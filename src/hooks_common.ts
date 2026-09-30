@@ -6,7 +6,7 @@ import { recordStat, savedTokensFromBytes } from './stats.js'
 import { countRedactionPlaceholders } from './secret_redact.js'
 import { loadConfig } from './config.js'
 import { neutralizeOutsideFences } from './injection_scan.js'
-import { displaySafeText } from './paths.js'
+import { displaySafeText, resolveToolPath } from './paths.js'
 import { detectHarness } from './bridges/registry.js'
 
 /** Return the event's tool name, or `undefined` for non-tool events. */
@@ -19,12 +19,17 @@ export function getToolInput(event: HookEvent): Record<string, unknown> {
   return event.toolInput
 }
 
-/** Extract the edited/read file path from the tool input. Checks `file_path` first (Read/Edit/Write and most other tools), then falls back to `notebook_path` (NotebookEdit's actual tool-input key) when `file_path` is absent. Returns the string value when present and non-empty, otherwise `undefined`. A non-string value (malformed payload) is treated as absent rather than coerced. */
+/** Extract the edited/read file path from the tool input. Checks `file_path` first (Read/Edit/Write and most other tools), then falls back to `notebook_path` (NotebookEdit's actual tool-input key) when `file_path` is absent. Returns the string value when present and non-empty, otherwise `undefined`. A non-string value (malformed payload) is treated as absent rather than coerced. A relative path is resolved against the payload's `cwd` ({@link resolveEventPath}). */
 export function getFilePath(event: HookEvent): string | undefined {
   const value = event.toolInput['file_path']
-  if (typeof value === 'string' && value !== '') return value
+  if (typeof value === 'string' && value !== '') return resolveEventPath(event, value)
   const notebookValue = event.toolInput['notebook_path']
-  return typeof notebookValue === 'string' && notebookValue !== '' ? notebookValue : undefined
+  return typeof notebookValue === 'string' && notebookValue !== '' ? resolveEventPath(event, notebookValue) : undefined
+}
+
+/** Resolve a path taken from the tool input against the payload's `cwd` when it is relative; an absolute path comes back unchanged. See {@link resolveToolPath}. */
+export function resolveEventPath(event: HookEvent, file: string): string {
+  return resolveToolPath(file, getCwd(event))
 }
 
 /** Every file an edit touched: the entries of a `file_paths` array, then {@link getFilePath}'s single path when the array does not already hold it, each once. `file_paths` is how a tool that edits several files in one call reaches the post-edit handler (VS Code's multi_replace_string_in_file and apply_patch, whose paths hooks_cli.ts reads out of `replacements[]` and the patch text). Non-string and empty entries are skipped. */
@@ -32,7 +37,11 @@ export function getFilePaths(event: HookEvent): string[] {
   const out: string[] = []
   const list = event.toolInput['file_paths']
   if (Array.isArray(list)) {
-    for (const entry of list) if (typeof entry === 'string' && entry !== '' && !out.includes(entry)) out.push(entry)
+    for (const entry of list) {
+      if (typeof entry !== 'string' || entry === '') continue
+      const resolved = resolveEventPath(event, entry)
+      if (!out.includes(resolved)) out.push(resolved)
+    }
   }
   const single = getFilePath(event)
   if (single !== undefined && !out.includes(single)) out.push(single)

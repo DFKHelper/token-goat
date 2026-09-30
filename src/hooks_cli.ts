@@ -472,6 +472,12 @@ export function normalizePayload(payload: unknown, harness: Harness = 'claude'):
     if (mapped) {
       result['tool_name'] = mapped
     }
+    // Codex hands an apply_patch hook only `{"command": <the patch>}` (codex-rs core/src/tools/handlers/apply_patch.rs builds both the pre and post tool_input that way), so the files it touches exist only in the patch headers. Lift them out, relative as Codex wrote them: getFilePaths resolves them against the payload cwd, the directory Codex applied the patch in.
+    const rawInput = obj['tool_input']
+    const patch = toolName === 'apply_patch' && typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput) ? (rawInput as Record<string, unknown>)['command'] : undefined
+    if (typeof patch === 'string') {
+      result['tool_input'] = { ...(rawInput as Record<string, unknown>), ...derivedPaths(patchFilePaths(patch)) }
+    }
     result['_tg_harness'] = harness
     return result
   }

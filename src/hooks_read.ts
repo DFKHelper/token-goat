@@ -3,7 +3,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { getCwd, getFilePath } from './hooks_common.js'
+import { getCwd, getFilePath, resolveEventPath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
@@ -548,7 +548,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   let filePath = getFilePath(event)
   if (filePath === undefined && event.toolName === 'Grep') {
     const rawPath = event.toolInput['path']
-    if (typeof rawPath === 'string' && rawPath !== '') filePath = rawPath
+    if (typeof rawPath === 'string' && rawPath !== '') filePath = resolveEventPath(event, rawPath)
   }
   if (filePath === undefined) return passOutput()
 
@@ -1318,7 +1318,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 export function preReadHandler(event: HookEvent): HookOutput {
   // Before anything below stats or reads the path: this runs ahead of the user's approval, see preToolPathDeclined.
   const rawGrepPath = event.toolName === 'Grep' ? event.toolInput['path'] : undefined
-  if (preToolPathDeclined(event, getFilePath(event) ?? (typeof rawGrepPath === 'string' && rawGrepPath !== '' ? rawGrepPath : undefined))) return passOutput()
+  if (preToolPathDeclined(event, getFilePath(event) ?? (typeof rawGrepPath === 'string' && rawGrepPath !== '' ? resolveEventPath(event, rawGrepPath) : undefined))) return passOutput()
   return applyHintTracking(event, preReadHandlerInner(event), classifyReadHint)
 }
 

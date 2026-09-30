@@ -12,7 +12,7 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
-// opencode built-in tool id -> token-goat canonical tool name. websearch/skill/task were re-verified against opencode's own source at the tag matching the installed release (anomalyco/opencode v1.18.16 packages/opencode/src/tool/): WebSearchTool registers as "websearch" (websearch.ts), SkillTool as "skill" (skill.ts), TaskTool as "task" (task.ts, params prompt/subagent_type/description -- the exact keys token-goat's hooks_agent_spawn.ts reads, which registers a lowercase 'task' handler). Unmapped, all three were dead mechanisms here: no WebSearch repeat-search deny/compression, no repeat-skill-load deny, no agent-spawn briefing or report compaction. apply_patch (patchText only, no per-file path) and lsp/plan/question/todo have no token-goat equivalent and stay unmapped.
+// opencode built-in tool id -> token-goat canonical tool name. websearch/skill/task were re-verified against opencode's own source at the tag matching the installed release (anomalyco/opencode v1.18.16 packages/opencode/src/tool/): WebSearchTool registers as "websearch" (websearch.ts), SkillTool as "skill" (skill.ts), TaskTool as "task" (task.ts, params prompt/subagent_type/description -- the exact keys token-goat's hooks_agent_spawn.ts reads, which registers a lowercase 'task' handler). Unmapped, all three were dead mechanisms here: no WebSearch repeat-search deny/compression, no repeat-skill-load deny, no agent-spawn briefing or report compaction. apply_patch is mapped to Edit (see patchTextPaths below). lsp/plan/question/todo have no token-goat equivalent and stay unmapped.
 const TOOL_TO_TG = {
   read: "Read",
   bash: "Bash",
@@ -24,6 +24,7 @@ const TOOL_TO_TG = {
   websearch: "WebSearch",
   skill: "Skill",
   task: "task",
+  apply_patch: "Edit",
 }
 
 // Tools with a pre_tool_use handler server-side whose OUTPUT SHAPE this hook can act on: deny (throw), updatedInput (args rewrite), or the Read image-shrink materialization. websearch (repeat-search deny within the dedup TTL, hooks_websearch.ts), skill (repeat-load deny, hooks_skill.ts) and task (briefing updatedInput rewrite, hooks_agent_spawn.ts) all qualify. Edit/Write have no pre-hook at all. Glob DOES have one (preGlobDedupHandler, hooks_glob.ts) -- the old claim here that it has none was stale -- but its only output is an advisory contextOutput hint, and tool.execute.before has no context channel (see the module docblock), so calling it would spawn a subprocess per glob only to drop the answer; it stays excluded for that reason, not the old one.
@@ -50,7 +51,27 @@ function reverseArgMap(tool) {
   return rev
 }
 
+// opencode's apply_patch tool (tool/apply_patch.ts, v1.18.33) takes one patchText argument and no per-file path; it is the tool opencode offers GPT models in place of edit and write. The file paths are the header lines of the patch (patch/index.ts parsePatchHeader: "*** Add File: ", "*** Delete File: ", "*** Update File: ", plus "*** Move to: " for a rename), each trimmed and resolved against the instance directory, which is the directory this plugin sends as cwd. A trailing carriage return is dropped by the trim. Left unmapped, an edit a GPT model made was never queued for reindexing.
+const PATCH_PATH_HEADERS = ["*** Add File: ", "*** Delete File: ", "*** Update File: ", "*** Move to: "]
+
+function patchTextPaths(patchText) {
+  const paths = []
+  if (typeof patchText !== "string") return paths
+  for (const line of patchText.split(String.fromCharCode(10))) {
+    for (const header of PATCH_PATH_HEADERS) {
+      if (!line.startsWith(header)) continue
+      const p = line.slice(header.length).trim()
+      if (p && !paths.includes(p)) paths.push(p)
+    }
+  }
+  return paths
+}
+
 function toToolInput(tool, args) {
+  if (tool === "apply_patch") {
+    const paths = patchTextPaths(args && args.patchText)
+    return paths.length === 1 ? { file_path: paths[0], file_paths: paths } : { file_paths: paths }
+  }
   const map = ARGS_TO_TG[tool] ?? {}
   const out = {}
   for (const [opencodeKey, tgKey] of Object.entries(map)) {

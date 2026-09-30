@@ -9,12 +9,13 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import type { HookEvent } from '../src/hook_registry.js'
 import { normalizePayload } from '../src/hooks_cli.js'
+import { preReadHandler } from '../src/hooks_read.js'
 import { postReadHandler } from '../src/hooks_read_post.js'
 import { isTruncatedReadDelivery, parseReadDelivery, readRequestedSliceWindow, readStartLine } from '../src/hooks_read_slice.js'
 import { normalizePath } from '../src/paths.js'
 import { buildEvent } from '../src/relay.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { wasFileTruncatedThisSession } from '../src/session.js'
+import { wasFileReadThisSession, wasFileTruncatedThisSession } from '../src/session.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
 import { extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from '../src/hooks_common.js'
 
@@ -139,6 +140,30 @@ describe.each(['gemini', 'qwen'] as const)('%s read_file delivery', (harness) =>
     loadSessionState(sid)
     expect(wasFileTruncatedThisSession(`${ws}/big.txt`)).toBe(true)
     expect(wasFileTruncatedThisSession(`${ws}/small.txt`)).toBe(false)
+  })
+})
+
+describe('gemini read_file with a path relative to the workspace (CAPTURE)', () => {
+  it('the pre and post hooks book the read under the absolute path, the key every other read of the file uses', () => {
+    // The payloads are the captured AfterTool stdin as Gemini CLI sends it: tool_input.file_path is "small.txt" / "big.txt" and cwd is the workspace. Keyed as given, the session recorded the bare file name, so a later absolute read of the same file met no prior read and the cut-short big read was never booked as truncated.
+    clearModuleCaches()
+    const ws = workspace()
+    const sid = newSession()
+    // The pre hook is what records a read; its BeforeTool stdin is the captured payload before the tool ran, so it carries no tool_response.
+    const { tool_response: _unused, ...before } = geminiPayload(ws, sid, 'small')
+    const preEvent = buildEvent('pre_tool_use', normalizePayload({ ...before, hook_event_name: 'BeforeTool' }, 'gemini'))
+    for (const run of [() => postReadHandler(postEvent('gemini', ws, sid, 'big')), () => preReadHandler(preEvent)]) {
+      loadSessionState(sid)
+      try {
+        run()
+      } finally {
+        saveSessionState(sid)
+      }
+    }
+    loadSessionState(sid)
+    expect(wasFileTruncatedThisSession(`${ws}/big.txt`)).toBe(true)
+    expect(wasFileReadThisSession(`${ws}/small.txt`)).toBe(true)
+    expect(wasFileReadThisSession('small.txt')).toBe(false)
   })
 })
 

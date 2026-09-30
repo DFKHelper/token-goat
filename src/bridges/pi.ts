@@ -159,12 +159,48 @@ function reverseArgMap(tool: string): Record<string, string> {
   return Object.fromEntries(Object.entries(fwd).map(([piKey, tgKey]) => [tgKey, piKey]));
 }
 
-function toToolInput(tool: string, input: Record<string, unknown>): Record<string, unknown> {
+const UNICODE_SPACES = new RegExp("[" + [0xa0, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x202f, 0x205f, 0x3000].map((c) => String.fromCharCode(c)).join("") + "]", "g");
+
+function fileExists(p: string): boolean {
+  try {
+    fs.accessSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// The absolute path pi will open for a read/edit/write "path" argument. pi rewrites the argument before resolving it (pi-coding-agent 0.99.1, core/tools/path-utils.js resolveToCwd over utils/paths.js normalizePath), in this order: trim, unicode spaces to plain spaces, drop one leading "@", on Windows turn a Git Bash, Cygwin or WSL drive path (/c/x, /cygdrive/c/x, /mnt/c/x) into C:/x, expand "~", convert a file:// URL, then resolve against the session cwd. A read of a missing file also tries the macOS screenshot spellings (resolveReadPath). token-goat was sent the argument as written, so "@src/a.ts" or "~/notes.md" named a file that does not exist: a re-read went unrecognised and an edit never reached the index.
+function resolvePiPath(raw: string, base: string, isRead: boolean): string {
+  let p = raw.trim().replace(UNICODE_SPACES, " ");
+  if (p.startsWith("@")) p = p.slice(1);
+  if (process.platform === "win32" && p.startsWith("/") && !p.startsWith("//") && !p.includes(String.fromCharCode(92))) {
+    const m = p.match(/^[/](?:mnt[/]|cygdrive[/])?([a-z])(?:[/](.*))?$/i);
+    if (m) p = m[1].toUpperCase() + ":/" + (m[2] ?? "");
+  }
+  if (p === "~") p = os.homedir();
+  else if (p.startsWith("~/") || (process.platform === "win32" && p.startsWith("~" + String.fromCharCode(92)))) p = path.join(os.homedir(), p.slice(2));
+  else if (/^file:[/][/]/.test(p)) {
+    try { p = fileURLToPath(p); } catch {}
+  }
+  const resolved = path.resolve(base, p);
+  if (!isRead || fileExists(resolved)) return resolved;
+  const amPm = resolved.replace(/ (AM|PM)[.]/gi, String.fromCharCode(0x202f) + "$1.");
+  const nfd = resolved.normalize("NFD");
+  const curly = (s: string) => s.replace(/'/g, String.fromCharCode(0x2019));
+  for (const variant of [amPm, nfd, curly(resolved), curly(nfd)]) {
+    if (variant !== resolved && fileExists(variant)) return variant;
+  }
+  return resolved;
+}
+
+function toToolInput(tool: string, input: Record<string, unknown>, base: string): Record<string, unknown> {
   const argMap = ARGS_TO_TG[tool] ?? {};
   const out: Record<string, unknown> = {};
   for (const [piKey, tgKey] of Object.entries(argMap)) {
     if (input[piKey] !== undefined) out[tgKey] = input[piKey];
   }
+  if (typeof out["file_path"] === "string") out["file_path"] = resolvePiPath(out["file_path"] as string, base, tool === "read");
   return out;
 }
 
@@ -252,7 +288,7 @@ export default function (pi: ExtensionAPI) {
     sessionId = file ? \`pi-\${file.replace(/[^A-Za-z0-9._-]/g, "_")}\` : \`pi-\${process.pid}\`;
   });
 
-  pi.on("tool_call", async (event, _ctx) => {
+  pi.on("tool_call", async (event, ctx) => {
     const tg = TOOL_TO_TG[event.toolName];
     if (!tg || !PRE_HOOK_TOOLS.has(tg)) return;
 
@@ -260,8 +296,8 @@ export default function (pi: ExtensionAPI) {
     const resp = await callHook("pre_tool_use", {
       session_id: sessionId,
       tool_name: tg,
-      tool_input: toToolInput(event.toolName, input),
-      cwd,
+      tool_input: toToolInput(event.toolName, input, ctx?.cwd ?? cwd),
+      cwd: ctx?.cwd ?? cwd,
     });
     if (!resp) return;
 
@@ -292,7 +328,7 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("tool_result", async (event, _ctx) => {
+  pi.on("tool_result", async (event, ctx) => {
     const tg = TOOL_TO_TG[event.toolName];
     if (!tg) return;
     // event.content is tool_result's real output field (ToolResultEventBase.content:
@@ -309,8 +345,8 @@ export default function (pi: ExtensionAPI) {
     const resp = await callHook("post_tool_use", {
       session_id: sessionId,
       tool_name: tg,
-      tool_input: toToolInput(event.toolName, (event.input ?? {}) as Record<string, unknown>),
-      cwd,
+      tool_input: toToolInput(event.toolName, (event.input ?? {}) as Record<string, unknown>, ctx?.cwd ?? cwd),
+      cwd: ctx?.cwd ?? cwd,
       tool_response: { output },
     });
     if (!resp) return;

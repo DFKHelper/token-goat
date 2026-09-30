@@ -66,6 +66,18 @@ describe('normalizePayload', () => {
     expect(result['_tg_harness']).toBe('codex')
   })
 
+  // PROVENANCE: FORMAT-DERIVED, codex-rs 0.159.2 core/src/tools/handlers/apply_patch_tests.rs: both pre_tool_use_payload and post_tool_use_payload build tool_input as `json!({ "command": patch })`, and sample_patch() names its file relative (`*** Add File: hello.txt`). Paths are HAND-DERIVED.
+  it('lifts the files a Codex apply_patch names out of its `command`, relative as Codex wrote them, and leaves the patch itself in place', () => {
+    const command = ['*** Begin Patch', '*** Add File: hello.txt', '+hello', '*** Update File: src/a.ts', '@@', '-a', '+b', '*** End Patch'].join('\n')
+    const result = normalizePayload({ tool_name: 'apply_patch', cwd: '/w', tool_input: { command } }, 'codex')
+    expect(result['tool_name']).toBe('Edit')
+    expect(result['tool_input']).toEqual({ command, file_paths: ['hello.txt', 'src/a.ts'] })
+    const one = normalizePayload({ tool_name: 'apply_patch', tool_input: { command: '*** Begin Patch\n*** Delete File: gone.ts\n*** End Patch' } }, 'codex')
+    expect(one['tool_input']).toEqual({ command: '*** Begin Patch\n*** Delete File: gone.ts\n*** End Patch', file_paths: ['gone.ts'], file_path: 'gone.ts' })
+    // A non-string command is left alone rather than thrown on.
+    expect(normalizePayload({ tool_name: 'apply_patch', tool_input: { command: 7 } }, 'codex')['tool_input']).toEqual({ command: 7 })
+  })
+
   it('remaps Codex view_image to Read (CODEX_MATCHERS wires it in the same matcher as the shell spellings, in codex_install.ts)', () => {
     const payload: HookPayload = {
       tool_name: 'view_image',

@@ -124,6 +124,12 @@ export function resolveIndexPath(file: string, base: string = process.cwd()): st
   return normalizePath(resolve(b, f))
 }
 
+/** Resolve a path a hook payload carries against the payload's `cwd` when the path is relative, the way the tool itself opened it. Gemini CLI's `read_file` sends `{"file_path":"small.txt"}` with the workspace as `cwd`; keyed as given, the session recorded `small.txt` while every other read of the file recorded its absolute path, so re-read hints and the index lookup never met. An absolute path is returned byte-identical: resolving it would collapse `..` and change the session key of every Claude Code read, which already arrives absolute. With no `cwd` there is nothing to resolve against, so the path is returned as given rather than resolved against the hook process's own directory, which is not the tool's. */
+export function resolveToolPath(file: string, cwd: string | undefined): string {
+  if (cwd === undefined || path.posix.isAbsolute(file) || path.win32.isAbsolute(file)) return file
+  return resolveIndexPath(file, cwd)
+}
+
 /** True when stat finds a directory at `p`, following a symlink; false for anything else and for any error. */
 export function dirExists(p: string): boolean {
   try {

@@ -8,6 +8,7 @@ import {
   normalizeDarwinSystemAlias,
   normalizePath,
   resolveIndexPath,
+  resolveToolPath,
   safeJoin,
   toDisplayPath,
 } from '../src/paths.js'
@@ -422,5 +423,23 @@ describe('toDisplayPath', () => {
       expect(result).toBe('D:/other/x.ts')
       expect(path.isAbsolute(result) || /^[a-zA-Z]:/.test(result)).toBe(true)
     })
+  })
+})
+
+// HAND-DERIVED: each expectation is worked out from path semantics, not from the implementation. A payload path that is already absolute must come back byte-identical, because every Claude Code read arrives absolute and resolving it would collapse '..' and move its session key; a relative one is resolved against the payload cwd, the directory the tool opened it from.
+describe('resolveToolPath', () => {
+  it('returns an absolute path unchanged, in every absolute form', () => {
+    expect(resolveToolPath(String.raw`C:\x\..\y.ts`, 'D:/w')).toBe(String.raw`C:\x\..\y.ts`)
+    expect(resolveToolPath('/x/../y.ts', 'D:/w')).toBe('/x/../y.ts')
+    expect(resolveToolPath(String.raw`\\server\share\f.ts`, 'D:/w')).toBe(String.raw`\\server\share\f.ts`)
+  })
+
+  it('resolves a relative path against the payload cwd, to the index key form (drive letter lowercased, as normalizePath does for every Windows path)', () => {
+    expect(resolveToolPath('src/a.ts', 'D:/w')).toBe('d:/w/src/a.ts')
+    expect(resolveToolPath('../b.ts', 'D:/w/sub')).toBe('d:/w/b.ts')
+  })
+
+  it('leaves a relative path as given when the payload has no cwd, rather than resolving it against the hook process directory', () => {
+    expect(resolveToolPath('src/a.ts', undefined)).toBe('src/a.ts')
   })
 })

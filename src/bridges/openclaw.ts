@@ -33,14 +33,62 @@ const TOOL_TO_TG = {
 // Tools with a pre_tool_use handler whose output shape this hook can act on: deny (block/blockReason), updatedInput (params rewrite), or the Read image-shrink materialization. Edit/Write have no pre handler at all. Glob (OpenClaw's find) DOES have one -- preGlobDedupHandler in hooks_glob.ts; the old claim here that it has none was stale -- but its only output is an advisory contextOutput hint and before_tool_call has no context channel, so calling it would spawn a hook subprocess per find only to drop the answer; it stays excluded for that reason (matching pi.ts/opencode.ts's corrected note).
 const PRE_HOOK_TOOLS = new Set(["Read", "Grep", "Bash", "WebFetch"]);
 
-// OpenClaw tools whose file path travels under "path" (see the parameter-shapes note above). apply_patch is deliberately absent: its input is a patch document, not a single path.
+// OpenClaw tools whose file path travels under "path" (see the parameter-shapes note above). apply_patch is handled separately: its input is a patch document naming any number of files.
 const PATH_ARG_TOOLS = new Set(["read", "write", "edit"]);
 
-// Build token-goat's tool_input from OpenClaw's params: same object, plus the canonical file_path added alongside the original path for the tools that carry one. Never renames or drops a key.
-function toToolInput(toolName, params) {
+// The directory OpenClaw resolves a relative tool path against. Checked against OpenClaw 2026.9.7: its coding tools resolve against the agent workspace (agents.list[].workspace, else agents.defaults.workspace, else the state dir's workspace folder), not the gateway process's own directory, and the tool-call hook context carries only agentId/sessionId/sessionKey/runId/toolCallId, no directory. So the workspace is looked up through the plugin runtime's own resolver, api.runtime.agent.resolveAgentWorkspaceDir(api.runtime.config.current(), agentId). The workspace differs from the resolve base only when a run asked for a separate cwd or runs sandboxed, and neither is visible to a plugin. process.cwd() is the last resort for a runtime without that resolver.
+function workspaceFor(api, ctx) {
+  if (ctx && typeof ctx.workspaceDir === "string" && ctx.workspaceDir) return ctx.workspaceDir;
+  try {
+    const rt = api && api.runtime;
+    const dir = rt.agent.resolveAgentWorkspaceDir(rt.config.current(), ctx && ctx.agentId);
+    if (typeof dir === "string" && dir) return dir;
+  } catch {}
+  return process.cwd();
+}
+
+// Turn a tool's raw path argument into the absolute path OpenClaw will open, applying OpenClaw's own rewrites in its order: a leading "@" (a file reference) is dropped unless a file or folder literally named that way exists, a file:// URL becomes a path, and "~", "~/" and, on Windows, "~" plus a backslash expand to the home folder. Without this, a relative path was resolved against whatever directory token-goat happened to run in, so a re-read was never recognised and an edit was never queued for reindexing.
+function resolveToolPathArg(raw, base) {
+  let p = raw.trim();
+  if (p.startsWith("@") && p.length > 1) {
+    const first = p.split("/")[0].split(path.sep)[0];
+    if (!fs.existsSync(path.resolve(base, p)) && !fs.existsSync(path.resolve(base, first))) p = p.slice(1);
+  }
+  if (/^file:[/][/]/i.test(p)) {
+    try { p = fileURLToPath(p); } catch {}
+  }
+  if (p === "~") p = os.homedir();
+  else if (p.startsWith("~/") || p.startsWith("~" + path.sep)) p = path.join(os.homedir(), p.slice(2));
+  return path.resolve(base, p);
+}
+
+// apply_patch (params.input, OpenClaw's apply-patch-paths extractApplyPatchTargets) names its files on header lines, leading whitespace allowed, with a rename's "*** Move to: " following its "*** Update File: ".
+const PATCH_PATH_HEADERS = ["*** Add File: ", "*** Delete File: ", "*** Update File: ", "*** Move to: "];
+
+function patchTextPaths(patchText) {
+  const paths = [];
+  if (typeof patchText !== "string") return paths;
+  for (const rawLine of patchText.split(String.fromCharCode(10))) {
+    const line = rawLine.trimStart();
+    for (const header of PATCH_PATH_HEADERS) {
+      if (!line.startsWith(header)) continue;
+      const p = line.slice(header.length).trim();
+      if (p && !paths.includes(p)) paths.push(p);
+    }
+  }
+  return paths;
+}
+
+// Build token-goat's tool_input from OpenClaw's params: same object, plus the canonical file_path (absolute, see resolveToolPathArg) added alongside the original path for the tools that carry one, or file_paths for apply_patch. derived is OpenClaw's own resolution of the patch's files (event.derivedPaths), preferred over re-parsing the patch. Never renames or drops a key.
+function toToolInput(toolName, params, base, derived) {
   const p = params || {};
   if (PATH_ARG_TOOLS.has(toolName) && typeof p.path === "string" && p.file_path === undefined) {
-    return { ...p, file_path: p.path };
+    return { ...p, file_path: resolveToolPathArg(p.path, base) };
+  }
+  if (toolName === "apply_patch" && p.file_path === undefined) {
+    const files = derived && derived.length ? derived : patchTextPaths(p.input).map((f) => resolveToolPathArg(f, base));
+    if (files.length === 1) return { ...p, file_path: files[0], file_paths: files };
+    if (files.length > 1) return { ...p, file_paths: files };
   }
   return p;
 }
@@ -85,16 +133,25 @@ export default definePluginEntry({
     // bridge (commit 2f0a15e4). OpenClaw's session_end is a real lifecycle
     // event, but token-goat has no corresponding hook to bridge it to.
 
+    // apply_patch's files as OpenClaw itself resolved them (event.derivedPaths, absolute), keyed by toolCallId: only before_tool_call carries them, and after_tool_call is where the edit is recorded. Capped so a call that never completes cannot grow it without bound.
+    const patchPaths = new Map();
+
     api.on("before_tool_call", async (event, ctx) => {
+      const callId = event.toolCallId || (ctx && ctx.toolCallId);
+      if (event.toolName === "apply_patch" && callId && Array.isArray(event.derivedPaths)) {
+        patchPaths.set(callId, [...event.derivedPaths]);
+        if (patchPaths.size > 256) patchPaths.delete(patchPaths.keys().next().value);
+      }
       const tg = TOOL_TO_TG[event.toolName];
       if (!tg || !PRE_HOOK_TOOLS.has(tg)) return {};
 
       const sid = (ctx && (ctx.sessionId || ctx.sessionKey)) || sessionId;
+      const base = workspaceFor(api, ctx);
       const resp = await callHook("pre_tool_use", {
         session_id: sid,
         tool_name: tg,
-        tool_input: toToolInput(event.toolName, event.params),
-        cwd: process.cwd(),
+        tool_input: toToolInput(event.toolName, event.params, base),
+        cwd: base,
       });
       if (!resp) return {};
 
@@ -134,11 +191,15 @@ export default definePluginEntry({
       // pi.ts's tool_response: { output } shape.
       const toolResponse =
         event.result && typeof event.result === "object" ? event.result : { output: event.result };
+      const callId = event.toolCallId || (ctx && ctx.toolCallId);
+      const derived = callId ? patchPaths.get(callId) : undefined;
+      if (callId) patchPaths.delete(callId);
+      const base = workspaceFor(api, ctx);
       await callHook("post_tool_use", {
         session_id: sid,
         tool_name: tg,
-        tool_input: toToolInput(event.toolName, event.params),
-        cwd: process.cwd(),
+        tool_input: toToolInput(event.toolName, event.params, base, derived),
+        cwd: base,
         tool_response: toolResponse,
       });
     });

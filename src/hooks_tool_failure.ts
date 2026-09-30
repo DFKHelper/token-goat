@@ -7,7 +7,7 @@ import { callStreakAfterFailure } from './call_streak.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import { buildLineIndex, offsetToLine } from './languages/common.js'
 import { unwrapCompressCommand } from './hooks_bash_commands.js'
-import { contextOutput, getFilePath, getToolInput, getToolName, passOutput } from './hooks_common.js'
+import { contextOutput, getFilePath, getToolInput, getToolName, passOutput, resolveEventPath } from './hooks_common.js'
 import { displaySafeText, hostPathOfIndexKey, normalizePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
 import { ensureDirSync } from './util.js'
@@ -126,7 +126,7 @@ export function diagnoseEditFailure(event: HookEvent, errorText: string): string
   }
 
   const filePath =
-    getFilePath(event) ?? (typeof event.toolInput['path'] === 'string' ? event.toolInput['path'] : undefined)
+    getFilePath(event) ?? (typeof event.toolInput['path'] === 'string' && event.toolInput['path'] !== '' ? resolveEventPath(event, event.toolInput['path']) : undefined)
   if (!filePath) return null
 
   const oldString =

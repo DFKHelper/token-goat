@@ -1,7 +1,7 @@
 /** Regression coverage for the in-process hook call refactor (fixes the "double node process spawn per hook event" issue): every bridge used to spawnSync a whole second `token-goat hook <event>` node process for each hook call. They now try an in-process `import()` of the sibling `dist/token-goat-hook.mjs` hook library first (src/hook_lib.ts -> relayInProcess), falling back to the old spawnSync path only when that's unavailable. Each test here proves BOTH halves at once, against the real built bundle: 1. zero-spawn: the spawnSync fallback target is "poisoned" (writes a marker file if ever invoked) and the test asserts that marker is never created. 2. correct output: the response returned is a real hook decision -- a deny produced by the actual session-state-backed "already read this manifest file" dedup logic in hooks_read.ts, not a stub -- proving the in-process call really reached the real hook registry and that session state persists correctly across two calls. */
 import { spawnSync } from 'node:child_process'
 import { unfence } from '../helpers/unfence.js'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, copyFileSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, copyFileSync, readFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -18,11 +18,12 @@ import { OPENCODE_PLUGIN_SCRIPT } from '../../src/bridges/opencode.js'
 import { PI_EXTENSION_SCRIPT } from '../../src/bridges/pi.js'
 import { dataDir } from '../../src/constants.js'
 import { getDb } from '../../src/db.js'
-import { expandShortPath } from '../../src/paths.js'
+import { expandShortPath, normalizePath } from '../../src/paths.js'
 import { readSessionStateFile } from '../../src/session_store.js'
 import { summarize } from '../../src/stats.js'
 import { HOOK_BUNDLE, ROOT } from '../helpers/bundle.js'
 import { HARNESS_DETECTION_ENV_KEYS } from '../helpers/harness-env.js'
+import { indexableDir } from '../helpers/temp-config.js'
 
 const tempDirs: string[] = []
 let sharedHookFixture: { entryPath: string; markerPath: string; dir: string } | undefined
@@ -492,6 +493,32 @@ describe('opencode plugin: in-process hook call replaces the second node spawn',
     expect(rewritten).toContain('A similar subagent spawn already appears to be outstanding')
     expect(existsSync(markerPath)).toBe(false)
   })
+
+  // PROVENANCE: FORMAT-DERIVED, opencode v1.18.33 (anomalyco/opencode 51ef4be). packages/opencode/src/tool/apply_patch.ts registers id "apply_patch" with the single parameter patchText; packages/opencode/src/patch/index.ts parsePatchHeader reads the "*** Add File: ", "*** Delete File: " and "*** Update File: " headers and a following "*** Move to: ", trims each path, and apply_patch.ts resolves it with path.resolve(Instance.directory, ...). The file names are HAND-DERIVED.
+  it('apply_patch: every file a patch names is queued for reindexing, resolved against the plugin directory (previously unmapped: a GPT model edits through apply_patch and none of its edits reached the index)', async () => {
+    const cwd = mkIsolated()
+    const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+    writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+    const pluginPath = join(cwd, 'plugin.mjs')
+    writeFileSync(pluginPath, OPENCODE_PLUGIN_SCRIPT, 'utf8')
+
+    const mod = (await import(pathToFileURL(pluginPath).href)) as {
+      TokenGoatPlugin: (opts: { directory: string }) => Promise<Record<string, (input: unknown, output: unknown) => Promise<void>>>
+    }
+    // The project must sit outside the system temp dir, which the edit hook keeps out of the dirty queue on purpose.
+    const project = indexableDir()
+    const hooks = await mod.TokenGoatPlugin({ directory: project })
+    const sessionID = 'inprocess-applypatch-test-' + Math.random().toString(36).slice(2)
+    const patchText = '*** Begin Patch\r\n*** Update File: old_name.ts\r\n*** Move to: moved/new_name.ts\r\n@@\r\n-export const a = 1\r\n+export const a = 2\r\n*** Add File: added.ts\r\n+export const b = 1\r\n*** Delete File: gone.ts\r\n*** End Patch'
+
+    await hooks['tool.execute.after']!({ tool: 'apply_patch', sessionID, args: { patchText } }, { title: '', output: 'Success. Updated the following files:', metadata: {} })
+
+    const queueFile = join(dataDir(), 'queue', 'dirty.txt')
+    const queued = existsSync(queueFile) ? readFileSync(queueFile, 'utf8').split('\n').map((l) => l.trim()).filter((l) => l !== '').map((l) => normalizePath(l)) : []
+    const expected = ['old_name.ts', 'moved/new_name.ts', 'added.ts', 'gone.ts'].map((p) => normalizePath(join(project, p)))
+    expect(queued.filter((q) => expected.includes(q)).sort()).toEqual([...expected].sort())
+    expect(existsSync(markerPath)).toBe(false)
+  })
 })
 
 describe('openclaw plugin: in-process hook call replaces the second node spawn', () => {
@@ -536,6 +563,63 @@ describe('openclaw plugin: in-process hook call replaces the second node spawn',
     expect(second?.blockReason).toContain('already read')
 
     expect(existsSync(markerPath)).toBe(false)
+  })
+})
+
+// Provenance: FORMAT-DERIVED from pi's own published package, @earendil-works/pi-coding-agent@0.99.1 (npm tarball), NOT from this bridge. dist/utils/paths.js normalizePath trims, maps unicode spaces to a plain space, strips one leading "@", rewrites a Windows shell path (/c/..., /mnt/c/..., /cygdrive/c/...) to C:/..., expands "~", and converts a file:// URL; dist/core/tools/path-utils.js resolveToCwd then resolves the result against the tool context's cwd, and resolveReadPath retries a missing read path with a narrow no-break space before AM/PM, NFD, and a curly apostrophe. A hook that took the path as given saw "@.env" relative to the session start directory: a file that does not exist, so the read was never recorded and the re-read of the real file went through.
+describe('pi extension: tool paths are rewritten and resolved the way pi resolves them, against the tool call cwd', () => {
+  async function loadPi(sessionCwd: string): Promise<Record<string, (...args: unknown[]) => unknown>> {
+    const { entryPath } = setupPoisonedEntryWithRealHookLib(sessionCwd)
+    writeFileSync(join(sessionCwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+    const { code } = transformSync(PI_EXTENSION_SCRIPT, { loader: 'ts', format: 'esm' })
+    const extensionPath = join(sessionCwd, 'extension.mjs')
+    writeFileSync(extensionPath, code, 'utf8')
+    const mod = (await import(pathToFileURL(extensionPath).href)) as {
+      default: (pi: { on: (event: string, handler: (...args: unknown[]) => unknown) => void; sendMessage: () => void }) => void
+    }
+    const handlers: Record<string, (...args: unknown[]) => unknown> = {}
+    mod.default({ on(event, handler) { handlers[event] = handler }, sendMessage() {} })
+    handlers['session_start']!({}, { cwd: sessionCwd, sessionManager: undefined })
+    return handlers
+  }
+  type ToolCallResult = { block?: boolean; reason?: string } | undefined
+
+  it('resolves an @-prefixed relative read against ctx.cwd, so a re-read of the same file by its absolute path is caught', async () => {
+    const handlers = await loadPi(mkIsolated())
+    const workspace = mkIsolated()
+    const envPath = makeEnvFixture(workspace)
+    const first = (await handlers['tool_call']!({ toolName: 'read', input: { path: '@.env' } }, { cwd: workspace })) as ToolCallResult
+    expect(first?.block).toBeFalsy()
+    const second = (await handlers['tool_call']!({ toolName: 'read', input: { path: envPath } }, { cwd: workspace })) as ToolCallResult
+    expect(second?.block).toBe(true)
+    expect(second?.reason).toContain('already read')
+  })
+
+  it('retries a missing read path with the narrow no-break space pi substitutes before AM/PM', async () => {
+    const handlers = await loadPi(mkIsolated())
+    const workspace = mkIsolated()
+    // pi applies the substitution to the whole resolved path, so the narrow space sits in a directory name: the env-file re-read deny is the one the hook raises for a tiny file, and it matches on a basename of exactly ".env".
+    const realDir = join(workspace, 'Shot 10.00.00' + String.fromCharCode(0x202f) + 'AM.d')
+    mkdirSync(realDir)
+    const envPath = makeEnvFixture(realDir)
+    const first = (await handlers['tool_call']!({ toolName: 'read', input: { path: 'Shot 10.00.00 AM.d/.env' } }, { cwd: workspace })) as ToolCallResult
+    expect(first?.block).toBeFalsy()
+    // The re-read below goes through the same unicode-space rewrite, so it would match a read recorded under the plain-space path that does not exist too: the recorded path is what tells the two apart. The extension's session id falls back to its own pid when pi hands it no session file.
+    const recorded = (readSessionStateFile(`pi-${process.pid}`)?.files ?? []).map((f) => f.path)
+    expect(recorded).toContain(normalizePath(envPath))
+    const second = (await handlers['tool_call']!({ toolName: 'read', input: { path: envPath } }, { cwd: workspace })) as ToolCallResult
+    expect(second?.block).toBe(true)
+  })
+
+  it.runIf(process.platform === 'win32')('rewrites a Git Bash style /c/... path to the Windows drive path on win32', async () => {
+    const handlers = await loadPi(mkIsolated())
+    const workspace = mkIsolated()
+    const envPath = makeEnvFixture(workspace).replace(/\\/g, '/')
+    const shellPath = '/' + envPath[0]!.toLowerCase() + envPath.slice(2)
+    const first = (await handlers['tool_call']!({ toolName: 'read', input: { path: shellPath } }, { cwd: workspace })) as ToolCallResult
+    expect(first?.block).toBeFalsy()
+    const second = (await handlers['tool_call']!({ toolName: 'read', input: { path: envPath } }, { cwd: workspace })) as ToolCallResult
+    expect(second?.block).toBe(true)
   })
 })
 
@@ -803,6 +887,84 @@ describe('image shrink materialization: the shrink payload becomes a rewritten p
     expect(second?.block).toBe(true)
     expect(second?.blockReason).toContain('already read')
     expect(existsSync(markerPath)).toBe(false)
+  })
+
+  // PROVENANCE: FORMAT-DERIVED, openclaw 2026.9.7 (npm tarball dist/). The tool-call hook context carries no directory: agent-tools.before-tool-call-C1CeFtM4.mjs:2846 buildToolContext yields {toolName, agentId, sessionKey, sessionId, runId, toolCallId, ...}, and hook-helpers-NXwgiGge.mjs:18 builds after_tool_call's the same way. Relative tool paths resolve against the agent workspace, looked up through PluginRuntimeCore (plugin-entry-q9C-gfAu.d.ts:44615) as agent.resolveAgentWorkspaceDir(config.current(), agentId). before_tool_call's event carries derivedPaths for apply_patch only (line 2944, apply-patch-paths-DNbEgz1V.mjs:134, absolute), after_tool_call's does not; apply_patch's only parameter is "input" (core-coding-tools-B1aVLST6.mjs:546). A leading "@" is dropped unless a file of that literal name exists (path-policy-Lo9L0AE5.mjs:110). File names are HAND-DERIVED.
+  describe('openclaw: relative tool paths resolve against the agent workspace, not the gateway process directory', () => {
+    async function loadOpenclaw(workspace: string) {
+      const cwd = mkIsolated()
+      const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+      writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+      const pluginPath = join(cwd, 'plugin.mjs')
+      writeFileSync(pluginPath, OPENCLAW_PLUGIN_SCRIPT.replace('import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";', 'function definePluginEntry(cfg) { return cfg }'), 'utf8')
+      const mod = (await import(pathToFileURL(pluginPath).href)) as { default: { register: (api: unknown) => void } }
+      const handlers: Record<string, (...args: unknown[]) => unknown> = {}
+      const askedFor: unknown[] = []
+      mod.default.register({
+        on(event: string, handler: (...args: unknown[]) => unknown) {
+          handlers[event] = handler
+        },
+        runtime: {
+          config: { current: () => ({ agents: {} }) },
+          agent: {
+            resolveAgentWorkspaceDir: (_cfg: unknown, agentId: unknown) => {
+              askedFor.push(agentId)
+              return workspace
+            },
+          },
+        },
+      })
+      return { handlers, askedFor, markerPath }
+    }
+
+    function queuedPaths(): string[] {
+      const queueFile = join(dataDir(), 'queue', 'dirty.txt')
+      return existsSync(queueFile) ? readFileSync(queueFile, 'utf8').split('\n').map((l) => l.trim()).filter((l) => l !== '').map((l) => normalizePath(l)) : []
+    }
+
+    it('an edit to a relative path, an @-prefixed path and a file:// URL is queued as the workspace file it names', async () => {
+      // The workspace must sit outside the system temp dir, which the edit hook keeps out of the dirty queue on purpose; process.cwd() is the repo, so a resolve against it would land somewhere else entirely.
+      const workspace = indexableDir()
+      const { handlers, askedFor, markerPath } = await loadOpenclaw(workspace)
+      const ctx = { sessionId: 'inprocess-oc-rel-' + Math.random().toString(36).slice(2), agentId: 'coder', toolCallId: 'c1' }
+      const fileUrl = pathToFileURL(join(workspace, 'lib', 'url.ts')).href
+      for (const p of ['src/relative.ts', '@src/at.ts', fileUrl]) {
+        await handlers['after_tool_call']!({ toolName: 'edit', params: { path: p, oldText: 'a', newText: 'b' }, result: { content: [] } }, ctx)
+      }
+      const expected = ['src/relative.ts', 'src/at.ts', 'lib/url.ts'].map((p) => normalizePath(join(workspace, p)))
+      const queued = queuedPaths()
+      expect(queued.filter((q) => expected.includes(q)).sort()).toEqual([...expected].sort())
+      expect(queued).not.toContain(normalizePath(join(process.cwd(), 'src', 'relative.ts')))
+      expect(askedFor).toContain('coder')
+      expect(existsSync(markerPath)).toBe(false)
+    })
+
+    it('apply_patch queues the files OpenClaw itself resolved in before_tool_call, matched by toolCallId', async () => {
+      const workspace = indexableDir()
+      const { handlers, markerPath } = await loadOpenclaw(workspace)
+      const ctx = { sessionId: 'inprocess-oc-derived-' + Math.random().toString(36).slice(2), agentId: 'coder' }
+      // OpenClaw resolved these against a sandbox root the plugin cannot see, which is why they are preferred over re-parsing the patch.
+      const derivedPaths = [join(workspace, 'sandboxed', 'one.ts'), join(workspace, 'sandboxed', 'two.ts')]
+      const input = '*** Begin Patch\n*** Update File: not-this.ts\n@@\n-a\n+b\n*** End Patch'
+      await handlers['before_tool_call']!({ toolName: 'apply_patch', params: { input }, toolCallId: 'patch-1', derivedPaths }, ctx)
+      await handlers['after_tool_call']!({ toolName: 'apply_patch', params: { input }, toolCallId: 'patch-1', result: { content: [] } }, ctx)
+      const queued = queuedPaths()
+      const expected = derivedPaths.map((p) => normalizePath(p))
+      expect(queued.filter((q) => expected.includes(q)).sort()).toEqual([...expected].sort())
+      expect(queued).not.toContain(normalizePath(join(workspace, 'not-this.ts')))
+      expect(existsSync(markerPath)).toBe(false)
+    })
+
+    it('apply_patch with no derivedPaths falls back to the patch headers, indented or CRLF-terminated, resolved against the workspace', async () => {
+      const workspace = indexableDir()
+      const { handlers, markerPath } = await loadOpenclaw(workspace)
+      const ctx = { sessionId: 'inprocess-oc-headers-' + Math.random().toString(36).slice(2), agentId: 'coder', toolCallId: 'patch-2' }
+      const input = '*** Begin Patch\r\n  *** Update File: old_name.ts\r\n*** Move to: moved/new_name.ts\r\n@@\r\n-a\r\n+b\r\n*** Add File: added.ts\r\n+c\r\n*** Delete File: gone.ts\r\n*** End Patch'
+      await handlers['after_tool_call']!({ toolName: 'apply_patch', params: { input }, result: { content: [] } }, ctx)
+      const expected = ['old_name.ts', 'moved/new_name.ts', 'added.ts', 'gone.ts'].map((p) => normalizePath(join(workspace, p)))
+      expect(queuedPaths().filter((q) => expected.includes(q)).sort()).toEqual([...expected].sort())
+      expect(existsSync(markerPath)).toBe(false)
+    })
   })
 
   it('copilot shim: preToolUse on a large image view returns modifiedArgs carrying the FULL original args with only the Copilot-native path key swapped to the shrunk copy', async () => {
