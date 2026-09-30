@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import type * as HttpModule from 'http';
 import type * as HttpsModule from 'https';
@@ -6,6 +6,7 @@ import type * as DnsModule from 'dns';
 import { resolve } from 'path';
 import { existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
+import { createRequire } from 'module';
 
 const httpRequestMock = vi.hoisted(() => vi.fn());
 const httpsRequestMock = vi.hoisted(() => vi.fn());
@@ -21,10 +22,10 @@ function makeFakeRes(): FakeIncomingMessage {
   return new EventEmitter() as FakeIncomingMessage;
 }
 
-vi.mock('http', async (importOriginal) => {
-  const actual = await importOriginal<typeof HttpModule>();
-  return { ...actual, request: httpRequestMock };
-});
+// webfetch loads `http` through createRequire (an ESM import of it crashes Node 22 without WebAssembly), which vi.mock never sees, so the stub goes on the CommonJS module object itself: the same singleton createRequire hands webfetch. It is process-wide, hence the restore in afterAll.
+const httpCjs = createRequire(import.meta.url)('http') as typeof HttpModule;
+const httpRequestSpy = vi.spyOn(httpCjs, 'request').mockImplementation(((...args: unknown[]) => httpRequestMock(...args)) as typeof HttpModule.request);
+afterAll(() => httpRequestSpy.mockRestore());
 
 // Only the scheme-downgrade test below fetches an https URL; every other test in this file is http.
 vi.mock('https', async (importOriginal) => {

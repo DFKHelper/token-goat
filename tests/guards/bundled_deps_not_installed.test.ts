@@ -66,4 +66,10 @@ describe('packages the bundle inlines are not shipped to consumers', () => {
     expect(resolvesSpecifier("/* import x from 'commander' */\n", 'commander')).toBe(false)
     expect(resolvesSpecifier("// import x from 'commander'\n", 'commander')).toBe(false)
   })
+
+  // CAPTURE: esbuild's output for src/bridges/mcp_servers_json.ts once another module in its chunk also imported createRequire. The unsuffixed form alone lost jsonc-parser, and the positive control above went red.
+  it('reads a createRequire that esbuild renamed with a numeric suffix', () => {
+    expect(resolvesSpecifier('jsoncParser ??= createRequire2(import.meta.url)("jsonc-parser");', 'jsonc-parser')).toBe(true)
+    expect(resolvesSpecifier('jsoncParser ??= createRequire(import.meta.url)("jsonc-parser");', 'jsonc-parser')).toBe(true)
+  })
 })

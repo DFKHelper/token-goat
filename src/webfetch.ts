@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, statSync, unlinkSync } from 'fs';
-import * as http from 'http';
+import type * as HttpModule from 'http';
 import * as https from 'https';
+import { createRequire } from 'module';
 import { isIPv4, isIPv6 } from 'net';
 import { resolve, join } from 'path';
 import { URL } from 'url';
@@ -9,6 +10,9 @@ import { lookup as dnsLookup, type LookupOptions } from 'dns';
 import { dataDir } from './constants.js';
 import { loadConfig } from './config.js';
 import { isPrivateIpv4Octets, isPrivateIpv6Groups, urlPolicyDenialReason } from './url_policy.js';
+
+// Loaded through require, never `import`: on Node 22 an ESM import of `http` reads every export to build its facade, one of them is a lazy WebSocket getter that loads undici, and undici compiles WebAssembly as it loads, so under --jitless every command died at startup (tests/guards/bundle_never_imports_http_as_esm.test.ts).
+const http = createRequire(import.meta.url)('http') as typeof HttpModule;
 
 const dnsLookupAsync = promisify(dnsLookup);
 
