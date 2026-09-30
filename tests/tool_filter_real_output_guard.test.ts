@@ -221,6 +221,70 @@ const CAPTURES: Capture[] = [
       'High: 8',
     ],
   },
+  {
+    fixture: 'pytest-9.0.3-run-failing.txt',
+    command: 'pytest',
+    filter: 'pytest',
+    provenance:
+      'pytest 9.0.3 on Python 3.13.1 with pytest-asyncio 1.3.0 and hypothesis 6.155.7 installed, "python -m pytest -p no:cacheprovider" over two throwaway test modules with 3 failures, 41 passes and 1 skip, default output on 2026-09-29; rootdir rewritten to C:\\work\\py-cap, nothing else changed',
+    rawBytes: 2323,
+    minRatio: 0.18,
+    clearsShippingFloor: true,
+    // Every failure keeps its E line and its short-summary FAILED line, and the tally survives. The plugin banners are session boilerplate like rootdir: and plugins:, which the filter already drops.
+    mustContain: [
+      'E       ZeroDivisionError: division by zero',
+      "E       AssertionError: assert 'ab' == 'a b'",
+      "E       FileNotFoundError: [Errno 2] No such file or directory: 'missing.txt'",
+      'FAILED test_calc.py::test_div_by_zero_is_inf - ZeroDivisionError: division by...',
+      "FAILED test_calc.py::test_add_strings - AssertionError: assert 'ab' == 'a b'",
+      'FAILED test_io.py::test_load_missing - FileNotFoundError: [Errno 2] No such f...',
+      '3 failed, 41 passed, 1 skipped in 0.35s',
+    ],
+    mustNotContain: ['rootdir:', 'plugins:', 'asyncio: mode=', 'test session starts'],
+  },
+  {
+    fixture: 'pytest-9.0.3-run-verbose-failing.txt',
+    command: 'pytest -v',
+    filter: 'pytest',
+    provenance:
+      'pytest 9.0.3 on Python 3.13.1 with pytest-asyncio 1.3.0 and hypothesis 6.155.7 installed, "python -m pytest -p no:cacheprovider -v" over the same two modules, 2026-09-29; rootdir rewritten to C:\\work\\py-cap, nothing else changed',
+    rawBytes: 5834,
+    minRatio: 0.55,
+    clearsShippingFloor: true,
+    // The 41 PASSED lines collapse into a count; the FAILED and SKIPPED verbose lines, with the skip reason, stay.
+    mustContain: [
+      'test_calc.py::test_div_by_zero_is_inf FAILED',
+      'test_calc.py::test_fetch SKIPPED (needs network)',
+      'test_io.py::test_load_missing FAILED',
+      'E       ZeroDivisionError: division by zero',
+      "FAILED test_calc.py::test_add_strings - AssertionError: assert 'ab' == 'a b'",
+      '3 failed, 41 passed, 1 skipped in 0.30s',
+      'collapsed 41 PASSED lines',
+    ],
+    mustNotContain: ['test_calc.py::test_add[0] PASSED', 'test_calc.py::test_add[19] PASSED', 'test_io.py::test_many PASSED', 'rootdir:', 'plugins:', 'asyncio: mode=', "hypothesis profile 'default'"],
+  },
+  {
+    fixture: 'vitest-5.0.1-run-verbose-failing.txt',
+    command: 'vitest run --reporter=verbose',
+    filter: 'vitest',
+    provenance:
+      'vitest 5.0.1 (this repo\'s own devDependency) with NO_COLOR=1, "vitest run --reporter=verbose" over two throwaway test files with 3 failures and 33 passes, 2026-09-29; project root rewritten to C:/work/vt-cap, nothing else changed. rawBytes is the UTF-16 length the guard measures: the file holds multi-byte box-drawing characters',
+    rawBytes: 3017,
+    minRatio: 0.33,
+    clearsShippingFloor: true,
+    // Each FAIL block keeps its assertion, its expected/received diff and its source frame, and both tally lines survive.
+    mustContain: [
+      ' FAIL  math.test.js > mul > multiplies 3 by 4',
+      ' FAIL  math.test.js > mul > multiplies 0 by 9',
+      ' FAIL  math.test.js > parse > rejects empty input',
+      'AssertionError: expected 13 to be 12 // Object.is equality',
+      'Error: empty input',
+      ' ❯ math.test.js:7:51',
+      ' Test Files  1 failed | 1 passed (2)',
+      '      Tests  3 failed | 33 passed (36)',
+      'collapsed 32 passing ticks',
+    ],
+  },
 ]
 
 function fixturePath(name: string): string {
