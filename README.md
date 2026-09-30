@@ -11,13 +11,13 @@ permalink: /
 
 ***Give the model what it needs, not everything you have.***
 
-**85%** smaller reads · **49%** of first-read bytes withheld · **97.4%** image compression · **205+** filter & interception rules · **94–99%** skill overhead cut · compaction memory · **prompt injection** guard · **3.7 GB** never reached the model · **1.1 Gt** tokens saved
+**85%** smaller reads · **49%** of first-read bytes withheld · **97.4%** image compression · **prompt cache preservation** · **205+** filter & interception rules · **94–99%** skill overhead cut · compaction memory · **prompt injection** guard · **3.7 GB** never reached the model · **1.1 Gt** tokens saved
 
 **Reduces AI token use/costs by 40–90%, and improves its focus. Fully automated, always online.**
 
 **Also defends against prompt injection. Every fetched page, tool result, and extracted document is wrapped in an untrusted-content fence before hitting the model, whether or not it matched an attack pattern, and the scan only decides what the label says. One config line to disable.**
 
-**Your AI re-reads the same file three times. Every compaction causes amnesia. Every build log buries the one line that matters. You pay for all of it. Token-Goat fixes all of it — automatically.**
+**Your AI re-reads the same file three times. Every whole-file dump busts your prompt cache. Every compaction causes amnesia. Every build log buries the one line that matters. You pay for all of it. Token-Goat fixes all of it — automatically.**
 
 Token-Goat sits silently between your AI and your tools. Re-read a file? It gets a one-line hint and a narrow-slice suggestion instead of the full file again. Grab a screenshot? A 100 KB copy reaches the model instead of 10 MB. Run `pytest`, `npm install`, `docker build`, or `cargo`? The thousands of progress bars and passing-test names are stripped to the failures before the output even reaches the context window. Open a PDF, a large Markdown doc, or a CSV? The hook intercepts it — heading tree, page count, or column preview — so the model never pays for the full file. Run `gh run watch` or `next dev` a second time? Prior output is recalled rather than re-run. Compact a long session? It gets a clean structured manifest of edited files and key symbols so nothing important is forgotten. Sessions drop 40–90%+ in cost. You change nothing about how you work.
 
@@ -51,16 +51,19 @@ Restart your AI sessions. Run `token-goat stats` a couple of minutes after your 
 
 AIs read `auth.py`. Then reads it again. And again. Then a third time after compaction wipes the session. Then it can't find what it wanted and searches other lines and files. You pay for every token and most of it is waste.
 
-Long sessions accumulate waste five ways. Screenshots cross the model at full resolution. A single PNG can land at 10+ MB. The agent re-reads files it already parsed earlier in the same conversation. When a session compacts, the summary LLM doesn't know which files were edited or which symbols mattered, so it preserves the wrong things. And every `pytest`, `npm install`, `docker build`, or `git log` dumps thousands of lines of progress bars, deprecation warnings, and passing-test names that bury the one line that actually matters.
+Long sessions accumulate waste six ways. Screenshots cross the model at full resolution. A single PNG can land at 10+ MB. The agent re-reads files it already parsed earlier in the same conversation. When a session compacts, the summary LLM doesn't know which files were edited or which symbols mattered, so it preserves the wrong things. Every `pytest`, `npm install`, `docker build`, or `git log` dumps thousands of lines of progress bars, deprecation warnings, and passing-test names that bury the one line that actually matters.
 
 The fifth waste is skills. A single large skill injects 10k–65k tokens every time. Run a five-iteration `/improve` loop and you've paid for five full copies of the same rules. Token-Goat now blocks repeat skill loads before they happen: a PreToolUse hook intercepts the second invocation, serves the cached compact (~400 tokens) instead, and only allows a reload when compaction may have evicted the skill from context. It also intercepts direct reads of skill files and ensures the compaction manifest carries the full skill index — so nothing is forgotten and the full body never re-enters context unnecessarily.
 
-The fastest way to reduce AI token costs is fixing these five, not writing shorter prompts. Each one is preventable. Token-Goat intercepts all five, automatically.
+The sixth waste is prompt cache invalidation. Modern LLM pricing makes prompt cache hits up to 90% cheaper, but cache writes cost full price. Every time an agent reads a 2,000-line file to check a three-line helper, it invalidates your cached conversation prefix. That triggers a full cache write penalty, spikes token usage, and rushes context limits toward early compaction. Token-Goat's surgical reads serve only the requested symbol or slice, keeping your conversation prefix stable across turns so cache hit ratios stay high.
+
+The fastest way to reduce AI token costs is fixing these six, not writing shorter prompts. Each one is preventable. Token-Goat intercepts all six, automatically.
 
 ## What changes
 
 | Without Token-Goat | With Token-Goat |
 |--------------------|------------------|
+| Full-file reads bust the prompt cache prefix on every turn | Surgical reads preserve the cached prefix, maintaining 90%+ cache hit discounts and avoiding expensive cache rewrite penalties |
 | 3.3 MB screenshot lands in model context | 84 KB compressed copy, 97.4% smaller |
 | Agent re-reads files from earlier in the session | "Already read this" reminder with narrow slice suggestion |
 | Read tool asks for lines the session was already given | Answered with a pointer at the copy already delivered instead of the file, when the text this read would return matches the text already served for it whole line for whole line. Proof rather than a read count, so it also covers a file inside the recent-read protection window; a changed file, a wider range, and `reread_deny = false` all pass through |
@@ -325,6 +328,16 @@ $ token-goat compress -q --cmd "npm run lint"
 Token-goat tracks how close a session is to the autocompact trigger and tightens its hints as the window fills. Surgical-read suggestions kick in on progressively smaller files as pressure builds (500 lines at cool, down to 50 at critical), so large reads get flagged before they tip the session over. The PreCompact manifest also shrinks: capped at 500 tokens once the window runs hot, 300 once critical, so it stops contributing to the pressure it measures. The denominator is always the fixed 660,000-token autocompact trigger budget, not the model's raw context window, so the same thresholds apply across models. Run `token-goat doctor --context` to see the current footprint.
 
 For recurring scheduler loops, the 25th, 100th, and 250th observed delivery in a session receive a one-time checkpoint/fresh-session reminder; it prevents further accumulation but cannot reclaim input already injected. The count is independent of the scheduler's bracketed identifier, which some hosts repeat for every delivery. Before a direct test command without a focused selector or explicit timeout, the Bash hook either preserves its existing compressor timeout or gives an advisory when compression cannot apply; it never stops the test.
+
+### 7. Prompt cache preservation: stop busting your conversation prefix
+
+Modern LLM APIs (Anthropic, OpenAI, DeepSeek) charge roughly 10% of base input pricing for prompt cache hits, while cache writes cost full price or carry write surcharges.
+
+When an agent reads an entire file into context just to inspect a small function, two things happen:
+1. **Cache prefix churn:** The conversation prefix changes drastically, blowing away cache reuse for subsequent turns.
+2. **Accelerated compaction:** Thousands of unnecessary lines push the context window rapidly toward compaction thresholds, forcing a full context wipe and an expensive restart.
+
+Token-Goat's surgical commands (`read "file::symbol"`, `section "file::Heading"`, `skeleton file`, `json-query`) return only the required lines. Because additions to context remain small and surgical, the conversation prefix stays cached turn after turn. You get sustained 90%+ cache hit discounts, near-zero cache rewrite penalties, and sessions that last hours without hitting compaction.
 
 ## Install
 
