@@ -651,7 +651,8 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const cwd = getCwd(event) ?? null
     // The directory the call started in, which the pre hook saw and held under this call's id. Claude Code's main thread reports the directory a `cd` left the shell in here, so resolving the command's own `cd` against this hook's cwd applies it twice. A call with no pre hook on record falls back to this hook's cwd, which is where the call started whenever the shell does not move: a subagent, or a cd out of the working directories, which the harness resets.
     const toolUseId = event.raw['tool_use_id']
-    const startCwd = (typeof toolUseId === 'string' && toolUseId !== '' ? takeBashStartCwd(toolUseId) : null) ?? cwd
+    const heldStartCwd = typeof toolUseId === 'string' && toolUseId !== '' ? takeBashStartCwd(toolUseId) : null
+    const startCwd = heldStartCwd ?? cwd
     // The command the pre hook saw, recovered from a `token-goat compress` wrapper it rewrote the call into, and the directory the command ran in: every cached output below is keyed, stored and fingerprinted against them, so the pre hook, which derives the same directory from the same command and its own cwd, recalls a run only where it happened.
     const { rawCmd, cmd, runDir } = resolveBashCall(rawCmdRaw, startCwd)
     // Matches MIN_CACHE_BYTES's old hardcoded value as the config default, so an untouched install sees identical behavior; a configured cache_min_bytes now actually moves the floor instead of being silently ignored.
@@ -706,7 +707,9 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     // `gh api` advisory hints: scope/permission nudge and large-JSON --jq nudge. These commands are not cached (not build/monitoring/curl-GET), so emit the hint and return here.
 
     // Record a successful `token-goat symbol|read|section` invocation so a later identical call gets the re-read dedup hint from the pre-hook.
-    const tgRead = extractTgSurgicalRead(cmd, runDir)
+    let tgRead = extractTgSurgicalRead(cmd, runDir)
+    // The shim skips the pre hook for token-goat's own command (bridges/shim_common.ts::SHIM_OWN_COMMAND_BYPASS), so no start directory is held for it and, on Claude Code's main thread, runDir applies the cd a second time to a cwd it already moved. When the target is missing there, this hook's cwd is where the cd landed; a file under runDir keeps runDir, which is right wherever the shell did not move.
+    if (heldStartCwd === null && cwd !== null && tgRead?.filePath != null && !isFileAtIndexKey(tgRead.filePath)) tgRead = extractTgSurgicalRead(cmd, cwd)
     if (tgRead !== null && (exitCode === null || exitCode === 0)) {
       recordCliRead(tgRead.sub + '::' + tgRead.spec)
       // Record a surgical (symbol/section/range-scoped) read against the file's session entry so compact.ts's symbolsBonus can reward narrowly-engaged files. `spec` for read/section is `filePath` + a narrowing suffix (`::symbol`, `::heading`, and/or `@line-range`); an empty suffix means a whole-file `token-goat read <file>`, which is not symbol-scoped and is left out. `symbol`/`skill-*` subcommands carry no filePath and are skipped.
