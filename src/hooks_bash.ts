@@ -7,7 +7,7 @@ import { contextOutput, denyOutput, passOutput, getCwd } from './hooks_common.js
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import type { HookOutput } from './types.js'
 import { getBashOutputId, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordBashStartCwd, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, wasFileReadThisSession } from './session.js'
-import { resolveIndexPath, displaySafePath, hostPathOfIndexKey, isFileAtIndexKey } from './paths.js'
+import { resolveIndexPath, displaySafePath, hostPathOfTypedPath, isFileAtIndexKey } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand } from './bash_output_cache.js'
@@ -175,7 +175,7 @@ function wholeFileRange(
   const cat = classifyCatPath(filePath, tool)
   if (cat === null) return null
   try {
-    const onDisk = hostPathOfIndexKey(resolveIndexPath(hintPath, cwd))
+    const onDisk = hostPathOfTypedPath(hintPath, cwd)
     const st = statSync(onDisk)
     if (!st.isFile() || st.size > SLICE_ESTIMATE_SCAN_CAP_BYTES) return null
     const total = countTextLines(readFileSync(onDisk, 'utf8'))
@@ -630,7 +630,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (curlDl !== null) {
     const prevPath = getCurlDownloadPath(curlDl.url)
     const prevOnDisk = prevPath !== null && commandPathIsTouchable(prevPath, event)
-      ? hostPathOfIndexKey(resolveIndexPath(prevPath, preHookCwd ?? process.cwd()))
+      ? hostPathOfTypedPath(prevPath, preHookCwd ?? process.cwd())
       : null
     if (prevPath !== null && prevOnDisk !== null && !existsSync(prevOnDisk)) {
       // The previously downloaded file is gone (deleted/moved since). Forget the stale session record and let the re-download proceed instead of denying.

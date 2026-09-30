@@ -28,7 +28,7 @@ import { getFileEntry } from './index_reader.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { detectLanguageOfFile } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
-import { displaySafeText, resolveIndexPath, displaySafeJson } from './paths.js'
+import { displaySafeText, hostPathOfTypedPath, resolveIndexPath, displaySafeJson } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { runParallelSearch } from './search/search_cli.js'
 import { ALL_CHANNELS, type SearchChannel } from './search/types.js'
@@ -259,7 +259,9 @@ export async function cmdIndex(
 ): Promise<void> {
   // A bulk walk is long-running background work even though the user typed it: they start it and go back to their editor. The daemon lowers its own priority for the same reason; doing it here too is what makes "both indexing paths" true rather than only the invisible one.
   applyIndexingPriority()
-  const root = pathArg ?? process.cwd()
+  // A typed root can be spelled at a drive mount (`/mnt/c/x` or `/c/x` reaching a Windows process unconverted, `C:\x` under WSL). hostPathOfTypedPath opens it where this host keeps it; used as typed, the mount named a folder that does not exist here and the run reported `Indexed 0 files` as a success.
+  const root = pathArg === undefined ? process.cwd() : hostPathOfTypedPath(pathArg)
+  if (!fs.existsSync(root)) throw new CliError(`'${pathArg ?? root}' does not exist.`)
   const dbPath = opts.dbPath ?? globalDbPath()
   const force = opts.force === true
   const useWalk = opts.walk === true || opts.forceWalk === true

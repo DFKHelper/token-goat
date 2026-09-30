@@ -159,6 +159,11 @@ export function hostPathOfIndexKey(key: string): string {
   return statAtIndexKey(key)?.hostPath ?? key
 }
 
+/** The path the host opens for a path as a user typed it or a command wrote it, resolved against `base`: its index key, or that key's WSL mount when only the mount holds anything. So `C:\x` typed under WSL opens at `/mnt/c/x`, and `/mnt/c/x` or `/c/x` reaching a Windows process opens at `c:/x`. The confined CLI and MCP readers must not use it, for the reason hostPathOfIndexKey gives. */
+export function hostPathOfTypedPath(file: string, base: string = process.cwd()): string {
+  return hostPathOfIndexKey(resolveIndexPath(file, base))
+}
+
 /** True when the host path of an index key holds a regular file. */
 export function isFileAtIndexKey(key: string): boolean {
   return statAtIndexKey(key)?.stats.isFile() === true

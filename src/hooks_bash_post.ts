@@ -7,7 +7,7 @@ import { fenceUntrusted, fenceUntrustedSpans } from './untrusted_fence.js'
 import { UNTRUSTED_TOOL_TAG, type FenceSpan } from './injection_scan.js'
 import type { HookOutput } from './types.js'
 import { getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, recordFileLineRange, resetFileLineRanges, recordFileRead, markFileTruncated, wasHintShown, markHintShown, recordCliRead, recordSymbolRead, takeBashStartCwd, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
-import { resolveIndexPath, toDisplayPath, displaySafePath, displaySafeText, dirAtIndexKey, hostPathOfIndexKey, isFileAtIndexKey } from './paths.js'
+import { resolveIndexPath, toDisplayPath, displaySafePath, displaySafeText, dirAtIndexKey, hostPathOfIndexKey, hostPathOfTypedPath, isFileAtIndexKey } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput, isScopedGitStatusOrDiffStatCommand, commandHash, bashOutputIdSync, summarizeOutputDelta } from './bash_output_cache.js'
@@ -693,7 +693,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const curlDl = extractCurlDownload(cmd)
     if (curlDl !== null && (exitCode === null || exitCode === 0)) {
       // Recorded at its host path, which is the key except for a drive-letter key on WSL, so the recall names a file the shell there can open.
-      const outputOnDisk = hostPathOfIndexKey(resolveIndexPath(curlDl.outputPath, runDir ?? process.cwd()))
+      const outputOnDisk = hostPathOfTypedPath(curlDl.outputPath, runDir ?? process.cwd())
       if (existsSync(outputOnDisk)) {
         recordCurlDownload(curlDl.url, outputOnDisk)
       }
