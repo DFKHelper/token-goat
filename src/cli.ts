@@ -59,6 +59,7 @@ import { registerAnalysisCommands } from './cli_cmd_analysis.js'
 import { registerSessionCommands } from './cli_cmd_session.js'
 import { cmdHookServerRun, cmdHookServerStatus, cmdHookServerStop } from './cli_hook_server.js'
 import { cmdInstall, cmdMcpStatus, cmdUninstall } from './cli_install.js'
+import { runPayloads } from './cli_payloads.js'
 import { _applyFiltersAndPrint, cmdBashOutput, cmdMcpOutput, cmdWebOutput } from './cli_cached_output.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { BRIDGE_CAPABILITY_MATRIX, bridgesStatusToJson, formatBridgesStatus } from './bridges_status.js'
@@ -531,7 +532,11 @@ function cmdWorkerStatus(): void {
   out(isWorkerRunning() ? 'Worker is running.' : 'Worker is not running.')
 }
 
-function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string; full?: boolean; short?: boolean; methodology?: boolean; hooks?: boolean } = {}): void {
+function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string; full?: boolean; short?: boolean; methodology?: boolean; hooks?: boolean; payloads?: boolean } = {}): void {
+  if (opts.payloads === true) {
+    runPayloads(opts.json === true)
+    return
+  }
   const windowDays = opts.windowDays !== undefined ? requireNonNegativeInt('--window-days', opts.windowDays) : 30
   const statsOpts: Parameters<typeof runStats>[0] = {
     json: opts.json === true,
@@ -1210,6 +1215,7 @@ export function buildProgram(): Command {
     .option('--short', 'force the rich short KPI view even when stdout is not a TTY (e.g. piped)')
     .option('--methodology', 'explain local savings estimates and their billing limits')
     .option('--hooks', 'show the per-event/per-harness hook latency breakdown (median/p95/slowest/last-seen)')
+    .option('--payloads', "show what token-goat adds to every session's context, and whether the files each note names were read again")
     .option('--window-days <days>', 'days to include (0 = all time)', '30')
     .option('--home-dir <path>', 'home directory (for testing)')
     .action(guard(cmdStats))

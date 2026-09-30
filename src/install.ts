@@ -496,6 +496,20 @@ function stripClaudeMdBlock(p: string): boolean {
   return stripDelimitedBlock(p, CLAUDE_MD_BEGIN, CLAUDE_MD_END)
 }
 
+/** The token-goat block as it sits in `~/.claude/CLAUDE.md` now, markers included, or null when the file or either marker is missing. Read from disk rather than rebuilt with {@link buildClaudeMdBlock}, because the file is what a session loads: an install from an older version, or a hand edit, is what the user pays for until the next install refreshes it. */
+export function installedClaudeMdBlock(): string | null {
+  let text: string
+  try {
+    text = fs.readFileSync(claudeMdPath(), 'utf8')
+  } catch {
+    return null
+  }
+  const begin = text.indexOf(CLAUDE_MD_BEGIN)
+  if (begin === -1) return null
+  const end = text.indexOf(CLAUDE_MD_END, begin + CLAUDE_MD_BEGIN.length)
+  return end === -1 ? null : text.slice(begin, end + CLAUDE_MD_END.length)
+}
+
 /** Outcome of an {@link installClaudeMd} call. */
 export interface ClaudeMdInstallResult {
   readonly path: string
