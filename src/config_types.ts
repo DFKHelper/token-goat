@@ -144,6 +144,7 @@ export interface HintsConfig {
   truncated_read_min_lines: number
   protect_recent_reads: number
   warn_unbalanced_shell_quoting: boolean
+  deny_bash_double_backslash: boolean
   prompt_triggers: PromptTrigger[]
   log_large_file_hint_outcomes: boolean
   cross_session_read_dedup: boolean

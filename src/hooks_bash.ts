@@ -13,6 +13,7 @@ import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './
 import { getBashOutput, isBashEntryStale, isScopedGitStatusOrDiffStatCommand } from './bash_output_cache.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
+import { detectHarness } from './bridges/registry.js'
 import { detectFromCommand, hasBareBackground } from './tool_filters/index.js'
 import { canRunWrappedShell, canRunPowerShell } from './shell.js'
 import { detectStructuralIndexRewrite } from './bash_structural_index.js'
@@ -236,8 +237,15 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     return false
   }
 
-  // Check for unbalanced shell quoting or unterminated heredocs
   const cfg = loadConfig()
+  // Claude Code's Bash tool on Windows passes the command to Git Bash as a `-c` argument, and the argv quoting plus the MSYS2 runtime's decoding halve every run of two or more backslashes, so the command that runs is not the one written and nothing reports the difference (anthropics/claude-code#85856). Denied rather than rewritten: a rewrite goes out as updatedInput, which permission rules evaluate again. `_tg_harness` is 'claude' for every harness relay.ts does not map, so detectHarness() is what pins this to Claude Code; the hook server answers under the caller's own environment, so it sees the same variables here.
+  if (cfg.hints.deny_bash_double_backslash && process.platform === 'win32' && event.raw['_tg_harness'] === 'claude' && rawCmd.includes('\\\\') && detectHarness() === 'claudecode') {
+    recordStat('session_hint', 0, 0)
+    return denyOutput(
+      'This command has two backslashes in a row. Claude Code\'s Bash tool on Windows halves every run of two or more backslashes before Git Bash sees the command, so it would run with different text than you wrote, with no error (anthropics/claude-code#85856). Write text containing backslashes to a file with the Write tool and run it by path, or use the PowerShell tool, which passes the command unchanged. For paths, use forward slashes: C:/Users/me works in Git Bash. To turn this check off, set hints.deny_bash_double_backslash = false or TOKEN_GOAT_DENY_BASH_DOUBLE_BACKSLASH=0.',
+    )
+  }
+  // Check for unbalanced shell quoting or unterminated heredocs
   if (cfg.hints.warn_unbalanced_shell_quoting) {
     const quoteError = detectUnbalancedShellSyntax(cmd)
     if (quoteError !== null) {

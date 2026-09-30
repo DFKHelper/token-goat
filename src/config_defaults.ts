@@ -157,6 +157,8 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
     truncated_read_min_lines: 200,
     protect_recent_reads: 4,
     warn_unbalanced_shell_quoting: true,
+    // On. Claude Code's Bash tool on Windows hands the command to Git Bash as a `-c` argument, and the argv quoting plus the MSYS2 runtime's decoding turn every run of two or more backslashes into half as many, so `printf 'a\\nb'` or a `C:\\Users` path arrives changed and nothing says so. Only that pairing is denied: another platform, another harness, or a command without a doubled backslash passes untouched.
+    deny_bash_double_backslash: true,
     prompt_triggers: [],
     log_large_file_hint_outcomes: false,
     cross_session_read_dedup: false,

@@ -296,6 +296,7 @@ const ENV_KEYS = [
   'TOKEN_GOAT_PRE_SKILL',
   'TOKEN_GOAT_ORPHAN_SWEEP',
   'TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING',
+  'TOKEN_GOAT_DENY_BASH_DOUBLE_BACKSLASH',
   'TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES',
   'TOKEN_GOAT_CROSS_SESSION_READ_DEDUP',
   'TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS',
@@ -732,8 +733,10 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hi.truncated_read_min_lines = validatedInt(hi_raw['truncated_read_min_lines'], hi.truncated_read_min_lines, ...boundsOf('hints.truncated_read_min_lines'))
   hi.protect_recent_reads = validatedInt(hi_raw['protect_recent_reads'], hi.protect_recent_reads, ...boundsOf('hints.protect_recent_reads'))
   hi.warn_unbalanced_shell_quoting = validatedBool(hi_raw['warn_unbalanced_shell_quoting'], hi.warn_unbalanced_shell_quoting)
+  hi.deny_bash_double_backslash = validatedBool(hi_raw['deny_bash_double_backslash'], hi.deny_bash_double_backslash)
   hi.log_large_file_hint_outcomes = validatedBool(hi_raw['log_large_file_hint_outcomes'], hi.log_large_file_hint_outcomes)
   hi.warn_unbalanced_shell_quoting = envBool('TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING', hi.warn_unbalanced_shell_quoting)
+  hi.deny_bash_double_backslash = envBool('TOKEN_GOAT_DENY_BASH_DOUBLE_BACKSLASH', hi.deny_bash_double_backslash)
   hi.serve_diff_on_reread = envBool('TOKEN_GOAT_SERVE_DIFF_ON_REREAD', hi.serve_diff_on_reread)
   hi.elide_served_lines = envBool('TOKEN_GOAT_ELIDE_SERVED_LINES', hi.elide_served_lines)
   hi.subagent_markdown_first_read_deny = envBool('TOKEN_GOAT_SUBAGENT_MARKDOWN_FIRST_READ_DENY', hi.subagent_markdown_first_read_deny)
@@ -952,6 +955,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hints.write_rewrite_unchanged_pct': ['TOKEN_GOAT_WRITE_REWRITE_UNCHANGED_PCT'],
   'hints.large_read_redirect_bytes': ['TOKEN_GOAT_LARGE_READ_BYTES'],
   'hints.warn_unbalanced_shell_quoting': ['TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING'],
+  'hints.deny_bash_double_backslash': ['TOKEN_GOAT_DENY_BASH_DOUBLE_BACKSLASH'],
   'hints.serve_diff_on_reread': ['TOKEN_GOAT_SERVE_DIFF_ON_REREAD'],
   'hints.elide_served_lines': ['TOKEN_GOAT_ELIDE_SERVED_LINES'],
   'hints.subagent_markdown_first_read_deny': ['TOKEN_GOAT_SUBAGENT_MARKDOWN_FIRST_READ_DENY'],
@@ -1126,6 +1130,7 @@ export function saveConfig(config: Config): void {
       protect_recent_reads: config.hints.protect_recent_reads,
       prompt_triggers: config.hints.prompt_triggers,
       warn_unbalanced_shell_quoting: config.hints.warn_unbalanced_shell_quoting,
+      deny_bash_double_backslash: config.hints.deny_bash_double_backslash,
       log_large_file_hint_outcomes: config.hints.log_large_file_hint_outcomes,
       cross_session_read_dedup: config.hints.cross_session_read_dedup,
       cross_session_read_dedup_ttl_secs: config.hints.cross_session_read_dedup_ttl_secs,

@@ -37,6 +37,7 @@ const REVIEWED_OVERRIDABLE: readonly string[] = [
   'hints.context_threshold_advisory',
   'hints.cross_session_read_dedup',
   'hints.cross_session_read_dedup_ttl_secs',
+  'hints.deny_bash_double_backslash',
   'hints.diff_hint_min_tokens_saved',
   'hints.git_hint_max_ms',
   'hints.glob_dedup_min_matches',
