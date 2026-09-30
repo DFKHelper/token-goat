@@ -3,7 +3,7 @@
 import * as fs from 'node:fs'
 
 import type { HookEvent } from './hook_registry.js'
-import { OUTPUT_FIRST_TOOL_RESPONSE_KEYS, resolveToolResponseFieldPath } from './hooks_common.js'
+import { extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, resolveToolResponseFieldPath } from './hooks_common.js'
 import { displaySafePath, hostPathOfIndexKey } from './paths.js'
 import { leadWithCommand } from './hint_suggestion_guard.js'
 import { hintTarget, sliceCommand, sliceForPath } from './hint_target.js'
@@ -34,14 +34,25 @@ export interface RequestedSliceWindow {
   readonly isExplicitSlice: boolean
 }
 
-/** Normalizes multi-harness line window parameters across Claude Code (`offset`/`limit`), Copilot CLI (`view_range: [start, end]`), and other tools (`lines`, `range`, `start_line`/`end_line`). */
+/** Harnesses whose `read_file` hands the hook the file's own text, unnumbered, where Claude Code numbers it: Gemini CLI and its fork Qwen Code return it as `llmContent` (gemini-cli-core 0.62.0 tools/read-file.js, qwen-code 0.24.7), and Grok's `FileContent` is taken the same way. A file line shaped like a `cat -n` row is file text on these, never a rendering. */
+type RawTextReadHarness = 'gemini' | 'qwen' | 'grok'
+
+function rawTextReadHarness(event: HookEvent): RawTextReadHarness | null {
+  const harness = event.raw['_tg_harness']
+  return harness === 'gemini' || harness === 'qwen' || harness === 'grok' ? harness : null
+}
+
+/** Normalizes multi-harness line window parameters across Claude Code (`offset`/`limit`), Copilot CLI (`view_range: [start, end]`), and other tools (`lines`, `range`, `start_line`/`end_line`). Qwen Code's `offset`, and the `offset` Gemini CLI sent before it moved to `start_line`, is 0-based (qwen-code 0.24.7 read-file: `startLine = offset || 0`, shown as `startLine + 1`), so it is shifted onto the 1-based line it names. */
 export function readRequestedSliceWindow(event: HookEvent): RequestedSliceWindow {
   const rawOffset = readIntToolInput(event, 'offset')
   const rawLimit = readIntToolInput(event, 'limit')
 
   if (rawOffset !== undefined || rawLimit !== undefined) {
+    const harness = rawTextReadHarness(event)
+    const zeroBased = harness === 'qwen' || harness === 'gemini'
+    const offset = rawOffset === undefined ? 1 : zeroBased ? (rawOffset >= 0 ? Math.floor(rawOffset) + 1 : 1) : rawOffset >= 1 ? Math.floor(rawOffset) : 1
     return {
-      offset: rawOffset !== undefined && rawOffset >= 1 ? Math.floor(rawOffset) : 1,
+      offset,
       limit: rawLimit !== undefined && rawLimit > 0 ? Math.floor(rawLimit) : undefined,
       isExplicitSlice: true,
     }
@@ -83,8 +94,12 @@ export function readRequestedSliceWindow(event: HookEvent): RequestedSliceWindow
   return { isExplicitSlice: false }
 }
 
-/** The 1-based file line the delivered body starts at, from `tool_response.file.startLine`. */
+/** The 1-based file line the delivered body starts at: Claude Code's `tool_response.file.startLine`, or on a raw-text harness the first line its truncation header names, else the line the request started at. */
 export function readStartLine(event: HookEvent): number {
+  if (rawTextReadHarness(event) !== null) {
+    const shown = splitRawReadHeader(readResponseText(event))?.shown
+    return shown?.start ?? readRequestedSliceWindow(event).offset ?? 1
+  }
   const resp = event.raw['tool_response'] as Record<string, unknown> | null
   const file = resp?.['file'] as Record<string, unknown> | null
   const start = file?.['startLine']
@@ -109,8 +124,62 @@ export function numberedRenderBytes(text: string, startLine: number): number {
   return bytes
 }
 
+function readResponseText(event: HookEvent): string {
+  return extractToolResponseField(event.raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
+}
+
+/** The lines a raw-text harness shows and the file length it states, from the header it puts ahead of a partial read. */
+interface RawReadShown {
+  readonly start: number
+  readonly end: number
+  readonly total: number
+  readonly atLeast: boolean
+}
+
+const GEMINI_TRUNCATION_OPENER = 'IMPORTANT: The file content has been truncated.'
+const GEMINI_STATUS_RE = /^Status: Showing lines (\d+)-(\d+) of (\d+) total lines\.$/
+const GEMINI_CONTENT_MARKER = '--- FILE CONTENT (truncated) ---'
+const QWEN_STATUS_RE = /^Showing lines (\d+)-(\d+) of (at least )?(\d+) total lines\.$/
+const LINE_CUT_MARKER_RE = /\.\.\. \[truncated\]$/m
+
+/** Split the header Gemini CLI or Qwen Code puts ahead of a partial `read_file` off the file text beneath it. Gemini (gemini-cli-core 0.62.0 tools/read-file.js) writes `\nIMPORTANT: The file content has been truncated.\nStatus: Showing lines X-Y of N total lines.\nAction: ...\n\n--- FILE CONTENT (truncated) ---\n`; Qwen (0.24.7) writes `Showing lines X-Y of N total lines.` (N may read `at least N`) then `\n\n---\n\n`, or `\n---\n` on its @-include path. Null when the text opens with neither. */
+function splitRawReadHeader(respText: string): { header: string[]; body: string; shown: RawReadShown } | null {
+  const lines = respText.split('\n')
+  const opener = lines[0] === '' ? 1 : 0
+  if (lines[opener] === GEMINI_TRUNCATION_OPENER) {
+    const marker = lines.indexOf(GEMINI_CONTENT_MARKER, opener + 1)
+    if (marker === -1 || marker > opener + 6) return null
+    const status = lines.slice(opener + 1, marker).map((l) => GEMINI_STATUS_RE.exec(l)).find((m) => m !== null)
+    if (status === undefined || status === null) return null
+    const shown = { start: Number(status[1]), end: Number(status[2]), total: Number(status[3]), atLeast: false }
+    return { header: lines.slice(0, marker + 1), body: lines.slice(marker + 1).join('\n'), shown }
+  }
+  const status = QWEN_STATUS_RE.exec(lines[0] ?? '')
+  if (status === null) return null
+  const shown = { start: Number(status[1]), end: Number(status[2]), total: Number(status[4]), atLeast: status[3] !== undefined }
+  const width = lines[1] === '' && lines[2] === '---' && lines[3] === '' ? 4 : lines[1] === '---' ? 2 : 0
+  if (width === 0) return null
+  return { header: lines.slice(0, width), body: lines.slice(width).join('\n'), shown }
+}
+
+/** Whether a raw-text harness's header says it delivered less than was asked for: a different first line, an earlier last line than the request (or the file) runs to, a file length it only bounds from below, or a line cut short with `... [truncated]`. Both harnesses print the header on a ranged read that came back whole too, so its presence alone proves nothing. */
+function rawReadCutShort(event: HookEvent, split: { body: string; shown: RawReadShown }): boolean {
+  const { shown } = split
+  if (shown.atLeast) return true
+  const window = readRequestedSliceWindow(event)
+  const reqStart = window.offset ?? 1
+  const reqEnd = window.limit !== undefined ? Math.min(reqStart + window.limit - 1, shown.total) : shown.total
+  if (shown.start !== reqStart || shown.end < reqEnd) return true
+  return LINE_CUT_MARKER_RE.test(split.body)
+}
+
 /** True when the harness handed back only part of the read, so folding it would withhold lines the model never received. */
 export function isTruncatedReadDelivery(event: HookEvent, respText: string): boolean {
+  const harness = rawTextReadHarness(event)
+  if (harness === 'gemini' || harness === 'qwen') {
+    const split = splitRawReadHeader(respText)
+    return split !== null && rawReadCutShort(event, split)
+  }
   const resp = event.raw['tool_response'] as Record<string, unknown> | null
   const file = resp?.['file'] as Record<string, unknown> | null
   if (file?.['truncatedByTokenCap'] === true) return true
@@ -353,7 +422,29 @@ export interface ParsedReadResult {
 /** The rows a Read delivered, each carrying the file line it is. Where the harness numbers the text itself ({@link harnessNumbersReadContent}) every line is the file's own and is numbered by position, however it reads: a file line shaped like a numbered row (a TSV record, a captured `cat -n` listing inside a string) is still file text, and parsing it as a rendering handed each rewrite a slice of the file under the listing's own numbers, so a fold withheld listing rows beneath a notice naming a function body it delivered whole. */
 export function parseReadDelivery(event: HookEvent, respText: string): ParsedReadResult | null {
   const firstLine = readStartLine(event)
+  const harness = rawTextReadHarness(event)
+  if (harness === 'gemini' || harness === 'qwen') {
+    const split = splitRawReadHeader(respText)
+    if (split === null) return plainReadResult(respText, firstLine)
+    const parsed = plainReadResult(split.body, firstLine)
+    return parsed === null ? null : { ...parsed, header: split.header }
+  }
+  if (harness === 'grok') return wholeNumberedReadResult(respText, firstLine) ?? plainReadResult(respText, firstLine)
   return harnessNumbersReadContent(event) ? plainReadResult(respText, firstLine) : parseNumberedReadResult(respText, firstLine)
+}
+
+/** The delivery as numbered rows only when every line is one, numbered consecutively from `firstLine` (a trailing empty line aside); null otherwise. Decided for the whole delivery rather than per line, so a file line that merely looks numbered (`     2\tx` on line 2 of a raw delivery) stays file text. */
+function wholeNumberedReadResult(respText: string, firstLine: number): ParsedReadResult | null {
+  const lines = respText.split('\n')
+  const body = lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines
+  if (body.length === 0) return null
+  const rows: NumberedRow[] = []
+  for (const [idx, line] of body.entries()) {
+    const m = READ_NUMBERED_ROW_RE.exec(line)
+    if (m === null || Number(m[1]) !== firstLine + idx) return null
+    rows.push({ no: firstLine + idx, text: m[2] ?? '', raw: line })
+  }
+  return { header: [], rows, trailer: body.length < lines.length ? [''] : [] }
 }
 
 /** Every line of `respText` as a row of its own, numbered by position from `firstLine`. */
