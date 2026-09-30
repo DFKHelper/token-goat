@@ -480,7 +480,7 @@ Three things follow, and they are worth knowing before you decide. It never leav
 
 | Path | What |
 |------|------|
-| `~/.config/opencode/plugins/token-goat.ts` (Linux/macOS) or `%APPDATA%\opencode\plugins\token-goat.ts` (Windows) | TypeScript bridge plugin. Fires on `tool.execute.before`, `tool.execute.after`, and `experimental.session.compacting`. Covers image shrinking, post-edit indexing, and compact assist. |
+| `~/.config/opencode/plugins/token-goat.ts` on every platform, Windows included (`$XDG_CONFIG_HOME/opencode/plugins/token-goat.ts` when that is set) | TypeScript bridge plugin. Fires on `tool.execute.before`, `tool.execute.after`, and `experimental.session.compacting`. Covers image shrinking, post-edit indexing, and compact assist. |
 
 **With `--pi`** (pi extension)
 

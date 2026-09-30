@@ -28,7 +28,7 @@ export interface VscodeScopeOptions {
   keepBackups?: boolean
 }
 
-/** VS Code's user-profile config directory, mirroring how VS Code itself resolves it (confirmed against VS Code's own docs, not assumed by analogy with another bridge): `%APPDATA%\Code\User` on Windows, `~/Library/Application Support/Code/User` on macOS, `~/.config/Code/User` on Linux. `mcp.json` lives directly inside it, using the same `servers` root key as the project-local file. Like `opencodeGlobalConfigDir` in `./opencode_install.js`, the Windows branch reads `process.env['APPDATA']` directly (falling back to `~/AppData/Roaming` if unset or blank) rather than hardcoding a path, so tests and dogfooding can isolate it the same way they already isolate `HOME`/`USERPROFILE`/`LOCALAPPDATA`. */
+/** VS Code's user-profile config directory, mirroring how VS Code itself resolves it (confirmed against VS Code's own docs, not assumed by analogy with another bridge): `%APPDATA%\Code\User` on Windows, `~/Library/Application Support/Code/User` on macOS, `~/.config/Code/User` on Linux. `mcp.json` lives directly inside it, using the same `servers` root key as the project-local file. Like `zedConfigDir` in `./zed_install.js`, the Windows branch reads `process.env['APPDATA']` directly (falling back to `~/AppData/Roaming` if unset or blank) rather than hardcoding a path, so tests and dogfooding can isolate it the same way they already isolate `HOME`/`USERPROFILE`/`LOCALAPPDATA`. */
 function vscodeUserConfigDir(): string {
   if (process.platform === 'win32') {
     const appData = process.env['APPDATA']

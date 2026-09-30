@@ -208,8 +208,10 @@ function ensureBase(): string {
     TOKEN_GOAT_HOME: path.join(BASE, 'tghome'),
     LOCALAPPDATA: path.join(BASE, 'localapp'),
     XDG_DATA_HOME: path.join(BASE, 'localapp'),
-    // The CONFIG roots, not just the DATA roots. `vscode_install.ts`, `zed_install.ts` and
-    // `opencode_install.ts` read `process.env['APPDATA']` directly on Windows, and this set did not
+    // The CONFIG roots, not just the DATA roots. `vscode_install.ts` and `zed_install.ts` read
+    // `process.env['APPDATA']` directly on Windows (as does `opencode_install.ts`, to remove the
+    // plugin an older token-goat wrote there), and `opencode_install.ts` reads `XDG_CONFIG_HOME`
+    // on every platform. This set did not
     // redirect it: a probe using this very allowlist wrote `%APPDATA%\Zed\settings.json` into the
     // real user profile during an audit. The read direction bites here too -- `install --vscode -p`'s
     // clean control below calls `otherScopeHasManagedServer`, which reads the real

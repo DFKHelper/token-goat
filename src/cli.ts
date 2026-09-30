@@ -1138,7 +1138,7 @@ export function buildProgram(): Command {
     .option('--qwen', 'patch Qwen Code (~/.qwen/settings.json)')
     .option('--kimi', 'register a Kimi Code hook config, shim, instructions block and skill ($KIMI_CODE_HOME or ~/.kimi-code: config.toml, hooks/token-goat-shim.cjs, AGENTS.md, skills/token-goat/SKILL.md)')
     .option('--pi', 'drop a pi (pi-coding-agent) extension (~/.pi/agent/extensions/token-goat.ts)')
-    .option('--opencode', 'drop an opencode plugin (~/.config/opencode/plugins/token-goat.ts, %APPDATA%\\opencode\\plugins\\token-goat.ts on Windows)')
+    .option('--opencode', 'drop an opencode plugin (~/.config/opencode/plugins/token-goat.ts, or under $XDG_CONFIG_HOME when set)')
     .option('--hermes', 'verify token-goat hooks are present for Hermes Agent (writes nothing new)')
     .option('--openclaw', 'register an OpenClaw plugin (~/.openclaw/openclaw.json, ~/.openclaw/plugins/token-goat.ts)')
     .option('--copilot', 'register a Copilot CLI hook config and routing block (~/.copilot/hooks/token-goat.json, ~/.copilot/hooks/token-goat-shim.cjs, ~/.copilot/copilot-instructions.md; with --local, <project>/.github/hooks/token-goat.json, <project>/.github/hooks/token-goat-shim.cjs, <project>/.github/copilot-instructions.md)')

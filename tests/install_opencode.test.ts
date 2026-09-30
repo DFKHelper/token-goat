@@ -46,12 +46,9 @@ beforeEach(() => {
   realPlatform = process.platform
   origAppData = process.env['APPDATA']
   origXdgConfigHome = process.env['XDG_CONFIG_HOME']
-  // Always sandbox APPDATA into TMP by default, regardless of host platform --
-  // on a real Windows host, opencodeGlobalConfigDir()'s win32 branch reads
-  // process.env.APPDATA directly, so without this every test here would read
-  // and write the developer's real %APPDATA%\opencode\ (mirrors the homedir
-  // mock above, which only isolates the non-Windows branch). Individual tests
-  // below override this further where they need to exercise a specific branch.
+  // Always sandbox APPDATA into TMP by default, regardless of host platform: on
+  // Windows, install and uninstall remove the plugin an older token-goat wrote under
+  // %APPDATA%\opencode\, so without this they would reach the developer's real one.
   process.env['APPDATA'] = path.join(TMP, 'appdata')
   // Sandbox XDG_CONFIG_HOME off by default too, so the ~/.config fallback tests
   // exercise the actual fallback branch instead of a developer's real override.
@@ -101,20 +98,61 @@ describe('opencodePluginPath', () => {
     )
   })
 
-  it('resolves under %APPDATA%\\opencode\\plugins on Windows', () => {
+  // Regression: the Windows branch returned %APPDATA%, on the belief that xdg-basedir maps xdgConfig there. It does not: xdg-basedir has no Windows case, so opencode reads XDG_CONFIG_HOME or ~/.config on every platform, and a plugin under %APPDATA% was never loaded. CAPTURE (Windows 11, opencode 1.18.16, `opencode debug paths`): `config C:\Users\<user>\.config\opencode` with no override and with APPDATA pointed at a temp folder; `config <tmp>\xc\opencode` with XDG_CONFIG_HOME=<tmp>\xc.
+  it('resolves under ~/.config/opencode/plugins on Windows, not %APPDATA%', () => {
     setPlatform('win32')
     process.env['APPDATA'] = path.join(TMP, 'appdata')
     expect(opencodePluginPath()).toBe(
-      path.join(TMP, 'appdata', 'opencode', 'plugins', 'token-goat.ts'),
+      path.join(TMP, 'home', '.config', 'opencode', 'plugins', 'token-goat.ts'),
     )
   })
 
-  it('falls back to ~/AppData/Roaming on Windows when APPDATA is unset', () => {
+  it('resolves under $XDG_CONFIG_HOME/opencode/plugins on Windows when set', () => {
     setPlatform('win32')
-    delete process.env['APPDATA']
+    process.env['XDG_CONFIG_HOME'] = path.join(TMP, 'xdg-config')
     expect(opencodePluginPath()).toBe(
-      path.join(TMP, 'home', 'AppData', 'Roaming', 'opencode', 'plugins', 'token-goat.ts'),
+      path.join(TMP, 'xdg-config', 'opencode', 'plugins', 'token-goat.ts'),
     )
+  })
+})
+
+describe('the plugin an older token-goat wrote under %APPDATA% on Windows', () => {
+  const legacyDir = (): string => path.join(TMP, 'appdata', 'opencode', 'plugins')
+  const plantLegacy = (): void => {
+    fs.mkdirSync(legacyDir(), { recursive: true })
+    fs.writeFileSync(path.join(legacyDir(), 'token-goat.ts'), OPENCODE_PLUGIN_SCRIPT)
+    fs.writeFileSync(path.join(legacyDir(), 'token-goat-entry.json'), '{"entryPath":"x"}\n')
+  }
+  const legacyLeft = (): string[] => fs.readdirSync(legacyDir())
+
+  it('is removed by install, which writes the plugin where opencode reads it', () => {
+    setPlatform('win32')
+    plantLegacy()
+    const result = installOpencode()
+    expect(result.pluginPath).toBe(path.join(TMP, 'home', '.config', 'opencode', 'plugins', 'token-goat.ts'))
+    expect(fs.existsSync(result.pluginPath)).toBe(true)
+    expect(legacyLeft()).toEqual([])
+  })
+
+  it('is removed by uninstall, which reports that it removed something', () => {
+    setPlatform('win32')
+    plantLegacy()
+    expect(uninstallOpencode()).toBe(true)
+    expect(legacyLeft()).toEqual([])
+  })
+
+  it('does not count as installed, since opencode never loads it', () => {
+    setPlatform('win32')
+    plantLegacy()
+    expect(isOpencodeInstalled()).toBe(false)
+  })
+
+  it('is left alone off Windows, where %APPDATA% is not a location token-goat ever wrote to', () => {
+    setPlatform('linux')
+    plantLegacy()
+    installOpencode()
+    uninstallOpencode()
+    expect(legacyLeft().sort()).toEqual(['token-goat-entry.json', 'token-goat.ts'])
   })
 })
 
