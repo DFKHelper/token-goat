@@ -93,6 +93,25 @@ describe('batch-serve is indistinguishable from spawning the bundle', () => {
     expect(after.stdout).toBe(spawnedClean.stdout)
   })
 
+  // HAND-DERIVED: a spawned process resolves its data directory from its own LOCALAPPDATA / XDG_DATA_HOME, so a note set under home A is invisible to a list under home B. The batched server resolved it once at startup and kept it, so the set landed in the server's startup directory (neither A nor B) and the list under B printed it. Found by a note-eviction test in text_commands.test.ts that gave itself a fresh home and still saw the earlier notes.
+  it('a request writes to the data directory its own environment names, not the server\'s', async () => {
+    const homeA = tempDir()
+    const homeB = tempDir()
+    // `note` needs a project root to key the notes by; a package.json is the cheapest marker.
+    const project = tempDir()
+    fs.writeFileSync(path.join(project, 'package.json'), '{}\n')
+    const envFor = (home: string): NodeJS.ProcessEnv => ({ ...process.env, LOCALAPPDATA: home, XDG_DATA_HOME: home, TOKEN_GOAT_HOME: home })
+
+    const set = await runBatched(['note', 'set', 'batchedHomeProbe', 'from home A'], { cwd: project, env: envFor(homeA) })
+    expect(set.status).toBe(0)
+    expect(fs.readdirSync(homeA, { recursive: true }).map(String).some((p) => p.endsWith('_memory.toml')), 'the note did not land under the requesting home').toBe(true)
+
+    const batched = await runBatched(['note', 'list'], { cwd: project, env: envFor(homeB) })
+    const spawned = runSpawned(['note', 'list'], { cwd: project, env: envFor(homeB) })
+    expect(batched.stdout).toBe(spawned.stdout)
+    expect(batched.stdout).not.toContain('batchedHomeProbe')
+  })
+
   it('a nonzero exit does not carry over into the next request', async () => {
     const failed = await runBatched(['definitelyNotACommand'], { cwd: dir })
     expect(failed.status).not.toBe(0)

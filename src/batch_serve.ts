@@ -1,4 +1,5 @@
 /** `--batch-serve`: run many CLI invocations inside one already-started process. Every one of the suite's built-bundle tests spawns `node dist/token-goat.mjs <args>` and asserts on the real output, deliberately, so that no injected seam can hide a broken shipping path. The problem is what that costs. Measured on this repo: a bundle spawn that does nothing at all (`--version`) takes 259ms, and one that does real work (`todo .`) takes 258ms. The command is free; ~228ms of every such test is Node starting up and evaluating a 3.3 MB bundle. Across the ~534 tests in that shape it is about 122 seconds of the suite's 452 seconds of test time. So this serves invocations from a process that has already paid that cost once. What it deliberately does NOT change is anything the tests are actually asserting about: it is the real built artifact, the real `run(argv)` entrypoint, the real commander parse, and the real command implementations. Only the process boundary is amortised. What a shared process does change is state, and that is the whole risk. Between requests this restores the working directory, restores the environment key by key, resets `process.exitCode`, and calls `clearModuleCaches()` (the same reset registry the in-process tests already rely on). A module-level cache that no reset covers would make a batched run disagree with a spawned one -- which is why tests/batch_serve_equivalence.test.ts runs a sample of commands both ways and compares stdout, stderr and exit status byte for byte. Batching is only as trustworthy as that guard, so the guard is not optional. Protocol, newline-delimited JSON over stdin, replies on stdout prefixed with a caller-supplied random token: `<token> {"id":N,...}`. The token exists because a command's own output is captured in-process but a stray async write is not, and a reply stream that a test's own output could be mistaken for would be worse than no speedup at all. The caller generates the token, so nothing in a fixture can predict it. */
+import { _resetDataDirCacheForTesting } from './constants.js'
 import { clearModuleCaches } from './reset.js'
 
 export interface BatchRequest {
@@ -64,6 +65,8 @@ export async function serveOne(
   let status: number
   try {
     if (req.cwd !== undefined) process.chdir(req.cwd)
+    // The data directory is resolved once per process from LOCALAPPDATA/XDG_DATA_HOME, so it has to be resolved again from this request's environment. Every request does this before it runs, so none inherits the directory of the one before it. The test-only reset fits because this server exists only for the test suite, and reusing it rather than adding an export leaves constants.ts, a parser-fingerprint source, unchanged, so no user's index is reparsed for it.
+    _resetDataDirCacheForTesting()
     process.exitCode = undefined
     await runFn([process.execPath, 'token-goat', ...req.argv])
     status = typeof process.exitCode === 'number' ? process.exitCode : 0
