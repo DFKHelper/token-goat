@@ -14,9 +14,10 @@
  *
  * FIXTURE PROVENANCE
  *
- * The two spellings below are HAND-DERIVED: `/mnt/c/...` and a backslash drive path are rewritten
- * by `shellMountToWindowsPath`, which is not platform-gated, so the expected answer is computed
- * from the input by hand rather than read off the implementation and holds on every platform.
+ * The two spellings below are HAND-DERIVED: a backslash drive path is rewritten on every platform,
+ * and `/mnt/c/...` only on Windows, since on Linux it is where WSL mounts the C: drive and the key has
+ * to be a path the indexer can open (BE-21). The expected answers are computed from the input by hand
+ * rather than read off the implementation.
  *
  * The end-to-end case is CAPTURE in the sense that matters: it does not invent a non-canonical
  * spelling, it asks the OS for one. `fs.realpathSync.native` disagreeing with the path `mkdtempSync`
@@ -37,8 +38,8 @@ import { resolveIndexPath, normalizePath } from '../src/paths.js'
 fs.mkdirSync(path.dirname(configPath()), { recursive: true })
 
 describe('the spelling the index is keyed on', () => {
-  it('is one a reader can produce, for the shapes every platform rewrites', () => {
-    expect(canonicalizeIndexPath('/mnt/c/proj/a.ts')).toBe('c:/proj/a.ts')
+  it('is one a reader can produce, for the shapes the host rewrites', () => {
+    expect(canonicalizeIndexPath('/mnt/c/proj/a.ts')).toBe(process.platform === 'win32' ? 'c:/proj/a.ts' : '/mnt/c/proj/a.ts')
     expect(canonicalizeIndexPath('C:\\proj\\a.ts')).toBe('c:/proj/a.ts')
   })
 

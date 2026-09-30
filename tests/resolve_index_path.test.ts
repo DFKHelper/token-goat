@@ -83,8 +83,28 @@ describe('index lookup contract: raw relative misses, resolved hits', () => {
 })
 
 describe('shellMountToWindowsPath', () => {
-  it('rewrites a WSL mount path to drive-letter form on every platform', () => {
+  const realPlatform = process.platform
+  const setPlatform = (p: string): void => {
+    Object.defineProperty(process, 'platform', { value: p, configurable: true })
+  }
+  afterEach(() => setPlatform(realPlatform))
+
+  it('rewrites a WSL mount path to drive-letter form on win32', () => {
+    setPlatform('win32')
     expect(shellMountToWindowsPath('/mnt/c/proj/a.ts')).toBe('c:/proj/a.ts')
+  })
+
+  // HAND-DERIVED: on Linux `/mnt/c/proj/a.ts` is where WSL mounts C:, the path the indexer and every read command open, while `c:/proj/a.ts` is relative. Loop 72 probe on WSL (node 24.14.0): with the fold, `index . --walk` indexed 0 files under /mnt/c and `outline x.ts` answered "Could not read: x.ts" (BE-21).
+  it('leaves a WSL mount path alone on linux, where it is the real path', () => {
+    setPlatform('linux')
+    expect(shellMountToWindowsPath('/mnt/c/proj/a.ts')).toBe('/mnt/c/proj/a.ts')
+    expect(shellMountToWindowsPath('/c/proj/a.ts')).toBe('/c/proj/a.ts')
+  })
+
+  // Real POSIX host only: resolveIndexPath calls the host's path.resolve, which a stubbed process.platform does not swap.
+  it.runIf(process.platform !== 'win32')('resolveIndexPath keys a WSL mount path at the mount on POSIX, for an absolute path and against a mount base', () => {
+    expect(resolveIndexPath('/mnt/c/proj/a.ts', '/')).toBe('/mnt/c/proj/a.ts')
+    expect(resolveIndexPath('a.ts', '/mnt/c/proj')).toBe('/mnt/c/proj/a.ts')
   })
 
   it('leaves an ordinary POSIX path alone', () => {

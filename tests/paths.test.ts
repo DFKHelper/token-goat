@@ -48,29 +48,54 @@ describe('normalizePath', () => {
     expect(normalizePath('c:/foo/bar')).toBe('c:/foo/bar')
   })
 
-  it('converts a WSL /mnt path to Windows drive form', () => {
-    expect(normalizePath('/mnt/c/foo/bar')).toBe('c:/foo/bar')
-  })
-
-  it('lowercases the WSL drive letter and collapses leading slashes', () => {
-    expect(normalizePath('/mnt/C///bar')).toBe('c:/bar')
-  })
-
   it('leaves a plain POSIX path unchanged', () => {
     expect(normalizePath('/home/user/project')).toBe('/home/user/project')
   })
 
-  it('normalizes mixed-separator WSL paths fully', () => {
-    expect(normalizePath('/mnt/c/foo\\bar')).toBe('c:/foo/bar')
-  })
+  // HAND-DERIVED: WSL mounts the C: drive at /mnt/c, so on Linux `/mnt/c/foo` is the real path and `c:/foo` is a relative one. The fold to drive-letter form belongs to Windows alone, like the Git Bash form below; folding on Linux left every file under a drive mount unindexed and unreadable (BE-21).
+  describe('WSL /mnt/<drive>/ mount form (win32-gated)', () => {
+    const realPlatform = process.platform
+    const setPlatform = (p: string): void => {
+      Object.defineProperty(process, 'platform', { value: p, configurable: true })
+    }
+    afterEach(() => setPlatform(realPlatform))
 
-  // Mutation-testing gap: WSL_PATH_RE's `.*` after the drive segment must match a literal
-  // newline byte (via the regex's `s` flag), or a path containing one -- unusual, but not
-  // impossible for a filename built from arbitrary bytes -- fails to match at all and falls
-  // through unrewritten, silently skipping the WSL->Windows-drive-form rewrite instead of
-  // completing it.
-  it('converts a WSL /mnt path whose remainder contains a literal newline byte', () => {
-    expect(normalizePath('/mnt/c/foo\nbar/baz')).toBe('c:/foo\nbar/baz')
+    it('converts a WSL /mnt path to Windows drive form on win32', () => {
+      setPlatform('win32')
+      expect(normalizePath('/mnt/c/foo/bar')).toBe('c:/foo/bar')
+    })
+
+    it('lowercases the WSL drive letter and collapses leading slashes on win32', () => {
+      setPlatform('win32')
+      expect(normalizePath('/mnt/C///bar')).toBe('c:/bar')
+    })
+
+    it('normalizes mixed-separator WSL paths fully on win32', () => {
+      setPlatform('win32')
+      expect(normalizePath('/mnt/c/foo\\bar')).toBe('c:/foo/bar')
+    })
+
+    // Mutation-testing gap: WSL_PATH_RE's `.*` after the drive segment must match a literal newline byte (via the regex's `s` flag), or a path containing one -- unusual, but not impossible for a filename built from arbitrary bytes -- fails to match at all and falls through unrewritten, silently skipping the WSL->Windows-drive-form rewrite instead of completing it.
+    it('converts a WSL /mnt path whose remainder contains a literal newline byte on win32', () => {
+      setPlatform('win32')
+      expect(normalizePath('/mnt/c/foo\nbar/baz')).toBe('c:/foo\nbar/baz')
+    })
+
+    it('leaves /mnt/c/foo unchanged on linux (the path WSL opens)', () => {
+      setPlatform('linux')
+      expect(normalizePath('/mnt/c/foo/bar')).toBe('/mnt/c/foo/bar')
+      expect(normalizePath('/mnt/C///bar')).toBe('/mnt/C///bar')
+    })
+
+    it('still turns backslashes into slashes on linux without folding the mount', () => {
+      setPlatform('linux')
+      expect(normalizePath('/mnt/c/foo\\bar')).toBe('/mnt/c/foo/bar')
+    })
+
+    it('leaves /mnt/c/foo unchanged on darwin', () => {
+      setPlatform('darwin')
+      expect(normalizePath('/mnt/c/foo/bar')).toBe('/mnt/c/foo/bar')
+    })
   })
 
   // Regression: UNC paths (\\host\share\...) have a case-insensitive host and share segment,

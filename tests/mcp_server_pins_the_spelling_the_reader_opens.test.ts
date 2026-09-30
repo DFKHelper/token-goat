@@ -1,4 +1,4 @@
-/** Whatever spelling of a target the confinement gate admits, the read layer's own lookup key for that target must be pinned. The gate stats the target and records a `pinKey -> dev:ino` entry so the read can prove it opened the object that passed the check. The read side looks that entry up with `activePins.get(pinKey(path.resolve(p)))` (read_commands.ts, `readFileText` / `readFileBytes` / `indexFileSyncPinned`), where `p` is the handler's resolution of the caller's RAW spec against the same `projectRoot` the gate was handed. A lookup that misses is not a refusal: it falls straight through to an unpinned `fs.readFileSync`, so the identity check and the ABSENT_PIN race guard are both switched off for the whole request while the gate still reports success. That is exactly what happened, and no confinement test could see it, because every one of them asks whether a path is admitted or refused -- which was correct throughout. `normalizePath` rewrites the WSL mount form `/mnt/c/x` to `c:/x` on every platform by design, and `c:/x` is RELATIVE on POSIX, so with a project root of `/mnt/c/workspace` the gate pinned the synthetic `/mnt/c/workspace/c:/workspace/a.txt` while the reader opened `/mnt/c/workspace/a.txt`. Every MCP read under a WSL-mounted root was unpinned. PROVENANCE: FORMAT-DERIVED. The key expression asserted below -- `pinKey(path.resolve(root, target))` -- is read off the read side's own call sites (`pinKey(path.resolve(p))` in read_commands.ts) composed with the root-relative resolution the handlers perform, not off the gate. Deriving it from the gate is what would make this test agree with the defect. */
+/** Whatever spelling of a target the confinement gate admits, the read layer's own lookup key for that target must be pinned. The gate stats the target and records a `pinKey -> dev:ino` entry so the read can prove it opened the object that passed the check. The read side looks that entry up with `activePins.get(pinKey(path.resolve(p)))` (read_commands.ts, `readFileText` / `readFileBytes` / `indexFileSyncPinned`), where `p` is the handler's resolution of the caller's RAW spec against the same `projectRoot` the gate was handed. A lookup that misses is not a refusal: it falls straight through to an unpinned `fs.readFileSync`, so the identity check and the ABSENT_PIN race guard are both switched off for the whole request while the gate still reports success. That is exactly what happened, and no confinement test could see it, because every one of them asks whether a path is admitted or refused -- which was correct throughout. `normalizePath` then rewrote the WSL mount form `/mnt/c/x` to `c:/x` on every platform (Windows-only since BE-21), and `c:/x` is RELATIVE on POSIX, so with a project root of `/mnt/c/workspace` the gate pinned the synthetic `/mnt/c/workspace/c:/workspace/a.txt` while the reader opened `/mnt/c/workspace/a.txt`. Every MCP read under a WSL-mounted root was unpinned. PROVENANCE: FORMAT-DERIVED. The key expression asserted below -- `pinKey(path.resolve(root, target))` -- is read off the read side's own call sites (`pinKey(path.resolve(p))` in read_commands.ts) composed with the root-relative resolution the handlers perform, not off the gate. Deriving it from the gate is what would make this test agree with the defect. */
 import type * as nodeFs from 'node:fs'
 import * as path from 'node:path'
 
@@ -36,9 +36,11 @@ const CASES: readonly { readonly label: string; readonly root: string; readonly 
   { label: 'an absolute target under the root', root: '/srv/workspace', target: '/srv/workspace/a.txt', posixOnly: true },
   { label: 'a relative target', root: '/srv/workspace', target: 'src/a.txt', posixOnly: true },
   { label: 'a relative target with a redundant dot segment', root: '/srv/workspace', target: './src/./a.txt', posixOnly: true },
-  // The regression. Both spellings are in-root, so this is an ORDINARY read that must work -- the defect was never a wrongful refusal, it was a silently unpinned success.
+  // The original regression, found when normalizePath folded a WSL mount to `c:/...` on every platform. Since BE-21 the fold is Windows-only, so on POSIX these are one spelling again; they stay as ordinary reads that must still pin.
   { label: 'an absolute target under a WSL-mounted root', root: '/mnt/c/workspace', target: '/mnt/c/workspace/a.txt', posixOnly: true },
   { label: 'a nested absolute target under a WSL-mounted root', root: '/mnt/c/workspace', target: '/mnt/c/workspace/src/deep/a.txt', posixOnly: true },
+  // HAND-DERIVED: a POSIX filename may contain a backslash, and normalizePath folds it to a separator, so the gate resolves `src/a.txt` and `src\a.txt` as two spellings. pinKey folds the backslash too, so both land on one key: since BE-21 no POSIX spelling gives the gate and the reader different keys, and the WSL rows above guard that it stays so.
+  { label: 'a target spelled with a backslash', root: '/srv/workspace', target: 'src\\a.txt', posixOnly: true },
   { label: 'a windows absolute target under the root', root: 'C:\\workspace', target: 'C:\\workspace\\a.txt', posixOnly: false },
   { label: 'a windows target spelled with forward slashes', root: 'C:\\workspace', target: 'C:/workspace/a.txt', posixOnly: false },
 ]
@@ -68,20 +70,16 @@ describe('the confinement gate pins the spelling the read layer will look up', (
     })
   }
 
-  it.runIf(POSIX)('is exercising the divergence it claims to, for the WSL case', () => {
-    // Calibration. If `normalizePath` ever stopped rewriting the mount form, the WSL rows above would collapse into the ordinary absolute case and pass for a reason that has nothing to do with the defect. This asserts the two spellings genuinely differ.
-    const root = '/mnt/c/workspace'
+  it.runIf(POSIX)('keys a WSL mount at the mount on POSIX, so the gate and the reader agree on it (BE-21)', () => {
+    // HAND-DERIVED: on Linux `/mnt/c/workspace/a.txt` is the only spelling the host can open, so normalizing it must leave it alone; folding it to `c:/workspace/a.txt` is the defect this file was written for.
     const target = '/mnt/c/workspace/a.txt'
-    const normalized = path.resolve(root, normalizePath(target))
-    const raw = path.resolve(root, target)
-    expect(normalizePath(target), 'normalizePath no longer rewrites the WSL mount form, so the WSL cases above are no longer distinct').not.toBe(target)
-    expect(pinKey(normalized), 'the normalized and raw spellings now share a pin key, so the WSL cases can no longer detect a missing raw pin').not.toBe(pinKey(raw))
+    expect(normalizePath(target)).toBe(target)
   })
 
   it('stats the target exactly once, however many spellings it validates', () => {
     // The count is the security property, not an efficiency one. Each stat between the verdict and the read is another window for the validated-absent race in `tests/mcp_server_read_confinement.test.ts`; the first draft of the two-spelling fix stat'd each spelling separately and reopened it, leaking an out-of-root secret through three of those tests on Windows -- and only on Windows, because a POSIX root does not produce two spellings for an ordinary path. This asserts the invariant on every platform.
-    const root = POSIX ? '/mnt/c/workspace' : 'C:\\workspace'
-    const target = POSIX ? '/mnt/c/workspace/a.txt' : 'C:\\workspace\\a.txt'
+    const root = POSIX ? '/srv/workspace' : 'C:\\workspace'
+    const target = POSIX ? 'src\\a.txt' : 'C:\\workspace\\a.txt'
     // Calibration: this case is only worth counting if it takes the two-spelling branch at all.
     expect(path.resolve(root, normalizePath(target)), 'this case no longer produces two spellings, so it cannot detect a second stat').not.toBe(path.resolve(root, target))
 

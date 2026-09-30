@@ -692,7 +692,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     // Item 2: record curl -o downloads by URL for cross-command dedup — only after confirming the download actually succeeded. Recording it unconditionally (before checking exit code or that the file landed on disk) meant a FAILED curl (network error, 404, ...) still got recorded as if it succeeded, and the recall-deny above would then block the user from ever retrying the same download.
     const curlDl = extractCurlDownload(cmd)
     if (curlDl !== null && (exitCode === null || exitCode === 0)) {
-      // Recorded at its host path, which is the key everywhere but WSL, so the recall names a file the shell there can open.
+      // Recorded at its host path, which is the key except for a drive-letter key on WSL, so the recall names a file the shell there can open.
       const outputOnDisk = hostPathOfIndexKey(resolveIndexPath(curlDl.outputPath, runDir ?? process.cwd()))
       if (existsSync(outputOnDisk)) {
         recordCurlDownload(curlDl.url, outputOnDisk)

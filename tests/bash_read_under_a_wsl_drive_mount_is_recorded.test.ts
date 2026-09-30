@@ -1,4 +1,4 @@
-// The Bash hooks record a read-shaped command's file only when stat finds a regular file there, and they stat its index key. On WSL a project on a Windows drive sits under a mount such as /mnt/c/..., which shellMountToWindowsPath folds into the drive-letter key c:/... on every platform, and POSIX resolves that key as a relative path, so no Bash read under a drive mount went on record. CAPTURE on WSL (node 24.14.0, linux, 2026-09-27): the built bundle's pre hook told a repeat `head -n 40 x.ts`, and a repeat `sed -n '1,40p' x.ts`, "You already read lines 1-40" in a project under /var/tmp and nothing in the same project under /mnt/c/Projects/..., while a build with the stat check stripped told both. A runner cannot create a real /mnt/<letter> without root (see tests/mcp_server_normalization_asymmetry.test.ts), so this file maps one mount onto a temp directory through node:fs's statSync alone, the call the check makes, and on Windows, which opens a drive-letter key as it stands, maps the letter there too; the /mnt/<drive> layout is FORMAT-DERIVED from WSL's default automount root, and the commands and their output are HAND-DERIVED from coreutils and sed syntax.
+// The Bash hooks record a read-shaped command's file only when stat finds a regular file there, and they stat its index key. On WSL a project on a Windows drive sits under a mount such as /mnt/c/..., which shellMountToWindowsPath used to fold into the drive-letter key c:/... on every platform, and POSIX resolves that key as a relative path, so no Bash read under a drive mount went on record. The fold is now Windows-only (BE-21), so on Linux the key is the mount path itself; this file pins that either spelling of the key finds the file. CAPTURE on WSL (node 24.14.0, linux, 2026-09-27): the built bundle's pre hook told a repeat `head -n 40 x.ts`, and a repeat `sed -n '1,40p' x.ts`, "You already read lines 1-40" in a project under /var/tmp and nothing in the same project under /mnt/c/Projects/..., while a build with the stat check stripped told both. A runner cannot create a real /mnt/<letter> without root (see tests/mcp_server_normalization_asymmetry.test.ts), so this file maps one mount onto a temp directory through node:fs's statSync alone, the call the check makes, and on Windows, which opens a drive-letter key as it stands, maps the letter there too; the /mnt/<drive> layout is FORMAT-DERIVED from WSL's default automount root, and the commands and their output are HAND-DERIVED from coreutils and sed syntax.
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -68,8 +68,8 @@ function text(out: HookOutput): string {
 }
 
 describe('a Bash read under a WSL drive mount goes on record when its file is there', () => {
-  it('the mount folds into a drive-letter key, which is what makes this a separate case', () => {
-    expect(resolveIndexPath('x.ts', PROJECT)).toBe('q:/proj/x.ts')
+  it('the mount keys as the drive letter on Windows and as the mount itself elsewhere', () => {
+    expect(resolveIndexPath('x.ts', PROJECT)).toBe(process.platform === 'win32' ? 'q:/proj/x.ts' : '/mnt/q/proj/x.ts')
   })
 
   // `cat x.ts | head -n 40` is recorded by the post hook, and reaches Claude Code's PostToolUse even with x.ts absent, since head's status is the pipeline's; `sed -n '1,40p' x.ts` is recorded by the pre hook before it runs.

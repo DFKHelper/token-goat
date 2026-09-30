@@ -1,4 +1,4 @@
-// Every stat and read a hook makes of an index key goes through paths.ts::hostPathOfIndexKey, because a drive-letter key names nothing on WSL: shellMountToWindowsPath folds a mount such as /mnt/c/x into the key c:/x on every platform, and POSIX resolves c:/x as a relative path, so each check below failed toward doing nothing for a file under a drive mount. CAPTURE on WSL (node 24.14.0, linux, 2026-09-27): the loop 71 review's isolated dogfood of the built bundle had the Read hook refuse a 79 KB log under /var/tmp and pass the same file under /mnt/c with no word, and loop 72's rerun of that probe against the fixed bundle refused both. A runner cannot create /mnt/<letter>, so one mount is mapped onto a temp directory through node:fs, and on Windows, which opens a key as it stands, the drive letter is mapped there too; the file contents and names are HAND-DERIVED, the document is this repository's own CLAUDE.arch.md.
+// Every stat and read a hook makes of an index key goes through paths.ts::hostPathOfIndexKey, because a drive-letter key names nothing on WSL: shellMountToWindowsPath used to fold a mount such as /mnt/c/x into the key c:/x on every platform, and POSIX resolves c:/x as a relative path, so each check below failed toward doing nothing for a file under a drive mount. The fold is Windows-only since BE-21, so on Linux a drive-letter key now comes only from a path typed as `C:\x` or from a key an earlier version recorded; the mount paths below key at the mount there, and the VS Code case types the drive letter. CAPTURE on WSL (node 24.14.0, linux, 2026-09-27): the loop 71 review's isolated dogfood of the built bundle had the Read hook refuse a 79 KB log under /var/tmp and pass the same file under /mnt/c with no word, and loop 72's rerun of that probe against the fixed bundle refused both. A runner cannot create /mnt/<letter>, so one mount is mapped onto a temp directory through node:fs, and on Windows, which opens a key as it stands, the drive letter is mapped there too; the file contents and names are HAND-DERIVED, the document is this repository's own CLAUDE.arch.md.
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -107,8 +107,8 @@ function text(out: HookOutput): string {
 }
 
 describe('a hook reading the file behind a drive-letter key opens it where the host keeps it', () => {
-  it('the mount folds into a drive-letter key, which is what makes this a separate case', () => {
-    expect(resolveIndexPath('app.log', PROJECT)).toBe('q:/proj/app.log')
+  it('the mount keys as the drive letter on Windows and as the mount itself elsewhere', () => {
+    expect(resolveIndexPath('app.log', PROJECT)).toBe(`${HOST_PROJECT}/app.log`)
   })
 
   it('the Read hook refuses a 79 KB log by its file-type intercept', async () => {
@@ -133,7 +133,7 @@ describe('a hook reading the file behind a drive-letter key opens it where the h
     await asHook(sid, () => preReadHandler(readEvent(sid, 'pre_tool_use', `${PROJECT}/x.ts`)))
     const out = await asHook(sid, () => postReadHandler(readEvent(sid, 'post_tool_use', `${PROJECT}/x.ts`, { tool_response: { type: 'text', file: { filePath: `${PROJECT}/x.ts`, content: SOURCE, numLines: 300, startLine: 1, totalLines: 300 } } })))
     loadSessionState(sid)
-    expect(getSessionFileEntry('q:/proj/x.ts')?.sizeBytes).toBe(bytes)
+    expect(getSessionFileEntry(`${HOST_PROJECT}/x.ts`)?.sizeBytes).toBe(bytes)
     expect(text(out)).toContain('is 300 lines')
   })
 

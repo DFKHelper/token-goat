@@ -554,7 +554,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
   const normalized = normalizePath(filePath)
   const shown = displaySafePath(normalized)
-  // The index key the session, snapshots and hints are keyed on is not always a path this host can open: on WSL a drive-mount key names its mount. Every stat and read below goes through `onDisk`.
+  // The index key the session, snapshots and hints are keyed on is not always a path this host can open: on WSL a drive-letter key (a path typed as `C:\x`, or one recorded by an earlier version) names its mount. Every stat and read below goes through `onDisk`.
   const onDisk = hostPathOfIndexKey(normalized)
 
   if (isNodeModulesPath(normalized)) {
