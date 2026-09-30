@@ -270,10 +270,15 @@ export function extractPowerShellFileMethodRead(cmd: string, event?: HookEvent):
   return { filePath, isDoc: flags.isDoc, isEnv: flags.isEnv, isConfig: flags.isConfig, isSql: flags.isSql, isXml: flags.isXml }
 }
 
+/** Whether an `rg`/`grep` command carries the line-number flag: `-n` alone or bundled (`-rn`, `-nH`, `-wn`), or `--line-number`. Anchored to a whole flag token the way the recursive-flag check in extractRgSymbolSearch is, so the `-n` inside a name (`state-n.ts`) is not taken for it (BE-22). */
+function hasLineNumberFlag(cmd: string): boolean {
+  return /(?:^|\s)-[a-mo-zA-Z]*n[a-zA-Z]*(?=\s|$)/.test(cmd) || /(?:^|\s)--line-number(?=\s|$)/.test(cmd)
+}
+
 /** Returns identifier info when command is `rg`/`grep` with `-n` flag targeting a pure identifier (or `|`-joined identifiers) against exactly one source file. Used to suggest `token-goat symbol` as a cheaper alternative to scanning the file. */
 export function extractRgSymbolSearch(cmd: string): { filePath: string; identifier: string } | null {
   if (!/^(?:rg|grep)\s+/.test(cmd)) return null
-  if (!/-n\b/.test(cmd)) return null
+  if (!hasLineNumberFlag(cmd)) return null
 
   // Extract the quoted or unquoted pattern (first string-like argument)
   const patternMatch = /["']([^"']+)["']/.exec(cmd)
@@ -832,11 +837,9 @@ export function extractNodeFileRead(cmd: string): { filePath: string; isDoc: boo
 
 /** Extracts file path from `tail -n X <path>` or `tail -X <path>` commands on source files. Excludes -f (follow), -c (byte mode), and +N (offset). */
 export function extractTailFile(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean; isSql: boolean; isXml: boolean } | null {
-  if (/-f\b/.test(cmd)) return null // follow mode — legitimate streaming
-  if (/-c\b/.test(cmd)) return null // byte mode
-  if (/-n\s*\+/.test(cmd)) return null // tail from line N offset — legitimate
+  // No whole-command `-f`/`-c`/`-n +` guard: both regexes below admit only `-n N` or `-N` between `tail` and the file, so follow, byte and offset forms already fail them, and such a guard matched the same letters inside a name (`appendix-c.md`, `notes-f.md`), declining a plain trailing-lines read (BE-22).
   const direct = /^tail(?:\s+-n\s+(\d+)|\s+-(\d+))?\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
-  // Piped spelling of the same trailing-lines read: `cat [flags] FILE [2>&1|2>/dev/null] | tail -N` (loop-46 census: 26 qualifying reads). The -f/-c/-n + guards above already rejected streaming/byte/offset variants on the whole command.
+  // Piped spelling of the same trailing-lines read: `cat [flags] FILE [2>&1|2>/dev/null] | tail -N` (loop-46 census: 26 qualifying reads). Its `tail` stage admits only `-n N` or `-N`, so streaming, byte and offset variants fail it as they fail the direct form.
   const piped = direct === null ? /^cat(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+?))(?:\s+2>(?:&1|\/dev\/null))?\s*\|\s*tail(?:\s+-n\s+(\d+)|\s+-(\d+))?\s*$/.exec(cmd) : null
   if (direct === null && piped === null) return null
   const n = parseInt((direct !== null ? (direct[1] ?? direct[2]) : (piped![4] ?? piped![5])) ?? '0', 10)
@@ -945,8 +948,8 @@ export function extractTasksOutput(cmd: string): { id: string; path: string; n?:
     }
   }
 
-  // tail command — handles -n (line-count) and -c (byte-count) modes; excludes -f follow and +N offset
-  if (!/-f\b/.test(cmd) && !/-n\s*\+/.test(cmd)) {
+  // tail command — handles -n (line-count) and -c (byte-count) modes. Follow and +N offset forms fail both anchored regexes, so there is no whole-command `-f` guard: one matched the `-f` in a project folder like `C--Projects-f-droid` and declined the read (BE-22).
+  {
     // Standard line-count tail: -n N or -N or no count
     const tailM = /^tail(?:\s+-n\s+(\d+)|\s+-(\d+))?\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
     if (tailM) {
@@ -988,8 +991,8 @@ export function extractToolResultsFile(cmd: string): { path: string } | null {
     }
   }
 
-  // tail command — handles -n (line-count) and -c (byte-count) modes; excludes -f follow and +N offset
-  if (!/-f\b/.test(cmd) && !/-n\s*\+/.test(cmd)) {
+  // tail command — handles -n (line-count) and -c (byte-count) modes. Follow and +N offset forms fail both anchored regexes, so there is no whole-command `-f` guard: one matched the `-f` in a project folder like `C--Projects-f-droid` and declined the read (BE-22).
+  {
     // Standard line-count tail: -n N or -N or no count
     const tailM = /^tail(?:\s+-n\s+(\d+)|\s+-(\d+))?\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
     if (tailM) {
@@ -1046,7 +1049,7 @@ export function extractMarkdownHeadingGrep(cmd: string): { filePath: string } | 
   if (!/^(?:rg|grep)\s+/.test(cmd)) return null
 
   // Must have the -n (line-number) flag
-  if (!/-n\b/.test(cmd)) return null
+  if (!hasLineNumberFlag(cmd)) return null
 
   // Pattern must be a markdown heading anchor: starts with ^# in some form. Allow: "^#", '^##', "^#+" , "^#+", "^## |^### ", /^#/ variants, '^#\+'
   const hasHeadingPattern = (
