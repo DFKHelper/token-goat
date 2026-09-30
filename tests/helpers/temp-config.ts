@@ -43,9 +43,9 @@ export function tempDir(): string {
   return dirUnder(os.tmpdir())
 }
 
-/** Like {@link tempDir}, but outside the OS temp dir, for a fixture whose files the dirty queue must accept. It sits inside this repository's work tree, so it is never a non-git directory. */
+/** Like {@link tempDir}, but outside the OS temp dir, for a fixture whose files the dirty queue must accept. It sits inside this repository's work tree, so it is never a non-git directory. Under vitest it sits inside the run's own .tmp/ root (tests/setup/build-bundle.ts), which the run deletes when it ends; the exit handler below never runs in a killed worker. */
 export function indexableDir(): string {
-  return dirUnder(INDEXABLE_BASE)
+  return dirUnder(process.env['TG_TEST_INDEXABLE_ROOT'] ?? INDEXABLE_BASE)
 }
 
 function dirUnder(base: string): string {

@@ -52,13 +52,12 @@ function buildNativeOnce(): void {
 const STALE_RUN_ROOT_MS = 6 * 60 * 60 * 1000
 
 // Best-effort removal of run roots abandoned by earlier interrupted runs. Only `tg-run-` prefixed directories are considered, so the deliberately shared tg-test-v8-compile-cache survives. Any failure (a permission error, a root another process holds open) is skipped: this must never fail the run.
-export function sweepStaleRunRoots(): void {
+export function sweepStaleRunRoots(dir: string = os.tmpdir(), prefixes: readonly string[] = ['tg-run-']): void {
   try {
-    const tmp = os.tmpdir()
     const cutoff = Date.now() - STALE_RUN_ROOT_MS
-    for (const entry of fs.readdirSync(tmp)) {
-      if (!entry.startsWith('tg-run-')) continue
-      const full = path.join(tmp, entry)
+    for (const entry of fs.readdirSync(dir)) {
+      if (!prefixes.some((prefix) => entry.startsWith(prefix))) continue
+      const full = path.join(dir, entry)
       try {
         const st = fs.statSync(full)
         if (!st.isDirectory() || st.mtimeMs >= cutoff) continue
@@ -72,22 +71,32 @@ export function sweepStaleRunRoots(): void {
   }
 }
 
-function createRunRoot(): (() => void) | void {
+// tests/helpers/temp-config.ts::indexableDir() puts fixtures the dirty queue must accept under the repo's .tmp/, since the queue refuses anything under the OS temp dir, so the %TEMP% run root above cannot hold them. They leaked the same way for the same reason: a tg-test-cfg-* root per test file, removed only by an exit handler killed workers never run, 42 of them in this checkout with their files intact. The repo's .tmp/ gets its own per-run root, which the teardown removes and the sweep reclaims, the sweep also taking tg-test-cfg-* roots from runs before this existed.
+export const INDEXABLE_TMP = path.join(ROOT, '.tmp')
+
+export function createRunRoot(): (() => void) | void {
   // A nested `vitest run` inherits this config; it must reuse the outer run's root rather than create and then delete its own out from under the workers still using it.
   if (process.env['TG_TEST_RUN_ROOT']) return
   sweepStaleRunRoots()
-  let root: string
-  try {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-run-'))
-  } catch {
-    return // best-effort: without a root, isolate-home falls back to os.tmpdir() as before
-  }
-  process.env['TG_TEST_RUN_ROOT'] = root
-  return () => {
+  sweepStaleRunRoots(INDEXABLE_TMP, ['tg-run-', 'tg-test-cfg-'])
+  const created: string[] = []
+  for (const [name, base] of [['TG_TEST_RUN_ROOT', os.tmpdir()], ['TG_TEST_INDEXABLE_ROOT', INDEXABLE_TMP]] as const) {
     try {
-      fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 })
+      fs.mkdirSync(base, { recursive: true })
+      const root = fs.mkdtempSync(path.join(base, 'tg-run-'))
+      process.env[name] = root
+      created.push(root)
     } catch {
-      // best-effort
+      // best-effort: without a root, isolate-home and temp-config fall back to their own directories as before
+    }
+  }
+  return () => {
+    for (const root of created) {
+      try {
+        fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 })
+      } catch {
+        // best-effort
+      }
     }
   }
 }
