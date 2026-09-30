@@ -1576,6 +1576,33 @@ describe('note command', () => {
     expect(rGet.stdout.trim()).toBe('hello')
   })
 
+  it('set over an existing key prints the value it replaced, and a repeat of the same value prints nothing extra', async () => {
+    // HAND-DERIVED: the old value is the one set a moment earlier; before this, an overwrite printed only the new value and the old finding was gone with no trace.
+    await run(['note', 'set', 'overwritten', 'first finding'], { env: noteEnv, cwd: ROOT })
+    const r = await run(['note', 'set', 'overwritten', 'second finding'], { env: noteEnv, cwd: ROOT })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toBe('Set: overwritten = second finding\nReplaced the previous value: first finding\n')
+    const same = await run(['note', 'set', 'overwritten', 'second finding'], { env: noteEnv, cwd: ROOT })
+    expect(same.stdout).toBe('Set: overwritten = second finding\n')
+  })
+
+  it('set past the 30-note limit names the note it removed', async () => {
+    // HAND-DERIVED: MAX_ENTRIES is 30 and the oldest note goes first, so the 31st set evicts the first one set. Keys count down so that two sets landing in the same millisecond, which the eviction breaks by key order, still put the first one set last.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-note-evict-'))
+    try {
+      const env = isolatedEnv(home)
+      for (let i = 29; i >= 0; i--) {
+        const r = await run(['note', 'set', `n${String(i).padStart(2, '0')}`, 'v'], { env, cwd: ROOT })
+        expect(r.stdout, `set n${i} evicted nothing yet`).not.toContain('Removed')
+      }
+      const r = await run(['note', 'set', 'latest', 'v'], { env, cwd: ROOT })
+      expect(r.status, r.stderr).toBe(0)
+      expect(r.stdout).toBe('Set: latest = v\nRemoved the oldest note to stay within 30: n29\n')
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
   it('list shows all stored keys', async () => {
     await run(['note', 'set', 'k1', 'v1'], { env: noteEnv, cwd: ROOT })
     await run(['note', 'set', 'k2', 'v2'], { env: noteEnv, cwd: ROOT })

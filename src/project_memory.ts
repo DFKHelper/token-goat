@@ -5,10 +5,11 @@ import * as path from 'node:path';
 
 import { dataDir } from './constants.js';
 import { findProject } from './project.js';
+import { fenceUntrustedFileContent } from './injection_scan.js';
 import { formatAge } from './skill_cache.js';
 import { atomicWriteText, ensureDirSync, LOCK_WAIT_MS_HARDENED, sleepSync, withFileLock, withRetryOnLock } from './util.js';
 
-const MAX_ENTRIES = 30;
+export const MAX_ENTRIES = 30;
 const MAX_VALUE_LEN = 300;
 const MAX_TOTAL_CHARS = 4000;
 const KEY_RE = /^[A-Za-z0-9_-]{1,80}$/;
@@ -159,17 +160,27 @@ function byRecency(a: string, aSetAt: string | undefined, b: string, bSetAt: str
   return ta !== tb ? (ta > tb ? -1 : 1) : ordinal(a, b);
 }
 
+/** What a `note set` displaced: the key's old value when it already existed, and the keys evicted to stay within MAX_ENTRIES. */
+export interface SetResult {
+  previous?: string;
+  evicted: string[];
+}
+
 /** Set key to value in this project's memory, stamped with the current time. Enforces MAX_ENTRIES by evicting the oldest-set entries to make room for new entries; undated entries count as older than any dated one, and among them the alphabetically last goes first. */
-export function setEntry(projectHash: string, key: string, value: string): void {
+export function setEntry(projectHash: string, key: string, value: string): SetResult {
   validateKey(key);
   const p = memoryPath(projectHash);
   const dir = path.dirname(p);
   ensureDirSync(dir);
 
   // load-modify-save is a read-modify-write race: two concurrent `token-goat note` calls for the same project could each read the same pre-write state and the second save() would silently clobber the first's entry. Lock the critical section, same as session_store.ts's saveSessionState and config_commands.ts's `config set`, through {@link underNotesLock}, which refuses rather than run the update unlocked. withFileLock returns `undefined` both when fn() could not be run (lock unobtainable) and, indistinguishably, when fn() itself legitimately returns undefined -- so fn must return a non-undefined sentinel or a successful run is misread as a failed acquire and re-run a second time (doubling every write). Mirrors session_store.ts's writeMerged: (): true.
+  const result: SetResult = { evicted: [] };
   const doSet = (): true => {
     const setAt = new Map<string, string>();
     const entries = loadRaw(p, true, setAt);
+    // Read under the lock, so the value reported as replaced is the one this write actually overwrote, even when another process set the key a moment earlier.
+    const old = Object.hasOwn(entries, key) ? entries[key] : undefined;
+    if (old !== undefined) result.previous = old;
 
     // If this is a new key and we're at capacity, evict the oldest-set entries to make room: the same notes buildInjection's newest-first order would omit first at its size cap.
     const isNewKey = !Object.hasOwn(entries, key);
@@ -177,6 +188,7 @@ export function setEntry(projectHash: string, key: string, value: string): void 
       const keysToKeep = MAX_ENTRIES - 1;
       const allKeys = Object.keys(entries).sort((a, b) => byRecency(a, setAt.get(a), b, setAt.get(b)));
       for (const k of allKeys.slice(keysToKeep)) {
+        result.evicted.push(k);
         delete entries[k];
         setAt.delete(k);
       }
@@ -188,6 +200,7 @@ export function setEntry(projectHash: string, key: string, value: string): void 
     return true;
   };
   underNotesLock(p, doSet);
+  return result;
 }
 
 /** Run a load-modify-save of the notes file at `p` holding its lock, or throw having changed nothing. withFileLock answers `undefined` both for a lock it waited on and never got and for one it could not create at all, and these updates used to run anyway on that answer: the unlocked read-modify-write the lock exists to prevent, where a concurrent writer's note is lost to whichever save lands last. A lock that could not be created is retried briefly, since a scanner holding the directory entry fails the create for a moment; a lock still held by a live process after the long wait is not, because waiting again would not change the answer. */
@@ -241,36 +254,27 @@ export function buildInjection(projectHash: string): string | null {
     const now = Date.now();
 
     const header = '### Project notes (`token-goat note set <key> "<finding>"`)';
-    const lines: string[] = [header];
-    let total = header.length;
+    // The notes are fenced as data: anything that can write the notes file (a repo script, a tool the agent ran, a hand edit) otherwise speaks in the session's own voice at every start. The header and the trailer are token-goat's words and stay outside the fence.
+    const render = (shown: string[], skipped: number): string => {
+      const parts = [header];
+      if (shown.length > 0) parts.push(fenceUntrustedFileContent(shown.join('\n')));
+      if (skipped > 0) parts.push(`- (+${skipped} more memory entries omitted)`);
+      return parts.join('\n');
+    };
 
     // Newest-set first, undated after in ordinal order, so the size cap below omits the oldest notes, the ones setEntry evicts first. An explicit sort, not raw Object.entries() order: JS engines enumerate canonical-integer-string keys (e.g. "9", "10") in ascending numeric order regardless of insertion order. The age marker is part of each line, so the cap counts it.
     const entries_list = Object.entries(entries).sort(([a, na], [b, nb]) => byRecency(a, na.setAt, b, nb.setAt));
-    // Stop at the first note that does not fit rather than skipping it for a shorter one further down, which would show an older note in place of a newer one. Everything not shown, including notes past the first MAX_ENTRIES of a hand-edited file, is counted in the trailer.
+    // Stop at the first note that does not fit rather than skipping it for a shorter one further down, which would show an older note in place of a newer one. Everything not shown, including notes past the first MAX_ENTRIES of a hand-edited file, is counted in the trailer. Each candidate is measured as the block that would be returned if it were the last note shown -- fence, whatever neutralizing the fence does to a note, and the trailer counting the rest -- so the block returned below is always one already measured against the cap.
+    const shown: string[] = [];
     for (const [key, note] of entries_list.slice(0, MAX_ENTRIES)) {
       const val = note.value;
       const display = val.length <= MAX_VALUE_LEN ? val : val.slice(0, MAX_VALUE_LEN) + '…';
       const line = `- **${key}**${noteAgeLabel(note, now)}: ${display}`;
-      if (total + line.length + 1 > MAX_TOTAL_CHARS) break;
-      lines.push(line);
-      total += line.length + 1;
-    }
-    let skipped = entries_list.length - (lines.length - 1);
-
-    // The trailer itself counts against MAX_TOTAL_CHARS too -- pop entries back off until it fits, so the returned string never exceeds the bound the whole function exists to enforce.
-    if (skipped > 0) {
-      while (
-        lines.length > 1 &&
-        total + `- (+${skipped} more memory entries omitted)`.length + 1 > MAX_TOTAL_CHARS
-      ) {
-        const popped = lines.pop() as string;
-        total -= popped.length + 1;
-        skipped++;
-      }
-      lines.push(`- (+${skipped} more memory entries omitted)`);
+      if (render([...shown, line], entries_list.length - shown.length - 1).length > MAX_TOTAL_CHARS) break;
+      shown.push(line);
     }
 
-    return lines.join('\n');
+    return render(shown, entries_list.length - shown.length);
   } catch {
     return null;
   }

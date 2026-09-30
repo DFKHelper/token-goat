@@ -10,7 +10,7 @@ import { getBashOutput } from './bash_output_cache.js'
 import { loadConfig } from './config.js'
 import { computeAdaptiveBudget, getContextPressure, isNoisePath, loadSessionCache } from './compact.js'
 import { displaySafePath, displaySafeText } from './paths.js'
-import { neutralizeSpokenMarkers } from './injection_scan.js'
+import { neutralizeSpokenMarkers, UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { projectNotesFor } from './project_memory.js'
 
 /** Bound on how long we'll wait for `mem epoch` before giving up -- see {@link buildMemEpochSection}. */
@@ -199,7 +199,20 @@ function capManifestChars(manifest: string, sessionId?: string, cwd?: string, tr
   const effectiveCap = cap + adaptiveCharBonus(sessionId, cwd, transcriptPath)
   if (manifest.length <= effectiveCap) return manifest
   const omitted = manifest.length - effectiveCap
-  return manifest.slice(0, effectiveCap) + `\n...(manifest truncated at ${effectiveCap} chars; ${omitted} chars omitted)`
+  return closeCutFence(manifest.slice(0, effectiveCap)) + `\n...(manifest truncated at ${effectiveCap} chars; ${omitted} chars omitted)`
+}
+
+/** The project notes arrive fenced as data, and the cap can land inside the fence. Left open, the truncation notice and everything after the manifest would read as part of the fenced notes, so a cut fence is closed here; a close tag the cut split in half is dropped first so the fence ends on one whole tag. */
+export function closeCutFence(kept: string): string {
+  const open = `<${UNTRUSTED_FILE_TAG}>`
+  const close = `\n</${UNTRUSTED_FILE_TAG}>`
+  const lastOpen = kept.lastIndexOf(open)
+  if (lastOpen === -1 || kept.includes(close, lastOpen)) return kept
+  let body = kept
+  for (let n = close.length - 1; n > 0; n--) {
+    if (body.endsWith(close.slice(0, n))) { body = body.slice(0, -n); break }
+  }
+  return body + close
 }
 
 /** Build the SAFE_TO_DISCARD manifest section: provably-inert prior context that compaction can drop without losing data, because it is recoverable through an existing recall command. Conservative by construction -- only three classes, each backed by an explicit session-state signal (never inferred): 1. Superseded identical-command bash reruns: a store call this session overwrote an already-cached entry under the exact same command key (see recordBashRerun in session.ts, wired from hooks_bash_post.ts's Item F delta-folding path). The raw transcript copy of the OLDER run is dead -- the surviving cached id already holds the freshest output. 2. File reads superseded by a later Edit/Write/Read of the same file: readCount > 1 (re-read at least once) or wasEdited (the file changed after being read) both mean an earlier textual copy in the transcript no longer reflects the file's current content. 3. Every other bash output still tracked in the session's cache index -- each is recallable verbatim via bash-output <id>, so its inline transcript copy is redundant regardless of whether it was ever rerun. Reruns already itemized under (1) are excluded here to avoid double counting the same command under two headings. Always labels the section with an explicit item count and the recall command needed to get each item's data back -- never implies data is gone, only that the inline copy is a redundant duplicate of something recallable. */

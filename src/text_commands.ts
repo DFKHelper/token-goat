@@ -11,7 +11,7 @@ import { tokenGoatHome } from './disk_cache.js'
 import { ownGet } from './own_lookup.js'
 import { displaySafeText, toDisplayPath, displaySafeJson } from './paths.js'
 import { findProject, getDisplayRoot } from './project.js'
-import { clearAll, loadDatedEntries, loadEntries, noteAgeLabel, setEntry, unsetEntry } from './project_memory.js'
+import { clearAll, loadDatedEntries, loadEntries, MAX_ENTRIES as MAX_NOTE_ENTRIES, noteAgeLabel, setEntry, unsetEntry } from './project_memory.js'
 import { getSessionFiles } from './session.js'
 import { foldPath, requireNonNegativeStrictInt } from './util.js'
 import { suggestPackageNames } from './util_suggest.js'
@@ -538,8 +538,11 @@ export function cmdNote(
     if (key === undefined) throw new Error('note set requires a key')
     if (value === undefined) throw new Error('note set requires a value')
     const hash = resolveProjectHash()
-    setEntry(hash, key, value)
+    const { previous, evicted } = setEntry(hash, key, value)
     process.stdout.write(`Set: ${key} = ${value}\n`)
+    // A note set overwrites without asking, so say what it overwrote: the old finding is otherwise gone with no trace.
+    if (previous !== undefined && previous !== value) process.stdout.write(`Replaced the previous value: ${previous}\n`)
+    for (const k of evicted) process.stdout.write(`Removed the oldest note to stay within ${MAX_NOTE_ENTRIES}: ${k}\n`)
     return
   }
 
