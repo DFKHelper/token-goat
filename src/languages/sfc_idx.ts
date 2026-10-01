@@ -119,6 +119,24 @@ const FUNC_DECL_RE = /^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\
 const CONST_DECL_RE = /^(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*[:=]/
 const CLASS_DECL_RE = /^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/
 
+// Last (1-indexed, script-relative) line of the declaration that starts at `startIdx` (0-indexed) in the string-and-comment-blanked `blanked` lines: the first line where every ( [ { opened since the start is closed again. A declaration that opens nothing, `const x = ref(0)`, ends on its own line, so a following statement's braces can never stretch it (the no-semicolon style has no `;` to stop a forward search). A signature whose `{` sits alone on the next line (Allman) still reaches its body.
+function declarationEndIdx(blanked: readonly string[], startIdx: number): number {
+  let depth = 0
+  for (let j = startIdx; j < blanked.length; j++) {
+    const line = blanked[j] ?? ''
+    for (const ch of line) {
+      if (ch === '(' || ch === '[' || ch === '{') depth++
+      else if (ch === ')' || ch === ']' || ch === '}') depth--
+    }
+    if (depth > 0) continue
+    let k = j + 1
+    while (k < blanked.length && (blanked[k] ?? '').trim() === '') k++
+    if (j === startIdx && (blanked[k] ?? '').trimStart().startsWith('{')) { j = k - 1; continue }
+    return j
+  }
+  return startIdx
+}
+
 function extractTopLevelDeclarations(
   scriptContent: string,
   filePath: string,
@@ -128,6 +146,7 @@ function extractTopLevelDeclarations(
   const commentFree = stripJsComments(scriptContent)
   // Blank string/template-literal BODIES across the whole script before splitting, so a brace inside a multi-line backtick template literal never moves the depth counter and a declaration-shaped line inside one is never indexed as a real declaration. The per-line stripStringLiterals this used to call cannot see that a backtick span opened on an earlier line, so an unbalanced `{` inside one pinned depth above 0 and silently dropped every later top-level declaration.
   const lines = blankJsStringLiterals(commentFree).split('\n')
+  const rawLines = scriptContent.split('\n')
   let depth = 0
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
@@ -135,16 +154,14 @@ function extractTopLevelDeclarations(
     if (depth === 0 && trimmed) {
       const line = startLine + i
       const fm = FUNC_DECL_RE.exec(trimmed)
-      if (fm?.[1]) {
-        symbols.push(makeLineSymbol(filePath, fm[1], 'sfc_script_function', line))
-      } else {
-        const cm = CONST_DECL_RE.exec(trimmed)
-        if (cm?.[1]) {
-          symbols.push(makeLineSymbol(filePath, cm[1], 'sfc_script_const', line))
-        } else {
-          const clm = CLASS_DECL_RE.exec(trimmed)
-          if (clm?.[1]) symbols.push(makeLineSymbol(filePath, clm[1], 'sfc_script_class', line))
-        }
+      const cm = fm ? null : CONST_DECL_RE.exec(trimmed)
+      const clm = fm || cm ? null : CLASS_DECL_RE.exec(trimmed)
+      const name = fm?.[1] ?? cm?.[1] ?? clm?.[1]
+      if (name) {
+        const kind = fm ? 'sfc_script_function' : cm ? 'sfc_script_const' : 'sfc_script_class'
+        const sym = makeLineSymbol(filePath, name, kind, line)
+        const endIdx = declarationEndIdx(lines, i)
+        symbols.push(endIdx > i ? { ...sym, lineEnd: startLine + endIdx, body: rawLines.slice(i, endIdx + 1).join('\n') } : sym)
       }
     }
     depth += (rawLine.match(/\{/g) ?? []).length - (rawLine.match(/\}/g) ?? []).length

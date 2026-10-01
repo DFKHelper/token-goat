@@ -152,8 +152,8 @@ describe('vue adapter', () => {
 
     const byName = (name: string) => symbols.find((s) => s.name === name)
     expect(byName('count')).toMatchObject({ kind: 'sfc_script_const', lineStart: 5, lineEnd: 5 })
-    expect(byName('increment')).toMatchObject({ kind: 'sfc_script_function', lineStart: 7, lineEnd: 7 })
-    expect(byName('Logger')).toMatchObject({ kind: 'sfc_script_class', lineStart: 11, lineEnd: 11 })
+    expect(byName('increment')).toMatchObject({ kind: 'sfc_script_function', lineStart: 7, lineEnd: 9 })
+    expect(byName('Logger')).toMatchObject({ kind: 'sfc_script_class', lineStart: 11, lineEnd: 15 })
 
     // `log` is a method nested inside the Logger class body, not a top-level declaration.
     expect(byName('log')).toBeUndefined()
@@ -471,5 +471,58 @@ describe('top-level declaration brace counting', () => {
     )
     expect(names, `${ext}: ${names.join(', ')}`).not.toContain('nestedConst')
     expect(names, `${ext}: ${names.join(', ')}`).not.toContain('nestedFn')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Multi-line script symbol spans
+// ---------------------------------------------------------------------------
+
+// PROVENANCE: HAND-DERIVED. Every expected span is counted from the fixture text above or below, line by line, independently of the extractor.
+describe('script symbols span their whole declaration', () => {
+  it('svelte: a function spans from its signature to its closing brace', () => {
+    const { symbols } = extractSvelte(SVELTE_CONTENT, 'Widget.svelte')
+    const handle = symbols.find((s) => s.name === 'handleClick')
+    expect(handle).toMatchObject({ lineStart: 9, lineEnd: 11 })
+    expect(handle?.body).toBe('  function handleClick() {\n    count += 1\n  }')
+    // Single-line declarations stay one line.
+    expect(symbols.find((s) => s.name === 'label')).toMatchObject({ lineStart: 13, lineEnd: 13 })
+    expect(symbols.find((s) => s.name === 'MODULE_CONST')).toMatchObject({ lineStart: 2, lineEnd: 2 })
+  })
+
+  it('astro: a frontmatter function spans to its closing brace', () => {
+    const { symbols } = extractAstro(ASTRO_CONTENT, 'Home.astro')
+    const greet = symbols.find((s) => s.name === 'greet')
+    expect(greet).toMatchObject({ lineStart: 6, lineEnd: 8 })
+    expect(greet?.body).toBe("function greet(name) {\n  return 'hi ' + name\n}")
+    expect(symbols.find((s) => s.name === 'title')).toMatchObject({ lineStart: 4, lineEnd: 4 })
+  })
+
+  it('vue: an arrow function block spans to its closing brace', () => {
+    const content = ['<script setup>', 'const f = () => {', '  return 1', '}', '</script>', ''].join('\n')
+    expect(extractVue(content, 'A.vue').symbols.find((s) => s.name === 'f')).toMatchObject({ lineStart: 2, lineEnd: 4 })
+  })
+
+  it('vue: a last const before the closing script tag stays single-line even when the template holds braces', () => {
+    const content = ['<script setup>', 'const x = ref(0)', '</script>', '', '<template>', '  <p>{{ x }}</p>', '  <i>{{ y }}</i>', '</template>', ''].join('\n')
+    expect(extractVue(content, 'B.vue').symbols.find((s) => s.name === 'x')).toMatchObject({ lineStart: 2, lineEnd: 2 })
+  })
+
+  it.each(SFC_FORMATS)('%s: a closing brace inside a template literal does not end the span', (ext, extract) => {
+    const content = wrapScript(ext, ['function build() {', '  const t = `}`', '  return t', '}'])
+    const build = extract(content, `C.${ext}`).symbols.find((s) => s.name === 'build')
+    expect(build?.lineEnd).toBe((build?.lineStart ?? 0) + 3)
+  })
+
+  it('vue: a semicolon-free const is not stretched over the next statement block', () => {
+    const content = ['<script setup>', 'const a = ref(0)', 'watch(a, () => {', '  go()', '})', '</script>', ''].join('\n')
+    expect(extractVue(content, 'D.vue').symbols.find((s) => s.name === 'a')).toMatchObject({ lineStart: 2, lineEnd: 2 })
+  })
+
+  it('keeps CRLF files line-aligned', () => {
+    const content = VUE_CONTENT.replace(/\n/g, '\r\n')
+    const { symbols } = extractVue(content, 'MyButtonPanel.vue')
+    expect(symbols.find((s) => s.name === 'increment')).toMatchObject({ lineStart: 7, lineEnd: 9 })
+    expect(symbols.find((s) => s.name === 'Logger')).toMatchObject({ lineStart: 11, lineEnd: 15 })
   })
 })
