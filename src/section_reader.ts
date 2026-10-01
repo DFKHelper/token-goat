@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { buildLineIndex, offsetToLine, findHtmlHeadingMatches } from './languages/common.js'
 import { eachUnfencedLine } from './markdown_lines.js'
+import { frontMatterEndIndex } from './markdown_frontmatter.js'
 import { detectLanguage, refineLanguageByContent } from './parser_types.js'
 import { decodeSource } from './util.js'
 import { yamlOpenQuoteAfter, yamlLineClosesQuote, lineOpenDelimiterAfter, tomlBracketDelta, stripTomlComment } from './parser.js'
@@ -150,7 +151,9 @@ const ENV_KEYVALUE_HEADER_RE = /^(?:export\s+)?([A-Za-z_][\w.-]*)\s*(?:=|:(?!\/\
  */
 export function findMarkdownHeaders(lines: readonly string[]): SectionHeader[] {
   const headers: SectionHeader[] = []
-  const unfenced = Array.from(eachUnfencedLine(lines))
+  // Front matter is metadata, not prose: start after it so its closing fence cannot underline a key as a setext heading.
+  const fmEnd = frontMatterEndIndex(lines)
+  const unfenced = Array.from(eachUnfencedLine(lines)).filter(([i]) => i >= fmEnd)
 
   for (let u = 0; u < unfenced.length; u++) {
     const [i, line] = unfenced[u]!

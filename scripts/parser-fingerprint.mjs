@@ -26,6 +26,7 @@ const DECISION_SOURCES = [
   path.join(ROOT, 'src', 'language_specs.ts'),
   path.join(ROOT, 'src', 'doc_comment.ts'),
   path.join(ROOT, 'src', 'markdown_lines.ts'),
+  path.join(ROOT, 'src', 'markdown_frontmatter.ts'),
   path.join(ROOT, 'src', 'section_reader.ts'),
   path.join(ROOT, 'src', 'encoding.ts'),
   path.join(ROOT, 'src', 'constants.ts'),
@@ -182,6 +183,7 @@ export function embedFingerprintSources() {
     path.join(ROOT, 'src', 'ooxml_extract.ts'),
     path.join(ROOT, 'src', 'xml_parser.ts'),
     path.join(ROOT, 'src', 'markdown_lines.ts'),
+    path.join(ROOT, 'src', 'markdown_frontmatter.ts'),
     path.join(ROOT, 'src', 'hints', 'markdown_hints.ts'),
     path.join(ROOT, 'src', 'encoding.ts'),
     path.join(ROOT, 'src', 'dotenv_redact.ts'),
@@ -203,7 +205,7 @@ export function embedKindSources() {
   const ooxml = [src('ooxml_extract.ts'), src('xml_parser.ts'), src('zip_bounds.ts')]
   return new Map([
     ['docx', [src('docx_extract.ts'), ...ooxml]],
-    ['markdown', [src('hints', 'markdown_hints.ts')]],
+    ['markdown', [src('hints', 'markdown_hints.ts'), src('markdown_frontmatter.ts')]],
     ['pdf', [src('pdf_extract.ts')]],
     ['pptx', [src('pptx_extract.ts'), ...ooxml]],
     ['xlsx', [src('xlsx_extract.ts'), src('xlsx_reader.ts'), ...ooxml]],

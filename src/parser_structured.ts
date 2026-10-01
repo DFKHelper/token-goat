@@ -6,6 +6,7 @@
 import { precedingDocComment, type DocCommentStyle } from './doc_comment.js'
 import { stripCstyleComments, stripStringLiterals } from './languages/common.js'
 import { eachUnfencedLine } from './markdown_lines.js'
+import { frontMatterEndIndex } from './markdown_frontmatter.js'
 import type { SymbolEntry } from './parser_types.js'
 
 /**
@@ -95,7 +96,9 @@ function countNewlines(s: string): number {
 export function extractMarkdownSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)
-  const unfenced = Array.from(eachUnfencedLine(lines))
+  // Front matter is metadata, not prose: start after it so its closing fence cannot underline a key as a setext heading.
+  const fmEnd = frontMatterEndIndex(lines)
+  const unfenced = Array.from(eachUnfencedLine(lines)).filter(([i]) => i >= fmEnd)
 
   for (let u = 0; u < unfenced.length; u++) {
     const [i, line] = unfenced[u]!

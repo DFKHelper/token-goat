@@ -4,7 +4,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
-Upgrading reparses the index. The file-lock fix below is in a file the parser fingerprint covers, so the parser stamp moves for every language and each file is read once more, although nothing a parse extracts has changed. Embeddings are untouched and keep serving throughout.
+Upgrading reparses the index. The file-lock fix below is in a file the parser fingerprint covers, so the parser stamp moves for every language and each file is read once more, although nothing a parse extracts has changed. Markdown files are re-embedded once, because a document that opens with a front-matter block now has different heading boundaries; every other embedding is untouched and keeps serving throughout.
 
 ### Added
 
@@ -173,6 +173,7 @@ Upgrading reparses the index. The file-lock fix below is in a file the parser fi
 - **A failed write while switching embedding runtimes no longer leaves old and new vectors mixed.** When the database was busy at the moment token-goat noticed the embedding runtime had changed, the check was remembered as done even though the new runtime was never recorded, so a long-running worker went on comparing new query vectors against old stored ones. The reset and the record of the new runtime are now written together, and a failed write is retried on the next use.
 - **`THIRD_PARTY_NOTICES.md` names the exact release of every package the bundle includes, nested copies too.** It looked each package up by name at the top of `node_modules`, so it listed the wrong `onnxruntime-common` release and left out the `entities` 7.0.1 a parser brings along.
 - **An archived changelog entry gave `onnxruntime-node`'s installed size as 34 MB.** It is about 288 MB, every platform's binaries included.
+- **Front matter at the top of a markdown file is no longer indexed as a heading.** A Jekyll block like the one that opens README.md ends in a `---` line, and the heading scanners took that line for the underline of a heading. The last metadata key (`permalink: /` in README.md) then showed up as a level 2 heading ahead of the real title in `outline`, `section` and read hints. The scanners now start after the front matter. An opening `---` with no closing one is not treated as front matter.
 
 ## [2.9.29] - 2026-09-25
 

@@ -105,3 +105,36 @@ describe('the three markdown setext scanners agree', () => {
     expect(setextLinesFromSymbols()).toEqual([1, 4])
   })
 })
+
+/** Every 1-based heading line each scanner reports, ATX and setext alike. */
+function allHeadingLines(doc: string): { symbols: number[]; sections: number[]; hints: number[] } {
+  const asc = (xs: number[]): number[] => [...xs].sort((a, b) => a - b)
+  return {
+    symbols: asc(extractMarkdownSymbols(doc, 'doc.md').map((s) => s.lineStart)),
+    sections: asc(findMarkdownHeaders(doc.split('\n')).map((h) => h.index + 1)),
+    hints: asc(extractMarkdownHeadings(doc, Infinity).map((h) => h.lineNumber)),
+  }
+}
+
+describe('YAML front matter is not scanned for headings', () => {
+  // Fixture provenance: HAND-DERIVED from the Jekyll front-matter rule (a leading `---` block closed by `---` or `...` is metadata) and the CommonMark setext rule, which would otherwise read the line above the closing `---` as a heading.
+  it('reports only the real heading after a closed front-matter block, in all three scanners', () => {
+    const doc = ['---', '# yaml comment', 'key: v', '---', '', '# Real'].join('\n')
+    expect(allHeadingLines(doc)).toEqual({ symbols: [6], sections: [6], hints: [6] })
+  })
+
+  it('does not read lines inside a block closed by `...` fence as a setext heading', () => {
+    const doc = ['---', '# c', 'key: v', '...', '', '# Real'].join('\n')
+    expect(allHeadingLines(doc)).toEqual({ symbols: [6], sections: [6], hints: [6] })
+  })
+
+  it('treats an unclosed leading fence as no front matter', () => {
+    const doc = ['---', 'Para', '', '# H'].join('\n')
+    expect(allHeadingLines(doc)).toEqual({ symbols: [4], sections: [4], hints: [4] })
+  })
+
+  it('only honours a fence on line 1', () => {
+    const doc = ['# Top', '---', 'Para', '---', '', '# Later'].join('\n')
+    expect(allHeadingLines(doc).symbols).toEqual([1, 3, 6])
+  })
+})

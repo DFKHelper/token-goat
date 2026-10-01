@@ -6,6 +6,7 @@
  */
 
 import { eachUnfencedLine } from '../markdown_lines.js'
+import { frontMatterEndIndex } from '../markdown_frontmatter.js'
 import { displaySafeText } from '../paths.js'
 
 /** Extract markdown headings (H1-H3 by default; H1-H6 when `limit` is Infinity) with their byte offsets */
@@ -35,7 +36,9 @@ const MAX_OUTPUT_LINES = 60
 export function extractMarkdownHeadings(content: string, limit: number = MAX_HEADINGS): MarkdownHeading[] {
   const headings: MarkdownHeading[] = []
   const lines = content.split('\n')
-  const unfenced = Array.from(eachUnfencedLine(lines))
+  // Front matter is metadata, not prose: start after it so its closing fence cannot underline a key as a setext heading.
+  const fmEnd = frontMatterEndIndex(lines)
+  const unfenced = Array.from(eachUnfencedLine(lines)).filter(([i]) => i >= fmEnd)
 
   for (let u = 0; u < unfenced.length; u++) {
     const [i, line] = unfenced[u]!

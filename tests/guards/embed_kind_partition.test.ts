@@ -3,7 +3,7 @@
  *
  * EMBED_FINGERPRINT was one digest over every embedding-decision source, so an edit to `pdf_extract.ts` -- which can only change how a PDF's bytes become chunk text -- re-embedded every TypeScript, Python and Markdown file on the machine. Splitting it per kind is only sound while one property holds: every source that can decide WHICH chunker a file goes through stays global. That is the whole safety argument for ever skipping a re-embed, since a file can only become a document extractor's business through a classification change, and a classification change has to move the digest of every kind at once. Narrowing one of those into a kind bucket would break the argument silently -- nothing fails, files just keep vectors built by code that no longer describes them.
  *
- * Provenance: HAND-DERIVED. The six sources pinned below are the intersection of `embedFingerprintSources()` and `sharedExtractionSources()`, computed here from those two functions rather than copied from either list, so the pin cannot drift into agreeing with a narrowing that moved one of them. `languages/ini_idx.ts` is in that set and reads like a kind-specific file; it is not, which is the specific mistake this guard exists to catch.
+ * Provenance: HAND-DERIVED. The seven sources pinned below are the intersection of `embedFingerprintSources()` and `sharedExtractionSources()`, computed here from those two functions rather than copied from either list, so the pin cannot drift into agreeing with a narrowing that moved one of them. `languages/ini_idx.ts` is in that set and reads like a kind-specific file; it is not, which is the specific mistake this guard exists to catch.
  */
 import * as path from 'node:path'
 
@@ -48,11 +48,14 @@ describe('the embed fingerprint partition', () => {
       'src/language_specs.ts',
       'src/languages/ini_idx.ts',
       'src/languages/sniff.ts',
+      'src/markdown_frontmatter.ts',
       'src/markdown_lines.ts',
       'src/parser_types.ts',
     ])
     const owned = kindOwned()
-    const narrowed = classifiers.filter((f) => owned.has(f)).map((f) => `${f} (narrowed to ${owned.get(f)})`)
+    // markdown_frontmatter.ts is shared with the parser only because both read where front matter ends; it takes a line array and returns an index, so it cannot send a file to a different chunker and may sit in the markdown kind's digest.
+    const cannotReclassify = new Set(['src/markdown_frontmatter.ts'])
+    const narrowed = classifiers.filter((f) => owned.has(f) && !cannotReclassify.has(f)).map((f) => `${f} (narrowed to ${owned.get(f)})`)
     expect(narrowed, `these sources decide how a file is classified for extraction and were narrowed into one kind's digest, which breaks the only argument for skipping a re-embed -- a change that sends a file to a different chunker must move every kind's digest: ${narrowed.join(', ')}`).toEqual([])
   })
 
