@@ -353,6 +353,7 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
     .command('json-query <file> <path>')
     .description(
       "extract one value or a projected/filtered subset from a JSON document by dot-path instead of a raw Read\n\n" +
+        "file: path to a JSON document or - to read from stdin\n\n" +
         "path grammar: dot-separated keys with optional bracket segments -- [n] index, [*] wildcard " +
         '(projects every element/value), [field=value] filter (keeps array elements whose field ' +
         "stringifies to value), [\"key\"] for a key holding a dot or space. Examples: data.items[3].name, items[*].id, items[status=active], [\"a.b\"].c",
@@ -372,6 +373,7 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
     .command('yaml-query <file> <path>')
     .description(
       "extract one value or a projected/filtered subset from a YAML document by dot-path instead of a raw Read (same grammar as json-query)\n\n" +
+        "file: path to a YAML document or - to read from stdin\n\n" +
         "path grammar: dot-separated keys with optional bracket segments -- [n] index, [*] wildcard " +
         '(projects every element/value), [field=value] filter (keeps array elements whose field ' +
         "stringifies to value), [\"key\"] for a key holding a dot or space. Examples: spec.containers[0].image, items[*].name, items[kind=Service]",
@@ -392,6 +394,7 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
     .command('xml-query <file> [path]')
     .description(
       "extract elements or attributes from an XML document by tag path or XPath expression instead of a raw Read\n\n" +
+        "file: path to an XML document or - to read from stdin\n\n" +
         "path grammar: slash- or dot-separated tag names with optional bracket segments and attribute selectors -- " +
         "[n] index, [*] wildcard, [@attr] or [@attr=value] filter, and trailing @attr to extract attribute value. " +
         "Bracket clauses stack and apply left to right, so an index after a filter counts within the filtered set. " +

@@ -1,3 +1,4 @@
+import * as fs from 'fs'
 import { loadAll as loadAllYaml } from 'js-yaml'
 
 import { formatCsvProfile, formatCsvTable, parseWhereSpecs, profileCsv, queryCsv } from './csv_query.js'
@@ -188,6 +189,22 @@ export interface JsonQueryCliOptions {
   json?: boolean
 }
 
+function readQueryInput(file: string): string | null {
+  if (file === '-') {
+    if (process.stdin.isTTY) {
+      emitErr('stdin is a terminal: pipe a document in or pass a file')
+      return null
+    }
+    try {
+      return fs.readFileSync(0, 'utf8')
+    } catch (e) {
+      emitErr(`Could not read stdin: ${e instanceof Error ? e.message : String(e)}`)
+      return null
+    }
+  }
+  return readFileText(file)
+}
+
 function runQueryCommand(
   opts: JsonQueryCliOptions,
   parse: (text: string) => unknown,
@@ -195,9 +212,11 @@ function runQueryCommand(
   guardTag: string,
   kind: string,
 ): number {
-  const text = readFileText(opts.file)
+  const text = readQueryInput(opts.file)
   if (text === null) {
-    emitErr(`Could not read: ${opts.file}`)
+    if (opts.file !== '-') {
+      emitErr(`Could not read: ${opts.file}`)
+    }
     return 1
   }
 
@@ -219,13 +238,14 @@ function runQueryCommand(
 
   try {
     const result = queryJson(data, opts.path)
-    const fullSourceBytes = sumFileSizes([opts.file])
+    const fullSourceBytes = opts.file === '-' ? Buffer.byteLength(text) : sumFileSizes([opts.file])
+    const detail = opts.file === '-' ? '<stdin>' : opts.file
 
     if (!result.fanned) {
       const value = result.items[0]
       const valueText = opts.json === true ? displaySafeJson(value, 0) : displaySafeJson(value)
       emit(valueText)
-      recordReadStat(kind, fullSourceBytes, valueText, opts.file)
+      recordReadStat(kind, fullSourceBytes, valueText, detail)
       return 0
     }
 
@@ -237,7 +257,7 @@ function runQueryCommand(
       const capped = guardJsonRows(limited)
       const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated || result.truncated, totalCount }, 0)
       emit(jsonText)
-      recordReadStat(kind, fullSourceBytes, jsonText, opts.file)
+      recordReadStat(kind, fullSourceBytes, jsonText, detail)
     } else {
       const lines = limited.map((item) => displaySafeJson(item, 0))
       if (headTruncated) {
@@ -248,7 +268,7 @@ function runQueryCommand(
       }
       const plainText = lines.join('\n')
       emitGuarded(plainText, guardTag)
-      recordReadStat(kind, fullSourceBytes, plainText, opts.file)
+      recordReadStat(kind, fullSourceBytes, plainText, detail)
     }
     return 0
   } catch (e) {
@@ -343,9 +363,11 @@ export interface XmlQueryCliOptions {
 }
 
 export function runXmlQuery(opts: XmlQueryCliOptions): number {
-  const text = readFileText(opts.file)
+  const text = readQueryInput(opts.file)
   if (text === null) {
-    emitErr(`Could not read: ${opts.file}`)
+    if (opts.file !== '-') {
+      emitErr(`Could not read: ${opts.file}`)
+    }
     return 1
   }
 
@@ -365,14 +387,15 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
 
   try {
     const result = queryXml(text, queryPath, { ...(opts.xpath !== undefined ? { xpath: opts.xpath } : {}) })
-    const fullSourceBytes = sumFileSizes([opts.file])
+    const fullSourceBytes = opts.file === '-' ? Buffer.byteLength(text) : sumFileSizes([opts.file])
+    const detail = opts.file === '-' ? '<stdin>' : opts.file
 
     if (result.attributeValues !== undefined) {
       if (result.attributeValues.length === 0) {
         if (opts.json === true) {
           const jsonText = displaySafeJson({ items: [], truncated: false, totalCount: 0 }, 0)
           emit(jsonText)
-          recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
+          recordReadStat('xml_query', fullSourceBytes, jsonText, detail)
         } else {
           emit(`No attributes matched path: '${displaySafeText(queryPath)}'`)
         }
@@ -413,7 +436,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
           }
         }
         emit(outText)
-        recordReadStat('xml_query', fullSourceBytes, outText, opts.file)
+        recordReadStat('xml_query', fullSourceBytes, outText, detail)
         return 0
       }
 
@@ -444,7 +467,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
           0,
         )
         emit(jsonText)
-        recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
+        recordReadStat('xml_query', fullSourceBytes, jsonText, detail)
       } else {
         const lines: string[] = []
         for (let i = 0; i < limited.length; i++) {
@@ -465,7 +488,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
         }
         const plainText = lines.join('\n')
         emitGuarded(plainText, 'xml-query')
-        recordReadStat('xml_query', fullSourceBytes, plainText, opts.file)
+        recordReadStat('xml_query', fullSourceBytes, plainText, detail)
       }
       return 0
     }
@@ -474,7 +497,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
       if (opts.json === true) {
         const jsonText = displaySafeJson({ items: [], truncated: false, totalCount: 0 }, 0)
         emit(jsonText)
-        recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
+        recordReadStat('xml_query', fullSourceBytes, jsonText, detail)
       } else {
         emit(`No elements matched path: '${displaySafeText(queryPath)}'`)
       }
@@ -490,7 +513,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
         })
         const jsonText = displaySafeJson(jsonVal)
         emit(jsonText)
-        recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
+        recordReadStat('xml_query', fullSourceBytes, jsonText, detail)
       } else {
         let xmlText = serializeXmlNode(
           node,
@@ -501,7 +524,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
           xmlText = `# Lines: L${node.line}-L${node.lineEnd}\n${xmlText}`
         }
         emitGuarded(xmlText, 'xml-query')
-        recordReadStat('xml_query', fullSourceBytes, xmlText, opts.file)
+        recordReadStat('xml_query', fullSourceBytes, xmlText, detail)
       }
       return 0
     }
@@ -523,7 +546,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
         0,
       )
       emit(jsonText)
-      recordReadStat('xml_query', fullSourceBytes, jsonText, opts.file)
+      recordReadStat('xml_query', fullSourceBytes, jsonText, detail)
     } else {
       const blocks = limited.map((node) => {
         let block = serializeXmlNode(
@@ -541,7 +564,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
       }
       const plainText = blocks.join('\n')
       emitGuarded(plainText, 'xml-query')
-      recordReadStat('xml_query', fullSourceBytes, plainText, opts.file)
+      recordReadStat('xml_query', fullSourceBytes, plainText, detail)
     }
     return 0
   } catch (e) {
