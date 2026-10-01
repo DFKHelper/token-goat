@@ -12,7 +12,7 @@ import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import { suggestedIndexCommand } from './index_health.js'
 import { projectScopeClause } from './sql_path.js'
-import { foldPath, isTestFile } from './util.js'
+import { foldPath, isCaseInsensitiveFs, isTestFile } from './util.js'
 import { displaySafeText, normalizePath, toDisplayPath } from './paths.js'
 import { findClaudeMdFiles } from './cli_context_stats.js'
 
@@ -136,38 +136,46 @@ interface TopSymbolRow {
 /** Fetch headline symbols from the index: ranked by how often they're referenced elsewhere in the project (most-referenced first), with the class/interface/function kind ordering and body length as tie-breaks. Reference count is a much better orientation signal than body length -- a heavily-called function matters more than a long, never-referenced class. Returns `[]` when the index is empty or unavailable so `map` works before any indexing has happened. `global.db` is a single machine-wide index keyed by absolute path across every project ever indexed (see constants.ts), so this query MUST be scoped to `rootDir` via {@link projectScopeClause} -- otherwise `map` mixes in headline symbols from unrelated projects that happen to share the same index. `refs` rows carry only a `name` (no target-symbol column), so the ref count is aggregated once per name in a subquery -- scoped to the same project via `projectScopeClause('file_path')` -- and left-joined onto `symbols`, rather than joining the raw `refs` table per symbol row. */
 /** The exact SQL {@link fetchTopSymbols} runs, exported so its query plan can be asserted against the shipping string rather than a copy retyped in a test -- a copy would keep passing while production silently regressed. See tests/baseline_top_symbols_plan.test.ts. */
 export function buildTopSymbolsSql(): string {
-  const { clause } = projectScopeClause('file_path')
-  const refScope = projectScopeClause('file_path')
+  const { clause } = projectScopeClause('s.file_path')
+  const refScope = projectScopeClause('r.file_path')
+  // The ref-credit join below turns the symbols read into a left-deep join the planner would otherwise start with a full scan of; pin the same path index projectScopeClause's expression matches.
+  const symbolsPathIndex = isCaseInsensitiveFs() ? 'idx_symbols_file_folded' : 'idx_symbols_file'
+  // typescript and javascript share one family (a .js caller really does call a .ts export); every other language matches only itself, so a Rust `join` no longer collects every TS `path.join(`.
+  const family = (col: string): string => `CASE WHEN ${col} IN ('typescript', 'javascript') THEN 'js' ELSE COALESCE(${col}, '') END`
   // refs carry only a bare name, so a name defined N times cannot claim all N copies' references: divide by the number of same-named definitions, and keep one representative per name so a generic helper like `apply` occupies one slot instead of seven.
         // Ranking selects only each body's LENGTH, never its text, and the rowid join pulls bodies back for the `limit` survivors alone. Selecting `body` inside the window query instead makes SQLite carry every symbol's full text (up to boundSymbolBody's 131072 chars) through both window functions before LIMIT discards nearly all of it. Both path filters are range predicates (sql_path.ts), so the planner picks the file_path index on its own and no INDEXED BY override is needed to keep it off a full scan of the machine-wide index. An earlier LIKE-based clause did need one on the refs aggregate, because a LIKE carrying an ESCAPE cannot drive an index at all and the planner then preferred whichever index made GROUP BY sort-free.
   return `SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring, s.parent
          FROM (
            SELECT rid, kind, score, body_len
            FROM (
-             SELECT t.rid, t.name, t.kind, t.body_len,
-                    COALESCE(r.ref_count, 0) * 1.0 / COUNT(*) OVER (PARTITION BY t.name) AS score,
+             SELECT t.rid, t.name, t.kind, t.body_len, t.file_path,
+                    t.ref_count * 1.0 / COUNT(*) OVER (PARTITION BY t.name) AS score,
                     ROW_NUMBER() OVER (
                       PARTITION BY t.name
                       ORDER BY t.body_len DESC, t.file_path
                     ) AS rn
              FROM (
-               SELECT rowid AS rid, file_path, name, kind, LENGTH(COALESCE(body, '')) AS body_len
-               FROM symbols
-               WHERE kind IN ('class', 'function', 'interface') AND ${clause}
-                 AND LENGTH(name) >= 4
-                                                   AND file_path NOT LIKE '%/tests/%' ESCAPE '\\'
-                                                   AND file_path NOT LIKE '%/test/%' ESCAPE '\\'
-                                                   AND file_path NOT LIKE '%/__tests__/%' ESCAPE '\\'
-                                                   AND file_path NOT LIKE '%/spec/%' ESCAPE '\\'
-                 AND file_path NOT LIKE '%.test.%'
-                 AND file_path NOT LIKE '%.spec.%'
+               SELECT d.rid, d.file_path, d.name, d.kind, d.body_len, COUNT(DISTINCT rr.file_path) AS ref_count
+               FROM (
+                 SELECT s.rowid AS rid, s.file_path, s.name, s.kind, LENGTH(COALESCE(s.body, '')) AS body_len,
+                        ${family('(SELECT f.language FROM files f WHERE f.path = s.file_path)')} AS fam
+                 FROM symbols s INDEXED BY ${symbolsPathIndex}
+                 WHERE s.kind IN ('class', 'function', 'interface') AND ${clause}
+                   AND LENGTH(s.name) >= 4
+                   AND s.file_path NOT LIKE '%/tests/%' ESCAPE '\\'
+                   AND s.file_path NOT LIKE '%/test/%' ESCAPE '\\'
+                   AND s.file_path NOT LIKE '%/__tests__/%' ESCAPE '\\'
+                   AND s.file_path NOT LIKE '%/spec/%' ESCAPE '\\'
+                   AND s.file_path NOT LIKE '%.test.%'
+                   AND s.file_path NOT LIKE '%.spec.%'
+               ) d
+               LEFT JOIN (
+                 SELECT DISTINCT r.name AS name, r.file_path AS file_path, ${family('(SELECT rf.language FROM files rf WHERE rf.path = r.file_path)')} AS fam
+                 FROM refs r
+                 WHERE ${refScope.clause}
+               ) rr ON rr.name = d.name AND rr.fam = d.fam AND rr.file_path <> d.file_path
+               GROUP BY d.rid
              ) t
-             LEFT JOIN (
-               SELECT name, COUNT(DISTINCT file_path) AS ref_count
-               FROM refs
-               WHERE ${refScope.clause}
-               GROUP BY name
-             ) r ON r.name = t.name
            )
            WHERE rn = 1
            ORDER BY score DESC,
@@ -228,7 +236,7 @@ export function buildProjectMap(
     })
     .sort((a, b) => b.mtime - a.mtime)
     .slice(0, compact ? 5 : 15)
-    .map((x) => path.relative(root, x.f))
+    .map((x) => path.relative(root, x.f).split(path.sep).join('/'))
 
   return {
     rootDir: root,

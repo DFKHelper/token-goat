@@ -298,8 +298,9 @@ describe('fetchTopSymbols ref-count ranking', () => {
     const insertRef = db.prepare(
       'INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)',
     )
+    // Refs from the defining file do not count, so the callers live in other files.
     for (let i = 0; i < 20; i += 1) {
-      insertRef.run(filePath, 'hotFn', 100 + i, 1, `hotFn(${i})`)
+      insertRef.run(`${normalizePath(root)}/caller${i}.ts`, 'hotFn', 100 + i, 1, `hotFn(${i})`)
     }
     // ColdClass gets zero refs.
 
@@ -343,6 +344,78 @@ describe('fetchTopSymbols ref-count ranking', () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }
+  })
+})
+
+describe('fetchTopSymbols language-family ref counting', () => {
+  // Provenance: HAND-DERIVED. Refs carry bare names, so a TS `path.join(` call site used to be credited to a Rust `fn join`. Scores below are computed by hand from distinct referencing files in the same language family, excluding the defining file.
+  function seed(root: string) {
+    const rootUri = normalizePath(root)
+    const db = getDb(globalDbPath())
+    const addFile = db.prepare('INSERT INTO files (path, sha, mtime, language, indexed_at) VALUES (?, ?, ?, ?, ?)')
+    const addSym = db.prepare('INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    const addRef = db.prepare('INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)')
+    return { rootUri, addFile, addSym, addRef }
+  }
+
+  it('does not credit TypeScript call sites to a same-named Rust definition', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-family-'))
+    const { rootUri, addFile, addSym, addRef } = seed(root)
+    addFile.run(`${rootUri}/native/nodepath.rs`, 'x', 0, 'rust', 0)
+    addSym.run(`${rootUri}/native/nodepath.rs`, 'joinPaths', 'function', 1, 1, 'fn joinPaths() { let a = 1; let b = 2; }', '')
+    addFile.run(`${rootUri}/src/lib.ts`, 'x', 0, 'typescript', 0)
+    addSym.run(`${rootUri}/src/lib.ts`, 'realHelper', 'function', 1, 1, 'function realHelper() {}', '')
+    for (let i = 0; i < 10; i += 1) {
+      addFile.run(`${rootUri}/src/caller${i}.ts`, 'x', 0, 'typescript', 0)
+      addRef.run(`${rootUri}/src/caller${i}.ts`, 'joinPaths', 1, 1, 'path.joinPaths(')
+    }
+    for (let i = 0; i < 3; i += 1) addRef.run(`${rootUri}/src/caller${i}.ts`, 'realHelper', 2, 1, 'realHelper()')
+    try {
+      const names = buildProjectMap(root).topSymbols.map((s) => s.name)
+      expect(names).toEqual(['realHelper', 'joinPaths'])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('still credits a .js caller to a .ts definition (one family)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-family-js-'))
+    const { rootUri, addFile, addSym, addRef } = seed(root)
+    addFile.run(`${rootUri}/a.ts`, 'x', 0, 'typescript', 0)
+    addSym.run(`${rootUri}/a.ts`, 'sharedFn', 'function', 1, 1, 'function sharedFn() {}', '')
+    addSym.run(`${rootUri}/a.ts`, 'otherFn', 'function', 2, 2, 'function otherFn() { return 1 }', '')
+    addFile.run(`${rootUri}/b.js`, 'x', 0, 'javascript', 0)
+    addRef.run(`${rootUri}/b.js`, 'sharedFn', 1, 1, 'sharedFn()')
+    try {
+      const names = buildProjectMap(root).topSymbols.map((s) => s.name)
+      expect(names[0]).toBe('sharedFn')
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not count references made from the defining file itself', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-family-self-'))
+    const { rootUri, addFile, addSym, addRef } = seed(root)
+    addFile.run(`${rootUri}/self.ts`, 'x', 0, 'typescript', 0)
+    addFile.run(`${rootUri}/other.ts`, 'x', 0, 'typescript', 0)
+    addSym.run(`${rootUri}/self.ts`, 'selfOnly', 'function', 1, 1, 'function selfOnly() { return 1 }', '')
+    addSym.run(`${rootUri}/self.ts`, 'usedElsewhere', 'function', 2, 2, 'function usedElsewhere() {}', '')
+    addRef.run(`${rootUri}/self.ts`, 'selfOnly', 5, 1, 'selfOnly()')
+    addRef.run(`${rootUri}/other.ts`, 'usedElsewhere', 1, 1, 'usedElsewhere()')
+    try {
+      const names = buildProjectMap(root).topSymbols.map((s) => s.name)
+      expect(names).toEqual(['usedElsewhere', 'selfOnly'])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('lists recentFiles with forward slashes', () => {
+    write('sub/deep/a.ts', 'export const a = 1\n')
+    const map = buildProjectMap(TMP)
+    expect(map.recentFiles).toContain('sub/deep/a.ts')
+    expect(map.recentFiles.every((f) => !f.includes(String.fromCharCode(92)))).toBe(true)
   })
 })
 

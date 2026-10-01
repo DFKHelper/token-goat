@@ -35,17 +35,17 @@ describe('fetchTopSymbols query plan', () => {
 
   it('searches refs by the project-path index, never scanning refs or the name index', () => {
     const detail = planOfShippingSql()
-    expect(detail).toMatch(new RegExp(`SEARCH refs USING (COVERING )?INDEX ${pathIndex('refs')}`))
+    expect(detail).toMatch(new RegExp(`SEARCH r USING (COVERING )?INDEX ${pathIndex('refs')}`))
     expect(detail).not.toMatch(/refs USING (COVERING )?INDEX idx_refs_name/)
-    expect(detail).not.toMatch(/SCAN refs\b/)
+    expect(detail).not.toMatch(/SCAN (refs|r)\b/)
   })
 
   it('searches symbols by the project-path index rather than scanning the whole table', () => {
     // The symbols side had the same defect and no INDEXED BY override ever covered it: on a global
     // index shared by every project it scanned every symbol row to keep this project's few thousand.
     const detail = planOfShippingSql()
-    expect(detail).toMatch(new RegExp(`SEARCH symbols USING (COVERING )?INDEX ${pathIndex('symbols')}`))
-    expect(detail).not.toMatch(/SCAN symbols\b/)
+    expect(detail).toMatch(new RegExp(`SEARCH s USING (COVERING )?INDEX ${pathIndex('symbols')}`))
+    expect(detail).not.toMatch(/SCAN (symbols|s)\b/)
   })
 
   it('never carries symbol bodies through the ranking window functions', () => {
@@ -59,7 +59,7 @@ describe('fetchTopSymbols query plan', () => {
     const ranking = sql.slice(sql.indexOf('FROM (') + 'FROM ('.length, sql.indexOf(') top'))
     // Computing the length reads the column, which is unavoidable; projecting it is the defect.
     // So the only mention of `body` allowed above the join is inside that LENGTH() call.
-    const withoutLengthCalls = ranking.replaceAll("LENGTH(COALESCE(body, ''))", 'LEN')
+    const withoutLengthCalls = ranking.replaceAll("LENGTH(COALESCE(s.body, ''))", 'LEN')
     expect(withoutLengthCalls).not.toMatch(/\bbody\b/)
     expect(sql).toMatch(/JOIN symbols s ON s\.rowid = top\.rid/)
   })
