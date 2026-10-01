@@ -15,11 +15,11 @@ describe('bootstrap-audit', () => {
     fs.mkdirSync(path.join(home, '.claude', 'skills', 'nested'), { recursive: true })
     fs.writeFileSync(path.join(project, 'CLAUDE.md'), 'project startup guidance\n')
     fs.writeFileSync(path.join(home, '.claude', 'agents', 'small.md'), '---\ndescription: abc\ntools: Read\n---\nSECRET PROMPT BODY\n')
-    fs.writeFileSync(path.join(home, '.claude', 'skills', 'nested', 'large.md'), '---\ndescription: a much larger description\ntools: Read, Write\n---\nSECRET PROMPT BODY\n')
+    fs.writeFileSync(path.join(home, '.claude', 'skills', 'nested', 'SKILL.md'), '---\ndescription: a much larger description\ntools: Read, Write\n---\nSECRET PROMPT BODY\n')
     const result = await buildBootstrapAudit({ project, home, top: 1, failTokens: 0 })
     expect(result.counts.metadata_files).toBe(2)
     expect(result.largest).toHaveLength(1)
-    expect(result.largest[0].path.endsWith('large.md')).toBe(true)
+    expect(result.largest[0].path.endsWith('SKILL.md')).toBe(true)
     expect(result.largest[0]).not.toHaveProperty('body')
     expect(result.budgets.failures).toHaveLength(1)
     fs.rmSync(root, { recursive: true, force: true })
@@ -125,11 +125,56 @@ describe('bootstrap-audit', () => {
     fs.rmSync(root, { recursive: true, force: true })
   })
 
+  // FORMAT-DERIVED: layout from https://code.claude.com/docs/en/skills.md (a skill is <root>/<name>/SKILL.md; project agents live in <project>/.claude/agents).
+  it('counts project agents with project scope', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'token-goat-bootstrap-pagent-'))
+    const project = path.join(root, 'project')
+    const home = path.join(root, 'home')
+    fs.mkdirSync(path.join(project, '.claude', 'agents'), { recursive: true })
+    fs.mkdirSync(home, { recursive: true })
+    fs.writeFileSync(path.join(project, '.claude', 'agents', 'a.md'), '---\ndescription: project agent\n---\nBODY\n')
+    const result = await buildBootstrapAudit({ project, home })
+    expect(result.counts.agents).toBe(1)
+    expect(result.largest[0]?.scope).toBe('project')
+    expect(result.scope_counts.project.agents).toBe(1)
+    expect(result.scope_counts.user.agents).toBe(0)
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it('does not scan project roots when no project is named', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'token-goat-bootstrap-noproj-'))
+    const home = path.join(root, 'home')
+    fs.mkdirSync(home, { recursive: true })
+    const result = await buildBootstrapAudit({ home })
+    expect(result.scope_counts.project).toEqual({ agents: 0, skills: 0 })
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  // FORMAT-DERIVED: same skills.md layout; supporting files and flat .md files are not skills.
+  it('counts only <name>/SKILL.md as skills and flags flat markdown files', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'token-goat-bootstrap-skilllayout-'))
+    const home = path.join(root, 'home')
+    const skills = path.join(home, '.claude', 'skills')
+    fs.mkdirSync(path.join(skills, 'x', 'templates'), { recursive: true })
+    fs.writeFileSync(path.join(skills, 'x', 'SKILL.md'), '---\ndescription: real skill\n---\nBODY\n')
+    fs.writeFileSync(path.join(skills, 'x', 'reference.md'), '---\ndescription: supporting file\n---\nBODY\n')
+    fs.writeFileSync(path.join(skills, 'x', 'templates', 'SKILL.md'), '---\ndescription: nested template\n---\nBODY\n')
+    fs.writeFileSync(path.join(skills, 'y.md'), '---\ndescription: flat file\n---\nBODY\n')
+    const result = await buildBootstrapAudit({ project: root, home })
+    expect(result.counts.skills).toBe(1)
+    expect(result.largest.map((e) => path.basename(e.path))).toEqual(['SKILL.md'])
+    const flagged = result.diagnostics.filter((d) => d.reason.includes('<name>/SKILL.md'))
+    expect(flagged).toHaveLength(1)
+    expect(path.basename(flagged[0].path)).toBe('y.md')
+    expect(result.diagnostics.some((d) => d.path.includes('reference.md'))).toBe(false)
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
   it('emits structured JSON without prompt bodies', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'token-goat-bootstrap-json-'))
     const home = path.join(root, 'home')
-    fs.mkdirSync(path.join(home, '.claude', 'skills'), { recursive: true })
-    fs.writeFileSync(path.join(home, '.claude', 'skills', 'one.md'), '---\ndescription: safe metadata\n---\nPRIVATE PROMPT BODY\n')
+    fs.mkdirSync(path.join(home, '.claude', 'skills', 'one'), { recursive: true })
+    fs.writeFileSync(path.join(home, '.claude', 'skills', 'one', 'SKILL.md'), '---\ndescription: safe metadata\n---\nPRIVATE PROMPT BODY\n')
     const writes: string[] = []
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
       writes.push(String(chunk))

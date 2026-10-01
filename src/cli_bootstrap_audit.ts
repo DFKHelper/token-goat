@@ -21,6 +21,7 @@ export interface BootstrapAuditOptions {
 
 interface MetadataEntry {
   kind: 'agent' | 'skill'
+  scope: 'user' | 'project'
   path: string
   description_bytes: number
   tools_bytes: number
@@ -42,6 +43,7 @@ export interface BootstrapAuditResult {
   metadata_tokens: number
   total_estimated_tokens: number
   counts: { agents: number; skills: number; metadata_files: number }
+  scope_counts: Record<'user' | 'project', { agents: number; skills: number }>
   largest: MetadataEntry[]
   largestTotal: number
   largestTruncated: boolean
@@ -110,6 +112,7 @@ async function readFrontmatter(filePath: string): Promise<{ description: string;
 async function scanMetadataRoot(
   root: string,
   kind: 'agent' | 'skill',
+  scope: 'user' | 'project',
   diagnostics: Diagnostic[],
   visitedDirs = new Set<string>(),
   seenFiles = new Set<string>(),
@@ -137,7 +140,7 @@ async function scanMetadataRoot(
     return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
   }
 
-  async function visit(candidate: string, allowedRoot?: string, topLevel = false): Promise<void> {
+  async function visit(candidate: string, allowedRoot?: string, topLevel = false, depth = 0): Promise<void> {
     let real: string
     let candidateIsLink: boolean
     try {
@@ -173,10 +176,16 @@ async function scanMetadataRoot(
         return
       }
       children.sort((a, b) => a.name.localeCompare(b.name))
-      for (const child of children) await visit(path.join(real, child.name), trustedRoot)
+      // A skill is <root>/<name>/SKILL.md: inside a skill directory only SKILL.md counts, and nothing deeper is a skill.
+      if (kind === 'skill') children = depth === 0 ? children.filter((child) => child.name === 'SKILL.md') : []
+      for (const child of children) await visit(path.join(real, child.name), trustedRoot, false, depth + 1)
       return
     }
     if (!stat.isFile() || path.extname(real).toLowerCase() !== '.md') return
+    if (kind === 'skill' && depth === 0) {
+      diagnostics.push({ path: path.resolve(candidate), reason: 'ignored by Claude Code: a skill must be <name>/SKILL.md' })
+      return
+    }
     if (seenFiles.has(canonical)) return
     seenFiles.add(canonical)
     try {
@@ -186,6 +195,7 @@ async function scanMetadataRoot(
       const toolsBytes = Buffer.byteLength(metadata.tools, 'utf8')
       entries.push({
         kind,
+        scope,
         path: path.resolve(real),
         description_bytes: descriptionBytes,
         tools_bytes: toolsBytes,
@@ -216,8 +226,14 @@ export async function buildBootstrapAudit(opts: BootstrapAuditOptions = {}): Pro
   const top = opts.top === undefined ? 10 : parseBudget('--top', opts.top) ?? 10
   const visitedDirs = new Set<string>()
   const seenFiles = new Set<string>()
-  const agents = await scanMetadataRoot(path.join(claudeConfigDir(home), 'agents'), 'agent', diagnostics, visitedDirs, seenFiles, opts.followLinks === true)
-  const skills = await scanMetadataRoot(path.join(claudeConfigDir(home), 'skills'), 'skill', diagnostics, visitedDirs, seenFiles, opts.followLinks === true)
+  const follow = opts.followLinks === true
+  const userAgents = await scanMetadataRoot(path.join(claudeConfigDir(home), 'agents'), 'agent', 'user', diagnostics, visitedDirs, seenFiles, follow)
+  const userSkills = await scanMetadataRoot(path.join(claudeConfigDir(home), 'skills'), 'skill', 'user', diagnostics, visitedDirs, seenFiles, follow)
+  // Project-level agents and skills load at startup too, but only when the caller named a project.
+  const projectAgents = opts.project === undefined ? [] : await scanMetadataRoot(path.join(project, '.claude', 'agents'), 'agent', 'project', diagnostics, visitedDirs, seenFiles, follow)
+  const projectSkills = opts.project === undefined ? [] : await scanMetadataRoot(path.join(project, '.claude', 'skills'), 'skill', 'project', diagnostics, visitedDirs, seenFiles, follow)
+  const agents = [...userAgents, ...projectAgents]
+  const skills = [...userSkills, ...projectSkills]
   const rankedEntries = [...agents, ...skills]
     .sort((a, b) => b.metadata_bytes - a.metadata_bytes || a.path.localeCompare(b.path))
   // Counted before --top slices. `metadata_bytes` below is already a whole-set aggregate, so the
@@ -248,6 +264,7 @@ export async function buildBootstrapAudit(opts: BootstrapAuditOptions = {}): Pro
     metadata_tokens: Math.floor(metadataBytes / 4),
     total_estimated_tokens: totalTokens,
     counts: { agents: agents.length, skills: skills.length, metadata_files: agents.length + skills.length },
+    scope_counts: { user: { agents: userAgents.length, skills: userSkills.length }, project: { agents: projectAgents.length, skills: projectSkills.length } },
     largest,
     largestTotal,
     largestTruncated: largest.length < largestTotal,
@@ -266,10 +283,12 @@ export async function runBootstrapAudit(opts: BootstrapAuditOptions = {}): Promi
     process.stdout.write(`Claude context: ${result.claude_md_tokens} tok CLAUDE.md + ${result.memory_md_tokens} tok MEMORY.md\n`)
     process.stdout.write(`Agent/skill metadata: ${result.metadata_bytes} bytes (~${result.metadata_tokens} tok)\n`)
     process.stdout.write(`Total estimated startup context: ${result.total_estimated_tokens} tok\n`)
-    process.stdout.write(`Entries: ${result.counts.metadata_files} (${result.counts.agents} agents, ${result.counts.skills} skills)\n\n`)
+    process.stdout.write(`Entries: ${result.counts.metadata_files} (${result.counts.agents} agents, ${result.counts.skills} skills)\n`)
+    for (const scope of ['user', 'project'] as const) process.stdout.write(`  ${scope}: ${result.scope_counts[scope].agents} agents, ${result.scope_counts[scope].skills} skills\n`)
+    process.stdout.write('\n')
     process.stdout.write('Largest metadata entries:\n')
     // These paths come from whatever is installed under ~/.claude/agents and ~/.claude/skills, which is third-party content: an agent directory named after one of token-goat's markers would otherwise print as token-goat's own line.
-    for (const entry of result.largest) process.stdout.write(`  ${entry.metadata_bytes.toString().padStart(7)} bytes  ${displaySafeText(entry.path)}\n`)
+    for (const entry of result.largest) process.stdout.write(`  ${entry.metadata_bytes.toString().padStart(7)} bytes  [${entry.scope}] ${displaySafeText(entry.path)}\n`)
     if (result.largestTruncated) process.stdout.write(`  ...and ${result.largestTotal - result.largest.length} more (raise --top to see them).\n`)
     for (const diagnostic of result.diagnostics) process.stderr.write(`token-goat: bootstrap-audit: skipped ${displaySafeText(diagnostic.path)} (${displaySafeText(diagnostic.reason)})\n`)
     for (const warning of result.budgets.warnings) process.stderr.write(`token-goat: bootstrap-audit: warning: ${warning}\n`)

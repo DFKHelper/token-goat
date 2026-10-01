@@ -177,6 +177,7 @@ Upgrading reparses the index. The file-lock fix below is in a file the parser fi
 - **`token-goat section --grep <pattern>` filters the section.** The flag was accepted and then ignored, so the whole section came back. It now prints only the matching lines, each under the sub-heading it sits in.
 - **`token-goat symbol NAME` lists the current project's definitions first.** Matches were sorted by path across every indexed project, so another project whose path sorted earlier could fill the page before the one you were working in appeared. Definitions from the current project now come first, and a truncated page says how many of the matches are local.
 - **Search keeps far-apart hits separate and points at the matching line.** Two hits on the same name hundreds of lines apart were merged into one range covering everything between them. Hits now merge only when they are within 20 lines of each other, and a match inside a large function prints its own line (for example `cli.ts:923`) instead of the whole function's range.
+- **`bootstrap-audit --project` counts the project's own agents and skills.** It looked only in `~/.claude`, so agents and skills under the project's `.claude` folder were never counted. Each entry is now labelled `user` or `project`. Only `<name>/SKILL.md` counts as a skill, which is the layout Claude Code loads. A loose markdown file directly in a skills folder is reported as ignored, and reference files inside a skill's folder no longer add to the total.
 
 ## [2.9.29] - 2026-09-25
 
