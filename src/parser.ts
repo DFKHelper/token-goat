@@ -488,6 +488,11 @@ export function deleteFileRows(db: ReturnType<typeof getDb>, filePath: string): 
   db.prepare(`DELETE FROM files WHERE ${pathEqClause('path')}`).run(folded)
 }
 
+/** True when the basename is a minified bundle by name: `.min.js`, `.min.mjs`, `.min.cjs`, `.min.css` or `-min.js`, case-insensitive. Name-based on purpose: it is deterministic and cannot misfire on hand-written code. */
+export function isMinifiedBundlePath(filePath: string): boolean {
+  return /(?:\.min\.(?:js|mjs|cjs|css)|-min\.js)$/i.test(path.basename(filePath))
+}
+
 /** True when any directory segment of `filePath` matches a basename in `skipDirs` -- the `indexing.skip_dirs` config knob. Splits on either separator since callers pass both forward-slash-normalized keys (resolveIndexPath) and raw absolute paths. */
 export function isUnderSkipDir(filePath: string, skipDirs: readonly string[]): boolean {
   if (skipDirs.length === 0) return false
@@ -499,6 +504,7 @@ export function isUnderSkipDir(filePath: string, skipDirs: readonly string[]): b
 export function isParseSkipEligible(filePath: string, cfg: IndexingConfig): boolean {
   if (isUnderSkipDir(filePath, cfg.skip_dirs)) return true
   if (cfg.skip_files.includes(path.basename(filePath))) return true
+  if (cfg.skip_minified !== false && isMinifiedBundlePath(filePath)) return true
   try {
     const stat = fs.statSync(filePath)
     if (stat.size > cfg.large_file_skip_kb * 1024) return true

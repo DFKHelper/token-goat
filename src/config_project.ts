@@ -37,6 +37,7 @@ export const PROJECT_LOCKED_KEYS: readonly string[] = [
   // The same principle as the four fold keys above, applied one layer earlier and with a wider blast radius: those decide how much of an indexed file is shown, these decide whether it is indexed at all. A checked-in `.token-goat.toml` adding its own attack surface to `skip_dirs` -- or dropping `large_file_skip_kb` to a handful of kilobytes -- removes those files from `symbol`, `read`, `refs`, `semantic` and `graph` for a reviewing agent, and every one of them then answers "not found" in the same words it uses for a name that genuinely does not exist. There is no notice to read, because from the index's point of view nothing was hidden. The user's own global config still sets all three freely; only the project-supplied layer is refused.
   'indexing.skip_dirs',
   'indexing.skip_files',
+  'indexing.skip_minified',
   'indexing.large_file_skip_kb',
   'indexing.large_file_symbol_only_kb',
   // Same reasoning as the two thresholds above, on the chunk axis: a checked-in `.token-goat.toml` dropping this to 1 would take every file in the repository out of `semantic` for a reviewing agent, and `semantic` would answer "no matches" in the words it uses for a genuine absence.

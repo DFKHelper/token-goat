@@ -826,6 +826,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   ix.max_chunks_per_file = validatedInt(ix_raw['max_chunks_per_file'], ix.max_chunks_per_file, ...boundsOf('indexing.max_chunks_per_file'))
   ix.skip_dirs = validatedStrList(ix_raw['skip_dirs'], ix.skip_dirs)
   ix.skip_files = validatedStrList(ix_raw['skip_files'], ix.skip_files)
+  ix.skip_minified = validatedBool(ix_raw['skip_minified'], ix.skip_minified)
   ix.embeddings_enabled = validatedBool(ix_raw['embeddings_enabled'], ix.embeddings_enabled)
   ix.embeddings_enabled = envBool('TOKEN_GOAT_EMBEDDINGS_ENABLED', ix.embeddings_enabled)
   ix.cross_project_symbols = validatedBool(ix_raw['cross_project_symbols'], ix.cross_project_symbols)
@@ -1186,6 +1187,7 @@ export function saveConfig(config: Config, explicitKeys: readonly string[] = [])
       max_chunks_per_file: config.indexing.max_chunks_per_file,
       skip_dirs: config.indexing.skip_dirs,
       skip_files: config.indexing.skip_files,
+      skip_minified: config.indexing.skip_minified,
       embeddings_enabled: config.indexing.embeddings_enabled,
       cross_project_symbols: config.indexing.cross_project_symbols,
       max_db_size_mb: config.indexing.max_db_size_mb,

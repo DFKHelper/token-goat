@@ -193,6 +193,7 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
     max_chunks_per_file: 600,
     skip_dirs: [],
     skip_files: ['coverage.json', 'coverage-final.json'],
+    skip_minified: true,
     embeddings_enabled: true,
     cross_project_symbols: true,
     max_db_size_mb: 1500,
