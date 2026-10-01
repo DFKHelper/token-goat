@@ -855,6 +855,9 @@ export function shlexSplit(cmd: string): string[] {
 
 // --------------------------------------------------------------------------- Fallback compression pipelines (shared by apply() and structural filters) ---------------------------------------------------------------------------
 
+/** Fewest chars a cut must drop before {@link capLongLines} writes its marker; a smaller overflow is cheaper left in place. */
+const CLIP_MIN_OVERFLOW = 64
+
 /** Truncate individual lines exceeding `maxChars` with an inline marker. */
 export function capLongLines(lines: string[], maxChars = FALLBACK_MAX_LINE_CHARS): string[] {
   return lines.map((line) => {
@@ -868,6 +871,8 @@ export function capLongLines(lines: string[], maxChars = FALLBACK_MAX_LINE_CHARS
     const high = line.charCodeAt(cut - 1)
     const low = line.charCodeAt(cut)
     if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) cut -= 1
+    // The marker costs 21 bytes plus the digits of its count, so a clip that drops fewer than CLIP_MIN_OVERFLOW chars grows the line while losing content: emit it whole. Measured before the carried count is added, since that figure describes what an earlier clip already dropped, not what this cut saves.
+    if (line.length - cut <= CLIP_MIN_OVERFLOW) return line
     const carried = priorClip !== null && priorClip.index >= cut ? Number(priorClip[1]) - priorClip[0].length : 0
     return `${line.slice(0, cut)}  … [${line.length - cut + carried} chars elided]`
   })

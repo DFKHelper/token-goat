@@ -27,10 +27,25 @@ function wide(n: number): string {
 }
 
 describe('capLongLines', () => {
-  it('leaves a line at the threshold alone and clips the one past it', () => {
-    const [atCap, overCap] = capLongLines([wide(LONG_LINE_MAX_CHARS), wide(LONG_LINE_MAX_CHARS + 1)], LONG_LINE_MAX_CHARS)
+  // Provenance: HAND-DERIVED from the marker's cost (21 bytes plus the count's digits) against a 64-char overflow floor.
+  it('leaves a line at the threshold alone and a line whose overflow is 64 chars or fewer whole', () => {
+    const [atCap, plusOne, plus64] = capLongLines([wide(LONG_LINE_MAX_CHARS), wide(LONG_LINE_MAX_CHARS + 1), wide(LONG_LINE_MAX_CHARS + 64)], LONG_LINE_MAX_CHARS)
     expect(atCap).toBe(wide(LONG_LINE_MAX_CHARS))
-    expect(overCap).toContain('… [1 chars elided]')
+    expect(plusOne).toBe(wide(LONG_LINE_MAX_CHARS + 1))
+    expect(plus64).toBe(wide(LONG_LINE_MAX_CHARS + 64))
+  })
+
+  it('clips a line whose overflow is 65 chars', () => {
+    const [overCap] = capLongLines([wide(LONG_LINE_MAX_CHARS + 65)], LONG_LINE_MAX_CHARS)
+    expect(overCap).toContain('… [65 chars elided]')
+  })
+
+  it('measures the overflow before adding a carried prior-clip count', () => {
+    const marker = ' ... [9000 chars clipped] ... '
+    const line = wide(LONG_LINE_MAX_CHARS - 10) + marker + wide(30)
+    const [out] = capLongLines([line], LONG_LINE_MAX_CHARS)
+    expect(line.length - LONG_LINE_MAX_CHARS).toBeLessThanOrEqual(64)
+    expect(out).toBe(line)
   })
 
   it('reports the elided count against the original line, not the clipped one', () => {

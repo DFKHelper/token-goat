@@ -149,12 +149,12 @@ describe('helpers: capping', () => {
 
   it('capLongLines never splits a surrogate pair at the cut boundary', () => {
     // U+1F600 (😀) is a high/low surrogate pair. A naive `slice(0, 5)` lands exactly between the pair, leaving a lone high surrogate that decodes as U+FFFD once the string is round-tripped through UTF-8 bytes (as happens whenever this output is written to stdout or serialized).
-    const line = 'ab😀😀😀'
+    const line = 'ab' + '😀'.repeat(40)
     const [out] = capLongLines([line], 5)
     const cutPart = out.slice(0, out.indexOf('  … ['))
     expect(cutPart).toBe('ab😀')
     expect(Buffer.from(cutPart, 'utf8').toString('utf8')).not.toContain('�')
-    expect(out).toContain('[4 chars elided]')
+    expect(out).toContain('[78 chars elided]')
   })
 
   it('squeezeBlankLines collapses 3+ blank lines to one', () => {
