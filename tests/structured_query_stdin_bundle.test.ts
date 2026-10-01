@@ -43,10 +43,20 @@ describe('structured query stdin (json/yaml/xml with - argument)', () => {
     expect(parsed.items).toEqual([1, 2])
   })
 
-  it('json-query - with empty stdin exits with parse error', () => {
-    const result = run(['json-query', '-', 'a.b'], '')
-    expect(result.code).toBeGreaterThan(0)
-    expect(result.err).toMatch(/Failed to parse/)
+  // `printf '' | token-goat json-query - a` printed "Failed to parse JSON: -", naming neither stdin nor the cause.
+  it.each(['json-query', 'yaml-query', 'xml-query'])('%s - with empty stdin says stdin was empty', (cmd) => {
+    for (const input of ['', '  \n']) {
+      const result = run([cmd, '-', 'a.b'], input)
+      expect(result.code).toBe(1)
+      expect(result.err).toMatch(/stdin was empty: pipe a document in or pass a file/)
+      expect(result.out).toBe('')
+    }
+  })
+
+  it('json-query - with malformed stdin names <stdin> in the parse error', () => {
+    const result = run(['json-query', '-', 'a.b'], '{"a":')
+    expect(result.code).toBe(1)
+    expect(result.err).toMatch(/Failed to parse JSON: <stdin>/)
   })
 
   it('yaml-query - reads from stdin and extracts a value', () => {

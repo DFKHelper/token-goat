@@ -195,12 +195,18 @@ function readQueryInput(file: string): string | null {
       emitErr('stdin is a terminal: pipe a document in or pass a file')
       return null
     }
+    let text: string
     try {
-      return fs.readFileSync(0, 'utf8')
+      text = fs.readFileSync(0, 'utf8')
     } catch (e) {
       emitErr(`Could not read stdin: ${e instanceof Error ? e.message : String(e)}`)
       return null
     }
+    if (text.trim() === '') {
+      emitErr('stdin was empty: pipe a document in or pass a file')
+      return null
+    }
+    return text
   }
   return readFileText(file)
 }
@@ -224,7 +230,7 @@ function runQueryCommand(
   try {
     data = parse(text)
   } catch {
-    emitErr(`Failed to parse ${formatLabel}: ${opts.file}`)
+    emitErr(`Failed to parse ${formatLabel}: ${opts.file === '-' ? '<stdin>' : opts.file}`)
     return 1
   }
 
