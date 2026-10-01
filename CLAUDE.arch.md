@@ -603,7 +603,7 @@ Project hash = `crypto.createHash('sha1').update(canonicalRoot)` from [`src/proj
 ### (b) Incremental updates (background worker)
 
 1. Every `Write` or `Edit` tool event fires `postEditHandler()` in [`src/hooks_edit.ts`](src/hooks_edit.ts), which appends the normalized absolute path to `queue/dirty.txt` via `appendDirtyPath()` in [`src/hooks_index.ts`](src/hooks_index.ts).
-2. The background worker (`worker.ts::runWorkerLoop`) polls `queue/dirty.txt` every **2 seconds** (`DEFAULT_POLL_INTERVAL_MS = 2000`).
+2. The background worker (`worker.ts::runWorkerLoop`) drains `queue/dirty.txt` as soon as a producer appends (fs.watch on `queue/`, via `createQueueWaker` in [`src/queue_waker.ts`](src/queue_waker.ts)), with the 2 second poll (`DEFAULT_POLL_INTERVAL_MS = 2000`) as the fallback.
 3. `drainOnce()` reads the queue and calls `processDirtyBatch()`, which SHA-fingerprints each file (`fingerprintFile()`), skips unchanged files, and calls `makeIndexer(globalDbPath())(absPath, sha)` which resolves to `indexFileSync()`.
 4. The worker runs either as a Node.js `Worker` thread (in-process, started by `startWorker()`) or as a detached child process with the `--worker-daemon` flag (`worker_daemon.ts::startDaemon()`).
 
