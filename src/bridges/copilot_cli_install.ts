@@ -19,6 +19,8 @@ import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
 export interface CopilotCliScopeOptions {
   /** When true, target the project-scoped `.github/hooks/` directory instead of the user-scoped `~/.copilot/hooks/` one. */
   local?: boolean
+  /** Project root directory to use when `local` is true; defaults to `process.cwd()`. */
+  projectRoot?: string
 }
 
 /** Copilot's own hook event names that this bridge implements (see copilot_cli.ts's COPILOT_TO_TG_EVENT). */
@@ -58,12 +60,12 @@ export function copilotCliUserHooksDir(): string {
   return path.join(copilotCliUserRoot(), 'hooks')
 }
 
-export function copilotCliProjectHooksDir(): string {
-  return path.join(process.cwd(), '.github', 'hooks')
+export function copilotCliProjectHooksDir(projectRoot?: string): string {
+  return path.join(projectRoot ?? process.cwd(), '.github', 'hooks')
 }
 
-function copilotCliHooksDir(opts: CopilotCliScopeOptions = {}): string {
-  return opts.local === true ? copilotCliProjectHooksDir() : copilotCliUserHooksDir()
+export function copilotCliHooksDir(opts: CopilotCliScopeOptions = {}): string {
+  return opts.local === true ? copilotCliProjectHooksDir(opts.projectRoot) : copilotCliUserHooksDir()
 }
 
 export function copilotCliConfigPath(opts: CopilotCliScopeOptions = {}): string {
@@ -92,7 +94,7 @@ function buildCopilotInstructionsBlock(): string {
       endMarker: COPILOT_INSTRUCTIONS_END,
       fallbackToolClause:
         "Copilot CLI's native `view`, `grep`, and `glob` tools (with PowerShell commands `Get-Content`/`Select-String` as search fallbacks)",
-      gdrive: loadConfig().gdrive.enabled,
+      gdrive: loadConfig().gdrive?.enabled ?? false,
     }),
   )
 }
@@ -102,7 +104,7 @@ function stripInlineCodeSpans(text: string): string {
 }
 
 /** Idempotent merge-or-append of the token-goat block into the Copilot instructions file, preserving every byte outside the markers (the file is user-owned and hand-edited). Mirrors codex_install.ts's writeAgentsBlock. */
-function writeCopilotInstructionsBlock(p: string): boolean {
+export function writeCopilotInstructionsBlock(p: string): boolean {
   const changed = upsertDelimitedBlock(p, COPILOT_INSTRUCTIONS_BEGIN, COPILOT_INSTRUCTIONS_END, buildCopilotInstructionsBlock())
   // A project file shared with install --visualstudio -p: its block shrinks to an addendum now that this gate is present. That rewrite is a change to the file in its own right, so it has to reach the caller: dropping it reported "already installed" on a run that had just rewritten the Visual Studio block.
   const visualStudioChanged = syncVisualStudioProjectGuidance(p)

@@ -478,6 +478,20 @@ export async function cmdInstall(opts: {
     // fail-soft: install succeeded even if pre-gen fails
   }
 
+  // Auto-refresh stale hooks and missing instruction gates across all already-installed harnesses
+  if (wantsClaudeCodeBase(opts)) {
+    try {
+      const { repairHarnessHooks } = await import('./cli_doctor_hooks.js')
+      const { repairInstructionGates } = await import('./cli_doctor_guidance.js')
+      const hookRepair = repairHarnessHooks(process.cwd())
+      for (const r of hookRepair.repairs) out(`  • Re-established hook: ${r}`)
+      const gateRepair = repairInstructionGates(process.cwd())
+      for (const r of gateRepair.repairs) out(`  • Refreshed instruction gate: ${r}`)
+    } catch {
+      // Non-fatal: base installation already succeeded
+    }
+  }
+
   // Last, so every harness above is wired before the worker starts spending CPU on a parse. queueInstallIndex never throws.
   const indexLine = formatInstallIndexResult(queueInstallIndex(process.cwd(), { enabled: opts.index }))
   if (indexLine !== null) out(indexLine)

@@ -834,6 +834,25 @@ export async function runDoctorRepair(opts?: {
   repairs.push(...gateRepair.repairs)
   errors.push(...gateRepair.errors)
 
+  // 6b. Repair stale or outdated harness hooks and shims
+  const { repairHarnessHooks } = await import('./cli_doctor_hooks.js')
+  const hookRepair = repairHarnessHooks(opts?.rootDir)
+  repairs.push(...hookRepair.repairs)
+  errors.push(...hookRepair.errors)
+
+  // 6c. Repair parser freshness mismatch by enqueuing project for background reindexing
+  try {
+    const actualRoot = path.resolve(opts?.rootDir ?? process.cwd())
+    const freshness = checkParserFreshness(dbPath, actualRoot)
+    if (freshness.status === 'warn') {
+      const { queueInstallIndex } = await import('./install_index.js')
+      queueInstallIndex(actualRoot)
+      repairs.push('Queued project for parser freshness reindexing')
+    }
+  } catch {
+    // Non-fatal if queue or db unavailable
+  }
+
   // 7. Check for pending updates and upgrade if available
   // A development checkout is reported, never replaced: installing from the registry would overwrite the developer's own build. Offline or an unreachable registry installs nothing and is not an error, since the rest of the repair still ran.
   try {

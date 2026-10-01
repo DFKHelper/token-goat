@@ -197,6 +197,31 @@ describe('doctor auto-repair and embedding model checks', () => {
       expect(ensureSpy).not.toHaveBeenCalled()
     })
 
+    it('repairs stale hook shims when an installed harness has outdated shim content', async () => {
+      const mockConfig: Config = {
+        mcp: { confine_reads_to_project_root: false },
+        indexing: { cross_project_symbols: true, embeddings_enabled: true },
+        network: { offline: false },
+      } as unknown as Config
+
+      vi.spyOn(configModule, 'loadConfig').mockReturnValue(mockConfig)
+      vi.spyOn(configModule, 'saveConfig').mockImplementation(() => undefined)
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(true)
+
+      // Seed a project-scoped Copilot CLI hooks directory with a stale shim and valid config
+      const hooksDir = path.join(projectRoot, '.github', 'hooks')
+      fs.mkdirSync(hooksDir, { recursive: true })
+      const shimPath = path.join(hooksDir, 'token-goat-shim.cjs')
+      fs.writeFileSync(shimPath, '# old stale shim content\nexit 0\n', 'utf8')
+      const configPath = path.join(hooksDir, 'hooks.json')
+      fs.writeFileSync(configPath, JSON.stringify({ hooks: { preToolUse: [] } }), 'utf8')
+
+      const result = await runDoctorRepair({ rootDir: projectRoot })
+      expect(result.repairs.some((r) => r.includes('Copilot CLI (project)'))).toBe(true)
+      const repairedShim = fs.readFileSync(shimPath, 'utf8')
+      expect(repairedShim).not.toContain('old stale shim content')
+    })
+
     describe('deprecated .vscode/mcp.json residue cleanup', () => {
       let project: string
       let mcpPath: string
