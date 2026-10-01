@@ -1,6 +1,7 @@
 /** Whether semantic search can run now, and when it cannot because the embedding model has not downloaded, why and what fixes it. checkEmbeddingPreflight in embed_model.ts answers from configuration and the files on disk; it cannot see a download that failed in another process, so with the network blocked it reported "load_error ... Check model integrity" after a `--warm`, and "0 of N files have embeddings, run `token-goat index`" otherwise, and neither is the problem or the fix. This file reads the failure the download recorded (model_download_gate.ts) and rewrites the result to say so. It lives outside embed_model.ts because that file is hashed into EMBED_FINGERPRINT and a wording change here must not re-embed anyone's index; nothing here changes a vector. */
 
-import { loadConfig } from './config.js'
+import { getProjectConfigInfo, loadConfig, resolveConfigKeyLayer } from './config.js'
+import { displaySafeText } from './paths.js'
 import { modelDir, modelFilesPresent, type EmbeddingPreflightResult } from './embed_model.js'
 // Through embeddings.js, the module every other caller takes it from, so a test that stubs the preflight there stubs it here too.
 import { checkEmbeddingPreflight } from './embeddings.js'
@@ -106,4 +107,18 @@ export function explainModelDownload(result: EmbeddingPreflightResult, now: numb
 /** checkEmbeddingPreflight, with a model that is not downloaded yet explained rather than misreported. Every command and tool that reports semantic readiness goes through this. */
 export async function checkSemanticReadiness(options?: Parameters<typeof checkEmbeddingPreflight>[0]): Promise<EmbeddingPreflightResult> {
   return explainModelDownload(await checkEmbeddingPreflight(options))
+}
+
+/** The stderr notice for files `index` left unembedded because offline mode holds the model download, or null when offline mode is off and the usual "the worker downloads it" wording applies. Names the setting that holds it (the environment variable, config.toml, or the project's own file), says which commands need no model, and points at the directory the pinned files can be copied into, since neither the worker nor --warm can fetch them while offline. */
+export function offlineEmbedNotice(fileCount: string, rootDir?: string): string | null {
+  const cfg = loadConfig(rootDir)
+  if (!cfg.network.offline) return null
+  const state = resolveConfigKeyLayer('network.offline', cfg.network.offline, cfg as unknown as Record<string, unknown>, getProjectConfigInfo(rootDir))
+  const holder =
+    state.layer === 'env' || state.layer === 'env-invalid'
+      ? `${state.envVar} is set in your environment`
+      : state.layer === 'project'
+        ? `${displaySafeText(state.path)} sets network.offline`
+        : 'network.offline is on in config.toml'
+  return `token-goat: index: ${fileCount} not embedded: the embedding model is not downloaded and ${holder}, so nothing will download it. symbol, read, outline and section work now; semantic falls back to keyword search. To embed them, unset it so the worker can download the model, or copy the pinned model files into ${modelDir()}; then run \`token-goat index\` again.`
 }

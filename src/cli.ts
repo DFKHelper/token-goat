@@ -18,7 +18,7 @@ import { dataDir, ENV_KEYS, globalDbPath, VERSION } from './constants.js'
 import { assetEmbedSha, indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors, maxChunksEmbedSha } from './parser.js'
 import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { pruneUnembeddableChunks } from './embed_backfill.js'
-import { foregroundDownloadDeferred, WARM_COMMAND } from './embed_preflight.js'
+import { foregroundDownloadDeferred, offlineEmbedNotice, WARM_COMMAND } from './embed_preflight.js'
 import { rerunWithEnvProxy } from './env_proxy.js'
 import { allowReadOnlyIndex, getDb } from './db.js'
 import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
@@ -427,7 +427,9 @@ export async function cmdIndex(
   // The worker's backlog sweep embeds every file left without an embed_sha, and it is the process whose downloads go through the proxy, so it is started here rather than left for the next hook to start.
   if (embedsDeferred > 0) {
     ensureWorkerAlive()
-    err(`token-goat: index: ${countNoun(embedsDeferred, 'file')} not embedded yet: the embedding model is not downloaded. The background worker downloads it and embeds them; to do it now, run \`${WARM_COMMAND}\` and then \`token-goat index\` again.`)
+    const offlineNotice = offlineEmbedNotice(countNoun(embedsDeferred, 'file'), root)
+    if (offlineNotice !== null) err(offlineNotice)
+    else err(`token-goat: index: ${countNoun(embedsDeferred, 'file')} not embedded yet: the embedding model is not downloaded. The background worker downloads it and embeds them; to do it now, run \`${WARM_COMMAND}\` and then \`token-goat index\` again.`)
   }
   // A run where every file failed and none indexed is a total indexing failure, not a no-op success -- callers scripting on `$?` must be able to detect it.
   if (indexed === 0 && failed > 0) {

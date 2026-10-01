@@ -4,8 +4,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { invalidateConfigCache } from '../src/config.js'
+import { modelDir } from '../src/embed_model.js'
 import { nodeFetchHonoursEnvProxy } from '../src/env_proxy.js'
 import { canonicalize } from '../src/project.js'
 
@@ -113,5 +115,30 @@ describe.skipIf(!nodeFetchHonoursEnvProxy())('semantic with a proxy the process 
     expect(stderr).toContain('1 file not embedded yet')
     expect(stderr).toContain(WARM_COMMAND)
     expect(fs.existsSync(downloadFailureRecordPath())).toBe(false)
+  })
+})
+
+// HAND-DERIVED: TOKEN_GOAT_OFFLINE=1 is the documented env spelling of network.offline (README and capabilities.ts name it); the wording asserted is the contract the task states: name the variable, name the model directory, say the offline-safe commands work, and never promise a background download that offline mode forbids.
+describe('index with the model missing and offline mode on', () => {
+  beforeEach(() => {
+    ensureWorkerAlive.mockClear()
+    indexFileEmbeddings.mockClear()
+    process.env['TOKEN_GOAT_OFFLINE'] = '1'
+    invalidateConfigCache()
+  })
+  afterEach(() => {
+    delete process.env['TOKEN_GOAT_OFFLINE']
+    invalidateConfigCache()
+  })
+
+  it('names the offline setting and the model directory instead of promising a download', async () => {
+    const { stderr } = await runCli(['index', '--walk'])
+    expect(indexFileEmbeddings).not.toHaveBeenCalled()
+    expect(stderr).toContain('1 file not embedded')
+    expect(stderr).toContain('TOKEN_GOAT_OFFLINE')
+    expect(stderr).toContain(modelDir())
+    expect(stderr).toMatch(/symbol, read, outline and section/)
+    expect(stderr).not.toContain('The background worker downloads it')
+    expect(stderr).not.toContain(WARM_COMMAND)
   })
 })

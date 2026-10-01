@@ -11,6 +11,7 @@ import { getDirtyPathsFor } from './dirty_queue.js'
 import { isWorkerRunning } from './worker_lifecycle.js'
 import { emptyIndexMessage, getProjectIndexCounts, getEmbeddingCoverage, getParserFreshness } from './index_health.js'
 import { loadConfig } from './config.js'
+import { modelFilesPresent } from './embed_model.js'
 import { isEmbedFresh, oversizeEmbedSha } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { getDb } from './db.js'
@@ -274,6 +275,10 @@ export function checkEmbeddingCoverage(dbPath: string, rootDir?: string): Doctor
     const pct = Math.round((embeddedFiles / indexedFiles) * 100)
     const sizeKb = cfg.indexing.large_file_symbol_only_kb
     if (embeddedFiles / indexedFiles < EMBED_COVERAGE_WARN_FRACTION) {
+      // Without the model nothing can be embedded, and the Embedding model check already warns about exactly that; a second warning here would count one fault twice.
+      if (!modelFilesPresent()) {
+        return { name: 'Embedding coverage', status: 'ok', message: `${embeddedFiles} of ${indexedFiles} indexed file(s) (${pct}%) have embeddings; model not installed, see Embedding model` }
+      }
       return {
         name: 'Embedding coverage',
         status: 'warn',

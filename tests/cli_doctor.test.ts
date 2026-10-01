@@ -28,6 +28,7 @@ import { PACKAGE_NAME, VERSION } from '../src/version.js'
 import { defaultConfig, invalidateConfigCache, loadConfig, saveConfig, type Config } from '../src/config.js'
 import { clearUpdateCheck, seedUpdateCheck } from './helpers/update-check.js'
 import type * as CliContextStats from '../src/cli_context_stats.js'
+import type * as EmbedModel from '../src/embed_model.js'
 import type * as ChildProcess from 'child_process'
 
 // runContextStats is `async` (needed for --fix's confirm-gate); runDoctorAndExit's own --context path used to call it fire-and-forget with no await, which turned a synchronous throw into a silently-swallowed unhandled promise rejection instead of propagating like every other doctor error. Mock it to throw so we can assert runDoctorAndExit's own returned promise rejects.
@@ -40,6 +41,13 @@ vi.mock('../src/cli_context_stats.js', async (importOriginal) => {
 vi.mock('child_process', async (importOriginal) => {
   const original = await importOriginal<typeof ChildProcess>()
   return { ...original, spawnSync: vi.fn(original.spawnSync) }
+})
+
+// The suite's isolated data root never holds the model, so the real modelFilesPresent is false everywhere; the embedding-coverage cases pin it either way through this override, and every other test falls through to the real check.
+const modelOverride = vi.hoisted(() => ({ present: null as boolean | null }))
+vi.mock('../src/embed_model.js', async (importOriginal) => {
+  const original = await importOriginal<typeof EmbedModel>()
+  return { ...original, modelFilesPresent: () => modelOverride.present ?? original.modelFilesPresent() }
 })
 
 // Passed by every runDoctor test that is not about process health. Gathering the real list shells out to PowerShell for a full Win32_Process listing, which measured 1.2 s of runDoctor's 1.5 s and was the single largest cost in this file. The default gather is still covered, once, below.
@@ -341,12 +349,27 @@ describe('cli_doctor', () => {
     beforeEach(() => {
       prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
       process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
+      // The cases below are about coverage with the model installed; the model-missing case sets false itself.
+      modelOverride.present = true
       clearModuleCaches()
     })
     afterEach(() => {
+      modelOverride.present = null
       if (prevEmbedEnv === undefined) delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
       else process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = prevEmbedEnv
       clearModuleCaches()
+    })
+
+    // HAND-DERIVED: with the model not installed, every file is unembedded for that one reason, which the Embedding model check already reports; a second warning would be the same fault counted twice.
+    it('reports ok and points at the Embedding model check when the model is not installed', () => {
+      modelOverride.present = false
+      const dbPath = path.join(tempDir, 'global.db')
+      const db = getDb(dbPath)
+      for (let i = 0; i < 10; i++) insertFile(db, `src/f${i}.ts`)
+      const result = checkEmbeddingCoverage(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('model not installed')
+      expect(result.message).toContain('Embedding model')
     })
 
     const insertFile = (db: ReturnType<typeof getDb>, p: string) =>
@@ -357,6 +380,16 @@ describe('cli_doctor', () => {
       db
         .prepare('INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)')
         .run(p, 1, 2, 'body', 'symbol')
+
+    // HAND-DERIVED: a fresh install with the model missing and nothing embedded has one fault, so the full doctor run must raise one warning about it, not one per check that observes it.
+    it('raises exactly one embedding warning through runDoctor when the model is missing and nothing is embedded', () => {
+      modelOverride.present = false
+      const db = getDb(path.join(tempDir, 'global.db'))
+      for (let i = 0; i < 10; i++) insertFile(db, normalizePath(path.join(tempDir, `src/f${i}.ts`)))
+      const results = runDoctor(tempDir, path.join(tempDir, 'config.toml'), tempDir, NO_PROCESSES)
+      const warned = results.filter((r) => r.status === 'warn' && /^Embedding (model|coverage)$/.test(r.name)).map((r) => r.name)
+      expect(warned).toEqual(['Embedding model'])
+    })
 
     it('returns ok (no database yet) when global.db does not exist', () => {
       const result = checkEmbeddingCoverage(path.join(tempDir, 'global.db'))
