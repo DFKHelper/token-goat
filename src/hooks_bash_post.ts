@@ -766,10 +766,14 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       recordBashOutput(gitScopedCacheHash, gitScopedCacheId, Buffer.byteLength(output, 'utf-8'))
     }
 
-    // In environments without pre-hook wrapping (VS Code run_in_terminal, unwrapped shells), an eligible single command (e.g. `git diff`, `dotnet test`, `cargo test`) that ran directly is compressed here on post-hook.
-    if (isUnwrapped && (detectFromCommand(cmd, runDir ?? undefined) !== null || /^git(?:\s+-[^\s]+|\s+--[^\s]+)*\s+diff\b/i.test(cmd))) {
+    // In environments without pre-hook wrapping (VS Code run_in_terminal, unwrapped shells), a test run with a filter (e.g. `dotnet test`, `cargo test`) or a `git diff` that ran directly is compressed here on post-hook; other unwrapped commands fall through so cat recall, curl and build caching below still see them.
+    if (isUnwrapped && ((isTestRunnerCommand(cmd) && detectFromCommand(cmd, runDir ?? undefined) !== null) || /^git(?:\s+-[^\s]+|\s+--[^\s]+)*\s+diff\b/i.test(cmd))) {
       const unwrappedCompressed = await maybeCompressCompoundOutput(cmd, optedOut, output, exitCode, runDir, cacheMinBytes, isUnwrapped)
-      if (unwrappedCompressed !== null) return unwrappedCompressed
+      if (unwrappedCompressed !== null) {
+        // The compressor already stored this output under bashOutputIdSync's id; record the same session mapping the monitoring cache below writes, or a repeat run of the same test command loses its recall hint.
+        recordBashOutput(bashRecallKey(cmd, runDir), bashOutputIdSync(cmd, output, runDir), Buffer.byteLength(output, 'utf-8'))
+        return unwrappedCompressed
+      }
     }
 
     // Only cache monitoring, build, and curl GET commands — not generic shell commands.

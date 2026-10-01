@@ -207,6 +207,19 @@ function inferProjectRootFromTarget(target: string): string | null {
   return null
 }
 
+/** Whether the index holds at least one file under `root`. An inferred root is accepted only when this is true: inference runs when the caller named no projectRoot, and `assertRootAllowed` admits every root while `mcp.allowed_roots` is empty, so accepting the directory of any existing absolute path made that path its own root and voided confinement for every tool. Requiring an indexed project limits inference to workspaces the user already pointed token-goat at. Prefix compare by length rather than LIKE, so a `_` or `%` in the root cannot widen the match, and fail closed when the index cannot be read. */
+function rootHasIndexedFiles(root: string): boolean {
+  const dbPath = globalDbPath()
+  if (!fs.existsSync(dbPath)) return false
+  try {
+    const prefix = normalizePath(root).toLowerCase().replace(/\/+$/, '') + '/'
+    const row = getDb(dbPath).prepare(`SELECT 1 FROM files WHERE TG_LOWER(substr(path, 1, ?)) = ? LIMIT 1`).get(prefix.length, prefix)
+    return row !== undefined
+  } catch {
+    return false
+  }
+}
+
 function resolveToolRoot(projectRoot: string | undefined, candidateTargets?: readonly string[]): string {
   if (projectRoot !== undefined) {
     const resolved = resolveProjectRoot({ project: projectRoot })
@@ -218,7 +231,7 @@ function resolveToolRoot(projectRoot: string | undefined, candidateTargets?: rea
     for (const target of candidateTargets) {
       if (!target) continue
       const inferred = inferProjectRootFromTarget(target)
-      if (inferred) {
+      if (inferred && rootHasIndexedFiles(inferred)) {
         try {
           assertRootAllowed(inferred)
           return inferred

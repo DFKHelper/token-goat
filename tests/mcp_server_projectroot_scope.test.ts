@@ -11,6 +11,8 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
 import type * as IndexReaderModule from '../src/index_reader.js'
 import type { SymbolEntry } from '../src/parser_types.js'
+import { globalDbPath } from '../src/constants.js'
+import { getDb } from '../src/db.js'
 import { resolveIndexPath } from '../src/paths.js'
 import { resolveProjectRoot } from '../src/project.js'
 import type * as SectionReaderModule from '../src/section_reader.js'
@@ -150,13 +152,16 @@ describe('mcp read/symbol/skeleton/outline/section tools accept projectRoot', ()
       const testFile = path.join(scratchRoot, 'src', 'Service.cs')
       fs.mkdirSync(path.dirname(testFile), { recursive: true })
       fs.writeFileSync(testFile, 'public class Service { public void Run() {} }', 'utf8')
+      // Inference accepts only a project the index already holds, so record the file the way a real index pass does.
+      getDb(globalDbPath())
+        .prepare('INSERT INTO files (path, sha, mtime, language, indexed_at) VALUES (?, ?, ?, ?, ?)')
+        .run(resolveIndexPath('src/Service.cs', resolvedScratchRoot), 'sha', 0, 'csharp', 0)
 
       const result = await client.callTool({
         name: 'read',
         arguments: { spec: `${testFile}::Run` },
       })
-      // Even without projectRoot, it should not be refused as out-of-root because
-      // inferProjectRootFromTarget infers scratchRoot from the file path.
+      // Even without projectRoot, it should not be refused as out-of-root because inferProjectRootFromTarget infers scratchRoot from the file path.
       const text = (result.content as Array<{ text: string }>)[0]?.text ?? ''
       expect(text).not.toContain('confining to')
       expect(text).not.toContain('Refused: path is outside')
