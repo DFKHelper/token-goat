@@ -13,7 +13,7 @@ import { serverStatuses } from './hook_client.js'
 import { readMarker, type ServerStatus } from './hook_ipc.js'
 import { dataDirWriteRefusal } from './worker_lifecycle.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
-import { hookServerEnabled, loadConfig, readConfigSource, saveConfig, invalidateConfigCache } from './config.js'
+import { hookServerEnabled, loadConfig, loadPersistedConfig, readConfigSource, saveConfig, invalidateConfigCache, resolveConfigKeyLayer, getProjectConfigInfo } from './config.js'
 import type { Config } from './config.js'
 import { ensureModelFiles, modelFilesPresent } from './embed_model.js'
 import { downloadAdvice, runtimeDownloadAdvice } from './embed_preflight.js'
@@ -189,13 +189,18 @@ export function checkEmbeddings(config: Config): DoctorResult {
 }
 
 /** Check whether the pinned embedding model files are present on disk. */
-export function checkEmbeddingModel(config: Config): DoctorResult {
+export function checkEmbeddingModel(config: Config, rootDir?: string): DoctorResult {
   const name = 'Embedding model'
   if ((config.indexing?.embeddings_enabled ?? true) === false) {
     return { name, status: 'ok', message: 'embeddings disabled by config' }
   }
   if (!modelFilesPresent()) {
     if (config.network?.offline) {
+      // --repair never writes an environment variable or a project file, so advising it there would send the user in a circle.
+      const blocker = repairBlocker('network.offline', config, getProjectConfigInfo(rootDir), 'allow the model download')
+      if (blocker !== null) {
+        return { name, status: 'warn', message: `model files are missing and network is disabled (network.offline = true): ${blocker}` }
+      }
       return {
         name,
         status: 'warn',
@@ -676,7 +681,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   const actualConfigPath = configPath || defaultConfigPath()
   results.push(checkConfigValid(actualConfigPath))
   results.push(checkEmbeddings(loadConfig(rootDir)))
-  results.push(checkEmbeddingModel(loadConfig(rootDir)))
+  results.push(checkEmbeddingModel(loadConfig(rootDir), rootDir))
   // Directly after the availability row: "available" and "3% of files covered" are both true at once, and reading either alone gives the wrong picture of what `semantic` can actually see.
   results.push(checkEmbeddingCoverage(path.join(actualDataDir, 'global.db'), rootDir))
   results.push(checkParserFreshness(path.join(actualDataDir, 'global.db'), rootDir))
@@ -725,6 +730,18 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
 export interface DoctorRepairResult {
   repairs: string[]
   errors: string[]
+  /** Settings the repair left alone because a layer it must not write (an environment variable or a project file) is what holds them. */
+  notices: string[]
+}
+
+/** Why a key cannot be repaired by writing the global config, or null when the global config is the layer that holds its effective value. */
+function repairBlocker(key: string, effectiveCfg: Config, projectInfo: ReturnType<typeof getProjectConfigInfo>, goal: string): string | null {
+  const parts = key.split('.')
+  const effective = (effectiveCfg as unknown as Record<string, Record<string, unknown> | undefined>)[parts[0] ?? '']?.[parts[1] ?? '']
+  const state = resolveConfigKeyLayer(key, effective, effectiveCfg as unknown as Record<string, unknown>, projectInfo)
+  if (state.layer === 'env' || state.layer === 'env-invalid') return `${state.envVar} is set in your environment; unset it to ${goal}`
+  if (state.layer === 'project') return `${displaySafeText(state.path)} sets ${key}; edit that file to ${goal}`
+  return null
 }
 
 /** Automatically repairs known issues such as restrictive security posture and missing semantic models due to offline rollout. */
@@ -736,40 +753,58 @@ export async function runDoctorRepair(opts?: {
   const repairs: string[] = []
   const errors: string[] = []
   const cfg = loadConfig(opts?.rootDir)
-
+  const notices: string[] = []
+  // Decisions use the effective config, but only the persisted file's own values are mutated and saved: an environment override or a repository's .token-goat.toml must never be written into the global config.
+  const projectInfo = getProjectConfigInfo(opts?.rootDir)
+  const persisted = loadPersistedConfig()
   let configDirty = false
-  const updatedCfg = { ...cfg }
+  let offlineNow = cfg.network?.offline === true
+  let embeddingsNow = (cfg.indexing?.embeddings_enabled ?? true) !== false
 
   // 1. Repair restrictive settings to permissive defaults
-  if (updatedCfg.mcp?.confine_reads_to_project_root) {
-    updatedCfg.mcp = { ...updatedCfg.mcp, confine_reads_to_project_root: false }
-    configDirty = true
-    repairs.push('Restored permissive read access (mcp.confine_reads_to_project_root = false)')
+  if (cfg.mcp?.confine_reads_to_project_root) {
+    const blocker = repairBlocker('mcp.confine_reads_to_project_root', cfg, projectInfo, 'allow reads outside the project root')
+    if (blocker === null) {
+      persisted.mcp = { ...persisted.mcp, confine_reads_to_project_root: false }
+      configDirty = true
+      repairs.push('Restored permissive read access (mcp.confine_reads_to_project_root = false)')
+    } else notices.push(blocker)
   }
-  if (updatedCfg.indexing?.cross_project_symbols === false) {
-    updatedCfg.indexing = { ...updatedCfg.indexing, cross_project_symbols: true }
-    configDirty = true
-    repairs.push('Restored cross-project symbol search (indexing.cross_project_symbols = true)')
+  if (cfg.indexing?.cross_project_symbols === false) {
+    const blocker = repairBlocker('indexing.cross_project_symbols', cfg, projectInfo, 'allow cross-project symbol search')
+    if (blocker === null) {
+      persisted.indexing = { ...persisted.indexing, cross_project_symbols: true }
+      configDirty = true
+      repairs.push('Restored cross-project symbol search (indexing.cross_project_symbols = true)')
+    } else notices.push(blocker)
   }
 
   // 2. Repair missing semantic model (e.g. from mistaken rollout with network disabled)
   const needModel = !modelFilesPresent()
   if (needModel) {
-    if (updatedCfg.network?.offline) {
-      updatedCfg.network = { ...updatedCfg.network, offline: false }
-      configDirty = true
-      repairs.push('Restored network access (network.offline = false)')
+    if (cfg.network?.offline) {
+      const blocker = repairBlocker('network.offline', cfg, projectInfo, 'allow the model download')
+      if (blocker === null) {
+        persisted.network = { ...persisted.network, offline: false }
+        configDirty = true
+        offlineNow = false
+        repairs.push('Restored network access (network.offline = false)')
+      } else notices.push(blocker)
     }
-    if ((updatedCfg.indexing?.embeddings_enabled ?? true) === false) {
-      updatedCfg.indexing = { ...updatedCfg.indexing, embeddings_enabled: true }
-      configDirty = true
-      repairs.push('Enabled semantic embeddings (indexing.embeddings_enabled = true)')
+    if (!embeddingsNow) {
+      const blocker = repairBlocker('indexing.embeddings_enabled', cfg, projectInfo, 'turn semantic embeddings on')
+      if (blocker === null) {
+        persisted.indexing = { ...persisted.indexing, embeddings_enabled: true }
+        configDirty = true
+        embeddingsNow = true
+        repairs.push('Enabled semantic embeddings (indexing.embeddings_enabled = true)')
+      } else notices.push(blocker)
     }
   }
 
   if (configDirty) {
     try {
-      saveConfig(updatedCfg)
+      saveConfig(persisted)
       invalidateConfigCache()
     } catch (e) {
       errors.push(`Failed to update configuration: ${extractErrorMessage(e)}`)
@@ -777,7 +812,8 @@ export async function runDoctorRepair(opts?: {
   }
 
   // 3. Download and verify missing semantic model files
-  if (needModel) {
+  // A still-active offline switch or disabled embeddings was named above; attempting the download would only fail against it.
+  if (needModel && !offlineNow && embeddingsNow) {
     try {
       console.log('Downloading and verifying semantic model files...')
       // `--repair` is the user asking for the download now, so it goes through a hold an earlier failure left behind.
@@ -789,8 +825,7 @@ export async function runDoctorRepair(opts?: {
   }
 
   // 3b. The WebAssembly runtime's binary, the other download semantic search waits on when the native runtime is not installed. Offline mode is left alone here unless step 2 lifted it, since nothing else is missing that would justify overriding the user's setting.
-  const embeddingsOn = (updatedCfg.indexing?.embeddings_enabled ?? true) !== false
-  if (embeddingsOn && updatedCfg.network?.offline !== true && activeRuntime() === 'onnxruntime-web' && !wasmBinaryPresent()) {
+  if (embeddingsNow && !offlineNow && activeRuntime() === 'onnxruntime-web' && !wasmBinaryPresent()) {
     try {
       console.log('Downloading and verifying the WebAssembly runtime binary...')
       await withExplicitDownload(() => ensureWasmBinary())
@@ -870,7 +905,7 @@ export async function runDoctorRepair(opts?: {
     errors.push(`Upgrade check failed: ${e instanceof Error ? e.message : String(e)}`)
   }
 
-  return { repairs, errors }
+  return { repairs, errors, notices }
 }
 
 /** Format and print doctor results to stdout. */
@@ -1005,7 +1040,7 @@ export async function runDoctorAndExit(opts?: string | {
 
   if (repairRan) {
     console.log('Running automatic repairs...\n')
-    const { repairs, errors } = await runDoctorRepair({
+    const { repairs, errors, notices } = await runDoctorRepair({
       dataDir: options.dataDir,
       configPath: options.configPath,
       rootDir: options.rootDir,
@@ -1019,6 +1054,14 @@ export async function runDoctorAndExit(opts?: string | {
       console.log()
     } else {
       console.log('No automatic repairs needed.\n')
+    }
+
+    if (notices.length > 0) {
+      console.log('Left unchanged:')
+      for (const n of notices) {
+        console.log(`  - ${n}`)
+      }
+      console.log()
     }
 
     if (errors.length > 0) {

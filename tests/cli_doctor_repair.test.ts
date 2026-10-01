@@ -7,7 +7,7 @@ import { checkEmbeddingModel, runDoctorAndExit, runDoctorRepair } from '../src/c
 import * as embedModel from '../src/embed_model.js'
 import * as configModule from '../src/config.js'
 import { recordCreatedConfig } from '../src/bridges/created_configs.js'
-import { _resetDataDirCacheForTesting } from '../src/constants.js'
+import { _resetDataDirCacheForTesting, configPath } from '../src/constants.js'
 import { downloadAdvice } from '../src/embed_preflight.js'
 import { MODEL_DOWNLOAD_HOST, clearDownloadFailure, isExplicitDownload, recordDownloadFailure } from '../src/model_download_gate.js'
 import { INSTRUCTION_GATE_BEGIN, INSTRUCTION_GATE_END } from '../src/cli_doctor_guidance.js'
@@ -26,6 +26,8 @@ describe('doctor auto-repair and embedding model checks', () => {
     projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-doctor-repair-root-'))
     vi.stubEnv('HOME', userHome)
     vi.stubEnv('USERPROFILE', userHome)
+    // The suite pins embeddings off through the environment; the repair's job here is the config layer, and an env-held switch is exercised by its own test.
+    vi.stubEnv('TOKEN_GOAT_EMBEDDINGS_ENABLED', undefined)
     vi.stubEnv('CLAUDE_CONFIG_DIR', path.join(userHome, '.claude'))
     vi.stubEnv('COPILOT_HOME', path.join(userHome, '.copilot'))
     fs.mkdirSync(path.join(userHome, '.claude'))
@@ -367,6 +369,90 @@ describe('doctor auto-repair and embedding model checks', () => {
       expect(out).toContain('development checkout')
       expect(out).not.toContain('[!] Update available')
       expect(out).not.toContain("Run 'token-goat upgrade'")
+    })
+  })
+
+  describe('runDoctorRepair against the real config layering', () => {
+    // No loadConfig/saveConfig spies: the repair loads the effective config and saves through the real config module into the isolated TOKEN_GOAT_HOME. Provenance: CAPTURE (a scratch-home run of 2.9.29 where an env var and a repo's .token-goat.toml landed in the global config.toml); 4321 is HAND-DERIVED, inside the 50-100000 clamp of bash_compress.max_lines.
+    function writeProjectToml(): void {
+      fs.writeFileSync(path.join(projectRoot, '.token-goat.toml'), '[bash_compress]\nmax_lines = 4321\n')
+    }
+
+    function captureLog(): string[] {
+      const lines: string[] = []
+      vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')) })
+      return lines
+    }
+
+    afterEach(() => {
+      configModule.invalidateConfigCache()
+      try { fs.rmSync(configPath(), { force: true }) } catch { /* nothing written */ }
+    })
+
+    it('persists neither an env override nor the repo file, and names the variable instead of claiming a fix', async () => {
+      writeProjectToml()
+      // A global setting the repair does flip, so the save happens and whatever else the effective config carried would ride along with it.
+      fs.mkdirSync(path.dirname(configPath()), { recursive: true })
+      fs.writeFileSync(configPath(), '[indexing]\ncross_project_symbols = false\n')
+      vi.stubEnv('TOKEN_GOAT_OFFLINE', '1')
+      vi.stubEnv('TOKEN_GOAT_REDACTION_STRICT', '1')
+      configModule.invalidateConfigCache()
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(false)
+      const ensureSpy = vi.spyOn(embedModel, 'ensureModelFiles').mockResolvedValue('mock-dir')
+      captureLog()
+
+      const result = await runDoctorRepair({ rootDir: projectRoot })
+
+      const saved = fs.existsSync(configPath()) ? fs.readFileSync(configPath(), 'utf8') : ''
+      expect(saved).toMatch(/cross_project_symbols\s*=\s*true/)
+      expect(saved).not.toContain('4321')
+      expect(saved).not.toContain('strict = true')
+      expect(result.repairs.join('\n')).not.toContain('Restored network access')
+      expect(result.notices.join('\n')).toContain('TOKEN_GOAT_OFFLINE')
+      expect(ensureSpy).not.toHaveBeenCalled()
+      expect(result.errors).toHaveLength(0)
+    })
+
+    it('has the model check name the environment variable rather than advise a repair that cannot lift it', () => {
+      vi.stubEnv('TOKEN_GOAT_OFFLINE', '1')
+      configModule.invalidateConfigCache()
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(false)
+
+      const result = checkEmbeddingModel(configModule.loadConfig(projectRoot), projectRoot)
+
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('TOKEN_GOAT_OFFLINE')
+      expect(result.message).not.toContain('doctor --repair')
+    })
+
+    it('still restores network access when the global file is what turned offline mode on', async () => {
+      fs.mkdirSync(path.dirname(configPath()), { recursive: true })
+      fs.writeFileSync(configPath(), '[network]\noffline = true\n')
+      configModule.invalidateConfigCache()
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(false)
+      const ensureSpy = vi.spyOn(embedModel, 'ensureModelFiles').mockResolvedValue('mock-dir')
+      captureLog()
+
+      const result = await runDoctorRepair({ rootDir: projectRoot })
+
+      expect(result.repairs).toContain('Restored network access (network.offline = false)')
+      expect(fs.readFileSync(configPath(), 'utf8')).toMatch(/offline\s*=\s*false/)
+      expect(ensureSpy).toHaveBeenCalled()
+    })
+
+    it('never persists embeddings_enabled = true over an environment switch that turns embeddings off', async () => {
+      vi.stubEnv('TOKEN_GOAT_EMBEDDINGS_ENABLED', '0')
+      configModule.invalidateConfigCache()
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(false)
+      vi.spyOn(embedModel, 'ensureModelFiles').mockResolvedValue('mock-dir')
+      captureLog()
+
+      const result = await runDoctorRepair({ rootDir: projectRoot })
+
+      const saved = fs.existsSync(configPath()) ? fs.readFileSync(configPath(), 'utf8') : ''
+      expect(saved).not.toMatch(/embeddings_enabled\s*=\s*true/)
+      expect(result.repairs.join('\n')).not.toContain('Enabled semantic embeddings')
+      expect(result.notices.join('\n')).toContain('TOKEN_GOAT_EMBEDDINGS_ENABLED')
     })
   })
 })
