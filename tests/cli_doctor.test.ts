@@ -991,11 +991,13 @@ describe('cli_doctor', () => {
       expect(result.message).toContain('valid')
     })
 
-    it('returns warn when config missing', () => {
+    it('returns ok when the optional config file is missing, naming the built-in defaults', () => {
+      // HAND-DERIVED: nothing is written at this path, and loadConfig falls back to defaults when the file is absent.
       const configPath = path.join(tempDir, 'missing.toml')
       const result = checkConfigValid(configPath)
-      expect(result.status).toBe('warn')
-      expect(result.message).toContain('not found')
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('built-in defaults')
+      expect(result.message).toContain(configPath)
     })
 
     it('returns fail for invalid TOML', () => {

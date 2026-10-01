@@ -230,10 +230,11 @@ export function checkEmbeddingModel(config: Config, rootDir?: string): DoctorRes
 /** Check if config file is valid and readable. */
 export function checkConfigValid(configPath: string): DoctorResult {
   if (!fs.existsSync(configPath)) {
+    // The file is optional: loadConfig falls back to built-in defaults and `install` never creates it, so its absence is not a problem.
     return {
       name: 'Config',
-      status: 'warn',
-      message: `config file not found at ${configPath}`,
+      status: 'ok',
+      message: `no config file; using built-in defaults (${configPath})`,
     }
   }
   try {
