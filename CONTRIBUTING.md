@@ -17,6 +17,8 @@ Lefthook wires three fast checks into `pre-commit` — lint, then typecheck, the
 
 `lefthook` is a devDependency and `npm install` runs `prepare` → `lefthook install`, so a fresh clone gets the hooks automatically. If `.git/hooks/pre-commit` is missing, run `npx lefthook install` — the guards below only protect you if the hook actually exists.
 
+The `commit-msg` hook checks the message itself. It refuses AI attribution trailers, any name on the confidential denylist, and a hard-wrapped body: write each paragraph and each list item on one line and let the viewer wrap it, because GitHub and `git log` show a message exactly as written. It also refuses a verification checklist ("Why didn't a test catch this?", "Mutation check:", "Dogfood:") in place of a description; what was tested belongs in the tests. `tests/commit_msg_style.test.ts` and `tests/commit_msg_hook_denylist.test.ts` run the real scripts.
+
 The pre-commit guards (`tests/guards/`) are pure-introspection invariants with no I/O: no bundle build, no SQLite DB, no git fixtures. They run in ~2s and exist to catch the *implemented-but-unregistered / unfunctional command* class before a commit lands, rather than discovering it later at push or in CI. Keep them fast — do not move the full suite, the built-bundle smoke tests, or the command matrix into pre-commit.
 
 The heavy coverage stays on `pre-push` / CI: the full suite plus the built-bundle command matrix (`tests/command_matrix_e2e.*.test.ts`), which runs every registered command against the shipped `dist/token-goat.mjs`. The suite is occasionally racy on Windows under heavy disk pressure; the gating fact is CI on `origin/main`, so when the pre-push hook hangs intermittently it is reasonable to push with `--no-verify`.
