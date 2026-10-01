@@ -8,6 +8,7 @@ import { storeBashOutput } from '../src/bash_output_cache.js'
 import { storeOutput, setSkillOutputsDirForTesting } from '../src/skill_cache.js'
 import { WEB_FETCH_KEY_SEP, exportSessionState, recordWebFetch } from '../src/session.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { storeWebOutput } from '../src/web_cache.js'
 
 // Only runGit (used for the "## Uncommitted changes (git diff --stat)" section) is mocked --
 // resolveProjectRoot resolves the real project root normally, but every git subprocess call
@@ -272,18 +273,62 @@ describe('buildResumePacket — Skills section', () => {
   it('names the pages this session fetched, with the cacheId that recalls each one', async () => {
     const sessionId = 'sid-web-fetches'
     clearModuleCaches()
-    recordWebFetch('https://example.com/docs/api', 'what are the rate limits', 'cache-id-1')
-    recordWebFetch('https://example.com/pricing', '', 'cache-id-2')
+    const id1 = storeWebOutput('https://example.com/docs/api', 'body one', 'k1')
+    const id2 = storeWebOutput('https://example.com/pricing', 'body two', 'k2')
+    recordWebFetch('https://example.com/docs/api', 'what are the rate limits', id1)
+    recordWebFetch('https://example.com/pricing', '', id2)
     expect(storeBlob(SESSIONS_SUBDIR, sessionId, exportSessionState() as unknown as Record<string, unknown>)).toBe(true)
 
     const packet = await buildResumePacket(sessionId)
     expect(packet).not.toBeNull()
     expect(packet).toContain('## Web pages fetched')
     // The url and the cacheId both survive: the url is what identifies the page to a reader, the cacheId is what makes the row actionable through `token-goat web-output`.
-    expect(packet).toContain('- https://example.com/docs/api (cacheId: cache-id-1, prompt: "what are the rate limits")')
-    expect(packet).toContain('- https://example.com/pricing (cacheId: cache-id-2)')
+    expect(packet).toContain(`- https://example.com/docs/api (cacheId: ${id1}, prompt: "what are the rate limits")`)
+    expect(packet).toContain(`- https://example.com/pricing (cacheId: ${id2})`)
     // Not the raw composite key: the trailing identity digest is noise to a reader, and a row printing it would mean the key was never split.
-    expect(packet).not.toContain(`cache-id-1)${WEB_FETCH_KEY_SEP}`)
+    expect(packet).not.toContain(`${id1})${WEB_FETCH_KEY_SEP}`)
+  })
+
+  // Provenance: live ids are PRODUCER output (storeWebOutput writes the body and returns its id). Dead ids are HAND-DERIVED: an id no blob was ever written under, which is what an aged-out entry looks like to a reader. The expired rows each carrying a cacheId and a long prompt are CAPTURE (the resume packet quoted in the defect report, where `web-output e0b75713b3c590dd` answered "no cached web output ... may have expired").
+  it('prints an expired fetch as its url alone and keeps the live one actionable', async () => {
+    const sessionId = 'sid-web-live-dead'
+    clearModuleCaches()
+    const live = storeWebOutput('https://example.com/live', 'live body', 'live-key')
+    recordWebFetch('https://example.com/live', 'live prompt', live)
+    recordWebFetch('https://example.com/gone', 'a long prompt that points at nothing', 'deadbeef00000001')
+    expect(storeBlob(SESSIONS_SUBDIR, sessionId, exportSessionState() as unknown as Record<string, unknown>)).toBe(true)
+    clearModuleCaches()
+
+    const packet = await buildResumePacket(sessionId)
+    expect(packet).not.toBeNull()
+    expect(packet).toContain(`- https://example.com/live (cacheId: ${live}, prompt: "live prompt")`)
+    expect(packet!.split(String.fromCharCode(10))).toContain('- https://example.com/gone (cache expired)')
+    expect(packet).not.toContain('deadbeef00000001')
+    expect(packet).not.toContain('points at nothing')
+  })
+
+  it('collapses a session whose every fetch expired to one line with no cacheId', async () => {
+    const sessionId = 'sid-web-all-dead'
+    clearModuleCaches()
+    recordWebFetch('https://example.com/a', 'p-a', 'deadbeef00000002')
+    recordWebFetch('https://example.com/b', 'p-b', 'deadbeef00000003')
+    expect(storeBlob(SESSIONS_SUBDIR, sessionId, exportSessionState() as unknown as Record<string, unknown>)).toBe(true)
+
+    const packet = await buildResumePacket(sessionId)
+    expect(packet).not.toBeNull()
+    expect(packet).toContain('- 2 fetched pages, cache expired: https://example.com/a, https://example.com/b')
+    expect(packet).not.toContain('cacheId:')
+    expect(packet).not.toContain('p-a')
+  })
+
+  it('prints no bash heading when every recent bash output has expired', async () => {
+    const sessionId = 'sid-bash-all-dead'
+    // HAND-DERIVED: ids with no stored output.
+    expect(storeBlob(SESSIONS_SUBDIR, sessionId, { files: [], bashOutputs: [['ls', 'deadbeef00000004'], ['pwd', 'deadbeef00000005']] })).toBe(true)
+
+    const packet = await buildResumePacket(sessionId)
+    expect(packet).not.toBeNull()
+    expect(packet).not.toContain('## Recent bash commands')
   })
 
   it('omits the web section entirely when the session fetched nothing', async () => {

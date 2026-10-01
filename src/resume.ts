@@ -8,7 +8,7 @@ import { resolveProjectRoot } from './project.js'
 import { runGit, safeSlice } from './util.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { listSkills, getSkillFilePath, extractChecklistSection } from './skill_cache.js'
-import { renderWebFetchRow } from './manifest.js'
+import { renderWebFetchRows } from './manifest.js'
 import { readCompactDroppedPaths } from './compact_dropped.js'
 
 export const MAX_RESUME_TOKENS = 2000
@@ -130,28 +130,26 @@ export async function buildResumePacket(sessionId: string): Promise<string | nul
 
   const bashOutputs = Array.isArray(raw['bashOutputs']) ? (raw['bashOutputs'] as Array<unknown>) : []
   const recentBash = bashOutputs.slice(-2)
-  if (recentBash.length > 0) {
-    lines.push('## Recent bash commands')
-    for (const entry of recentBash) {
-      if (Array.isArray(entry) && typeof entry[1] === 'string') {
-        const bashEntry = getBashOutput(entry[1])
-        // A multi-line command (heredoc, multi-line script) embeds literal newlines into
-        // bashEntry.command; pushed raw, each line becomes its own top-level markdown line
-        // with only the first prefixed `- `, breaking this list's structure for the model
-        // reading it. Collapse to one line, same defect class as mcp_compress.ts's cellText.
-        // displaySafeText replaces the old tab/newline squeeze rather than stacking with it: it already escapes C0 controls, and the two together would double-process the same bytes.
-        if (bashEntry !== null) lines.push(`- ${displaySafeText(bashEntry.command)}`)
-      }
+  const bashRows: string[] = []
+  for (const entry of recentBash) {
+    if (Array.isArray(entry) && typeof entry[1] === 'string') {
+      const bashEntry = getBashOutput(entry[1])
+      // A multi-line command (heredoc, multi-line script) embeds literal newlines into
+      // bashEntry.command; pushed raw, each line becomes its own top-level markdown line
+      // with only the first prefixed `- `, breaking this list's structure for the model
+      // reading it. Collapse to one line, same defect class as mcp_compress.ts's cellText.
+      // displaySafeText replaces the old tab/newline squeeze rather than stacking with it: it already escapes C0 controls, and the two together would double-process the same bytes.
+      if (bashEntry !== null) bashRows.push(`- ${displaySafeText(bashEntry.command)}`)
     }
-    lines.push('')
   }
+  if (bashRows.length > 0) lines.push('## Recent bash commands', ...bashRows, '')
 
   // A fetched page is the one kind of session state that cannot be recovered by re-reading the working tree: the URL is gone from the model's context and nothing on disk names it. The blob stores `[key, cacheId]` pairs in the same composite-key shape the compaction manifest renders, so this shares that renderer rather than re-deriving the split -- taking the most recent fetches, since a resume is a recency question. The whole section is dropped on a malformed entry rather than printing a half-row: the cacheId is what makes the row actionable via `web-output`.
   const webFetches = Array.isArray(raw['webFetches']) ? (raw['webFetches'] as Array<unknown>) : []
-  const webRows = webFetches
+  const webEntries = webFetches
     .slice(-MAX_RESUME_WEB_FETCHES)
     .filter((e): e is [string, string] => Array.isArray(e) && typeof e[0] === 'string' && typeof e[1] === 'string')
-    .map(([key, cacheId]) => renderWebFetchRow(key, cacheId))
+  const webRows = renderWebFetchRows(webEntries)
   if (webRows.length > 0) {
     lines.push('## Web pages fetched')
     lines.push(...webRows)

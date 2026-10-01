@@ -17,6 +17,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { buildManifest } from '../src/manifest.js'
 import { exportSessionState, importSessionState, recordWebFetch, recordFileRead } from '../src/session.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
+import { storeWebOutput } from '../src/web_cache.js'
 
 // Captured before any test has touched the module-level session maps, so each `fetchAs` below can stand in for one hook process starting empty.
 const EMPTY_STATE = JSON.parse(JSON.stringify(exportSessionState()))
@@ -56,8 +57,11 @@ describe('compaction manifest web URLs across subagents', () => {
   const SESSION = 'f0e9d8c7-b6a5-4433-2211-000000000000'
 
   it('lists a URL a subagent fetched, not only the parent thread', () => {
-    fetchAs(agentKey(SESSION, 'agent-one-11111111-1111-1111-1111-111111111111'), 'https://example.com/sub-a', 'what does this say', 'cafe1111')
-    fetchAs(agentKey(SESSION, 'agent-two-22222222-2222-2222-2222-222222222222'), 'https://example.com/sub-b', '', 'cafe2222')
+    // Provenance: live ids are PRODUCER output (storeWebOutput); a row whose body has expired no longer carries its id, so these must be live to be listed.
+    const idA = storeWebOutput('https://example.com/sub-a', 'body a', 'k-sub-a')
+    const idB = storeWebOutput('https://example.com/sub-b', 'body b', 'k-sub-b')
+    fetchAs(agentKey(SESSION, 'agent-one-11111111-1111-1111-1111-111111111111'), 'https://example.com/sub-a', 'what does this say', idA)
+    fetchAs(agentKey(SESSION, 'agent-two-22222222-2222-2222-2222-222222222222'), 'https://example.com/sub-b', '', idB)
 
     // The parent thread, which is what runs pre_compact: its own fetch plus at least one read so the manifest has a file section to render alongside.
     importSessionState(JSON.parse(JSON.stringify(EMPTY_STATE)))
@@ -71,8 +75,24 @@ describe('compaction manifest web URLs across subagents', () => {
     expect(text).toContain('https://example.com/sub-a')
     expect(text).toContain('https://example.com/sub-b')
     // The cache id is the row's whole point: it is the handle that recalls the fetched body without paying for the fetch again, so a row that survived with the URL but lost the id is not a pass.
-    expect(text).toContain('cafe1111')
-    expect(text).toContain('cafe2222')
+    expect(text).toContain(idA)
+    expect(text).toContain(idB)
+  })
+
+  // Provenance: the dead id is HAND-DERIVED, an id no blob was written under; the live id is PRODUCER output (storeWebOutput).
+  it('shows a subagent fetch whose body expired as its url alone, and the live one with its id', () => {
+    const live = storeWebOutput('https://example.com/sub-live', 'body', 'k-sub-live')
+    fetchAs(agentKey(SESSION, 'agent-one-11111111-1111-1111-1111-111111111111'), 'https://example.com/sub-live', 'p live', live)
+    fetchAs(agentKey(SESSION, 'agent-two-22222222-2222-2222-2222-222222222222'), 'https://example.com/sub-gone', 'p gone', 'deadbeef20000001')
+
+    importSessionState(JSON.parse(JSON.stringify(EMPTY_STATE)))
+    loadSessionState(SESSION)
+    recordFileRead('/proj/parent.ts')
+
+    const text = buildManifest(SESSION)
+    expect(text).toContain(`cacheId: ${live}`)
+    expect(text.split(String.fromCharCode(10))).toContain('- https://example.com/sub-gone (cache expired)')
+    expect(text).not.toContain('deadbeef20000001')
   })
 
   it('prints one row when the parent and a subagent fetched the same URL with the same prompt', () => {

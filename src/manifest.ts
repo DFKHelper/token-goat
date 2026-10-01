@@ -7,6 +7,7 @@ import type { FileEntry, SerializedSession } from './session.js'
 import { listSiblingSessionStates } from './session_store.js'
 import { foldPath, toKB, runGit } from './util.js'
 import { getBashOutput } from './bash_output_cache.js'
+import { hasWebOutput } from './web_cache.js'
 import { loadConfig } from './config.js'
 import { computeAdaptiveBudget, getContextPressure, isNoisePath, loadSessionCache } from './compact.js'
 import { displaySafePath, displaySafeText } from './paths.js'
@@ -67,10 +68,21 @@ export function mergeManifestFiles(parent: FileEntry[], siblingFiles: FileEntry[
 }
 
 /** One `- url (cacheId: ...)` row for a recorded web fetch, shared by the compaction manifest and `resume`'s packet. The map key is the redactedUrl + redactedPrompt + digest composite (see webFetchKey in session.ts), so split it back apart for display instead of treating the whole key as the url. Taking only the first two fields drops the trailing digest, which exists for identity and means nothing to a reader. Every other manifest row routes its file-derived text through displaySafePath/displaySafeText; this one did not, and a URL is no more ours than a filename is. The key holds only the redacted spellings, and redactSecrets removes secrets rather than neutralizing markers, so a fetched URL containing `[tg]` reached the manifest raw inside a block token-goat speaks in its own voice. The prompt is neutralized after JSON.stringify rather than before it: stringify already escapes quotes and control characters, and running the escaper first would leave the backslashes it produces to be escaped a second time. */
-export function renderWebFetchRow(key: string, cacheId: string): string {
+export function renderWebFetchRow(key: string, cacheId: string, live = true): string {
   const [url = key, prompt = ''] = key.split(WEB_FETCH_KEY_SEP)
+  if (!live) return `- ${displaySafeText(url)} (cache expired)`
   const promptSuffix = prompt ? `, prompt: ${neutralizeSpokenMarkers(JSON.stringify(prompt))}` : ''
   return `- ${displaySafeText(url)} (cacheId: ${cacheId}${promptSuffix})`
+}
+
+/** The rows for a list of `[key, cacheId]` fetches, shared by the compaction manifest and `resume`. A fetch whose cached body has expired keeps its url, so the model still knows the page was consulted, but loses the cacheId and prompt that would only point at nothing; when every fetch has expired the rows collapse to one line naming the count and the urls. */
+export function renderWebFetchRows(entries: ReadonlyArray<readonly [string, string]>): string[] {
+  const live = entries.map(([, cacheId]) => hasWebOutput(cacheId))
+  if (entries.length > 0 && !live.includes(true)) {
+    const urls = entries.map(([key]) => displaySafeText(key.split(WEB_FETCH_KEY_SEP)[0] ?? key))
+    return [`- ${entries.length} fetched page${entries.length === 1 ? '' : 's'}, cache expired: ${urls.join(', ')}`]
+  }
+  return entries.map(([key, cacheId], n) => renderWebFetchRow(key, cacheId, live[n]))
 }
 
 /** Build the session manifest string. Counts reads and edits, then lists read files, an edited-files section (only when edits exist), and any fetched web URLs with their cache ids. Rows are capped at {@link MAX_ROWS} per section with a truncation note. `sessionId`, when provided, is the *unsalted* parent session id (relay.ts only salts `sessionStateKey` when `agentId` is set, which is never true on the main thread that runs pre_compact). Every subagent spawned during this session persisted its reads/edits into its own agent-salted blob (see relay.ts's `sessionStateKey`), separate from the parent's plain-keyed blob that {@link getSessionFiles} was just hydrated from — so without this, a subagent's edits are invisible to the compaction manifest that is supposed to preserve exactly that context across compaction. Sibling blobs are read straight off disk and merged in; nothing is written back. `cwd`, when provided, is passed through to {@link capManifestChars} so its {@link adaptiveCharBonus} can check real git dirty state for this project before capping -- omitted (e.g. a harness that doesn't send `cwd` on `pre_compact`), the cap falls back to the fixed configured value unchanged. */
@@ -134,7 +146,7 @@ function buildManifestParts(
   if (notes !== null) lines.push('', notes)
   appendFileSection('### Surgically read files (symbol/section reads, never read whole)', symbolOnlyFiles, renderSymbolReadRow)
   appendFileSection('### Read files', readFiles, renderReadRow)
-  appendCappedSection(lines, '### Web URLs fetched', webFetches.map(([key, cacheId]) => renderWebFetchRow(key, cacheId)), MAX_ROWS)
+  appendCappedSection(lines, '### Web URLs fetched', renderWebFetchRows(webFetches), MAX_ROWS)
 
   lines.push(...buildSafeToDiscardSection(files))
   lines.push(...buildMemEpochSection())

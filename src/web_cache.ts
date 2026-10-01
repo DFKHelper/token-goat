@@ -1,8 +1,9 @@
 /** Web-fetch result cache with cross-process disk persistence. Ports the web-fetch dedup concept from `session.py` (mark_web_fetch / lookup_web_entry): a previously fetched URL's body is kept so a redundant re-fetch can be served from cache instead of hitting the network again, and so `token-goat web-output <id>` can recall it. A per-process `cacheId -> content` map plus a `url -> cacheId` index front a content-addressed disk store (`~/.token-goat/web_outputs/<cacheId>.json`). Since the hooks and CLI run as separate processes, the disk layer is what lets a body cached by one process be recalled by another. The in-memory maps are cleared between tests via {@link registerReset}; the disk store is pruned by age/count on each write. */
 
+import * as fs from 'node:fs'
 import { shortFingerprint } from './fingerprint.js'
 import { registerReset } from './reset.js'
-import { isBlobStale, loadBlob, storeBlob } from './disk_cache.js'
+import { blobPath, isBlobStale, loadBlob, storeBlob } from './disk_cache.js'
 import { indexRecallEntry } from './recall_index.js'
 import { redactSecrets } from './secret_redact.js'
 
@@ -63,6 +64,14 @@ export function getWebOutput(cacheId: string): string | null {
   if (blob.raw !== null) _rawById.set(cacheId, blob.raw)
   if (blob.url !== null) _urlIndex.set(blob.url, cacheId)
   return blob.content
+}
+
+/** True when a body for `cacheId` is still recallable, by the same rules {@link getWebOutput} applies (in-process hit, else a blob on disk that has not aged out) but without reading or parsing it. Lets a listing say which of its ids still resolve. */
+export function hasWebOutput(cacheId: string): boolean {
+  if (_byId.has(cacheId)) return true
+  const p = blobPath(WEB_OUTPUT_SUBDIR, cacheId)
+  if (p === null || isBlobStale(WEB_OUTPUT_SUBDIR, cacheId)) return false
+  return fs.existsSync(p)
 }
 
 /** Return the body as actually fetched for `cacheId`, before extractCleanText's cleaning pass -- the recovery path `web-output --raw` uses. Falls back to the cleaned body (same disk/staleness rules as {@link getWebOutput}) when no separate raw copy was stored, which covers both "the entry predates this raw-recovery feature" and "cleaning never ran for this entry (webfetch.compress_bodies was off, or the body was too small/not HTML)" -- in both cases the cleaned body IS the raw body, so there is nothing to lose. */
