@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -8,6 +8,7 @@ import { checkDbExists, oversizeDbMessage } from '../src/cli_doctor_index.js'
 import { getDb } from '../src/db.js'
 import { reclaimIndex, indexSizeBytes } from '../src/index_reclaim.js'
 import { invalidateConfigCache } from '../src/config.js'
+import { clearUpdateCheck, seedUpdateCheck } from './helpers/update-check.js'
 
 describe('doctor index size threshold and auto-reclaim', () => {
   let tmpHome: string
@@ -17,10 +18,19 @@ describe('doctor index size threshold and auto-reclaim', () => {
     prevHome = process.env['TOKEN_GOAT_HOME']
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-doctor-thresh-'))
     process.env['TOKEN_GOAT_HOME'] = tmpHome
+    // runDoctorRepair also checks the instruction gate in the user-level files and the project root, and writes the project when none is gated: keep both inside the scratch dir, never the real home or the checkout the suite runs from.
+    vi.stubEnv('HOME', tmpHome)
+    vi.stubEnv('USERPROFILE', tmpHome)
+    vi.stubEnv('CLAUDE_CONFIG_DIR', path.join(tmpHome, '.claude'))
+    vi.stubEnv('COPILOT_HOME', path.join(tmpHome, '.copilot'))
     invalidateConfigCache()
+    // Seeded so the update check in doctor reads the cache instead of asking a registry: the result would otherwise depend on the network and on the version npm serves that day.
+    seedUpdateCheck()
   })
 
   afterEach(() => {
+    clearUpdateCheck()
+    vi.unstubAllEnvs()
     if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
     else process.env['TOKEN_GOAT_HOME'] = prevHome
     invalidateConfigCache()
@@ -116,7 +126,9 @@ describe('doctor index size threshold and auto-reclaim', () => {
     const sizeBefore = indexSizeBytes(dbPath)
     expect(sizeBefore).toBeGreaterThan(1 * 1024 * 1024)
 
-    const repairRes = await runDoctorRepair({ dataDir: tmpHome })
+    const project = path.join(tmpHome, 'project')
+    fs.mkdirSync(project)
+    const repairRes = await runDoctorRepair({ dataDir: tmpHome, rootDir: project })
     delete process.env['TOKEN_GOAT_INDEXING_AUTO_RECLAIM_EMBEDDINGS']
     delete process.env['TOKEN_GOAT_INDEXING_MAX_DB_SIZE_MB']
     invalidateConfigCache()

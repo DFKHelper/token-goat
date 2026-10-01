@@ -10,11 +10,34 @@ import { recordCreatedConfig } from '../src/bridges/created_configs.js'
 import { _resetDataDirCacheForTesting } from '../src/constants.js'
 import { downloadAdvice } from '../src/embed_preflight.js'
 import { MODEL_DOWNLOAD_HOST, clearDownloadFailure, isExplicitDownload, recordDownloadFailure } from '../src/model_download_gate.js'
+import { INSTRUCTION_GATE_BEGIN, INSTRUCTION_GATE_END } from '../src/cli_doctor_guidance.js'
+import { clearUpdateCheck, seedUpdateCheck } from './helpers/update-check.js'
 
 describe('doctor auto-repair and embedding model checks', () => {
+  // runDoctorRepair checks the instruction gate against the user-level files and the project root, and writes the project when no gate is active anywhere. Every call gets a scratch project and a scratch home holding the gate `token-goat install` writes to ~/.claude/CLAUDE.md, so a healthy install reads as healthy and nothing touches the real home or the checkout the suite runs from.
+  let userHome: string
+  let projectRoot: string
+
   beforeEach(() => {
     delete process.env['TOKEN_GOAT_MODEL_CACHE_DIR']
     vi.restoreAllMocks()
+    userHome = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-doctor-repair-home-'))
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-doctor-repair-root-'))
+    vi.stubEnv('HOME', userHome)
+    vi.stubEnv('USERPROFILE', userHome)
+    vi.stubEnv('CLAUDE_CONFIG_DIR', path.join(userHome, '.claude'))
+    vi.stubEnv('COPILOT_HOME', path.join(userHome, '.copilot'))
+    fs.mkdirSync(path.join(userHome, '.claude'))
+    fs.writeFileSync(path.join(userHome, '.claude', 'CLAUDE.md'), `${INSTRUCTION_GATE_BEGIN}\nGate body\n${INSTRUCTION_GATE_END}\n`)
+    // Step 7 reads the update check from the cache, so no test asks a registry and none changes its result the day npm serves a newer version.
+    seedUpdateCheck()
+  })
+
+  afterEach(() => {
+    clearUpdateCheck()
+    vi.unstubAllEnvs()
+    fs.rmSync(userHome, { recursive: true, force: true })
+    fs.rmSync(projectRoot, { recursive: true, force: true })
   })
 
   describe('checkEmbeddingModel', () => {
@@ -96,7 +119,7 @@ describe('doctor auto-repair and embedding model checks', () => {
       const saveSpy = vi.spyOn(configModule, 'saveConfig').mockImplementation(() => undefined)
       vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(true)
 
-      const result = await runDoctorRepair()
+      const result = await runDoctorRepair({ rootDir: projectRoot })
       expect(result.repairs).toContain('Restored permissive read access (mcp.confine_reads_to_project_root = false)')
       expect(result.repairs).toContain('Restored cross-project symbol search (indexing.cross_project_symbols = true)')
       expect(saveSpy).toHaveBeenCalled()
@@ -117,7 +140,7 @@ describe('doctor auto-repair and embedding model checks', () => {
       vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(false)
       const ensureSpy = vi.spyOn(embedModel, 'ensureModelFiles').mockResolvedValue('mock-dir')
 
-      const result = await runDoctorRepair()
+      const result = await runDoctorRepair({ rootDir: projectRoot })
       expect(result.repairs).toContain('Restored network access (network.offline = false)')
       expect(result.repairs).toContain('Enabled semantic embeddings (indexing.embeddings_enabled = true)')
       expect(result.repairs).toContain('Downloaded and verified semantic embedding model files')
@@ -139,7 +162,7 @@ describe('doctor auto-repair and embedding model checks', () => {
         return 'mock-dir'
       })
 
-      await runDoctorRepair()
+      await runDoctorRepair({ rootDir: projectRoot })
       expect(explicit).toBe(true)
     })
 
@@ -150,7 +173,7 @@ describe('doctor auto-repair and embedding model checks', () => {
       vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(false)
       vi.spyOn(embedModel, 'ensureModelFiles').mockRejectedValue(new Error('GET https://huggingface.co/x failed: fetch failed (connect ECONNREFUSED 127.0.0.1:9)'))
 
-      const result = await runDoctorRepair()
+      const result = await runDoctorRepair({ rootDir: projectRoot })
       expect(result.errors).toContain(`Failed to download embedding model: GET https://huggingface.co/x failed: fetch failed (connect ECONNREFUSED 127.0.0.1:9). ${downloadAdvice()}`)
     })
 
@@ -166,7 +189,7 @@ describe('doctor auto-repair and embedding model checks', () => {
       vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(true)
       const ensureSpy = vi.spyOn(embedModel, 'ensureModelFiles').mockResolvedValue('mock-dir')
 
-      const result = await runDoctorRepair()
+      const result = await runDoctorRepair({ rootDir: projectRoot })
       expect(result.repairs).toHaveLength(0)
       expect(result.errors).toHaveLength(0)
       expect(saveSpy).not.toHaveBeenCalled()
@@ -188,9 +211,11 @@ describe('doctor auto-repair and embedding model checks', () => {
         process.env['LOCALAPPDATA'] = dataHome
         process.env['XDG_DATA_HOME'] = dataHome
         _resetDataDirCacheForTesting()
+        seedUpdateCheck()
       })
 
       afterEach(() => {
+        clearUpdateCheck()
         fs.rmSync(project, { recursive: true, force: true })
         fs.rmSync(dataHome, { recursive: true, force: true })
         _resetDataDirCacheForTesting()

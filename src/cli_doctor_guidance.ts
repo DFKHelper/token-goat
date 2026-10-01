@@ -4,6 +4,9 @@ import type { DoctorResult } from './doctor_result.js'
 import { buildGuidanceBlock } from './bridges/guidance_block.js'
 import { upsertDelimitedBlock } from './util.js'
 import { loadConfig } from './config.js'
+import { claudeMdPath, isInstalled } from './install.js'
+import { codexAgentsPath, isCodexInstalled } from './bridges/codex_install.js'
+import { copilotCliInstructionsPath, isCopilotCliInstalled } from './bridges/copilot_cli_install.js'
 
 export const INSTRUCTION_GATE_BEGIN = '<!-- token-goat-begin -->'
 export const INSTRUCTION_GATE_END = '<!-- token-goat-end -->'
@@ -34,7 +37,7 @@ export function findInstructionGateCandidates(rootDir: string = process.cwd()): 
   if (claudeMdExists) {
     try {
       const content = fs.readFileSync(claudeMdPath, 'utf8')
-      claudeMdHasGate = content.includes(INSTRUCTION_GATE_BEGIN)
+      claudeMdHasGate = content.includes(INSTRUCTION_GATE_BEGIN) && content.includes(INSTRUCTION_GATE_END)
     } catch {
       // ignore
     }
@@ -58,7 +61,7 @@ export function findInstructionGateCandidates(rootDir: string = process.cwd()): 
   if (agentsMdExists) {
     try {
       const content = fs.readFileSync(agentsMdPath, 'utf8')
-      agentsMdHasGate = content.includes(CODEX_GATE_BEGIN) || content.includes(INSTRUCTION_GATE_BEGIN)
+      agentsMdHasGate = (content.includes(CODEX_GATE_BEGIN) && content.includes(CODEX_GATE_END)) || (content.includes(INSTRUCTION_GATE_BEGIN) && content.includes(INSTRUCTION_GATE_END))
     } catch {
       // ignore
     }
@@ -82,7 +85,7 @@ export function findInstructionGateCandidates(rootDir: string = process.cwd()): 
   if (copilotInstructionsExists) {
     try {
       const content = fs.readFileSync(copilotInstructionsPath, 'utf8')
-      copilotInstructionsHasGate = content.includes(INSTRUCTION_GATE_BEGIN)
+      copilotInstructionsHasGate = content.includes(INSTRUCTION_GATE_BEGIN) && content.includes(INSTRUCTION_GATE_END)
     } catch {
       // ignore
     }
@@ -102,14 +105,36 @@ export function findInstructionGateCandidates(rootDir: string = process.cwd()): 
   return candidates
 }
 
+/** Whether `fullPath` holds a complete token-goat block under any of the given marker pairs. A begin marker without its end is a truncated or hand-damaged block, not a gate. */
+function fileHasGate(fullPath: string, markers: readonly (readonly [string, string])[]): boolean {
+  let content: string
+  try {
+    content = fs.readFileSync(fullPath, 'utf8')
+  } catch {
+    return false
+  }
+  return markers.some(([begin, end]) => content.includes(begin) && content.includes(end))
+}
+
+/** The user-level instruction files `token-goat install` writes its gate into, which each harness loads in every project: `~/.claude/CLAUDE.md` (or under CLAUDE_CONFIG_DIR), `~/.codex/AGENTS.md`, and Copilot CLI's `~/.copilot/copilot-instructions.md` (or under COPILOT_HOME). Returns the ones that carry a complete gate. */
+export function findActiveGlobalGates(): string[] {
+  const globals: { fullPath: string; markers: readonly (readonly [string, string])[] }[] = [
+    { fullPath: claudeMdPath(), markers: [[INSTRUCTION_GATE_BEGIN, INSTRUCTION_GATE_END]] },
+    { fullPath: codexAgentsPath(), markers: [[CODEX_GATE_BEGIN, CODEX_GATE_END], [INSTRUCTION_GATE_BEGIN, INSTRUCTION_GATE_END]] },
+    { fullPath: copilotCliInstructionsPath(), markers: [[INSTRUCTION_GATE_BEGIN, INSTRUCTION_GATE_END]] },
+  ]
+  return globals.filter((g) => fileHasGate(g.fullPath, g.markers)).map((g) => g.fullPath)
+}
+
 /** Check whether project instructions files contain the token-goat routing gate. */
 export function checkInstructionGates(rootDir: string = process.cwd()): DoctorResult {
   const candidates = findInstructionGateCandidates(rootDir)
   const existingFiles = candidates.filter((c) => c.exists)
   const gatedFiles = existingFiles.filter((c) => c.hasGate)
+  const activeGlobal = findActiveGlobalGates()
 
-  if (gatedFiles.length > 0) {
-    const names = gatedFiles.map((c) => c.relativePath).join(', ')
+  if (gatedFiles.length > 0 || activeGlobal.length > 0) {
+    const names = [...activeGlobal, ...gatedFiles.map((c) => c.relativePath)].join(', ')
     return {
       name: 'Instruction gate',
       status: 'ok',
@@ -117,30 +142,30 @@ export function checkInstructionGates(rootDir: string = process.cwd()): DoctorRe
     }
   }
 
-  // If instruction files exist but lack the gate:
+  // No gate anywhere, but the project has instruction files to carry one:
   if (existingFiles.length > 0) {
     const unGated = existingFiles.map((c) => c.relativePath).join(', ')
     return {
       name: 'Instruction gate',
       status: 'warn',
-      message: `missing in ${unGated} (agents will bypass token-goat and read whole files). Run 'token-goat doctor --fix' to inject automatically.`,
+      message: `missing in ${unGated} and in the user-level instruction files 'token-goat install' writes (agents will bypass token-goat and read whole files). Run 'token-goat doctor --fix' to inject automatically.`,
     }
   }
 
-  // No instruction files exist at all in project
   return {
     name: 'Instruction gate',
     status: 'warn',
-    message: "no project instruction file found (CLAUDE.md, AGENTS.md, or .github/copilot-instructions.md). Run 'token-goat doctor --fix' to create CLAUDE.md with routing gate.",
+    message: "missing: no user-level instruction file carries it and no project instruction file was found (CLAUDE.md, AGENTS.md, or .github/copilot-instructions.md). Run 'token-goat install', or 'token-goat doctor --fix' to create CLAUDE.md with the routing gate.",
   }
 }
 
-/** Injects missing routing gates into appropriate project instruction files. */
+/** Injects the routing gate into the project's instruction files, only when no gate is active anywhere: a user-level gate written by `token-goat install` already reaches every project, and copying it into a project file the user commits would duplicate guidance loaded every session, in a block nothing refreshes or uninstalls. */
 export function repairInstructionGates(rootDir: string = process.cwd()): { repairs: string[]; errors: string[] } {
   const repairs: string[] = []
   const errors: string[] = []
   const candidates = findInstructionGateCandidates(rootDir)
-  const existingUngated = candidates.filter((c) => c.exists && !c.hasGate)
+  if (candidates.some((c) => c.hasGate) || findActiveGlobalGates().length > 0) return { repairs, errors }
+  const existingUngated = candidates.filter((c) => c.exists)
 
   const fallback = candidates[0]
   if (!fallback) return { repairs, errors }
@@ -171,7 +196,7 @@ export function repairInstructionGates(rootDir: string = process.cwd()): { repai
   return { repairs, errors }
 }
 
-/** Warns if only IDE workspaces are detected without CLI harness config, highlighting prompt cache retention and enforcement advantages of CLI harnesses. */
+/** Warns if only IDE workspace folders are present: the project has a .vscode, .idea, .cursor or .vs folder and no CLI harness is configured, either in the project or at user level by `token-goat install`. */
 export function checkHarnessCacheEfficiency(rootDir: string = process.cwd()): DoctorResult | null {
   const hasVscode = fs.existsSync(path.join(rootDir, '.vscode'))
   const hasIdea = fs.existsSync(path.join(rootDir, '.idea'))
@@ -191,17 +216,18 @@ export function checkHarnessCacheEfficiency(rootDir: string = process.cwd()): Do
     fs.existsSync(path.join(rootDir, '.github', 'copilot-instructions.md'))
   const hasCodex = fs.existsSync(path.join(rootDir, '.codex')) || fs.existsSync(path.join(rootDir, 'AGENTS.md'))
 
+  // `token-goat install` wires the CLI harnesses at user level by default, so a project with no harness files of its own is still covered.
   const cliDetected = [
-    hasClaude && 'Claude Code',
-    hasCopilot && 'Copilot CLI',
-    hasCodex && 'Codex',
+    (hasClaude || isInstalled('user')) && 'Claude Code',
+    (hasCopilot || isCopilotCliInstalled()) && 'Copilot CLI',
+    (hasCodex || isCodexInstalled()) && 'Codex',
   ].filter(Boolean) as string[]
 
   if (ideDetected.length > 0 && cliDetected.length === 0) {
     return {
       name: 'Harness efficiency',
       status: 'warn',
-      message: `${ideDetected.join(', ')} workspace detected without CLI harness config. IDE hooks cannot fold/trim built-in reads, and dynamic editor context churns prompt cache. Use Claude Code or Copilot CLI for 90%+ prompt cache reuse and hard pre-tool denials.`,
+      message: `${ideDetected.join(', ')} workspace detected without CLI harness config. IDE hooks cannot fold/trim built-in reads. If you also use a CLI agent, run 'token-goat install' for Claude Code, or 'token-goat install --codex' or '--copilot' for those.`,
     }
   }
 
@@ -209,7 +235,7 @@ export function checkHarnessCacheEfficiency(rootDir: string = process.cwd()): Do
     return {
       name: 'Harness efficiency',
       status: 'ok',
-      message: `CLI harness configured (${cliDetected.join(', ')}) — maximum prompt cache preservation and hard pre-tool denial enabled`,
+      message: `CLI harness configured (${cliDetected.join(', ')})`,
     }
   }
 
