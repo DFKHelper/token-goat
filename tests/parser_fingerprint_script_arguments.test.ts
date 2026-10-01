@@ -67,7 +67,7 @@ describe('parser-fingerprint.mjs arguments', () => {
     expect(check.stdout).toContain(`embed fingerprint up to date (${EMBED_FINGERPRINT})`)
   })
 
-  // CAPTURE: CI's test-macos job on 6593e34f, where os.tmpdir() is under /var, a link to /private/var, and the case above got exit 0 for `--chek` because the script took itself for imported. A directory link reproduces that on every platform: a junction on Windows, which needs no symlink privilege, and a symlink elsewhere.
+  // CAPTURE: CI's test-macos job on 57c9fbb3, where os.tmpdir() is under /var, a link to /private/var, and the case above got exit 0 for `--chek` because the script took itself for imported. A directory link reproduces that on every platform: a junction on Windows, which needs no symlink privilege, and a symlink elsewhere.
   it('acts when run through a linked directory', () => {
     const link = `${dir}-link`
     fs.symlinkSync(dir, link, process.platform === 'win32' ? 'junction' : 'dir')

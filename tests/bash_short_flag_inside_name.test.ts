@@ -6,7 +6,7 @@ import { extractTailFile, extractTasksOutput, extractToolResultsFile, extractRgS
 
 // BE-22: the short-flag tests in bash_extractors.ts were `/-f\b/`, `/-c\b/`, `/-n\b/` and `/-n\s*\+/` against the whole command, so a `-f`, `-c` or `-n` inside a name (the `.` after `appendix-c` is a word boundary) was taken for the flag.
 // HAND-DERIVED: every command below is shell grammar written from tail(1), grep(1) and rg(1) option syntax, not from the extractors' regexes; the Claude Code project-folder spelling in the tasks and tool-results paths (every non-alphanumeric character of the working directory becomes `-`) is FORMAT-DERIVED from the CAPTURE comment at tests/hooks_bash.test.ts, where `C:\Projects\claude-agents` is spelled `C--Projects-claude-agents`.
-// CAPTURE (this machine, 2026-09-30, the installed 2.9.29-era build of 8e1116dc fed a PreToolUse Bash payload through `token-goat hook pre_tool_use` under an isolated home): over three copies of one 120-line markdown file, `tail -n 50 docs/notes.md` drew the tail hint while `tail -n 50 docs/appendix-c.md` and `tail -n 50 docs/notes-f.md` returned `{}`.
+// CAPTURE (this machine, 2026-09-30, the installed 2.9.29-era build of 33e5507a fed a PreToolUse Bash payload through `token-goat hook pre_tool_use` under an isolated home): over three copies of one 120-line markdown file, `tail -n 50 docs/notes.md` drew the tail hint while `tail -n 50 docs/appendix-c.md` and `tail -n 50 docs/notes-f.md` returned `{}`.
 
 function makeBashEvent(command: string): HookEvent {
   return makeHookEvent({ toolName: 'Bash', toolInput: { command }, sessionId: 'test-session', agentId: undefined, raw: {} })

@@ -28,7 +28,7 @@ function runHook(message: string): { status: number | null; stderr: string } {
   return { status: r.status, stderr: r.stderr }
 }
 
-/** CAPTURE: the subject and first paragraph of 9218ac3d's message, as `git log -1 --format=%B 9218ac3d` prints it. */
+/** CAPTURE: the subject and first paragraph of 9218ac3d's message as first pushed, as `git log -1 --format=%B 9218ac3d` printed it. The message was rewritten on one line per paragraph, and the commit is now fbaa73e1. */
 const WRAPPED_9218AC3D = [
   'fix(doctor): count the user-level install in the gate and harness checks',
   '',
@@ -49,7 +49,7 @@ const WRAPPED_BULLET_9218AC3D = [
   '',
 ].join('\n')
 
-/** CAPTURE: 9a9c8012's whole message, one line per paragraph. */
+/** CAPTURE: 9a9c8012's whole message as first pushed, one line per paragraph. The commit is now d8340fff, and its SHA references now name the rewritten commits. */
 const UNWRAPPED_9A9C8012 = [
   'docs(ledger): yield row for loop 83',
   '',
@@ -158,7 +158,7 @@ describe('commit-msg hook: verification checklists', () => {
   const hasBash = HOOK_BASH !== null
 
   it.skipIf(!hasBash)('refuses the checklist headings even when each is a single line', () => {
-    // CAPTURE: the headings of 17f9e0a7's message, each paragraph on one line, so the wrap check alone passes them.
+    // CAPTURE: the headings of 17f9e0a7's message as first pushed (now fcdd4689, with the checklist removed), each paragraph on one line, so the wrap check alone passes them.
     const message = [
       "feat(stats): --payloads shows what token-goat adds to every session's context",
       '',

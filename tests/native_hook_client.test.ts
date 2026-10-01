@@ -232,7 +232,7 @@ interface Session {
 
 type Script = (c: FakeConn, f: Fake) => Promise<void>
 
-/** The endpoint a client in the sandbox computes for `slot` of `bundle`. A long Unix socket path moves under the temp directory, which is the sandbox's, so it is computed with the sandbox's TMPDIR. CAPTURE: on CI's test-macos job for f285eff0 the real-server cases computed it with this process's TMPDIR, polled `/var/folders/.../T/tg-run-WZTo44/token-goat-501/11df605e7cdbd677-0.sock`, and never saw the server the wrapped command started under the sandbox's; Linux's shorter data directory keeps the socket there, so TMPDIR never entered it. */
+/** The endpoint a client in the sandbox computes for `slot` of `bundle`. A long Unix socket path moves under the temp directory, which is the sandbox's, so it is computed with the sandbox's TMPDIR. CAPTURE: on CI's test-macos job for 0f673c42 the real-server cases computed it with this process's TMPDIR, polled `/var/folders/.../T/tg-run-WZTo44/token-goat-501/11df605e7cdbd677-0.sock`, and never saw the server the wrapped command started under the sandbox's; Linux's shorter data directory keeps the socket there, so TMPDIR never entered it. */
 function sandboxEndpoint(slot: number, bundle: string): string {
   const saved = process.env['TMPDIR']
   process.env['TMPDIR'] = sb.tmp
@@ -334,7 +334,7 @@ const SILENT: Script = async (c, f) => {
 beforeAll(() => {
   const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-native-client-')))
   const dataDir = dataDirForHome(base)
-  // The data directory's socket path is too long here, so every endpoint moves to `token-goat-<uid>` under this temp directory, which has to be short for that path to fit the ~104-byte Unix socket limit. Under the run's own temp root it is not on macOS: CAPTURE, CI's test-macos job on 6593e34f bound `/private/var/folders/36/.../T/tg-run-wJAHtZ/tg-native-client-d7NKZn/tmp/token-goat-501/c78dd622d3d3e0ab-0.sock`, 137 bytes, and 31 cases failed with EADDRINUSE. A real macOS temp directory leaves about 87.
+  // The data directory's socket path is too long here, so every endpoint moves to `token-goat-<uid>` under this temp directory, which has to be short for that path to fit the ~104-byte Unix socket limit. Under the run's own temp root it is not on macOS: CAPTURE, CI's test-macos job on 57c9fbb3 bound `/private/var/folders/36/.../T/tg-run-wJAHtZ/tg-native-client-d7NKZn/tmp/token-goat-501/c78dd622d3d3e0ab-0.sock`, 137 bytes, and 31 cases failed with EADDRINUSE. A real macOS temp directory leaves about 87.
   const tmp = WIN ? path.join(base, 'tmp') : fs.realpathSync.native(fs.mkdtempSync('/tmp/tgn-'))
   const proj = path.join(base, 'proj')
   const fakeBundle = path.join(base, 'fake-dist')
