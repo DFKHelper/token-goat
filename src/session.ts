@@ -248,6 +248,8 @@ export function markCompacted(now: number = Date.now()): void {
   _fileLineRanges = new Map()
   // Same assumption at whole-body granularity: after compaction the served text is no longer in context, so it can no longer justify withholding a later read.
   _fileServedOutputs = new Map()
+  // The same, for the exact-repeat CLI-read ledger: a `token-goat read` the model ran before the compaction is no longer in its context, so a repeat is not a re-run of something it still holds.
+  _cliReads = new Set()
 }
 
 /** Case-fold-aware lookup of a file's session entry -- resolves `filePath` through {@link resolveFilesKey} the same way `recordFileRead`/`wasFileReadThisSession` do, so a caller that only has a differently-cased path than the one first recorded (case-insensitive filesystems) still finds the existing entry instead of missing it. Use this instead of a direct `getSessionFiles().get(filePath)` for any single-entry lookup. */

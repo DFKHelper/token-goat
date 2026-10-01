@@ -4,13 +4,15 @@
  * The manifest itself is built in manifest.ts, which `compact-hint` shares. This module owns only the two events and the choice of channel each one has available — see {@link preCompactHandler} for why that choice is not the same on every harness, and {@link postCompactHandler} for the measurement.
  */
 
+import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { markCompacted } from './session.js'
+import { COMPACTED_AT_SUFFIX, sessionSidecarPath } from './session_store.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook, sessionStateKey } from './hook_registry.js'
 import { contextOutput, passOutput, getCwd, getTranscriptPath } from './hooks_common.js'
-import { foldPath } from './util.js'
+import { ensureDirSync, foldPath } from './util.js'
 import type { HookOutput } from './types.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
@@ -19,6 +21,18 @@ import { BUDGET_ESCALATION_MARKER, MANIFEST_PREAMBLE, MANIFEST_RECOVERY_PREAMBLE
 import { dropsPreCompactContext } from './harness_channels.js'
 import { MAX_PENDING_CONTEXT_BYTES, queuePendingContext } from './pending_context.js'
 import { recordCompactDroppedPaths } from './compact_dropped.js'
+
+/** Publishes the compaction epoch to the session's subagents, whose own PreCompact carries no `agent_id` and so stamps only the parent state. See session_store.ts::applySessionCompaction. Fail-soft: a write failure must never break PreCompact. */
+function recordSessionCompaction(sessionId: string | undefined, now: number): void {
+  const p = sessionSidecarPath(sessionId ?? '', COMPACTED_AT_SUFFIX)
+  if (!p) return
+  try {
+    ensureDirSync(path.dirname(p))
+    fs.writeFileSync(p, String(now), 'utf8')
+  } catch {
+    // fail-soft
+  }
+}
 
 /**
  * pre_compact handler: hand the session manifest to the model that writes the compaction summary.
@@ -42,7 +56,9 @@ export function preCompactHandler(event: HookEvent): HookOutput {
       queuePendingContext(sessionStateKey(event), `${MANIFEST_RECOVERY_PREAMBLE}\n\n${manifest.slice(0, MAX_PENDING_CONTEXT_BYTES - MANIFEST_RECOVERY_PREAMBLE.length - 2)}`)
     }
   }
-  markCompacted()
+  const now = Date.now()
+  markCompacted(now)
+  recordSessionCompaction(event.sessionId, now)
   return out
 }
 

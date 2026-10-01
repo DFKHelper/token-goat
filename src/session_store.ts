@@ -8,7 +8,7 @@ import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, saniti
 import { normalizePath } from './paths.js'
 import { SESSIONS_SUBDIR, sessionsDir } from './sessions_dir.js'
 import { redactSerializedJson } from './secret_redact.js'
-import { MAX_SEEN_IMAGE_HASHES, MAX_BASH_START_CWDS, bashStartCwdsAtLoad, consumedBashStartCwdKeys, consumedCurlDownloadKeys, consumedFileLineRangeKeys, consumedFileServedOutputKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
+import { MAX_SEEN_IMAGE_HASHES, MAX_BASH_START_CWDS, bashStartCwdsAtLoad, consumedBashStartCwdKeys, consumedCurlDownloadKeys, consumedFileLineRangeKeys, consumedFileServedOutputKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, markCompacted, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
@@ -408,6 +408,8 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
   // Same epoch filter, same reason: a served body recorded before the winning compaction may no longer be in the model's context, so it must not justify withholding a later read of that file.
   const rawDiskServed = (disk.compactedAt ?? 0) === compactedAt ? (disk.fileServedOutputs ?? []) : []
   const memServed = (mem.compactedAt ?? 0) === compactedAt ? (mem.fileServedOutputs ?? []) : []
+  const rawDiskCliReads = (disk.compactedAt ?? 0) === compactedAt ? (disk.cliReads ?? []) : []
+  const memCliReads = (mem.compactedAt ?? 0) === compactedAt ? (mem.cliReads ?? []) : []
   // recordFileEdit clears a single file's line-range history in-memory (an edit moves the numbers those ranges are matched on; the served-output ids are matched on bytes instead and survive), but that per-file deletion carries no epoch of its own, so the compaction filter above cannot see it -- an unrelated disk read from before the edit would otherwise resurrect the exact entry this process just cleared. Drop those files from the disk side before the union so the clearing actually sticks.
   const clearedRangeFiles = new Set(consumedFileLineRangeKeys())
   const clearedServedFiles = new Set(consumedFileServedOutputKeys())
@@ -423,7 +425,8 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     fileLineRanges: mergeLineRanges(diskRanges, memRanges),
     fileServedOutputs: mergeServedOutputs(diskServed, memServed),
     ...(compactedAt > 0 ? { compactedAt } : {}),
-    cliReads: Array.from(new Set([...(disk.cliReads ?? []), ...(mem.cliReads ?? [])])),
+    // Same epoch filter as the line ranges above: a CLI read recorded before the winning compaction is not in the model's context any more, so merging it back would resurrect the "you already ran this" note the compaction just cleared.
+    cliReads: Array.from(new Set([...(rawDiskCliReads), ...(memCliReads)])),
     bashReruns: Array.from(new Set([...(disk.bashReruns ?? []), ...(mem.bashReruns ?? [])])),
     pendingLargeFileHints: mergePendingLargeFileHints(disk.pendingLargeFileHints ?? [], mem.pendingLargeFileHints ?? []),
     bashStartCwds: mergeBashStartCwds(disk.bashStartCwds ?? [], mem.bashStartCwds ?? []),
@@ -525,6 +528,24 @@ const EMPTY_SESSION: SerializedSession = { files: [], hintsShown: [], webFetches
 export function loadSessionState(sessionId: string): void {
   const p = sessionPath(sessionId)
   importSessionState((p ? readDiskState(p) : null) ?? EMPTY_SESSION)
+  applySessionCompaction(sessionId)
+}
+
+/** Sidecar holding the epoch of the latest compaction of a session, written by PreCompact whatever agent it carries. */
+export const COMPACTED_AT_SUFFIX = '.compacted-at'
+
+/** A subagent's state is keyed `<sid>:agent:<id>` but its PreCompact arrives without an `agent_id`, so the epoch is stamped on the parent's state, never its own. Reading the few-byte sidecar the stamp also writes brings the subagent's served-lines, line-range, CLI-read and repeat-deny state up to that compaction without parsing the parent's state file. */
+function applySessionCompaction(stateKey: string): void {
+  const at = stateKey.indexOf(':agent:')
+  if (at < 0) return
+  const p = sessionSidecarPath(stateKey.slice(0, at), COMPACTED_AT_SUFFIX)
+  if (!p) return
+  try {
+    const epoch = Number(fs.readFileSync(p, 'utf8').trim())
+    if (Number.isFinite(epoch) && epoch > 0) markCompacted(epoch)
+  } catch {
+    // fail-soft: no sidecar means no compaction has been recorded for this session
+  }
 }
 
 /** Persist the in-memory session state for `sessionId`, merged with whatever is already on disk (so a concurrent same-session hook process is not clobbered). No-op when the id is empty/unusable. Fail-soft: a disk error is swallowed, and a cache that exists but cannot be read is left as it is rather than written over. */
