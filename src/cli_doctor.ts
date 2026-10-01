@@ -41,7 +41,7 @@ import { nonTreeSitterLanguageCount, TREE_SITTER_LANGUAGES } from './parser_type
 import { checkSymbolBodySize } from './symbol_body_probe.js'
 import { getDb } from './db.js'
 import { HOOK_PROBE_ENV, firstReceiptShownAt, readUnmappedTools, pruneStalePatternCoveredUnmappedTools } from './stats.js'
-import { claudeHookActivity, hookLatencyBreakdown } from './hook_latency.js'
+import { claudeHookActivity, formatAgeSeconds, hookLatencyBreakdown, type HookLatencyRow } from './hook_latency.js'
 import { checkNativeHooks } from './cli_doctor_native.js'
 import { checkDbExists, checkSymbolCount, checkDirtyQueueHealth, checkEmbeddingCoverage, checkParserFreshness } from './cli_doctor_index.js'
 import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
@@ -531,6 +531,11 @@ export function checkCompactionChannel(dbPath: string): DoctorResult {
   }
 }
 
+/** A pair with fewer hook calls than this is not judged: its p95 is one or two outliers. */
+const MIN_LATENCY_SAMPLES = 20
+/** A pair whose newest call is older than this is reported but not judged. */
+const LATENCY_RECENT_WINDOW_SECONDS = 24 * 3600
+
 /** Is any single (event, harness) pair's hook latency running hot? Reads the same `stats.duration_ms` rows `token-goat stats --hooks` renders, via {@link hookLatencyBreakdown}, so this and that view can never disagree about what "hot" means. The p95 ceiling is `hooks.latency_budget_ms`, whose 1500ms default was measured as follows. `duration_ms` reads `performance.now()` inside `relayInProcess`'s finally block for a synchronous call -- total time since process start, Node bootstrap and bundle import included, not just dispatch -- which measured ~86-92ms total on this machine against a ~28ms dispatch-only figure the old threshold was calibrated for. Re-examined after the fix that made a Claude Code async-detached call (post_tool_use on Edit/Write/MultiEdit/NotebookEdit outside markdown, and every subagent_stop) record what the harness actually waited on instead: that population now measures ~20-30ms, since the harness stops waiting at the shim's early `{"async":true}` marker rather than at process exit. Left at 1500ms rather than lowered for that smaller floor: this is a ceiling meant to catch a genuine regression, not a tight bound on either population's normal range, and 1500ms is already 16-60x either one -- lowering it would only invite false positives from ordinary variance in the still-larger synchronous population, which this column measures unchanged. */
 export function checkHookLatency(dbPath: string): DoctorResult {
   const name = 'Hook latency'
@@ -548,18 +553,30 @@ export function checkHookLatency(dbPath: string): DoctorResult {
     if (rows.length === 0) {
       return { name, status: 'ok', message: 'no hook latency recorded yet (or this database predates the duration_ms column)' }
     }
-    const worst = rows[0]! // hookLatencyBreakdown sorts worst p95 first.
-    const totalCount = rows.reduce((n, r) => n + r.count, 0)
-    const worstLabel = `${worst.event} (${worst.harness || 'unrecorded harness'})`
+    const nowTs = Math.floor(Date.now() / 1000)
     const budgetMs = loadConfig().hooks.latency_budget_ms
-    if (worst.p95_ms > budgetMs) {
+    const label = (r: HookLatencyRow): string => `${r.event} (${r.harness || 'unrecorded harness'})`
+    // Only a pair with enough samples seen recently can fail the check: a p95 over a handful of calls is one outlier, and a pair last seen days ago describes a build that may no longer be running.
+    const judged = rows.filter((r) => r.count >= MIN_LATENCY_SAMPLES && nowTs - r.newest_ts <= LATENCY_RECENT_WINDOW_SECONDS)
+    const worst = judged[0] // hookLatencyBreakdown sorts worst p95 first.
+    if (worst !== undefined && worst.p95_ms > budgetMs) {
       return {
         name,
         status: 'warn',
-        message: `${worstLabel} is running a p95 of ${worst.p95_ms}ms across ${totalCount} recent hook(s); see 'token-goat stats --hooks' for the full breakdown`,
+        message: `${label(worst)} is running a p95 of ${worst.p95_ms}ms across ${worst.count} call(s); see 'token-goat stats --hooks' for the full breakdown`,
       }
     }
-    return { name, status: 'ok', message: `worst p95 ${worst.p95_ms}ms (${worstLabel}) across ${totalCount} recent hook(s)` }
+    const ignored = rows.find((r) => r.p95_ms > budgetMs && !judged.includes(r))
+    if (ignored !== undefined) {
+      const age = formatAgeSeconds(Math.max(0, nowTs - ignored.newest_ts))
+      return {
+        name,
+        status: 'ok',
+        message: `${label(ignored)} hit p95 ${ignored.p95_ms}ms ${age} (${ignored.count} call(s)), too old or too few to judge; see 'token-goat stats --hooks'`,
+      }
+    }
+    const shown = worst ?? rows[0]!
+    return { name, status: 'ok', message: `worst p95 ${shown.p95_ms}ms (${label(shown)}) across ${shown.count} call(s)` }
   } catch (e) {
     return { name, status: 'warn', message: `could not read hook latency stats: ${extractErrorMessage(e)}` }
   }

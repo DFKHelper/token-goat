@@ -11,7 +11,7 @@ function percentile(sorted: readonly number[], p: number): number {
 }
 
 /** `Ns`/`Nm`/`Nh`/`Nd ago` for a duration in seconds, coarsest unit that keeps the number readable. */
-function formatAgeSeconds(seconds: number): string {
+export function formatAgeSeconds(seconds: number): string {
   if (seconds < 60) return `${seconds}s ago`
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`

@@ -638,13 +638,14 @@ describe('cli_doctor', () => {
   })
 
   describe('checkHookLatency', () => {
-    function seedHookDurations(dbPath: string, event: string, durations: number[], harness = 'claudecode'): void {
+    // stats.ts stores ts in epoch seconds; `ts` defaults to now. A population is `durations` repeated to reach `n` rows, because the verdict ignores a pair with fewer than 20 samples.
+    function seedHookDurations(dbPath: string, event: string, durations: number[], harness = 'claudecode', ts = Math.floor(Date.now() / 1000)): void {
       const db = getDb(dbPath)
       db.exec(GLOBAL_SCHEMA_SQL)
       const stmt = db.prepare(
         "INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, harness, duration_ms) VALUES (?, ?, 0, 0, ?, ?)",
       )
-      durations.forEach((d) => stmt.run(Date.now(), `hook:${event}`, harness, d))
+      durations.forEach((d) => stmt.run(ts, `hook:${event}`, harness, d))
     }
 
     it('returns ok when there is no database yet', () => {
@@ -664,7 +665,7 @@ describe('cli_doctor', () => {
     // HAND-DERIVED: fixed durations chosen so the p95 sits unambiguously on one side of the warn threshold.
     it('reports ok with the worst p95 when latency is healthy', () => {
       const dbPath = path.join(tempDir, 'global.db')
-      seedHookDurations(dbPath, 'post_tool_use', [20, 25, 30, 35, 40])
+      seedHookDurations(dbPath, 'post_tool_use', Array.from({ length: 25 }, (_, i) => 20 + (i % 5) * 5))
       const result = checkHookLatency(dbPath)
       expect(result.status).toBe('ok')
       expect(result.message).toContain('post_tool_use')
@@ -673,15 +674,42 @@ describe('cli_doctor', () => {
 
     it('warns when a hook is running a p95 above the threshold', () => {
       const dbPath = path.join(tempDir, 'global.db')
-      seedHookDurations(dbPath, 'pre_tool_use', [1700, 1800, 1900, 1950, 1999])
+      seedHookDurations(dbPath, 'pre_tool_use', Array.from({ length: 25 }, (_, i) => 1700 + (i % 5) * 75))
       const result = checkHookLatency(dbPath)
       expect(result.status).toBe('warn')
       expect(result.message).toContain('pre_tool_use')
     })
 
+    // HAND-DERIVED: a pair needs 20 samples seen within 24h to be judged; counts and ages are chosen on each side of those lines.
+    it('judges a pair only on its own samples and names its harness, not the total across every pair', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      seedHookDurations(dbPath, 'pre_tool_use', Array(25).fill(1900), 'opencode')
+      seedHookDurations(dbPath, 'post_tool_use', Array(100).fill(30), 'claudecode')
+      const result = checkHookLatency(dbPath)
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('25 call(s)')
+      expect(result.message).not.toContain('125')
+      expect(result.message).toContain('opencode')
+    })
+
+    it('does not warn about a slow pair last seen three days ago, and says when it was', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      seedHookDurations(dbPath, 'pre_tool_use', Array(25).fill(1900), 'opencode', Math.floor(Date.now() / 1000) - 3 * 86400)
+      const result = checkHookLatency(dbPath)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('3d')
+      expect(result.message).toContain('opencode')
+    })
+
+    it('does not warn on a recent slow pair with only five samples', () => {
+      const dbPath = path.join(tempDir, 'global.db')
+      seedHookDurations(dbPath, 'pre_tool_use', Array(5).fill(1900), 'opencode')
+      expect(checkHookLatency(dbPath).status).toBe('ok')
+    })
+
     it('is wired into runDoctor rather than only being callable', () => {
       const dbPath = path.join(tempDir, 'global.db')
-      seedHookDurations(dbPath, 'pre_tool_use', [1700, 1800, 1900, 1950, 1999])
+      seedHookDurations(dbPath, 'pre_tool_use', Array.from({ length: 25 }, (_, i) => 1700 + (i % 5) * 75))
       const results = runDoctor(tempDir, path.join(tempDir, 'config.toml'), tempDir, NO_PROCESSES)
       const row = results.find((r) => r.name === 'Hook latency')
       expect(row, `no Hook latency row in: ${results.map((r) => r.name).join(', ')}`).toBeDefined()
@@ -690,7 +718,7 @@ describe('cli_doctor', () => {
 
     // hooks.latency_budget_ms replaced a hardcoded 1500. These assert on the verdict checkHookLatency actually reached for a fixed population, which is the only thing that proves the consumer read the key rather than the key merely parsing. HAND-DERIVED: the same 20-40ms durations the healthy case above uses, whose p95 is far below the 1500 default and far above a 10ms budget, so the verdict is decided by the budget alone and by nothing about the data.
     describe('hooks.latency_budget_ms', () => {
-      const HEALTHY_DURATIONS = [20, 25, 30, 35, 40]
+      const HEALTHY_DURATIONS = Array.from({ length: 25 }, (_, i) => 20 + (i % 5) * 5)
 
       function verdictWithConfig(mutate: (c: Config) => void): { status: string; message: string } {
         const cfg = defaultConfig()
