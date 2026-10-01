@@ -11,7 +11,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { extractErrorMessage } from './util.js'
-import { claudeHookScriptPath, hookEventGaps, installHooks, isInstalled, wiredClaudeHookWords } from './install.js'
+import { claudeHookScriptPath, hookEventGaps, installHooks, isInstalled, type HookEventGaps } from './install.js'
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import {
   copilotCliConfigPath,
@@ -62,6 +62,11 @@ export function shimIsCurrent(scriptPath: string, expected: string): boolean {
   }
 }
 
+/** Whether a scope's wiring needs rewriting. A fully wired scope still returns an object with three empty lists, so a non-null result alone is not a gap; null means the scope wires no token-goat hook, which is not ours to add. */
+function hasHookEventGaps(gaps: HookEventGaps | null): boolean {
+  return gaps !== null && (gaps.missing.length > 0 || gaps.outdated.length > 0 || gaps.broken.length > 0)
+}
+
 export interface HarnessRepairResult {
   repairs: string[]
   errors: string[]
@@ -82,10 +87,8 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
     const userInstalled = isInstalled('user') || fs.existsSync(userShim)
     if (userInstalled) {
       const isStaleShim = fs.existsSync(userShim) && !shimIsCurrent(userShim, CLAUDECODE_HOOK_SCRIPT)
-      const hasGaps = hookEventGaps('user') !== null
-      const words = wiredClaudeHookWords('user')
-      const hasOutdatedEntries = words.length > 0 && words.some((w) => (w[0] ?? '').includes('token-goat') === false)
-      if (isStaleShim || hasGaps || hasOutdatedEntries) {
+      // hookEventGaps compares each entry with the one this build writes, so it also catches an entry left by an older build.
+      if (isStaleShim || hasHookEventGaps(hookEventGaps('user'))) {
         installHooks('user')
         repairs.push('Repaired Claude Code (user) hooks and shim')
       }
@@ -100,8 +103,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
     const projInstalled = isInstalled('project')
     if (projInstalled) {
       const isStaleShim = fs.existsSync(projShim) && !shimIsCurrent(projShim, CLAUDECODE_HOOK_SCRIPT)
-      const hasGaps = hookEventGaps('project') !== null
-      if (isStaleShim || hasGaps) {
+      if (isStaleShim || hasHookEventGaps(hookEventGaps('project'))) {
         installHooks('project')
         repairs.push('Repaired Claude Code (project) hooks and shim')
       }
