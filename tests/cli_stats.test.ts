@@ -33,9 +33,11 @@ vi.mock('../src/hook_latency.js', () => ({
 }))
 
 // Stub session module so renderTopSessionFiles is deterministic
-vi.mock('../src/session.js', () => {
+vi.mock('../src/session.js', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>()
   let _files = new Map<string, { path: string; readCount: number; lastReadAt: number; wasEdited: boolean; sizeBytes: number }>()
   return {
+    ...actual,
     getSessionFiles: () => _files,
     recordFileRead: (p: string) => {
       const key = p

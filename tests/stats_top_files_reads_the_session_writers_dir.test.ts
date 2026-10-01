@@ -50,7 +50,7 @@ describe('stats top-files reads the directory the session writer writes to', () 
     expect(fs.readdirSync(sessionsDir()).filter((f) => f.endsWith('.json'))).toHaveLength(1)
 
     const rendered = renderTopSessionFilesFromDisk(5)
-    expect(rendered).toContain('Top files this session:')
+    expect(rendered).toContain('Top files, most recent session')
     expect(rendered).toContain('hot-file.ts')
     expect(rendered).toContain('4x')
   })
@@ -62,10 +62,11 @@ describe('stats top-files reads the directory the session writer writes to', () 
 
   it('the built bundle prints the section for a real session blob and omits it for an empty store', () => {
     const env = tgIsolatedEnv(home, { TOKEN_GOAT_HOME: home })
+    delete env['CLAUDE_CODE_SESSION_ID']
 
     const empty = runBundle(['stats'], { env })
     expect(empty.status, empty.stderr).toBe(0)
-    expect(empty.stdout).not.toContain('Top files this session:')
+    expect(empty.stdout).not.toContain('Top files')
 
     const tracked = path.join(workDir, 'bundle-hot-file.ts')
     fs.writeFileSync(tracked, 'export const b = 2\n', 'utf-8')
@@ -73,7 +74,7 @@ describe('stats top-files reads the directory the session writer writes to', () 
 
     const populated = runBundle(['stats'], { env })
     expect(populated.status, populated.stderr).toBe(0)
-    expect(populated.stdout).toContain('Top files this session:')
+    expect(populated.stdout).toContain('Top files, most recent session')
     expect(populated.stdout).toContain('bundle-hot-file.ts')
   })
 })

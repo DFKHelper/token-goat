@@ -7,6 +7,7 @@ import { renderStats, renderShortStats } from './stats_report.js'
 import { renderHookLatencyStats } from './hook_latency.js'
 import { sessionsDir } from './sessions_dir.js'
 import { getSessionFiles } from './session.js'
+import { listSiblingSessionStates, readSessionStateFile } from './session_store.js'
 import { ensureNewline } from './util.js'
 import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
 import { displaySafeJson } from './paths.js'
@@ -28,9 +29,9 @@ function rankByReadCount(entries: Array<{ path: string; count: number }>, topN: 
 }
 
 /** Format ranked (path, count) entries as the "Top files this session:" block, or "" if empty. */
-function formatTopFiles(ranked: Array<{ path: string; count: number }>): string {
+function formatTopFiles(ranked: Array<{ path: string; count: number }>, heading: string = 'Top files this session:'): string {
   if (ranked.length === 0) return ''
-  const lines = ['Top files this session:']
+  const lines = [heading]
   for (const { path: filePath, count } of ranked) {
     const basename = path.basename(filePath)
     lines.push(`  ${count.toString().padStart(3)}x  ${basename}  (${filePath})`)
@@ -46,6 +47,24 @@ export function renderTopSessionFiles(topN: number = 5): string {
 
     const entries = [...sessionFiles.values()].map((e) => ({ path: e.path, count: e.readCount }))
     return formatTopFiles(rankByReadCount(entries, topN))
+  } catch {
+    return ''
+  }
+}
+
+/** Heading for the newest-file fallback, which cannot know it is showing this session's reads. */
+export const MOST_RECENT_SESSION_HEADING = 'Top files, most recent session (not necessarily this one):'
+
+/** Top-N most-read files for the session `sessionId` itself: its own blob merged with its salted subagent siblings, read counts summed per path. Returns "" when that session has read nothing more than once, and never borrows another session's files. */
+export function renderTopFilesForSession(sessionId: string, topN: number = 5): string {
+  try {
+    const states = [readSessionStateFile(sessionId), ...listSiblingSessionStates(sessionId)]
+    const totals = new Map<string, number>()
+    for (const state of states) {
+      if (state === null) continue
+      for (const f of state.files) totals.set(f.path, (totals.get(f.path) ?? 0) + f.readCount)
+    }
+    return formatTopFiles(rankByReadCount([...totals].map(([p, count]) => ({ path: p, count })), topN))
   } catch {
     return ''
   }
@@ -76,7 +95,7 @@ export function renderTopSessionFilesFromDisk(topN: number = 5, overrideSessions
           .filter((f) => typeof f['readCount'] === 'number')
           .map((f) => ({ path: String(f['path'] ?? ''), count: Number(f['readCount']) }))
 
-        const rendered = formatTopFiles(rankByReadCount(entries, topN))
+        const rendered = formatTopFiles(rankByReadCount(entries, topN), MOST_RECENT_SESSION_HEADING)
         if (rendered === '') continue
         return rendered
       } catch {
@@ -188,7 +207,11 @@ export function runStats(opts: StatsOptions = {}): void {
     renderShortStats(renderOpts)
   }
 
-  const topFilesText = renderTopSessionFiles(5) || renderTopSessionFilesFromDisk(5)
+  // Inside a Claude Code session the id is in the environment, so show that session's files; the newest-file scan is only for a caller that cannot say which session it is.
+  const sessionId = process.env['CLAUDE_CODE_SESSION_ID']
+  const topFilesText = sessionId !== undefined && sessionId !== ''
+    ? renderTopFilesForSession(sessionId, 5)
+    : renderTopSessionFiles(5) || renderTopSessionFilesFromDisk(5)
   if (topFilesText) {
     writeRaw(topFilesText)
   }
