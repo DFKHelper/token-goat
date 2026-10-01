@@ -617,6 +617,8 @@ async function maybeEmitLargeUncompressedHint(
     (exitCode !== null && exitCode !== 0) ||
     // token-goat's own output is already the narrow form; telling the model to compress it is noise.
     isTokenGoatOwnCommand(cmd) ||
+    // a line-range read, piped or repeated, is already the narrow slice; compressing it saves nothing.
+    extractLineRangeReadsCompound(cmd) !== null ||
     (event.raw['_tg_harness'] !== 'vscode' && (isCompressibleSingleCommand(cmd) || !isUnwrapped))
   ) {
     return null
