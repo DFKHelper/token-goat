@@ -10,9 +10,10 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { run } from '../src/cli.js'
+import { clearUpdateCheck, seedUpdateCheck } from './helpers/update-check.js'
 
 function captureStdout(fn: () => Promise<void>): Promise<string> {
   const spy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
@@ -25,7 +26,13 @@ describe('map --json / doctor --json', () => {
   let root: string
   const cwd = process.cwd()
 
+  beforeEach(() => {
+    // Seeded so the update check in doctor reads the cache instead of asking a registry: the result would otherwise depend on the network and on the version npm serves that day.
+    seedUpdateCheck()
+  })
+
   afterEach(() => {
+    clearUpdateCheck()
     process.chdir(cwd)
     if (root) rmSync(root, { recursive: true, force: true })
   })

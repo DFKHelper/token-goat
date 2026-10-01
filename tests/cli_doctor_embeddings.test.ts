@@ -10,6 +10,7 @@ import type * as EmbedModel from '../src/embed_model.js'
 import { runtimeDownloadAdvice } from '../src/embed_preflight.js'
 import type * as EmbedRuntime from '../src/embed_runtime.js'
 import { RUNTIME_DOWNLOAD_HOST, clearDownloadFailure, recordDownloadFailure } from '../src/model_download_gate.js'
+import { clearUpdateCheck, seedUpdateCheck } from './helpers/update-check.js'
 
 /** Only `indexing.embeddings_enabled` and `network.offline` are read, so the rest of Config is irrelevant to the check. */
 function configWith(enabled: boolean | undefined, offline = false): Config {
@@ -156,6 +157,7 @@ describe('doctor: a WebAssembly runtime download that failed', () => {
   })
   afterEach(() => {
     clearDownloadFailure(RUNTIME_URL)
+    clearUpdateCheck()
     vi.unstubAllEnvs()
   })
 
@@ -181,6 +183,8 @@ describe('doctor: a WebAssembly runtime download that failed', () => {
     // tests/setup/isolate-home.ts turns embeddings off for the whole suite, and step 3b rightly skips a runtime nothing will use.
     vi.stubEnv('TOKEN_GOAT_EMBEDDINGS_ENABLED', 'true')
     vi.stubEnv('TOKEN_GOAT_OFFLINE', 'false')
+    // Seeded so the update check in doctor reads the cache instead of asking a registry: the result would otherwise depend on the network and on the version npm serves that day.
+    seedUpdateCheck()
     vi.doMock('../src/embed_runtime.js', async (importOriginal) => ({
       ...(await importOriginal<typeof EmbedRuntime>()),
       activeRuntime: () => 'onnxruntime-web',

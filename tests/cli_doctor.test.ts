@@ -26,6 +26,7 @@ import { MAX_SYMBOL_BODY_CHARS } from '../src/parser.js'
 import { checkSymbolBodySize, OVERSIZED_BODY_PROBE_SQL } from '../src/symbol_body_probe.js'
 import { PACKAGE_NAME, VERSION } from '../src/version.js'
 import { defaultConfig, invalidateConfigCache, loadConfig, saveConfig, type Config } from '../src/config.js'
+import { clearUpdateCheck, seedUpdateCheck } from './helpers/update-check.js'
 import type * as CliContextStats from '../src/cli_context_stats.js'
 import type * as ChildProcess from 'child_process'
 
@@ -49,9 +50,12 @@ describe('cli_doctor', () => {
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor_test_'))
+    // Seeded so the update check in doctor reads the cache instead of asking a registry: the result would otherwise depend on the network and on the version npm serves that day.
+    seedUpdateCheck()
   })
 
   afterEach(() => {
+    clearUpdateCheck()
     // checkSymbolCount opens the db via getDb, which caches an open handle per path; close it before rmSync or Windows refuses to delete the locked .db/.db-wal files.
     clearModuleCaches()
     setTsModuleForTesting(undefined)

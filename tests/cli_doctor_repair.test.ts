@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import type { Config } from '../src/config.js'
-import { checkEmbeddingModel, runDoctorRepair } from '../src/cli_doctor.js'
+import { checkEmbeddingModel, runDoctorAndExit, runDoctorRepair } from '../src/cli_doctor.js'
 import * as embedModel from '../src/embed_model.js'
 import * as configModule from '../src/config.js'
 import { recordCreatedConfig } from '../src/bridges/created_configs.js'
@@ -11,6 +11,7 @@ import { _resetDataDirCacheForTesting } from '../src/constants.js'
 import { downloadAdvice } from '../src/embed_preflight.js'
 import { MODEL_DOWNLOAD_HOST, clearDownloadFailure, isExplicitDownload, recordDownloadFailure } from '../src/model_download_gate.js'
 import { INSTRUCTION_GATE_BEGIN, INSTRUCTION_GATE_END } from '../src/cli_doctor_guidance.js'
+import { DEV_CHECKOUT_ADVICE } from '../src/cli_upgrade.js'
 import { clearUpdateCheck, seedUpdateCheck } from './helpers/update-check.js'
 
 describe('doctor auto-repair and embedding model checks', () => {
@@ -271,6 +272,76 @@ describe('doctor auto-repair and embedding model checks', () => {
         expect(result.errors).toHaveLength(0)
         expect(fs.existsSync(mcpPath)).toBe(true)
       })
+    })
+
+    it('reports an available update from a development checkout and installs nothing', async () => {
+      // The suite runs from this repository, which is a development checkout, so step 7 must name the update and leave the build alone.
+      seedUpdateCheck('99.0.0')
+      vi.spyOn(configModule, 'loadConfig').mockReturnValue({
+        mcp: { confine_reads_to_project_root: false },
+        indexing: { cross_project_symbols: true, embeddings_enabled: true },
+        network: { offline: false },
+      } as unknown as Config)
+      vi.spyOn(configModule, 'saveConfig').mockImplementation(() => undefined)
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(true)
+
+      const result = await runDoctorRepair({ rootDir: projectRoot })
+
+      const notice = result.repairs.find((r) => r.includes('development checkout'))
+      expect(notice).toContain('-> v99.0.0')
+      expect(notice).toContain(DEV_CHECKOUT_ADVICE)
+      expect(result.repairs.some((r) => r.startsWith('Upgraded'))).toBe(false)
+      expect(result.errors.filter((e) => e.includes('pgrade'))).toHaveLength(0)
+    })
+
+    it('reports nothing about updates when offline, even with one cached', async () => {
+      seedUpdateCheck('99.0.0')
+      vi.spyOn(configModule, 'loadConfig').mockReturnValue({
+        mcp: { confine_reads_to_project_root: false },
+        indexing: { cross_project_symbols: true, embeddings_enabled: true },
+        network: { offline: true },
+      } as unknown as Config)
+      vi.spyOn(configModule, 'saveConfig').mockImplementation(() => undefined)
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(true)
+
+      const result = await runDoctorRepair({ rootDir: projectRoot })
+
+      expect(result.repairs.filter((r) => r.includes('pdate') || r.includes('pgrade'))).toHaveLength(0)
+      expect(result.errors.filter((e) => e.includes('pgrade'))).toHaveLength(0)
+    })
+  })
+
+  describe('the update notice at the end of a doctor run', () => {
+    // HAND-DERIVED: the suite runs from this repository, a development checkout, and the cache says 99.0.0 is out, so the decision is dev-checkout. The notice once said "Run 'token-goat upgrade'" whatever the decision, which upgrade itself refuses from a checkout, and it printed after --fix had already handled the update in step 7.
+    async function doctorOutput(opts: { fix?: boolean }): Promise<string> {
+      seedUpdateCheck('99.0.0')
+      // The full checks run after the repair, so this one needs every section of a real config rather than the few the repair reads.
+      const config = configModule.defaultConfig()
+      config.network.offline = false
+      vi.spyOn(configModule, 'loadConfig').mockReturnValue(config)
+      vi.spyOn(configModule, 'saveConfig').mockImplementation(() => undefined)
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(true)
+      const lines: string[] = []
+      vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')) })
+      await runDoctorAndExit({ rootDir: projectRoot, processes: [], ...opts })
+      return lines.join('\n')
+    }
+
+    it('gives the development-checkout advice instead of telling a checkout to run upgrade', async () => {
+      const out = await doctorOutput({})
+
+      expect(out).toContain('[!] Update available: token-goat v')
+      expect(out).toContain('-> v99.0.0')
+      expect(out).toContain(DEV_CHECKOUT_ADVICE)
+      expect(out).not.toContain("Run 'token-goat upgrade'")
+    })
+
+    it('prints no notice after --fix, whose own step already handled the update', async () => {
+      const out = await doctorOutput({ fix: true })
+
+      expect(out).toContain('development checkout')
+      expect(out).not.toContain('[!] Update available')
+      expect(out).not.toContain("Run 'token-goat upgrade'")
     })
   })
 })

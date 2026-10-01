@@ -34,6 +34,8 @@ import { storeBlob } from '../src/disk_cache.js'
 import { SESSIONS_SUBDIR } from '../src/session_store.js'
 import { findProject } from '../src/project.js'
 import { setEntry } from '../src/project_memory.js'
+import { DEV_CHECKOUT_ADVICE, saveCachedUpdateStatus } from '../src/cli_upgrade.js'
+import { VERSION } from '../src/version.js'
 
 function makeEvent(cwd?: string, source?: string): HookEvent {
   return {
@@ -331,5 +333,35 @@ describe('sessionStartHandler', () => {
       const result = await sessionStartHandler(makeEvent(undefined, 'compact'))
       expect(contextOf(result)).not.toContain('# Resume packet')
     })
+  })
+})
+
+describe('the update reminder at session start', () => {
+  // HAND-DERIVED: the suite runs from this repository, a development checkout, where `upgrade` refuses to replace the install; the cache says 99.0.0 is out. Offline, `upgrade` makes no check and installs nothing.
+  async function contextWithUpdate(offline: boolean): Promise<string> {
+    vi.stubEnv('TOKEN_GOAT_OFFLINE', offline ? '1' : '0')
+    invalidateConfigCache()
+    saveCachedUpdateStatus({ checkedAt: Date.now(), current: VERSION, latest: '99.0.0', updateAvailable: true })
+    const result = await sessionStartHandler(makeEvent())
+    return result.hookType === 'context' ? result.context : ''
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    invalidateConfigCache()
+    // The file alone: the hook leaves other stores open in this directory, and Windows refuses to delete an open file.
+    fs.rmSync(path.join(_testDataDir, 'update_check.json'), { force: true })
+  })
+
+  it('gives a development checkout its own update steps rather than telling it to run upgrade', async () => {
+    const context = await contextWithUpdate(false)
+    expect(context).toContain(`token-goat update available: v${VERSION} -> v99.0.0`)
+    expect(context).toContain(DEV_CHECKOUT_ADVICE)
+    expect(context).not.toContain("run 'token-goat upgrade'")
+    expect(context).not.toContain("Run 'token-goat upgrade'")
+  })
+
+  it('says nothing about an update while offline, when upgrade would do nothing', async () => {
+    expect(await contextWithUpdate(true)).not.toContain('update available')
   })
 })

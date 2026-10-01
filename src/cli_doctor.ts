@@ -835,22 +835,20 @@ export async function runDoctorRepair(opts?: {
   errors.push(...gateRepair.errors)
 
   // 7. Check for pending updates and upgrade if available
+  // A development checkout is reported, never replaced: installing from the registry would overwrite the developer's own build. Offline or an unreachable registry installs nothing and is not an error, since the rest of the repair still ran.
   try {
-    const { checkUpdateStatus, cmdUpgrade } = await import('./cli_upgrade.js')
-    const update = await checkUpdateStatus(2500)
-    if (update.updateAvailable && update.latest) {
-      const isLocalGitRepo =
-        fs.existsSync(path.join(process.cwd(), '.git')) &&
-        fs.existsSync(path.join(process.cwd(), 'esbuild.config.mjs'))
-      if (isLocalGitRepo) {
-        repairs.push(`Update available (v${update.current} -> v${update.latest}). In local dev repo; run: git pull && npm run build`)
-      } else {
-        await cmdUpgrade()
-        repairs.push(`Upgraded token-goat to latest (v${update.latest})`)
-      }
+    const upgrade = await import('./cli_upgrade.js')
+    const update = await upgrade.checkUpdateStatus(2500)
+    const decision = upgrade.currentUpgradeDecision(update)
+    if (decision === 'dev-checkout') {
+      repairs.push(`Update available (v${update.current} -> v${update.latest}). This token-goat runs from a development checkout, so it was not replaced; run: ${upgrade.DEV_CHECKOUT_ADVICE}`)
+    } else if (decision === 'install') {
+      const outcome = await upgrade.performUpgrade()
+      if (outcome.ok) repairs.push(`Upgraded token-goat v${update.current} -> v${update.latest}`)
+      else errors.push(`Upgrade to v${update.latest} failed: ${outcome.message}`)
     }
-  } catch {
-    // Non-fatal if offline
+  } catch (e) {
+    errors.push(`Upgrade check failed: ${e instanceof Error ? e.message : String(e)}`)
   }
 
   return { repairs, errors }
@@ -984,8 +982,9 @@ export async function runDoctorAndExit(opts?: string | {
   fix?: boolean
 }): Promise<number> {
   const options = typeof opts === 'string' ? { rootDir: opts } : (opts ?? {})
+  const repairRan = options.repair === true || options.fix === true
 
-  if (options.repair === true || options.fix === true) {
+  if (repairRan) {
     console.log('Running automatic repairs...\n')
     const { repairs, errors } = await runDoctorRepair({
       dataDir: options.dataDir,
@@ -1057,15 +1056,19 @@ export async function runDoctorAndExit(opts?: string | {
     }
   }
 
-  try {
-    const { checkUpdateStatus } = await import('./cli_upgrade.js')
-    const update = await checkUpdateStatus(1500)
-    if (update.updateAvailable && update.latest) {
-      console.log(`\n[!] Update available: token-goat v${displaySafeText(update.current)} -> v${displaySafeText(update.latest)}`)
-      console.log(`    Run 'token-goat upgrade' to update.\n`)
+  // A repair run already handled the update in its own step, and this process still reports the version it started as, so a notice here would announce the update it just installed.
+  if (!repairRan) {
+    try {
+      const upgrade = await import('./cli_upgrade.js')
+      const update = await upgrade.checkUpdateStatus(1500)
+      const advice = upgrade.updateAdvice(upgrade.currentUpgradeDecision(update))
+      if (advice !== null) {
+        console.log(`\n[!] Update available: token-goat v${displaySafeText(update.current)} -> v${displaySafeText(update.latest ?? '')}`)
+        console.log(`    ${advice}\n`)
+      }
+    } catch {
+      // Silent fail if network unreachable or offline
     }
-  } catch {
-    // Silent fail if network unreachable or offline
   }
 
   return results.some((r) => r.status === 'fail') ? 1 : 0
