@@ -440,10 +440,37 @@ function recallStageTokens(cmd: string): string[] | null {
   const forSplit = cmd.replace(/\s2>(?:&1|\/dev\/null)/g, '')
   if (hasBareBackgroundOrNewline(forSplit)) return null
   const first = splitShellSegments(forSplit)[0]
-  if (first === undefined || !(segmentCommandIs(first, 'token-goat') || segmentCommandIs(first, 'tg'))) return null
-  const tokens = safeShlexSplit(stripOutputPipeline(first))
-  if (tokens === null) return null
-  return Object.values(RECALL_COMMAND).includes(tokens[1] ?? '') ? tokens : null
+  if (first === undefined) return null
+  const args = tokenGoatInvocation(stripOutputPipeline(first))
+  if (args === null) return null
+  return Object.values(RECALL_COMMAND).includes(args[0] ?? '') ? ['token-goat', ...args] : null
+}
+
+/** The arguments after the program when `segment` launches token-goat itself, otherwise null: bare `token-goat` or `tg`, `node`/`node.exe` running a script whose basename is token-goat.mjs or token-goat.core.mjs (the form this repo's dogfood protocol prescribes), or `npx [-y|--yes] token-goat[@version]`. Any other node script is not token-goat. */
+export function tokenGoatInvocation(segment: string): string[] | null {
+  const tokens = safeShlexSplit(segment)
+  if (tokens === null || tokens.length === 0) return null
+  const base = (t: string): string => t.replace(/^.*[/\\]/, '').replace(/\.exe$/i, '').toLowerCase()
+  const head = base(tokens[0] ?? '')
+  if (head === 'token-goat' || head === 'tg') return tokens.slice(1)
+  if (head === 'node') {
+    const script = tokens[1]
+    return script !== undefined && /(?:^|[/\\:])token-goat(?:\.core)?\.mjs$/i.test(script) ? tokens.slice(2) : null
+  }
+  if (head === 'npx') {
+    let i = 1
+    while (tokens[i] === '-y' || tokens[i] === '--yes') i++
+    return /^token-goat(?:@\S+)?$/.test(tokens[i] ?? '') ? tokens.slice(i + 1) : null
+  }
+  return null
+}
+
+/** True when the first pipeline stage of `cmd` launches token-goat itself (bare, `tg`, the node bundle or npx), so its output is already the narrow form and no generic pass should rewrite or clip it. */
+export function isTokenGoatOwnCommand(cmd: string): boolean {
+  const forSplit = cmd.replace(/\s2>(?:&1|\/dev\/null)/g, '')
+  if (hasBareBackgroundOrNewline(forSplit)) return false
+  const first = splitShellSegments(forSplit)[0]
+  return first !== undefined && tokenGoatInvocation(stripOutputPipeline(first)) !== null
 }
 
 /** True when the first pipeline stage of `cmd` recalls a cached output, with or without `--full`, `--grep`, `--section`, `--head` or `--tail`. What it prints is text the model asked to have back, so withholding any of it behind a recall pointer names the very id the model just recalled and the text never arrives. */

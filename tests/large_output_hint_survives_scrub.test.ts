@@ -39,4 +39,13 @@ describe('large uncompressed output hint', () => {
     expect(hintFor('curl http://example.com/api && echo done', 'foreign', stdout, ROOT)).toContain('uncompressed')
     expect(hintFor(targets.map((t) => `token-goat read "${t}"`).join('; '), 'own', stdout, ROOT)).not.toContain('uncompressed')
   })
+
+  // Provenance: the launcher form is CAPTURE (live recall 02b8a82b5281cbc3); `tg` is the second bin name package.json installs for the same program; the stdout is the real output of the bundle's `read` command.
+  it('stays silent on token-goat run through the node launcher or the tg alias', () => {
+    const targets = ['src/hooks_bash_post.ts@648-683', 'src/hooks_bash_post.ts@684-718']
+    const stdout = targets.map((t) => spawnSync(process.execPath, [BUNDLE, 'read', t], { cwd: ROOT, encoding: 'utf-8', env }).stdout).join('')
+    expect(hintFor('curl http://example.com/api && echo done', 'foreign2', stdout, ROOT)).toContain('uncompressed')
+    expect(hintFor(targets.map((t) => `node C:/Projects/token-goat/dist/token-goat.mjs read "${t}"`).join('; '), 'own-node', stdout, ROOT)).not.toContain('uncompressed')
+    expect(hintFor(targets.map((t) => `tg read "${t}"`).join('; '), 'own-tg', stdout, ROOT)).not.toContain('uncompressed')
+  })
 })

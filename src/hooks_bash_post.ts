@@ -44,6 +44,7 @@ import {
   pipelineShapeFilter,
   isFullRecallCommand,
   isRecallCommand,
+  isTokenGoatOwnCommand,
   pureFileReadPath,
   deliveredLineNumbers,
   isWholeFileDump,
@@ -325,6 +326,8 @@ async function maybeCompressCompoundOutput(
   if (!isUnwrapped) return null
   // A recall of already-delivered full output must survive verbatim, or a piped/chained read of it (e.g. `bash-output <id> --full | head -300`) gets recompressed into a new, smaller pointer -- the model asked for the full text back and got another summary.
   if (isFullRecallCommand(cmd)) return null
+  // token-goat's own commands already print the narrow form, whatever launcher spelled them, so piping one through head or 2>&1 must not run it through generic compression.
+  if (isTokenGoatOwnCommand(cmd)) return null
   // Don't compact a command that reported a non-zero exit: a failing compound pipeline's diagnostics must reach the model in full on its first read, not behind a `--full` recall. An unknown exit (null -- common on harnesses that do not report one) is treated as non-failure, matching the success gates elsewhere in this handler.
   if (exitCode !== null && exitCode !== 0) return null
   let cfg: { enabled: boolean; disabled_filters: string[]; max_lines: number; max_bytes: number }
@@ -613,7 +616,7 @@ async function maybeEmitLargeUncompressedHint(
     optedOut ||
     (exitCode !== null && exitCode !== 0) ||
     // token-goat's own output is already the narrow form; telling the model to compress it is noise.
-    /^\s*token-goat\s/.test(cmd) ||
+    isTokenGoatOwnCommand(cmd) ||
     (event.raw['_tg_harness'] !== 'vscode' && (isCompressibleSingleCommand(cmd) || !isUnwrapped))
   ) {
     return null

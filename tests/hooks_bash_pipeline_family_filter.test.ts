@@ -159,4 +159,14 @@ describe('post-hook filter selection for a piped command', () => {
     expect(isFullRecallCommand('token-goat bash-output abc123')).toBe(false)
     expect(isFullRecallCommand('grep -rn "export function" src | head -200')).toBe(false)
   })
+
+  // Provenance: the node form is CAPTURE (live recall 02b8a82b5281cbc3); the npx form is FORMAT-DERIVED from docs/install.md; `node scripts/other.mjs` is HAND-DERIVED as the control.
+  it('isFullRecallCommand recognizes the node launcher and npx spellings of token-goat only', () => {
+    expect(isFullRecallCommand('node C:/x/dist/token-goat.mjs bash-output 0123456789abcdef --full')).toBe(true)
+    expect(isFullRecallCommand("node.exe 'C:/Program Files/x/token-goat.mjs' bash-output 0123456789abcdef --full")).toBe(true)
+    expect(isFullRecallCommand('npx -y token-goat bash-output 0123456789abcdef --full')).toBe(true)
+    expect(isFullRecallCommand('npx token-goat@1.2.3 bash-output 0123456789abcdef --full | head -5')).toBe(true)
+    expect(isFullRecallCommand('node scripts/other.mjs bash-output 0123456789abcdef --full')).toBe(false)
+    expect(isFullRecallCommand('npx other-pkg bash-output 0123456789abcdef --full')).toBe(false)
+  })
 })
