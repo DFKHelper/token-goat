@@ -926,7 +926,7 @@ export function buildProgram(): Command {
     )
     .option('-j, --json', 'output as JSON')
     .option('--list', 'list all section headings in the file instead of reading one')
-    .option('--grep <pattern>', 'with --list, filter headings to this regex (literal substring if it is not valid regex)')
+    .option('--grep <pattern>', 'with --list, filter headings to this regex; otherwise keep only the matching body lines of each section under their nearest sub-heading (literal substring if it is not valid regex)')
     .option('--max-lines <n>', 'limit returned section content to at most N lines from the top')
     .option('--head <n>', 'alias for --max-lines')
     .action((spec: string, more: string[], opts: { json?: boolean; list?: boolean; grep?: string; maxLines?: string; head?: string }) => {
@@ -948,6 +948,7 @@ export function buildProgram(): Command {
                   spec,
                   ...(opts.json === true ? { json: true } : {}),
                   ...(maxLines !== undefined ? { maxLines } : {}),
+                  ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
                 }),
               { noun: 'spec', mergeable: namedSpecsMergeable([spec, ...more]) },
             ),

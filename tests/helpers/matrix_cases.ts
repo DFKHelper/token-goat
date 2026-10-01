@@ -304,7 +304,19 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(anchored.stdout).toContain('return 20')
     expect(anchored.stdout).not.toContain('return 10')
   },
-  section: () => expectRead(['section', 'README.md::Install'], 'npm install'),
+  section: () => {
+    expectRead(['section', 'README.md::Install'], 'npm install')
+    // --grep filters the body rather than being ignored. Provenance: HAND-DERIVED, README.md is written in the fixture setup above (the Install body is one line, "Run npm install to set up the project.").
+    const grepHit = run(['section', 'README.md::Fixture', '--grep', 'npm install'])
+    expect(grepHit.status, grepHit.stderr).toBe(0)
+    expect(grepHit.stdout).toContain('Run npm install to set up the project.')
+    expect(grepHit.stdout).toContain('## Install')
+    expect(grepHit.stdout).toContain('1 of 5 lines matched')
+    const grepMiss = run(['section', 'README.md::Fixture', '--grep', 'zzznomatch'])
+    expect(grepMiss.status, grepMiss.stderr).toBe(0)
+    expect(grepMiss.stdout).toContain('filtered out by --grep zzznomatch')
+    expect(grepMiss.stdout).not.toContain('Run npm install')
+  },
   // Deliberately a keyword smoke test, not a proof of real embedding-vector search: this shared fixture is indexed with embeddings disabled (isolate-home.ts sets TOKEN_GOAT_EMBEDDINGS_ENABLED=false for the whole suite, and tgEnv inherits it), so this case only exercises the FTS keyword fallback and would pass identically whether or not real semantic search is wired up - it is not a substitute for that proof. The dedicated proof - a meaning-only natural-language query finding a symbol whose name/body never uses the query's words, with a control run showing the same query genuinely misses under FTS alone - lives in tests/semantic_embeddings_e2e.test.ts.
   semantic: () => {
     expectRead(['semantic', 'alphamarker'], 'alphaSym')

@@ -174,6 +174,7 @@ Upgrading reparses the index. The file-lock fix below is in a file the parser fi
 - **`THIRD_PARTY_NOTICES.md` names the exact release of every package the bundle includes, nested copies too.** It looked each package up by name at the top of `node_modules`, so it listed the wrong `onnxruntime-common` release and left out the `entities` 7.0.1 a parser brings along.
 - **An archived changelog entry gave `onnxruntime-node`'s installed size as 34 MB.** It is about 288 MB, every platform's binaries included.
 - **Front matter at the top of a markdown file is no longer indexed as a heading.** A Jekyll block like the one that opens README.md ends in a `---` line, and the heading scanners took that line for the underline of a heading. The last metadata key (`permalink: /` in README.md) then showed up as a level 2 heading ahead of the real title in `outline`, `section` and read hints. The scanners now start after the front matter. An opening `---` with no closing one is not treated as front matter.
+- **`token-goat section --grep <pattern>` filters the section.** The flag was accepted and then ignored, so the whole section came back. It now prints only the matching lines, each under the sub-heading it sits in.
 
 ## [2.9.29] - 2026-09-25
 

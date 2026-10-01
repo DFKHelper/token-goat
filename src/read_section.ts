@@ -7,7 +7,7 @@ import { findSpecSeparator, guardText, healStaleIndex, readFileText, recordReadS
 import { stripHtmlIdSpelling, parseCrossFileMultiSpec } from './read_spec.js'
 import { didYouMean, filterSimilarHeadings } from './read_suggest.js'
 import { listSections, readSection, type SectionResult } from './section_reader.js'
-import { countNoun } from './util.js'
+import { compileGrepMatcher, countNoun, grepFilteredToEmptyNotice } from './util.js'
 
 // `readSection` only ever resolves headings from the file's own text; a non-heading html element (`<section id="chart1-panel">`) is invisible to it even after the extractor spans its whole element (html.ts::extractHtml), because that span lives in the symbols table, not in the file's heading list. Fall back to an html_id symbol lookup for html files only, so `section "file.html::chart1-panel"` (or the `#chart1-panel` spelling) resolves the same element `read`/`symbol` already do.
 function htmlIdSectionFallback(filePath: string, heading: string): SectionResult | null {
@@ -32,6 +32,29 @@ export interface SectionOptions {
   projectRoot?: string
   /** Maximum number of content lines to return from the top of the section. */
   maxLines?: number
+  /** Keep only the section body lines matching this pattern (regex, literal substring when invalid), each under its nearest sub-heading. */
+  grep?: string
+}
+
+// Keeps the section's own first line plus each matching line, preceded once by the nearest heading line above it, so a surviving line stays attributable to its sub-section.
+function filterBodyByGrep(content: string, pattern: string): { content: string; matched: number; total: number } {
+  const matches = compileGrepMatcher(pattern)
+  const lines = content.split('\n')
+  const out: string[] = []
+  let matched = 0
+  let pendingHeading: string | null = null
+  for (const [i, line] of lines.entries()) {
+    const isHeading = /^#{1,6}\s/.test(line)
+    if (i === 0 && isHeading) out.push(line)
+    else if (isHeading) pendingHeading = line
+    const hit = matches(line)
+    if (hit) matched++
+    if (!hit || (i === 0 && isHeading)) continue
+    if (pendingHeading !== null && pendingHeading !== line) out.push(pendingHeading)
+    pendingHeading = null
+    out.push(line)
+  }
+  return { content: out.join('\n'), matched, total: lines.length }
 }
 
 export function literalHeadingExists(filePath: string, heading: string): boolean {
@@ -107,6 +130,15 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
   let content = result.content
   let lineEnd = result.lineEnd
   let truncatedNotice = ''
+  let grepNote = ''
+  let grepStats: { matched: number; total: number } | null = null
+
+  if (opts.grep !== undefined) {
+    const filtered = filterBodyByGrep(content, opts.grep)
+    grepStats = { matched: filtered.matched, total: filtered.total }
+    grepNote = filtered.matched === 0 ? `\n${grepFilteredToEmptyNotice(filtered.total, opts.grep, 'line', 'lines')}` : `\n${filtered.matched} of ${filtered.total} lines matched`
+    content = filtered.matched === 0 ? '' : filtered.content
+  }
 
   if (opts.maxLines !== undefined && opts.maxLines > 0) {
     const lines = content.split('\n')
@@ -123,6 +155,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
       ...result,
       content,
       lineEnd,
+      ...(grepStats !== null ? { grep: opts.grep, matchedLines: grepStats.matched, sectionLines: grepStats.total } : {}),
       ...(opts.maxLines !== undefined && opts.maxLines > 0
         ? {
             totalLines: result.content.split('\n').length,
@@ -139,7 +172,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
   const redirectNote =
     result.redirectedFrom !== undefined ? ` (redirected from: '${result.redirectedFrom}')` : ''
   const text = guardText(
-    `# ${result.heading} — ${filePath}:${result.lineStart}-${lineEnd}${redirectNote}\n${content}${truncatedNotice}`,
+    `# ${result.heading} — ${filePath}:${result.lineStart}-${lineEnd}${redirectNote}${content.length > 0 ? `\n${content}` : ''}${truncatedNotice}${grepNote}`,
     'heading',
   )
   if (opts.suppressStat !== true) recordReadStat(kind, fullSourceBytes, text, heading)
