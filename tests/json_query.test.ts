@@ -445,4 +445,164 @@ describe('recursive descent and quoted filter expressions in json_query', () => 
     const res2 = queryJson(data, "chunks[@.metadata.type=='subsection'].id")
     expect(res2.items).toEqual(['c2'])
   })
+
+  describe('JMESPath / jq projections', () => {
+    const ORG = {
+      name: 'Acme Corp',
+      tier: 'enterprise',
+      members: [
+        { id: 1, name: 'Alice', role: 'admin', tags: ['core', 'lead'], address: { city: 'New York', zip: '10001' } },
+        { id: 2, name: 'Bob', role: 'developer', tags: ['dev'], address: { city: 'London' } },
+        { id: 3, name: 'Carol', role: 'developer', tags: ['qa'], address: { city: 'Paris', zip: '75000' } },
+      ],
+    }
+
+    it('projects multiple fields into list tuples with [*].[field1, field2]', () => {
+      const res = queryJson(ORG, 'members[*].[id, name]')
+      expect(res.fanned).toBe(true)
+      expect(res.items).toEqual([
+        [1, 'Alice'],
+        [2, 'Bob'],
+        [3, 'Carol'],
+      ])
+    })
+
+    it('supports jq-style empty bracket wildcard [].[field1, field2]', () => {
+      const res = queryJson(ORG, 'members[].[id, role]')
+      expect(res.fanned).toBe(true)
+      expect(res.items).toEqual([
+        [1, 'admin'],
+        [2, 'developer'],
+        [3, 'developer'],
+      ])
+    })
+
+    it('projects nested paths and array indices in list projection', () => {
+      const res = queryJson(ORG, 'members[*].[id, address.city, tags[0]]')
+      expect(res.items).toEqual([
+        [1, 'New York', 'core'],
+        [2, 'London', 'dev'],
+        [3, 'Paris', 'qa'],
+      ])
+    })
+
+    it('defaults missing nested fields to null in list projection', () => {
+      const res = queryJson(ORG, 'members[*].[id, address.zip]')
+      expect(res.items).toEqual([
+        [1, '10001'],
+        [2, null],
+        [3, '75000'],
+      ])
+    })
+
+    it('auto-fans array target when wildcard is omitted with members.[field1, field2]', () => {
+      const res = queryJson(ORG, 'members.[id, name]')
+      expect(res.fanned).toBe(true)
+      expect(res.items).toEqual([
+        [1, 'Alice'],
+        [2, 'Bob'],
+        [3, 'Carol'],
+      ])
+    })
+
+    it('projects a single object root without fanning', () => {
+      const res = queryJson(ORG, '[name, tier]')
+      expect(res.fanned).toBe(false)
+      expect(res.items).toEqual([['Acme Corp', 'enterprise']])
+    })
+
+    it('chains equality filter before list projection', () => {
+      const res = queryJson(ORG, 'members[role=developer].[id, name]')
+      expect(res.fanned).toBe(true)
+      expect(res.items).toEqual([
+        [2, 'Bob'],
+        [3, 'Carol'],
+      ])
+    })
+
+    it('supports pipe syntax for list projection members[*] | [id, name]', () => {
+      const res = queryJson(ORG, 'members[*] | [id, name]')
+      expect(res.fanned).toBe(true)
+      expect(res.items).toEqual([
+        [1, 'Alice'],
+        [2, 'Bob'],
+        [3, 'Carol'],
+      ])
+    })
+
+    it('projects multiple fields into objects with [*].{field1, field2}', () => {
+      const res = queryJson(ORG, 'members[*].{id, name}')
+      expect(res.fanned).toBe(true)
+      expect(res.items).toEqual([
+        { id: 1, name: 'Alice' },
+        { id: 2, name: 'Bob' },
+        { id: 3, name: 'Carol' },
+      ])
+    })
+
+    it('supports aliased keys and nested paths in object projection', () => {
+      const res = queryJson(ORG, 'members[*].{memberId: id, city: address.city}')
+      expect(res.items).toEqual([
+        { memberId: 1, city: 'New York' },
+        { memberId: 2, city: 'London' },
+        { memberId: 3, city: 'Paris' },
+      ])
+    })
+
+    it('uses leaf property name when unaliased nested path is given in object projection', () => {
+      const res = queryJson(ORG, 'members[*].{id, address.city}')
+      expect(res.items).toEqual([
+        { id: 1, city: 'New York' },
+        { id: 2, city: 'London' },
+        { id: 3, city: 'Paris' },
+      ])
+    })
+
+    it('supports quoted custom target keys in object projection', () => {
+      const res = queryJson(ORG, 'members[*].{"custom.id": id, name}')
+      expect(res.items).toEqual([
+        { 'custom.id': 1, name: 'Alice' },
+        { 'custom.id': 2, name: 'Bob' },
+        { 'custom.id': 3, name: 'Carol' },
+      ])
+    })
+
+    it('projects single object root into object without fanning', () => {
+      const res = queryJson(ORG, '{orgName: name, tier}')
+      expect(res.fanned).toBe(false)
+      expect(res.items).toEqual([{ orgName: 'Acme Corp', tier: 'enterprise' }])
+    })
+
+    it('supports pipe syntax for object projection members[] | {id, name}', () => {
+      const res = queryJson(ORG, 'members[] | {id, name}')
+      expect(res.fanned).toBe(true)
+      expect(res.items).toEqual([
+        { id: 1, name: 'Alice' },
+        { id: 2, name: 'Bob' },
+        { id: 3, name: 'Carol' },
+      ])
+    })
+
+    it('defaults missing fields to null in object projection', () => {
+      const res = queryJson(ORG, 'members[*].{id, zip: address.zip}')
+      expect(res.items).toEqual([
+        { id: 1, zip: '10001' },
+        { id: 2, zip: null },
+        { id: 3, zip: '75000' },
+      ])
+    })
+
+    it('throws on unterminated {', () => {
+      expect(() => parseJsonPath('members[*].{id, name')).toThrow(/unterminated '{'/)
+    })
+
+    it('throws on empty object projection {}', () => {
+      expect(() => parseJsonPath('members[*].{}')).toThrow(/must specify at least one field/)
+    })
+
+    it('throws when attempting projection on primitive value when not fanned', () => {
+      expect(() => queryJson(12345, '{id, name}')).toThrow(/cannot project fields on number value/)
+      expect(() => queryJson(12345, '[id, name]')).toThrow(/cannot project fields on number value/)
+    })
+  })
 })

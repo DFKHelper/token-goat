@@ -109,12 +109,19 @@ export function formatJsonOutline(outline: JsonOutline): string {
   return lines.join('\n')
 }
 
-type PathOp =
+export interface ProjectionObjectField {
+  targetKey: string
+  sourcePath: string
+}
+
+export type PathOp =
   | { kind: 'key'; name: string }
   | { kind: 'recursive_key'; name: string }
   | { kind: 'index'; index: number }
   | { kind: 'wildcard' }
   | { kind: 'filter'; field: string; value: string }
+  | { kind: 'project_list'; fields: string[] }
+  | { kind: 'project_object'; fields: ProjectionObjectField[] }
 
 export const MAX_RECURSIVE_NODES = 50_000
 export const MAX_RECURSIVE_DEPTH = 100
@@ -181,14 +188,157 @@ function getNestedField(obj: unknown, fieldPath: string): unknown {
   if (Object.prototype.hasOwnProperty.call(obj, fieldPath)) {
     return (obj as Record<string, unknown>)[fieldPath]
   }
-  const parts = fieldPath.split('.')
+  const normalized = fieldPath.replace(/^\[(\d+)\]/, '$1').replace(/\[(\d+)\]/g, '.$1')
+  const parts = normalized.split('.')
   let cur: unknown = obj
   for (const part of parts) {
     if (cur === null || typeof cur !== 'object') return undefined
+    if (Array.isArray(cur)) {
+      const idx = Number(part)
+      if (Number.isInteger(idx) && idx >= 0 && idx < cur.length) {
+        cur = cur[idx]
+        continue
+      }
+      return undefined
+    }
     if (!Object.prototype.hasOwnProperty.call(cur, part)) return undefined
     cur = (cur as Record<string, unknown>)[part]
   }
   return cur
+}
+
+function splitByUnquotedChar(str: string, delimiter: string): string[] {
+  const parts: string[] = []
+  let inQuote: string | null = null
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i]
+    if (inQuote !== null) {
+      if (ch === '\\') {
+        i++
+        continue
+      }
+      if (ch === inQuote) {
+        inQuote = null
+      }
+    } else if (ch === '"' || ch === "'") {
+      inQuote = ch
+    } else if (ch === '[' || ch === '{') {
+      depth++
+    } else if (ch === ']' || ch === '}') {
+      depth = Math.max(0, depth - 1)
+    } else if (ch === delimiter && depth === 0) {
+      parts.push(str.slice(start, i))
+      start = i + 1
+    }
+  }
+  parts.push(str.slice(start))
+  return parts
+}
+
+function unquoteIfQuoted(str: string): string {
+  const trimmed = str.trim()
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    if (trimmed.length >= 2) {
+      return trimmed.slice(1, -1).replace(/\\(["'\\])/g, '$1')
+    }
+  }
+  return trimmed
+}
+
+function cleanFieldPath(str: string): string {
+  let cleaned = str.trim()
+  if (
+    (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+    (cleaned.startsWith("'") && cleaned.endsWith("'"))
+  ) {
+    return unquoteIfQuoted(cleaned)
+  }
+  if (cleaned.startsWith('.')) {
+    cleaned = cleaned.slice(1).trim()
+  }
+  return cleaned
+}
+
+function getLeafKeyName(str: string): string {
+  const trimmed = str.trim()
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return unquoteIfQuoted(trimmed)
+  }
+  let path = trimmed
+  if (path.startsWith('.')) path = path.slice(1).trim()
+  const lastDot = path.lastIndexOf('.')
+  return lastDot !== -1 ? path.slice(lastDot + 1) : path
+}
+
+function isValidFieldPath(str: string): boolean {
+  const trimmed = str.trim()
+  if (!trimmed) return false
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return true
+  }
+  return /^(\.)?[a-zA-Z_$][a-zA-Z0-9_$.]*$/.test(trimmed)
+}
+
+function parseListProjectionFields(inner: string, fullSpec: string): string[] {
+  const rawParts = splitByUnquotedChar(inner, ',')
+  const fields: string[] = []
+  for (const raw of rawParts) {
+    const trimmed = raw.trim()
+    if (!trimmed) continue
+    const source = cleanFieldPath(trimmed)
+    if (!source) {
+      throw new Error(`invalid list projection '[${inner}]' in path spec '${fullSpec}': empty field expression`)
+    }
+    fields.push(source)
+  }
+  if (fields.length === 0) {
+    throw new Error(`invalid list projection '[${inner}]' in path spec '${fullSpec}': must specify at least one field`)
+  }
+  return fields
+}
+
+function parseObjectProjectionFields(inner: string, fullSpec: string): ProjectionObjectField[] {
+  const rawParts = splitByUnquotedChar(inner, ',')
+  const fields: ProjectionObjectField[] = []
+  for (const raw of rawParts) {
+    const trimmed = raw.trim()
+    if (!trimmed) continue
+    const colonParts = splitByUnquotedChar(trimmed, ':')
+    if (colonParts.length === 1) {
+      const source = cleanFieldPath(colonParts[0]!.trim())
+      if (!source) {
+        throw new Error(`invalid object projection '{${inner}}' in path spec '${fullSpec}': empty field expression`)
+      }
+      const target = getLeafKeyName(colonParts[0]!.trim())
+      fields.push({ targetKey: target, sourcePath: source })
+    } else if (colonParts.length === 2) {
+      const rawTarget = colonParts[0]!.trim()
+      const rawSource = colonParts[1]!.trim()
+      const target = unquoteIfQuoted(rawTarget)
+      const source = cleanFieldPath(rawSource)
+      if (!target || !source) {
+        throw new Error(`invalid object projection field '${trimmed}' in '{${inner}}' of path spec '${fullSpec}'`)
+      }
+      fields.push({ targetKey: target, sourcePath: source })
+    } else {
+      throw new Error(`invalid object projection field '${trimmed}' in '{${inner}}' of path spec '${fullSpec}': multiple colons`)
+    }
+  }
+  if (fields.length === 0) {
+    throw new Error(`invalid object projection '{${inner}}' in path spec '${fullSpec}': must specify at least one field`)
+  }
+  return fields
 }
 
 export function parseJsonPath(spec: string): PathOp[] {
@@ -199,7 +349,7 @@ export function parseJsonPath(spec: string): PathOp[] {
     if (spec[i] === '.' && i + 1 < n && spec[i + 1] === '.') {
       i += 2
       let j = i
-      while (j < n && spec[j] !== '.' && spec[j] !== '[') j++
+      while (j < n && spec[j] !== '.' && spec[j] !== '[' && spec[j] !== '{' && spec[j] !== '|') j++
       if (j === i) throw new Error(`invalid path spec: expected property name after '..' in '${spec}'`)
       ops.push({ kind: 'recursive_key', name: spec.slice(i, j) })
       i = j
@@ -210,8 +360,19 @@ export function parseJsonPath(spec: string): PathOp[] {
       i++
       continue
     }
-    if (ch === '[') {
+    if (ch === '|') {
+      i++
+      while (i < n && (spec[i] === ' ' || spec[i] === '\t')) i++
+      if (i < n && spec[i] === '.') i++
+      continue
+    }
+    if (ch === ' ' || ch === '\t') {
+      i++
+      continue
+    }
+    if (ch === '{') {
       let inQuote: string | null = null
+      let depth = 1
       let close = -1
       for (let k = i + 1; k < n; k++) {
         const c = spec[k]
@@ -225,14 +386,54 @@ export function parseJsonPath(spec: string): PathOp[] {
           }
         } else if (c === '"' || c === "'") {
           inQuote = c
+        } else if (c === '{') {
+          depth++
+        } else if (c === '}') {
+          depth--
+          if (depth === 0) {
+            close = k
+            break
+          }
+        }
+      }
+      if (close === -1) throw new Error(`invalid path spec: unterminated '{' in '${spec}'`)
+      const inner = spec.slice(i + 1, close)
+      const fields = parseObjectProjectionFields(inner, spec)
+      ops.push({ kind: 'project_object', fields })
+      i = close + 1
+      continue
+    }
+    if (ch === '[') {
+      const isDottedPrefix = i > 0 && spec[i - 1] === '.'
+      let inQuote: string | null = null
+      let depth = 1
+      let close = -1
+      for (let k = i + 1; k < n; k++) {
+        const c = spec[k]
+        if (inQuote !== null) {
+          if (c === '\\') {
+            k++
+            continue
+          }
+          if (c === inQuote) {
+            inQuote = null
+          }
+        } else if (c === '"' || c === "'") {
+          inQuote = c
+        } else if (c === '[') {
+          depth++
         } else if (c === ']') {
-          close = k
-          break
+          depth--
+          if (depth === 0) {
+            close = k
+            break
+          }
         }
       }
       if (close === -1) throw new Error(`invalid path spec: unterminated '[' in '${spec}'`)
       const inner = spec.slice(i + 1, close)
-      if (inner === '*') {
+      const trimmedInner = inner.trim()
+      if (trimmedInner === '' || trimmedInner === '*') {
         ops.push({ kind: 'wildcard' })
       } else if (/^\s*(["'])(?:\\.|(?!\1)[^\\])*\1\s*$/.test(inner)) {
         // A quoted segment is a literal key, the only way to address one holding a dot or a space: a bare segment ends at the first `.`, so `a.b` always meant two keys and a key named `a.b` had no spelling at all.
@@ -241,45 +442,53 @@ export function parseJsonPath(spec: string): PathOp[] {
       } else if (/^-?\d+$/.test(inner)) {
         ops.push({ kind: 'index', index: Number(inner) })
       } else {
-        let expr = inner.trim()
-        if (expr.startsWith('?(') && expr.endsWith(')')) {
-          expr = expr.slice(2, -1).trim()
-        }
-        if (expr.startsWith('@.')) {
-          expr = expr.slice(2).trim()
-        }
-        const m = /^([^=]+)==?(.*)$/.exec(expr)
-        if (!m) {
-          // A bare `<`/`>` has no `=` for the match to anchor on, so it lands here rather than in the swallowed-operator check below. Named explicitly, because "expected [n], [*], or [field=value]" does not tell someone who wrote `[price>10]` what is actually wrong with it.
-          const bareOperator = /[<>]/.exec(expr)
-          if (bareOperator !== null) {
-            throw new Error(`unsupported comparison operator '${bareOperator[0]}' in '[${inner}]' of path spec '${spec}': this grammar filters by equality only ([field=value])`)
+        const commaParts = splitByUnquotedChar(inner, ',')
+        if (commaParts.length > 1) {
+          ops.push({ kind: 'project_list', fields: parseListProjectionFields(inner, spec) })
+        } else {
+          let expr = inner.trim()
+          if (expr.startsWith('?(') && expr.endsWith(')')) {
+            expr = expr.slice(2, -1).trim()
           }
-          throw new Error(`invalid bracket expression '[${inner}]' in path spec: '${spec}' (expected [n], [*], ["key"], or [field=value])`)
-        }
-        let field = (m[1] as string).trim()
-        if (field.startsWith('@.')) field = field.slice(2).trim()
-        // The field group is `[^=]+`, so it swallows the first character of any two-character comparison operator: `price>=10` parsed as a field literally named `price>`, which no document has, and the query returned an empty filter rather than an error. An empty result is what a correct filter matching nothing looks like, so the user is told their data has no expensive items instead of being told this grammar does not do `>=`.
-        const swallowedOperator = /[!<>]$/.exec(field)
-        if (swallowedOperator !== null) {
-          throw new Error(`unsupported comparison operator '${swallowedOperator[0]}=' in '[${inner}]' of path spec '${spec}': this grammar filters by equality only ([field=value])`)
-        }
-        let rawVal = (m[2] as string).trim()
-        if (
-          (rawVal.startsWith('"') && rawVal.endsWith('"')) ||
-          (rawVal.startsWith("'") && rawVal.endsWith("'"))
-        ) {
-          if (rawVal.length >= 2) {
-            rawVal = rawVal.slice(1, -1).replace(/\\(["'\\])/g, '$1')
+          if (expr.startsWith('@.')) {
+            expr = expr.slice(2).trim()
+          }
+          const m = /^([^=]+)==?(.*)$/.exec(expr)
+          if (m) {
+            let field = (m[1] as string).trim()
+            if (field.startsWith('@.')) field = field.slice(2).trim()
+            const swallowedOperator = /[!<>]$/.exec(field)
+            if (swallowedOperator !== null) {
+              throw new Error(`unsupported comparison operator '${swallowedOperator[0]}=' in '[${inner}]' of path spec '${spec}': this grammar filters by equality only ([field=value])`)
+            }
+            let rawVal = (m[2] as string).trim()
+            if (
+              (rawVal.startsWith('"') && rawVal.endsWith('"')) ||
+              (rawVal.startsWith("'") && rawVal.endsWith("'"))
+            ) {
+              if (rawVal.length >= 2) {
+                rawVal = rawVal.slice(1, -1).replace(/\\(["'\\])/g, '$1')
+              }
+            }
+            ops.push({ kind: 'filter', field, value: rawVal })
+          } else {
+            const bareOperator = /[<>]/.exec(expr)
+            if (bareOperator !== null) {
+              throw new Error(`unsupported comparison operator '${bareOperator[0]}' in '[${inner}]' of path spec '${spec}': this grammar filters by equality only ([field=value])`)
+            }
+            if (isDottedPrefix || expr.startsWith('.') || (i === 0 && isValidFieldPath(expr))) {
+              ops.push({ kind: 'project_list', fields: [cleanFieldPath(expr)] })
+            } else {
+              throw new Error(`invalid bracket expression '[${inner}]' in path spec: '${spec}' (expected [n], [*], ["key"], or [field=value])`)
+            }
           }
         }
-        ops.push({ kind: 'filter', field, value: rawVal })
       }
       i = close + 1
       continue
     }
     let j = i
-    while (j < n && spec[j] !== '.' && spec[j] !== '[') j++
+    while (j < n && spec[j] !== '.' && spec[j] !== '[' && spec[j] !== '{' && spec[j] !== '|') j++
     if (j === i) throw new Error(`invalid path spec: '${spec}'`)
     ops.push({ kind: 'key', name: spec.slice(i, j) })
     i = j
@@ -338,7 +547,59 @@ export function evalJsonPath(data: unknown, ops: readonly PathOp[]): JsonQueryRe
         } else if (typeof item === 'object' && item !== null) {
           pushAll(next, Object.values(item as Record<string, unknown>))
         }
-      } else {
+      } else if (op.kind === 'project_list') {
+        if (Array.isArray(item) && !fanned) {
+          fanned = true
+          for (const el of item) {
+            next.push(
+              op.fields.map((f) => {
+                const val = getNestedField(el, f)
+                return val === undefined ? null : val
+              }),
+            )
+          }
+        } else if (item === null || typeof item !== 'object') {
+          if (!fanned) {
+            throw new Error(`path not found: cannot project fields on ${jsonType(item)} value`)
+          }
+          next.push(op.fields.map(() => null))
+        } else {
+          next.push(
+            op.fields.map((f) => {
+              const val = getNestedField(item, f)
+              return val === undefined ? null : val
+            }),
+          )
+        }
+      } else if (op.kind === 'project_object') {
+        if (Array.isArray(item) && !fanned) {
+          fanned = true
+          for (const el of item) {
+            const row: Record<string, unknown> = {}
+            for (const f of op.fields) {
+              const val = getNestedField(el, f.sourcePath)
+              row[f.targetKey] = val === undefined ? null : val
+            }
+            next.push(row)
+          }
+        } else if (item === null || typeof item !== 'object') {
+          if (!fanned) {
+            throw new Error(`path not found: cannot project fields on ${jsonType(item)} value`)
+          }
+          const row: Record<string, unknown> = {}
+          for (const f of op.fields) {
+            row[f.targetKey] = null
+          }
+          next.push(row)
+        } else {
+          const row: Record<string, unknown> = {}
+          for (const f of op.fields) {
+            const val = getNestedField(item, f.sourcePath)
+            row[f.targetKey] = val === undefined ? null : val
+          }
+          next.push(row)
+        }
+      } else if (op.kind === 'filter') {
         fanned = true
         if (Array.isArray(item)) {
           for (const el of item) {
