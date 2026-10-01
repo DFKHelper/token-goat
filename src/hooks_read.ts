@@ -1177,6 +1177,17 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       ? ' Sequential line-range paging detected (' + (activeRanges.length + 1) + ' slices read). Prefer `token-goat skeleton ' + shown + '` or ' +
         realSymbolReadHint(normalized, shown, pagingWindow.offset !== undefined && pagingWindow.limit !== undefined ? { start: pagingWindow.offset, end: pagingWindow.offset + pagingWindow.limit - 1 } : undefined) + '.'
       : ''
+    // A ranged Read whose window touches no line served before, with no whole-file read behind it, hands over lines the model has never seen: the already-read note would be false.
+    const windowIsNew = pagingWindow.isExplicitSlice && fullReads === 0 && pagingWindow.offset !== undefined && pagingWindow.limit !== undefined &&
+      !activeRanges.some(([s, e]) => s <= pagingWindow.offset! + pagingWindow.limit! - 1 && e >= pagingWindow.offset!)
+    if (windowIsNew) {
+      recordActualSlice(event, normalized)
+      if (pagingNote === '') return passOutput()
+      if (!isWithinQuietHours(config.hints.quiet_hours)) {
+        recordStat('session_hint', 0, 0)
+      }
+      return quietContextOutput(pagingNote.trimStart(), [shown])
+    }
     if (!isWithinQuietHours(config.hints.quiet_hours)) {
       recordStat('session_hint', 0, 0)
     }
