@@ -104,7 +104,7 @@ describe('output filters on content that ends in a newline', () => {
     const r = recall(blob(200), [])
     expect(r.status, r.stderr).toBe(0)
     const lines = bodyLines(r.stdout)
-    expect(r.stdout, 'fixture must be long enough to elide').toContain('...(elided)...')
+    expect(r.stdout, 'fixture must be long enough to elide').toContain('...(elided lines ')
     expect(lines[lines.length - 1]).toBe('line 200')
     expect(lines, 'the 80-line tail window must start at line 121, not 122').toContain('line 121')
     expect(lines.filter((l) => /^line \d+$/.test(l)), 'a 30-line head plus an 80-line tail is 110 lines').toHaveLength(
@@ -125,7 +125,7 @@ describe('output filters on content that ends in a newline', () => {
     const r = recall(text, ['--full'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('line 200')
-    expect(r.stdout).not.toContain('...(elided)...')
+    expect(r.stdout).not.toContain('...(elided lines ')
     // Verbatim inside the fence: --full is the lossless escape hatch, and the fence wraps it
     // without touching a byte of it.
     expect(unfence(r.stdout.replace(/\r\n/g, '\n'))).toBe(text)

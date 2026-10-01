@@ -19,9 +19,38 @@ import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
 import { decodeSource, isWindows } from './util.js'
 import { getWebOutput, getWebOutputRaw } from './web_cache.js'
 
+/** The narrowing flags every cached-output recall command shares; the three recall-by-position flags (`--lines`, `-n`, `--context`) are optional so callers that never register them (cli_office.ts) compile unchanged. */
+export interface RecallFilterOpts {
+  head?: string
+  tail?: string
+  grep?: string
+  section?: string
+  maxMatches?: string
+  full?: boolean
+  lines?: string
+  lineNumbers?: boolean
+  context?: string
+}
+
+/** One printed line: `n` is its 1-based number in the text being filtered, or null for a synthetic row (an elision marker, a `--` group separator, a cap note) that has none. */
+interface RecallRow {
+  n: number | null
+  text: string
+}
+
+/** Parse a `--lines A-B` (or single `A`) spec into a 1-based inclusive range. */
+function parseLineRange(spec: string): { from: number; to: number } {
+  const m = /^(\d+)(?:-(\d+))?$/.exec(spec.trim())
+  if (m === null) throw new CliError(`--lines must be a line number or a range like 395-405, got: "${spec}"`)
+  const from = Number(m[1])
+  const to = m[2] === undefined ? from : Number(m[2])
+  if (from < 1 || to < from) throw new CliError(`--lines must start at 1 or later and not run backwards, got: "${spec}"`)
+  return { from, to }
+}
+
 export function _applyFiltersAndPrint(
   content: string,
-  opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; full?: boolean },
+  opts: RecallFilterOpts,
   fenceByProvenance = false,
   fenceTag: string = UNTRUSTED_WEB_TAG,
 ): string {
@@ -37,12 +66,30 @@ export function _applyFiltersAndPrint(
     out(fenced)
     return fenced
   }
+  const render = (rows: RecallRow[]): string => rows.map((r) => (opts.lineNumbers === true && r.n !== null ? `${r.n}:${r.text}` : r.text)).join('\n')
   if (opts.section !== undefined) {
     const sectionResult = extractSection(content, opts.section)
     if (sectionResult === null) {
       throw new CliError(`section '${opts.section}' not found`)
     }
     content = sectionResult.content
+  }
+
+  let rows: RecallRow[] = content.split(/\r?\n/).map((text, i) => ({ n: i + 1, text }))
+  // --full below keeps this raw split, trailing "" included, so the verbatim blob is unchanged; every other path drops the phantom trailing row.
+  const dropPhantom = (r: RecallRow[]): RecallRow[] => (r.length > 1 && r[r.length - 1]?.text === '' ? r.slice(0, -1) : r)
+
+  let ranged = false
+  if (opts.lines !== undefined) {
+    const { from, to } = parseLineRange(opts.lines)
+    const total = dropPhantom(rows).length
+    if (from > total) throw new CliError(`--lines ${opts.lines} is past the end: the text has ${total} lines`)
+    rows = rows.slice(from - 1, Math.min(to, total))
+    ranged = true
+  }
+
+  if (opts.context !== undefined && opts.grep === undefined) {
+    throw new CliError('--context needs --grep: it widens each match with the lines around it')
   }
 
   if (opts.grep !== undefined) {
@@ -53,43 +100,59 @@ export function _applyFiltersAndPrint(
     }
     // Guarded, not just compiled: a pattern that backtracks unboundedly cannot be interrupted, and this filter runs over cached command output a line at a time. A refused pattern takes the same literal-substring path an uncompilable one already takes.
     const guarded = compileGuardedRegex(pattern)
-    if (guarded.ok) {
-      const re = guarded.re
-      content = content
-        .split(/\r?\n/)
-        .filter((line) => re.test(line))
-        .map((line) => clipLongMatchLine(line, pattern))
-        .join('\n')
-    } else {
-      content = content
-        .split(/\r?\n/)
-        .filter((line) => line.includes(pattern))
-        .map((line) => clipLongMatchLine(line, pattern))
-        .join('\n')
+    const matches = guarded.ok ? (line: string): boolean => guarded.re.test(line) : (line: string): boolean => line.includes(pattern)
+    const hits: number[] = []
+    rows.forEach((r, i) => {
+      if (matches(r.text)) hits.push(i)
+    })
+    const cap = opts.maxMatches !== undefined ? requireNonNegativeInt('--max-matches', opts.maxMatches) : undefined
+    const kept = cap !== undefined && hits.length > cap ? hits.slice(0, cap) : hits
+    const ctx = opts.context !== undefined ? requireNonNegativeInt('--context', opts.context) : 0
+    // The phantom trailing row is not a line of the text, so context never pulls it in.
+    const lastReal = dropPhantom(rows).length - 1
+    const wanted = new Set<number>()
+    for (const h of kept) {
+      for (let i = Math.max(0, h - ctx); i <= Math.min(lastReal, h + ctx); i++) wanted.add(i)
+      wanted.add(h)
     }
+    const next: RecallRow[] = []
+    let previous = -1
+    for (const i of [...wanted].sort((a, b) => a - b)) {
+      if (ctx > 0 && previous >= 0 && i - previous > 1) next.push({ n: null, text: '--' })
+      const r = rows[i]!
+      next.push({ n: r.n, text: clipLongMatchLine(r.text, pattern) })
+      previous = i
+    }
+    if (cap !== undefined && hits.length > cap) {
+      next.push({ n: null, text: '[token-goat: showing first ' + cap + ' of ' + hits.length + ' matching lines; raise --max-matches for more]' })
+    }
+    rows = next
   }
 
-  if (opts.grep !== undefined && opts.maxMatches !== undefined) {
-    const cap = requireNonNegativeInt('--max-matches', opts.maxMatches)
-    const matched = content === '' ? [] : content.split(/\r?\n/)
-    if (matched.length > cap) {
-      content = [...matched.slice(0, cap), '[token-goat: showing first ' + cap + ' of ' + matched.length + ' matching lines; raise --max-matches for more]'].join('\n')
-    }
-  }
-
-  const rawLines = content.split(/\r?\n/)
   // --full is the only way to get the stored blob back verbatim. The blob store itself is lossless, but every render path below elides the middle past head+tail, so without this flag an elision marker pointing a reader at `mcp-output <id>` promises a full report the CLI cannot actually produce -- which is exactly what hooks_agent_spawn.ts's envelope compaction relies on. Deliberately bypasses only the elision, not --section/--grep/--max-matches above: those are explicit narrowing the caller asked for.
   if (opts.full === true) {
-    return emit(rawLines.join('\n'))
+    return emit(render(rows))
   }
   // Text that ends in a newline splits into a trailing "" that is not a line of output. Counting it made `--tail N` return N-1 real lines (`--tail 1` returned nothing at all) and made the default elision drop the last line of every long capture. `--full` above keeps the raw split so the verbatim blob is unchanged.
-  const lines = rawLines.length > 1 && rawLines[rawLines.length - 1] === '' ? rawLines.slice(0, -1) : rawLines
+  const lines = dropPhantom(rows)
+  // An explicit --lines range is the caller asking for exactly those lines, so the default head/tail window must not cut into it.
+  if (ranged && opts.head === undefined && opts.tail === undefined) {
+    return emit(render(lines))
+  }
   const headN = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : 30
   const tailN = opts.tail !== undefined ? requireNonNegativeInt('--tail', opts.tail) : 80
 
-  const applyElision = (lines: string[], headN: number, tailN: number): string[] => lines.length > headN + tailN + 1 ? [...lines.slice(0, headN), '...(elided)...', ...lines.slice(lines.length - tailN)] : lines
+  // The marker names the cut lines. Unfiltered text is numbered 1..N, so it can hand back the exact `--lines` that fetches them; a --grep/--section view has no such numbering to point at, so it points at --full.
+  const elisionMarker = (all: RecallRow[]): RecallRow => {
+    const first = headN + 1
+    const last = all.length - tailN
+    const hint = opts.grep === undefined && opts.section === undefined ? `--lines ${all[headN]?.n}-${all[last - 1]?.n}` : '--full'
+    const of = opts.grep === undefined ? `${all.length}` : `${all.length} matching lines`
+    return { n: null, text: `...(elided lines ${first}-${last} of ${of}: ${hint})...` }
+  }
+  const applyElision = (all: RecallRow[]): RecallRow[] => (all.length > headN + tailN + 1 ? [...all.slice(0, headN), elisionMarker(all), ...all.slice(all.length - tailN)] : all)
 
-  /** Say on stderr how much of the body an explicit --head/--tail dropped. The two-sided paths above leave a `...(elided)...` marker in the body, so a reader can see the middle went missing. The one-sided branches left nothing at all: `web-output <id> --head 3` against a 60-line body returned three lines inside a content fence that looked exactly like a complete short document. Asking for three lines tells the caller how many they get; it does not tell them whether the body held three or sixty thousand, which is the number that decides whether to look again. stderr rather than stdout because stdout here is fenced untrusted content -- a token-goat line inside the fence would read as part of the payload it is describing. */
+  /** Say on stderr how much of the body an explicit --head/--tail dropped. The two-sided paths above leave a `...(elided ...)...` marker in the body, so a reader can see the middle went missing. The one-sided branches left nothing at all: `web-output <id> --head 3` against a 60-line body returned three lines inside a content fence that looked exactly like a complete short document. Asking for three lines tells the caller how many they get; it does not tell them whether the body held three or sixty thousand, which is the number that decides whether to look again. stderr rather than stdout because stdout here is fenced untrusted content -- a token-goat line inside the fence would read as part of the payload it is describing. */
   const noteLineCap = (which: 'first' | 'last', flag: 'head' | 'tail', shown: number, total: number): void => {
     if (shown >= total) return
     process.stderr.write(`Showing ${which} ${shown} of ${total} lines (raise --${flag}, or --full for the whole body).\n`)
@@ -98,9 +161,9 @@ export function _applyFiltersAndPrint(
   let result = lines
   if (opts.head === undefined && opts.tail === undefined) {
     // Covers both "no filters at all" and "--grep alone" -- the latter is the single most common recall pattern this CLI's own hint text pushes users toward (bash-output/web-output --grep with no --head/--tail), and left unbounded here it could return an arbitrarily large number of matching lines with no truncation at all.
-    result = applyElision(lines, headN, tailN)
+    result = applyElision(lines)
   } else if (opts.head !== undefined && opts.tail !== undefined) {
-    result = applyElision(lines, headN, tailN)
+    result = applyElision(lines)
   } else if (opts.head !== undefined) {
     result = lines.slice(0, headN)
     noteLineCap('first', 'head', result.length, lines.length)
@@ -109,7 +172,7 @@ export function _applyFiltersAndPrint(
     noteLineCap('last', 'tail', result.length, lines.length)
   }
 
-  return emit(result.join('\n'))
+  return emit(render(result))
 }
 
 /** The text of the file a `bash-output`/`mcp-output --file` recall names: a regular file only, decoded, and with a dotenv file's values redacted, since either command will print a .env it is pointed at and every other path that serves a file's text redacts them (see dotenv_redact.ts). `mtimeMs` is what `--verify-last-write` measures a write's age against. */
@@ -134,13 +197,8 @@ function readRecallFile(file: string): { text: string; mtimeMs: number } {
 
 export function cmdBashOutput(
   id: string | undefined,
-  opts: {
-    head?: string
-    tail?: string
-    grep?: string
-    section?: string
+  opts: RecallFilterOpts & {
     file?: string
-    maxMatches?: string
     transcript?: boolean
     verifyLastWrite?: string | boolean
     strict?: boolean
@@ -198,7 +256,7 @@ export function cmdBashOutput(
 
 export function cmdWebOutput(
   id: string | undefined,
-  opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; raw?: boolean },
+  opts: RecallFilterOpts & { raw?: boolean },
 ): void {
   if (id === undefined) {
     throw new CliError('provide a web cache <id>')
@@ -256,13 +314,7 @@ function fenceJsonStrings(value: unknown): unknown {
 // MCP results are stored in the same bash-output blob store as `mcp_<hash>`-prefixed ids (see mcp_cache.ts's storeMcpOutput), so `token-goat bash-output <id>` already resolves one — this command exists for discoverability (the id printed in a `[token-goat: compressed, full via mcp-output <id>]` label points here) and to fail clearly on a non-MCP id rather than silently serving whatever bash-output happens to be stored under it.
 export function cmdMcpOutput(
   id: string | undefined,
-  opts: {
-    head?: string
-    tail?: string
-    grep?: string
-    section?: string
-    maxMatches?: string
-    full?: boolean
+  opts: RecallFilterOpts & {
     jsonQuery?: string
     file?: string
     json?: boolean

@@ -1240,6 +1240,9 @@ export function buildProgram(): Command {
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--section <heading>', 'extract a specific section from the output')
     .option('--full', 'print the entire cached entry with no head/tail elision')
+    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405')
+    .option('-n, --line-numbers', 'prefix every printed line with its line number (N:text)')
+    .option('--context <n>', 'with --grep, also show N lines around each match')
     .option('--file <path>', 'read from raw output file instead of cache')
     .option('--transcript', 'parse the --file as a JSONL agent transcript: keep assistant text blocks in order before filtering')
     .option('--verify-last-write [seconds]', 'verify the file or cache entry was written within [seconds] (default: 60s) to catch stale/no-op terminal output')
@@ -1255,6 +1258,9 @@ export function buildProgram(): Command {
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--section <heading>', 'extract a specific section from the response')
     .option('--full', 'print the entire cached entry with no head/tail elision')
+    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405')
+    .option('-n, --line-numbers', 'prefix every printed line with its line number (N:text)')
+    .option('--context <n>', 'with --grep, also show N lines around each match')
     .option('--raw', 'return the body as actually fetched, before extractCleanText cleaning, instead of the default cleaned text')
     .action(guard(cmdWebOutput))
 
@@ -1267,6 +1273,9 @@ export function buildProgram(): Command {
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--section <heading>', 'extract a specific section from the result')
     .option('--full', 'print the entire cached entry with no head/tail elision')
+    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405')
+    .option('-n, --line-numbers', 'prefix every printed line with its line number (N:text)')
+    .option('--context <n>', 'with --grep, also show N lines around each match')
     .option('--json-query <path>', 'query JSON content using a dot/bracket path expression (e.g. "issues[*].key")')
     .option('--file <path>', 'read and query an on-disk tool spill file (e.g. content.json) instead of cache')
     .option('--json', 'emit query results as structured JSON envelope')
@@ -1411,8 +1420,8 @@ export async function run(argv: string[] = process.argv): Promise<void> {
       process.exitCode = 0
       return
     }
-    if (code === 'commander.unknownCommand' || code === 'commander.missingArgument') {
-      // Commander already wrote its diagnostic to stderr. Its "(Did you mean X?)" is edit distance over the registered names, which misfires on a conceptual miss rather than a typo -- `search` resolves to `arch`. Append an intent-based pointer for the handful of names a caller reaches for when they know what they want but not what it is called; commander's own line is left exactly as it was.
+    if (typeof code === 'string' && code.startsWith('commander.')) {
+      // Every commander error (unknown command or option, missing argument, excess arguments) has already been written to stderr by commander, so printing it again as a token-goat error doubled every parse failure. Its "(Did you mean X?)" is edit distance over the registered names, which misfires on a conceptual miss rather than a typo -- `search` resolves to `arch`. Append an intent-based pointer for the handful of names a caller reaches for when they know what they want but not what it is called; commander's own line is left exactly as it was.
       if (code === 'commander.unknownCommand') {
         const attempted = attemptedCommandName(argv)
         const hint = attempted === null ? null : suggestForUnknownCommand(attempted)

@@ -262,7 +262,7 @@ describe('token-goat CLI', () => {
     try {
       const r = await run(['bash-output', '--file', tmpFile, '--full'])
       expect(r.status).toBe(0)
-      expect(r.stdout).not.toContain('...(elided)...')
+      expect(r.stdout).not.toContain('...(elided lines ')
       expect(r.stdout).toContain('LINE 1')
       expect(r.stdout).toContain('LINE 100')
       expect(r.stdout).toContain('LINE 200')
@@ -293,7 +293,7 @@ describe('token-goat CLI', () => {
     try {
       const r = await run(['bash-output', '--file', tmpFile, '--grep', 'MATCH'])
       expect(r.status).toBe(0)
-      expect(r.stdout).toContain('...(elided)...')
+      expect(r.stdout).toContain('...(elided lines ')
       expect(r.stdout).toContain('MATCH line 1')
       expect(r.stdout).toContain('MATCH line 200')
       expect(r.stdout).not.toContain('MATCH line 100')
@@ -373,7 +373,7 @@ describe('token-goat CLI', () => {
       expect(r.status).toBe(0)
       expect(r.stdout).toContain('line 1')
       expect(r.stdout).toContain('line 5')
-      expect(r.stdout).toContain('...(elided)...')
+      expect(r.stdout).toContain('...(elided lines ')
       expect(r.stdout).toContain('line 200')
       expect(r.stdout).not.toContain('line 100')
     } finally {
@@ -388,7 +388,7 @@ describe('token-goat CLI', () => {
     try {
       const r = await run(['bash-output', '--file', tmpFile, '--head', '5', '--tail', '10'])
       expect(r.status).toBe(0)
-      expect(r.stdout).not.toContain('...(elided)...')
+      expect(r.stdout).not.toContain('...(elided lines ')
       expect(r.stdout).toContain('line 1')
       expect(r.stdout).toContain('line 16')
     } finally {

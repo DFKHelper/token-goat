@@ -86,7 +86,7 @@ describe('retrieve output filters', () => {
     const r = runIsolated(['retrieve', id])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout.replace(/\n$/, '')).toBe(text)
-    expect(r.stdout).not.toContain('...(elided)...')
+    expect(r.stdout).not.toContain('...(elided lines ')
   })
 
   it('--section extracts just the named section', () => {
@@ -117,5 +117,89 @@ describe('retrieve output filters', () => {
     const r = runIsolated(['retrieve', id, '--head', '3'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout.trim()).toBe('line 1\nline 2\nline 3')
+  })
+})
+
+// Provenance: the 600-line body is HAND-DERIVED ("line N" for N in 1..600); the default window is head 30 / tail 80, so lines 31..520 are cut and the marker names them. The Commander stderr text is CAPTURE (a real `bash-output abc --bogus` run on the previous build printed it twice).
+describe('cached-output recall: ranges, line numbers, context and the elision marker', () => {
+  /** The recalled lines inside the untrusted-tool-output fence (CAPTURE: the fence is two lines before the body and one after, as printed by `bash-output --file`). */
+  function body(stdout: string): string[] {
+    const lines = stdout.trimEnd().split('\n')
+    return lines[1] === '<untrusted-tool-output>' ? lines.slice(2, -1) : lines
+  }
+
+  function recallFile(): string {
+    const file = path.join(home, 'out600.txt')
+    const lines: string[] = []
+    for (let i = 1; i <= 600; i++) lines.push(`line ${i}`)
+    fs.writeFileSync(file, lines.join('\n') + '\n')
+    return file
+  }
+
+  it('the default elision marker names the cut lines and the flag that fetches them', () => {
+    const r = runIsolated(['bash-output', '--file', recallFile()])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('...(elided lines 31-520 of 600: --lines 31-520)...')
+    expect(r.stdout).toContain('line 30\n')
+    expect(r.stdout).not.toContain('line 31\n')
+    expect(r.stdout).toContain('line 521\n')
+  })
+
+  it('--lines A-B prints exactly that inclusive range with no elision', () => {
+    const r = runIsolated(['bash-output', '--file', recallFile(), '--lines', '395-405'])
+    expect(r.status, r.stderr).toBe(0)
+    const expected = Array.from({ length: 11 }, (_, i) => `line ${395 + i}`).join('\n')
+    expect(body(r.stdout).join('\n')).toBe(expected)
+  })
+
+  it('--lines clamps to the end of the text and prints a range wider than the default window whole', () => {
+    const r = runIsolated(['bash-output', '--file', recallFile(), '--lines', '590-9999'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(body(r.stdout)).toHaveLength(11)
+    const wide = runIsolated(['bash-output', '--file', recallFile(), '--lines', '1-300'])
+    expect(wide.stdout).not.toContain('elided')
+    expect(body(wide.stdout)).toHaveLength(300)
+  })
+
+  it('--lines rejects a malformed or out-of-range spec', () => {
+    const file = recallFile()
+    expect(runIsolated(['bash-output', '--file', file, '--lines', 'abc']).status).toBe(1)
+    expect(runIsolated(['bash-output', '--file', file, '--lines', '9-3']).status).toBe(1)
+    const past = runIsolated(['bash-output', '--file', file, '--lines', '700-710'])
+    expect(past.status).toBe(1)
+    expect(past.stderr).toContain('600 lines')
+  })
+
+  it('--grep -n prefixes each hit with its original line number', () => {
+    const r = runIsolated(['bash-output', '--file', recallFile(), '--grep', 'line 40[0-2]', '-n'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(body(r.stdout)).toEqual(['400:line 400', '401:line 401', '402:line 402'])
+  })
+
+  it('--grep --context N shows the neighbouring lines, and separates groups with --', () => {
+    const one = runIsolated(['bash-output', '--file', recallFile(), '--grep', 'line 300', '--context', '1'])
+    expect(one.status, one.stderr).toBe(0)
+    expect(body(one.stdout)).toEqual(['line 299', 'line 300', 'line 301'])
+    const two = runIsolated(['bash-output', '--file', recallFile(), '--grep', 'line (10|20)$', '--context', '1', '-n'])
+    expect(body(two.stdout)).toEqual(['9:line 9', '10:line 10', '11:line 11', '--', '19:line 19', '20:line 20', '21:line 21'])
+  })
+
+  it('web-output and mcp-output accept the same options', () => {
+    const bad = runIsolated(['mcp-output', 'mcp_deadbeefdeadbeef', '--lines', '1-2', '-n', '--context', '1'])
+    expect(bad.stderr).not.toContain('unknown option')
+    const web = runIsolated(['web-output', 'nope', '--lines', '1-2', '-n', '--context', '1'])
+    expect(web.stderr).not.toContain('unknown option')
+  })
+
+  it('a Commander parse error is printed once, not twice', () => {
+    const r = runIsolated(['bash-output', 'abc', '--bogus'])
+    expect(r.status).toBe(1)
+    expect(r.stderr.match(/unknown option '--bogus'/g)).toHaveLength(1)
+  })
+
+  it('--help still exits 0 with help text', () => {
+    const r = runIsolated(['bash-output', '--help'])
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('--lines')
   })
 })
