@@ -33,6 +33,7 @@ import {
   commandRunDir,
   bashRecallKey,
   pipelineDivergenceNote,
+  cachedRunCoversCommand,
   extractCommand,
   detectUnbalancedShellSyntax,
 } from './hooks_bash_commands.js'
@@ -613,7 +614,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     // Only emit the recall hint if the content entry is actually present (the session index may name an id whose blob was pruned) and not stale — a matching id whose stored git/dir/lockfile fingerprint no longer matches the current state means the source changed since it was cached, so it must not be recalled as fresh.
     const monEntryRaw = monOutputId !== null ? getBashOutput(monOutputId) : null
     const monEntry = monEntryRaw !== null && !isBashEntryStale(monEntryRaw, cmd, runDir) ? monEntryRaw : null
-    if (monOutputId !== null && monEntry !== null && recallWorthShowing(monOutputId, monEntry)) {
+    if (monOutputId !== null && monEntry !== null && cachedRunCoversCommand(monEntry.command, cmd) && recallWorthShowing(monOutputId, monEntry)) {
       const monBytes = monEntry.sizeBytes
       const catFile = extractCatSourceFile(cmd)
       if (catFile !== null) {
@@ -624,7 +625,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
           '`' + sliceCommand(displaySafePath(catFile), targetFor(displaySafePath(catFile))) + '` to extract only the part you need.'
         )
       }
-      const cmdSummary = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
+      const cmdSummary = cmd.length > 60 ? cmd.slice(0, 57).trimEnd() + '...' : cmd
       recordStat('bash_compress:recall', monBytes, savedTokensFromBytes(monBytes))
       return contextOutput(
         'Prior output from `' + cmdSummary + '`' + pipelineDivergenceNote(cmd, monEntry.command) + ' is cached.\n' +

@@ -125,6 +125,24 @@ export function resolveBashCall(reported: string, startCwd: string | null): { ra
 
 /** Strips a command's downstream pipeline and trailing redirections, returning the base command. Used to key the bash-output cache so that the same build/test command run with different downstream filters (`| tail -40` vs `| grep ERROR`) or redirects (`2>&1`) shares a single cache entry — mirroring how curl GET commands are keyed on their URL. Splits on the first top-level pipe operator (`|`), ignoring `|` inside single or double quotes and the `||` logical-OR operator, then removes trailing stream redirections (`2>&1`, `>/dev/null`, `2> file`, `&> file`, etc.). */
 export function stripOutputPipeline(cmd: string): string {
+  let base = cmd.slice(0, firstTopLevelPipe(cmd))
+  // Strip trailing stream redirections (possibly chained), honoring quotes. Mask quoted content with same-length spaces so the redirect regex cannot match characters inside a string literal (e.g. 'pytest -k "value > 0"'). String length is preserved, so slicing back to newMasked.length is exact.
+  let prev: string
+  do {
+    prev = base
+    const masked = base
+      .replace(/"((?:[^"\\]|\\.)*)"/g, (_m, inner: string) => '"' + ' '.repeat(inner.length) + '"')
+      .replace(/'([^']*)'/g, (_m, inner: string) => "'" + ' '.repeat(inner.length) + "'")
+    const newMasked = masked.replace(/\s*(?:[0-9]*>&[0-9]+|[0-9&]*>>?\s*(?:"[^"]*"|'[^']*'|[^\s|]+))\s*$/, '')
+    if (newMasked.length < masked.length) {
+      base = base.slice(0, newMasked.length)
+    }
+  } while (base !== prev)
+  return base.trim()
+}
+
+/** The index of the first top-level pipe operator in `cmd`, ignoring a `|` inside single or double quotes and the `||` logical-OR operator, or `cmd.length` when there is none. */
+function firstTopLevelPipe(cmd: string): number {
   let inSingle = false
   let inDouble = false
   let cut = cmd.length
@@ -151,27 +169,46 @@ export function stripOutputPipeline(cmd: string): string {
       break
     }
   }
-  let base = cmd.slice(0, cut)
-  // Strip trailing stream redirections (possibly chained), honoring quotes. Mask quoted content with same-length spaces so the redirect regex cannot match characters inside a string literal (e.g. 'pytest -k "value > 0"'). String length is preserved, so slicing back to newMasked.length is exact.
-  let prev: string
-  do {
-    prev = base
-    const masked = base
-      .replace(/"((?:[^"\\]|\\.)*)"/g, (_m, inner: string) => '"' + ' '.repeat(inner.length) + '"')
-      .replace(/'([^']*)'/g, (_m, inner: string) => "'" + ' '.repeat(inner.length) + "'")
-    const newMasked = masked.replace(/\s*(?:[0-9]*>&[0-9]+|[0-9&]*>>?\s*(?:"[^"]*"|'[^']*'|[^\s|]+))\s*$/, '')
-    if (newMasked.length < masked.length) {
-      base = base.slice(0, newMasked.length)
-    }
-  } while (base !== prev)
-  return base.trim()
+  return cut
 }
 
 // A cache entry keyed on the base command (stripOutputPipeline) or a curl URL is intentionally shared across different downstream pipes/redirects on the same underlying command — see stripOutputPipeline's docstring. But the stored *content* is whatever that one run's pipe produced, so a differently-piped recall (`| jq '.a'` vs `| jq '.b'`) can silently serve the wrong value. Rather than break the intentional sharing (and the tests that pin it), surface the command that actually produced the cached content whenever it differs from the one being run now, so the caller can judge whether the recall still covers what they need.
 export function pipelineDivergenceNote(cmd: string, entryCommand: string): string {
   if (entryCommand === cmd) return ''
-  const preview = entryCommand.length > 60 ? entryCommand.slice(0, 57) + '...' : entryCommand
+  const preview = entryCommand.length > 60 ? entryCommand.slice(0, 57).trimEnd() + '...' : entryCommand
   return ' (cached from a differently-piped run, `' + preview + '` — verify it covers what you need before trusting it)'
+}
+
+type OutputSlice = { kind: 'none' } | { kind: 'head'; n: number } | { kind: 'tail'; n: number } | { kind: 'sed'; from: number; to: number } | { kind: 'unknown' }
+
+/** The line window a command's trailing output pipeline keeps: nothing past the base command is `none`, a lone `head -N`, `tail -N` or `sed -n A,Bp` is that window, and any other pipeline (a grep, a second pipe, an option this does not read) is `unknown`. */
+function outputSlice(cmd: string): OutputSlice {
+  const pipe = firstTopLevelPipe(cmd)
+  if (pipe >= cmd.length) return { kind: 'none' }
+  const tail = cmd.slice(pipe + 1).replace(/\s*[0-9]*>&[0-9]+\s*$/, '').trim()
+  const head = /^head\s+(?:-n\s*|-)(\d+)$/.exec(tail)
+  if (head?.[1] !== undefined) return { kind: 'head', n: Number(head[1]) }
+  const last = /^tail\s+(?:-n\s*|-)(\d+)$/.exec(tail)
+  if (last?.[1] !== undefined) return { kind: 'tail', n: Number(last[1]) }
+  const sed = /^sed\s+-n\s+'?(\d+),(\d+)p'?$/.exec(tail)
+  if (sed?.[1] !== undefined && sed[2] !== undefined) return { kind: 'sed', from: Number(sed[1]), to: Number(sed[2]) }
+  return { kind: 'unknown' }
+}
+
+/** Whether the output cached for `cachedCommand` can contain what `cmd` would print: an unsliced cached run holds every window, a head or sed window holds a window inside it, and a tail holds only the identical tail (its line numbers are unknown). An output pipeline on either side that outputSlice cannot read is treated as not covering, since a recall hint that points at a cache lacking the lines costs more than the re-run it was meant to save. */
+export function cachedRunCoversCommand(cachedCommand: string, cmd: string): boolean {
+  const cached = outputSlice(cachedCommand)
+  const wanted = outputSlice(cmd)
+  if (cached.kind === 'unknown' || wanted.kind === 'unknown') return false
+  if (cached.kind === 'none') return true
+  if (wanted.kind === 'none') return false
+  if (cached.kind === 'tail') return wanted.kind === 'tail' && wanted.n === cached.n
+  const cachedFrom = cached.kind === 'head' ? 1 : cached.from
+  const cachedTo = cached.kind === 'head' ? cached.n : cached.to
+  if (wanted.kind === 'tail') return false
+  const wantedFrom = wanted.kind === 'head' ? 1 : wanted.from
+  const wantedTo = wanted.kind === 'head' ? wanted.n : wanted.to
+  return cachedFrom <= wantedFrom && wantedTo <= cachedTo
 }
 
 /** Extract the command string from a Bash tool_input. */

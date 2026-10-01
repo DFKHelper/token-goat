@@ -408,10 +408,10 @@ describe('pipe/redirect-insensitive cache keying', () => {
     clearModuleCaches()
   })
 
-  it('pipe variant hits cache: same jest command with different tail filter', async () => {
+  it('pipe variant hits cache: same jest command with narrower head filter', async () => {
     const baseCmd = 'npx jest tests/unit/foo.test.js --no-coverage 2>&1'
-    const firstCmd = baseCmd + ' | tail -40'
-    const secondCmd = baseCmd + ' | grep "PASS"'
+    const firstCmd = baseCmd + ' | head -40'
+    const secondCmd = baseCmd + ' | head -20'
     const largeOutput = 'PASSED tests/unit/foo.test.js\n'.repeat(200)
 
     // Post: run with first pipe variant
