@@ -440,6 +440,8 @@ export async function describeTarget(
           for (const col of found.columns) {
             lines.push(`| \`${col.name}\` | \`${col.type}\` | ${col.notNull ? 'NO' : 'YES'} | ${col.defaultValue ?? 'NULL'} | ${col.primaryKey ? 'YES' : 'NO'} |`)
           }
+          // A virtual table whose module is not loaded has no columns to list: the CREATE statement is its schema.
+          if (found.createSql !== undefined) lines.push('', `Module ${found.module ?? '?'} is not loaded here, so columns are not available. Declared as:`, found.createSql)
           return { exitCode: 0, text: lines.join('\n') }
         }
         if (opts?.json === true) {

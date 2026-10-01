@@ -88,12 +88,26 @@ export interface SqliteForeignKeyInfo {
 
 export interface SqliteTableInfo {
   name: string
-  kind: 'table' | 'view'
+  /** `virtual` is a `CREATE VIRTUAL TABLE`; its `module` names the implementation (`vec0`, `fts5`). */
+  kind: 'table' | 'view' | 'virtual'
+  /** The module a virtual table is declared USING; absent for ordinary tables and views. */
+  module?: string
+  /** The CREATE statement, kept only for a virtual table SQLite could not describe because its module is not loaded here: there the statement is the only schema there is. */
+  createSql?: string
+  /** True when SQLite refused to describe this virtual table; columns, indexes and the row count are then empty rather than guessed. */
+  moduleNotLoaded?: boolean
   columns: SqliteColumnInfo[]
   indexes: SqliteIndexInfo[]
   foreignKeys: SqliteForeignKeyInfo[]
   /** Row count via `SELECT COUNT(*)`, or null when that count itself fails (e.g. a view over a missing/broken dependency). */
   rowCount: number | null
+}
+
+/** The module of a `CREATE VIRTUAL TABLE ... USING module(...)` statement, or null when the statement is not one. */
+function virtualTableModule(createSql: string | null | undefined): string | null {
+  if (typeof createSql !== 'string') return null
+  const m = /^\s*CREATE\s+VIRTUAL\s+TABLE\b[\s\S]*?\bUSING\s+["'`[]?(\w+)/i.exec(createSql)
+  return m === null ? null : (m[1] ?? null)
 }
 
 export interface SqliteSchemaResult {
@@ -128,41 +142,18 @@ export function getSqliteSchema(filePath: string): SqliteSchemaResult {
   try {
     const objects = db
       // ESCAPE makes the `_` literal. Without it `_` is LIKE's single-character wildcard, so `sqlite_%` also excludes any user table starting with `sqlite` plus one more character (`sqlitedata`, `sqlite3cfg`), and a discovery command that omits a table reads as that table not existing.
-      .prepare("SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name")
-      .all() as Array<{ name: string; type: string }>
+      .prepare("SELECT name, type, sql FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name")
+      .all() as Array<{ name: string; type: string; sql: string | null }>
 
     const tables: SqliteTableInfo[] = objects.map((o) => {
-      const columns: SqliteColumnInfo[] = (db.prepare(`PRAGMA table_info(${quoteIdent(o.name)})`).all() as TableInfoRow[]).map(
-        (c) => ({
-          name: c.name,
-          type: c.type || '',
-          notNull: c.notnull === 1,
-          primaryKey: c.pk > 0,
-          defaultValue: c.dflt_value === null || c.dflt_value === undefined ? null : String(c.dflt_value),
-        }),
-      )
-
-      const indexes: SqliteIndexInfo[] = (db.prepare(`PRAGMA index_list(${quoteIdent(o.name)})`).all() as IndexListRow[]).map(
-        (idx) => {
-          const idxColumns = (db.prepare(`PRAGMA index_info(${quoteIdent(idx.name)})`).all() as IndexInfoRow[]).map((c) => c.name)
-          return { name: idx.name, unique: idx.unique === 1, columns: idxColumns }
-        },
-      )
-
-      const foreignKeys: SqliteForeignKeyInfo[] = (
-        db.prepare(`PRAGMA foreign_key_list(${quoteIdent(o.name)})`).all() as ForeignKeyRow[]
-      ).map((fk) => ({ table: fk.table, from: fk.from, to: fk.to }))
-
-      let rowCount: number | null
+      const module = virtualTableModule(o.sql)
       try {
-        const row = db.prepare(`SELECT COUNT(*) AS c FROM ${quoteIdent(o.name)}`).get() as { c: number }
-        rowCount = row.c
-      } catch {
-        // A view over a missing/broken dependency, or any other count failure -- report the table/view's shape without a row count rather than failing the whole schema summary.
-        rowCount = null
+        return describeOne(db, o, module)
+      } catch (e) {
+        // One object SQLite cannot describe must not take the listing of every other table with it. The case that matters is a virtual table whose module (sqlite-vec's vec0, in token-goat's own index DBs) is not loaded in this process: PRAGMA table_info then throws `no such module: vec0`. Anything else that throws on an ordinary table or view is not ours to swallow.
+        if (module === null) throw e
+        return { name: o.name, kind: 'virtual', module, ...(o.sql !== null ? { createSql: o.sql } : {}), moduleNotLoaded: true, columns: [], indexes: [], foreignKeys: [], rowCount: null }
       }
-
-      return { name: o.name, kind: o.type === 'view' ? 'view' : 'table', columns, indexes, foreignKeys, rowCount }
     })
 
     return { tables }
@@ -171,11 +162,49 @@ export function getSqliteSchema(filePath: string): SqliteSchemaResult {
   }
 }
 
+function describeOne(db: SqliteDatabase, o: { name: string; type: string }, module: string | null): SqliteTableInfo {
+  const columns: SqliteColumnInfo[] = (db.prepare(`PRAGMA table_info(${quoteIdent(o.name)})`).all() as TableInfoRow[]).map(
+    (c) => ({
+      name: c.name,
+      type: c.type || '',
+      notNull: c.notnull === 1,
+      primaryKey: c.pk > 0,
+      defaultValue: c.dflt_value === null || c.dflt_value === undefined ? null : String(c.dflt_value),
+    }),
+  )
+
+  const indexes: SqliteIndexInfo[] = (db.prepare(`PRAGMA index_list(${quoteIdent(o.name)})`).all() as IndexListRow[]).map(
+    (idx) => {
+      const idxColumns = (db.prepare(`PRAGMA index_info(${quoteIdent(idx.name)})`).all() as IndexInfoRow[]).map((c) => c.name)
+      return { name: idx.name, unique: idx.unique === 1, columns: idxColumns }
+    },
+  )
+
+  const foreignKeys: SqliteForeignKeyInfo[] = (
+    db.prepare(`PRAGMA foreign_key_list(${quoteIdent(o.name)})`).all() as ForeignKeyRow[]
+  ).map((fk) => ({ table: fk.table, from: fk.from, to: fk.to }))
+
+  let rowCount: number | null
+  try {
+    const row = db.prepare(`SELECT COUNT(*) AS c FROM ${quoteIdent(o.name)}`).get() as { c: number }
+    rowCount = row.c
+  } catch {
+    // A view over a missing/broken dependency, or any other count failure -- report the table/view's shape without a row count rather than failing the whole schema summary.
+    rowCount = null
+  }
+
+  if (module !== null) return { name: o.name, kind: 'virtual', module, columns, indexes, foreignKeys, rowCount }
+  return { name: o.name, kind: o.type === 'view' ? 'view' : 'table', columns, indexes, foreignKeys, rowCount }
+}
+
 export function formatSqliteSchema(result: SqliteSchemaResult): string {
   if (result.tables.length === 0) return '(no tables or views found)'
   return result.tables
     .map((t) => {
-      const lines = [`${t.name}  (${t.kind}${t.rowCount !== null ? `, ${t.rowCount} row${t.rowCount === 1 ? '' : 's'}` : ''})`]
+      const kind = t.kind === 'virtual' ? `virtual table: ${displaySafeText(t.module ?? '?')}${t.moduleNotLoaded === true ? '; module not loaded' : ''}` : t.kind
+      const lines = [`${displaySafeText(t.name)}  (${kind}${t.rowCount !== null ? `, ${t.rowCount} row${t.rowCount === 1 ? '' : 's'}` : ''})`]
+      // Without the module SQLite cannot list the columns, so the CREATE statement is the whole schema there is; print it rather than an empty table.
+      if (t.createSql !== undefined) lines.push(`  ${displaySafeText(t.createSql.replace(/\s+/g, ' ').trim())}`)
       for (const c of t.columns) {
         const flags = [c.primaryKey ? 'PK' : null, c.notNull ? 'NOT NULL' : null, c.defaultValue !== null ? `DEFAULT ${c.defaultValue}` : null]
           .filter((f): f is string => f !== null)
@@ -201,7 +230,9 @@ export function formatSqliteSchema(result: SqliteSchemaResult): string {
 
 export interface SqliteTableSummary {
   name: string
-  kind: 'table' | 'view'
+  kind: 'table' | 'view' | 'virtual'
+  /** The module a virtual table is declared USING (`vec0`, `fts5`); absent otherwise. */
+  module?: string
   rowCount: number | null
   columnCount: number
 }
@@ -215,11 +246,12 @@ export function getSqliteTables(filePath: string): SqliteTableSummary[] {
     const objects = db
       .prepare(
         // ESCAPE makes every `_` literal; see getSqliteSchema above. Here it costs three tables rather than one, since `%_fts_%` and `%_vec0_%` exist to hide the shadow tables FTS5 and sqlite-vec create beside a virtual table, and unescaped they also hide anything of the shape `my_ftsx_cache`.
-        "SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '%\\_fts\\_%' ESCAPE '\\' AND name NOT LIKE '%\\_vec0\\_%' ESCAPE '\\' ORDER BY name",
+        "SELECT name, type, sql FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '%\\_fts\\_%' ESCAPE '\\' AND name NOT LIKE '%\\_vec0\\_%' ESCAPE '\\' ORDER BY name",
       )
-      .all() as Array<{ name: string; type: string }>
+      .all() as Array<{ name: string; type: string; sql: string | null }>
 
     return objects.map((o) => {
+      const module = virtualTableModule(o.sql)
       let columnCount: number
       try {
         const cols = db.prepare(`PRAGMA table_info(${quoteIdent(o.name)})`).all() as unknown[]
@@ -238,7 +270,8 @@ export function getSqliteTables(filePath: string): SqliteTableSummary[] {
 
       return {
         name: o.name,
-        kind: o.type === 'view' ? 'view' : 'table',
+        kind: module !== null ? 'virtual' : o.type === 'view' ? 'view' : 'table',
+        ...(module !== null ? { module } : {}),
         rowCount,
         columnCount,
       }
@@ -252,11 +285,12 @@ export function formatSqliteTables(tables: SqliteTableSummary[]): string {
   if (tables.length === 0) return '(no tables or views found)'
   return tables
     .map((t) => {
-      const parts: string[] = [t.kind]
+      const parts: string[] = [t.kind === 'virtual' ? `virtual table: ${displaySafeText(t.module ?? '?')}` : t.kind]
       if (t.rowCount !== null) {
         parts.push(`${t.rowCount.toLocaleString()} row${t.rowCount === 1 ? '' : 's'}`)
       }
-      parts.push(`${t.columnCount} col${t.columnCount === 1 ? '' : 's'}`)
+      // A virtual table whose module is not loaded reports no columns at all; saying '0 cols' would read as an empty table.
+      if (t.kind !== 'virtual' || t.columnCount > 0) parts.push(`${t.columnCount} col${t.columnCount === 1 ? '' : 's'}`)
       return `${displaySafeText(t.name)}  (${parts.join(', ')})`
     })
     .join('\n')
