@@ -151,6 +151,29 @@ describe('formatInstallIndexResult', () => {
     expect(line({ status: 'skipped', reason: 'blocked', root: '/p' })).toContain('worker.blocked_roots')
     for (const reason of ['disabled', 'indexed', 'nothing-queued'] as const) expect(line({ status: 'skipped', reason, root: '/p' })).toBeNull()
   })
+
+  // HAND-DERIVED: each reason's remedy differs (temp and broad-root can still be indexed by hand, no-project has nothing to index), so the three messages must not share wording.
+  it('distinguishes temp from other skipped reasons with its own message', () => {
+    const msg = formatInstallIndexResult({ status: 'skipped', reason: 'temp', root: '/some/temp/project' })
+    expect(msg).toContain('/some/temp/project')
+    expect(msg).toContain('token-goat index')
+    expect(msg).toContain('system temp directory')
+    expect(msg).not.toContain('No project here')
+  })
+
+  it('distinguishes broad-root from other skipped reasons with its own message', () => {
+    const msg = formatInstallIndexResult({ status: 'skipped', reason: 'broad-root', root: '/home/user' })
+    expect(msg).toContain('/home/user')
+    expect(msg).toContain('token-goat index')
+    expect(msg).toContain('too broad')
+    expect(msg).not.toContain('No project here')
+  })
+
+  it('keeps the no-project message unchanged', () => {
+    const msg = formatInstallIndexResult({ status: 'skipped', reason: 'no-project' })
+    expect(msg).toContain('No project here')
+    expect(msg).toContain('token-goat index')
+  })
 })
 
 describe('the built bundle', () => {

@@ -58,9 +58,11 @@ export function formatInstallIndexResult(result: InstallIndexResult): string | n
   }
   switch (result.reason) {
     case 'no-project':
-    case 'broad-root':
-    case 'temp':
       return 'No project here to index. Run `token-goat index` inside a project, or start a session in one after it has been indexed.'
+    case 'broad-root':
+      return `${result.root ?? 'This folder'} is too broad to index automatically (a home or drive root); run \`token-goat index\` inside a specific project.`
+    case 'temp':
+      return `${result.root ?? 'This folder'} is under the system temp directory, so install does not index it automatically; run \`token-goat index\` there to index it.`
     case 'not-git':
       return `${result.root ?? 'This folder'} is not a git repository, so it was not indexed. Run \`token-goat index --walk\` inside it to index it anyway.`
     case 'blocked':
