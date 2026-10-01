@@ -657,7 +657,8 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   const is_cfg = getDefaultConfig('image_shrink') as ImageShrinkConfig
   is_cfg.enabled = validatedBool(is_raw['enabled'], is_cfg.enabled)
   is_cfg.jpeg_quality = validatedInt(is_raw['jpeg_quality'], is_cfg.jpeg_quality, ...boundsOf('image_shrink.jpeg_quality'))
-  is_cfg.max_image_pixels = validatedInt(is_raw['max_image_pixels'], is_cfg.max_image_pixels, ...boundsOf('image_shrink.max_image_pixels'))
+  // Legacy-sentinel guard: a pre-cb2a1dfa full-snapshot save persisted the then-default 16_000_000, which now loads as the current default instead of pinning the old cap.
+  is_cfg.max_image_pixels = validatedIntWithLegacySentinel(is_raw['max_image_pixels'], is_cfg.max_image_pixels, 16_000_000, ...boundsOf('image_shrink.max_image_pixels'))
   is_cfg.screenshot_redirect = validatedBool(is_raw['screenshot_redirect'], is_cfg.screenshot_redirect)
   is_cfg.ocr_enabled = validatedBool(is_raw['ocr_enabled'], is_cfg.ocr_enabled)
   is_cfg.ocr_min_confidence = validatedInt(is_raw['ocr_min_confidence'], is_cfg.ocr_min_confidence, ...boundsOf('image_shrink.ocr_min_confidence'))
@@ -1009,7 +1010,30 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'indexing.auto_reclaim_embeddings': ['TOKEN_GOAT_INDEXING_AUTO_RECLAIM_EMBEDDINGS'],
 }
 
-export function saveConfig(config: Config): void {
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
+}
+
+/** Drop every leaf that equals the effective default (the empty-file config, after cross-field clamps) and is not literally present in the raw TOML being replaced (or named in `explicit`), and every table left empty, so a save never freezes a default into config.toml and a later default change still reaches the user. */
+function sparsifyAgainstDefaults(data: Record<string, unknown>, defaults: Record<string, unknown>, raw: Record<string, unknown>, explicit: ReadonlySet<string>, prefix = ''): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(data)) {
+    const dotted = prefix === '' ? k : `${prefix}.${k}`
+    const d = defaults[k]
+    const r = raw[k]
+    if (isPlainObject(v) && isPlainObject(d)) {
+      const sub = sparsifyAgainstDefaults(v, d, isPlainObject(r) ? r : {}, explicit, dotted)
+      if (Object.keys(sub).length > 0) out[k] = sub
+      continue
+    }
+    const keep = d === undefined || !rawValueEquals(v, d) || r !== undefined || explicit.has(dotted)
+    if (keep) out[k] = v
+  }
+  return out
+}
+
+/** Persist `config` sparsely: only values that differ from the defaults, that the existing config.toml already spells out, or that the caller names in `explicitKeys` (dotted, e.g. the key a `config set` just wrote) are written. */
+export function saveConfig(config: Config, explicitKeys: readonly string[] = []): void {
   const ca = config.compact_assist
   const bc = config.bash_compress
   const sp = config.skill_preservation
@@ -1201,7 +1225,7 @@ export function saveConfig(config: Config): void {
     },
   }
 
-  const toml = stringify(data)
+  const toml = stringify(sparsifyAgainstDefaults(data as unknown as Record<string, unknown>, buildPersistedConfig({}) as unknown as Record<string, unknown>, readConfigToml(configPath()).raw, new Set(explicitKeys)))
   atomicWriteText(configPath(), toml)
   _cached = null
 }

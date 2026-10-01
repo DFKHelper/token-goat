@@ -24,9 +24,9 @@ import { emit, emitErr } from './emit.js'
 import { levenshteinDistance } from './util_suggest.js'
 
 /** Ensure the config parent directory exists then call saveConfig. */
-function saveConfigSafe(cfg: Parameters<typeof saveConfig>[0]): void {
+function saveConfigSafe(cfg: Parameters<typeof saveConfig>[0], explicitKeys: readonly string[] = []): void {
   ensureDirSync(path.dirname(configPath()))
-  saveConfig(cfg)
+  saveConfig(cfg, explicitKeys)
 }
 
 function closestKeys(unknown: string, known: string[]): string[] {
@@ -304,7 +304,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
           throw new Error(`config set: ${key} = '${coercedValue}' is not valid; must be one of: ${allowed.join(', ')}`)
         }
       }
-      saveConfigSafe(cfg as unknown as Parameters<typeof saveConfig>[0])
+      saveConfigSafe(cfg as unknown as Parameters<typeof saveConfig>[0], [key])
       return coercedValue
     }
     // Must exist before the lock file itself can be created (writeFileSync 'wx' throws ENOENT, not EEXIST, against a missing directory -- withFileLock treats that as "can't lock at all" and silently falls back to running unprotected, defeating the lock entirely on a machine that has never run `config set` before).
