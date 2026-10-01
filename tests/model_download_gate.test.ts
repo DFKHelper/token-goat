@@ -338,6 +338,36 @@ describe('the record under concurrent writers', () => {
     })
   }, 60_000)
 
+  // HAND-DERIVED: a holder that keeps the record's lock for 3 s while it reads and rewrites the record, which is longer than withFileLock's default 2 s wait. A writer that gave up at 2 s and wrote without the lock had its entry overwritten by the holder's rewrite a second later.
+  it('waits out a holder slower than the default lock wait instead of writing past it', async () => {
+    const record = downloadFailureRecordPath()
+    fs.mkdirSync(path.dirname(record), { recursive: true })
+    const ready = path.join(tmp, 'holder.ready')
+    const script = path.join(tmp, 'holder.ts')
+    const util = pathToFileURL(path.join(HERE, '..', 'src', 'util.ts')).href
+    fs.writeFileSync(script, [
+      `import * as fs from 'node:fs'`,
+      `import { sleepSync, withFileLock } from '${util}'`,
+      'const [record, ready] = process.argv.slice(2)',
+      "const taken = withFileLock(record + '.lock', () => {",
+      "  const before = fs.existsSync(record) ? fs.readFileSync(record, 'utf8') : '{}'",
+      "  fs.writeFileSync(ready, '')",
+      '  sleepSync(3000)',
+      '  fs.writeFileSync(record, before)',
+      '  return true',
+      '})',
+      'process.exit(taken ? 0 : 1)',
+      '',
+    ].join('\n'))
+    const holder = spawn(process.execPath, tsxProcessArgs(script, record, ready), { cwd: path.join(HERE, '..'), env: process.env, stdio: 'pipe' })
+    const closed = new Promise<number | null>((resolve) => holder.on('close', resolve))
+    for (let i = 0; i < 300 && !fs.existsSync(ready); i++) await new Promise((r) => setTimeout(r, 50))
+    expect(fs.existsSync(ready), 'calibration: the holder took the lock').toBe(true)
+    recordDownloadFailure('https://late.example/f', 'fetch failed')
+    expect(await closed).toBe(0)
+    expect(lastDownloadFailure('late.example')).not.toBeNull()
+  }, 60_000)
+
   // HAND-DERIVED: three processes that start together against a host that is down all fail within the same second. That is one outage, and counting it three times held the next try for 40 minutes instead of 10.
   it('counts failures of attempts that overlapped as one', () => {
     const t0 = Date.UTC(2026, 8, 29, 12, 0, 0)

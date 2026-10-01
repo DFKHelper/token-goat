@@ -5,7 +5,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { dataDir } from './constants.js'
-import { atomicWriteText, ensureDirSync, withFileLock } from './util.js'
+import { atomicWriteText, ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock } from './util.js'
 
 /** The host embed_model.ts downloads the model from. tests/model_download_gate.test.ts checks it against the URL a real download requests, so the two cannot drift apart without a failure. */
 export const MODEL_DOWNLOAD_HOST = 'huggingface.co'
@@ -136,7 +136,7 @@ function updateRecord<T>(mutate: (record: Record<string, DownloadFailure>, now: 
     // withFileLock reports a lock it cannot create as undefined, which falls through to the unlocked run below.
   }
   // Wrapped in an object because withFileLock answers undefined for a lock it never got, which a mutate returning undefined would be mistaken for.
-  return (withFileLock(`${file}.lock`, run) ?? run()).value
+  return (withFileLock(`${file}.lock`, run, { waitMs: LOCK_WAIT_MS_HARDENED }) ?? run()).value
 }
 
 /** Record a failure against `url`'s host and return the entry written. `err` is the error or an already-described message. `startedAt`, when the attempt began, keeps concurrent attempts from counting one outage several times: a failure another process recorded after this attempt started is the same outage, not an earlier one, so the count stays where that process left it and the hold does not jump to its ceiling because three processes gave up in the same second. */

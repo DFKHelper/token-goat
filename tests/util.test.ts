@@ -18,7 +18,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 })
 
 // vi.spyOn cannot patch node:fs (its namespace exports are non-configurable: "Cannot redefine property"), so simulating a writeSync failure needs a module mock with a hoisted flag -- same pattern as tests/index_prune.test.ts. Every other fs call passes straight through to the real module untouched; only writeSync is ever intercepted, and only for the one call after the flag is set.
-const mockState = vi.hoisted(() => ({ failNextWrite: false, failNextMkdir: '' }))
+const mockState = vi.hoisted(() => ({ failNextWrite: false, failNextMkdir: '', lockCreateEperm: '', lockCreateEpermPersist: false, lockStatEperm: '', lockStolenAfterRead: '' }))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
   const guardedWriteSync = ((...args: Parameters<typeof fs.writeSync>) => {
@@ -36,7 +36,33 @@ vi.mock('node:fs', async (importOriginal) => {
     }
     return actual.mkdirSync(...args)
   }) as typeof fs.mkdirSync
-  return { ...actual, default: actual, writeSync: guardedWriteSync, mkdirSync: guardedMkdirSync }
+  // A lock create or stat that fails once with EPERM, the way Windows answers either call on a lock file another holder is still deleting.
+  const eperm = (call: string): Error => Object.assign(new Error(`EPERM: operation not permitted, ${call}`), { code: 'EPERM' })
+  const guardedWriteFileSync = ((file: Parameters<typeof fs.writeFileSync>[0], ...rest: unknown[]) => {
+    if (mockState.lockCreateEperm !== '' && String(file) === mockState.lockCreateEperm) {
+      if (!mockState.lockCreateEpermPersist) mockState.lockCreateEperm = ''
+      throw eperm('open')
+    }
+    return (actual.writeFileSync as (...a: unknown[]) => void)(file, ...rest)
+  }) as typeof fs.writeFileSync
+  const guardedStatSync = ((file: Parameters<typeof fs.statSync>[0], ...rest: unknown[]) => {
+    if (mockState.lockStatEperm !== '' && String(file) === mockState.lockStatEperm) {
+      mockState.lockStatEperm = ''
+      throw eperm('stat')
+    }
+    return (actual.statSync as (...a: unknown[]) => unknown)(file, ...rest)
+  }) as typeof fs.statSync
+  // Another waiter that judged the same abandoned lock stale, stealing it and taking its own lock just after this process read the old holder's token.
+  const guardedReadFileSync = ((file: Parameters<typeof fs.readFileSync>[0], ...rest: unknown[]) => {
+    const content = (actual.readFileSync as (...a: unknown[]) => unknown)(file, ...rest)
+    if (mockState.lockStolenAfterRead !== '' && String(file) === mockState.lockStolenAfterRead) {
+      mockState.lockStolenAfterRead = ''
+      actual.unlinkSync(String(file))
+      actual.writeFileSync(String(file), `${process.ppid}:competitor`, { flag: 'wx' })
+    }
+    return content
+  }) as typeof fs.readFileSync
+  return { ...actual, default: actual, writeSync: guardedWriteSync, mkdirSync: guardedMkdirSync, writeFileSync: guardedWriteFileSync, statSync: guardedStatSync, readFileSync: guardedReadFileSync }
 })
 
 import type * as fs from 'node:fs'
@@ -223,6 +249,58 @@ describe('withFileLock', () => {
     expect(elapsed).toBeLessThan(1000) // stealing is immediate, not bounded by the full waitMs
   })
 
+  // FORMAT-DERIVED: libuv maps Windows ERROR_ACCESS_DENIED to EPERM, which is what CreateFile and the stat of a file in the delete-pending state return (libuv src/win/error.c, uv_translate_sys_error). CAPTURE: a 12-process withFileLock stress run on Windows 11 logged EPERM from the `wx` create while another holder was releasing; the stat case follows from the same mapping.
+  describe('a lock file another holder is still deleting on Windows', () => {
+    const onPlatform = <T>(platform: NodeJS.Platform, fn: () => T): T => {
+      const original = Object.getOwnPropertyDescriptor(process, 'platform')!
+      Object.defineProperty(process, 'platform', { ...original, value: platform })
+      try {
+        return fn()
+      } finally {
+        Object.defineProperty(process, 'platform', original)
+        mockState.lockCreateEperm = ''
+        mockState.lockCreateEpermPersist = false
+        mockState.lockStatEperm = ''
+      }
+    }
+
+    it('retries a create refused with EPERM and takes the lock once the old file is gone', () => {
+      const lockPath = path.join(dir, 'eperm-create.lock')
+      mockState.lockCreateEperm = lockPath
+      const result = onPlatform('win32', () => withFileLock(lockPath, () => 'ran', { waitMs: 2000 }))
+      expect(result).toBe('ran')
+      expect(existsSync(lockPath)).toBe(false)
+    })
+
+    it('gives up on a create Windows keeps refusing with EPERM long before the wait runs out', () => {
+      const lockPath = path.join(dir, 'eperm-lasting.lock')
+      mockState.lockCreateEperm = lockPath
+      mockState.lockCreateEpermPersist = true
+      const start = Date.now()
+      const result = onPlatform('win32', () => withFileLock(lockPath, () => 'ran', { waitMs: 15_000 }))
+      expect(result).toBeUndefined()
+      expect(Date.now() - start).toBeLessThan(5000)
+    })
+
+    it('still reports no lock at once off Windows, where EPERM on create is a real permission error', () => {
+      const lockPath = path.join(dir, 'eperm-posix.lock')
+      mockState.lockCreateEperm = lockPath
+      const start = Date.now()
+      const result = onPlatform('linux', () => withFileLock(lockPath, () => 'ran', { waitMs: 2000 }))
+      expect(result).toBeUndefined()
+      expect(Date.now() - start).toBeLessThan(1000)
+    })
+
+    it('never deletes a held lock whose stat failed with EPERM, so a second holder cannot get in', () => {
+      const lockPath = path.join(dir, 'eperm-stat.lock')
+      writeFileSync(lockPath, 'live-holder', { flag: 'wx' })
+      mockState.lockStatEperm = lockPath
+      const result = withFileLock(lockPath, () => 'ran', { waitMs: 200, staleMs: 60_000 })
+      expect(result).toBeUndefined()
+      expect(readFileSync(lockPath, 'utf8')).toBe('live-holder')
+    })
+  })
+
   // HAND-DERIVED: each token below is built in the `<pid>:<hrtime>` shape withFileLock writes, with a pid whose state (running elsewhere, exited, this process) is arranged by the test itself.
   describe('an aged lock is judged by whether the pid in its token is still running', () => {
     const agedLock = (name: string, pid: number, ageMs: number): string => {
@@ -261,6 +339,22 @@ describe('withFileLock', () => {
     it('steals a lock older than the live-holder ceiling even when its pid is running, since a pid can be reused', () => {
       const lockPath = agedLock('reused.lock', process.ppid, 61_000)
       expect(withFileLock(lockPath, () => 'stolen', { waitMs: 2000, staleMs: 50 })).toBe('stolen')
+    })
+
+    // HAND-DERIVED: the interleaving is two waiters reading the same dead holder's token, the other one unlinking and recreating first; the mock replays it at the read so it happens on every run instead of one in thousands.
+    it('leaves alone the lock a competing waiter took after both judged the old one abandoned', () => {
+      const gone = childProcess.spawnSync(process.execPath, ['-e', '0'])
+      const lockPath = agedLock('raced.lock', gone.pid!, 10_000)
+      mockState.lockStolenAfterRead = lockPath
+      try {
+        const result = withFileLock(lockPath, () => 'ran', { waitMs: 300, staleMs: 50 })
+        expect(mockState.lockStolenAfterRead, 'calibration: the competitor stole the lock mid-check').toBe('')
+        expect(result).toBeUndefined()
+        expect(readFileSync(lockPath, 'utf8')).toBe(`${process.ppid}:competitor`)
+        expect(existsSync(`${lockPath}.steal`)).toBe(false)
+      } finally {
+        mockState.lockStolenAfterRead = ''
+      }
     })
 
     it('keeps a lock younger than staleMs even when its pid has exited', () => {

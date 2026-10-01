@@ -182,6 +182,8 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
   ['util.ts::ensureDirSync', 'generic mkdir primitive: it touches only the path its caller supplies, so the caller is where a payload path has to be classified'],
   ['util.ts::atomicWriteCore', 'generic write primitive, same reasoning as ensureDirSync'],
   ['util.ts::withFileLock', 'generic lockfile primitive, same reasoning as ensureDirSync'],
+  ['util.ts::lockAbandoned', "withFileLock's staleness check on the lock path its caller supplies, same reasoning as ensureDirSync"],
+  ['util.ts::stealAbandoned', "withFileLock's steal of an abandoned lock, on that lock path and a guard file beside it, same reasoning as ensureDirSync"],
   ['pending_context.ts::commitPendingContext', 'relayInProcess calls it AFTER runHook, to clear a delivered hint, so it is only on this list because static reachability cannot see where in the function the call sits. The path is sessionSidecarPath(sessionId, ...) under tokenGoatHome(): env-derived root, and the payload-derived session id is sanitized to a stem and containment-checked inside that helper before it becomes a path -- the same provenance as session_store.ts::saveSessionState above'],
   ['pending_context.ts::readPending', 'the read half of the same pair: it only ever opens the path commitPendingContext and peekPendingContext computed, with that same sanitization'],
   ['call_streak.ts::readState', 'relayInProcess calls applyCallStreak AFTER runHook, the same position as pending_context.ts::commitPendingContext above. The path is sessionSidecarPath(sessionStateKey(event), ...) under tokenGoatHome(): env-derived root, and the payload-derived session and agent ids are sanitized to a stem and containment-checked inside that helper before they become a path'],
@@ -214,8 +216,8 @@ describe('the pre-dispatch call graph is real', () => {
     pinnedPopulation({
       what: 'pre-dispatch functions that touch fs or net',
       items: touching.map((v) => v.key),
-      floor: 18, // measured the same way: 21 live, 16 before call_streak.ts added its sidecar read and write and the loadConfig path's three
-      ceiling: 24,
+      floor: 23, // measured the same way: 26 live, 24 before withFileLock's staleness check and steal moved into their own functions, 16 before call_streak.ts added its sidecar read and write and the loadConfig path's three
+      ceiling: 29,
       mustInclude: ['vscode_duplicate.ts::alreadyClaimed', 'bridges/copilot_hooks_owners.ts::readCopilotHooksOwners', 'constants.ts::ensureDataDirPrivate'],
     })
   })

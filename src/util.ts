@@ -106,8 +106,11 @@ function isRetryable(err: unknown): boolean {
 }
 
 function isEExist(err: unknown): boolean {
-  if (typeof err !== 'object' || err === null) return false
-  return (err as { code?: unknown }).code === 'EEXIST'
+  return errnoCode(err) === 'EEXIST'
+}
+
+function errnoCode(err: unknown): unknown {
+  return typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined
 }
 
 /** Create a directory recursively, ignoring EEXIST errors from concurrent mkdir races. Node.js `mkdirSync(..., { recursive: true })` is not atomic: the existence check and actual mkdir syscall have a TOCTOU (time-of-check-to-time-of-use) window where two concurrent calls can both pass the check but only one wins the actual mkdir, leaving the second with an EEXIST error despite `recursive: true`. This is a known issue on Windows and some Unix systems. This function catches and ignores EEXIST specifically (the desired end-state — the directory exists — is already true), while propagating all other errors. */
@@ -330,11 +333,14 @@ export function containsLineRun(haystack: string, needle: string): boolean {
 const LOCK_WAIT_MS = 2000
 const LOCK_STALE_MS = 5000
 
-// Larger wait budget for hot, contended withFileLock call sites (e.g. session_store.ts's saveSessionState, config_commands.ts's `config set`) where the default LOCK_WAIT_MS can plausibly be missed under real machine load even though no lock holder is actually stuck. Falling back to an unprotected write on that miss reintroduces the exact clobber the lock exists to prevent, precisely when contention (and therefore risk) is highest -- so these call sites wait much longer instead. An actually-wedged holder still gets its lock stolen well before this via withFileLock's own staleMs abandonment check, so this only lengthens the wait for genuine, resolving contention, not a real hang.
+// Larger wait budget for hot, contended withFileLock call sites (e.g. session_store.ts's saveSessionState, config_commands.ts's `config set`, model_download_gate.ts's updateRecord) where the default LOCK_WAIT_MS can plausibly be missed under real machine load even though no lock holder is actually stuck. Falling back to an unprotected write on that miss reintroduces the exact clobber the lock exists to prevent, precisely when contention (and therefore risk) is highest -- so these call sites wait much longer instead. An actually-wedged holder still gets its lock stolen well before this via withFileLock's own staleMs abandonment check, so this only lengthens the wait for genuine, resolving contention, not a real hang.
 export const LOCK_WAIT_MS_HARDENED = 15_000
 
 // How long a lock whose holder is still running is honoured past staleMs. A holder's liveness is read from the pid its token carries, and a pid can be reused once its process is gone, so a lock naming a live process is still taken once it is this old; a legitimate holder never blocks a session save or a config write for anything close to this.
 const LOCK_LIVE_HOLDER_MAX_MS = 60_000
+
+// How long withFileLock keeps retrying a lock create that Windows refuses with EPERM and nothing else. A lock file being deleted stops refusing within milliseconds, so a refusal this long is a permission the caller will not get by waiting.
+const LOCK_EPERM_RUN_MS = 1000
 
 /** Whether the process that wrote lock token `token` (`<pid>:<hrtime>`) is still running and is not this one. A token naming no pid, a pid that is gone, or this process's own pid (a synchronous holder here has already returned or thrown, and released) reads as not alive, so that lock is judged by its age alone. `EPERM` means the process exists under another user, which is alive. */
 function lockHolderAlive(token: string): boolean {
@@ -346,6 +352,39 @@ function lockHolderAlive(token: string): boolean {
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === 'EPERM'
   }
+}
+
+/** Whether the lock file at `lockPath` was left by a holder that crashed: older than `staleMs` with its holder gone, or older than LOCK_LIVE_HOLDER_MAX_MS whoever holds it. Throws what statSync or readFileSync throws. */
+function lockAbandoned(lockPath: string, staleMs: number): boolean {
+  const age = Date.now() - statSync(lockPath).mtimeMs
+  return age > staleMs && (age > Math.max(staleMs, LOCK_LIVE_HOLDER_MAX_MS) || !lockHolderAlive(readFileSync(lockPath, 'utf8')))
+}
+
+/** Removes an abandoned lock at `lockPath`, one waiter at a time. Two waiters that both judged the same lock abandoned would otherwise each unlink it, and the second unlink could land on the lock the first had just created, letting two holders in. So the steal runs only under a `.steal` guard file, and the lock is judged again under it before the unlink. Returns false when another waiter holds the guard; a guard older than `staleMs` was left by a waiter that crashed mid-steal and is removed for the next attempt. */
+function stealAbandoned(lockPath: string, staleMs: number): boolean {
+  const guardPath = `${lockPath}.steal`
+  try {
+    writeFileSync(guardPath, '', { flag: 'wx' })
+  } catch (err) {
+    try {
+      if (isEExist(err) && Date.now() - statSync(guardPath).mtimeMs > staleMs) unlinkSync(guardPath)
+    } catch {
+      // the guard went away or is still being deleted; the next attempt sees which
+    }
+    return false
+  }
+  try {
+    if (lockAbandoned(lockPath, staleMs)) unlinkSync(lockPath)
+  } catch {
+    // already released or replaced; the retried create sorts it out
+  } finally {
+    try {
+      unlinkSync(guardPath)
+    } catch {
+      // a guard left behind ages out and is removed by the next waiter
+    }
+  }
+  return true
 }
 
 /** Runs `fn` while holding an exclusive lock at `lockPath`, so the same critical section never runs concurrently across separate OS processes. The mutex primitive is an atomic exclusive-create write (`wx`), which behaves identically on Windows and POSIX, unlike advisory `flock`. If another process already holds the lock, this waits (backoff style mirrors atomicWriteCore's rename retry) for up to `waitMs` before giving up. A lock file whose mtime is older than `staleMs` is treated as abandoned by a holder that crashed without releasing it and is stolen, so one crashed process can never permanently wedge every future caller of this critical section. A lock whose holder is still running (see lockHolderAlive above) is not stolen at staleMs, so a live holder -- even one whose fn() blocks the thread for longer than staleMs -- is never mistaken for a crashed one. Returns `undefined` -- without ever calling `fn` -- if the lock could not be acquired in time. Callers whose own persistence must never block forever should treat that as "proceed without the lock" (e.g. fall back to an unprotected write), not as a hard failure. */
@@ -360,29 +399,32 @@ export function withFileLock<T>(
   const token = `${process.pid}:${process.hrtime.bigint().toString()}`
   const deadline = Date.now() + waitMs
   let attempt = 0
+  let epermSince: number | undefined
   for (;;) {
     try {
       writeFileSync(lockPath, token, { flag: 'wx' })
       break
     } catch (err) {
+      // Windows answers a create over a lock file another holder is still deleting with EPERM, not EEXIST, and the file is gone a moment later, so nothing observable separates it from a real permission error. It is retried as contention, but a refusal that lasts LOCK_EPERM_RUN_MS without a break is a real permission error, reported as no lock rather than waited out to the deadline.
+      if (process.platform === 'win32' && errnoCode(err) === 'EPERM') {
+        epermSince ??= Date.now()
+        if (Date.now() >= deadline || Date.now() - epermSince >= LOCK_EPERM_RUN_MS) return undefined
+        sleepSync(Math.min(20 * ++attempt, 200))
+        continue
+      }
       if (!isEExist(err)) return undefined // can't lock at all (e.g. missing dir); let the caller fall back
+      epermSince = undefined
     }
     // Someone else holds it. A holder that crashed without releasing it would otherwise wedge every future caller of this critical section forever, so a lock file older than staleMs whose holder is no longer running is abandoned and stolen. A holder that is still running keeps its lock however long fn() blocks, up to LOCK_LIVE_HOLDER_MAX_MS.
     let stale: boolean
     try {
-      const age = Date.now() - statSync(lockPath).mtimeMs
-      stale = age > staleMs && (age > Math.max(staleMs, LOCK_LIVE_HOLDER_MAX_MS) || !lockHolderAlive(readFileSync(lockPath, 'utf8')))
-    } catch {
-      stale = true // lock vanished between the failed create and this stat; clear to retry
+      stale = lockAbandoned(lockPath, staleMs)
+    } catch (err) {
+      // Released between the failed create and this stat: retry the create at once. Any other failure (Windows reports a lock file still being deleted as EPERM) is a lock someone may hold, never one to unlink, because by the time the unlink ran it could remove a lock another process had just created, letting two holders in.
+      if (errnoCode(err) === 'ENOENT') continue
+      stale = false
     }
-    if (stale) {
-      try {
-        unlinkSync(lockPath)
-      } catch {
-        // another waiter may already be stealing/holding it; the retried create sorts it out
-      }
-      continue // no sleep: stealing (or losing the steal race) always makes forward progress
-    }
+    if (stale && stealAbandoned(lockPath, staleMs)) continue // no sleep: the steal made forward progress
     if (Date.now() >= deadline) return undefined
     sleepSync(Math.min(20 * ++attempt, 200))
   }
