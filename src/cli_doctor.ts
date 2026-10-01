@@ -49,6 +49,7 @@ import { reclaimIndex, indexSizeBytes } from './index_reclaim.js'
 import type { DoctorResult } from './doctor_result.js'
 import { type ProcessInfo, checkMcpProcessHealth, readWindowsProcesses, checkWorkerRunning } from './cli_doctor_process.js'
 import { checkGlobalMcpConfig, checkVscodeUserScopeHooks, checkVscodeClaudeHooks, checkClaudeHookEvents, checkClaudeHooksGone, checkVisualStudio, checkZed, checkCursor, checkStrayClaudeMdBlocks, checkVscodeProjectMcp } from './cli_doctor_platforms.js'
+import { checkInstructionGates, checkHarnessCacheEfficiency, repairInstructionGates } from './cli_doctor_guidance.js'
 import { checkSecurityPosture } from './cli_doctor_security.js'
 
 /** Check if token-goat binary is installed and accessible. */
@@ -658,6 +659,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   results.push(checkTsCompiler())
   results.push(checkTreeSitter())
   results.push(checkStrayClaudeMdBlocks())
+  results.push(checkInstructionGates(rootDir))
   results.push(checkWorker(actualDataDir))
 
   // File checks
@@ -712,6 +714,8 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   if (zedResult) results.push(zedResult)
   const cursorResult = checkCursor(cursorMcpPath(), isInstalled('user') || isInstalled('project'))
   if (cursorResult) results.push(cursorResult)
+  const harnessCacheResult = checkHarnessCacheEfficiency(rootDir)
+  if (harnessCacheResult) results.push(harnessCacheResult)
   results.push(checkGlobalMcpConfig())
   if (process.platform === 'win32') results.push(checkMcpProcessHealth(processes ?? readWindowsProcesses()))
 
@@ -824,6 +828,11 @@ export async function runDoctorRepair(opts?: {
       errors.push(`Failed to auto-reclaim embeddings from global.db: ${extractErrorMessage(e)}`)
     }
   }
+
+  // 6. Repair missing instruction gates
+  const gateRepair = repairInstructionGates(opts?.rootDir)
+  repairs.push(...gateRepair.repairs)
+  errors.push(...gateRepair.errors)
 
   return { repairs, errors }
 }

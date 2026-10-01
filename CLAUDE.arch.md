@@ -323,6 +323,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 
 | Module | Role |
 |--------|------|
+| [`src/cli_doctor_guidance.ts`](src/cli_doctor_guidance.ts) | Doctor diagnostic health checks for guidance |
 | [`src/cli_doctor_index.ts`](src/cli_doctor_index.ts) | Index and reindex-queue diagnostics for token-goat doctor. |
 | [`src/cli_doctor_native.ts`](src/cli_doctor_native.ts) | `doctor`'s native hook client rows: per harness and scope, which form of hook command is wired (the native client in front of the Node command, or the Node command alone), whether |
 | [`src/cli_doctor_platforms.ts`](src/cli_doctor_platforms.ts) | Platform and harness integration diagnostics for token-goat doctor. |

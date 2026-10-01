@@ -940,6 +940,19 @@ function _renderInsightsSection(stats: StatsData): string[] {
           `${dim(' hint(s) fired but not acted on — run symbol/read/section/semantic/outline/skeleton directly to capture these savings')}`,
       )
     }
+  } else {
+    // Surgical read compliance check: when hints fire substantially more than surgical commands, the model is bypassing token-goat.
+    const hintEvents = stats.by_kind?.find((k) => k.kind === 'session_hint')?.events ?? 0
+    const commandEvents = stats.by_command?.reduce((acc, c) => acc + c.events, 0) ?? 0
+    if (hintEvents >= 10) {
+      const compliancePct = Math.round((commandEvents / (hintEvents + commandEvents)) * 100)
+      if (compliancePct < 25) {
+        lines.push(
+          `${_M}${fg(...C.YELLOW)}▸${RESET} ${dim('Low surgical compliance: ')}${fg(...C.TEXT_PRIMARY)}${compliancePct}%${RESET}` +
+            `${dim(` (${commandEvents} command(s) vs ${hintEvents} advisory hints). Run 'token-goat doctor --fix' to inject the instruction gate.`)}`,
+        )
+      }
+    }
   }
 
   return lines
