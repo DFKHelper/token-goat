@@ -147,6 +147,9 @@ patantsub.pdf
 # Claude Code local project state — never tracked (this repo is linked to a personal GitHub account)
 .claude/
 
+# Copilot CLI hooks written by `token-goat install --copilot --local` or `--vscode`: local state, and the env guard skips them
+.github/hooks/
+
 # Claude Code project instructions — kept local, not for public repo
 CLAUDE.md
 

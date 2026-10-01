@@ -527,10 +527,10 @@
                             
                             <ol style="margin-left:20px; margin-bottom:12px;">
                                 <li><strong>The 5-Minute Eviction TTL (Developer Thinking Time):</strong>
-                                    Provider prompt caches (Anthropic Ephemeral Cache, OpenAI Prompt Cache) have a strict <strong>5-minute time-to-live (TTL)</strong>. Real engineering work is not an automated batch script. You stop to review a git diff, inspect a compiler error, run a local debugger, test an endpoint in Postman, or think through a design choice. The moment you pause for more than 5 minutes between turns, the cache is completely evicted. On your next turn, you pay 100% full price (actually 125% on Anthropic due to cache-write pricing) to write all 85,000 tokens back into GPU memory. In a realistic 10-turn debugging session, developers bust the 5-minute cache window 4 to 6 times.
+                                    Anthropic's prompt cache lives <strong>5 minutes</strong> by default, refreshed each time it is read; a one-hour cache is available at twice the base price to write. Other providers expire cached prompts on their own schedules. Real engineering work is not an automated batch script. You stop to review a git diff, inspect a compiler error, run a local debugger, test an endpoint in Postman, or think through a design choice. Once a pause outlasts the cache, the next turn writes the whole prompt again: all 85,000 tokens at 1.25x the base input price on Anthropic's five-minute cache, or 2x on the one-hour one.
                                 </li>
-                                <li><strong>Prefix Invalidation (The Branch & Edit Trap):</strong>
-                                    Prompt caching is strictly a prefix cache: every token from token 1 down to the checkpoint must match byte-for-byte. The moment you edit a file, run a tool that returns a varying timestamp or process ID, or switch git branches, the cache invalidates downstream and every token is billed at full cost.
+                                <li><strong>Prefix Invalidation (What Changes Earlier in the Prompt):</strong>
+                                    Prompt caching is a prefix cache: a cached prefix is reused up to the first token that differs. Appending to the conversation, whether an edit's result or a tool output carrying a timestamp, leaves everything before it cached. A change earlier in the prompt does not: a different system prompt, a model switch, or a change to the tool definitions (connecting or disconnecting an MCP server changes them) makes every token after that point a cache write again.
                                 </li>
                                 <li><strong>Context Window Ceilings & Lossy Auto-Compaction:</strong>
                                     A 90% billing discount does not expand the physical context window. When an agent fills 150,000 tokens with full-file dumps, you hit the context limit. The harness triggers aggressive, lossy auto-compaction (dropping earlier turns, forgetting constraints, and losing instructions). Organizational rate limits (Tokens Per Minute, or TPM) also measure total token volume regardless of cache status. An agent pushing 85,000 tokens per turn rapidly triggers <code>429 Rate Limit Exceeded</code> errors across your team.
@@ -549,7 +549,7 @@
                                 <strong>Scenario: 30-Turn Complex Refactoring Task</strong><br><br>
                                 • <strong>Bloated Session (85,000 tokens/turn with 90% cache discount):</strong><br>
                                 &nbsp;&nbsp;Billed equivalent: 8,500 tokens/turn × 30 turns = <span style="color:#b91c1c; font-weight:700;">255,000 billed tokens</span><br>
-                                &nbsp;&nbsp;<em>(Plus full-price cache-write spikes every time you pause for 5 minutes)</em><br><br>
+                                &nbsp;&nbsp;<em>(Plus a cache write of the whole prompt, at 1.25x the base price, every time a pause outlasts the cache)</em><br><br>
                                 • <strong>Token-Goat Session (11,500 tokens/turn with 90% cache discount):</strong><br>
                                 &nbsp;&nbsp;Billed equivalent: 1,150 tokens/turn × 30 turns = <span style="color:#15803d; font-weight:700;">34,500 billed tokens</span><br>
                                 &nbsp;&nbsp;<span style="color:#15803d; font-weight:600;">✓ Result: 86% cheaper than the cached bloated session, with zero attention dilution and sub-2-second latency.</span>
