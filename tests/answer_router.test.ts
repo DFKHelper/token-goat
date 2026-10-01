@@ -585,6 +585,51 @@ describe('runAnswer against the real index', () => {
     }
   })
 
+  // HAND-DERIVED: `runSection` is defined once, in src/read_section.ts, by reading that file's `export function runSection` line.
+  it('routes an explain question on a uniquely defined symbol to brief', () => {
+    const r = captureErr(() => runAnswer({ question: 'what does runSection do' }))
+    expect(r.err).toBe('')
+    expect(r.code).toBe(0)
+    expect(r.out.split('\n')[0]).toBe('via: token-goat brief "src/read_section.ts::runSection" --limit 20')
+    expect(r.out).toContain('runSection')
+    const forPhrase = captureErr(() => runAnswer({ question: 'what is runSection for?' }))
+    expect(forPhrase.out.split('\n')[0]).toBe('via: token-goat brief "src/read_section.ts::runSection" --limit 20')
+  })
+
+  // HAND-DERIVED fixture: one name written into two project files, so the definition count is fixed by the layout.
+  it('refuses an explain question when the name has two definitions, naming the count and brief', () => {
+    const a = join(resolve('tests'), '.tg-answer-explain-a-fixture.ts')
+    const b = join(resolve('tests'), '.tg-answer-explain-b-fixture.ts')
+    try {
+      writeFileSync(a, 'export function zzExplainTwice(): number {\n  return 1\n}\n')
+      writeFileSync(b, 'export function zzExplainTwice(): number {\n  return 2\n}\n')
+      indexFileSync(normalizePath(a))
+      indexFileSync(normalizePath(b))
+      const r = captureErr(() => runAnswer({ question: 'what does zzExplainTwice do' }))
+      expect(r.code).toBe(1)
+      expect(r.out).toBe('')
+      expect(r.err).toContain("'zzExplainTwice' has 2 definitions")
+      expect(r.err).toContain('try: token-goat brief "tests/.tg-answer-explain-a-fixture.ts::zzExplainTwice"')
+    } finally {
+      rmSync(a, { force: true })
+      rmSync(b, { force: true })
+    }
+  })
+
+  it('keeps judgement and unresolved explain questions refused', () => {
+    const judgement = captureErr(() => runAnswer({ question: 'should we refactor runSection' }))
+    expect(judgement.code).toBe(1)
+    expect(judgement.err).toContain('judgement')
+    const unresolved = captureErr(() => runAnswer({ question: 'what does zzNoSuchSymbolAnywhere do' }))
+    expect(unresolved.code).toBe(1)
+    expect(unresolved.err).toContain("'zzNoSuchSymbolAnywhere' is not an indexed symbol")
+    const file = captureErr(() => runAnswer({ question: 'what does src/paths.ts do' }))
+    expect(file.code).toBe(1)
+    expect(file.out).toBe('')
+    const show = captureErr(() => runAnswer({ question: 'show me runSection' }))
+    expect(show.code).toBe(1)
+  })
+
   it('refuses an empty question', () => {
     const r = captureErr(() => runAnswer({ question: '   ' }))
     expect(r.code).toBe(1)

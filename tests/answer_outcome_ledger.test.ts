@@ -63,6 +63,14 @@ describe('answer outcome ledger', () => {
     expect(summarize(30).by_command.find((r) => r.command === 'answer')?.events).toBe(answerRows().length)
   })
 
+  it('books an explain question under brief, the command its via: line names', () => {
+    const before = answerRows().length
+    // HAND-DERIVED: the explain intent's `what does X do` phrasing with this file's subject substituted.
+    expect(runAnswer({ question: 'what does ledgerTarget5w do' })).toBe(0)
+    expect(answerRows().slice(before)).toEqual(['answer:brief answered'])
+    expect(summarize(30).by_command.find((r) => r.command === 'answer')?.events).toBe(answerRows().length)
+  })
+
   it('books each refusal with the reason it refused', () => {
     const before = answerRows().length
     expect(runAnswer({ question: '   ' })).toBe(1)

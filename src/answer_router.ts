@@ -11,6 +11,7 @@ import { runTestFor } from './graph_analysis.js'
 import { runDeps } from './graph_inspection.js'
 import { runExports, runImports } from './read_inspect.js'
 import { runSymbol } from './read_symbol.js'
+import { runBrief } from './read_brief.js'
 import { emit, emitErr } from './emit.js'
 import { type AnswerRoute, recordStat } from './stats.js'
 
@@ -23,7 +24,7 @@ export function refusal(why: string, suggestion: string): string {
   return `cannot answer deterministically: ${why}; try: ${suggestion}`
 }
 
-export type AnswerIntent = 'where' | 'callers' | 'tests' | 'exports' | 'imports' | 'importers' | 'impact'
+export type AnswerIntent = 'where' | 'callers' | 'tests' | 'exports' | 'imports' | 'importers' | 'impact' | 'explain'
 
 /** Questions that must refuse even when they name a resolvable symbol. These ask for judgement, intent, runtime behaviour, or a reading of a body -- none of which any index row can answer. This guard runs before intent matching precisely because the over-firing case is a judgement question that happens to contain a symbol name ("why does foldPath normalize", "is foldPath correct"). */
 const JUDGEMENT_PATTERNS: readonly RegExp[] = [
@@ -81,6 +82,10 @@ const INTENT_RULES: readonly IntentRule[] = [
   { intent: 'impact', re: /^what(?:'s| is) impacted by (?:changing )?(.+)$/i },
   { intent: 'impact', re: /^blast radius of (?:changing )?(.+)$/i },
   { intent: 'impact', re: /^impact of (?:changing )?(.+)$/i },
+
+  // Only the two phrasings that cannot be read as a judgement question; `how does X work` and `explain X` stay refused by JUDGEMENT_PATTERNS.
+  { intent: 'explain', re: /^what does (.+) do$/i },
+  { intent: 'explain', re: /^what(?:'s| is) (.+) for$/i },
 
   { intent: 'where', re: /^where(?:'s| is) (.+) (?:defined|declared)$/i },
   // Ahead of the bare `where is X`, which would otherwise capture `the code for X` as a four-word subject and refuse it.
@@ -157,6 +162,16 @@ function resolveSymbolHit(subject: string, rootDir: string): { name: string; fil
   }
 }
 
+/** Every indexed definition of exactly this name in this project, outside vendored, generated, and tool-metadata trees. Paged to exhaustion for the same reason as {@link resolveSymbolHit}: ignored trees sort first, so a capped page would miss real rows. */
+function collectSymbolDefs(subject: string, rootDir: string): { name: string; file: string }[] {
+  const defs: { name: string; file: string }[] = []
+  for (let offset = 0; ; offset += SYMBOL_SCAN_PAGE) {
+    const rows = querySymbols({ name: subject, rootDir, limit: SYMBOL_SCAN_PAGE, offset })
+    for (const r of rows) if (!isIgnoredIndexPath(r.filePath)) defs.push({ name: r.name, file: r.filePath })
+    if (rows.length < SYMBOL_SCAN_PAGE) return defs
+  }
+}
+
 /** The subject read as a file: an exact path, else the project's file list matched by basename ("config.ts") or by extensionless stem ("config"). Several matches is reported as ambiguity rather than resolved by picking one, which would be a confident wrong answer. The match runs over the `files` table rather than over symbol rows: `files` is the authoritative list of what is indexed (a file with no extracted symbols has no symbol rows at all), it needs one query instead of a capped path-suffix scan, and it makes the candidate set independent of how many symbols each file happens to contain. */
 function resolveFileHit(subject: string, rootDir: string): ResolvedSubject | null {
   const entry = getFileEntry(resolveSpecPath(subject))
@@ -216,6 +231,33 @@ const FILE_INTENTS: ReadonlySet<AnswerIntent> = new Set<AnswerIntent>(['tests', 
 /** The phrasing that re-asks a file intent about one specific path, for the ambiguous refusal's next step. */
 const FILE_INTENT_PHRASE: Readonly<Partial<Record<AnswerIntent, string>>> = { tests: 'tests for', exports: 'exports of', imports: 'imports of', importers: 'importers of' }
 
+/** Routes an explain question to `brief` only when the subject has exactly one definition in this project (or is spelled `file::symbol`); several definitions, a file, or nothing at all refuses with the next step. */
+function answerExplain(question: string, subject: string, rootDir: string): number {
+  let target: { name: string; file: string } | null = null
+  if (subject.includes('::')) {
+    const r = resolveSubject(subject)
+    if (r?.kind === 'symbol') target = { name: r.name, file: r.file }
+  } else if (!/\s/.test(subject)) {
+    const defs = collectSymbolDefs(subject, rootDir)
+    if (defs.length > 1) {
+      const shown = defs.slice(0, 5).map((d) => toDisplayPath(rootDir, d.file))
+      const more = defs.length - shown.length
+      const first = shown[0] ?? ''
+      return refuse('ambiguous', `'${subject}' has ${defs.length} definitions in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, `token-goat brief "${first}::${subject}"`)
+    }
+    target = defs[0] ?? null
+    if (target === null) {
+      const file = resolveSubject(subject, 'file-only')
+      if (file?.kind === 'file') return refuse('file-needs-symbol', `'${subject}' is a file, and explain needs a symbol`, `token-goat outline ${toDisplayPath(rootDir, file.path)}`)
+      if (file?.kind === 'ambiguous') return refuse('ambiguous', `'${subject}' names ${file.candidates.length} files in this project`, `token-goat outline ${toDisplayPath(rootDir, file.candidates[0] ?? '')}`)
+    }
+  }
+  if (target === null) return refuse('unresolved', `'${subject}' is not an indexed symbol`, `token-goat semantic "${question}"`)
+  const spec = `${toDisplayPath(rootDir, target.file)}::${displaySafeText(target.name)}`
+  emit(`via: token-goat brief "${spec}" --limit ${ANSWER_DELEGATE_LIMIT}`)
+  return routed('brief', runBrief({ spec, limit: ANSWER_DELEGATE_LIMIT, projectRoot: rootDir }))
+}
+
 /** Row cap the router puts on every symbol-intent delegate, so an answer stays smaller than the file it exists to save you from reading. Measured against this repo's own index: `callers normalizePath` (500+ refs) emits 24,274 bytes unbounded versus 21,091 for src/paths.ts itself, and 878 bytes at 20 rows; `impact` and `symbol` already default to 20 at the CLI, so this is the bound the whole router shares. Every `via:` line names the flag that reproduces the window it printed, and the delegate discloses whatever it withheld. */
 export const ANSWER_DELEGATE_LIMIT = 20
 
@@ -266,10 +308,12 @@ export function runAnswer(opts: AnswerOptions): number {
   if (cls === null) {
     return refuse(
       'no-intent',
-      'no intent matched -- this router only answers where/who-calls/what-tests-cover/what-exports/what-imports/what-imports-it/what-breaks questions about a named symbol or file',
+      'no intent matched -- this router only answers where/who-calls/what-tests-cover/what-exports/what-imports/what-imports-it/what-breaks/what-does-X-do questions about a named symbol or file',
       `token-goat semantic "${question}"`,
     )
   }
+
+  if (cls.intent === 'explain') return answerExplain(question, cls.subject, resolveProjectRoot({ project: process.cwd() }))
 
   const resolved = resolveSubject(cls.subject, subjectModeFor(cls.intent))
   if (resolved === null) return refuse('unresolved', `'${cls.subject}' is not an indexed symbol or file`, `token-goat semantic "${question}"`)
