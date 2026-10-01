@@ -2,6 +2,20 @@ import type { ChannelHit, FusedSearchResult, SearchChannel } from './types.js';
 
 export const DEFAULT_RRF_K = 60;
 
+/** Largest gap in lines between two hits that may still fuse into one cluster. */
+export const FUSION_GAP_LINES = 20;
+/** Span in lines a cluster may grow to by fusing; a single hit that is already wider (a big symbol) is exempt. */
+export const FUSION_SPAN_CAP = 200;
+
+/** True when fusing two line ranges stays inside the gap window and the span cap. */
+function withinFusionWindow(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
+  const gap = Math.max(aStart, bStart) - Math.min(aEnd, bEnd) - 1;
+  if (gap > FUSION_GAP_LINES) return false;
+  const merged = Math.max(aEnd, bEnd) - Math.min(aStart, bStart) + 1;
+  const widest = Math.max(aEnd - aStart + 1, bEnd - bStart + 1);
+  return merged <= Math.max(FUSION_SPAN_CAP, widest);
+}
+
 /**
  * Fuses ranked results from multiple search channels using Reciprocal Rank Fusion (RRF).
  * Consolidates overlapping or identical hits from different angles and ranks by multi-channel consensus.
@@ -65,7 +79,10 @@ export function fuseChannelHits(
     for (const cluster of clusters) {
       // If both have names, they only match if they share the exact symbol name
       if (hit.name && cluster.name) {
-        if (hit.name.toLowerCase() === cluster.name.toLowerCase()) {
+        if (
+          hit.name.toLowerCase() === cluster.name.toLowerCase() &&
+          withinFusionWindow(cluster.lineStart, cluster.lineEnd, hit.lineStart, hit.lineEnd)
+        ) {
           matchedCluster = cluster;
           break;
         }
@@ -87,7 +104,7 @@ export function fuseChannelHits(
       } else {
         // Both unnamed: match if ranges overlap or are within a 6-line locality margin
         const overlap = Math.max(cluster.lineStart, hit.lineStart) <= Math.min(cluster.lineEnd, hit.lineEnd) + 6;
-        if (overlap) {
+        if (overlap && withinFusionWindow(cluster.lineStart, cluster.lineEnd, hit.lineStart, hit.lineEnd)) {
           matchedCluster = cluster;
           break;
         }
@@ -142,6 +159,11 @@ export function fuseChannelHits(
     }
     // Filter against unrounded score so borderline results are not dropped prematurely
     if (rawScore >= minScore) {
+      // The best text hit keeps its own line so a wide enclosing symbol does not hide where the match is
+      let matchHit: ChannelHit | undefined;
+      for (const h of entry.hits) {
+        if (h.channel === 'text' && (!matchHit || h.rank < matchHit.rank)) matchHit = h;
+      }
       results.push({
         filePath: entry.filePath,
         name: entry.name,
@@ -152,6 +174,7 @@ export function fuseChannelHits(
         channels,
         score: Number(rawScore.toFixed(6)),
         channelHits: entry.hits,
+        ...(matchHit ? { matchLine: matchHit.lineStart, matchPreview: matchHit.preview } : {}),
       });
     }
   }

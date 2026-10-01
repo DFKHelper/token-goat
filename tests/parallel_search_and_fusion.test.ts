@@ -133,6 +133,55 @@ describe('Parallel Search & RRF Fusion', () => {
     expect(fused.length).toBe(2);
     expect(fused.map((f) => f.name).sort()).toEqual(['bar', 'foo']);
   });
+
+  // Provenance: HAND-DERIVED line numbers chosen from the acceptance scenarios (CHANGELOG '### Fixed' headings, src/cli.ts:763-1378 buildProgram with a match at 923), not from the matcher.
+  it('keeps same-name hits 900 lines apart as separate results', () => {
+    const hitsMap = new Map<SearchChannel, ChannelHit[]>();
+    hitsMap.set('heading', [
+      { channel: 'heading', filePath: 'CHANGELOG.md', name: 'Fixed', lineStart: 77, lineEnd: 90, preview: '### Fixed', rank: 1 },
+      { channel: 'heading', filePath: 'CHANGELOG.md', name: 'Fixed', lineStart: 977, lineEnd: 1030, preview: '### Fixed', rank: 2 },
+    ]);
+    const fused = fuseChannelHits(hitsMap);
+    expect(fused.length).toBe(2);
+    expect(fused.map((f) => f.lineStart).sort((a, b) => a - b)).toEqual([77, 977]);
+    expect(Math.max(...fused.map((f) => f.lineEnd - f.lineStart))).toBeLessThan(100);
+  });
+
+  it('reports the matched text line when it falls inside a much larger symbol range', () => {
+    const hitsMap = new Map<SearchChannel, ChannelHit[]>();
+    hitsMap.set('symbol', [
+      { channel: 'symbol', filePath: 'src/cli.ts', name: 'buildProgram', kind: 'function', lineStart: 763, lineEnd: 1378, preview: 'function buildProgram', rank: 1 },
+    ]);
+    hitsMap.set('text', [
+      { channel: 'text', filePath: 'src/cli.ts', lineStart: 923, lineEnd: 923, preview: "command('section')", rank: 1 },
+    ]);
+    const fused = fuseChannelHits(hitsMap);
+    expect(fused.length).toBe(1);
+    expect(fused[0]!.lineStart).toBe(763);
+    expect(fused[0]!.lineEnd).toBe(1378);
+    expect(fused[0]!.matchLine).toBe(923);
+    expect(fused[0]!.matchPreview).toBe("command('section')");
+  });
+
+  it('still fuses same-name hits 5 lines apart', () => {
+    const hitsMap = new Map<SearchChannel, ChannelHit[]>();
+    hitsMap.set('symbol', [{ channel: 'symbol', filePath: 'src/a.ts', name: 'calc', lineStart: 10, lineEnd: 20, preview: 'calc', rank: 1 }]);
+    hitsMap.set('heading', [{ channel: 'heading', filePath: 'src/a.ts', name: 'calc', lineStart: 25, lineEnd: 26, preview: 'calc', rank: 1 }]);
+    const fused = fuseChannelHits(hitsMap);
+    expect(fused.length).toBe(1);
+    expect(fused[0]!.lineStart).toBe(10);
+    expect(fused[0]!.lineEnd).toBe(26);
+  });
+
+  it('stops growing an unnamed cluster at the span cap', () => {
+    const hits: ChannelHit[] = [];
+    for (let i = 0; i < 80; i++) {
+      hits.push({ channel: 'text', filePath: 'src/long.ts', lineStart: 1 + i * 5, lineEnd: 1 + i * 5, preview: 'x' + i, rank: i + 1 });
+    }
+    const fused = fuseChannelHits(new Map([['text', hits]]), { limit: 100 });
+    expect(fused.length).toBeGreaterThan(1);
+    for (const f of fused) expect(f.lineEnd - f.lineStart + 1).toBeLessThanOrEqual(200);
+  });
 });
 
 describe('Bridge Installers & Ecosystem Detection Safety', () => {

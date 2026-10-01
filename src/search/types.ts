@@ -36,6 +36,9 @@ export interface FusedSearchResult {
   readonly channels: ReadonlyArray<SearchChannel>;
   readonly score: number;
   readonly channelHits: ReadonlyArray<ChannelHit>;
+  /** Line of the best text-channel hit inside the fused range, when one exists. */
+  readonly matchLine?: number | undefined;
+  readonly matchPreview?: string | undefined;
 }
 
 export interface SearchExecutionSummary {

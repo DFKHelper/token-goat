@@ -6,17 +6,21 @@ import { resolveProjectConfinement } from '../read_spec.js';
 /** Formats a single fused search result for terminal display. */
 function formatTerminalHit(hit: FusedSearchResult, rank: number): string {
   const channelBadge = hit.channels.map((c) => `[${c}]`).join('');
-  const lineRange = hit.lineStart === hit.lineEnd ? `:${hit.lineStart}` : `:${hit.lineStart}-${hit.lineEnd}`;
+  const wide = hit.lineStart !== hit.lineEnd;
+  const showMatch = hit.matchLine !== undefined && wide;
+  const lineRange = showMatch ? `:${hit.matchLine}` : wide ? `:${hit.lineStart}-${hit.lineEnd}` : `:${hit.lineStart}`;
   const loc = `${displaySafeText(hit.filePath)}${lineRange}`;
-  const symInfo = hit.name ? ` (${displaySafeText(hit.name)}${hit.kind ? ` · ${hit.kind}` : ''})` : '';
+  const spanInfo = showMatch ? `${hit.lineStart}-${hit.lineEnd}` : '';
+  const symInfo = hit.name ? ` (${displaySafeText(hit.name)}${hit.kind ? ` · ${hit.kind}` : ''}${spanInfo ? ` ${spanInfo}` : ''})` : spanInfo ? ` (${spanInfo})` : '';
   const scoreInfo = `score: ${hit.score.toFixed(4)}`;
 
   const lines = [
     `#${rank} ${channelBadge} ${loc}${symInfo} [${scoreInfo}]`,
   ];
 
-  if (hit.preview) {
-    const cleanPreview = hit.preview.replace(/\r?\n/g, ' ').slice(0, 120).trim();
+  const shownPreview = showMatch && hit.matchPreview ? hit.matchPreview : hit.preview;
+  if (shownPreview) {
+    const cleanPreview = shownPreview.replace(/\r?\n/g, ' ').slice(0, 120).trim();
     lines.push(`    ${cleanPreview}`);
   }
 

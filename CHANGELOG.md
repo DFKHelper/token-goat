@@ -176,6 +176,7 @@ Upgrading reparses the index. The file-lock fix below is in a file the parser fi
 - **Front matter at the top of a markdown file is no longer indexed as a heading.** A Jekyll block like the one that opens README.md ends in a `---` line, and the heading scanners took that line for the underline of a heading. The last metadata key (`permalink: /` in README.md) then showed up as a level 2 heading ahead of the real title in `outline`, `section` and read hints. The scanners now start after the front matter. An opening `---` with no closing one is not treated as front matter.
 - **`token-goat section --grep <pattern>` filters the section.** The flag was accepted and then ignored, so the whole section came back. It now prints only the matching lines, each under the sub-heading it sits in.
 - **`token-goat symbol NAME` lists the current project's definitions first.** Matches were sorted by path across every indexed project, so another project whose path sorted earlier could fill the page before the one you were working in appeared. Definitions from the current project now come first, and a truncated page says how many of the matches are local.
+- **Search keeps far-apart hits separate and points at the matching line.** Two hits on the same name hundreds of lines apart were merged into one range covering everything between them. Hits now merge only when they are within 20 lines of each other, and a match inside a large function prints its own line (for example `cli.ts:923`) instead of the whole function's range.
 
 ## [2.9.29] - 2026-09-25
 
