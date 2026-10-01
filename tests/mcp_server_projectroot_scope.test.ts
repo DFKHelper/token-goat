@@ -144,6 +144,60 @@ describe('mcp read/symbol/skeleton/outline/section tools accept projectRoot', ()
     }
   })
 
+  it('infers projectRoot automatically from absolute target path when projectRoot is omitted', async () => {
+    const { client, close } = await connectedClient()
+    try {
+      const testFile = path.join(scratchRoot, 'src', 'Service.cs')
+      fs.mkdirSync(path.dirname(testFile), { recursive: true })
+      fs.writeFileSync(testFile, 'public class Service { public void Run() {} }', 'utf8')
+
+      const result = await client.callTool({
+        name: 'read',
+        arguments: { spec: `${testFile}::Run` },
+      })
+      // Even without projectRoot, it should not be refused as out-of-root because
+      // inferProjectRootFromTarget infers scratchRoot from the file path.
+      const text = (result.content as Array<{ text: string }>)[0]?.text ?? ''
+      expect(text).not.toContain('confining to')
+      expect(text).not.toContain('Refused: path is outside')
+    } finally {
+      await close()
+    }
+  })
+
+  it('reports clear diagnostic message when projectRoot is omitted and target is outside cwd', async () => {
+    const { client, close } = await connectedClient()
+    try {
+      // Non-existent path outside cwd
+      const outsidePath = path.resolve('/some/nonexistent/workspace/file.ts')
+      const result = await client.callTool({
+        name: 'read',
+        arguments: { spec: `${outsidePath}::Foo` },
+      })
+      expect(result.isError).toBe(true)
+      const text = (result.content as Array<{ text: string }>)[0]?.text ?? ''
+      expect(text).toContain('projectRoot was omitted and defaulted to server cwd')
+      expect(text).toContain('Pass projectRoot: "<workspace-path>"')
+    } finally {
+      await close()
+    }
+  })
+
+  it('refs tool reports clear error when projectRoot is omitted and index is empty', async () => {
+    const { client, close } = await connectedClient()
+    try {
+      const result = await client.callTool({
+        name: 'refs',
+        arguments: { spec: 'NonExistent::sym' },
+      })
+      const text = (result.content as Array<{ text: string }>)[0]?.text ?? ''
+      expect(text).toContain('projectRoot was omitted')
+      expect(text).toContain('Pass projectRoot: "<workspace-path>"')
+    } finally {
+      await close()
+    }
+  })
+
   afterEach(() => {
     fs.rmSync(scratchRoot, { recursive: true, force: true })
   })

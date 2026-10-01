@@ -766,8 +766,8 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       recordBashOutput(gitScopedCacheHash, gitScopedCacheId, Buffer.byteLength(output, 'utf-8'))
     }
 
-    // In environments without pre-hook wrapping (VS Code run_in_terminal, unwrapped shells), an eligible single command (e.g. `git diff`) that ran directly is compressed here on post-hook.
-    if (isUnwrapped && /^git(?:\s+-[^\s]+|\s+--[^\s]+)*\s+diff\b/i.test(cmd)) {
+    // In environments without pre-hook wrapping (VS Code run_in_terminal, unwrapped shells), an eligible single command (e.g. `git diff`, `dotnet test`, `cargo test`) that ran directly is compressed here on post-hook.
+    if (isUnwrapped && (detectFromCommand(cmd, runDir ?? undefined) !== null || /^git(?:\s+-[^\s]+|\s+--[^\s]+)*\s+diff\b/i.test(cmd))) {
       const unwrappedCompressed = await maybeCompressCompoundOutput(cmd, optedOut, output, exitCode, runDir, cacheMinBytes, isUnwrapped)
       if (unwrappedCompressed !== null) return unwrappedCompressed
     }

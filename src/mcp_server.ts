@@ -31,7 +31,7 @@ import {
   CONTENT_MAX_INPUT_CHARS,
 } from './content_store.js'
 import { resolveProjectRoot } from './project.js'
-import { getProjectIndexCounts, getEmbeddingCoverage } from './index_health.js'
+import { getProjectIndexCounts, getEmbeddingCoverage, isIndexEmptyForProject } from './index_health.js'
 import { getDirtyPathsFor } from './dirty_queue.js'
 import { isWorkerRunning } from './worker_lifecycle.js'
 import { getDb } from './db.js'
@@ -142,8 +142,94 @@ function forCompare(p: string): string {
 }
 
 /** CONFINEMENT INVARIANT: the base the gate resolves a relative target against MUST be the exact base the execution layer resolves it against. Every tool handler resolves the root exactly ONCE, here, and then uses that single absolute value for BOTH the {@link confineTargets} check and the `projectRoot` option handed to the `run*` handler. Resolving a second time inside the gate (as this file used to) let the two bases diverge: the gate validated `<projectRoot>/x` while the read resolved `<server cwd>/x`, so confinement was only sound when the server process's cwd happened to equal the project root. `resolveProjectRoot` also walks up to the git toplevel, so even an explicitly supplied `projectRoot` pointing at a subdirectory of a repo resolves to a different base than the raw value -- one resolution site is the only way to guarantee the two agree. */
-function resolveToolRoot(projectRoot: string | undefined): string {
-  const resolved = resolveProjectRoot(projectRoot !== undefined ? { project: projectRoot } : {})
+function inferProjectRootFromTarget(target: string): string | null {
+  const file = specFilePart(target)
+  if (!file) return null
+
+  // 1. If file is absolute and exists on disk, resolve its project root
+  if (path.isAbsolute(file)) {
+    if (fs.existsSync(file)) {
+      try {
+        return resolveProjectRoot({ project: path.dirname(file) })
+      } catch {
+        return null
+      }
+    }
+    return null
+  }
+
+  // 2. If relative file exists in server process.cwd(), let default cwd handle it
+  try {
+    if (fs.existsSync(path.resolve(process.cwd(), file))) {
+      return null
+    }
+  } catch {
+    // ignore
+  }
+
+  // 3. Search indexed files in global.db for matching suffix
+  const dbPath = globalDbPath()
+  if (fs.existsSync(dbPath)) {
+    try {
+      const db = getDb(dbPath)
+      const normFile = normalizePath(file).toLowerCase()
+      const rows = db
+        .prepare(`SELECT path FROM files WHERE TG_LOWER(path) LIKE ? OR TG_LOWER(path) = ? LIMIT 5`)
+        .all(`%/${normFile}`, normFile) as { path: string }[]
+
+      for (const row of rows) {
+        if (fs.existsSync(row.path)) {
+          return resolveProjectRoot({ project: path.dirname(row.path) })
+        }
+      }
+    } catch {
+      // If DB is locked or query fails, skip silently
+    }
+  }
+
+  // 4. If target is a bare symbol name (no path, no separator), check symbols table
+  if (!file.includes('/') && !file.includes('\\') && !file.includes('.')) {
+    if (fs.existsSync(dbPath)) {
+      try {
+        const db = getDb(dbPath)
+        const rows = db.prepare(`SELECT file_path FROM symbols WHERE name = ? LIMIT 5`).all(file) as { file_path: string }[]
+        for (const row of rows) {
+          if (fs.existsSync(row.file_path)) {
+            return resolveProjectRoot({ project: path.dirname(row.file_path) })
+          }
+        }
+      } catch {
+        // skip
+      }
+    }
+  }
+
+  return null
+}
+
+function resolveToolRoot(projectRoot: string | undefined, candidateTargets?: readonly string[]): string {
+  if (projectRoot !== undefined) {
+    const resolved = resolveProjectRoot({ project: projectRoot })
+    assertRootAllowed(resolved)
+    return resolved
+  }
+
+  if (candidateTargets && candidateTargets.length > 0) {
+    for (const target of candidateTargets) {
+      if (!target) continue
+      const inferred = inferProjectRootFromTarget(target)
+      if (inferred) {
+        try {
+          assertRootAllowed(inferred)
+          return inferred
+        } catch {
+          // If inferred root is not in allowed_roots, skip it
+        }
+      }
+    }
+  }
+
+  const resolved = resolveProjectRoot({})
   assertRootAllowed(resolved)
   return resolved
 }
@@ -284,19 +370,24 @@ const NO_PINS: ReadonlyMap<string, string> = new Map<string, string>()
 
 /** CONFINEMENT INVARIANT: a handler must pass `targets` from this function's own return value to its `run*` call, never the raw argument it validated -- the value checked and the value used must be the same reference, or a future normalisation step (trim, comma-strip, `@`/`::` parsing -- four such variants have shipped and been fixed individually in this function's history) reintroduces the bypass by construction. Comma-separated multi-file specs are checked part by part: one out-of-root member must reject the whole call, or the confinement is trivially bypassed by appending an in-root path. Each part is validated and forwarded byte-for-byte identical -- no trimming: `specFilePart`, and the `parseReadSpec`/`resolveSymbolSpec` execution layer it mirrors, never trim either, so trimming here would (as it did) validate a different string than the one that gets read. */
 /** The refusal a failed containment check produces. All three are refusals and all three are final -- the distinction is diagnostic, not a difference in what the tool will do. A blocked read caused by an unreadable workspace root used to arrive worded as a traversal refusal, which is the one message guaranteed to send an operator hunting for an attack instead of at their mount. */
-function refusalText(file: string, resolvedRoot: string, reason: ContainmentReason): string {
+function refusalText(file: string, resolvedRoot: string, reason: ContainmentReason, projectRootWasOmitted = false): string {
   const escapeHatch = 'Set mcp.confine_reads_to_project_root = false (or TOKEN_GOAT_MCP_CONFINE_READS=0) to allow cross-root reads.'
+  const omittedNote = projectRootWasOmitted
+    ? ` Note: projectRoot was omitted and defaulted to server process cwd "${resolvedRoot}". Pass projectRoot: "<workspace-path>" if your target is in another directory.`
+    : ''
   if (reason === 'unresolvable-root') {
     return (
       `refused: the project root "${resolvedRoot}" could not be resolved, so no path can be confirmed to sit inside it. ` +
-      'This is a broken workspace root -- an unmounted share, a deleted directory, or a permission change on a parent -- not a request to read outside the project.'
+      'This is a broken workspace root -- an unmounted share, a deleted directory, or a permission change on a parent -- not a request to read outside the project.' +
+      omittedNote
     )
   }
   if (reason === 'unresolvable-target') {
     return (
       `refused: "${file}" could not be resolved to a real location, so it cannot be confirmed to sit inside the project root. ` +
       'A symlink loop, a permission error on a parent directory, or a path past the operating system\'s length limit all produce this. ' +
-      'The check fails closed rather than falling back to comparing the text of the path.'
+      'The check fails closed rather than falling back to comparing the text of the path.' +
+      omittedNote
     )
   }
   // Names the root rather than saying "the workspace", and says whose choice it was. The old wording -- "the MCP tools are confined to the workspace" -- described a boundary that only exists once an operator sets `mcp.allowed_roots`, which defaults to empty (config.ts). Until then the caller picks the root per call, so what this refusal proves is that the target did not sit inside the root THIS call named, not that the tools cannot reach outside some workspace. An operator reading the old sentence in a log would have taken the stronger guarantee from it.
@@ -304,10 +395,10 @@ function refusalText(file: string, resolvedRoot: string, reason: ContainmentReas
     loadConfig().mcp.allowed_roots.length === 0
       ? 'Each call is confined to the projectRoot it names, and that root comes from the caller: set mcp.allowed_roots (or TOKEN_GOAT_MCP_ALLOWED_ROOTS) to pin which roots may be named at all.'
       : 'Each call is confined to the projectRoot it names, which must itself sit inside mcp.allowed_roots.'
-  return `refused: "${file}" is outside the project root "${resolvedRoot}". ${rootScope} ${escapeHatch}`
+  return `refused: "${file}" is outside the project root "${resolvedRoot}". ${rootScope} ${escapeHatch}${omittedNote}`
 }
 
-function confineTargets(targets: readonly string[], resolvedRoot: string, splitCommas = true): ConfinementResult {
+function confineTargets(targets: readonly string[], resolvedRoot: string, splitCommas = true, projectRootWasOmitted = false): ConfinementResult {
   // The allowlist is NOT checked here any more -- it moved to assertRootAllowed, called from resolveToolRoot, so it applies to every tool and is independent of this setting. See its doc comment for what that early return used to void.
   if (!loadConfig(resolvedRoot).mcp.confine_reads_to_project_root) return { ok: true, targets, pins: NO_PINS }
   const allowedRoots = loadConfig().mcp.allowed_roots
@@ -338,7 +429,7 @@ function confineTargets(targets: readonly string[], resolvedRoot: string, splitC
         }
       }
       if (!check.inside) {
-        return { ok: false, refusal: toCallToolResult({ text: refusalText(file, resolvedRoot, check.reason), code: 1 }) }
+        return { ok: false, refusal: toCallToolResult({ text: refusalText(file, resolvedRoot, check.reason, projectRootWasOmitted), code: 1 }) }
       }
       // Pin what was just validated, so the read can prove it opened that same object rather than a replacement swapped in behind the path afterwards. The set of keys comes from the check itself: it is the only thing that knows which spellings of the target it resolved, and a lookup that misses degrades silently to the unpinned behaviour rather than failing closed.
       for (const [key, identity] of check.pins) pins.set(key, identity)
@@ -363,6 +454,22 @@ function withConfinedRead(pins: ReadonlyMap<string, string>, fn: () => CallToolR
     }
     throw err
   }
+}
+
+function noteOmittedProjectRoot(result: CallToolResult, root: string, projectRootWasOmitted: boolean): CallToolResult {
+  if (!projectRootWasOmitted) return result
+  if (!isIndexEmptyForProject(globalDbPath(), root)) return result
+  const note = `\n(Note: projectRoot was omitted and defaulted to server cwd "${root}", which has no files indexed. Pass projectRoot: "<workspace-path>" to target your workspace.)`
+  const contents = result.content
+  if (!Array.isArray(contents)) return result
+  for (const item of contents) {
+    if (item && typeof item === 'object' && 'text' in item && typeof item.text === 'string') {
+      if (!item.text.includes('projectRoot was omitted')) {
+        item.text += note
+      }
+    }
+  }
+  return result
 }
 
 /** Builds the MCP server and registers every tool listed in tests/mcp_server.test.ts's TOOL_NAMES, which is asserted against a live listTools() call. Does not connect a transport. Async purely so the protocol layer and `zod` load here rather than at module scope. cli.ts already defers this whole module behind `await import('./mcp_server.js')` and says so, but that only defers token-goat's own code: a static `import` of a package gets hoisted to the top of the bundle, where ESM evaluates it before anything runs, and code splitting can only keep a module out of the startup chunk if the edge reaching it is dynamic. This once cost 181ms and 131 module file loads on every invocation of the binary -- `--version`, every hook Claude Code fires on every tool call, every test that spawns the bundle -- to serve the one command that is an MCP server. Keep both loads inside this function; a static import here is not local to this file. */
@@ -414,26 +521,31 @@ export async function createMcpServer(): Promise<McpServer> {
     },
     (args) => {
       const { name, limit, file, kind, json, projectRoot } = args
-      const root = resolveToolRoot(projectRoot)
+      const projectRootWasOmitted = projectRoot === undefined
+      const root = resolveToolRoot(projectRoot, file ? [file] : (name ? [name] : undefined))
       let confinedFile = file
       let pins = NO_PINS
       if (file !== undefined) {
-        const gate = confineTargets([file], root)
+        const gate = confineTargets([file], root, true, projectRootWasOmitted)
         if (!gate.ok) return gate.refusal
         confinedFile = gate.targets[0]
         pins = gate.pins
       }
-      return withConfinedRead(pins, () =>
-        toCallToolResult(
-          runSymbol({
-            name,
-            limit: limit ?? 20,
-            ...(confinedFile !== undefined ? { file: confinedFile } : {}),
-            ...(kind !== undefined ? { kind } : {}),
-            ...(json === true ? { json: true } : {}),
-            projectRoot: root,
-          }),
+      return noteOmittedProjectRoot(
+        withConfinedRead(pins, () =>
+          toCallToolResult(
+            runSymbol({
+              name,
+              limit: limit ?? 20,
+              ...(confinedFile !== undefined ? { file: confinedFile } : {}),
+              ...(kind !== undefined ? { kind } : {}),
+              ...(json === true ? { json: true } : {}),
+              projectRoot: root,
+            }),
+          ),
         ),
+        root,
+        projectRootWasOmitted,
       )
     },
   )
@@ -455,19 +567,24 @@ export async function createMcpServer(): Promise<McpServer> {
     },
     (args) => {
       const { spec, json, forceRefresh, stats, projectRoot } = args
-      const root = resolveToolRoot(projectRoot)
-      const gate = confineTargets([spec], root)
+      const projectRootWasOmitted = projectRoot === undefined
+      const root = resolveToolRoot(projectRoot, [spec])
+      const gate = confineTargets([spec], root, true, projectRootWasOmitted)
       if (!gate.ok) return gate.refusal
-      return withConfinedRead(gate.pins, () =>
-        toCallToolResult(
-          runRead({
-            spec: gate.targets[0]!,
-            ...(json === true ? { json: true } : {}),
-            ...(forceRefresh === true ? { forceRefresh: true } : {}),
-            ...(stats === true ? { stats: true } : {}),
-            projectRoot: root,
-          }),
+      return noteOmittedProjectRoot(
+        withConfinedRead(gate.pins, () =>
+          toCallToolResult(
+            runRead({
+              spec: gate.targets[0]!,
+              ...(json === true ? { json: true } : {}),
+              ...(forceRefresh === true ? { forceRefresh: true } : {}),
+              ...(stats === true ? { stats: true } : {}),
+              projectRoot: root,
+            }),
+          ),
         ),
+        root,
+        projectRootWasOmitted,
       )
     },
   )
@@ -485,17 +602,22 @@ export async function createMcpServer(): Promise<McpServer> {
     },
     (args) => {
       const { spec, json, projectRoot } = args
-      const root = resolveToolRoot(projectRoot)
-      const gate = confineTargets([spec], root)
+      const projectRootWasOmitted = projectRoot === undefined
+      const root = resolveToolRoot(projectRoot, [spec])
+      const gate = confineTargets([spec], root, true, projectRootWasOmitted)
       if (!gate.ok) return gate.refusal
-      return withConfinedRead(gate.pins, () =>
-        toCallToolResult(
-          runSection({
-            spec: gate.targets[0]!,
-            ...(json === true ? { json: true } : {}),
-            projectRoot: root,
-          }),
+      return noteOmittedProjectRoot(
+        withConfinedRead(gate.pins, () =>
+          toCallToolResult(
+            runSection({
+              spec: gate.targets[0]!,
+              ...(json === true ? { json: true } : {}),
+              projectRoot: root,
+            }),
+          ),
         ),
+        root,
+        projectRootWasOmitted,
       )
     },
   )
@@ -516,20 +638,25 @@ export async function createMcpServer(): Promise<McpServer> {
     },
     (args) => {
       const { file, json, minLines, forceRefresh, stats, projectRoot } = args
-      const root = resolveToolRoot(projectRoot)
-      const gate = confineTargets([file], root)
+      const projectRootWasOmitted = projectRoot === undefined
+      const root = resolveToolRoot(projectRoot, [file])
+      const gate = confineTargets([file], root, true, projectRootWasOmitted)
       if (!gate.ok) return gate.refusal
-      return withConfinedRead(gate.pins, () =>
-        toCallToolResult(
-          runSkeleton({
-            file: gate.targets[0]!,
-            ...(json === true ? { json: true } : {}),
-            ...(minLines !== undefined ? { minLines } : {}),
-            ...(forceRefresh === true ? { forceRefresh: true } : {}),
-            ...(stats === true ? { stats: true } : {}),
-            projectRoot: root,
-          }),
+      return noteOmittedProjectRoot(
+        withConfinedRead(gate.pins, () =>
+          toCallToolResult(
+            runSkeleton({
+              file: gate.targets[0]!,
+              ...(json === true ? { json: true } : {}),
+              ...(minLines !== undefined ? { minLines } : {}),
+              ...(forceRefresh === true ? { forceRefresh: true } : {}),
+              ...(stats === true ? { stats: true } : {}),
+              projectRoot: root,
+            }),
+          ),
         ),
+        root,
+        projectRootWasOmitted,
       )
     },
   )
@@ -550,20 +677,25 @@ export async function createMcpServer(): Promise<McpServer> {
     },
     (args) => {
       const { file, json, minLines, forceRefresh, stats, projectRoot } = args
-      const root = resolveToolRoot(projectRoot)
-      const gate = confineTargets([file], root)
+      const projectRootWasOmitted = projectRoot === undefined
+      const root = resolveToolRoot(projectRoot, [file])
+      const gate = confineTargets([file], root, true, projectRootWasOmitted)
       if (!gate.ok) return gate.refusal
-      return withConfinedRead(gate.pins, () =>
-        toCallToolResult(
-          runOutline({
-            file: gate.targets[0]!,
-            ...(json === true ? { json: true } : {}),
-            ...(minLines !== undefined ? { minLines } : {}),
-            ...(forceRefresh === true ? { forceRefresh: true } : {}),
-            ...(stats === true ? { stats: true } : {}),
-            projectRoot: root,
-          }),
+      return noteOmittedProjectRoot(
+        withConfinedRead(gate.pins, () =>
+          toCallToolResult(
+            runOutline({
+              file: gate.targets[0]!,
+              ...(json === true ? { json: true } : {}),
+              ...(minLines !== undefined ? { minLines } : {}),
+              ...(forceRefresh === true ? { forceRefresh: true } : {}),
+              ...(stats === true ? { stats: true } : {}),
+              projectRoot: root,
+            }),
+          ),
         ),
+        root,
+        projectRootWasOmitted,
       )
     },
   )
@@ -698,9 +830,16 @@ export async function createMcpServer(): Promise<McpServer> {
     },
     (args) => {
       const { spec, callers, limit, top, json, projectRoot } = args
-      const root = resolveToolRoot(projectRoot)
-      const gate = confineTargets([spec], root)
+      const projectRootWasOmitted = projectRoot === undefined
+      const root = resolveToolRoot(projectRoot, [spec])
+      const gate = confineTargets([spec], root, true, projectRootWasOmitted)
       if (!gate.ok) return gate.refusal
+      if (projectRootWasOmitted && isIndexEmptyForProject(globalDbPath(), root)) {
+        return toCallToolResult({
+          text: `Error: projectRoot was omitted and defaulted to server cwd "${root}", which has no files indexed. Pass projectRoot: "<workspace-path>" to target your workspace.`,
+          code: 1,
+        })
+      }
       return withConfinedRead(gate.pins, () =>
         toCallToolResultFromExitCode(() =>
           runRefs({
@@ -737,21 +876,26 @@ export async function createMcpServer(): Promise<McpServer> {
     },
     (args) => {
       const { spec, limit, json, context, excludeTests, grep, projectRoot } = args
-      const root = resolveToolRoot(projectRoot)
-      const gate = confineTargets([spec], root)
+      const projectRootWasOmitted = projectRoot === undefined
+      const root = resolveToolRoot(projectRoot, [spec])
+      const gate = confineTargets([spec], root, true, projectRootWasOmitted)
       if (!gate.ok) return gate.refusal
-      return withConfinedRead(gate.pins, () =>
-        toCallToolResultFromExitCode(() =>
-          runBrief({
-            spec: gate.targets[0]!,
-            ...(json === true ? { json: true } : {}),
-            ...(limit !== undefined ? { limit } : {}),
-            ...(context !== undefined ? { context } : {}),
-            ...(excludeTests === true ? { excludeTests: true } : {}),
-            ...(grep !== undefined ? { grep } : {}),
-            projectRoot: root,
-          }),
+      return noteOmittedProjectRoot(
+        withConfinedRead(gate.pins, () =>
+          toCallToolResultFromExitCode(() =>
+            runBrief({
+              spec: gate.targets[0]!,
+              ...(json === true ? { json: true } : {}),
+              ...(limit !== undefined ? { limit } : {}),
+              ...(context !== undefined ? { context } : {}),
+              ...(excludeTests === true ? { excludeTests: true } : {}),
+              ...(grep !== undefined ? { grep } : {}),
+              projectRoot: root,
+            }),
+          ),
         ),
+        root,
+        projectRootWasOmitted,
       )
     },
   )
@@ -824,9 +968,10 @@ export async function createMcpServer(): Promise<McpServer> {
     },
     (args) => {
       const { pattern, path: searchPath, maxLines, json, recursive, context, projectRoot } = args
-      const root = resolveToolRoot(projectRoot)
+      const projectRootWasOmitted = projectRoot === undefined
+      const root = resolveToolRoot(projectRoot, searchPath)
       // grep's `path` elements are whole files/directories, never `file::symbol` specs, so each is checked verbatim -- no comma splitting, since a comma can be a legitimate filename character. An omitted `path` still runs the gate (against the resolved root itself, which trivially passes): short-circuiting to `null` here used to skip confinement entirely, and runGrep then defaulted to `process.cwd()`, so omitting `path` searched the server process's own cwd unconfined. The same root is passed on as GrepOptions.projectRoot so the default search scope IS the gated root -- see the invariant on resolveToolRoot.
-      const gate = confineTargets(searchPath === undefined ? [root] : searchPath, root, false)
+      const gate = confineTargets(searchPath === undefined ? [root] : searchPath, root, false, projectRootWasOmitted)
       if (!gate.ok) return gate.refusal
       const confinedPath = searchPath === undefined ? undefined : [...gate.targets]
       return withConfinedRead(gate.pins, () =>
@@ -858,8 +1003,9 @@ export async function createMcpServer(): Promise<McpServer> {
     },
     (args) => {
       const { file, json, projectRoot } = args
-      const root = resolveToolRoot(projectRoot)
-      const gate = confineTargets([file], root)
+      const projectRootWasOmitted = projectRoot === undefined
+      const root = resolveToolRoot(projectRoot, [file])
+      const gate = confineTargets([file], root, true, projectRootWasOmitted)
       if (!gate.ok) return gate.refusal
       return withConfinedRead(gate.pins, () =>
         toCallToolResultFromExitCode(() =>
@@ -882,8 +1028,9 @@ export async function createMcpServer(): Promise<McpServer> {
     },
     (args) => {
       const { file, json, projectRoot } = args
-      const root = resolveToolRoot(projectRoot)
-      const gate = confineTargets([file], root)
+      const projectRootWasOmitted = projectRoot === undefined
+      const root = resolveToolRoot(projectRoot, [file])
+      const gate = confineTargets([file], root, true, projectRootWasOmitted)
       if (!gate.ok) return gate.refusal
       return withConfinedRead(gate.pins, () =>
         toCallToolResultFromExitCode(() =>

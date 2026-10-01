@@ -5,7 +5,7 @@
  * delegates, methods, constructors, properties, and `using` import directives.
  */
 
-import type { SymbolEntry } from '../parser_types.js'
+import type { RefEntry, SymbolEntry } from '../parser_types.js'
 import {
   stripBlockCommentSpan,
   stripLineComment,
@@ -179,23 +179,119 @@ function nextCodeLines(lines: readonly string[], from: number, count: number): s
   return out
 }
 
+const CS_REF_NOISE: ReadonlySet<string> = new Set([
+  'if',
+  'else',
+  'while',
+  'for',
+  'foreach',
+  'switch',
+  'case',
+  'catch',
+  'finally',
+  'using',
+  'lock',
+  'fixed',
+  'sizeof',
+  'typeof',
+  'nameof',
+  'default',
+  'checked',
+  'unchecked',
+  'delegate',
+  'return',
+  'throw',
+  'yield',
+  'base',
+  'this',
+  'new',
+  'var',
+  'async',
+  'await',
+  'get',
+  'set',
+  'init',
+  'add',
+  'remove',
+  'where',
+  'when',
+  'select',
+  'from',
+  'join',
+  'into',
+  'let',
+  'orderby',
+  'group',
+  'by',
+  'equals',
+  'on',
+  'ascending',
+  'descending',
+  'true',
+  'false',
+  'null',
+  'void',
+  'bool',
+  'byte',
+  'sbyte',
+  'short',
+  'ushort',
+  'int',
+  'uint',
+  'long',
+  'ulong',
+  'float',
+  'double',
+  'decimal',
+  'char',
+  'string',
+  'object',
+  'dynamic',
+  'public',
+  'private',
+  'protected',
+  'internal',
+  'static',
+  'readonly',
+  'volatile',
+  'virtual',
+  'override',
+  'abstract',
+  'sealed',
+  'extern',
+  'unsafe',
+  'partial',
+  'class',
+  'struct',
+  'interface',
+  'enum',
+  'record',
+])
+
+const CS_NEW_CALL_RE = /\bnew\s+([A-Za-z_][A-Za-z0-9_.]*)(?:<[^>()]+>)?\s*(?:\(|(?=\{))/g
+const CS_INVOCATION_RE =
+  /(?:\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:\.|\?\.)\s*|(?:\.|\?\.)\s*)?\b([A-Za-z_][A-Za-z0-9_]*)(?:\s*<[^>()\n]+>)?\s*\(/g
+const CS_MULTILINE_INVOCATION_RE =
+  /(?:\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:\.|\?\.)\s*|(?:\.|\?\.)\s*)?\b([A-Za-z_][A-Za-z0-9_]*)(?:\s*<[^>()\n]+>)?\s*$/
+
 export function extractCsharp(
   content: string,
   filePath: string,
-): { symbols: SymbolEntry[]; imports: AdapterImport[] } {
+): { symbols: SymbolEntry[]; refs: RefEntry[]; imports: AdapterImport[] } {
   const symbols: SymbolEntry[] = []
+  const refs: RefEntry[] = []
   const imports: AdapterImport[] = []
+  const seenRefs = new Set<string>()
   const lines = content.split(/\r?\n/)
 
   const classStack: ClassFrame[] = []
   let braceDepth = 0
   let inComment = false
   let mlState: MultilineStringState | null = null
-  // `#if false` / `#if 0` guards a block the compiler never sees, so its braces and declarations
-  // must not reach the brace counter or the symbol list. `falseNesting` counts `#if`s opened
-  // inside the disabled block so only the matching `#endif` re-enables extraction.
   let inFalseBlock = false
   let falseNesting = 0
+  let currentMember: string | undefined
+  let memberBodyEntered = false
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
@@ -292,17 +388,25 @@ export function extractCsharp(
       classStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
     }
 
+    let ctorM: RegExpExecArray | null = null
+    let methM: RegExpExecArray | null = null
+    let propM: RegExpExecArray | null = null
+    let headerM: RegExpExecArray | null = null
+    let arrowM: RegExpExecArray | null = null
+
     const frame = classStack.length > 0 ? classStack[classStack.length - 1]! : null
     if (frame !== null) {
       const depthInClass = braceDepth - frame.startDepth
       if (depthInClass === 1) {
         const lineNoAttr = stripLeadingAttributes(line)
         // constructor
-        const ctorM = CONSTRUCTOR_RE.exec(lineNoAttr)
+        ctorM = CONSTRUCTOR_RE.exec(lineNoAttr)
         if (ctorM && stripVerbatim(ctorM[1] ?? '') === frame.name) {
           const sigEnd = line.indexOf('{')
           const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trimEnd() : line.trimEnd()
           symbols.push(makeLineSymbol(filePath, frame.name, 'method', lineNum, sig.slice(0, 200), frame.name, lines, 'c'))
+          currentMember = frame.name
+          memberBodyEntered = line.includes('{')
         }
         // event. Checked before the property patterns so the accessor-block spelling is claimed here rather than falling through to the Allman header peek, which would read its `{` and following `add`/`remove` line as a property body.
         let isPropertyLine = false
@@ -317,51 +421,189 @@ export function extractCsharp(
           }
         }
         // property
-        const propM = isPropertyLine ? null : PROPERTY_RE.exec(lineNoAttr)
+        propM = isPropertyLine ? null : PROPERTY_RE.exec(lineNoAttr)
         if (propM) {
           isPropertyLine = true
-          symbols.push(makeLineSymbol(filePath, stripVerbatim(propM[1] ?? ''), 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
+          const propName = stripVerbatim(propM[1] ?? '')
+          symbols.push(makeLineSymbol(filePath, propName, 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
+          currentMember = propName
+          memberBodyEntered = line.includes('{')
         } else {
           // Allman-style auto-property: the `{`/`get;`/`set;` tokens live on their own
           // following lines rather than trailing the header line, so PROPERTY_RE (which
           // requires a same-line `{`) never matches. Peek the next two lines for that shape.
-          const headerM = PROPERTY_HEADER_RE.exec(lineNoAttr)
+          headerM = PROPERTY_HEADER_RE.exec(lineNoAttr)
           if (headerM) {
             const [braceLineNext = '', accessorLine = ''] = nextCodeLines(lines, i, 2)
             if (braceLineNext === '{' && (ALLMAN_ACCESSOR_RE.test(accessorLine) || ALLMAN_ACCESSOR_BODY_RE.test(accessorLine))) {
               isPropertyLine = true
-              symbols.push(makeLineSymbol(filePath, stripVerbatim(headerM[1] ?? ''), 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
+              const propName = stripVerbatim(headerM[1] ?? '')
+              symbols.push(makeLineSymbol(filePath, propName, 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
+              currentMember = propName
+              memberBodyEntered = false
             }
           } else {
             // Expression-bodied property (`Name => expr;`) - neither PROPERTY_RE nor the
             // Allman header match, since there is no `{` on this line or the next.
-            const arrowM = PROPERTY_ARROW_RE.exec(lineNoAttr)
+            arrowM = PROPERTY_ARROW_RE.exec(lineNoAttr)
             if (arrowM) {
               isPropertyLine = true
-              symbols.push(makeLineSymbol(filePath, stripVerbatim(arrowM[1] ?? ''), 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
+              const propName = stripVerbatim(arrowM[1] ?? '')
+              symbols.push(makeLineSymbol(filePath, propName, 'var', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
+              currentMember = propName
+              memberBodyEntered = false
             }
           }
         }
         // method - skipped when the property detection above already matched this line, so a
         // property/auto-property declaration is never double-processed as a phantom method too.
-        const methM = isPropertyLine ? null : METHOD_RE.exec(lineNoAttr)
+        methM = isPropertyLine ? null : METHOD_RE.exec(lineNoAttr)
         if (methM) {
           const mname = stripVerbatim(methM[1] ?? '')
           if (mname && mname !== frame.name) {
             const sigEnd = line.indexOf('{')
             const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trimEnd() : line.trimEnd()
             symbols.push(makeLineSymbol(filePath, mname, 'method', lineNum, sig.slice(0, 200), frame.name, lines, 'c'))
+            currentMember = mname
+            memberBodyEntered = line.includes('{')
           }
         }
       }
     }
 
-    // Brace-count on a string-stripped copy of the line so a literal brace inside a string
-    // literal (e.g. `private string bracket = "{";`) is never counted as real nesting.
-    const braceLine = stripStringLiterals(stripLineComment(line))
+    // Brace-count and extract references on a string-stripped copy of the line. For interpolated
+    // strings ($"..." or $@"..."), stripping comments from rawLine preserves holes containing executable code.
+    const isInterpolatedLine = rawLine.includes('$"') || rawLine.includes('$@"') || rawLine.includes('@$"')
+    const baseLine = isInterpolatedLine ? stripLineComment(rawLine) : stripLineComment(line)
+    const braceLine = stripStringLiterals(baseLine, { tripleQuotes: true })
+
+    if (!inFalseBlock && !stripped.startsWith('#')) {
+      const declSpans: Array<{ name: string; col: number }> = []
+      if (cm) {
+        const name = stripVerbatim(cm[2] ?? '')
+        declSpans.push({ name, col: line.indexOf(name) })
+      }
+      if (ctorM) {
+        const name = stripVerbatim(ctorM[1] ?? '')
+        declSpans.push({ name, col: line.indexOf(name) })
+      }
+      if (methM) {
+        const name = stripVerbatim(methM[1] ?? '')
+        declSpans.push({ name, col: line.indexOf(name) })
+      }
+      if (delM) {
+        const name = stripVerbatim(delM[1] ?? '')
+        declSpans.push({ name, col: line.indexOf(name) })
+      }
+      if (propM) {
+        const name = stripVerbatim(propM[1] ?? '')
+        declSpans.push({ name, col: line.indexOf(name) })
+      }
+      if (headerM) {
+        const name = stripVerbatim(headerM[1] ?? '')
+        declSpans.push({ name, col: line.indexOf(name) })
+      }
+      if (arrowM) {
+        const name = stripVerbatim(arrowM[1] ?? '')
+        declSpans.push({ name, col: line.indexOf(name) })
+      }
+
+      const isDeclaration = (name: string, col: number): boolean =>
+        declSpans.some((d) => d.name === name && Math.abs(d.col - col) <= 2)
+
+      const context = currentMember ?? (frame !== null ? frame.name : '')
+
+      for (const m of braceLine.matchAll(CS_NEW_CALL_RE)) {
+        const rawName = stripVerbatim(m[1] ?? '')
+        const name = rawName.includes('.') ? rawName.slice(rawName.lastIndexOf('.') + 1) : rawName
+        if (name.length < 1 || CS_REF_NOISE.has(name)) continue
+        const nameOffset = m[0].lastIndexOf(name)
+        const col = m.index !== undefined ? m.index + (nameOffset >= 0 ? nameOffset : 0) : 0
+        if (isDeclaration(name, col)) continue
+        const key = `${name}\0${lineNum}`
+        if (!seenRefs.has(key)) {
+          seenRefs.add(key)
+          refs.push({ filePath, name, line: lineNum, col, context })
+        }
+      }
+
+      for (const m of braceLine.matchAll(CS_INVOCATION_RE)) {
+        const callee = stripVerbatim(m[2] ?? '')
+        if (callee.length >= 1 && !CS_REF_NOISE.has(callee)) {
+          const dotIdx = m[0].indexOf('.')
+          const searchStart = dotIdx >= 0 ? m[0].lastIndexOf('.') + 1 : 0
+          const calleeOffset = m[0].indexOf(callee, searchStart)
+          const col = m.index !== undefined ? m.index + (calleeOffset >= 0 ? calleeOffset : 0) : 0
+          if (!isDeclaration(callee, col)) {
+            const key = `${callee}\0${lineNum}`
+            if (!seenRefs.has(key)) {
+              seenRefs.add(key)
+              refs.push({ filePath, name: callee, line: lineNum, col, context })
+            }
+          }
+        }
+        const receiver = m[1] !== undefined ? stripVerbatim(m[1]) : ''
+        if (receiver.length > 1 && !CS_REF_NOISE.has(receiver)) {
+          const col = m.index !== undefined ? m.index + m[0].indexOf(receiver) : 0
+          if (!isDeclaration(receiver, col)) {
+            const key = `${receiver}\0${lineNum}`
+            if (!seenRefs.has(key)) {
+              seenRefs.add(key)
+              refs.push({ filePath, name: receiver, line: lineNum, col, context })
+            }
+          }
+        }
+      }
+
+      const nextCode = nextCodeLines(lines, i, 1)[0]
+      if (nextCode?.startsWith('(')) {
+        const mlMatch = CS_MULTILINE_INVOCATION_RE.exec(braceLine)
+        if (mlMatch) {
+          const callee = stripVerbatim(mlMatch[2] ?? '')
+          if (callee.length >= 1 && !CS_REF_NOISE.has(callee)) {
+            const dotIdx = mlMatch[0].indexOf('.')
+            const searchStart = dotIdx >= 0 ? mlMatch[0].lastIndexOf('.') + 1 : 0
+            const calleeOffset = mlMatch[0].indexOf(callee, searchStart)
+            const col = mlMatch.index !== undefined ? mlMatch.index + (calleeOffset >= 0 ? calleeOffset : 0) : 0
+            if (!isDeclaration(callee, col)) {
+              const key = `${callee}\0${lineNum}`
+              if (!seenRefs.has(key)) {
+                seenRefs.add(key)
+                refs.push({ filePath, name: callee, line: lineNum, col, context })
+              }
+            }
+          }
+          const receiver = mlMatch[1] !== undefined ? stripVerbatim(mlMatch[1]) : ''
+          if (receiver.length > 1 && !CS_REF_NOISE.has(receiver)) {
+            const col = mlMatch.index !== undefined ? mlMatch.index + mlMatch[0].indexOf(receiver) : 0
+            if (!isDeclaration(receiver, col)) {
+              const key = `${receiver}\0${lineNum}`
+              if (!seenRefs.has(key)) {
+                seenRefs.add(key)
+                refs.push({ filePath, name: receiver, line: lineNum, col, context })
+              }
+            }
+          }
+        }
+      }
+    }
+
     const openBraces = (braceLine.match(/\{/g) ?? []).length
     const closeBraces = (braceLine.match(/\}/g) ?? []).length
     braceDepth += openBraces - closeBraces
+
+    if (currentMember !== undefined) {
+      if (!memberBodyEntered) {
+        if (openBraces > 0 && braceDepth > (frame?.startDepth ?? 0) + 1) {
+          memberBodyEntered = true
+        } else if (stripped.endsWith(';')) {
+          currentMember = undefined
+        }
+      } else if (frame === null || braceDepth <= frame.startDepth + 1) {
+        currentMember = undefined
+        memberBodyEntered = false
+      }
+    }
 
     const bracelessTop = classStack.length > 0 ? classStack[classStack.length - 1]! : null
     if (
@@ -400,5 +642,5 @@ export function extractCsharp(
     }
   }
 
-  return { symbols, imports }
+  return { symbols, refs, imports }
 }

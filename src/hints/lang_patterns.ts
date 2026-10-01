@@ -219,6 +219,8 @@ export const TEST_RUNNER_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
   /^go test(?:\s|$)/i,
   // Rust / Cargo
   /^cargo test(?:\s|$)/i,
+  // dotnet test
+  /^\s*dotnet\s+test(?:\s|$)/i,
   // npm test / npm run test
   /^npm (?:test|run test)(?:\s|$)/i,
   // yarn test / yarn run test / pnpm test / pnpm run test

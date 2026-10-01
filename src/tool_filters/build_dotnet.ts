@@ -117,10 +117,17 @@ const DOTNET_RESTORE_RE = new RegExp(
 const DOTNET_BUILD_SUCCEEDED_RE = /^Build succeeded\.\s*$/i
 const DOTNET_MSBUILD_NOISE_RE =
   /^\s*(?:Project|Target|Task|Using) "|^\s*MSBuild version/i
-const DOTNET_TEST_PASS_RE = /^\s*(?:Passed|passed)\s+\S/
+const DOTNET_TEST_PASS_RE = /^\s*(?:Passed|passed|\[PASS\]|√|✓)\s+\S/
 const DOTNET_TEST_FAIL_RE = /^\s*(?:Failed|failed|Error)\s+\S/
 const DOTNET_TEST_SUMMARY_RE =
-  /^\s*(?:Test Run|Total tests|Passed:|Failed:|Skipped:|Test results file)/
+  /^\s*(?:Test Run|Total tests|Passed:|Failed:|Skipped:|Test results file|Passed!|Failed!|Skipped!)/i
+const DOTNET_TEST_BANNER_RE = new RegExp(
+  '^\\s*(?:Microsoft \\(R\\) Test Execution|Copyright \\(c\\) Microsoft|Starting test execution' +
+  '|A total of \\d+ test files matched|Attachments:|Test run for \\S+ \\([^)]+\\)' +
+  '|\\[xUnit\\.net[^\\]]*\\]\\s+(?:Discovering|Discovered|Starting|Finished):' +
+  '|Build succeeded\\.|0 Warning\\(s\\)|0 Error\\(s\\)|Time Elapsed\\s+\\d)\\b',
+  'i',
+)
 const DOTNET_FORMAT_FILE_RE = new RegExp(
   '^\\s*(?:Formatted code in|Fixed code style violations in|Fixing code style in' +
   '|Fixed whitespace in|Fixing whitespace in' +
@@ -224,6 +231,7 @@ export class DotnetFilter extends ToolFilter {
     const lines = merged.split('\n')
     const kept: string[] = []
     let passCount = 0
+    let droppedNoise = 0
     let inFailBlock = false
 
     for (const line of lines) {
@@ -247,11 +255,23 @@ export class DotnetFilter extends ToolFilter {
         continue
       }
       inFailBlock = false
+      if (
+        DOTNET_MSBUILD_NOISE_RE.test(line) ||
+        DOTNET_RESTORE_RE.test(line) ||
+        DOTNET_RESTORE_EXTRA_RE.test(line) ||
+        DOTNET_TEST_BANNER_RE.test(line) ||
+        DOTNET_BUILD_ARROW_RE.test(line) ||
+        DOTNET_BUILD_SUCCEEDED_RE.test(line)
+      ) {
+        droppedNoise++
+        continue
+      }
       kept.push(line)
     }
 
     const notes: string[] = []
     maybeNote(notes, passCount, `collapsed ${passCount} passed test lines`)
+    maybeNote(notes, droppedNoise, `dropped ${droppedNoise} noise lines`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }

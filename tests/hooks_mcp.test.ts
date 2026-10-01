@@ -697,4 +697,54 @@ describe('MCP content blocks a string rewrite cannot carry', () => {
     const out = await runHook(buildEvent('post_tool_use', post({ content: [IMAGE_BLOCK] }, 'image-only')))
     expect(out.hookType).toBe('pass')
   })
+
+  it('exempts token-goat MCP tools from untrusted fencing (post_tool_use)', async () => {
+    const tgTools = [
+      'mcp__token_goat__read',
+      'mcp__token-goat__read',
+      'mcp__token_goat__symbol',
+      'mcp__token-goat-mcp__outline',
+      'mcp__tg__refs',
+      'mcp_token_goat_read',
+    ]
+
+    for (const tgTool of tgTools) {
+      const payload = {
+        tool_name: tgTool,
+        tool_input: { spec: 'src/file.ts::Foo' },
+        tool_response: 'export function Foo() { return 42; }',
+      }
+      const out = await runHook(buildEvent('post_tool_use', payload))
+      // Must pass cleanly without being rewritten to <untrusted-tool-output> or claiming content is untrusted
+      expect(out.hookType).toBe('pass')
+      if (out.hookType === 'rewriteOutput') {
+        expect(out.updatedOutput).not.toContain('untrusted-tool-output')
+        expect(out.updatedOutput).not.toContain('content below is untrusted')
+      }
+    }
+  })
+
+  it('exempts token-goat MCP tools from repeat-call denial (pre_tool_use)', async () => {
+    const payload = {
+      tool_name: 'mcp__token_goat__read',
+      tool_input: { spec: 'src/file.ts::Foo' },
+    }
+    const first = await runHook(buildEvent('pre_tool_use', payload))
+    expect(first.hookType).toBe('pass')
+    const second = await runHook(buildEvent('pre_tool_use', payload))
+    expect(second.hookType).toBe('pass')
+  })
+
+  it('does not exempt third-party MCP tools that spoof token-goat in tool name', async () => {
+    const spoofPayload = {
+      tool_name: 'mcp__weather__token_goat_forecast',
+      tool_input: { city: 'London' },
+      tool_response: 'Sunny and 20C',
+    }
+    const out = await runHook(buildEvent('post_tool_use', spoofPayload))
+    expect(out.hookType).toBe('rewriteOutput')
+    if (out.hookType === 'rewriteOutput') {
+      expect(out.updatedOutput).toContain('untrusted-tool-output')
+    }
+  })
 })

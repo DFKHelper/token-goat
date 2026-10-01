@@ -82,6 +82,7 @@ export const REF_LANGUAGES: ReadonlySet<Language> = new Set<Language>([
   'c',
   'cpp',
   'ruby',
+  'csharp',
 ])
 
 import {
@@ -448,6 +449,15 @@ function extractNoTreeSitter(
   if (language === 'natural') {
     const r = adapters.extractNatural(content, filePath)
     return { symbols: r.symbols, refs: r.refs }
+  }
+  if (language === 'csharp') {
+    const r = adapters.extractCsharp(content, filePath)
+    const symbols = adapters.assignBraceBlockSpans(r.symbols, content, {
+      lineComment: '//',
+      stringEscapes: 'csharp',
+      rawStringQuotes: true,
+    })
+    return { symbols, refs: r.refs }
   }
 
   const parsed: ParseContentResult = {

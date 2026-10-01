@@ -157,6 +157,14 @@ function sessionArtifactRecall(rawPath: string): string {
   return 'Use `token-goat bash-output --file "' + filePath + '" --tail 50` (or `--grep PATTERN`) to read a slice instead of the full file.'
 }
 
+/** Recall pointer for prior output of a file served earlier this session. */
+function priorOutputRecallHint(normalized: string): string {
+  const ids = getFileServedOutputs(normalized)
+  if (ids.length === 0) return ''
+  const latestId = ids[ids.length - 1]
+  return ' Recall earlier content with `token-goat bash-output ' + latestId + '`.'
+}
+
 /** Source/style/data files eligible for diff-on-reread when serve_diff_on_reread is enabled: the `diffable` column of src/language_specs.ts. */
 export function isDiffableSource(basename: string): boolean {
   return languageHasFlag(detectLanguage(basename), 'diffable')
@@ -1052,7 +1060,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             recordStat('session_hint', 0, 0)
             return denyOutput(
               'Lines ' + start + '..' + end + ' of ' + shown + ' was already read this session. ' +
-              'Pull just the part you need with ' + realSymbolReadHint(normalized, shown, { start, end }) + '.',
+              'Pull just the part you need with ' + realSymbolReadHint(normalized, shown, { start, end }) + '.' +
+              priorOutputRecallHint(normalized),
             )
           }
           if (snapDiff.kind === 'unchanged') {
@@ -1131,7 +1140,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         return denyOutput(leadWithCommand(
           'token-goat section "' + shown + '::' + hintTarget(normalized, 'section', { placeholder: 'HeadingName' }).name + '"',
           'to read one section',
-          'Markdown file already read this session.',
+          'Markdown file already read this session.' + priorOutputRecallHint(normalized),
         ))
       }
 
@@ -1140,7 +1149,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         const hint = surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized, rereadBytes))
         recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-structured-deny')
         bookDenyIdentity('structured')
-        return denyOutput((hint + ' ' + shown + ' was already read this session (' + reads + ' ' + plural + ').').trimStart())
+        return denyOutput((hint + ' ' + shown + ' was already read this session (' + reads + ' ' + plural + ').' + priorOutputRecallHint(normalized)).trimStart())
       }
 
       // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
@@ -1150,7 +1159,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordStat('session_hint', 0, 0)
         bookDenyIdentity('source-count')
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
-        return denyOutput((surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)) + ' Tried to read this file ' + reads + ' times already.').trimStart())
+        return denyOutput((surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)) + ' Tried to read this file ' + reads + ' times already.' + priorOutputRecallHint(normalized)).trimStart())
       }
     }
 
@@ -1159,7 +1168,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-count-deny')
       bookDenyIdentity('count')
       // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
-      return denyOutput((hint + ' ' + shown + ' was already read this session (' + reads + ' ' + plural + ').').trimStart())
+      return denyOutput((hint + ' ' + shown + ' was already read this session (' + reads + ' ' + plural + ').' + priorOutputRecallHint(normalized)).trimStart())
     }
     // Only counted when the note actually reaches the caller -- quietContextOutput silently degrades to passOutput() during hints.quiet_hours, and recording unconditionally (as this used to) over-counted the ledger on every quiet-hours re-read that produced no visible output at all. Zero bytes, deliberately: this branch does NOT block the read. The note is appended and the Read still proceeds, so the file's full contents reach the model anyway and the hint text is spent on top of them -- crediting rereadCredit here booked the entire file as saved on the one path where nothing was. The event is still recorded (count, not bytes) because how often the soft note fires is worth knowing; what it is worth is separately measurable through hint-stats' acted-on tracking, which is the only thing that can tell whether the note ever changed what the model did next.
     const pagingWindow = readRequestedSliceWindow(event)

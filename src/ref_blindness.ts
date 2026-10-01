@@ -33,6 +33,7 @@ export const REF_INDEXED_LANGUAGES: ReadonlySet<Language> = new Set<Language>([
   'c',
   'cpp',
   'ruby',
+  'csharp',
 ])
 
 /** True when the reference index records call sites for this language at all. False means every `refs`/`callers` answer for a file in it is an empty set produced by the indexer's blindness, not by the code. */

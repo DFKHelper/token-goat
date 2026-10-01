@@ -79,9 +79,12 @@ export function suggestedIndexCommand(rootDir: string): string {
 }
 
 /** The exact doctor wording (checkSymbolCount's warn message) for an empty index, with the git-aware suggested command spliced in. Shared verbatim so every query command's empty-index hint and doctor's own Symbols warning never drift apart. */
-export function emptyIndexMessage(rootDir: string): string {
+export function emptyIndexMessage(rootDir: string, projectRootWasOmitted = false): string {
+  const omittedNote = projectRootWasOmitted
+    ? ` (projectRoot was omitted and defaulted to server process cwd "${rootDir}"; pass projectRoot: "<workspace-path>" to target your workspace)`
+    : ''
   return (
     `no files indexed for this project — every read command will return empty, which looks ` +
-    `like a genuine "not found" rather than a missing index; run '${suggestedIndexCommand(rootDir)}' here`
+    `like a genuine "not found" rather than a missing index; run '${suggestedIndexCommand(rootDir)}' here${omittedNote}`
   )
 }

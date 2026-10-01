@@ -606,9 +606,13 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
         continue
       }
       if (ch === '"' || ch === "'") {
-        // A `$` immediately before the opening `"` marks a C# interpolated string, where a bare
+        // A `$` before the opening `"` (or `$@`/`@$`) marks a C# interpolated string, where a bare
         // `{` (not `${`) opens an interpolation hole.
-        const bareBraceHole = ch === '"' && i > 0 && line[i - 1] === '$'
+        const bareBraceHole =
+          ch === '"' &&
+          ((i > 0 && line[i - 1] === '$') ||
+            (i > 1 && line[i - 1] === '@' && line[i - 2] === '$') ||
+            (i > 1 && line[i - 1] === '$' && line[i - 2] === '@'))
         const delim = openDelim(i)
         stack.push({ kind: 'string', quote: delim, bareBraceHole })
         out += delim
@@ -627,7 +631,11 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
         continue
       }
       if (ch === '"' || ch === "'") {
-        const bareBraceHole = ch === '"' && i > 0 && line[i - 1] === '$'
+        const bareBraceHole =
+          ch === '"' &&
+          ((i > 0 && line[i - 1] === '$') ||
+            (i > 1 && line[i - 1] === '@' && line[i - 2] === '$') ||
+            (i > 1 && line[i - 1] === '$' && line[i - 2] === '@'))
         const delim = openDelim(i)
         stack.push({ kind: 'string', quote: delim, bareBraceHole })
         out += delim

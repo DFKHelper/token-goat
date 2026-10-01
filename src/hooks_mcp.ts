@@ -19,12 +19,77 @@ import { hintTarget } from './hint_target.js'
 
 export const MCP_OVERSIZED_THRESHOLD_BYTES = 25_000
 
+const TOKEN_GOAT_MCP_TOOL_NAMES = new Set([
+  'read',
+  'symbol',
+  'section',
+  'outline',
+  'skeleton',
+  'refs',
+  'brief',
+  'map',
+  'changed',
+  'grep',
+  'imports',
+  'exports',
+  'semantic',
+  'index_status',
+  'handoff_create',
+  'handoff_apply',
+  'retrieve_text',
+])
+
+/**
+ * Returns true if the tool belongs to token-goat's own local MCP server.
+ * Token-goat is a local companion process indexing the user's workspace files,
+ * not an external third-party remote API. Its tool results must not be fenced
+ * as untrusted remote payloads, which triggers prompt-injection refusals in LLMs.
+ */
+export function isTokenGoatMcpTool(toolName: string): boolean {
+  const lower = toolName.toLowerCase()
+  let rest = lower
+  if (rest.startsWith('mcp__')) {
+    rest = rest.slice(5)
+  } else if (rest.startsWith('mcp_')) {
+    rest = rest.slice(4)
+  } else {
+    if (lower.startsWith('token_goat_') || lower.startsWith('token-goat-') || lower.startsWith('tg_')) {
+      const tool = lower.replace(/^(token_goat_|token-goat-|tg_)/, '')
+      return TOKEN_GOAT_MCP_TOOL_NAMES.has(tool)
+    }
+    return false
+  }
+
+  const sepIdx = rest.indexOf('__')
+  let server = ''
+  let tool = ''
+  if (sepIdx !== -1) {
+    server = rest.slice(0, sepIdx)
+    tool = rest.slice(sepIdx + 2)
+  } else {
+    const singleIdx = rest.indexOf('_')
+    if (singleIdx !== -1) {
+      server = rest.slice(0, singleIdx)
+      tool = rest.slice(singleIdx + 1)
+    }
+  }
+
+  const isTgServer =
+    server === 'token_goat' ||
+    server === 'token-goat' ||
+    server === 'tg' ||
+    server === 'token_goat_mcp' ||
+    server === 'token-goat-mcp'
+
+  return isTgServer && TOKEN_GOAT_MCP_TOOL_NAMES.has(tool)
+}
+
 // Defined in hooks_common.ts alongside extractToolResultText, whose output the rule is about, and re-exported here because this module was its only caller for a while.
 export { isMcpErrorResponse } from './hooks_common.js'
 
 function preMcpHandler(event: HookEvent): HookOutput {
   const toolName = getToolName(event)
-  if (!toolName || !event.sessionId) return passOutput()
+  if (!toolName || !event.sessionId || isTokenGoatMcpTool(toolName)) return passOutput()
   const toolInput = getToolInput(event)
   if (!isMcpReadOnly(toolName, toolInput)) return passOutput()
   const ttlMs = loadConfig().hints.mcp_dedup_ttl_secs * 1000
@@ -42,7 +107,7 @@ function preMcpHandler(event: HookEvent): HookOutput {
 
 function postMcpHandler(event: HookEvent): HookOutput {
   const toolName = getToolName(event)
-  if (!toolName || !toolName.startsWith('mcp__')) return passOutput()
+  if (!toolName || !toolName.startsWith('mcp__') || isTokenGoatMcpTool(toolName)) return passOutput()
   const toolInput = getToolInput(event)
   const resultText = extractToolResultText(event.raw)
   if (!resultText) return passOutput()

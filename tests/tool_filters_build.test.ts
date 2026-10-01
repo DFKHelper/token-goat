@@ -453,6 +453,27 @@ describe('DotnetFilter', () => {
     expect(result).toContain('Expected: 1')
   })
 
+  it('drops MSBuild noise and test runner banners during test', () => {
+    const out = [
+      'Determining projects to restore...',
+      'All projects are up-to-date for restore.',
+      '  MyProject -> /bin/Debug/net8.0/MyProject.dll',
+      'Microsoft (R) Test Execution Command Line Tool Version 17.10.0',
+      'Copyright (c) Microsoft Corporation.  All rights reserved.',
+      'Starting test execution, please wait...',
+      'A total of 1 test files matched the specified pattern.',
+      '  Passed Test1',
+      '  Passed Test2',
+      'Passed!  - Failed: 0, Passed: 2, Skipped: 0, Total: 2, Duration: 50 ms - MyProject.dll (net8.0)',
+    ].join('\n')
+    const result = apply(f, out, '', 0, ['dotnet', 'test'])
+    expect(result).not.toContain('Determining projects')
+    expect(result).not.toContain('Microsoft (R) Test Execution')
+    expect(result).not.toContain('Starting test execution')
+    expect(result).not.toContain('  Passed Test1')
+    expect(result).toContain('Passed!  - Failed: 0')
+  })
+
   it('collapses "Build succeeded." repetitions to last', () => {
     const out = 'Build succeeded.\nBuild succeeded.\nBuild succeeded.\n'
     const result = apply(f, out, '', 0, ['dotnet', 'build'])

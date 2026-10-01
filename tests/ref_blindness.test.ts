@@ -66,16 +66,16 @@ beforeAll(() => {
     'export function MixedZq(): number { return 1 }',
     '',
   ].join('\n'))
-  // C# half: a class whose method is called from the same file. The call site is real; the index simply never walks it, because csharp is outside REF_LANGUAGES. The interface is blind BOTH ways -- unindexed language AND type-only kind -- which is what fixes the precedence between the two notices.
-  writeFileSync(join(project, 'Widget.cs'), [
-    'namespace Demo {',
-    '  public interface IShapeZq { int SizeZq(); }',
-    '  public class WidgetZq {',
-    '    public int ComputeZq() { return 42; }',
-    '  }',
-    '  public class CallerZq {',
-    '    public int GoZq() { var w = new WidgetZq(); return w.ComputeZq(); }',
-    '  }',
+  // PHP half: a class whose method is called from the same file. The call site is real; the index simply never walks it, because php is outside REF_LANGUAGES. The interface is blind BOTH ways -- unindexed language AND type-only kind -- which is what fixes the precedence between the two notices.
+  writeFileSync(join(project, 'Widget.php'), [
+    '<?php',
+    'namespace Demo;',
+    'interface IShapeZq { public function sizeZq(); }',
+    'class WidgetZq {',
+    '  public function ComputeZq() { return 42; }',
+    '}',
+    'class CallerZq {',
+    '  public function GoZq() { $w = new WidgetZq(); return $w->ComputeZq(); }',
     '}',
     '',
   ].join('\n'))
@@ -84,9 +84,9 @@ beforeAll(() => {
   // Population guard: if the fixture indexed nothing, every "the misleading output is absent" assertion below would pass for the wrong reason.
   const outline = tg('outline', 'widget.ts')
   expect(outline.stdout, 'the TypeScript fixture must be in the index').toContain('UsedShapeZq')
-  const csOutline = tg('outline', 'Widget.cs')
-  expect(csOutline.stdout, 'the C# fixture must be in the index, or the language gate is never reached').toContain('ComputeZq')
-  expect(csOutline.stdout, 'the C# interface must be in the index, or the precedence test is vacuous').toContain('IShapeZq')
+  const phpOutline = tg('outline', 'Widget.php')
+  expect(phpOutline.stdout, 'the PHP fixture must be in the index, or the language gate is never reached').toContain('ComputeZq')
+  expect(phpOutline.stdout, 'the PHP interface must be in the index, or the precedence test is vacuous').toContain('IShapeZq')
   const mixedOutline = tg('outline', 'mixed.ts')
   expect(mixedOutline.stdout, 'both definitions of the mixed-kind name must be in the index, or the partial-disclosure tests are vacuous').toContain('MixedZq')
 })
@@ -173,10 +173,10 @@ describe('refs and its siblings: a language whose call sites are never indexed s
   })
 
   it('refs names the language instead of returning a flat zero', () => {
-    const r = tg('refs', 'Widget.cs::ComputeZq')
+    const r = tg('refs', 'Widget.php::ComputeZq')
     const text = out(r)
     expect(r.status).toBe(1)
-    expect(text).toContain('C# call sites are not indexed')
+    expect(text).toContain('PHP call sites are not indexed')
     expect(text).toContain('not evidence the symbol is unreferenced')
     expect(text, 'the misleading message must be replaced, not merely accompanied').not.toContain('No references found')
   })
@@ -185,7 +185,7 @@ describe('refs and its siblings: a language whose call sites are never indexed s
     const r = tg('callers', 'ComputeZq')
     const text = out(r)
     expect(r.status).toBe(1)
-    expect(text).toContain('C# call sites are not indexed')
+    expect(text).toContain('PHP call sites are not indexed')
     expect(text).not.toContain('No references found')
   })
 
@@ -193,14 +193,14 @@ describe('refs and its siblings: a language whose call sites are never indexed s
     const r = tg('impact', 'ComputeZq')
     const text = out(r)
     expect(r.status).toBe(1)
-    expect(text).toContain('C# call sites are not indexed')
+    expect(text).toContain('PHP call sites are not indexed')
     expect(text, 'a BFS over empty rows must not report absence as a finding').not.toContain('No callers found')
   })
 
   it('call-chain names the language, the one sibling whose empty answer exits 0', () => {
     const r = tg('call-chain', 'ComputeZq')
     const text = out(r)
-    expect(text).toContain('C# call sites are not indexed')
+    expect(text).toContain('PHP call sites are not indexed')
     expect(r.stdout, 'the bare "(no callers)" verdict must not be presented for a symbol nobody looked for callers of').not.toContain('(no callers)\n')
     expect(r.stdout).toContain('(no callers recorded)')
   })
@@ -212,16 +212,16 @@ describe('refs and its siblings: a language whose call sites are never indexed s
     expect(text).not.toContain('call sites are not indexed')
   })
 
-  // The three tests above call callers/impact with a BARE name, the one input shape where `opts.symbol` and the bare symbol name are the same string -- so a notice built from the spec reads correctly there and the defect is invisible. Driven with the `file::symbol` form instead, the suggested command came back as `rg -n -w Widget.cs::ComputeZq`, which matches nothing and sends the caller to a dead end at exactly the moment the tool has admitted it cannot answer. Asserting the negative as well as the positive, since a message that happens to contain the bare name as a substring of the spec would satisfy the positive alone.
+  // The three tests above call callers/impact with a BARE name, the one input shape where `opts.symbol` and the bare symbol name are the same string -- so a notice built from the spec reads correctly there and the defect is invisible. Driven with the `file::symbol` form instead, the suggested command came back as `rg -n -w Widget.php::ComputeZq`, which matches nothing and sends the caller to a dead end at exactly the moment the tool has admitted it cannot answer. Asserting the negative as well as the positive, since a message that happens to contain the bare name as a substring of the spec would satisfy the positive alone.
   it.each([['callers'], ['impact']])('%s suggests a runnable search when given a file::symbol spec, not the spec itself', (cmd) => {
-    const text = out(tg(cmd, 'Widget.cs::ComputeZq'))
-    expect(text).toContain('C# call sites are not indexed')
+    const text = out(tg(cmd, 'Widget.php::ComputeZq'))
+    expect(text).toContain('PHP call sites are not indexed')
     expect(text, 'the suggested command must be runnable').toContain('rg -n -w ComputeZq')
-    expect(text, 'rg takes a pattern, and `Widget.cs::ComputeZq` matches no line in any file').not.toContain('rg -n -w Widget.cs::ComputeZq')
+    expect(text, 'rg takes a pattern, and `Widget.php::ComputeZq` matches no line in any file').not.toContain('rg -n -w Widget.php::ComputeZq')
   })
 
   it('emits no control characters, which a bare \\b inside a template literal would silently produce', () => {
-    const text = out(tg('refs', 'Widget.cs::ComputeZq'))
+    const text = out(tg('refs', 'Widget.php::ComputeZq'))
     // Built from char codes rather than written as a regex literal: eslint's no-control-regex bans the literal form, and the point here is to detect exactly those characters in shipped output.
     const control = [...text].some((ch) => { const c = ch.charCodeAt(0); return c < 32 && c !== 9 && c !== 10 && c !== 13 })
     expect(control, `control character in: ${JSON.stringify(text)}`).toBe(false)
@@ -271,11 +271,11 @@ describe('refs and its siblings: a kind whose usages are never recorded says so 
   })
 
   it('call-chain --json carries the LANGUAGE disclosure too, not only the kind one', () => {
-    // The kind field above was added and its language counterpart was not, so an envelope for a C#-defined root read as a settled `(no callers)` while text mode said on stderr that C# call sites are never indexed. Asserting the field's contents, not merely its presence: a field carrying the wrong language sends the caller to the wrong conclusion just as confidently.
-    const r = tg('call-chain', 'Widget.cs::ComputeZq', '--json')
+    // The kind field above was added and its language counterpart was not, so an envelope for a PHP-defined root read as a settled `(no callers)` while text mode said on stderr that PHP call sites are never indexed. Asserting the field's contents, not merely its presence: a field carrying the wrong language sends the caller to the wrong conclusion just as confidently.
+    const r = tg('call-chain', 'Widget.php::ComputeZq', '--json')
     const parsed = JSON.parse(r.stdout) as { chains: string[][]; refBlindLanguage?: { language: string; definedIn: string } }
-    expect(parsed.refBlindLanguage?.language, 'an empty envelope with no field reads as a settled "no callers"').toBe('csharp')
-    expect(parsed.refBlindLanguage?.definedIn).toContain('Widget.cs')
+    expect(parsed.refBlindLanguage?.language, 'an empty envelope with no field reads as a settled "no callers"').toBe('php')
+    expect(parsed.refBlindLanguage?.definedIn).toContain('Widget.php')
     expect(parsed.chains, 'the chain rendering keeps its shape; the field is added, never substituted').toEqual([['ComputeZq']])
   })
 
@@ -300,10 +300,10 @@ describe('refs and its siblings: a kind whose usages are never recorded says so 
   })
 
   it('gives the language message, not the kind message, when a symbol is blind both ways', () => {
-    const r = tg('refs', 'Widget.cs::IShapeZq')
+    const r = tg('refs', 'Widget.php::IShapeZq')
     const text = out(r)
     expect(r.status).toBe(1)
-    expect(text, 'naming the file and language is the more actionable of the two').toContain('C# call sites are not indexed')
+    expect(text, 'naming the file and language is the more actionable of the two').toContain('PHP call sites are not indexed')
     expect(text, 'only one notice, or the caller is told two different mechanisms for one absence').not.toContain('is an interface')
   })
 

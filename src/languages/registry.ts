@@ -69,7 +69,7 @@ import { extractOcaml } from './ocaml.js'
 import { extractFSharp } from './fsharp.js'
 import { extractNix } from './nix.js'
 
-export { extractCobol, extractNatural, extractSalesforceMetadata, extractVue, extractSvelte, extractAstro }
+export { extractCobol, extractNatural, extractSalesforceMetadata, extractVue, extractSvelte, extractAstro, extractCsharp, assignBraceBlockSpans }
 
 type SymbolExtractor = (content: string, filePath: string) => SymbolEntry[]
 
