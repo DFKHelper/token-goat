@@ -1,9 +1,4 @@
-/**
- * Minified bundles (*.min.js, *.min.css, ...) were indexed like source: a 166 KB ort.wasm.min.js produced 262 symbols, 231 of them
- * two characters or shorter, and a 898 KB transformers.min.js stored 950 KB of symbol bodies, so `symbol n` returned one-letter hits.
- * `indexing.skip_minified` (default true, global config only) now leaves them out through the same gate as skip_dirs/skip_files, and a
- * file already indexed is purged by the same pass. The end-to-end tests drive the worker's real default indexer (no injected callback).
- */
+/** Minified bundles (*.min.js, *.min.css, ...) were indexed like source: a 166 KB ort.wasm.min.js produced 262 symbols, 231 of them two characters or shorter, and a 898 KB transformers.min.js stored 950 KB of symbol bodies, so `symbol n` returned one-letter hits. `indexing.skip_minified` (default true, global config only) now leaves them out through the same gate as skip_dirs/skip_files, and a file already indexed is purged by the same pass. The end-to-end tests drive the worker's real default indexer (no injected callback). */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

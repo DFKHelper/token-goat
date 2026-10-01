@@ -829,8 +829,7 @@ export async function runDoctorRepair(opts?: {
     }
   }
 
-  // 3. Download and verify missing semantic model files
-  // A still-active offline switch or disabled embeddings was named above; attempting the download would only fail against it.
+  // 3. Download and verify missing semantic model files. A still-active offline switch or disabled embeddings was named above; attempting the download would only fail against it.
   if (needModel && !offlineNow && embeddingsNow) {
     try {
       console.log('Downloading and verifying semantic model files...')
@@ -906,8 +905,7 @@ export async function runDoctorRepair(opts?: {
     // Non-fatal if queue or db unavailable
   }
 
-  // 7. Check for pending updates and upgrade if available
-  // A development checkout is reported, never replaced: installing from the registry would overwrite the developer's own build. Offline or an unreachable registry installs nothing and is not an error, since the rest of the repair still ran.
+  // 7. Check for pending updates and upgrade if available. A development checkout is reported, never replaced: installing from the registry would overwrite the developer's own build. Offline or an unreachable registry installs nothing and is not an error, since the rest of the repair still ran.
   try {
     const upgrade = await import('./cli_upgrade.js')
     const update = await upgrade.checkUpdateStatus(2500)

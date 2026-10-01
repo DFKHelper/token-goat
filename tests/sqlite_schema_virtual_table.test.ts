@@ -1,8 +1,4 @@
-/**
- * `sqlite-schema`, `sqlite-tables` and `describe` against a database holding a sqlite-vec `vec0` virtual table, the shape of token-goat's own index DBs. The CLI never loads sqlite-vec for a read, so asking SQLite about the virtual table's columns fails with "no such module: vec0"; one such table used to abort the whole listing and hide every ordinary table beside it.
- *
- * Provenance: the vec0 DDL is FORMAT-DERIVED (sqlite-vec README, `CREATE VIRTUAL TABLE vec_examples USING vec0(sample_embedding float[8])`); the error text `no such module: vec0` is CAPTURE (stderr of the pre-fix bundle against this fixture); the notes row is HAND-DERIVED.
- */
+/** `sqlite-schema`, `sqlite-tables` and `describe` against a database holding a sqlite-vec `vec0` virtual table, the shape of token-goat's own index DBs. The CLI never loads sqlite-vec for a read, so asking SQLite about the virtual table's columns fails with "no such module: vec0"; one such table used to abort the whole listing and hide every ordinary table beside it. Provenance: the vec0 DDL is FORMAT-DERIVED (sqlite-vec README, `CREATE VIRTUAL TABLE vec_examples USING vec0(sample_embedding float[8])`); the error text `no such module: vec0` is CAPTURE (stderr of the pre-fix bundle against this fixture); the notes row is HAND-DERIVED. */
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import * as fs from 'node:fs'
@@ -29,11 +25,12 @@ beforeAll(() => {
       ;(require('sqlite-vec') as { load: (d: unknown) => void }).load(db)
       vecLoaded = true
     } catch {
-      return
+      vecLoaded = false
     }
     db.exec('CREATE TABLE notes(id INTEGER PRIMARY KEY, body TEXT)')
-    db.exec('CREATE VIRTUAL TABLE chunk_vectors USING vec0(embedding float[4])')
     db.exec("INSERT INTO notes(body) VALUES ('hello')")
+    // Each case skips itself through ctx.skip() when sqlite-vec is missing, so the hook builds everything else unconditionally.
+    if (vecLoaded) db.exec('CREATE VIRTUAL TABLE chunk_vectors USING vec0(embedding float[4])')
   } finally {
     db.close()
   }
