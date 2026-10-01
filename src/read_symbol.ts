@@ -104,14 +104,18 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   if (opts.file === undefined && queryOpts.rootDir === undefined && confinedRoot !== null) queryOpts.rootDir = confinedRoot
 
   // One pass over the scope that keeps only the rows this call can print, alongside the exact counts the notices below quote. Both shapes run through it so the filter, the counts and the heal retry stay in one place: a client-filtered call walks every row, a plain lookup takes the single SQL-limited page it always did.
-  interface SymbolSweep { kept: SymbolEntry[]; keptCount: number; scanned: number; hiddenByExcludeTests: number; files: Set<string> }
+  interface SymbolSweep { kept: SymbolEntry[]; keptCount: number; scanned: number; hiddenByExcludeTests: number; files: Set<string>; mineCount: number; mineKept: number }
+  // An unconfined lookup lists the current project's rows ahead of every other project's: the machine-wide index is ordered by file path, so a project whose path sorts earlier buried the local definition under pages of someone else's.
+  const preferRoot = opts.file === undefined && queryOpts.rootDir === undefined ? resolveProjectRoot({ project: process.cwd() }) : undefined
+  const rowKept = (s: { filePath: string; name: string }): boolean =>
+    (matchesGrep === undefined || matchesGrep(s.name)) && !(excludeTests && isTestFile(s.filePath)) && !(excludeVendored && isIgnoredIndexPath(s.filePath))
   const runSweep = (): SymbolSweep => {
-    const found: SymbolSweep = { kept: [], keptCount: 0, scanned: 0, hiddenByExcludeTests: 0, files: new Set() }
+    const found: SymbolSweep = { kept: [], keptCount: 0, scanned: 0, hiddenByExcludeTests: 0, files: new Set(), mineCount: 0, mineKept: 0 }
     const admit = (s: { filePath: string; name: string }): boolean => {
       found.scanned++
       found.files.add(s.filePath)
       const nameKept = matchesGrep === undefined || matchesGrep(s.name)
-      if (nameKept && !(excludeTests && isTestFile(s.filePath)) && !(excludeVendored && isIgnoredIndexPath(s.filePath))) {
+      if (rowKept(s)) {
         found.keptCount++
         return true
       }
@@ -120,12 +124,34 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
       return false
     }
     if (anyClientFilter) {
-      // The scan reads no bodies: only the rows that will print are read in full, once the walk has picked them.
-      const first = new FirstRows<SymbolHead>(effectiveLimit)
+      // The scan reads no bodies: only the rows that will print are read in full, once the walk has picked them. With a preferred project the walk runs twice: once inside it for the leading rows, once over everything for the counts and the rest, whose cap leaves room for the leading rows it will meet again.
+      const mine = new FirstRows<SymbolHead>(effectiveLimit)
+      if (preferRoot !== undefined) {
+        forEachSymbol({ ...queryOpts, rootDir: preferRoot }, (s: SymbolHead) => {
+          if (rowKept(s)) {
+            found.mineKept++
+            mine.offer(s)
+          }
+        })
+      }
+      const mineRows = mine.rows()
+      const mineIds = new Set(mineRows.map((s) => s.id))
+      const first = new FirstRows<SymbolHead>(effectiveLimit + mineRows.length)
       forEachSymbol(queryOpts, (s: SymbolHead) => {
         if (admit(s)) first.offer(s)
       })
-      found.kept = symbolsById(first.rows().map((s) => s.id))
+      const rest = first.rows().filter((s) => !mineIds.has(s.id))
+      found.mineCount = mineRows.length
+      found.kept = symbolsById([...mineRows, ...rest].slice(0, effectiveLimit).map((s) => s.id))
+    } else if (preferRoot !== undefined) {
+      const mineRows = querySymbols({ ...queryOpts, rootDir: preferRoot, limit: effectiveLimit })
+      // A short page is the whole project's matches, so the global page below can drop exactly those rows; a full page leaves no room for anything else.
+      const rowKey = (r: SymbolEntry): string => [r.filePath, r.lineStart, r.name].join('|')
+      const mineKeys = new Set(mineRows.map(rowKey))
+      const all = querySymbols({ ...queryOpts, limit: effectiveLimit + mineRows.length })
+      for (const row of all) admit(row)
+      found.kept = [...mineRows, ...all.filter((r) => !mineKeys.has(rowKey(r)))].slice(0, effectiveLimit)
+      found.mineCount = mineRows.length
     } else {
       for (const row of querySymbols(queryOpts)) if (admit(row) && found.kept.length < effectiveLimit) found.kept.push(row)
     }
@@ -142,8 +168,11 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   }
   const preFilterCount = sweep.scanned
   const unordered = sweep.kept.slice(0, effectiveLimit)
+  // Applied inside each group, so the leading project's rows stay ahead of everyone else's whatever their kind.
+  const orderGroup = (rows: SymbolEntry[]): SymbolEntry[] => (opts.name === undefined ? rows : stableSortImportBindsLast(rows))
+  const ordered = [...orderGroup(unordered.slice(0, sweep.mineCount)), ...orderGroup(unordered.slice(sweep.mineCount))]
   // An exact-name lookup asks where a thing is defined, and `file_path, line_start` answers it by alphabet: `const { ambigProbeFn } = await import('../src/thing.js')` in scripts/ sorts ahead of the real function in src/ purely because "scripts" precedes "src", so the first block a caller reads is an import statement rather than the body it went looking for. Sink the rows that only re-bind an imported name, keeping the query's own order within each group so the existing tie-breaks and paging behaviour are untouched. Nothing is dropped -- every candidate still prints, so a misjudged row costs one position and never an answer, which is the reason this reorders rather than filters. `--grep` listings are deliberately excluded: those are a browse of many different names, where file order is the useful one.
-  const results = sinkGoneRows(opts.name === undefined ? unordered : stableSortImportBindsLast(unordered), (s) => s.filePath)
+  const results = sinkGoneRows(ordered, (s) => s.filePath)
   // A named file is judged once by staleWarning below (or the JSON branch); a bare lookup spans many files, so it books the states its own rows carry.
   if (opts.file === undefined) {
     if (results.some((s) => stillStale.has(s.filePath))) recordStaleServed('symbol', 'stale')
@@ -282,5 +311,9 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // Under a client-side filter the sweep walked every row in scope, so its kept count is the exact total rather than a floor.
   const symbolTotal = (): TruncationTotal =>
     anyClientFilter ? { count: sweep.keptCount, exact: true } : { count: countSymbols(queryOpts), exact: true }
-  return { text: text + truncationFooter(results.length, effectiveLimit, symbolTotal, 'matches', '--limit'), code: 0 }
+  const footer = truncationFooter(results.length, effectiveLimit, symbolTotal, 'matches', '--limit')
+  // Only said when a page was cut and some of it is this project's: the reader needs to know the leading rows are theirs and how to see only them.
+  const mineTotal = footer !== '' && preferRoot !== undefined ? (anyClientFilter ? sweep.mineKept : countSymbols({ ...queryOpts, rootDir: preferRoot })) : 0
+  const mineNote = mineTotal > 0 ? `\ntoken-goat: ${mineTotal} of the matches are in this project and listed first; pass -p to search only it` : ''
+  return { text: text + footer + mineNote, code: 0 }
 }
