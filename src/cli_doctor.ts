@@ -834,6 +834,25 @@ export async function runDoctorRepair(opts?: {
   repairs.push(...gateRepair.repairs)
   errors.push(...gateRepair.errors)
 
+  // 7. Check for pending updates and upgrade if available
+  try {
+    const { checkUpdateStatus, cmdUpgrade } = await import('./cli_upgrade.js')
+    const update = await checkUpdateStatus(2500)
+    if (update.updateAvailable && update.latest) {
+      const isLocalGitRepo =
+        fs.existsSync(path.join(process.cwd(), '.git')) &&
+        fs.existsSync(path.join(process.cwd(), 'esbuild.config.mjs'))
+      if (isLocalGitRepo) {
+        repairs.push(`Update available (v${update.current} -> v${update.latest}). In local dev repo; run: git pull && npm run build`)
+      } else {
+        await cmdUpgrade()
+        repairs.push(`Upgraded token-goat to latest (v${update.latest})`)
+      }
+    }
+  } catch {
+    // Non-fatal if offline
+  }
+
   return { repairs, errors }
 }
 

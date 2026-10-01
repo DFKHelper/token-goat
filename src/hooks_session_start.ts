@@ -119,6 +119,15 @@ async function sessionStartOutput(event: HookEvent): Promise<HookOutput> {
     } catch {
       // dodgy DB health check must never block the base reminder
     }
+    try {
+      const { getCachedUpdateStatus } = await import('./cli_upgrade.js')
+      const update = getCachedUpdateStatus()
+      if (update?.updateAvailable && update.latest) {
+        context += `\n[token-goat update available: v${update.current} -> v${update.latest} (run 'token-goat upgrade')]`
+      }
+    } catch {
+      // non-fatal
+    }
     if (tail !== '') context += `\n\n${tail}`
     return contextOutput(context)
   } catch {

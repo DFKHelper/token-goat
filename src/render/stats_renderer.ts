@@ -13,6 +13,7 @@ import type {
 } from './types.js'
 import { displaySafeText } from '../paths.js'
 import { toLocalDateKey } from '../stats.js'
+import { getCachedUpdateStatus } from '../cli_upgrade.js'
 
 // Statistics messages for insights section
 interface StatsMessages {
@@ -953,6 +954,14 @@ function _renderInsightsSection(stats: StatsData): string[] {
         )
       }
     }
+  }
+
+  const update = getCachedUpdateStatus()
+  if (update?.updateAvailable && update.latest) {
+    lines.push(
+      `${_M}${fg(...C.YELLOW)}▸${RESET} ${dim('Update available: ')}${fg(...C.TEXT_PRIMARY)}v${displaySafeText(update.current)} → v${displaySafeText(update.latest)}${RESET}` +
+        `${dim(". Run 'token-goat upgrade' to get latest cache savers.")}`,
+    )
   }
 
   return lines

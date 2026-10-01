@@ -1,6 +1,16 @@
-import { describe, expect, it, vi } from 'vitest'
-import { compareSemver, checkUpdateStatus, cmdUpgrade } from '../src/cli_upgrade.js'
+import { describe, expect, it, vi, afterEach } from 'vitest'
+import {
+  compareSemver,
+  checkUpdateStatus,
+  cmdUpgrade,
+  getRegistryUrl,
+  getCachedUpdateStatus,
+  saveCachedUpdateStatus,
+} from '../src/cli_upgrade.js'
 import { VERSION } from '../src/version.js'
+import { renderStats } from '../src/render/stats_renderer.js'
+import { stripAnsiEscapes } from '../src/render/ansi.js'
+import type { StatsData } from '../src/render/types.js'
 
 describe('cli_upgrade', () => {
   describe('compareSemver', () => {
@@ -70,6 +80,75 @@ describe('cli_upgrade', () => {
       } finally {
         spy.mockRestore()
       }
+    })
+  })
+
+  describe('enterprise Artifactory and registry resolution', () => {
+    const origEnv = { ...process.env }
+
+    afterEach(() => {
+      process.env = { ...origEnv }
+    })
+
+    it('defaults to npmjs.org when no registry env vars are set', () => {
+      delete process.env.npm_config_registry
+      delete process.env.NPM_CONFIG_REGISTRY
+      expect(getRegistryUrl()).toBe('https://registry.npmjs.org/')
+    })
+
+    it('honors npm_config_registry from Artifactory / corporate config', () => {
+      process.env.npm_config_registry = 'https://artifactory.corp.internal/artifactory/api/npm/npm-virtual'
+      expect(getRegistryUrl()).toBe('https://artifactory.corp.internal/artifactory/api/npm/npm-virtual/')
+    })
+
+    it('honors NPM_CONFIG_REGISTRY from uppercase env var', () => {
+      process.env.NPM_CONFIG_REGISTRY = 'https://nexus.corp.internal/repository/npm-group/'
+      expect(getRegistryUrl()).toBe('https://nexus.corp.internal/repository/npm-group/')
+    })
+  })
+
+  describe('update check caching and stats rendering', () => {
+    it('round-trips cached update status and uses cache within TTL', async () => {
+      saveCachedUpdateStatus({
+        checkedAt: Date.now(),
+        current: VERSION,
+        latest: '99.0.0',
+        updateAvailable: true,
+      })
+
+      const cached = getCachedUpdateStatus()
+      expect(cached).not.toBeNull()
+      expect(cached?.latest).toBe('99.0.0')
+      expect(cached?.updateAvailable).toBe(true)
+
+      // checkUpdateStatus without forceFresh should return the cached status immediately
+      const status = await checkUpdateStatus(100, false)
+      expect(status.latest).toBe('99.0.0')
+      expect(status.updateAvailable).toBe(true)
+    })
+
+    it('renders update insight in token-goat stats when update is available', () => {
+      saveCachedUpdateStatus({
+        checkedAt: Date.now(),
+        current: VERSION,
+        latest: '99.0.0',
+        updateAvailable: true,
+      })
+
+      const mockStats: StatsData = {
+        period_start: new Date(0),
+        period_end: new Date(86_400_000),
+        totals: { events: 10, bytes: 500, tokens: 100, sparklines: null },
+        by_kind: [{ kind: 'read', bytes: 500, tokens: 100, events: 10, bytes_mode_only: false }],
+        by_day: [],
+        by_project: [],
+        by_command: [{ command: 'read', events: 10, bytes: 500, tokens: 100 }],
+      }
+
+      const output = stripAnsiEscapes(renderStats(mockStats))
+      expect(output).toContain('Update available:')
+      expect(output).toContain(`v${VERSION} → v99.0.0`)
+      expect(output).toContain("Run 'token-goat upgrade'")
     })
   })
 })
