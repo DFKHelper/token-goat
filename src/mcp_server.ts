@@ -38,6 +38,7 @@ import { getDb } from './db.js'
 import { embeddingsDepsAvailable } from './embeddings.js'
 import { checkSemanticReadiness } from './embed_preflight.js'
 import { loadConfig } from './config.js'
+import { pathSuffixClause } from './sql_path.js'
 import { extractErrorMessage, foldCaseForContainment } from './util.js'
 import { statThroughHandle } from './handle_stat.js'
 import { normalizePath, displaySafeJson } from './paths.js'
@@ -142,7 +143,7 @@ function forCompare(p: string): string {
 }
 
 /** CONFINEMENT INVARIANT: the base the gate resolves a relative target against MUST be the exact base the execution layer resolves it against. Every tool handler resolves the root exactly ONCE, here, and then uses that single absolute value for BOTH the {@link confineTargets} check and the `projectRoot` option handed to the `run*` handler. Resolving a second time inside the gate (as this file used to) let the two bases diverge: the gate validated `<projectRoot>/x` while the read resolved `<server cwd>/x`, so confinement was only sound when the server process's cwd happened to equal the project root. `resolveProjectRoot` also walks up to the git toplevel, so even an explicitly supplied `projectRoot` pointing at a subdirectory of a repo resolves to a different base than the raw value -- one resolution site is the only way to guarantee the two agree. */
-function inferProjectRootFromTarget(target: string): string | null {
+export function inferProjectRootFromTarget(target: string): string | null {
   const file = specFilePart(target)
   if (!file) return null
 
@@ -172,10 +173,11 @@ function inferProjectRootFromTarget(target: string): string | null {
   if (fs.existsSync(dbPath)) {
     try {
       const db = getDb(dbPath)
-      const normFile = normalizePath(file).toLowerCase()
+      // Suffix equality (not LIKE) so `_` and `%` in a file name stay literal; shortest path first keeps the pick deterministic.
+      const suffix = pathSuffixClause('path')
       const rows = db
-        .prepare(`SELECT path FROM files WHERE TG_LOWER(path) LIKE ? OR TG_LOWER(path) = ? LIMIT 5`)
-        .all(`%/${normFile}`, normFile) as { path: string }[]
+        .prepare(`SELECT path FROM files WHERE ${suffix.clause} ORDER BY length(path), path LIMIT 5`)
+        .all(...suffix.params(normalizePath(file))) as { path: string }[]
 
       for (const row of rows) {
         if (fs.existsSync(row.path)) {
