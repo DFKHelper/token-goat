@@ -58,6 +58,14 @@ export interface CustomPatternProblem {
   readonly reason: string
 }
 
+/** Texts a custom pattern is probed against: the empty string, and a short phrase with word boundaries, since `\b` and a bare lookahead match zero-width there but not against ''. */
+const ZERO_WIDTH_PROBES = ['', 'a b']
+
+/** Whether `pattern` matches an empty string anywhere on a probe text, which would make the replace insert a marker at every such position. */
+function matchesZeroWidth(compiled: RegExp): boolean {
+  return ZERO_WIDTH_PROBES.some((probe) => Array.from(probe.matchAll(compiled)).some((m) => m[0].length === 0))
+}
+
 /** Compiled custom patterns plus whatever was rejected, memoised on the exact source list. */
 let customCache: { key: string; patterns: RegExp[]; problems: CustomPatternProblem[] } | null = null
 
@@ -94,7 +102,7 @@ export function compileCustomPatterns(sources: readonly string[]): {
       problems.push({ pattern: source, reason: e instanceof Error ? e.message : 'is not a valid regular expression' })
       continue
     }
-    if (new RegExp(source).test('')) {
+    if (matchesZeroWidth(compiled)) {
       problems.push({
         pattern: source,
         reason: 'matches the empty string, so it would replace every position in the text',
@@ -193,7 +201,9 @@ export function redactSecrets(text: string, config: Config = loadConfig()): Reda
   }
 
   for (const pattern of compileCustomPatterns(config.redaction.custom_patterns).patterns) {
-    out = out.replace(pattern, () => {
+    out = out.replace(pattern, (match) => {
+      // A zero-width match (a lookbehind-only pattern, say) would insert a marker at a point and hide nothing
+      if (match.length === 0) return match
       count++
       return '[REDACTED:custom]'
     })
