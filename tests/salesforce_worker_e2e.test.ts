@@ -1,13 +1,4 @@
-/**
- * Salesforce DX regression coverage for the two shipping seams:
- *
- * 1. the worker drains dirty.txt with its real default indexer (no injected
- *    callback), and
- * 2. the built CLI indexes and surgically reads the same fixture.
- *
- * Keep this fixture deliberately small but cross-layer: Apex, an LWC bundle,
- * detailed metadata, Flow references, and an otherwise unknown *-meta.xml.
- */
+/** Salesforce DX regression coverage for the two shipping seams: 1. the worker drains dirty.txt with its real default indexer (no injected callback), and 2. the built CLI indexes and surgically reads the same fixture. Keep this fixture deliberately small but cross-layer: Apex, an LWC bundle, detailed metadata, Flow references, and an otherwise unknown *-meta.xml. */
 
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -25,6 +16,7 @@ import { drainOnce, pendingEmbeddings } from '../src/worker.js'
 import { runBundle as sharedRunBundle, tgIsolatedEnv } from './helpers/bundle.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
+// Provenance: HAND-DERIVED. Salesforce DX sample written from language knowledge and documented metadata element names (tests/fixtures/PROVENANCE.tsv).
 const FIXTURE = path.join(HERE, 'fixtures', 'salesforce-dx')
 
 const tempDirs = new Set<string>()
@@ -82,13 +74,7 @@ describe('Salesforce DX worker default path', () => {
 
     expect(drainOnce(dataDir)).toBe(files.length)
 
-    // makeIndexer fires embedding fire-and-forget (the drain loop must return instantly), and
-    // worker.ts's global concurrency cap (config.worker.max_pool_workers) can defer a queued
-    // file's embed call -- including its very first getDb() connection open -- until well after
-    // drainOnce() itself returns. Without waiting for that work to actually finish here, the
-    // afterEach cleanup's fs.rmSync(dataDir) can race a queued embed call that opens its own DB
-    // connection AFTER this test's own closeDb() below already ran, leaking an open handle that
-    // Windows then holds a lock on, failing the directory removal with EPERM.
+    // makeIndexer fires embedding fire-and-forget (the drain loop must return instantly), and worker.ts's global concurrency cap (config.worker.max_pool_workers) can defer a queued file's embed call -- including its very first getDb() connection open -- until well after drainOnce() itself returns. Without waiting for that work to actually finish here, the afterEach cleanup's fs.rmSync(dataDir) can race a queued embed call that opens its own DB connection AFTER this test's own closeDb() below already ran, leaking an open handle that Windows then holds a lock on, failing the directory removal with EPERM.
     await pendingEmbeddings()
 
     const dbPath = path.join(dataDir, 'global.db')
@@ -99,9 +85,7 @@ describe('Salesforce DX worker default path', () => {
       expect(querySymbols({ name: 'loadAccount' }, dbPath)[0]).toMatchObject({
         kind: 'apex_method',
       })
-      // Safe-navigation is covered on the real worker path, including methods after it. The
-      // fixture also contains an apostrophe in a preceding line comment, the historical masker
-      // failure that could blank the remainder of an otherwise valid Apex file.
+      // Safe-navigation is covered on the real worker path, including methods after it. The fixture also contains an apostrophe in a preceding line comment, the historical masker failure that could blank the remainder of an otherwise valid Apex file.
       for (const name of [
         'hasDirectName',
         'hasRelatedName',
@@ -115,26 +99,17 @@ describe('Salesforce DX worker default path', () => {
         })
       }
 
-      // The LWC bundle and its public API are addressable across JS/template/metadata files.
-      // Pin the exact deterministic count -- and kind, matching this fixture's own JS/HTML
-      // origin for each name -- rather than a bare ">0", so a regression that resolved the
-      // name to the wrong file or duplicated/dropped an entry is caught too.
+      // The LWC bundle and its public API are addressable across JS/template/metadata files. Pin the exact deterministic count -- and kind, matching this fixture's own JS/HTML origin for each name -- rather than a bare ">0", so a regression that resolved the name to the wrong file or duplicated/dropped an entry is caught too.
       expect(querySymbols({ name: 'accountCard' }, dbPath)).toMatchObject([{ kind: 'lwc_bundle' }])
       expect(querySymbols({ name: 'recordId' }, dbPath)).toMatchObject([{ kind: 'lwc_api_property' }])
-      // Both symbols share the exact same (file_path, line_start) -- the JS tree-sitter extractor
-      // and salesforce_frontend.ts's @api regex scan both attribute `refresh` to its leading
-      // `@api` decorator's line. querySymbols' `ORDER BY file_path, line_start` has no tiebreak
-      // for that case, so which of the two comes back first is an unspecified SQLite tie order
-      // (observed to flip after an unrelated schema change added a column) -- assert both are
-      // present regardless of order rather than pinning a sequence SQLite never promised.
+      // Both symbols share the exact same (file_path, line_start) -- the JS tree-sitter extractor and salesforce_frontend.ts's @api regex scan both attribute `refresh` to its leading `@api` decorator's line. querySymbols' `ORDER BY file_path, line_start` has no tiebreak for that case, so which of the two comes back first is an unspecified SQLite tie order (observed to flip after an unrelated schema change added a column) -- assert both are present regardless of order rather than pinning a sequence SQLite never promised.
       expect(querySymbols({ name: 'refresh' }, dbPath).map((s) => s.kind).sort()).toEqual(
         ['lwc_api_method', 'method'].sort(),
       )
       expect(querySymbols({ name: 'refreshButton' }, dbPath)).toMatchObject([{ kind: 'lwc_ref' }])
       expect(querySymbols({ name: 'variant' }, dbPath)).toMatchObject([{ kind: 'sf_lwc_property' }])
 
-      // Selected metadata receives qualified symbols, while an unknown metadata type
-      // still gets a stable top-level symbol and never stores the whole XML body.
+      // Selected metadata receives qualified symbols, while an unknown metadata type still gets a stable top-level symbol and never stores the whole XML body.
       expect(querySymbols({ name: 'Account.Business' }, dbPath)[0]).toMatchObject({
         kind: 'sf_record_type',
       })
@@ -143,11 +118,7 @@ describe('Salesforce DX worker default path', () => {
         body: '',
       })
 
-      // Canonical cross-file names make navigation independent of import aliases. Pin the exact
-      // deterministic count of refs per name -- both AccountController.loadAccount and
-      // Account.Name are referenced once from the Flow metadata's XML tag and once from the
-      // LWC JS import, so a resolver regression that drops (or double-counts) either origin is
-      // caught, not just "at least one ref exists somewhere".
+      // Canonical cross-file names make navigation independent of import aliases. Pin the exact deterministic count of refs per name -- both AccountController.loadAccount and Account.Name are referenced once from the Flow metadata's XML tag and once from the LWC JS import, so a resolver regression that drops (or double-counts) either origin is caught, not just "at least one ref exists somewhere".
       expect(queryRefs({ name: 'AccountController.loadAccount' }, dbPath).length).toBe(2)
       expect(queryRefs({ name: 'Account.Name' }, dbPath).length).toBe(2)
       expect(queryRefs({ name: 'refresh' }, dbPath).length).toBe(1)

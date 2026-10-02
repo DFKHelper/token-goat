@@ -1,32 +1,4 @@
-/**
- * Token-savings regression benchmark.
- *
- * token-goat's core product claim (README / CLAUDE.md) is that its surgical-read
- * commands -- `symbol`, `read`, `outline`, `section` -- return dramatically smaller
- * output than a full-file `Read`, "typically 85-97% smaller". Nothing else in the
- * suite measures that claim: a regression that made e.g. `outline` dump near-full-file
- * output would pass every other test untouched.
- *
- * This spawns the real built bundle (dist/token-goat.mjs) against small synthetic
- * fixtures (tests/fixtures/token_savings/), indexes them through the shipping CLI
- * path, then measures each surgical-read command's stdout byte size against the
- * fixture's full-file byte size and asserts the savings percentage stays above a
- * conservative floor. Numbers are logged so a maintainer can see the real ratios
- * when a regression trips the floor.
- *
- * Floor rationale: measured savings across these fixtures today run ~76-93%, with
- * one documented exception below. A floor of 0% would never fail (defeats the
- * purpose); a floor at today's measured number would flake on any incidental
- * formatting byte. SAVINGS_FLOOR_PERCENT=60 leaves real headroom below every
- * measured command (>=16 points) while still catching a genuine regression, e.g. a
- * command silently degrading into a near-full-file dump.
- *
- * A case may override the shared floor via `floorPercent`, but only where a lower
- * number is a understood consequence of a deliberate change rather than a
- * regression. Lowering the SHARED floor to accommodate one case would silently
- * relax the guard for every other case too, which is the opposite of what this
- * test is for -- so the exception is scoped to the case that earned it.
- */
+/** Token-savings regression benchmark. token-goat's core product claim (README / CLAUDE.md) is that its surgical-read commands -- `symbol`, `read`, `outline`, `section` -- return dramatically smaller output than a full-file `Read`, "typically 85-97% smaller". Nothing else in the suite measures that claim: a regression that made e.g. `outline` dump near-full-file output would pass every other test untouched. This spawns the real built bundle (dist/token-goat.mjs) against small synthetic fixtures (tests/fixtures/token_savings/), indexes them through the shipping CLI path, then measures each surgical-read command's stdout byte size against the fixture's full-file byte size and asserts the savings percentage stays above a conservative floor. Numbers are logged so a maintainer can see the real ratios when a regression trips the floor. Floor rationale: measured savings across these fixtures today run ~76-93%, with one documented exception below. A floor of 0% would never fail (defeats the purpose); a floor at today's measured number would flake on any incidental formatting byte. SAVINGS_FLOOR_PERCENT=60 leaves real headroom below every measured command (>=16 points) while still catching a genuine regression, e.g. a command silently degrading into a near-full-file dump. A case may override the shared floor via `floorPercent`, but only where a lower number is a understood consequence of a deliberate change rather than a regression. Lowering the SHARED floor to accommodate one case would silently relax the guard for every other case too, which is the opposite of what this test is for -- so the exception is scoped to the case that earned it. */
 
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -39,6 +11,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { runBundle as sharedRunBundle, tgIsolatedEnv } from './helpers/bundle.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
+// Provenance: HAND-DERIVED. Small synthetic samples written for this benchmark, no external producer (tests/fixtures/PROVENANCE.tsv).
 const FIXTURE_DIR = path.join(HERE, 'fixtures', 'token_savings')
 
 const SAVINGS_FLOOR_PERCENT = 60
@@ -68,12 +41,7 @@ interface Measurement {
   readonly label: string
   readonly command: readonly string[]
   readonly fixtureFile: string
-  /**
-   * Per-case override of {@link SAVINGS_FLOOR_PERCENT}. Only set this where a lower
-   * ratio is an understood consequence of a deliberate change; an unexplained drop is
-   * exactly the regression this benchmark exists to catch, and belongs in the code
-   * under test rather than here.
-   */
+  /** Per-case override of {@link SAVINGS_FLOOR_PERCENT}. Only set this where a lower ratio is an understood consequence of a deliberate change; an unexplained drop is exactly the regression this benchmark exists to catch, and belongs in the code under test rather than here. */
   readonly floorPercent?: number
 }
 
@@ -81,11 +49,7 @@ const MEASUREMENTS: readonly Measurement[] = [
   { label: 'symbol fetchUser (service.ts)', command: ['symbol', 'fetchUser'], fixtureFile: 'service.ts' },
   { label: 'read service.ts::fetchUser', command: ['read', 'service.ts::fetchUser'], fixtureFile: 'service.ts' },
   { label: 'read report.py::calculate_total', command: ['read', 'report.py::calculate_total'], fixtureFile: 'report.py' },
-  // Go's outline now surfaces each declaration's leading `//` doc comment, which the
-  // parser previously dropped on the floor for every non-Python language. The output is
-  // correspondingly larger -- that is the fix working, not a command degrading toward a
-  // full-file dump, and this fixture is densely doc-commented so it feels it most. Kept
-  // as a scoped exception with real headroom rather than by relaxing the shared floor.
+  // Go's outline now surfaces each declaration's leading `//` doc comment, which the parser previously dropped on the floor for every non-Python language. The output is correspondingly larger -- that is the fix working, not a command degrading toward a full-file dump, and this fixture is densely doc-commented so it feels it most. Kept as a scoped exception with real headroom rather than by relaxing the shared floor.
   { label: 'outline inventory.go', command: ['outline', 'inventory.go'], fixtureFile: 'inventory.go', floorPercent: 50 },
   { label: 'section guide.md::Configuration', command: ['section', 'guide.md::Configuration'], fixtureFile: 'guide.md' },
 ]
@@ -125,8 +89,7 @@ describe('token savings regression benchmark', () => {
       })
     }
 
-    // Print the real measured numbers so a maintainer can see the actual ratios,
-    // not just a pass/fail, when this test is inspected or when it trips the floor.
+    // Print the real measured numbers so a maintainer can see the actual ratios, not just a pass/fail, when this test is inspected or when it trips the floor.
     console.log(
       '\nToken-savings benchmark results:\n' +
         results
