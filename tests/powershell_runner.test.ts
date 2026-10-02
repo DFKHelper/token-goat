@@ -67,21 +67,31 @@ describe('PowerShell runner integration and resolution', () => {
     expect(captured).toContain('Part3')
   })
 
-  // Provenance: CAPTURE exit codes of direct `pwsh -NoProfile -NonInteractive -Command <cmd>` on the authoring machine: Get-Item missing -> 1, `cmd /c exit 3; Write-Output ok` -> 0, `Write-Output ok` -> 0, `cmd /c exit 3; cmd /c exit 0` -> 0, `cmd /c exit 3` -> 3.
+  // Provenance: CAPTURE, exit codes of a direct `pwsh -NoProfile -NonInteractive -Command <cmd>` spawned from node, PowerShell 7.6.4 on Windows 11, 2026-10-02. A trailing failed native command exits 1, not its own code, and a top-level `return` keeps the `$?` of the statement before it. `node -e` is the native command because it exists on every CI runner, where `cmd` does not.
   it.each([
-    ['Get-Item C:/nonexistent-xyz-123', 1],
-    ['cmd /c exit 3; Write-Output ok', 0],
+    ['Get-Item ./nonexistent-xyz-123', 1],
     ['Write-Output ok', 0],
-    ['cmd /c exit 3; cmd /c exit 0', 0],
-    ['cmd /c exit 3', 3],
+    ["node -e 'process.exit(3)'", 1],
+    ["node -e 'process.exit(3)'; Write-Output ok", 0],
+    ["node -e 'process.exit(3)'; node -e 'process.exit(0)'", 0],
+    ["node -e 'process.exit(3)'; Get-Item ./nonexistent-xyz-123", 1],
+    ['Write-Output hi; return', 0],
+    ["node -e 'process.exit(3)'; return", 1],
+    ['if ($true) { return }; Write-Output unreached', 0],
+    ['throw "boom"', 1],
+    ["using namespace System.Text\n[StringBuilder]::new().Append('x').ToString()", 0],
+    ["using namespace System.Text\nnode -e 'process.exit(3)'", 1],
+    ['Write-Output (', 1],
   ])('wrapped exit code matches direct pwsh for %s', async (cmd, expected) => {
     const exitCode = await run(cmd, { shellType: 'pwsh', writeStdout: () => {}, writeStderr: () => {} })
     expect(exitCode).toBe(expected)
   })
 
-  // Provenance: CAPTURE, direct `pwsh -NoProfile -Command 'cmd /c exit 3; Get-Item C:/nonexistent-q'` exits 1 on the authoring machine. The wrapper reports the earlier native code instead, because telling whether the failing last statement was native would mean parsing the script inside the eager hook bundle; the verdict (failed) is what callers act on, so that is what is pinned.
-  it('reports failure when a cmdlet fails after an earlier native failure', async () => {
-    const exitCode = await run('cmd /c exit 3; Get-Item C:/nonexistent-xyz-123', { shellType: 'pwsh', writeStdout: () => {}, writeStderr: () => {} })
-    expect(exitCode).not.toBe(0)
+  it('stops at a top-level return and still prints what ran before it', async () => {
+    let captured = ''
+    const exitCode = await run('Write-Output before; if ($true) { return }; Write-Output after', { filterName: 'powershell', shellType: 'pwsh', writeStdout: (s) => { captured += s }, writeStderr: () => {} })
+    expect(exitCode).toBe(0)
+    expect(captured).toContain('before')
+    expect(captured).not.toContain('after')
   })
 })

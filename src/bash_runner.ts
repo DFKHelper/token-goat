@@ -142,14 +142,14 @@ function spawnTarget(
 ): { file: string; args: string[]; shell: boolean; cmdEnv?: NodeJS.ProcessEnv } {
   if (shellType === 'pwsh' || shellType === 'powershell') {
     const ps = resolvePowerShell()
-    // Exit mirrors `pwsh -Command`: reset LASTEXITCODE so a stale native code cannot leak, then append a `$?` capture so the script's own last statement decides (`& scriptblock` itself always reports success).
+    // Exit mirrors `pwsh -Command`, which exits 1 when the last statement's `$?` is false and 0 otherwise (`exit N` exits directly). `& scriptblock` itself always reports success, so the script runs inside try/finally and the finally captures `$?`, which also runs past a top-level `return`; a script try cannot wrap (a leading `using` statement) falls back to an appended capture, and one that does not parse at all leaves TgOk false.
     return {
       file: ps,
       args: [
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        '$c = $env:TG_CMD; Remove-Item Env:\\TG_CMD -ErrorAction SilentlyContinue; $global:LASTEXITCODE = $null; & ([scriptblock]::Create($c + [Environment]::NewLine + \'$global:TgOk = $?\')); if (-not $global:TgOk) { if ($global:LASTEXITCODE -ne $null -and $global:LASTEXITCODE -ne 0) { exit $global:LASTEXITCODE } else { exit 1 } } else { exit 0 }',
+        '$TgC = $env:TG_CMD; Remove-Item Env:\\TG_CMD -ErrorAction SilentlyContinue; $global:TgOk = $false; $TgN = [Environment]::NewLine; $TgB = try { [scriptblock]::Create(\'try {\' + $TgN + $TgC + $TgN + \'} finally { $global:TgOk = $? }\') } catch { $TgS = [scriptblock]::Create($TgC + $TgN + \'$global:TgOk = $?\'); $global:TgOk = $true; $TgS }; if ($TgB) { & $TgB }; if ($global:TgOk) { exit 0 } else { exit 1 }',
       ],
       shell: false,
       cmdEnv: { TG_CMD: command },
