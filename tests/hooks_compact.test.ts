@@ -32,6 +32,12 @@ const spawnSyncMock = vi.fn()
 vi.mock('node:child_process', () => ({
   spawnSync: (...args: unknown[]) => spawnSyncMock(...args),
 }))
+// PATH resolution and the Windows shim launch are covered against a real shim in tests/manifest_mem_epoch_shim.test.ts; here only the spawn outcome is scripted.
+vi.mock('../src/process_util.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  resolveOnPath: (label: string) => label,
+  spawnResolvedSync: (...args: unknown[]) => spawnSyncMock(...args),
+}))
 
 // A project-shaped absolute path, not a real file under the OS temp directory. The manifest drops noise paths before its row cap, and every OS temp root this suite could write to is on that list (`/tmp/` on Unix, `/appdata/local/temp/` on Windows), so a fixture written there is filtered out of the very rows these tests assert on. Nothing here reads the bytes: `recordFileRead` stats the path for a size and the row renderer floors that at 1kb, so an absent file renders exactly as a small real one would.
 const FIXTURE_ROOT = `${path.parse(os.tmpdir()).root.split(path.sep).join('/')}tg-fixture-project/src`

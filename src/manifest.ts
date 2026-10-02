@@ -1,6 +1,6 @@
 /** The compaction manifest: what this session touched, rendered for whoever reads it next. Ports the intent of `hooks_compact.py` / `build_manifest`: a concise summary of the files read, the files edited and the web URLs fetched, so a compaction preserves that context instead of dropping it. The manifest is intentionally compact -- aim well under 2000 chars. Two things the discarded builder did are deliberately not here. It inferred a session goal from the file names it saw and put that sentence at the top of the injected text: an inference stated as fact to the one reader who cannot check it, and wrong exactly when a session changed direction, which is when a manifest matters most. It also grouped rows by directory, which collapses the per-file read counts the rows exist to carry. Its noise-path filtering was worth keeping and is here, through {@link isNoisePath}. Reopen either decision by measuring against a real compaction, not by preference. It lives apart from the hook that emits it because it has two callers with different jobs. `hooks_compact.ts` builds it at `pre_compact` and hands it to the summarizing model; `cache_session_commands.ts` builds it for `compact-hint`, which reports what the next compaction will carry. Those two used to build different text from different code, so the command sized a manifest the hook would never produce and a reader checking one learned nothing about the other. One builder, two callers, and the module holds no `registerHook` call of its own -- importing it from a command must not install a hook as a side effect. */
 
-import { spawnSync } from 'node:child_process'
+import { resolveOnPath, spawnResolvedSync } from './process_util.js'
 
 import { WEB_FETCH_KEY_SEP, getSessionFiles, getSessionWebFetches, getSessionBashOutputs, getSessionBashReruns } from './session.js'
 import type { FileEntry, SerializedSession } from './session.js'
@@ -287,11 +287,13 @@ function buildSafeToDiscardSection(files: FileEntry[]): FitSection[] {
   }
   return sections
 }
-/** Fold `mem epoch` (token-goat-mem's monotonic counter, when the `mem` binary is on PATH) into the compaction manifest, so a resumed session can tell whether mem's fact store has advanced since this transcript was captured. FINDING (searched for at implementation time): this codebase has no existing tracking of a "current live TGMEM block" anywhere -- no `TGMEM` marker, no in-session summary of facts mem currently holds. `hooks_compact.ts`'s manifest tracks only file reads/edits/web fetches/bash-output caching (see {@link buildManifest}); nothing here shadows mem's own state. Per spec, that gap is reported rather than papered over with a fabricated block-tracking mechanism: this section folds in `mem epoch`'s bare integer alone, with an explicit note that no live TGMEM block is tracked in this session. Must fail open: `mem` may be absent from PATH, may error, or may hang. `spawnSync` bounds the wait to {@link MEM_EPOCH_TIMEOUT_MS} (same spawnSync-with-timeout pattern as checkCopilotCli in cli_doctor.ts) and any failure -- ENOENT, non-zero exit, timeout kill, unparsable stdout -- silently omits the section. No error is ever surfaced and compaction never blocks or fails because of this. */
+/** Fold `mem epoch` (token-goat-mem's monotonic counter, when the `mem` binary is on PATH) into the compaction manifest, so a resumed session can tell whether mem's fact store has advanced since this transcript was captured. FINDING (searched for at implementation time): this codebase has no existing tracking of a "current live TGMEM block" anywhere -- no `TGMEM` marker, no in-session summary of facts mem currently holds. `hooks_compact.ts`'s manifest tracks only file reads/edits/web fetches/bash-output caching (see {@link buildManifest}); nothing here shadows mem's own state. Per spec, that gap is reported rather than papered over with a fabricated block-tracking mechanism: this section folds in `mem epoch`'s bare integer alone, with an explicit note that no live TGMEM block is tracked in this session. Must fail open: `mem` may be absent from PATH, may error, or may hang. `mem` is resolved on PATH and launched through `spawnResolvedSync`, because an npm or cargo install leaves a `.cmd` shim on Windows that a bare `spawnSync('mem')` cannot start; the timeout bounds the wait to {@link MEM_EPOCH_TIMEOUT_MS} and any failure -- not on PATH, non-zero exit, timeout kill, unparsable stdout -- silently omits the section. No error is ever surfaced and compaction never blocks or fails because of this. */
 function buildMemEpochSection(): FitSection[] {
-  let result: ReturnType<typeof spawnSync>
+  let result: ReturnType<typeof spawnResolvedSync>
   try {
-    result = spawnSync('mem', ['epoch'], {
+    const resolved = resolveOnPath('mem')
+    if (resolved === null) return []
+    result = spawnResolvedSync(resolved, ['epoch'], {
       encoding: 'utf-8',
       timeout: MEM_EPOCH_TIMEOUT_MS,
       windowsHide: true,
