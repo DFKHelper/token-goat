@@ -202,4 +202,30 @@ describe('cached-output recall: ranges, line numbers, context and the elision ma
     expect(r.status).toBe(0)
     expect(r.stdout).toContain('--lines')
   })
+
+  it('--full -n numbers only the real lines, with no bare number for the newline at the end', () => {
+    const r = runIsolated(['bash-output', '--file', recallFile(), '--full', '-n'])
+    expect(r.status, r.stderr).toBe(0)
+    const plain = body(runIsolated(['bash-output', '--file', recallFile(), '--full']).stdout)
+    const got = body(r.stdout)
+    // Same shape as the verbatim --full view, which keeps the text's final newline; only the 600 real lines carry a number.
+    expect(got).toEqual(plain.map((l, i) => (i < 600 ? `${i + 1}:${l}` : l)))
+    expect(got).toContain('600:line 600')
+    expect(r.stdout).not.toMatch(/^601:/m)
+  })
+
+  it('retrieve takes --lines, -n and --context like its siblings', () => {
+    const id = retrieveIdFor(bigBlob())
+    const ranged = runIsolated(['retrieve', id, '--lines', '150-152', '-n'])
+    expect(ranged.status, ranged.stderr).toBe(0)
+    expect(ranged.stdout.trim()).toBe('150:line 150\n151:line 151\n152:line 152')
+    const ctx = runIsolated(['retrieve', id, '--grep', 'line 100$', '--context', '1'])
+    expect(ctx.status, ctx.stderr).toBe(0)
+    expect(ctx.stdout.trim()).toBe('line 99\nline 100\nline 101')
+    // -n alone is not a narrowing flag: every line comes back, numbered, with no elision.
+    const numbered = runIsolated(['retrieve', id, '-n'])
+    expect(numbered.status, numbered.stderr).toBe(0)
+    expect(numbered.stdout).not.toContain('elided')
+    expect(numbered.stdout.trimEnd().split('\n')).toHaveLength(200)
+  })
 })

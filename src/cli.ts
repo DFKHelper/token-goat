@@ -60,7 +60,7 @@ import { registerSessionCommands } from './cli_cmd_session.js'
 import { cmdHookServerRun, cmdHookServerStatus, cmdHookServerStop } from './cli_hook_server.js'
 import { cmdInstall, cmdMcpStatus, cmdUninstall } from './cli_install.js'
 import { runPayloads } from './cli_payloads.js'
-import { _applyFiltersAndPrint, cmdBashOutput, cmdMcpOutput, cmdWebOutput } from './cli_cached_output.js'
+import { _applyFiltersAndPrint, cmdBashOutput, cmdMcpOutput, cmdWebOutput, type RecallFilterOpts } from './cli_cached_output.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { BRIDGE_CAPABILITY_MATRIX, bridgesStatusToJson, formatBridgesStatus } from './bridges_status.js'
 import { buildCommandManifest, filterCommandManifest, formatCommandManifest } from './cli_commands.js'
@@ -144,11 +144,11 @@ function cmdContentCompress(text: string | undefined, opts: { file?: string; pay
   out(formatCompression(compressText(readBoundedText(text, opts.file)), opts.payload === true))
 }
 
-function cmdRetrieve(id: string, opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; full?: boolean }): void {
+function cmdRetrieve(id: string, opts: RecallFilterOpts): void {
   const text = retrieveText(id)
   if (text === null) throw new CliError(`no token-goat content for id: ${id}. The local cache may have expired.`)
   // retrieve is the lossless round-trip for compress-text; other commands print `recovery: token-goat retrieve <id>` promising the original bytes back, so with no narrowing flag it must stay byte-verbatim -- only opt into sibling head/tail elision once the caller explicitly asks for a slice.
-  const noNarrowing = opts.head === undefined && opts.tail === undefined && opts.grep === undefined && opts.section === undefined && opts.maxMatches === undefined && opts.full !== true
+  const noNarrowing = opts.head === undefined && opts.tail === undefined && opts.grep === undefined && opts.section === undefined && opts.maxMatches === undefined && opts.lines === undefined && opts.full !== true
   _applyFiltersAndPrint(text, noNarrowing ? { ...opts, full: true } : opts)
 }
 
@@ -1116,6 +1116,9 @@ export function buildProgram(): Command {
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--section <heading>', 'extract a specific section from the retrieved text')
     .option('--full', 'print the entire retrieved text with no head/tail elision (default behaviour when no other flag is given)')
+    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405')
+    .option('-n, --line-numbers', 'prefix every printed line with its line number (N:text)')
+    .option('--context <n>', 'with --grep, also show N lines around each match')
     .action(guard(cmdRetrieve))
 
   program

@@ -131,7 +131,9 @@ export function _applyFiltersAndPrint(
 
   // --full is the only way to get the stored blob back verbatim. The blob store itself is lossless, but every render path below elides the middle past head+tail, so without this flag an elision marker pointing a reader at `mcp-output <id>` promises a full report the CLI cannot actually produce -- which is exactly what hooks_agent_spawn.ts's envelope compaction relies on. Deliberately bypasses only the elision, not --section/--grep/--max-matches above: those are explicit narrowing the caller asked for.
   if (opts.full === true) {
-    return emit(render(rows))
+    // With -n the trailing "" after a final newline would print as a bare `N:` line that is not in the text, so number only the real lines and keep the newline.
+    const real = dropPhantom(rows)
+    return emit(opts.lineNumbers === true && real.length < rows.length ? render(real) + '\n' : render(rows))
   }
   // Text that ends in a newline splits into a trailing "" that is not a line of output. Counting it made `--tail N` return N-1 real lines (`--tail 1` returned nothing at all) and made the default elision drop the last line of every long capture. `--full` above keeps the raw split so the verbatim blob is unchanged.
   const lines = dropPhantom(rows)
