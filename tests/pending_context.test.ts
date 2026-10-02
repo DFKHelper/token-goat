@@ -86,6 +86,29 @@ describe('pending context', () => {
     expect(drained?.endsWith('NEWEST')).toBe(true)
   })
 
+  // Provenance: HAND-DERIVED. hooks_compact.ts sizes its manifest block to fill MAX_PENDING_CONTEXT_BYTES, so any hint queued before it overflowed the cap, and the tail slice delivered the end of that hint -- here half a command span -- as the head of the queue.
+  it('drops an earlier hint whole rather than delivering a fragment of it when the cap forces a choice', () => {
+    queuePendingContext('s1', 'Earlier hint: run `token-goat read "src/a.ts::alpha"` before editing alpha.')
+    const block = `RECOVERY\n\n${'m'.repeat(MAX_PENDING_CONTEXT_BYTES - 40)}`
+    queuePendingContext('s1', block)
+
+    expect(drainPendingContext('s1')).toBe(block)
+  })
+
+  it('keeps both hints when they fit together', () => {
+    queuePendingContext('s1', 'first hint')
+    queuePendingContext('s1', 'm'.repeat(MAX_PENDING_CONTEXT_BYTES - 20))
+
+    expect(drainPendingContext('s1')?.startsWith('first hint\n')).toBe(true)
+  })
+
+  it('keeps the opening lines of a single hint that outgrows the cap, cut at a line boundary', () => {
+    const opening = 'Heading line that says what this hint is.'
+    queuePendingContext('s1', `${opening}\n${'x'.repeat(MAX_PENDING_CONTEXT_BYTES)}`)
+
+    expect(drainPendingContext('s1')).toBe(opening)
+  })
+
   it('ignores empty text and an unusable session id', () => {
     queuePendingContext('s1', '   ')
     expect(drainPendingContext('s1')).toBeNull()

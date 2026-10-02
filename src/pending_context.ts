@@ -9,7 +9,7 @@ import { ensureDirSync } from './util.js'
 /** Sidecar suffix holding text queued for the next tool call. */
 const PENDING_SUFFIX = '.pending-context.txt'
 
-/** Largest queued payload retained, in bytes. A hint that outgrows this is not worth the context it would cost to deliver, and an unbounded queue would let a runaway producer write a file that then gets injected whole. Oldest text is dropped rather than newest: the newest hint is the one describing the session's state now. */
+/** Largest queued payload retained, in bytes. A hint that outgrows this is not worth the context it would cost to deliver, and an unbounded queue would let a runaway producer write a file that then gets injected whole. Oldest text is dropped rather than newest, and whole rather than cut: the newest hint is the one describing the session's state now. */
 export const MAX_PENDING_CONTEXT_BYTES = 4_096
 
 /** Queue `text` for delivery on the next tool call made under `stateKey`. Appends, so two hints produced by one prompt both survive. Silently does nothing when the key is unusable or the write fails -- a hint that cannot be stored is a lost hint, never a failed hook. The key is `sessionStateKey(event)`, never a bare session id: a subagent shares its parent's session id and makes tool calls of its own, so a queue keyed on the id alone let the first child tool call read and consume a manifest queued for the parent's compaction, and the parent -- the one that compacted and lost the context -- got nothing. The composite key is the one `session_store.ts` already understands: `sessionFileStem` splits on `:agent:` and hashes the agent half, so parent and child land on different sidecars. */
@@ -19,11 +19,7 @@ export function queuePendingContext(stateKey: string, text: string): void {
   const target = sessionSidecarPath(stateKey, PENDING_SUFFIX)
   if (target === null) return
   try {
-    const existing = readPending(target)
-    const merged = existing === null ? trimmed : `${existing}\n${trimmed}`
-    // Keep the tail: when the cap forces a choice, the most recent hint is the accurate one.
-    const capped =
-      merged.length <= MAX_PENDING_CONTEXT_BYTES ? merged : merged.slice(merged.length - MAX_PENDING_CONTEXT_BYTES)
+    const capped = fitPending(readPending(target), trimmed)
     ensureDirSync(dirname(target))
     writeFileSync(target, capped, 'utf8')
   } catch {
@@ -68,6 +64,20 @@ export function commitPendingContext(stateKey: string, delivered: string | null)
   } catch {
     // Already gone, or unremovable; a repeated hint is the cost here, never a blocked tool call.
   }
+}
+
+/** Append `text` to what is already queued, within the cap. When both do not fit, the earlier text goes whole: the newest hint is the accurate one, and a tail slice across the join delivered the end of an earlier hint, often half a command span, as the head of the queue. A single text over the cap keeps its opening lines, cut at a line boundary, since that is where a hint says what it is. */
+function fitPending(existing: string | null, text: string): string {
+  if (existing !== null) {
+    const merged = `${existing}\n${text}`
+    if (merged.length <= MAX_PENDING_CONTEXT_BYTES) return merged
+  }
+  if (text.length <= MAX_PENDING_CONTEXT_BYTES) return text
+  const head = text.slice(0, MAX_PENDING_CONTEXT_BYTES)
+  const lineEnd = head.lastIndexOf('\n')
+  if (lineEnd > 0) return head.slice(0, lineEnd).trimEnd()
+  // No line boundary to cut at: never end on the first half of a surrogate pair.
+  return /[\uD800-\uDBFF]$/.test(head) ? head.slice(0, -1) : head
 }
 
 /** Read a queued payload, or null when the file is absent, unreadable, or empty. */
