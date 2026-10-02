@@ -16,15 +16,10 @@ function withinFusionWindow(aStart: number, aEnd: number, bStart: number, bEnd: 
   return merged <= Math.max(FUSION_SPAN_CAP, widest);
 }
 
-/**
- * Fuses ranked results from multiple search channels using Reciprocal Rank Fusion (RRF).
- * Consolidates overlapping or identical hits from different angles and ranks by multi-channel consensus.
- * Each channel contributes at most once per fused item (using its highest rank) to prevent
- * single-channel clustering from artificially inflating consensus scores.
- */
+/** Fuses ranked results from multiple search channels using Reciprocal Rank Fusion (RRF). Consolidates overlapping or identical hits from different angles and ranks by multi-channel consensus. Each channel contributes at most once per fused item (using its highest rank) to prevent single-channel clustering from artificially inflating consensus scores. */
 export function fuseChannelHits(
   channelHitsMap: Map<SearchChannel, ChannelHit[]>,
-  options: { limit?: number | undefined; k?: number | undefined; minScore?: number | undefined } = {},
+  options: { limit?: number | undefined; k?: number | undefined; minScore?: number | undefined; weightOf?: ((filePath: string) => number) | undefined } = {},
 ): FusedSearchResult[] {
   if (options.limit === 0) return [];
 
@@ -89,8 +84,7 @@ export function fuseChannelHits(
         continue;
       }
 
-      // If one is a named symbol and the other is an unnamed text/semantic match:
-      // match if the unnamed hit falls within or directly borders the symbol range
+      // If one is a named symbol and the other is an unnamed text/semantic match: match if the unnamed hit falls within or directly borders the symbol range
       if (cluster.name && !hit.name) {
         if (hit.lineStart >= cluster.lineStart - 5 && hit.lineEnd <= cluster.lineEnd + 5) {
           matchedCluster = cluster;
@@ -157,6 +151,8 @@ export function fuseChannelHits(
       channels.push(channel);
       rawScore += 1.0 / (k + bestRank);
     }
+    // Applied before the minScore filter and the limit cut so a down-weighted hit neither survives on its unweighted score nor wastes a slot.
+    if (options.weightOf) rawScore *= options.weightOf(entry.filePath);
     // Filter against unrounded score so borderline results are not dropped prematurely
     if (rawScore >= minScore) {
       // The best text hit keeps its own line so a wide enclosing symbol does not hide where the match is

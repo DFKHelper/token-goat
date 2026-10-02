@@ -521,6 +521,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/resident_context.ts`](src/resident_context.ts) | Accounting for the context the harness injects and token-goat's hooks never see. |
 | [`src/screenshot.ts`](src/screenshot.ts) | Local screenshot capture for `token-goat screenshot`, so a page render can reach the model as a small shrunk image instead of round-tripping through a separate browser-automation M |
 | [`src/search/parallel_search.ts`](src/search/parallel_search.ts) | Exports: `executeParallelSearch` |
+| [`src/search/path_weight.ts`](src/search/path_weight.ts) | Exports: `ARCHIVE_PATH_SEGMENTS`, `ARCHIVE_FILE_RE`, `DOCS_FILE_RE`, `DOCS_DIR_SEGMENT` |
 | [`src/search/rrf.ts`](src/search/rrf.ts) | Exports: `DEFAULT_RRF_K`, `fuseChannelHits` |
 | [`src/search/search_cli.ts`](src/search/search_cli.ts) | Exports: `runParallelSearch` |
 | [`src/search/symbol_fts.ts`](src/search/symbol_fts.ts) | Full-text symbol search split by kind, for the `search` command's symbol and heading channels. |

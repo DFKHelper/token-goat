@@ -8,6 +8,8 @@ import { searchSymbolsFtsByKind } from './symbol_fts.js';
 import { projectPathIsConsultable } from '../bridges/project_scope_guard.js';
 import { readFileText } from '../read_commands.js';
 import { fuseChannelHits } from './rrf.js';
+import { pathPriorityWeight } from './path_weight.js';
+import { loadConfig } from '../config.js';
 import { ALL_CHANNELS, type ChannelHit, type SearchChannel, type SearchExecutionSummary, type SearchOptions } from './types.js';
 
 /** Searches symbols via Full-Text Search and symbol queries. */
@@ -255,8 +257,10 @@ export async function executeParallelSearch(options: SearchOptions): Promise<Sea
     }
   }
 
+  const semanticConfig = loadConfig().semantic;
   const fusedResults = fuseChannelHits(channelHitsMap, {
     limit,
+    weightOf: (p) => pathPriorityWeight(p, semanticConfig),
     ...(options.minScore !== undefined ? { minScore: options.minScore } : {}),
   });
 
