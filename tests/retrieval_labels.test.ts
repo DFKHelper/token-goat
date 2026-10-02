@@ -88,7 +88,12 @@ describe('golden labels stay resolvable against this repository', () => {
   it('has unique ids and a known kind on every record', () => {
     expect(golden.length).toBeGreaterThanOrEqual(40)
     expect(new Set(golden.map((g) => g.id)).size).toBe(golden.length)
-    for (const g of golden) expect(['identifier', 'paraphrase', 'doc']).toContain(g.kind)
+    for (const g of golden) expect(['identifier', 'paraphrase', 'doc', 'absent']).toContain(g.kind)
+  })
+
+  it('labels a query absent exactly when nothing in the repo answers it', () => {
+    for (const g of golden) expect(g.relevant.length === 0, g.id).toBe(g.kind === 'absent')
+    expect(golden.filter((g) => g.kind === 'absent').length).toBeGreaterThanOrEqual(12)
   })
 
   it.each(golden.map((g) => [g.id, g] as const))('%s resolves every label', (_id, g) => {

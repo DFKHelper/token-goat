@@ -1,12 +1,12 @@
-/** Golden retrieval eval: runs the real `search`, `semantic` and `answer` commands over the labelled queries in evals/retrieval and reports hit@k, MRR@10 and bytes per correct hit, each with a bootstrap interval, separately for the train and test splits. Usage:
- *
- *   npx tsx scripts/eval-retrieval.ts --home <dir> [--bin token-goat] [--root .] [--reindex] [--out report.json] [--baseline old.json] [--arms fused,semantic,...]
- *
- * `--home` is required and every child runs with HOME, USERPROFILE, TOKEN_GOAT_HOME, LOCALAPPDATA, APPDATA and XDG_DATA_HOME pointed inside it, because `answer` and the search commands write to the savings ledger and an eval run must never land in the user's real one. `--reindex` builds that home's index first. `--baseline` takes an earlier report and prints the paired per-query delta for each arm, which is how a change is judged: keep it only when both splits improve past the interval. */
+/** Golden retrieval eval: runs the real `search`, `semantic` and `answer` commands over the labelled queries in evals/retrieval and reports hit@k, MRR@10 and bytes per correct hit, each with a bootstrap interval, separately for the train and test splits. Usage: npx tsx scripts/eval-retrieval.ts --home <dir> [--bin token-goat] [--root .] [--reindex] [--out report.json] [--baseline old.json] [--arms fused,semantic,...] `--home` is required and every child runs with HOME, USERPROFILE, TOKEN_GOAT_HOME, LOCALAPPDATA, APPDATA and XDG_DATA_HOME pointed inside it, because `answer` and the search commands write to the savings ledger and an eval run must never land in the user's real one. `--reindex` builds that home's index first. `--baseline` takes an earlier report and prints the paired per-query delta for each arm, which is how a change is judged: keep it only when both splits improve past the interval. Queries of kind `absent` have no answer in the repo. They are left out of every hit-rate line and scored instead on whether each arm abstains: `search` by returning nothing, `semantic` by flagging its closest match as weak. For `semantic` the report also fits the weak-match line on the train split and scores it on the test split beside the configured one. */
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { defaultConfig } from '../src/config_defaults.js'
+import { summarizeDistances } from '../src/semantic_distances.js'
+import type { DistanceRow } from '../evals/retrieval/calibration.js'
 import { resolveLabel, type GoldenLabel } from '../evals/retrieval/labels.js'
+import { num, pct, qualityLines, weakFitLines } from '../evals/retrieval/quality.js'
 import {
   bootstrapCI,
   bytesPerCorrectHit,
@@ -27,7 +27,7 @@ const K = 10
 interface GoldenQuery {
   readonly id: string
   readonly query: string
-  readonly kind: 'identifier' | 'paraphrase' | 'doc'
+  readonly kind: 'identifier' | 'paraphrase' | 'doc' | 'absent'
   readonly relevant: readonly GoldenLabel[]
   readonly why_hard?: string
 }
@@ -45,18 +45,38 @@ interface Arm {
   readonly name: string
   readonly json: (q: string) => string[]
   readonly text: (q: string) => string[]
-  readonly parse: (stdout: string) => RankedHit[]
+  readonly parse: (stdout: string) => Parsed
+}
+
+/** One arm's answer: its ranked hits, whether it abstained, and the closest dense distance behind that call (null when the arm reports none). */
+interface Parsed {
+  readonly hits: RankedHit[]
+  readonly abstained: boolean
+  readonly closest: number | null
 }
 
 interface SearchJson {
   results?: { filePath: string; lineStart?: number; lineEnd?: number }[]
 }
 interface SemanticJson {
-  items?: { filePath: string; startLine?: number; endLine?: number }[]
+  items?: { filePath: string; startLine?: number; endLine?: number; distance?: number | null }[]
+  lowConfidence?: { closestDistance: number }
 }
 
-const parseSearch = (s: string): RankedHit[] => ((JSON.parse(s) as SearchJson).results ?? []).map((r) => ({ file: r.filePath, lineStart: r.lineStart, lineEnd: r.lineEnd }))
-const parseSemantic = (s: string): RankedHit[] => ((JSON.parse(s) as SemanticJson).items ?? []).map((r) => ({ file: r.filePath, lineStart: r.startLine, lineEnd: r.endLine }))
+/** `search` has no confidence signal, so it abstains only by returning nothing. */
+function parseSearch(s: string): Parsed {
+  const hits = ((JSON.parse(s) as SearchJson).results ?? []).map((r) => ({ file: r.filePath, lineStart: r.lineStart, lineEnd: r.lineEnd }))
+  return { hits, abstained: hits.length === 0, closest: null }
+}
+
+/** `semantic` abstains when it flags its closest match as weak, and also when no dense match came back at all, which is what `abstainsAt` scores. The closest distance is the flagged one when present, else the smallest a dense item carries; lexical items carry null. */
+export function parseSemantic(s: string): Parsed {
+  const j = JSON.parse(s) as SemanticJson
+  const items = j.items ?? []
+  const dense = items.flatMap((r) => (typeof r.distance === 'number' ? [r.distance] : []))
+  const closest = j.lowConfidence?.closestDistance ?? (dense.length === 0 ? null : Math.min(...dense))
+  return { hits: items.map((r) => ({ file: r.filePath, lineStart: r.startLine, lineEnd: r.endLine })), abstained: j.lowConfidence !== undefined || closest === null, closest }
+}
 
 const searchArm = (name: string, channel?: string): Arm => {
   const base = (q: string): string[] => ['search', '-l', String(K), ...(channel !== undefined ? ['-c', channel] : []), q]
@@ -117,10 +137,11 @@ function isolatedEnv(home: string): NodeJS.ProcessEnv {
 interface Run {
   readonly stdout: string
   readonly stderr: string
+  readonly status: number | null
   readonly ms: number
 }
 
-/** Runs one command. A nonzero exit throws unless `allowFail` is set, which only `answer` needs: a refusal is a graded outcome there, printed to stderr with exit 1. A `.mjs` bundle runs under this Node directly. Any other name on Windows is an npm `.cmd` shim, which only a shell can start, and Node deprecates handing an argument array to a shell (DEP0190), so the shell gets one quoted command line instead. */
+/** Runs one command. A nonzero exit throws unless `allowFail` is set, which `answer` needs because a refusal is a graded outcome there, printed to stderr with exit 1, and the arms need because `semantic` exits 1 when nothing matched. A `.mjs` bundle runs under this Node directly. Any other name on Windows is an npm `.cmd` shim, which only a shell can start, and Node deprecates handing an argument array to a shell (DEP0190), so the shell gets one quoted command line instead. */
 function runner(bin: string, cwd: string, env: NodeJS.ProcessEnv): (args: string[], allowFail?: boolean) => Run {
   const opts = { cwd, env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, windowsHide: true } as const
   const start = (args: string[]): SpawnSyncReturns<string> => {
@@ -134,8 +155,24 @@ function runner(bin: string, cwd: string, env: NodeJS.ProcessEnv): (args: string
     const ms = performance.now() - t0
     if (r.error !== undefined) throw r.error
     if (r.status !== 0 && !allowFail) throw new Error(`token-goat ${args.join(' ')} exited ${r.status}: ${r.stderr.slice(0, 500)}`)
-    return { stdout: r.stdout, stderr: r.stderr, ms }
+    return { stdout: r.stdout, stderr: r.stderr, status: r.status, ms }
   }
+}
+
+/** Runs one query through an arm, JSON then text. Exit 1 is accepted only when the JSON parses to no hits, which is how `semantic` reports an empty result; any other failure, or JSON that does not parse, is a crash and stops the run rather than scoring as a miss. */
+function askArm(exec: ReturnType<typeof runner>, arm: Arm, query: string): { parsed: Parsed; text: Run } {
+  const j = exec(arm.json(query), true)
+  let parsed: Parsed | undefined
+  try {
+    parsed = arm.parse(j.stdout)
+  } catch {
+    parsed = undefined
+  }
+  const fail = (r: Run): boolean => r.status !== 0 && !(r.status === 1 && parsed?.hits.length === 0)
+  if (parsed === undefined || fail(j)) throw new Error(`token-goat ${arm.json(query).join(' ')} exited ${j.status}: ${j.stderr.slice(0, 500)}`)
+  const text = exec(arm.text(query), true)
+  if (fail(text)) throw new Error(`token-goat ${arm.text(query).join(' ')} exited ${text.status}: ${text.stderr.slice(0, 500)}`)
+  return { parsed, text }
 }
 
 /** Quote one word for cmd.exe. A query is plain words, so double quotes are enough once any inside it are dropped. */
@@ -150,6 +187,10 @@ interface QueryResult {
   readonly bytes: number
   readonly ms: number
   readonly top: string[]
+  readonly abstained: boolean
+  readonly closest: number | null
+  readonly topFiles: string[]
+  readonly labelFiles: string[]
 }
 
 interface ArmSummary {
@@ -179,8 +220,18 @@ function summarize(rows: readonly QueryResult[]): ArmSummary {
   }
 }
 
-const pct = (i: Interval): string => `${(i.mean * 100).toFixed(1)} [${(i.lo * 100).toFixed(1)}, ${(i.hi * 100).toFixed(1)}]`
-const num = (i: Interval): string => `${i.mean.toFixed(3)} [${i.lo.toFixed(3)}, ${i.hi.toFixed(3)}]`
+/** How far `semantic`'s closest match sits for answerable and for absent queries, in the bands `token-goat semantic --distances` prints, then the weak-match line fitted on train and scored on test. The closest distance is read from the top results, so a dense hit that fusion pushed below them reads slightly further than it was. */
+function distanceLines(rows: readonly QueryResult[], indent: string): string[] {
+  const weak = defaultConfig().semantic.weak_distance
+  const out: string[] = []
+  for (const [label, absent] of [['answerable', false], ['absent', true]] as const) {
+    const s = summarizeDistances(rows.filter((r) => (r.kind === 'absent') === absent).map((r) => ({ closest_distance: r.closest })), weak)
+    out.push(`${indent}closest distance, ${label.padEnd(10)} ${s.bands.map((b) => `${b.range} ${b.count}`).join('  ')}`)
+  }
+  const distanceRows = (split: string): DistanceRow[] => rows.filter((r) => r.split === split).map((r) => ({ absent: r.kind === 'absent', closest: r.closest }))
+  out.push(...weakFitLines(distanceRows('train'), distanceRows('test'), weak, indent))
+  return out
+}
 
 interface Report {
   readonly arms: Record<string, QueryResult[]>
@@ -210,9 +261,8 @@ function main(): void {
     const rows: QueryResult[] = []
     for (const g of golden) {
       const rel = labels.get(g.id) ?? []
-      const j = exec(arm.json(g.query))
-      const hits = arm.parse(j.stdout)
-      const t = exec(arm.text(g.query))
+      const { parsed, text: t } = askArm(exec, arm, g.query)
+      const hits = parsed.hits
       rows.push({
         id: g.id,
         split: splitOf(g.id),
@@ -222,6 +272,10 @@ function main(): void {
         bytes: Buffer.byteLength(t.stdout, 'utf8'),
         ms: t.ms,
         top: hits.slice(0, 3).map((h) => `${normalizePath(h.file, root)}:${h.lineStart ?? ''}`),
+        abstained: parsed.abstained,
+        closest: parsed.closest,
+        topFiles: hits.slice(0, K).map((h) => normalizePath(h.file, root)),
+        labelFiles: [...new Set(g.relevant.map((l) => normalizePath(l.file, root)))],
       })
     }
     report.arms[arm.name] = rows
@@ -238,7 +292,9 @@ function main(): void {
   }
 
   const out: string[] = []
-  for (const [name, rows] of Object.entries(report.arms)) {
+  const indent = ''.padEnd(17)
+  for (const [name, all] of Object.entries(report.arms)) {
+    const rows = all.filter((r) => r.kind !== 'absent')
     for (const split of ['train', 'test'] as const) {
       const s = summarize(rows.filter((r) => r.split === split))
       out.push(`${name.padEnd(16)} ${split.padEnd(5)} n=${String(s.n).padStart(2)}  hit@1 ${pct(s.hit1)}  hit@5 ${pct(s.hit5)}  hit@10 ${pct(s.hit10)}  MRR@10 ${num(s.mrr10)}  B/hit ${s.bytesPerCorrectHit === null ? '-' : Math.round(s.bytesPerCorrectHit)}  p50 ${Math.round(s.medianMs)}ms`)
@@ -247,6 +303,8 @@ function main(): void {
       const s = summarize(rows.filter((r) => r.kind === kind))
       if (s.n > 0) out.push(`${''.padEnd(16)} ${kind.padEnd(10)} n=${String(s.n).padStart(2)}  hit@10 ${pct(s.hit10)}  MRR@10 ${num(s.mrr10)}`)
     }
+    out.push(...qualityLines(all.map((r) => ({ ...r, absent: r.kind === 'absent' })), indent))
+    if (name === 'semantic') out.push(...distanceLines(all, indent))
   }
   for (const split of ['train', 'test']) {
     const rows = report.answer.filter((r) => r.split === split)
@@ -261,7 +319,7 @@ function main(): void {
       const old = base.arms[name]
       if (old === undefined) continue
       for (const split of ['train', 'test'] as const) {
-        const now = rows.filter((r) => r.split === split)
+        const now = rows.filter((r) => r.split === split && r.kind !== 'absent')
         const before = new Map(old.filter((r) => r.split === split).map((r) => [r.id, r.rank]))
         const paired = now.filter((r) => before.has(r.id))
         const d = pairedBootstrapDelta(

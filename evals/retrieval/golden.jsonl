@@ -40,3 +40,18 @@
 {"id":"doc-hooks-wired","query":"check that the hooks are actually running","kind":"doc","relevant":[{"file":"README.md","heading":"Confirming hooks are wired"},{"file":"README.md","heading":"Verify"}]}
 {"id":"doc-incremental","query":"how edits get picked up by the index without a full rebuild","kind":"doc","relevant":[{"file":"CLAUDE.arch.md","heading":"(b) Incremental updates (background worker)"}],"why_hard":"no heading word appears in the query; code in worker.ts and dirty_queue.ts competes"}
 {"id":"doc-bash-compress","query":"example of compressed bash output","kind":"doc","relevant":[{"file":"README.md","heading":"5. Bash output compression"}]}
+{"id":"absent-cake-recipe","query":"recipe for a chocolate layer cake","kind":"absent","relevant":[]}
+{"id":"absent-k8s-ingress","query":"configure a kubernetes ingress controller with tls","kind":"absent","relevant":[]}
+{"id":"absent-cobol-payroll","query":"cobol batch job that runs the monthly payroll","kind":"absent","relevant":[]}
+{"id":"absent-mesh-shader","query":"vertex shader that deforms a 3d mesh","kind":"absent","relevant":[]}
+{"id":"absent-stripe-refund","query":"handle the stripe refund webhook","kind":"absent","relevant":[]}
+{"id":"absent-pkce-login","query":"login page using oauth pkce","kind":"absent","relevant":[]}
+{"id":"absent-ios-push","query":"send an ios push notification","kind":"absent","relevant":[]}
+{"id":"absent-graphql-orders","query":"graphql resolver for customer orders","kind":"absent","relevant":[]}
+{"id":"absent-terraform-s3","query":"terraform module for a versioned s3 bucket","kind":"absent","relevant":[]}
+{"id":"absent-bluetooth","query":"pair a bluetooth headset","kind":"absent","relevant":[]}
+{"id":"absent-invoice-email","query":"email template for a pdf invoice","kind":"absent","relevant":[]}
+{"id":"absent-sap-export","query":"export payroll csv to sap","kind":"absent","relevant":[]}
+{"id":"absent-physics-collision","query":"rigid body collision response in the physics engine","kind":"absent","relevant":[]}
+{"id":"absent-sourdough","query":"sourdough fermentation timer","kind":"absent","relevant":[]}
+{"id":"absent-shopping-cart","query":"add an item to the shopping cart and apply a coupon","kind":"absent","relevant":[]}

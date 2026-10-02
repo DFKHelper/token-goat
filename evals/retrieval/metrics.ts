@@ -132,3 +132,40 @@ export function fnv1a(s: string): number {
 export function splitOf(id: string, testFraction = 0.3): 'train' | 'test' {
   return fnv1a(id) % 1000 < Math.round(testFraction * 1000) ? 'test' : 'train'
 }
+
+export interface HubFile {
+  readonly file: string
+  /** Share of the queries whose top k contained this file. */
+  readonly share: number
+}
+
+/** Files that turn up in the top k of at least `minShare` of the queries, most frequent first, ties by path. A file in the top ten for a third of unrelated questions is a magnet: it costs bytes on every one of them and pushes the real answer down, and no single query's rank shows it. A file listed twice for one query counts once. */
+export function hubFiles(topFilesPerQuery: readonly (readonly string[])[], minShare: number): HubFile[] {
+  if (topFilesPerQuery.length === 0) return []
+  const counts = new Map<string, number>()
+  for (const files of topFilesPerQuery) for (const f of new Set(files)) counts.set(f, (counts.get(f) ?? 0) + 1)
+  return [...counts]
+    .map(([file, n]) => ({ file, share: n / topFilesPerQuery.length }))
+    .filter((h) => h.share >= minShare)
+    .sort((a, b) => b.share - a.share || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
+}
+
+export interface Top1Row {
+  /** Normalized path of the first hit, or null when nothing came back. */
+  readonly top1: string | null
+  /** Normalized paths the query's labels name. */
+  readonly labelFiles: readonly string[]
+}
+
+/** Share of the queries with a first hit whose first hit is shared with another query while at least one query in that group is labelled with a different file: two questions with different answers that land on the same file first. Queries that agree on a file every one of them is labelled with are not a collision, however many there are. Null when no query returned anything. */
+export function top1CollisionRate(rows: readonly Top1Row[]): number | null {
+  const groups = new Map<string, Top1Row[]>()
+  for (const r of rows) if (r.top1 !== null) groups.set(r.top1, [...(groups.get(r.top1) ?? []), r])
+  let answered = 0
+  let colliding = 0
+  for (const [file, members] of groups) {
+    answered += members.length
+    if (members.length > 1 && members.some((m) => !m.labelFiles.includes(file))) colliding += members.length
+  }
+  return answered === 0 ? null : colliding / answered
+}

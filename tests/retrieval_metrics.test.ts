@@ -1,11 +1,4 @@
-/**
- * `evals/retrieval/metrics.ts` is the arithmetic behind the retrieval evals: which hit counts as the labelled answer, hit@k, MRR, the bootstrap intervals and the train/test split.
- *
- * Provenance:
- * - Ranks, reciprocal ranks, overlaps, means and bytes-per-hit below are HAND-DERIVED: each expected value is worked from the input on paper, not read off the implementation.
- * - The FNV-1a values are FORMAT-DERIVED from the published FNV test vectors (Fowler/Noll/Vo, `fnv1a32` of "", "a" and "foobar": 0x811c9dc5, 0xe40c292c, 0xbf9cf968).
- * - The path spellings are CAPTURE: `search -j` reported `c:/Projects/token-goat/src/worker.ts` and `semantic -j` reported `tests/reconcile_parser_stale.test.ts` for the same repository on 2026-09-29.
- */
+/** `evals/retrieval/metrics.ts` is the arithmetic behind the retrieval evals: which hit counts as the labelled answer, hit@k, MRR, the bootstrap intervals and the train/test split. Provenance: ranks, reciprocal ranks, overlaps, means and bytes-per-hit below are HAND-DERIVED: each expected value is worked from the input on paper, not read off the implementation. The FNV-1a values are FORMAT-DERIVED from the published FNV test vectors (Fowler/Noll/Vo, `fnv1a32` of "", "a" and "foobar": 0x811c9dc5, 0xe40c292c, 0xbf9cf968). The path spellings are CAPTURE: `search -j` reported `c:/Projects/token-goat/src/worker.ts` and `semantic -j` reported `tests/reconcile_parser_stale.test.ts` for the same repository on 2026-09-29. */
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -15,6 +8,7 @@ import {
   firstRelevantRank,
   fnv1a,
   hitAtK,
+  hubFiles,
   hitMatches,
   mean,
   mulberry32,
@@ -23,6 +17,7 @@ import {
   percentile,
   reciprocalRank,
   splitOf,
+  top1CollisionRate,
 } from '../evals/retrieval/metrics.js'
 
 const ROOT = 'C:\\Projects\\token-goat'
@@ -202,5 +197,34 @@ describe('split', () => {
     const test = ids.filter((id) => splitOf(id, 0.3) === 'test').length
     expect(test).toBeGreaterThan(500)
     expect(test).toBeLessThan(700)
+  })
+})
+
+describe('hubFiles', () => {
+  it('counts a file once per query and keeps those at or above the share', () => {
+    // Four queries: a appears in three (3/4), b in two (the repeat inside the third query counts once, 2/4), c and d in one each (1/4).
+    const tops = [['a', 'b'], ['a', 'c'], ['a', 'b', 'b'], ['d']]
+    expect(hubFiles(tops, 0.5)).toEqual([
+      { file: 'a', share: 0.75 },
+      { file: 'b', share: 0.5 },
+    ])
+    expect(hubFiles(tops, 0.25).map((h) => h.file)).toEqual(['a', 'b', 'c', 'd'])
+    expect(hubFiles([], 0.1)).toEqual([])
+  })
+})
+
+describe('top1CollisionRate', () => {
+  it('counts every member of a shared first hit once one of them is labelled elsewhere', () => {
+    // Five queries answered (the null one is not). x is first for two queries and one is labelled y: both collide. z is first for two that are both labelled z: agreement, not a collision. w is first for one query alone: wrong, but nothing collides with it. 2 / 5 = 0.4.
+    const rows = [
+      { top1: 'x', labelFiles: ['x'] },
+      { top1: 'x', labelFiles: ['y'] },
+      { top1: 'z', labelFiles: ['z'] },
+      { top1: 'z', labelFiles: ['z'] },
+      { top1: 'w', labelFiles: ['q'] },
+      { top1: null, labelFiles: ['x'] },
+    ]
+    expect(top1CollisionRate(rows)).toBe(0.4)
+    expect(top1CollisionRate([{ top1: null, labelFiles: [] }])).toBeNull()
   })
 })
