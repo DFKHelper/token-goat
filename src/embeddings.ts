@@ -89,8 +89,7 @@ async function buildExtractorWithRetry(
       // The revision is pinned inside embed_model.ts, which is the only thing that can act on it: it is what the digests belong to. Passing it here as well would be a second copy of the same fact, and the one a reader would trust is not necessarily the one that is used.
       return await pipelineFn('feature-extraction', modelName)
     } catch (e) {
-      // A download that already failed was retried by pinned_fetch.ts and recorded against its host, and the record holds every later try, so going round again only prints "Downloading..." twice more and turns the real reason into "Not downloading yet".
-      // Imported here rather than at the top because embeddings.ts is on the hook path, and the hook never builds an extractor.
+      // A download that already failed was retried by pinned_fetch.ts and recorded against its host, and the record holds every later try, so going round again only prints "Downloading..." twice more and turns the real reason into "Not downloading yet". Imported here rather than at the top because embeddings.ts is on the hook path, and the hook never builds an extractor.
       const { failedAtOf } = await import('./model_download_gate.js')
       if (failedAtOf(e) !== null) throw e
       lastError = e
@@ -576,11 +575,13 @@ export function insertChunkVector(
 }
 
 /** Outcome of an embedding attempt, so callers can distinguish a real embed (or a legitimately empty file) from a skip forced by absent optional deps (the inference runtime or the sqlite-vec `chunk_vectors` table). The caller (parser.ts::indexFileEmbeddings) stamps a bare `embed_sha` for `'embedded'` but an `unavailable:`-prefixed marker for `'unavailable'`, so a file skipped only because deps were missing is re-embedded once the deps are installed instead of masquerading as permanently fresh. See {@link embeddingsDepsAvailable}. */
-export type EmbedOutcome = 'embedded' | 'unavailable'
+// 'stale' means the file was reindexed to a different sha while this embed ran, so nothing was written and the caller must not stamp
+export type EmbedOutcome = 'embedded' | 'unavailable' | 'stale'
 
 export async function upsertChunks(
   db: SqliteDatabase,
   chunks: Chunk[],
+  expectedSha?: string,
 ): Promise<EmbedOutcome> {
   if (chunks.length === 0) {
     return 'embedded'
@@ -621,7 +622,12 @@ export async function upsertChunks(
     VALUES (?, ?)
   `)
 
-  const tx = db.transaction(() => {
+  const tx = db.transaction((): EmbedOutcome => {
+    // Embedding awaited above, so the worker may have reindexed this file meanwhile; writing version 1's vectors over version 2's would be stamped fresh by nobody but never corrected. Compare under the write lock and leave the newer rows alone.
+    if (expectedSha !== undefined) {
+      const current = db.prepare('SELECT sha FROM files WHERE path = ?').pluck().get(filePath) as string | null | undefined
+      if (current !== expectedSha) return 'stale'
+    }
     // Delete the file's prior chunks/vectors inside the same transaction as the inserts below, so a failed insert rolls back the delete too instead of leaving the file's embeddings deleted-but-not-replaced.
     deleteFileEmbeddings(db, filePath)
 
@@ -641,11 +647,11 @@ export async function upsertChunks(
       )
       insertChunkVector(vectorInsertStmt, chunkResult.lastInsertRowid, embedding)
     }
+    return 'embedded'
   })
 
   // `.immediate()` -- BEGIN IMMEDIATE. The driver issues a plain call as a deferred BEGIN, which takes a read snapshot first and only asks for the write lock at the first writing statement. SQLite refuses that upgrade with SQLITE_BUSY straight away instead of consulting the busy handler, so `busy_timeout` does nothing for it and a concurrent writer fails outright. This database is shared by the worker daemon, the hook processes and the CLI at once, so that is an ordinary situation rather than a rare one. See writeParseResult in parser.ts.
-  tx.immediate()
-  return 'embedded'
+  return tx.immediate()
 }
 
 // sqlite-vec's vec0 `chunk_vectors` table stores only (rowid, embedding) -- there is no file_path/partition column on the vector table itself to scope the ANN (MATCH + k) scan against, so a project-scoped KNN query in one pass isn't available. Instead we over-fetch candidates from the unscoped ANN scan, then post-filter each candidate's chunk metadata (joined by rowid) against the project root. If a caller-provided rootDir filters out too many candidates to satisfy topK, we grow k by BACKFILL_MULTIPLIER and retry -- without this, `token-goat semantic` from project A silently returns chunks from unrelated project B sharing the same machine-wide global.db (see constants.ts).
@@ -941,6 +947,7 @@ export async function indexFile(
   filePath: string,
   content: string,
   boundaries: ChunkBoundary[] = [],
+  expectedSha?: string,
 ): Promise<EmbedOutcome> {
   let chunks = chunkFile(filePath, content, undefined, undefined, boundaries)
   // Replace, do not append: drop the file's prior chunks (and their vectors) before inserting, so a reindex - or an edit that empties the file - leaves no stale rows behind.
@@ -951,7 +958,7 @@ export async function indexFile(
       if (countTokens !== undefined) chunks = chunkFile(filePath, content, undefined, undefined, boundaries, countTokens)
     }
     // upsertChunks deletes the file's prior chunks/vectors as part of the same transaction as the new insert, so a failed insert can't leave them deleted-but-not-replaced. It returns 'unavailable' when the optional embedding deps are absent so the caller can avoid falsely stamping the file as embedded.
-    return upsertChunks(db, chunks)
+    return upsertChunks(db, chunks, expectedSha)
   }
   // An empty file has nothing to embed regardless of whether the optional deps are present, so it is a genuinely terminal 'embedded' state (a bare embed_sha), never 'unavailable'.
   deleteFileEmbeddings(db, filePath)

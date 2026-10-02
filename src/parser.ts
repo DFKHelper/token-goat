@@ -853,7 +853,9 @@ export async function indexFileEmbeddings(
     try {
       const db = getDb(dbPath)
       // No symbol table exists for these formats, so boundaries is empty -- the whole extracted text goes through chunkFile's generic windowed chunking instead of symbol-aligned chunks.
-      const outcome = await embedIndexFile(db, filePath, extracted, [])
+      const outcome = await embedIndexFile(db, filePath, extracted, [], sha)
+      // The file was reindexed while it embedded; the newer run owns the vectors and the stamp
+      if (outcome === 'stale') return
       // Documents reach this point without having passed the chunk-count gate below, which sits in the generic-content branch this one returns before. A PDF or spreadsheet whose extracted text is under the byte threshold was therefore embedded with no ceiling at all, on the same windowed cut that the ceiling exists to bound. Enforcing it here rather than adding a second pre-count keeps one rule for both branches.
       if (outcome !== 'unavailable' && enforceStoredChunkCap(db, filePath, sha, ixCfg.max_chunks_per_file)) return
       stampEmbedSha(db, filePath, sha, (s) => (outcome === 'unavailable' ? unavailableEmbedSha(s) : s))
@@ -907,7 +909,9 @@ export async function indexFileEmbeddings(
   }
   try {
     const db = getDb(dbPath)
-    const outcome = await embedIndexFile(db, filePath, content, boundaries)
+    const outcome = await embedIndexFile(db, filePath, content, boundaries, sha)
+    // The file was reindexed while it embedded; the newer run owns the vectors and the stamp
+    if (outcome === 'stale') return
     if (outcome !== 'unavailable' && enforceStoredChunkCap(db, filePath, sha, ixCfg.max_chunks_per_file)) return
     // When the optional embedding deps were absent, embedIndexFile reports 'unavailable' and no vectors were written -- stamp an unavailable-marker embed_sha (not the bare sha) so this file is re-embedded once the deps are installed, rather than masquerading as fresh forever.
     stampEmbedSha(db, filePath, sha, (s) => (outcome === 'unavailable' ? unavailableEmbedSha(s) : s))
