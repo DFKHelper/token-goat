@@ -552,11 +552,13 @@ describe('redactSecrets — oauth token names', () => {
   })
 })
 
-// A connection url carries its credential in the authority section, where there is no `key=value` separator for the generic pattern to anchor on. A DATABASE_URL echoed by a failing migration went through untouched.
+// Provenance: FORMAT-DERIVED RFC 3986 section 3.2.1 (userinfo may contain ':' and a sloppy producer leaves '@' unencoded, so the host starts after the last '@'); the two password cases are the review's reproductions. A connection url carries its credential in the authority section, where there is no `key=value` separator for the generic pattern to anchor on. A DATABASE_URL echoed by a failing migration went through untouched.
 describe('redactSecrets — credentials in a url', () => {
   it.each([
     ['postgres', 'postgres://user:supersecret@db.example', 'supersecret'],
     ['mysql with a port and path', 'mysql://root:hunter2hunter2@127.0.0.1:3306/app', 'hunter2hunter2'],
+    ['postgres with a colon in the password', 'postgres://user:pa:ss@db.internal/x', 'pa:ss'],
+    ['https with an at sign in the password', 'https://u:p@ss@host/x', 'ss@host'],
   ])('redacts the password in a %s url', (_label, input, secret) => {
     const { text, count } = redactSecrets(input)
 
@@ -569,6 +571,9 @@ describe('redactSecrets — credentials in a url', () => {
   it.each([
     ['a url with a port but no credentials', 'http://example.com:8080/path'],
     ['a plain url', 'https://example.com/a/b'],
+    ['userinfo without a password', 'ssh://git@github.com/org/repo'],
+    ['an email address after a url with a port', 'see http://host:8080 then mail bob@example.com'],
+    ['a port followed by a quoted email in JSON', '{"u":"http://h:80","e":"x@y.com"}'],
   ])('leaves %s alone', (_label, input) => {
     expect(redactSecrets(input)).toEqual({ text: input, count: 0 })
   })
@@ -620,6 +625,16 @@ describe('redactSecrets — Authorization header spellings', () => {
     expect(count).toBe(1)
     expect(text).not.toContain('abcdefghijklmnop')
     expect(text).toContain('[REDACTED:auth_bearer_token]')
+  })
+
+  // Provenance: HAND-DERIVED base64 of 'user:password' is dXNlcjpwYXNzd29yZA==; the wider gaps are a hand-aligned header
+  it('redacts a Basic credential after one or several blanks', () => {
+    for (const gap of [' ', '  ', '        ']) {
+      const { text, count } = redactSecrets(`Authorization: Basic${gap}dXNlcjpwYXNzd29yZA==`)
+
+      expect(count).toBe(1)
+      expect(text).toBe('Authorization: Basic' + gap + '[REDACTED:auth_basic_token]')
+    }
   })
 
   it('leaves the header name and scheme readable, so a request log still makes sense', () => {
