@@ -167,6 +167,27 @@ describe('todo command', () => {
     expect(r.stdout).not.toContain('FIXME')
   })
 
+  // Provenance: HAND-DERIVED the fixture lists one marker per kind; a trailing comma in --kinds splits to an empty kind that, as a substring match, hits every line.
+  it('--kinds with a trailing comma ignores the empty kind instead of matching every line', async () => {
+    const src = path.join(tmpDir, 'kinds_trailing_comma.ts')
+    fs.writeFileSync(src, '// TODO: a\n// FIXME: b\nconst plain = 1\n', 'utf8')
+    const r = await run(['todo', src, '--kinds', 'TODO,'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('TODO')
+    expect(r.stdout).not.toContain('FIXME')
+    expect(r.stdout).not.toContain('plain')
+  })
+
+  it('--kinds made only of separators falls back to the default kinds like an empty --kinds', async () => {
+    const src = path.join(tmpDir, 'kinds_only_commas.ts')
+    fs.writeFileSync(src, '// TODO: a\n// FIXME: b\nconst plain = 1\n', 'utf8')
+    const r = await run(['todo', src, '--kinds', ' , ,'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('TODO')
+    expect(r.stdout).toContain('FIXME')
+    expect(r.stdout).not.toContain('plain')
+  })
+
   it('--json emits parseable structured output', async () => {
     const src = path.join(tmpDir, 'json_out.ts')
     fs.writeFileSync(src, '// TODO: write tests\n// FIXME: handle error\n', 'utf8')

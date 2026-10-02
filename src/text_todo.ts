@@ -107,11 +107,9 @@ export function cmdTodo(
   patterns: string[],
   opts: { group?: string; kinds?: string; json?: boolean },
 ): void {
-  const kindSet = new Set<string>(
-    opts.kinds !== undefined && opts.kinds.length > 0
-      ? opts.kinds.split(',').map((k) => k.trim().toUpperCase())
-      : DEFAULT_KINDS,
-  )
+  // Empty entries (a trailing comma, a lone separator) are dropped: an empty kind is a substring of every line. If none survive, the default kinds apply, as for a missing --kinds.
+  const requested = (opts.kinds ?? '').split(',').map((k) => k.trim().toUpperCase()).filter((k) => k.length > 0)
+  const kindSet = new Set<string>(requested.length > 0 ? requested : DEFAULT_KINDS)
   const files = collectTodoFiles(patterns)
   const items: TodoItem[] = []
   for (const f of files) {
