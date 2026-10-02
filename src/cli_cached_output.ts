@@ -60,12 +60,12 @@ export function _applyFiltersAndPrint(
       out(text)
       return text
     }
-    // fenceByProvenance true means this is third-party content (a fetched page, a recalled cache entry, a document the caller only named rather than authored), the same population the injection fence covers -- redact before fencing so a credential pasted into a PDF, a leaked token in a recalled build log, or a signed URL in a doc does not reach the model raw. Idempotent on content already redacted at write time (bash/web/mcp caches), matching the defense-in-depth pass disk_cache.ts's storeBlob already applies on top of a caller's own redaction.
-    const redacted = redactSecrets(text).text
-    const fenced = fenceUntrusted(redacted, fenceTag)
+    const fenced = fenceUntrusted(text, fenceTag)
     out(fenced)
     return fenced
   }
+  // fenceByProvenance true means this is third-party content (a fetched page, a recalled cache entry, a document the caller only named rather than authored), the same population the injection fence covers -- redact it before any narrowing so --grep's long-line clip can never cut a secret in half and leave a fragment the redactor no longer recognises. Idempotent on content already redacted at write time (bash/web/mcp caches).
+  if (fenceByProvenance) content = redactSecrets(content).text
   const render = (rows: RecallRow[]): string => rows.map((r) => (opts.lineNumbers === true && r.n !== null ? `${r.n}:${r.text}` : r.text)).join('\n')
   if (opts.section !== undefined) {
     const sectionResult = extractSection(content, opts.section)
