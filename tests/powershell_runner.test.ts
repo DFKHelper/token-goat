@@ -66,4 +66,22 @@ describe('PowerShell runner integration and resolution', () => {
     expect(captured).toContain('Part2')
     expect(captured).toContain('Part3')
   })
+
+  // Provenance: CAPTURE exit codes of direct `pwsh -NoProfile -NonInteractive -Command <cmd>` on the authoring machine: Get-Item missing -> 1, `cmd /c exit 3; Write-Output ok` -> 0, `Write-Output ok` -> 0, `cmd /c exit 3; cmd /c exit 0` -> 0, `cmd /c exit 3` -> 3.
+  it.each([
+    ['Get-Item C:/nonexistent-xyz-123', 1],
+    ['cmd /c exit 3; Write-Output ok', 0],
+    ['Write-Output ok', 0],
+    ['cmd /c exit 3; cmd /c exit 0', 0],
+    ['cmd /c exit 3', 3],
+  ])('wrapped exit code matches direct pwsh for %s', async (cmd, expected) => {
+    const exitCode = await run(cmd, { shellType: 'pwsh', writeStdout: () => {}, writeStderr: () => {} })
+    expect(exitCode).toBe(expected)
+  })
+
+  // Provenance: CAPTURE, direct `pwsh -NoProfile -Command 'cmd /c exit 3; Get-Item C:/nonexistent-q'` exits 1 on the authoring machine. The wrapper reports the earlier native code instead, because telling whether the failing last statement was native would mean parsing the script inside the eager hook bundle; the verdict (failed) is what callers act on, so that is what is pinned.
+  it('reports failure when a cmdlet fails after an earlier native failure', async () => {
+    const exitCode = await run('cmd /c exit 3; Get-Item C:/nonexistent-xyz-123', { shellType: 'pwsh', writeStdout: () => {}, writeStderr: () => {} })
+    expect(exitCode).not.toBe(0)
+  })
 })

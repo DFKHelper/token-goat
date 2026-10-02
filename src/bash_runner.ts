@@ -141,13 +141,14 @@ function spawnTarget(
 ): { file: string; args: string[]; shell: boolean; cmdEnv?: NodeJS.ProcessEnv } {
   if (shellType === 'pwsh' || shellType === 'powershell') {
     const ps = resolvePowerShell()
+    // Exit mirrors `pwsh -Command`: reset LASTEXITCODE so a stale native code cannot leak, then append a `$?` capture so the script's own last statement decides (`& scriptblock` itself always reports success).
     return {
       file: ps,
       args: [
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        '$c = $env:TG_CMD; Remove-Item Env:\\TG_CMD -ErrorAction SilentlyContinue; & ([scriptblock]::Create($c)); if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
+        '$c = $env:TG_CMD; Remove-Item Env:\\TG_CMD -ErrorAction SilentlyContinue; $global:LASTEXITCODE = $null; & ([scriptblock]::Create($c + [Environment]::NewLine + \'$global:TgOk = $?\')); if (-not $global:TgOk) { if ($global:LASTEXITCODE -ne $null -and $global:LASTEXITCODE -ne 0) { exit $global:LASTEXITCODE } else { exit 1 } } else { exit 0 }',
       ],
       shell: false,
       cmdEnv: { TG_CMD: command },
