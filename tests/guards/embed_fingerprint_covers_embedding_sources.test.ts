@@ -83,6 +83,7 @@ const NOT_EMBEDDING: Record<string, string> = {
   'src/reset.ts': 'test/dev module-cache clearing utility, never runs in a production embed',
   'src/sqlite_driver.ts': 'sqlite driver initialization, infrastructure like src/db.ts',
   'src/regex_guard.ts': 'ReDoS-safety guard for the CLI grep-pattern surfaces in pdf_extract.ts/pptx_extract.ts (pdfTextGrep/pptxTextGrep); the embedding extraction functions (extractPdfText, docxText, pptxAllSlidesText, allSheetsHeadText) never call it',
+  'src/secret_redact.ts': 'credential redaction for the CLI search surfaces in pdf_extract.ts/pptx_extract.ts (locatePdfPages/pptxTextGrep); the embedding extraction functions (extractPdfText, docxText, pptxAllSlidesText, allSheetsHeadText) never call it',
   'src/types.ts': 'type-only shared declarations (GitResult, HookEventName, etc.), erased at compile time',
   'src/util_config.ts': 'shared string-stripping helpers for uninstalling hooks from harness config files, reached only via util.ts, not chunking',
   'src/version.ts': 'the published package version string, excluded per this fingerprint\'s own design, same as PARSER_FINGERPRINT',

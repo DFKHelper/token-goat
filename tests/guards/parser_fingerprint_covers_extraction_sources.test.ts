@@ -91,6 +91,7 @@ const NOT_EXTRACTION: Record<string, string> = {
   'src/regex_guard.ts': 'ReDoS-safety guard for user-supplied CLI regex flags (grep/affected/secret-redact); reached in this closure only via util.ts, never by a language extractor\'s own pattern',
   'src/reset.ts': 'test/dev module-cache clearing utility, never runs in a production parse',
   'src/sql_path.ts': 'builds a SQL WHERE clause for path-equality lookups; a query-shaping helper, not an extraction decision',
+  'src/secret_redact.ts': 'credential redaction for the CLI search surfaces in pdf_extract.ts/pptx_extract.ts (locatePdfPages/pptxTextGrep), which redact page or slide text before clipping a snippet; no extractor parseContent reaches calls it',
   'src/sqlite_driver.ts': 'sqlite driver initialization, infrastructure like src/db.ts',
   'src/types.ts': 'type-only shared declarations, erased at compile time',
   'src/util_config.ts': 'shared string-stripping helpers for uninstalling hooks from harness config files, not extraction',

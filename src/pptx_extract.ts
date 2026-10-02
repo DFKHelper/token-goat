@@ -1,7 +1,9 @@
 /** PowerPoint (.pptx) narrow-slice reader. Slide XML lives at `ppt/slides/slideN.xml`, one file per slide, each a `p:sld > p:cSld > p:spTree` tree of shapes (`p:sp`); each shape has an optional `p:txBody` of paragraphs (`a:p`) of runs (`a:r`) of text (`a:t`). A slide's title placeholder is the shape whose `p:nvSpPr.p:nvPr.p:ph.@_type` is `title`/`ctrTitle`. Speaker notes live in a sibling `ppt/notesSlides/notesSlideN.xml` part, in the shape whose `p:ph.@_type` is `body` (the other notes-slide shape is a non-text slide-image placeholder). */
 
+import { loadConfig } from './config.js'
 import { assertOoxmlWithinDeadline, collectElements, collectParagraphTexts, decodeZipEntry, inlineMathRuns, NotAnOfficeDocumentError, ooxmlPartBudget, ooxmlWorkDeadline, parseOoxmlPart, readOoxmlZip, sortNumberedParts, type OoxmlPartBudget } from './ooxml_extract.js'
 import { compileGuardedRegex } from './regex_guard.js'
+import { redactSecrets } from './secret_redact.js'
 
 export interface SlideOutlineEntry {
   slide: number
@@ -235,10 +237,12 @@ export async function pptxTextGrep(filePath: string, pattern: string, deadline: 
   if (!guarded.ok) throw new Error(`invalid --grep pattern: ${pattern} -- the pattern ${guarded.reason}`)
   const re = guarded.re
   const out: PptxTextMatch[] = []
+  // Each slide is redacted before it is matched or clipped: the snippet window can cut a credential mid-token, and a fragment shorter than its pattern's minimum length is no longer recognised by the caller's redaction pass.
+  const config = loadConfig()
   for (let i = 0; i < slidePaths.length; i++) {
     assertOoxmlWithinDeadline(deadline, 'Narrow the read to specific slides with pptx-slide, or use a smaller deck.')
     const parsed = await parseSlide(entries, slidePaths[i] as string, budget)
-    const text = flatSlideText(parsed)
+    const text = redactSecrets(flatSlideText(parsed), config).text
     if (re.test(text)) {
       const idx = text.search(re)
       const snippet = text.slice(Math.max(0, idx - 40), idx + 80).trim()

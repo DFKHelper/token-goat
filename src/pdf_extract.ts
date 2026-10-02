@@ -6,7 +6,9 @@ import type * as pdfjsTypes from 'pdfjs-dist/legacy/build/pdf.mjs'
 
 import { DocumentRefusedError, MAX_DOCUMENT_WORK_MILLIS } from './document_refusal.js'
 import { createLazyModuleLoader } from './lazy_module.js'
+import { loadConfig } from './config.js'
 import { compileGuardedRegex } from './regex_guard.js'
+import { redactSecrets } from './secret_redact.js'
 
 export interface PdfExtractResult {
   text: string
@@ -413,12 +415,14 @@ export async function locatePdfPages(
     const end = range ? range.end : doc.numPages
 
     const matches: PdfLocateMatch[] = []
+    // Each page is redacted before it is matched or clipped: a snippet window can cut a credential mid-token, and a fragment shorter than its pattern's minimum length is no longer recognised by the caller's redaction pass.
+    const config = loadConfig()
     // The byte budget is per page here, not per document: a locate scan reads a page, keeps a snippet, and drops the rest, so a thousand-page book is not a thousand pages held at once and capping the sum would refuse documents this command exists to search. What the sum does cost is time, and that is what the deadline -- one for the whole scan -- bounds.
     let i = start
     for (; i <= end && matches.length < maxMatches; i++) {
       const page = await getPageWithinDeadline(doc, i, deadline)
       const textItems = await readPageTextItems(page, MAX_PDF_TEXT_BYTES, deadline)
-      const pageText = joinTextItems(textItems, ' ')
+      const pageText = redactSecrets(joinTextItems(textItems, ' '), config).text
       // Non-global regex: exec always starts at 0, so reusing `re` across pages carries no lastIndex state.
       const m = re.exec(pageText)
       if (m === null) continue
