@@ -1,38 +1,4 @@
-/**
- * End-to-end coverage for the adaptive PreCompact manifest budget wired in
- * hooks_compact.ts (see `adaptiveCharBonus`/`gitDirtySignals`).
- *
- * `compact.ts`'s `computeAdaptiveBudget`/`buildManifestAdaptive` were ported from the
- * Python predecessor (`eb119425`) but never wired to the real production PreCompact path --
- * only unit-tested in isolation via directly-injected opts (tests/compact.test.ts). This
- * suite closes that "injected-callback seam" gap (see CLAUDE.md's "Critical path" section)
- * two ways other coverage in this repo doesn't:
- *
- * 1. It dispatches through the *real* registered handler via `relayInProcess` (relay.ts ->
- *    hook_registry.ts's `pre_compact` registration -> `preCompactHandler`), not a directly
- *    imported function reference -- proving the wiring is actually reachable on the wire
- *    path, not just correct in isolation.
- * 2. It never mocks `node:child_process`/`runGit` -- `hasPendingDiff`/`hasUncommittedChanges`
- *    are checked against a real scratch git repo (real `git init`/`diff`/`status --porcelain`
- *    subprocess calls), not a stubbed git result.
- *
- * Deliberately does NOT mock `node:child_process` (unlike hooks_compact.test.ts, which mocks
- * it to control `mem epoch`'s spawnSync call deterministically) -- doing so here would also
- * intercept `runGit`'s spawnSync calls and defeat the "real git state" requirement above.
- *
- * Deliberately does NOT call `clearModuleCaches()` between tests: that helper also runs
- * hook_registry.ts's `clearHooks()` reset (registered via `registerReset`), which empties the
- * shared `_handlers` map. Every hook module registers itself exactly once, at ESM import time
- * (`registerHook('pre_compact', preCompactHandler)` etc. in hooks_compact.ts/hooks_index.ts) --
- * once cleared in-process, nothing re-populates it, so every `relayInProcess` call afterward
- * would silently see zero registered handlers and resolve to `pass` (`{}`), rather than
- * actually dispatching to `preCompactHandler`. Every other suite that calls
- * `clearModuleCaches()` invokes hook handlers directly (bypassing the registry) or drives a
- * fresh child process per call (session_persistence_e2e.test.ts), so this interaction is new
- * here specifically because this suite dispatches in-process through the real registry.
- * Session/config state between tests is instead reset narrowly, via `resetSessionState()` and
- * `invalidateConfigCache()`.
- */
+/** End-to-end coverage for the adaptive PreCompact manifest budget wired in hooks_compact.ts (see `adaptiveCharBonus`/`gitDirtySignals`). `compact.ts`'s `computeAdaptiveBudget`/`buildManifestAdaptive` were ported from the Python predecessor (`eb119425`) but never wired to the real production PreCompact path -- only unit-tested in isolation via directly-injected opts (tests/compact.test.ts). This suite closes that "injected-callback seam" gap (see CLAUDE.md's "Critical path" section) two ways other coverage in this repo doesn't: 1. It dispatches through the *real* registered handler via `relayInProcess` (relay.ts -> hook_registry.ts's `pre_compact` registration -> `preCompactHandler`), not a directly imported function reference -- proving the wiring is actually reachable on the wire path, not just correct in isolation. 2. It never mocks `node:child_process`/`runGit` -- `hasPendingDiff`/`hasUncommittedChanges` are checked against a real scratch git repo (real `git init`/`diff`/`status --porcelain` subprocess calls), not a stubbed git result. Deliberately does NOT mock `node:child_process` (unlike hooks_compact.test.ts, which mocks it to control `mem epoch`'s spawnSync call deterministically) -- doing so here would also intercept `runGit`'s spawnSync calls and defeat the "real git state" requirement above. Deliberately does NOT call `clearModuleCaches()` between tests: that helper also runs hook_registry.ts's `clearHooks()` reset (registered via `registerReset`), which empties the shared `_handlers` map. Every hook module registers itself exactly once, at ESM import time (`registerHook('pre_compact', preCompactHandler)` etc. in hooks_compact.ts/hooks_index.ts) -- once cleared in-process, nothing re-populates it, so every `relayInProcess` call afterward would silently see zero registered handlers and resolve to `pass` (`{}`), rather than actually dispatching to `preCompactHandler`. Every other suite that calls `clearModuleCaches()` invokes hook handlers directly (bypassing the registry) or drives a fresh child process per call (session_persistence_e2e.test.ts), so this interaction is new here specifically because this suite dispatches in-process through the real registry. Session/config state between tests is instead reset narrowly, via `resetSessionState()` and `invalidateConfigCache()`. */
 
 import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
@@ -42,13 +8,7 @@ import * as util from '../src/util.js'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.mock is hoisted -- redirects configPath() to a per-test-file temp file so this suite can
-// deterministically set compact_assist.max_manifest_chars and hints.git_hint_max_ms without
-// touching the real ~/.token-goat config. Mirrors tests/hooks_compact.test.ts's own mock; kept
-// in a separate file (rather than added to that one) specifically so it does not inherit that
-// file's node:child_process mock. The factory closes over `_testConfigPath` by reference, so
-// it resolves correctly even though the `const` below is declared after this call -- vi.mock's
-// factory only actually runs later, the first time configPath() is invoked from a test body.
+// vi.mock is hoisted -- redirects configPath() to a per-test-file temp file so this suite can deterministically set compact_assist.max_manifest_chars and hints.git_hint_max_ms without touching the real ~/.token-goat config. Mirrors tests/hooks_compact.test.ts's own mock; kept in a separate file (rather than added to that one) specifically so it does not inherit that file's node:child_process mock. The factory closes over `_testConfigPath` by reference, so it resolves correctly even though the `const` below is declared after this call -- vi.mock's factory only actually runs later, the first time configPath() is invoked from a test body.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return {
@@ -95,8 +55,15 @@ function truncatedAt(manifest: string): number | null {
   return match ? Number(match[1]) : null
 }
 
-async function runPreCompact(cwd: string | undefined): Promise<string> {
-  const payload: Record<string, unknown> = { session_id: SESSION_ID }
+/** Seeds `sessionId` with exactly these edited paths. saveSessionState merges into what is already on disk, so re-seeding SESSION_ID after beforeEach keeps its repoDir rows beside the new ones; a session id nothing else wrote is the only way to hold just these. */
+function seedEdits(sessionId: string, paths: readonly string[]): void {
+  resetSessionState()
+  for (const p of paths) recordFileEdit(p)
+  saveSessionState(sessionId)
+}
+
+async function runPreCompact(cwd: string | undefined, sessionId: string = SESSION_ID): Promise<string> {
+  const payload: Record<string, unknown> = { session_id: sessionId }
   if (cwd !== undefined) payload['cwd'] = cwd
   return manifestFrom(await relayInProcess('pre_compact', payload))
 }
@@ -116,20 +83,12 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
 
     const cfg = defaultConfig()
     cfg.compact_assist.max_manifest_chars = CONFIGURED_CAP
-    // Generous bound (default is 50ms) so a slow CI/Windows git spawn can never flake this
-    // suite into a false "clean" reading -- this suite is about proving detection is correct,
-    // not about re-testing the default timeout value (already covered by hooks_session.test.ts).
+    // Generous bound (default is 50ms) so a slow CI/Windows git spawn can never flake this suite into a false "clean" reading -- this suite is about proving detection is correct, not about re-testing the default timeout value (already covered by hooks_session.test.ts).
     cfg.hints.git_hint_max_ms = 5000
     saveConfig(cfg)
     invalidateConfigCache()
 
-    // Seed a real, on-disk session cache with edited-file activity via the real session.ts
-    // recorder + session_store.ts persister -- large enough (5 edited files, both listed under
-    // "### Edited files" and duplicated under "### SAFE_TO_DISCARD") that the natural manifest
-    // comfortably exceeds CONFIGURED_CAP regardless of the git-adaptive bonus, so every
-    // scenario below actually exercises truncation rather than trivially fitting under any cap.
-    // relayInProcess's own loadSessionState (called before the handler runs) reads this back
-    // from disk exactly as the production PreCompact dispatch does -- nothing is injected.
+    // Seed a real, on-disk session cache with edited-file activity via the real session.ts recorder + session_store.ts persister -- large enough (5 edited files, both listed under "### Edited files" and duplicated under "### SAFE_TO_DISCARD") that the natural manifest comfortably exceeds CONFIGURED_CAP regardless of the git-adaptive bonus, so every scenario below actually exercises truncation rather than trivially fitting under any cap. relayInProcess's own loadSessionState (called before the handler runs) reads this back from disk exactly as the production PreCompact dispatch does -- nothing is injected.
     for (let i = 0; i < 5; i++) {
       recordFileEdit(path.join(repoDir, `edited${i}.ts`).split(path.sep).join('/'))
     }
@@ -160,18 +119,12 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
 
   it('preserves the fixed configured cap unchanged on a clean working tree (no regression to the common case)', async () => {
     const manifest = await runPreCompact(repoDir)
-    // The seeded session activity guarantees the untruncated manifest is well over
-    // CONFIGURED_CAP, so a truncation marker is expected here -- and the signals being
-    // false/zero (clean tree) means the reported cap must equal the configured value exactly,
-    // not some perturbed number, proving the adaptive bonus contributed 0 in the common case.
+    // The seeded session activity guarantees the untruncated manifest is well over CONFIGURED_CAP, so a truncation marker is expected here -- and the signals being false/zero (clean tree) means the reported cap must equal the configured value exactly, not some perturbed number, proving the adaptive bonus contributed 0 in the common case.
     expect(truncatedAt(manifest)).toBe(CONFIGURED_CAP)
   })
 
   it('never spawns git at all when the manifest already fits under the configured base cap', async () => {
-    // Regression: fitManifest used to compute adaptiveCharBonus() -- 2 real git spawns --
-    // unconditionally, even when the manifest was already short enough that no bonus could ever
-    // matter. Raising max_manifest_chars well above the seeded manifest's natural length (a few
-    // hundred chars) means truncation, and therefore the adaptive bonus, is never relevant here.
+    // Regression: fitManifest used to compute adaptiveCharBonus() -- 2 real git spawns -- unconditionally, even when the manifest was already short enough that no bonus could ever matter. Raising max_manifest_chars well above the seeded manifest's natural length (a few hundred chars) means truncation, and therefore the adaptive bonus, is never relevant here.
     const cfg = defaultConfig()
     cfg.compact_assist.max_manifest_chars = 100_000
     cfg.hints.git_hint_max_ms = 5000
@@ -190,8 +143,7 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
   it('grows the manifest cap through the real relay/hook_registry dispatch when the repo has real uncommitted changes', async () => {
     const cleanManifest = await runPreCompact(repoDir)
 
-    // Real dirty state -- no mocked git call: modifying the tracked file makes both
-    // `git diff --no-color --stat HEAD` and `git status --porcelain` genuinely non-empty.
+    // Real dirty state -- no mocked git call: modifying the tracked file makes both `git diff --no-color --stat HEAD` and `git status --porcelain` genuinely non-empty.
     fs.writeFileSync(path.join(repoDir, 'tracked.txt'), 'changed\n')
 
     const dirtyManifest = await runPreCompact(repoDir)
@@ -200,9 +152,7 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
     const cleanCap = truncatedAt(cleanManifest)
     const dirtyCap = truncatedAt(dirtyManifest)
     expect(cleanCap).toBe(CONFIGURED_CAP)
-    // Either the boosted cap still truncates (at a strictly larger reported N) or the boost
-    // was large enough that the manifest now fits entirely (no truncation marker at all) --
-    // both outcomes mean strictly more room than the clean-tree run got.
+    // Either the boosted cap still truncates (at a strictly larger reported N) or the boost was large enough that the manifest now fits entirely (no truncation marker at all) -- both outcomes mean strictly more room than the clean-tree run got.
     if (dirtyCap !== null) {
       expect(dirtyCap).toBeGreaterThan(CONFIGURED_CAP)
     }
@@ -211,9 +161,7 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
   it('detects an untracked-only change via real `git status --porcelain` even though `git diff --stat HEAD` stays empty', async () => {
     const cleanManifest = await runPreCompact(repoDir)
 
-    // Untracked new file: `git diff HEAD` never reports untracked files (hasPendingDiff stays
-    // false), but `git status --porcelain` reports it (`?? untracked.txt`), so this isolates
-    // the hasUncommittedChanges signal specifically.
+    // Untracked new file: `git diff HEAD` never reports untracked files (hasPendingDiff stays false), but `git status --porcelain` reports it (`?? untracked.txt`), so this isolates the hasUncommittedChanges signal specifically.
     fs.writeFileSync(path.join(repoDir, 'untracked.txt'), 'new\n')
 
     const dirtyManifest = await runPreCompact(repoDir)
@@ -233,16 +181,15 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
   // HAND-DERIVED: the dirty state is made on disk by this test and the expectation follows from what the adaptive bonus is for -- a wider cap prints more rows, so a sample taken under the wider cap must be at least as large as one taken under the narrower. Nothing is read off the budget arithmetic. The post-compact canary used to rebuild the manifest with no cwd at all, scoring survival against a manifest shorter than the one that was actually sent: the rows it silently dropped were the tail, which is exactly what a summary is least likely to keep, so the ratio came back better than the truth -- the one direction a canary is not allowed to be wrong in.
   it('samples the manifest the hook emitted, not a narrower rebuild of it', async () => {
     // Short fixed-width rows, and a cap read off the manifest this run rendered, because the bonus is a fixed number of CHARACTERS while a row costs whatever an absolute path costs: the rows each side prints are floor(budget / rowWidth) against floor((budget + bonus) / rowWidth), so once a row is wider than the whole bonus the two floors are equal and the boost buys nothing. The seeded rows used to be repoDir-shaped, which makes their width a property of where the OS puts its temp directory -- macOS's /private/var/folders/... reaches that point and Linux's /tmp does not, so this read 2 > 2 on macOS alone. Scaling the cap with the row does not fix it either, since the bonus stays fixed as the row grows; only taking the host's path length out of the row does. repoDir remains the cwd, so the git signal under test is still the real one, and recordFileEdit never opens these paths.
-    resetSessionState()
-    for (let i = 0; i < 5; i++) recordFileEdit(`/tg-budget/e${i}.ts`)
-    saveSessionState(SESSION_ID)
+    const sid = `${SESSION_ID}-short-rows`
+    seedEdits(sid, Array.from({ length: 5 }, (_, i) => `/tg-budget/e${i}.ts`))
 
     const wide = defaultConfig()
     wide.compact_assist.max_manifest_chars = 100_000
     wide.hints.git_hint_max_ms = 5000
     saveConfig(wide)
     invalidateConfigCache()
-    const full = buildManifest(SESSION_ID)
+    const full = buildManifest(sid)
     const firstRowEnd = full.indexOf('\n', full.indexOf('- /tg-budget/e0.ts'))
     expect(firstRowEnd, 'the seeded rows must render, or this asserts nothing').toBeGreaterThan(0)
 
@@ -253,11 +200,13 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
     invalidateConfigCache()
 
     fs.writeFileSync(path.join(repoDir, 'tracked.txt'), 'changed\n')
-    const emitted = await runPreCompact(repoDir)
+    const emitted = await runPreCompact(repoDir, sid)
 
-    const withCwd = manifestPrintedPaths(SESSION_ID, 64, repoDir)
-    const withoutCwd = manifestPrintedPaths(SESSION_ID, 64)
+    const withCwd = manifestPrintedPaths(sid, 64, repoDir)
+    const withoutCwd = manifestPrintedPaths(sid, 64)
 
+    // The hook reloads the session from disk, so this is what proves the rows sized above are the only ones in play: beforeEach's repoDir rows leaking back in put a host-length row first, and on macOS that row alone was wider than the whole bonus.
+    expect(emitted).toContain('Files edited: 5')
     expect(withoutCwd.length, 'the narrow side must actually truncate, or a wider cap has nothing to widen').toBeLessThan(5)
     expect(withCwd.length, 'the dirty-tree bonus must widen the sample, or this asserts nothing').toBeGreaterThan(withoutCwd.length)
     for (const p of withCwd) expect(emitted, `${p} was sampled but never emitted`).toContain(p)
@@ -266,16 +215,14 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
   // HAND-DERIVED: the cap is computed from the manifest this run actually rendered -- find where the shorter of the two rows begins and cap one character before it -- rather than guessed at, so the cut lands on that row whatever the surrounding rows happen to cost. An edited row is a bare `- <path>`, so `- <dir>/a.ts` is a prefix of `- <dir>/a.tsx`: with the longer row surviving above the cut, a substring test reports the cut row as printed, and the canary then scores survival against a path the model was never sent.
   it('does not report a cut row as printed because a longer row shares its prefix', () => {
     const dir = '/tg-prefix-probe'
-    resetSessionState()
-    recordFileEdit(`${dir}/a.tsx`)
-    recordFileEdit(`${dir}/a.ts`)
-    saveSessionState(SESSION_ID)
+    const sid = `${SESSION_ID}-prefix`
+    seedEdits(sid, [`${dir}/a.tsx`, `${dir}/a.ts`])
 
     const wide = defaultConfig()
     wide.compact_assist.max_manifest_chars = 100_000
     saveConfig(wide)
     invalidateConfigCache()
-    const full = buildManifest(SESSION_ID)
+    const full = buildManifest(sid)
     const cutAt = full.indexOf(`- ${dir}/a.ts\n`)
     expect(cutAt, 'both rows must render, or this asserts nothing').toBeGreaterThan(full.indexOf(`- ${dir}/a.tsx\n`))
 
@@ -285,7 +232,7 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
     saveConfig(narrow)
     invalidateConfigCache()
 
-    const printed = manifestPrintedPaths(SESSION_ID, 64)
+    const printed = manifestPrintedPaths(sid, 64)
     expect(printed).toContain(`${dir}/a.tsx`)
     expect(printed).not.toContain(`${dir}/a.ts`)
   })
