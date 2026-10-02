@@ -555,7 +555,11 @@ auto_trigger_multiplier = 2.0
         expect(cut, 'the cap must engage, or this asserts on an uncut fence').toBeGreaterThan(-1)
         const open = manifest.indexOf('<untrusted-file-content>')
         expect(open).toBeGreaterThan(-1)
-        expect(manifest.slice(0, cut).endsWith('\n</untrusted-file-content>'), 'the fence must close before the truncation notice').toBe(true)
+        const kept = manifest.slice(0, cut)
+        const close = kept.lastIndexOf('\n</untrusted-file-content>')
+        // The reserved SAFE_TO_DISCARD section may now survive after the fence, so the close tag is no longer last; what matters is that it closes before the notice and nothing but notes sits inside it.
+        expect(close, 'the fence must close before the truncation notice').toBeGreaterThan(open)
+        expect(kept.slice(open, close)).not.toContain('### ')
         expect(manifest.split('</untrusted-file-content>')).toHaveLength(2)
       } finally {
         fs.rmSync(projectDir, { recursive: true, force: true })

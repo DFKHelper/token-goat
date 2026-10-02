@@ -295,16 +295,6 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
-    'capManifestChars',
-    {
-      bucket: 'shortens-a-count-or-a-digest-not-free-text',
-      reason:
-        'Shortens the pre-compact session manifest, built from file paths/symbol names/git status ' +
-        'lines/hint ids -- structured session bookkeeping, not raw tool-output text a credential ' +
-        'could be pasted into.',
-    },
-  ],
-  [
     'truncateUrl',
     {
       bucket: 'operator-supplied-value-cli-error-path',

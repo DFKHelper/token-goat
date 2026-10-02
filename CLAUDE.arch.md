@@ -479,6 +479,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/lazy_module.ts`](src/lazy_module.ts) | Shared factory for the "lazily load an optional npm dependency" pattern used by every optional-dependency reader (pdf_extract.ts, xlsx_extract.ts, ooxml_extract.ts, screenshot.ts, |
 | [`src/line_regions.ts`](src/line_regions.ts) | Maps a requested line span onto the file regions that cover it. |
 | [`src/listing_size.ts`](src/listing_size.ts) | `token-goat listing-size`: price the skill and agent listings Claude Code puts in context. |
+| [`src/manifest_fit.ts`](src/manifest_fit.ts) | Fits an ordered list of manifest sections to a character budget by dropping whole rows, never by cutting text. |
 | [`src/manifest.ts`](src/manifest.ts) | The compaction manifest: what this session touched, rendered for whoever reads it next. |
 | [`src/markdown_frontmatter.ts`](src/markdown_frontmatter.ts) | Index of the first line after a leading YAML front-matter block, or 0 when the document has none. |
 | [`src/markdown_lines.ts`](src/markdown_lines.ts) | Iterate markdown lines, skipping fenced-code-block content (``` or ~~~ blocks) and the fence delimiter lines themselves, so a `#` comment inside a code fence is never mistaken for |

@@ -13,21 +13,14 @@ import { computeAdaptiveBudget, getContextPressure, isNoisePath, loadSessionCach
 import { displaySafePath, displaySafeText } from './paths.js'
 import { neutralizeSpokenMarkers, UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { projectNotesFor } from './project_memory.js'
+import { fitSections } from './manifest_fit.js'
+import type { FitSection } from './manifest_fit.js'
 
 /** Bound on how long we'll wait for `mem epoch` before giving up -- see {@link buildMemEpochSection}. */
 const MEM_EPOCH_TIMEOUT_MS = 800
 
 /** Cap on read/edit/web rows so a huge session can't blow the token budget. */
 const MAX_ROWS = 40
-
-/** Appends a blank line, `header`, up to `cap` of `rows` verbatim, and an `- ...and N more` overflow line when `rows` exceeds `cap`. No-op when `rows` is empty. Shared by every capped-list section in {@link buildManifest} and {@link buildSafeToDiscardSection}. */
-function appendCappedSection(lines: string[], header: string, rows: readonly string[], cap: number): void {
-  if (rows.length === 0) return
-  lines.push('')
-  lines.push(header)
-  for (const row of rows.slice(0, cap)) lines.push(row)
-  if (rows.length > cap) lines.push(`- ...and ${rows.length - cap} more`)
-}
 
 /** Render one read-file row: `path (Xkb, N reads[, edited])`. */
 function renderReadRow(entry: FileEntry): string {
@@ -125,43 +118,42 @@ function buildManifestParts(
   const { files, readFiles, editedFiles, symbolOnlyFiles } = selectManifestFiles(siblings)
   const webFetches = selectManifestWebFetches(siblings)
 
-  const lines: string[] = []
-  lines.push('## Session context')
-  lines.push(`Files read: ${readFiles.length}`)
-  lines.push(`Files edited: ${editedFiles.length}`)
-
-  // Every row a file section prints, paired with the path it names, so the survival sample below is taken rather than re-derived.
-  const fileRows: { path: string; row: string }[] = []
-  const appendFileSection = (header: string, entries: readonly FileEntry[], render: (entry: FileEntry) => string): void => {
-    const rows = entries.map(render)
-    appendCappedSection(lines, header, rows, MAX_ROWS)
-    for (let i = 0; i < Math.min(rows.length, MAX_ROWS); i++) fileRows.push({ path: displaySafePath(entries[i]!.path), row: rows[i]! })
+  // Fill priority is edits, notes, surgical reads, reads, web: the budget drops whole rows from the low end first, and a display-order cut used to take the tail whichever section it held. Edits outrank reads because the two sections are not worth the same. The budget is 1600 chars by default and a read row runs about 55, so roughly 28 read rows consume all of it -- MAX_ROWS (40) is not even reachable. With reads rendered first, any session past that many reads had its entire edited-files section truncated away, and the summarizing model was told what the session had looked at but not what it had changed. Measured: 45 reads and one edit printed no edited row at all. Reads are also the recoverable half, since a dropped read row costs a re-read while a dropped edit is a fact about the session that nothing else records. Notes sit behind the edits and ahead of the reads for the reason the edits lead: the cap cuts the tail, and a note is a finding the session recorded on purpose that nothing else holds, while a dropped read row costs a re-read. It is also the only way a note gets back into a Codex session, whose SessionStart is unwired and whose manifest arrives after the compaction. Unmarked: this builder is synchronous and the anchor resolver is loaded lazily to keep the index reader off the hook eager path. On Claude Code the SessionStart that follows a compaction re-injects the notes with their markers.
+  const fileSections: { entries: readonly FileEntry[]; section: FitSection }[] = []
+  const fileSection = (header: string, entries: readonly FileEntry[], render: (entry: FileEntry) => string, priority: number): FitSection[] => {
+    if (entries.length === 0) return []
+    const section: FitSection = { header: ['', header], rows: entries.map(render), priority, maxRows: MAX_ROWS }
+    fileSections.push({ entries, section })
+    return [section]
   }
-
-  // Edits before reads, because capManifestChars cuts the tail and the two sections are not worth the same. The budget is 1600 chars by default and a read row runs about 55, so roughly 28 read rows consume all of it -- MAX_ROWS (40) is not even reachable. With reads rendered first, any session past that many reads had its entire edited-files section truncated away, and the summarizing model was told what the session had looked at but not what it had changed. Measured: 45 reads and one edit printed no edited row at all. Reads are also the recoverable half, since a dropped read row costs a re-read while a dropped edit is a fact about the session that nothing else records.
-  appendFileSection('### Edited files', editedFiles, (entry) => `- ${displaySafePath(entry.path)}`)
-  // Notes sit behind the edits and ahead of the reads for the reason the edits lead: the cap cuts the tail, and a note is a finding the session recorded on purpose that nothing else holds, while a dropped read row costs a re-read. It is also the only way a note gets back into a Codex session, whose SessionStart is unwired and whose manifest arrives after the compaction.
-  // Unmarked: this builder is synchronous and the anchor resolver is loaded lazily to keep the index reader off the hook eager path. On Claude Code the SessionStart that follows a compaction re-injects the notes with their markers.
   const notes = projectNotesFor(cwd)
-  if (notes !== null) lines.push('', notes)
-  appendFileSection('### Surgically read files (symbol/section reads, never read whole)', symbolOnlyFiles, renderSymbolReadRow)
-  appendFileSection('### Read files', readFiles, renderReadRow)
-  appendCappedSection(lines, '### Web URLs fetched', renderWebFetchRows(webFetches), MAX_ROWS)
+  const webRows = renderWebFetchRows(webFetches)
+  const sections: FitSection[] = [
+    { header: ['## Session context', `Files read: ${readFiles.length}`, `Files edited: ${editedFiles.length}`], priority: 0 },
+    ...fileSection('### Edited files', editedFiles, (entry) => `- ${displaySafePath(entry.path)}`, 1),
+    ...(notes === null ? [] : [notesSection(notes)]),
+    ...fileSection('### Surgically read files (symbol/section reads, never read whole)', symbolOnlyFiles, renderSymbolReadRow, 3),
+    ...fileSection('### Read files', readFiles, renderReadRow, 4),
+    ...(webRows.length === 0 ? [] : [{ header: ['', '### Web URLs fetched'], rows: webRows, priority: 5, maxRows: MAX_ROWS }]),
+    ...buildSafeToDiscardSection(files),
+    ...buildMemEpochSection(),
+  ]
 
-  lines.push(...buildSafeToDiscardSection(files))
-  lines.push(...buildMemEpochSection())
+  const fit = fitManifest(sections, sessionId, cwd, transcriptPath)
 
-  const text = capManifestChars(lines.join('\n'), sessionId, cwd, transcriptPath)
-
+  // Paths come from the rows the fitter reports as emitted, never from a substring search over the text: a path is printed exactly when its whole row was.
   const seen = new Set<string>()
   const printed: string[] = []
-  for (const { path, row } of fileRows) {
-    // The row must survive as a whole line, not as a prefix of one. An edited row is a bare `- <path>`, so a plain `includes` would report `- src/a.ts` as printed on the strength of `- src/a.tsx` sitting above the cut -- counting a path the model never saw, which is the inflated denominator this function exists to prevent.
-    if (seen.has(path) || !(text.includes(row + '\n') || text.endsWith(row))) continue
-    seen.add(path)
-    printed.push(path)
+  for (const { entries, section } of fileSections) {
+    const count = fit.shown[sections.indexOf(section)] ?? 0
+    for (const entry of entries.slice(0, count)) {
+      const path = displaySafePath(entry.path)
+      if (seen.has(path)) continue
+      seen.add(path)
+      printed.push(path)
+    }
   }
-  return { text, printed }
+  return { text: fit.text, printed }
 }
 
 /** The compaction manifest for `sessionId`, as text -- {@link buildManifestParts} without the survival sample its other caller needs. */
@@ -204,15 +196,17 @@ function adaptiveCharBonus(sessionId: string | undefined, cwd: string | undefine
   return deltaTokens * 3
 }
 
-/** Enforce `compact_assist.max_manifest_chars` (default 1600) on the fully-built manifest -- this module's own doc comment promises the manifest stays "well under 2000 chars", but nothing previously bounded the actual string: MAX_ROWS only caps rows *per section*, not the manifest's total length, so a session with many populated sections (reads, edits, web fetches, SAFE_TO_DISCARD, mem epoch) could still produce an arbitrarily large manifest. `max_manifest_chars <= 0` means "no cap", the same 0-means-unlimited convention the rest of token-goat's numeric caps use, so a 0 value never truncates -- and never spends the git-spawn cost of {@link adaptiveCharBonus} either, since there is no cap for it to adjust. Likewise, when the manifest already fits under the base (non-adaptive) cap, there is nothing for the bonus to widen room for, so the two `git diff`/`git status` spawns in {@link adaptiveCharBonus} are skipped entirely rather than paid on every compaction regardless of whether truncation could ever happen. */
-function capManifestChars(manifest: string, sessionId?: string, cwd?: string, transcriptPath?: string): string {
+/** Enforce `compact_assist.max_manifest_chars` (default 1600) on the sections by dropping whole rows through {@link fitSections}, so no row or fence is ever cut. The unbudgeted render is built first and returned as is when it fits, which keeps the git probe behind {@link adaptiveCharBonus} off the common path. A fit that dropped anything ends with the truncation notice, naming any section left out entirely. */
+function fitManifest(sections: readonly FitSection[], sessionId?: string, cwd?: string, transcriptPath?: string): { text: string; shown: number[] } {
+  const full = fitSections(sections, Infinity)
   const cap = loadConfig().compact_assist.max_manifest_chars
-  if (cap <= 0) return manifest
-  if (manifest.length <= cap) return manifest
+  if (cap <= 0 || full.text.length <= cap) return full
   const effectiveCap = cap + adaptiveCharBonus(sessionId, cwd, transcriptPath)
-  if (manifest.length <= effectiveCap) return manifest
-  const omitted = manifest.length - effectiveCap
-  return closeCutFence(manifest.slice(0, effectiveCap)) + `\n...(manifest truncated at ${effectiveCap} chars; ${omitted} chars omitted)`
+  if (full.text.length <= effectiveCap) return full
+  const fit = fitSections(sections, effectiveCap)
+  const gone = fit.omitted.length > 0 ? `; sections omitted: ${fit.omitted.map((h) => h.replace(/^#+\s*/, '')).join(', ')}` : ''
+  const notice = `\n...(manifest truncated at ${effectiveCap} chars; ${full.text.length - fit.text.length} chars omitted${gone})`
+  return { text: closeCutFence(fit.text) + notice, shown: fit.shown }
 }
 
 /** The project notes arrive fenced as data, and the cap can land inside the fence. Left open, the truncation notice and everything after the manifest would read as part of the fenced notes, so a cut fence is closed here; a close tag the cut split in half is dropped first so the fence ends on one whole tag. */
@@ -228,8 +222,22 @@ export function closeCutFence(kept: string): string {
   return body + close
 }
 
+/** The project notes block as a fitter section: the lines up to and including the open fence tag are the header, the close tag and anything after it the footer, and each note is one row, so the fence is only ever emitted whole. A line that does not open a note belongs to the one before it. A block with no fence is header-only. */
+function notesSection(notes: string): FitSection {
+  const lines = notes.split('\n')
+  const open = lines.indexOf(`<${UNTRUSTED_FILE_TAG}>`)
+  const close = lines.lastIndexOf(`</${UNTRUSTED_FILE_TAG}>`)
+  if (open === -1 || close < open) return { header: ['', ...lines], priority: 2 }
+  const rows: string[] = []
+  for (const line of lines.slice(open + 1, close)) {
+    if (rows.length > 0 && !line.startsWith('- ')) rows[rows.length - 1] += '\n' + line
+    else rows.push(line)
+  }
+  return { header: ['', ...lines.slice(0, open + 1)], rows, footer: lines.slice(close), priority: 2, maxRows: MAX_ROWS }
+}
+
 /** Build the SAFE_TO_DISCARD manifest section: provably-inert prior context that compaction can drop without losing data, because it is recoverable through an existing recall command. Conservative by construction -- only three classes, each backed by an explicit session-state signal (never inferred): 1. Superseded identical-command bash reruns: a store call this session overwrote an already-cached entry under the exact same command key (see recordBashRerun in session.ts, wired from hooks_bash_post.ts's Item F delta-folding path). The raw transcript copy of the OLDER run is dead -- the surviving cached id already holds the freshest output. 2. File reads superseded by a later Edit/Write/Read of the same file: readCount > 1 (re-read at least once) or wasEdited (the file changed after being read) both mean an earlier textual copy in the transcript no longer reflects the file's current content. 3. Every other bash output still tracked in the session's cache index -- each is recallable verbatim via bash-output <id>, so its inline transcript copy is redundant regardless of whether it was ever rerun. Reruns already itemized under (1) are excluded here to avoid double counting the same command under two headings. Always labels the section with an explicit item count and the recall command needed to get each item's data back -- never implies data is gone, only that the inline copy is a redundant duplicate of something recallable. */
-function buildSafeToDiscardSection(files: FileEntry[]): string[] {
+function buildSafeToDiscardSection(files: FileEntry[]): FitSection[] {
   const rerunHashes = getSessionBashReruns()
   const bashOutputs = getSessionBashOutputs()
   const rerunHashSet = new Set(rerunHashes)
@@ -265,17 +273,22 @@ function buildSafeToDiscardSection(files: FileEntry[]): string[] {
   const total = rerunRows.length + supersededReadRows.length + cachedOutputRows.length
   if (total === 0) return []
 
-  const lines: string[] = []
-  lines.push('')
-  lines.push('### SAFE_TO_DISCARD (' + total + ' items — provably inert; each is recallable, not gone)')
-  appendCappedSection(lines, 'Superseded reruns (' + rerunRows.length + '):', rerunRows, MAX_ROWS)
-  appendCappedSection(lines, 'Superseded file reads (' + supersededReadRows.length + '):', supersededReadRows, MAX_ROWS)
-  appendCappedSection(lines, 'Other cached bash outputs (' + cachedOutputRows.length + '):', cachedOutputRows, MAX_ROWS)
-  return lines
+  const title = '### SAFE_TO_DISCARD (' + total + ' items — provably inert; each is recallable, not gone)'
+  const groups: [string, string[]][] = [
+    ['Superseded reruns (' + rerunRows.length + '):', rerunRows],
+    ['Superseded file reads (' + supersededReadRows.length + '):', supersededReadRows],
+    ['Other cached bash outputs (' + cachedOutputRows.length + '):', cachedOutputRows],
+  ]
+  // The title rides on the first non-empty group's header, so it can never be emitted over nothing.
+  const sections: FitSection[] = []
+  for (const [header, rows] of groups) {
+    if (rows.length === 0) continue
+    sections.push({ header: sections.length === 0 ? ['', title, '', header] : ['', header], rows, priority: 9, reserved: true, maxRows: MAX_ROWS })
+  }
+  return sections
 }
-
 /** Fold `mem epoch` (token-goat-mem's monotonic counter, when the `mem` binary is on PATH) into the compaction manifest, so a resumed session can tell whether mem's fact store has advanced since this transcript was captured. FINDING (searched for at implementation time): this codebase has no existing tracking of a "current live TGMEM block" anywhere -- no `TGMEM` marker, no in-session summary of facts mem currently holds. `hooks_compact.ts`'s manifest tracks only file reads/edits/web fetches/bash-output caching (see {@link buildManifest}); nothing here shadows mem's own state. Per spec, that gap is reported rather than papered over with a fabricated block-tracking mechanism: this section folds in `mem epoch`'s bare integer alone, with an explicit note that no live TGMEM block is tracked in this session. Must fail open: `mem` may be absent from PATH, may error, or may hang. `spawnSync` bounds the wait to {@link MEM_EPOCH_TIMEOUT_MS} (same spawnSync-with-timeout pattern as checkCopilotCli in cli_doctor.ts) and any failure -- ENOENT, non-zero exit, timeout kill, unparsable stdout -- silently omits the section. No error is ever surfaced and compaction never blocks or fails because of this. */
-function buildMemEpochSection(): string[] {
+function buildMemEpochSection(): FitSection[] {
   let result: ReturnType<typeof spawnSync>
   try {
     result = spawnSync('mem', ['epoch'], {
@@ -291,11 +304,11 @@ function buildMemEpochSection(): string[] {
   const stdout = typeof result.stdout === 'string' ? result.stdout.trim() : ''
   if (!/^\d+$/.test(stdout)) return []
 
-  return [
-    '',
-    '### mem epoch',
-    `mem epoch: ${stdout} (no live TGMEM block is tracked in this session -- only the epoch counter is folded in; see buildMemEpochSection's doc comment)`,
-  ]
+  return [{
+    header: ['', '### mem epoch', `mem epoch: ${stdout} (no live TGMEM block is tracked in this session -- only the epoch counter is folded in; see buildMemEpochSection's doc comment)`],
+    priority: 9,
+    reserved: true,
+  }]
 }
 
 /** Framing in front of the manifest, addressed to whoever writes the compaction summary. Reaches the summarizer as raw `customInstructions`: `hook_registry.ts` lists `pre_compact` in EVENTS_WITH_RAW_STDOUT_CONTEXT, so this text is handed over unwrapped rather than rendered as a tool result. That is the only lever token-goat holds on the compaction channel. An earlier revision asked for preservation and deliberately not for brevity, reasoning that trading a summary's completeness for tokens was a bad trade to make on a user's behalf without being asked. The budget below exists because the user asked. It does not replace that reasoning: preservation stays the first instruction, the budget is a target rather than a cap, and {@link BUDGET_ESCALATION_MARKER} lets a session that genuinely cannot fit exceed it on the record instead of silently dropping state. */

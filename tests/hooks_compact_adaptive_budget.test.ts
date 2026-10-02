@@ -168,7 +168,7 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
   })
 
   it('never spawns git at all when the manifest already fits under the configured base cap', async () => {
-    // Regression: capManifestChars used to compute adaptiveCharBonus() -- 2 real git spawns --
+    // Regression: fitManifest used to compute adaptiveCharBonus() -- 2 real git spawns --
     // unconditionally, even when the manifest was already short enough that no bonus could ever
     // matter. Raising max_manifest_chars well above the seeded manifest's natural length (a few
     // hundred chars) means truncation, and therefore the adaptive bonus, is never relevant here.
@@ -218,7 +218,11 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
 
     const dirtyManifest = await runPreCompact(repoDir)
 
-    expect(dirtyManifest.length).toBeGreaterThan(cleanManifest.length)
+    // Rows are kept or dropped whole, so a small bonus can widen the cap without room for one more row: the reported cap is the direct evidence, length only has to not shrink.
+    expect(dirtyManifest.length).toBeGreaterThanOrEqual(cleanManifest.length)
+    expect(truncatedAt(cleanManifest)).toBe(CONFIGURED_CAP)
+    const dirtyCap = truncatedAt(dirtyManifest)
+    if (dirtyCap !== null) expect(dirtyCap).toBeGreaterThan(CONFIGURED_CAP)
   })
 
   it('falls back to the fixed cap with zero extra git spawns when the harness sends no cwd', async () => {
@@ -276,7 +280,8 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
     expect(cutAt, 'both rows must render, or this asserts nothing').toBeGreaterThan(full.indexOf(`- ${dir}/a.tsx\n`))
 
     const narrow = defaultConfig()
-    narrow.compact_assist.max_manifest_chars = cutAt
+    // Rows are dropped whole now, so the budget leaves the first row plus its `- ...and 1 more` tail line (15 chars and a newline), which fits, and not the second row, which needs 24.
+    narrow.compact_assist.max_manifest_chars = cutAt + '- ...and 1 more'.length
     saveConfig(narrow)
     invalidateConfigCache()
 
