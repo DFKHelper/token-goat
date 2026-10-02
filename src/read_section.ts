@@ -145,7 +145,8 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
     if (lines.length > opts.maxLines) {
       const remaining = lines.length - opts.maxLines
       content = lines.slice(0, opts.maxLines).join('\n')
-      lineEnd = Math.min(result.lineEnd, result.lineStart + opts.maxLines - 1)
+      // With --grep the kept lines are scattered through the section, so the first maxLines of them say nothing about a contiguous range; the header keeps the span they were drawn from.
+      if (opts.grep === undefined) lineEnd = Math.min(result.lineEnd, result.lineStart + opts.maxLines - 1)
       truncatedNotice = `\n... (${countNoun(remaining, 'more line')} not shown; pass a larger --max-lines or omit to read full section)`
     }
   }
