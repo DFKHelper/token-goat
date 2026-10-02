@@ -669,15 +669,28 @@ export function cmdInsertSection(file: string, opts: { after: string; contentFro
   const sourceEncoding = detectSourceEncoding(rawBytes)
   const rawText = decodeSource(rawBytes)
 
-  const eol = detectDominantEol(Buffer.from(rawText, 'utf8'))
-  const lfLines = rawText.replace(/\r\n/g, '\n').split('\n')
   const insertAt = result.lineEnd
+  // Splice into the original text at the end of line `insertAt` so every untouched line keeps its own terminator; only the inserted lines take the local EOL.
+  let offset = 0
+  for (let seen = 0; seen < insertAt; seen++) {
+    const nl = rawText.indexOf('\n', offset)
+    if (nl < 0) {
+      offset = rawText.length
+      break
+    }
+    offset = nl + 1
+  }
+  const prevLineStart = offset > 0 ? rawText.lastIndexOf('\n', offset - 2) + 1 : 0
+  const prevLine = Buffer.from(rawText.slice(prevLineStart, offset), 'utf8')
+  const eol = localEolStyle(prevLine, { start: 0, end: prevLine.length }, Buffer.from(rawText, 'utf8'))
 
   const insertedLines = contentBytes.toString('utf8').replace(/\r\n/g, '\n').split('\n')
   if (insertedLines.length > 0 && insertedLines[insertedLines.length - 1] === '') insertedLines.pop()
 
-  const mergedLfText = [...lfLines.slice(0, insertAt), ...insertedLines, ...lfLines.slice(insertAt)].join('\n')
-  const mergedText = eol === '\n' ? mergedLfText : mergedLfText.replace(/\n/g, '\r\n')
+  const insertedText = insertedLines.join(eol)
+  // A final line with no terminator gets one before the insert and none after, so the file still ends the way it did.
+  const endsUnterminated = offset > 0 && rawText[offset - 1] !== '\n'
+  const mergedText = rawText.slice(0, offset) + (endsUnterminated ? eol + insertedText : insertedText + eol) + rawText.slice(offset)
 
   if (preWriteStat !== undefined) {
     let preRenameStat: fs.Stats | undefined
