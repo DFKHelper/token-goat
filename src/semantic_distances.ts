@@ -2,7 +2,7 @@
 
 import { loadConfig } from './config.js'
 import { projectHash, resolveProjectRoot } from './project.js'
-import { getGlobalDb } from './stats.js'
+import { getGlobalDb, withTelemetryWriteDb } from './stats.js'
 
 /** Below this many recorded queries the percentiles are noise, so the report says so instead of suggesting a value. */
 export const MIN_QUERIES_FOR_ADVICE = 20
@@ -71,12 +71,13 @@ export function formatDistanceReport(summary: DistanceSummary, thresholds: { wea
   return lines.join('\n')
 }
 
-/** Best-effort, like recordStat: a failed write must never fail the query it describes. No query text is accepted, so none can be stored. */
+/** Best-effort, like recordStat, and on the same short-budget connection: a failed or contended write must never fail or stall the query it describes. No query text is accepted, so none can be stored. */
 export function recordSemanticQuery(row: { projectRoot: string; closestDistance: number | null; floorRejectedMin: number | null; weak: boolean }): void {
   try {
-    getGlobalDb()
-      .prepare('INSERT INTO semantic_queries (ts, project_hash, closest_distance, floor_rejected_min, weak) VALUES (?, ?, ?, ?, ?)')
-      .run(Math.floor(Date.now() / 1000), projectHash(row.projectRoot), row.closestDistance, row.floorRejectedMin, row.weak ? 1 : 0)
+    withTelemetryWriteDb((db) => {
+      db.prepare('INSERT INTO semantic_queries (ts, project_hash, closest_distance, floor_rejected_min, weak) VALUES (?, ?, ?, ?, ?)')
+        .run(Math.floor(Date.now() / 1000), projectHash(row.projectRoot), row.closestDistance, row.floorRejectedMin, row.weak ? 1 : 0)
+    })
   } catch {
     // Telemetry only: nothing to do with a failed write.
   }

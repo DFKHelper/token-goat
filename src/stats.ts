@@ -715,8 +715,29 @@ function recordStatWriteFailure(kind: string, err: unknown, dir: string = dataDi
   }
 }
 
-// getDb()'s connection to global.db is shared with the indexer and worker and keeps db.ts's 15000ms busy_timeout on purpose (initConnection); recordStat's contract below is the opposite -- a lost stats row is already logged out of band, so the write goes through its own short-budget connection, opened and closed per call, instead of ever waiting out indexing's contention. 200ms is sized against the hook path's own ~65-92ms synchronous cost, not against 15000ms.
+// getDb()'s connection to global.db is shared with the indexer and worker and keeps db.ts's 15000ms busy_timeout on purpose (initConnection); telemetry writes (recordStat, recordSemanticQuery) have the opposite contract -- a lost row costs a measurement, never a result, so withTelemetryWriteDb gives each write its own short-budget connection, opened and closed per call, instead of ever waiting out indexing's contention. 200ms is sized against the hook path's own ~65-92ms synchronous cost, not against 15000ms.
 const STATS_WRITE_BUSY_TIMEOUT_MS = 200
+
+/** Runs one telemetry write against global.db on its own short-budget connection, opened and closed per call, so a held lock costs the caller STATS_WRITE_BUSY_TIMEOUT_MS rather than the shared connection's 15000ms. Throws whatever the write throws; a served read-only database skips the write. */
+export function withTelemetryWriteDb(write: (db: SqliteDatabase) => void): void {
+  // getGlobalDb() ensures schema/migrations exist via the shared, patient connection first -- a rare, idempotent bootstrap step left on db.ts's normal budget rather than given a second timeout regime.
+  getGlobalDb()
+  const dbPath = path.join(dataDir(), 'global.db')
+  // Served read-only (db.ts's allowReadOnlyIndex): the row has nowhere to go, and the run has already said stats are not recorded.
+  if (isReadOnlyDb(dbPath)) return
+  const db = new Database(dbPath, { timeout: STATS_WRITE_BUSY_TIMEOUT_MS })
+  try {
+    // A telemetry row under WAL: NORMAL drops the flush to disk on every commit, measured at 1.4ms of each hook's 1.45ms insert, and can lose only the latest rows to a power cut, never corrupt the file. Outside WAL it could, so the default stays there.
+    if (String(db.pragma('journal_mode', { simple: true })).toLowerCase() === 'wal') db.pragma('synchronous = NORMAL')
+    write(db)
+  } finally {
+    try {
+      db.close()
+    } catch {
+      // Best-effort: nothing else to do with a close failure on our own connection.
+    }
+  }
+}
 
 /** Record a stat event in the global database. Silently no-ops on any error so hook paths are never blocked. Pass `_testDb` in tests to inject a pre-initialized database. */
 export function recordStat(
@@ -728,15 +749,7 @@ export function recordStat(
   traceparent?: string,
   durationMs?: number,
 ): void {
-  let db: SqliteDatabase | undefined
-  try {
-    // getGlobalDb() ensures schema/migrations exist via the shared, patient connection first -- a rare, idempotent bootstrap step left on db.ts's normal budget rather than given a second timeout regime.
-    if (!_testDb) getGlobalDb()
-    // Served read-only (db.ts's allowReadOnlyIndex): the row has nowhere to go, and the run has already said stats are not recorded.
-    if (!_testDb && isReadOnlyDb(path.join(dataDir(), 'global.db'))) return
-    db = _testDb ?? new Database(path.join(dataDir(), 'global.db'), { timeout: STATS_WRITE_BUSY_TIMEOUT_MS })
-    // A stats row is telemetry. Under WAL, NORMAL drops the flush to disk on every commit, measured at 1.4ms of each hook's 1.45ms insert, and can lose only the latest rows to a power cut, never corrupt the file. Outside WAL it could, so the default stays there.
-    if (!_testDb && String(db.pragma('journal_mode', { simple: true })).toLowerCase() === 'wal') db.pragma('synchronous = NORMAL')
+  const write = (db: SqliteDatabase): void => {
     const ts = Math.floor(Date.now() / 1000)
     const tp = traceparent ?? process.env['TRACEPARENT'] ?? process.env['traceparent'] ?? null
     // Built from whichever optional columns this database actually has rather than one branch per combination: with harness, traceparent, tg_version and duration_ms all optional that would be sixteen arms, and the arm for any un-exercised combination is exactly where a silently-dropped column hides. Column names here are literals, never caller input.
@@ -762,17 +775,13 @@ export function recordStat(
       `INSERT INTO stats (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
     ).run(...vals)
     maybeRunStatsMaintenance(db)
+  }
+  try {
+    if (_testDb) write(_testDb)
+    else withTelemetryWriteDb(write)
   } catch (e) {
     // Best-effort — never block the hook path. The write is still lost, but recordStatWriteFailure gives it somewhere to land that does not share fate with the database that just refused it.
     recordStatWriteFailure(kind, e)
-  } finally {
-    if (db && !_testDb) {
-      try {
-        db.close()
-      } catch {
-        // Best-effort: nothing else to do with a close failure on our own connection.
-      }
-    }
   }
 }
 
