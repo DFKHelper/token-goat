@@ -18,6 +18,7 @@ import { getNote, isNoteStale, listNotes, WHOLE_FILE_NOTE_SYMBOL } from './notes
 import type { SymbolEntry } from './parser_types.js'
 import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
+import { parseJsonOrJsonc } from './jsonc_text.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { DELETED_TAG, emitGuarded, fileExists, fileIsGone, guardJsonRows, healStaleIndex, isValidUtf8, readFileBytes, readFileText, recordReadStat, resolveAgainstProjectRoot, sinkGoneRows, sumFileSizes, healStaleResultFiles, warnIfFilesStale } from './read_commands.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
@@ -386,10 +387,10 @@ export function runConfigGet(opts: ConfigGetOptions): number {
 
   const ext = path.extname(opts.file).toLowerCase()
 
-  if (ext === '.json') {
+  if (ext === '.json' || ext === '.jsonc') {
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let obj: any = JSON.parse(text)
+      let obj: any = parseJsonOrJsonc(text)
       for (const part of opts.key.split('.')) {
         if (typeof obj !== 'object' || obj === null) {
           emitErr(`Key '${opts.key}' not found in ${opts.file}`)

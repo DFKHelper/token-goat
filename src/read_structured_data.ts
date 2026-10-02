@@ -13,6 +13,7 @@ import {
 } from './html_query.js'
 import { UNTRUSTED_HTML_TAG } from './injection_scan.js'
 import { formatJsonOutline, outlineJson, queryJson } from './json_query.js'
+import { parseJsonOrJsonc } from './jsonc_text.js'
 import {
   extractOperations,
   findOperation,
@@ -179,7 +180,7 @@ function runOutlineCommand(opts: JsonOutlineCliOptions, parse: (text: string) =>
 }
 
 export function runJsonOutline(opts: JsonOutlineCliOptions): number {
-  return runOutlineCommand(opts, JSON.parse, 'JSON', 'json_outline')
+  return runOutlineCommand(opts, parseJsonOrJsonc, 'JSON', 'json_outline')
 }
 
 export interface JsonQueryCliOptions {
@@ -284,7 +285,7 @@ function runQueryCommand(
 }
 
 export function runJsonQuery(opts: JsonQueryCliOptions): number {
-  return runQueryCommand(opts, JSON.parse, 'JSON', 'json-query', 'json_query')
+  return runQueryCommand(opts, parseJsonOrJsonc, 'JSON', 'json-query', 'json_query')
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

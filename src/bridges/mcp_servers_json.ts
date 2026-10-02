@@ -1,17 +1,9 @@
 /** Shared reader and writer for the `servers`-keyed MCP JSON files that VS Code (`mcp.json`) and Visual Studio (`.mcp.json`) both read. Both hosts use the same entry shape under the same `servers` root key (not Claude Code's `mcpServers`), so the managed-entry test, the JSONC-preserving edit and the bundle path live here once. Visual Studio's format: https://learn.microsoft.com/en-us/visualstudio/ide/mcp-servers The root-key-agnostic functions below (`serversOf`, `setTokenGoatServer`, `dropEmptyServers`, `hasManagedServer`) take an optional `rootKey` (default `'servers'`) so `./zed_install.ts` can reuse the same JSONC-preserving edit machinery for Zed's `context_servers` root key without duplicating it: Zed's entry *shape* is unrelated (a shell-executed `command` string plus `timeout`, not `type`/`command`/`args`), so `managedServer`/`isManagedServer` stay VS Code/Visual Studio-specific and Zed defines its own pair. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import type { ParseError } from 'jsonc-parser'
-import type * as JsoncParser from 'jsonc-parser'
-
-// Loaded on first use, not at module scope: cli.ts statically imports the bridge modules, so a top-level require here would run on every invocation of the binary, including every hook and every `--version`.
-let jsoncParser: typeof JsoncParser | undefined
-export function jsonc(): typeof JsoncParser {
-  jsoncParser ??= createRequire(import.meta.url)('jsonc-parser') as typeof JsoncParser
-  return jsoncParser
-}
+import { jsonc } from '../jsonc_text.js'
 
 /** Resolves the shipping `dist/token-goat.mjs` path from within a bridge module; shared with `./zed_install.ts`'s shim script, which needs the identical bundle path but cannot use `managedServer()`'s stdio-args shape (Zed shell-executes a single `command` string, not `command`+`args`). */
 export function bundledCliPath(): string {

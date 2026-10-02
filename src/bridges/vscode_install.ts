@@ -9,7 +9,8 @@ import { loadConfig } from '../config.js'
 import { copilotHooksFilePaths, installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
 import { assertProjectScopeTarget, projectPathIsConsultable, projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
-import { dropEmptyServers, hasManagedServer, isManagedServer, isResidueServersJson, jsonc, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
+import { dropEmptyServers, hasManagedServer, isManagedServer, isResidueServersJson, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
+import { jsonc } from '../jsonc_text.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
 
 /** Markers of the VS Code guidance block; exported so the Visual Studio block can tell when it shares a file with this one. */

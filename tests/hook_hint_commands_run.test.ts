@@ -15,6 +15,8 @@ afterAll(() => {
 
 interface Case {
   name: string
+  /** Test title when two cases share a file name. */
+  label?: string
   body: string
   /** Value substituted for any `<placeholder>` argument in a suggested command. */
   arg: string
@@ -41,6 +43,8 @@ const CASES: Case[] = [
   { name: 'mix.lock', body: '%{"serde": {:hex, :serde, "1.0.0"}}\n', arg: 'serde', marker: 'serde', priorReads: 0 },
   { name: 'package.json', body: '{"name":"x","dependencies":{"left-pad":"1.3.0"},"devDependencies":{"vitest":"1.0.0"}}', arg: 'dependencies', marker: 'left-pad', priorReads: 0 },
   { name: 'tsconfig.json', body: '{"compilerOptions":{"target":"es2020"}}', arg: 'compilerOptions', marker: 'es2020', priorReads: 1 },
+  // CAPTURE: real `tsc --init` output (tests/fixtures/jsonc/tsc-init-6.0.3.jsonc), whose comments and trailing comma made every command this hint names fail with "Failed to parse JSON".
+  { name: 'tsconfig.json', label: 'tsconfig.json from tsc --init', body: fs.readFileSync(path.join(import.meta.dirname, 'fixtures', 'jsonc', 'tsc-init-6.0.3.jsonc'), 'utf8'), arg: 'compilerOptions', marker: 'esnext', priorReads: 1 },
   { name: 'composer.json', body: '{"require":{"vendor/pkg":"^1.0"}}', arg: 'require', marker: 'vendor/pkg', priorReads: 1 },
   { name: 'pyproject.toml', body: '[project]\nname = "demo"\n', arg: 'project', marker: 'demo', priorReads: 1 },
   { name: 'pubspec.yaml', body: 'name: demo\ndependencies:\n  path: ^1.8.0\n', arg: 'name', marker: 'demo', priorReads: 1 },
@@ -50,7 +54,7 @@ const CASES: Case[] = [
 function suggestedText(c: Case, dir: string): { text: string; shown: string } {
   const file = path.join(dir, c.name)
   fs.writeFileSync(file, c.body)
-  const sessionId = `hint-run-${c.name}-${process.pid}`
+  const sessionId = `hint-run-${c.label ?? c.name}-${process.pid}`
   let text = ''
   for (let i = 0; i <= c.priorReads; i++) {
     const out = preReadHandler(makeHookEvent({ toolName: 'Read', toolInput: { file_path: file }, sessionId }))
@@ -69,7 +73,7 @@ function tokenize(command: string): string[] {
 
 describe('commands suggested by the read hooks run against a real file of that type', () => {
   for (const c of CASES) {
-    it(`${c.name}: every suggested token-goat command exits 0 with useful output`, () => {
+    it(`${c.label ?? c.name}: every suggested token-goat command exits 0 with useful output`, () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hint-run-'))
       tmpDirs.push(dir)
       const { text } = suggestedText(c, dir)
