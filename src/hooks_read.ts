@@ -9,7 +9,7 @@ import { registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
 import { preToolPathDeclined } from './vscode_path_gate.js'
 import { leadWithCommand } from './hint_suggestion_guard.js'
-import { hintTarget, sliceCommand, sliceForPath, HINT_PLACEHOLDERS } from './hint_target.js'
+import { hintTarget, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
 import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, displaySafeText, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import { foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
@@ -595,8 +595,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
   if (isLockFile(basename)) {
     return denyOutput(
-      'Lock files are rarely useful to read in full. Use `token-goat section "' + shown + '::<section>"` ' +
-      'to extract a specific dependency, or read the relevant manifest instead.',
+      'Lock files are rarely useful to read in full. ' + fileQueryHint(shown, 'Or read the relevant manifest instead.', 'package-name'),
     )
   }
 
@@ -613,7 +612,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   }
 
   if (!wasFileReadThisSession(normalized)) {
-    const manifestHint = buildPackageManifestHint({ file_path: normalized })
+    const manifestHint = buildPackageManifestHint({ file_path: normalized, shown })
     if (manifestHint) {
       recordActualRead(event, normalized)
       markHintShown('manifest-hint:' + normalized)
@@ -624,8 +623,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   if (isTsConfigFile(basename) && wasFileReadThisSession(normalized)) {
     recordActualRead(event, normalized)
     return quietContextOutput(
-      'Already read ' + basename + '. Use `token-goat section "' + shown + '::compilerOptions"` ' +
-      'to extract compiler options, or `token-goat config-get ' + shown + ' compilerOptions.target` for a single value.',
+      leadWithCommand('token-goat config-get "' + shown + '" "compilerOptions.target"', 'for a single compiler option, or `token-goat json-outline "' + shown + '"` for every top-level key', 'Already read ' + basename + '.'),
     )
   }
 
@@ -635,8 +633,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     return quietContextOutput(
       field.real
         ? leadWithCommand(sliceCommand(shown, field), 'to extract just the value you need', 'You\'ve already read ' + basename + '.')
-        : 'You\'ve already read ' + basename + '. Use `token-goat section "' + shown + '::<field>"` ' +
-          'or `token-goat config-get ' + shown + ' <key>` to extract just the value you need.',
+        : fileQueryHint(shown, 'You\'ve already read ' + basename + '.', 'field'),
       [shown],
     )
   }
@@ -1115,8 +1112,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
     // session_hint is recorded per-branch below, only where a deny actually returns or the final quietContextOutput will actually be visible -- recording it unconditionally here (as this used to) over-counted the ledger on every quiet-hours re-read that degraded to passOutput(), including protected/non-denying re-reads whose only possible output is that same quiet-hours-degradable fallback note. Session tracking above is unaffected either way; only this stat's accounting changes.
 
-    // All deny branches below are gated on hints.reread_deny -- with it disabled, a re-read still gets recorded/stat'd above (session tracking is unaffected) but never blocked, only hinted via the contextOutput fallback at the bottom of this block.
-    // Which whole-file deny below fired, and whether the file it refused still held what the session last read (rereadIdentity). These denies decide from the read count alone, so this row is what tells a deny that saved a redundant read apart from one that withheld a changed file. Zero bytes: a measurement, not a saving.
+    // All deny branches below are gated on hints.reread_deny -- with it disabled, a re-read still gets recorded/stat'd above (session tracking is unaffected) but never blocked, only hinted via the contextOutput fallback at the bottom of this block. Which whole-file deny below fired, and whether the file it refused still held what the session last read (rereadIdentity). These denies decide from the read count alone, so this row is what tells a deny that saved a redundant read apart from one that withheld a changed file. Zero bytes: a measurement, not a saving.
     const bookDenyIdentity = (branch: string): void => {
       const { identity, basis } = rereadIdentity(sessionStateKey(event), normalized, entry)
       recordStat('reread_deny_identity', 0, 0, undefined, `branch=${branch} identity=${identity} basis=${basis} edited=${entry?.wasEdited === true ? 1 : 0}`)

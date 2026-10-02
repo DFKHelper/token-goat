@@ -7,7 +7,7 @@ import { indexMatchesDisk } from './index_freshness.js'
 import { commandPathIsTouchable } from './vscode_path_gate.js'
 import { extractMarkdownHeadings, type MarkdownHeading } from './hints/markdown_hints.js'
 import { extractQuickSymbolSamples } from './hooks_read.js'
-import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { stripUnsafeSuggestions, leadWithCommand } from './hint_suggestion_guard.js'
 import { getCompactedAt, markHintShown, wasHintShown } from './session.js'
 import { shortFingerprint } from './fingerprint.js'
 import { sessionStateKey, type HookEvent } from './hook_registry.js'
@@ -190,9 +190,8 @@ export function sliceCommand(shownPath: string, target: HintTarget): string {
     case 'section':
       return 'token-goat section "' + shownPath + '::' + target.name + '"'
     case 'key': {
-      const fmt = /\.(jsonc?|ya?ml)$/i.exec(shownPath)?.[1]?.toLowerCase()
-      if (fmt === undefined) return 'token-goat config-get "' + shownPath + '" ' + target.name
-      const format = fmt.startsWith('json') ? 'json' : 'yaml'
+      const format = structuredFormat(shownPath)
+      if (format === null) return 'token-goat config-get "' + shownPath + '" ' + target.name
       if (/^[\w-]+$/.test(target.name)) return 'token-goat ' + format + '-query "' + shownPath + '" "' + target.name + '"'
       if (!target.name.includes("'")) return 'token-goat ' + format + '-query "' + shownPath + '" "[\'' + target.name + '\']"'
       return 'token-goat ' + format + '-outline "' + shownPath + '"'
@@ -201,6 +200,29 @@ export function sliceCommand(shownPath: string, target: HintTarget): string {
     case 'table':
       return 'token-goat read "' + shownPath + '::' + target.name + '"'
   }
+}
+
+/** Lock files whose bytes are a JSON or YAML document under an extension the format commands would not infer. */
+const JSON_LOCK_BASENAMES: ReadonlySet<string> = new Set(['package-lock.json', 'pipfile.lock', 'composer.lock', 'package.resolved'])
+const YAML_LOCK_BASENAMES: ReadonlySet<string> = new Set(['pnpm-lock.yaml', 'pubspec.lock'])
+
+/** The format whose `-query`/`-outline` commands read this file, by extension or by the well-known lock file name. */
+function structuredFormat(shownPath: string): 'json' | 'yaml' | null {
+  const base = (shownPath.split('/').pop() ?? '').toLowerCase()
+  if (JSON_LOCK_BASENAMES.has(base) || /\.jsonc?$/.test(base)) return 'json'
+  if (YAML_LOCK_BASENAMES.has(base) || /\.ya?ml$/.test(base)) return 'yaml'
+  return null
+}
+
+/** The runnable command that reads one value out of a whole file `section` cannot slice (it finds headings only): the format's outline/query pair for JSON and YAML (lock files included), config-get for TOML/INI, xml-outline for XML, and a grep for any line format. `reason` is the sentence the hook adds after the command. */
+export function fileQueryHint(shownPath: string, reason = '', grepSubject = 'pattern'): string {
+  const format = structuredFormat(shownPath)
+  if (format !== null) {
+    return leadWithCommand('token-goat ' + format + '-outline "' + shownPath + '"', 'to list the top-level keys, then `token-goat ' + format + '-query "' + shownPath + '" "<key>"` to read one value', reason)
+  }
+  if (/\.(toml|ini|cfg)$/i.test(shownPath)) return leadWithCommand('token-goat config-get "' + shownPath + '" "<key>"', 'to read one value', reason)
+  if (/\.(xml|csproj)$/i.test(shownPath)) return leadWithCommand('token-goat xml-outline "' + shownPath + '"', 'to see the element structure, then `token-goat xml-query "' + shownPath + '" "<path>"` to read one element', reason)
+  return leadWithCommand('token-goat grep "<' + grepSubject + '>" "' + shownPath + '" -C 3', 'to read the matching lines', reason)
 }
 
 /** The command a deny leads with, as leadWithCommand fenced it, or the first fenced `token-goat` command anywhere in it. */

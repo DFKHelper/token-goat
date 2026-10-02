@@ -23,7 +23,7 @@ const DENY_FIXTURES: Array<{ kind: string; text: string; expectedWithheldBytes: 
   // FORMAT-DERIVED: hooks_read.ts, denyOutput, node_modules branch
   { kind: 'node_modules_deny', text: 'node_modules is typically noise; use npm ls, npm outdated, or npm audit instead for dependency info. To force access, use: token-goat read node_modules/package/file.js::symbol-name or token-goat section node_modules/package/file.js::heading', expectedWithheldBytes: null },
   // FORMAT-DERIVED: hooks_read.ts, denyOutput, lock-file branch
-  { kind: 'lock_file_deny', text: 'Lock files are rarely useful to read in full. Use `token-goat section "package-lock.json::<section>"` to extract a specific dependency, or read the relevant manifest instead.', expectedWithheldBytes: null },
+  { kind: 'lock_file_deny', text: 'Lock files are rarely useful to read in full. Run `token-goat json-outline "package-lock.json"` to list the top-level keys, then `token-goat json-query "package-lock.json" "<key>"` to read one value. Or read the relevant manifest instead.', expectedWithheldBytes: null },
   // FORMAT-DERIVED: hooks_read.ts, denyOutput, .tsbuildinfo branch
   { kind: 'tsbuildinfo_deny', text: "This is a TypeScript incremental build cache file. You don't need to read it directly.", expectedWithheldBytes: null },
   // FORMAT-DERIVED: hooks_read.ts, denyOutput, generated/build branch
