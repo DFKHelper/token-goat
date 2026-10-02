@@ -28,6 +28,7 @@ const DECISION_SOURCES = [
   path.join(ROOT, 'src', 'markdown_lines.ts'),
   path.join(ROOT, 'src', 'markdown_frontmatter.ts'),
   path.join(ROOT, 'src', 'section_reader.ts'),
+  path.join(ROOT, 'src', 'line_matchers.ts'),
   path.join(ROOT, 'src', 'encoding.ts'),
   path.join(ROOT, 'src', 'constants.ts'),
   path.join(ROOT, 'src', 'util.ts'),

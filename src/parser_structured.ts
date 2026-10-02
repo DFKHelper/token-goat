@@ -1,28 +1,13 @@
-/**
- * Extractors for structured textual formats (Markdown, JSON, YAML, TOML, CSS, Dockerfile)
- * and fallback regex symbol recovery.
- */
+/** Extractors for structured textual formats (Markdown, JSON, YAML, TOML, CSS, Dockerfile) and fallback regex symbol recovery. */
 
 import { precedingDocComment, type DocCommentStyle } from './doc_comment.js'
 import { stripCstyleComments, stripStringLiterals } from './languages/common.js'
 import { eachUnfencedLine } from './markdown_lines.js'
+import { ATX_DOT_BREAK_RE, matchAtxHeading, matchCssSelectorSpan, matchTomlSectionName } from './line_matchers.js'
 import { frontMatterEndIndex } from './markdown_frontmatter.js'
 import type { SymbolEntry } from './parser_types.js'
 
-/**
- * Return the offset one past the end of the JSON value starting at `start`.
- *
- * Handles the three value shapes separately: a quoted string (walk to the
- * matching close quote, honoring backslash escapes), a container (`{`/`[` —
- * walk to the matching close brace/bracket, skipping over string contents so a
- * brace inside a string cannot unbalance the count), and a primitive (number /
- * `true` / `false` / `null` — ends at the first delimiter). Each walk is linear
- * in the length of the value it scans, so scanning every top-level value of a
- * document costs O(document), not O(keys × document).
- *
- * An unterminated value (malformed/truncated JSON) yields `content.length`
- * rather than throwing; the caller already treats extraction as best-effort.
- */
+/** Return the offset one past the end of the JSON value starting at `start`. Handles the three value shapes separately: a quoted string (walk to the matching close quote, honoring backslash escapes), a container (`{`/`[` — walk to the matching close brace/bracket, skipping over string contents so a brace inside a string cannot unbalance the count), and a primitive (number / `true` / `false` / `null` — ends at the first delimiter). Each walk is linear in the length of the value it scans, so scanning every top-level value of a document costs O(document), not O(keys × document). An unterminated value (malformed/truncated JSON) yields `content.length` rather than throwing; the caller already treats extraction as best-effort. */
 function scanJsonValueEnd(content: string, start: number): number {
   const first = content[start]
   if (first === undefined) return content.length
@@ -45,10 +30,7 @@ function scanJsonValueEnd(content: string, start: number): number {
   }
 
   if (first === '{' || first === '[') {
-    // Track the open delimiters themselves, not just a depth counter: matching `}` against `[`
-    // lets malformed input (`{"a":[1}`) close a container it never opened, which would hand the
-    // caller a body running past the value's real end. On a mismatch, stop at the offending
-    // character rather than consuming forward to EOF.
+    // Track the open delimiters themselves, not just a depth counter: matching `}` against `[` lets malformed input (`{"a":[1}`) close a container it never opened, which would hand the caller a body running past the value's real end. On a mismatch, stop at the offending character rather than consuming forward to EOF.
     const stack: string[] = []
     let inStr = false
     let escaping = false
@@ -102,10 +84,9 @@ export function extractMarkdownSymbols(content: string, filePath: string): Symbo
 
   for (let u = 0; u < unfenced.length; u++) {
     const [i, line] = unfenced[u]!
-    // eslint-disable-next-line regexp/no-super-linear-backtracking
-    const atxMatch = /^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$/.exec(line)
-    if (atxMatch !== null && atxMatch[2] !== undefined) {
-      const name = atxMatch[2].trim()
+    const atx = matchAtxHeading(line, ATX_DOT_BREAK_RE, false)
+    if (atx !== null) {
+      const name = atx.name
       if (name !== '') {
         out.push({
           filePath,
@@ -242,24 +223,11 @@ export function extractJsonSymbols(raw: string, filePath: string): SymbolEntry[]
             k++
           }
           if (content[k] === ':' && depthWhenStringOpened === 1) {
-            // body/lineEnd are derived from the key's and value's own character offsets, never
-            // from whole source lines.
+            // body/lineEnd are derived from the key's and value's own character offsets, never from whole source lines.
             //
-            // The previous implementation defaulted body to `lines[strStartLine - 1]` -- the
-            // key's entire source line -- widening it only for string values with embedded
-            // newlines. On minified JSON that default is catastrophic: every top-level key sits
-            // on line 1, so every key stored a copy of the *whole file*. An N-key, S-byte
-            // minified document wrote N x S bytes into `symbols.body`, mirrored again into
-            // `symbols_fts`. One real 1.5 MB, 1142-key file grew global.db by 1.6 GB by itself,
-            // which made each reindex transaction long enough to blow past db.ts's 15s
-            // busy_timeout -- surfacing as "database is locked" and as long freezes during
-            // `token-goat index`.
+            // The previous implementation defaulted body to `lines[strStartLine - 1]` -- the key's entire source line -- widening it only for string values with embedded newlines. On minified JSON that default is catastrophic: every top-level key sits on line 1, so every key stored a copy of the *whole file*. An N-key, S-byte minified document wrote N x S bytes into `symbols.body`, mirrored again into `symbols_fts`. One real 1.5 MB, 1142-key file grew global.db by 1.6 GB by itself, which made each reindex transaction long enough to blow past db.ts's 15s busy_timeout -- surfacing as "database is locked" and as long freezes during `token-goat index`.
             //
-            // Walking the value's true extent instead makes the stored bytes scale with the
-            // value, so a whole document's bodies now sum to roughly the document's own size.
-            // It also fixes a real correctness gap: an object/array value previously recorded
-            // lineEnd as the key's line and a body of just `"key": {`, so `read file::key`
-            // returned the opening brace rather than the value.
+            // Walking the value's true extent instead makes the stored bytes scale with the value, so a whole document's bodies now sum to roughly the document's own size. It also fixes a real correctness gap: an object/array value previously recorded lineEnd as the key's line and a body of just `"key": {`, so `read file::key` returned the opening brace rather than the value.
             let v = k + 1
             while (v < content.length && /\s/.test(content[v] ?? '')) {
               v++
@@ -438,12 +406,11 @@ export function extractTomlSymbols(content: string, filePath: string): SymbolEnt
 
   function matchLine(line: string, lineNum: number): void {
     // `\[?` matches the optional second bracket of a TOML array-of-tables header (`[[bin]]`) so the name captures as `bin`, not `[bin`.
-    // eslint-disable-next-line regexp/no-super-linear-backtracking
-    const sectionMatch = /^\s*\[\[?\s*([^\]]+)\s*\]/.exec(line)
-    if (sectionMatch !== null && sectionMatch[1] !== undefined) {
+    const sectionName = matchTomlSectionName(line)
+    if (sectionName !== null) {
       out.push({
         filePath,
-        name: sectionMatch[1].trim(),
+        name: sectionName.trim(),
         kind: 'section',
         lineStart: lineNum + 1,
         lineEnd: lineNum + 1,
@@ -596,18 +563,12 @@ export function extractCssSymbols(content: string, filePath: string): SymbolEntr
 
     // `^[.#][\w-]+[,\s{]` only matched a bare class/id selector immediately followed by a comma/space/brace, so a compound selector (`.foo.bar`), a pseudo-class/element (`.foo:hover`, `.foo::before`), a plain tag/attribute selector (`div`, `input[type]`), or any selector indented under a nested @media/@supports block (leading whitespace broke the `^` anchor) were all silently skipped. Match anything up to the opening brace instead - excluding lines that start with `@` (an at-rule header like `@media (...) {` is not itself a selector, though selectors nested inside its block are separate lines matched independently) or `{`/`}` (a bare brace-only line) - and split a same-line comma-separated selector list into one symbol per selector. Match against a string-literal-stripped copy of the line so a `{` inside a quoted declaration value (e.g. `content: "{";`, a common pseudo-element glyph pattern) is never mistaken for a rule-opening brace. stripStringLiterals blanks string interiors to same-length spaces, so the match's character offsets line up with the original `line` - the actual (unblanked) selector text is then re-sliced from `line` at those offsets, so a real selector that legitimately contains a quoted value (e.g. `input[type="text"]`) is still captured verbatim rather than with its quoted portion blanked out.
     const strippedLine = blanked[i] ?? ''
-    // eslint-disable-next-line regexp/no-super-linear-backtracking
-    const selectorLineMatch = /^[ \t]*([^{}@][^{]*)\{/d.exec(strippedLine)
-    if (selectorLineMatch !== null && selectorLineMatch[1] !== undefined) {
-      const braceCol = (selectorLineMatch.indices?.[0]?.[1] ?? 1) - 1
-      const endIdx = ruleEndIdx(blanked, i, braceCol)
+    const selectorSpan = matchCssSelectorSpan(strippedLine)
+    if (selectorSpan !== null) {
+      const endIdx = ruleEndIdx(blanked, i, selectorSpan.end)
       flushPending(endIdx)
-      const captureRange = (selectorLineMatch as RegExpExecArray & { indices?: Array<[number, number] | undefined> })
-        .indices?.[1]
-      const rawCapture = captureRange ? line.slice(captureRange[0], captureRange[1]) : selectorLineMatch[1]
-      const strippedCapture = captureRange
-        ? strippedLine.slice(captureRange[0], captureRange[1])
-        : selectorLineMatch[1]
+      const rawCapture = line.slice(selectorSpan.start, selectorSpan.end)
+      const strippedCapture = strippedLine.slice(selectorSpan.start, selectorSpan.end)
       for (const part of splitTopLevelSelectors(rawCapture, strippedCapture)) {
         const name = part.trim()
         if (name) {
@@ -639,8 +600,7 @@ export function extractCssSymbols(content: string, filePath: string): SymbolEntr
       }
     }
 
-    // Anything else (blank line, declaration, closing brace, ...) breaks the accumulation --
-    // the pending fragments weren't actually part of a selector list after all.
+    // Anything else (blank line, declaration, closing brace, ...) breaks the accumulation -- the pending fragments weren't actually part of a selector list after all.
     pending = []
   }
 
@@ -694,11 +654,7 @@ export function extractDockerfileSymbols(content: string, filePath: string): Sym
 
 // --- Regex fallback ---------------------------------------------------------
 
-// Top-level function/class patterns for the languages we lack a grammar for (and as a safety net
-// when a native grammar fails to load mid-run). Each pattern also carries the comment `style` of
-// the language it targets -- unlike the tree-sitter extractors, this fallback has no reliably
-// detected `Language` to key off (it commonly runs against an 'unknown' extension), but the
-// *pattern that matched* always knows its own source language, so the style travels with it.
+// Top-level function/class patterns for the languages we lack a grammar for (and as a safety net when a native grammar fails to load mid-run). Each pattern also carries the comment `style` of the language it targets -- unlike the tree-sitter extractors, this fallback has no reliably detected `Language` to key off (it commonly runs against an 'unknown' extension), but the *pattern that matched* always knows its own source language, so the style travels with it.
 const FALLBACK_PATTERNS: ReadonlyArray<{ re: RegExp; kind: string; style: DocCommentStyle }> = [
   // Python
   { re: /^[ \t]*(?:async\s+)?def\s+([A-Za-z_]\w*)/, kind: 'function', style: 'hash' },
@@ -728,20 +684,8 @@ const FALLBACK_PATTERNS: ReadonlyArray<{ re: RegExp; kind: string; style: DocCom
   { re: /^[ \t]*func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)/, kind: 'function', style: 'c' },
 ]
 
-/**
- * Line-oriented regex extraction used when tree-sitter is unavailable.
- *
- * Captures the symbol name and a single-line body (the matched line). Line
- * numbers are 1-based. This is intentionally shallow: it recovers names for
- * `symbol`/`skeleton` lookups without full-body spans.
- */
-// Exported for tests only. This fires in production for an unrecognized filename/extension (the
-// `language === 'unknown'` early return upstream never actually reaches it for that case -- see
-// extractSymbolsNoTreeSitter) and, more meaningfully, as the mid-parse safety net when a
-// tree-sitter grammar throws on real source for a language that HAS one (still routed through
-// `extractNoTreeSitter` -> `extractSymbolsNoTreeSitter` with that language's own real filePath
-// extension). Neither path is practical to reach deterministically via `parseFile` in a unit
-// test, so tests call this directly rather than asserting on unreachable-in-practice behavior.
+/** Line-oriented regex extraction used when tree-sitter is unavailable. Captures the symbol name and a single-line body (the matched line). Line numbers are 1-based. This is intentionally shallow: it recovers names for `symbol`/`skeleton` lookups without full-body spans. */
+// Exported for tests only. This fires in production for an unrecognized filename/extension (the `language === 'unknown'` early return upstream never actually reaches it for that case -- see extractSymbolsNoTreeSitter) and, more meaningfully, as the mid-parse safety net when a tree-sitter grammar throws on real source for a language that HAS one (still routed through `extractNoTreeSitter` -> `extractSymbolsNoTreeSitter` with that language's own real filePath extension). Neither path is practical to reach deterministically via `parseFile` in a unit test, so tests call this directly rather than asserting on unreachable-in-practice behavior.
 export function extractWithRegex(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)

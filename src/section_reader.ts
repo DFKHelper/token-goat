@@ -1,22 +1,11 @@
-/**
- * Named-section extraction from text files.
- *
- * Unlike the Python `read_section` (which queries a tree-sitter-built `sections`
- * index in SQLite), this layer parses sections directly from text so it works
- * before the Layer 7 index exists. It recognises markdown headings, TOML/INI
- * tables, Python class/function bodies (via regex), and generic `key = value` /
- * `key:` blocks, choosing the parser by what the text looks like.
- *
- * A section spans from its own header line up to (but not including) the next
- * header at the same or shallower level — exactly the slice a reader means when
- * they ask for "the Install section" or "the [tool.ruff] table".
- */
+/** Named-section extraction from text files. Unlike the Python `read_section` (which queries a tree-sitter-built `sections` index in SQLite), this layer parses sections directly from text so it works before the Layer 7 index exists. It recognises markdown headings, TOML/INI tables, Python class/function bodies (via regex), and generic `key = value` / `key:` blocks, choosing the parser by what the text looks like. A section spans from its own header line up to (but not including) the next header at the same or shallower level — exactly the slice a reader means when they ask for "the Install section" or "the [tool.ruff] table". */
 
 import { readFileSync } from 'node:fs'
 
 import { redactIfDotenv } from './dotenv_redact.js'
 import { buildLineIndex, offsetToLine, findHtmlHeadingMatches } from './languages/common.js'
 import { eachUnfencedLine } from './markdown_lines.js'
+import { ATX_CLASS_BREAK_RE, matchAtxHeading, matchTableHeaderName } from './line_matchers.js'
 import { frontMatterEndIndex } from './markdown_frontmatter.js'
 import { detectLanguage, refineLanguageByContent } from './parser_types.js'
 import { decodeSource } from './util.js'
@@ -31,12 +20,7 @@ export interface SectionResult {
   readonly lineEnd: number
   /** The original query a prefix redirect resolved from; absent on an exact match. */
   readonly redirectedFrom?: string
-  /**
-   * 1-based line numbers of every heading the spec matched, present only when the spec carried no
-   * ordinal and more than one heading matched. Absent -- not a one-element array -- for the
-   * unambiguous case, so a caller that ignores the field keeps the historical first-match result
-   * and only a caller that checks it sees the ambiguity. See runSection, which refuses on it.
-   */
+  /** 1-based line numbers of every heading the spec matched, present only when the spec carried no ordinal and more than one heading matched. Absent -- not a one-element array -- for the unambiguous case, so a caller that ignores the field keeps the historical first-match result and only a caller that checks it sees the ambiguity. See runSection, which refuses on it. */
   readonly occurrences?: readonly number[]
 }
 
@@ -52,18 +36,10 @@ interface SectionHeader {
 }
 
 /** Kind of header finder that produced the headers. */
-// 'table-toml' uses dotted-name nesting (tableSectionEndIndex): a later table only ends the current section if it is NOT a strict dotted descendant, matching TOML's real nesting convention (e.g. [tool.ruff] legitimately absorbs [tool.ruff.lint]). 'table-flat' is INI and the unknown-language table sniff, where a `.` in a section name (e.g. [server.pool] or [mysqld:replica]) is just a name, never a nesting operator, so every [header] must end strictly at the next header line regardless of dotted-prefix overlap.
-// 'region' is Visual Basic `#Region "name"` ... `#End Region`, nestable, each header carrying its own endIndex.
-// 'banner' is Shell script comment banner headings (e.g. `# -- Section --`, `## Section`, `# [Section]`), ending at the next banner or EOF.
+// 'table-toml' uses dotted-name nesting (tableSectionEndIndex): a later table only ends the current section if it is NOT a strict dotted descendant, matching TOML's real nesting convention (e.g. [tool.ruff] legitimately absorbs [tool.ruff.lint]). 'table-flat' is INI and the unknown-language table sniff, where a `.` in a section name (e.g. [server.pool] or [mysqld:replica]) is just a name, never a nesting operator, so every [header] must end strictly at the next header line regardless of dotted-prefix overlap. 'region' is Visual Basic `#Region "name"` ... `#End Region`, nestable, each header carrying its own endIndex. 'banner' is Shell script comment banner headings (e.g. `# -- Section --`, `## Section`, `# [Section]`), ending at the next banner or EOF.
 type HeaderKind = 'markdown' | 'table-toml' | 'table-flat' | 'keyvalue' | 'python' | 'region' | 'banner'
 
-/**
- * Split a heading spec into its base text and optional 1-based ordinal.
- *
- * `"Setup#2"` → `{ base: "Setup", ordinal: 2 }`; `"Setup"` → `{ base: "Setup",
- * ordinal: null }`. Only a trailing `#<digits>` is treated as an ordinal so a
- * heading that legitimately contains `#` mid-text is left intact.
- */
+/** Split a heading spec into its base text and optional 1-based ordinal. `"Setup#2"` → `{ base: "Setup", ordinal: 2 }`; `"Setup"` → `{ base: "Setup", ordinal: null }`. Only a trailing `#<digits>` is treated as an ordinal so a heading that legitimately contains `#` mid-text is left intact. */
 function parseHeadingSpec(
   spec: string,
   headers?: readonly SectionHeader[],
@@ -81,15 +57,7 @@ function parseHeadingSpec(
   return { base: spec.trim(), ordinal: null }
 }
 
-/**
- * Normalise a heading string before comparison — "replacement" mode.
- *
- * Replaces em-dash (U+2014) and en-dash (U+2013) with a regular hyphen `-` so a
- * query typed with a hyphen matches a stored heading that uses a typographic dash.
- * Also strips trailing parentheticals and leading numeric prefixes.
- *
- * Apply to BOTH sides of the comparison.
- */
+/** Normalise a heading string before comparison — "replacement" mode. Replaces em-dash (U+2014) and en-dash (U+2013) with a regular hyphen `-` so a query typed with a hyphen matches a stored heading that uses a typographic dash. Also strips trailing parentheticals and leading numeric prefixes. Apply to BOTH sides of the comparison. */
 export function normalizeHeading(s: string): string {
   // Replace em-dash and en-dash with a regular hyphen
   let n = s.replace(/[—–]/g, '-')
@@ -101,16 +69,7 @@ export function normalizeHeading(s: string): string {
   return n.replace(/\s+/g, ' ').trim()
 }
 
-/**
- * Normalise a heading string — "subtitle strip" mode.
- *
- * Em-dash and en-dash often introduce a subtitle (`"Section Index — description"`).
- * This variant strips the dash and everything that follows so a bare prefix query
- * (`"Section Index"`) matches the full stored heading.
- *
- * Also strips trailing parentheticals and leading numeric prefixes.
- * Apply to BOTH sides of the comparison.
- */
+/** Normalise a heading string — "subtitle strip" mode. Em-dash and en-dash often introduce a subtitle (`"Section Index — description"`). This variant strips the dash and everything that follows so a bare prefix query (`"Section Index"`) matches the full stored heading. Also strips trailing parentheticals and leading numeric prefixes. Apply to BOTH sides of the comparison. */
 function normalizeHeadingStrip(s: string): string {
   // Strip subtitle: everything from em-dash / en-dash onwards
   let n = s.replace(/\s*[—–].*$/, '')
@@ -121,34 +80,17 @@ function normalizeHeadingStrip(s: string): string {
   return n.replace(/\s+/g, ' ').trim()
 }
 
-// Minimum length for a query word to count in the widened suffix/word-subset match tier in
-// resolveHeaderPos -- below this, short words like "a"/"of" would match almost any heading.
+// Minimum length for a query word to count in the widened suffix/word-subset match tier in resolveHeaderPos -- below this, short words like "a"/"of" would match almost any heading.
 const MIN_WIDEN_WORD_LEN = 3
 
-// MARKDOWN_HEADER_RE and TABLE_HEADER_RE use non-greedy matching across whitespace boundaries.
-// eslint-disable-next-line regexp/no-super-linear-backtracking
-const MARKDOWN_HEADER_RE = /^(#{1,6})\s+([^\r\n]+?)(?:\s+#+)?\s*$/
-// TOML permits a trailing `# comment` after a table header, and INI files very commonly write `; comment` the same way; the trailing `(?:[#;].*)?` lets either follow the closing bracket(s) without treating the header line as anything other than a table header. Deliberately NOT fully unanchored to end-of-line (unlike the indexer's own regex) - this finder is also the unknown-language sniff fallback, so an unanchored match would let a markdown `[link](url)` be misread as a table header, which the comment-only relaxation avoids.
-// eslint-disable-next-line regexp/no-super-linear-backtracking
-const TABLE_HEADER_RE = /^\s*\[+\s*([^\]]+?)\s*\]+\s*(?:[#;].*)?$/
-// A Python def/class header. Indentation = nesting; the name is the section key.
+// TOML permits a trailing `# comment` after a table header, and INI files very commonly write `; comment` the same way; the trailing `(?:[#;].*)?` lets either follow the closing bracket(s) without treating the header line as anything other than a table header. Deliberately NOT fully unanchored to end-of-line (unlike the indexer's own regex) - this finder is also the unknown-language sniff fallback, so an unanchored match would let a markdown `[link](url)` be misread as a table header, which the comment-only relaxation avoids. A Python def/class header. Indentation = nesting; the name is the section key.
 const PYTHON_HEADER_RE = /^(\s*)(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)/
 // A generic `key = value` or `key:` block header at column zero. A bare URL on its own line (e.g. "https://example.com") must NOT match as a false "https" heading -- the colon there is a URL scheme separator immediately followed by "//", not a key/value split.
 const KEYVALUE_HEADER_RE = /^([A-Za-z_][\w.-]*)\s*(?:=|:(?!\/\/))/
-// Mirrors ENV_KEY_RE in languages/ini_idx.ts - .env/.envrc files commonly prefix an exported
-// key with `export `, which the plain KEYVALUE_HEADER_RE above does not tolerate.
+// Mirrors ENV_KEY_RE in languages/ini_idx.ts - .env/.envrc files commonly prefix an exported key with `export `, which the plain KEYVALUE_HEADER_RE above does not tolerate.
 const ENV_KEYVALUE_HEADER_RE = /^(?:export\s+)?([A-Za-z_][\w.-]*)\s*(?:=|:(?!\/\/))/
 
-/**
- * Locate every section header in `lines` for a markdown-style document.
- *
- * Level is the count of leading `#`. The header text is the trimmed remainder
- * with any trailing closing `#` run (ATX-closed headings) removed.
- *
- * Skips lines inside fenced code blocks so a `#`-comment line inside a fence
- * (common in shell snippets, e.g. `# install deps`) is not mistaken for a header
- * and does not truncate the enclosing section.
- */
+/** Locate every section header in `lines` for a markdown-style document. Level is the count of leading `#`. The header text is the trimmed remainder with any trailing closing `#` run (ATX-closed headings) removed. Skips lines inside fenced code blocks so a `#`-comment line inside a fence (common in shell snippets, e.g. `# install deps`) is not mistaken for a header and does not truncate the enclosing section. */
 export function findMarkdownHeaders(lines: readonly string[]): SectionHeader[] {
   const headers: SectionHeader[] = []
   // Front matter is metadata, not prose: start after it so its closing fence cannot underline a key as a setext heading.
@@ -157,14 +99,13 @@ export function findMarkdownHeaders(lines: readonly string[]): SectionHeader[] {
 
   for (let u = 0; u < unfenced.length; u++) {
     const [i, line] = unfenced[u]!
-    const m = MARKDOWN_HEADER_RE.exec(line)
-    if (m !== null && m[1] !== undefined && m[2] !== undefined) {
-      headers.push({ heading: m[2].trim(), level: m[1].length, index: i })
+    const atx = matchAtxHeading(line, ATX_CLASS_BREAK_RE, true)
+    if (atx !== null) {
+      headers.push({ heading: atx.name, level: atx.level, index: i })
       continue
     }
 
-    // Setext headings: non-blank text line followed immediately by an underline line (= or -)
-    // Both lines must be unfenced and consecutive in source lines (i + 1).
+    // Setext headings: non-blank text line followed immediately by an underline line (= or -) Both lines must be unfenced and consecutive in source lines (i + 1).
     const trimmed = line.trim()
     if (
       trimmed !== '' &&
@@ -194,26 +135,7 @@ export function findMarkdownHeaders(lines: readonly string[]): SectionHeader[] {
   return headers
 }
 
-/**
- * Locate every TOML-table / INI-section header in `lines`.
- *
- * Tables are flat in document order: `[tool.ruff]` is a sibling of `[project]`,
- * not a child of it (the dot is part of the table name, not text nesting). So
- * every table is level 1 and a section ends at the very next table header. The
- * full dotted name is kept as the heading so `extractSection("tool.ruff")`
- * works.
- *
- * A TOML `"""`/`'''` multi-line string or a multi-line array can legally contain text that
- * looks like a `[section]` header (a description quoting example TOML, an array-of-arrays row
- * starting with `[`). Track the same open-delimiter/bracket-depth state the TOML indexer
- * (extractTomlSymbols in parser.ts) uses so a line inside one of those spans is never mistaken
- * for a real table header here while the indexer correctly skips it. The triple-quote tracking
- * is inert for INI, which has no such construct, but the bracket-array tracking is NOT inert
- * for INI - an INI value routinely contains a bare, net-unbalanced `[` (a stray bracket, a log
- * format string, a glob fragment) with no structural meaning, and applying TOML's array-depth
- * state machine to it would suppress every real `[section]` header that follows. `isToml` gates
- * that half of the state machine off for INI and the unknown-format sniff fallback.
- */
+/** Locate every TOML-table / INI-section header in `lines`. Tables are flat in document order: `[tool.ruff]` is a sibling of `[project]`, not a child of it (the dot is part of the table name, not text nesting). So every table is level 1 and a section ends at the very next table header. The full dotted name is kept as the heading so `extractSection("tool.ruff")` works. A TOML `"""`/`'''` multi-line string or a multi-line array can legally contain text that looks like a `[section]` header (a description quoting example TOML, an array-of-arrays row starting with `[`). Track the same open-delimiter/bracket-depth state the TOML indexer (extractTomlSymbols in parser.ts) uses so a line inside one of those spans is never mistaken for a real table header here while the indexer correctly skips it. The triple-quote tracking is inert for INI, which has no such construct, but the bracket-array tracking is NOT inert for INI - an INI value routinely contains a bare, net-unbalanced `[` (a stray bracket, a log format string, a glob fragment) with no structural meaning, and applying TOML's array-depth state machine to it would suppress every real `[section]` header that follows. `isToml` gates that half of the state machine off for INI and the unknown-format sniff fallback. */
 function findTableHeaders(lines: readonly string[], isToml: boolean): SectionHeader[] {
   const headers: SectionHeader[] = []
   let openDelim: string | null = null
@@ -227,8 +149,8 @@ function findTableHeaders(lines: readonly string[], isToml: boolean): SectionHea
       const closeIdx = line.indexOf(openDelim)
       if (closeIdx === -1) continue
       const restStart = closeIdx + openDelim.length
-      const m = TABLE_HEADER_RE.exec(line.slice(restStart))
-      if (m !== null && m[1] !== undefined) headers.push({ heading: m[1].trim(), level: 1, index: i })
+      const name = matchTableHeaderName(line.slice(restStart))
+      if (name !== null) headers.push({ heading: name.trim(), level: 1, index: i })
       openDelim = lineOpenDelimiterAfter(stripTomlComment(line.slice(restStart)), 0)
       continue
     }
@@ -238,8 +160,8 @@ function findTableHeaders(lines: readonly string[], isToml: boolean): SectionHea
       continue
     }
 
-    const m = TABLE_HEADER_RE.exec(line)
-    if (m !== null && m[1] !== undefined) headers.push({ heading: m[1].trim(), level: 1, index: i })
+    const name = matchTableHeaderName(line)
+    if (name !== null) headers.push({ heading: name.trim(), level: 1, index: i })
     if (isToml) {
       // Comment text must not feed the delimiter/array trackers, or a note such as `# see [docs` opens a phantom array that hides every table header after it. Shared with extractTomlSymbols so both surfaces agree.
       const code = stripTomlComment(line)
@@ -250,28 +172,11 @@ function findTableHeaders(lines: readonly string[], isToml: boolean): SectionHea
   return headers
 }
 
-/**
- * Locate Python `def`/`class` headers, using indentation as nesting level.
- *
- * A top-level def/class is level 1; one indent step deeper is level 2, etc. Nesting is tracked
- * with a stack of indent widths (the same relative-comparison approach Python's own lexer uses
- * for blocks) rather than dividing the raw column count by a fixed 4-space unit - a fixed
- * divisor mis-levels every def/class in a 2-space or 3-space indented file (both indent widths
- * floor-divide to the SAME level as their enclosing class), which truncates the class's section
- * at its very first method instead of spanning the whole body. Tabs are normalised to 4 spaces
- * before comparison so a file mixing tabs and spaces at the same nesting depth still resolves
- * consistently.
- */
+/** Locate Python `def`/`class` headers, using indentation as nesting level. A top-level def/class is level 1; one indent step deeper is level 2, etc. Nesting is tracked with a stack of indent widths (the same relative-comparison approach Python's own lexer uses for blocks) rather than dividing the raw column count by a fixed 4-space unit - a fixed divisor mis-levels every def/class in a 2-space or 3-space indented file (both indent widths floor-divide to the SAME level as their enclosing class), which truncates the class's section at its very first method instead of spanning the whole body. Tabs are normalised to 4 spaces before comparison so a file mixing tabs and spaces at the same nesting depth still resolves consistently. */
 const VB_REGION_RE = /^\s*#\s*Region\s+"((?:[^"]|"")*)"/i
 const VB_END_REGION_RE = /^\s*#\s*End\s+Region\b/i
 
-/**
- * Shell script comment banner patterns:
- * 1. Markdown-style comment headers: `## Section Name` or `### Sub-section`
- * 2. Box / rule banners: `# ---------------------------------`, `# -- Section Name --`, `# === Check 1 ===`
- * 3. Bracketed step banners: `# [1. Check Git Status]`, `# [Setup]`
- * 4. Region tags: `# REGION: Name`
- */
+/** Shell script comment banner patterns: 1. Markdown-style comment headers: `## Section Name` or `### Sub-section` 2. Box / rule banners: `# ---------------------------------`, `# -- Section Name --`, `# === Check 1 ===` 3. Bracketed step banners: `# [1. Check Git Status]`, `# [Setup]` 4. Region tags: `# REGION: Name` */
 export function extractShellBannerHeading(line: string): { heading: string; level: number } | null {
   const trimmed = line.trim()
   if (!trimmed.startsWith('#')) return null
@@ -318,9 +223,7 @@ export function extractShellBannerHeading(line: string): { heading: string; leve
   return null
 }
 
-/**
- * Locate shell script heading banners (e.g. `## Section`, `# -- Section --`, `# [Section]`).
- */
+/** Locate shell script heading banners (e.g. `## Section`, `# -- Section --`, `# [Section]`). */
 export function findShellBannerHeaders(lines: readonly string[]): SectionHeader[] {
   const headers: SectionHeader[] = []
   for (let i = 0; i < lines.length; i++) {
@@ -333,9 +236,7 @@ export function findShellBannerHeaders(lines: readonly string[]): SectionHeader[
   return headers
 }
 
-/**
- * Visual Basic `#Region "name"` blocks as sections (https://learn.microsoft.com/en-us/dotnet/visual-basic/language-reference/directives/region-directive): nestable, each ending at its own `#End Region` line (included), or at end of file when it never closes. A stray `#End Region` with nothing open is ignored.
- */
+/** Visual Basic `#Region "name"` blocks as sections (https://learn.microsoft.com/en-us/dotnet/visual-basic/language-reference/directives/region-directive): nestable, each ending at its own `#End Region` line (included), or at end of file when it never closes. A stray `#End Region` with nothing open is ignored. */
 function findVbRegionHeaders(lines: readonly string[]): SectionHeader[] {
   const headers: SectionHeader[] = []
   const open: number[] = []
@@ -394,17 +295,7 @@ function findPythonHeaders(lines: readonly string[]): SectionHeader[] {
   return headers
 }
 
-/**
- * Locate generic `key = value` / `key:` block headers at column zero.
- *
- * A quoted value can wrap across multiple physical lines (YAML folds an embedded newline into
- * a space; .env values can do the same). Without tracking an open quote across lines, a
- * continuation line that happens to itself look like `word:`/`word=` (wrapped prose, an
- * embedded "ratio: 16:9", part of a multi-line cert/PEM block, etc.) was read as a brand new
- * top-level key, fragmenting the real section and producing phantom ones. Reuses the same
- * quote-tracking helpers the yaml and .env indexers already use (extractYamlSymbols in
- * parser.ts, extractEnv in ini_idx.ts) so the live reader and the index stay consistent.
- */
+/** Locate generic `key = value` / `key:` block headers at column zero. A quoted value can wrap across multiple physical lines (YAML folds an embedded newline into a space; .env values can do the same). Without tracking an open quote across lines, a continuation line that happens to itself look like `word:`/`word=` (wrapped prose, an embedded "ratio: 16:9", part of a multi-line cert/PEM block, etc.) was read as a brand new top-level key, fragmenting the real section and producing phantom ones. Reuses the same quote-tracking helpers the yaml and .env indexers already use (extractYamlSymbols in parser.ts, extractEnv in ini_idx.ts) so the live reader and the index stay consistent. */
 function findKeyValueHeaders(lines: readonly string[], language: string): SectionHeader[] {
   const headers: SectionHeader[] = []
   const isEnv = language === 'env_file'
@@ -446,17 +337,7 @@ function findHtmlHeaders(text: string): SectionHeader[] {
   return headers
 }
 
-/**
- * Choose the right header finder for `text` given a language hint.
- *
- * Markdown and table/INI are detected by their characteristic header lines even
- * when the language hint is `unknown` (so a raw `.txt` of TOML still parses).
- * Python uses the def/class finder; everything else falls back to key-value.
- *
- * Returns both the headers and the kind of finder that produced them so
- * termination rules can be tuned per kind (e.g. table headers use prefix-based
- * termination instead of level-based).
- */
+/** Choose the right header finder for `text` given a language hint. Markdown and table/INI are detected by their characteristic header lines even when the language hint is `unknown` (so a raw `.txt` of TOML still parses). Python uses the def/class finder; everything else falls back to key-value. Returns both the headers and the kind of finder that produced them so termination rules can be tuned per kind (e.g. table headers use prefix-based termination instead of level-based). */
 function findHeaders(text: string, language: string): { headers: SectionHeader[]; kind: HeaderKind } {
   const lines = text.split('\n')
 
@@ -480,20 +361,13 @@ function findHeaders(text: string, language: string): { headers: SectionHeader[]
   // Unknown / other: sniff. Prefer markdown headings, then tables, then a key-value fallback so generic config files still yield sections.
   const md = findMarkdownHeaders(lines)
   if (md.length > 0) return { headers: md, kind: 'markdown' }
-  // The sniffer cannot tell TOML from INI syntactically (both use bare `[header]` lines) when there is no file extension to consult, so it keeps the pre-existing dotted-nesting behavior here for the ambiguous case - only the language==='ini' branch above, where the file extension makes the language unambiguous, uses the flat (non-nesting) kind.
-  // isToml=false is a deliberate, known-imperfect choice for this ambiguous case: it disables findTableHeaders' TOML multi-line-array/triple-quote-string tracking, so an extension-less TOML-flavored file CAN misread a `[section]`-looking line quoted inside a triple-quoted string as a real header. isToml=true would fix that, but was rejected - it reintroduces the regressions the two "does not let a stray, net-unbalanced ..." tests below (in section_reader.test.ts) exist to prevent, where an ordinary INI value containing an unbalanced `[` or a triple-quote-length run gets misread as opening a multi-line TOML construct and silently swallows every following line, including a real `[section]` header. A single isToml boolean can't serve both flavors of ambiguous file at once; INI-style files were prioritized here because they already had regression coverage. Fixing the TOML-flavored case would need a smarter per-file heuristic, not a flag flip - left as a known limitation rather than resolved unilaterally.
+  // The sniffer cannot tell TOML from INI syntactically (both use bare `[header]` lines) when there is no file extension to consult, so it keeps the pre-existing dotted-nesting behavior here for the ambiguous case - only the language==='ini' branch above, where the file extension makes the language unambiguous, uses the flat (non-nesting) kind. isToml=false is a deliberate, known-imperfect choice for this ambiguous case: it disables findTableHeaders' TOML multi-line-array/triple-quote-string tracking, so an extension-less TOML-flavored file CAN misread a `[section]`-looking line quoted inside a triple-quoted string as a real header. isToml=true would fix that, but was rejected - it reintroduces the regressions the two "does not let a stray, net-unbalanced ..." tests below (in section_reader.test.ts) exist to prevent, where an ordinary INI value containing an unbalanced `[` or a triple-quote-length run gets misread as opening a multi-line TOML construct and silently swallows every following line, including a real `[section]` header. A single isToml boolean can't serve both flavors of ambiguous file at once; INI-style files were prioritized here because they already had regression coverage. Fixing the TOML-flavored case would need a smarter per-file heuristic, not a flag flip - left as a known limitation rather than resolved unilaterally.
   const tbl = findTableHeaders(lines, false)
   if (tbl.length > 0) return { headers: tbl, kind: 'table-toml' }
   return { headers: findKeyValueHeaders(lines, language), kind: 'keyvalue' }
 }
 
-/**
- * Resolve a header's end line: the line before the next header at the same or
- * a shallower level, or end-of-file when none follows.
- *
- * Returns a 0-based exclusive end index (the line *after* the section's last
- * content line), which the caller converts to a 1-based inclusive end.
- */
+/** Resolve a header's end line: the line before the next header at the same or a shallower level, or end-of-file when none follows. Returns a 0-based exclusive end index (the line *after* the section's last content line), which the caller converts to a 1-based inclusive end. */
 function sectionEndIndex(
   headers: readonly SectionHeader[],
   headerPos: number,
@@ -509,13 +383,7 @@ function sectionEndIndex(
   return totalLines
 }
 
-/**
- * Resolve a TOML table section's end line by dotted-name nesting rather than a
- * numeric level. A later table ends the section unless it is a strict
- * descendant — its dotted name begins with `<current>.` — so `[tool.ruff]`
- * absorbs `[tool.ruff.lint]` but stops at a sibling like `[tool.mypy]` or a
- * different root like `[project]`. Returns a 0-based exclusive end index.
- */
+/** Resolve a TOML table section's end line by dotted-name nesting rather than a numeric level. A later table ends the section unless it is a strict descendant — its dotted name begins with `<current>.` — so `[tool.ruff]` absorbs `[tool.ruff.lint]` but stops at a sibling like `[tool.mypy]` or a different root like `[project]`. Returns a 0-based exclusive end index. */
 function tableSectionEndIndex(
   headers: readonly SectionHeader[],
   headerPos: number,
@@ -533,13 +401,7 @@ function tableSectionEndIndex(
   return totalLines
 }
 
-/**
- * Resolve a heading spec to a header index. Tries exact / normalized / stripped
- * equality first; on a miss with no ordinal, falls back to a unique
- * normalized-prefix match (e.g. `"Business"` resolves a lone `"Business / logic"`)
- * and reports the original query via `redirectedFrom`. Returns null when nothing
- * resolves or a prefix is ambiguous across distinct headings.
- */
+/** Resolve a heading spec to a header index. Tries exact / normalized / stripped equality first; on a miss with no ordinal, falls back to a unique normalized-prefix match (e.g. `"Business"` resolves a lone `"Business / logic"`) and reports the original query via `redirectedFrom`. Returns null when nothing resolves or a prefix is ambiguous across distinct headings. */
 function resolveHeaderPos(
   headers: readonly SectionHeader[],
   base: string,
@@ -571,8 +433,7 @@ function resolveHeaderPos(
     const pick = ordinal === null ? 0 : ordinal - 1
     const headerPos = matches[pick]
     if (headerPos === undefined) return null
-    // Report the ambiguity only when the caller did NOT already disambiguate. A spec carrying an
-    // ordinal has picked its occurrence deliberately and must stay a plain, silent hit.
+    // Report the ambiguity only when the caller did NOT already disambiguate. A spec carrying an ordinal has picked its occurrence deliberately and must stay a plain, silent hit.
     let occurrences: number[] | null = null
     if (ordinal === null && matches.length > 1) {
       occurrences = []
@@ -601,13 +462,7 @@ function resolveHeaderPos(
     if (chosen === undefined) return null
     return { headerPos: prefixPos, redirectedFrom: base, occurrences: null }
   }
-  // Still no match. Last-resort tier: a distinctive suffix or word-subset query, e.g. "Setup"
-  // for "Installation and Setup", or "Config Options" for "Configuration Options". Every
-  // normalized query word must be a substring (either direction) of some word in the heading.
-  // Reached only once exact/normalized/stripped/prefix have all missed, so it can never divert
-  // an exact-text query away from its own heading. Ambiguous across 2+ distinct headings is
-  // still refused, same as the prefix tier above -- the caller reports a miss and lets the
-  // (filtered) "did you mean" suggestions surface the candidates instead of guessing.
+  // Still no match. Last-resort tier: a distinctive suffix or word-subset query, e.g. "Setup" for "Installation and Setup", or "Config Options" for "Configuration Options". Every normalized query word must be a substring (either direction) of some word in the heading. Reached only once exact/normalized/stripped/prefix have all missed, so it can never divert an exact-text query away from its own heading. Ambiguous across 2+ distinct headings is still refused, same as the prefix tier above -- the caller reports a miss and lets the (filtered) "did you mean" suggestions surface the candidates instead of guessing.
   const queryWords = normalizedTarget.split(/\s+/).filter((w) => w.length >= MIN_WIDEN_WORD_LEN)
   if (queryWords.length === 0) return null
   const widenedMatches: number[] = []
@@ -615,9 +470,7 @@ function resolveHeaderPos(
     const h = headers[i]
     if (h === undefined) continue
     const headingWords = normalizeHeading(h.heading).toLowerCase().split(/\s+/)
-    // Forward containment only (heading word contains the query word, not the reverse) -- a
-    // reverse check would let a short heading word like "title" match an unrelated longer
-    // query word that merely happens to contain it (e.g. "subtitle" contains "title").
+    // Forward containment only (heading word contains the query word, not the reverse) -- a reverse check would let a short heading word like "title" match an unrelated longer query word that merely happens to contain it (e.g. "subtitle" contains "title").
     const allWordsMatch = queryWords.every((qw) => headingWords.some((hw) => hw.includes(qw)))
     if (allWordsMatch) widenedMatches.push(i)
   }
@@ -648,9 +501,7 @@ function sectionLevenshtein(a: string, b: string): number {
   return v0[lb]!
 }
 
-// Fuzzy heading matching tier: catches minor phrasing differences, typos, punctuation differences,
-// stem variations, or extra/missing words (e.g. "Pre-Commit Hook" for "Pre-Commit Hook Configurations",
-// "Fuzzy Heading Matchers" for "Fuzzy Heading Matcher", or "Quick-Start Guide" for "Quick-Start & Usage Guide").
+// Fuzzy heading matching tier: catches minor phrasing differences, typos, punctuation differences, stem variations, or extra/missing words (e.g. "Pre-Commit Hook" for "Pre-Commit Hook Configurations", "Fuzzy Heading Matchers" for "Fuzzy Heading Matcher", or "Quick-Start Guide" for "Quick-Start & Usage Guide").
 const STOP_WORDS = new Set(['a', 'an', 'the', 'and', 'or', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', '&'])
 const cleanTokens = (str: string): string[] =>
   str.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 0)
@@ -747,11 +598,7 @@ const cleanTokens = (str: string): string[] =>
   return null
 }
 
-/**
- * Build a SectionResult for a resolved header: compute the section's end line,
- * trim a single trailing blank, and slice the body. `redirectedFrom`, when set,
- * is the original query text the spec resolved to via a prefix redirect.
- */
+/** Build a SectionResult for a resolved header: compute the section's end line, trim a single trailing blank, and slice the body. `redirectedFrom`, when set, is the original query text the spec resolved to via a prefix redirect. */
 function buildSectionResult(
   headers: readonly SectionHeader[],
   kind: HeaderKind,
@@ -780,16 +627,8 @@ function buildSectionResult(
   return redirectedFrom === null ? result : { ...result, redirectedFrom }
 }
 
-/**
- * Extract a named section from `text`. Returns `null` when not found.
- *
- * `headingSpec` is the section name, optionally suffixed with `#N` to select the
- * Nth (1-based) occurrence among headers sharing that name. Matching is
- * case-insensitive on the trimmed heading text. Without an ordinal the first
- * occurrence by line order is returned.
- */
-/** Shared by {@link extractSection}/{@link readSection}: resolve `headingSpec` against
- * `text`'s header structure (parsed for `language`) and build the section result. */
+/** Extract a named section from `text`. Returns `null` when not found. `headingSpec` is the section name, optionally suffixed with `#N` to select the Nth (1-based) occurrence among headers sharing that name. Matching is case-insensitive on the trimmed heading text. Without an ordinal the first occurrence by line order is returned. */
+/** Shared by {@link extractSection}/{@link readSection}: resolve `headingSpec` against `text`'s header structure (parsed for `language`) and build the section result. */
 function resolveSectionFromText(
   text: string,
   headingSpec: string,
@@ -814,20 +653,8 @@ export function extractSection(text: string, headingSpec: string): SectionResult
   return resolveSectionFromText(text, headingSpec, 'unknown')
 }
 
-/**
- * Read a section from a file on disk. Returns `null` when the file cannot be
- * read or the section is not found.
- *
- * The file's language is detected from its path so the correct header parser is
- * used (e.g. a `.py` file uses the Python def/class finder rather than the
- * markdown sniffer).
- */
-// `readFn`, when supplied, replaces the raw `readFileSync` below -- callers that hold a pin
-// verified by `confineTargets` (see src/mcp_server.ts) pass the pin-aware `readFileText` from
-// read_commands.ts so a section read re-verifies file identity instead of trusting the path a
-// second time. Threading a function rather than importing `readFileText` directly avoids a
-// circular import (read_commands.ts already imports this module), and CLI callers that omit it
-// keep the pre-existing plain-`fs` behavior byte-for-byte.
+/** Read a section from a file on disk. Returns `null` when the file cannot be read or the section is not found. The file's language is detected from its path so the correct header parser is used (e.g. a `.py` file uses the Python def/class finder rather than the markdown sniffer). */
+// `readFn`, when supplied, replaces the raw `readFileSync` below -- callers that hold a pin verified by `confineTargets` (see src/mcp_server.ts) pass the pin-aware `readFileText` from read_commands.ts so a section read re-verifies file identity instead of trusting the path a second time. Threading a function rather than importing `readFileText` directly avoids a circular import (read_commands.ts already imports this module), and CLI callers that omit it keep the pre-existing plain-`fs` behavior byte-for-byte.
 function readTextForSections(filePath: string, readFn?: (p: string) => string | null): string | null {
   let text: string
   if (readFn !== undefined) {
@@ -836,9 +663,7 @@ function readTextForSections(filePath: string, readFn?: (p: string) => string | 
     text = read
   } else {
     try {
-      // decodeSource, not a utf-8 read: a UTF-16 file has no headings at all once its bytes are
-      // read as UTF-8, so `section --list` on a PowerShell-written document answered "No sections
-      // found" for a document full of them.
+      // decodeSource, not a utf-8 read: a UTF-16 file has no headings at all once its bytes are read as UTF-8, so `section --list` on a PowerShell-written document answered "No sections found" for a document full of them.
       text = decodeSource(readFileSync(filePath))
     } catch {
       return null
@@ -849,10 +674,7 @@ function readTextForSections(filePath: string, readFn?: (p: string) => string | 
   if (text.charCodeAt(0) === 0xfeff) {
     text = text.slice(1)
   }
-  // A dotenv section is its key and its value, and the value is the secret. Applied here rather
-  // than only in the readFn branch so the plain CLI path (`token-goat section ".env::API_KEY"`,
-  // which passes no readFn) is covered too. Redacting after the BOM strip keeps both transforms
-  // in one place and line-for-line. See dotenv_redact.ts.
+  // A dotenv section is its key and its value, and the value is the secret. Applied here rather than only in the readFn branch so the plain CLI path (`token-goat section ".env::API_KEY"`, which passes no readFn) is covered too. Redacting after the BOM strip keeps both transforms in one place and line-for-line. See dotenv_redact.ts.
   return redactIfDotenv(filePath, text)
 }
 
@@ -916,12 +738,7 @@ export function findContainingSection(
   return { ...result, heading: `${bestHeader.heading}#${ordinal}` }
 }
 
-/**
- * List every section heading in a file at all nesting levels, in document order.
- *
- * Returns an empty array when the file cannot be read or has no recognisable
- * sections.
- */
+/** List every section heading in a file at all nesting levels, in document order. Returns an empty array when the file cannot be read or has no recognisable sections. */
 export function listSections(filePath: string, readFn?: (p: string) => string | null): string[] {
   const text = readTextForSections(filePath, readFn)
   if (text === null) return []

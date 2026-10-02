@@ -478,6 +478,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/known_roots.ts`](src/known_roots.ts) | Exports: `isTooShallowToPrune`, `recordKnownRoot`, `sweepExpiredKnownRootMarkers`, `recordKnownRootThrottled` |
 | [`src/language_specs.ts`](src/language_specs.ts) | The one table of languages token-goat indexes. |
 | [`src/lazy_module.ts`](src/lazy_module.ts) | Shared factory for the "lazily load an optional npm dependency" pattern used by every optional-dependency reader (pdf_extract.ts, xlsx_extract.ts, ooxml_extract.ts, screenshot.ts, |
+| [`src/line_matchers.ts`](src/line_matchers.ts) | Linear-time matchers for header-like lines. |
 | [`src/line_regions.ts`](src/line_regions.ts) | Maps a requested line span onto the file regions that cover it. |
 | [`src/listing_size.ts`](src/listing_size.ts) | `token-goat listing-size`: price the skill and agent listings Claude Code puts in context. |
 | [`src/manifest_fit.ts`](src/manifest_fit.ts) | Fits an ordered list of manifest sections to a character budget by dropping whole rows, never by cutting text. |
