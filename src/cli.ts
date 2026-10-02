@@ -722,10 +722,10 @@ async function cmdCompress(
 // setTimeout's delay is a signed 32-bit millisecond count and larger values fire immediately, so the largest safe whole-second value is floor(2147483647 / 1000).
 const MAX_TIMEOUT_SECONDS = 2147483
 
-/** Resolve the --timeout flag (seconds), clamped to the setTimeout limit: 0/absent/invalid → the built-in default. */
+/** Resolve the --timeout flag (seconds), rounded up to whole seconds and clamped to the setTimeout limit: 0/absent/invalid → the built-in default. parseFloat, not parseInt, because hooks_bash.ts renders a large configured number as '1e+21', which parseInt reads as 1. */
 export function parseTimeout(raw: string | undefined, fallbackSeconds: number): number {
-  const sec = raw ? parseInt(raw, 10) : 0
-  return Number.isFinite(sec) && sec > 0 ? Math.min(sec, MAX_TIMEOUT_SECONDS) : fallbackSeconds
+  const sec = raw ? parseFloat(raw) : 0
+  return sec > 0 ? Math.min(Math.ceil(sec), MAX_TIMEOUT_SECONDS) : fallbackSeconds
 }
 
 export * from './cli_skills.js'
