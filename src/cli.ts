@@ -719,10 +719,13 @@ async function cmdCompress(
   }
 }
 
-/** Resolve the --timeout flag (seconds): 0/absent/invalid → the built-in default. */
-function parseTimeout(raw: string | undefined, fallbackSeconds: number): number {
+// setTimeout's delay is a signed 32-bit millisecond count and larger values fire immediately, so the largest safe whole-second value is floor(2147483647 / 1000).
+const MAX_TIMEOUT_SECONDS = 2147483
+
+/** Resolve the --timeout flag (seconds), clamped to the setTimeout limit: 0/absent/invalid → the built-in default. */
+export function parseTimeout(raw: string | undefined, fallbackSeconds: number): number {
   const sec = raw ? parseInt(raw, 10) : 0
-  return Number.isFinite(sec) && sec > 0 ? sec : fallbackSeconds
+  return Number.isFinite(sec) && sec > 0 ? Math.min(sec, MAX_TIMEOUT_SECONDS) : fallbackSeconds
 }
 
 export * from './cli_skills.js'
