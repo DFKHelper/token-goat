@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { resolvePowerShell, canRunPowerShell } from '../src/shell.js'
-import { run } from '../src/bash_runner.js'
+import { spawnSync } from 'node:child_process'
+import { run, spawnTarget } from '../src/bash_runner.js'
+import { stripAnsiEscapes } from '../src/render/ansi.js'
 
 describe('PowerShell runner integration and resolution', () => {
   it('resolves PowerShell binary based on platform or environment override', () => {
@@ -85,6 +87,46 @@ describe('PowerShell runner integration and resolution', () => {
   ])('wrapped exit code matches direct pwsh for %s', async (cmd, expected) => {
     const exitCode = await run(cmd, { shellType: 'pwsh', writeStdout: () => {}, writeStderr: () => {} })
     expect(exitCode).toBe(expected)
+  })
+
+  // Provenance: CAPTURE, exit code and trimmed stdout lines of a direct `pwsh -NoProfile -NonInteractive -Command <cmd>` spawned from node, PowerShell 7.6.4 on Windows 11, 2026-10-02. A statement-terminating error (unknown command, .NET exception, divide by zero) does not stop the script, `return X` and a top-level break keep the `$?` of the statement before them, a finally that runs last decides the exit, a break whose label nothing catches still exits 1, and a user variable named like the wrapper's own does not change the result.
+  it.each([
+    ['nonexistentcmd-xyz; Write-Output after', 0, ['after']],
+    ["[int]::Parse('x'); Write-Output after", 0, ['after']],
+    ['$x = 1/0; Write-Output after', 0, ['after']],
+    ['Write-Output a; nonexistentcmd-xyz', 1, ['a']],
+    ['using namespace System.Text\nWrite-Output a; return', 0, ['a']],
+    ['using namespace System.Text\nGet-Item ./nope; return', 1, []],
+    ['Get-Item ./nope; return 5', 1, ['5']],
+    ['Get-Item ./nope; return $false', 1, ['False']],
+    ['Write-Output a; return Get-Item ./nope', 1, ['a']],
+    ['begin { Write-Output b } end { Get-Item ./nope }', 1, ['b']],
+    ['try { Get-Item ./nope; return 5 } finally { Write-Output f }', 0, ['5', 'f']],
+    ['try { Write-Output a; return } finally { Get-Item ./nope }', 1, ['a']],
+    ['Write-Output a; break; Write-Output b', 0, ['a']],
+    ['Get-Item ./nope; break', 1, []],
+    ['Get-Item ./nope; break nolabel', 1, []],
+    [':l foreach ($i in 1) { Get-Item ./nope; break l }; Write-Output after', 0, ['after']],
+    ['function f { Get-Item ./nope; break }; f; Write-Output after', 0, []],
+    ['$global:TgOk = $false; Write-Output x', 0, ['x']],
+    ['Write-Output "unterminated', 1, []],
+  ])('wrapped exit code and output match direct pwsh for %s', async (cmd, expected, lines) => {
+    const target = spawnTarget(cmd, undefined, 'pwsh')
+    const r = spawnSync(target.file, target.args, { encoding: 'utf8', env: { ...process.env, ...target.cmdEnv } })
+    expect(r.status).toBe(expected)
+    expect(r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)).toEqual(lines)
+    expect(await run(cmd, { filterName: 'powershell', shellType: 'pwsh', writeStdout: () => {}, writeStderr: () => {} })).toBe(expected)
+  })
+
+  // Provenance: CAPTURE, PowerShell 7.6.4 on Windows 11, 2026-10-02: a direct `pwsh -NoProfile -NonInteractive -Command 'Write-Output "unterminated'` spawned from node exits 1 with empty stdout and stderr, and the previous wrapper printed `MethodInvocationException: Exception calling "Create"`, which names neither the cause nor the line.
+  it('reports a parse error as a ParserError quoting the user line', () => {
+    const target = spawnTarget('Write-Output "unterminated', undefined, 'pwsh')
+    const r = spawnSync(target.file, target.args, { encoding: 'utf8', env: { ...process.env, ...target.cmdEnv } })
+    const stderr = stripAnsiEscapes(r.stderr)
+    expect(r.status).toBe(1)
+    expect(stderr).toContain('ParserError')
+    expect(stderr).toContain('Write-Output "unterminated')
+    expect(stderr).not.toContain('Exception calling')
   })
 
   it('stops at a top-level return and still prints what ran before it', async () => {
