@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { buildLineIndex, offsetToLine, findHtmlHeadingMatches } from './languages/common.js'
 import { eachUnfencedLine } from './markdown_lines.js'
-import { ATX_CLASS_BREAK_RE, matchAtxHeading, matchTableHeaderName } from './line_matchers.js'
+import { ATX_CLASS_BREAK_RE, matchAtxHeading, matchRuleBannerTitle, matchTableHeaderName } from './line_matchers.js'
 import { frontMatterEndIndex } from './markdown_frontmatter.js'
 import { detectLanguage, refineLanguageByContent } from './parser_types.js'
 import { decodeSource } from './util.js'
@@ -193,10 +193,9 @@ export function extractShellBannerHeading(line: string): { heading: string; leve
   }
 
   // 2. `# -- Section Name --` or `# === Section Name ===`
-  // eslint-disable-next-line regexp/no-misleading-capturing-group
-  const ruleMatch = /^#\s*[-=]{2,}\s*(\S(?:.*?\S)?)\s*[-=]{2,}$/.exec(trimmed)
-  if (ruleMatch && ruleMatch[1]) {
-    const text = ruleMatch[1].trim()
+  const ruleTitle = matchRuleBannerTitle(trimmed)
+  if (ruleTitle) {
+    const text = ruleTitle.trim()
     if (text && !/^[-=]+$/.test(text)) {
       return { heading: text, level: 1 }
     }

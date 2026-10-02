@@ -88,6 +88,65 @@ export function matchTableHeaderName(line: string): string | null {
   return open[0].trimStart().length >= 2 ? '[' : null
 }
 
+/** The title of a `# -- Name --` or `# === Name ===` banner, exactly as `^#\s*[-=]{2,}\s*(\S(?:.*?\S)?)\s*[-=]{2,}$` captures it, or null. That regex took seconds on a few thousand dashes; this tries each opening-run length once, longest first, and takes the shortest title of two or more characters before a one-character one, which is the order the regex backtracks in. */
+export function matchRuleBannerTitle(line: string): string | null {
+  const n = line.length
+  if (line.charAt(0) !== '#') return null
+  let p = 1
+  while (p < n && WS_RE.test(line.charAt(p))) p++
+  let run = 0
+  while (p + run < n && isRuleChar(line.charAt(p + run))) run++
+  let tail = 0
+  while (tail < n && isRuleChar(line.charAt(n - 1 - tail))) tail++
+  if (run < 2 || tail < 2) return null
+  // The title may end where whitespace before the closing run starts, or inside that run while two of its characters remain.
+  let wsStart = n - tail
+  while (WS_RE.test(line.charAt(wsStart - 1))) wsStart--
+  const firstEnd = (from: number): number => {
+    if (from <= wsStart) return wsStart
+    const end = Math.max(from, n - tail + 1)
+    return end <= n - 2 ? end : -1
+  }
+  const nextBreak = lineBreakIndex(line)
+  for (let k = run; k >= 2; k--) {
+    let start = p + k
+    if (k === run) while (start < n && WS_RE.test(line.charAt(start))) start++
+    if (start >= n) continue
+    const end = firstEnd(start + 2)
+    if (end >= 0 && nextBreak(start) >= end) return line.slice(start, end)
+    if (firstEnd(start + 1) === start + 1) return line.charAt(start)
+  }
+  return null
+}
+
+/** What `\s*(.+?)\s*$` (or `\s+` when `minGap` is 1) captures from `start` under the `m` flag: the rest of the line with its trailing whitespace dropped, or, when only whitespace remains in the whole text, the last character that is not a line break. */
+export function matchRestOfLine(text: string, start: number, minGap: 0 | 1): string | null {
+  const n = text.length
+  let k = start
+  while (k < n && WS_RE.test(text.charAt(k))) k++
+  if (k - start < minGap) return null
+  if (k < n) {
+    let lineEnd = k
+    while (lineEnd < n && !ATX_DOT_BREAK_RE.test(text.charAt(lineEnd))) lineEnd++
+    return text.slice(k, lineEnd).trimEnd()
+  }
+  for (let m = n - 1; m >= start + minGap; m--) if (!ATX_DOT_BREAK_RE.test(text.charAt(m))) return text.charAt(m)
+  return null
+}
+
+function isRuleChar(c: string): boolean {
+  return c === '-' || c === '='
+}
+
+/** A lookup for the first character at or after an index that `.` refuses to match, or the line length when there is none. */
+function lineBreakIndex(line: string): (from: number) => number {
+  if (!ATX_DOT_BREAK_RE.test(line)) return () => line.length
+  const next = new Array<number>(line.length + 1)
+  next[line.length] = line.length
+  for (let i = line.length - 1; i >= 0; i--) next[i] = ATX_DOT_BREAK_RE.test(line.charAt(i)) ? i : (next[i + 1] as number)
+  return (from) => next[from] as number
+}
+
 export interface SelectorSpan {
   start: number
   end: number

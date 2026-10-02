@@ -1,45 +1,12 @@
-/**
- * Accounting for the context the harness injects and token-goat's hooks never see.
- *
- * `waste` attributes tool-call cost, which is the part token-goat mediates. Measured against real
- * transcripts, that part is no longer where the bulk of the context lives: across the six largest
- * transcripts on this machine, `tool_result` content is a small fraction of what arrives as
- * harness-injected `attachment` lines -- `task_reminder` alone was 126.9 MB over 5,689 events
- * (avg 21.8 KB), re-injected in full whenever the task list changes. None of it passes through a
- * hook, so nothing could intercept it; but all of it is written to the transcript file whose path
- * every hook payload already carries, so it can at least be counted and reported.
- *
- * Transcript shapes this module reads (undocumented harness internals, confirmed empirically
- * against `~/.claude/projects/<slug>/*.jsonl`, and parsed defensively because a shape change must
- * degrade to zero counts rather than to an exception in a hook):
- *
- * - `{ attachment: { type, ... } }` -- one injected context block. `task_reminder` additionally
- *   carries `itemCount` and `content: [{ id, subject, description, activeForm, status, owner,
- *   blocks, blockedBy }]`, where `status` is `completed` | `in_progress` | `pending`.
- * - `{ type: 'user', isMeta: true, message: { content } }` -- among other things, a slash command's
- *   full skill body, expanded into prompt text. This is a different path from the Skill tool, and
- *   the `<!-- COMPACT_END -->` marker that trims a Skill-tool load does not apply to it.
- * - `{ type: 'system', subtype: 'compact_boundary' }` -- the authoritative record that a compaction
- *   happened. Counting `SessionStart` hook firings instead conflates compactions with plain session
- *   resumes; this marker does not.
- *
- * Everything here counts *injected bytes*, which is what the transcript actually records. How long
- * any of it stays resident, and what it is ultimately billed at, is not recorded anywhere this code
- * can see -- so the token figures are labelled estimates and the rendered text says "injected",
- * never "billed". This mirrors the existing "re-send CEILING, not real spend" discipline in
- * waste.ts, and exists for the same reason.
- */
+/** Accounting for the context the harness injects and token-goat's hooks never see. `waste` attributes tool-call cost, which is the part token-goat mediates. Measured against real transcripts, that part is no longer where the bulk of the context lives: across the six largest transcripts on this machine, `tool_result` content is a small fraction of what arrives as harness-injected `attachment` lines -- `task_reminder` alone was 126.9 MB over 5,689 events (avg 21.8 KB), re-injected in full whenever the task list changes. None of it passes through a hook, so nothing could intercept it; but all of it is written to the transcript file whose path every hook payload already carries, so it can at least be counted and reported. Transcript shapes this module reads (undocumented harness internals, confirmed empirically against `~/.claude/projects/<slug>/*.jsonl`, and parsed defensively because a shape change must degrade to zero counts rather than to an exception in a hook): - `{ attachment: { type, ... } }` -- one injected context block. `task_reminder` additionally carries `itemCount` and `content: [{ id, subject, description, activeForm, status, owner, blocks, blockedBy }]`, where `status` is `completed` | `in_progress` | `pending`. - `{ type: 'user', isMeta: true, message: { content } }` -- among other things, a slash command's full skill body, expanded into prompt text. This is a different path from the Skill tool, and the `<!-- COMPACT_END -->` marker that trims a Skill-tool load does not apply to it. - `{ type: 'system', subtype: 'compact_boundary' }` -- the authoritative record that a compaction happened. Counting `SessionStart` hook firings instead conflates compactions with plain session resumes; this marker does not. Everything here counts *injected bytes*, which is what the transcript actually records. How long any of it stays resident, and what it is ultimately billed at, is not recorded anywhere this code can see -- so the token figures are labelled estimates and the rendered text says "injected", never "billed". This mirrors the existing "re-send CEILING, not real spend" discipline in waste.ts, and exists for the same reason. */
 
 import * as fs from 'node:fs'
 
+import { matchRestOfLine } from './line_matchers.js'
 import { estimateTokensFromLength } from './overflow_guard.js'
 import { displaySafeText } from './paths.js'
 
-/**
- * A task list at or above this size is worth telling the agent about. Measured: lists that stayed
- * lean cost almost nothing across a whole session, while a single 613 KB reminder re-injected
- * hundreds of times dominated its session's new context.
- */
+/** A task list at or above this size is worth telling the agent about. Measured: lists that stayed lean cost almost nothing across a whole session, while a single 613 KB reminder re-injected hundreds of times dominated its session's new context. */
 export const LARGE_TASK_LIST_BYTES = 20_000
 
 /** A slash-expanded skill body at or above this size is worth attributing when it repeats. */
@@ -48,12 +15,7 @@ export const LARGE_SKILL_BODY_BYTES = 20_000
 /** A skill body injected this many times is a repeat worth reporting. */
 export const SKILL_BODY_REPEAT_THRESHOLD = 2
 
-/**
- * How much of the transcript tail a hook may read. A hook runs on the user's turn and its startup
- * cost already dominates its logic, so the scan is bounded by bytes rather than by line count: the
- * records this module cares about are appended, and the newest task list is the only one that can
- * still be acted on.
- */
+/** How much of the transcript tail a hook may read. A hook runs on the user's turn and its startup cost already dominates its logic, so the scan is bounded by bytes rather than by line count: the records this module cares about are appended, and the newest task list is the only one that can still be acted on. */
 export const RESIDENT_TAIL_MAX_BYTES = 1_048_576
 
 /** Per-class rollup of injected attachment bytes. */
@@ -130,23 +92,18 @@ function messageText(message: unknown): string {
   return out
 }
 
-/**
- * Name of the skill whose body this text is, or null if it does not look like one.
- *
- * The `Base directory for this skill:` preamble is preferred over the body's own H1 because it
- * carries the directory name, which is the name the user actually types after the slash -- an H1
- * reads "Superman (Claude Skill)" where the invocation is `/superman`. The H1 is the fallback for
- * bodies injected without the preamble.
- */
+/** Name of the skill whose body this text is, or null if it does not look like one. The `Base directory for this skill:` preamble is preferred over the body's own H1 because it carries the directory name, which is the name the user actually types after the slash -- an H1 reads "Superman (Claude Skill)" where the invocation is `/superman`. The H1 is the fallback for bodies injected without the preamble. */
 export function skillNameFromBody(text: string): string | null {
-  const dir = /^Base directory for this skill:\s*(.+?)\s*$/m.exec(text)
-  if (dir?.[1] !== undefined) {
-    const segments = dir[1].split(/[\\/]/).filter((s) => s.length > 0)
+  const dirAt = /^Base directory for this skill:/m.exec(text)
+  const dir = dirAt === null ? null : matchRestOfLine(text, dirAt.index + dirAt[0].length, 0)
+  if (dir !== null) {
+    const segments = dir.split(/[\\/]/).filter((s) => s.length > 0)
     const last = segments[segments.length - 1]
     if (last !== undefined && last.length > 0) return last
   }
-  const heading = /^#\s+(.+?)\s*$/m.exec(text)
-  if (heading?.[1] !== undefined && heading[1].length > 0) return heading[1]
+  const hashAt = /^#(?=\s)/m.exec(text)
+  const heading = hashAt === null ? null : matchRestOfLine(text, hashAt.index + 1, 1)
+  if (heading !== null && heading.length > 0) return heading
   return null
 }
 
@@ -163,8 +120,7 @@ function readTaskList(attachment: Record<string, unknown>, bytes: number): TaskL
   }
   const content = attachment['content']
   if (!Array.isArray(content)) return snapshot
-  // `itemCount` is the harness's own figure and is trusted when present, but an empty or trimmed
-  // `content` must not silently report a full list, so the walked length wins when it is larger.
+  // `itemCount` is the harness's own figure and is trusted when present, but an empty or trimmed `content` must not silently report a full list, so the walked length wins when it is larger.
   if (content.length > snapshot.itemCount) snapshot.itemCount = content.length
   for (const item of content) {
     if (item === null || typeof item !== 'object') continue
@@ -181,27 +137,8 @@ function readTaskList(attachment: Record<string, unknown>, bytes: number): TaskL
   return snapshot
 }
 
-/**
- * Fold one already-parsed transcript line into `acc`.
- *
- * `bytes` is the size of the raw line the object came from, passed in rather than recomputed: every
- * caller already has the string, and re-serializing to measure it would both cost more and report a
- * different number than the file actually holds.
- *
- * Never throws. The shapes above are undocumented and can change without notice, and one of this
- * function's two callers is a hook on the user's turn.
- */
-/**
- * Fold an `invoked_skills` attachment's bodies into the skill accumulator.
- *
- * Each entry is `{name, path, content}`. The name is taken from `name` when present and otherwise
- * from the last segment of `path`, which is the same rule {@link skillNameFromBody} uses for the
- * slash-expansion channel -- both end up keyed on the name the user types after the slash, so the
- * two channels aggregate together instead of splitting one skill across two labels.
- *
- * Applies the same size floor as the other channel. A body arriving here is often truncated by the
- * harness to a fixed cap, so it is the injection COUNT that carries the signal, not the length.
- */
+/** Fold one already-parsed transcript line into `acc`. `bytes` is the size of the raw line the object came from, passed in rather than recomputed: every caller already has the string, and re-serializing to measure it would both cost more and report a different number than the file actually holds. Never throws. The shapes above are undocumented and can change without notice, and one of this function's two callers is a hook on the user's turn. */
+/** Fold an `invoked_skills` attachment's bodies into the skill accumulator. Each entry is `{name, path, content}`. The name is taken from `name` when present and otherwise from the last segment of `path`, which is the same rule {@link skillNameFromBody} uses for the slash-expansion channel -- both end up keyed on the name the user types after the slash, so the two channels aggregate together instead of splitting one skill across two labels. Applies the same size floor as the other channel. A body arriving here is often truncated by the harness to a fixed cap, so it is the injection COUNT that carries the signal, not the length. */
 function collectInvokedSkills(acc: ResidentContextStats, record: Record<string, unknown>): void {
   const skills = record['skills']
   if (!Array.isArray(skills)) return
@@ -243,12 +180,7 @@ export function accumulateResidentLine(acc: ResidentContextStats, parsed: unknow
         acc.taskReminderBytes += bytes
         acc.latestTaskList = readTaskList(record, bytes)
       }
-      // A skill body reaches the model through TWO channels, and counting only one of them
-      // under-reports the same skill several-fold. Slash expansion sends it as prompt text (the
-      // isMeta branch below); the Skill tool sends it here, as `{skills:[{name, path, content}]}`.
-      // Measured on a real transcript: `superman` arrived 94 times this way against 12 the other,
-      // so attributing only the isMeta channel credited under a third of one skill's real cost.
-      // Both feed the same accumulator, so a repeat is a repeat regardless of how it arrived.
+      // A skill body reaches the model through TWO channels, and counting only one of them under-reports the same skill several-fold. Slash expansion sends it as prompt text (the isMeta branch below); the Skill tool sends it here, as `{skills:[{name, path, content}]}`. Measured on a real transcript: `superman` arrived 94 times this way against 12 the other, so attributing only the isMeta channel credited under a third of one skill's real cost. Both feed the same accumulator, so a repeat is a repeat regardless of how it arrived.
       if (type === 'invoked_skills') collectInvokedSkills(acc, record)
     }
 
@@ -260,8 +192,7 @@ export function accumulateResidentLine(acc: ResidentContextStats, parsed: unknow
       }
     }
   } catch {
-    // A shape this code did not expect is missing data, not a failure: counting nothing is correct,
-    // and throwing out of a hook would be worse than under-reporting.
+    // A shape this code did not expect is missing data, not a failure: counting nothing is correct, and throwing out of a hook would be worse than under-reporting.
   }
 }
 
@@ -308,13 +239,7 @@ export function formatTokenEstimate(tokens: number): string {
   return tokens >= 1_000 ? `${Math.round(tokens / 1000)}K` : String(tokens)
 }
 
-/**
- * Advice for an oversized task list, or null when there is nothing worth saying.
- *
- * Deliberately advisory. A task list can hold items owned by other agents in a multi-agent session,
- * so this names the tool the agent would use and leaves the decision there; token-goat never edits
- * a task itself.
- */
+/** Advice for an oversized task list, or null when there is nothing worth saying. Deliberately advisory. A task list can hold items owned by other agents in a multi-agent session, so this names the tool the agent would use and leaves the decision there; token-goat never edits a task itself. */
 export function taskListPruneHint(snapshot: TaskListSnapshot | null): string | null {
   if (snapshot === null) return null
   if (snapshot.bytes < LARGE_TASK_LIST_BYTES) return null
@@ -328,12 +253,7 @@ export function taskListPruneHint(snapshot: TaskListSnapshot | null): string | n
   )
 }
 
-/**
- * Advice for a skill body that slash-command expansion has injected more than once, or null.
- *
- * token-goat cannot prevent the injection -- the harness owns slash expansion, and it happens
- * before any hook runs. This reports what it cost and points at the two things that do help.
- */
+/** Advice for a skill body that slash-command expansion has injected more than once, or null. token-goat cannot prevent the injection -- the harness owns slash expansion, and it happens before any hook runs. This reports what it cost and points at the two things that do help. */
 export function repeatedSkillBodyHint(injections: readonly SkillBodyInjection[]): string | null {
   const worst = injections[0]
   if (worst === undefined) return null
@@ -350,16 +270,7 @@ export function repeatedSkillBodyHint(injections: readonly SkillBodyInjection[])
   )
 }
 
-/**
- * The last `maxBytes` of a transcript, split into lines.
- *
- * Reads a byte window rather than the whole file so a hook's cost stays bounded on a transcript
- * that has grown to hundreds of megabytes. When the window starts mid-file it almost certainly
- * starts mid-line; that leading fragment is dropped, because it is neither parseable nor a correct
- * measure of the record it belongs to.
- *
- * Returns an empty list for anything unreadable -- a hook has no better answer than "no data".
- */
+/** The last `maxBytes` of a transcript, split into lines. Reads a byte window rather than the whole file so a hook's cost stays bounded on a transcript that has grown to hundreds of megabytes. When the window starts mid-file it almost certainly starts mid-line; that leading fragment is dropped, because it is neither parseable nor a correct measure of the record it belongs to. Returns an empty list for anything unreadable -- a hook has no better answer than "no data". */
 export function readTranscriptTail(transcriptPath: string, maxBytes: number = RESIDENT_TAIL_MAX_BYTES): string[] {
   let fd: number | null = null
   try {
@@ -386,26 +297,9 @@ export function readTranscriptTail(transcriptPath: string, maxBytes: number = RE
   }
 }
 
-/**
- * Cheap pre-parse test: could this raw line carry a signal {@link accumulateResidentLine} acts on?
- *
- * A transcript tail is mostly assistant text and tool results, none of which this module counts, and
- * `JSON.parse` on all of it is the dominant cost of a hook-side scan. A substring test is roughly
- * two orders of magnitude cheaper and rejects the overwhelming majority of lines, so the hook path
- * filters with this first.
- *
- * Deliberately not used on the `waste` path: that one wants the full per-class attachment rollup, and
- * it is already parsing every line for tool calls, so a filter there would exclude data for no saving.
- * A false positive here is harmless (the line parses and contributes nothing); the patterns are the
- * literal JSON spellings of the three shapes, so a false negative would need the harness to change
- * its field names, which changes the shapes anyway.
- */
+/** Cheap pre-parse test: could this raw line carry a signal {@link accumulateResidentLine} acts on? A transcript tail is mostly assistant text and tool results, none of which this module counts, and `JSON.parse` on all of it is the dominant cost of a hook-side scan. A substring test is roughly two orders of magnitude cheaper and rejects the overwhelming majority of lines, so the hook path filters with this first. Deliberately not used on the `waste` path: that one wants the full per-class attachment rollup, and it is already parsing every line for tool calls, so a filter there would exclude data for no saving. A false positive here is harmless (the line parses and contributes nothing); the patterns are the literal JSON spellings of the three shapes, so a false negative would need the harness to change its field names, which changes the shapes anyway. */
 export function lineMayCarryResidentSignal(line: string): boolean {
-  // The first two are JSON *values*, so their spelling on disk is fixed. `isMeta` is a key, and a
-  // key is followed by however much whitespace the writer emits -- matching `"isMeta":true` would
-  // tie this to one serializer's formatting and silently stop matching if that ever changed, with
-  // no failure anywhere to notice. Match the key alone and let accumulateResidentLine do the real
-  // `=== true` check; a line mentioning the key at all is only ever a candidate here.
+  // The first two are JSON *values*, so their spelling on disk is fixed. `isMeta` is a key, and a key is followed by however much whitespace the writer emits -- matching `"isMeta":true` would tie this to one serializer's formatting and silently stop matching if that ever changed, with no failure anywhere to notice. Match the key alone and let accumulateResidentLine do the real `=== true` check; a line mentioning the key at all is only ever a candidate here.
   return (
     line.includes('"task_reminder"') ||
     line.includes('"compact_boundary"') ||

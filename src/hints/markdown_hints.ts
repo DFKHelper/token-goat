@@ -1,10 +1,6 @@
-/**
- * Markdown heading extraction and formatting for large-file hints.
- *
- * Provides utilities to parse markdown/RST files, extract heading structure,
- * and format user-friendly hints suggesting the token-goat section command.
- */
+/** Markdown heading extraction and formatting for large-file hints. Provides utilities to parse markdown/RST files, extract heading structure, and format user-friendly hints suggesting the token-goat section command. */
 
+import { ATX_CLASS_BREAK_RE, matchAtxHeading } from '../line_matchers.js'
 import { eachUnfencedLine } from '../markdown_lines.js'
 import { frontMatterEndIndex } from '../markdown_frontmatter.js'
 import { displaySafeText } from '../paths.js'
@@ -25,14 +21,7 @@ const MAX_HEADINGS = 40
 /** Maximum number of output lines in the formatted heading tree. */
 const MAX_OUTPUT_LINES = 60
 
-/**
- * Extract markdown headings.
- * Parses ATX headings (# through ######) only — no setext style.
- * Skips headings inside fenced code blocks (``` or ~~~ fences).
- * @param limit Maximum number of headings to extract. Defaults to MAX_HEADINGS (40) for display
- *              hints, which also restricts extraction to H1-H3 for a readable outline. Pass
- *              Infinity for indexing/embedding to capture all headings, H1 through H6.
- */
+/** Extract markdown headings. Parses ATX headings (# through ######) only — no setext style. Skips headings inside fenced code blocks (``` or ~~~ fences). @param limit Maximum number of headings to extract. Defaults to MAX_HEADINGS (40) for display hints, which also restricts extraction to H1-H3 for a readable outline. Pass Infinity for indexing/embedding to capture all headings, H1 through H6. */
 export function extractMarkdownHeadings(content: string, limit: number = MAX_HEADINGS): MarkdownHeading[] {
   const headings: MarkdownHeading[] = []
   const lines = content.split('\n')
@@ -43,23 +32,17 @@ export function extractMarkdownHeadings(content: string, limit: number = MAX_HEA
   for (let u = 0; u < unfenced.length; u++) {
     const [i, line] = unfenced[u]!
     if (!line) continue
-    const match = /^(#+)\s+([^\r\n]+?)(?:\s+#+)?\s*$/.exec(line)
-    if (match && match.length >= 3) {
-      const hashes = match[1]!
-      const headingText = match[2]!
-
-      const level = hashes.length
+    // Seven or more hashes is no heading, and the setext check below skips any line starting with `#`.
+    const atx = matchAtxHeading(line, ATX_CLASS_BREAK_RE, true)
+    if (atx !== null) {
       const maxLevel = limit === Infinity ? 6 : 3
-      if (level <= maxLevel) {
-        const text = headingText.trim()
-        if (text) {
-          headings.push({
-            level,
-            text,
-            lineNumber: i + 1,
-          })
-          if (headings.length >= limit) break
-        }
+      if (atx.level <= maxLevel && atx.name) {
+        headings.push({
+          level: atx.level,
+          text: atx.name,
+          lineNumber: i + 1,
+        })
+        if (headings.length >= limit) break
       }
       continue
     }
@@ -96,23 +79,13 @@ export function extractMarkdownHeadings(content: string, limit: number = MAX_HEA
   return headings
 }
 
-/**
- * A heading-tree hint split by provenance: `guidance` is token-goat's own
- * authored instruction text (safe to show unfenced), `sectionsList` is the
- * file-derived heading text (untrusted — callers must fence it). Concatenating
- * `guidance + '\n' + sectionsList` reproduces exactly what `formatHeadingTree`
- * returns as a single string.
- */
+/** A heading-tree hint split by provenance: `guidance` is token-goat's own authored instruction text (safe to show unfenced), `sectionsList` is the file-derived heading text (untrusted — callers must fence it). Concatenating `guidance + '\n' + sectionsList` reproduces exactly what `formatHeadingTree` returns as a single string. */
 export interface HeadingTreeParts {
   guidance: string
   sectionsList: string
 }
 
-/**
- * Format headings as a compact hint block for user display, split by
- * provenance. Handles duplicate headings by appending #2, #3 etc. Caps
- * output at MAX_OUTPUT_LINES.
- */
+/** Format headings as a compact hint block for user display, split by provenance. Handles duplicate headings by appending #2, #3 etc. Caps output at MAX_OUTPUT_LINES. */
 export function formatHeadingTreeParts(headings: MarkdownHeading[], filePath: string): HeadingTreeParts {
   if (headings.length === 0) return { guidance: '', sectionsList: '' }
 
@@ -140,8 +113,7 @@ export function formatHeadingTreeParts(headings: MarkdownHeading[], filePath: st
   const sectionLines: string[] = []
   let headingsAdded = 0
   for (const h of dedupedHeadings) {
-    // Check if adding this heading would exceed the limit. Account for the guidance
-    // lines plus this line, same budget the original single-block format used.
+    // Check if adding this heading would exceed the limit. Account for the guidance lines plus this line, same budget the original single-block format used.
     if (guidanceLines.length + sectionLines.length + 1 >= MAX_OUTPUT_LINES) {
       const remaining = dedupedHeadings.length - headingsAdded
       sectionLines.push(`  ... (${remaining} more headings)`)
@@ -158,16 +130,7 @@ export function formatHeadingTreeParts(headings: MarkdownHeading[], filePath: st
   return { guidance: guidanceLines.join('\n'), sectionsList: sectionLines.join('\n') }
 }
 
-/**
- * Format headings as a compact hint block for user display.
- * Handles duplicate headings by appending #2, #3 etc.
- * Caps output at MAX_OUTPUT_LINES.
- *
- * Returns token-goat's own instructions and the file-derived heading list
- * concatenated into one string. Callers that must fence untrusted content
- * separately from trusted instructions (see CLAUDE.arch.md::Security
- * Boundaries) should use `formatHeadingTreeParts` instead.
- */
+/** Format headings as a compact hint block for user display. Handles duplicate headings by appending #2, #3 etc. Caps output at MAX_OUTPUT_LINES. Returns token-goat's own instructions and the file-derived heading list concatenated into one string. Callers that must fence untrusted content separately from trusted instructions (see CLAUDE.arch.md::Security Boundaries) should use `formatHeadingTreeParts` instead. */
 export function formatHeadingTree(headings: MarkdownHeading[], filePath: string): string {
   const { guidance, sectionsList } = formatHeadingTreeParts(headings, filePath)
   if (guidance === '' && sectionsList === '') return ''
@@ -183,26 +146,12 @@ export const WELL_KNOWN_SECTIONS: Record<string, string[]> = {
   'CLAUDE.arch.md': ['Component Map', 'Architecture'],
 }
 
-/**
- * Get well-known sections for a given basename.
- * Returns an empty array if the file is not recognized.
- */
+/** Get well-known sections for a given basename. Returns an empty array if the file is not recognized. */
 export function getWellKnownSections(basename: string): string[] {
   return WELL_KNOWN_SECTIONS[basename] ?? []
 }
 
-/**
- * Extract the most recent versioned heading from CHANGELOG.md content.
- * Returns a section command string for the most recent version after Unreleased,
- * or empty string if none found.
- *
- * A changelog is not guaranteed to carry the Keep-a-Changelog "## [Unreleased]" placeholder --
- * many projects omit it once there's nothing pending, or never adopted the convention at all.
- * Requiring it as a precondition meant a changelog with real version headings but no Unreleased
- * section always returned '', silently disabling this hint. If no Unreleased header is ever
- * seen, fall back to the first version heading found -- the intent is "point at the most recent
- * real version", not "require the Unreleased placeholder to exist".
- */
+/** Extract the most recent versioned heading from CHANGELOG.md content. Returns a section command string for the most recent version after Unreleased, or empty string if none found. A changelog is not guaranteed to carry the Keep-a-Changelog "## [Unreleased]" placeholder -- many projects omit it once there's nothing pending, or never adopted the convention at all. Requiring it as a precondition meant a changelog with real version headings but no Unreleased section always returned '', silently disabling this hint. If no Unreleased header is ever seen, fall back to the first version heading found -- the intent is "point at the most recent real version", not "require the Unreleased placeholder to exist". */
 export function extractChangelogVersionHint(content: string, filePath: string): string {
   const lines = content.split('\n')
   let foundUnreleased = false

@@ -71,4 +71,11 @@ describe('scripts/merge-comments.mjs', () => {
     expect(run.stdout.trim()).toBe('')
     expect(run.status).toBe(0)
   })
+
+  it('leaves the folded linear-matcher callers unchanged', () => {
+    const files = ['src/line_matchers.ts', 'src/section_reader.ts', 'src/resident_context.ts', 'src/hints/markdown_hints.ts', 'src/doc_compact.ts', 'tests/line_matchers.test.ts']
+    const run = spawnSync(process.execPath, [script, '--check', ...files], { cwd: repoRoot, encoding: 'utf8' })
+    expect(run.stdout.trim()).toBe('')
+    expect(run.status).toBe(0)
+  })
 })

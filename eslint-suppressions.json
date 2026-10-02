@@ -16,7 +16,7 @@
   },
   "src/doc_compact.ts": {
     "regexp/no-super-linear-backtracking": {
-      "count": 7
+      "count": 2
     }
   },
   "src/failures.ts": {
@@ -40,11 +40,6 @@
   "src/hints/file_type_handler.ts": {
     "regexp/no-super-linear-backtracking": {
       "count": 1
-    }
-  },
-  "src/hints/markdown_hints.ts": {
-    "regexp/no-super-linear-backtracking": {
-      "count": 5
     }
   },
   "src/hooks_agent_spawn.ts": {
@@ -102,19 +97,9 @@
       "count": 2
     }
   },
-  "src/resident_context.ts": {
-    "regexp/no-super-linear-backtracking": {
-      "count": 6
-    }
-  },
   "src/secret_redact.ts": {
     "regexp/no-potentially-useless-backreference": {
       "count": 2
-    }
-  },
-  "src/section_reader.ts": {
-    "regexp/no-super-linear-backtracking": {
-      "count": 3
     }
   },
   "src/text_trace.ts": {
