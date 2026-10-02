@@ -13,12 +13,18 @@ import { BUNDLE } from './helpers/bundle.js'
 
 const VUE = ['<script setup>', 'function vueMulti() {', '  return 1', '}', '', 'class VueKlass {', '  run() {}', '}', '</script>', '', '<template>', '  <p>{{ vueMulti() }}</p>', '</template>', ''].join('\n')
 const SVELTE = ['<script>', '  function svelteAlpha() {', '    return 2', '  }', '</script>', '', '<p>{svelteAlpha()}</p>', ''].join('\n')
+const CSS = ['.css-multi {', '  color: red;', '  margin: 0;', '}', '', '.p,', '.q {', '  top: 0;', '}', ''].join('\n')
+const SCSS = ['.card {', '  .title {', '    color: red;', '  }', '}', ''].join('\n')
 
 // [file name, content, symbol, first line, last line, body lines that must all come back from `read`]
 const CASES: Array<[string, string, string, number, number, string[]]> = [
   ['x.vue', VUE, 'vueMulti', 2, 4, ['function vueMulti() {', '  return 1', '}']],
   ['x.vue', VUE, 'VueKlass', 6, 8, ['class VueKlass {', '  run() {}', '}']],
   ['Widget.svelte', SVELTE, 'svelteAlpha', 2, 4, ['function svelteAlpha() {', '    return 2', '  }']],
+  ['x.css', CSS, '.css-multi', 1, 4, ['.css-multi {', '  color: red;', '  margin: 0;', '}']],
+  ['x.css', CSS, '.q', 7, 9, ['.q {', '  top: 0;', '}']],
+  ['x.scss', SCSS, '.card', 1, 5, ['.card {', '  .title {', '    color: red;', '  }', '}']],
+  ['x.scss', SCSS, '.title', 2, 4, ['.title {', '    color: red;', '  }']],
 ]
 
 let TMP: string

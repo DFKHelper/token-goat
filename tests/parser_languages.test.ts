@@ -717,6 +717,93 @@ input[type="text"] {
       expect(names).toHaveLength(2)
     })
 
+    // PROVENANCE: HAND-DERIVED for every span case below; line numbers are counted from the fixture text, independently of the extractor.
+    it('spans a multi-line rule from its selector line to its closing brace, with the whole rule as the body', async () => {
+      const content = ['.css-multi {', '  color: red;', '  margin: 0;', '}', '.after {', '  top: 0;', '}', ''].join('\n')
+      const result = await parseFixture('span.css', content)
+      const multi = result.symbols.find((s) => s.name === '.css-multi')
+      expect([multi?.lineStart, multi?.lineEnd]).toEqual([1, 4])
+      expect(multi?.body).toBe(['.css-multi {', '  color: red;', '  margin: 0;', '}'].join('\n'))
+      const after = result.symbols.find((s) => s.name === '.after')
+      expect([after?.lineStart, after?.lineEnd]).toEqual([5, 7])
+    })
+
+    it('gives each selector of a multi-line comma list its own start line and the shared rule end line', async () => {
+      const content = ['.a,', '.b {', '  color: red;', '}', ''].join('\n')
+      const result = await parseFixture('list.css', content)
+      const spans = Object.fromEntries(result.symbols.map((s) => [s.name, [s.lineStart, s.lineEnd]]))
+      expect(spans).toEqual({ '.a': [1, 4], '.b': [2, 4] })
+    })
+
+    it('gives a same-line comma list the shared rule end line', async () => {
+      const result = await parseFixture('same.css', ['.a, .b {', '  color: red;', '}', ''].join('\n'))
+      const spans = Object.fromEntries(result.symbols.map((s) => [s.name, [s.lineStart, s.lineEnd]]))
+      expect(spans).toEqual({ '.a': [1, 3], '.b': [1, 3] })
+    })
+
+    it('spans an Allman-brace rule through its closing brace', async () => {
+      const result = await parseFixture('allman.css', ['body', '{', '  margin: 0;', '}', ''].join('\n'))
+      const body = result.symbols.find((s) => s.name === 'body')
+      expect([body?.lineStart, body?.lineEnd]).toEqual([1, 4])
+    })
+
+    it('nests: an outer SCSS rule spans past its inner rule', async () => {
+      const content = ['.card {', '  .title {', '    color: red;', '  }', '}', ''].join('\n')
+      const result = await parseFixture('nest.scss', content)
+      const spans = Object.fromEntries(result.symbols.map((s) => [s.name, [s.lineStart, s.lineEnd]]))
+      expect(spans).toEqual({ '.card': [1, 5], '.title': [2, 4] })
+    })
+
+    it('keeps a one-line rule inside an @media block on its own line', async () => {
+      const content = ['@media (min-width: 1px) {', '  .m { color: red }', '}', ''].join('\n')
+      const result = await parseFixture('media.css', content)
+      const m = result.symbols.find((s) => s.name === '.m')
+      expect([m?.lineStart, m?.lineEnd]).toEqual([2, 2])
+    })
+
+    it('does not close a rule on a `}` inside a quoted value or a comment', async () => {
+      const content = ['.q {', '  content: "}";', '  /* } */', '  color: red;', '}', '.next {', '  top: 0;', '}', ''].join('\n')
+      const result = await parseFixture('quoted.css', content)
+      const q = result.symbols.find((s) => s.name === '.q')
+      expect([q?.lineStart, q?.lineEnd]).toEqual([1, 5])
+      const next = result.symbols.find((s) => s.name === '.next')
+      expect([next?.lineStart, next?.lineEnd]).toEqual([6, 8])
+    })
+
+    it('does not close an SCSS or Less rule on a `}` inside a `//` line comment, and does not index a commented-out selector', async () => {
+      const content = ['.s {', '  // }', '  color: red;', '}', '// .old {', '.next {', '  top: 0;', '}', ''].join('\n')
+      for (const file of ['line.scss', 'line.less']) {
+        const result = await parseFixture(file, content)
+        const spans = Object.fromEntries(result.symbols.map((s) => [s.name, [s.lineStart, s.lineEnd]]))
+        expect(spans).toEqual({ '.s': [1, 4], '.next': [6, 8] })
+      }
+    })
+
+    it('keeps a multi-line SCSS selector list together across a `//` comment line, ignores a commented-out fragment, and keeps a quoted `//`', async () => {
+      const content = ['.a,', '// .gone,', '// note', '.b {', '  content: "//";', '  color: red;', '}', ''].join('\n')
+      const result = await parseFixture('list.scss', content)
+      const spans = Object.fromEntries(result.symbols.map((s) => [s.name, [s.lineStart, s.lineEnd]]))
+      expect(spans).toEqual({ '.a': [1, 7], '.b': [4, 7] })
+    })
+
+    it('keeps a `//` inside an unquoted url() as part of the value in SCSS, and leaves `//` alone in plain CSS', async () => {
+      const scss = ['.bg {', '  background: url(//cdn.example/a.png);', '  // {', '}', ''].join('\n')
+      const bg = (await parseFixture('url.scss', scss)).symbols.find((s) => s.name === '.bg')
+      expect([bg?.lineStart, bg?.lineEnd]).toEqual([1, 4])
+      const opener = ['.p {', '  background: url(//cdn.example/a.png); & .c {', '    color: red;', '  }', '}', ''].join('\n')
+      const p = (await parseFixture('opener.scss', opener)).symbols.find((s) => s.name === '.p')
+      expect([p?.lineStart, p?.lineEnd]).toEqual([1, 5])
+      const css =['.u {', '  background: url(//cdn.example/a.png);', '}', ''].join('\n')
+      const u = (await parseFixture('url.css', css)).symbols.find((s) => s.name === '.u')
+      expect([u?.lineStart, u?.lineEnd]).toEqual([1, 3])
+    })
+
+    it('leaves an unterminated rule on its selector line rather than stretching it to the end of the file', async () => {
+      const result = await parseFixture('open.css', ['.open {', '  color: red;', ''].join('\n'))
+      const open = result.symbols.find((s) => s.name === '.open')
+      expect([open?.lineStart, open?.lineEnd]).toEqual([1, 1])
+    })
+
     it('still captures a real selector whose attribute value legitimately contains a quoted string (guard: string-stripping the match must not blank a genuine selector)', async () => {
       const content = `input[type="text"] {
   color: blue;

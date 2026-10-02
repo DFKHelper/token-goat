@@ -527,21 +527,67 @@ function nextContentLineOpensBrace(lines: readonly string[], i: number): boolean
   return false
 }
 
+/** Index of the line holding the closing brace of the rule whose opening brace sits at braceCol of line startIdx, or startIdx itself when the block never closes so an unterminated rule is not stretched to the end of the file. */
+function ruleEndIdx(blanked: readonly string[], startIdx: number, braceCol: number): number {
+  let depth = 0
+  for (let i = startIdx; i < blanked.length; i++) {
+    const text = blanked[i] ?? ''
+    for (let c = i === startIdx ? braceCol : 0; c < text.length; c++) {
+      if (text[c] === '{') depth++
+      else if (text[c] === '}' && --depth === 0) return i
+    }
+  }
+  return startIdx
+}
+
+/** SCSS, Sass and Less end a line at a `//` comment, so cut it off; a `//` inside an unquoted `url(...)` is a protocol-relative URL, not a comment. Takes a line whose string interiors are already blanked. */
+function stripCssLineComment(line: string): string {
+  let inUrl = false
+  for (let c = 0; c < line.length; c++) {
+    if (inUrl) {
+      if (line[c] === ')') inUrl = false
+    } else if (line[c] === '/' && line[c + 1] === '/') {
+      return line.slice(0, c)
+    } else if (line[c] === '(' && /url$/i.test(line.slice(Math.max(0, c - 3), c))) {
+      inUrl = true
+    }
+  }
+  return line
+}
+
 export function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
   // Strip /* */ block comments (newlines preserved so line numbers stay correct) before scanning -- otherwise a commented-out selector at column 0 (e.g. inside a disabled block) is indexed as if it were live CSS.
   const lines = stripCstyleComments(content).split(/\r?\n/)
-  // Raw (pre-strip) lines, kept only to distinguish "blanked by comment stripping" from
-  // "genuinely blank in the source" below -- see the check at the top of the loop.
+  // Raw (pre-strip) lines: tell "blanked by comment stripping" from "genuinely blank in the source" at the top of the loop, and supply a multi-line rule's body.
   const rawLines = content.split(/\r?\n/)
 
   // Selector fragments accumulated from preceding comma-continuation lines -- the common multi-line selector-list idiom (`.btn,\n.btn-primary,\n.btn-secondary {`). Each entry keeps its own line number/body so a fragment is indexed at the line it actually appears on, not the brace line, matching how a same-line comma list is already indexed per-fragment below.
   let pending: Array<{ name: string; line: number; body: string }> = []
+  // String-blanked copy of every comment-stripped line, so a brace inside a quoted value never counts when a rule's closing brace is searched for.
+  const lineComments = /\.(?:scss|sass|less)$/i.test(filePath)
+  const blanked = lines.map((l) => (lineComments ? stripCssLineComment(stripStringLiterals(l)) : stripStringLiterals(l)))
+  // A rule's lineEnd and body run from its own start line to the rule's closing brace (endIdx), so read returns the whole rule rather than the selector line.
+  const spanEntry = (name: string, startIdx: number, endIdx: number): SymbolEntry => ({
+    filePath,
+    name,
+    kind: 'selector',
+    lineStart: startIdx + 1,
+    lineEnd: endIdx + 1,
+    body: endIdx > startIdx ? rawLines.slice(startIdx, endIdx + 1).join('\n') : (lines[startIdx] ?? '').trim(),
+    docstring: '',
+    parent: '',
+  })
+  const flushPending = (endIdx: number): void => {
+    for (const p of pending) out.push(spanEntry(p.name, p.line - 1, endIdx))
+    pending = []
+  }
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
-    const trimmed = line.trim()
+    // blanked[i] keeps the line's length up to any SCSS `//` comment, so this cuts the same comment off the unblanked text.
+    const trimmed = (lineComments ? line.slice(0, (blanked[i] ?? '').length) : line).trim()
 
     // A line that became empty ONLY because stripCstyleComments blanked a `/* ... */` comment sitting on its own line (e.g. `/* primary button */` between selector fragments of a multi-line comma-separated list) must be a no-op, not a break in accumulation -- treating it like a genuinely blank line would silently drop every fragment gathered in `pending` so far (see the discard fallback at the bottom of the loop). A line that was already blank in the raw source still falls through to that discard below, unchanged.
     if (trimmed.length === 0 && (rawLines[i]?.trim().length ?? 0) > 0) {
@@ -549,23 +595,13 @@ export function extractCssSymbols(content: string, filePath: string): SymbolEntr
     }
 
     // `^[.#][\w-]+[,\s{]` only matched a bare class/id selector immediately followed by a comma/space/brace, so a compound selector (`.foo.bar`), a pseudo-class/element (`.foo:hover`, `.foo::before`), a plain tag/attribute selector (`div`, `input[type]`), or any selector indented under a nested @media/@supports block (leading whitespace broke the `^` anchor) were all silently skipped. Match anything up to the opening brace instead - excluding lines that start with `@` (an at-rule header like `@media (...) {` is not itself a selector, though selectors nested inside its block are separate lines matched independently) or `{`/`}` (a bare brace-only line) - and split a same-line comma-separated selector list into one symbol per selector. Match against a string-literal-stripped copy of the line so a `{` inside a quoted declaration value (e.g. `content: "{";`, a common pseudo-element glyph pattern) is never mistaken for a rule-opening brace. stripStringLiterals blanks string interiors to same-length spaces, so the match's character offsets line up with the original `line` - the actual (unblanked) selector text is then re-sliced from `line` at those offsets, so a real selector that legitimately contains a quoted value (e.g. `input[type="text"]`) is still captured verbatim rather than with its quoted portion blanked out.
-    const strippedLine = stripStringLiterals(line)
+    const strippedLine = blanked[i] ?? ''
     // eslint-disable-next-line regexp/no-super-linear-backtracking
     const selectorLineMatch = /^[ \t]*([^{}@][^{]*)\{/d.exec(strippedLine)
     if (selectorLineMatch !== null && selectorLineMatch[1] !== undefined) {
-      for (const p of pending) {
-        out.push({
-          filePath,
-          name: p.name,
-          kind: 'selector',
-          lineStart: p.line,
-          lineEnd: p.line,
-          body: p.body,
-          docstring: '',
-          parent: '',
-        })
-      }
-      pending = []
+      const braceCol = (selectorLineMatch.indices?.[0]?.[1] ?? 1) - 1
+      const endIdx = ruleEndIdx(blanked, i, braceCol)
+      flushPending(endIdx)
       const captureRange = (selectorLineMatch as RegExpExecArray & { indices?: Array<[number, number] | undefined> })
         .indices?.[1]
       const rawCapture = captureRange ? line.slice(captureRange[0], captureRange[1]) : selectorLineMatch[1]
@@ -575,16 +611,7 @@ export function extractCssSymbols(content: string, filePath: string): SymbolEntr
       for (const part of splitTopLevelSelectors(rawCapture, strippedCapture)) {
         const name = part.trim()
         if (name) {
-          out.push({
-            filePath,
-            name,
-            kind: 'selector',
-            lineStart: i + 1,
-            lineEnd: i + 1,
-            body: line.trim(),
-            docstring: '',
-            parent: '',
-          })
+          out.push(spanEntry(name, i, endIdx))
         }
       }
       continue
@@ -592,19 +619,7 @@ export function extractCssSymbols(content: string, filePath: string): SymbolEntr
 
     // Brace-only line (nothing but `{`, possibly with surrounding whitespace) closing off a multi-line selector list whose fragments were accumulated via `pending` below (the idiom `.a,\n.b\n{\n...`). Flush those fragments as the selector list for this rule instead of falling through to the discard case at the bottom of the loop, which would otherwise silently drop every accumulated fragment because a bare `{` never matches `selectorLineMatch` above (it requires a non-`{`/`}`/`@` character before the brace).
     if (trimmed === '{') {
-      for (const p of pending) {
-        out.push({
-          filePath,
-          name: p.name,
-          kind: 'selector',
-          lineStart: p.line,
-          lineEnd: p.line,
-          body: p.body,
-          docstring: '',
-          parent: '',
-        })
-      }
-      pending = []
+      flushPending(ruleEndIdx(blanked, i, blanked[i]?.indexOf('{') ?? 0))
       continue
     }
 
