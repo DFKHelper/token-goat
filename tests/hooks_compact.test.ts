@@ -617,4 +617,22 @@ describe('pre-compact manifest routing per harness', () => {
       expect(peekPendingContext(sessionId)).toContain('Files read')
     })
   }
+
+  // Provenance: HAND-DERIVED. Two compactions with no tool call between them; each manifest states its own "Files read: N", so N distinguishes which one survived. The unrelated hint is an arbitrary string queued before the first compaction.
+  it('keeps only the newest manifest when a second compaction fires before the first was delivered', async () => {
+    process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'codex'
+    const { peekPendingContext, queuePendingContext } = await import('../src/pending_context.js')
+    const { MANIFEST_RECOVERY_PREAMBLE } = await import('../src/manifest.js')
+    const sessionId = 'route-two-compactions'
+    queuePendingContext(sessionId, 'EARLIER-UNRELATED-HINT')
+    recordFileRead(makeTmpFile())
+    preCompactHandler({ ...compactEvent, sessionId })
+    recordFileRead(makeTmpFile())
+    preCompactHandler({ ...compactEvent, sessionId })
+    const pending = peekPendingContext(sessionId) ?? ''
+    expect(pending.split(MANIFEST_RECOVERY_PREAMBLE).length - 1).toBe(1)
+    expect(pending).toContain('Files read: 2')
+    expect(pending).not.toContain('Files read: 1')
+    expect(pending).toContain('EARLIER-UNRELATED-HINT')
+  })
 })

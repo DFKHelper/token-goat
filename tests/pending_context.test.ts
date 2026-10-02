@@ -7,6 +7,7 @@ import {
   commitPendingContext,
   peekPendingContext,
   queuePendingContext,
+  replacePendingContextBlock,
 } from '../src/pending_context.js'
 
 /** Peek plus the commit a successful delivery makes, which is what the queue's storage contract is about. The half these tests are not exercising -- a peek whose text never reaches the output -- is covered separately below, at the relay level where that decision is actually made. */
@@ -32,14 +33,26 @@ describe('pending context', () => {
     rmSync(home, { recursive: true, force: true })
   })
 
+  // Provenance: HAND-DERIVED. Literal strings; BLOCK stands in for a preamble line.
+  it('replaces an earlier block that starts with the marker and keeps the text queued before it', () => {
+    queuePendingContext('s1', 'KEEP-ME')
+    replacePendingContextBlock('s1', 'BLOCK old', 'BLOCK')
+    replacePendingContextBlock('s1', 'BLOCK new', 'BLOCK')
+    expect(peekPendingContext('s1')).toBe('KEEP-ME\nBLOCK new')
+  })
+
+  it('behaves as a plain queue when no earlier block exists', () => {
+    replacePendingContextBlock('s2', 'BLOCK only', 'BLOCK')
+    expect(peekPendingContext('s2')).toBe('BLOCK only')
+  })
+
   it('round-trips queued text', () => {
     queuePendingContext('s1', 'your task list is large')
     expect(drainPendingContext('s1')).toBe('your task list is large')
   })
 
   it('delivers exactly once, so every later tool call in the turn is a no-op', () => {
-    // The drain runs on EVERY tool call. Without the delete, one hint would repeat for the rest of
-    // the session -- turning a one-shot nudge into a per-tool-call tax, the opposite of the point.
+    // The drain runs on EVERY tool call. Without the delete, one hint would repeat for the rest of the session -- turning a one-shot nudge into a per-tool-call tax, the opposite of the point.
     queuePendingContext('s1', 'hint text')
 
     expect(drainPendingContext('s1')).toBe('hint text')
@@ -82,9 +95,7 @@ describe('pending context', () => {
   })
 
   it('never writes outside the sessions directory, whatever the session id looks like', () => {
-    // The id arrives in hook JSON and lands in a filename. The stem sanitizer neutralizes
-    // traversal by rewriting rather than rejecting, so asserting "returns null" would pin the
-    // wrong thing -- the property that matters is where the bytes land, not what the call returns.
+    // The id arrives in hook JSON and lands in a filename. The stem sanitizer neutralizes traversal by rewriting rather than rejecting, so asserting "returns null" would pin the wrong thing -- the property that matters is where the bytes land, not what the call returns.
     for (const id of ['../../escape', '..\\..\\escape', 'a/b/c', 'a\0b', '.'.repeat(40)]) {
       expect(() => queuePendingContext(id, 'text')).not.toThrow()
       expect(() => drainPendingContext(id)).not.toThrow()
@@ -104,20 +115,7 @@ describe('pending context', () => {
   })
 })
 
-/**
- * The half the storage tests above cannot see: whether a peeked hint is cleared when it was never
- * emitted.
- *
- * pendingContextHandler is registered advisory, and runHook returns the first non-advisory non-pass
- * result it meets, discarding the advisory one it was holding. While the queue was consumed at read
- * time, that combination deleted a queued compaction manifest on any tool call where another
- * handler also had something to return -- postBashHandler's compression and delta branches are the
- * everyday case -- and it was gone for the rest of the session with nothing failing.
- *
- * Fixture provenance: HAND-DERIVED. The rewriteOutput shape is the HookOutput variant declared in
- * src/types.ts; the probe handler stands in for any non-advisory post_tool_use handler, since what
- * decides the outcome is runHook's advisory rule and not which handler won.
- */
+/** The half the storage tests above cannot see: whether a peeked hint is cleared when it was never emitted. pendingContextHandler is registered advisory, and runHook returns the first non-advisory non-pass result it meets, discarding the advisory one it was holding. While the queue was consumed at read time, that combination deleted a queued compaction manifest on any tool call where another handler also had something to return -- postBashHandler's compression and delta branches are the everyday case -- and it was gone for the rest of the session with nothing failing. Fixture provenance: HAND-DERIVED. The rewriteOutput shape is the HookOutput variant declared in src/types.ts; the probe handler stands in for any non-advisory post_tool_use handler, since what decides the outcome is runHook's advisory rule and not which handler won. */
 describe('deferred hint delivery, through the real relay', () => {
   let home: string
   let prevHome: string | undefined
