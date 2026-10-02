@@ -294,8 +294,18 @@ function installCopilotCliScoped(opts: CopilotCliScopeOptions): CopilotCliInstal
   if (!scopeDirExisted && fs.existsSync(scopeDir)) recordCreatedConfig(scopeDir)
   const hooks = installCopilotHooksFile(copilotCliHooksDir(opts), 'copilot')
   const instructionsExisted = fs.existsSync(instructionsPath)
-  const instructionsChanged = writeCopilotInstructionsBlock(instructionsPath)
+  let instructionsChanged = writeCopilotInstructionsBlock(instructionsPath)
   if (!instructionsExisted) recordCreatedConfig(instructionsPath)
+
+  // In user scope, also synchronize an existing project-level instructions file if present in the workspace
+  if (userScope) {
+    const projectRoot = path.resolve(opts.projectRoot ?? process.cwd())
+    const projectInstructions = copilotCliInstructionsPath({ local: true, projectRoot })
+    if (fs.existsSync(projectInstructions)) {
+      const projectChanged = writeCopilotInstructionsBlock(projectInstructions)
+      if (projectChanged) instructionsChanged = true
+    }
+  }
 
   return {
     configPath: hooks.configPath,

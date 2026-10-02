@@ -566,6 +566,21 @@ describe('copilot-instructions.md routing block', () => {
     expect(fs.readFileSync(result.instructionsPath, 'utf8')).toContain(TG_BEGIN)
     expect(isCopilotCliInstalled({ local: true })).toBe(true)
   })
+
+  it('user scope also synchronizes an existing project-level .github/copilot-instructions.md', () => {
+    const projectInstructions = copilotCliInstructionsPath({ local: true })
+    fs.mkdirSync(path.dirname(projectInstructions), { recursive: true })
+    fs.writeFileSync(projectInstructions, '# Project Instructions\nExisting content.\n', 'utf8')
+
+    const result = installCopilotCli()
+    expect(result.instructionsPath).toBe(copilotCliInstructionsPath())
+    expect(fs.readFileSync(result.instructionsPath, 'utf8')).toContain(TG_BEGIN)
+
+    const updatedProject = fs.readFileSync(projectInstructions, 'utf8')
+    expect(updatedProject).toContain('# Project Instructions')
+    expect(updatedProject).toContain(TG_BEGIN)
+    expect(updatedProject).toContain(TG_END)
+  })
 })
 
 // --- shim script (COPILOT_CLI_HOOK_SCRIPT) behavior --- Mirrors tests/bridges/shims.test.ts's approach: run the embedded script as a standalone Node process exactly as Copilot CLI would (argv[2] = event name, stdin = the hook payload JSON), and inspect what it writes to stdout.

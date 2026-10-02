@@ -64,6 +64,8 @@ Failure shapes to catch yourself in, and the command that replaces each:
 - opening an image to check its dimensions, format, or size → image-meta file
 - opening a screenshot, diagram, or scan to read the text in it → image-text file
 - opening a PDF or Office document → inspect its format first, then read a narrow slice: PDF pdf-meta/pdf-outline then pdf-locate to find the pages and pdf-extract only those; Word docx-outline then docx-tables/docx-text; PowerPoint pptx-outline then pptx-slide/pptx-notes; Excel xlsx-sheets then xlsx-columns/xlsx-head/xlsx-range/xlsx-query
+- running tests immediately on edited code without fast static validation → run language validator first (e.g. ruff check --select F821 <file>, node --check, tsc --noEmit) to catch missing imports and syntax errors before test execution
+- passing concatenated or unquoted paths to shell tools → verify whitespace and argument separation in multi-path commands (e.g. git add path1 path2, never git add path1path2)
 
 Commands: search "<query>", answer "<question>", symbol NAME, read "file::symbol", brief "file::symbol", section "file::Heading", semantic "description", outline file/skeleton file, map --compact, refs file::symbol --callers, changed --symbol, config-get file KEY, json-query file 'a.b.c'/yaml-query/xml-query, json-outline file/yaml-outline/xml-outline, bash-output/web-output/mcp-output, gdrive-sections <file-id>, image-meta file/image-text file, pdf-meta/pdf-outline/pdf-locate/pdf-extract, docx-outline/docx-tables/docx-text, pptx-outline/pptx-slide/pptx-notes/pptx-text, xlsx-sheets/xlsx-columns/xlsx-head/xlsx-range/xlsx-query.
 
