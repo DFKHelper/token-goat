@@ -625,7 +625,7 @@ export async function upsertChunks(
   const tx = db.transaction((): EmbedOutcome => {
     // Embedding awaited above, so the worker may have reindexed this file meanwhile; writing version 1's vectors over version 2's would be stamped fresh by nobody but never corrected. Compare under the write lock and leave the newer rows alone.
     if (expectedSha !== undefined) {
-      const current = db.prepare('SELECT sha FROM files WHERE path = ?').pluck().get(filePath) as string | null | undefined
+      const current = db.prepare(`SELECT sha FROM files WHERE ${pathEqClause('path')}`).pluck().get(foldPath(filePath)) as string | null | undefined
       if (current !== expectedSha) return 'stale'
     }
     // Delete the file's prior chunks/vectors inside the same transaction as the inserts below, so a failed insert rolls back the delete too instead of leaving the file's embeddings deleted-but-not-replaced.

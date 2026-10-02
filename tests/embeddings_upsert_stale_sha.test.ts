@@ -7,11 +7,23 @@ import { createRequire } from 'node:module'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as embedRuntime from '../src/embed_runtime.js'
+import type * as util from '../src/util.js'
 
 vi.mock('../src/embed_runtime.js', async (importOriginal) => ({
   ...(await importOriginal<typeof embedRuntime>()),
   isRuntimeAvailable: () => true,
 }))
+
+// Off by default so the other tests run on the host's own filesystem semantics; one test turns it on to stand in for Windows and macOS, the same toggle tests/memory_prune_collation.test.ts uses.
+let simulateCaseInsensitiveFs = false
+vi.mock('../src/util.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof util>()
+  return {
+    ...actual,
+    isCaseInsensitiveFs: () => simulateCaseInsensitiveFs || actual.isCaseInsensitiveFs(),
+    foldPath: (p: string) => (simulateCaseInsensitiveFs ? p.toLowerCase() : actual.foldPath(p)),
+  }
+})
 
 import { closeAllDbs, getDb } from '../src/db.js'
 import { chunkFile, DEFAULT_DIM, setPipelineFnForTesting, upsertChunks } from '../src/embeddings.js'
@@ -46,6 +58,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  simulateCaseInsensitiveFs = false
   if (prevEmbeddingsEnv === undefined) delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
   else process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = prevEmbeddingsEnv
   setPipelineFnForTesting(null)
@@ -76,6 +89,18 @@ describe('upsertChunks against a file that was reindexed while it embedded', () 
     expect(outcome).toBe('stale')
     expect(v2Texts()).toEqual(before)
     expect(db.prepare('SELECT COUNT(*) FROM chunk_vectors').pluck().get()).toBe(before.length)
+  })
+
+  it.skipIf(!vec0Working())('matches the files row case-insensitively where the filesystem is, so a current file is not mistaken for stale', async () => {
+    simulateCaseInsensitiveFs = true
+    const db = getDb(path.join(TMP, 'index.db'))
+    // The row still carries the spelling from before a case-only rename; the embed backlog re-spells the path from disk before the reparse catches up.
+    db.prepare('INSERT INTO files (path, sha, mtime) VALUES (?, ?, 0)').run('c:/proj/src/a.ts', 'sha-1')
+
+    const outcome = await upsertChunks(db, chunkFile('c:/proj/src/A.ts', V1), 'sha-1')
+
+    expect(outcome).toBe('embedded')
+    expect(db.prepare('SELECT COUNT(*) FROM chunks').pluck().get()).toBeGreaterThan(0)
   })
 
   it.skipIf(!vec0Working())('indexFileEmbeddings passes its sha through, so a stale run leaves the newer chunks and stamp alone', async () => {
