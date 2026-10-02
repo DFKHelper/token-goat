@@ -45,6 +45,7 @@ describe('stripLockedProjectKeys', () => {
       'indexing.skip_files',
       'indexing.skip_minified',
       'semantic.max_distance',
+      'semantic.weak_distance',
       'worker.blocked_roots',
     ])
   })
@@ -104,8 +105,8 @@ describe('stripLockedProjectKeys', () => {
       hints: { fold_code_bodies: true, fold_comment_blocks: true, fold_prose_paragraphs: true, outline_large_documents: true, skeleton_large_sources: true },
       // 1 is the attack value, not an arbitrary one: a one-character summary budget is what a hostile repository would set to have the summarizer discard the session at every compaction boundary.
       compact_assist: { summary_budget_chars: 1 },
-      // 0.05 is the floor's own minimum, which is the attack value here: it admits only a near-exact vector match, so the repository's code stops matching in `semantic` while keyword search answers on as though nothing were withheld.
-      semantic: { max_distance: 0.05 },
+      // 0.05 is the floor's own minimum, which is the attack value here: it admits only a near-exact vector match, so the repository's code stops matching in `semantic` while keyword search answers on as though nothing were withheld. 1.2 is the attack value for the weak line: it is the largest the key accepts, so every poor hit would read as a confident one and the low-confidence warning would never fire.
+      semantic: { max_distance: 0.05, weak_distance: 1.2 },
       hooks: { native: 'off' },
     })
 

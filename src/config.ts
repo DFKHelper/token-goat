@@ -201,6 +201,8 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'semantic.docs_weight': {min: 0.05, max: 1},
   // Upper bound is DEFAULT_DISTANCE_THRESHOLD, not the metric's own ceiling of 2. An L2 distance between unit vectors cannot exceed 2, so 2 reads like 'admit everything' -- but this floor only ever narrows what searchSemantic already returned, and runSemantic lets that scan keep its own 1.2 bound (see the max_distance comment on SemanticConfig for why the scan is the wrong place for a relevance decision). Anything between 1.2 and 2 was therefore discarded inside the scan before the floor could see it: a user raising this to widen recall got the setting accepted, validated and persisted, and identical results, with no diagnostic able to say why. validatedFloat clamps rather than rejects, so an existing value above the new bound becomes 1.2 and behaves exactly as it already did. The lower bound is not 0: a floor of 0 admits only an exact vector match, which would disable the vector half entirely while `semantic` went on answering in the words it uses for a genuine absence.
   'semantic.max_distance': {min: 0.05, max: 1.2},
+  // Same range as max_distance: both are L2 distances on the scan's own 1.2 ceiling, and a weak line above what the scan can return would never fire.
+  'semantic.weak_distance': {min: 0.05, max: 1.2},
 }
 
 /** Look up a field's [min, max] from NUMERIC_FIELD_BOUNDS for spreading into validatedInt/ validatedFloat/envInt -- _buildConfig's single source of truth for bounds, instead of restating each field's min/max a second time at its build-time validation call site. */
@@ -890,6 +892,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   sem.archive_weight = validatedFloat(sem_raw['archive_weight'], sem.archive_weight, ...boundsOf('semantic.archive_weight'))
   sem.docs_weight = validatedFloat(sem_raw['docs_weight'], sem.docs_weight, ...boundsOf('semantic.docs_weight'))
   sem.max_distance = validatedFloat(sem_raw['max_distance'], sem.max_distance, ...boundsOf('semantic.max_distance'))
+  sem.weak_distance = validatedFloat(sem_raw['weak_distance'], sem.weak_distance, ...boundsOf('semantic.weak_distance'))
 
   return {
     compact_assist: ca,
@@ -1223,6 +1226,7 @@ export function saveConfig(config: Config, explicitKeys: readonly string[] = [])
     semantic: {
       archive_weight: config.semantic.archive_weight,
       max_distance: config.semantic.max_distance,
+      weak_distance: config.semantic.weak_distance,
       docs_weight: config.semantic.docs_weight,
     },
   }

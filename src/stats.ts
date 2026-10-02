@@ -417,6 +417,15 @@ CREATE TABLE IF NOT EXISTS stats_flags (
   name TEXT PRIMARY KEY,
   set_ts INTEGER NOT NULL
 );
+-- One row per semantic query's dense outcome, for semantic --distances. Deliberately no query text: only distances and a project hash, so the ledger cannot leak what was asked. Pruned with the stats table's retention (pruneSemanticQueries).
+CREATE TABLE IF NOT EXISTS semantic_queries (
+  ts INTEGER NOT NULL,
+  project_hash TEXT,
+  closest_distance REAL,
+  floor_rejected_min REAL,
+  weak INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_semantic_queries_ts ON semantic_queries(ts);
 `
 
 const _globalSchemaApplied = new Set<string>()
@@ -606,6 +615,15 @@ export function pruneHintEmissions(db: SqliteDatabase, retentionDays: number = S
   }
 }
 
+/** Delete `semantic_queries` rows older than `retentionDays`, on the same retention as `stats` so the two ledgers age out together. */
+export function pruneSemanticQueries(db: SqliteDatabase, retentionDays: number = STATS_RETENTION_DAYS): void {
+  try {
+    db.prepare(`DELETE FROM semantic_queries WHERE ts < ?`).run(Math.floor(Date.now() / 1000) - retentionDays * 86400)
+  } catch {
+    // Fail-soft: never block the stat write that triggers this (see recordStat's call site).
+  }
+}
+
 /** `hook:*` rows (relay.ts's per-invocation duration_ms) fire on every hook call the running install makes -- an order of magnitude more often than any other kind in this table -- and {@link rollupAndPruneStats}'s day/kind/harness/tg_version rollup keeps only a summed count for whatever it aggregates, throwing away the individual durations hook_latency.ts's hookLatencyBreakdown() needs for a median/p95. A percentile over month-old latencies answers a question nobody asks ("was token-goat slow last quarter"), so raw rows are deleted outright at a much shorter window than {@link STATS_RETENTION_DAYS} rather than carried into the rollup at all. */
 export const HOOK_STATS_RETENTION_DAYS = 7
 
@@ -638,6 +656,7 @@ function maybeRunStatsMaintenance(db: SqliteDatabase): void {
     pruneHookStats(db)
     rollupAndPruneStats(db)
     pruneHintEmissions(db)
+    pruneSemanticQueries(db)
     pruneTestIsolationLeakRows(db)
     dropRetiredPythonTables(db)
   } catch {

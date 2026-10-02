@@ -18,6 +18,7 @@ import { querySymbols, searchSymbolsFts } from './index_reader.js'
 import type { SymbolEntry } from './parser_types.js'
 import { displaySafeJson, toDisplayPath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
+import { recordSemanticQuery } from './semantic_distances.js'
 import { guardJsonRows, guardText, largestFileSize, recordReadStat, warnIfFilesStale } from './read_commands.js'
 import { previewLines } from './read_meta.js'
 import { resolveProjectConfinement } from './read_spec.js'
@@ -62,9 +63,6 @@ interface SemanticOptions {
 
 // Ported from cli.ts's cmdSemantic, which used to throw a CliError (caught by the generic `guard` wrapper, which prefixes it with "token-goat: " before printing to stderr) on a no-matches miss instead of returning a code. The "token-goat: " prefix is baked into the returned text here so the CLI's output stays byte-identical to that historical path. Reciprocal Rank Fusion constant (score = sum over lists of 1/(RRF_K + rank)) -- the conventional k=60, chosen because RRF needs only each list's RANK (not its raw score), which sidesteps having to normalize dense cosine/L2 distance against BM25's unbounded score on incomparable scales.
 const RRF_K = 60
-
-// Best surviving dense distance above which runSemantic says its closest match is weak. Measured on this repo's index on 2026-09-24: 38 questions about code that is present had best hits from 0.565 to 0.800, and 12 nonsense or off-topic ones from 0.863 to 1.043 (8 questions from other programming domains spread over 0.718-0.952, the low ones landing on code that is genuinely related, so those are not separable by distance), so the cut sits in that gap nearer the noise edge, because a small corpus pushes genuine matches farther out (0.934 in a two-file project, see semantic.max_distance) and a false alarm on a right answer costs more than a missed one. Advisory only: it removes nothing, unlike that floor.
-const WEAK_MATCH_DISTANCE = 0.85
 
 // One row of runSemantic's fused dense+BM25 candidate set: dense-sourced rows carry a non-null distance and (when resolveEnclosingSymbol found a containing symbol) a name/kind pulled from that containment lookup, while FTS-sourced rows always carry the exact symbol's own name/kind and a null distance (BM25 has no notion of vector distance) -- a row present in both lists keeps its dense fields (distance, containment-derived name/kind) and simply accumulates the FTS list's rank into its score.
 interface FusedSemanticHit {
@@ -248,7 +246,12 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
   }
   // Nearest-neighbour search always returns something, so a page of noise prints exactly like a page of answers; the floor above is left loose on purpose and cannot say so. Measured on the floor's survivors, and only when there are any: an empty dense half already has its own warning.
   const closestDense = rawHits.reduce<number | null>((best, h) => (best === null || h.distance < best ? h.distance : best), null)
-  const weakClosestDistance = closestDense !== null && closestDense > WEAK_MATCH_DISTANCE ? closestDense : null
+  const weakDistance = loadConfig().semantic.weak_distance
+  const weakClosestDistance = closestDense !== null && closestDense > weakDistance ? closestDense : null
+  // A query with no dense answer because the model was not ready says nothing about distances, so only a returned hit or a ready, error-free pass is recorded.
+  if (closestDense !== null || (preflight.status === 'ready' && !searchSemanticError)) {
+    recordSemanticQuery({ projectRoot: rootDir, closestDistance: closestDense, floorRejectedMin: floorNearestRejected, weak: weakClosestDistance !== null })
+  }
 
   // The dense half contributing nothing is the moment this search is most misleading, because the BM25 pass below still answers and the output looks like a complete result. It is also the only moment worth paying for the coverage query, so it is gated here rather than run every call: with hits, the reader has evidence embeddings are working; with none, they have no way to tell "nothing in your code is similar" from "almost none of your code was ever embedded". Warn only when the model itself is available and didn't fail with an error, since those branches already explain that case. floorNearestRejected guards this: when the floor is what emptied the half, it has already said so with the concrete distance, and following that with a coverage hypothesis would offer a second explanation for something already explained.
   if (
@@ -376,7 +379,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
         truncated: capped.truncated || limitTruncated,
         totalCount: eligibleCount,
         ...(candidatesClipped ? { totalCountIsFloor: true } : {}),
-        ...(weakClosestDistance !== null ? { lowConfidence: { closestDistance: weakClosestDistance, threshold: WEAK_MATCH_DISTANCE } } : {}),
+        ...(weakClosestDistance !== null ? { lowConfidence: { closestDistance: weakClosestDistance, threshold: weakDistance } } : {}),
         ...semanticDegradedFields(preflight, searchSemanticError),
       })
       recordReadStat('semantic_search', largestFileSize(hits.map((h) => h.filePath)), text, query)
@@ -400,7 +403,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
     // Names the query because a multi-query call prints every block's stderr ahead of the blocks themselves.
     if (weakClosestDistance !== null) {
       console.warn(
-        `Matching on meaning found nothing close for '${query}' (closest was ${weakClosestDistance.toFixed(3)}, weak above ${WEAK_MATCH_DISTANCE}); these results may be unrelated. ` +
+        `Matching on meaning found nothing close for '${query}' (closest was ${weakClosestDistance.toFixed(3)}, weak above ${weakDistance}); these results may be unrelated. ` +
           `For a known name try token-goat symbol --grep <pattern> or rg, or rephrase the query.`,
       )
     }

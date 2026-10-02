@@ -45,6 +45,8 @@ export const PROJECT_LOCKED_KEYS: readonly string[] = [
   'indexing.cross_project_symbols',
   // The same blast radius as the indexing keys above, applied to retrieval rather than to what gets indexed: `semantic` drops a dense hit whose distance exceeds this, so a checked-in `.token-goat.toml` setting it near the floor removes this repository's own code from the vector half of every search a reviewing agent runs, and the command then answers "no matches" in the words it uses for a name that genuinely is not there. The keyword pass would still answer, which makes it worse rather than better -- the result looks like a working search. The user's own global config still sets it freely; only the project-supplied layer is refused.
   'semantic.max_distance',
+  // The advisory twin of the floor above: a checked-in `.token-goat.toml` raising it to the 1.2 maximum would make every poor hit read as confident, silencing the one warning that says a result is probably unrelated. The user's own global config still sets it freely.
+  'semantic.weak_distance',
   'worker.blocked_roots',
   // global.db is a machine-wide shared database across every project on the host. A checked-in per-project .token-goat.toml must not be able to lower the size warning threshold or trigger auto-reclaim/purging of embeddings across other repositories sharing the same database.
   'indexing.max_db_size_mb',

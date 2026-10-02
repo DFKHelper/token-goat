@@ -43,6 +43,7 @@ import { runSection } from './read_section.js'
 import { runListSections } from './read_inspect.js'
 import { runSkeleton, runOutline, type SkeletonOptions } from './read_outline.js'
 import { runSemantic, runSemanticMulti } from './read_semantic.js'
+import { runSemanticDistances } from './semantic_distances.js'
 import { runRefs } from './read_refs.js'
 import {
   runExit,
@@ -169,7 +170,14 @@ export { requireInt, requireNonNegativeInt, requirePositiveInt }
 // --- Command handlers -------------------------------------------------------
 
 // Thin wrapper: all orchestration (embedding search, merge, FTS fallback, formatting) lives in read_semantic.ts's runSemantic so the MCP server (mcp_server.ts) can call the same logic in-process without going through the CLI/commander layer.
-async function cmdSemantic(query: string | undefined, more: string[], opts: { limit?: string; json?: boolean; grep?: string; excludeTests?: boolean; preflight?: boolean; warm?: boolean }): Promise<void> {
+async function cmdSemantic(query: string | undefined, more: string[], opts: { limit?: string; json?: boolean; grep?: string; excludeTests?: boolean; preflight?: boolean; warm?: boolean; distances?: boolean; all?: boolean }): Promise<void> {
+  if (opts.distances === true) {
+    if (query !== undefined || opts.preflight === true || opts.warm === true) throw new CliError('--distances reports recorded queries and runs none; drop the query, --preflight and --warm')
+    const { text, code } = runSemanticDistances({ ...(opts.all === true ? { all: true } : {}) })
+    out(text)
+    process.exitCode = code
+    return
+  }
   if (!query && !opts.preflight && !opts.warm) {
     throw new CliError('missing required argument: query')
   }
@@ -396,8 +404,7 @@ export async function cmdIndex(
     }
     // Re-read the stamp the parse above just wrote rather than trusting the one captured before it: writeParseResult clears the carried embed_sha when a reparse moved this file's embedding boundaries (see embeddingBoundariesMoved), and `embedUnchanged` was computed from the pre-parse row. Without this the re-embed is deferred to whatever run happens next, so a single `token-goat index` after an adapter change leaves the file's vectors cut on boundaries that no longer exist.
     const embedFresh = parseUnchanged ? embedUnchanged : embedFreshFor(getFileEntry(key, dbPath)?.embedSha)
-    // A model that is not on this machine and cannot be fetched now (offline, the last download failed recently, or this process would go around the machine's proxy to get it) makes every embed below fail the same way, one file at a time. Skipping leaves embed_sha unset, so the worker, or the next run, embeds the file once the download succeeds.
-    // Only a file that would really download is deferred: with embeddings off, or the embedding packages absent, the call below writes the terminal marker that keeps the file from being retried, and that needs no download.
+    // A model that is not on this machine and cannot be fetched now (offline, the last download failed recently, or this process would go around the machine's proxy to get it) makes every embed below fail the same way, one file at a time. Skipping leaves embed_sha unset, so the worker, or the next run, embeds the file once the download succeeds. Only a file that would really download is deferred: with embeddings off, or the embedding packages absent, the call below writes the terminal marker that keeps the file from being retried, and that needs no download.
     if (!embedFresh && depsAvailable && foregroundDownloadDeferred()) {
       embedsDeferred += 1
     } else if (!embedFresh) {
@@ -966,6 +973,8 @@ export function buildProgram(): Command {
     .option('--exclude-tests', 'hide hits whose file is a test file (opt-in; default output is unchanged)')
     .option('--preflight', 'run semantic embedding preflight check and exit')
     .option('--warm', 'warm up the embedding model session in memory')
+    .option('--distances', 'report the closest-distance spread of recorded semantic queries (no query text is stored) and the current weak_distance')
+    .option('--all', 'with --distances: every project instead of the current one')
     .action(guard(cmdSemantic))
 
   program
