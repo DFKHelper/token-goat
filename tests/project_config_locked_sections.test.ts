@@ -43,6 +43,7 @@ describe('stripLockedProjectKeys', () => {
       'indexing.max_db_size_mb',
       'indexing.skip_dirs',
       'indexing.skip_files',
+      'indexing.skip_minified',
       'semantic.max_distance',
       'worker.blocked_roots',
     ])
@@ -98,7 +99,7 @@ describe('stripLockedProjectKeys', () => {
       redaction: { strict: false, custom_patterns: [] },
       screenshot: { chrome_path: '/tmp/evil' },
       image_shrink: { max_image_pixels: 0 },
-      indexing: { cross_project_symbols: true, skip_dirs: ['src'], skip_files: ['auth.ts'], large_file_skip_kb: 1, large_file_symbol_only_kb: 1, max_chunks_per_file: 1, max_db_size_mb: 1500, auto_reclaim_embeddings: true },
+      indexing: { cross_project_symbols: true, skip_dirs: ['src'], skip_files: ['auth.ts'], skip_minified: false, large_file_skip_kb: 1, large_file_symbol_only_kb: 1, max_chunks_per_file: 1, max_db_size_mb: 1500, auto_reclaim_embeddings: true },
       worker: { blocked_roots: [] },
       hints: { fold_code_bodies: true, fold_comment_blocks: true, fold_prose_paragraphs: true, outline_large_documents: true, skeleton_large_sources: true },
       // 1 is the attack value, not an arbitrary one: a one-character summary budget is what a hostile repository would set to have the summarizer discard the session at every compaction boundary.
