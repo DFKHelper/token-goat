@@ -1,8 +1,4 @@
-/**
- * Source file character encoding and BOM detection / transcoding.
- *
- * Extracted from src/util.ts as part of modular decomposition.
- */
+/** Source file character encoding and BOM detection / transcoding. Extracted from src/util.ts as part of modular decomposition. */
 
 export type SourceEncoding = 'utf8' | 'utf8-bom' | 'utf16le' | 'utf16be' | 'utf32le' | 'utf32be'
 
@@ -11,17 +7,7 @@ export function stripBom(text: string): string {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
 }
 
-/**
- * Which encoding `buf` declares through its leading byte-order mark.
- *
- * Order matters: UTF-32LE begins `FF FE 00 00`, whose first two bytes are exactly the UTF-16LE
- * mark, so the four-byte forms have to be tested first or a UTF-32 file decodes as UTF-16 and
- * comes back interleaved with NULs -- the same failure this whole helper exists to remove.
- *
- * A file with no mark is reported as `utf8` and decoded as UTF-8 exactly as before. Mark-less
- * UTF-16 is not guessed at: heuristics on byte distribution misfire on binary, and a wrong guess
- * is worse than the honest empty result.
- */
+/** Which encoding `buf` declares through its leading byte-order mark. Order matters: UTF-32LE begins `FF FE 00 00`, whose first two bytes are exactly the UTF-16LE mark, so the four-byte forms have to be tested first or a UTF-32 file decodes as UTF-16 and comes back interleaved with NULs -- the same failure this whole helper exists to remove. A file with no mark is reported as `utf8` and decoded as UTF-8 exactly as before. Mark-less UTF-16 is not guessed at: heuristics on byte distribution misfire on binary, and a wrong guess is worse than the honest empty result. */
 export function detectSourceEncoding(buf: Buffer): SourceEncoding {
   if (buf.length >= 4) {
     if (buf[0] === 0xff && buf[1] === 0xfe && buf[2] === 0x00 && buf[3] === 0x00) return 'utf32le'
@@ -35,20 +21,7 @@ export function detectSourceEncoding(buf: Buffer): SourceEncoding {
   return 'utf8'
 }
 
-/**
- * Decode a source file's bytes to text, honoring a byte-order mark.
- *
- * `buf.toString('utf8')` is right for almost every file and wrong for the ones Windows produces by
- * accident: PowerShell 5.1 writes UTF-16LE for `>` redirection and `Out-File`, so a script, log, or
- * generated document created that way is UTF-16 with a BOM. Decoded as UTF-8 those bytes become the
- * text interleaved with NULs, which parses to nothing at all -- the file indexes with zero symbols
- * and is reported as indexed, and `read` on it emits the doubled, NUL-laced mojibake into the
- * model's context.
- *
- * The mark itself is never part of the returned text, including for UTF-8: U+FEFF at the head of a
- * file is an encoding marker, not content, and leaving it in shifts every column on the first line
- * and stops a heading or shebang from matching at position 0.
- */
+/** Decode a source file's bytes to text, honoring a byte-order mark. `buf.toString('utf8')` is right for almost every file and wrong for the ones Windows produces by accident: PowerShell 5.1 writes UTF-16LE for `>` redirection and `Out-File`, so a script, log, or generated document created that way is UTF-16 with a BOM. Decoded as UTF-8 those bytes become the text interleaved with NULs, which parses to nothing at all -- the file indexes with zero symbols and is reported as indexed, and `read` on it emits the doubled, NUL-laced mojibake into the model's context. The mark itself is never part of the returned text, including for UTF-8: U+FEFF at the head of a file is an encoding marker, not content, and leaving it in shifts every column on the first line and stops a heading or shebang from matching at position 0. */
 export function decodeSource(buf: Buffer): string {
   switch (detectSourceEncoding(buf)) {
     case 'utf32le':
@@ -66,14 +39,7 @@ export function decodeSource(buf: Buffer): string {
   }
 }
 
-/**
- * Re-encode `text` in `encoding`, mark included, so a command that rewrites a file puts it back the
- * way it found it.
- *
- * Without this, reading a UTF-16 file correctly and writing it back as UTF-8 would silently convert
- * it -- worse than never having read it, since the caller asked to edit one section and got the
- * whole file re-encoded.
- */
+/** Re-encode `text` in `encoding`, mark included, so a command that rewrites a file puts it back the way it found it. Without this, reading a UTF-16 file correctly and writing it back as UTF-8 would silently convert it -- worse than never having read it, since the caller asked to edit one section and got the whole file re-encoded. */
 export function encodeSource(text: string, encoding: SourceEncoding): Buffer {
   switch (encoding) {
     case 'utf32le':
@@ -104,7 +70,10 @@ function decodeUtf32(buf: Buffer, littleEndian: boolean): string {
     const cp = littleEndian ? buf.readUInt32LE(i) : buf.readUInt32BE(i)
     points.push(cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) ? 0xfffd : cp)
   }
-  return String.fromCodePoint(...points)
+  // Chunked because spreading a large array into fromCodePoint overflows the argument limit.
+  let out = ''
+  for (let i = 0; i < points.length; i += 8192) out += String.fromCodePoint(...points.slice(i, i + 8192))
+  return out
 }
 
 /** Counterpart to {@link decodeUtf32}. */
