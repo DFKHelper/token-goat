@@ -552,13 +552,17 @@ describe('redactSecrets — oauth token names', () => {
   })
 })
 
-// Provenance: FORMAT-DERIVED RFC 3986 section 3.2.1 (userinfo may contain ':' and a sloppy producer leaves '@' unencoded, so the host starts after the last '@'); the two password cases are the review's reproductions. A connection url carries its credential in the authority section, where there is no `key=value` separator for the generic pattern to anchor on. A DATABASE_URL echoed by a failing migration went through untouched.
+// Provenance: FORMAT-DERIVED RFC 3986 section 3.2.1 (userinfo may contain ':' and a sloppy producer leaves '@' unencoded, so the host starts after the last '@'); the two password cases are the review's reproductions. The empty-username cases are FORMAT-DERIVED from the redis-py and Celery documentation, whose broker urls are written `redis://:password@hostname:port/db`; the at-sign-in-username cases are the same RFC section, a username that is itself an email address left unencoded. A connection url carries its credential in the authority section, where there is no `key=value` separator for the generic pattern to anchor on. A DATABASE_URL echoed by a failing migration went through untouched.
 describe('redactSecrets — credentials in a url', () => {
   it.each([
     ['postgres', 'postgres://user:supersecret@db.example', 'supersecret'],
     ['mysql with a port and path', 'mysql://root:hunter2hunter2@127.0.0.1:3306/app', 'hunter2hunter2'],
     ['postgres with a colon in the password', 'postgres://user:pa:ss@db.internal/x', 'pa:ss'],
     ['https with an at sign in the password', 'https://u:p@ss@host/x', 'ss@host'],
+    ['redis with an empty username', 'REDIS_URL=redis://:hunter2secret@localhost:6379/0', 'hunter2secret'],
+    ['amqp with an empty username and no path', 'amqp://:guestpass@rabbit', 'guestpass'],
+    ['ftp with an unencoded at sign in the username', 'ftp://alice@corp.example:s3cretpw@files.example/in', 's3cretpw'],
+    ['smtp with an email address as the username', 'smtp://bob@example.com:mailpass99@smtp.example.com:587', 'mailpass99'],
   ])('redacts the password in a %s url', (_label, input, secret) => {
     const { text, count } = redactSecrets(input)
 
@@ -574,6 +578,9 @@ describe('redactSecrets — credentials in a url', () => {
     ['userinfo without a password', 'ssh://git@github.com/org/repo'],
     ['an email address after a url with a port', 'see http://host:8080 then mail bob@example.com'],
     ['a port followed by a quoted email in JSON', '{"u":"http://h:80","e":"x@y.com"}'],
+    ['userinfo and a port but no password', 'ssh://git@github.com:2222/org/repo'],
+    ['an empty-username url with only a port', 'redis://:6379/0 and mail ops@example.com'],
+    ['a bracketed IPv6 host with a port', 'http://[::1]:8080/health then ops@example.com'],
   ])('leaves %s alone', (_label, input) => {
     expect(redactSecrets(input)).toEqual({ text: input, count: 0 })
   })

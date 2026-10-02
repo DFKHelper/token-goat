@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { invalidateConfigCache, loadConfig, type Config, type RedactionConfig } from '../src/config.js'
-import { compileCustomPatterns, redactSecrets } from '../src/secret_redact.js'
+import { compileCustomPatterns, hasPreciseSecret, redactSecrets } from '../src/secret_redact.js'
 
 function withRedaction(redaction: Partial<RedactionConfig>): Config {
   return { ...loadConfig(), redaction: { custom_patterns: [], strict: false, ...redaction } }
@@ -130,6 +130,12 @@ describe('a custom redaction pattern that is wrong in a way nothing would otherw
   it('skips a zero-length match at replace time even when the pattern passed the compile-time probe', () => {
     const out = redactSecrets('token:abc', withRedaction({ custom_patterns: ['(?<=token:)'] }))
     expect(out).toEqual({ text: 'token:abc', count: 0 })
+  })
+
+  // Provenance: HAND-DERIVED, the same input. The Read-hook fold gate asks hasPreciseSecret whether to decline a fold, and a declined fold sends the file through whole, so an empty match that redacts nothing must not count as a secret there either.
+  it('does not report a zero-length custom match as a precise secret', () => {
+    expect(hasPreciseSecret('token:abc', withRedaction({ custom_patterns: ['(?<=token:)'] }))).toBe(false)
+    expect(hasPreciseSecret('token:abc EMP-12345', withRedaction({ custom_patterns: ['(?<=token:)', '(?<=EMP-)[0-9]{4,8}'] }))).toBe(true)
   })
 
   it('still redacts with a pattern that has a lookaround but consumes characters', () => {

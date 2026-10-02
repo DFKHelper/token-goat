@@ -1,10 +1,12 @@
 /** Excel (.xlsx) narrow-slice reader. Reads the OOXML container directly through `xlsx_reader.ts`, which shares the zip+XML core in `ooxml_extract.ts` with the .docx and .pptx readers -- so the size cap, the not-a-file guard and the path-leak-safe error messages are one implementation rather than three. */
 
+import { loadConfig, type Config } from './config.js'
 import { DocumentRefusedError } from './document_refusal.js'
 import { assertOoxmlWithinDeadline, ooxmlWorkDeadline } from './ooxml_extract.js'
 import { displaySafeText } from './paths.js'
 import { quoteCsvCell, queryCsv, type CsvQueryOptions, type CsvQueryResult } from './csv_query.js'
 import { readXlsxWorkbook, type ExcelCell, type ExcelWorksheet, type ExcelWorkbook } from './xlsx_reader.js'
+import { redactSecrets } from './secret_redact.js'
 
 const loadWorkbook: (filePath: string, deadline?: number) => Promise<ExcelWorkbook> = readXlsxWorkbook
 
@@ -365,8 +367,13 @@ export async function xlsxColumns(
   }
 }
 
-export function formatXlsxColumns(result: XlsxColumnsResult): string {
+export function formatXlsxColumns(result: XlsxColumnsResult, config: Config = loadConfig()): string {
   if (result.columns.length === 0) return `Sheet "${displaySafeText(result.sheetName)}" is empty`
+  // Each sample is redacted before it is clipped: the clip can cut a credential below its pattern's minimum length, and the caller's redaction pass no longer recognises the fragment that is left.
+  const clip = (v: string): string => {
+    const safe = redactSecrets(v, config).text
+    return safe.length > 30 ? safe.slice(0, 27) + '...' : safe
+  }
   const lines = [
     `Sheet: ${displaySafeText(result.sheetName)} (${result.totalSheetRows} data rows, ${result.columns.length} columns; sampled first ${result.sampleRows} rows)`,
   ]
@@ -374,7 +381,7 @@ export function formatXlsxColumns(result: XlsxColumnsResult): string {
     const pct = result.sampleRows > 0 ? Math.round((c.nonEmptyRows / c.sampleRows) * 100) : 0
     const samples =
       c.sampleValues.length > 0
-        ? ` (e.g. ${c.sampleValues.map((v) => JSON.stringify(v.length > 30 ? v.slice(0, 27) + '...' : v)).join(', ')})`
+        ? ` (e.g. ${c.sampleValues.map((v) => JSON.stringify(clip(v))).join(', ')})`
         : ' (all empty)'
     lines.push(`  ${c.letter.padEnd(4)} ${displaySafeText(c.name).padEnd(25)} ${c.nonEmptyRows}/${c.sampleRows} (${pct}%)${samples}`)
   }

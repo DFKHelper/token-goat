@@ -31,28 +31,20 @@ beforeAll(async () => {
   ws4.addRow(['event', 'when'])
   const dateRow = ws4.addRow(['Launch', new Date(Date.UTC(2025, 0, 1))])
   dateRow.getCell(2).numFmt = 'yyyy-mm-dd'
-  // Sheet with an interior blank row (regression test for actualRowCount undercounting trailing
-  // rows -- actualRowCount only counts *populated* rows, so a sheet with a blank row in the
-  // middle has actualRowCount < rowCount, and loop bounds using actualRowCount silently drop
-  // the trailing data row).
+  // Sheet with an interior blank row (regression test for actualRowCount undercounting trailing rows -- actualRowCount only counts *populated* rows, so a sheet with a blank row in the middle has actualRowCount < rowCount, and loop bounds using actualRowCount silently drop the trailing data row).
   const ws5 = wb.addWorksheet('Gaps')
   ws5.getRow(1).values = ['name', 'value']
   ws5.getRow(2).values = ['first', 1]
   // row 3 intentionally left untouched/blank
   ws5.getRow(4).values = ['last', 2]
-  // Formula cells whose cached result is a Date or an error object (regression test for
-  // cellText's object/formula branch falling through to `String(obj.result)`, which produces
-  // a JS locale string for a Date result and the literal text "[object Object]" for an error
-  // result).
+  // Formula cells whose cached result is a Date or an error object (regression test for cellText's object/formula branch falling through to `String(obj.result)`, which produces a JS locale string for a Date result and the literal text "[object Object]" for an error result).
   const ws6 = wb.addWorksheet('FormulaResults')
   ws6.addRow(['label', 'value'])
   const formulaDateRow = ws6.addRow(['launch', null])
   formulaDateRow.getCell(2).value = { formula: 'A1', result: new Date(Date.UTC(2025, 0, 1)) }
   const formulaErrorRow = ws6.addRow(['broken', null])
   formulaErrorRow.getCell(2).value = { formula: 'A1/0', result: { error: '#N/A' } }
-  // Plain (non-formula) error cell, e.g. #N/A entered directly rather than produced by a
-  // formula -- shaped `{ error: '#N/A' }` with no richText/result/text key (regression test
-  // for cellText falling through to `String(cell.value)` and producing "[object Object]").
+  // Plain (non-formula) error cell, e.g. #N/A entered directly rather than produced by a formula -- shaped `{ error: '#N/A' }` with no richText/result/text key (regression test for cellText falling through to `String(cell.value)` and producing "[object Object]").
   const plainErrorRow = ws6.addRow(['direct-error', null])
   plainErrorRow.getCell(2).value = { error: '#N/A' }
   // CAPTURE: ExcelJS 4.x writes `{ formula }` with no result as `<c r="B5"><f>A1&amp;&quot;x&quot;</f></c>` (no `<v>`), the same shape openpyxl emits for every formula it writes, and `{ formula, result: false }` as `<c t="b"><f>1=2</f><v>0</v></c>`. The first read back as a fabricated `0`, the second as the JS spelling `false` beside plain boolean cells that read `FALSE`.
@@ -60,16 +52,12 @@ beforeAll(async () => {
   uncalculatedRow.getCell(2).value = { formula: 'A1&"x"' } as unknown as { formula: string; result: undefined }
   const formulaBoolRow = ws6.addRow(['bool', null])
   formulaBoolRow.getCell(2).value = { formula: '1=2', result: false }
-  // Sheet where the last data row has empty trailing cells, so `row.eachCell` stops earlier
-  // than the sheet's actual width (regression test for sheetToCsv producing ragged CSV rows
-  // that csv-parse's strict column-count check rejects with "Invalid Record Length").
+  // Sheet where the last data row has empty trailing cells, so `row.eachCell` stops earlier than the sheet's actual width (regression test for sheetToCsv producing ragged CSV rows that csv-parse's strict column-count check rejects with "Invalid Record Length").
   const ws7 = wb.addWorksheet('Ragged')
   ws7.addRow(['a', 'b', 'c', 'd', 'e'])
   ws7.addRow(['1', '2', '3', '4', '5'])
   ws7.addRow(['6', '7', '8'])
-  // A never-written sheet (no rows at all). usedRange used to floor this to A1:A1 / 1x1,
-  // announcing one phantom cell that xlsx-head then returned nothing for -- the two commands
-  // disagreed. It must report as empty (ref '(empty)', 0 rows, 0 cols) instead.
+  // A never-written sheet (no rows at all). usedRange used to floor this to A1:A1 / 1x1, announcing one phantom cell that xlsx-head then returned nothing for -- the two commands disagreed. It must report as empty (ref '(empty)', 0 rows, 0 cols) instead.
   wb.addWorksheet('Blank')
   await wb.xlsx.writeFile(file)
 })
@@ -110,11 +98,7 @@ describe('listSheets', () => {
     expect(blank?.ref).toBe('(empty)')
   })
 
-  // Regression: a non-.xlsx/corrupt file forwarded jszip's raw internal parse error ("Can't
-  // find end of central directory : is this a zip file ? If it is, see
-  // https://stuk.github.io/jszip/documentation/howto/read_zip.html") straight to the CLI user
-  // instead of a clean message. loadWorkbook (shared by listSheets/headSheet/rangeSheet/
-  // querySheet) now catches that and re-throws a clear "not a valid .xlsx file" error.
+  // Regression: a non-.xlsx/corrupt file forwarded jszip's raw internal parse error ("Can't find end of central directory : is this a zip file ? If it is, see https://stuk.github.io/jszip/documentation/howto/read_zip.html") straight to the CLI user instead of a clean message. loadWorkbook (shared by listSheets/headSheet/rangeSheet/ querySheet) now catches that and re-throws a clear "not a valid .xlsx file" error.
   it('throws a clean error instead of leaking the raw jszip parse error for a non-zip file', async () => {
     const notXlsx = path.join(dir, 'plain-text.xlsx')
     fs.writeFileSync(notXlsx, 'this is plain text, not a zip file\n')
@@ -137,13 +121,7 @@ describe('headSheet', () => {
     await expect(headSheet(file, 'Nope', 10)).rejects.toThrow(/unknown sheet/)
   })
 
-  // Regression: header and each data row were padded independently to Math.max(header.length,
-  // row.length) -- a per-row floor derived only from the header's own width -- instead of the
-  // sheet-wide widest-row column count. A row wider than the header kept its extra trailing
-  // columns with no corresponding header column, and different data rows ended up with
-  // different line widths from each other and from the header, desyncing which value belongs
-  // to which column. Header and every row must now pad to the sheet's actual used-column-count
-  // (WideData's widest row is 4 columns), same fix sheetToCsv already applies.
+  // Regression: header and each data row were padded independently to Math.max(header.length, row.length) -- a per-row floor derived only from the header's own width -- instead of the sheet-wide widest-row column count. A row wider than the header kept its extra trailing columns with no corresponding header column, and different data rows ended up with different line widths from each other and from the header, desyncing which value belongs to which column. Header and every row must now pad to the sheet's actual used-column-count (WideData's widest row is 4 columns), same fix sheetToCsv already applies.
   it('pads the header and every data row to the sheet-wide widest-row column count, not just the header width', async () => {
     const text = await headSheet(file, 'WideData', 10)
     const lines = text.split('\n')
@@ -155,10 +133,7 @@ describe('headSheet', () => {
     expect(lines[2]).toBe('x,y,z,')
   })
 
-  // Regression: cellText fell through to `String(cell.value)` for any non-rich/non-formula
-  // cell, and ExcelJS returns native Date objects for date-formatted cells -- so a date cell
-  // rendered as a full JS locale string (e.g. "Wed Jan 01 2025 00:00:00 GMT...") instead of a
-  // clean formatted date. cellText must prefer ExcelJS's pre-formatted `cell.text` instead.
+  // Regression: cellText fell through to `String(cell.value)` for any non-rich/non-formula cell, and ExcelJS returns native Date objects for date-formatted cells -- so a date cell rendered as a full JS locale string (e.g. "Wed Jan 01 2025 00:00:00 GMT...") instead of a clean formatted date. cellText must prefer ExcelJS's pre-formatted `cell.text` instead.
   it('renders a date-formatted cell as a clean date, not a JS locale string', async () => {
     const text = await headSheet(file, 'Dates', 10)
     const lines = text.split('\n')
@@ -168,11 +143,7 @@ describe('headSheet', () => {
     expect(lines[1]).not.toContain('Coordinated Universal Time')
   })
 
-  // Regression: a formula cell's cached result can itself be a Date or an error object.
-  // cellText's object/formula branch stringified `obj.result` directly, so a Date result
-  // produced a JS locale string (not the clean ISO format the plain-Date branch already
-  // produces) and an error-shaped result (`{error: '#N/A'}`) produced the literal text
-  // "[object Object]".
+  // Regression: a formula cell's cached result can itself be a Date or an error object. cellText's object/formula branch stringified `obj.result` directly, so a Date result produced a JS locale string (not the clean ISO format the plain-Date branch already produces) and an error-shaped result (`{error: '#N/A'}`) produced the literal text "[object Object]".
   it('renders a formula cell whose cached result is a Date as a clean date, not a locale string', async () => {
     const text = await headSheet(file, 'FormulaResults', 10)
     const lines = text.split('\n')
@@ -231,11 +202,7 @@ describe('rangeSheet', () => {
     expect(formatXlsxRange(result)).toBe('A,B\nAlice,"=SUM(29,1)"')
   })
 
-  // Regression: a reversed range (start corner below/right of the end corner) decoded to a
-  // start row/col greater than the end row/col, so the r <= e.r / c <= e.c iteration loops
-  // never executed -- silently producing an empty result instead of the requested data, with
-  // no signal that the range order was backwards. Excel treats a reversed selection as
-  // equivalent to its normalized form, so rangeSheet must too.
+  // Regression: a reversed range (start corner below/right of the end corner) decoded to a start row/col greater than the end row/col, so the r <= e.r / c <= e.c iteration loops never executed -- silently producing an empty result instead of the requested data, with no signal that the range order was backwards. Excel treats a reversed selection as equivalent to its normalized form, so rangeSheet must too.
   it('normalizes a reversed range to the same result as its forward form', async () => {
     const forward = await rangeSheet(file, 'Employees', 'A1:B3', false)
     const reversed = await rangeSheet(file, 'Employees', 'B3:A1', false)
@@ -243,22 +210,14 @@ describe('rangeSheet', () => {
     expect(formatXlsxRange(reversed)).toBe('A,B\nname,age\nAlice,30\nBob,25')
   })
 
-  // HAND-DERIVED: the cell counts below are the products of the A1 range's own corners, computed
-  // from the notation rather than from anything this repo emits. `XFD1048576` is the last cell
-  // ECMA-376 Part 1 section 18.3.1.73 allows (2^14 columns by 2^20 rows), so `A1:XFD1048576` is
-  // 16,384 x 1,048,576 = 17,179,869,184 cells.
+  // HAND-DERIVED: the cell counts below are the products of the A1 range's own corners, computed from the notation rather than from anything this repo emits. `XFD1048576` is the last cell ECMA-376 Part 1 section 18.3.1.73 allows (2^14 columns by 2^20 rows), so `A1:XFD1048576` is 16,384 x 1,048,576 = 17,179,869,184 cells.
   //
-  // Regression: every other reader here is bounded by assertScannableExtent, but that ceiling
-  // measures the extent the FILE declares. rangeSheet's extent is declared by the CALLER, and it
-  // reached no guard at all -- it iterated the requested corners directly, appending one string
-  // per cell. Measured at 0.083 us/cell over a real 2,080,000-cell request against a two-cell
-  // file, so the far corner is ~24 minutes of CPU and an unbounded array, from one flag.
+  // Regression: every other reader here is bounded by assertScannableExtent, but that ceiling measures the extent the FILE declares. rangeSheet's extent is declared by the CALLER, and it reached no guard at all -- it iterated the requested corners directly, appending one string per cell. Measured at 0.083 us/cell over a real 2,080,000-cell request against a two-cell file, so the far corner is ~24 minutes of CPU and an unbounded array, from one flag.
   it('rejects a caller-supplied range past the shared scan limit instead of iterating it', async () => {
     await expect(rangeSheet(file, 'Employees', 'A1:XFD1048576', false)).rejects.toThrow(/scan limit/)
   })
 
-  // The negative control, and half the evidence: a guard that rejected everything would satisfy
-  // the assertion above while being broken. An ordinary range must still return its data.
+  // The negative control, and half the evidence: a guard that rejected everything would satisfy the assertion above while being broken. An ordinary range must still return its data.
   it('still returns an ordinary bounded range once the limit exists', async () => {
     expect(formatXlsxRange(await rangeSheet(file, 'Employees', 'A1:B2', false))).toBe('A,B\nname,age\nAlice,30')
   })
@@ -279,10 +238,7 @@ describe('querySheet', () => {
     expect(result.rows).toEqual([['Alice'], ['Bob'], ['Carol']])
   })
 
-  // Regression: sheetToCsv emitted each row only up to that row's own last non-empty column,
-  // so a row with empty/unset trailing cells produced fewer CSV fields than the header --
-  // csv-parse's default strict column-count check then threw "Invalid Record Length" instead
-  // of returning results.
+  // Regression: sheetToCsv emitted each row only up to that row's own last non-empty column, so a row with empty/unset trailing cells produced fewer CSV fields than the header -- csv-parse's default strict column-count check then threw "Invalid Record Length" instead of returning results.
   it('does not throw on a sheet where a data row has empty trailing cells', async () => {
     const result = await querySheet(file, 'Ragged', {})
     expect(result.header).toEqual(['a', 'b', 'c', 'd', 'e'])
@@ -294,14 +250,7 @@ describe('querySheet', () => {
 })
 
 describe('a sheet whose declared used range reaches the format\'s own far corner', () => {
-  // ws.rowCount/ws.columnCount come straight from the highest row/column number declared in any
-  // populated cell's `r="..."` attribute (xlsx_reader.ts's parseSheet). ECMA-376 Part 1 section
-  // 18.3.1.73 allows up to 2^20 rows by 2^14 columns (row XFD1048576), and a single cell placed
-  // there is enough to declare it -- a real, if usually accidental, Excel shape (a formatting or
-  // paste operation that reaches the sheet's edge inflates the "used range" even though only one
-  // cell holds data). listSheets/headSheet/querySheet each used to scan from row/column 1 up to
-  // those declared numbers, which is quadratic in numbers the file merely states rather than in
-  // anything it actually contains, and takes on the order of minutes for this one-cell file.
+  // ws.rowCount/ws.columnCount come straight from the highest row/column number declared in any populated cell's `r="..."` attribute (xlsx_reader.ts's parseSheet). ECMA-376 Part 1 section 18.3.1.73 allows up to 2^20 rows by 2^14 columns (row XFD1048576), and a single cell placed there is enough to declare it -- a real, if usually accidental, Excel shape (a formatting or paste operation that reaches the sheet's edge inflates the "used range" even though only one cell holds data). listSheets/headSheet/querySheet each used to scan from row/column 1 up to those declared numbers, which is quadratic in numbers the file merely states rather than in anything it actually contains, and takes on the order of minutes for this one-cell file.
   let farCornerFile: string
 
   beforeAll(async () => {
@@ -358,6 +307,20 @@ describe('xlsx ergonomic improvements: sheet defaulting, column projection, xlsx
     const formatted = formatXlsxColumns(summary)
     expect(formatted).toContain('Sheet: Employees')
     expect(formatted).toContain('A    name')
+  })
+
+  // Provenance: FORMAT-DERIVED. A GitHub classic token is `ghp_` plus 36 base62 characters (github.blog 2021-04-05, "Behind GitHub's new authentication token formats"); the 27-character clip used to cut it to `ghp_` plus 23, below the pattern's minimum, so the caller's redaction pass no longer recognised the fragment it printed.
+  it('redacts a secret sample value before clipping it to the column width', () => {
+    const token = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij'
+    const formatted = formatXlsxColumns({
+      sheetName: 'Keys',
+      totalSheetRows: 1,
+      sampleRows: 1,
+      columns: [{ letter: 'A', name: 'token', index: 0, nonEmptyRows: 1, sampleRows: 1, sampleValues: [token, 'a short plain value'] }],
+    })
+    expect(formatted).not.toContain('ghp_ABCDEFGHIJ')
+    expect(formatted).toContain('[REDACTED:')
+    expect(formatted).toContain('"a short plain value"')
   })
 
   it('querySheet works with defaulted sheetName', async () => {
