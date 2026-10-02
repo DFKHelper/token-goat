@@ -1,30 +1,39 @@
 import { executeParallelSearch } from './parallel_search.js';
-import type { FusedSearchResult, SearchOptions } from './types.js';
+import type { FusedSearchResult, SearchExecutionSummary, SearchOptions } from './types.js';
 import { displaySafeJson, displaySafeText } from '../paths.js';
 import { resolveProjectConfinement } from '../read_spec.js';
 
-/** Formats a single fused search result for terminal display. */
+/** Formats one fused result as its location line, naming the channels that agreed on it, and a one-line preview. The fusion score stays in `--json`: it orders the list but tells a reader nothing the order does not. */
 function formatTerminalHit(hit: FusedSearchResult, rank: number): string {
-  const channelBadge = hit.channels.map((c) => `[${c}]`).join('');
   const wide = hit.lineStart !== hit.lineEnd;
   const showMatch = hit.matchLine !== undefined && wide;
   const lineRange = showMatch ? `:${hit.matchLine}` : wide ? `:${hit.lineStart}-${hit.lineEnd}` : `:${hit.lineStart}`;
   const loc = `${displaySafeText(hit.filePath)}${lineRange}`;
   const spanInfo = showMatch ? `${hit.lineStart}-${hit.lineEnd}` : '';
   const symInfo = hit.name ? ` (${displaySafeText(hit.name)}${hit.kind ? ` · ${hit.kind}` : ''}${spanInfo ? ` ${spanInfo}` : ''})` : spanInfo ? ` (${spanInfo})` : '';
-  const scoreInfo = `score: ${hit.score.toFixed(4)}`;
 
-  const lines = [
-    `#${rank} ${channelBadge} ${loc}${symInfo} [${scoreInfo}]`,
-  ];
+  const lines = [`${rank}. ${loc}${symInfo} ${hit.channels.join('+')}`];
 
   const shownPreview = showMatch && hit.matchPreview ? hit.matchPreview : hit.preview;
   if (shownPreview) {
     const cleanPreview = shownPreview.replace(/\r?\n/g, ' ').slice(0, 120).trim();
-    lines.push(`    ${cleanPreview}`);
+    if (cleanPreview) lines.push(`   ${cleanPreview}`);
   }
 
   return lines.join('\n');
+}
+
+/** Renders a search summary as terminal text: one header line with the per-channel counts, any degraded-channel notes, then each hit on consecutive lines. */
+export function formatSearchText(summary: SearchExecutionSummary): string {
+  const notes = (summary.degradedChannels ?? []).map((d) => `\n(note: ${d.channel} channel degraded: ${displaySafeText(d.reason)})`).join('');
+
+  if (summary.totalHits === 0) {
+    return `No results found across active channels [${summary.activeChannels.join(', ')}] for: "${displaySafeText(summary.query)}" (${summary.durationMs}ms)${notes}`;
+  }
+
+  const counts = Object.entries(summary.channelCounts).map(([c, n]) => `${c}:${n}`).join(', ');
+  const header = `${summary.totalHits} result${summary.totalHits === 1 ? '' : 's'} for "${displaySafeText(summary.query)}" in ${summary.durationMs}ms [${counts}]${notes}`;
+  return [header, ...summary.results.map((hit, idx) => formatTerminalHit(hit, idx + 1))].join('\n');
 }
 
 /** Runs the parallel search command and formats the output. */
@@ -51,28 +60,5 @@ export async function runParallelSearch(options: SearchOptions): Promise<{ text:
     };
   }
 
-  let degradationNotice = '';
-  if (summary.degradedChannels && summary.degradedChannels.length > 0) {
-    degradationNotice = '\n' + summary.degradedChannels
-      .map((d) => `(note: ${d.channel} channel degraded: ${displaySafeText(d.reason)})`)
-      .join('\n');
-  }
-
-  if (summary.totalHits === 0) {
-    return {
-      text: `No results found across active channels [${summary.activeChannels.join(', ')}] for: "${displaySafeText(summary.query)}" (${summary.durationMs}ms)${degradationNotice}`,
-      code: 0,
-    };
-  }
-
-  const header = `Parallel Multi-Angle Search: "${displaySafeText(summary.query)}"\n` +
-    `Found ${summary.totalHits} consensus results in ${summary.durationMs}ms ` +
-    `[channels: ${Object.entries(summary.channelCounts).map(([c, n]) => `${c}:${n}`).join(', ')}]${degradationNotice}`;
-
-  const items = summary.results.map((hit, idx) => formatTerminalHit(hit, idx + 1)).join('\n\n');
-
-  return {
-    text: `${header}\n\n${items}`,
-    code: 0,
-  };
+  return { text: formatSearchText(summary), code: 0 };
 }

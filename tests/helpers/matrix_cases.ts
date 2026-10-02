@@ -338,7 +338,8 @@ export const cases: Record<string, () => void | Promise<void>> = {
   search: () => {
     const r = run(['search', 'alphaSym'])
     expect(r.status, r.stderr).toBe(0)
-    expect(r.stdout).toContain('Parallel Multi-Angle Search')
+    expect(r.stdout).toMatch(/^\d+ results? for "alphaSym" in \d+ms \[/)
+    expect(r.stdout).not.toMatch(/score/i)
     expect(r.stdout).toContain('alphaSym')
 
     const jsonRes = run(['search', 'alphaSym', '--json'])
