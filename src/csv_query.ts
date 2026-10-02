@@ -31,16 +31,14 @@ const DELIMITER_SAMPLE_ROWS = 5
 
 /** Sniffs the field delimiter by PARSING the sample with each candidate and keeping the first that yields a consistent, multi-column table -- never by counting characters in the raw first line. Counting cannot tell a separator from the same character sitting inside a quoted field, and the first line is the header, which is exactly where a compound name lands. Two real failures, both from a plain comma-separated file: a header of `"model;year;trim",price` has two semicolons against one comma, so `;` won and the file did not parse AT ALL (`Invalid Closing Quote`); a header of `a|b|c,description` has two pipes against one comma, so `|` won and the file quietly became three columns with `description` no longer addressable. The second is the dangerous one -- it produced a table, just the wrong one. A candidate that throws is not the delimiter, and neither is one that leaves the sample ragged or collapses it to a single column: under the true delimiter every row of a CSV has the same field count, and under a character that is merely PRESENT in the data it generally does not. Where two candidates both parse cleanly the file is genuinely ambiguous from its bytes alone, and order decides; `--delimiter` is the escape hatch and is what the error message points at. */
 export function detectDelimiter(content: string): string {
-  // Cut at the last newline in range so the sample never ends mid-record (a half row throws under the true delimiter and flips detection to a comma); a newline-free head keeps the whole content.
-  const cut = content.lastIndexOf('\n', 10_000)
-  const slice = content.length <= 10_000 ? content : cut > 0 ? content.slice(0, cut) : content
-  if (slice.trim() === '') return ','
+  // The sample is bounded by the parser's own `to`, which stops reading once that many records are complete; a character cut ends mid-record whenever it lands in a wide row or inside a quoted field that spans lines, and the half record throws under the true delimiter and flips detection to a comma.
+  if (content.trim() === '') return ','
 
   for (const cand of DELIMITER_CANDIDATES) {
     let rows: string[][]
     try {
       // `relax_column_count` is deliberately NOT passed here, unlike in parseRecords below. That is the whole test: with it, a ragged parse is quietly smoothed into a table and every candidate looks plausible; without it, csv-parse throws `Invalid Record Length` and the candidate eliminates itself. Quote handling stays the same as parseRecords so a candidate is judged on the parse the file would really get.
-      rows = parse(slice, { columns: false, skip_empty_lines: true, trim: true, delimiter: cand, bom: true, relax_quotes: true, to: DELIMITER_SAMPLE_ROWS }) as string[][]
+      rows = parse(content, { columns: false, skip_empty_lines: true, trim: true, delimiter: cand, bom: true, relax_quotes: true, to: DELIMITER_SAMPLE_ROWS }) as string[][]
     } catch {
       continue
     }
