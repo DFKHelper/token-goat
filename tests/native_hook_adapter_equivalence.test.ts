@@ -68,6 +68,13 @@ function sandboxEnv(base: string, dataDir: string): Env {
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v
   for (const k of HARNESS_DETECTION_ENV_KEYS) delete env[k]
   const envRoot = process.platform === 'win32' ? path.dirname(path.dirname(dataDir)) : path.dirname(dataDir)
+  // A `mem` that always fails goes first on PATH: a real one on the developer's machine makes pre_compact add a mem epoch section only when its probe beats the 800 ms timeout, so under a loaded full suite the shim and the server could answer differently. Failing and timing out both omit the section, so every path now answers the same.
+  const stubBin = path.join(base, 'stub-bin')
+  fs.mkdirSync(stubBin, { recursive: true })
+  if (process.platform === 'win32') fs.writeFileSync(path.join(stubBin, 'mem.cmd'), '@exit /b 1\r\n')
+  else fs.writeFileSync(path.join(stubBin, 'mem'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+  const pathKey = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
+  env[pathKey] = [stubBin, env[pathKey] ?? ''].join(path.delimiter)
   return {
     ...env,
     HOME: base,
