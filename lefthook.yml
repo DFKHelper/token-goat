@@ -49,3 +49,15 @@ pre-push:
     all-checks:
       # Single bash wrapper runs typecheck + tests in parallel internally. Avoids lefthook's parallel-mode EvalSymlinks canonicalize failure on Windows (affects commands with glob: on parallel runners when stdin is read concurrently).
       run: bash .lefthook-scripts/run-all-checks.sh
+
+post-merge:
+  commands:
+    sync-on-pull:
+      # Automatically builds bundle, restarts in-memory daemons, updates shims, and reindexes on git pull/merge
+      run: node scripts/post-merge.mjs
+
+post-rewrite:
+  commands:
+    sync-on-rebase:
+      # Runs the same sync after git pull --rebase or git rebase
+      run: node scripts/post-merge.mjs

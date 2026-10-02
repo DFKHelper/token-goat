@@ -50,4 +50,20 @@ describe('PowerShell runner integration and resolution', () => {
     expect(exitCode).toBe(0)
     expect(captured).toContain('TG_CMD_VAL:[]')
   })
+
+  it('executes multi-statement pipeline and native commands via scriptblock invocation', async () => {
+    let captured = ''
+    const exitCode = await run('Write-Output "Part1"; python -c "print(\'Part2\')"; Write-Output "Part3"', {
+      filterName: 'powershell',
+      shellType: 'pwsh',
+      writeStdout: (s) => {
+        captured += s
+      },
+    })
+
+    expect(exitCode).toBe(0)
+    expect(captured).toContain('Part1')
+    expect(captured).toContain('Part2')
+    expect(captured).toContain('Part3')
+  })
 })

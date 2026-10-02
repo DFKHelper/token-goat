@@ -37,6 +37,7 @@
     "typecheck:vscode-extension": "npm --prefix vscode-extension run compile",
     "typecheck:vscode-extension:tests": "npm --prefix vscode-extension run typecheck:tests",
     "dev": "tsx src/main.ts",
+    "sync": "node scripts/post-merge.mjs",
     "prepare": "node scripts/install-git-hooks.mjs",
     "parser:fingerprint": "node scripts/parser-fingerprint.mjs",
     "parser:fingerprint:check": "node scripts/parser-fingerprint.mjs --check",
