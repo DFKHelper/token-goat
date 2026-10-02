@@ -10,6 +10,7 @@ import * as os from 'node:os'
 import { storeBashOutputSync } from './bash_output_cache.js'
 import { loadConfig } from './config.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
+import { displaySafeText } from './paths.js'
 import { wrappedShell, resolvePowerShell } from './shell.js'
 import { recordStat } from './stats.js'
 import { PassthroughFilter } from './tool_filters/generic.js'
@@ -232,6 +233,11 @@ function passthrough(
     stdio: 'inherit',
   })
   if (isTimeout(result.error)) return 124
+  // A spawn failure (ENOENT) leaves status null; exit 127 like a shell's "command not found" instead of reporting success.
+  if (result.error) {
+    process.stderr.write(`[token-goat: ${displaySafeText(result.error.message)}]\n`)
+    return 127
+  }
   if (result.status !== null) return result.status
   if (result.signal) return signalExitCode(result.signal)
   return 0
@@ -287,7 +293,13 @@ async function wrapAndCompress(
   child.stdout?.on('data', onData(stdoutSink))
   child.stderr?.on('data', onData(stderrSink))
 
+  // 'error' (spawn failure, e.g. ENOENT) and 'close' can both fire; the promise settles on the first, and a spawn error maps to 127 with its message kept for stderr.
+  let spawnError: Error | null = null
   const { code, signal } = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    child.on('error', (e) => {
+      spawnError = e
+      resolve({ code: 127, signal: null })
+    })
     child.on('close', (code, signal) => resolve({ code, signal }))
   })
   heartbeat.stop()
@@ -299,6 +311,7 @@ async function wrapAndCompress(
     stdoutText += `\n[token-goat: capture capped at ${MAX_CAPTURE_BYTES / (1024 * 1024)} MiB]`
   }
 
+  if (spawnError !== null) stderrText = (stderrText ? stderrText + '\n' : '') + `[token-goat: ${displaySafeText((spawnError as Error).message)}]`
   let exitCode: number
   if (timedOut) {
     exitCode = 124
