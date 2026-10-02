@@ -369,8 +369,7 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
         // Nothing left to embed. `false` tells processDirtyBatch the gate found nothing to do at all, so it is only truthful when the parse was skipped too: a parser-stamp bump reparses the file above while correctly leaving its embedding alone, and that is a real index rather than a no-op skip.
         return parseUnchanged ? false : undefined
       }
-      // Embeddings are fired and forgotten here, never awaited: the worker's drain loop is synchronous by design (drainOnce/processDirtyBatch must return instantly so the dirty queue clears promptly), and chunk/vector freshness can safely lag a beat behind symbol freshness since semantic search tolerates staleness in a way exact symbol lookups do not. indexFileEmbeddings already swallows its own errors internally, and embedFileSerialized ends its chain with a .catch so the promise returned here can never reject -- that backstop lives there, not on this line, and removing it would leave this un-awaited call able to take the daemon down with an unhandled rejection. Returning the promise (rather than voiding it) lets a caller that wants to - such as a test - await it explicitly instead of racing it. Routed through embedFileSerialized so two overlapping drains of the same rapidly re-edited file chain onto one another instead of racing -- see its doc comment for the stale-overwrite bug this closes.
-      // The model is not on this machine and its download is held (offline, or failed moments ago): an embed now would only fail again. The file keeps a NULL embed_sha, so runWorkerLoop's backlog sweep embeds it once embeddingsReady turns true.
+      // Embeddings are fired and forgotten here, never awaited: the worker's drain loop is synchronous by design (drainOnce/processDirtyBatch must return instantly so the dirty queue clears promptly), and chunk/vector freshness can safely lag a beat behind symbol freshness since semantic search tolerates staleness in a way exact symbol lookups do not. indexFileEmbeddings already swallows its own errors internally, and embedFileSerialized ends its chain with a .catch so the promise returned here can never reject -- that backstop lives there, not on this line, and removing it would leave this un-awaited call able to take the daemon down with an unhandled rejection. Returning the promise (rather than voiding it) lets a caller that wants to - such as a test - await it explicitly instead of racing it. Routed through embedFileSerialized so two overlapping drains of the same rapidly re-edited file chain onto one another instead of racing -- see its doc comment for the stale-overwrite bug this closes. The model is not on this machine and its download is held (offline, or failed moments ago): an embed now would only fail again. The file keeps a NULL embed_sha, so runWorkerLoop's backlog sweep embeds it once embeddingsReady turns true.
       if (modelDownloadHeld()) return parseUnchanged ? false : undefined
       return embedFileSerialized(absPath, dbPath, sha, configRoot)
     } catch (err) {
@@ -388,6 +387,19 @@ function makeRemover(dbPath: string): (absPath: string) => void {
   }
 }
 
+/** Prune `p`'s rows through `remove` and clear its retry streak; on failure log it and requeue it within the same retry budget, since a failed prune leaves stale symbols just like a failed reindex. Returns whether the prune succeeded. */
+function pruneDirtyPath(p: string, remove: (absPath: string) => void, dir: string, requeue: (dir: string, absPath: string) => void): boolean {
+  try {
+    remove(p)
+    clearRetryCount(path.join(dir, 'global.db'), p)
+    return true
+  } catch (err) {
+    appendWorkerErrorLog(dir, `${new Date().toISOString()} removeFileFromIndex failed for ${p}: ${extractErrorMessage(err)}\n`)
+    requeue(dir, p)
+    return false
+  }
+}
+
 /** Process one batch of dirty paths. For each path: skip if the file no longer exists or cannot be fingerprinted, otherwise re-index it. The default `index` callback parses the file and writes its rows into the global index DB; tests inject their own callback to observe the plumbing in isolation. Returns the number of paths actually (re)indexed -- a path whose callback returns `false` (the default indexer's sha-gate skip for byte-identical content) or `INDEX_FAILED` (the default indexer's sentinel for a swallowed, logged indexing failure -- see makeIndexer) is visited but not counted. Exported for unit tests so the drain logic can be exercised without a thread. */
 export function processDirtyBatch(
   paths: string[],
@@ -397,6 +409,7 @@ export function processDirtyBatch(
   requeue: (dir: string, absPath: string) => void = requeueDirtyPath,
 ): number {
   const blockedRoots = loadConfig().worker.blocked_roots
+  const ixCfg = loadConfig().indexing
   // Memoizes findProject(dirname) for this batch only -- findProject re-runs a full ancestor-marker probe (9 markers x existsSync/lstat per level) plus isRepoContainer's readdirSync on every call, and a batch routinely contains many dirty paths under the same directory (or same project tree) that would otherwise repeat that walk once per path for a result (lastKnownProjectRoots) that is only consulted once per PRUNE_EVERY_N_DRAINS drains. Scoped to this function call (not module-level) since a project root learned from one batch's traffic can legitimately go stale by the next batch (e.g. after a project is deleted).
   const projectRootCache = new Map<string, string | null>()
   let indexed = 0
@@ -407,14 +420,13 @@ export function processDirtyBatch(
     if (isUnderBlockedRoot(p, blockedRoots)) continue
     // A dirty path whose file is gone is a deletion to reconcile, not a no-op: prune its stale rows instead of skipping, otherwise `symbol Foo` resolves a deleted file forever. fileIsAbsent, not fs.existsSync: existsSync answers false for a locked or permission-denied file exactly as it does for a missing one, so a file held open by an AV scanner or sitting behind a deny ACE would have had its symbols, references, sections and embedding chunks deleted while it was still on disk -- silently, and with no way back until something edited it again. That is the same class of transient failure the fingerprint branch immediately below already logs and requeues, so an unreadable file now falls through to it instead of being pruned.
     if (fileIsAbsent(p)) {
-      try {
-        remove(p)
-        clearRetryCount(path.join(dir, 'global.db'), p)
-      } catch (err) {
-        // A failed deletion leaves stale symbols just like a failed reindex. Keep it queued within the same retry budget, without blocking healthy batch entries.
-        appendWorkerErrorLog(dir, `${new Date().toISOString()} removeFileFromIndex failed for ${p}: ${extractErrorMessage(err)}\n`)
-        requeue(dir, p)
-      }
+      pruneDirtyPath(p, remove, dir, requeue)
+      continue
+    }
+    // Decided from the path and a stat before fingerprintFile reads the whole file, as cmdIndex does: a log past large_file_skip_kb was otherwise loaded whole on every drain only to be skipped, and one over 2 GiB failed that read and was requeued as transient until its retries ran out, its stale rows never purged. Counted as indexed for the same reason as makeIndexer's identical branch, which still covers its direct callers.
+    if (ixCfg !== undefined && isParseSkipEligible(p, ixCfg)) {
+      recordKnownRootThrottled(p, dir, path.join(dir, 'global.db'))
+      if (pruneDirtyPath(p, remove, dir, requeue)) indexed += 1
       continue
     }
     const sha = fingerprintFile(p)
