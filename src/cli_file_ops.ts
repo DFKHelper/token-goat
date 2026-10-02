@@ -517,13 +517,14 @@ function findClosestLineWindow(targetText: string, oldText: string): { lineStart
 export function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; oldB64?: string; newB64?: string; all?: boolean; normalizeNewlines?: boolean }): void {
   validateWritablePath(file, 'target file')
 
-  const targetBuf = readFileBoundedRaw(file, 'target file', true)
+  // Stat before the read so the stale-write check also covers a write landing between the two.
   let preWriteStat: fs.Stats | undefined
   try {
     preWriteStat = fs.statSync(file)
   } catch {
     // If the file vanished
   }
+  const targetBuf = readFileBoundedRaw(file, 'target file', true)
   const usingFrom = opts.oldFrom !== undefined || opts.newFrom !== undefined
   const usingB64 = opts.oldB64 !== undefined || opts.newB64 !== undefined
 
