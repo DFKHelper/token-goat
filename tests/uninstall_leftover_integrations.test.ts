@@ -20,9 +20,14 @@ const ENV_KEYS = [
   'XDG_CONFIG_HOME',
 ] as const
 let saved: Record<string, string | undefined>
+// Resolved before any test moves the cwd: the project-scope detectors (Copilot --local, Cursor, JetBrains, Neovim, Visual Studio, pi) read the working directory, and scripts/post-merge.mjs installs --copilot --local into this checkout, so a test left in the repo reports a leftover the developer's own setup put there.
+const BUNDLE = path.resolve(process.cwd(), 'dist', 'token-goat.mjs')
+let prevCwd: string
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-leftover-'))
+  prevCwd = process.cwd()
+  process.chdir(root)
   saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
   process.env['HOME'] = root
   process.env['USERPROFILE'] = root
@@ -39,6 +44,7 @@ afterEach(() => {
     if (saved[k] === undefined) delete process.env[k]
     else process.env[k] = saved[k]
   }
+  process.chdir(prevCwd)
   fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -57,8 +63,7 @@ function env(): NodeJS.ProcessEnv {
 }
 
 function runOut(args: string[]): { status: number | null; out: string } {
-  const bundle = path.resolve(process.cwd(), 'dist', 'token-goat.mjs')
-  const result = spawnSync(process.execPath, [bundle, ...args], { encoding: 'utf8', env: env() })
+  const result = spawnSync(process.execPath, [BUNDLE, ...args], { encoding: 'utf8', env: env(), cwd: root })
   return { status: result.status, out: `${result.stdout}${result.stderr}` }
 }
 
