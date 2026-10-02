@@ -1,6 +1,4 @@
-/**
- * Narrow CSV projection/filter for `token-goat csv-query`, so a multi-thousand row CSV never needs a full `Read` just to answer "what's in column X where Y = Z". Deliberately no query language beyond column projection + one equality filter -- matches the project's "no premature abstraction" bar.
- */
+/** Narrow CSV projection/filter for `token-goat csv-query`, so a multi-thousand row CSV never needs a full `Read` just to answer "what's in column X where Y = Z". Deliberately no query language beyond column projection + one equality filter -- matches the project's "no premature abstraction" bar. */
 
 import { displaySafeText } from './paths.js'
 import { compileGuardedRegexCached } from './regex_guard.js'
@@ -31,15 +29,11 @@ const DELIMITER_CANDIDATES = [',', '\t', ';', '|'] as const
 /** How many rows of the sample each candidate is judged on. Enough for a ragged parse to show itself, few enough that sniffing stays cheap on a large file. */
 const DELIMITER_SAMPLE_ROWS = 5
 
-/**
- * Sniffs the field delimiter by PARSING the sample with each candidate and keeping the first that yields a consistent, multi-column table -- never by counting characters in the raw first line.
- *
- * Counting cannot tell a separator from the same character sitting inside a quoted field, and the first line is the header, which is exactly where a compound name lands. Two real failures, both from a plain comma-separated file: a header of `"model;year;trim",price` has two semicolons against one comma, so `;` won and the file did not parse AT ALL (`Invalid Closing Quote`); a header of `a|b|c,description` has two pipes against one comma, so `|` won and the file quietly became three columns with `description` no longer addressable. The second is the dangerous one -- it produced a table, just the wrong one.
- *
- * A candidate that throws is not the delimiter, and neither is one that leaves the sample ragged or collapses it to a single column: under the true delimiter every row of a CSV has the same field count, and under a character that is merely PRESENT in the data it generally does not. Where two candidates both parse cleanly the file is genuinely ambiguous from its bytes alone, and order decides; `--delimiter` is the escape hatch and is what the error message points at.
- */
+/** Sniffs the field delimiter by PARSING the sample with each candidate and keeping the first that yields a consistent, multi-column table -- never by counting characters in the raw first line. Counting cannot tell a separator from the same character sitting inside a quoted field, and the first line is the header, which is exactly where a compound name lands. Two real failures, both from a plain comma-separated file: a header of `"model;year;trim",price` has two semicolons against one comma, so `;` won and the file did not parse AT ALL (`Invalid Closing Quote`); a header of `a|b|c,description` has two pipes against one comma, so `|` won and the file quietly became three columns with `description` no longer addressable. The second is the dangerous one -- it produced a table, just the wrong one. A candidate that throws is not the delimiter, and neither is one that leaves the sample ragged or collapses it to a single column: under the true delimiter every row of a CSV has the same field count, and under a character that is merely PRESENT in the data it generally does not. Where two candidates both parse cleanly the file is genuinely ambiguous from its bytes alone, and order decides; `--delimiter` is the escape hatch and is what the error message points at. */
 export function detectDelimiter(content: string): string {
-  const slice = content.slice(0, 10_000)
+  // Cut at the last newline in range so the sample never ends mid-record (a half row throws under the true delimiter and flips detection to a comma); a newline-free head keeps the whole content.
+  const cut = content.lastIndexOf('\n', 10_000)
+  const slice = content.length <= 10_000 ? content : cut > 0 ? content.slice(0, cut) : content
   if (slice.trim() === '') return ','
 
   for (const cand of DELIMITER_CANDIDATES) {
@@ -58,12 +52,15 @@ export function detectDelimiter(content: string): string {
   return ','
 }
 
-function parseRecords(content: string, opts: { delimiter?: string; noHeader?: boolean }): Array<Record<string, string>> {
+function parseRecords(content: string, opts: { delimiter?: string; noHeader?: boolean }): { records: Array<Record<string, string>>; columns: string[] } {
   const delimiter = opts.delimiter ?? detectDelimiter(content)
   if (opts.noHeader === true) {
     // relax_column_count so a single short or long row is filled/trimmed to the widest shape rather than aborting the whole file (the default CSV_RECORD_INCONSISTENT_FIELDS_LENGTH). relax_quotes preserves unescaped quotes in field values (e.g. 16" wheels).
     const rows = parse(content, { columns: false, skip_empty_lines: true, trim: true, delimiter, bom: true, relax_column_count: true, relax_quotes: true }) as string[][]
-    return rows.map((row) => Object.fromEntries(row.map((cell, i) => [`col${i + 1}`, cell])))
+    // Names come from the widest row and short rows are padded, so a short first row cannot drop columns.
+    const width = rows.reduce((max, row) => Math.max(max, row.length), 0)
+    const columns = Array.from({ length: width }, (_, i) => `col${i + 1}`)
+    return { records: rows.map((row) => Object.fromEntries(columns.map((name, i) => [name, row[i] ?? '']))), columns }
   }
   // Two columns sharing a header name collapse to one key under `columns: true`, and the profile then reads as complete with a column silently gone. The tool's object-keyed model genuinely cannot carry both, so refuse and name the collision rather than drop it. Detected from the raw header before parsing, so it fires on a header-only file too.
   const header = csvHeader(content, { ...opts, delimiter })
@@ -76,14 +73,12 @@ function parseRecords(content: string, opts: { delimiter?: string; noHeader?: bo
     )
   }
   // relax_column_count: a ragged row omits its missing trailing keys (read back as '') instead of aborting the file; an over-long row's extra fields past the header are dropped. relax_quotes: unescaped quotes inside values are preserved instead of failing with Invalid Opening Quote.
-  return parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter, bom: true, relax_column_count: true, relax_quotes: true }) as Array<Record<string, string>>
+  const records = parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter, bom: true, relax_column_count: true, relax_quotes: true }) as Array<Record<string, string>>
+  // The header line, not the first record's keys: a short first data row omits its trailing keys.
+  return { records, columns: header }
 }
 
-/**
- * Resolve the real header column names, even when the file has zero data rows.
- *
- * `parseRecords`'s `columns: true` mode returns an EMPTY records array for a header-only CSV -- there is nothing to `Object.keys()` a header out of, which is what `queryCsv`'s `allColumns` deliberately still does (its emptiness is how the CLI layer detects "no data rows" and prints a friendly message instead of an empty table -- see read_commands.ts's runCsvQuery). But that same emptiness was also being used as the sole "does this column exist" check for `--columns`/`--where`: a spec naming a column that is honestly present in the header line -- just with zero data rows to show for it -- threw a misleading `unknown column: X (available: )`, as if the column itself didn't exist, rather than either working (returning the correctly-empty result) or falling into the same friendly "no data rows" message. This resolves the REAL header (independent of whether any data rows exist) so `--columns`/`--where` validation can tell "genuinely absent from this file" apart from "present, just nothing to show". `noHeader` files have no header line to recover (their `colN` names are synthesized from data-row cell counts, which zero rows can't supply either) -- `[]` there is the honest answer, not a gap to paper over.
- */
+/** Resolve the real header column names, even when the file has zero data rows. `parseRecords`'s `columns: true` mode returns an EMPTY records array for a header-only CSV -- there is nothing to `Object.keys()` a header out of, which is what `queryCsv`'s `allColumns` deliberately still does (its emptiness is how the CLI layer detects "no data rows" and prints a friendly message instead of an empty table -- see read_commands.ts's runCsvQuery). But that same emptiness was also being used as the sole "does this column exist" check for `--columns`/`--where`: a spec naming a column that is honestly present in the header line -- just with zero data rows to show for it -- threw a misleading `unknown column: X (available: )`, as if the column itself didn't exist, rather than either working (returning the correctly-empty result) or falling into the same friendly "no data rows" message. This resolves the REAL header (independent of whether any data rows exist) so `--columns`/`--where` validation can tell "genuinely absent from this file" apart from "present, just nothing to show". `noHeader` files have no header line to recover (their `colN` names are synthesized from data-row cell counts, which zero rows can't supply either) -- `[]` there is the honest answer, not a gap to paper over. */
 function csvHeader(content: string, opts: { delimiter?: string; noHeader?: boolean }): string[] {
   if (opts.noHeader === true) return []
   const delimiter = opts.delimiter ?? detectDelimiter(content)
@@ -127,11 +122,7 @@ export function parseWhereSpecs(specs: string[] | undefined): CsvWhere[] | undef
   })
 }
 
-/**
- * `WHERE_SPEC_RE`'s column capture excludes `= < > ~ !` outright, so it always stops at the FIRST operator-class character in the spec -- a column literally named e.g. `a<b` can never be parsed correctly (`a<b=x` always splits as column `a`, op `<`, value `b=x`, even when a genuine `a<b` column exists and was the intended target).
- *
- * Re-checks the naive split against the real header: reconstructs the raw spec text from `where`'s own fields (invertible, since parseWhereSpecs never drops characters from column, op, or value) and looks for a LONGER header entry that is a prefix of that raw text with a remainder that still parses as a valid `op value` pair. The longest such header entry wins, so an unambiguous shorter column (e.g. `a`) only loses to a genuine longer column (e.g. `a<b`) that is actually present in this file's header -- never to an arbitrary substring.
- */
+/** `WHERE_SPEC_RE`'s column capture excludes `= < > ~ !` outright, so it always stops at the FIRST operator-class character in the spec -- a column literally named e.g. `a<b` can never be parsed correctly (`a<b=x` always splits as column `a`, op `<`, value `b=x`, even when a genuine `a<b` column exists and was the intended target). Re-checks the naive split against the real header: reconstructs the raw spec text from `where`'s own fields (invertible, since parseWhereSpecs never drops characters from column, op, or value) and looks for a LONGER header entry that is a prefix of that raw text with a remainder that still parses as a valid `op value` pair. The longest such header entry wins, so an unambiguous shorter column (e.g. `a`) only loses to a genuine longer column (e.g. `a<b`) that is actually present in this file's header -- never to an arbitrary substring. */
 function resolveWhereColumn(where: CsvWhere, allColumns: string[]): CsvWhere {
   const rawSpec = where.column + where.op + where.value
   let best: CsvWhere = where
@@ -185,10 +176,10 @@ function matchesWhere(row: Record<string, string>, where: CsvWhere): boolean {
 }
 
 export function queryCsv(content: string, opts: CsvQueryOptions): CsvQueryResult {
-  const records = parseRecords(content, opts)
+  const { records, columns: allHeader } = parseRecords(content, opts)
 
   // allColumns stays [] for a header-only (zero data row) file with no explicit --columns -- that emptiness is what tells the CLI layer to print "No data rows found" instead of an empty table (see read_commands.ts's runCsvQuery). realHeader is the true header column list regardless of data-row count, used only to validate that a --columns/--where name is genuinely known -- see csvHeader's doc comment for why the two must not be conflated.
-  const allColumns = records.length > 0 ? Object.keys(records[0] as Record<string, string>) : []
+  const allColumns = records.length > 0 ? allHeader : []
   const realHeader = records.length > 0 ? allColumns : csvHeader(content, opts)
   const columns = opts.columns && opts.columns.length > 0 ? opts.columns : allColumns
 
@@ -252,9 +243,9 @@ export interface CsvColumnProfile {
 
 /** Per-column type inference + null/distinct counts + min/max (or top values for low-cardinality columns), so an agent can understand a CSV's shape without reading every row. */
 export function profileCsv(content: string, opts: { delimiter?: string; noHeader?: boolean } = {}): CsvColumnProfile[] {
-  const records = parseRecords(content, opts)
+  const { records, columns: allHeader } = parseRecords(content, opts)
   // Deliberately [] on zero data rows (not the real header): an empty result here is what tells the CLI layer to print "No data rows found" instead of a header with no stats to show (see read_commands.ts's runCsvProfile and queryCsv's allColumns doc comment above).
-  const columns = records.length > 0 ? Object.keys(records[0] as Record<string, string>) : []
+  const columns = records.length > 0 ? allHeader : []
 
   return columns.map((col) => {
     const values = records.map((r) => r[col] ?? '')
