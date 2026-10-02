@@ -1,8 +1,7 @@
-/** Golden retrieval eval: runs the real `search`, `semantic` and `answer` commands over the labelled queries in evals/retrieval and reports hit@k, MRR@10 and bytes per correct hit, each with a bootstrap interval, separately for the train and test splits. Usage: npx tsx scripts/eval-retrieval.ts --home <dir> [--bin token-goat] [--root .] [--reindex] [--out report.json] [--baseline old.json] [--arms fused,semantic,...] `--home` is required and every child runs with HOME, USERPROFILE, TOKEN_GOAT_HOME, LOCALAPPDATA, APPDATA and XDG_DATA_HOME pointed inside it, because `answer` and the search commands write to the savings ledger and an eval run must never land in the user's real one. `--reindex` builds that home's index first. `--baseline` takes an earlier report and prints the paired per-query delta for each arm, which is how a change is judged: keep it only when both splits improve past the interval. Queries of kind `absent` have no answer in the repo. They are left out of every hit-rate line and scored instead on whether each arm abstains: `search` by returning nothing, `semantic` by flagging its closest match as weak. For `semantic` the report also fits the weak-match line on the train split and scores it on the test split beside the configured one. */
+/** Golden retrieval eval: runs the real `search`, `semantic` and `answer` commands over the labelled queries in evals/retrieval and reports hit@k, MRR@10 and bytes per correct hit, each with a bootstrap interval, separately for the train and test splits. Usage: npx tsx scripts/eval-retrieval.ts --home <dir> [--bin token-goat] [--root .] [--reindex] [--out report.json] [--baseline old.json] [--arms fused,semantic,...] `--home` is required and every child runs with HOME, USERPROFILE, TOKEN_GOAT_HOME, LOCALAPPDATA, APPDATA and XDG_DATA_HOME pointed inside it, because `answer` and the search commands write to the savings ledger and an eval run must never land in the user's real one. `--reindex` builds that home's index first. `--baseline` takes an earlier report and prints the paired per-query delta for each arm, which is how a change is judged: keep it only when both splits improve past the interval. Queries of kind `absent` have no answer in the repo. They are left out of every hit-rate line and scored instead on whether each arm abstains: `search` by returning nothing, `semantic` by flagging its closest match as weak. For `semantic` the report also fits the weak-match line on the train split and scores it on the test split beside the line the eval home has configured, read back with `config get` rather than assumed to be the default. Every run excludes evals/retrieval from that home's index and refuses to score a hit inside it, because the golden file holds every query's own text. */
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { defaultConfig } from '../src/config_defaults.js'
 import { summarizeDistances } from '../src/semantic_distances.js'
 import type { DistanceRow } from '../evals/retrieval/calibration.js'
 import { resolveLabel, type GoldenLabel } from '../evals/retrieval/labels.js'
@@ -23,6 +22,21 @@ import {
 } from '../evals/retrieval/metrics.js'
 
 const K = 10
+
+/** The eval's own fixtures. The golden file holds every query verbatim, so an index that includes it lets the text channel find each query in its own label row. `index .` skips `.jsonl`, but the worker's dirty queue does not. */
+export const FIXTURE_DIR = 'evals/retrieval'
+
+/** Every top-K hit inside FIXTURE_DIR, as `id: file`. Rows carry paths through normalizePath, so they are lowercase and root-relative. */
+export function fixtureHits(rows: readonly { readonly id: string; readonly topFiles: readonly string[] }[]): string[] {
+  return rows.flatMap((r) => r.topFiles.filter((f) => f.startsWith(`${FIXTURE_DIR}/`)).map((f) => `${r.id}: ${f}`))
+}
+
+/** The value `config get <key> --json` printed, which is the effective setting for that home and project rather than the shipped default. */
+export function parseConfiguredNumber(stdout: string, key: string): number {
+  const j = JSON.parse(stdout) as { key?: unknown; value?: unknown }
+  if (j.key !== key || typeof j.value !== 'number' || !Number.isFinite(j.value)) throw new Error(`config get ${key} printed no number: ${stdout.slice(0, 200)}`)
+  return j.value
+}
 
 interface GoldenQuery {
   readonly id: string
@@ -221,8 +235,7 @@ function summarize(rows: readonly QueryResult[]): ArmSummary {
 }
 
 /** How far `semantic`'s closest match sits for answerable and for absent queries, in the bands `token-goat semantic --distances` prints, then the weak-match line fitted on train and scored on test. The closest distance is read from the top results, so a dense hit that fusion pushed below them reads slightly further than it was. */
-function distanceLines(rows: readonly QueryResult[], indent: string): string[] {
-  const weak = defaultConfig().semantic.weak_distance
+function distanceLines(rows: readonly QueryResult[], indent: string, weak: number): string[] {
   const out: string[] = []
   for (const [label, absent] of [['answerable', false], ['absent', true]] as const) {
     const s = summarizeDistances(rows.filter((r) => (r.kind === 'absent') === absent).map((r) => ({ closest_distance: r.closest })), weak)
@@ -251,9 +264,11 @@ function main(): void {
   const armFilter = arg('arms')?.split(',')
   const arms = ARMS.filter((a) => armFilter === undefined || armFilter.includes(a.name))
 
+  // Before the reindex so `index .` never reads the fixtures, and on every run so rows the worker indexed earlier are removed too.
+  exec(['project', 'exclude', path.join(root, FIXTURE_DIR)])
   if (process.argv.includes('--reindex')) exec(['index', '.'])
 
-  const golden = readJsonl<GoldenQuery>(path.join(root, 'evals/retrieval/golden.jsonl'))
+  const golden = readJsonl<GoldenQuery>(path.join(root, FIXTURE_DIR, 'golden.jsonl'))
   const labels = new Map<string, RelevantSpan[]>(golden.map((g) => [g.id, g.relevant.flatMap((l) => resolveLabel(l, readFileSync(path.join(root, l.file), 'utf8')))]))
 
   const report: Report = { arms: {}, answer: [] }
@@ -278,12 +293,17 @@ function main(): void {
         labelFiles: [...new Set(g.relevant.map((l) => normalizePath(l.file, root)))],
       })
     }
+    const selfHits = fixtureHits(rows)
+    if (selfHits.length > 0) {
+      process.stderr.write(`eval-retrieval: ${arm.name} retrieved the eval's own fixtures, so its scores would count queries finding their own text; refusing to score: ${selfHits.slice(0, 5).join(', ')}\n`)
+      process.exit(1)
+    }
     report.arms[arm.name] = rows
     process.stderr.write(`eval-retrieval: ${arm.name} done\n`)
   }
 
   if (armFilter === undefined || armFilter.includes('answer')) {
-    for (const a of readJsonl<AnswerQuery>(path.join(root, 'evals/retrieval/answer.jsonl'))) {
+    for (const a of readJsonl<AnswerQuery>(path.join(root, FIXTURE_DIR, 'answer.jsonl'))) {
       const r = exec(['answer', a.question], true)
       const got = parseAnswer(r.stdout, r.stderr)
       const found = a.expectFiles.filter((f) => got.files.some((p) => answerFileMatches(f, p, root))).length
@@ -304,7 +324,7 @@ function main(): void {
       if (s.n > 0) out.push(`${''.padEnd(16)} ${kind.padEnd(10)} n=${String(s.n).padStart(2)}  hit@10 ${pct(s.hit10)}  MRR@10 ${num(s.mrr10)}`)
     }
     out.push(...qualityLines(all.map((r) => ({ ...r, absent: r.kind === 'absent' })), indent))
-    if (name === 'semantic') out.push(...distanceLines(all, indent))
+    if (name === 'semantic') out.push(...distanceLines(all, indent, parseConfiguredNumber(exec(['config', 'get', 'semantic.weak_distance', '--json']).stdout, 'semantic.weak_distance')))
   }
   for (const split of ['train', 'test']) {
     const rows = report.answer.filter((r) => r.split === split)
