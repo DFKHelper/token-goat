@@ -5,9 +5,7 @@ import type * as NodeOs from 'node:os'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by
-// default) so each test below can point `~` at an isolated temp dir instead of
-// touching the real `~/.qwen/` (mirrors install_gemini.test.ts).
+// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by default) so each test below can point `~` at an isolated temp dir instead of touching the real `~/.qwen/` (mirrors install_gemini.test.ts).
 vi.mock('node:os', async (importOriginal) => {
   const original = await importOriginal<typeof NodeOs>()
   return {
@@ -63,10 +61,7 @@ beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-qwen-install-'))
   const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
   homedirMock.mockReturnValue(TMP)
-  // Same rationale as install_gemini.test.ts: installQwen/isQwenInstalled/uninstallQwen identify
-  // their own hook commands via process.argv[1] containing a "token-goat" path segment
-  // (QWEN_ENTRY_PATH_MARKER_PATTERN), which tinypool's worker entry path does not satisfy by
-  // default -- stub it to a realistic token-goat entry path for deterministic tests.
+  // Same rationale as install_gemini.test.ts: installQwen/isQwenInstalled/uninstallQwen identify their own hook commands via process.argv[1] containing a "token-goat" path segment (QWEN_ENTRY_PATH_MARKER_PATTERN), which tinypool's worker entry path does not satisfy by default -- stub it to a realistic token-goat entry path for deterministic tests.
   originalArgv1 = process.argv[1]
   process.argv[1] = path.join(TMP, 'node_modules', 'token-goat', 'dist', 'token-goat.mjs')
 })
@@ -288,8 +283,8 @@ describe('isQwenInstalled / uninstallQwen', () => {
     expect(uninstallQwen()).toBe(true)
     expect(isQwenInstalled()).toBe(false)
 
-    const settings = readSettings()
-    expect(settings.hooks).toBeUndefined()
+    // Install created settings.json from nothing, so uninstall removes it rather than leaving `{}`.
+    expect(fs.existsSync(qwenSettingsPath())).toBe(false)
   })
 
   it('uninstallQwen returns false when nothing is installed', () => {
@@ -387,8 +382,7 @@ describe('isQwenInstalled / uninstallQwen', () => {
   it('backs settings.json up before a rewrite, then removes only the backups it made itself', () => {
     installQwen()
     const p = qwenSettingsPath()
-    // Hand-edited back to an empty object, so the second install has something to write and
-    // therefore something to back up first.
+    // Hand-edited back to an empty object, so the second install has something to write and therefore something to back up first.
     fs.writeFileSync(p, '{}\n')
     installQwen()
 

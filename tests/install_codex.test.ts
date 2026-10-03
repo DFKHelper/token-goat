@@ -390,14 +390,9 @@ describe('isCodexInstalled / uninstallCodex', () => {
     expect(isCodexInstalled()).toBe(false)
     expect(fs.existsSync(result.hookScriptPath)).toBe(false)
 
-    const config = readConfig()
-    expect(config.hooks).toBeUndefined()
-
-    const agents = fs.readFileSync(result.agentsPath, 'utf8')
-    expect(agents).not.toContain('<!-- token-goat-codex-begin -->')
-    for (const event of ['PreCompact', 'UserPromptSubmit', 'SubagentStop']) {
-      expect(commandsFor(config, event)).toHaveLength(0)
-    }
+    // Install created both files from nothing, so uninstall now removes them rather than leaving them empty.
+    expect(fs.existsSync(codexConfigPath())).toBe(false)
+    expect(fs.existsSync(result.agentsPath)).toBe(false)
   })
 
   it('uninstallCodex returns false when nothing is installed', () => {

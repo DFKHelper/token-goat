@@ -60,8 +60,13 @@ export function copilotCliUserHooksDir(): string {
   return path.join(copilotCliUserRoot(), 'hooks')
 }
 
+/** The project root with a Windows drive letter upper-cased. The hook command embeds the shim path, and the up-to-date check compares it byte for byte, so `c:/proj` and `C:/proj` (one directory on NTFS) must not be two different installs. Upper case matches what cmd.exe and PowerShell report, so an existing file written from a normal cwd stays current. */
+export function canonicalProjectRoot(projectRoot: string): string {
+  return process.platform === 'win32' ? projectRoot.replace(/^[a-z]:/, (drive) => drive.toUpperCase()) : projectRoot
+}
+
 export function copilotCliProjectHooksDir(projectRoot?: string): string {
-  return path.join(projectRoot ?? process.cwd(), '.github', 'hooks')
+  return path.join(canonicalProjectRoot(projectRoot ?? process.cwd()), '.github', 'hooks')
 }
 
 export function copilotCliHooksDir(opts: CopilotCliScopeOptions = {}): string {

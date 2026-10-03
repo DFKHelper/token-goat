@@ -107,6 +107,9 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **Copilot CLI and VS Code project hooks were rewritten, with a new backup each time, when `install` or `doctor --repair` ran from a folder spelled with a lower-case drive letter.** `c:\proj` and `C:\proj` are the same folder on Windows. The drive letter is now upper-cased before the hook commands are written, so the file stays as it was.
+- **`doctor` said Claude Code's settings.json had probably been overwritten or deleted when only one hook event was missing.** That message is now kept for settings with no token-goat hook at all, and a partly wired file gets the row that names the missing events.
+- **`uninstall` left behind the empty config files and folders that install had created for Gemini CLI, Qwen Code, OpenClaw, Kimi, Codex, Grok, Cursor, opencode, pi and Zed.** Install now records what it creates, and uninstall removes those files and folders once nothing else is in them. A file or folder that was there before install stays.
 - **Compressed `go test -v` output attached a failing test's log lines to the test before it and kept every passing test's `t.Log` lines.** Go prints a test's log lines between its `=== RUN` and its verdict, which the filter did not follow. Log lines now stay with their own test, and those from passing tests are dropped.
 - **`session-outline` and `session-slice` skipped any transcript turn containing U+2028 or U+2029 and numbered every later turn one too low.** The transcript reader treated those characters as line breaks. They now stay inside the turn, and turn numbers match the transcript.
 - **`yaml-query` and `yaml-outline` read a YAML file ending in `---` or in a comment-only document as a list of two documents.** Every path then needed a `0.` in front. Empty documents are now ignored, so a file with one real document reads as that document.

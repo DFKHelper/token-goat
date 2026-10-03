@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
+import { recordCreatedBy, removeCreatedBackups, removeCreatedTree, takeCreatedConfig } from './created_configs.js'
 import { bundledCliPath, dropEmptyServers, hasManagedServer, managedServerEntry, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { atomicWriteText, backupFile, ensureDirSync, removeFileInScope } from '../util.js'
@@ -70,7 +70,6 @@ function installCursorScoped(opts: CursorScopeOptions): CursorInstallResult {
   const scope: 'project' | 'user' = opts.project === true ? 'project' : 'user'
   const mcpPath = cursorMcpPath(opts)
 
-  const fileExisted = fs.existsSync(mcpPath)
   const config = readServersJson(mcpPath, 'Cursor')
   const current = serversOf(config, mcpPath, 'Cursor', MCP_SERVERS_KEY)[TOKEN_GOAT_ENTRY_KEY]
   if (current !== undefined && !isCursorManagedServer(current)) {
@@ -82,10 +81,11 @@ function installCursorScoped(opts: CursorScopeOptions): CursorInstallResult {
   const alreadyInstalled = config.text === nextText
   if (!alreadyInstalled) {
     // ensureDirSync, not a raw recursive mkdirSync: a recursive create WALKS THROUGH a directory symlink a clone checked in, so this step is itself one of the ways an install lands outside the tree. The containment check lives in ensureDirSync for exactly that reason, and a raw fs.mkdirSync here is outside the boundary by inspection even while the backupFile below happens to refuse. See bridges/project_scope_guard.ts.
-    ensureDirSync(path.dirname(mcpPath))
-    if (!fileExisted) recordCreatedConfig(mcpPath)
-    backupFile(mcpPath)
-    atomicWriteText(mcpPath, nextText)
+    recordCreatedBy([mcpPath], () => {
+      ensureDirSync(path.dirname(mcpPath))
+      backupFile(mcpPath)
+      atomicWriteText(mcpPath, nextText)
+    })
   }
 
   return { mcpPath, alreadyInstalled, scope }
@@ -112,6 +112,7 @@ function uninstallCursorScoped(opts: CursorScopeOptions): boolean {
   }
   // The timestamped backups this bridge made for mcpPath are token-goat's own litter, so a full uninstall takes them with it.
   removeCreatedBackups(mcpPath)
+  removeCreatedTree([mcpPath])
   return true
 }
 

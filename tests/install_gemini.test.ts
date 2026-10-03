@@ -321,8 +321,8 @@ describe('isGeminiInstalled / uninstallGemini', () => {
     expect(uninstallGemini()).toBe(true)
     expect(isGeminiInstalled()).toBe(false)
 
-    const settings = readSettings()
-    expect(settings.hooks).toBeUndefined()
+    // Install created settings.json from nothing, so uninstall removes it rather than leaving `{}`.
+    expect(fs.existsSync(geminiSettingsPath())).toBe(false)
   })
 
   it('uninstallGemini returns false when nothing is installed', () => {

@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { removeCreatedBackups } from './created_configs.js'
+import { recordCreatedBy, removeCreatedBackups, removeCreatedTree } from './created_configs.js'
 import { atomicWriteText, ensureDirSync, extractErrorMessage, foldPath } from '../util.js'
 import { parseJsonOrJsonc } from '../jsonc_text.js'
 import { writeSettingsKeepingComments } from './commented_settings.js'
@@ -95,7 +95,16 @@ export interface OpenclawInstallResult {
   readonly alreadyInstalled: boolean
 }
 
+/** Every file the OpenClaw integration writes; the directories above them are what the created-configs ledger tracks too. */
+function openclawArtifactPaths(): string[] {
+  return [openclawConfigPath(), openclawPluginPath(), openclawEntrySidecarPath()]
+}
+
 export function installOpenclaw(): OpenclawInstallResult {
+  return recordCreatedBy(openclawArtifactPaths(), installOpenclawFiles)
+}
+
+function installOpenclawFiles(): OpenclawInstallResult {
   const configPath = openclawConfigPath()
   const pluginPath = openclawPluginPath()
 
@@ -207,6 +216,7 @@ export function uninstallOpenclaw(): boolean {
 
   // The timestamped backups of this config are token-goat's own litter, so they leave with it.
   removeCreatedBackups(configPath)
+  removeCreatedTree(openclawArtifactPaths())
 
   return removed
 }

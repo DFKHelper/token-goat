@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
+import { recordCreatedBy, removeCreatedBackups, removeCreatedTree, takeCreatedConfig } from './created_configs.js'
 import { bundledCliPath, dropEmptyServers, hasManagedServer, managedServerEntry, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 import { atomicWriteText, backupFile, writeIfDifferent } from '../util.js'
 
@@ -67,13 +67,16 @@ export interface ZedInstallResult {
 
 /** Install the Zed MCP context-server integration: writes the generated shim script and merges `context_servers.token-goat` into `settings.json`, preserving every other key, comment, and formatting choice already there (via `setTokenGoatServer`'s JSONC-preserving edit). Idempotent: a second call reports `alreadyInstalled: true` and does not duplicate the entry. Throws before any write if `settings.json` exists but fails to parse, or if it already holds a `context_servers.token-goat` entry this bridge did not write (mirrors `installGemini`'s `GeminiSettingsParseError` guard and `installVscode`'s cross-entry-ownership check) -- a real user file that may already have content is never silently clobbered. */
 export function installZed(): ZedInstallResult {
+  return recordCreatedBy([zedSettingsPath(), zedShimPath()], installZedFiles)
+}
+
+function installZedFiles(): ZedInstallResult {
   const settingsPath = zedSettingsPath()
   const shimPath = zedShimPath()
 
   const shimChanged = writeIfDifferent(shimPath, buildShimScript())
   if (process.platform !== 'win32') fs.chmodSync(shimPath, 0o755)
 
-  const fileExisted = fs.existsSync(settingsPath)
   const config = readServersJson(settingsPath, 'Zed')
   const current = serversOf(config, settingsPath, 'Zed', CONTEXT_SERVERS_KEY)[TOKEN_GOAT_ENTRY_KEY]
   if (current !== undefined && !isZedManagedServer(current)) {
@@ -84,7 +87,6 @@ export function installZed(): ZedInstallResult {
   const alreadyInstalled = current !== undefined && !shimChanged
   if (!alreadyInstalled) {
     const nextText = setTokenGoatServer(config.text, desired, CONTEXT_SERVERS_KEY)
-    if (!fileExisted) recordCreatedConfig(settingsPath)
     backupFile(settingsPath)
     atomicWriteText(settingsPath, nextText)
   }
@@ -116,6 +118,7 @@ export function uninstallZed(): boolean {
 
   const shimRemoved = fs.existsSync(shimPath)
   if (shimRemoved) fs.rmSync(shimPath, { force: true })
+  removeCreatedTree([settingsPath, shimPath])
 
   return entryRemoved || shimRemoved
 }

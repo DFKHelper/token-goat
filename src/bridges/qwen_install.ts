@@ -5,6 +5,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { anchoredMarkerPattern, finishHookUninstall } from '../install.js'
+import { recordCreatedBy, removeCreatedTree } from './created_configs.js'
 import { extractErrorMessage, quoteShellPath, stripOwnHooksFromMap, stripStaleGroupHooks } from '../util.js'
 import { parseJsonOrJsonc } from '../jsonc_text.js'
 import { writeSettingsKeepingComments } from './commented_settings.js'
@@ -138,7 +139,7 @@ export function installQwen(): QwenInstallResult {
   }
 
   settings.hooks = hooks
-  writeSettingsKeepingComments(p, settings, { allowTrailingComma: false })
+  recordCreatedBy([p], () => writeSettingsKeepingComments(p, settings, { allowTrailingComma: false }))
   return { settingsPath: p, alreadyInstalled: false }
 }
 
@@ -147,7 +148,9 @@ export function uninstallQwen(): boolean {
   // Strict, as install reads it: a file that is there but cannot be read or parsed may still hold token-goat's hooks, so uninstall stops with it and its backups as they were.
   const settings = readQwenSettings(p, { strict: true, command: 'uninstall' })
   const removed = settings.hooks !== undefined && stripOwnHooksFromMap(settings.hooks, isQwenTokenGoatCommand)
-  return finishHookUninstall(p, settings, removed, (file, next) => writeSettingsKeepingComments(file, next, { allowTrailingComma: false }))
+  const result = finishHookUninstall(p, settings, removed, (file, next) => writeSettingsKeepingComments(file, next, { allowTrailingComma: false }))
+  removeCreatedTree([p])
+  return result
 }
 
 export function isQwenInstalled(): boolean {

@@ -6,7 +6,7 @@ import * as path from 'node:path'
 import { atomicWriteText, backupFile, ensureDirSync, removeEmptyDirInScope, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
 import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
-import { copilotHooksFilePaths, installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
+import { canonicalProjectRoot, copilotHooksFilePaths, installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
 import { assertProjectScopeTarget, projectPathIsConsultable, projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, takeCreatedConfig } from './created_configs.js'
 import { dropEmptyServers, hasManagedServer, isManagedServer, isResidueServersJson, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
@@ -87,7 +87,7 @@ export const VSCODE_HOOK_FILE_EVENT_KEYS: readonly string[] = [
 /** The hooks directory VS Code's agent reads for this scope. Both entries are on VS Code's own hook-source list in workbench.desktop.main.js (1.136.0): `.github/hooks` in the workspace and `~/.copilot/hooks` for the user. VS Code expands that `~/` against the user's home directory, not COPILOT_HOME, so the user scope ignores COPILOT_HOME here even though Copilot CLI honors it; when COPILOT_HOME is unset the two are the same directory and share one hooks file. */
 export function vscodeHooksDir(opts: VscodeScopeOptions = {}): string {
   return opts.project === true
-    ? path.join(path.resolve(opts.projectRoot ?? process.cwd()), '.github', 'hooks')
+    ? path.join(canonicalProjectRoot(path.resolve(opts.projectRoot ?? process.cwd())), '.github', 'hooks')
     : path.join(os.homedir(), '.copilot', 'hooks')
 }
 

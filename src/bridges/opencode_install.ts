@@ -4,6 +4,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { recordCreatedBy, removeCreatedTree } from './created_configs.js'
 import { installSingleFilePlugin, uninstallSingleFilePlugin } from '../util.js'
 import { OPENCODE_PLUGIN_SCRIPT } from './opencode.js'
 
@@ -46,14 +47,16 @@ export interface OpencodeInstallResult {
 
 export function installOpencode(): OpencodeInstallResult {
   const pluginPath = opencodePluginPath()
-  const { alreadyInstalled } = installSingleFilePlugin(pluginPath, opencodeEntrySidecarPath(), OPENCODE_PLUGIN_SCRIPT)
+  const { alreadyInstalled } = recordCreatedBy([pluginPath, opencodeEntrySidecarPath()], () => installSingleFilePlugin(pluginPath, opencodeEntrySidecarPath(), OPENCODE_PLUGIN_SCRIPT))
   removeLegacyWindowsPlugin()
   return { pluginPath, alreadyInstalled }
 }
 
 export function uninstallOpencode(): boolean {
   const removedLegacy = removeLegacyWindowsPlugin()
-  return uninstallSingleFilePlugin(opencodePluginPath(), opencodeEntrySidecarPath()) || removedLegacy
+  const removed = uninstallSingleFilePlugin(opencodePluginPath(), opencodeEntrySidecarPath())
+  removeCreatedTree([opencodePluginPath(), opencodeEntrySidecarPath()])
+  return removed || removedLegacy
 }
 
 export function isOpencodeInstalled(): boolean {

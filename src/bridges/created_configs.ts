@@ -109,14 +109,48 @@ export function ensureDirRecordingCreation(dir: string): void {
   if (!existed) recordCreatedConfig(dir)
 }
 
+/** True for text with no content: nothing but whitespace, or the empty JSON object a settings file is left as once its last token-goat key is stripped. */
+function holdsNothing(text: string): boolean {
+  const trimmed = text.trim()
+  return trimmed === '' || /^\{\s*\}$/.test(trimmed)
+}
+
 /** Delete `target`, an empty directory or a file holding nothing but whitespace, when the created-configs ledger says a token-goat install created it, and forget the entry once it is gone. Anything else stays: a directory or file the user made, however empty, and one token-goat made that now holds anything at all. Emptiness alone is not evidence either way, which is why the ledger is asked first. */
 export function removeCreatedIfEmpty(target: string): void {
   if (!hasCreatedConfig(target)) return
   let removed = false
   try {
-    removed = fs.lstatSync(target).isDirectory() ? removeEmptyDirInScope(target) : fs.readFileSync(target, 'utf8').trim() === '' && removeFileInScope(target)
+    removed = fs.lstatSync(target).isDirectory() ? removeEmptyDirInScope(target) : holdsNothing(fs.readFileSync(target, 'utf8')) && removeFileInScope(target)
   } catch {
     // Already gone, unreadable, or not a plain file or directory: nothing is removed, and the entry stays for a later uninstall.
   }
   if (removed) takeCreatedConfig(target)
+}
+
+/** Run `work`, then record in the ledger each of `targets` and each directory above one that `work` brought into being, so uninstall can take away exactly what this install made. Recorded even when `work` throws, since whatever it created before failing is still token-goat's. */
+export function recordCreatedBy<T>(targets: readonly string[], work: () => T): T {
+  const absent = new Set<string>()
+  for (const target of targets) {
+    for (let p = path.resolve(target); !fs.existsSync(p) && !absent.has(p); p = path.dirname(p)) absent.add(p)
+  }
+  try {
+    return work()
+  } finally {
+    for (const p of absent) if (fs.existsSync(p)) recordCreatedConfig(p)
+  }
+}
+
+/** The uninstall half of {@link recordCreatedBy}: walk `targets` and every directory above them, deepest first, deleting what the ledger says an install created and that now holds nothing, and forgetting an entry whose path is already gone. The ledger decides, never emptiness alone, so a pre-existing file or directory and anything holding user content stay. */
+export function removeCreatedTree(targets: readonly string[]): void {
+  const paths = new Set<string>()
+  for (const target of targets) {
+    for (let p = path.resolve(target); !paths.has(p); p = path.dirname(p)) {
+      paths.add(p)
+      if (path.dirname(p) === p) break
+    }
+  }
+  for (const p of [...paths].sort((a, b) => b.length - a.length)) {
+    if (fs.existsSync(p)) removeCreatedIfEmpty(p)
+    else if (hasCreatedConfig(p)) takeCreatedConfig(p)
+  }
 }

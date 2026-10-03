@@ -7,7 +7,7 @@ import * as path from 'node:path'
 
 import { parse, stringify } from 'smol-toml'
 
-import { removeCreatedBackups } from './created_configs.js'
+import { recordCreatedBy, removeCreatedBackups, removeCreatedTree } from './created_configs.js'
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, hookPowershellCommand, stripDelimitedBlock, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock } from '../util.js'
 import { powershellHookLine } from '../process_util.js'
 import { anchoredMarkerPattern } from '../install.js'
@@ -296,6 +296,15 @@ export interface CodexInstallResult {
 
 /** Install the Codex CLI integration. Always additive: never touches Claude Code's `~/.claude/settings.json` (the caller is responsible for also running the base install per README's "patches both Claude Code and Codex CLI in one pass"). Idempotent -- a second call reports `alreadyInstalled: true` and does not duplicate any hook entry or AGENTS.md block. */
 export function installCodex(): CodexInstallResult {
+  return recordCreatedBy(codexArtifactPaths(), installCodexFiles)
+}
+
+/** Every file the Codex integration writes; the directories above them are what the created-configs ledger tracks too. */
+function codexArtifactPaths(): string[] {
+  return [codexConfigPath(), codexAgentsPath(), codexHookScriptPath(), codexLegacyHookScriptPath()]
+}
+
+function installCodexFiles(): CodexInstallResult {
   const configPath = codexConfigPath()
   const agentsPath = codexAgentsPath()
   const scriptPath = codexHookScriptPath()
@@ -527,6 +536,7 @@ export function uninstallCodex(): boolean {
 
   // The timestamped backups of this config are token-goat's own litter, so they leave with it.
   if (!keepBackups) removeCreatedBackups(configPath)
+  removeCreatedTree(codexArtifactPaths())
 
   return removedAny
 }

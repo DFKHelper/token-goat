@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { removeCreatedBackups } from './created_configs.js'
+import { recordCreatedBy, removeCreatedBackups, removeCreatedTree } from './created_configs.js'
 import { hookCommandFor, hookPowershellCommand, writeIfDifferent } from '../util.js'
 import { powershellHookLine } from '../process_util.js'
 import { HookCommandRewriteError, hookCommandRewrittenSpan, nativeHookBinary, nativeHookCommandLine, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
@@ -106,6 +106,15 @@ export interface GrokInstallResult {
 
 /** Install the Grok CLI integration. Always additive: never touches Claude Code's `~/.claude/settings.json` (the caller is responsible for also running the base install). Idempotent -- a second call reports `alreadyInstalled: true` and does not duplicate any entry. */
 export function installGrok(): GrokInstallResult {
+  return recordCreatedBy(grokArtifactPaths(), installGrokFiles)
+}
+
+/** Every file the Grok integration writes; the directories above them are what the created-configs ledger tracks too. */
+function grokArtifactPaths(): string[] {
+  return [grokConfigPath(), grokHookScriptPath(), grokLegacyHookScriptPath()]
+}
+
+function installGrokFiles(): GrokInstallResult {
   const configPath = grokConfigPath()
   const scriptPath = grokHookScriptPath()
   const config = buildConfig(scriptPath)
@@ -149,6 +158,7 @@ export function uninstallGrok(): boolean {
   }
   // The timestamped backups of this config are token-goat's own litter, so they leave with it.
   removeCreatedBackups(configPath)
+  removeCreatedTree(grokArtifactPaths())
   return removedAny
 }
 

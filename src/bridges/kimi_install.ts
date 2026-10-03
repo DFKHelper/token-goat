@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { parse, stringify } from 'smol-toml'
 
-import { removeCreatedBackups } from './created_configs.js'
+import { recordCreatedBy, removeCreatedBackups, removeCreatedTree } from './created_configs.js'
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { nativeHookBinary, nativeHookCommandLine, HookCommandRewriteError, hookCommandRewrittenSpan, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
@@ -166,8 +166,17 @@ export interface KimiInstallResult {
   readonly alreadyInstalled: boolean
 }
 
+/** Every file the Kimi integration writes; the directories above them are what the created-configs ledger tracks too. */
+function kimiArtifactPaths(): string[] {
+  return [kimiConfigPath(), kimiAgentsPath(), kimiSkillPath(), kimiHookScriptPath(), kimiLegacyHookScriptPath()]
+}
+
 /** Install the Kimi Code CLI integration. */
 export function installKimi(): KimiInstallResult {
+  return recordCreatedBy(kimiArtifactPaths(), installKimiFiles)
+}
+
+function installKimiFiles(): KimiInstallResult {
   const configPath = kimiConfigPath()
   const agentsPath = kimiAgentsPath()
   const scriptPath = kimiHookScriptPath()
@@ -262,6 +271,7 @@ export function uninstallKimi(): boolean {
 
   // The timestamped backups of this config are token-goat's own litter, so they leave with it.
   removeCreatedBackups(configPath)
+  removeCreatedTree(kimiArtifactPaths())
 
   return removed
 }

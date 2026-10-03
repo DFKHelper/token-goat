@@ -194,9 +194,8 @@ describe('isOpenclawInstalled / uninstallOpenclaw', () => {
     expect(isOpenclawInstalled()).toBe(false)
     expect(fs.existsSync(openclawPluginPath())).toBe(false)
 
-    const settings = readSettings()
-    expect(settings.plugins?.load?.paths ?? []).not.toContain(openclawPluginPath())
-    expect(settings.plugins?.entries?.['token-goat']).toBeUndefined()
+    // Install created openclaw.json from nothing, so uninstall removes it rather than leaving `{}`.
+    expect(fs.existsSync(openclawConfigPath())).toBe(false)
   })
 
   it('uninstallOpenclaw returns false when nothing is installed', () => {
@@ -221,8 +220,7 @@ describe('isOpenclawInstalled / uninstallOpenclaw', () => {
     installOpenclaw()
     uninstallOpenclaw()
 
-    const raw = fs.readFileSync(openclawConfigPath(), 'utf8')
-    expect(JSON.parse(raw)).toEqual({})
+    expect(fs.existsSync(openclawConfigPath())).toBe(false)
   })
 
   it('uninstall leaves unrelated openclaw.json keys and plugin entries intact', () => {

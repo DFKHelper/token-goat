@@ -7,9 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { parse, stringify } from 'smol-toml'
 
-// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by
-// default) so the KIMI_CODE_HOME-unset cases below resolve `~` to an isolated
-// temp dir instead of touching a real `~/.kimi-code/` (mirrors install_qwen.test.ts).
+// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by default) so the KIMI_CODE_HOME-unset cases below resolve `~` to an isolated temp dir instead of touching a real `~/.kimi-code/` (mirrors install_qwen.test.ts).
 vi.mock('node:os', async (importOriginal) => {
   const original = await importOriginal<typeof NodeOs>()
   return {
@@ -68,9 +66,7 @@ beforeEach(() => {
   homedirMock.mockReturnValue(TMP)
   originalKimiHome = process.env['KIMI_CODE_HOME']
   delete process.env['KIMI_CODE_HOME']
-  // Same rationale as install_qwen.test.ts: the installer identifies its own hook
-  // commands by a "token-goat" path segment in the baked command, which tinypool's
-  // worker entry path does not satisfy -- stub argv[1] to a realistic entry path.
+  // Same rationale as install_qwen.test.ts: the installer identifies its own hook commands by a "token-goat" path segment in the baked command, which tinypool's worker entry path does not satisfy -- stub argv[1] to a realistic entry path.
   originalArgv1 = process.argv[1]
   process.argv[1] = path.join(TMP, 'node_modules', 'token-goat', 'dist', 'token-goat.mjs')
 })
@@ -146,9 +142,7 @@ describe('installKimi', () => {
 
     const skill = fs.readFileSync(result.skillPath, 'utf8')
     expect(skill.startsWith('---\nname: token-goat\ndescription: ')).toBe(true)
-    // Kimi's SKILL.md frontmatter schema has no allowed-tools field; writing one would be
-    // invented surface. Scoped to the frontmatter block, since the shared gate body legitimately
-    // mentions the phrase in prose.
+    // Kimi's SKILL.md frontmatter schema has no allowed-tools field; writing one would be invented surface. Scoped to the frontmatter block, since the shared gate body legitimately mentions the phrase in prose.
     const frontmatter = skill.slice(0, skill.indexOf('\n---', 3) + 4)
     expect(frontmatter).not.toContain('allowed-tools')
     expect(frontmatter.split('\n').filter((l) => l !== '---')).toHaveLength(2)
@@ -248,7 +242,8 @@ describe('uninstallKimi', () => {
   it('drops the hooks key entirely when token-goat wrote every entry, leaving no empty array behind', () => {
     installKimi()
     uninstallKimi()
-    expect(readConfig().hooks).toBeUndefined()
+    // Install created config.toml from nothing, so once every entry is gone the file is gone too.
+    expect(fs.existsSync(kimiConfigPath())).toBe(false)
   })
 
   it('returns false when there is nothing to remove', () => {

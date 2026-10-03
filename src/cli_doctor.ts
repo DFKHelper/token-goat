@@ -714,9 +714,11 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   if (copilotProjectResult) results.push(copilotProjectResult)
   const claudeShimResult = checkHookShim('Claude Code', claudeHookScriptPath(), CLAUDECODE_HOOK_SCRIPT, isInstalled('user') || !isInstalled('project') ? 'token-goat install' : 'token-goat install --project')
   if (claudeShimResult) results.push(claudeShimResult)
-  const claudeEventsResult = checkClaudeHookEvents({ user: hookEventGaps('user'), project: hookEventGaps('project') })
+  const claudeGaps = { user: hookEventGaps('user'), project: hookEventGaps('project') }
+  const claudeEventsResult = checkClaudeHookEvents(claudeGaps)
   if (claudeEventsResult) results.push(claudeEventsResult)
-  const claudeGoneResult = checkClaudeHooksGone(isInstalled('user') || isInstalled('project'), claudeHookActivity())
+  // A null gap report means no token-goat entry at all in that scope; a partly wired scope is the event row's finding, not a settings file that was overwritten.
+  const claudeGoneResult = checkClaudeHooksGone(claudeGaps.user !== null || claudeGaps.project !== null, claudeHookActivity())
   if (claudeGoneResult) results.push(claudeGoneResult)
   for (const result of checkNativeHooks(path.join(actualDataDir, 'global.db'))) results.push(result)
   const codexShimResult = checkHookShim('Codex', codexHookScriptPath(), CODEX_HOOK_SCRIPT, 'token-goat install --codex')

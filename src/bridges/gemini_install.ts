@@ -8,6 +8,7 @@ import { GEMINI_TOOL_NAME_MAP } from '../hooks_cli.js'
 import { toolMatcherFor } from '../hook_registry.js'
 import { anchoredMarkerPattern, finishHookUninstall } from '../install.js'
 import type { HookEventName } from '../types.js'
+import { recordCreatedBy, removeCreatedTree } from './created_configs.js'
 import { extractErrorMessage, quoteShellPath, stripOwnHooksFromMap, stripStaleGroupHooks } from '../util.js'
 import { parseJsonOrJsonc } from '../jsonc_text.js'
 import { writeSettingsKeepingComments } from './commented_settings.js'
@@ -196,7 +197,7 @@ export function installGemini(): GeminiInstallResult {
   }
 
   settings.hooks = hooks
-  writeSettingsKeepingComments(p, settings, { allowTrailingComma: false })
+  recordCreatedBy([p], () => writeSettingsKeepingComments(p, settings, { allowTrailingComma: false }))
   return { settingsPath: p, alreadyInstalled: false }
 }
 
@@ -206,7 +207,9 @@ export function uninstallGemini(): boolean {
   // Strict, as install reads it: a file that is there but cannot be read or parsed may still hold token-goat's hooks, so uninstall stops with it and its backups as they were.
   const settings = readGeminiSettings(p, { strict: true, command: 'uninstall' })
   const removed = settings.hooks !== undefined && stripOwnHooksFromMap(settings.hooks, isGeminiTokenGoatCommand)
-  return finishHookUninstall(p, settings, removed, (file, next) => writeSettingsKeepingComments(file, next, { allowTrailingComma: false }))
+  const result = finishHookUninstall(p, settings, removed, (file, next) => writeSettingsKeepingComments(file, next, { allowTrailingComma: false }))
+  removeCreatedTree([p])
+  return result
 }
 
 /** Is the Gemini CLI integration currently present? True only when every (event, matcher) pair {@link desiredMatchersFor} expects carries a token-goat hook entry. A partial install (e.g. one matcher group deleted by hand) reads as not installed, so {@link installGemini} will top up what's missing. */

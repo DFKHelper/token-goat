@@ -4,6 +4,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { recordCreatedBy, removeCreatedTree } from './created_configs.js'
 import { installSingleFilePlugin, uninstallSingleFilePlugin } from '../util.js'
 import { PI_EXTENSION_SCRIPT } from './pi.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
@@ -45,7 +46,7 @@ export interface PiInstallResult {
 export function installPi(opts: PiScopeOptions = {}): PiInstallResult {
   return withInstallScope(projectScopeRoot(opts), () => {
     const extensionPath = piExtensionPath(opts)
-    const { alreadyInstalled } = installSingleFilePlugin(extensionPath, piEntrySidecarPath(opts), PI_EXTENSION_SCRIPT)
+    const { alreadyInstalled } = recordCreatedBy([extensionPath, piEntrySidecarPath(opts)], () => installSingleFilePlugin(extensionPath, piEntrySidecarPath(opts), PI_EXTENSION_SCRIPT))
     return { extensionPath, alreadyInstalled }
   })
 }
@@ -53,7 +54,11 @@ export function installPi(opts: PiScopeOptions = {}): PiInstallResult {
 /** Remove the pi extension file at the resolved path. Returns true when a file was actually present and removed; false when nothing was installed (no write occurs in that case). */
 // Scoped per sweep, not on the exported entry point below, which deliberately visits BOTH scopes.
 function uninstallPiScope(opts: PiScopeOptions): boolean {
-  return withInstallScope(projectScopeRoot(opts), () => uninstallSingleFilePlugin(piExtensionPath(opts), piEntrySidecarPath(opts)))
+  return withInstallScope(projectScopeRoot(opts), () => {
+    const removed = uninstallSingleFilePlugin(piExtensionPath(opts), piEntrySidecarPath(opts))
+    removeCreatedTree([piExtensionPath(opts), piEntrySidecarPath(opts)])
+    return removed
+  })
 }
 
 // Uninstall is a cleanup operation, not a mirror of install's scope targeting: a plain `token-goat uninstall --pi` (opts.local left unset) must remove the extension wherever it actually is, not just the global scope, or a --local install silently survives (the user has to remember to pass --local again at uninstall time, which they usually won't). Only when the caller explicitly asks for the local scope (opts.local === true) do we narrow to that one scope and leave a coexisting global install untouched.
