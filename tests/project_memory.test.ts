@@ -159,6 +159,35 @@ describe('project_memory', () => {
       expect(entries['escaped']).not.toContain('\n');
     });
 
+    // HAND-DERIVED: the stored line is written out from the escape format (backslash, `u`, four hex digits) rather than taken from the writer. JS regex `.` and String.trim() treat U+2028 and U+2029 as line terminators (ECMAScript spec, LineTerminator), which is what left a raw one unreadable.
+    it('round-trips U+2028 and U+2029 in a value and keeps the notes file updatable', () => {
+      setEntry('test', 'sep', 'a\u2028b\u2029c');
+      const stored = fs.readFileSync(memoryPath('test'), 'utf-8');
+      expect(stored).toContain('sep = "a\\u2028b\\u2029c"');
+      expect(stored).not.toMatch(/[\u2028\u2029]/);
+      expect(loadEntries('test')['sep']).toBe('a\u2028b\u2029c');
+      expect(() => setEntry('test', 'other', 'v')).not.toThrow();
+      expect(() => unsetEntry('test', 'other')).not.toThrow();
+      expect(loadEntries('test')).toEqual({ sep: 'a\u2028b\u2029c' });
+    });
+
+    it('keeps a literal backslash-u2028 as text, not as the separator', () => {
+      setEntry('test', 'lit', 'a\\u2028b');
+      expect(loadEntries('test')['lit']).toBe('a\\u2028b');
+    });
+
+    // HAND-DERIVED: the file is what an older version wrote for a value holding U+2028 (the raw character inside the quotes, no escape), which it then could not parse back.
+    it('recovers a notes file an older version wedged with a raw U+2028 in a value', () => {
+      const p = memoryPath('wedged');
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, 'first = "one"\nsep = "a\u2028b"\nlast = "z\u2029"\n');
+      expect(loadEntries('wedged')).toEqual({ first: 'one', sep: 'a\u2028b', last: 'z\u2029' });
+      expect(() => setEntry('wedged', 'next', 'n')).not.toThrow();
+      const stored = fs.readFileSync(p, 'utf-8');
+      expect(stored).not.toMatch(/[\u2028\u2029]/);
+      expect(loadEntries('wedged')).toEqual({ first: 'one', sep: 'a\u2028b', last: 'z\u2029', next: 'n' });
+    });
+
     it('should accept alphanumeric, hyphens, underscores', () => {
       setEntry('test', 'key_with-hyphen123', 'value');
       const entries = loadEntries('test');

@@ -97,13 +97,16 @@ function parseTOML(content: string, unparsed: number[] = [], setAt = new Map<str
     const entryAnchor = pendingAnchor;
     pendingSetAt = undefined;
     pendingAnchor = undefined;
-    const match = trimmed.match(/^([A-Za-z0-9_-]+)\s*=\s*"(.*)"\s*$/);
+    // The `s` flag lets `.` cross U+2028/U+2029, which older versions wrote raw inside a value and which would otherwise leave that line unreadable and every later update refused.
+    const match = trimmed.match(/^([A-Za-z0-9_-]+)\s*=\s*"(.*)"\s*$/s);
     if (match) {
       const [, key, value] = match;
       if (key && value !== undefined) {
         // Unescape TOML string escapes in a single pass to avoid sequential-replace interference (e.g. "a\\nb" → "a\nb" not "a\<NL>b").
-        const unescaped = value.replace(/\\([\\nrt"])/g, (_, c: string) => {
+        const unescaped = value.replace(/\\(u202[89]|[\\nrt"])/g, (_, c: string) => {
           switch (c) {
+            case 'u2028': return '\u2028'
+            case 'u2029': return '\u2029'
             case '\\': return '\\'
             case 'n': return '\n'
             case 'r': return '\r'
@@ -153,7 +156,9 @@ function save(filePath: string, entries: Record<string, string>, setAt = new Map
       .replace(/\\/g, '\\\\')
       .replace(/"/g, '\\"')
       .replace(/\r/g, '\\r')
-      .replace(/\n/g, '\\n');
+      .replace(/\n/g, '\\n')
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029');
     const time = setAt.get(k);
     if (time !== undefined) lines.push(`# set ${time}`);
     const anchor = anchors.get(k);
