@@ -183,8 +183,7 @@ describe('classify (pure, no index)', () => {
   })
 
   it('keeps the neighbours of those phrasings where they were', () => {
-    // HAND-DERIVED: the near-misses each new pattern must not swallow.
-    // `what depends on X` is an impact question; only the `which files`/`which modules` form asks for importers.
+    // HAND-DERIVED: the near-misses each new pattern must not swallow. `what depends on X` is an impact question; only the `which files`/`which modules` form asks for importers.
     expect(classify('what depends on foldPath')).toEqual({ intent: 'impact', subject: 'foldPath' })
     // A bare name after `show me` names no intent, so it refuses rather than guessing that the body is wanted.
     expect(normalizeQuestion('show me foldPath')).toBe('foldPath')
@@ -236,7 +235,7 @@ describe('runAnswer against the real index', () => {
   it('resolves a bare symbol subject and answers who-calls via the callers command', () => {
     const r = captureErr(() => runAnswer({ question: 'who calls foldPath' }))
     expect(r.code).toBe(0)
-    expect(r.out.split('\n')[0]).toBe('via: token-goat callers foldPath --limit 20')
+    expect(r.out.split('\n')[0]).toBe('via: token-goat callers src/path_containment.ts::foldPath --limit 20')
     expect(r.out).toMatch(/\bsrc\/[^\s]+\.ts:\d+/)
   })
 
@@ -277,7 +276,7 @@ describe('runAnswer against the real index', () => {
     expect(r.out.split('\n')[0]).toBe('via: token-goat deps src/delivery_cap.ts --importers')
     // A symbol subject keeps the call-graph answer.
     const bySymbol = captureErr(() => runAnswer({ question: 'what depends on foldPath' }))
-    expect(bySymbol.out.split('\n')[0]).toBe('via: token-goat impact foldPath --top 20')
+    expect(bySymbol.out.split('\n')[0]).toBe('via: token-goat impact src/path_containment.ts::foldPath --top 20')
   })
 
   it('refuses a symbol subject for importers and names the file-level command that answers it', () => {
@@ -298,7 +297,7 @@ describe('runAnswer against the real index', () => {
   it('answers what-breaks-if-X-changes via impact', () => {
     const r = captureErr(() => runAnswer({ question: 'what breaks if foldPath changes' }))
     expect(r.code).toBe(0)
-    expect(r.out.split('\n')[0]).toBe('via: token-goat impact foldPath --top 20')
+    expect(r.out.split('\n')[0]).toBe('via: token-goat impact src/path_containment.ts::foldPath --top 20')
   })
 
   it('answers where-is via symbol', () => {
@@ -510,7 +509,7 @@ describe('runAnswer against the real index', () => {
       const r = captureErr(() => runAnswer({ question: 'who calls zzAnswerBoundTarget' }))
       expect(r.code).toBe(0)
       const lines = r.out.trim().split('\n')
-      expect(lines[0]).toBe('via: token-goat callers zzAnswerBoundTarget --limit 20')
+      expect(lines[0]).toBe('via: token-goat callers tests/.tg-answer-bound-def.ts::zzAnswerBoundTarget --limit 20')
       // Pre-fix the router passed no bound at all, so this was 40 rows here and 500 against a real symbol.
       expect(lines.length - 1).toBe(20)
       // A cap with no disclosure is worse than no cap: the reader cannot tell a complete answer from a clipped one.
@@ -546,6 +545,68 @@ describe('runAnswer against the real index', () => {
     } finally {
       rmSync(vendorDir, { recursive: true, force: true })
       rmSync(realFile, { force: true })
+    }
+  })
+
+  // HAND-DERIVED fixture: one name defined in node_modules/ and in tests/, each with a same-file caller of its own, so which caller belongs to the resolved definition is fixed by the layout. Pre-fix the router passed the bare name and the callers/impact delegates answered for both definitions.
+  it('scopes the callers and impact delegates to the definition it resolved, not to every definition of the name', () => {
+    const vendorDir = join(resolve('node_modules'), '.tg-answer-graph-vendor')
+    const realFile = join(resolve('tests'), '.tg-answer-graph-real-fixture.ts')
+    try {
+      mkdirSync(vendorDir, { recursive: true })
+      const vendored = join(vendorDir, 'shadow.ts')
+      writeFileSync(vendored, 'export function zzGraphShadow(): number {\n  return 0\n}\nexport function zzGraphVendoredCaller(): number {\n  return zzGraphShadow()\n}\n')
+      writeFileSync(realFile, 'export function zzGraphShadow(): number {\n  return 1\n}\nexport function zzGraphRealCaller(): number {\n  return zzGraphShadow()\n}\n')
+      indexFileSync(normalizePath(vendored))
+      indexFileSync(normalizePath(realFile))
+
+      // Calibration: the bare name really does reach both callers, so their absence below is the file scope working.
+      const bare = captureErr(() => runCallers({ symbol: 'zzGraphShadow' }))
+      expect(bare.out, 'the vendored caller was never indexed').toContain('zzGraphVendoredCaller')
+
+      const callers = captureErr(() => runAnswer({ question: 'who calls zzGraphShadow' }))
+      expect(callers.code, callers.err).toBe(0)
+      expect(callers.out.split('\n')[0]).toBe('via: token-goat callers tests/.tg-answer-graph-real-fixture.ts::zzGraphShadow --limit 20')
+      expect(callers.out).toContain('zzGraphRealCaller')
+      expect(callers.out).not.toContain('zzGraphVendoredCaller')
+
+      const impact = captureErr(() => runAnswer({ question: 'what breaks if zzGraphShadow changes' }))
+      expect(impact.code, impact.err).toBe(0)
+      expect(impact.out.split('\n')[0]).toBe('via: token-goat impact tests/.tg-answer-graph-real-fixture.ts::zzGraphShadow --top 20')
+      expect(impact.out).toContain('zzGraphRealCaller')
+      expect(impact.out).not.toContain('zzGraphVendoredCaller')
+    } finally {
+      rmSync(vendorDir, { recursive: true, force: true })
+      rmSync(realFile, { force: true })
+    }
+  })
+
+  // HAND-DERIVED fixture: one name defined in two project files, each with a same-file caller of its own, so the definition count and each definition's callers are fixed by the layout.
+  it('refuses a callers or impact question when the name has two definitions, and answers for the one a file::symbol subject names', () => {
+    const a = join(resolve('tests'), '.tg-answer-graph-a-fixture.ts')
+    const b = join(resolve('tests'), '.tg-answer-graph-b-fixture.ts')
+    try {
+      writeFileSync(a, 'export function zzGraphTwice(): number {\n  return 1\n}\nexport function zzGraphCallerA(): number {\n  return zzGraphTwice()\n}\n')
+      writeFileSync(b, 'export function zzGraphTwice(): number {\n  return 2\n}\nexport function zzGraphCallerB(): number {\n  return zzGraphTwice()\n}\n')
+      indexFileSync(normalizePath(a))
+      indexFileSync(normalizePath(b))
+
+      for (const [question, command] of [['who calls zzGraphTwice', 'callers'], ['what breaks if zzGraphTwice changes', 'impact']] as const) {
+        const r = captureErr(() => runAnswer({ question }))
+        expect(r.code).toBe(1)
+        expect(r.out).toBe('')
+        expect(r.err).toContain("'zzGraphTwice' has 2 definitions")
+        expect(r.err).toContain(`try: token-goat ${command} "tests/.tg-answer-graph-a-fixture.ts::zzGraphTwice"`)
+      }
+
+      const picked = captureErr(() => runAnswer({ question: 'who calls tests/.tg-answer-graph-b-fixture.ts::zzGraphTwice' }))
+      expect(picked.code, picked.err).toBe(0)
+      expect(picked.out.split('\n')[0]).toBe('via: token-goat callers tests/.tg-answer-graph-b-fixture.ts::zzGraphTwice --limit 20')
+      expect(picked.out).toContain('zzGraphCallerB')
+      expect(picked.out).not.toContain('zzGraphCallerA')
+    } finally {
+      rmSync(a, { force: true })
+      rmSync(b, { force: true })
     }
   })
 

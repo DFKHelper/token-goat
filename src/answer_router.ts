@@ -231,6 +231,32 @@ const FILE_INTENTS: ReadonlySet<AnswerIntent> = new Set<AnswerIntent>(['tests', 
 /** The phrasing that re-asks a file intent about one specific path, for the ambiguous refusal's next step. */
 const FILE_INTENT_PHRASE: Readonly<Partial<Record<AnswerIntent, string>>> = { tests: 'tests for', exports: 'exports of', imports: 'imports of', importers: 'importers of' }
 
+/** Refuses a symbol question whose bare name has several definitions, naming the first one as the `file::symbol` spelling that re-asks it for exactly that definition. */
+function refuseAmbiguousDefs(subject: string, defs: { file: string }[], rootDir: string, command: 'brief' | 'callers' | 'impact'): number {
+  const shown = defs.slice(0, 5).map((d) => toDisplayPath(rootDir, d.file))
+  const more = defs.length - shown.length
+  const first = shown[0] ?? ''
+  return refuse('ambiguous', `'${subject}' has ${defs.length} definitions in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, `token-goat ${command} "${first}::${subject}"`)
+}
+
+/** Routes a callers or impact question to the one definition the subject names: a `file::symbol` subject or a name with exactly one definition in this project. Several definitions refuse, and the delegate always receives the resolved `file::symbol` spec, since a bare name makes the graph command pick whichever definition it likes while the `via:` line claims the one resolved here. */
+function answerGraph(intent: 'callers' | 'impact', subject: string, resolved: { name: string; file: string }, rootDir: string): number {
+  if (!subject.includes('::')) {
+    const defs = collectSymbolDefs(resolved.name, rootDir)
+    if (defs.length > 1) return refuseAmbiguousDefs(subject, defs, rootDir, intent)
+  }
+  const spec = `${toDisplayPath(rootDir, resolved.file)}::${resolved.name}`
+  // Quoted only when a path with whitespace needs it, so the common via: line stays a command that splits on spaces into its own argv.
+  const shown = displaySafeText(spec)
+  const arg = /\s/.test(shown) ? `"${shown}"` : shown
+  if (intent === 'callers') {
+    emit(`via: token-goat callers ${arg} --limit ${ANSWER_DELEGATE_LIMIT}`)
+    return routed('callers', runCallers({ symbol: spec, limit: ANSWER_DELEGATE_LIMIT }))
+  }
+  emit(`via: token-goat impact ${arg} --top ${ANSWER_DELEGATE_LIMIT}`)
+  return routed('impact', runImpact({ symbol: spec, top: ANSWER_DELEGATE_LIMIT }))
+}
+
 /** Routes an explain question to `brief` only when the subject has exactly one definition in this project (or is spelled `file::symbol`); several definitions, a file, or nothing at all refuses with the next step. */
 function answerExplain(question: string, subject: string, rootDir: string): number {
   let target: { name: string; file: string } | null = null
@@ -239,12 +265,7 @@ function answerExplain(question: string, subject: string, rootDir: string): numb
     if (r?.kind === 'symbol') target = { name: r.name, file: r.file }
   } else if (!/\s/.test(subject)) {
     const defs = collectSymbolDefs(subject, rootDir)
-    if (defs.length > 1) {
-      const shown = defs.slice(0, 5).map((d) => toDisplayPath(rootDir, d.file))
-      const more = defs.length - shown.length
-      const first = shown[0] ?? ''
-      return refuse('ambiguous', `'${subject}' has ${defs.length} definitions in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, `token-goat brief "${first}::${subject}"`)
-    }
+    if (defs.length > 1) return refuseAmbiguousDefs(subject, defs, rootDir, 'brief')
     target = defs[0] ?? null
     if (target === null) {
       const file = resolveSubject(subject, 'file-only')
@@ -359,14 +380,7 @@ export function runAnswer(opts: AnswerOptions): number {
     return refuse('file-needs-symbol', `'${cls.subject}' is a file, and ${cls.intent === 'where' ? 'where' : cls.intent} needs a symbol`, `token-goat outline ${display}`)
   }
 
-  if (cls.intent === 'callers') {
-    emit(`via: token-goat callers ${displaySafeText(resolved.name)} --limit ${ANSWER_DELEGATE_LIMIT}`)
-    return routed('callers', runCallers({ symbol: resolved.name, limit: ANSWER_DELEGATE_LIMIT }))
-  }
-  if (cls.intent === 'impact') {
-    emit(`via: token-goat impact ${displaySafeText(resolved.name)} --top ${ANSWER_DELEGATE_LIMIT}`)
-    return routed('impact', runImpact({ symbol: resolved.name, top: ANSWER_DELEGATE_LIMIT }))
-  }
+  if (cls.intent === 'callers' || cls.intent === 'impact') return answerGraph(cls.intent, cls.subject, resolved, rootDir)
 
   // `-p` is not decoration: `symbol` searches the machine-wide index unless the project scope is opted into, while the router always scopes to this project. Without it the pointer named a command whose output includes same-named definitions from every other checkout on the machine -- a `via:` line that does not reproduce its own window is worse than none, since the reader verifies against it and concludes the answer dropped rows.
   emit(`via: token-goat symbol ${displaySafeText(resolved.name)} -p --exclude-vendored`)

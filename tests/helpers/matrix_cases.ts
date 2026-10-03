@@ -2218,7 +2218,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['answer', 'who calls refHelper'])
     expect(r.status, r.stderr).toBe(0)
     // The router bounds every delegate, and the provenance line names the flag that reproduces exactly the window it printed -- an unnamed bound would make this pointer lie about its own output.
-    expect(r.stdout.split('\n')[0]).toBe('via: token-goat callers refHelper --limit 20')
+    expect(r.stdout.split('\n')[0]).toBe('via: token-goat callers caller.ts::refHelper --limit 20')
     expect(r.stdout).toMatch(/refDriver|caller\.ts/)
     // Pinning the provenance line's TEXT is not the contract; the contract is that running it reproduces the window it introduced. Re-run whatever it names, through the same built bundle, and require byte equality with the answer's body. The `where` intent failed exactly this while its text pin was green: `symbol` searches the machine-wide index unless `-p` opts into the project, so the named command returned same-named definitions from unrelated checkouts the answer had (correctly) scoped away.
     const viaWhere = run(['answer', 'where is refHelper'])
