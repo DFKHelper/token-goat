@@ -95,6 +95,27 @@ describe('serializeOutput: rewriteInput', () => {
 })
 
 describe('preBashHandler: compression rewrite', () => {
+  it.each([
+    'token-goat compress -c "cargo build"',
+    'token-goat bash -c "cargo build"',
+    'token-goat run -c "cargo build"',
+    'token-goat read src/cli.ts::cmdCompress',
+    'token-goat outline src/cli.ts',
+    'token-goat section "docs/cli.md::CLI"',
+    'tg compress -c "cargo build"',
+    'tg outline src/cli.ts',
+    'npx token-goat compress -c "cargo build"',
+    'npx token-goat outline src/cli.ts',
+    'cd /repo && token-goat compress -c "cargo build"',
+    'FOO=bar tg compress -c "cargo build"',
+    '  token-goat compress -c "cargo build"',
+    'token-goat',
+    'tg',
+    'npx token-goat',
+  ])('does not wrap an existing token-goat invocation: %s', (command) => {
+    expect(preBashHandler(preEvent({ command })).hookType).not.toBe('rewriteInput')
+  })
+
   // PROVENANCE: HAND-DERIVED. VS Code's run_in_terminal payload does not name the terminal's shell, so no quoting of the wrapped command is safe there; the end-to-end version of this is tests/vscode_terminal_never_rewritten.test.ts.
   it('never wraps a VS Code command, quoted or not, while the same command still wraps on Claude Code', () => {
     const quoted = preBashHandler(makeHookEvent({ toolName: 'Bash', toolInput: { command: "cargo build --message-format 'short'" }, sessionId: 's', raw: { tool_name: 'Bash', _tg_harness: 'vscode' } }))

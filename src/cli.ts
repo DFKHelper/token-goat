@@ -681,13 +681,36 @@ async function cmdCompress(
     shell?: string
   } = {},
 ): Promise<void> {
+  const usedBase64 = opts.cmdB64 !== undefined
   try {
-    let command = opts.cmd
-    if (Array.isArray(commandArgs) && commandArgs.length > 0) {
-      command = command ? [command, ...commandArgs].join(' ') : commandArgs.join(' ')
-    }
-    if (opts.cmdB64 !== undefined) {
-      command = Buffer.from(opts.cmdB64, 'base64').toString('utf8')
+    let command: string | undefined
+    for (let depth = 0; depth < 5; depth++) {
+      if (opts.cmdB64 !== undefined) {
+        command = Buffer.from(opts.cmdB64, 'base64').toString('utf8')
+        delete opts.cmdB64
+      } else {
+        command = opts.cmd
+        if (Array.isArray(commandArgs) && commandArgs.length > 0) {
+          command = command ? [command, ...commandArgs].join(' ') : commandArgs.join(' ')
+        }
+      }
+      if (!usedBase64 || !command || !/^\s*(?:token-goat|tg)\s+(?:compress|bash|run)(?:\s|$)/.test(command)) break
+
+      // Reuse the CLI grammar so aliases, positional commands and runner options
+      // survive unwrapping without starting another token-goat process.
+      const { shlexSplit } = await import('./tool_filters/helpers.js')
+      const nested = buildProgram()
+      applyExitOverride(nested)
+      let parsedArgs: string[] = []
+      let parsedOpts: Record<string, unknown> = {}
+      nested.commands.find((sub) => sub.name() === 'compress')!.action((args: string[], innerOpts: Record<string, unknown>) => {
+        parsedArgs = args
+        parsedOpts = innerOpts
+      })
+      delete opts.cmd
+      await nested.parseAsync(shlexSplit(command).slice(1), { from: 'user' })
+      commandArgs = parsedArgs
+      opts = { ...opts, ...parsedOpts } as typeof opts
     }
     if (!command || command.trim() === '') {
       err(`token-goat: either command arguments, -c/--cmd, or --cmd-b64 is required`)
@@ -717,8 +740,17 @@ async function cmdCompress(
       ...(opts.shell !== undefined ? { shellType: opts.shell } : {}),
     })
   } catch (e) {
+    const code = (e as { code?: string }).code
+    if (code === 'commander.helpDisplayed' || code === 'commander.version' || code === 'commander.help') {
+      process.exitCode = 0
+      return
+    }
     err(formatCommandError(e))
     process.exitCode = 1
+  } finally {
+    if (usedBase64 && process.exitCode !== undefined && process.exitCode !== 0) {
+      err('[tg: note] Command failed when invoked via --cmd-b64. If an LLM generated this base64 string, tokenization bit-drift may have corrupted characters or file paths. Always pass plain shell commands directly.')
+    }
   }
 }
 
@@ -1329,7 +1361,7 @@ export function buildProgram(): Command {
     .description('run a shell command (under a POSIX shell / bash) and emit a compressed view of its output')
     .allowUnknownOption(true)
     .option('-c, --cmd <command>', 'the shell command to run, as one string (use / for paths across platforms)')
-    .option('--cmd-b64 <payload>', 'the shell command as a base64-encoded string (preserves quotes, backslashes, and symbols across platforms)')
+    .option('--cmd-b64 <payload>', 'internal hook use only: base64-encoded command generated programmatically by token-goat hooks. Agents and interactive users must NOT use this flag manually (pass plain shell commands instead; LLMs cannot reliably synthesize base64 without character corruption)')
     .option('--shell <type>', 'shell interpreter to run under: bash | pwsh | powershell | native')
     .option('-f, --filter <name>', 'filter name (auto-detected from the command when omitted)')
     .option('--timeout <seconds>', 'wall-clock timeout in seconds (0 = built-in default)')

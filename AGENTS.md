@@ -8,6 +8,8 @@ token-goat is a Claude Code / Codex CLI companion, written in TypeScript and bun
 
 ## Build, test, lint
 
+`--cmd-b64` is strictly an internal hook transport flag, generated programmatically by token-goat hooks. Agents and interactive users must pass ordinary plain shell commands directly, using positional arguments or `--cmd`; never synthesize base64 manually, because character corruption can change commands and file paths.
+
 ```bash
 npm install
 npm test            # full test suite
