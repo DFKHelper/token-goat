@@ -301,13 +301,18 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
     return leadWithCommand(`token-goat section "${filePath}::${table}"`, 'to extract a part')
   } else {
     const isShellScript = /\.(sh|bash|zsh|ksh)$/i.test(basename)
+    // `section` resolves headings only, so it is offered only for names that came from the banner-heading list.
+    let namesAreHeadings = false
     const samples = fileContent !== undefined
       ? extractQuickSymbolSamples(fileContent, filePath, HINT_NAME_SCAN_LIMIT).map(escapeHintName).filter((name) => name !== '').slice(0, HINT_NAME_COUNT)
       : (() => {
           try {
             if (isShellScript) {
               const headings = indexedHintNames({ filePath, kind: 'heading' })
-              if (headings.length > 0) return headings
+              if (headings.length > 0) {
+                namesAreHeadings = true
+                return headings
+              }
             }
             return indexedHintNames({ filePath })
           } catch {
@@ -317,7 +322,7 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
     const fallback = samples.length > 0 ? null : hintTarget(filePath, 'symbol', { content: fileContent })
     const sym = samples[0] ?? fallback?.name ?? HINT_PLACEHOLDERS.symbol
     const avail = samples.length > 0 ? `(available: ${samples.join(', ')}) ` : ''
-    if (isShellScript && samples.length > 0) {
+    if (namesAreHeadings) {
       return leadWithCommand(`token-goat section "${filePath}::${sym}"`, `${avail}for a section, or \`token-goat skeleton "${filePath}"\` / \`token-goat outline "${filePath}"\` for structure`)
     }
     // The DB, not fileContent's naive regex scan, is what knows a symbol's real line span -- consulted here purely as a size check even on the fileContent-available path, so a symbol this large is never recommended for a whole-body read regardless of which branch found its name.

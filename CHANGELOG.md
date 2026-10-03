@@ -107,6 +107,10 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **`config-get` could not read most TOML files.** It now handles arrays and strings that span several lines, dotted keys such as `server.port = 8080`, and inline tables such as `owner = { name = "n" }`.
+- **`changed --symbol` listed files that were only renamed or had only their file mode changed.** Those files have no changed lines, so they are now left out.
+- **Reading a large shell script got no hint to read one function instead.** The Read hint now offers `token-goat read "script.sh::function"` for shell scripts, as it already did for other languages.
+- **The Grep hint could not name a symbol with a hyphen in it or a markdown heading.** A search for either now points at the matching `read` or `section` command.
 - **`refs --callers` left out calls made from arrow functions stored on a class property or from functions stored in an object.** Those calls are now credited to the property or key name, the same way a method's calls are. Upgrading reindexes each project once to pick this up.
 - **An Elixir `def name(args),` with `do:` on the next line was indexed as one line.** The function now gets its full span, so `read` returns its body.
 - **Replacing an indexed file with a folder of the same name left the old file's symbols in the index.** Reconcile and the background worker now drop the stale file, so `symbol` stops finding code that is gone.

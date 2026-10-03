@@ -1,5 +1,7 @@
 import * as path from 'node:path'
 
+import { parse as parseToml } from 'smol-toml'
+
 import {
   ArchiveDependencyMissingError,
   extractZipEntry,
@@ -420,6 +422,18 @@ export function runConfigGet(opts: ConfigGetOptions): number {
     return 0
   }
 
+  if (ext === '.toml') {
+    const toml = lookupToml(text, opts.key)
+    if (toml !== undefined) {
+      if (toml === null) {
+        emitErr(`Key '${opts.key}' not found in ${opts.file}`)
+        return 1
+      }
+      emit(toml)
+      return 0
+    }
+  }
+
   const flavour = flatKeyFlavour(opts.file)
   const lines = text.split('\n')
   // A flat key such as `spring.datasource.url` is looked up whole first, since a .properties or .env file has no sections; the section split is the INI/TOML reading of the same dots.
@@ -429,6 +443,11 @@ export function runConfigGet(opts: ConfigGetOptions): number {
   for (const attempt of attempts) {
     const value = lookupFlatKey(lines, attempt.section, attempt.leaf, flavour)
     if (value !== null) {
+      // A TOML file that failed to parse reaches this line scan; a value it can only see the first line of must not print as if whole.
+      if (ext === '.toml' && isTomlFragment(value)) {
+        emitErr(`Key '${opts.key}' in ${opts.file} spans several lines and the file is not valid TOML, so it cannot be read whole`)
+        return 1
+      }
       emit(value)
       return 0
     }
@@ -436,6 +455,43 @@ export function runConfigGet(opts: ConfigGetOptions): number {
 
   emitErr(`Key '${opts.key}' not found in ${opts.file}`)
   return 1
+}
+
+/** True when a line-scanned TOML value is the opening of a multi-line array, inline table or string, or a lone quote. */
+function isTomlFragment(v: string): boolean {
+  if (v === '"' || v === "'" || v.startsWith('"""') || v.startsWith("'''")) return true
+  return (v.startsWith('[') && !v.endsWith(']')) || (v.startsWith('{') && !v.endsWith('}'))
+}
+
+/** Resolve a dotted `key` against parsed TOML, trying longer dotted prefixes as one key so a quoted key containing a dot still resolves. */
+function resolveTomlKey(node: unknown, parts: readonly string[]): unknown {
+  if (parts.length === 0) return node
+  if (typeof node !== 'object' || node === null || Array.isArray(node) || node instanceof Date) return undefined
+  const table = node as Record<string, unknown>
+  for (let n = 1; n <= parts.length; n++) {
+    const head = parts.slice(0, n).join('.')
+    if (!Object.hasOwn(table, head)) continue
+    const found = resolveTomlKey(table[head], parts.slice(n))
+    if (found !== undefined) return found
+  }
+  return undefined
+}
+
+/** The printable value of `key` in TOML `text`: a string, null when the file parses but lacks the key, undefined when the file is not valid TOML (the caller falls back to the line scan). */
+function lookupToml(text: string, key: string): string | null | undefined {
+  let doc: unknown
+  try {
+    doc = parseToml(text)
+  } catch {
+    return undefined
+  }
+  const found = resolveTomlKey(doc, key.split('.'))
+  if (found === undefined) return null
+  if (typeof found === 'string') return found
+  if (typeof found === 'object' && found !== null && !(found instanceof Date)) {
+    return displaySafeJson(JSON.parse(JSON.stringify(found, (_k, x: unknown) => typeof x === 'bigint' ? x.toString() : x)), 0)
+  }
+  return String(found)
 }
 
 type FlatKeyFlavour = 'properties' | 'env' | 'ini'

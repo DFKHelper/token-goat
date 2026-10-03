@@ -144,6 +144,36 @@ export function parseDiffHunks(diffText: string): Map<string, Array<{ start: num
   return hunksByFile
 }
 
+// New-side paths of files the diff reports as renamed or mode-changed with no content change: their `diff --git` block carries no `+++` header and no hunks, which is not the same as a file git gave no hunks for (an added or unpaired one), so they contribute no changed symbols.
+export function parseHunklessFiles(diffText: string): Set<string> {
+  const hunkless = new Set<string>()
+  let path: string | null = null
+  let metadataOnly = false
+  let hasContent = false
+  const flush = (): void => {
+    if (path !== null && metadataOnly && !hasContent) hunkless.add(path)
+  }
+  for (const line of diffText.split(/\r?\n/)) {
+    if (line.startsWith('diff --git ')) {
+      flush()
+      const header = /^diff --git "?a\/.*?"? "?b\/(.*?)"?$/.exec(line)
+      path = header === null ? null : line.endsWith('"') ? unquoteGitPath(header[1] ?? '') : (header[1] ?? null)
+      metadataOnly = false
+      hasContent = false
+    } else if (line.startsWith('rename to ')) {
+      const to = line.slice('rename to '.length)
+      path = to.startsWith('"') && to.endsWith('"') && to.length > 1 ? unquoteGitPath(to.slice(1, -1)) : to
+      metadataOnly = true
+    } else if (line.startsWith('new mode ')) {
+      metadataOnly = true
+    } else if (line.startsWith('+++ ') || line.startsWith('Binary files ') || line === 'GIT binary patch') {
+      hasContent = true
+    }
+  }
+  flush()
+  return hunkless
+}
+
 const EMPTY_TREE_HASH = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 
 function buildChangedRefHint(cwd: string, ref: string): string | null {
@@ -316,11 +346,13 @@ export function runChanged(opts: ChangedOptions = {}): number {
 
   if (opts.symbolMode === true) {
     let hunksByFile = new Map<string, Array<{ start: number; end: number }>>()
+    let hunklessFiles = new Set<string>()
     let symbolDiffBaselineBytes = 0
     try {
       const diffResult = unifiedDiffOf(projectRoot, ref, changedFiles, ['--src-prefix=a/', '--dst-prefix=b/'])
       if (diffResult.exitCode === 0) {
         hunksByFile = parseDiffHunks(diffResult.stdout)
+        hunklessFiles = parseHunklessFiles(diffResult.stdout)
         symbolDiffBaselineBytes = deliveredOutputBytes(Buffer.byteLength(diffResult.stdout, 'utf8'))
       }
     } catch {
@@ -329,6 +361,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
 
     const allSymbols: SymbolEntry[] = []
     for (const f of changedFiles) {
+      if (hunklessFiles.has(f)) continue
       const fileSymbols = querySymbols({ filePath: resolveIndexPath(f, projectRoot), limit: FIND_SCAN_LIMIT })
       const hunks = hunksByFile.get(f)
       const scoped =

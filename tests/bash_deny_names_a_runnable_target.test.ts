@@ -12,6 +12,7 @@ import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import { indexFileSync } from '../src/parser.js'
 import { globalDbPath, configPath } from '../src/constants.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { normalizePath } from '../src/paths.js'
 import { ROOT, runBundle } from './helpers/bundle.js'
 import { DOTENV_VALUE_PLACEHOLDER } from '../src/dotenv_redact.js'
 
@@ -360,6 +361,64 @@ describe('the commands a deny names run against the file', () => {
     it('names the targeted Python def, whatever order the file defines them in', () => {
       fs.writeFileSync(path.join(proj, 'b.py'), 'def alpha():\n    return 1\n\ndef beta():\n    return 2\n', 'utf8')
       expect(namedCommands(hook('Grep', { pattern: 'def beta', path: 'b.py' }))[0]).toBe('token-goat read "b.py::beta"')
+    })
+  })
+
+  describe('a large indexed file, hinted through the built bundle', () => {
+    const FILLER = '  # filler comment line\n'.repeat(6)
+    const count = (n: number): number[] => Array.from({ length: n }, (_, i) => i)
+
+    const shown = normalizePath
+
+    function indexProject(): void {
+      fs.writeFileSync(path.join(proj, 'package.json'), '{"name":"p"}', 'utf8')
+      expect(runBundle(['index', '.', '--walk'], { cwd: proj, env: env() }).status).toBe(0)
+    }
+
+    // HAND-DERIVED: the names are the ones written into the fixtures below, 0..119 of each family, so `Get-Thing3` and `Heading 3` also prefix `Get-Thing30` and `Heading 30`.
+    it.each([
+      ['function Get-Thing3', 'read "big.ps1::Get-Thing3"'],
+      ['function Get-Thing30', 'read "big.ps1::Get-Thing30"'],
+      ['function Get-Thing3$', 'read "big.ps1::Get-Thing3"'],
+    ])('Grep %s on a PowerShell file names the hyphenated function it targets', (pattern, command) => {
+      fs.writeFileSync(path.join(proj, 'big.ps1'), count(120).map((i) => `function Get-Thing${i} {\n${FILLER}  Write-Output ${i}\n}\n`).join(''), 'utf8')
+      indexProject()
+      const commands = namedCommands(hook('Grep', { pattern, path: 'big.ps1' }))
+      expect(commands[0]).toBe('token-goat ' + command)
+      expect(run(commands[0]!).status).toBe(0)
+    })
+
+    it.each([
+      ['^## Heading 3', 'Heading 3'],
+      ['^## Heading 3$', 'Heading 3'],
+      ['^## Heading 30$', 'Heading 30'],
+      ['^## Heading 30', 'Heading 30'],
+    ])('Grep %s on a markdown file names the heading it targets', (pattern, heading) => {
+      fs.writeFileSync(path.join(proj, 'big.md'), count(120).map((i) => `## Heading ${i}\n\n${'prose line for padding the section out\n'.repeat(4)}\n`).join(''), 'utf8')
+      indexProject()
+      const commands = namedCommands(hook('Grep', { pattern, path: 'big.md' }))
+      expect(commands[0]).toBe('token-goat section "big.md::' + heading + '"')
+      expect(run(commands[0]!).status).toBe(0)
+    })
+
+    it('the Read hint for a shell script holding only functions leads with read, not a section that exits 1', () => {
+      const file = path.join(proj, 'big.sh')
+      fs.writeFileSync(file, '#!/bin/bash\n' + count(120).map((i) => `func_${i}() {\n${FILLER}  echo ${i}\n}\n`).join(''), 'utf8')
+      indexProject()
+      const commands = namedCommands(hook('Read', { file_path: file }))
+      expect(commands[0]).toBe('token-goat read "' + shown(file) + '::func_0"')
+      expect(commands.filter((c) => c.startsWith('token-goat section'))).toEqual([])
+      expect(run(commands[0]!).status).toBe(0)
+    })
+
+    it('the Read hint for a shell script with banner headings still offers section, and it runs', () => {
+      const file = path.join(proj, 'banner.sh')
+      const body = count(120).map((i) => `# === Step ${i} ===\nfunc_${i}() {\n${FILLER}  echo ${i}\n}\n`).join('')
+      fs.writeFileSync(file, '#!/bin/bash\n' + body, 'utf8')
+      indexProject()
+      const commands = namedCommands(hook('Read', { file_path: file }))
+      expect(commands[0]).toBe('token-goat section "' + shown(file) + '::Step 0"')
+      expect(run(commands[0]!).status).toBe(0)
     })
   })
 })

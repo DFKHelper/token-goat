@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { parseDiffHunks, runChanged } from '../src/read_git.js'
+import { parseDiffHunks, parseHunklessFiles, runChanged } from '../src/read_git.js'
 
 const roots: string[] = []
 
@@ -146,5 +146,74 @@ describe('changed --symbol on a renamed and lightly edited file', () => {
     const out = changedOutput({ ref: 'HEAD', projectRoot: root, symbolMode: true })
     expect(out).toContain('beta')
     expect(out).not.toContain('alpha')
+  })
+})
+
+describe('changed --symbol on a file git reports with no hunks', () => {
+  // CAPTURE: `git diff HEAD -M --unified=0 --src-prefix=a/ --dst-prefix=b/` (git 2.53.0.windows.1) after `git mv a.ts b.ts`, `git update-index --chmod=+x run.sh` and `git add` of a new c.ts printed exactly this.
+  const CAPTURED = [
+    'diff --git a/a.ts b/b.ts',
+    'similarity index 100%',
+    'rename from a.ts',
+    'rename to b.ts',
+    'diff --git a/c.ts b/c.ts',
+    'new file mode 100644',
+    'index 0000000..19f2811',
+    '--- /dev/null',
+    '+++ b/c.ts',
+    '@@ -0,0 +1,3 @@',
+    '+export function z() {',
+    '+  return 9',
+    '+}',
+    'diff --git a/run.sh b/run.sh',
+    'old mode 100644',
+    'new mode 100755',
+    '',
+  ].join('\n')
+
+  it('names the pure rename and the mode-only change, not the added file', () => {
+    expect([...parseHunklessFiles(CAPTURED)].sort()).toEqual(['b.ts', 'run.sh'])
+  })
+
+  it('does not name a rename that also carries an edit', () => {
+    // HAND-DERIVED: a rename with edits has `+++` and a hunk after the rename lines.
+    const diff = ['diff --git a/m.ts b/n.ts', 'similarity index 90%', 'rename from m.ts', 'rename to n.ts', '--- a/m.ts', '+++ b/n.ts', '@@ -5 +5 @@', '-x', '+y', ''].join('\n')
+    expect(parseHunklessFiles(diff).size).toBe(0)
+  })
+
+  it('lists no symbols for a file that was only renamed with git mv', () => {
+    const root = makeRepo()
+    writeFileSync(join(root, 'a.ts'), BEFORE)
+    git(root, 'add', '.')
+    git(root, 'commit', '-m', 'init')
+    git(root, 'mv', 'a.ts', 'b.ts')
+    indexFileSync(normalizePath(join(root, 'b.ts')))
+    const out = changedOutput({ ref: 'HEAD', projectRoot: root, symbolMode: true })
+    expect(out).toContain('No symbols changed.')
+    expect(out).not.toContain('alpha')
+  })
+
+  it('lists no symbols for a file whose only change is its mode', () => {
+    const root = makeRepo()
+    writeFileSync(join(root, 'a.ts'), BEFORE)
+    git(root, 'add', '.')
+    git(root, 'commit', '-m', 'init')
+    git(root, 'update-index', '--chmod=+x', 'a.ts')
+    indexFileSync(normalizePath(join(root, 'a.ts')))
+    const out = changedOutput({ ref: 'HEAD', projectRoot: root, symbolMode: true })
+    expect(out).toContain('No symbols changed.')
+  })
+
+  it('still lists every symbol of a newly added file', () => {
+    const root = makeRepo()
+    writeFileSync(join(root, 'keep.ts'), 'export const k = 1\n')
+    git(root, 'add', '.')
+    git(root, 'commit', '-m', 'init')
+    writeFileSync(join(root, 'c.ts'), BEFORE)
+    git(root, 'add', 'c.ts')
+    indexFileSync(normalizePath(join(root, 'c.ts')))
+    const out = changedOutput({ ref: 'HEAD', projectRoot: root, symbolMode: true })
+    expect(out).toContain('alpha')
+    expect(out).toContain('beta')
   })
 })

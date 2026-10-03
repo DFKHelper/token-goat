@@ -99,14 +99,36 @@ function quotable(raw: string): string | null {
   return stripUnsafeSuggestions(probe) === probe ? name : null
 }
 
-/** The candidate a Grep pattern targets, or null when no identifier in it is a symbol the file holds. A dotted pair both of which the file holds (`Box.open`) names the method as the pair, which `read` resolves; otherwise a candidate whose name is a bare identifier of the pattern, in file order. */
-function pickForPattern(candidates: ReadonlyArray<{ name: string; level: number }>, pattern: string): string | null {
-  const held = new Set<string | null>(candidates.map((c) => quotable(c.name)))
+/** True when the character at `i` of `text` would run on into a name written next to it: a word character, or a hyphen or dollar sign joining it to another word character (`Get-Thing`, `a$b`), where a bare `$` is the regex end anchor. `step` is the direction the name would grow, so a name ending at a boundary is tested forward and one starting there backward. */
+function continuesName(text: string, i: number, step: 1 | -1): boolean {
+  const ch = text[i]
+  if (ch === undefined) return false
+  if (/\w/.test(ch)) return true
+  return (ch === '-' || ch === '$') && /\w/.test(text[i + step] ?? '')
+}
+
+/** True when `name` occurs in `text` as a whole name, not as part of a longer one (`Heading 3` is not in `Heading 30`, `Get-Thing` is not in `Get-Thing3`). */
+function namedIn(text: string, name: string): boolean {
+  for (let at = text.indexOf(name); at !== -1; at = text.indexOf(name, at + 1)) {
+    if (!continuesName(text, at - 1, -1) && !continuesName(text, at + name.length, 1)) return true
+  }
+  return false
+}
+
+/** The candidate a Grep pattern targets, or null when the pattern names none the file holds. A dotted pair both of which the file holds (`Box.open`) names the method as the pair, which `read` resolves; otherwise the longest candidate name that occurs whole in the pattern text, so a hyphenated symbol (`Get-Thing3`) or a multi-word heading (`Heading 3`) is matched as the name the file indexes rather than as the words around it. A heading that occurs twice is skipped, since `section` refuses an ambiguous one. */
+function pickForPattern(candidates: ReadonlyArray<{ name: string; level: number }>, pattern: string, slice: HintSlice): string | null {
+  const section = slice === 'section'
+  const held = Array.from(new Set(candidates.flatMap((c) => quotable(c.name) ?? [])))
   const text = pattern.replace(/\\[A-Za-z]/g, ' ')
-  const pair = Array.from(text.matchAll(/([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)/g)).find((m) => held.has(m[1]!) && held.has(m[2]!))
-  if (pair !== undefined) return pair[1] + '.' + pair[2]
-  const words: string[] = text.match(/[A-Za-z_$][\w$]*/g) ?? []
-  return Array.from(held).find((name) => name !== null && words.includes(name) && !DECLARATION_WORDS.test(name)) ?? null
+  if (!section) {
+    const heldSet = new Set(held)
+    const pair = Array.from(text.matchAll(/([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)/g)).find((m) => heldSet.has(m[1]!) && heldSet.has(m[2]!))
+    if (pair !== undefined) return pair[1] + '.' + pair[2]
+  }
+  const counts = new Map<string, number>()
+  for (const c of candidates) counts.set(c.name.trim(), (counts.get(c.name.trim()) ?? 0) + 1)
+  const named = held.filter((name) => (section || !DECLARATION_WORDS.test(name)) && (!section || counts.get(name) === 1) && namedIn(text, name))
+  return named.sort((a, b) => b.length - a.length)[0] ?? null
 }
 
 /** First usable name in line order. For sections, a heading that occurs twice is skipped (`section` refuses an ambiguous one) and a lone top-level title is passed over for the heading after it, since the title's section is the whole document the deny just refused. */
@@ -211,7 +233,7 @@ export function hintTarget(filePath: string, slice: HintSlice, source: HintTarge
       const onDisk = hostPathOfIndexKey(resolved)
       if (!statSync(onDisk).isFile()) return null
       const indexed = indexedCandidates(resolved, onDisk, slice)
-      const byPattern = (c: Array<{ name: string; level: number }>): string | null => source.pattern === undefined || slice !== 'symbol' ? null : pickForPattern(c, source.pattern)
+      const byPattern = (c: Array<{ name: string; level: number }>): string | null => source.pattern === undefined || (slice !== 'symbol' && slice !== 'section') ? null : pickForPattern(c, source.pattern, slice)
       const fromIndex = indexed === null ? null : byPattern(indexed) ?? pick(indexed, slice)
       if (fromIndex !== null) return fromIndex
       const scanned = scanText(readHead(onDisk), resolved, slice)
