@@ -81,13 +81,17 @@ export function extractMarkdownSymbols(content: string, filePath: string): Symbo
   // Front matter is metadata, not prose: start after it so its closing fence cannot underline a key as a setext heading.
   const fmEnd = frontMatterEndIndex(lines)
   const unfenced = Array.from(eachUnfencedLine(lines)).filter(([i]) => i >= fmEnd)
+  // Every heading, including a nameless one that yields no symbol, ends the section of any heading at its level or deeper.
+  const bounds: Array<{ line: number; level: number; at: number }> = []
 
   for (let u = 0; u < unfenced.length; u++) {
     const [i, line] = unfenced[u]!
     const atx = matchAtxHeading(line, ATX_DOT_BREAK_RE, false)
     if (atx !== null) {
       const name = atx.name
+      let at = -1
       if (name !== '') {
+        at = out.length
         out.push({
           filePath,
           name,
@@ -99,6 +103,7 @@ export function extractMarkdownSymbols(content: string, filePath: string): Symbo
           parent: '',
         })
       }
+      bounds.push({ line: i + 1, level: atx.level, at })
       continue
     }
 
@@ -116,6 +121,7 @@ export function extractMarkdownSymbols(content: string, filePath: string): Symbo
       if (nextIdx === i + 1) {
         const isUnderline = /^\s*(=+|-+)\s*$/.test(nextLine)
         if (isUnderline) {
+          const at = out.length
           out.push({
             filePath,
             name: trimmed,
@@ -126,12 +132,28 @@ export function extractMarkdownSymbols(content: string, filePath: string): Symbo
             docstring: '',
             parent: '',
           })
+          bounds.push({ line: i + 1, level: nextLine.trim().startsWith('=') ? 1 : 2, at })
           u++
         }
       }
     }
   }
 
+  // A heading symbol spans its whole section, like the HTML adapters', so a line in the body resolves to its heading and a changed body marks it changed; trailing blank lines stay out, as in the section reader.
+  for (let k = 0; k < bounds.length; k++) {
+    const cur = bounds[k]!
+    const sym = out[cur.at]
+    if (sym === undefined) continue
+    let end = lines.length
+    for (let j = k + 1; j < bounds.length; j++) {
+      if (bounds[j]!.level <= cur.level) {
+        end = bounds[j]!.line - 1
+        break
+      }
+    }
+    while (end > sym.lineEnd && (lines[end - 1] ?? '').trim() === '') end--
+    out[cur.at] = { ...sym, lineEnd: Math.max(sym.lineEnd, end) }
+  }
   return out
 }
 

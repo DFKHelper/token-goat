@@ -83,13 +83,46 @@ function hunkHeaderRange(m: RegExpExecArray): { start: number; end: number } {
     : { start: newStart, end: newStart + newLines - 1 }
 }
 
+const C_ESCAPES: Readonly<Record<string, number>> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, '\\': 92 }
+
+// Decodes the C-style quoting git puts around a path with a quote, backslash, control character or (under core.quotePath) non-ASCII byte: `\"`, `\\`, `\t`, `\n` and so on, plus `\ooo` octal bytes that together form UTF-8.
+function unquoteGitPath(quoted: string): string {
+  const bytes: number[] = []
+  for (let i = 0; i < quoted.length; i++) {
+    const ch = quoted.charAt(i)
+    if (ch !== '\\') {
+      bytes.push(...Buffer.from(ch, 'utf8'))
+      continue
+    }
+    const next = quoted.charAt(i + 1)
+    const octal = /^[0-7]{3}/.exec(quoted.slice(i + 1, i + 4))
+    if (octal !== null) {
+      bytes.push(parseInt(octal[0], 8))
+      i += 3
+    } else if (C_ESCAPES[next] !== undefined) {
+      bytes.push(C_ESCAPES[next])
+      i += 1
+    } else {
+      bytes.push(92)
+    }
+  }
+  return Buffer.from(bytes).toString('utf8')
+}
+
+// The new-side path of a `+++ ` header line, or null for a header that is not a b/ path. Git appends a trailing TAB after an unquoted path containing a space, and wraps a path with special characters in double quotes.
+function newSidePath(line: string): string | null {
+  const quoted = /^\+\+\+ "b\/(.*)"$/.exec(line)
+  if (quoted !== null) return unquoteGitPath(quoted[1] ?? '')
+  const plain = /^\+\+\+ b\/(.+?)\t?$/.exec(line)
+  return plain === null ? null : (plain[1] ?? null)
+}
+
 export function parseDiffHunks(diffText: string): Map<string, Array<{ start: number; end: number }>> {
   const hunksByFile = new Map<string, Array<{ start: number; end: number }>>()
   let currentFile: string | null = null
   for (const line of diffText.split(/\r?\n/)) {
-    const fileMatch = /^\+\+\+ b\/(.+)$/.exec(line)
-    if (fileMatch) {
-      currentFile = fileMatch[1] ?? null
+    if (line.startsWith('+++ ') && line !== '+++ /dev/null') {
+      currentFile = newSidePath(line)
       continue
     }
     if (line === '+++ /dev/null') {
@@ -149,11 +182,15 @@ function emitUnsafeRef(ref: string): void {
   emitErr(`Refusing a git ref that starts with '-': ${ref}`)
 }
 
-// The diff `changed` replaces is one shell command, so it is priced like every shell saving: by what the harness would have delivered of it, not by its full size.
+// The diff `changed` replaces is one shell command, so it is priced like every shell saving: by what the harness would have delivered of it, not by its full size. `git diff --name-only` lists paths relative to the repository top level whatever the cwd, so every git call that takes those names back as pathspecs must run from the top level too (resolveProjectRoot is that top level inside a repository), and must match them literally.
+function literalPathspec(file: string): string {
+  return `:(literal)${file}`
+}
+
 function changedDiffBaselineBytes(cwd: string, ref: string, files: readonly string[]): number {
   if (files.length === 0) return 0
   try {
-    const result = runGit(['diff', ref, '--unified=0', '--', ...files], { cwd })
+    const result = runGit(['diff', ref, '--unified=0', '--', ...files.map(literalPathspec)], { cwd })
     if (result.exitCode === 0) return deliveredOutputBytes(Buffer.byteLength(result.stdout, 'utf8'))
   } catch {
     // Fall through to the 0 baseline below.
@@ -196,7 +233,12 @@ export function runChanged(opts: ChangedOptions = {}): number {
       }
       return 1
     }
-    changedFiles = result.stdout.trim().split(/\r?\n/).filter(Boolean)
+    // A name with a quote, backslash or control character comes back C-quoted even with core.quotePath off.
+    changedFiles = result.stdout
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((f) => (f.startsWith('"') && f.endsWith('"') && f.length > 1 ? unquoteGitPath(f.slice(1, -1)) : f))
   } catch {
     emitErr(`Could not run git diff against '${ref}'`)
     return 1
@@ -247,7 +289,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
     let hunksByFile = new Map<string, Array<{ start: number; end: number }>>()
     let symbolDiffBaselineBytes = 0
     try {
-      const diffResult = runGit(['diff', ref, '--unified=0', '--', ...changedFiles], { cwd })
+      const diffResult = runGit(['diff', ref, '--unified=0', '--src-prefix=a/', '--dst-prefix=b/', '--', ...changedFiles.map(literalPathspec)], { cwd: projectRoot })
       if (diffResult.exitCode === 0) {
         hunksByFile = parseDiffHunks(diffResult.stdout)
         symbolDiffBaselineBytes = deliveredOutputBytes(Buffer.byteLength(diffResult.stdout, 'utf8'))
@@ -287,7 +329,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
     return 0
   }
 
-  const fullBytes = changedDiffBaselineBytes(cwd, ref, changedFiles)
+  const fullBytes = changedDiffBaselineBytes(projectRoot, ref, changedFiles)
   if (opts.json === true) {
     const capped = guardJsonRows(changedFiles)
     const text = displaySafeJson({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount })
