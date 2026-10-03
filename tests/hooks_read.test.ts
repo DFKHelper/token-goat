@@ -2041,6 +2041,8 @@ Some content that makes the file large enough`
   it('counts a 3rd physical read as reads=2 even when it arrives under different path casing than the first-seen key (regression: the reread-count lookup used a direct getSessionFiles().get(normalized) instead of the case-fold-aware resolution recordFileRead/wasFileReadThisSession use, so a differently-cased 3rd read under-reported as reads=1 and returned "context" instead of "deny")', () => {
     const prevCaseEnv = process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
     process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '1'
+    // At the default protect_recent_reads of 4 a 3rd read at reads=2 is a protected recent re-read under any casing, so the count lookup this pins is only observable with the protection off.
+    pinProtectRecentReadsToZero()
     try {
       // Vary only the basename's casing (keep the directory untouched) -- os.tmpdir() may already be all-lowercase (e.g. Linux CI's "/tmp"), and resolveFilesKey's fold-scan is only exercised when the queried string's own fold differs from itself, so uppercasing just the basename reliably produces a "differently-cased" query on every platform.
       const p = makeTmpFile('x'.repeat(5 * 1024))
@@ -2064,6 +2066,7 @@ Some content that makes the file large enough`
         expect(r3.message).toContain('already read this session (2 reads)')
       }
     } finally {
+      unpinProtectRecentReadsToZero()
       if (prevCaseEnv === undefined) delete process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
       else process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = prevCaseEnv
     }
