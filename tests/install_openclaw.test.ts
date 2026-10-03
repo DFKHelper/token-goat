@@ -132,8 +132,8 @@ describe('installOpenclaw', () => {
   it('throws on an existing openclaw.json with invalid JSON, and leaves both the config and plugin file untouched', () => {
     const p = openclawConfigPath()
     fs.mkdirSync(path.dirname(p), { recursive: true })
-    // Deliberately unparseable: a trailing comma before the closing brace.
-    const corrupt = '{ "gateway": { "port": 4141 }, }'
+    // Deliberately unparseable under JSON5 too (a trailing comma alone is legal there): the closing brace is missing.
+    const corrupt = '{ "gateway": { "port": 4141 }, '
     fs.writeFileSync(p, corrupt)
 
     expect(() => installOpenclaw()).toThrow(OpenclawConfigParseError)
@@ -307,7 +307,7 @@ describe("installOpenclaw entry-path sidecar (PATH-hardening for the plugin's in
   it('does not write the sidecar when openclaw.json exists but fails the strict parse (regression: the sidecar used to be written unconditionally before the strict config parse, so a corrupt config still left a stray token-goat-entry.json on disk even though installOpenclaw() aborted before touching the plugin config)', () => {
     const p = openclawConfigPath()
     fs.mkdirSync(path.dirname(p), { recursive: true })
-    const corrupt = '{ "gateway": { "port": 4141 }, }'
+    const corrupt = '{ "gateway": { "port": 4141 }, '
     fs.writeFileSync(p, corrupt)
 
     expect(() => installOpenclaw()).toThrow(OpenclawConfigParseError)

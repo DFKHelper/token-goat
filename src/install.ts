@@ -428,11 +428,11 @@ function uninstallHooksScoped(scope: HookScope): boolean {
   return finishHookUninstall(p, settings, removed) || removedScript
 }
 
-/** The end of every JSON-settings hook uninstall, whatever it found. When `removed` says token-goat's entries were just stripped from `settings`, the file is written back, dropping a `hooks` map left empty. Either way the timestamped backups token-goat made of the file are deleted: they are its own litter, so they leave with it, including when an earlier uninstall or the user already took the entries out. The Claude Code, Gemini CLI and Qwen Code uninstalls all end here and return what this returns, which is `removed`. */
-export function finishHookUninstall(p: string, settings: { hooks?: Record<string, unknown> }, removed: boolean): boolean {
+/** The end of every JSON-settings hook uninstall, whatever it found. When `removed` says token-goat's entries were just stripped from `settings`, the file is written back, dropping a `hooks` map left empty. Either way the timestamped backups token-goat made of the file are deleted: they are its own litter, so they leave with it, including when an earlier uninstall or the user already took the entries out. The Claude Code, Gemini CLI and Qwen Code uninstalls all end here and return what this returns, which is `removed`. `write` defaults to the plain JSON writer; the Gemini and Qwen uninstalls pass the comment-keeping one. */
+export function finishHookUninstall(p: string, settings: { hooks?: Record<string, unknown> }, removed: boolean, write: (p: string, settings: unknown) => void = writeJsonSettings): boolean {
   if (removed) {
     if (settings.hooks !== undefined && Object.keys(settings.hooks).length === 0) delete settings.hooks
-    writeJsonSettings(p, settings)
+    write(p, settings)
   }
   removeCreatedBackups(p)
   return removed

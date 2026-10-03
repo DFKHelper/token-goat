@@ -5,7 +5,9 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { removeCreatedBackups } from './created_configs.js'
-import { atomicWriteText, ensureDirSync, extractErrorMessage, foldPath, writeJsonSettings } from '../util.js'
+import { atomicWriteText, ensureDirSync, extractErrorMessage, foldPath } from '../util.js'
+import { parseJsonOrJsonc } from '../jsonc_text.js'
+import { writeSettingsKeepingComments } from './commented_settings.js'
 import { OPENCLAW_PLUGIN_SCRIPT } from './openclaw.js'
 
 interface OpenclawPluginEntry {
@@ -66,7 +68,7 @@ function readOpenclawConfig(p: string, opts: { strict?: boolean; command?: 'inst
   }
   let parsed: unknown
   try {
-    parsed = JSON.parse(raw)
+    parsed = parseJsonOrJsonc(raw)
   } catch (e) {
     if (opts.strict === true) throw refuse('exists but contains invalid JSON', extractErrorMessage(e))
     return {}
@@ -140,7 +142,7 @@ export function installOpenclaw(): OpenclawInstallResult {
 
   if (configChanged) {
     settings.plugins = { ...plugins, load: { ...plugins.load, paths: loadPaths }, entries }
-    writeJsonSettings(configPath, settings)
+    writeSettingsKeepingComments(configPath, settings)
   }
 
   return { configPath, pluginPath, alreadyInstalled: false }
@@ -199,7 +201,7 @@ export function uninstallOpenclaw(): boolean {
       } else {
         settings.plugins = plugins
       }
-      writeJsonSettings(configPath, settings)
+      writeSettingsKeepingComments(configPath, settings)
     }
   }
 

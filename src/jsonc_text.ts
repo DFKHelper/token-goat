@@ -46,13 +46,13 @@ function jsoncToJson(text: string): string {
   return out.join('')
 }
 
-/** Parses strict JSON with `JSON.parse`, falling back to JSONC only when the strict parse fails and the text is otherwise well-formed JSONC. The fallback still ends in `JSON.parse`, so a `__proto__` key stays an own property and a duplicate key keeps its last value, exactly as for strict JSON. Text that is not valid JSONC rethrows the strict parser's error, so a broken file reports the same message it always did. */
-export function parseJsonOrJsonc(text: string): unknown {
+/** Parses strict JSON with `JSON.parse`, falling back to JSONC only when the strict parse fails and the text is otherwise well-formed JSONC. The fallback still ends in `JSON.parse`, so a `__proto__` key stays an own property and a duplicate key keeps its last value, exactly as for strict JSON. Text that is not valid JSONC rethrows the strict parser's error, so a broken file reports the same message it always did. Pass `allowTrailingComma: false` for a consumer that strips comments but still parses with strict `JSON.parse` (Gemini CLI, Qwen Code), so a trailing comma is refused just as that consumer refuses it. */
+export function parseJsonOrJsonc(text: string, opts: { allowTrailingComma?: boolean } = {}): unknown {
   try {
     return JSON.parse(text) as unknown
   } catch (strictError) {
     const errors: ParseError[] = []
-    jsonc().parse(text, errors, { allowTrailingComma: true, disallowComments: false, allowEmptyContent: false })
+    jsonc().parse(text, errors, { allowTrailingComma: opts.allowTrailingComma !== false, disallowComments: false, allowEmptyContent: false })
     if (errors.length > 0) throw strictError
     return JSON.parse(jsoncToJson(text)) as unknown
   }

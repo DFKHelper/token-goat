@@ -96,7 +96,8 @@ describe('user-scope install --vscode', () => {
     expect(fs.readFileSync(result.instructionsPath, 'utf8')).toContain('<!-- token-goat-vscode-begin -->')
     expect(fs.existsSync(personalFile())).toBe(false)
     uninstallVscode({ project: true, projectRoot: project })
-    expect(fs.readFileSync(result.instructionsPath, 'utf8')).not.toContain('token-goat-vscode-begin')
+    // The install created the file, so the uninstall removes it rather than leaving an empty one behind.
+    expect(fs.existsSync(result.instructionsPath)).toBe(false)
   })
 })
 

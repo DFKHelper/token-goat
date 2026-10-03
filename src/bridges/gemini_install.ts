@@ -8,7 +8,9 @@ import { GEMINI_TOOL_NAME_MAP } from '../hooks_cli.js'
 import { toolMatcherFor } from '../hook_registry.js'
 import { anchoredMarkerPattern, finishHookUninstall } from '../install.js'
 import type { HookEventName } from '../types.js'
-import { extractErrorMessage, quoteShellPath, stripOwnHooksFromMap, stripStaleGroupHooks, writeJsonSettings } from '../util.js'
+import { extractErrorMessage, quoteShellPath, stripOwnHooksFromMap, stripStaleGroupHooks } from '../util.js'
+import { parseJsonOrJsonc } from '../jsonc_text.js'
+import { writeSettingsKeepingComments } from './commented_settings.js'
 import { groupHasTokenGoat } from './matcher_group.js'
 
 /** Marker substring identifying a legacy (pre exec-path-hardening) bare `token-goat hook <event>` command -- still recognized so an older install remains detectable/removable, but no longer written by {@link geminiHookCommand}. */
@@ -83,7 +85,7 @@ function readGeminiSettings(p: string, opts: { strict?: boolean; command?: 'inst
   }
   let parsed: unknown
   try {
-    parsed = JSON.parse(raw)
+    parsed = parseJsonOrJsonc(raw, { allowTrailingComma: false })
   } catch (e) {
     if (opts.strict === true) throw refuse('exists but contains invalid JSON', extractErrorMessage(e))
     return {}
@@ -194,7 +196,7 @@ export function installGemini(): GeminiInstallResult {
   }
 
   settings.hooks = hooks
-  writeJsonSettings(p, settings)
+  writeSettingsKeepingComments(p, settings, { allowTrailingComma: false })
   return { settingsPath: p, alreadyInstalled: false }
 }
 
@@ -204,7 +206,7 @@ export function uninstallGemini(): boolean {
   // Strict, as install reads it: a file that is there but cannot be read or parsed may still hold token-goat's hooks, so uninstall stops with it and its backups as they were.
   const settings = readGeminiSettings(p, { strict: true, command: 'uninstall' })
   const removed = settings.hooks !== undefined && stripOwnHooksFromMap(settings.hooks, isGeminiTokenGoatCommand)
-  return finishHookUninstall(p, settings, removed)
+  return finishHookUninstall(p, settings, removed, (file, next) => writeSettingsKeepingComments(file, next, { allowTrailingComma: false }))
 }
 
 /** Is the Gemini CLI integration currently present? True only when every (event, matcher) pair {@link desiredMatchersFor} expects carries a token-goat hook entry. A partial install (e.g. one matcher group deleted by hand) reads as not installed, so {@link installGemini} will top up what's missing. */

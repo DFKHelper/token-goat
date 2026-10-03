@@ -159,6 +159,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/bridges/claudecode.ts`](src/bridges/claudecode.ts) | Claude Code hook script template and install config |
 | [`src/bridges/codex_install.ts`](src/bridges/codex_install.ts) | Codex CLI install / uninstall writer. |
 | [`src/bridges/codex.ts`](src/bridges/codex.ts) | Codex hook script template; `hookSpecificOutput: true` (Codex schemas use `additionalProperties: false`) |
+| [`src/bridges/commented_settings.ts`](src/bridges/commented_settings.ts) | Comment-keeping writes for the JSON settings files whose real consumer accepts comments (Gemini CLI, Qwen Code, OpenClaw): a plain `JSON.stringify` rewrite would drop every comment |
 | [`src/bridges/copilot_cli_install.ts`](src/bridges/copilot_cli_install.ts) | Copilot CLI install/uninstall wiring. |
 | [`src/bridges/copilot_cli.ts`](src/bridges/copilot_cli.ts) | Copilot CLI hook shim. |
 | [`src/bridges/copilot_hooks_owners.ts`](src/bridges/copilot_hooks_owners.ts) | The owner record for a Copilot hooks directory, split out of copilot_cli_install.ts so the hook path (vscode_duplicate.ts) can read it without loading the installer and everything |

@@ -69,7 +69,7 @@ export function serversOf(config: ServersJsonConfig, filePath: string, label: st
 const FORMAT = { insertSpaces: true, tabSize: 2, eol: '\n' } as const
 
 /** Applies one jsonc edit unformatted, then formats only the text that edit inserted: formatting through `modify` re-indents the neighboring property too, so an install-then-uninstall would not give the user's bytes back. */
-function editAt(text: string, jsonPath: string[], value: unknown): string {
+export function editAt(text: string, jsonPath: string[], value: unknown): string {
   let out = text
   for (const e of [...jsonc().modify(text, jsonPath, value, {})].sort((a, b) => b.offset - a.offset)) {
     out = out.slice(0, e.offset) + e.content + out.slice(e.offset + e.length)

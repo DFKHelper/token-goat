@@ -8,7 +8,7 @@ import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 import { copilotHooksFilePaths, installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
 import { assertProjectScopeTarget, projectPathIsConsultable, projectScopeRoot, withInstallScope } from './project_scope_guard.js'
-import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
+import { recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, takeCreatedConfig } from './created_configs.js'
 import { dropEmptyServers, hasManagedServer, isManagedServer, isResidueServersJson, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
 import { jsonc } from '../jsonc_text.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
@@ -229,7 +229,15 @@ function installVscodeScoped(opts: VscodeScopeOptions): VscodeInstallResult {
     atomicWriteText(mcpPath, next)
     if (!mcpExisted) recordCreatedConfig(mcpPath)
   }
+  // Remembered before the write, like the mcp.json above: the project file and its `.github` directory are only token-goat's to remove if this install made them. User scope is left out: its frontmatter-only file is recognised by content on uninstall and its directory is shared.
+  const guidanceDir = path.dirname(instructionsPath)
+  const guidanceDirExisted = fs.existsSync(guidanceDir)
+  const guidanceExisted = fs.existsSync(instructionsPath)
   const guidanceChanged = writeGuidance(instructionsPath, scope === 'user')
+  if (scope === 'project') {
+    if (!guidanceDirExisted && fs.existsSync(guidanceDir)) recordCreatedConfig(guidanceDir)
+    if (!guidanceExisted && fs.existsSync(instructionsPath)) recordCreatedConfig(instructionsPath)
+  }
   if (scope === 'project') syncVisualStudioProjectGuidance(instructionsPath)
   const hooks = installCopilotHooksFile(vscodeHooksDir(opts), 'vscode')
   return {
@@ -283,6 +291,11 @@ function uninstallVscodeScoped(opts: VscodeScopeOptions): boolean {
   if (opts.project === true) syncVisualStudioProjectGuidance(instructionsPath)
   // Leaves the hooks file in place while `install --copilot` still relies on it.
   if (releaseCopilotHooksFile(vscodeHooksDir(opts), 'vscode', opts.keepBackups === true)) removed = true
+  // Last, so the hooks file above is already gone from the directory: a file or directory this install created leaves with it once nothing else is in it.
+  if (opts.project === true) {
+    removeCreatedIfEmpty(instructionsPath)
+    removeCreatedIfEmpty(path.dirname(instructionsPath))
+  }
   return removed
 }
 

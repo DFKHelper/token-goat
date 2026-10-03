@@ -84,7 +84,9 @@ type Breakage = [string, (p: string) => void]
 const TOML_SYNTAX: Breakage = ['invalid TOML', (p) => fs.appendFileSync(p, '\n[profiles.fast\n')]
 // HAND-DERIVED: a trailing comma before the closing brace, the typo a hand edit of a JSON file most often leaves.
 const JSON_SYNTAX: Breakage = ['invalid JSON', (p) => fs.writeFileSync(p, `${fs.readFileSync(p, 'utf8').trimEnd().replace(/\}$/, ',}')}\n`)]
-const JSON_NOT_OBJECT: Breakage = ['JSON whose top level is not an object', (p) => fs.writeFileSync(p, `[${fs.readFileSync(p, 'utf8')}]\n`)]
+// HAND-DERIVED: a doubled comma before the closing brace; OpenClaw reads its config as JSON5 (https://docs.openclaw.ai/gateway/configuration), where a single trailing comma is valid, so its syntax breakage needs one JSON5 refuses too.
+const JSON5_SYNTAX: Breakage = ['invalid JSON5', (p) => fs.writeFileSync(p, `${fs.readFileSync(p, 'utf8').trimEnd().replace(/\}$/, ',,}')}\n`)]
+const JSON_NOT_OBJECT: Breakage =['JSON whose top level is not an object', (p) => fs.writeFileSync(p, `[${fs.readFileSync(p, 'utf8')}]\n`)]
 // A directory stands in for a file the process may not read, a permission or another process's lock: reading a directory fails with EISDIR on every platform, while a permission bit does not stop a read on Windows.
 const DIRECTORY: Breakage = ['a directory where the file should be', (p) => {
   fs.rmSync(p)
@@ -148,7 +150,7 @@ const BRIDGES: Bridge[] = [
     uninstall: uninstallOpenclaw,
     error: OpenclawConfigParseError,
     artifacts: () => [openclawPluginPath(), openclawEntrySidecarPath()],
-    breakages: [JSON_SYNTAX, JSON_NOT_OBJECT, DIRECTORY, OPENCLAW_PATHS_STRING],
+    breakages: [JSON5_SYNTAX, JSON_NOT_OBJECT, DIRECTORY, OPENCLAW_PATHS_STRING],
   },
   {
     name: 'JetBrains',
