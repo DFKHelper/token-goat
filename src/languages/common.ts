@@ -1837,7 +1837,7 @@ export interface BraceSpanOpts {
   /** Blank this language's multi-line-capable string literals before walking braces, via {@link maskMultilineStrings}. The per-literal {@link BraceScanOpts} flags cover the forms whose delimiters are fixed; this covers the ones whose closer is decided by the opener, which a character-at-a-time walk cannot recognise: a PHP heredoc (`<<<EOT`) and a Swift raw string (`#"..."#`). A `}` inside either is text, and without this it decrements the brace depth and ends the enclosing function at that line. The extractors for those languages already mask with the same function to find declarations, so this makes the span walk read the same text they did. */
   multilineLang?: MultilineStringLang
   /** Span a C# expression-bodied member (`=> expr;`) through its terminating `;` at bracket depth 0, however many lines the expression takes, instead of leaving it on its first line. */
-  expressionBodies?: boolean
+  expressionBodies?: boolean | 'kotlin'
 }
 
 /** Opt-in extras for {@link findMatchingBraceEndLine}. Each defaults to the pre-existing behaviour,
@@ -2113,7 +2113,12 @@ export function assignBraceBlockSpans(
       const arrowLast = Math.min(nextStart !== undefined ? nextStart - 1 : totalLines, sym.lineStart + BRACE_SEARCH_MAX_LINES)
       const arrowEnd = findArrowBodyEndLine(scanContent, lineIndex, sym.lineStart, arrowLast)
       if (arrowEnd !== null) {
-        return arrowEnd <= sym.lineStart ? sym : { ...sym, lineEnd: arrowEnd, body: lines.slice(sym.lineStart - 1, arrowEnd).join('\n') }
+        return arrowEnd <= sym.lineStart ? withWholeLineBody(sym, lines) : { ...sym, lineEnd: arrowEnd, body: lines.slice(sym.lineStart - 1, arrowEnd).join('\n') }
+      }
+    } else if (opts.expressionBodies === 'kotlin') {
+      const eqEnd = findKotlinEqualsBodyEndLine(scanContent, lineIndex, sym.lineStart, nextStart !== undefined ? nextStart - 1 : totalLines)
+      if (eqEnd !== null) {
+        return eqEnd <= sym.lineStart ? withWholeLineBody(sym, lines) : { ...sym, lineEnd: eqEnd, body: lines.slice(sym.lineStart - 1, eqEnd).join('\n') }
       }
     }
     // Cap the window so the last symbol in a file cannot reach an unrelated brace far below it.
@@ -2123,10 +2128,18 @@ export function assignBraceBlockSpans(
     // noMatchValue -1: an unbalanced/unclosed brace must not stretch the symbol to end-of-file.
     const endLine = findMatchingBraceEndLine(scanContent, openIndex, totalLines, lineIndex, lineCommentPrefix,
       scanOpts)
-    // An inline `{}` closing on the signature line, or -1 for no match, leaves the symbol as it was.
-    if (endLine <= sym.lineStart) return sym
+    // A block closing on the signature line keeps that whole line; -1 (no match) leaves the symbol as it was.
+    if (endLine === sym.lineStart) return withWholeLineBody(sym, lines)
+    if (endLine < sym.lineStart) return sym
     return { ...sym, lineEnd: endLine, body: lines.slice(sym.lineStart - 1, endLine).join('\n') }
   })
+}
+
+/** The symbol with its whole source line as the body when its stored text stops short of the block it opened. The regex adapters cut the signature at the first `{` (the PHP one at the first `)`), which is right while the block spans later lines and replaces it, but drops `return a + b;` from `int Add(int a, int b) { return a + b; }`. A body that already holds a brace is whole-line text (Swift, Scala) and is left alone. */
+function withWholeLineBody(sym: SymbolEntry, lines: readonly string[]): SymbolEntry {
+  const line = lines[sym.lineStart - 1]
+  if (line === undefined || sym.body.includes('{') || !line.includes('{')) return sym
+  return { ...sym, body: line.trimEnd() }
 }
 
 /**
@@ -2232,6 +2245,118 @@ function findArrowBodyEndLine(content: string, lineIndex: readonly number[], sta
     }
   }
   return null
+}
+
+/** Index just past the `${ ... }` hole that opens at `i` inside a Kotlin string template, skipping any literal nested in it. */
+function skipKotlinTemplateHole(content: string, i: number, to: number): number {
+  let depth = 0
+  for (let k = i; k < to; k++) {
+    const lit = skipKotlinLiteral(content, k, to)
+    if (lit !== null) { k = lit - 1; continue }
+    const ch = content[k]
+    if (ch === '{') depth++
+    else if (ch === '}' && --depth === 0) return k + 1
+  }
+  return to
+}
+
+/** Index just past the Kotlin string or char literal that starts at `i`, or null when `i` does not start one. Template holes are walked as code, so a quote inside one does not end the string early. */
+function skipKotlinLiteral(content: string, i: number, to: number): number | null {
+  const first = content[i]
+  if (first === "'") {
+    for (let k = i + 1; k < to && content[k] !== '\n'; k++) {
+      if (content[k] === '\\') { k++; continue }
+      if (content[k] === "'") return k + 1
+    }
+    return null
+  }
+  if (first !== '"') return null
+  const triple = content.startsWith('"""', i)
+  for (let k = i + (triple ? 3 : 1); k < to; k++) {
+    const ch = content[k]
+    if (triple) {
+      if (ch === '"' && content.startsWith('"""', k)) {
+        k += 3
+        while (content[k] === '"') k++
+        return k
+      }
+    } else if (ch === '\\') { k++; continue }
+    else if (ch === '"') return k + 1
+    else if (ch === '\n') return k
+    if (ch === '$' && content[k + 1] === '{') k = skipKotlinTemplateHole(content, k + 1, to) - 1
+  }
+  return to
+}
+
+/** Whether a Kotlin expression body whose line ends at `lastSig` carries on to the next line: it ends in an operator, `else`, or the `)` of an `if (...)` header, or the next code line opens with a token that can only continue an expression (`.foo`, `?.`, `?:`, `&&`, `||`, `else`, `as`, `catch`, `finally`). A leading `+` or `-` does not count, since Kotlin starts a new statement there. */
+function kotlinBodyContinues(content: string, lastSig: number, ifParenClosedAt: number, nextLineFrom: number): boolean {
+  const c = content[lastSig]
+  const prev = content[lastSig - 1]
+  if (lastSig === ifParenClosedAt) return true
+  if (c !== undefined && '=*/%&|,.:'.includes(c)) return true
+  if ((c === '+' || c === '-') && prev !== c) return true
+  if (c === '>' && prev === '-') return true
+  if (/(?:^|[^A-Za-z0-9_])else$/.test(content.slice(Math.max(0, lastSig - 4), lastSig + 1))) return true
+  const rest = content.slice(nextLineFrom)
+  const next = /^(?:[ \t\r]*(?:\/\/[^\n]*)?\n)*[ \t]*(\.|\?\.|\?:|&&|\|\||else\b|as\b|catch\b|finally\b)/.exec(rest)
+  return next !== null
+}
+
+/** Last line of a Kotlin expression-bodied declaration (`fun f(x: Int) = expr`) that starts on `startLine`, or null when there is none: a `{` before the `=` is a block body, and a line that ends with no `=` and no open bracket is a bodiless declaration, for the brace walk or nothing to own. The `=` must sit at bracket depth 0, so a default argument (`fun f(x: Int = 0)`) is not one. Kotlin has no terminator, so the body ends at the first line break at depth 0 that the expression cannot cross: see {@link kotlinBodyContinues}. */
+function findKotlinEqualsBodyEndLine(content: string, lineIndex: readonly number[], startLine: number, lastLine: number): number | null {
+  const from = lineIndex[startLine - 1]
+  if (from === undefined) return null
+  const to = lineIndex[lastLine] ?? content.length
+  let depth = 0
+  let seenEq = false
+  let line = startLine
+  let lastSig = -1
+  let ifParenClosedAt = -1
+  const ifParens: boolean[] = []
+  for (let i = from; i < to; i++) {
+    const ch = content[i]
+    if (ch === undefined) break
+    if (ch === '\n') {
+      if (depth === 0) {
+        if (!seenEq) return null
+        if (!kotlinBodyContinues(content, lastSig, ifParenClosedAt, i + 1)) return line
+      }
+      line++
+      continue
+    }
+    if (ch === ' ' || ch === '\t' || ch === '\r') continue
+    if (ch === '/' && content[i + 1] === '/') {
+      while (i + 1 < to && content[i + 1] !== '\n') i++
+      continue
+    }
+    if (ch === '/' && content[i + 1] === '*') {
+      const end = content.indexOf('*/', i + 2)
+      if (end === -1) return null
+      for (let k = i; k < end; k++) if (content[k] === '\n') line++
+      i = end + 1
+      continue
+    }
+    const lit = skipKotlinLiteral(content, i, to)
+    if (lit !== null) {
+      for (let k = i; k < lit; k++) if (content[k] === '\n') line++
+      lastSig = lit - 1
+      i = lit - 1
+      continue
+    }
+    lastSig = i
+    if (ch === '(' || ch === '[' || ch === '{') {
+      if (ch === '{' && !seenEq && depth === 0) return null
+      ifParens.push(ch === '(' && /\bif\s*$/.test(content.slice(Math.max(from, i - 8), i)))
+      depth++
+    } else if (ch === ')' || ch === ']' || ch === '}') {
+      if (depth === 0) return null
+      depth--
+      if (ifParens.pop() === true) ifParenClosedAt = i
+    } else if (ch === '=' && !seenEq && depth === 0 && !'=!<>'.includes(content[i - 1] ?? ' ') && content[i + 1] !== '=') {
+      seenEq = true
+    }
+  }
+  return seenEq && depth === 0 ? line : null
 }
 
 /**

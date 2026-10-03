@@ -147,6 +147,17 @@ const CONSTRUCTOR_RE = new RegExp(
   `${MEMBER_INDENT}(?:(?:public|protected|private|internal|static)\\s+)*` +
   `(${IDENT})\\s*\\(`,
 )
+// A finalizer (`~Calc()`), named with its tilde the way the C++ adapter names a destructor.
+const FINALIZER_RE = new RegExp(`${MEMBER_INDENT}(?:(?:extern|unsafe)\\s+)*~\\s*(${IDENT})\\s*\\(`)
+// An operator overload (`public static Calc operator +(Calc a, Calc b)`) or a user conversion (`public static implicit operator int(Calc c)`). Groups: 1 the conversion's target type, 2 `checked` when written, 3 the operator token. Its own pattern because METHOD_RE needs an identifier before the `(`, and read as a method the conversion form is a phantom method named for its target type. `operator` is a reserved word that only an operator declaration puts before a `(`, so the pattern anchors on the keyword and DECLARATION_PREFIX_RE vets what precedes it, rather than spelling out modifiers and return type in one backtracking-prone pattern.
+const OPERATOR_RE = /\b(?:implicit|explicit)\s+operator\s([^(]+)\(|\boperator(\s+checked)?\s*([-+!~*/%&|^<>=]+|true|false)\s*\(/
+// An indexer (`public int this[int i]`, or `IList.this[int i]` for an explicit interface one), named `this[]`: a property-like member whose parameter list is part of its header.
+const INDEXER_RE = /\bthis\s*\[/
+// What may precede `operator` or `this[` on a declaration line: modifiers, a (generic, tuple, array or nullable) type and an interface qualifier. An `=`, quote or comment marker means an initializer, string or comment, never a header.
+const DECLARATION_PREFIX_RE = /^[\w@.<>,?[\]()\s]*$/
+function isDeclarationPrefix(prefix: string): boolean {
+  return DECLARATION_PREFIX_RE.test(prefix) && /\w/.test(prefix)
+}
 const CLASS_HEADER_RE = new RegExp(
   '^(?:(?:public|protected|private|internal|abstract|sealed|static|partial|readonly|ref|unsafe|file|new)\\s+)*' +
   `(class|struct|interface|enum|record)(?:\\s+(?:class|struct))?\\s+(${IDENT})`,
@@ -389,6 +400,7 @@ export function extractCsharp(
     }
 
     let ctorM: RegExpExecArray | null = null
+    let finM: RegExpExecArray | null = null
     let methM: RegExpExecArray | null = null
     let propM: RegExpExecArray | null = null
     let headerM: RegExpExecArray | null = null
@@ -455,6 +467,27 @@ export function extractCsharp(
             }
           }
         }
+        // finalizer, operator overload and indexer: members with no identifier before their parameter list (or, for the indexer, no parameter parentheses), so METHOD_RE and the property patterns above cannot see them.
+        let specialName: string | null = null
+        let specialKind = 'method'
+        finM = FINALIZER_RE.exec(lineNoAttr)
+        if (finM && stripVerbatim(finM[1] ?? '') === frame.name) specialName = `~${frame.name}`
+        else finM = null
+        const opM = specialName === null && !isPropertyLine ? OPERATOR_RE.exec(lineNoAttr) : null
+        if (opM && isDeclarationPrefix(lineNoAttr.slice(0, opM.index))) specialName = opM[1] !== undefined ? `operator ${opM[1].replace(/\s+/g, ' ').trim()}` : `operator${opM[2] !== undefined ? ' checked ' : ''}${opM[3] ?? ''}`
+        const ixM = specialName === null && !isPropertyLine ? INDEXER_RE.exec(lineNoAttr) : null
+        if (ixM && isDeclarationPrefix(lineNoAttr.slice(0, ixM.index))) {
+          specialName = 'this[]'
+          specialKind = 'var'
+        }
+        if (specialName !== null) {
+          isPropertyLine = true
+          const sigEnd = line.indexOf('{')
+          const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trimEnd() : line.trimEnd()
+          symbols.push(makeLineSymbol(filePath, specialName, specialKind, lineNum, sig.slice(0, 200), frame.name, lines, 'c'))
+          currentMember = specialName
+          memberBodyEntered = line.includes('{')
+        }
         // method - skipped when the property detection above already matched this line, so a
         // property/auto-property declaration is never double-processed as a phantom method too.
         methM = isPropertyLine ? null : METHOD_RE.exec(lineNoAttr)
@@ -503,6 +536,7 @@ export function extractCsharp(
         const name = stripVerbatim(headerM[1] ?? '')
         declSpans.push({ name, col: line.indexOf(name) })
       }
+      if (finM) declSpans.push({ name: stripVerbatim(finM[1] ?? ''), col: line.indexOf('~') + 1 })
       if (arrowM) {
         const name = stripVerbatim(arrowM[1] ?? '')
         declSpans.push({ name, col: line.indexOf(name) })

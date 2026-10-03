@@ -107,6 +107,10 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **C#, Kotlin, PHP and PowerShell methods written on one line were stored cut at the first brace.** `public int Get() { return x; }` came back from `read` as `public int Get()`. The whole line is now the method's body.
+- **Kotlin functions written as `fun f() = ...` across several lines were stored as their first line only.** The body now runs to the end of the expression, following trailing operators, commas, chained calls and `if`/`else` branches.
+- **C# operator overloads, conversions, finalizers and indexers were missing from the index or filed under the wrong name.** They are now indexed as `operator+`, `operator int`, `~Calc` and `this[]`, the same names C++ uses, so `read "Calc.cs::Calc.operator+"` finds them.
+- **A Rust `impl<T> Wrapper<T>` block was named `Wrapper<T>`, so `read "lib.rs::Wrapper.new"` found nothing.** Impl blocks are now named after the bare type: `impl<T> Wrapper<T>`, `impl foo::Bar` and `impl Trait for &Foo` resolve as `Wrapper`, `Bar` and `Foo`.
 - **Compressed `git diff` output dropped hunks that changed indentation or spaces inside a string, calling them whitespace-only.** A Python block moved one level in, or `"a b"` turned into `"a  b"`, changes what the code does, yet the hunk was folded away. Only trailing spaces, line endings and spacing around operators outside quotes now count as whitespace-only.
 - **`pdf-extract` and `docx-text` rejected the `--lines` and `--full` flags that their own output told you to use.** The note at the end of a long extract named both flags, and running either one failed with an unknown-option error. Both commands accept them now, and a test checks every command that prints that note against the flags it names.
 - **`xml-query //a//b` returned the same element more than once when `b` sat under nested `a` elements, and `//a/@id` read only the top match.** Later `//` steps now search descendants, results come back once each in file order, and an attribute step after `//` reads every matching element.

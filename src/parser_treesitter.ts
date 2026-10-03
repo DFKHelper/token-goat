@@ -745,6 +745,14 @@ function leadingRustAttributes(node: TsNode): TsNode[] {
   return attrs
 }
 
+// The name an `impl` block goes by: its type with type arguments, path and reference dropped (`Wrapper<T>`, `foo::Bar`, `&Foo` -> `Wrapper`, `Bar`, `Foo`), so `Wrapper.get` finds a method of `impl<T> Wrapper<T>`. Any other type (`[u8; 3]`, `dyn Foo`) keeps its text.
+function rustImplTypeName(type: TsNode | null): string | null {
+  if (type === null) return null
+  const inner = type.type === 'generic_type' || type.type === 'reference_type' ? type.childForFieldName('type') : null
+  if (inner !== null) return rustImplTypeName(inner)
+  return type.type === 'scoped_type_identifier' ? (type.childForFieldName('name')?.text ?? type.text) : type.text
+}
+
 export function extractRustSymbols(root: TsNode, filePath: string, lines: readonly string[]): SymbolEntry[] {
   const out: SymbolEntry[] = []
 
@@ -754,7 +762,7 @@ export function extractRustSymbols(root: TsNode, filePath: string, lines: readon
       // An `impl` block has no `name` field; the implemented type lives in a `type` field (e.g. `impl Widget` or `impl Trait for Widget`), so resolve it there. A `foreign_mod_item` (`extern "C" { ... }`) has no name field either -- there is no type/trait to name it after, so its own `extern_modifier` child's text ("extern \"C\"") stands in as the symbol name, giving the ABI string a place to be visible. All other Rust items expose their name on the `name` field.
       const name =
         node.type === 'impl_item'
-          ? (node.childForFieldName('type')?.text ?? null)
+          ? rustImplTypeName(node.childForFieldName('type'))
           : node.type === 'foreign_mod_item'
             ? (node.namedChildren.find((c) => c.type === 'extern_modifier')?.text ?? 'extern')
             : nodeName(node)
