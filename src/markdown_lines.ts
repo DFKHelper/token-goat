@@ -1,19 +1,15 @@
-/**
- * Iterate markdown lines, skipping fenced-code-block content (``` or ~~~ blocks)
- * and the fence delimiter lines themselves, so a `#` comment inside a code fence
- * is never mistaken for a heading. A fence closes only on its own marker char, so
- * a ``` block is not closed by a ~~~ line.
- *
- * Yields [lineIndex, lineText] for each content line.
- *
- * Single source of fence handling shared by the markdown symbol extractor and
- * the section header scanner.
- */
+/** Iterate markdown lines, skipping fenced-code-block content (``` or ~~~ blocks) and the fence delimiter lines themselves, so a `#` comment inside a code fence is never mistaken for a heading. A fence closes only on its own marker char, so a ``` block is not closed by a ~~~ line. Lines of an HTML comment block (`<!--` through the line holding `-->`) are skipped the same way, so a commented-out `## Old heading` is not a heading either. Yields [lineIndex, lineText] for each content line. Single source of fence handling shared by the markdown symbol extractor and the section header scanner. */
 export function* eachUnfencedLine(lines: readonly string[]): Generator<[number, string]> {
   let fence: { ch: string; len: number } | null = null
+  let inComment = false
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
+    // CommonMark 4.6 HTML block type 2: the block runs through the line holding `-->`, and nothing inside it (a heading-looking line, a fence marker) is markdown.
+    if (inComment) {
+      if (line.includes('-->')) inComment = false
+      continue
+    }
     // `[^\n]*`, not `.*`: a JS regex `.` excludes every line terminator, and `\r` is one of them, so on a CRLF document (the norm for a Windows checkout) a `.*` tail could not reach the un-anchored `$` and the fence line matched nothing at all. Every fence was then invisible, a `#` comment inside a fenced block was scanned as a real heading, and `section` truncated the enclosing section at it.
     const fm = /^\s*(`{3,}|~{3,})([^\n]*)$/.exec(line)
     if (fm !== null && fm[1] !== undefined) {
@@ -30,6 +26,11 @@ export function* eachUnfencedLine(lines: readonly string[]): Generator<[number, 
       continue
     }
     if (fence !== null) continue
+    // A line beginning `<!--` (up to 3 spaces of indent) opens the block, and the opening line is tested for `-->` too, so a one-line comment ends where it began. The whole line is skipped, trailing text included.
+    if (/^ {0,3}<!--/.test(line)) {
+      inComment = !line.includes('-->')
+      continue
+    }
     yield [i, line]
   }
 }
