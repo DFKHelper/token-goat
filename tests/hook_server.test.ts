@@ -142,6 +142,8 @@ function runNodeAsync(sb: Sandbox, argv: string[], opts: NodeOpts): Promise<Run>
     child.stderr.on('data', (d: Buffer) => (stderr += d.toString('utf8')))
     child.on('error', reject)
     child.on('close', (status) => resolve({ status, stdout, stderr, ms: performance.now() - start }))
+    // A server that stopped reading stdin early would fail this write with EPIPE; that is not what these cases test.
+    child.stdin.on('error', () => undefined)
     child.stdin.end(opts.input ?? '')
   })
 }

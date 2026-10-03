@@ -2176,6 +2176,8 @@ export const cases: Record<string, () => void | Promise<void>> = {
           clearTimeout(timer)
           reject(err)
         })
+        // A server that exited before reading stdin would fail these writes with EPIPE; the timer and the tool list already report that.
+        child.stdin.on('error', () => undefined)
         child.stdin.write(
           `${JSON.stringify({
             jsonrpc: '2.0',

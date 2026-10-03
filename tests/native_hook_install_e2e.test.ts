@@ -194,6 +194,8 @@ function launch(l: Launch, c: HookPayloadCase, sb: Sandbox, sid: string, env: En
     child.stderr.on('data', (d: Buffer) => (stderr += d.toString('utf8')))
     child.on('error', reject)
     child.on('close', (exit) => resolve({ stdout: Buffer.concat(out).toString('utf8'), stderr, exit }))
+    // A client that stopped reading stdin early would fail this write with EPIPE; that is not what these cases test.
+    child.stdin.on('error', () => undefined)
     child.stdin.end(substitute(c.raw ?? JSON.stringify(c.payload), sb, sid))
   })
 }

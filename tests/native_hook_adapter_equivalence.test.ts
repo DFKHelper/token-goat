@@ -215,6 +215,8 @@ function runShim(c: HookPayloadCase, sid: string): Promise<{ stdout: string; exi
     child.stderr.on('data', (d: Buffer) => (stderr += d.toString('utf8')))
     child.on('error', reject)
     child.on('close', (exit) => resolve({ stdout: Buffer.concat(out).toString('utf8'), exit, stderr }))
+    // A client that stopped reading stdin early would fail this write with EPIPE; that is not what these cases test.
+    child.stdin.on('error', () => undefined)
     child.stdin.end(caseInput(c, sid))
   })
 }
@@ -248,6 +250,8 @@ function runNative(c: HookPayloadCase, sid: string, args: readonly string[]): Pr
     child.stderr.on('data', (d: Buffer) => (stderr += d.toString('utf8')))
     child.on('error', reject)
     child.on('close', (exit) => resolve({ stdout: Buffer.concat(out).toString('utf8'), exit, stderr }))
+    // A client that stopped reading stdin early would fail this write with EPIPE; that is not what these cases test.
+    child.stdin.on('error', () => undefined)
     child.stdin.end(caseInput(c, sid))
   })
 }
