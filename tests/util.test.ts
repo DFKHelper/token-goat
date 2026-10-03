@@ -69,6 +69,7 @@ import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
 import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, isCodeFenceDelimiter, isWithinQuietHours, normalizePathForwardSlash, quoteShellPath, requireNonNegativeStrictInt, requirePositiveStrictInt, requireStrictInt, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock, windowsCmdQuoteArg, withFileLock } from '../src/util.js'
+import { commandHookFields, type HookEntryLike, isOwnHookEntry } from '../src/util_config.js'
 import { levenshteinDistance } from '../src/util_suggest.js'
 import { ROOT } from './helpers/bundle.js'
 import { tsxProcessArgs } from './helpers/tsx_process.js'
@@ -1160,6 +1161,47 @@ describe('stripStaleGroupHooks', () => {
     const scalarGroups = 'ab' as unknown as Array<{ matcher?: string; hooks?: Array<{ command: string }> }>
     const next = stripStaleGroupHooks(scalarGroups, (c) => c.includes('token-goat'))
     expect(next).toEqual([])
+  })
+})
+
+// FORMAT-DERIVED: Claude Code's `prompt`, `http` and `mcp_tool` handler shapes, from https://code.claude.com/docs/en/hooks.md; none carries a `command`.
+const COMMANDLESS: readonly HookEntryLike[] = [
+  { type: 'prompt', prompt: 'Evaluate whether this command is safe to run: $ARGUMENTS' },
+  { type: 'http', url: 'http://localhost:8080/hooks/pre-tool-use', timeout: 30 },
+  { type: 'mcp_tool', server: 'my_server', tool: 'security_scan' },
+] as ReadonlyArray<Record<string, unknown>>
+
+describe('commandHookFields / isOwnHookEntry', () => {
+  it('returns the command and a string argv, and drops an argv that is not all strings', () => {
+    expect(commandHookFields({ command: 'node', args: ['shim.cjs', 'pre_tool_use'] })).toEqual({ command: 'node', args: ['shim.cjs', 'pre_tool_use'] })
+    expect(commandHookFields({ command: 'token-goat hook stop' })).toEqual({ command: 'token-goat hook stop', args: undefined })
+    expect(commandHookFields({ command: 'node', args: ['shim.cjs', 7] })).toEqual({ command: 'node', args: undefined })
+    expect(commandHookFields({ command: 'node', args: 'shim.cjs' })).toEqual({ command: 'node', args: undefined })
+  })
+
+  it('returns undefined for an entry that runs no command, a non-string command, null and undefined', () => {
+    for (const h of [...COMMANDLESS, { command: 42 }, { command: ['node'] }, null, undefined]) expect(commandHookFields(h)).toBeUndefined()
+  })
+
+  it('never calls the predicate for an entry with no command', () => {
+    const seen: string[] = []
+    const isOurs = (c: string): boolean => {
+      seen.push(c)
+      return true
+    }
+    for (const h of [...COMMANDLESS, null]) expect(isOwnHookEntry(h, isOurs)).toBe(false)
+    expect(seen).toEqual([])
+    expect(isOwnHookEntry({ command: 'token-goat hook stop' }, isOurs)).toBe(true)
+  })
+
+  it('stripOwnHooksFromMap and stripStaleGroupHooks keep commandless and null entries and strip only ours', () => {
+    const ours = { type: 'command', command: 'token-goat hook pre_tool_use' }
+    const hooks: Record<string, Array<{ hooks?: unknown[] }> | undefined> = { PreToolUse: [{ hooks: [ours, ...COMMANDLESS, null] }] }
+    expect(stripOwnHooksFromMap(hooks as Record<string, Array<{ hooks?: Array<{ command?: unknown }> }>>, (c) => c.includes('token-goat'))).toBe(true)
+    expect(hooks['PreToolUse']).toEqual([{ hooks: [...COMMANDLESS, null] }])
+
+    const groups = [{ matcher: 'Read', hooks: [ours, ...COMMANDLESS] }]
+    expect(stripStaleGroupHooks(groups, (c) => c.includes('token-goat'))).toEqual([{ matcher: 'Read', hooks: COMMANDLESS }])
   })
 })
 

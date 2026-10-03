@@ -18,6 +18,7 @@ import type { HookEventName } from './types.js'
 import { ensureDirRecordingCreation, recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty } from './bridges/created_configs.js'
 import { assertWriteInScope, withInstallScope } from './bridges/project_scope_guard.js'
 import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, extractErrorMessage, hookCommandFor, hookExecPartsFor, removeFileInScope, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
+import { commandHookFields, isOwnHookEntry } from './util_config.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
 export type HookScope = 'user' | 'project'
@@ -162,7 +163,8 @@ function anyScopeReferencesShim(
       for (const group of groups) {
         for (const h of group.hooks ?? []) {
           // Exec form carries the shim path in `args`, not `command` (which is just the node binary).
-          if (scriptPaths.some((p) => h.command.includes(p) || (h.args ?? []).some((a) => a.includes(p)))) return true
+          const fields = commandHookFields(h)
+          if (fields !== undefined && scriptPaths.some((p) => fields.command.includes(p) || (fields.args ?? []).some((a) => a.includes(p)))) return true
         }
       }
     }
@@ -196,9 +198,10 @@ export function settingsPath(scope: HookScope): string {
 /** A single hook command entry as Claude Code stores it. */
 interface HookCommandEntry {
   type: string
-  command: string
+  /** Absent on Claude Code's `prompt`, `agent`, `http` and `mcp_tool` hooks, which run no command; read it through {@link commandHookFields}. */
+  command?: unknown
   /** Exec-form argv (Claude Code >= {@link CLAUDE_EXEC_FORM_MIN_VERSION}). Absent for a string-form entry. */
-  args?: string[]
+  args?: unknown
 }
 
 /** A matcher group: an optional matcher plus the list of hook commands. */
@@ -255,8 +258,9 @@ export function wiredClaudeHookWords(scope: HookScope): string[][] {
   for (const groups of Object.values(readSettings(settingsPath(scope)).hooks ?? {})) {
     for (const g of Array.isArray(groups) ? groups : []) {
       for (const h of Array.isArray(g?.hooks) ? g.hooks : []) {
-        if (typeof h?.command !== 'string' || !isTokenGoatHookCommand(h.command, h.args)) continue
-        out.push(Array.isArray(h.args) && h.args.length > 0 ? [h.command, ...h.args] : stringFormHookWords(h.command))
+        const fields = commandHookFields(h)
+        if (fields === undefined || !isTokenGoatHookCommand(fields.command, fields.args)) continue
+        out.push(fields.args !== undefined && fields.args.length > 0 ? [fields.command, ...fields.args] : stringFormHookWords(fields.command))
       }
     }
   }
@@ -271,7 +275,7 @@ function groupHasTokenGoat(
   if (groups === undefined) return false
   for (const group of groups) {
     for (const h of group.hooks ?? []) {
-      if (predicate(h.command, h.args)) return true
+      if (isOwnHookEntry(h, predicate)) return true
     }
   }
   return false
@@ -313,7 +317,7 @@ function installHooksScoped(scope: HookScope): InstallResult {
     let strippedStale = false
     for (const group of existingGroups) {
       const keptHooks = (group.hooks ?? []).filter((h) => {
-        const isStale = isTokenGoatHookCommand(h.command, h.args) && !hookEntryMatches(h.command, h.args, expected)
+        const isStale = isOwnHookEntry(h, (command, args) => isTokenGoatHookCommand(command, args) && !hookEntryMatches(command, args, expected))
         if (isStale) strippedStale = true
         return !isStale
       })
@@ -335,7 +339,7 @@ function installHooksScoped(scope: HookScope): InstallResult {
           const group = groups[i]
           if (group === undefined) continue
           const ownHooks = group.hooks ?? []
-          const isOwnGroup = ownHooks.length > 0 && ownHooks.every((h) => isOurs(h.command, h.args))
+          const isOwnGroup = ownHooks.length > 0 && ownHooks.every((h) => isOwnHookEntry(h, isOurs))
           if (isOwnGroup && group.matcher !== narrowed) {
             groups[i] = { ...group, matcher: narrowed }
             renarrowed = true

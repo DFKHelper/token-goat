@@ -14,9 +14,23 @@ import { atomicWriteText, backupFile, ensureDirSync } from './util.js'
  * the minimal fields {@link stripOwnHooksFromMap} needs.
  */
 export interface HookEntryLike {
-  readonly command: string
+  /** Absent on a hook that runs no command (Claude Code's `prompt`, `agent`, `http` and `mcp_tool` types), and anything at all in a hand-edited file, so read it through {@link commandHookFields}. */
+  readonly command?: unknown
   /** Exec-form argv, when the harness's hook schema supports it (Claude Code >= 2.1.139). Absent for a string-form entry. */
-  readonly args?: readonly string[]
+  readonly args?: unknown
+}
+
+/** The `command` and `args` of a hook entry that runs a command, or undefined for one that does not: Claude Code's `prompt`, `agent`, `http` and `mcp_tool` hooks carry no `command`, and a hand-edited entry may hold anything. */
+export function commandHookFields(h: HookEntryLike | null | undefined): { command: string; args: readonly string[] | undefined } | undefined {
+  if (typeof h?.command !== 'string') return undefined
+  const args = Array.isArray(h.args) && h.args.every((a) => typeof a === 'string') ? (h.args as readonly string[]) : undefined
+  return { command: h.command, args }
+}
+
+/** True when `h` runs a command `isOurs` claims; an entry with no command is never token-goat's. */
+export function isOwnHookEntry(h: HookEntryLike | null | undefined, isOurs: (command: string, args?: readonly string[]) => boolean): boolean {
+  const fields = commandHookFields(h)
+  return fields !== undefined && isOurs(fields.command, fields.args)
 }
 
 /**
@@ -54,7 +68,7 @@ export function stripOwnHooksFromMap<H extends HookEntryLike, G extends MatcherG
     const kept: G[] = []
     for (const group of groups) {
       const keptHooks = (group.hooks ?? []).filter((h) => {
-        const isOur = isOurs(h.command, h.args)
+        const isOur = isOwnHookEntry(h, isOurs)
         if (isOur) removed = true
         return !isOur
       })
@@ -91,7 +105,7 @@ export function stripStaleGroupHooks<H extends HookEntryLike, G extends MatcherG
       next.push(group)
       continue
     }
-    const keptHooks = (group.hooks ?? []).filter((h) => !isOurs(h.command, h.args))
+    const keptHooks = (group.hooks ?? []).filter((h) => !isOwnHookEntry(h, isOurs))
     if (keptHooks.length > 0) {
       next.push({ ...group, hooks: keptHooks })
     } else if ((group.hooks ?? []).length === 0) {
