@@ -5,7 +5,7 @@ import * as path from 'node:path'
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
 import { bundledCliPath, dropEmptyServers, hasManagedServer, noteRootKeyCreation, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 import { copilotCliUserRoot } from '../copilot_home.js'
-import { atomicWriteText, backupFile, ensureDirSync, removeFileInScope } from '../util.js'
+import { backupFile, ensureDirSync, removeFileInScope, writeConfigText } from '../util.js'
 
 const MCP_SERVERS_KEY = 'mcpServers'
 const TOKEN_GOAT_ENTRY_KEY = 'token-goat'
@@ -59,7 +59,7 @@ export function installCopilotMcpServer(): boolean {
   ensureDirSync(path.dirname(mcpPath))
   if (!fileExisted) recordCreatedConfig(mcpPath)
   backupFile(mcpPath)
-  atomicWriteText(mcpPath, nextText)
+  writeConfigText(mcpPath, nextText)
   noteRootKeyCreation(mcpPath, config, MCP_SERVERS_KEY)
   return true
 }
@@ -75,7 +75,7 @@ export function uninstallCopilotMcpServer(): boolean {
     removeFileInScope(mcpPath)
   } else {
     backupFile(mcpPath)
-    atomicWriteText(mcpPath, next)
+    writeConfigText(mcpPath, next)
   }
   removeCreatedBackups(mcpPath)
   return true

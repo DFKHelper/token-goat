@@ -5,7 +5,7 @@ import * as path from 'node:path'
 
 import { recordCreatedBy, removeCreatedBackups, removeCreatedTree, takeCreatedConfig } from './created_configs.js'
 import { bundledCliPath, dropEmptyServers, hasManagedServer, managedServerEntry, noteRootKeyCreation, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
-import { atomicWriteText, backupFile, writeIfDifferent } from '../util.js'
+import { atomicWriteBytes, backupFile, writeConfigText, writeIfDifferent } from '../util.js'
 
 const CONTEXT_SERVERS_KEY = 'context_servers'
 const TOKEN_GOAT_ENTRY_KEY = 'token-goat'
@@ -81,19 +81,63 @@ function installZedFiles(): ZedInstallResult {
   }
 
   // The shim is written only once settings.json has parsed and passed the ownership check above, so a rejected install leaves no file behind.
+  const priorShim = snapshotShim(shimPath)
   const shimChanged = writeIfDifferent(shimPath, buildShimScript())
   if (process.platform !== 'win32') fs.chmodSync(shimPath, 0o755)
 
   const desired = zedManagedServer()
   const alreadyInstalled = current !== undefined && !shimChanged
   if (!alreadyInstalled) {
-    const nextText = setTokenGoatServer(config.text, desired, CONTEXT_SERVERS_KEY)
-    backupFile(settingsPath)
-    atomicWriteText(settingsPath, nextText)
+    try {
+      const nextText = setTokenGoatServer(config.text, desired, CONTEXT_SERVERS_KEY)
+      backupFile(settingsPath)
+      writeConfigText(settingsPath, nextText)
+    } catch (err) {
+      // settings.json is what points Zed at the shim, so a failed write (the file read-only, or held open by Zed) puts the shim back the way it was rather than leave a script nothing launches.
+      try {
+        restoreShim(shimPath, priorShim, shimChanged)
+      } catch {
+        // The settings.json failure is the one the user has to act on, so a rollback that also fails does not replace it.
+      }
+      throw err
+    }
     noteRootKeyCreation(settingsPath, config, CONTEXT_SERVERS_KEY)
   }
 
   return { settingsPath, shimPath, alreadyInstalled }
+}
+
+interface ShimSnapshot {
+  readonly existed: boolean
+  readonly bytes: Buffer | undefined
+  readonly mode: number | undefined
+}
+
+// Only ENOENT means there was no shim: a file that exists but cannot be read (EACCES) is still the user's, so the rollback must never delete it. Bytes, not text, so a hand-edited shim comes back exactly.
+function snapshotShim(shimPath: string): ShimSnapshot {
+  let mode: number | undefined
+  try {
+    mode = fs.statSync(shimPath).mode & 0o777
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { existed: false, bytes: undefined, mode: undefined }
+  }
+  let bytes: Buffer | undefined
+  try {
+    bytes = fs.readFileSync(shimPath)
+  } catch {
+    bytes = undefined
+  }
+  return { existed: true, bytes, mode }
+}
+
+// The install chmods the shim to 0755 even when its content was already current, so the mode goes back whether or not the bytes changed.
+function restoreShim(shimPath: string, prior: ShimSnapshot, shimChanged: boolean): void {
+  if (!prior.existed) {
+    fs.rmSync(shimPath, { force: true })
+    return
+  }
+  if (shimChanged && prior.bytes !== undefined) atomicWriteBytes(shimPath, prior.bytes)
+  if (prior.mode !== undefined && process.platform !== 'win32') fs.chmodSync(shimPath, prior.mode)
 }
 
 /** Remove the Zed MCP context-server integration: drops `context_servers.token-goat` (and the now-empty `context_servers` object, if it was the last entry) from `settings.json`, deletes `settings.json` itself only if token-goat created it AND it now holds nothing else, and deletes the generated shim script. Returns true when at least one of the entry or the shim was present and removed; false when nothing was installed (no writes occur in that case). */
@@ -112,7 +156,7 @@ export function uninstallZed(): boolean {
           fs.rmSync(settingsPath, { force: true })
         } else {
           backupFile(settingsPath)
-          atomicWriteText(settingsPath, next)
+          writeConfigText(settingsPath, next)
         }
         // The timestamped backups this bridge made for settingsPath are token-goat's own litter, so a full uninstall takes them with it.
         removeCreatedBackups(settingsPath)

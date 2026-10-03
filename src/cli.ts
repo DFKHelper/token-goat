@@ -150,7 +150,12 @@ function cmdRetrieve(id: string, opts: RecallFilterOpts): void {
   const text = retrieveText(id)
   if (text === null) throw new CliError(`no token-goat content for id: ${id}. The local cache may have expired.`)
   // retrieve is the lossless round-trip for compress-text; other commands print `recovery: token-goat retrieve <id>` promising the original bytes back, so with no narrowing flag it must stay byte-verbatim -- only opt into sibling head/tail elision once the caller explicitly asks for a slice.
-  const noNarrowing = opts.head === undefined && opts.tail === undefined && opts.grep === undefined && opts.section === undefined && opts.maxMatches === undefined && opts.lines === undefined && opts.full !== true
+  const noNarrowing = opts.head === undefined && opts.tail === undefined && opts.grep === undefined && opts.section === undefined && opts.maxMatches === undefined && opts.lines === undefined && opts.context === undefined
+  // Written raw, not through out() or the shared filter: both strip ANSI codes for a non-colour stdout and the filter re-joins CRLF lines with LF, so the "original bytes back" came back altered whenever the stored text had either. No trailing newline is added either, so `retrieve <id> > file` reproduces the file compress-text read.
+  if (noNarrowing && opts.lineNumbers !== true) {
+    process.stdout.write(text)
+    return
+  }
   _applyFiltersAndPrint(text, noNarrowing ? { ...opts, full: true } : opts)
 }
 
@@ -1163,7 +1168,7 @@ export function buildProgram(): Command {
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--section <heading>', 'extract a specific section from the retrieved text')
     .option('--full', 'print the entire retrieved text with no head/tail elision (default behaviour when no other flag is given)')
-    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405')
+    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405; with --section, the numbers -n prints')
     .option('-n, --line-numbers', 'prefix every printed line with its line number (N:text)')
     .option('--context <n>', 'with --grep, also show N lines around each match')
     .action(guard(cmdRetrieve))
@@ -1292,7 +1297,7 @@ export function buildProgram(): Command {
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--section <heading>', 'extract a specific section from the output')
     .option('--full', 'print the entire cached entry with no head/tail elision')
-    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405')
+    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405; with --section, the numbers -n prints')
     .option('-n, --line-numbers', 'prefix every printed line with its line number (N:text)')
     .option('--context <n>', 'with --grep, also show N lines around each match')
     .option('--file <path>', 'read from raw output file instead of cache')
@@ -1310,7 +1315,7 @@ export function buildProgram(): Command {
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--section <heading>', 'extract a specific section from the response')
     .option('--full', 'print the entire cached entry with no head/tail elision')
-    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405')
+    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405; with --section, the numbers -n prints')
     .option('-n, --line-numbers', 'prefix every printed line with its line number (N:text)')
     .option('--context <n>', 'with --grep, also show N lines around each match')
     .option('--raw', 'return the body as actually fetched, before extractCleanText cleaning, instead of the default cleaned text')
@@ -1325,7 +1330,7 @@ export function buildProgram(): Command {
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--section <heading>', 'extract a specific section from the result')
     .option('--full', 'print the entire cached entry with no head/tail elision')
-    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405')
+    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405; with --section, the numbers -n prints')
     .option('-n, --line-numbers', 'prefix every printed line with its line number (N:text)')
     .option('--context <n>', 'with --grep, also show N lines around each match')
     .option('--json-query <path>', 'query JSON content using a dot/bracket path expression (e.g. "issues[*].key")')

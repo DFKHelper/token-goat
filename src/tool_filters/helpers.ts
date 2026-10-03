@@ -54,6 +54,9 @@ export function clipWideLines(text: string, maxChars = INPUT_MAX_LINE_CHARS): st
   let clipped = 0
   const out = text.split('\n').map((line) => {
     if (line.length <= maxChars) return line
+    // A line this function already clipped is maxChars of content plus its marker; clipping it again would stack a second marker over the first.
+    const marker = CLIPPED_MARKER_RE.exec(line)
+    if (marker && line.length - marker[0].length <= maxChars) return line
     clipped += 1
     const keep = Math.floor(maxChars / 2)
     return line.slice(0, keep) + ` ... [${line.length - maxChars} chars clipped] ... ` + line.slice(line.length - (maxChars - keep))

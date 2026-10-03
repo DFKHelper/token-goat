@@ -19,7 +19,7 @@ export const DEFAULT_RECONCILE_BUDGET_MS = 1500
 
 export interface ReconcileOptions {
   cwd?: string
-  /** Wall-clock budget. Defaults to {@link DEFAULT_RECONCILE_BUDGET_MS}. */
+  /** Wall-clock budget for examining files, counted from once the tracked list and index rows are in hand. Defaults to {@link DEFAULT_RECONCILE_BUDGET_MS}. */
   budgetMs?: number
   /** Compute the drift set without enqueueing it. */
   dryRun?: boolean
@@ -166,7 +166,7 @@ export function isReconcileClean(r: ReconcileResult): boolean {
 export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   const cwd = opts.cwd ?? process.cwd()
   const budgetMs = opts.budgetMs ?? DEFAULT_RECONCILE_BUDGET_MS
-  const startedAt = Date.now()
+  const calledAt = Date.now()
   const dbPath = opts.dbPath ?? globalDbPath()
 
   const tracked = getTrackedFiles(cwd)
@@ -177,6 +177,8 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   const chunked = new Set(
     (getDb(dbPath).prepare(`SELECT DISTINCT file_path FROM chunks WHERE ${chunkScope.clause}`).pluck().all(...chunkScope.params(projectRoot)) as string[]).map((p) => foldPath(normalizePath(p))),
   )
+  // The budget starts here, after `git ls-files` and the index reads, because it bounds the examining and nothing earlier: the setup runs whatever the budget says, so charging it only shrinks the scan. When setup alone outran the budget, the sweep examined nothing and saved no resume point, so the next session repeated the same empty sweep and the project was never checked at all.
+  const startedAt = Date.now()
 
   // Resume where the previous budget-truncated sweep of this project left off, instead of rescanning the same deterministic `git ls-files` prefix every session forever and never reaching whatever comes after it. Matched by folded/normalized path rather than by array index, because the tracked-file list can change shape between sessions (a file added, removed, or renamed shifts every index after it); a cursor that no longer matches anything just is not found, and the sweep falls back to starting from the beginning -- never an out-of-bounds read, never a crash. `scanOrder` is always a full permutation of `tracked` (same elements, same count, only reordered), so a lap that completes without exhausting the budget still visits every tracked file exactly once, which is what the deletion logic below depends on.
   let scanOrder = tracked
@@ -200,8 +202,8 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   let lastScanned: string | null = null
 
   for (const file of scanOrder) {
-    // Checked before the work rather than after, so the budget bounds what this function does rather than merely reporting that it overran. The check itself is a clock read, and hoisting it out of the loop would be the optimization that removes the bound.
-    if (Date.now() - startedAt > budgetMs) {
+    // Checked before the work rather than after, so the budget bounds what this function does rather than merely reporting that it overran. The check itself is a clock read, and hoisting it out of the loop would be the optimization that removes the bound. Reaching the budget spends it, so a budget of 0 examines nothing even when the whole scan would fit inside one clock tick.
+    if (Date.now() - startedAt >= budgetMs) {
       budgetExhausted = true
       break
     }
@@ -268,7 +270,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     for (const [folded, entry] of indexed) {
       if (seenOnDisk.has(folded)) continue
       // The loop above costs one map lookup per row; this one costs a disk stat, so it needs the same clock the scan loop has. Read before the stat rather than after it, because a row that is still on disk takes an early exit: a check placed below that exit is reached only on rows that turn out to be deletions, which lets the contents of the index decide whether the bound is consulted at all. A sweep that runs out here reports no deletions and says so, rather than shipping the prefix it happened to reach as though it were the whole answer.
-      if (Date.now() - startedAt > budgetMs) {
+      if (Date.now() - startedAt >= budgetMs) {
         budgetExhausted = true
         removed.length = 0
         break
@@ -304,6 +306,6 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     trackedUnavailable,
     unscanned: Math.max(0, tracked.length - scanned),
     enqueued,
-    elapsedMs: Date.now() - startedAt,
+    elapsedMs: Date.now() - calledAt,
   }
 }

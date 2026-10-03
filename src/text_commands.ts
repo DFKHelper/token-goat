@@ -489,6 +489,11 @@ function resolveProjectHash(): string {
   return resolveProject().hash
 }
 
+/** A note value as the human-facing note lines print it: one line, with control characters escaped. A note can hold text copied from a page or a tool's output, so an ESC sequence in it would otherwise reach the terminal from `note set` and `note list`; `note get` stays byte-verbatim for scripts. */
+function noteValueForDisplay(value: string): string {
+  return displaySafeText(oneLineNoteValue(value))
+}
+
 export function cmdNote(
   action: string,
   key: string | undefined,
@@ -511,7 +516,7 @@ export function cmdNote(
         const now = Date.now()
         for (const [k, note] of pairs) {
           const flag = note.anchor === undefined ? '' : anchorLabel(anchorStatus(project.root, note.anchor))
-          process.stdout.write(`${k}${noteAgeLabel(note, now)}${flag} = ${oneLineNoteValue(note.value)}\n`)
+          process.stdout.write(`${k}${noteAgeLabel(note, now)}${flag} = ${noteValueForDisplay(note.value)}\n`)
         }
       }
     }
@@ -550,10 +555,10 @@ export function cmdNote(
     // An explicit anchor that does not resolve is an error; one found in the note's own text is a convenience, and the note is set either way.
     const anchor = opts.anchor !== undefined ? resolveNoteAnchor(opts.anchor, project.root) : autoNoteAnchor(value, project.root) ?? undefined
     const { previous, evicted } = setEntry(project.hash, key, value, anchor)
-    process.stdout.write(`Set: ${key} = ${value}\n`)
+    process.stdout.write(`Set: ${key} = ${noteValueForDisplay(value)}\n`)
     if (anchor !== undefined) process.stdout.write(`Anchored to ${displaySafeText(anchor.file)}::${displaySafeText(anchor.symbol)}; the note is flagged once that symbol changes\n`)
     // A note set overwrites without asking, so say what it overwrote: the old finding is otherwise gone with no trace.
-    if (previous !== undefined && previous !== value) process.stdout.write(`Replaced the previous value: ${previous}\n`)
+    if (previous !== undefined && previous !== value) process.stdout.write(`Replaced the previous value: ${noteValueForDisplay(previous)}\n`)
     for (const k of evicted) process.stdout.write(`Removed the oldest note to stay within ${MAX_NOTE_ENTRIES}: ${k}\n`)
     return
   }

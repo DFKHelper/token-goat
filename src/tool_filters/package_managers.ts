@@ -1006,14 +1006,16 @@ class NodePackageFilter extends ToolFilter {
     return !DEP_LIST_OWNED_SUBCOMMANDS.has(subcmd)
   }
 
+  // npm's JSON reporter indents its document, so one wide advisory string left it unparseable once clipped and the vulnerability map was never collapsed.
+  protected override consumesWholeJson(argv: string[]): boolean {
+    return isAuditJson(argv)
+  }
+
   override compress(stdout: string, stderr: string, _exitCode: number, argv: string[]): string {
+    // The document is on stdout alone; npm's `npm warn` lines go to stderr, and parsing the two merged failed on every run that printed one.
+    if (isAuditJson(argv)) return this.combineOutput(compressNpmAuditJson(stdout), stderr)
     const merged = this.combineOutput(stdout, stderr)
-    const pos = positionalArgs(argv.slice(1))
-    const isAudit = pos.includes('audit')
-    if (isAudit) {
-      if (argv.includes('--json')) return compressNpmAuditJson(merged)
-      return compressNpmAuditHuman(merged)
-    }
+    if (positionalArgs(argv.slice(1)).includes('audit')) return compressNpmAuditHuman(merged)
     const lines = merged.split('\n')
     const kept: string[] = []
     const deprecatedPkgs = new Map<string, number>()
@@ -1046,6 +1048,10 @@ class NodePackageFilter extends ToolFilter {
     }
     return this.finalize(kept)
   }
+}
+
+function isAuditJson(argv: string[]): boolean {
+  return argv.includes('--json') && positionalArgs(argv.slice(1)).includes('audit')
 }
 
 function compressNpmAuditJson(text: string): string {

@@ -79,3 +79,21 @@ describe('cached-output --section with -n', () => {
     expect(unfence(stdout.join(''))).toContain('7:usage one')
   })
 })
+
+describe('cached-output --section with --lines', () => {
+  it('takes the same line numbers -n printed for the section', async () => {
+    const id = storeWebOutput('https://example.com/abs', BODY)
+    expect(await runCli(['web-output', id, '--section', 'Usage', '--lines', '7-8', '-n'])).toBe(0)
+    const shown = unfence(stdout.join(''))
+    expect(shown).toContain('7:usage one')
+    expect(shown).toContain('8:usage two')
+    expect(shown).not.toContain('## Usage')
+  })
+
+  it('refuses a range that falls outside the section', async () => {
+    const id = storeWebOutput('https://example.com/out', BODY)
+    expect(await runCli(['web-output', id, '--section', 'Usage', '--lines', '1-2'])).toBe(1)
+    expect(stderr.join('')).toContain("is outside section 'Usage', which covers lines 6-")
+    expect(stdout.join('')).not.toContain('# Doc')
+  })
+})

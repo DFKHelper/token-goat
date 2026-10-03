@@ -12,13 +12,16 @@ import { installJetbrains, jetbrainsProjectMcpPath, uninstallJetbrains } from '.
 import { installVisualStudio, uninstallVisualStudio, visualStudioManagedEntry, visualStudioUserMcpPath } from '../src/bridges/visualstudio_install.js'
 import { installVscode, uninstallVscode, vscodeMcpPath } from '../src/bridges/vscode_install.js'
 import { installZed, uninstallZed, zedManagedEntry, zedSettingsPath } from '../src/bridges/zed_install.js'
-import { installHooks, isInstalled, settingsPath, uninstallHooks } from '../src/install.js'
+import { codexConfigPath, installCodex, uninstallCodex } from '../src/bridges/codex_install.js'
+import { geminiSettingsPath, installGemini, uninstallGemini } from '../src/bridges/gemini_install.js'
+import { installKimi, kimiConfigPath, uninstallKimi } from '../src/bridges/kimi_install.js'
+import { claudeMdPath, installClaudeMd, installHooks, isInstalled, settingsPath, uninstallClaudeMd, uninstallHooks } from '../src/install.js'
 import { checkGlobalMcpConfig } from '../src/cli_doctor_platforms.js'
 import { hasManagedServer } from '../src/bridges/mcp_servers_json.js'
 import { parseJsonOrJsonc, stripBom } from '../src/jsonc_text.js'
 
 const BOM = String.fromCharCode(0xfeff)
-const ENV_KEYS = ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME'] as const
+const ENV_KEYS = ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'KIMI_CODE_HOME'] as const
 
 let saved: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>>
 let fakeHome: string
@@ -33,6 +36,7 @@ beforeEach(() => {
   process.env['LOCALAPPDATA'] = path.join(fakeHome, 'AppData', 'Local')
   process.env['XDG_CONFIG_HOME'] = path.join(fakeHome, '.config')
   process.env['XDG_DATA_HOME'] = path.join(fakeHome, '.local', 'share')
+  delete process.env['KIMI_CODE_HOME']
 })
 
 afterEach(() => {
@@ -46,7 +50,14 @@ afterEach(() => {
 
 function writeBom(file: string, json: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, BOM + json, 'utf8')
+  fs.writeFileSync(file, BOM + stripBom(json), 'utf8')
+}
+
+/** The file starts with exactly one byte-order mark. */
+function expectOneBom(file: string): void {
+  const raw = fs.readFileSync(file, 'utf8')
+  expect(raw.startsWith(BOM)).toBe(true)
+  expect(raw.startsWith(BOM + BOM)).toBe(false)
 }
 
 function readJson(file: string): Record<string, unknown> {
@@ -175,5 +186,107 @@ describe('hook configs behind a BOM', () => {
     writeBom(file, fs.readFileSync(file, 'utf8'))
     expect(isAntigravityInstalled()).toBe(true)
     expect(uninstallAntigravity()).toBe(true)
+  })
+})
+
+describe('a rewrite keeps the byte-order mark the user saved the file with', () => {
+  const MCP_HOSTS: ReadonlyArray<{ name: string; file: () => string; key: string; install: () => unknown; uninstall: () => unknown }> = [
+    { name: 'Cursor', file: () => cursorMcpPath(), key: 'mcpServers', install: () => installCursor(), uninstall: () => uninstallCursor() },
+    { name: 'Visual Studio', file: () => visualStudioUserMcpPath(), key: 'servers', install: () => installVisualStudio(), uninstall: () => uninstallVisualStudio() },
+    { name: 'VS Code', file: () => vscodeMcpPath({ project: true, projectRoot: fakeHome }), key: 'servers', install: () => installVscode({ project: true, projectRoot: fakeHome }), uninstall: () => uninstallVscode({ project: true, projectRoot: fakeHome }) },
+    { name: 'Zed', file: () => zedSettingsPath(), key: 'context_servers', install: () => installZed(), uninstall: () => uninstallZed() },
+    { name: 'Copilot CLI MCP', file: () => copilotMcpConfigPath(), key: 'mcpServers', install: () => installCopilotMcpServer(), uninstall: () => uninstallCopilotMcpServer() },
+    { name: 'JetBrains', file: () => jetbrainsProjectMcpPath(fakeHome), key: 'mcpServers', install: () => installJetbrains({ project: true, projectRoot: fakeHome }), uninstall: () => uninstallJetbrains({ project: true, projectRoot: fakeHome }) },
+  ]
+
+  for (const host of MCP_HOSTS) {
+    it(`${host.name} MCP config`, () => {
+      const file = host.file()
+      writeBom(file, JSON.stringify({ [host.key]: { other: OTHER } }))
+      host.install()
+      expectOneBom(file)
+      host.uninstall()
+      expectOneBom(file)
+      expect(readJson(file)[host.key]).toEqual({ other: OTHER })
+    })
+  }
+
+  it('Claude Code settings.json', () => {
+    const file = settingsPath('user')
+    writeBom(file, JSON.stringify({ model: 'opus' }))
+    installHooks('user')
+    expectOneBom(file)
+    uninstallHooks('user')
+    expectOneBom(file)
+  })
+
+  it('Gemini settings.json', () => {
+    const file = geminiSettingsPath()
+    writeBom(file, JSON.stringify({ theme: 'Dracula' }))
+    installGemini()
+    expectOneBom(file)
+    uninstallGemini()
+    expectOneBom(file)
+    expect(readJson(file)['theme']).toBe('Dracula')
+  })
+
+  it('Codex config.toml', () => {
+    const file = codexConfigPath()
+    writeBom(file, 'model = "o3"\n')
+    installCodex()
+    expectOneBom(file)
+    uninstallCodex()
+    expectOneBom(file)
+    expect(fs.readFileSync(file, 'utf8')).toContain('model = "o3"')
+  })
+
+  // HAND-DERIVED: a static `PreToolUse = []` cannot be extended by an appended `[[hooks.PreToolUse]]` table, so install and uninstall both take the whole-file rewrite rather than the in-place block edit.
+  it('Codex config.toml the delimited block cannot express', () => {
+    const file = codexConfigPath()
+    writeBom(file, 'model = "o3"\n\n[hooks]\nPreToolUse = []\n')
+    installCodex()
+    expectOneBom(file)
+    expect(fs.readFileSync(file, 'utf8')).not.toContain('managed block')
+    uninstallCodex()
+    expectOneBom(file)
+    expect(fs.readFileSync(file, 'utf8')).toContain('model = "o3"')
+  })
+
+  it('Kimi config.toml', () => {
+    const file = kimiConfigPath()
+    writeBom(file, 'default_model = "k2"\n')
+    installKimi()
+    expectOneBom(file)
+    uninstallKimi()
+    expectOneBom(file)
+    expect(fs.readFileSync(file, 'utf8')).toContain('default_model = "k2"')
+  })
+
+  it('the CLAUDE.md guidance block', () => {
+    const file = claudeMdPath('user')
+    writeBom(file, '# My notes\n')
+    installClaudeMd('user')
+    expectOneBom(file)
+    uninstallClaudeMd('user')
+    expect(fs.readFileSync(file, 'utf8')).toBe(`${BOM}# My notes\n`)
+  })
+
+  // HAND-DERIVED: JS `\s` matches U+FEFF, so trimming the text around the block takes a mark that nothing else precedes with it.
+  it('a CLAUDE.md holding only the mark, with notes added after the block later', () => {
+    const file = claudeMdPath('user')
+    writeBom(file, '')
+    installClaudeMd('user')
+    expectOneBom(file)
+    fs.appendFileSync(file, '\n# Added later\n', 'utf8')
+    uninstallClaudeMd('user')
+    expect(fs.readFileSync(file, 'utf8')).toBe(`${BOM}# Added later\n`)
+  })
+
+  it('a file saved without a mark is not given one', () => {
+    const file = cursorMcpPath()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify({ mcpServers: { other: OTHER } }), 'utf8')
+    installCursor()
+    expect(fs.readFileSync(file, 'utf8').startsWith(BOM)).toBe(false)
   })
 })

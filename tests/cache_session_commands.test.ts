@@ -547,6 +547,35 @@ describe('cmdCacheAudit', () => {
     }
   })
 
+  // HAND-DERIVED: the spellings come from FALSY_ENV_VALUES in src/env.ts, which config.ts's envBool applies to the same keys, and the "still cached" wording from postBashHandler storing output before any opt-out check.
+  it('reads TOKEN_GOAT_BASH_COMPRESS the way config does and says output is still cached', () => {
+    const prev = process.env['TOKEN_GOAT_BASH_COMPRESS']
+    const gateFor = (val: string): { ok: boolean; detail: string } => {
+      process.env['TOKEN_GOAT_BASH_COMPRESS'] = val
+      stdoutLines.length = 0
+      cmdCacheAudit({ json: true })
+      const parsed = JSON.parse(capturedOutput()) as { findings: Array<{ check: string; ok: boolean; detail: string }> }
+      return parsed.findings.find((f) => f.check === 'env:TOKEN_GOAT_BASH_COMPRESS')!
+    }
+    try {
+      for (const off of ['off', 'no', 'FALSE', ' 0 ']) expect(gateFor(off).ok).toBe(false)
+      const zero = gateFor('0').detail
+      expect(zero).toContain('disables bash output compression')
+      expect(zero).toContain('still cached')
+      expect(zero).not.toContain('caching and recall')
+      expect(gateFor('1')).toMatchObject({ ok: true, detail: 'TOKEN_GOAT_BASH_COMPRESS=1 (feature enabled)' })
+      expect(gateFor('')).toMatchObject({ ok: true })
+      delete process.env['TOKEN_GOAT_BASH_COMPRESS']
+      stdoutLines.length = 0
+      cmdCacheAudit({ json: true })
+      const unset = (JSON.parse(capturedOutput()) as { findings: Array<{ check: string; ok: boolean; detail: string }> }).findings.find((f) => f.check === 'env:TOKEN_GOAT_BASH_COMPRESS')
+      expect(unset).toMatchObject({ ok: true, detail: 'TOKEN_GOAT_BASH_COMPRESS unset (feature enabled by default)' })
+    } finally {
+      if (prev === undefined) delete process.env['TOKEN_GOAT_BASH_COMPRESS']
+      else process.env['TOKEN_GOAT_BASH_COMPRESS'] = prev
+    }
+  })
+
   it('includes both hooks:user and hooks:project findings', () => {
     cmdCacheAudit({ json: true })
     const parsed = JSON.parse(capturedOutput()) as { findings: Array<{ check: string }> }

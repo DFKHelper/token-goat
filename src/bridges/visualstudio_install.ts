@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, backupFile, ensureDirSync, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
+import { backupFile, ensureDirSync, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock, writeConfigText } from '../util.js'
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
 import { buildGuidanceBody } from './guidance_block.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
@@ -172,7 +172,7 @@ function installVisualStudioScoped(opts: VisualStudioScopeOptions): VisualStudio
     // ensureDirSync, not a raw recursive mkdirSync: a recursive create WALKS THROUGH a directory symlink a clone checked in, so this step is itself one of the ways an install lands outside the tree. The containment check lives in ensureDirSync for exactly that reason, and a raw fs.mkdirSync here is outside the boundary by inspection even while the backupFile below happens to refuse. See bridges/project_scope_guard.ts.
     ensureDirSync(path.dirname(mcpPath))
     backupFile(mcpPath)
-    atomicWriteText(mcpPath, next)
+    writeConfigText(mcpPath, next)
     noteRootKeyCreation(mcpPath, config)
     if (!mcpExisted || ownedAlready) recordCreatedConfig(mcpPath)
   }
@@ -196,7 +196,7 @@ function uninstallVisualStudioScoped(opts: VisualStudioScopeOptions): boolean {
       if (/^\s*\{\s*\}\s*$/.test(dropLoneEmptyMcpServers(next)) && takeCreatedConfig(mcpPath)) removeFileInScope(mcpPath)
       else {
         backupFile(mcpPath)
-        atomicWriteText(mcpPath, ensureMcpServersKey(next))
+        writeConfigText(mcpPath, ensureMcpServersKey(next))
       }
       // The timestamped backups this bridge made for mcpPath are token-goat's own litter, so a full uninstall takes them with it.
       removeCreatedBackups(mcpPath)

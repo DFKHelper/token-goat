@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { atomicWriteText, backupFile, ensureDirSync, removeEmptyDirInScope, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, removeEmptyDirInScope, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock, writeConfigText } from '../util.js'
 import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 import { canonicalProjectRoot, copilotHooksFilePaths, installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
@@ -226,7 +226,7 @@ function installVscodeScoped(opts: VscodeScopeOptions): VscodeInstallResult {
   ensureDirSync(path.dirname(mcpPath))
   if (config.text !== next) {
     backupFile(mcpPath)
-    atomicWriteText(mcpPath, next)
+    writeConfigText(mcpPath, next)
     noteRootKeyCreation(mcpPath, config)
     if (!mcpExisted) recordCreatedConfig(mcpPath)
   }
@@ -275,7 +275,7 @@ function uninstallVscodeScoped(opts: VscodeScopeOptions): boolean {
         }
       } else {
         backupFile(mcpPath)
-        atomicWriteText(mcpPath, next)
+        writeConfigText(mcpPath, next)
       }
       // The timestamped backups this bridge made for mcpPath are token-goat's own litter, so a full uninstall takes them with it. A migration is not a full uninstall and keeps them; see VscodeScopeOptions.keepBackups.
       if (opts.keepBackups !== true) removeCreatedBackups(mcpPath)

@@ -24,6 +24,7 @@ export {
   stripDelimitedBlock,
   upsertDelimitedBlock,
   writeJsonSettings,
+  writeConfigText,
   writeIfDifferent,
 } from './util_config.js'
 

@@ -153,7 +153,7 @@ export function stripDelimitedBlock(p: string, beginMarker: string, endMarker: s
   }
 
   backupFile(p)
-  atomicWriteText(p, next)
+  atomicWriteText(p, keepBom(existing, next))
   if (!keepBackups) removeCreatedBackups(p)
   return true
 }
@@ -191,7 +191,7 @@ export function upsertDelimitedBlock(p: string, beginMarker: string, endMarker: 
   const next = trimmed.length > 0 ? `${trimmed}${eol}${eol}${block}${eol}` : `${block}${eol}`
   ensureDirSync(path.dirname(p))
   backupFile(p)
-  atomicWriteText(p, next)
+  atomicWriteText(p, keepBom(existing, next))
   return true
 }
 
@@ -207,7 +207,25 @@ export function writeJsonSettings(p: string, settings: unknown): void {
   backupFile(p)
   const eol = detectEol(existing)
   const body = JSON.stringify(settings, null, detectJsonIndent(existing)).replace(/\n/g, eol)
-  atomicWriteText(p, existing.length > 0 && !existing.endsWith('\n') ? body : `${body}${eol}`)
+  atomicWriteText(p, keepBom(existing, existing.length > 0 && !existing.endsWith('\n') ? body : `${body}${eol}`))
+}
+
+const BOM = String.fromCharCode(0xfeff)
+
+/** `next` with the UTF-8 byte-order mark `existing` starts with, if it has one and `next` does not. Every config reader strips the mark before parsing (Notepad, PowerShell 5 `Set-Content -Encoding UTF8` and Visual Studio's "UTF-8 with signature" all write one), so a rewrite built from the parsed text would otherwise drop the encoding the user's editor chose. */
+function keepBom(existing: string | undefined, next: string): string {
+  return existing?.startsWith(BOM) && !next.startsWith(BOM) ? `${BOM}${next}` : next
+}
+
+/** {@link atomicWriteText} for a user-owned config file: a file that starts with a byte-order mark keeps it through the rewrite. */
+export function writeConfigText(p: string, next: string): void {
+  let existing: string | undefined
+  try {
+    existing = readFileSync(p, 'utf8')
+  } catch {
+    existing = undefined
+  }
+  atomicWriteText(p, keepBom(existing, next))
 }
 
 /** The indent unit an existing pretty-printed JSON file uses (a tab, or its first indented line's run of spaces), or two spaces when it has none to copy. */

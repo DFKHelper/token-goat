@@ -1687,6 +1687,23 @@ describe('note command', () => {
     expect(r.stdout).not.toContain('Unset')
   })
 
+  it('set and list print a value carrying an escape sequence or a line break escaped, while get returns it byte for byte', async () => {
+    // HAND-DERIVED: ESC (0x1b) is a C0 control character, which displaySafeText writes as \x1b, and a line break inside a note, CRLF included, prints as one \n, the form `note list` already used for it. The value stands in for terminal colour codes copied into a note from a tool's output.
+    const value = 'red \u001b[31mtext\u001b[0m\r\nsecond line'
+    const shown = 'red \\x1b[31mtext\\x1b[0m\\nsecond line'
+    const rSet = await run(['note', 'set', 'esc-value', value], { env: noteEnv, cwd: ROOT })
+    expect(rSet.status, rSet.stderr).toBe(0)
+    expect(rSet.stdout).toBe(`Set: esc-value = ${shown}\n`)
+    const rReplace = await run(['note', 'set', 'esc-value', 'plain'], { env: noteEnv, cwd: ROOT })
+    expect(rReplace.stdout).toBe(`Set: esc-value = plain\nReplaced the previous value: ${shown}\n`)
+    await run(['note', 'set', 'esc-value', value], { env: noteEnv, cwd: ROOT })
+    const rList = await run(['note', 'list'], { env: noteEnv, cwd: ROOT })
+    expect(/^esc-value \(set \d+s ago\) = (.*)$/m.exec(rList.stdout)?.[1]).toBe(shown)
+    expect(rList.stdout).not.toContain('\u001b')
+    const rGet = await run(['note', 'get', 'esc-value'], { env: noteEnv, cwd: ROOT })
+    expect(rGet.stdout).toBe(`${value}\n`)
+  })
+
   it('unset of a key twice succeeds once and then reports it as not found', async () => {
     // HAND-DERIVED: the first unset removes the only note under this key, so the second finds nothing.
     await run(['note', 'set', 'twice-key', 'v'], { env: noteEnv, cwd: ROOT })

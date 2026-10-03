@@ -24,6 +24,7 @@ import {
   filterByName,
   selectFilter,
   shlexSplit,
+  TOOL_FILTERS,
 } from './tool_filters/index.js'
 
 /** Default wall-clock timeout for the wrapped subprocess, in seconds. */
@@ -109,7 +110,7 @@ export function resolveFilter(
   command: string,
   filterName: string | undefined,
   cwd: string | undefined,
-): { filter: ToolFilter | null; argv: string[] } {
+): { filter: ToolFilter | null; argv: string[]; unknownFilter?: string } {
   // No caller-supplied cwd means the command runs in this process's own directory, which is the one whose package.json `npm test` / `yarn lint` resolves against. Leaving it undefined here left `resolvePackageManagerScript` unreachable from the CLI entirely, so a wrapped `compress -c "yarn lint"` fell through to the generic filter while the pre-hook, which does pass a cwd, picked the script's real one.
   const effectiveCwd = cwd ?? process.cwd()
   let split: string[] | null
@@ -123,7 +124,9 @@ export function resolveFilter(
   if (filterName) {
     const named = filterByName(filterName)
     if (named !== null) return { filter: named, argv }
-    // Unknown name — fall through to auto-detect rather than failing.
+    // Unknown name — fall through to auto-detect rather than failing, and report the name so run() can say so: a silent fall-through made `--filter az` look like a filter that compresses nothing.
+    const filter = split === null ? null : selectFilter(split, effectiveCwd)
+    return { filter, argv, unknownFilter: filterName }
   }
   if (split === null) return { filter: null, argv }
   return { filter: selectFilter(split, effectiveCwd), argv }
@@ -192,10 +195,22 @@ function resolveCompressLimits(): { maxLines: number; maxBytes: number } {
   }
 }
 
+/** The stderr line for a `--filter` name no filter carries: what ran instead, and the registered names with a word that starts with the one typed, so `--filter az` points at `azure-cli`. */
+export function unknownFilterNotice(name: string, fallback: ToolFilter | null): string {
+  const typed = name.toLowerCase()
+  const names = ['generic', 'passthrough', ...new Set(TOOL_FILTERS.map((f) => f.name))]
+  // A word-start match, not a substring one: `az` is the start of `azure-cli` but sits inside `bazel` and `lazygit`, which are not what anyone typing it meant.
+  const near = names.filter((n) => n.split('-').some((word) => word.startsWith(typed)) || typed.startsWith(n)).slice(0, 5)
+  const instead = fallback === null ? 'running it uncompressed' : `auto-detected ${fallback.name}`
+  const hint = near.length > 0 ? `; did you mean ${near.join(', ')}?` : ''
+  return `[token-goat: no filter named "${displaySafeText(name)}", ${instead}${hint}]\n`
+}
+
 /** Run *command* through the system shell, compress its output, and return the wrapped subprocess's exit code (124 on wrapper-induced timeout, `128 + signum` when killed by a signal). When no filter applies the command is streamed through unchanged so the cost is limited to one subprocess fork. */
 export async function run(command: string, opts: RunOptions = {}): Promise<number> {
   const timeout = opts.timeout ?? DEFAULT_TIMEOUT_SECONDS
-  const { filter, argv } = resolveFilter(command, opts.filterName, opts.cwd)
+  const { filter, argv, unknownFilter } = resolveFilter(command, opts.filterName, opts.cwd)
+  if (unknownFilter !== undefined) (opts.writeStderr ?? ((s: string) => process.stderr.write(s)))(unknownFilterNotice(unknownFilter, filter))
   if (filter === null) {
     // No tool filter matches this command. Ordinarily that means streaming it through raw is cheapest (one subprocess fork, no capture). But when the caller asked for a `--max-tokens` cap or `--quiet-success`, raw passthrough would silently bypass it — `passthrough()` uses `stdio: 'inherit'` and never sees the output. Route through the capture-and-compress path with an identity filter instead, so the options apply.
     if ((opts.maxTokens ?? 0) > 0 || opts.quietSuccess) {

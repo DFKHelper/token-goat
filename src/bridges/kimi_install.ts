@@ -7,7 +7,7 @@ import * as path from 'node:path'
 import { parse, stringify } from 'smol-toml'
 
 import { recordCreatedBy, removeCreatedBackups, removeCreatedTree } from './created_configs.js'
-import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, upsertDelimitedBlock, writeConfigText, writeIfDifferent } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { nativeHookBinary, nativeHookCommandLine, HookCommandRewriteError, hookCommandRewrittenSpan, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
 import { KIMI_HOOK_SCRIPT } from './kimi.js'
@@ -212,7 +212,7 @@ function installKimiFiles(): KimiInstallResult {
     config.hooks = [...foreign, ...desired]
     ensureDirSync(path.dirname(configPath))
     backupFile(configPath)
-    atomicWriteText(configPath, stringify(config as Record<string, unknown>))
+    writeConfigText(configPath, stringify(config as Record<string, unknown>))
   }
 
   return {
@@ -240,7 +240,7 @@ export function uninstallKimi(): boolean {
         config.hooks = kept
       }
       backupFile(configPath)
-      atomicWriteText(configPath, stringify(config as Record<string, unknown>))
+      writeConfigText(configPath, stringify(config as Record<string, unknown>))
       removed = true
     }
   }

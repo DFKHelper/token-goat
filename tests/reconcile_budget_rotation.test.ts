@@ -71,8 +71,9 @@ afterEach(() => {
 
 /**
  * Runs one sweep with a `Date.now` mock that advances by exactly one virtual millisecond per
- * call, so a `budgetMs` of `filesPerCall` scans exactly that many files before the budget check
- * trips (or fewer, if the rotated scan order runs out first -- see the file-header comment).
+ * call. The check reads the clock once per file and trips when elapsed reaches the budget, so a
+ * `budgetMs` of `filesPerCall + 1` scans exactly `filesPerCall` files before it trips (or fewer,
+ * if the rotated scan order runs out first -- see the file-header comment).
  */
 function sweepOnce(filesPerCall: number): ReturnType<typeof reconcileProject> {
   let tick = -1
@@ -81,7 +82,7 @@ function sweepOnce(filesPerCall: number): ReturnType<typeof reconcileProject> {
     return tick
   })
   try {
-    return reconcileProject({ cwd: projectDir, dbPath, budgetMs: filesPerCall })
+    return reconcileProject({ cwd: projectDir, dbPath, budgetMs: filesPerCall + 1 })
   } finally {
     spy.mockRestore()
   }

@@ -16,6 +16,7 @@ import { runStats } from './cli_stats.js'
 import { buildProjectMap, formatProjectMap, formatMemSuggestions, findMemSuggestionCandidates } from './baseline.js'
 import { pad, requireNonNegativeStrictInt, countNoun } from './util.js'
 import { loadConfig } from './config.js'
+import { envBool } from './env.js'
 import { displaySafeText, displaySafeJson } from './paths.js'
 import { emitErr } from './emit.js'
 
@@ -53,9 +54,9 @@ function pruneSubdir(sub: string, maxCount: number, maxAgeMs: number): number {
   return sub === SKILLS_OUTPUT_SUBDIR ? pruneSkillOutputs(maxCount, maxAgeMs) : pruneBlobs(sub, maxCount, maxAgeMs)
 }
 
-// Cache-feature env vars: when set to '0' or 'false', the named feature is disabled.
+// Cache-feature env vars: any value envBool reads as false (the parse config.ts applies to the same keys) disables the named feature.
 const CACHE_ENV_GATES: Array<{ key: string; what: string }> = [
-  { key: 'TOKEN_GOAT_BASH_COMPRESS', what: 'bash output caching and recall' },
+  { key: 'TOKEN_GOAT_BASH_COMPRESS', what: 'bash output compression (output is still cached for bash-output and recall)' },
   { key: 'TOKEN_GOAT_COMPACT_ASSIST', what: 'compact-assist manifest injection' },
   { key: 'TOKEN_GOAT_INJECTION_ENABLED', what: 'context injection in hooks' },
 ]
@@ -283,11 +284,11 @@ export function cmdCacheAudit(opts: { json?: boolean }): void {
   })
   for (const { key, what } of CACHE_ENV_GATES) {
     const val = process.env[key]
-    const disabled = val === '0' || val === 'false'
+    const disabled = !envBool(key, true)
     findings.push({
       check: `env:${key}`,
       ok: !disabled,
-      detail: disabled ? `${key}=${val} — disables ${what}` : `${key} unset (feature enabled by default)`,
+      detail: disabled ? `${key}=${val} — disables ${what}` : val === undefined ? `${key} unset (feature enabled by default)` : `${key}=${val} (feature enabled)`,
     })
   }
   // A large_file_skip_kb this small silently guts indexing project-wide (nearly every real source file exceeds a few KB, so `token-goat index` would skip almost everything with no error -- exactly what happened when this session's own config.toml was accidentally corrupted to large_file_skip_kb=1, and no existing check surfaced it). 5 KB is well below any file size a legitimate skip-most-large-files config would plausibly choose.

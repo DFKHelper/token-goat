@@ -11,6 +11,7 @@ import { emitErr } from './emit.js'
 import { ORT_WEB_WASM, RUNTIME_UNAVAILABLE_ADVICE } from './embed_runtime.js'
 import { searchSemantic, OVER_FETCH_FACTOR, MAX_OVER_FETCH, isAvailable as embeddingModelAvailable, embeddingBackendLoadError, type EmbeddingPreflightResult, type SearchHit } from './embeddings.js'
 import { mergeNearbyHits } from './semantic_merge.js'
+import { commentSyntaxFor, type CommentSyntax } from './code_fold.js'
 import { checkSemanticReadiness, foregroundDownloadDeferred, modelDownloadHeld, WARM_COMMAND } from './embed_preflight.js'
 import { withExplicitDownload } from './model_download_gate.js'
 import { searchEvidenceSemantically } from './evidence_cache.js'
@@ -20,7 +21,7 @@ import type { SymbolEntry } from './parser_types.js'
 import { displaySafeJson, toDisplayPath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { recordSemanticQuery } from './semantic_distances.js'
-import { guardJsonRows, guardText, largestFileSize, recordReadStat, warnIfFilesStale } from './read_commands.js'
+import { guardJsonRows, guardText, largestFileSize, readFileText, recordReadStat, warnIfFilesStale } from './read_commands.js'
 import { previewLines } from './read_meta.js'
 import { resolveProjectConfinement } from './read_spec.js'
 import { ensureWorkerAlive } from './worker_lifecycle.js'
@@ -28,22 +29,51 @@ import { compileGrepMatcher, countNoun, excludeTestsHiddenNote, extractErrorMess
 
 // Resolves the enclosing symbol for a semantic chunk's line range, keyed off its `startLine`.
 //
-// Containment rule (documented per the semantic-fields task): a symbol is a candidate only if `symbol.lineStart <= chunk.startLine <= symbol.lineEnd` -- the chunk's START line must fall strictly inside the symbol's own indexed range. This deliberately does NOT use "nearest symbol by start line": a top-of-file chunk (imports/module header, before any symbol starts) would otherwise get wrongly labelled with whatever symbol happens to sit below it, even though it isn't inside that symbol at all. Chunk boundaries don't always align with symbol boundaries (embeddings.ts's chunkFile folds short boundary ranges into neighbors and can merge across gaps), so a chunk may overlap zero, one, or several symbols -- using the START line is the same "does this line belong to a definition" question `read`/`skeleton` already answer elsewhere in this file, and needs no separate end-line/overlap policy.
+// Containment rule (documented per the semantic-fields task): a symbol is a candidate only if `symbol.lineStart <= chunk.startLine <= symbol.lineEnd` -- the chunk's START line must fall strictly inside the symbol's own indexed range. This deliberately does NOT use "nearest symbol by start line": a top-of-file chunk (imports/module header, before any symbol starts) would otherwise get wrongly labelled with whatever symbol happens to sit below it, even though it isn't inside that symbol at all. Chunk boundaries don't always align with symbol boundaries (embeddings.ts's chunkFile folds short boundary ranges into neighbors and can merge across gaps), so a chunk may overlap zero, one, or several symbols -- the START line picks the candidates, the same "does this line belong to a definition" question `read`/`skeleton` already answer elsewhere in this file, and the end line only rules out the several-symbols case below.
 //
 // Among all containing candidates, innermost wins: the smallest range (fewest lines) is preferred, e.g. a method chunk resolves to the method itself, not its enclosing class.
-function resolveEnclosingSymbol(filePath: string, chunkStartLine: number): { name: string; kind: string; lineStart: number } | null {
+// A candidate is also dropped when the chunk reaches a symbol that is neither inside it nor around it: a window chunk on a small file (the leading gap folded forward, short ranges merged together) or two hits merged by mergeNearbyHits can cover several sibling symbols from the first one's opening line, and naming only the first would say the whole range sits inside it. Any start within the chunk counts, not only one past the candidate's last line, because a sibling can open on the line that closes it (`} function next() {`). Nested symbols and ancestors never disqualify, so a run of sibling methods falls back to the class that holds them all.
+// The same holds for code that is no symbol at all: a top-level call or a class field after the candidate drops it, while the trailing blank and comment lines chunkFile folds onto a symbol's own chunk keep their label. An extension with no known comment syntax counts only blank lines as not code, and a file that cannot be read skips the check rather than guess.
+function resolveEnclosingSymbol(filePath: string, chunkStartLine: number, chunkEndLine: number, linesOf: (filePath: string) => readonly string[] | null): { name: string; kind: string; lineStart: number } | null {
   // No rootDir scope here: filePath alone already narrows to the exact file the hit came from (an absolute path from the embeddings index), so an additional project-prefix filter is redundant and, worse, can spuriously exclude the very row being looked up whenever the stored/queried root strings don't normalize identically (e.g. a symlinked or 8.3-short temp path) -- the same file_path equality check every exact-file lookup in read_commands.ts already relies on without a rootDir filter (see its `resolved` lookups). Unbounded (-1), not a finite cap: querySymbols orders by (file_path, line_start), so a per-file cap on a bare filePath query has no predicate left to combine against and silently drops every symbol past the cutoff -- a generated/data-shaped file with more flat top-level declarations than the old 100,000 cap lost its tail (confirmed with a 100,051-symbol fixture), so a hit landing in the last symbol resolved to no enclosing symbol instead of the real one. Same fix and reasoning as ALL_SYMBOLS_IN_FILE_LIMIT in graph_commands.ts.
   const symbols = querySymbols({ filePath, limit: -1 }, globalDbPath())
+  const related = (s: SymbolEntry, t: SymbolEntry): boolean => (t.lineStart >= s.lineStart && t.lineEnd <= s.lineEnd) || (t.lineStart <= s.lineStart && t.lineEnd >= s.lineEnd)
+  const holdsChunk = (s: SymbolEntry): boolean => {
+    if (symbols.some((t) => t !== s && !related(s, t) && t.lineStart >= chunkStartLine && t.lineStart <= chunkEndLine)) return false
+    if (chunkEndLine <= s.lineEnd) return true
+    const lines = linesOf(filePath)
+    return lines === null || onlyBlankOrComment(lines.slice(s.lineEnd, chunkEndLine), commentSyntaxFor(filePath))
+  }
   let best: SymbolEntry | null = null
   for (const s of symbols) {
     if (s.lineStart <= chunkStartLine && chunkStartLine <= s.lineEnd) {
-      if (best === null || s.lineEnd - s.lineStart < best.lineEnd - best.lineStart) {
-        best = s
-      }
+      if ((best === null || s.lineEnd - s.lineStart < best.lineEnd - best.lineStart) && holdsChunk(s)) best = s
     }
   }
   // lineStart is returned alongside name/kind because the fusion key below needs it: a bare name is not unique within a file (two classes can each define a same-named method), and keying on name alone silently collapses two genuinely different symbols into one Map entry, dropping one.
   return best === null ? null : { name: best.name, kind: best.kind, lineStart: best.lineStart }
+}
+
+// True when every line is blank or comment under `syntax`; a block comment counts from its opening marker through the line holding its close.
+function onlyBlankOrComment(lines: readonly string[], syntax: CommentSyntax | null): boolean {
+  let inBlock = false
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (inBlock) {
+      if (syntax?.close !== undefined && trimmed.includes(syntax.close)) inBlock = false
+      continue
+    }
+    if (trimmed === '') continue
+    if (syntax === null) return false
+    if (syntax.open !== undefined && trimmed.startsWith(syntax.open)) {
+      const rest = trimmed.slice(syntax.open.length)
+      if (syntax.close === undefined || !rest.includes(syntax.close)) inBlock = true
+      else if (rest.slice(rest.indexOf(syntax.close) + syntax.close.length).trim() !== '') return false
+      continue
+    }
+    if (!syntax.line.some((p) => trimmed.startsWith(p))) return false
+  }
+  return true
 }
 
 interface SemanticOptions {
@@ -286,8 +316,17 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
 
   // Fuse both candidate lists with Reciprocal Rank Fusion -- a row is keyed by its enclosing symbol (filePath + name + the symbol's own lineStart) when one is known, since that is the only identity both a dense chunk and a BM25 symbol row can genuinely share; the lineStart component matters because name alone is not unique within a file (e.g. a same-named method on two different classes), and dropping it would silently collapse two distinct symbols into one fused row. A dense hit with no resolvable enclosing symbol falls back to filePath + start line, which an FTS row (always symbol-backed) can never collide with, so it simply stays its own row.
   const fused = new Map<string, FusedSemanticHit>()
+  // One read per hit file: several chunks of the same file each check their trailing lines against it.
+  const fileLines = new Map<string, readonly string[] | null>()
+  const linesOf = (p: string): readonly string[] | null => {
+    if (!fileLines.has(p)) {
+      const text = readFileText(p)
+      fileLines.set(p, text === null ? null : text.split(/\r?\n/))
+    }
+    return fileLines.get(p) ?? null
+  }
   mergedHits.forEach((h, denseRank) => {
-    const enclosing = resolveEnclosingSymbol(h.filePath, h.startLine)
+    const enclosing = resolveEnclosingSymbol(h.filePath, h.startLine, h.endLine, linesOf)
     const key = enclosing !== null ? `${h.filePath}::${enclosing.name}@${enclosing.lineStart}` : `${h.filePath}::L${h.startLine}`
     // A long symbol is several chunks, and the list is best-first, so the first chunk to claim a symbol is its best: a later one taking the row would report a worse range at a worse rank.
     if (fused.has(key)) return

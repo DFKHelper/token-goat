@@ -6,7 +6,7 @@ import * as path from 'node:path'
 import { recordCreatedBy, removeCreatedBackups, removeCreatedTree, takeCreatedConfig } from './created_configs.js'
 import { bundledCliPath, dropEmptyServers, hasManagedServer, managedServerEntry, noteRootKeyCreation, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
-import { atomicWriteText, backupFile, ensureDirSync, removeFileInScope } from '../util.js'
+import { backupFile, ensureDirSync, removeFileInScope, writeConfigText } from '../util.js'
 
 const MCP_SERVERS_KEY = 'mcpServers'
 const TOKEN_GOAT_ENTRY_KEY = 'token-goat'
@@ -84,7 +84,7 @@ function installCursorScoped(opts: CursorScopeOptions): CursorInstallResult {
     recordCreatedBy([mcpPath], () => {
       ensureDirSync(path.dirname(mcpPath))
       backupFile(mcpPath)
-      atomicWriteText(mcpPath, nextText)
+      writeConfigText(mcpPath, nextText)
       noteRootKeyCreation(mcpPath, config, MCP_SERVERS_KEY)
     })
   }
@@ -109,7 +109,7 @@ function uninstallCursorScoped(opts: CursorScopeOptions): boolean {
     removeFileInScope(mcpPath)
   } else {
     backupFile(mcpPath)
-    atomicWriteText(mcpPath, next)
+    writeConfigText(mcpPath, next)
   }
   // The timestamped backups this bridge made for mcpPath are token-goat's own litter, so a full uninstall takes them with it.
   removeCreatedBackups(mcpPath)

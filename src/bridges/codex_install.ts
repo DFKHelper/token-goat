@@ -8,7 +8,7 @@ import * as path from 'node:path'
 import { parse, stringify } from 'smol-toml'
 
 import { recordCreatedBy, removeCreatedBackups, removeCreatedTree } from './created_configs.js'
-import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, hookPowershellCommand, stripDelimitedBlock, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock } from '../util.js'
+import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, hookPowershellCommand, stripDelimitedBlock, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock, writeConfigText } from '../util.js'
 import { powershellHookLine } from '../process_util.js'
 import { anchoredMarkerPattern } from '../install.js'
 import { nativeHookBinary, nativeHookCommandLine, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
@@ -443,7 +443,7 @@ function installCodexFiles(): CodexInstallResult {
     backupFile(configPath)
     // Append a delimited block to the user's own text rather than re-serializing the file, which would drop every comment in it; the whole-file rewrite is the fallback for a layout the append cannot express.
     const before = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : ''
-    atomicWriteText(configPath, appendManagedBlock(before, config) ?? stringify(config as Record<string, unknown>))
+    writeConfigText(configPath, appendManagedBlock(before, config) ?? stringify(config as Record<string, unknown>))
   }
 
   return {
@@ -506,17 +506,14 @@ export function uninstallCodex(): boolean {
       const before = fs.readFileSync(configPath, 'utf8')
       const text = removeManagedBlockText(before, config, plan.rekey)
       if (text === undefined) {
-        const rewritten = stringify(config as Record<string, unknown>)
         // A file that stringify(parse()) reproduces exactly has no comments or layout to lose.
         try {
           keepBackups = stringify(parse(before) as Record<string, unknown>) !== before
         } catch {
           keepBackups = true
         }
-        atomicWriteText(configPath, rewritten)
-      } else {
-        atomicWriteText(configPath, text)
       }
+      writeConfigText(configPath, text ?? stringify(config as Record<string, unknown>))
       removedAny = true
     }
   }

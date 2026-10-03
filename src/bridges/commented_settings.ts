@@ -2,7 +2,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { parseJsonOrJsonc, stripBom } from '../jsonc_text.js'
-import { atomicWriteText, backupFile, ensureDirSync, writeJsonSettings } from '../util.js'
+import { backupFile, ensureDirSync, writeConfigText, writeJsonSettings } from '../util.js'
 import { editAt } from './mcp_servers_json.js'
 
 export interface CommentedSettingsOptions {
@@ -58,5 +58,5 @@ export function writeSettingsKeepingComments(p: string, next: unknown, opts: Com
   const edited = applyDiff(body, prev, next, [])
   ensureDirSync(path.dirname(p))
   backupFile(p)
-  atomicWriteText(p, edited.endsWith('\n') ? edited : `${edited}\n`)
+  writeConfigText(p, edited.endsWith('\n') ? edited : `${edited}\n`)
 }

@@ -514,6 +514,14 @@ const BODY_KINDS: ReadonlySet<string> = new Set([
   'sql_function', 'sql_procedure', 'sql_trigger', 'sql_type', 'sql_type_body', 'sql_package', 'sql_package_body', 'sql_rule',
 ])
 
+// A function header with no body opener before its first `;` is one statement (DuckDB `CREATE FUNCTION f(a) AS a + 2;`, SQL-standard `RETURN a + 1;`, a C `AS 'obj'`). BEGIN, DECLARE and a dollar quote open a body, and so does a PL/SQL `RETURN type [modifiers] IS|AS` header, whose first `;` ends a declaration. The PL/SQL form allows only bare words and parenthesised groups between the type and IS|AS, at most 16 of them (the longest real modifier run, RESULT_CACHE RELIES_ON (...) AUTHID ... PIPELINED, is about a dozen, and the bound keeps a header full of RETURNs linear), and never an IS predicate (`IS NULL`, `IS NOT ...`), so an IS or CAST(... AS ...) inside an expression body opens nothing. Procedures stay unpinned: a T-SQL procedure body runs on past its first `;` without a BEGIN.
+const BODY_OPENER_RE = /\b(?:BEGIN|DECLARE)\b|\$\w*\$|\bRETURN\s+[\w$#.%]+(?:\s+[\w$#.%=]+|\s*\([^()]*\)){0,16}?\s+(?:IS|AS)\b(?!\s+(?:NOT|NULL|TRUE|FALSE|DISTINCT|UNKNOWN)\b)/i
+// A quoted identifier is a name whatever it spells, so `"begin"`, `` `declare` `` and `[is]` are blanked before the opener test.
+const QUOTED_IDENTIFIER_RE = /"[^"]*"|`[^`]*`|\[[^\]]*\]/g
+function isBodylessFunction(kind: string, header: string): boolean {
+  return kind === 'sql_function' && !BODY_OPENER_RE.test(header.replace(QUOTED_IDENTIFIER_RE, ' '))
+}
+
 // Walk a span's end back over trailing lines that are blank once comments are stripped, bounded by the span's own first line.
 function trimBlankTail(lines: readonly string[], start: number, end: number): number {
   let e = end
@@ -564,7 +572,7 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
           const line = offsetToLine(lineIndex, m.index ?? 0)
           createStarts.push(m.index ?? 0)
           const semiIdx = findStatementTerminator(noStrings, m.index ?? 0)
-          if (semiIdx !== -1 && (offsetToLine(lineIndex, semiIdx) === line || !BODY_KINDS.has(kind))) {
+          if (semiIdx !== -1 && (offsetToLine(lineIndex, semiIdx) === line || !BODY_KINDS.has(kind) || isBodylessFunction(kind, noStrings.slice(m.index ?? 0, semiIdx)))) {
             // kind must be part of the key, same reasoning as makeSymbolEmitter's own `seen`
             // key: a name can legitimately repeat across kinds on the same line (e.g. a
             // same-line `CREATE TABLE foo (...); CREATE FUNCTION foo() ...`), and a name+line-

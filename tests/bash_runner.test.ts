@@ -13,7 +13,7 @@ const _savedLocal = process.env['LOCALAPPDATA']
 const _savedXdg = process.env['XDG_DATA_HOME']
 process.env['LOCALAPPDATA'] = DATA_DIR_TMP
 process.env['XDG_DATA_HOME'] = DATA_DIR_TMP
-const { resolveFilter, run, runRaw } = await import('../src/bash_runner.js')
+const { resolveFilter, run, runRaw, unknownFilterNotice } = await import('../src/bash_runner.js')
 const { defaultConfig, invalidateConfigCache, saveConfig } = await import('../src/config.js')
 const { configPath } = await import('../src/constants.js')
 const { getBashOutput } = await import('../src/bash_output_cache.js')
@@ -370,6 +370,18 @@ describe('compress command (built-bundle e2e)', () => {
     expect(r.status).toBe(3)
   })
 
+  // HAND-DERIVED: `az` is the Azure CLI's own binary name, the natural thing to type, while its filter registers as `azure-cli`; an unknown name used to fall through to auto-detect without a word, so the output came back uncompressed and looked like a filter that does nothing.
+  it('says so on stderr when --filter names no filter, and still runs the command', () => {
+    const s = script('e2e-unknown.js', "console.log('still-ran')\nprocess.exit(4)\n")
+    const r = compress(['--filter', 'az', '--cmd', nodeCmd(s)])
+    expect(r.status).toBe(4)
+    expect(r.stdout).toContain('still-ran')
+    expect(r.stderr).toContain('no filter named "az"')
+    expect(r.stderr).toContain('did you mean azure-cli?')
+    const known = compress(['--filter', 'generic', '--cmd', nodeCmd(s)])
+    expect(known.stderr).not.toContain('no filter named')
+  })
+
   it('--no-compress streams raw output and preserves the exit code', () => {
     const s = script('e2e-raw.js', "console.log('raw-line')\nprocess.exit(5)\n")
     const r = compress(['--no-compress', '--cmd', nodeCmd(s)])
@@ -405,5 +417,25 @@ describe('resolveFilter cwd default', () => {
     } finally {
       fs.rmSync(other, { recursive: true, force: true })
     }
+  })
+})
+
+describe('unknownFilterNotice', () => {
+  // HAND-DERIVED: the names are the registered filter names (`azure-cli`, `aws-cli`, `bazel`, `lazygit`) and the expected hints are computed by hand from which of them have a dash-separated word starting with the typed text.
+  it('suggests names whose word starts with the typed text, not names that merely contain it', () => {
+    const notice = unknownFilterNotice('az', null)
+    expect(notice).toContain('did you mean azure-cli?')
+    expect(notice).not.toContain('bazel')
+    expect(notice).not.toContain('lazygit')
+    expect(notice).toContain('running it uncompressed')
+  })
+
+  it('offers no hint when nothing is close', () => {
+    expect(unknownFilterNotice('zzqx', null)).toBe('[token-goat: no filter named "zzqx", running it uncompressed]\n')
+  })
+
+  it('reports a known filter as unknownFilter only when the name is not registered', () => {
+    expect(resolveFilter('node -e 1', 'generic', undefined).unknownFilter).toBeUndefined()
+    expect(resolveFilter('node -e 1', 'az', undefined).unknownFilter).toBe('az')
   })
 })

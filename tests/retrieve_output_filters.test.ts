@@ -85,8 +85,32 @@ describe('retrieve output filters', () => {
 
     const r = runIsolated(['retrieve', id])
     expect(r.status, r.stderr).toBe(0)
-    expect(r.stdout.replace(/\n$/, '')).toBe(text)
+    expect(r.stdout).toBe(text)
     expect(r.stdout).not.toContain('...(elided lines ')
+  })
+
+  // HAND-DERIVED: the stored text carries an SGR colour code and CRLF line endings, and the lossless contract means both come back exactly as stored, with or without --full.
+  it('bare retrieve and retrieve --full keep ANSI codes and CRLF line endings byte-verbatim', () => {
+    const text = 'build \u001b[31mfailed\u001b[0m\r\nsecond line\r\nthird line'
+    const id = retrieveIdFor(text)
+    for (const args of [['retrieve', id], ['retrieve', id, '--full']]) {
+      const r = runIsolated(args)
+      expect(r.status, r.stderr).toBe(0)
+      expect(r.stdout, args.join(' ')).toBe(text)
+    }
+    // A narrowing flag is an explicit slice, and slices are rendered plain like every sibling recall.
+    const grep = runIsolated(['retrieve', id, '--grep', 'failed'])
+    expect(grep.stdout.trim()).toBe('build failed')
+    // -n is a rendering the caller asked for, so it numbers lines rather than echoing the bytes; --context without --grep is still refused.
+    expect(runIsolated(['retrieve', id, '-n']).stdout).toBe('1:build failed\n2:second line\n3:third line\n')
+    expect(runIsolated(['retrieve', id, '--context', '1']).status).toBe(1)
+  })
+
+  // HAND-DERIVED: a stored text that ends without a newline comes back without one, and one that ends with a newline keeps exactly that one; appending a newline made `retrieve <id> > file` differ from the file compress-text read.
+  it('bare retrieve adds no trailing newline the stored text did not have', () => {
+    for (const text of ['no newline at end', 'ends with one\n', 'ends with two\n\n']) {
+      expect(runIsolated(['retrieve', retrieveIdFor(text)]).stdout, JSON.stringify(text)).toBe(text)
+    }
   })
 
   it('--section extracts just the named section', () => {

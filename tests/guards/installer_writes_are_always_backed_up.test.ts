@@ -57,7 +57,7 @@ function functionBodies(code: string): Array<{ name: string; body: string; start
   return out
 }
 
-const WRITE_CALL_RE = /\b(atomicWriteText|writeFileSync|writeIfDifferent|writeJsonSettings|upsertDelimitedBlock|stripDelimitedBlock)\s*\(/g
+const WRITE_CALL_RE = /\b(atomicWriteText|writeConfigText|writeFileSync|writeIfDifferent|writeJsonSettings|upsertDelimitedBlock|stripDelimitedBlock)\s*\(/g
 
 interface WriteSite {
   readonly file: string
@@ -117,7 +117,7 @@ function scan(): WriteSite[] {
 describe('every installer write site backs up the file it overwrites', () => {
   const allSites = scan()
   const population = pinnedPopulation({
-    what: 'installer write sites (atomicWriteText/writeFileSync/writeIfDifferent/writeJsonSettings/upsertDelimitedBlock/stripDelimitedBlock calls in src/install.ts and src/bridges/*_install.ts)',
+    what: 'installer write sites (atomicWriteText/writeConfigText/writeFileSync/writeIfDifferent/writeJsonSettings/upsertDelimitedBlock/stripDelimitedBlock calls in src/install.ts and src/bridges/*_install.ts)',
     items: allSites.map((s) => `${s.file}::${s.fn}::${s.call}`),
     floor: 30,
     // EXACT, not substring. These two anchors were `mustInclude` and one of them was already a near-miss: `vscode_install.ts::installVscode` kept matching after every write in that function moved into a new `installVscodeScoped` wrapper, purely because the new name CONTAINS the old one. The anchor was green while pinned to a function with no write site left in it, and it would have survived deleting `installVscode` entirely. Repinned to `installVscodeScoped`, which is where the writes actually are, and matched at a `::` boundary so the next rename fails loudly instead. `installSkill` went the same way when `install -p` gave the skill a project destination: its writes now live in `installSkillScoped`, so that is the pinned member.

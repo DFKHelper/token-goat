@@ -1,7 +1,7 @@
 // Cloud provider CLI filters (Batch G): aws/aws2, gcloud and az. Each is a faithful TypeScript port of its Python counterpart in bash_compress.py, and CLOUD_FILTERS in cloud.ts sets its dispatch position: AwsCliFilter, which owns the CloudFormation and S3 routing, must precede AwsFilter, the simpler JSON-array fallback, since both match `aws`/`aws2`.
 
 import { ToolFilter } from './base.js'
-import { maybeNote, positionalArgs, truncateTableRows } from './helpers.js'
+import { clipWideLines, maybeNote, positionalArgs, truncateTableRows } from './helpers.js'
 
 // --------------------------------------------------------------------------- JSON array helpers shared by AwsCliFilter and AzureCliFilter ---------------------------------------------------------------------------
 
@@ -15,27 +15,26 @@ function _tryCompressJsonArray(text: string, threshold: number, keep: number): s
     return null
   }
   let changed = false
-  if (Array.isArray(data) && data.length > threshold) {
-    const original = data.length
-    data = [...data.slice(0, keep), { __token_goat__: `${original} items (showing first ${keep})` }]
-    changed = true
-  } else if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
-    const obj = data as Record<string, unknown>
-    for (const key of Object.keys(obj)) {
-      const value = obj[key]
-      if (Array.isArray(value) && value.length > threshold) {
-        const original = value.length
-        obj[key] = [
-          ...value.slice(0, keep),
-          { __token_goat__: `${original} items (showing first ${keep})` },
-        ]
-        changed = true
-      }
+  // Nested arrays count too: `aws ec2 describe-instances` puts every instance of one launch under `Reservations[0].Instances`, so a top-level-only pass left an Auto Scaling group's hundreds of instances whole. The depth bound keeps a pathological document from recursing without end.
+  const shrink = (value: unknown, depth: number): unknown => {
+    if (value === null || typeof value !== 'object' || depth > _JSON_ARRAY_MAX_DEPTH) return value
+    if (Array.isArray(value)) {
+      const kept = value.length > threshold ? value.slice(0, keep) : value
+      const out = kept.map((item) => shrink(item, depth + 1))
+      if (kept === value) return out
+      changed = true
+      return [...out, { __token_goat__: `${value.length} items (showing first ${keep})` }]
     }
+    const obj = value as Record<string, unknown>
+    for (const key of Object.keys(obj)) obj[key] = shrink(obj[key], depth + 1)
+    return obj
   }
+  data = shrink(data, 0)
   if (!changed) return null
   return JSON.stringify(data, null, 2)
 }
+
+const _JSON_ARRAY_MAX_DEPTH = 6
 
 // --------------------------------------------------------------------------- AwsFilter  (simpler JSON list truncation — registered AFTER AwsCliFilter) ---------------------------------------------------------------------------
 
@@ -43,6 +42,11 @@ export class AwsFilter extends ToolFilter {
   readonly name = 'aws'
   override readonly binaries = new Set(['aws', 'aws2'])
   override readonly errorPassthrough = true
+
+  // `--filter aws` selects this filter by name, so it parses the same indented documents AwsCliFilter does and needs the same exemption from the input clip.
+  protected override consumesWholeJson(argv: string[]): boolean {
+    return awsConsumesWholeJson(argv)
+  }
 
   protected override compressBody(
     stdout: string,
@@ -55,7 +59,8 @@ export class AwsFilter extends ToolFilter {
     if (compressed !== null) {
       text = compressed
     } else if (text.includes('\n') && text.includes('|')) {
-      // table output — use kubectl-style row truncation
+      // A JSON document skips the input clip (consumesWholeJson), so bound its lines before the table pass sees them; table output uses kubectl-style row truncation.
+      text = clipWideLines(text)
       text = _compressTable(text, 25)
     }
     if (stderr.trim()) {
@@ -92,6 +97,20 @@ const AWS_GLOBAL_VALUE_FLAGS = new Set([
   '--cli-pager',
 ])
 
+function isS3Transfer(positionals: string[]): boolean {
+  return (
+    positionals.length >= 2 &&
+    positionals[0] === 's3' &&
+    // `rm` belongs here for the failure path, not the volume one: `aws s3 rm --recursive` reports `delete failed:` per object, and routing it anywhere else meant those lines were never counted. Its `delete:` success lines are not folded into a count -- only `upload:`/`download:` are -- so adding it drops nothing that used to survive.
+    (positionals[1] === 'cp' || positionals[1] === 'sync' || positionals[1] === 'mv' || positionals[1] === 'rm')
+  )
+}
+
+// aws prints indented JSON, so one string value past the clip width (a log message, a policy document, base64 UserData) left the document unparseable once clipped and the array was never truncated.
+function awsConsumesWholeJson(argv: string[]): boolean {
+  return !isS3Transfer(positionalArgs(argv.slice(1), AWS_GLOBAL_VALUE_FLAGS))
+}
+
 // --------------------------------------------------------------------------- AwsCliFilter  (enhanced — registered BEFORE AwsFilter) ---------------------------------------------------------------------------
 
 export class AwsCliFilter extends ToolFilter {
@@ -102,6 +121,10 @@ export class AwsCliFilter extends ToolFilter {
   private readonly _JSON_ARRAY_THRESHOLD = 10
   private readonly _JSON_ARRAY_KEEP = 3
 
+  protected override consumesWholeJson(argv: string[]): boolean {
+    return awsConsumesWholeJson(argv)
+  }
+
   protected override compressBody(
     stdout: string,
     stderr: string,
@@ -109,18 +132,13 @@ export class AwsCliFilter extends ToolFilter {
     argv: string[],
   ): string {
     const positionals = positionalArgs(argv.slice(1), AWS_GLOBAL_VALUE_FLAGS)
-    const isS3Transfer =
-      positionals.length >= 2 &&
-      positionals[0] === 's3' &&
-      // `rm` belongs here for the failure path, not the volume one: `aws s3 rm --recursive` reports `delete failed:` per object, and routing it anywhere else meant those lines were never counted. Its `delete:` success lines are not folded into a count -- only `upload:`/`download:` are -- so adding it drops nothing that used to survive.
-      (positionals[1] === 'cp' || positionals[1] === 'sync' || positionals[1] === 'mv' || positionals[1] === 'rm')
     const isCfnEvents =
       positionals.length >= 2 &&
       positionals[0] === 'cloudformation' &&
       positionals[1] === 'describe-stack-events'
 
     let text = stdout
-    if (isS3Transfer) {
+    if (isS3Transfer(positionals)) {
       text = this._compressS3Transfer(text)
     } else if (isCfnEvents) {
       const compressed = this._compressCfnStackEvents(text)
@@ -134,7 +152,9 @@ export class AwsCliFilter extends ToolFilter {
       if (compressed !== null) {
         text = compressed
       } else if (text.includes('\n') && text.includes('|')) {
-        // `--output table` results (e.g. `aws ec2 describe-instances --output table`) are not JSON, so _tryCompressJsonArray never fires. AwsCliFilter always wins dispatch over AwsFilter for real aws commands (see CLOUD_FILTERS ordering), so this fallback must live here — AwsFilter's copy below is unreachable in practice.
+        // A JSON document skips the input clip (consumesWholeJson), so bound its lines before the line-oriented table pass sees them.
+        text = clipWideLines(text)
+        // `--output table` results (e.g. `aws ec2 describe-instances --output table`) are not JSON, so _tryCompressJsonArray never fires. AwsCliFilter always wins dispatch over AwsFilter for real aws commands (see CLOUD_FILTERS ordering), so this fallback must live here; AwsFilter keeps its own copy for `--filter aws`, which selects it by name.
         text = _compressTable(text, 25)
       }
     }
@@ -348,6 +368,11 @@ export class AzureCliFilter extends ToolFilter {
   override readonly binaries = new Set(['az'])
   override readonly errorPassthrough = true
 
+  // az prints indented JSON too, with the same failure: a wide string value made the clipped document unparseable.
+  protected override consumesWholeJson(_argv: string[]): boolean {
+    return true
+  }
+
   protected override compressBody(
     stdout: string,
     stderr: string,
@@ -368,7 +393,8 @@ export class AzureCliFilter extends ToolFilter {
     const compressed = _tryCompressJsonArray(text, _AZ_JSON_ARRAY_THRESHOLD, _AZ_JSON_ARRAY_KEEP)
     if (compressed !== null) return compressed
 
-    const lines = text.split('\n')
+    // A JSON document skips the input clip (consumesWholeJson), so bound its lines before the line regexes below see them.
+    const lines = clipWideLines(text).split('\n')
     const kept: string[] = []
     let previewDropped = 0
     let lastProgressStatus: string | null = null

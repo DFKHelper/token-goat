@@ -292,8 +292,8 @@ export abstract class ToolFilter {
 
     // Step 2b: bound every line's width before normalisation or any per-tool filter regex runs. The byte clamp above bounds a stream, not a line, and the filter regexes are line-oriented with polynomial backtracking suppressed on the premise that a line is short. Nothing enforced that premise.
     so = this.preClip(so, argv)
-    // A filter that parses the whole stdout as JSON declares it, and then skips the clip when the stream really is one JSON value: the clip would cut the document and make its JSON.parse fail.
-    const soClipped = this.consumesWholeJson(argv) && isWholeJsonDocument(so) ? so : clipWideLines(so)
+    // A filter that parses the whole stdout as JSON declares it, and then skips the clip when the stream really is one JSON value: the clip would cut the document and make its JSON.parse fail. The test looks past colour codes (az `-o jsonc`) because normalise strips them before the filter parses.
+    const soClipped = this.consumesWholeJson(argv) && isWholeJsonDocument(stripAnsiEscapes(so)) ? so : clipWideLines(so)
     const seClipped = clipWideLines(se)
     if (soClipped !== so || seClipped !== se) {
       so = soClipped

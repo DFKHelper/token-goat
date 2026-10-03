@@ -463,13 +463,48 @@ function isTomlFragment(v: string): boolean {
   return (v.startsWith('[') && !v.endsWith(']')) || (v.startsWith('{') && !v.endsWith('}'))
 }
 
-/** Resolve a dotted `key` against parsed TOML, trying longer dotted prefixes as one key so a quoted key containing a dot still resolves. */
-function resolveTomlKey(node: unknown, parts: readonly string[]): unknown {
+/** One part of a config-get TOML key path; `joinable` is false for a part only quoting could have produced, so it is never merged with a neighbour into one dotted key. */
+interface TomlKeyPart {
+  name: string
+  joinable: boolean
+}
+
+const TOML_BARE_KEY = /^[A-Za-z0-9_-]+$/
+
+/** Split a config-get key the way TOML splits a dotted key, by handing `<key> = 0` and `<key> = 1` to the same parser: a "double" or 'single' quoted segment stays one part with its dots and escapes as TOML reads them, so `site."google.com"` names the quoted key even when a `[site.google]` table also matches the unquoted spelling. Two probe values are needed because key text such as `a = 0 #` carries a value and comments out the probe's; it reads the same under both probes only if it is a key and nothing more. A key that is not a valid TOML key falls back to a plain split on every dot. */
+function splitTomlKeyPath(key: string): TomlKeyPart[] {
+  const zero = tomlProbePath(key, 0)
+  const one = tomlProbePath(key, 1)
+  if (zero === null || one === null || JSON.stringify(zero) !== JSON.stringify(one)) return key.split('.').map((name) => ({ name, joinable: true }))
+  return zero.map((name) => ({ name, joinable: TOML_BARE_KEY.test(name) }))
+}
+
+/** The key parts TOML reads from the line `<key> = <value>`, or null unless that line holds exactly one key path whose value is `value`. */
+function tomlProbePath(key: string, value: number): string[] | null {
+  const parts: string[] = []
+  try {
+    let node: unknown = parseToml(`${key} = ${value}`)
+    while (typeof node === 'object' && node !== null && !Array.isArray(node)) {
+      const keys = Object.keys(node)
+      if (keys.length !== 1) return null
+      const k = keys[0] as string
+      parts.push(k)
+      node = (node as Record<string, unknown>)[k]
+    }
+    return node === value && parts.length > 0 ? parts : null
+  } catch {
+    return null
+  }
+}
+
+/** Resolve a dotted `key` against parsed TOML, trying longer runs of unquoted parts as one key so a quoted key containing a dot still resolves from its unquoted spelling; a quoted part is never merged with its neighbours. */
+function resolveTomlKey(node: unknown, parts: readonly TomlKeyPart[]): unknown {
   if (parts.length === 0) return node
   if (typeof node !== 'object' || node === null || Array.isArray(node) || node instanceof Date) return undefined
   const table = node as Record<string, unknown>
   for (let n = 1; n <= parts.length; n++) {
-    const head = parts.slice(0, n).join('.')
+    if (n > 1 && !((parts[0] as TomlKeyPart).joinable && (parts[n - 1] as TomlKeyPart).joinable)) break
+    const head = parts.slice(0, n).map((p) => p.name).join('.')
     if (!Object.hasOwn(table, head)) continue
     const found = resolveTomlKey(table[head], parts.slice(n))
     if (found !== undefined) return found
@@ -485,7 +520,7 @@ function lookupToml(text: string, key: string): string | null | undefined {
   } catch {
     return undefined
   }
-  const found = resolveTomlKey(doc, key.split('.'))
+  const found = resolveTomlKey(doc, splitTomlKeyPath(key))
   if (found === undefined) return null
   if (typeof found === 'string') return found
   if (typeof found === 'object' && found !== null && !(found instanceof Date)) {

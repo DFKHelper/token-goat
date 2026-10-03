@@ -96,8 +96,13 @@ export function _applyFiltersAndPrint(
   if (opts.lines !== undefined) {
     const { from, to } = parseLineRange(opts.lines)
     const total = dropPhantom(rows).length
-    if (from > total) throw new CliError(`--lines ${opts.lines} is past the end: the text has ${total} lines`)
-    rows = rows.slice(from - 1, Math.min(to, total))
+    // The range is in the same numbering -n prints, so after --section it counts from the stored text's first line, not the section's.
+    const last = firstLine + total - 1
+    if (opts.section !== undefined && (from > last || to < firstLine)) {
+      throw new CliError(`--lines ${opts.lines} is outside section '${opts.section}', which covers lines ${firstLine}-${last}`)
+    }
+    if (from > last) throw new CliError(`--lines ${opts.lines} is past the end: the text has ${total} lines`)
+    rows = rows.slice(Math.max(from, firstLine) - firstLine, Math.min(to, last) - firstLine + 1)
     ranged = true
   }
 
@@ -144,7 +149,7 @@ export function _applyFiltersAndPrint(
     rows = next
   }
 
-  // --full is the only way to get the stored blob back verbatim. The blob store itself is lossless, but every render path below elides the middle past head+tail, so without this flag an elision marker pointing a reader at `mcp-output <id>` promises a full report the CLI cannot actually produce -- which is exactly what hooks_agent_spawn.ts's envelope compaction relies on. Deliberately bypasses only the elision, not --section/--grep/--max-matches above: those are explicit narrowing the caller asked for.
+  // --full is the only way to get the whole stored blob back (colour codes stripped, as on every path here; `retrieve` with no flag bypasses this function for its byte-verbatim contract). The blob store itself is lossless, but every render path below elides the middle past head+tail, so without this flag an elision marker pointing a reader at `mcp-output <id>` promises a full report the CLI cannot actually produce -- which is exactly what hooks_agent_spawn.ts's envelope compaction relies on. Deliberately bypasses only the elision, not --section/--grep/--max-matches above: those are explicit narrowing the caller asked for.
   if (opts.full === true) {
     // With -n the trailing "" after a final newline would print as a bare `N:` line that is not in the text, so number only the real lines and keep the newline.
     const real = dropPhantom(rows)
