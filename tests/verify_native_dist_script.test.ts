@@ -39,7 +39,7 @@ function tlv(tag: number, body: Buffer | readonly number[], longForm = false): B
   return Buffer.concat([Buffer.from([tag, ...length]), content])
 }
 
-type Envelope = { algorithm?: Buffer; contentType?: Buffer; digestTag?: number; signers?: Buffer; certificates?: boolean; longForm?: boolean }
+type Envelope = { algorithm?: Buffer; contentType?: Buffer; digestTag?: number; signers?: Buffer; certificates?: boolean; longForm?: boolean; afterSigners?: Buffer }
 
 /** An Authenticode ContentInfo signing `digest`: SignedData { version, digestAlgorithms, encapContentInfo { SPC_INDIRECT_DATA, [0] SpcIndirectDataContent { SpcAttributeTypeAndOptionalValue { SPC_PE_IMAGE_DATA, SpcPeImageData }, DigestInfo { algorithm, digest } } }, [0] certificates and [1] crls when asked, signerInfos }. The signer is a placeholder SEQUENCE, since the check stops at whether one exists. */
 function authenticodeContentInfo(digest: Buffer, opts: Envelope = {}): Buffer {
@@ -49,8 +49,52 @@ function authenticodeContentInfo(digest: Buffer, opts: Envelope = {}): Buffer {
   const imageData = tlv(0x30, Buffer.concat([OID_SPC_PE_IMAGE_DATA, tlv(0x30, [0x03, 0x01, 0x00])]), long)
   const encap = tlv(0x30, Buffer.concat([opts.contentType ?? OID_SPC_INDIRECT_DATA, tlv(0xa0, tlv(0x30, Buffer.concat([imageData, digestInfo]), long), long)]), long)
   const extras = opts.certificates === true ? [tlv(0xa0, tlv(0x30, digestInfo)), tlv(0xa1, tlv(0x30, [0x02, 0x01, 0x00]))] : []
-  const signedData = tlv(0x30, Buffer.concat([Buffer.from([0x02, 0x01, 0x01]), tlv(0x31, algorithm), encap, ...extras, tlv(0x31, opts.signers ?? tlv(0x30, [0x02, 0x01, 0x01]))]), long)
+  const signedData = tlv(0x30, Buffer.concat([Buffer.from([0x02, 0x01, 0x01]), tlv(0x31, algorithm), encap, ...extras, tlv(0x31, opts.signers ?? tlv(0x30, [0x02, 0x01, 0x01])), opts.afterSigners ?? Buffer.alloc(0)]), long)
   return tlv(0x30, Buffer.concat([Buffer.from(OID_SIGNED_DATA), tlv(0xa0, signedData, long)]), long)
+}
+
+/** `pe` with `extra` zero bytes appended and its certificate table's size grown to cover them, leaving the hashed bytes and the WIN_CERTIFICATE untouched. */
+function grownCertificateTable(pe: Buffer, extra: number): Buffer {
+  const out = Buffer.concat([pe, Buffer.alloc(extra)])
+  const at = certificateDirectoryAt(out)
+  out.writeUInt32LE(out.readUInt32LE(at + 4) + extra, at + 4)
+  return out
+}
+
+/** `pe` with its certificate table cut back to exactly the WIN_CERTIFICATE's dwLength, dropping the quadword padding, so the table size is the unpadded length. */
+function unpaddedCertificateTable(pe: Buffer): Buffer {
+  const at = certificateDirectoryAt(pe)
+  const offset = pe.readUInt32LE(at)
+  const out = Buffer.from(pe.subarray(0, offset + pe.readUInt32LE(offset)))
+  out.writeUInt32LE(out.readUInt32LE(offset), at + 4)
+  return out
+}
+
+/** How many bytes the DER element at the start of `der` spans: tag, the short-form length or the long form's count of length octets, then the body. */
+function derSpan(der: Buffer): number {
+  const first = der[1]!
+  if (first < 0x80) return 2 + first
+  let body = 0
+  for (let i = 0; i < (first & 0x7f); i++) body = body * 256 + der[2 + i]!
+  return 2 + (first & 0x7f) + body
+}
+
+/** The body of the DER element at the start of `der`, without its tag and length. */
+function derBody(der: Buffer): Buffer {
+  return der.subarray(der[1]! < 0x80 ? 2 : 2 + (der[1]! & 0x7f), derSpan(der))
+}
+
+/** `pe` with its WIN_CERTIFICATE re-laid around `edit` of the ContentInfo it holds, followed by exactly `tail`, with dwLength and the table size both set to the result and no quadword padding, so `tail` is every byte between the DER and the end of the table. The image digest skips the table, so the signature still matches. */
+function rewrappedCertificate(pe: Buffer, tail: Buffer, edit: (der: Buffer) => Buffer = (der) => der): Buffer {
+  const at = certificateDirectoryAt(pe)
+  const offset = pe.readUInt32LE(at)
+  const der = pe.subarray(offset + 8, offset + 8 + derSpan(pe.subarray(offset + 8)))
+  const header = Buffer.from(pe.subarray(offset, offset + 8))
+  const content = Buffer.concat([edit(Buffer.from(der)), tail])
+  header.writeUInt32LE(8 + content.length, 0)
+  const out = Buffer.concat([pe.subarray(0, offset), header, content])
+  out.writeUInt32LE(8 + content.length, at + 4)
+  return out
 }
 
 /** A WIN_CERTIFICATE (dwLength, wRevision 0x0200, wCertificateType 0x0002 PKCS_SIGNED_DATA, bCertificate) holding `content`, padded to the quadword boundary the spec requires. */
@@ -315,6 +359,57 @@ describe('peSignatureProblem (FORMAT-DERIVED)', () => {
     expect(peSignatureProblem(Buffer.concat([pe, Buffer.alloc(8)]), IMAGE_FILE_MACHINE_AMD64)).toBe('has data after its certificate table, which the signature does not cover')
   })
 
+  it('refuses bytes appended inside a certificate table grown to cover them, since the table size is outside the digest', () => {
+    const pe = withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64))
+    expect(peSignatureProblem(grownCertificateTable(pe, 16), IMAGE_FILE_MACHINE_AMD64)).toBe('has 19 bytes in its certificate table beyond its WIN_CERTIFICATE, which the signature does not cover')
+    expect(peSignatureProblem(grownCertificateTable(pe, 8), IMAGE_FILE_MACHINE_AMD64)).toBe('has 11 bytes in its certificate table beyond its WIN_CERTIFICATE, which the signature does not cover')
+  })
+
+  it('accepts a certificate table sized to its WIN_CERTIFICATE without the quadword padding, which covers no extra bytes', () => {
+    const pe = unpaddedCertificateTable(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64)))
+    expect(pe.length % 8).not.toBe(0)
+    expect(peSignatureProblem(pe, IMAGE_FILE_MACHINE_AMD64)).toBeUndefined()
+  })
+
+  // HAND-DERIVED from the size rule (the table is its WIN_CERTIFICATE, or that padded to a quadword): growing an unpadded table by k bytes is allowed only when it lands on the quadword boundary.
+  it('allows a table to grow past its WIN_CERTIFICATE only up to the next quadword boundary', () => {
+    const signed = withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64))
+    const offset = signed.readUInt32LE(certificateDirectoryAt(signed))
+    const base = rewrappedCertificate(signed, Buffer.alloc(0))
+    const length = base.readUInt32LE(offset)
+    expect(length % 8).not.toBe(0)
+    for (let k = 1; k <= 7; k++) {
+      const expected = (length + k) % 8 === 0 ? undefined : `has ${k} bytes in its certificate table beyond its WIN_CERTIFICATE, which the signature does not cover`
+      expect(peSignatureProblem(grownCertificateTable(base, k), IMAGE_FILE_MACHINE_AMD64), `grown by ${k}`).toBe(expected)
+    }
+  })
+
+  it('refuses bytes after the signature inside the WIN_CERTIFICATE, beyond up to 7 zero bytes of padding', () => {
+    const pe = withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64))
+    const problem = (tail: Buffer, edit?: (der: Buffer) => Buffer): string | undefined => peSignatureProblem(rewrappedCertificate(pe, tail, edit), IMAGE_FILE_MACHINE_AMD64)
+    expect(problem(Buffer.alloc(0))).toBeUndefined()
+    expect(problem(Buffer.alloc(7))).toBeUndefined()
+    expect(problem(Buffer.alloc(4000, 0x41))).toBe('has 4000 bytes in its certificate table after its signature, which the signature does not cover')
+    expect(problem(Buffer.alloc(8))).toBe('has 8 bytes in its certificate table after its signature, which the signature does not cover')
+    expect(problem(Buffer.from([0, 0, 0x41]))).toBe('pads its signature with non-zero bytes, which the signature does not cover')
+    expect(problem(Buffer.from([0x41]))).toBe('pads its signature with non-zero bytes, which the signature does not cover')
+  })
+
+  it('refuses bytes tucked inside the ContentInfo, its [0] wrapper, or the SignedData after the signers', () => {
+    const pe = withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64))
+    const payload = Buffer.alloc(190, 0x41)
+    const afterExplicit = (der: Buffer): Buffer => tlv(0x30, Buffer.concat([derBody(der), tlv(0x04, payload)]))
+    const insideExplicit = (der: Buffer): Buffer => {
+      const body = derBody(der)
+      const oid = body.subarray(0, derSpan(body))
+      return tlv(0x30, Buffer.concat([oid, tlv(0xa0, Buffer.concat([derBody(body.subarray(oid.length)), payload]))]))
+    }
+    const nested = 'has a WIN_CERTIFICATE whose ContentInfo holds bytes after its signedData, which the signature does not cover'
+    expect(peSignatureProblem(rewrappedCertificate(pe, Buffer.alloc(0), afterExplicit), IMAGE_FILE_MACHINE_AMD64)).toBe(nested)
+    expect(peSignatureProblem(rewrappedCertificate(pe, Buffer.alloc(0), insideExplicit), IMAGE_FILE_MACHINE_AMD64)).toBe(nested)
+    expect(peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), { afterSigners: tlv(0x04, payload) }), IMAGE_FILE_MACHINE_AMD64)).toBe('has a WIN_CERTIFICATE whose signedData holds bytes after its signers, which the signature does not cover')
+  })
+
   it('refuses an envelope with no signer, an unknown digest algorithm, a non-Authenticode content type, or no digest', () => {
     const problem = (opts: Envelope): string | undefined => peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), opts), IMAGE_FILE_MACHINE_AMD64)
     expect(problem({ signers: Buffer.alloc(0) })).toBe('has a WIN_CERTIFICATE whose signedData has no signer')
@@ -334,6 +429,14 @@ describe('peSignatureProblem (FORMAT-DERIVED)', () => {
     flipped[0x2000] ^= 1
     expect(peSignatureProblem(flipped, machine)).toBe('has an Authenticode signature whose image digest does not match the file, so the signature belongs to other bytes')
     expect(peSignatureProblem(Buffer.concat([node, Buffer.alloc(8)]), machine)).toBe('has data after its certificate table, which the signature does not cover')
+    expect(peSignatureProblem(grownCertificateTable(node, 1080), machine)).toMatch(/^has 1080 bytes in its certificate table beyond its WIN_CERTIFICATE/)
+    // node.exe pads its DER with one zero byte inside dwLength; that byte is not signed, so it must stay zero, and a payload laid inside dwLength in its place is refused.
+    const offset = node.readUInt32LE(certificateDirectoryAt(node))
+    const padded = Buffer.from(node)
+    padded[offset + node.readUInt32LE(certificateDirectoryAt(node) + 4) - 1] = 0x41
+    expect(peSignatureProblem(padded, machine)).toBe('pads its signature with non-zero bytes, which the signature does not cover')
+    expect(peSignatureProblem(rewrappedCertificate(node, Buffer.alloc(4000, 0x41)), machine)).toBe('has 4000 bytes in its certificate table after its signature, which the signature does not cover')
+    expect(peSignatureProblem(rewrappedCertificate(node, Buffer.alloc(0)), machine)).toBeUndefined()
   })
 
   it('refuses a PE built for the other architecture', () => {

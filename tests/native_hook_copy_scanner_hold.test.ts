@@ -94,7 +94,7 @@ describe('syncNativeCopy when the scanner hold outlasts the retries', () => {
     expect(fs.existsSync(dest)).toBe(false)
   })
 
-  it('puts the older copy back where hooks already name it', () => {
+  it('leaves the older copy where hooks already name it when the new copy cannot be readied', () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-native-hold-'))
     const src = path.join(root, 'tg-hook.exe')
     const dest = path.join(root, 'native', 'abc', 'tg-hook.exe')

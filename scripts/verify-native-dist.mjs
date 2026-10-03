@@ -40,6 +40,8 @@ export function peSignatureProblem(buf, machine) {
   if (size < 8 || offset + size > buf.length) return `has a certificate table (offset ${offset}, size ${size}) that does not fit in the file`
   const length = buf.readUInt32LE(offset)
   if (length < 9 || length > size) return `has a WIN_CERTIFICATE whose length ${length} does not fit its table of ${size} bytes`
+  // The table's size sits in the directory entry, which the image digest skips, so a table grown past its one WIN_CERTIFICATE and its quadword padding would carry appended bytes the signature does not cover.
+  if (size !== length && size !== ((length + 7) & ~7)) return `has ${size - length} bytes in its certificate table beyond its WIN_CERTIFICATE, which the signature does not cover`
   if (buf.readUInt16LE(offset + 4) !== WIN_CERT_REVISION_2_0) return 'has a WIN_CERTIFICATE that is not revision 2.0'
   if (buf.readUInt16LE(offset + 6) !== WIN_CERT_TYPE_PKCS_SIGNED_DATA) return 'has a WIN_CERTIFICATE that is not PKCS#7 signed data'
   // RFC 5652 ContentInfo: SEQUENCE { contentType OID signedData, [0] EXPLICIT SignedData SEQUENCE }; each element must fit inside the one that holds it.
@@ -50,6 +52,11 @@ export function peSignatureProblem(buf, machine) {
   const explicit = derElement(buf, contentType.end, contentInfo.end)
   const signedData = explicit?.tag === 0xa0 ? derElement(buf, explicit.start, explicit.end) : undefined
   if (signedData?.tag !== 0x30) return 'has a WIN_CERTIFICATE whose signedData content is missing or truncated'
+  // The signature covers the image, not the WIN_CERTIFICATE around it, so bytes after the DER (the CVE-2013-3900 shape) are refused unless they are the at most 7 zero bytes signers pad to a quadword with.
+  if (explicit.end !== contentInfo.end || signedData.end !== explicit.end) return 'has a WIN_CERTIFICATE whose ContentInfo holds bytes after its signedData, which the signature does not cover'
+  const tail = offset + size - contentInfo.end
+  if (tail > 7) return `has ${tail} bytes in its certificate table after its signature, which the signature does not cover`
+  if (buf.subarray(contentInfo.end, offset + size).some((b) => b !== 0)) return 'pads its signature with non-zero bytes, which the signature does not cover'
   if (offset + size !== buf.length) return 'has data after its certificate table, which the signature does not cover'
   const signed = signedImageDigest(buf, signedData)
   if (typeof signed === 'string') return `has a WIN_CERTIFICATE whose signedData ${signed}`
@@ -83,6 +90,7 @@ function signedImageDigest(buf, signedData) {
     element = derElement(buf, rest, signedData.end)
   }
   if (element?.tag !== 0x31 || element.end === element.start) return 'has no signer'
+  if (element.end !== signedData.end) return 'holds bytes after its signers, which the signature does not cover'
   return { algorithm, digest: buf.subarray(digest.start, digest.end) }
 }
 
