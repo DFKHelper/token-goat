@@ -39,7 +39,7 @@
     "dev": "tsx src/main.ts",
     "sync": "node scripts/post-merge.mjs",
     "prepare": "node scripts/install-git-hooks.mjs",
-    "prepublishOnly": "node scripts/verify-native-dist.mjs --pack dist/native",
+    "prepack": "node scripts/verify-native-dist.mjs --pack dist/native",
     "parser:fingerprint": "node scripts/parser-fingerprint.mjs",
     "parser:fingerprint:check": "node scripts/parser-fingerprint.mjs --check",
     "skill:canonical": "node scripts/generate-canonical-skill.mjs",
@@ -75,7 +75,8 @@
     "docs/C4_RUNTIME_ARCHITECTURE.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
-    "scripts/install-git-hooks.mjs"
+    "scripts/install-git-hooks.mjs",
+    "scripts/verify-native-dist.mjs"
   ],
   "license": "PolyForm-Noncommercial-1.0.0",
   "engines": {

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** The publish gate for the native hook client: refuses a dist/native that is not exactly the four release binaries, each byte-identical to the hash its producing job recorded, with both Windows files carrying an Authenticode signature. Run by the publish job of .github/workflows/publish.yml, which holds the registry token, so it imports nothing but Node builtins: no dependency code runs beside the credential. The signature check is structural (the PE certificate table is present and holds a PKCS#7 WIN_CERTIFICATE); the sign job has already verified the signature cryptographically, and the hash match is what ties the file here to the file it verified. Usage: `node scripts/verify-native-dist.mjs [--without-windows] <dist/native> <SHA256SUMS>...`, where every manifest is in `sha256sum` format with paths relative to the directory; `--without-windows` is the release with no Windows signing configuration, which ships the two Linux binaries and no Windows one, so Windows installs keep the Node hook. `node scripts/verify-native-dist.mjs --pack <dist/native>` is the prepublishOnly check for a publish from a working tree: no manifests, so it checks shape only, and a missing directory passes. Exits 0 when everything holds, otherwise 1 with one line per problem. */
+/** The publish gate for the native hook client: refuses a dist/native that is not exactly the release binaries (all four, or the two Linux ones under `--without-windows`), each a statically linked executable for its target and byte-identical to the hash its producing job recorded, with both Windows files carrying an Authenticode signature. Run by the publish job of .github/workflows/publish.yml, which holds the registry token, so it imports nothing but Node builtins: no dependency code runs beside the credential. The signature check is structural (the PE certificate table is present and holds a WIN_CERTIFICATE wrapping a PKCS#7 signedData ContentInfo); the sign job has already verified the signature cryptographically, and the hash match is what ties the file here to the file it verified. Usage: `node scripts/verify-native-dist.mjs [--without-windows] <dist/native> <SHA256SUMS>...`, where every manifest is in `sha256sum` format with paths relative to the directory; `--without-windows` is the release with no Windows signing configuration, which ships the two Linux binaries and no Windows one, so Windows installs keep the Node hook. `node scripts/verify-native-dist.mjs --pack <dist/native>` is the prepack check, which npm runs on `npm pack` and on `npm publish` from a directory, so a tarball packed by hand cannot carry what a direct publish would refuse: no manifests, so it checks shape only, and a missing directory passes. Exits 0 when everything holds, otherwise 1 with one line per problem. */
 import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -42,26 +42,75 @@ export function peSignatureProblem(buf, machine) {
   if (length < 9 || length > size) return `has a WIN_CERTIFICATE whose length ${length} does not fit its table of ${size} bytes`
   if (buf.readUInt16LE(offset + 4) !== WIN_CERT_REVISION_2_0) return 'has a WIN_CERTIFICATE that is not revision 2.0'
   if (buf.readUInt16LE(offset + 6) !== WIN_CERT_TYPE_PKCS_SIGNED_DATA) return 'has a WIN_CERTIFICATE that is not PKCS#7 signed data'
-  // A PKCS#7 ContentInfo is a DER SEQUENCE.
-  if (buf[offset + 8] !== 0x30) return 'has a WIN_CERTIFICATE whose content is not DER'
+  // RFC 5652 ContentInfo: SEQUENCE { contentType OID signedData, [0] EXPLICIT SignedData SEQUENCE }; each element must fit inside the one that holds it.
+  const contentInfo = derElement(buf, offset + 8, offset + length)
+  if (contentInfo?.tag !== 0x30) return 'has a WIN_CERTIFICATE whose content is not a DER SEQUENCE that fits it'
+  const contentType = derElement(buf, contentInfo.start, contentInfo.end)
+  if (contentType?.tag !== 0x06 || !buf.subarray(contentType.start, contentType.end).equals(OID_PKCS7_SIGNED_DATA)) return 'has a WIN_CERTIFICATE whose ContentInfo is not PKCS#7 signedData'
+  const explicit = derElement(buf, contentType.end, contentInfo.end)
+  if (explicit?.tag !== 0xa0 || derElement(buf, explicit.start, explicit.end)?.tag !== 0x30) return 'has a WIN_CERTIFICATE whose signedData content is missing or truncated'
   return undefined
 }
 
-/** Why `buf` is not a static 64-bit little-endian ELF executable for `machine`, or undefined when it is. Header layout per the System V ABI (elf(5)): e_machine at 18, e_phoff at 32, e_phentsize and e_phnum at 54 and 56. A program header of type PT_INTERP (3) names a dynamic loader, which a musl-static build does not have and a glibc build does. */
+// 1.2.840.113549.1.7.2, the PKCS#7 signedData content type, as DER OID content bytes.
+const OID_PKCS7_SIGNED_DATA = Buffer.from([0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02])
+
+/** The DER element (X.690) whose identifier octet is at `at`: its tag, and where its content starts and ends. Undefined when the header or the content runs past `limit`, or the length is the indefinite form DER forbids. Only single-octet tags are read, which every element of a ContentInfo header uses. */
+function derElement(buf, at, limit) {
+  if (at + 2 > limit) return undefined
+  const first = buf[at + 1]
+  let start = at + 2
+  let len = first
+  if (first >= 0x80) {
+    const octets = first & 0x7f
+    if (octets === 0 || octets > 4 || start + octets > limit) return undefined
+    len = buf.readUIntBE(start, octets)
+    start += octets
+  }
+  return start + len > limit ? undefined : { tag: buf[at], start, end: start + len }
+}
+
+/** Why `buf` is not a static 64-bit little-endian ELF executable for `machine`, or undefined when it is. Header layout per the System V ABI (elf(5)): e_machine at 18, e_phoff at 32, e_phentsize and e_phnum at 54 and 56. A program header of type PT_INTERP (3) names a dynamic loader, which a musl-static build does not have and a glibc build does; a DT_NEEDED entry in the dynamic segment names a shared library, which a static-pie build does not have either. */
 export function elfProblem(buf, machine) {
   if (buf.length < 64 || buf.readUInt32BE(0) !== 0x7f454c46) return 'is not an ELF file'
   if (buf[4] !== 2 || buf[5] !== 1) return 'is not a 64-bit little-endian ELF file'
   const declared = buf.readUInt16LE(18)
   if (declared !== machine) return `declares machine ${declared}, expected ${machine}`
+  const type = buf.readUInt16LE(16)
+  if (type !== ET_EXEC && type !== ET_DYN) return `is not an executable (e_type ${type})`
   const phoff = Number(buf.readBigUInt64LE(32))
   const phentsize = buf.readUInt16LE(54)
   const phnum = buf.readUInt16LE(56)
-  if (phentsize < 4 || phoff + phentsize * phnum > buf.length) return 'has program headers that do not fit in the file'
+  if (phentsize < ELF64_PHDR_SIZE || phoff + phentsize * phnum > buf.length) return 'has program headers that do not fit in the file'
+  const dynamicSegments = []
   for (let i = 0; i < phnum; i++) {
-    if (buf.readUInt32LE(phoff + i * phentsize) === 3) return 'is dynamically linked (it names an ELF interpreter); the release ships musl-static binaries only'
+    const at = phoff + i * phentsize
+    const segment = buf.readUInt32LE(at)
+    if (segment === PT_INTERP) return 'is dynamically linked (it names an ELF interpreter); the release ships musl-static binaries only'
+    if (segment === PT_DYNAMIC) dynamicSegments.push(at)
+  }
+  // A static-pie has a PT_DYNAMIC segment for its own relocations but no DT_NEEDED entry; a DT_NEEDED names a shared library some loader would have to supply. Entries are 16 bytes (d_tag, d_val), ending at DT_NULL.
+  for (const at of dynamicSegments) {
+    const start = Number(buf.readBigUInt64LE(at + 8))
+    const end = start + Number(buf.readBigUInt64LE(at + 32))
+    if (end > buf.length) return 'has a dynamic segment that does not fit in the file'
+    for (let entry = start; entry + 16 <= end; entry += 16) {
+      const tag = buf.readBigInt64LE(entry)
+      if (tag === DT_NULL) break
+      if (tag === DT_NEEDED) return 'is dynamically linked (it needs a shared library); the release ships musl-static binaries only'
+    }
   }
   return undefined
 }
+
+// elf(5): e_type values, program header types, the dynamic tags read above, and the size of an Elf64_Phdr.
+const ET_EXEC = 2
+const ET_DYN = 3
+const PT_DYNAMIC = 2
+const PT_INTERP = 3
+const DT_NULL = 0n
+const DT_NEEDED = 1n
+const ELF64_PHDR_SIZE = 56
 
 /** `sha256sum` output (text or binary mode) as a map from relative path to lowercase hex digest. A line that is not a digest and a path is a problem, not something to skip. */
 export function parseManifest(text, label = 'manifest') {

@@ -15,6 +15,7 @@ interface Step {
   name?: string
   id?: string
   if?: string
+  'continue-on-error'?: boolean | string
   uses?: string
   run?: string
   with?: Record<string, string>
@@ -171,6 +172,10 @@ function publishVerifiesBeforePublishing(doc: Workflow): string[] {
   else {
     if (publish >= 0 && gate > publish) problems.push('scripts/verify-native-dist.mjs runs after npm publish')
     if (gate < assembly) problems.push('scripts/verify-native-dist.mjs runs before dist/native is assembled')
+    // Ordering alone proves nothing if the gate step can be skipped or can fail without stopping the job: the publish step after it would still run.
+    if (steps[gate]!.if !== undefined) problems.push(`the verify gate step is conditional (if: ${steps[gate]!.if}), so a run that skips it still publishes`)
+    const lenient = steps[gate]!['continue-on-error']
+    if (lenient !== undefined && lenient !== false) problems.push(`the verify gate step has continue-on-error: ${String(lenient)}, so a refusal does not stop npm publish`)
     const runs = steps[gate]!.run!.split('\n').filter((l) => GATE_LINE.test(l))
     const signed = runs.find((l) => !l.includes('--without-windows'))
     const unsigned = runs.find((l) => l.includes('--without-windows'))
@@ -296,6 +301,22 @@ const CHECKS: ReadonlyArray<readonly [string, (doc: Workflow) => string[], (doc:
       steps.push(...steps.splice(gate, 1))
     },
     'scripts/verify-native-dist.mjs runs after npm publish',
+  ],
+  [
+    'publish cannot skip the verify gate',
+    publishVerifiesBeforePublishing,
+    (doc) => {
+      doc.jobs[PUBLISH_JOB]!.steps.find((s) => /verify-native-dist\.mjs/.test(s.run ?? ''))!.if = SIGNED_JOB
+    },
+    `the verify gate step is conditional (if: ${SIGNED_JOB}), so a run that skips it still publishes`,
+  ],
+  [
+    'publish stops when the verify gate refuses',
+    publishVerifiesBeforePublishing,
+    (doc) => {
+      doc.jobs[PUBLISH_JOB]!.steps.find((s) => /verify-native-dist\.mjs/.test(s.run ?? ''))!['continue-on-error'] = true
+    },
+    'the verify gate step has continue-on-error: true, so a refusal does not stop npm publish',
   ],
   [
     'Windows binaries are signed, downloaded, copied and verified only when signing is configured',

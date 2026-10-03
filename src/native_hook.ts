@@ -89,7 +89,7 @@ export function syncNativeCopy(src: string, dest: string): boolean {
     reclaimLeftovers(dir)
     fs.writeFileSync(staged, want, { mode: 0o755 })
   } catch {
-    fs.rmSync(staged, { force: true })
+    discardStaged(staged)
     return false
   }
   try {
@@ -98,14 +98,36 @@ export function syncNativeCopy(src: string, dest: string): boolean {
   } catch {
     // dest is running, or a scanner still holds the file just written
   }
+  const aside = `${dest}.${tag}.old`
+  let movedAside = false
   try {
     // A running dest can be renamed but not replaced; an absent one (nothing to move aside) leaves only the scanner's hold on the staged file, which the retry outwaits.
-    if (fs.existsSync(dest)) withRetryOnLock(() => fs.renameSync(dest, `${dest}.${tag}.old`))
+    if (fs.existsSync(dest)) {
+      withRetryOnLock(() => fs.renameSync(dest, aside))
+      movedAside = true
+    }
     withRetryOnLock(() => fs.renameSync(staged, dest))
     return true
   } catch {
-    fs.rmSync(staged, { force: true })
+    // Put the old copy back so hooks already naming dest keep a binary to run; a failure here leaves it as a leftover the next install reclaims.
+    if (movedAside) {
+      try {
+        fs.renameSync(aside, dest)
+      } catch {
+        // dest stays missing; doctor reports it and the next install rewrites it
+      }
+    }
+    discardStaged(staged)
     return false
+  }
+}
+
+/** Delete a staged copy that will not be used. A scanner holding it makes the delete fail with EPERM; the file then stays as a leftover the next install reclaims, since a failed cleanup must not turn a fallback to the Node command into a failed install. */
+function discardStaged(staged: string): void {
+  try {
+    fs.rmSync(staged, { force: true })
+  } catch {
+    // reclaimed by a later install
   }
 }
 

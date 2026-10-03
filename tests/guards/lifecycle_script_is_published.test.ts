@@ -16,7 +16,10 @@ const LIFECYCLE = [
 const INSTALL_TIME = ['preinstall', 'install', 'postinstall'] as const
 
 /** Lifecycle scripts this package is allowed to declare, with what each is for. `prepare` is not in INSTALL_TIME because npm does not run it for a registry tarball -- only for a git dependency or a local `npm install` in the package directory -- and `scripts/install-git-hooks.mjs` exits 0 when lefthook is absent, which is every context except a dev checkout. */
-const ALLOWED: ReadonlyMap<string, string> = new Map([['prepare', 'wires lefthook into a dev checkout; a no-op anywhere else']])
+const ALLOWED: ReadonlyMap<string, string> = new Map([
+  ['prepare', 'wires lefthook into a dev checkout; a no-op anywhere else'],
+  ['prepack', 'refuses an unsigned or dynamically linked dist/native on `npm pack` and on `npm publish` from a directory; passes when dist/native is absent, as it is in a git-dependency checkout'],
+])
 
 /** Local file paths a script shell-invokes, e.g. the `scripts/x.mjs` in `node scripts/x.mjs`. */
 function referencedPaths(command: string): string[] {
@@ -49,7 +52,7 @@ describe('published package carries every file its lifecycle scripts run', () =>
   it('names at least one lifecycle script, so this guard is not vacuously green', () => {
     expect(present, 'no lifecycle script found -- if one was removed, delete this guard deliberately').not.toHaveLength(0)
     // The positive control for the two checks below: both read `present`, so a manifest read that returned nothing would agree with either of them for the wrong reason.
-    expect(present, 'the one lifecycle script this package declares is gone').toContain('prepare')
+    expect(present, 'a lifecycle script this package declares is gone').toEqual(expect.arrayContaining(['prepare', 'prepack']))
   })
 
   it('runs nothing at all when a consumer installs it', () => {

@@ -1,4 +1,4 @@
-/** scripts/verify-native-dist.mjs is the last gate before `npm publish`: it must refuse an unsigned Windows binary, a binary whose bytes differ from what its producing job recorded, a dynamically linked Linux binary (the glibc build the test run leaves in dist/native), and anything in dist/native that is not one of the four release binaries. Provenance, per fixture: the binary this run built (tests/helpers/native_bin.ts) is CAPTURE, a real unsigned executable from scripts/build-native.mjs; the synthetic PE and ELF files are FORMAT-DERIVED, laid out from the Microsoft PE/COFF specification (https://learn.microsoft.com/en-us/windows/win32/debug/pe-format, sections "Optional Header Data Directories" and "The Attribute Certificate Table") and the System V ABI ELF header and program header layout (elf(5), https://man7.org/linux/man-pages/man5/elf.5.html); every expected sha256 is HAND-DERIVED, computed here from the fixture bytes. */
+/** scripts/verify-native-dist.mjs is the last gate before `npm publish`: it must refuse an unsigned Windows binary, a binary whose bytes differ from what its producing job recorded, a dynamically linked Linux binary (the glibc build the test run leaves in dist/native), and anything in dist/native that is not one of the four release binaries. Provenance, per fixture: the binary this run built (tests/helpers/native_bin.ts) is CAPTURE, a real unsigned executable from scripts/build-native.mjs; the synthetic PE and ELF files are FORMAT-DERIVED, laid out from the Microsoft PE/COFF specification (https://learn.microsoft.com/en-us/windows/win32/debug/pe-format, sections "Optional Header Data Directories" and "The Attribute Certificate Table") and the System V ABI ELF header, program header and dynamic section layout (elf(5), https://man7.org/linux/man-pages/man5/elf.5.html: e_type, PT_DYNAMIC, Elf64_Dyn, DT_NEEDED), with the certificate content encoded per RFC 5652 section 3 (ContentInfo, https://www.rfc-editor.org/rfc/rfc5652#section-3) in DER per ITU-T X.690; every expected sha256 is HAND-DERIVED, computed here from the fixture bytes. */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
@@ -10,6 +10,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { NATIVE_TARGETS, elfProblem, parseManifest, peSignatureProblem, releaseTargets, verifyNativeDist, verifyPackDir } from '../scripts/verify-native-dist.mjs'
 import { buildNative } from './helpers/native_bin.js'
+// @ts-expect-error -- a maintainer script in plain JavaScript, deliberately outside the typed source tree.
+import { npmCommand } from '../scripts/dependabot-body.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const script = path.join(repoRoot, 'scripts', 'verify-native-dist.mjs')
@@ -19,9 +21,13 @@ const IMAGE_FILE_MACHINE_ARM64 = 0xaa64
 const EM_X86_64 = 62
 const EM_AARCH64 = 183
 
-/** A WIN_CERTIFICATE (dwLength, wRevision 0x0200, wCertificateType 0x0002 PKCS_SIGNED_DATA, bCertificate) padded to the quadword boundary the spec requires. The content is a minimal DER SEQUENCE, not a real PKCS#7 signature: the script's check is structural. */
-function winCertificate(): Buffer {
-  const content = Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01])
+// DER (X.690) for the RFC 5652 ContentInfo header: the signedData OID 1.2.840.113549.1.7.2, and a SignedData reduced to SEQUENCE { INTEGER 1 }, its version field. Real signatures carry far more inside, but the script's check is structural and stops at the SignedData SEQUENCE.
+const OID_SIGNED_DATA = [0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02]
+const SIGNED_DATA = [0x30, 0x03, 0x02, 0x01, 0x01]
+const CONTENT_INFO = Buffer.from([0x30, 0x12, ...OID_SIGNED_DATA, 0xa0, 0x05, ...SIGNED_DATA])
+
+/** A WIN_CERTIFICATE (dwLength, wRevision 0x0200, wCertificateType 0x0002 PKCS_SIGNED_DATA, bCertificate) holding `content`, padded to the quadword boundary the spec requires. */
+function winCertificate(content: Buffer = CONTENT_INFO): Buffer {
   const header = Buffer.alloc(8)
   header.writeUInt32LE(8 + content.length, 0)
   header.writeUInt16LE(0x0200, 4)
@@ -37,9 +43,9 @@ function certificateDirectoryAt(pe: Buffer): number {
 }
 
 /** `pe` with a WIN_CERTIFICATE appended at an 8-byte-aligned offset and the Certificate Table pointed at it, the placement Authenticode signing tools use. */
-function withCertificateTable(pe: Buffer): Buffer {
+function withCertificateTable(pe: Buffer, content?: Buffer): Buffer {
   const aligned = Buffer.concat([pe, Buffer.alloc((8 - (pe.length % 8)) % 8)])
-  const cert = winCertificate()
+  const cert = winCertificate(content)
   const out = Buffer.concat([aligned, cert])
   const at = certificateDirectoryAt(out)
   out.writeUInt32LE(aligned.length, at)
@@ -63,20 +69,31 @@ function syntheticPe(machine: number, magic: 0x20b | 0x10b = 0x20b): Buffer {
   return buf
 }
 
-/** A 64-bit little-endian ELF header for `machine` followed by one 56-byte program header per entry of `types` (PT_LOAD is 1, PT_INTERP is 3). */
-function syntheticElf(machine: number, types: readonly number[]): Buffer {
-  const buf = Buffer.alloc(64 + 56 * types.length)
+/** A 64-bit little-endian ELF header for `machine` followed by one 56-byte program header per entry of `types` (PT_LOAD is 1, PT_INTERP is 3). With `dynamic`, a PT_DYNAMIC (2) header is added whose p_offset (+8) and p_filesz (+32) cover those (d_tag, d_val) pairs, appended after the headers; `dynamicSize` overrides p_filesz. */
+function syntheticElf(machine: number, types: readonly number[], opts: { type?: number; dynamic?: ReadonlyArray<readonly [bigint, bigint]>; dynamicSize?: number } = {}): Buffer {
+  const headers = opts.dynamic === undefined ? types : [...types, 2]
+  const dynamicAt = 64 + 56 * headers.length
+  const buf = Buffer.alloc(dynamicAt + 16 * (opts.dynamic?.length ?? 0))
   buf.writeUInt32BE(0x7f454c46, 0)
   buf[4] = 2
   buf[5] = 1
   buf[6] = 1
-  buf.writeUInt16LE(3, 16)
+  buf.writeUInt16LE(opts.type ?? 3, 16)
   buf.writeUInt16LE(machine, 18)
   buf.writeBigUInt64LE(64n, 32)
   buf.writeUInt16LE(64, 52)
   buf.writeUInt16LE(56, 54)
-  buf.writeUInt16LE(types.length, 56)
-  types.forEach((t, i) => buf.writeUInt32LE(t, 64 + 56 * i))
+  buf.writeUInt16LE(headers.length, 56)
+  headers.forEach((t, i) => buf.writeUInt32LE(t, 64 + 56 * i))
+  if (opts.dynamic !== undefined) {
+    const header = 64 + 56 * types.length
+    buf.writeBigUInt64LE(BigInt(dynamicAt), header + 8)
+    buf.writeBigUInt64LE(BigInt(opts.dynamicSize ?? 16 * opts.dynamic.length), header + 32)
+    opts.dynamic.forEach(([tag, value], i) => {
+      buf.writeBigInt64LE(tag, dynamicAt + 16 * i)
+      buf.writeBigUInt64LE(value, dynamicAt + 16 * i + 8)
+    })
+  }
   return buf
 }
 
@@ -167,7 +184,7 @@ describe('the binary this run built (CAPTURE)', () => {
     expect(r.stderr).toContain('refusing to publish')
   })
 
-  it.runIf(process.platform === 'win32')('refuses a working-tree publish whose dist/native holds the unsigned build, through the prepublishOnly command', () => {
+  it.runIf(process.platform === 'win32')('refuses a working-tree publish whose dist/native holds the unsigned build, through the prepack command', () => {
     const target = process.arch === 'arm64' ? 'win32-arm64/tg-hook.exe' : 'win32-x64/tg-hook.exe'
     writeFiles(new Map([[target, fs.readFileSync(buildNative())]]))
     const r = runScript('--pack', dir)
@@ -216,6 +233,24 @@ describe('peSignatureProblem (FORMAT-DERIVED)', () => {
     expect(peSignatureProblem(pe, IMAGE_FILE_MACHINE_AMD64)).toBe('has a WIN_CERTIFICATE that is not PKCS#7 signed data')
   })
 
+  it('refuses a WIN_CERTIFICATE that only looks like DER, such as an empty SEQUENCE', () => {
+    const problem = (content: number[]): string | undefined => peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), Buffer.from(content)), IMAGE_FILE_MACHINE_AMD64)
+    expect(problem([0x30, 0x00])).toBe('has a WIN_CERTIFICATE whose ContentInfo is not PKCS#7 signedData')
+    expect(problem([0x02, 0x01, 0x01])).toBe('has a WIN_CERTIFICATE whose content is not a DER SEQUENCE that fits it')
+    expect(problem([0x30, 0x7f, ...OID_SIGNED_DATA])).toBe('has a WIN_CERTIFICATE whose content is not a DER SEQUENCE that fits it')
+    expect(problem([0x30, 0x80, ...OID_SIGNED_DATA, 0x00, 0x00])).toBe('has a WIN_CERTIFICATE whose content is not a DER SEQUENCE that fits it')
+    // pkcs7-data (1.2.840.113549.1.7.1) in place of signedData.
+    expect(problem([0x30, 0x12, ...OID_SIGNED_DATA.slice(0, -1), 0x01, 0xa0, 0x05, ...SIGNED_DATA])).toBe('has a WIN_CERTIFICATE whose ContentInfo is not PKCS#7 signedData')
+    expect(problem([0x30, 0x0b, ...OID_SIGNED_DATA])).toBe('has a WIN_CERTIFICATE whose signedData content is missing or truncated')
+    expect(problem([0x30, 0x10, ...OID_SIGNED_DATA, 0xa0, 0x03, 0x02, 0x01, 0x01])).toBe('has a WIN_CERTIFICATE whose signedData content is missing or truncated')
+    expect(problem([0x30, 0x12, ...OID_SIGNED_DATA, 0xa0, 0x09, ...SIGNED_DATA])).toBe('has a WIN_CERTIFICATE whose signedData content is missing or truncated')
+  })
+
+  it('reads the long-form lengths a real signature uses', () => {
+    const longForm = Buffer.from([0x30, 0x82, 0x00, 0x13, ...OID_SIGNED_DATA, 0xa0, 0x81, 0x05, ...SIGNED_DATA])
+    expect(peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), longForm), IMAGE_FILE_MACHINE_AMD64)).toBeUndefined()
+  })
+
   it('refuses a PE built for the other architecture', () => {
     expect(peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64)), IMAGE_FILE_MACHINE_ARM64)).toBe('declares machine 0x8664, expected 0xaa64')
   })
@@ -229,6 +264,22 @@ describe('elfProblem (FORMAT-DERIVED)', () => {
   it('passes a static executable and refuses one that names an interpreter', () => {
     expect(elfProblem(syntheticElf(EM_X86_64, [1, 1]), EM_X86_64)).toBeUndefined()
     expect(elfProblem(syntheticElf(EM_X86_64, [6, 3, 1]), EM_X86_64)).toBe('is dynamically linked (it names an ELF interpreter); the release ships musl-static binaries only')
+  })
+
+  // A musl static-pie keeps PT_DYNAMIC for its own relocations (DT_RELA 7, DT_RELASZ 8, DT_FLAGS_1 0x6ffffffb) with no DT_NEEDED; a glibc build linked with a custom loader path, or with PT_INTERP stripped, still carries DT_NEEDED (1) entries naming libc.so.6.
+  it('passes a static-pie dynamic segment and refuses one that needs a shared library', () => {
+    const staticPie: Array<[bigint, bigint]> = [[7n, 0x1000n], [8n, 0x18n], [0x6ffffffbn, 0x8000000n], [0n, 0n]]
+    expect(elfProblem(syntheticElf(EM_X86_64, [1, 1], { dynamic: staticPie }), EM_X86_64)).toBeUndefined()
+    const needsLibc: Array<[bigint, bigint]> = [[7n, 0x1000n], [1n, 0x20n], [0n, 0n]]
+    expect(elfProblem(syntheticElf(EM_X86_64, [1, 1], { dynamic: needsLibc }), EM_X86_64)).toBe('is dynamically linked (it needs a shared library); the release ships musl-static binaries only')
+    expect(elfProblem(syntheticElf(EM_X86_64, [1, 1], { dynamic: [[0n, 0n], [1n, 0x20n]] }), EM_X86_64)).toBeUndefined()
+  })
+
+  it('refuses a dynamic segment that runs past the end of the file, and an ELF that is not an executable', () => {
+    expect(elfProblem(syntheticElf(EM_X86_64, [1], { dynamic: [[0n, 0n]], dynamicSize: 32 }), EM_X86_64)).toBe('has a dynamic segment that does not fit in the file')
+    expect(elfProblem(syntheticElf(EM_X86_64, [1, 1], { type: 1 }), EM_X86_64)).toBe('is not an executable (e_type 1)')
+    expect(elfProblem(syntheticElf(EM_X86_64, [1, 1], { type: 4 }), EM_X86_64)).toBe('is not an executable (e_type 4)')
+    expect(elfProblem(syntheticElf(EM_X86_64, [1, 1], { type: 2 }), EM_X86_64)).toBeUndefined()
   })
 
   it('refuses the other architecture and a non-ELF file', () => {
@@ -374,7 +425,7 @@ describe('a release with no Windows signing configuration (HAND-DERIVED hashes o
   })
 })
 
-describe('the prepublishOnly check on a working-tree publish (FORMAT-DERIVED binaries)', () => {
+describe('the prepack check on a working-tree pack or publish (FORMAT-DERIVED binaries)', () => {
   const PACK_REMEDY = 'delete dist/native, or publish through the release workflow, which signs it'
 
   it('passes when dist/native does not exist, the state every platform supports through the Node hook', () => {
@@ -416,9 +467,9 @@ describe('the prepublishOnly check on a working-tree publish (FORMAT-DERIVED bin
     expect(verifyPackDir(file)).toEqual([expect.stringMatching(/^.*native: cannot be read \(/)])
   })
 
-  it('is the command package.json runs before a working-tree npm publish, and it refuses an unsigned build from the package root', () => {
+  it('is the command package.json runs before a working-tree npm pack or publish, and it refuses an unsigned build from the package root', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')) as { scripts: Record<string, string> }
-    const command = pkg.scripts.prepublishOnly
+    const command = pkg.scripts.prepack
     expect(command).toBe('node scripts/verify-native-dist.mjs --pack dist/native')
     // npm runs a lifecycle script through the shell from the package root, so the command runs the same way here against a copy of that root.
     fs.mkdirSync(path.join(dir, 'scripts'))
@@ -433,4 +484,27 @@ describe('the prepublishOnly check on a working-tree publish (FORMAT-DERIVED bin
     expect(refused.status).toBe(1)
     expect(refused.stderr).toContain(`win32-x64/tg-hook.exe: carries no Authenticode signature (its certificate table is empty); ${PACK_REMEDY}`)
   })
+
+  it('stops a real npm pack of an unsigned build, since a packed tarball can be published without npm running prepublishOnly', () => {
+    // FORMAT-DERIVED from npm's lifecycle order (https://docs.npmjs.com/cli/v10/using-npm/scripts, "Life Cycle Operation Order"): `npm pack` runs prepack and not prepublishOnly, so only a prepack gate stands in front of a tarball packed first and published second. CAPTURE (npm 11.6.2 here, and CI's npm 10 on every run of this test): the refusal below is npm's, not a simulation of it.
+    const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')) as { scripts: Record<string, string> }
+    // prepare is left out because it runs scripts/install-git-hooks.mjs, which this copy of the package root does not carry.
+    const scripts = Object.fromEntries(Object.entries(pkg.scripts).filter(([name]) => name !== 'prepare'))
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'tg-prepack-probe', version: '0.0.0', scripts, files: ['dist/', 'scripts/verify-native-dist.mjs'] }))
+    fs.mkdirSync(path.join(dir, 'scripts'))
+    fs.copyFileSync(script, path.join(dir, 'scripts', 'verify-native-dist.mjs'))
+    writeFiles(new Map([['dist/index.mjs', Buffer.from('export {}\n')]]))
+    const npm = npmCommand({ platform: process.platform, env: process.env, execPath: process.execPath, exists: fs.existsSync })
+    expect(npm, 'no npm-cli.js to run').not.toBeNull()
+    const pack = (): CliResult => {
+      const r = spawnSync(npm.file, [...npm.prefix, 'pack', '--dry-run'], { cwd: dir, encoding: 'utf8', timeout: 60_000, env: { ...process.env, npm_config_ignore_scripts: 'false' } })
+      return { status: r.status, stdout: r.stdout, stderr: r.stderr }
+    }
+    // The positive control: the same package packs while dist/native holds nothing, so the refusal below is the gate and not a broken package.
+    expect(pack().status).toBe(0)
+    writeFiles(new Map([['dist/native/win32-x64/tg-hook.exe', syntheticPe(IMAGE_FILE_MACHINE_AMD64)]]))
+    const refused = pack()
+    expect(refused.status).not.toBe(0)
+    expect(refused.stderr).toContain(`win32-x64/tg-hook.exe: carries no Authenticode signature (its certificate table is empty); ${PACK_REMEDY}`)
+  }, 120_000)
 })

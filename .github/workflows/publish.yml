@@ -68,7 +68,8 @@ jobs:
           INSTALL_DIR="$RUNNER_TEMP/smoke-install"
           DATA_DIR="$RUNNER_TEMP/smoke-data"
           mkdir -p "$PACK_DIR" "$INSTALL_DIR" "$DATA_DIR"
-          TARBALL="$(npm pack --pack-destination "$PACK_DIR" | tail -1)"
+          # --ignore-scripts skips the prepack gate on purpose: the test run left its own glibc tg-hook in dist/native, which that gate refuses, and this tarball only feeds the smoke install below; the publish job assembles dist/native afresh and checks it against the recorded hashes.
+          TARBALL="$(npm pack --ignore-scripts --pack-destination "$PACK_DIR" | tail -1)"
           npm install -g "$PACK_DIR/$TARBALL" --prefix "$INSTALL_DIR"
           BIN="$INSTALL_DIR/bin/token-goat"
           "$BIN" --version
