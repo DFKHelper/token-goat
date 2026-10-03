@@ -47,7 +47,119 @@ export function resolveTypedRefs(input: ResolveTypedRefsInput): RefEntry[] | nul
   } catch {
     return null
   }
+  return resolveInProgram(ts, program, input)
+}
 
+// A session roots one program per tsconfig at every file its inputs have needed so far, so it trades the per-symbol cap for a cumulative one; an input that would push the roots past this many files falls back to name-based results.
+const MAX_BATCH_FILES = 2000
+
+/** {@link resolveTypedRefs} for many definitions at once, through one {@link createTypedRefsSession}, so a scan that would otherwise build one program per symbol (`dead` over a whole project) pays for one. Returns one entry per input, in order, each with the same `null` meaning as {@link resolveTypedRefs}. */
+export function resolveTypedRefsBatch(inputs: readonly ResolveTypedRefsInput[]): Array<RefEntry[] | null> {
+  return createTypedRefsSession().resolve(inputs)
+}
+
+/** A run-scoped typed-refs resolver for a caller that asks in several rounds, such as `impact` expanding one hop at a time. */
+export interface TypedRefsSession {
+  /** One entry per input, in order, each with the same `null` meaning as {@link resolveTypedRefs}; every entry is `null` when `typescript` is unavailable. */
+  resolve(inputs: readonly ResolveTypedRefsInput[]): Array<RefEntry[] | null>
+}
+
+interface SessionProgram {
+  options: TsModule.CompilerOptions
+  host: TsModule.CompilerHost
+  roots: Set<string>
+  program?: TsModule.Program
+  failed: boolean
+}
+
+/** A {@link TypedRefsSession} that keeps one program per tsconfig and grows its roots as later rounds need new files. Each rebuild goes through a host that caches every parsed source file, and an already-bound file is not bound again, so a round that adds a few files costs module resolution and the new files' parse rather than a fresh ~600ms program. */
+export function createTypedRefsSession(): TypedRefsSession {
+  const byConfig = new Map<string, SessionProgram>()
+  const configByDir = new Map<string, string>()
+
+  const programFor = (ts: typeof TsModule, defFile: string): SessionProgram => {
+    const dir = path.dirname(defFile)
+    let configKey = configByDir.get(dir)
+    if (configKey === undefined) {
+      configKey = ts.findConfigFile(dir, ts.sys.fileExists, 'tsconfig.json') ?? ''
+      configByDir.set(dir, configKey)
+    }
+    let state = byConfig.get(configKey)
+    if (state === undefined) {
+      const options = scopedOptions(ts, configKey === '' ? undefined : configKey)
+      state = { options, host: cachingHost(ts, options), roots: new Set(), failed: false }
+      byConfig.set(configKey, state)
+    }
+    return state
+  }
+
+  return {
+    resolve(inputs) {
+      const out: Array<RefEntry[] | null> = inputs.map(() => null)
+      if (!inputs.some((i) => isTsPath(i.defFile))) return out
+      const ts = loadTs()
+      if (ts === null) return out
+      const groups = new Map<SessionProgram, number[]>()
+      inputs.forEach((input, i) => {
+        if (!isTsPath(input.defFile)) return
+        const state = programFor(ts, input.defFile)
+        const group = groups.get(state)
+        if (group === undefined) groups.set(state, [i])
+        else group.push(i)
+      })
+      for (const [state, indices] of groups) {
+        if (state.failed) continue
+        const missing = new Set<string>()
+        for (const i of indices) for (const f of rootsOf(inputs[i]!)) if (!state.roots.has(f)) missing.add(f)
+        if (missing.size > 0 && state.roots.size + missing.size <= MAX_BATCH_FILES) {
+          for (const f of missing) state.roots.add(f)
+          try {
+            state.program = ts.createProgram({ rootNames: [...state.roots], options: state.options, host: state.host })
+          } catch {
+            state.failed = true
+            continue
+          }
+        }
+        const program = state.program
+        if (program === undefined) continue
+        for (const i of indices) {
+          const input = inputs[i]!
+          if (rootsOf(input).some((f) => !state.roots.has(f))) continue
+          try {
+            out[i] = resolveInProgram(ts, program, input)
+          } catch {
+            out[i] = null
+          }
+        }
+      }
+      return out
+    },
+  }
+}
+
+/** The files a program must be rooted at to resolve `input`: its definition and every TypeScript or JavaScript candidate file; a candidate in another language is kept unresolved by {@link resolveInProgram}, so it needs no root. */
+function rootsOf(input: ResolveTypedRefsInput): string[] {
+  const roots = [input.defFile]
+  for (const c of input.candidates) if (TS_JS_EXTENSIONS.has(path.extname(c.filePath).toLowerCase())) roots.push(c.filePath)
+  return roots
+}
+
+/** A compiler host that parses each file once for the life of the session and hands the same SourceFile to every later program. */
+function cachingHost(ts: typeof TsModule, options: TsModule.CompilerOptions): TsModule.CompilerHost {
+  const host = scopedHost(ts, options) ?? ts.createCompilerHost(options)
+  const parse = host.getSourceFile.bind(host)
+  const parsed = new Map<string, TsModule.SourceFile | undefined>()
+  host.getSourceFile = (fileName, languageVersionOrOptions, onError, shouldCreateNewSourceFile) => {
+    if (shouldCreateNewSourceFile === true) return parse(fileName, languageVersionOrOptions, onError, true)
+    if (parsed.has(fileName)) return parsed.get(fileName)
+    const file = parse(fileName, languageVersionOrOptions, onError, false)
+    parsed.set(fileName, file)
+    return file
+  }
+  return host
+}
+
+function resolveInProgram(ts: typeof TsModule, program: TsModule.Program, input: ResolveTypedRefsInput): RefEntry[] | null {
   const checker = program.getTypeChecker()
   const defSourceFile = program.getSourceFile(input.defFile)
   if (defSourceFile === undefined) return null
@@ -85,6 +197,14 @@ function buildScopedProgram(
   rootNames: readonly string[],
   searchFrom: string,
 ): TsModule.Program {
+  const options = scopedOptions(ts, ts.findConfigFile(path.dirname(searchFrom), ts.sys.fileExists, 'tsconfig.json'))
+  const host = scopedHost(ts, options)
+  if (host === undefined) return ts.createProgram({ rootNames: [...rootNames], options })
+  return ts.createProgram({ rootNames: [...rootNames], options, host })
+}
+
+/** The compiler options a scoped program uses: permissive defaults, overlaid by the project's tsconfig at `configPath` when one exists and parses. */
+function scopedOptions(ts: typeof TsModule, configPath: string | undefined): TsModule.CompilerOptions {
   const options: TsModule.CompilerOptions = {
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.ESNext,
@@ -97,7 +217,6 @@ function buildScopedProgram(
     esModuleInterop: true,
   }
 
-  const configPath = ts.findConfigFile(path.dirname(searchFrom), ts.sys.fileExists, 'tsconfig.json')
   if (configPath !== undefined) {
     try {
       const raw = ts.readConfigFile(configPath, ts.sys.readFile)
@@ -111,15 +230,17 @@ function buildScopedProgram(
   }
   // noEmit must stay true regardless of what the project's own tsconfig says -- this program is only ever used for type resolution, never for emitting output.
   options.noEmit = true
+  return options
+}
 
+/** A compiler host that skips JSDoc parsing where the installed TypeScript allows it, or undefined to keep the default host. */
+function scopedHost(ts: typeof TsModule, options: TsModule.CompilerOptions): TsModule.CompilerHost | undefined {
   // Parsing every JSDoc comment in every file the program pulls in is pure waste here: this tier only ever asks the checker whether two identifiers resolve to the same declaration, and never reads a doc comment or reports a diagnostic. Skipping it in .ts files takes program construction from ~700ms to ~600ms on this repo, with the same 626 files loaded. ParseForTypeErrors rather than ParseNone so JSDoc in plain .js files, where it is the only place a type can be declared, is still parsed. The enum arrived in TypeScript 5.3 and typescript is an optional dependency, so an older install just keeps the default host.
   const jsDocParsingMode = ts.JSDocParsingMode?.ParseForTypeErrors
-  if (jsDocParsingMode === undefined) {
-    return ts.createProgram({ rootNames: [...rootNames], options })
-  }
+  if (jsDocParsingMode === undefined) return undefined
   const host = ts.createCompilerHost(options)
   host.jsDocParsingMode = jsDocParsingMode
-  return ts.createProgram({ rootNames: [...rootNames], options, host })
+  return host
 }
 
 /** Finds the symbol bound to the declaration name inside `sourceFile` whose own line falls within `[lineStart, lineEnd]` (1-based, inclusive) and whose identifier text is `name`. Returns `null` if no such declaration identifier is found. */

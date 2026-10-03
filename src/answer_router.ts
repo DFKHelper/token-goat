@@ -5,6 +5,8 @@ import { isIgnoredIndexPath } from './baseline.js'
 import { foldPath } from './path_containment.js'
 import { displaySafeText, toDisplayPath } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
+import { ambiguityPicks, resolveSymbolSpec } from './read_spec.js'
+import type { SymbolEntry } from './parser_types.js'
 import { resolveProjectRoot } from './project.js'
 import { runCallers, runImpact } from './graph_commands.js'
 import { runTestFor } from './graph_analysis.js'
@@ -139,8 +141,15 @@ export function normalizeSubject(raw: string): string {
   return s.trim()
 }
 
+/** One definition of an ambiguous subject and the `Parent.name` / `@line` spelling that picks it alone. */
+export interface DefinitionPick {
+  file: string
+  qualifier: string
+}
+
 export type ResolvedSubject =
-  | { kind: 'symbol'; name: string; file: string }
+  | { kind: 'symbol'; name: string; file: string; qualifier?: string }
+  | { kind: 'ambiguous-defs'; subject: string; picks: DefinitionPick[] }
   | { kind: 'file'; path: string }
   | { kind: 'ambiguous'; candidates: string[] }
   | { kind: 'symbol-only'; name: string; file: string }
@@ -163,11 +172,11 @@ function resolveSymbolHit(subject: string, rootDir: string): { name: string; fil
 }
 
 /** Every indexed definition of exactly this name in this project, outside vendored, generated, and tool-metadata trees. Paged to exhaustion for the same reason as {@link resolveSymbolHit}: ignored trees sort first, so a capped page would miss real rows. */
-function collectSymbolDefs(subject: string, rootDir: string): { name: string; file: string }[] {
-  const defs: { name: string; file: string }[] = []
+function collectSymbolDefs(subject: string, rootDir: string): SymbolEntry[] {
+  const defs: SymbolEntry[] = []
   for (let offset = 0; ; offset += SYMBOL_SCAN_PAGE) {
     const rows = querySymbols({ name: subject, rootDir, limit: SYMBOL_SCAN_PAGE, offset })
-    for (const r of rows) if (!isIgnoredIndexPath(r.filePath, rootDir)) defs.push({ name: r.name, file: r.filePath })
+    for (const r of rows) if (!isIgnoredIndexPath(r.filePath, rootDir)) defs.push(r)
     if (rows.length < SYMBOL_SCAN_PAGE) return defs
   }
 }
@@ -201,8 +210,14 @@ export function resolveSubject(subject: string, mode: SubjectMode = 'symbol-firs
   const sep = subject.lastIndexOf('::')
   if (sep > 0 && sep + 2 < subject.length) {
     const file = resolveSpecPath(subject.slice(0, sep))
-    const hit = querySymbols({ filePath: file, name: subject.slice(sep + 2), rootDir, limit: 1 })[0]
+    const symbolPart = subject.slice(sep + 2)
+    const hit = querySymbols({ filePath: file, name: symbolPart, rootDir, limit: 1 })[0]
     if (hit && !isIgnoredIndexPath(hit.filePath, rootDir)) return { kind: 'symbol', name: hit.name, file: hit.filePath }
+    // A `Class.method` (or `name@line`) subject names no row by its literal text; resolve it the way `read`, `brief` and `callers` do, so the delegate gets a spec that picks the same one definition.
+    if (!symbolPart.includes('.') && !/@\d+$/.test(symbolPart)) return null
+    const resolution = resolveSymbolSpec(subject, undefined, rootDir)
+    if (resolution?.kind === 'ok' && !isIgnoredIndexPath(resolution.entry.filePath, rootDir)) return { kind: 'symbol', name: resolution.entry.name, file: resolution.entry.filePath, qualifier: symbolPart }
+    if (resolution?.kind === 'ambiguous') return { kind: 'ambiguous-defs', subject, picks: ambiguityPicks(resolution.symbol, resolution.candidates).map((p) => ({ file: p.candidate.filePath, qualifier: p.qualifier })) }
     return null
   }
 
@@ -231,21 +246,26 @@ const FILE_INTENTS: ReadonlySet<AnswerIntent> = new Set<AnswerIntent>(['tests', 
 /** The phrasing that re-asks a file intent about one specific path, for the ambiguous refusal's next step. */
 const FILE_INTENT_PHRASE: Readonly<Partial<Record<AnswerIntent, string>>> = { tests: 'tests for', exports: 'exports of', imports: 'imports of', importers: 'importers of' }
 
-/** Refuses a symbol question whose bare name has several definitions, naming the first one as the `file::symbol` spelling that re-asks it for exactly that definition. */
-function refuseAmbiguousDefs(subject: string, defs: { file: string }[], rootDir: string, command: 'brief' | 'callers' | 'impact'): number {
-  const shown = defs.slice(0, 5).map((d) => toDisplayPath(rootDir, d.file))
-  const more = defs.length - shown.length
-  const first = shown[0] ?? ''
-  return refuse('ambiguous', `'${subject}' has ${defs.length} definitions in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, `token-goat ${command} "${first}::${subject}"`)
+/** Refuses a symbol question whose subject has several definitions, naming each as the `file::Parent.name` (or `@line`) spelling that re-asks it for exactly that definition. */
+function refuseAmbiguousDefs(subject: string, picks: DefinitionPick[], rootDir: string, command: 'brief' | 'callers' | 'impact'): number {
+  const specs = picks.map((p) => `${toDisplayPath(rootDir, p.file)}::${p.qualifier}`)
+  const shown = specs.slice(0, 5)
+  const more = specs.length - shown.length
+  return refuse('ambiguous', `'${subject}' has ${specs.length} definitions in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, `token-goat ${command} "${specs[0] ?? ''}"`)
+}
+
+/** The bare name's definitions as pickable specs. */
+function picksFor(subject: string, defs: SymbolEntry[]): DefinitionPick[] {
+  return ambiguityPicks(subject, defs).map((p) => ({ file: p.candidate.filePath, qualifier: p.qualifier }))
 }
 
 /** Routes a callers or impact question to the one definition the subject names: a `file::symbol` subject or a name with exactly one definition in this project. Several definitions refuse, and the delegate always receives the resolved `file::symbol` spec, since a bare name makes the graph command pick whichever definition it likes while the `via:` line claims the one resolved here. */
-function answerGraph(intent: 'callers' | 'impact', subject: string, resolved: { name: string; file: string }, rootDir: string): number {
+function answerGraph(intent: 'callers' | 'impact', subject: string, resolved: { name: string; file: string; qualifier?: string }, rootDir: string): number {
   if (!subject.includes('::')) {
     const defs = collectSymbolDefs(resolved.name, rootDir)
-    if (defs.length > 1) return refuseAmbiguousDefs(subject, defs, rootDir, intent)
+    if (defs.length > 1) return refuseAmbiguousDefs(subject, picksFor(subject, defs), rootDir, intent)
   }
-  const spec = `${toDisplayPath(rootDir, resolved.file)}::${resolved.name}`
+  const spec = `${toDisplayPath(rootDir, resolved.file)}::${resolved.qualifier ?? resolved.name}`
   // Quoted only when a path with whitespace needs it, so the common via: line stays a command that splits on spaces into its own argv.
   const shown = displaySafeText(spec)
   const arg = /\s/.test(shown) ? `"${shown}"` : shown
@@ -259,14 +279,15 @@ function answerGraph(intent: 'callers' | 'impact', subject: string, resolved: { 
 
 /** Routes an explain question to `brief` only when the subject has exactly one definition in this project (or is spelled `file::symbol`); several definitions, a file, or nothing at all refuses with the next step. */
 function answerExplain(question: string, subject: string, rootDir: string): number {
-  let target: { name: string; file: string } | null = null
+  let target: { name: string; file: string; qualifier?: string } | null = null
   if (subject.includes('::')) {
     const r = resolveSubject(subject)
-    if (r?.kind === 'symbol') target = { name: r.name, file: r.file }
+    if (r?.kind === 'symbol') target = { name: r.name, file: r.file, ...(r.qualifier !== undefined ? { qualifier: r.qualifier } : {}) }
+    if (r?.kind === 'ambiguous-defs') return refuseAmbiguousDefs(subject, r.picks, rootDir, 'brief')
   } else if (!/\s/.test(subject)) {
     const defs = collectSymbolDefs(subject, rootDir)
-    if (defs.length > 1) return refuseAmbiguousDefs(subject, defs, rootDir, 'brief')
-    target = defs[0] ?? null
+    if (defs.length > 1) return refuseAmbiguousDefs(subject, picksFor(subject, defs), rootDir, 'brief')
+    target = defs[0] !== undefined ? { name: defs[0].name, file: defs[0].filePath } : null
     if (target === null) {
       const file = resolveSubject(subject, 'file-only')
       if (file?.kind === 'file') return refuse('file-needs-symbol', `'${subject}' is a file, and explain needs a symbol`, `token-goat outline ${toDisplayPath(rootDir, file.path)}`)
@@ -274,7 +295,7 @@ function answerExplain(question: string, subject: string, rootDir: string): numb
     }
   }
   if (target === null) return refuse('unresolved', `'${subject}' is not an indexed symbol`, `token-goat semantic "${question}"`)
-  const spec = `${toDisplayPath(rootDir, target.file)}::${displaySafeText(target.name)}`
+  const spec = `${toDisplayPath(rootDir, target.file)}::${displaySafeText(target.qualifier ?? target.name)}`
   emit(`via: token-goat brief "${spec}" --limit ${ANSWER_DELEGATE_LIMIT}`)
   return routed('brief', runBrief({ spec, limit: ANSWER_DELEGATE_LIMIT, projectRoot: rootDir }))
 }
@@ -340,6 +361,8 @@ export function runAnswer(opts: AnswerOptions): number {
   if (resolved === null) return refuse('unresolved', `'${cls.subject}' is not an indexed symbol or file`, `token-goat semantic "${question}"`)
 
   const rootDir = resolveProjectRoot({ project: process.cwd() })
+
+  if (resolved.kind === 'ambiguous-defs') return refuseAmbiguousDefs(cls.subject, resolved.picks, rootDir, cls.intent === 'callers' || cls.intent === 'impact' ? cls.intent : 'brief')
 
   if (resolved.kind === 'ambiguous') {
     const shown = resolved.candidates.slice(0, 5).map((c) => toDisplayPath(rootDir, c))

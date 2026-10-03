@@ -5,6 +5,8 @@ import * as os from 'node:os'
 import {
   isTsPath,
   resolveTypedRefs,
+  resolveTypedRefsBatch,
+  createTypedRefsSession,
   type ResolveTypedRefsInput,
 } from '../src/ts_refs.js'
 import { isAvailable, setTsModuleForTesting } from '../src/ts_compiler.js'
@@ -98,6 +100,78 @@ describe('ts_refs — resolveTypedRefs precision: two same-named methods on unre
     const callerASrc = "foo.run()\n"
     const callerBSrc = "bar.run()\n"
     expect(colOf(callerASrc, 1, 'run')).toBe(colOf(callerBSrc, 1, 'run'))
+  })
+
+  it('resolveTypedRefsBatch answers several definitions from one program, in input order, each as resolveTypedRefs would', () => {
+    // HAND-DERIVED: Foo.run is called only from callerA and Bar.run only from callerB, which follows from the source text; a .py definition has no typed tier.
+    fs.writeFileSync(path.join(dir, 'fileA.ts'), 'export class Foo {\n  run(): void {\n    return\n  }\n}\n')
+    fs.writeFileSync(path.join(dir, 'fileB.ts'), 'export class Bar {\n  run(): void {\n    return\n  }\n}\n')
+    fs.writeFileSync(path.join(dir, 'callerA.ts'), "import { Foo } from './fileA'\nconst foo = new Foo()\nfoo.run()\n")
+    fs.writeFileSync(path.join(dir, 'callerB.ts'), "import { Bar } from './fileB'\nconst bar = new Bar()\nbar.run()\n")
+    const candidates = [ref(path.join(dir, 'callerA.ts'), 3, 0), ref(path.join(dir, 'callerB.ts'), 3, 0)]
+    const inputs: ResolveTypedRefsInput[] = [
+      { defFile: path.join(dir, 'fileB.ts'), defLineStart: 2, defLineEnd: 4, symbolName: 'run', candidates },
+      { defFile: path.join(dir, 'tool.py'), defLineStart: 1, defLineEnd: 2, symbolName: 'run', candidates },
+      { defFile: path.join(dir, 'fileA.ts'), defLineStart: 2, defLineEnd: 4, symbolName: 'run', candidates },
+    ]
+    const batch = resolveTypedRefsBatch(inputs)
+    expect(batch.map((r) => r?.map((e) => path.basename(e.filePath)) ?? null)).toEqual([['callerB.ts'], null, ['callerA.ts']])
+    expect(batch).toEqual(inputs.map((i) => resolveTypedRefs(i)))
+  })
+})
+
+describe('ts_refs — a session grows one program instead of re-parsing per call', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ts-session-'))
+  })
+
+  afterEach(() => {
+    setTsModuleForTesting(undefined)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('parses each file once across calls whose files overlap, and answers each call as resolveTypedRefs would', () => {
+    // HAND-DERIVED: Foo.run is called only from callerA and Bar.run only from callerB, which follows from the source text; impact asks once per hop level, so the second call shares callerA and callerB with the first.
+    fs.writeFileSync(path.join(dir, 'fileA.ts'), 'export class Foo {\n  run(): void {\n    return\n  }\n}\n')
+    fs.writeFileSync(path.join(dir, 'fileB.ts'), 'export class Bar {\n  run(): void {\n    return\n  }\n}\n')
+    fs.writeFileSync(path.join(dir, 'callerA.ts'), "import { Foo } from './fileA'\nconst foo = new Foo()\nfoo.run()\n")
+    fs.writeFileSync(path.join(dir, 'callerB.ts'), "import { Bar } from './fileB'\nconst bar = new Bar()\nbar.run()\n")
+    const candidates = [ref(path.join(dir, 'callerA.ts'), 3, 0), ref(path.join(dir, 'callerB.ts'), 3, 0)]
+    const first: ResolveTypedRefsInput = { defFile: path.join(dir, 'fileA.ts'), defLineStart: 2, defLineEnd: 4, symbolName: 'run', candidates: [candidates[0]!] }
+    const second: ResolveTypedRefsInput = { defFile: path.join(dir, 'fileB.ts'), defLineStart: 2, defLineEnd: 4, symbolName: 'run', candidates }
+    const expected = [resolveTypedRefs(first), resolveTypedRefs(second)]
+
+    const parsed = new Map<string, number>()
+    let programs = 0
+    const mod = {
+      ...realTs,
+      createProgram: (opts: TsModule.CreateProgramOptions) => {
+        programs += 1
+        return realTs.createProgram(opts)
+      },
+      createCompilerHost: (options: TsModule.CompilerOptions, setParentNodes?: boolean) => {
+        const host = realTs.createCompilerHost(options, setParentNodes)
+        const getSourceFile = host.getSourceFile.bind(host)
+        host.getSourceFile = (fileName, ...rest) => {
+          parsed.set(fileName, (parsed.get(fileName) ?? 0) + 1)
+          return getSourceFile(fileName, ...rest)
+        }
+        return host
+      },
+    } as unknown as typeof TsModule
+    setTsModuleForTesting(mod)
+
+    const session = createTypedRefsSession()
+    const answers = [session.resolve([first])[0], session.resolve([second])[0]]
+
+    expect(answers).toEqual(expected)
+    expect(answers.map((a) => a?.map((e) => path.basename(e.filePath)))).toEqual([['callerA.ts'], ['callerB.ts']])
+    // The second call adds fileB and callerB to the roots, so the program is rebuilt once, but fileA and callerA come from the host cache rather than being parsed again.
+    expect(programs).toBe(2)
+    expect([...parsed.keys()].some((f) => path.basename(f) === 'callerA.ts')).toBe(true)
+    expect([...parsed.entries()].filter(([, n]) => n !== 1)).toEqual([])
   })
 })
 

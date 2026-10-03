@@ -10,8 +10,8 @@ import { querySymbols, queryRefs, queryRefsByContext } from './index_reader.js'
 import { resolveProjectRoot } from './project.js'
 import { findSpecSeparator } from './read_commands.js'
 import { foldPath } from './util.js'
-import { resolveQualifiedSpecDef } from './read_spec.js'
-import { isTsPath, resolveTypedRefs } from './ts_refs.js'
+import { resolveQualifiedSpec, type SymbolResolution } from './read_spec.js'
+import { isTsPath, resolveTypedRefs, resolveTypedRefsBatch, type ResolveTypedRefsInput, type TypedRefsSession } from './ts_refs.js'
 import { UNBOUNDED_QUERY_LIMIT } from './query_limits.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 
@@ -113,9 +113,17 @@ export const ENTRY_NAMES: ReadonlySet<string> = new Set([
   'main', 'default', 'index', '__init__', '__main__', 'setup', 'run', 'handler', 'constructor',
 ])
 
+// An operator (`operator+`, `operator int`), a destructor or finalizer (`~Foo`) and an indexer (`this[]`) run from syntax, a `+`, a cast, scope exit or `a[i]`, so no call site ever names them and a name-based ref count of zero says nothing about whether they are used.
+const SYNTAX_INVOKED_NAME = /^(?:operator(?:\s|[^\w\s])|~|this\[)/
+
+/** True for a member the language invokes through syntax rather than by name, which ref-based dead and coverage analysis cannot assess. */
+export function isSyntaxInvokedName(name: string): boolean {
+  return SYNTAX_INVOKED_NAME.test(name)
+}
+
 /** Return true when a symbol with the given name and reference count is dead. */
 export function isDeadSymbol(name: string, refCount: number): boolean {
-  if (ENTRY_NAMES.has(name)) return false
+  if (ENTRY_NAMES.has(name) || isSyntaxInvokedName(name)) return false
   return refCount === 0
 }
 
@@ -129,21 +137,42 @@ export function parseGraphSymbolSpec(spec: string): { name: string; file?: strin
 }
 
 /** Like parseGraphSymbolSpec, but a qualified `file::Parent.method` spec is resolved through the same candidate lookup `read` uses, so the name to query is the method's own name and `def` is the one definition it names. A spec that resolves to nothing, or to several, keeps the raw name so each command's own not-found/ambiguity message still fires. */
-export function resolveGraphSpec(spec: string, rootDir: string): { name: string; file?: string; def?: SymbolEntry } {
+export function resolveGraphSpec(spec: string, rootDir: string): { name: string; file?: string; def?: SymbolEntry; ambiguous?: Extract<SymbolResolution, { kind: 'ambiguous' }> } {
   const parsed = parseGraphSymbolSpec(spec)
   if (parsed.file === undefined || !parsed.name.includes('.')) return parsed
-  const def = resolveQualifiedSpecDef(spec, rootDir)
-  return def === undefined ? parsed : { name: def.name, file: parsed.file, def }
+  const resolution = resolveQualifiedSpec(spec, rootDir)
+  if (resolution?.kind === 'ok') return { name: resolution.entry.name, file: parsed.file, def: resolution.entry }
+  // An overloaded `Class.method` is a real symbol with several definitions; the commands print the same pick-one list `read` does rather than a not-found for a literal dotted name.
+  if (resolution?.kind === 'ambiguous') return { ...parsed, ambiguous: resolution }
+  return parsed
+}
+
+/** The references that bind to `def` according to the type checker (TypeScript only), or null when it cannot tell: no definition, a non-TypeScript file, the compiler unavailable, or a resolution failure. The one typed tier `refs --callers`, `callers`, `brief` and `impact` all share. */
+export function typedRefsForDef(refs: RefEntry[], def: SymbolEntry | undefined): RefEntry[] | null {
+  if (def === undefined || refs.length === 0 || !isTsPath(def.filePath)) return null
+  try {
+    return resolveTypedRefs(typedInput(refs, def))
+  } catch {
+    return null
+  }
+}
+
+function typedInput(refs: RefEntry[], def: SymbolEntry): ResolveTypedRefsInput {
+  return { defFile: def.filePath, defLineStart: def.lineStart, defLineEnd: def.lineEnd, symbolName: def.name, candidates: refs }
+}
+
+/** {@link typedRefsForDef} for many definitions, sharing one compiler program across them so a whole-project scan does not build one per symbol. Returns one entry per item, in order. */
+export function typedRefsForDefs(items: ReadonlyArray<{ refs: RefEntry[]; def: SymbolEntry }>): Array<RefEntry[] | null> {
+  try {
+    return resolveTypedRefsBatch(items.map(({ refs, def }) => typedInput(refs, def)))
+  } catch {
+    return items.map(() => null)
+  }
 }
 
 /** Narrows name-matched references to the ones that bind to `def` when the type checker can tell (TypeScript only); otherwise returns them unchanged, since the refs table is keyed by name alone. */
 export function narrowRefsToDef(refs: RefEntry[], def: SymbolEntry | undefined): RefEntry[] {
-  if (def === undefined || refs.length === 0 || !isTsPath(def.filePath)) return refs
-  try {
-    return resolveTypedRefs({ defFile: def.filePath, defLineStart: def.lineStart, defLineEnd: def.lineEnd, symbolName: def.name, candidates: refs }) ?? refs
-  } catch {
-    return refs
-  }
+  return typedRefsForDef(refs, def) ?? refs
 }
 
 export function buildFileSymCache(): (fp: string) => SymbolEntry[] {
@@ -180,13 +209,58 @@ export function filterRefsForSymbol(
   return refs.filter((ref) => foldPath(ref.filePath) === foldPath(filePath) || !fileDefinesName(ref.filePath, name, getSyms))
 }
 
+/** The references attributable to the symbol `name` defined at `filePath`, tiered like `refs --callers`: the type checker's binding when it can tell, and the same-name-in-another-file heuristic only as the fallback. The heuristic must not run first: it drops every reference in a file that defines its own same-named symbol, including a typed call that binds to this definition. Without a `def` (a plain `file::name` spec) the definition is the one symbol of that name in the file, when there is exactly one. */
+export function scopeRefsToDefinition(
+  refs: RefEntry[],
+  name: string,
+  filePath: string,
+  getSyms: (fp: string) => SymbolEntry[],
+  def?: SymbolEntry,
+): RefEntry[] {
+  const target = def ?? soleDefinitionIn(name, filePath)
+  return typedRefsForDef(refs, target) ?? filterRefsForSymbol(refs, name, filePath, getSyms)
+}
+
+export interface ScopeRequest {
+  refs: RefEntry[]
+  name: string
+  filePath: string
+  def?: SymbolEntry | undefined
+}
+
+/** {@link scopeRefsToDefinition} for many requests at once, resolving every typed lookup through `session`, so a traversal that scopes many nodes (`impact`, one hop at a time) grows one compiler program instead of building one per node. Returns one list per request, in order. */
+export function scopeRefsToDefinitions(session: TypedRefsSession, requests: readonly ScopeRequest[], getSyms: (fp: string) => SymbolEntry[]): RefEntry[][] {
+  const typedAt: number[] = []
+  const inputs: ResolveTypedRefsInput[] = []
+  requests.forEach((r, i) => {
+    const target = r.def ?? soleDefinitionIn(r.name, r.filePath)
+    if (target === undefined || r.refs.length === 0 || !isTsPath(target.filePath)) return
+    typedAt.push(i)
+    inputs.push(typedInput(r.refs, target))
+  })
+  let typed: Array<RefEntry[] | null>
+  try {
+    typed = session.resolve(inputs)
+  } catch {
+    typed = inputs.map(() => null)
+  }
+  const typedByRequest = new Map(typedAt.map((i, k) => [i, typed[k] ?? null]))
+  return requests.map((r, i) => typedByRequest.get(i) ?? filterRefsForSymbol(r.refs, r.name, r.filePath, getSyms))
+}
+
+/** The one symbol named `name` in `filePath`, or undefined when there are none or several. */
+function soleDefinitionIn(name: string, filePath: string): SymbolEntry | undefined {
+  const defs = querySymbols({ name, filePath, limit: 2 })
+  return defs.length === 1 ? defs[0] : undefined
+}
+
 /** Resolves callers of a symbol. */
 export function resolveCallers(name: string, limit?: number, filePath?: string, rootDir?: string, excludeTests?: boolean, def?: SymbolEntry): CallerEntry[] {
   const resolvedRootDir = rootDir ?? resolveProjectRoot({ project: process.cwd() })
   const queryLimit = excludeTests === true ? UNBOUNDED_REF_LIMIT : (limit ?? 500)
   const refs = queryRefs({ name, limit: queryLimit, rootDir: resolvedRootDir })
   const getSyms = buildFileSymCache()
-  const scoped = narrowRefsToDef(filePath === undefined ? refs : filterRefsForSymbol(refs, name, filePath, getSyms), def)
+  const scoped = filePath === undefined ? narrowRefsToDef(refs, def) : scopeRefsToDefinition(refs, name, filePath, getSyms, def)
 
   return scoped.map((ref) => {
     const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)

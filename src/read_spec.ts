@@ -252,13 +252,8 @@ export function findParentName(entry: SymbolEntry, fileSymbols: SymbolEntry[]): 
   return null
 }
 
-export function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[], explicitRoot?: string, commandName = 'read'): string {
-  const multiFile = new Set(candidates.map((c) => c.filePath)).size > 1
-  const displayRoot = getDisplayRoot(explicitRoot)
-  const lines = [
-    `Ambiguous symbol '${displaySafeText(symbol)}' in '${displaySafeText(file)}': ${countNoun(candidates.length, 'definition')} match. ` +
-      `Retry with one of the qualified commands below to pick one:`,
-  ]
+/** The spelling that picks each candidate out of an ambiguous `symbol`: `Parent.symbol` when the parent tells them apart, with `@line` added when it does not (or when there is no parent and the file holds several). Every returned qualifier resolves to exactly its own definition. */
+export function ambiguityPicks(symbol: string, candidates: SymbolEntry[]): { candidate: SymbolEntry; qualifier: string }[] {
   const fileSymCache = new Map<string, SymbolEntry[]>()
   const getFileSyms = (filePath: string): SymbolEntry[] => {
     let fileSyms = fileSymCache.get(filePath)
@@ -278,6 +273,7 @@ export function formatAmbiguity(symbol: string, file: string, candidates: Symbol
     qualifierCounts.set(key, (qualifierCounts.get(key) ?? 0) + 1)
     fileGroupSize.set(c.filePath, (fileGroupSize.get(c.filePath) ?? 0) + 1)
   }
+  const picks: { candidate: SymbolEntry; qualifier: string }[] = []
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i]!
     const parent = parents[i]!
@@ -285,7 +281,19 @@ export function formatAmbiguity(symbol: string, file: string, candidates: Symbol
     const collides =
       (qualifierCounts.get(`${c.filePath} ${plainQualifier}`) ?? 0) > 1 ||
       (parent === null && (fileGroupSize.get(c.filePath) ?? 0) > 1)
-    const qualifier = collides ? `${plainQualifier}@${c.lineStart}` : plainQualifier
+    picks.push({ candidate: c, qualifier: collides ? `${plainQualifier}@${c.lineStart}` : plainQualifier })
+  }
+  return picks
+}
+
+export function formatAmbiguity(symbol: string, file: string, candidates: SymbolEntry[], explicitRoot?: string, commandName = 'read'): string {
+  const multiFile = new Set(candidates.map((c) => c.filePath)).size > 1
+  const displayRoot = getDisplayRoot(explicitRoot)
+  const lines = [
+    `Ambiguous symbol '${displaySafeText(symbol)}' in '${displaySafeText(file)}': ${countNoun(candidates.length, 'definition')} match. ` +
+      `Retry with one of the qualified commands below to pick one:`,
+  ]
+  for (const { candidate: c, qualifier } of ambiguityPicks(symbol, candidates)) {
     const retryFile = multiFile ? toDisplayPath(displayRoot, c.filePath) : file
     const label = multiFile ? `${toDisplayPath(displayRoot, c.filePath)}::${qualifier}` : qualifier
     lines.push(`  - ${label} (line ${c.lineStart})  ->  token-goat ${commandName} "${retryFile}::${qualifier}"`)
@@ -482,12 +490,17 @@ export function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectR
   return finalize(candidates, displaySymbol)
 }
 
-/** The one definition a qualified `file::Parent.method` spec names, or undefined when the spec is not qualified or does not resolve to exactly one symbol. */
-export function resolveQualifiedSpecDef(spec: string, projectRoot: string | undefined): SymbolEntry | undefined {
+/** How a qualified `file::Parent.method` spec resolved, or undefined when the spec is not qualified. */
+export function resolveQualifiedSpec(spec: string, projectRoot: string | undefined): SymbolResolution | undefined {
   const { symbol } = parseReadSpec(spec)
   if (symbol === undefined || !symbol.includes('.')) return undefined
-  const resolution = resolveSymbolSpec(spec, undefined, projectRoot)
-  return resolution.kind === 'ok' ? resolution.entry : undefined
+  return resolveSymbolSpec(spec, undefined, projectRoot)
+}
+
+/** The one definition a qualified `file::Parent.method` spec names, or undefined when the spec is not qualified or does not resolve to exactly one symbol. */
+export function resolveQualifiedSpecDef(spec: string, projectRoot: string | undefined): SymbolEntry | undefined {
+  const resolution = resolveQualifiedSpec(spec, projectRoot)
+  return resolution?.kind === 'ok' ? resolution.entry : undefined
 }
 
 export function resolveSymbolSpecOrEmitError(

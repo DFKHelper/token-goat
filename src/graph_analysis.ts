@@ -24,6 +24,7 @@ import {
   UNBOUNDED_REF_LIMIT,
   MAX_CYCLES,
   ENTRY_NAMES,
+  isSyntaxInvokedName,
   enclosingSymbol,
   buildFileSymCache,
   findCyclesCapped,
@@ -246,7 +247,7 @@ export function runCoverageGaps(opts: CoverageGapsOptions): number {
 
   for (const sym of candidates) {
     if (!opts.includePrivate && sym.name.startsWith('_')) continue
-    if (ENTRY_NAMES.has(sym.name)) continue
+    if (ENTRY_NAMES.has(sym.name) || isSyntaxInvokedName(sym.name)) continue
     const refs = queryRefs({ name: sym.name, limit: UNBOUNDED_REF_LIMIT, rootDir })
     const hasTestRef = refs.some((r) => isTestFile(r.filePath))
     if (!hasTestRef) gaps.push({ name: sym.name, kind: sym.kind, file: sym.filePath, line: sym.lineStart })

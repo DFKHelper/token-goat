@@ -12,10 +12,10 @@ import { resolveSpecPath } from './spec_path.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { UNBOUNDED_QUERY_LIMIT } from './query_limits.js'
 import { DELETED_TAG, emitGuarded, fileIsGone, findSpecSeparator, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, recordReadStat, sinkGoneRows, truncationFooter, truncationNotice, warnIfFilesStale, type TruncationTotal } from './read_commands.js'
-import { confinedProjectRoot, confinementRefusal, parseCrossFileMultiSpec, parseReadSpec, resolveProjectConfinement, resolveQualifiedSpecDef } from './read_spec.js'
+import { confinedProjectRoot, confinementRefusal, parseCrossFileMultiSpec, formatAmbiguity, parseReadSpec, resolveProjectConfinement, resolveQualifiedSpec, resolveQualifiedSpecDef } from './read_spec.js'
 import { unknownSymbolSuggestion } from './read_suggest.js'
 import { isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote, REF_BLIND_DEF_PROBE_LIMIT } from './ref_blindness.js'
-import { isTsPath, resolveTypedRefs } from './ts_refs.js'
+import { typedRefsForDef } from './graph_traversal.js'
 import { compileGrepMatcher, countNoun, excludeTestsHiddenNote, grepFilteredToEmptyNotice, isTestFile } from './util.js'
 import { buildContextWindow, renderContextWindow, type SourceContextLine } from './util_context.js'
 
@@ -87,16 +87,7 @@ function applyTypedRefsTier(
     // A qualified spec already named its one definition, which a same-file name collision (Circle.area / Square.area) would otherwise make ambiguous here.
     const defs = qualifiedDef !== undefined ? [qualifiedDef] : querySymbols(symbolQueryOpts)
     if (defs.length !== 1) return results
-    const def = defs[0]
-    if (def === undefined || !isTsPath(def.filePath)) return results
-    const typed = resolveTypedRefs({
-      defFile: def.filePath,
-      defLineStart: def.lineStart,
-      defLineEnd: def.lineEnd,
-      symbolName: symName,
-      candidates: results,
-    })
-    return typed ?? results
+    return typedRefsForDef(results, defs[0]) ?? results
   } catch {
     return results
   }
@@ -214,6 +205,14 @@ function renderRefsTargets(
     annotateHiddenByGrep: boolean
   },
 ): number {
+  // An overloaded `Class.method` target would otherwise print "(no references found)" for a symbol that exists: refuse the whole request with the @line picks, as the single-symbol form does.
+  for (const { file, symbol } of targets) {
+    if (file === undefined || !symbol.includes('.')) continue
+    const qualified = resolveQualifiedSpec(`${file}::${symbol}`, opts.projectRoot ?? process.cwd())
+    if (qualified?.kind !== 'ambiguous') continue
+    emitErr(formatAmbiguity(qualified.symbol, qualified.file, qualified.candidates, opts.projectRoot, 'refs'))
+    return 1
+  }
   // Every entry uses the same envelope shape as the single-symbol `refs`/`symbol`/`skeleton`/ `outline` JSON output ({ items, truncated, totalCount }), whether or not it was truncated — a JSON consumer should never have to branch on shape depending on truncation. `--top` opts into a distinct, deliberately different envelope ({ fileCounts, totalFiles, totalRefs, shown }) since the caller explicitly asked for the grouped summary shape instead.
   const jsonOut: Record<string, RefsJsonEntry> = {}
   let anyFound = false
@@ -342,7 +341,13 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
 function runRefsSingle(opts: RefsOptions): number {
   const { file, symbol } = parseReadSpec(opts.spec)
   // A qualified `file::Parent.method` resolves to the method's own name plus its one definition, so refs are keyed by the real name and the typed tier knows which declaration is meant.
-  const qualifiedDef = resolveQualifiedSpecDef(opts.spec, opts.projectRoot ?? process.cwd())
+  const qualified = resolveQualifiedSpec(opts.spec, opts.projectRoot ?? process.cwd())
+  // An overloaded `Class.method` is a real symbol with several definitions: list them with their @line picks, as `read` does, instead of reporting a literal dotted name as not found.
+  if (qualified?.kind === 'ambiguous') {
+    emitErr(formatAmbiguity(qualified.symbol, qualified.file, qualified.candidates, opts.projectRoot, 'refs'))
+    return 1
+  }
+  const qualifiedDef = qualified?.kind === 'ok' ? qualified.entry : undefined
   const symName = qualifiedDef?.name ?? symbol ?? file
   // A bare-name spec parses as a file with no symbol, and names no defining file at all.
   const { queryOpts, defFileHint, results, preScanCount, scanLimit, suppressed, preGrepCount, clientFiltered, filteredTotal } = collectRefs(symName, symbol !== undefined ? file : undefined, opts, qualifiedDef)

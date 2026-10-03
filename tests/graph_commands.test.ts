@@ -5933,14 +5933,14 @@ describe('runCallers file::symbol attribution vs --limit', () => {
   it('scans with full headroom so same-name attribution cannot eat slots ahead of the limit', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-callers-attr-limit-'))
     try {
-      // `shadowFn7q1` is defined in defFile AND, independently, in each shadow file. filterRefsForSymbol drops a ref living in a file that defines its own same-named symbol, so the two shadow refs are never attributable to defFile's definition -- but they sort first by file path, so a bounded SQL query hands them back and they are discarded afterwards.
+      // Every fixture file is a module (`export {}`): script files share one global scope, where the typed binding resolves the real files' bare calls to a shadow's function. `shadowFn7q1` is defined in defFile AND, independently, in each shadow file. filterRefsForSymbol drops a ref living in a file that defines its own same-named symbol, so the two shadow refs are never attributable to defFile's definition -- but they sort first by file path, so a bounded SQL query hands them back and they are discarded afterwards.
       const defFile = join(root, 'a-def.ts')
       writeFileSync(defFile, 'export function shadowFn7q1() { return 1 }\n')
       for (const n of ['b-shadow1', 'c-shadow2']) {
-        writeFileSync(join(root, `${n}.ts`), `function shadowFn7q1() { return 2 }\nfunction use_${n.replace('-', '_')}() { shadowFn7q1() }\n`)
+        writeFileSync(join(root, `${n}.ts`), `export {}\nfunction shadowFn7q1() { return 2 }\nfunction use_${n.replace('-', '_')}() { shadowFn7q1() }\n`)
       }
       for (const n of ['d-real1', 'e-real2', 'f-real3']) {
-        writeFileSync(join(root, `${n}.ts`), `function use_${n.replace('-', '_')}() { shadowFn7q1() }\n`)
+        writeFileSync(join(root, `${n}.ts`), `export {}\nfunction use_${n.replace('-', '_')}() { shadowFn7q1() }\n`)
       }
       for (const f of ['a-def', 'b-shadow1', 'c-shadow2', 'd-real1', 'e-real2', 'f-real3']) {
         indexFileSync(normalizePath(join(root, `${f}.ts`)))

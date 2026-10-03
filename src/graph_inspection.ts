@@ -15,7 +15,7 @@ import { fileConfinementRefusal } from './read_spec.js'
 import { rankSimilarNames, didYouMean } from './read_suggest.js'
 import { decodeSource, isTestFile, compileGrepMatcher, grepFilteredToEmptyNotice, excludeTestsHiddenNote, countNoun, foldPath } from './util.js'
 import { buildImportGraph } from './import_graph.js'
-import type { SymbolEntry } from './parser_types.js'
+import type { RefEntry, SymbolEntry } from './parser_types.js'
 import { globalDbPath } from './constants.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
@@ -28,6 +28,7 @@ import {
   isDeadSymbol,
   buildFileSymCache,
   filterRefsForSymbol,
+  typedRefsForDefs,
   hasAncestorDispatchRef,
   REF_BLIND_KINDS,
   CORE_SYMBOL_KINDS,
@@ -95,18 +96,27 @@ export function runDead(opts: DeadOptions): number {
 
   let suppressed = 0
   let refBlindByLanguage = 0
+  const suspects: Array<{ sym: SymbolEntry; refs: RefEntry[] }> = []
   for (const sym of syms) {
     if (!isRefIndexedFile(sym.filePath)) {
       refBlindByLanguage += 1
       continue
     }
     if (opts.includePrivate !== true && sym.name.startsWith('_')) continue
-    const refs = queryRefs({ name: sym.name, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
+    let refs = queryRefs({ name: sym.name, limit: DEFAULT_REF_QUERY_LIMIT, rootDir })
     let scoped = filterRefsForSymbol(refs, sym.name, sym.filePath, getSyms)
     if (scoped.length === 0 && refs.length >= DEFAULT_REF_QUERY_LIMIT) {
-      scoped = filterRefsForSymbol(queryRefs({ name: sym.name, limit: UNBOUNDED_REF_LIMIT, rootDir }), sym.name, sym.filePath, getSyms)
+      refs = queryRefs({ name: sym.name, limit: UNBOUNDED_REF_LIMIT, rootDir })
+      scoped = filterRefsForSymbol(refs, sym.name, sym.filePath, getSyms)
     }
-    if (!isDeadSymbol(sym.name, scoped.length)) continue
+    if (isDeadSymbol(sym.name, scoped.length)) suspects.push({ sym, refs })
+  }
+  // The name heuristic drops every ref in a file that defines its own same-named symbol, so before calling a symbol dead the typed binding gets to claim those refs, as callers does; every suspect with refs shares one compiler program, which keeps the scan to a single build.
+  const typedInputs = suspects.filter((s) => s.refs.length > 0).map((s) => ({ refs: s.refs, def: s.sym }))
+  const typedRefs = typedInputs.length > 0 ? typedRefsForDefs(typedInputs) : []
+  const typed = new Map(typedInputs.map((t, i) => [t.def, typedRefs[i]] as const))
+  for (const { sym } of suspects) {
+    if (!isDeadSymbol(sym.name, typed.get(sym)?.length ?? 0)) continue
     if (sym.kind === 'method') {
       const ownScope = enclosingNamedScope(getSyms(sym.filePath), sym.lineStart)
       if (ownScope !== null && hasAncestorDispatchRef(sym.name, ownScope.name, sym.filePath, rootDir)) continue

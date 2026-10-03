@@ -19,6 +19,8 @@ import {
 } from './ref_blindness.js'
 import { detectLanguageOfFile } from './parser_types.js'
 import { guardJsonRows, warnIfFilesStale } from './read_commands.js'
+import { formatAmbiguity } from './read_spec.js'
+import type { RefEntry, SymbolEntry } from './parser_types.js'
 import { unknownSymbolSuggestion } from './read_suggest.js'
 import {
   isTestFile,
@@ -34,6 +36,7 @@ import { globalDbPath } from './constants.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 import { fenceUntrustedFileContent } from './injection_scan.js'
 import { redactSecrets } from './secret_redact.js'
+import { createTypedRefsSession } from './ts_refs.js'
 
 import {
   DEFAULT_REF_QUERY_LIMIT,
@@ -42,9 +45,10 @@ import {
   type CallersOfFn,
   bfsCallChains,
   resolveGraphSpec,
-  narrowRefsToDef,
+  scopeRefsToDefinition,
+  scopeRefsToDefinitions,
+  type ScopeRequest,
   buildFileSymCache,
-  filterRefsForSymbol,
   resolveCallers,
   refBlindKindVerdict,
   compareHopEntries,
@@ -56,6 +60,12 @@ export * from './graph_traversal.js'
 export * from './graph_inspection.js'
 export * from './graph_analysis.js'
 export { isTestFile }
+
+/** Prints the pick-one list `read` prints for an overloaded `file::Class.method` and returns the exit code. */
+function refuseAmbiguousSpec(command: string, ambiguous: NonNullable<ReturnType<typeof resolveGraphSpec>['ambiguous']>, rootDir: string): number {
+  emitErr(formatAmbiguity(ambiguous.symbol, ambiguous.file, ambiguous.candidates, rootDir, command))
+  return 1
+}
 
 // ---- callers ----------------------------------------------------------------
 
@@ -81,7 +91,8 @@ export function runCallers(opts: CallersOptions): number {
     return 1
   }
   const rootDir = scope.root
-  const { name, file, def } = resolveGraphSpec(opts.symbol, cwdRoot)
+  const { name, file, def, ambiguous } = resolveGraphSpec(opts.symbol, cwdRoot)
+  if (ambiguous !== undefined) return refuseAmbiguousSpec('callers', ambiguous, rootDir)
   const fileHint = file !== undefined ? resolveSpecPath(file, cwdRoot) : undefined
   if (fileHint !== undefined && querySymbols({ name, filePath: fileHint, limit: 1 }).length === 0) {
     emitErr(`Symbol '${name}' not found in '${file}'`)
@@ -212,7 +223,8 @@ export function runCallChain(opts: CallChainOptions): number {
     return 1
   }
   const rootDir = scope.root
-  const { name, file, def } = resolveGraphSpec(opts.symbol, cwdRoot)
+  const { name, file, def, ambiguous } = resolveGraphSpec(opts.symbol, cwdRoot)
+  if (ambiguous !== undefined) return refuseAmbiguousSpec('call-chain', ambiguous, rootDir)
   const fileHint = file !== undefined ? resolveSpecPath(file, cwdRoot) : undefined
 
   if (fileHint !== undefined) {
@@ -245,7 +257,7 @@ export function runCallChain(opts: CallChainOptions): number {
   const callersOf: CallersOfFn = (n: string): string[] => {
     const refs = queryRefs({ name: n, limit: UNBOUNDED_REF_LIMIT, rootDir })
     if (refs.length === 0) return []
-    const scoped = fileHint !== undefined && n === name ? narrowRefsToDef(filterRefsForSymbol(refs, n, fileHint, getSyms), def) : refs
+    const scoped = fileHint !== undefined && n === name ? scopeRefsToDefinition(refs, n, fileHint, getSyms, def) : refs
     const names = new Set<string>()
     for (const ref of scoped) {
       if (opts.excludeTests === true && isTestFile(ref.filePath)) {
@@ -336,7 +348,8 @@ export function runImpact(opts: ImpactOptions): number {
     return 1
   }
   const rootDir = scope.root
-  const { name: rootName, file, def: rootDef } = resolveGraphSpec(opts.symbol, cwdRoot)
+  const { name: rootName, file, def: rootDef, ambiguous } = resolveGraphSpec(opts.symbol, cwdRoot)
+  if (ambiguous !== undefined) return refuseAmbiguousSpec('impact', ambiguous, rootDir)
   const fileHint = file !== undefined ? resolveSpecPath(file, cwdRoot) : undefined
   if (fileHint !== undefined && querySymbols({ name: rootName, filePath: fileHint, limit: 1 }).length === 0) {
     emitErr(`Symbol '${rootName}' not found in '${file}'`)
@@ -344,18 +357,63 @@ export function runImpact(opts: ImpactOptions): number {
   }
 
   const getSyms = buildFileSymCache()
-  const hops = new Map<string, number>([[rootName, 0]])
-  const queue: Array<[string, number]> = [[rootName, 0]]
+  // Hops are keyed by definition identity, not bare name: a caller that merely shares the target's name (an override, Other.run calling Service().run()) is a different symbol and must not be mistaken for the root. With no single definition named (a bare name), every definition of that name is the root, as before.
+  const defKey = (s: SymbolEntry): string => `${s.filePath}|${s.parent ?? ''}|${s.name}|${s.lineStart}`
+  const rootRows = rootDef !== undefined ? [rootDef] : querySymbols({ name: rootName, ...(fileHint !== undefined ? { filePath: fileHint } : {}), rootDir, limit: UNBOUNDED_REF_LIMIT })
+  const hops = new Map<string, { name: string; hop: number }>(rootRows.map((r) => [defKey(r), { name: rootName, hop: 0 }]))
+  // Every node is expanded once per definition. A name with several definitions in the project (Outer.run and Other.run) has its refs scoped to the definition being expanded, so impact never walks from one into the callers of the other; a name defined once keeps every ref, as before.
+  const queue: Array<{ name: string; depth: number; def?: SymbolEntry }> = [{ name: rootName, depth: 0 }]
+  const expandedDefs = new Set<string>()
+  const refsByName = new Map<string, RefEntry[]>()
+  const sharedNames = new Map<string, boolean>()
+  const refsOf = (name: string): RefEntry[] => {
+    let refs = refsByName.get(name)
+    if (refs === undefined) {
+      refs = queryRefs({ name, limit: UNBOUNDED_REF_LIMIT, rootDir })
+      refsByName.set(name, refs)
+    }
+    return refs
+  }
+  const isSharedName = (name: string): boolean => {
+    let shared = sharedNames.get(name)
+    if (shared === undefined) {
+      shared = querySymbols({ name, rootDir, limit: 2 }).length > 1
+      sharedNames.set(name, shared)
+    }
+    return shared
+  }
   let suppressedCount = 0
   let depthCapped = 0
 
+  // The queue is breadth-first, so it is drained one hop level at a time and every node of a level that needs scoping is scoped in one call through one session: a wide graph then grows a single compiler program about once per level, where scoping node by node built a fresh ~600ms program for each shared name and ran for minutes.
+  const typedSession = createTypedRefsSession()
   while (queue.length > 0) {
-    const item = queue.shift()
-    if (item === undefined) break
-    const [name, depth] = item
-    if (depth >= DEPTH_CAP) { depthCapped += 1; continue }
-    const refs = queryRefs({ name, limit: UNBOUNDED_REF_LIMIT, rootDir })
-    const scoped = fileHint !== undefined && name === rootName ? narrowRefsToDef(filterRefsForSymbol(refs, name, fileHint, getSyms), rootDef) : refs
+    const depth = queue[0]!.depth
+    const level: Array<{ refs: RefEntry[]; scope: ScopeRequest | undefined }> = []
+    while (queue.length > 0 && queue[0]!.depth === depth) {
+      const { name, def } = queue.shift()!
+      if (def !== undefined) {
+        const key = defKey(def)
+        if (expandedDefs.has(key)) continue
+        expandedDefs.add(key)
+      }
+      if (depth >= DEPTH_CAP) { depthCapped += 1; continue }
+      const refs = refsOf(name)
+      const scope: ScopeRequest | undefined = def === undefined
+        ? (fileHint !== undefined ? { refs, name, filePath: fileHint, def: rootDef } : undefined)
+        : (isSharedName(name) ? { refs, name, filePath: def.filePath, def } : undefined)
+      level.push({ refs, scope })
+    }
+    const scopeRequests = level.flatMap((node) => (node.scope === undefined ? [] : [node.scope]))
+    const scopedRefs = scopeRefsToDefinitions(typedSession, scopeRequests, getSyms)
+    let nextScoped = 0
+    for (const node of level) {
+      const scoped = node.scope === undefined ? node.refs : scopedRefs[nextScoped++]!
+      expandNode(depth, scoped)
+    }
+  }
+
+  function expandNode(depth: number, scoped: RefEntry[]): void {
     for (const ref of scoped) {
       if (opts.excludeTests === true && isTestFile(ref.filePath)) {
         suppressedCount += 1
@@ -366,21 +424,22 @@ export function runImpact(opts: ImpactOptions): number {
       if (enc === null) {
         const fileKey = `(module scope) ${ref.filePath}`
         const existing = hops.get(fileKey)
-        if (existing === undefined || existing > newHop) hops.set(fileKey, newHop)
+        if (existing === undefined || existing.hop > newHop) hops.set(fileKey, { name: fileKey, hop: newHop })
         continue
       }
-      const callerName = enc.name
-      const existing = hops.get(callerName)
-      if (existing === undefined || existing > newHop) {
-        hops.set(callerName, newHop)
-        queue.push([callerName, newHop])
+      const key = defKey(enc)
+      const existing = hops.get(key)
+      if (existing === undefined || existing.hop > newHop) {
+        hops.set(key, { name: enc.name, hop: newHop })
+        queue.push({ name: enc.name, depth: newHop, def: enc })
       }
     }
   }
 
-  hops.delete(rootName)
+  for (const r of rootRows) hops.delete(defKey(r))
 
-  const allSorted = [...hops.entries()].sort(compareHopEntries)
+  // Two distinct definitions can share a name; the key (file, parent, line) keeps their order stable.
+  const allSorted = [...hops.entries()].sort((a, b) => compareHopEntries([a[1].name, a[1].hop], [b[1].name, b[1].hop]) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).map(([, v]): [string, number] => [v.name, v.hop])
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
   const grepped = matchesGrep !== undefined ? allSorted.filter(([symbol]) => matchesGrep(symbol)) : allSorted
   const sorted = grepped.slice(0, top)

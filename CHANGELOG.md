@@ -107,6 +107,12 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **`token-goat answer` refused any subject written as `file::Class.method`.** It now resolves the subject the way `read` does, and when the name matches more than one definition it lists each one with the spelling that picks it.
+- **`token-goat impact` skipped a caller that shared the symbol's name, and later hops followed the callers of unrelated methods with the same name.** Each step now looks only at references to the definition it is expanding.
+- **`callers`, `brief`, `impact` and `call-chain` dropped a TypeScript call when the calling file defined its own method of the same name.** They now check what the call is bound to first, as `refs` already did, and keep the call when it reaches the symbol you asked about.
+- **`token-goat dead` listed a method as unused when every file that called it also defined a method of the same name.** It now checks what each call is bound to before reporting a method, and answers the whole scan from one TypeScript program, so the check adds seconds rather than minutes on a large project.
+- **`callers`, `impact`, `call-chain` and `refs` on an overloaded `file::Class.method` silently picked one overload, and `refs` with several symbols printed "no references found" for it.** They now say the name is ambiguous and list each overload with its `@line` spelling.
+- **`token-goat dead` and `coverage-gaps` listed C# and C++ operators, conversions, destructors and indexers as unused or untested.** These run from syntax such as `a + b`, a cast or the end of a scope, so no call site ever names them and a count of name references cannot tell whether they are used. Both commands now leave them out, and still report an unused method in the same class.
 - **C#, Kotlin, PHP and PowerShell methods written on one line were stored cut at the first brace.** `public int Get() { return x; }` came back from `read` as `public int Get()`. The whole line is now the method's body.
 - **Kotlin functions written as `fun f() = ...` across several lines were stored as their first line only.** The body now runs to the end of the expression, following trailing operators, commas, chained calls and `if`/`else` branches.
 - **C# operator overloads, conversions, finalizers and indexers were missing from the index or filed under the wrong name.** They are now indexed as `operator+`, `operator int`, `~Calc` and `this[]`, the same names C++ uses, so `read "Calc.cs::Calc.operator+"` finds them.
