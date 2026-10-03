@@ -31,6 +31,8 @@ export interface InstallResult {
   readonly settingsPath: string
   /** True when every token-goat hook was already present (no write needed). */
   readonly alreadyInstalled: boolean
+  /** Event keys left untouched because the file holds a non-list value there. */
+  readonly skippedEvents?: readonly string[]
 }
 
 /** Claude Code event names token-goat wires, mapped to their internal event arg. The settings key is Claude Code's PascalCase event name; the value is the arg passed to `token-goat hook <event>`, matching the internal HookEventName spellings the relay dispatches on. */
@@ -160,8 +162,8 @@ function anyScopeReferencesShim(
 ): boolean {
   const referencesIn = (map: Record<string, HookMatcherGroup[]> | undefined): boolean => {
     for (const groups of Object.values(map ?? {})) {
-      for (const group of groups) {
-        for (const h of group.hooks ?? []) {
+      for (const group of Array.isArray(groups) ? groups : []) {
+        for (const h of hooksOf(group)) {
           // Exec form carries the shim path in `args`, not `command` (which is just the node binary).
           const fields = commandHookFields(h)
           if (fields !== undefined && scriptPaths.some((p) => fields.command.includes(p) || (fields.args ?? []).some((a) => a.includes(p)))) return true
@@ -246,7 +248,12 @@ function readSettings(p: string, opts: { strict?: boolean; command?: 'install' |
     return {}
   }
   if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-    return parsed as Settings
+    const hooksValue = (parsed as Settings).hooks
+    if (hooksValue === undefined || (typeof hooksValue === 'object' && hooksValue !== null && !Array.isArray(hooksValue))) return parsed as Settings
+    // A `hooks` that is not a JSON object cannot be merged into or stripped: strict callers refuse and leave the file alone, read-only ones see no hooks.
+    if (opts.strict === true) throw refuse('has a "hooks" value that is not a JSON object')
+    const { hooks: _ignored, ...rest } = parsed as Settings
+    return rest
   }
   if (opts.strict === true) throw refuse('does not contain a JSON object at the top level')
   return {}
@@ -267,14 +274,20 @@ export function wiredClaudeHookWords(scope: HookScope): string[][] {
   return out
 }
 
+/** The hook entries of a matcher group, or none when the group is not an object or its `hooks` is not an array (a hand-edited file can hold anything). */
+function hooksOf(group: HookMatcherGroup | null | undefined): HookCommandEntry[] {
+  return Array.isArray(group?.hooks) ? group.hooks : []
+}
+
 /** True when `groups` contains a hook command matching `predicate`. */
 function groupHasTokenGoat(
   groups: HookMatcherGroup[] | undefined,
   predicate: (command: string, args?: readonly string[]) => boolean,
 ): boolean {
-  if (groups === undefined) return false
+  // A hand-edited `hooks.<Event>` can hold a string or an object where Claude Code expects an array of groups; it holds no token-goat entry.
+  if (!Array.isArray(groups)) return false
   for (const group of groups) {
-    for (const h of group.hooks ?? []) {
+    for (const h of hooksOf(group)) {
       if (isOwnHookEntry(h, predicate)) return true
     }
   }
@@ -308,22 +321,33 @@ function installHooksScoped(scope: HookScope): InstallResult {
   })
 
   let settingsChanged = false
+  const skippedEvents: string[] = []
   for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
     const expected = expectedHookEntryFor(scriptPath, eventArg)
-    const existingGroups = hooks[eventKey] ?? []
+    // A non-array value (a string or an object) is the user's own and cannot be merged into; it is left byte-for-byte as it was and the event is skipped, as the settings file is reported at the end.
+    const rawGroups: unknown = hooks[eventKey]
+    if (rawGroups !== undefined && !Array.isArray(rawGroups)) {
+      skippedEvents.push(eventKey)
+      continue
+    }
+    const existingGroups: HookMatcherGroup[] = (rawGroups as HookMatcherGroup[] | undefined) ?? []
 
     // Strip every token-goat entry that is not byte-identical to what this build wires, whether or not a correct entry also already exists -- a wrong entry coexisting with a right one violates "exactly one, working, entry per event key" just as much as a wrong entry sitting alone does. Exact-match rather than marker-match is what makes this cover all four staleness shapes at once: a legacy alias (tokenwise/token_goat/tg-hook), a pre-shim bare `token-goat hook <event>`, a shim command whose baked absolute paths have since moved (node upgraded, token-goat reinstalled elsewhere), and a string-form entry once exec form becomes available (or vice versa, if a user downgrades Claude Code). A marker check would call any of those "already installed" and leave the hook pointing at a binary that no longer exists, or in a form the running Claude Code can't use.
     const groups: HookMatcherGroup[] = []
     let strippedStale = false
     for (const group of existingGroups) {
-      const keptHooks = (group.hooks ?? []).filter((h) => {
+      if (typeof group !== 'object' || group === null) {
+        groups.push(group)
+        continue
+      }
+      const keptHooks = hooksOf(group).filter((h) => {
         const isStale = isOwnHookEntry(h, (command, args) => isTokenGoatHookCommand(command, args) && !hookEntryMatches(command, args, expected))
         if (isStale) strippedStale = true
         return !isStale
       })
       if (keptHooks.length > 0) {
         groups.push({ ...group, hooks: keptHooks })
-      } else if ((group.hooks ?? []).length === 0) {
+      } else if (hooksOf(group).length === 0) {
         // A group that had no hooks to begin with is user data; preserve it.
         groups.push(group)
       }
@@ -338,7 +362,7 @@ function installHooksScoped(scope: HookScope): InstallResult {
         for (let i = 0; i < groups.length; i++) {
           const group = groups[i]
           if (group === undefined) continue
-          const ownHooks = group.hooks ?? []
+          const ownHooks = hooksOf(group)
           const isOwnGroup = ownHooks.length > 0 && ownHooks.every((h) => isOwnHookEntry(h, isOurs))
           if (isOwnGroup && group.matcher !== narrowed) {
             groups[i] = { ...group, matcher: narrowed }
@@ -360,8 +384,12 @@ function installHooksScoped(scope: HookScope): InstallResult {
     settingsChanged = true
   }
 
+  if (skippedEvents.length > 0) {
+    process.stderr.write(`token-goat: left ${p} untouched under hooks.${skippedEvents.join(', hooks.')}: not a list of hook groups, so no token-goat hook was added there. Fix the value and run install again.\n`)
+  }
+
   if (!settingsChanged && !scriptChanged) {
-    return { scope, settingsPath: p, alreadyInstalled: true }
+    return { scope, settingsPath: p, alreadyInstalled: true, ...(skippedEvents.length > 0 ? { skippedEvents } : {}) }
   }
 
   // Only touch settings.json when its own content actually changed: a run that merely repaired the shim must not rewrite (and re-timestamp) a file the user may be watching or version-controlling.
@@ -369,7 +397,7 @@ function installHooksScoped(scope: HookScope): InstallResult {
     settings.hooks = hooks
     writeJsonSettings(p, settings)
   }
-  return { scope, settingsPath: p, alreadyInstalled: false }
+  return { scope, settingsPath: p, alreadyInstalled: false, ...(skippedEvents.length > 0 ? { skippedEvents } : {}) }
 }
 
 /** Remove token-goat hooks from the `scope` settings file. Strips every hook entry whose command targets `token-goat hook ...`, prunes now-empty matcher groups and event keys, and drops the `hooks` section if it becomes empty. Returns true when at least one entry was removed; false when none were present (no write occurs in that case). */

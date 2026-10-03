@@ -165,6 +165,126 @@ export function computeCodexHookHash(
   return `sha256:${hash}`
 }
 
+/** Delimiters of the block {@link installCodex} appends to config.toml, so uninstall can take away exactly that text and leave every byte the user wrote, comments included. The second begin line records that the file had no final newline, so the removal knows how many separator newlines it added. */
+const MANAGED_BEGIN = '# >>> token-goat codex hooks (managed block; token-goat uninstall removes it) >>>'
+const MANAGED_BEGIN_NO_EOL = '# >>> token-goat codex hooks (managed block; token-goat uninstall removes it; file had no final newline) >>>'
+const MANAGED_END = '# <<< token-goat codex hooks <<<'
+
+/** `text` without the managed block and the separator newlines install put before it, or undefined when it holds no well-formed block. */
+function removeManagedBlock(text: string): string | undefined {
+  for (const begin of [MANAGED_BEGIN_NO_EOL, MANAGED_BEGIN]) {
+    const start = text.indexOf(begin)
+    if (start < 0 || (start > 0 && text[start - 1] !== '\n')) continue
+    const endMark = text.indexOf(MANAGED_END, start)
+    if (endMark < 0) return undefined
+    const nl = text.indexOf('\n', endMark)
+    const end = nl < 0 ? text.length : nl + 1
+    const sep = start === 0 ? 0 : begin === MANAGED_BEGIN_NO_EOL ? 2 : 1
+    if (text.slice(start - sep, start) !== '\n'.repeat(sep)) return undefined
+    return text.slice(0, start - sep) + text.slice(end)
+  }
+  return undefined
+}
+
+/** A comparable form of a parsed TOML value: object keys sorted, so two documents that differ only in key order compare equal. */
+function canonicalToml(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonicalToml).join(',')}]`
+  if (v instanceof Date) return `d${v.toISOString()}`
+  if (typeof v === 'bigint') return `n${v}`
+  if (typeof v === 'object' && v !== null) {
+    return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalToml((v as Record<string, unknown>)[k])}`).join(',')}}`
+  }
+  return JSON.stringify(v) ?? 'undefined'
+}
+
+/** The text of `target` built by appending a managed block to the user's own text, or undefined when that cannot be done safely. The user's bytes, comments and layout, stay as they were; the result is returned only when it parses to exactly `target`, so a layout the append cannot express (a static `hooks = [...]` array, a stale token-goat entry outside the block, an edited state entry) falls back to re-serializing the whole file. */
+function appendManagedBlock(original: string, target: CodexConfig): string | undefined {
+  const base = removeManagedBlock(original) ?? original
+  try {
+    const baseHooks = (parse(base) as CodexConfig).hooks ?? {}
+    const targetHooks = target.hooks ?? {}
+    const added: Record<string, unknown> = {}
+    for (const [event, groups] of Object.entries(targetHooks)) {
+      if (event === 'state' || !Array.isArray(groups)) continue
+      const have = Array.isArray(baseHooks[event]) ? baseHooks[event].length : 0
+      if (groups.length > have) added[event] = groups.slice(have)
+    }
+    const baseState = (baseHooks['state'] ?? {}) as Record<string, unknown>
+    const addedState = Object.fromEntries(Object.entries(targetHooks['state'] ?? {}).filter(([k]) => !(k in baseState)))
+    if (Object.keys(addedState).length > 0) added['state'] = addedState
+    let candidate = base
+    if (Object.keys(added).length > 0) {
+      const noEol = base.length > 0 && !base.endsWith('\n')
+      const lead = base.length === 0 ? '' : noEol ? '\n\n' : '\n'
+      candidate = `${base}${lead}${noEol ? MANAGED_BEGIN_NO_EOL : MANAGED_BEGIN}\n${stringify({ hooks: added }).trimEnd()}\n${MANAGED_END}\n`
+    }
+    return canonicalToml(parse(candidate)) === canonicalToml(target) ? candidate : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The text of `target` built by taking the managed block out of the user's own text and renaming the state tables `rekey` moves, or undefined when that does not parse to exactly `target` (no block to take out, a state table written inline). */
+function removeManagedBlockText(original: string, target: CodexConfig, rekey: ReadonlyMap<string, string>): string | undefined {
+  const without = removeManagedBlock(original)
+  if (without === undefined) return undefined
+  const renamed = without.replace(/^([ \t]*)\[hooks\.state\.("(?:[^"\\\n]|\\.)*"|'[^'\n]*')\]([ \t]*(?:#[^\r\n]*)?)(\r?)$/gm, (whole, indent: string, quoted: string, tail: string, cr: string) => {
+    let key: string
+    try {
+      key = quoted.startsWith('"') ? (JSON.parse(quoted) as string) : quoted.slice(1, -1)
+    } catch {
+      return whole
+    }
+    const next = rekey.get(key)
+    return next === undefined ? whole : `${indent}[hooks.state.${JSON.stringify(next)}]${tail}${cr}`
+  })
+  try {
+    return canonicalToml(parse(renamed)) === canonicalToml(target) ? renamed : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The event label Codex puts in a hook's state key and hash: the snake_case spelling install writes for the events it wires, derived the same way for any other event. */
+function codexEventLabel(event: string): string {
+  const known = (CODEX_EVENT_ARG as Record<string, string>)[event] ?? (CODEX_GLOBAL_EVENT_ARG as Record<string, string>)[event]
+  return known ?? event.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()
+}
+
+/** What stripping token-goat's hooks does to `[hooks.state]`: the keys and hashes that were token-goat's own, and the new key of every user hook whose position the strip moves. Codex keys a hook's trust by position, `<config path>:<event label>:<group index>:<handler index>` (codex-rs/hooks/src/lib.rs `hook_key`; the position keying is discussed in https://github.com/openai/codex/issues/49399), so a user group sitting after a removed group of ours changes index and loses its trust unless its entry is renamed. Mirrors {@link stripOwnHooksFromMap}: a group stays when it has a hook left or began with none. */
+function planStateCleanup(configPath: string, hooks: Record<string, unknown>): { ownKeys: Set<string>; ownHashes: Set<string>; rekey: Map<string, string> } {
+  const ownKeys = new Set<string>()
+  const ownHashes = new Set<string>()
+  const rekey = new Map<string, string>()
+  for (const [event, groups] of Object.entries(hooks)) {
+    if (event === 'state' || !Array.isArray(groups)) continue
+    const label = codexEventLabel(event)
+    const keyOf = (g: number, h: number): string => `${configPath}:${label}:${g}:${h}`
+    let newGroup = 0
+    groups.forEach((group: CodexMatcherGroup | null, gi: number) => {
+      const list = Array.isArray(group?.hooks) ? group.hooks : []
+      const matcher = typeof group?.matcher === 'string' ? group.matcher : undefined
+      const mine = list.map((h) => isCodexTokenGoatCommand(h?.command))
+      list.forEach((h, hi) => {
+        if (!mine[hi]) return
+        ownKeys.add(keyOf(gi, hi))
+        ownHashes.add(computeCodexHookHash(label, h.command, matcher))
+        ownHashes.add(computeCodexHookHash(label, h.command))
+      })
+      const kept = mine.filter((m) => !m).length
+      if (kept === 0 && list.length > 0) return
+      let newHook = 0
+      list.forEach((_h, hi) => {
+        if (mine[hi]) return
+        if (newGroup !== gi || newHook !== hi) rekey.set(keyOf(gi, hi), keyOf(newGroup, newHook))
+        newHook++
+      })
+      newGroup++
+    })
+  }
+  return { ownKeys, ownHashes, rekey }
+}
+
 /** Outcome of an {@link installCodex} call. */
 export interface CodexInstallResult {
   readonly configPath: string
@@ -312,7 +432,9 @@ export function installCodex(): CodexInstallResult {
     config.hooks = hooks
     ensureDirSync(path.dirname(configPath))
     backupFile(configPath)
-    atomicWriteText(configPath, stringify(config as Record<string, unknown>))
+    // Append a delimited block to the user's own text rather than re-serializing the file, which would drop every comment in it; the whole-file rewrite is the fallback for a layout the append cannot express.
+    const before = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : ''
+    atomicWriteText(configPath, appendManagedBlock(before, config) ?? stringify(config as Record<string, unknown>))
   }
 
   return {
@@ -334,31 +456,58 @@ export function uninstallCodex(): boolean {
   // Strict, as install reads it: a file that is there but cannot be read or parsed may still wire hooks that run the shim, so uninstall stops here with the file, the shim, the AGENTS.md block and the file's backups as they were, rather than read it as holding no hooks and delete what those hooks run.
   const config = readCodexConfig(configPath, { strict: true, command: 'uninstall' })
   const hooks = config.hooks
+  // Set when the config is rewritten from the parsed data, which loses comments: the pre-install backup is then the only copy of them and must stay.
+  let keepBackups = false
   if (hooks !== undefined) {
+    // Planned from the config as read, before the strip moves any group.
+    const plan = planStateCleanup(configPath, structuredClone(hooks) as Record<string, unknown>)
     const hooksRemoved = stripOwnHooksFromMap(hooks, isCodexTokenGoatCommand)
-    // Strip token-goat's state keys from hooks.state
+    // Only token-goat's own trust entries go: the ones keyed to a group just stripped, or whose hash is of a token-goat command. A user's own entries stay, renamed where the strip moved their group.
     const hooksState = hooks['state'] as Record<string, unknown> | undefined
-    let stateRemoved = false
+    let stateChanged = false
     if (hooksState && typeof hooksState === 'object') {
-      const prefix = `${configPath}:`
-      for (const key of Object.keys(hooksState)) {
-        if (key.startsWith(prefix)) {
-          delete hooksState[key]
-          stateRemoved = true
+      const kept: Array<[string, unknown]> = []
+      const moved: Array<[string, unknown]> = []
+      for (const [key, value] of Object.entries(hooksState)) {
+        const hash = (value as { trusted_hash?: unknown } | null)?.trusted_hash
+        if (plan.ownKeys.has(key) || (typeof hash === 'string' && plan.ownHashes.has(hash))) {
+          stateChanged = true
+          continue
+        }
+        const next = plan.rekey.get(key)
+        if (next === undefined) kept.push([key, value])
+        else {
+          moved.push([next, value])
+          stateChanged = true
         }
       }
+      for (const k of Object.keys(hooksState)) delete hooksState[k]
+      for (const [k, v] of [...kept, ...moved]) hooksState[k] = v
       if (Object.keys(hooksState).length === 0) {
         delete hooks['state']
       }
     }
-    if (hooksRemoved || stateRemoved) {
+    if (hooksRemoved || stateChanged) {
       if (Object.keys(hooks).length === 0) {
         delete config.hooks
       } else {
         config.hooks = hooks
       }
       backupFile(configPath)
-      atomicWriteText(configPath, stringify(config as Record<string, unknown>))
+      const before = fs.readFileSync(configPath, 'utf8')
+      const text = removeManagedBlockText(before, config, plan.rekey)
+      if (text === undefined) {
+        const rewritten = stringify(config as Record<string, unknown>)
+        // A file that stringify(parse()) reproduces exactly has no comments or layout to lose.
+        try {
+          keepBackups = stringify(parse(before) as Record<string, unknown>) !== before
+        } catch {
+          keepBackups = true
+        }
+        atomicWriteText(configPath, rewritten)
+      } else {
+        atomicWriteText(configPath, text)
+      }
       removedAny = true
     }
   }
@@ -377,7 +526,7 @@ export function uninstallCodex(): boolean {
   }
 
   // The timestamped backups of this config are token-goat's own litter, so they leave with it.
-  removeCreatedBackups(configPath)
+  if (!keepBackups) removeCreatedBackups(configPath)
 
   return removedAny
 }
