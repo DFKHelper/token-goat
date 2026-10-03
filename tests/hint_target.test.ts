@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { relayInProcess, buildEvent } from '../src/relay.js'
 import { handlersFor, runHook } from '../src/hook_registry.js'
-import { HINT_PLACEHOLDERS, hintTarget, sharpenRepeatedDeny, sliceCommand, sliceForPath, type HintTarget } from '../src/hint_target.js'
+import { HINT_PLACEHOLDERS, headingTreeParts, hintTarget, sharpenRepeatedDeny, sliceCommand, sliceForPath, type HintTarget } from '../src/hint_target.js'
 import { leadWithCommand, stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import { preBashHandler } from '../src/hooks_bash.js'
 import { preReadHandler } from '../src/hooks_read.js'
@@ -17,6 +17,7 @@ import { postEditHandler } from '../src/hooks_edit.js'
 import { preSkillHandler } from '../src/hooks_skill.js'
 import { setSkillOutputsDirForTesting, setSkillsSourceDirForTesting } from '../src/skill_cache.js'
 import { planMarkdownOutline } from '../src/fold_structure.js'
+import { extractMarkdownHeadings } from '../src/hints/markdown_hints.js'
 import { recordFileRead } from '../src/session.js'
 import { normalizePath } from '../src/paths.js'
 import { makeHookEvent } from './helpers/hook-event.js'
@@ -370,5 +371,63 @@ describe.each(SITES)('$name', (site) => {
     expect(text).toContain(site.fallback)
     for (const span of commandSpans(text)) for (const mark of HOSTILE_MARKS) expect(span).not.toContain(mark)
     if (site.guarded) expect(stripUnsafeSuggestions(text)).toBe(text)
+  })
+})
+
+describe('hintTarget over an indexed file reads a setext heading as its level', () => {
+  // HAND-DERIVED: CommonMark setext rule: an `=` underline makes a level-1 heading and a `-` underline a level-2 one. Each fixture names by hand the heading `section` should be pointed at: the lone level-1 title is skipped (its section is the whole file), so the first `## Part` is named.
+  const parts = Array.from({ length: 5 }, (_, i) => `## Part ${i}\n\ntext ${i}\n`).join('\n')
+
+  it.each([
+    ['an ATX title and a trailing dash-underlined heading', '# Big Doc\n\nintro\n\n' + parts + '\nSetext End\n----------\n\ntail\n', 'Part 0'],
+    ['an equals-underlined title', 'Big Doc\n=======\n\nintro\n\n' + parts, 'Part 0'],
+  ])('names the first section for %s', async (_, body, expected) => {
+    const p = write(uniq('setext') + '.md', body)
+    const { indexFileSync } = await import('../src/parser.js')
+    const { globalDbPath } = await import('../src/constants.js')
+    indexFileSync(p, globalDbPath())
+    expect(hintTarget(p, 'section')).toEqual({ name: expected, real: true, slice: 'section' })
+  })
+})
+
+describe('the large-markdown read deny reports the real heading count', () => {
+  it('says 301 for a 301-heading file whose list was capped at 40', () => {
+    // HAND-DERIVED: one equals-underlined title plus 300 dash-underlined headings written by the loop below, so the file holds 301 headings and the display list is cut at 40.
+    const body = 'Huge Doc\n========\n\n' + Array.from({ length: 300 }, (_, i) => `Part ${i}\n--------\n\n${'filler text. '.repeat(30)}\n`).join('\n')
+    const p = write(uniq('huge') + '.md', body)
+    recordFileRead(normalizePath(p))
+    const out = preReadHandler(makeHookEvent({ toolName: 'Read', toolInput: { file_path: p }, sessionId: uniq('huge') }))
+    if (out.hookType !== 'deny') throw new Error('expected a deny, got ' + out.hookType)
+    expect(out.message).toContain('showing the first 40 of 301 headings')
+    expect(out.message).toContain('more headings)')
+    expect(out.message).not.toContain('Large markdown file (40 headings)')
+  })
+})
+
+describe('headingTreeParts reports the true heading count when the list was capped', () => {
+  // HAND-DERIVED: 301 level-2 headings written by the loop below; the display extraction stops at 40, so the true H1-H3 count is 301 by construction.
+  const content = Array.from({ length: 301 }, (_, i) => `## Part ${i}\n\ntext\n`).join('\n')
+
+  it('says the list is a prefix and counts the remainder', () => {
+    const { guidance, sectionsList } = headingTreeParts(extractMarkdownHeadings(content), '/big.md', content)
+    expect(guidance).toContain('Large markdown file (showing the first 40 of 301 headings)')
+    expect(sectionsList.endsWith('  ... (261 more headings)')).toBe(true)
+    expect(sectionsList.match(/more headings/g)).toHaveLength(1)
+  })
+
+  it('counts the remainder from what was listed when the output line cap cut the list too', () => {
+    // HAND-DERIVED: 40 headings fit in the 60-line budget, so a shorter budget is forced by feeding 100 headings directly.
+    const many = Array.from({ length: 100 }, (_, i) => ({ level: 1, text: `H${i}`, lineNumber: i + 1 }))
+    const body = Array.from({ length: 150 }, (_, i) => `# H${i}\n`).join('\n')
+    const { sectionsList } = headingTreeParts(many, '/big.md', body)
+    const listed = sectionsList.split('\n').filter((l) => /^ {2}# H\d+$/.test(l)).length
+    expect(sectionsList.match(/\((\d+) more headings\)/g)).toEqual([`(${150 - listed} more headings)`])
+  })
+
+  it('leaves the plain count alone when nothing was cut', () => {
+    const small = '## A\n\nx\n\n## B\n\nx\n\n## C\n\nx\n'
+    const { guidance, sectionsList } = headingTreeParts(extractMarkdownHeadings(small), '/s.md', small)
+    expect(guidance).toContain('Large markdown file (3 headings).')
+    expect(sectionsList).not.toContain('more headings')
   })
 })

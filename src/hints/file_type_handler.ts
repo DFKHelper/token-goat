@@ -1,10 +1,4 @@
-/**
- * Universal large-file interception for non-code, non-markdown file types.
- *
- * Dispatches based on file extension and content length to provide
- * targeted hints for PDFs, HTML, plain text, office binaries, CSV/TSV,
- * and a generic catch-all for unrecognized large files.
- */
+/** Universal large-file interception for non-code, non-markdown file types. Dispatches based on file extension and content length to provide targeted hints for PDFs, HTML, plain text, office binaries, CSV/TSV, and a generic catch-all for unrecognized large files. */
 
 import { parse } from 'csv-parse/sync'
 import { findHtmlHeadingMatches } from '../languages/common.js'
@@ -49,17 +43,12 @@ function formatBytes(n: number): string {
   return `${(n / 1_099_511_627_776).toFixed(1)} TB`
 }
 
-// The caller (hooks_read.ts) skips reading files above SLICE_ESTIMATE_SCAN_CAP_BYTES and passes
-// an empty `content` with the real size as `contentLengthHint` instead -- so an empty `content`
-// alongside a nonzero effective length means "too large to scan", not "genuinely empty file".
-// Content-derived stats (line/row counts, headings, minified-detection) would otherwise silently
-// report false zeros in that case instead of the honest "not scanned" this helper produces.
+// The caller (hooks_read.ts) skips reading files above SLICE_ESTIMATE_SCAN_CAP_BYTES and passes an empty `content` with the real size as `contentLengthHint` instead -- so an empty `content` alongside a nonzero effective length means "too large to scan", not "genuinely empty file". Content-derived stats (line/row counts, headings, minified-detection) would otherwise silently report false zeros in that case instead of the honest "not scanned" this helper produces.
 function previewUnavailable(content: string, effectiveLength: number): boolean {
   return content.length === 0 && effectiveLength > 0
 }
 
-/** Advice for a file whose content shape (e.g. one long minified/base64 line) makes any
- *  line-based offset/limit window meaningless — point at raw byte sampling instead. */
+/** Advice for a file whose content shape (e.g. one long minified/base64 line) makes any line-based offset/limit window meaningless — point at raw byte sampling instead. */
 export function BYTE_RANGE_ADVICE(filePath: string): string {
   return (
     `This file is mostly one long line (e.g. base64 or minified content) — offset/limit ` +
@@ -93,10 +82,7 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
   }
 
   const title = content.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim()
-  // Route through the shared findHtmlHeadingMatches helper (same one html.ts/liquid.ts/
-  // section_reader.ts use) rather than a hand-rolled regex, so a heading-shaped tag sitting
-  // inside a <!-- comment -->, <script> body, or CDATA section is masked out first instead of
-  // being reported as a live heading.
+  // Route through the shared findHtmlHeadingMatches helper (same one html.ts/liquid.ts/ section_reader.ts use) rather than a hand-rolled regex, so a heading-shaped tag sitting inside a <!-- comment -->, <script> body, or CDATA section is masked out first instead of being reported as a live heading.
   const headings = findHtmlHeadingMatches(content)
     .slice(0, 20)
     .map(({ level, heading }) => {
@@ -134,15 +120,12 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
 /** Plain text / log handler — blocks when file exceeds threshold. */
 export function handleTxt(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
   const length = contentLengthHint ?? content.length
-  // Match /logs/ or \logs\ so Windows-native backslash-separated absolute paths (this
-  // tool's primary deployment target) get the same log-specific recall hint as POSIX paths.
+  // Match /logs/ or \logs\ so Windows-native backslash-separated absolute paths (this tool's primary deployment target) get the same log-specific recall hint as POSIX paths.
   const isLog = /\.(log|out|err|trace)$/i.test(filePath) || /[\\/]logs[\\/]/.test(filePath)
   const threshold = isLog ? FILE_TYPE_THRESHOLDS.log : FILE_TYPE_THRESHOLDS.txt
   if (length < threshold) return { shouldBlock: false, message: '' }
 
-  // `bash-output <id>` errors for a file read directly off disk (never went through the
-  // bash-output cache, so there is no id) -- `--file "<path>"` is the working form, matching
-  // hooks_read.ts's sessionArtifactRecall for the same on-disk-but-uncached situation.
+  // `bash-output <id>` errors for a file read directly off disk (never went through the bash-output cache, so there is no id) -- `--file "<path>"` is the working form, matching hooks_read.ts's sessionArtifactRecall for the same on-disk-but-uncached situation.
   const recall = isLog
     ? `Log file — use Read with offset/limit params, or: token-goat bash-output --file "${filePath}" --tail 100 --grep "error|ERROR"`
     : 'Use Read with offset and limit params to sample specific line ranges.'
@@ -154,18 +137,13 @@ export function handleTxt(filePath: string, content: string, contentLengthHint?:
     }
   }
 
-  // Content-sniff: if the content looks like HTML despite the .txt/.log extension, delegate to
-  // handleHtml -- but only take its result when it actually decides to block. handleHtml re-gates
-  // independently on the higher html threshold, so a file that's already past handleTxt's own
-  // (lower) threshold but below handleHtml's would otherwise lose its hint entirely and read
-  // through silently. Fall back to the standard plain-text preview below in that case.
+  // Content-sniff: if the content looks like HTML despite the .txt/.log extension, delegate to handleHtml -- but only take its result when it actually decides to block. handleHtml re-gates independently on the higher html threshold, so a file that's already past handleTxt's own (lower) threshold but below handleHtml's would otherwise lose its hint entirely and read through silently. Fall back to the standard plain-text preview below in that case.
   const contentSniff = content.slice(0, 1000)
   if (/^\s*<!DOCTYPE\s+html|^\s*<html[\s>]/i.test(contentSniff)) {
     const htmlResult = handleHtml(filePath, content, contentLengthHint)
     if (htmlResult.shouldBlock) return htmlResult
   }
-  // Drop the empty piece a trailing newline leaves behind, so the reported
-  // total is the real line count and the last-5 preview is not a blank line.
+  // Drop the empty piece a trailing newline leaves behind, so the reported total is the real line count and the last-5 preview is not a blank line.
   const lines = content.split('\n')
   if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
   const preview = [
@@ -311,8 +289,7 @@ export function handleDocx(filePath: string): FileTypeResult {
 
 /** CSV/TSV handler — blocks when file exceeds threshold. */
 export function handleCsv(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
-  // Extension-aware: FILE_TYPE_THRESHOLDS.tsv is a distinct, independently configurable knob
-  // from .csv's, so it must be selected the same way the delimiter below is.
+  // Extension-aware: FILE_TYPE_THRESHOLDS.tsv is a distinct, independently configurable knob from .csv's, so it must be selected the same way the delimiter below is.
   const threshold = filePath.toLowerCase().endsWith('.tsv') ? FILE_TYPE_THRESHOLDS.tsv : FILE_TYPE_THRESHOLDS.csv
   const length = contentLengthHint ?? content.length
   if (length < threshold) return { shouldBlock: false, message: '' }
@@ -330,14 +307,9 @@ export function handleCsv(filePath: string, content: string, contentLengthHint?:
   const lines = content.split('\n').filter(l => l.trim())
   const headers = lines[0] ?? ''
   const sampleRows = lines.slice(1, 4)
-  // Case-insensitive: dispatchFileTypeHandler routes .csv/.tsv by a lowercased
-  // extension but passes the original-case filePath through, so an uppercase
-  // .TSV must still be recognized here or it silently gets the wrong separator.
+  // Case-insensitive: dispatchFileTypeHandler routes .csv/.tsv by a lowercased extension but passes the original-case filePath through, so an uppercase .TSV must still be recognized here or it silently gets the wrong separator.
   const sep = filePath.toLowerCase().endsWith('.tsv') ? '\t' : ','
-  // A naive headers.split(sep) miscounts whenever a quoted field legitimately contains the
-  // delimiter (e.g. "Full Name, Preferred") - reuse the project's RFC-4180-aware csv-parse
-  // (already a dependency via csv_query.ts) to parse just the header line correctly, falling
-  // back to the naive split only if the header itself is malformed enough to throw.
+  // A naive headers.split(sep) miscounts whenever a quoted field legitimately contains the delimiter (e.g. "Full Name, Preferred") - reuse the project's RFC-4180-aware csv-parse (already a dependency via csv_query.ts) to parse just the header line correctly, falling back to the naive split only if the header itself is malformed enough to throw.
   let colCount: number
   try {
     colCount = (parse(headers, { delimiter: sep }) as string[][])[0]?.length ?? headers.split(sep).length
@@ -430,8 +402,8 @@ export function handleJson(filePath: string, content: string, contentLengthHint?
           ? `This file appears to be an oversized tool output spill (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`
           : `Large JSON file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
         `See structure: token-goat json-outline "${filePath}"`,
-        `Query subtree: token-goat json-query "${filePath}" '<path>'`,
-        isSpill ? `Slice spill: token-goat mcp-output --file "${filePath}" --json-query '<path>'` : '',
+        `Query subtree: token-goat json-query "${filePath}" "<path>"`,
+        isSpill ? `Slice spill: token-goat mcp-output --file "${filePath}" --json-query "<path>"` : '',
       ].filter(Boolean).join('\n'),
     }
   }
@@ -459,8 +431,8 @@ export function handleJson(filePath: string, content: string, contentLengthHint?
       spillHeader,
       summary ? fenceUntrustedFileContent(summary) : '',
       `See structure: token-goat json-outline "${filePath}"`,
-      `Query subtree: token-goat json-query "${filePath}" '<path>'`,
-      isSpill ? `Slice spill: token-goat mcp-output --file "${filePath}" --json-query '<path>'` : '',
+      `Query subtree: token-goat json-query "${filePath}" "<path>"`,
+      isSpill ? `Slice spill: token-goat mcp-output --file "${filePath}" --json-query "<path>"` : '',
     ].filter(Boolean).join('\n'),
   }
 }
@@ -475,7 +447,7 @@ export function handleYaml(filePath: string, content: string, contentLengthHint?
     message: [
       `Large YAML file (${formatBytes(length)}).`,
       `See structure: token-goat yaml-outline "${filePath}"`,
-      `Query subtree: token-goat yaml-query "${filePath}" '<path>'`,
+      `Query subtree: token-goat yaml-query "${filePath}" "<path>"`,
     ].join('\n'),
   }
 }
@@ -525,16 +497,7 @@ export function handleGenericLarge(filePath: string, contentLength: number): Fil
   }
 }
 
-/**
- * Main dispatcher — call this from hooks_read.ts.
- *
- * Returns null for .md/.mdx/.markdown/.rst files (handled upstream by the
- * markdown handler). Returns a FileTypeResult for all other file types.
- *
- * @param filePath — absolute file path
- * @param content — file content as UTF-8 string (empty for binary files)
- * @param contentLengthHint — optional file size in bytes (used for binary files where content is not read)
- */
+/** Main dispatcher — call this from hooks_read.ts. Returns null for .md/.mdx/.markdown/.rst files (handled upstream by the markdown handler). Returns a FileTypeResult for all other file types. @param filePath — absolute file path @param content — file content as UTF-8 string (empty for binary files) @param contentLengthHint — optional file size in bytes (used for binary files where content is not read) */
 export function dispatchFileTypeHandler(
   filePath: string,
   content: string,

@@ -185,8 +185,56 @@ export function trimBlankLines(lines: string[]): string[] {
   return lines.slice(start, end)
 }
 
+// End index just past one `@name` / `@a.b(args)` decorator or annotation at `from`, or -1 when none starts there (`@interface` declares, so it is not one)
+function decoratorEnd(text: string, from: number): number {
+  if (text[from] !== '@') return -1
+  let i = from + 1
+  const nameStart = i
+  while (i < text.length && /[\w.$]/.test(text[i] as string)) i++
+  const name = text.slice(nameStart, i)
+  if (name === '' || name === 'interface') return -1
+  if (text[i] !== '(') return i
+  let depth = 0
+  let quote = ''
+  for (; i < text.length; i++) {
+    const ch = text[i] as string
+    if (quote) {
+      if (ch === '\\') i++
+      else if (ch === quote) quote = ''
+    } else if (ch === '"' || ch === "'" || ch === '`') quote = ch
+    else if (ch === '(') depth++
+    else if (ch === ')' && --depth === 0) return i + 1
+  }
+  return text.length
+}
+
+// Offset of the declaration in a symbol body, past leading whitespace and any `@...` decorators (tree-sitter spans start at the first decorator); `decorated` says whether one was skipped
+function declarationStart(body: string): { pos: number; decorated: boolean } {
+  let pos = 0
+  let decorated = false
+  for (;;) {
+    while (pos < body.length && /\s/.test(body[pos] as string)) pos++
+    const end = decoratorEnd(body, pos)
+    if (end < 0) return { pos, decorated }
+    pos = end
+    decorated = true
+  }
+}
+
+// A symbol body from its declaration on, or the whole body when it holds nothing but decorators
+export function bodyFromDeclaration(body: string): string {
+  const { pos } = declarationStart(body)
+  return pos >= body.length ? body : body.slice(pos)
+}
+
+// The declaration line of a symbol body: leading `@...` lines (and their multi-line argument lists) are skipped
 export function firstBodyLine(body: string): string {
-  return body.split('\n').find((l) => l.trim() !== '') ?? ''
+  const { pos, decorated } = declarationStart(body)
+  if (pos >= body.length) return body.split('\n').find((l) => l.trim() !== '') ?? ''
+  const lineStart = body.lastIndexOf('\n', pos - 1) + 1
+  const lineEnd = body.indexOf('\n', pos)
+  const line = body.slice(lineStart, lineEnd < 0 ? undefined : lineEnd)
+  return /^\s*@/.test(line) ? body.slice(pos, lineEnd < 0 ? undefined : lineEnd) : decorated ? line.trimStart() : line
 }
 
 export function findStructuredKeyPath(name: string, filePaths: string[]): { filePath: string; dotPath: string; command: string } | null {

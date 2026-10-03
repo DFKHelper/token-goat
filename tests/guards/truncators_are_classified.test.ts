@@ -219,6 +219,13 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
+    'symbolPreview',
+    {
+      bucket: 'read-tool-or-transcript-content-not-in-scope-of-the-tool-output-redaction-boundary',
+      reason: 'search/parallel_search.ts symbol-hit preview for `token-goat search`: a docstring or the first 140 characters of an indexed symbol body, the user\'s own project source, not tool output.',
+    },
+  ],
+  [
     'clipDocSummary',
     {
       bucket: 'read-tool-or-transcript-content-not-in-scope-of-the-tool-output-redaction-boundary',

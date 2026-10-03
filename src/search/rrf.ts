@@ -6,6 +6,8 @@ export const DEFAULT_RRF_K = 60;
 export const FUSION_GAP_LINES = 20;
 /** Span in lines a cluster may grow to by fusing; a single hit that is already wider (a big symbol) is exempt. */
 export const FUSION_SPAN_CAP = 200;
+/** Order in which named hits form clusters: the channels that report definitions first. */
+const CHANNEL_PRECEDENCE: readonly SearchChannel[] = ['symbol', 'heading', 'text', 'semantic'];
 
 /** True when fusing two line ranges stays inside the gap window and the span cap. */
 function withinFusionWindow(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
@@ -60,8 +62,9 @@ export function fuseChannelHits(
   // Group candidate hits by normalized file path
   const fileClusters = new Map<string, Cluster[]>();
 
-  // Named hits form their clusters first so an unnamed hit always sees every enclosing symbol, whatever line order the pool sorted into
-  const clusterOrder = [...pooledHits.filter((h) => h.name), ...pooledHits.filter((h) => !h.name)];
+  // Named hits form their clusters first so an unnamed hit always sees every enclosing symbol, whatever line order the pool sorted into. Among them the definition channels go first (the sort is stable, so line order holds inside a channel), so a same-named hit from a later channel finds every definition cluster to pick its nearest from
+  const namedHits = pooledHits.filter((h) => h.name).sort((x, y) => CHANNEL_PRECEDENCE.indexOf(x.channel) - CHANNEL_PRECEDENCE.indexOf(y.channel));
+  const clusterOrder = [...namedHits, ...pooledHits.filter((h) => !h.name)];
 
   for (const hit of clusterOrder) {
     const normPath = hit.filePath.replace(/\\/g, '/');
@@ -76,14 +79,21 @@ export function fuseChannelHits(
     let growsSpan = true;
 
     if (hit.name) {
+      let nearestGap = Infinity;
       for (const cluster of clusters) {
         if (
           cluster.name &&
           hit.name.toLowerCase() === cluster.name.toLowerCase() &&
-          withinFusionWindow(cluster.lineStart, cluster.lineEnd, hit.lineStart, hit.lineEnd)
+          withinFusionWindow(cluster.lineStart, cluster.lineEnd, hit.lineStart, hit.lineEnd) &&
+          // Two same-named hits from one channel that do not overlap are two definitions, not one entity seen twice
+          !cluster.hits.some((h) => h.channel === hit.channel && (h.lineEnd < hit.lineStart || h.lineStart > hit.lineEnd))
         ) {
-          matchedCluster = cluster;
-          break;
+          // The nearest such cluster wins, so a hit between two same-named definitions joins the one it sits on
+          const gap = Math.max(0, Math.max(cluster.lineStart, hit.lineStart) - Math.min(cluster.lineEnd, hit.lineEnd));
+          if (gap < nearestGap) {
+            matchedCluster = cluster;
+            nearestGap = gap;
+          }
         }
       }
     } else {

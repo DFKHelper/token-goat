@@ -5,7 +5,7 @@ import { resolveIndexPath, displaySafeText, hostPathOfIndexKey } from './paths.j
 import { querySymbols } from './index_reader.js'
 import { indexMatchesDisk } from './index_freshness.js'
 import { commandPathIsTouchable } from './vscode_path_gate.js'
-import { extractMarkdownHeadings, type MarkdownHeading } from './hints/markdown_hints.js'
+import { extractMarkdownHeadings, formatHeadingTreeParts, type MarkdownHeading } from './hints/markdown_hints.js'
 import { extractQuickSymbolSamples } from './hooks_read.js'
 import { stripUnsafeSuggestions, leadWithCommand } from './hint_suggestion_guard.js'
 import { getCompactedAt, markHintShown, wasHintShown } from './session.js'
@@ -67,6 +67,15 @@ const TABLE_HEADER_RE = /^[ \t]*\[([^[\]\r\n]+)\]/gm
 const SQL_CREATE_RE = /\bCREATE\s+(?:(?:OR\s+REPLACE|TEMP|TEMPORARY|UNLOGGED)\s+)*(?:TABLE|TYPE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([^"\r\n]+)"|`([^`\r\n]+)`|\[([^\]\r\n]+)\]|([\w.]+))/gi
 const HEADING_LEVEL_RE = /^\s*(#{1,6})\s/
 const SETEXT_DASH_RE = /\n[ \t]*-{3,}[ \t]*$/
+const SETEXT_UNDERLINE_RE = /\n[ \t]*([=-])\1*[ \t]*$/
+
+/** The heading level a stored heading body shows: the `#` run of an ATX heading, else 1 for an `=` underline and 2 for a `-` underline. */
+function headingLevel(body: string): number {
+  const atx = HEADING_LEVEL_RE.exec(body)?.[1]?.length
+  if (atx !== undefined) return atx
+  const underline = SETEXT_UNDERLINE_RE.exec(body)?.[1]
+  return underline === '=' ? 1 : underline === '-' ? 2 : 0
+}
 
 /** The slice a file's own type offers: sections for prose and TOML/INI tables, keys for JSON/YAML/.env/.properties, CREATE blocks for SQL, symbols for everything else. */
 export function sliceForPath(filePath: string): HintSlice {
@@ -156,7 +165,20 @@ function indexedCandidates(resolved: string, onDisk: string, slice: HintSlice): 
   const metaEnd = slice === 'section' && rows.some((s) => SETEXT_DASH_RE.test(s.body)) ? frontMatterEnd(readHead(onDisk)) : 0
   return rows
     .filter((s) => s.lineStart > metaEnd)
-    .map((s) => ({ name: s.name, level: s.kind === 'heading' ? (HEADING_LEVEL_RE.exec(s.body)?.[1]?.length ?? 0) : 0 }))
+    .map((s) => ({ name: s.name, level: s.kind === 'heading' ? headingLevel(s.body) : 0 }))
+}
+
+const MORE_HEADINGS_LINE_RE = /^ {2}\.\.\. \(\d+ more headings\)$/
+
+/** formatHeadingTreeParts over a heading list the display extraction cut short: when `content` holds more H1-H3 headings than `headings`, the guidance says it shows the first N of the true total and the list ends with a count of the rest, instead of presenting the cut list as the whole file. (markdown_hints.ts is an embedding-fingerprinted source, so the true count is applied here.) */
+export function headingTreeParts(headings: MarkdownHeading[], filePath: string, content: string): { guidance: string; sectionsList: string } {
+  const parts = formatHeadingTreeParts(headings, filePath)
+  const total = extractMarkdownHeadings(content, Number.MAX_SAFE_INTEGER).length
+  if (total <= headings.length) return parts
+  const guidance = parts.guidance.replace(`Large markdown file (${headings.length} headings)`, () => `Large markdown file (showing the first ${headings.length} of ${total} headings)`)
+  const lines = parts.sectionsList.split('\n')
+  const kept = lines.filter((l) => !MORE_HEADINGS_LINE_RE.test(l))
+  return { guidance, sectionsList: [...kept, `  ... (${total - kept.length} more headings)`].join('\n') }
 }
 
 /** A real name for `slice` inside `filePath`, else the slice's placeholder. Looks, in order, at what the caller already holds (a heading tree, the text), then the index, then the first HINT_TARGET_SCAN_BYTES of the file. A path as written in a command (`source.cwd` set) is gated with commandPathIsTouchable before resolveIndexPath, which is itself an fs call on Windows (an 8.3 segment expands through realpathSync.native), so a UNC path is refused before anything dials it. */

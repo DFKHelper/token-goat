@@ -2,9 +2,9 @@
 import { ALIGNED_LAYOUT_NOTE, alignedPaddingBytes, foldDelivery, isProseFoldablePath, pushWithheld, type FoldLayout, type FoldRow } from './fold_delivery.js'
 import { bodyFoldNotice } from './fold_delivery.js'
 import { loadConfig } from './config.js'
-import { extractMarkdownHeadings, formatHeadingTreeParts, type MarkdownHeading } from './hints/markdown_hints.js'
+import { extractMarkdownHeadings, type MarkdownHeading } from './hints/markdown_hints.js'
 import { fenceNumberedFileContent, fenceUntrustedFileContent } from './injection_scan.js'
-import { hintTarget } from './hint_target.js'
+import { headingTreeParts, hintTarget } from './hint_target.js'
 import { displaySafeText } from './paths.js'
 import { isTreeSitterAvailable, parseSourceSymbolsTreeSitterOnly } from './parser.js'
 import { detectLanguage } from './parser_types.js'
@@ -63,7 +63,7 @@ export function planMarkdownOutline(rows: readonly FoldRow[], normalizedPath: st
   const headings = extractMarkdownHeadings(fileText)
   if (headings.length < OUTLINE_MIN_HEADINGS) return null
 
-  const { guidance, sectionsList } = formatHeadingTreeParts(headings, shownPath)
+  const { guidance, sectionsList } = headingTreeParts(headings, shownPath, fileText)
 
   const leadInRows = outlineLeadInRows(rows, headings)
   const { rows: cappedLeadIn, notice: capNotice } = capLeadIn(leadInRows)

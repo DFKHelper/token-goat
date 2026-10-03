@@ -8,9 +8,16 @@ import { searchSymbolsFtsByKind } from './symbol_fts.js';
 import { projectPathIsConsultable } from '../bridges/project_scope_guard.js';
 import { readFileText } from '../read_commands.js';
 import { fuseChannelHits } from './rrf.js';
+import { bodyFromDeclaration } from '../read_suggest.js';
 import { pathPriorityWeight } from './path_weight.js';
 import { loadConfig } from '../config.js';
 import { ALL_CHANNELS, type ChannelHit, type SearchChannel, type SearchExecutionSummary, type SearchOptions } from './types.js';
+
+/** A symbol hit's preview: its docstring, else the first 140 characters of its body from the declaration on, so a decorated symbol previews as `def area(...)` rather than `@property`. */
+export function symbolPreview(sym: { name: string; docstring?: string | null; body?: string | null }): string {
+  if (sym.docstring) return sym.docstring;
+  return sym.body ? bodyFromDeclaration(sym.body).slice(0, 140).trim() : `Symbol: ${sym.name}`;
+}
 
 /** Searches symbols via Full-Text Search and symbol queries. */
 async function searchSymbolChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
@@ -24,7 +31,7 @@ async function searchSymbolChannel(query: string, limit: number, rootDir?: strin
         kind: sym.kind,
         lineStart: sym.lineStart,
         lineEnd: sym.lineEnd,
-        preview: sym.docstring || (sym.body ? sym.body.slice(0, 140).trim() : `Symbol: ${sym.name}`),
+        preview: symbolPreview(sym),
         rank: idx + 1,
       })),
     };

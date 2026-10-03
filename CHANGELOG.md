@@ -107,6 +107,11 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **`skeleton` and `search` showed the decorator or annotation line instead of the declaration.** A decorated Python, TypeScript or Java symbol came back as `@dataclass`, `@Override` or `@Get(':id')`. Both now skip leading decorators and show the signature line.
+- **`search` merged separate definitions that share a name in one file into one result with a made-up line range.** Two `render` methods in different classes came back as a single hit spanning both, and the second disappeared. Each definition is now its own result.
+- **The pre-read notice for a large JSON or YAML file printed "command omitted: the path contains shell metacharacters" in place of its query command, even for a plain path.** The check was tripping on the `'<path>'` placeholder rather than the file path. The notice now names a `json-query` or `yaml-query` command you can paste.
+- **A markdown file with any setext heading (a title underlined with `===` or `---`) made the pre-read section hint name the whole-document title.** Setext headings now count at their real level, so the hint names the section you were about to read.
+- **The pre-read hint for a large markdown file said "40 headings" for a file with 301.** It reported the number it listed rather than the number in the file. It now gives the real count and says how many it left out.
 - **Ruby methods called without parentheses or a receiver were never recorded as references.** A bare `helper` or `save!` inside another method counts as a call in Ruby, yet `refs --callers`, `impact` and `dead` saw nothing calling it. These calls are now indexed like `helper()`.
 - **Scala definitions written as `def f(...) =` with the body on the next line, and every Scala 3 type declared with a colon and an indented body, were stored as one line.** `read` returned the signature alone. The span now runs to the end of the body.
 - **Elixir functions whose `do` sat on a later line were stored as their first line.** `mix format` wraps long argument lists and `when` guards that way, so `read` returned only `def name(`. The span now starts at `def` and runs to the matching `end`.

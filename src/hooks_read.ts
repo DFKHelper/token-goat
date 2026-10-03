@@ -9,7 +9,7 @@ import { registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
 import { preToolPathDeclined } from './vscode_path_gate.js'
 import { leadWithCommand } from './hint_suggestion_guard.js'
-import { hintTarget, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
+import { headingTreeParts, hintTarget, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
 import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, displaySafeText, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import { foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
@@ -40,7 +40,6 @@ import { extractShellBannerHeading } from './section_reader.js'
 import { isLockFile, isManifestFile, isInBuildDir, isGeneratedFile } from './hints/lang_patterns.js'
 import {
   extractMarkdownHeadings,
-  formatHeadingTreeParts,
   getWellKnownSections,
   extractChangelogVersionHint,
   MARKDOWN_SIZE_THRESHOLD,
@@ -736,7 +735,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const headings = extractMarkdownHeadings(fileContent)
       if (headings.length >= 3) {
         const alreadyRead = wasFileFullyReadThisSession(normalized)
-        const { guidance, sectionsList } = formatHeadingTreeParts(headings, normalized)
+        const { guidance, sectionsList } = headingTreeParts(headings, normalized, fileContent)
         // Filter the hardcoded per-basename shortcut list down to headings that actually exist in this file — otherwise a README missing e.g. 'API' or 'Getting Started' gets a hint recommending a `section` command that will just 404.
         const headingTextsLower = new Set(headings.map((h) => h.text.trim().toLowerCase()))
         const wellKnown = getWellKnownSections(basename).filter((s) => headingTextsLower.has(s.trim().toLowerCase()))

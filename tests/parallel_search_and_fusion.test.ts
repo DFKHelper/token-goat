@@ -254,3 +254,44 @@ describe('Bridge Installers & Ecosystem Detection Safety', () => {
     }
   });
 });
+
+describe('fusion keeps separate same-named definitions as separate results', () => {
+  // HAND-DERIVED: src/shapes.ts holds `class Circle` (1-5) with `area` at 2-4 and `class Square` (7-11) with `area` at 8-10; the symbol channel reports each definition once with its own span, and a heading channel with three `### Install` subsections is the markdown form of the same shape. CAPTURE for the failure: `search area -c symbol` on that file printed one invented 2-10 span before the fix.
+  it('does not fuse two same-named methods of different classes into one invented span', () => {
+    const hitsMap = new Map<SearchChannel, ChannelHit[]>();
+    hitsMap.set('symbol', [
+      { channel: 'symbol', filePath: 'src/shapes.ts', name: 'area', kind: 'method', lineStart: 2, lineEnd: 4, preview: 'area(): number {', rank: 1 },
+      { channel: 'symbol', filePath: 'src/shapes.ts', name: 'area', kind: 'method', lineStart: 8, lineEnd: 10, preview: 'area(): number {', rank: 2 },
+      { channel: 'symbol', filePath: 'src/shapes.ts', name: 'Circle', kind: 'class', lineStart: 1, lineEnd: 5, preview: 'class Circle', rank: 3 },
+      { channel: 'symbol', filePath: 'src/shapes.ts', name: 'Square', kind: 'class', lineStart: 7, lineEnd: 11, preview: 'class Square', rank: 4 },
+    ]);
+    const fused = fuseChannelHits(hitsMap, { limit: 10 });
+    const spans = fused.filter((f) => f.name === 'area').map((f) => [f.lineStart, f.lineEnd]).sort((a, b) => a[0]! - b[0]!);
+    expect(spans).toEqual([[2, 4], [8, 10]]);
+    expect(fused).toHaveLength(4);
+  });
+
+  it('keeps three same-named headings under different parents as three results', () => {
+    const hitsMap = new Map<SearchChannel, ChannelHit[]>();
+    hitsMap.set('heading', [
+      { channel: 'heading', filePath: 'docs/a.md', name: 'Install', kind: 'heading', lineStart: 3, lineEnd: 6, preview: '### Install', rank: 1 },
+      { channel: 'heading', filePath: 'docs/a.md', name: 'Install', kind: 'heading', lineStart: 10, lineEnd: 13, preview: '### Install', rank: 2 },
+      { channel: 'heading', filePath: 'docs/a.md', name: 'Install', kind: 'heading', lineStart: 17, lineEnd: 20, preview: '### Install', rank: 3 },
+    ]);
+    const fused = fuseChannelHits(hitsMap, { limit: 10 });
+    expect(fused.map((f) => [f.lineStart, f.lineEnd])).toEqual([[3, 6], [10, 13], [17, 20]]);
+  });
+
+  it('still fuses a symbol hit and a semantic hit that describe the same entity', () => {
+    const hitsMap = new Map<SearchChannel, ChannelHit[]>();
+    hitsMap.set('symbol', [
+      { channel: 'symbol', filePath: 'src/shapes.ts', name: 'area', kind: 'method', lineStart: 2, lineEnd: 4, preview: 'area', rank: 1 },
+      { channel: 'symbol', filePath: 'src/shapes.ts', name: 'area', kind: 'method', lineStart: 8, lineEnd: 10, preview: 'area', rank: 2 },
+    ]);
+    hitsMap.set('semantic', [{ channel: 'semantic', filePath: 'src/shapes.ts', name: 'area', kind: 'method', lineStart: 8, lineEnd: 10, preview: 'chunk', rank: 1 }]);
+    const fused = fuseChannelHits(hitsMap, { limit: 10 });
+    expect(fused).toHaveLength(2);
+    const second = fused.find((f) => f.lineStart === 8)!;
+    expect(second.channels.slice().sort()).toEqual(['semantic', 'symbol']);
+  });
+});
