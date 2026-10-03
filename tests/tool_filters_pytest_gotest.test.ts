@@ -303,14 +303,7 @@ describe('go-test filter', () => {
   })
 
   it('closes a FAIL block on "=== RUN", not just on PASS/FAIL', () => {
-    // Regression: TEST_RPC_RE (=== RUN|PAUSE|CONT) used to `continue` before the
-    // inFailBlock-closing logic in TEST_RUN_RE could ever run for RUN/PAUSE/CONT lines,
-    // so a FAIL block's `inFailBlock` flag stayed stuck open past the next test's
-    // "=== RUN" line. TEST_RUN_RE's own inFailBlock branch is only reachable for
-    // "=== NAME" lines (RUN/PAUSE/CONT are intercepted earlier), so the stale flag's
-    // only observable symptom is a later "=== NAME" line getting misread as "closing
-    // structure" and kept verbatim, instead of being dropped like ordinary
-    // outside-fail-block noise.
+    // Regression: TEST_RPC_RE (=== RUN|PAUSE|CONT) used to `continue` before the inFailBlock-closing logic in TEST_RUN_RE could ever run for RUN/PAUSE/CONT lines, so a FAIL block's `inFailBlock` flag stayed stuck open past the next test's "=== RUN" line. TEST_RUN_RE's own inFailBlock branch is only reachable for "=== NAME" lines (RUN/PAUSE/CONT are intercepted earlier), so the stale flag's only observable symptom is a later "=== NAME" line getting misread as "closing structure" and kept verbatim, instead of being dropped like ordinary outside-fail-block noise.
     const text =
       '--- FAIL: TestA (0.00s)\n' +
       '    a_test.go:10: boom\n' +
@@ -400,9 +393,7 @@ describe('go-test filter', () => {
     expect(result.text).toContain('goroutine frames omitted')
   })
 
-  // Regression: a stray `==========`-style fence with no WARNING/blank-line/second-fence
-  // within a bounded lookahead used to buffer every remaining line of the file
-  // indefinitely, silently disabling PASS/SKIP/RUN compression for the rest of the stream.
+  // Regression: a stray `==========`-style fence with no WARNING/blank-line/second-fence within a bounded lookahead used to buffer every remaining line of the file indefinitely, silently disabling PASS/SKIP/RUN compression for the rest of the stream.
   it('gives up waiting on a stray race fence that never confirms, and resumes normal compression', () => {
     const text =
       '==========\n' +
@@ -423,13 +414,7 @@ describe('go-test filter', () => {
   })
 
   it('collapses stack frames under the primary "Write at"/"Read at" headers, not just under "Goroutine N ... created at:" trailers', () => {
-    // Real `go test -race` output's *first* conflicting access is reported as a bare
-    // "Write at ADDR by goroutine N:" / "Read at ADDR by goroutine N:" line (no "Previous"
-    // prefix) -- only the *second*, comparison access gets a "Previous read/write at ..."
-    // prefix. GOROUTINE_HEADER_RE previously only matched "Goroutine N", "Previous", and
-    // "Current", so the largest and most important stack in every race report (the one
-    // right under the un-prefixed "Write at"/"Read at" line) was never recognized as a
-    // header and its frames were never collapsed.
+    // Real `go test -race` output's *first* conflicting access is reported as a bare "Write at ADDR by goroutine N:" / "Read at ADDR by goroutine N:" line (no "Previous" prefix) -- only the *second*, comparison access gets a "Previous read/write at ..." prefix. GOROUTINE_HEADER_RE previously only matched "Goroutine N", "Previous", and "Current", so the largest and most important stack in every race report (the one right under the un-prefixed "Write at"/"Read at" line) was never recognized as a header and its frames were never collapsed.
     const writeFrames = Array.from({ length: 10 }, (_, i) => `      write_frame_${i}()`).join('\n')
     const readFrames = Array.from({ length: 10 }, (_, i) => `      read_frame_${i}()`).join('\n')
     const text =
@@ -461,12 +446,7 @@ describe('go-test filter', () => {
   })
 
   it('collapses real two-line-per-frame race stacks at frame boundaries, never splitting a kept function line from its location line', () => {
-    // Real `go test -race` stack frames are TWO physical lines each: a function-signature line
-    // (e.g. "  pkg.Func()") immediately followed by a source-location line (e.g.
-    // "      /path/file.go:12 +0x44"). The line-counting collapse previously treated each
-    // physical line as its own "frame", so MAX_RACE_GOROUTINE_FRAMES (5) cut off mid-pair on an
-    // odd boundary, keeping a function-signature line with its location line silently deleted
-    // (and mislabeling the omitted-count as "frames" when it was actually stray lines).
+    // Real `go test -race` stack frames are TWO physical lines each: a function-signature line (e.g. "  pkg.Func()") immediately followed by a source-location line (e.g. "      /path/file.go:12 +0x44"). The line-counting collapse previously treated each physical line as its own "frame", so MAX_RACE_GOROUTINE_FRAMES (5) cut off mid-pair on an odd boundary, keeping a function-signature line with its location line silently deleted (and mislabeling the omitted-count as "frames" when it was actually stray lines).
     const frame = (i: number): string => `  pkg.Func${i}()\n      /tmp/race.go:${10 + i} +0x44`
     const frames = Array.from({ length: 6 }, (_, i) => frame(i)).join('\n')
     const text =
@@ -486,9 +466,65 @@ describe('go-test filter', () => {
     // The 6th frame is dropped as a whole pair, not split.
     expect(result.text).not.toContain('pkg.Func5()')
     expect(result.text).not.toContain('/tmp/race.go:15 +0x44')
-    // The omitted-count reflects real frames (1), not physical lines (which would be a
-    // different, larger number if line-based counting leaked through).
+    // The omitted-count reflects real frames (1), not physical lines (which would be a different, larger number if line-based counting leaked through).
     expect(result.text).toContain('+1 goroutine frames omitted')
+  })
+
+  it('go test -v: drops passing tests logs, keeps each failing test output under its own header', () => {
+    // CAPTURE: stdout+stderr of `go test -v ./...` (go1.25.5 windows/amd64) in a scratch module with TestOk1/2/3 (t.Log), TestBad (Println + t.Log + t.Errorf) and TestSub (case2 t.Fatal).
+    const captured = [
+      '=== RUN   TestOk1',
+      '    gt_test.go:8: fine one',
+      '--- PASS: TestOk1 (0.00s)',
+      '=== RUN   TestOk2',
+      '    gt_test.go:9: fine two',
+      '--- PASS: TestOk2 (0.00s)',
+      '=== RUN   TestBad',
+      'stdout noise',
+      '    gt_test.go:13: bad context line',
+      '    gt_test.go:14: want 1 got 2',
+      '--- FAIL: TestBad (0.00s)',
+      '=== RUN   TestSub',
+      '=== RUN   TestSub/case1',
+      '    gt_test.go:18: case1 fine',
+      '=== RUN   TestSub/case2',
+      '    gt_test.go:19: sub broke',
+      '=== RUN   TestSub/case3',
+      '    gt_test.go:20: case3 fine',
+      '--- FAIL: TestSub (0.00s)',
+      '    --- PASS: TestSub/case1 (0.00s)',
+      '    --- FAIL: TestSub/case2 (0.00s)',
+      '    --- PASS: TestSub/case3 (0.00s)',
+      '=== RUN   TestOk3',
+      '    gt_test.go:23: fine three',
+      '--- PASS: TestOk3 (0.00s)',
+      'FAIL',
+      'FAIL\tgt\t0.146s',
+      'FAIL',
+    ].join('\n')
+    const result = goTestFilter.apply(captured, '', 1, ['go', 'test', '-v', './...'])
+    const out = result.text.split('\n')
+    // Must-not-drop: the failing tests' own lines and the FAIL lines.
+    for (const keep of [
+      'stdout noise',
+      '    gt_test.go:13: bad context line',
+      '    gt_test.go:14: want 1 got 2',
+      '    gt_test.go:19: sub broke',
+      '--- FAIL: TestBad (0.00s)',
+      '--- FAIL: TestSub (0.00s)',
+      '    --- FAIL: TestSub/case2 (0.00s)',
+      'FAIL\tgt\t0.146s',
+    ]) {
+      expect(out).toContain(keep)
+    }
+    // Passing tests' logs (including passing subtests of a failing parent) are dropped.
+    for (const drop of ['fine one', 'fine two', 'fine three', 'case1 fine', 'case3 fine']) {
+      expect(result.text).not.toContain(drop)
+    }
+    // Each kept log line sits under the header of the test that emitted it.
+    expect(out.indexOf('=== RUN   TestBad')).toBe(out.indexOf('stdout noise') - 1)
+    expect(out.indexOf('=== RUN   TestSub/case2')).toBe(out.indexOf('    gt_test.go:19: sub broke') - 1)
+    expect(out.indexOf('=== RUN   TestBad')).toBeLessThan(out.indexOf('--- FAIL: TestBad (0.00s)'))
   })
 
   it('routes "go test" to go-test but "go build" elsewhere', () => {

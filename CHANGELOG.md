@@ -107,6 +107,9 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **Compressed `go test -v` output attached a failing test's log lines to the test before it and kept every passing test's `t.Log` lines.** Go prints a test's log lines between its `=== RUN` and its verdict, which the filter did not follow. Log lines now stay with their own test, and those from passing tests are dropped.
+- **`session-outline` and `session-slice` skipped any transcript turn containing U+2028 or U+2029 and numbered every later turn one too low.** The transcript reader treated those characters as line breaks. They now stay inside the turn, and turn numbers match the transcript.
+- **`yaml-query` and `yaml-outline` read a YAML file ending in `---` or in a comment-only document as a list of two documents.** Every path then needed a `0.` in front. Empty documents are now ignored, so a file with one real document reads as that document.
 - **`skeleton` and `search` showed the decorator or annotation line instead of the declaration.** A decorated Python, TypeScript or Java symbol came back as `@dataclass`, `@Override` or `@Get(':id')`. Both now skip leading decorators and show the signature line.
 - **`search` merged separate definitions that share a name in one file into one result with a made-up line range.** Two `render` methods in different classes came back as a single hit spanning both, and the second disappeared. Each definition is now its own result.
 - **The pre-read notice for a large JSON or YAML file printed "command omitted: the path contains shell metacharacters" in place of its query command, even for a plain path.** The check was tripping on the `'<path>'` placeholder rather than the file path. The notice now names a `json-query` or `yaml-query` command you can paste.

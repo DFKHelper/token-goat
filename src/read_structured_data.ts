@@ -313,8 +313,10 @@ function resolveYamlMergeKeys(node: unknown): unknown {
 
 export function parseYamlDocument(text: string): unknown {
   const docs = loadAllYaml(text).map(resolveYamlMergeKeys)
-  if (docs.length === 0) return null
-  return docs.length === 1 ? docs[0] : docs
+  // A trailing/leading `---` or a comment-only document parses to an empty (null) document; it must not turn a single real document into a stream.
+  const real = docs.filter((d) => d !== null && d !== undefined)
+  if (real.length === 0) return docs.length === 1 ? docs[0] : null
+  return real.length === 1 ? real[0] : docs
 }
 
 export function runYamlOutline(opts: JsonOutlineCliOptions): number {

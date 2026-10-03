@@ -1,8 +1,7 @@
-/** Surgical reads over Claude Code's own session JSONL transcripts (files like `~/.claude/projects/<project-slug>/<session-id>.jsonl`). Backs `token-goat session-outline` and `token-goat session-slice`. Transcript discovery/format matches `waste.ts` and `resume.ts`, which already parse this same file for cost attribution and resume packets: one JSON object per line, chronological. Not every line is a conversational turn -- real transcripts interleave `custom-title`, `mode`, `attachment`, `file-history-snapshot`, `system`, and other bookkeeping event types alongside `user`/`assistant` message lines (confirmed empirically against real transcripts). Only lines with `type` `user` or `assistant` and a `message.content` field count as a "turn" here; turn numbers are 1-based positions in that filtered sequence, not raw line numbers, so `--range` stays stable and compact even though the underlying file may have many more non-turn lines. `message.content` is either a plain string (a simple text message) or an array of blocks (`text`, `thinking`, `tool_use`, `tool_result`, ...) -- unlike `waste.ts`'s `parseTranscript`, which only looks at array-content lines (it only needs tool_use/tool_result), this module also has to summarize plain-string turns for the outline. Read line-by-line via `readline` rather than `fs.readFileSync` + `.split('\n')` (waste.ts's approach): these transcripts are explicitly the multi-MB case this feature exists to make cheaper to inspect, so avoiding one whole-file string allocation is worth the small deviation from waste.ts's simpler (but for this use case, more expensive) pattern. */
+/** Surgical reads over Claude Code's own session JSONL transcripts (files like `~/.claude/projects/<project-slug>/<session-id>.jsonl`). Backs `token-goat session-outline` and `token-goat session-slice`. Transcript discovery/format matches `waste.ts` and `resume.ts`, which already parse this same file for cost attribution and resume packets: one JSON object per line, chronological. Not every line is a conversational turn -- real transcripts interleave `custom-title`, `mode`, `attachment`, `file-history-snapshot`, `system`, and other bookkeeping event types alongside `user`/`assistant` message lines (confirmed empirically against real transcripts). Only lines with `type` `user` or `assistant` and a `message.content` field count as a "turn" here; turn numbers are 1-based positions in that filtered sequence, not raw line numbers, so `--range` stays stable and compact even though the underlying file may have many more non-turn lines. `message.content` is either a plain string (a simple text message) or an array of blocks (`text`, `thinking`, `tool_use`, `tool_result`, ...) -- unlike `waste.ts`'s `parseTranscript`, which only looks at array-content lines (it only needs tool_use/tool_result), this module also has to summarize plain-string turns for the outline. Read line-by-line from a chunked stream split on `\n` only (`readline` also splits on U+2028/U+2029, which are legal unescaped inside a JSON string, so it cut records in two) rather than `fs.readFileSync` + `.split('\n')` (waste.ts's approach): these transcripts are explicitly the multi-MB case this feature exists to make cheaper to inspect, so avoiding one whole-file string allocation is worth the small deviation from waste.ts's simpler (but for this use case, more expensive) pattern. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import * as readline from 'node:readline'
 
 import { estimateTokens } from './compact.js'
 import { projectTranscriptsDir } from './claude_config_dir.js'
@@ -136,14 +135,28 @@ interface StreamedTurn {
   blocks: SessionBlock[]
 }
 
-/** Stream a transcript line-by-line, yielding one entry per valid turn -- blank lines, malformed JSON, and non-user/assistant lines are silently skipped, mirroring `toTurnBlocks`' null-return contract. Never loads the whole file into memory at once. Shared iteration core for `buildSessionOutline` and `sliceSessionTurns`, which otherwise differ only in what each does with a valid turn (and `sliceSessionTurns` additionally stops early once past its turn range). `rl.close()` and `input.destroy()` both run in `finally` so an early `break` in a `for await` consumer (which invokes this generator's `return()`) still releases the stream -- `readline.close()` alone does not destroy the underlying input stream, so without the explicit destroy the fs read handle/fd would linger until GC. */
+/** Split a stream of decoded text chunks into lines on `\n` only, yielding the final unterminated line if any. */
+async function* splitOnNewline(chunks: AsyncIterable<string>): AsyncGenerator<string> {
+  let rest = ''
+  for await (const chunk of chunks) {
+    rest += chunk
+    let at = rest.indexOf('\n')
+    while (at !== -1) {
+      yield rest.slice(0, at)
+      rest = rest.slice(at + 1)
+      at = rest.indexOf('\n')
+    }
+  }
+  if (rest !== '') yield rest
+}
+
+/** Stream a transcript line-by-line, yielding one entry per valid turn -- blank lines, malformed JSON, and non-user/assistant lines are silently skipped, mirroring `toTurnBlocks`' null-return contract. Never loads the whole file into memory at once. Shared iteration core for `buildSessionOutline` and `sliceSessionTurns`, which otherwise differ only in what each does with a valid turn (and `sliceSessionTurns` additionally stops early once past its turn range). `input.destroy()` runs in `finally` so an early `break` in a `for await` consumer (which invokes this generator's `return()`) still releases the fs read handle/fd instead of leaving it until GC. */
 async function* streamTurns(transcriptPath: string): AsyncGenerator<StreamedTurn> {
   const input = fs.createReadStream(transcriptPath, { encoding: 'utf8' })
-  const rl = readline.createInterface({ input, crlfDelay: Infinity })
   try {
     let lineNumber = 0
     let turn = 0
-    for await (const line of rl) {
+    for await (const line of splitOnNewline(input)) {
       lineNumber++
       const trimmed = line.trim()
       if (trimmed === '') continue
@@ -159,7 +172,6 @@ async function* streamTurns(transcriptPath: string): AsyncGenerator<StreamedTurn
       yield { turn, lineNumber, trimmed, role: parsed.role, blocks: parsed.blocks }
     }
   } finally {
-    rl.close()
     input.destroy()
   }
 }

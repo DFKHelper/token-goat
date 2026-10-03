@@ -397,3 +397,32 @@ describe('formatSessionOutline / formatSessionSlice', () => {
     expect(text).not.toContain('undefined(')
   })
 })
+
+describe('U+2028 / U+2029 inside a JSON string', () => {
+  // FORMAT-DERIVED: JSON (ECMA-404 / RFC 8259) permits U+2028 and U+2029 unescaped inside strings, and JSON.stringify emits them raw (ES2019 well-formed JSON.stringify), so a real transcript can carry them; the content below is a synthetic transcript written by this test.
+  const separators = [' ', ' ']
+
+  it.each(separators)('keeps the turn and the following line numbers when content holds %j', async (sep) => {
+    const file = writeFixture([
+      { type: 'user', message: { role: 'user', content: 'read the file' } },
+      { type: 'user', message: { role: 'user', content: `const s = "a${sep}b";` } },
+      { type: 'assistant', message: { role: 'assistant', content: 'ok' } },
+    ])
+    // HAND-DERIVED: three records on three physical lines, so three turns numbered 1..3 at lines 1..3.
+    const turns = await buildSessionOutline(file)
+    expect(turns.map((t) => [t.turn, t.lineNumber])).toEqual([
+      [1, 1],
+      [2, 2],
+      [3, 3],
+    ])
+    const slice = await sliceSessionTurns(file, 2, 2)
+    expect(slice).toHaveLength(1)
+    expect(slice[0]?.lineNumber).toBe(2)
+  })
+
+  it('still reads a final record that has no trailing newline', async () => {
+    const file = path.join(transcriptsDir, 'no_eol.jsonl')
+    fs.writeFileSync(file, JSON.stringify({ type: 'user', message: { role: 'user', content: 'last' } }), 'utf-8')
+    expect(await buildSessionOutline(file)).toHaveLength(1)
+  })
+})

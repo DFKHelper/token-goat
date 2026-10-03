@@ -15,12 +15,10 @@ const TEST_PASS_RE = /^\s*--- PASS:\s/
 const TEST_FAIL_RE = /^\s*--- FAIL:\s/
 const TEST_RPC_RE = /^=== (RUN|PAUSE|CONT)\s/
 const SKIP_RE = /^\s*--- SKIP:\s/
+const TEST_HEADER_NAME_RE = /^=== (?:RUN|PAUSE|CONT|NAME)\s+(\S+)/
+const TEST_RESULT_NAME_RE = /^\s*--- (?:PASS|FAIL|SKIP):\s+(\S+)/
 const GOROUTINE_HEADER_RE = /^(?:Goroutine \d+|Previous|Current|Write at|Read at)\s/
-// A real `go test -race` stack frame is TWO physical lines: a function-signature line (e.g.
-// `  pkg.Func()`), immediately followed by an indented source-location line (e.g.
-// `      /path/file.go:12 +0x44`). Used by flushRaceBlock to pair the two together so the
-// MAX_RACE_GOROUTINE_FRAMES cutoff always lands on a frame boundary, never splitting a kept
-// function line from its own location line (or vice versa).
+// A real `go test -race` stack frame is TWO physical lines: a function-signature line (e.g. `  pkg.Func()`), immediately followed by an indented source-location line (e.g. `      /path/file.go:12 +0x44`). Used by flushRaceBlock to pair the two together so the MAX_RACE_GOROUTINE_FRAMES cutoff always lands on a frame boundary, never splitting a kept function line from its own location line (or vice versa).
 const RACE_LOCATION_LINE_RE = /^\s+\S.*:\d+(?:\s+\+0x[0-9a-fA-F]+)?\s*$/
 const OK_PKG_RE = /^ok\s+\S+\s+(?:\d|\(cached\))/
 const FAIL_PKG_RE = /^FAIL\t\S+/
@@ -52,6 +50,17 @@ export class GoTestFilter extends ToolFilter {
     let skipCount = 0
     let inFailBlock = false
     let lastRunLine: string | null = null
+    // `go test -v` streams each test's output right under its `=== RUN` header. Hold it per test name so it is shown (with the header) only if that test fails, and dropped when it passes.
+    const pendingTests = new Map<string, { header: string; lines: string[] }>()
+    let currentTest: string | null = null
+    const flushPendingTest = (name: string | null): boolean => {
+      const pending = name === null ? undefined : pendingTests.get(name)
+      if (name === null || pending === undefined) return false
+      pendingTests.delete(name)
+      kept.push(pending.header, ...pending.lines)
+      droppedRun = Math.max(0, droppedRun - 1)
+      return true
+    }
     let droppedRun = 0
     let droppedDownload = 0
     // Race-detector state: a block spans `==========` (before WARNING) through the closing `==========`.
@@ -61,16 +70,11 @@ export class GoTestFilter extends ToolFilter {
     let raceCount = 0
 
     const flushRaceBlock = (): void => {
-      // Walk the block, collapsing goroutine stack frames beyond the limit. Each real frame is
-      // a function-signature line optionally followed by a RACE_LOCATION_LINE_RE location line
-      // (see that constant's doc comment) -- the two are paired here so a kept function line
-      // never has its own location line silently dropped (or vice versa) by the cutoff landing
-      // mid-pair, and so "N goroutine frames omitted" counts real frames, not physical lines.
+      // Walk the block, collapsing goroutine stack frames beyond the limit. Each real frame is a function-signature line optionally followed by a RACE_LOCATION_LINE_RE location line (see that constant's doc comment) -- the two are paired here so a kept function line never has its own location line silently dropped (or vice versa) by the cutoff landing mid-pair, and so "N goroutine frames omitted" counts real frames, not physical lines.
       let inGoroutine = false
       let goroutineFrameCount = 0
       let goroutineFramesDropped = 0
-      // True immediately after a frame's function-signature line, while we're still waiting to
-      // see whether the next indented line is that same frame's location line.
+      // True immediately after a frame's function-signature line, while we're still waiting to see whether the next indented line is that same frame's location line.
       let expectLocationLine = false
       let currentFrameKept = false
       const flushDroppedNote = (): void => {
@@ -96,8 +100,7 @@ export class GoTestFilter extends ToolFilter {
           // Stack frame lines are indented whitespace.
           if ((rline.startsWith(' ') || rline.startsWith('\t')) && rline.trim()) {
             if (expectLocationLine && RACE_LOCATION_LINE_RE.test(rline)) {
-              // This frame's location line -- inherits the function line's keep/drop decision,
-              // does not itself count as a new frame.
+              // This frame's location line -- inherits the function line's keep/drop decision, does not itself count as a new frame.
               if (currentFrameKept) kept.push(rline)
               expectLocationLine = false
               continue
@@ -175,7 +178,9 @@ export class GoTestFilter extends ToolFilter {
 
       // A panic/fatal aborts before any `--- FAIL:`; surface the buffered `=== RUN/NAME` line first so the panicking (sub)test is identifiable.
       if (PANIC_RE.test(line)) {
-        if (lastRunLine !== null) {
+        if (flushPendingTest(currentTest)) {
+          lastRunLine = null
+        } else if (lastRunLine !== null) {
           kept.push(lastRunLine)
           droppedRun = Math.max(0, droppedRun - 1)
           lastRunLine = null
@@ -189,16 +194,25 @@ export class GoTestFilter extends ToolFilter {
         if (inFailBlock) inFailBlock = false
         lastRunLine = line
         droppedRun += 1
+        const name = TEST_HEADER_NAME_RE.exec(line)?.[1] ?? null
+        if (name !== null) {
+          if (!pendingTests.has(name)) pendingTests.set(name, { header: line, lines: [] })
+          currentTest = name
+        }
         continue
       }
-      // FAIL opens a multi-line block preserved until the next testcase.
+      // FAIL opens a multi-line block preserved until the next testcase; the failing test's own header and output (held since its `=== RUN`) come out first so they stay attributed to it.
       if (TEST_FAIL_RE.test(line)) {
+        flushPendingTest(TEST_RESULT_NAME_RE.exec(line)?.[1] ?? null)
+        currentTest = null
         inFailBlock = true
         lastRunLine = null
         kept.push(line)
         continue
       }
       if (TEST_PASS_RE.test(line)) {
+        pendingTests.delete(TEST_RESULT_NAME_RE.exec(line)?.[1] ?? '')
+        currentTest = null
         inFailBlock = false
         lastRunLine = null
         passCount += 1
@@ -206,6 +220,8 @@ export class GoTestFilter extends ToolFilter {
       }
       // SKIP lines — not failures, not passes; count separately.
       if (SKIP_RE.test(line)) {
+        pendingTests.delete(TEST_RESULT_NAME_RE.exec(line)?.[1] ?? '')
+        currentTest = null
         lastRunLine = null
         skipCount += 1
         continue
@@ -217,6 +233,16 @@ export class GoTestFilter extends ToolFilter {
         } else {
           lastRunLine = line
           droppedRun += 1
+          const name = TEST_HEADER_NAME_RE.exec(line)?.[1] ?? null
+          if (name !== null && pendingTests.has(name)) currentTest = name
+          continue
+        }
+      }
+      // Output emitted while a `-v` test is running belongs to that test: hold it until the test's result is known.
+      if (currentTest !== null) {
+        const pending = pendingTests.get(currentTest)
+        if (pending !== undefined) {
+          pending.lines.push(line)
           continue
         }
       }
@@ -229,6 +255,9 @@ export class GoTestFilter extends ToolFilter {
       inFailBlock = false
       kept.push(line)
     }
+
+    // A test that never reported a result (truncated output, killed binary) keeps its output: it is the one that did not finish.
+    for (const name of [...pendingTests.keys()]) flushPendingTest(name)
 
     // Flush any unclosed race block (e.g. truncated output).
     if (raceBlockLines.length) flushRaceBlock()

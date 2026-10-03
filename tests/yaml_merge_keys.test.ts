@@ -43,3 +43,24 @@ describe('YAML merge keys', () => {
     expect(doc['base']).toEqual({ x: 1 })
   })
 })
+
+describe('YAML empty documents', () => {
+  // FORMAT-DERIVED: YAML 1.2 spec section 9.2 -- `---` starts a document, so a trailing `---`, or a comment-only document after one, is an empty document (null) that js-yaml loadAll returns as its own element; the YAML text below is hand-written here.
+  it('treats a trailing --- as no extra document', () => {
+    expect(parseYamlDocument('foo: 1\n---\n')).toEqual({ foo: 1 })
+  })
+
+  it('ignores leading comment-only and trailing comment-only documents', () => {
+    expect(parseYamlDocument('# c\n---\nfoo: 1\n---\n# only comment\n')).toEqual({ foo: 1 })
+  })
+
+  it('still returns a stream for two real documents, keeping an empty one in place', () => {
+    expect(parseYamlDocument('a: 1\n---\nb: 2\n')).toEqual([{ a: 1 }, { b: 2 }])
+    expect(parseYamlDocument('a: 1\n---\n# gap\n---\nb: 2\n')).toEqual([{ a: 1 }, null, { b: 2 }])
+  })
+
+  it('returns null for an empty stream and for comment-only text', () => {
+    expect(parseYamlDocument('')).toBeNull()
+    expect(parseYamlDocument('# nothing\n')).toBeNull()
+  })
+})
