@@ -146,10 +146,20 @@ export function checkNativeHookWiring(wiring: NativeWiring, avail: NativeAvailab
   return settled(wiredText)
 }
 
+/** The per-harness hook counts, or none when the stats database is missing or unreadable: a damaged global.db is the Database row's finding (`checkDbExists`), and must not stop doctor before it prints. */
+function readNativeHookCounts(dbPath: string): Map<string, NativeHookCounts> {
+  if (!fs.existsSync(dbPath)) return new Map<string, NativeHookCounts>()
+  try {
+    return nativeHookCounts(getDb(dbPath))
+  } catch {
+    return new Map<string, NativeHookCounts>()
+  }
+}
+
 /** Every native hook row for this machine, with counts read from the stats database at `dbPath` (none when it does not exist yet). */
 export function checkNativeHooks(dbPath: string): DoctorResult[] {
   const avail = nativeAvailability()
-  const counts = fs.existsSync(dbPath) ? nativeHookCounts(getDb(dbPath)) : new Map<string, NativeHookCounts>()
+  const counts = readNativeHookCounts(dbPath)
   return nativeWirings()
     .map((w) => checkNativeHookWiring(w, avail, counts))
     .filter((r): r is DoctorResult => r !== null)

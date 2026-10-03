@@ -245,12 +245,9 @@ describe('the population this guard runs against is not empty', () => {
     const written = path.join(linkDir, 'token-goat.instructions.md')
     expect(fs.readFileSync(written, 'utf8')).toContain('# my own file')
     expect(fs.readFileSync(written, 'utf8')).toContain('token-goat-vscode-begin')
-    // Unchanged pre-existing behaviour, pinned here so a later reader is not surprised: the write
-    // goes through atomicWriteText, which renames a regular file over the link rather than writing
-    // through it, so the user's dotfile keeps its old content and the link is replaced. That is a
-    // separate (user-scope, non-disclosing) wart, not something this fix touches.
-    expect(fs.lstatSync(written).isSymbolicLink()).toBe(false)
-    expect(fs.readFileSync(real, 'utf8')).toBe('# my own file\n')
+    // The write goes through atomicWriteText, which follows the link: the link stays a link and the user's dotfile receives the block.
+    expect(fs.lstatSync(written).isSymbolicLink()).toBe(true)
+    expect(fs.readFileSync(real, 'utf8')).toContain('token-goat-vscode-begin')
   })
 })
 

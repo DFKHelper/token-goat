@@ -144,6 +144,24 @@ describe('harness scope defaults are classified', () => {
     }
   })
 
+  it('keeps every no-scope harness in USER_ONLY_HARNESSES, so a project-scope uninstall --all cannot remove it', () => {
+    // A `no-scope` harness has one config location, under the user's home. `uninstall --all --project` skips exactly the members of USER_ONLY_HARNESSES; a harness missing from it is removed from the user's home by a project-scope uninstall, which is the defect this pins.
+    const declared = /const USER_ONLY_HARNESSES = \[([^\]]*)\] as const/.exec(code)?.[1]
+    expect(declared, 'src/cli_install.ts must declare USER_ONLY_HARNESSES').toBeDefined()
+    const listed = [...(declared ?? '').matchAll(/'(\w+)'/g)].map((m) => m[1]).sort()
+    const noScope = Object.entries(EXPECTED)
+      .filter(([name, v]) => v === 'no-scope' && !['Hooks', 'ClaudeMd', 'Skill'].includes(name))
+      .map(([name]) => name.toLowerCase())
+      .sort()
+    expect(listed).toEqual(noScope)
+  })
+
+  it('gates the user CLAUDE.md and skill removal behind user scope', () => {
+    // The CLAUDE.md block and the skill live under the user config dir whatever scope installed them, so only a user-scope uninstall may strip them.
+    const gated = /if \(scope === 'project'\) \{[^}]*\} else \{[\s\S]*?uninstallClaudeMd\(\)[\s\S]*?uninstallSkill\(\)/.test(code)
+    expect(gated, 'uninstallClaudeMd/uninstallSkill must sit in the user-scope branch of cmdUninstall').toBe(true)
+  })
+
   it('keeps the --user opt-out registered on both install and uninstall', () => {
     // Without this flag the inverted default has no escape hatch and a user who wants the old behaviour has no way to ask for it. Two registrations, one per command.
     const registrations = [...fs.readFileSync(CLI, 'utf8').matchAll(/\.option\('--user',/g)]

@@ -1,6 +1,6 @@
 /** Cross-cutting helpers shared across token-goat modules. Kept intentionally small: only utilities with no natural owner that would otherwise be duplicated. Imports only Node built-ins and other Layer 1 files. IMPORTANT: `runGit` is the ONLY place in the entire codebase that spawns git. A structural test (git_chokepoint.test.ts) greps every src/*.ts for bare git spawn patterns outside this file and fails if any are found. */
 
-import { chmodSync, closeSync, constants as fsConstants, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { chmodSync, closeSync, constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { createdBackupsFor, forgetCreatedBackup, recordCreatedBackup } from './bridges/created_configs.js'
@@ -147,9 +147,30 @@ export function withRetryOnLock(fn: () => void): void {
   throw lastErr
 }
 
+/** Follows `p` through any chain of symlinks to the path a write has to land on, resolving a relative link against the directory that holds it. A link whose target does not exist yet resolves to that missing target, which is why this is not `realpathSync`: that throws on a dangling link, and the write would then replace the link instead of creating the file it points at. A path that is not a link, or does not exist, comes back unchanged. On POSIX a link owned by another user is not followed and comes back as itself, so the rename replaces it (or the sticky bit refuses it) as before: `fetch-image` writes into the shared temp directory, where anyone can plant a link at a predictable name pointing at the victim's own files, the attack the kernel's `protected_symlinks` blocks for `open()` but not for a readlink-then-rename done in user space. */
+function resolveSymlinkChain(p: string): string {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined
+  let current = p
+  for (let hops = 0; hops < 40; hops++) {
+    let st: ReturnType<typeof lstatSync>
+    try {
+      st = lstatSync(current)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return current
+      throw err
+    }
+    if (!st.isSymbolicLink() || (uid !== undefined && st.uid !== uid && st.uid !== 0)) return current
+    current = path.resolve(path.dirname(current), readlinkSync(current))
+  }
+  throw Object.assign(new Error(`ELOOP: too many levels of symbolic links, resolving ${p}`), { code: 'ELOOP' })
+}
+
 /** Shared atomic-write core for text and bytes. Writes `content` to a sibling temp file (created with 0o600 so it is never world-readable even transiently on POSIX), then renames over `dest`. On Windows a brief exclusive-lock window can make the rename fail with EPERM/EBUSY/ETXTBSY; we retry up to 5 times with a `50 * attempt` ms backoff. Any failure past this point -- a failed write (ENOSPC, EIO, ...) just as much as a failed rename -- cleans up the temp file before the error propagates, so a partial write never leaks a `.tmp` file next to `dest`. */
-function atomicWriteCore(dest: string, content: string | Uint8Array): void {
-  assertWriteInScope(dest)
+function atomicWriteCore(requested: string, content: string | Uint8Array): void {
+  assertWriteInScope(requested)
+  // Write through a symlinked destination (a dotfiles setup) so the link survives: renaming the temp file over the link itself would replace the link with a regular file and leave its target untouched. Scope is checked again on the real file, so a project-scope link is followed only where it stays inside the project.
+  const dest = resolveSymlinkChain(requested)
+  if (dest !== requested) assertWriteInScope(dest)
   // Two-component temp name: pid + high-resolution time avoids collisions across concurrent and rapid sequential writes to the same path.
   const tmp = `${dest}.${process.pid}.${process.hrtime.bigint().toString()}.tmp`
 
@@ -172,8 +193,9 @@ function atomicWriteCore(dest: string, content: string | Uint8Array): void {
 
     // Preserve the destination's existing file mode (e.g. the exec bit on a committed script) across the rewrite. On POSIX, renaming the 0o600 temp file over dest would otherwise silently drop dest's permissions -- git then reports a 100755->100644 mode change and the file stops being executable. A brand-new dest has no mode to inherit, so it keeps the 0o600 default. No-op on Windows (chmodSync has no effect there).
     try {
-      const destMode = statSync(dest).mode
-      chmodSync(tmp, destMode)
+      // lstat, not stat: `dest` is only still a link when resolveSymlinkChain declined to follow it, and the rename then replaces the link, so the mode of whatever it points at is not this file's to inherit.
+      const destStat = lstatSync(dest)
+      if (!destStat.isSymbolicLink()) chmodSync(tmp, destStat.mode)
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
     }

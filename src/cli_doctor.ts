@@ -642,8 +642,12 @@ export function checkUnmappedTools(dbPath: string, options?: { maxAgeDays?: numb
 export function checkSavingsReceipt(dbPath: string): DoctorResult {
   const name = 'Savings receipt'
   if (!fs.existsSync(dbPath)) return { name, status: 'ok', message: 'not shown yet' }
-  const shownAt = firstReceiptShownAt(getDb(dbPath))
-  return { name, status: 'ok', message: shownAt === null ? 'not shown yet' : `shown ${new Date(shownAt).toISOString().slice(0, 10)}` }
+  try {
+    const shownAt = firstReceiptShownAt(getDb(dbPath))
+    return { name, status: 'ok', message: shownAt === null ? 'not shown yet' : `shown ${new Date(shownAt).toISOString().slice(0, 10)}` }
+  } catch (e) {
+    return { name, status: 'warn', message: `could not read the stats database: ${extractErrorMessage(e)}` }
+  }
 }
 
 /** The Worker line. A worker stopped because its data directory refuses writes does not come back on its own, since every hook's auto-restart is refused the same way, so that case says why instead of the bare "not running" a stopped worker gets. A directory that does not exist yet is not probed: `worker start` creates it. */

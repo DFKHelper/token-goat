@@ -107,6 +107,9 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **`uninstall -p` and `uninstall --all --project` also removed your personal setup.** They now touch only the project, and print a note naming the setups that live in your user profile and were left alone.
+- **`doctor` and `doctor --repair` stopped partway when the stats database was damaged.** They now report the damaged database and still run every other check.
+- **Installing into a settings file that was a symlink replaced the link with a plain file.** Install now writes through the link to the real file, which matters for settings kept in a dotfiles repo. A link owned by another user is not followed.
 - **`config-get` could not read most TOML files.** It now handles arrays and strings that span several lines, dotted keys such as `server.port = 8080`, and inline tables such as `owner = { name = "n" }`.
 - **`changed --symbol` listed files that were only renamed or had only their file mode changed.** Those files have no changed lines, so they are now left out.
 - **Reading a large shell script got no hint to read one function instead.** The Read hint now offers `token-goat read "script.sh::function"` for shell scripts, as it already did for other languages.

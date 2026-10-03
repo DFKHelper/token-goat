@@ -107,6 +107,9 @@ function wantsClaudeCodeBase(opts: {
   return !otherHarnessRequested || opts.hermes === true
 }
 
+/** Harnesses whose config lives only under the user's home: they have no project-scope form, so a project-scope uninstall must never remove them as part of `--all`. */
+const USER_ONLY_HARNESSES = ['codex', 'gemini', 'qwen', 'kimi', 'openclaw', 'opencode', 'grok', 'antigravity', 'zed'] as const
+
 export async function cmdInstall(opts: {
   project?: boolean
   codex?: boolean
@@ -536,20 +539,17 @@ export async function cmdUninstall(opts: {
     throw new Error('uninstall takes either -p/--project or --user, not both.')
   }
   const localScope = opts.local === true || opts.project === true
+  // A project-scope uninstall touches project files only. `--all` therefore leaves the user-only harnesses (and the user CLAUDE.md block and skill below) alone, and one NOTE names what it skipped; an explicit flag such as `--codex` is still honoured.
+  const skippedUserOnly: string[] = []
   if (opts.all === true) {
-    opts.codex = true
-    opts.gemini = true
-    opts.qwen = true
-    opts.kimi = true
+    for (const key of USER_ONLY_HARNESSES) {
+      if (opts.project === true && opts[key] !== true) skippedUserOnly.push(key)
+      else opts[key] = true
+    }
     opts.pi = true
-    opts.openclaw = true
     opts.copilot = true
-    opts.opencode = true
-    opts.grok = true
-    opts.antigravity = true
     opts.vscode = true
     opts.visualstudio = true
-    opts.zed = true
     opts.cursor = true
     opts.jetbrains = true
     opts.neovim = true
@@ -564,16 +564,21 @@ export async function cmdUninstall(opts: {
     // Tells doctor's Claude Code hooks check this removal was asked for, so it does not report the hooks as lost.
     if (removed) recordStat(CLAUDE_HOOKS_UNINSTALLED_KIND)
 
-    const claudeMdRemoved = uninstallClaudeMd()
-    out(claudeMdRemoved ? 'Removed token-goat block from CLAUDE.md.' : 'No token-goat block in CLAUDE.md to remove.')
+    // Neither the CLAUDE.md block nor the skill has a project-scope form (install writes them under the user config dir whatever the scope), so a project-scope uninstall leaves both and says so.
+    if (scope === 'project') {
+      out('NOTE: the token-goat CLAUDE.md block and skill are user-scope and were not touched. Run "token-goat uninstall" to remove them.')
+    } else {
+      const claudeMdRemoved = uninstallClaudeMd()
+      out(claudeMdRemoved ? 'Removed token-goat block from CLAUDE.md.' : 'No token-goat block in CLAUDE.md to remove.')
 
-    // Strays live in files token-goat doesn't own, so uninstall reports them rather than deleting: silently editing a user's own markdown is worse than leaving a line behind.
-    for (const stray of findStrayClaudeMdBlocks()) {
-      out(`NOTE: a token-goat block remains in ${stray} — outside CLAUDE.md, so it was not removed. Delete it manually if unwanted.`)
+      // Strays live in files token-goat doesn't own, so uninstall reports them rather than deleting: silently editing a user's own markdown is worse than leaving a line behind.
+      for (const stray of findStrayClaudeMdBlocks()) {
+        out(`NOTE: a token-goat block remains in ${stray} — outside CLAUDE.md, so it was not removed. Delete it manually if unwanted.`)
+      }
+
+      const skillRemoved = uninstallSkill()
+      out(skillRemoved ? 'Removed token-goat skill.' : 'No token-goat skill to remove.')
     }
-
-    const skillRemoved = uninstallSkill()
-    out(skillRemoved ? 'Removed token-goat skill.' : 'No token-goat skill to remove.')
   }
 
   // --codex/--gemini/--pi/--openclaw/--copilot/--opencode are each additive on both install and uninstall (README: "Add --codex ... to also strip those integrations"), so they run on top of the base uninstall above rather than replacing it. --local or -p/--project (pi, copilot) narrows removal to the project-local scope only; without it, the uninstaller cleans up wherever the integration actually is (global and/or local) instead of requiring the caller to remember which scope it was originally installed with.
@@ -600,9 +605,13 @@ export async function cmdUninstall(opts: {
     const removed = removal.run()
     out(removed ? `Removed token-goat ${removal.label}.` : `No token-goat ${removal.label} to remove.`)
   }
+  if (skippedUserOnly.length > 0) {
+    out(`NOTE: ${skippedUserOnly.map((key) => `--${key}`).join(', ')} are user-scope only and were not touched by this project-scope uninstall. Run "token-goat uninstall" with those flags (without --project) to remove them.`)
+  }
 
   // An integration whose flag was not passed is left wired and, before this, was left silent: a plain `token-goat uninstall` printed three "Removed" lines while a Codex or Copilot hook still pointed at the binary about to be deleted. That is the offboarding case, and a Copilot preToolUse hook whose target is gone fails closed on every call. So each one that is still present is named here with the exact command that removes it, following the same report-rather-than-delete rule the stray CLAUDE.md blocks above already use: uninstall does not silently undo an integration the caller did not ask about.
   for (const leftover of leftoverIntegrations(opts)) {
+    if (skippedUserOnly.includes(leftover.flag.slice(2))) continue
     out(`NOTE: the token-goat ${leftover.label} is still installed. Run "token-goat uninstall ${leftover.flag}" to remove it.`)
   }
 
