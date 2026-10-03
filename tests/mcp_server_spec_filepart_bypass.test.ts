@@ -1,20 +1,8 @@
-// Regression: `specFilePart` (the confinement gate's notion of "the file part of a spec")
-// disagreed with the execution layer's own parsing, on two separate axes, letting an in-root
-// prefix validate a call whose ACTUAL file target resolved outside the project root.
+// Regression: `specFilePart` (the confinement gate's notion of "the file part of a spec") disagreed with the execution layer's own parsing, on three separate axes, letting an in-root prefix validate a call whose ACTUAL file target resolved outside the project root.
 //
-//   1. `@` stripping: specFilePart stripped everything after the LAST `@` unconditionally, but
-//      only `parseLineRange`'s exact trailing-numeric-range syntax (`/^(.+)@(\d+)(?:-(\d+))?$/`)
-//      makes runRead treat an `@` as a range separator. `inside@../../../outside/secret` has no
-//      trailing digits, so parseLineRange declines and runRead reads the whole literal string as
-//      a bare file path -- but specFilePart still chopped it down to `inside` and validated that
-//      instead, admitting a call whose real target left the root.
-//   2. `::` splitting: specFilePart split on the FIRST `::` (`spec.indexOf('::')`), but both
-//      runRead's `parseReadSpec` and runSection use `findSpecSeparator`, which is a
-//      `lastIndexOf('::')`. A spec with two `::` occurrences -- `a::../../b::Heading` -- validated
-//      only `a` while the execution layer actually read `a::../../b`.
+// 1. `@` stripping: specFilePart stripped everything after the LAST `@` unconditionally, but only `parseLineRange`'s exact trailing-numeric-range syntax (`/^(.+)@(\d+)(?:-(\d+))?$/`) makes runRead treat an `@` as a range separator. `inside@../../../outside/secret` has no trailing digits, so parseLineRange declines and runRead reads the whole literal string as a bare file path -- but specFilePart still chopped it down to `inside` and validated that instead, admitting a call whose real target left the root. 2. `::` splitting: specFilePart split on the FIRST `::` (`spec.indexOf('::')`), but both runRead's `parseReadSpec` and runSection use `findSpecSeparator`, which is a `lastIndexOf('::')`. A spec with two `::` occurrences -- `a::../../b::Heading` -- validated only `a` while the execution layer actually read `a::../../b`. 3. `::` fallback: runSection reads a heading holding `::` (`api.md::Foo::bar()`) by falling back to the first `::` that leaves a real file when the last one does not, so the gate checks every prefix ending at a `::` rather than the last one alone; otherwise an in-root directory behind the last `::` vouched for an outside file before an earlier one.
 //
-// The fix makes specFilePart call read_commands.ts's real `parseLineRange` and
-// `findSpecSeparator` instead of restating their grammar, so the two layers can't drift again.
+// The fix makes specFilePart call read_commands.ts's real `parseLineRange` and `findSpecSeparator` instead of restating their grammar, so the two layers can't drift again.
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -87,16 +75,9 @@ describe('mcp confinement: specFilePart must agree with the execution layer', ()
 
   it('read: refuses a spec whose in-root-looking `@` prefix is not a real line-range separator', async () => {
     makeDirs()
-    // "inside@../../../<outside-basename>/secret" has no trailing digits after the `@`, so
-    // parseLineRange declines and runRead reads the literal string as a bare file path. Path
-    // resolution only collapses a segment that is EXACTLY "..", so "inside@.." is one literal
-    // (non-existent) directory name, not an up-move -- the first ".." after it cancels that
-    // push back to root, and the second climbs one level above root to root's parent, where
-    // `outside` lives as a sibling temp dir. Pre-fix, specFilePart's unconditional last-`@`
-    // strip validated only "inside" and admitted the call; the actual read escaped the root.
+    // "inside@../../../<outside-basename>/secret" has no trailing digits after the `@`, so parseLineRange declines and runRead reads the literal string as a bare file path. Path resolution only collapses a segment that is EXACTLY "..", so "inside@.." is one literal (non-existent) directory name, not an up-move -- the first ".." after it cancels that push back to root, and the second climbs one level above root to root's parent, where `outside` lives as a sibling temp dir. Pre-fix, specFilePart's unconditional last-`@` strip validated only "inside" and admitted the call; the actual read escaped the root.
     const spec = `inside@../../../${path.basename(outside)}/secret`
-    // Sanity: this spec really does resolve outside root when read literally, proving the
-    // exploit shape (not just an inert string the fix would refuse for unrelated reasons).
+    // Sanity: this spec really does resolve outside root when read literally, proving the exploit shape (not just an inert string the fix would refuse for unrelated reasons).
     expect(fs.existsSync(path.resolve(root, spec))).toBe(true)
 
     const { client, close } = await connectedClient()
@@ -112,10 +93,7 @@ describe('mcp confinement: specFilePart must agree with the execution layer', ()
 
   it('section: refuses a spec whose in-root-looking prefix before the FIRST `::` differs from the real file (before the LAST `::`)', async () => {
     makeDirs()
-    // Two `::` occurrences: pre-fix specFilePart split on the FIRST (validating just "inside"),
-    // but findSpecSeparator (lastIndexOf) -- what runSection actually uses -- splits on the
-    // LAST, so the real file part is "inside::../../../<outside-basename>/secret" (same
-    // literal-segment-then-two-real-".." shape as the `@` case above).
+    // Two `::` occurrences: pre-fix specFilePart split on the FIRST (validating just "inside"), but findSpecSeparator (lastIndexOf) -- what runSection actually uses -- splits on the LAST, so the real file part is "inside::../../../<outside-basename>/secret" (same literal-segment-then-two-real-".." shape as the `@` case above).
     const spec = `inside::../../../${path.basename(outside)}/secret::Heading`
 
     const { client, close } = await connectedClient()
@@ -125,6 +103,36 @@ describe('mcp confinement: specFilePart must agree with the execution layer', ()
     expect(result.isError).toBe(true)
     expect(textOf(result)).toContain('outside the project root')
     expect(textOf(result)).not.toContain(SECRET)
+  })
+
+  it('section: refuses a spec whose last `::` names an in-root directory while an earlier `::` names an outside file', async () => {
+    makeDirs()
+    // HAND-DERIVED: `<outside>/secret.md::x/../../<root-basename>/sub` normalizes to `<root>/sub`, an in-root directory, so a gate that checks only the last-`::` file part admits it; runSection then finds that part is not a file and falls back to the first `::`, opening `<outside>/secret.md` and looking up everything after it as the heading, which the outside file carries here so a leak shows its contents.
+    const heading = `x/../../${path.basename(root)}/sub::Heading`
+    fs.writeFileSync(path.join(outside, 'secret.md'), `# Title\n\n## ${heading}\n\n${SECRET}\n`)
+    fs.mkdirSync(path.join(root, 'sub'))
+    const spec = `${path.join(outside, 'secret.md')}::${heading}`
+    expect(fs.statSync(path.resolve(root, spec.slice(0, spec.lastIndexOf('::')))).isDirectory()).toBe(true)
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'section', arguments: { spec, projectRoot: root } })
+    expect(result.isError).toBe(true)
+    expect(textOf(result)).toContain('outside the project root')
+    expect(textOf(result)).not.toContain(SECRET)
+  })
+
+  it('section: a heading holding `::` in an in-root file still reads through the gate', async () => {
+    makeDirs()
+    // HAND-DERIVED: the last `::` leaves `api.md::Foo`, which is not a file, so runSection falls back to the first `::`; every candidate file part sits inside the root, so the gate admits it.
+    fs.writeFileSync(path.join(root, 'api.md'), `# Title\n\n## Foo::bar()\n\n${IN_ROOT} scoped\n`)
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'section', arguments: { spec: 'api.md::Foo::bar()', projectRoot: root } })
+    expect(result.isError).toBeFalsy()
+    expect(textOf(result)).toContain(`${IN_ROOT} scoped`)
   })
 
   // ---- Positive case: a legitimate range spec must still work -----------------------------

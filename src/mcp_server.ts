@@ -375,6 +375,14 @@ function specFilePart(spec: string): string {
   return colonIdx === -1 ? spec : spec.slice(0, colonIdx)
 }
 
+/** Every file part one spec can open: {@link specFilePart}'s, plus each shorter prefix ending at an earlier `::`, because runSection's findSectionSeparator falls back to the first `::` that leaves a real file when the last one does not (a heading such as `Foo::bar()`); checking all of them keeps this gate a superset of what the execution layer may open, so an in-root directory behind the last `::` cannot vouch for an outside file before an earlier one. */
+function specFileCandidates(spec: string): string[] {
+  const file = specFilePart(spec)
+  const out = [file]
+  for (let idx = file.indexOf('::'); idx !== -1; idx = file.indexOf('::', idx + 1)) if (idx > 0) out.push(file.slice(0, idx))
+  return out
+}
+
 /** Either every target passed confinement (`targets` is what the caller must forward to its `run*` call, `pins` what it must install around it via {@link withConfinedRead}), or the call is refused. */
 type ConfinementResult =
   | { readonly ok: true; readonly targets: readonly string[]; readonly pins: ReadonlyMap<string, string> }
@@ -422,32 +430,33 @@ function confineTargets(targets: readonly string[], resolvedRoot: string, splitC
   for (const raw of targets) {
     const parts = splitCommas ? raw.split(',') : [raw]
     for (const part of parts) {
-      const file = specFilePart(part)
-      if (file === '') continue
-      let check = checkWithinProjectRoot(file, resolvedRoot)
-      if (!check.inside) {
-        for (const allowed of allowedRoots) {
-          const altCheck = checkWithinProjectRoot(file, allowed)
-          if (altCheck.inside) {
-            check = altCheck
-            break
+      for (const file of specFileCandidates(part)) {
+        if (file === '') continue
+        let check = checkWithinProjectRoot(file, resolvedRoot)
+        if (!check.inside) {
+          for (const allowed of allowedRoots) {
+            const altCheck = checkWithinProjectRoot(file, allowed)
+            if (altCheck.inside) {
+              check = altCheck
+              break
+            }
           }
         }
-      }
-      if (!check.inside) {
-        for (const aux of getStandardAuxiliaryRoots(file)) {
-          const auxCheck = checkWithinProjectRoot(file, aux)
-          if (auxCheck.inside) {
-            check = auxCheck
-            break
+        if (!check.inside) {
+          for (const aux of getStandardAuxiliaryRoots(file)) {
+            const auxCheck = checkWithinProjectRoot(file, aux)
+            if (auxCheck.inside) {
+              check = auxCheck
+              break
+            }
           }
         }
+        if (!check.inside) {
+          return { ok: false, refusal: toCallToolResult({ text: refusalText(file, resolvedRoot, check.reason, projectRootWasOmitted), code: 1 }) }
+        }
+        // Pin what was just validated, so the read can prove it opened that same object rather than a replacement swapped in behind the path afterwards. The set of keys comes from the check itself: it is the only thing that knows which spellings of the target it resolved, and a lookup that misses degrades silently to the unpinned behaviour rather than failing closed.
+        for (const [key, identity] of check.pins) pins.set(key, identity)
       }
-      if (!check.inside) {
-        return { ok: false, refusal: toCallToolResult({ text: refusalText(file, resolvedRoot, check.reason, projectRootWasOmitted), code: 1 }) }
-      }
-      // Pin what was just validated, so the read can prove it opened that same object rather than a replacement swapped in behind the path afterwards. The set of keys comes from the check itself: it is the only thing that knows which spellings of the target it resolved, and a lookup that misses degrades silently to the unpinned behaviour rather than failing closed.
-      for (const [key, identity] of check.pins) pins.set(key, identity)
     }
     checked.push(splitCommas ? parts.join(',') : parts[0]!)
   }

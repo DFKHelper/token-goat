@@ -292,7 +292,17 @@ export async function cmdSkillSection(nameHeading: string, headingArg?: string):
     heading = nameHeading.slice(sepIdx + 2)
   }
 
-  const filePath = await getSkillFilePath(skillName)
+  let filePath = await getSkillFilePath(skillName)
+  // A heading holding `::` makes the last-`::` split cut inside it; retry the other separators, first to last, until one names a skill.
+  for (let idx = nameHeading.indexOf('::'); !filePath && !headingArg && idx !== -1 && idx < skillName.length; idx = nameHeading.indexOf('::', idx + 1)) {
+    const candidate = nameHeading.slice(0, idx)
+    const candidatePath = idx > 0 ? await getSkillFilePath(candidate) : undefined
+    if (candidatePath) {
+      filePath = candidatePath
+      skillName = candidate
+      heading = nameHeading.slice(idx + 2)
+    }
+  }
   if (!filePath) {
     throw new CliError(`skill '${skillName}' not found`)
   }

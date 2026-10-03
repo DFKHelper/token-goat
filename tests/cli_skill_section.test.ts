@@ -52,6 +52,17 @@ describe('skill-section spec parsing', () => {
     expect(code).toBe(0)
     expect(stdout.join('')).toContain('usage body text')
   })
+
+  // HAND-DERIVED: the skill file is written in this test, the heading text is `Foo::bar` and its body is the one line below it.
+  it('resolves a name::heading spec whose heading text holds "::" when the last-split name is no skill', async () => {
+    writeFileSync(skillFile, ['# Doc', '', '## Foo::bar', 'scoped body text', ''].join('\n'), 'utf-8')
+    await storeOutput('sess-1', 'plainskill', 'cached body', { sourcePath: skillFile })
+
+    const code = await runSkillSection('plainskill::Foo::bar')
+
+    expect(code).toBe(0)
+    expect(stdout.join('')).toContain('scoped body text')
+  })
 })
 
 // Regression guard: cmdSkillSection deliberately sets process.exitCode = 1 (without throwing) when the requested heading isn't found in the skill file. The buildProgram() `guard()` wrapper that registers every guard-wrapped command (skill-section among them) used to run `process.exitCode = 0` unconditionally after the handler resolved, clobbering that 1 back to 0 and reporting a real "section not found" failure as success. Drive the real run() entry so this exercises the actual guard() + handler wiring, not the handler in isolation.

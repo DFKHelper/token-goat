@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import { querySymbols } from './index_reader.js'
 import { detectLanguage } from './parser_types.js'
 import { displaySafeJson } from './paths.js'
-import { findSpecSeparator, guardText, healStaleIndex, readFileText, recordReadStat, resolveAgainstProjectRoot, sumFileSizes } from './read_commands.js'
+import { guardText, healStaleIndex, readFileText, recordReadStat, resolveAgainstProjectRoot, sumFileSizes } from './read_commands.js'
 import { stripHtmlIdSpelling, parseCrossFileMultiSpec } from './read_spec.js'
 import { didYouMean, filterSimilarHeadings } from './read_suggest.js'
 import { listSections, readSection, type SectionResult } from './section_reader.js'
@@ -64,11 +64,29 @@ export function literalHeadingExists(filePath: string, heading: string): boolean
   return listSections(filePath, readFileText).some((h) => h.trim().toLowerCase() === base)
 }
 
+/** Where the file part of a `section` spec ends. The last `::` wins when the file it leaves exists (the long-standing rule, kept for a POSIX file whose own name holds `::`); otherwise each `::` is tried from the first, so `api.md::Foo::bar()` reads heading `Foo::bar()` of `api.md` instead of failing on a file called `api.md::Foo`. When no split names a file, the last one is returned and the caller reports it as before. A drive letter holds one colon, so it never reads as a separator. Returns -1 when the spec holds no `::`. */
+export function findSectionSeparator(spec: string, projectRoot: string | undefined): number {
+  const last = spec.lastIndexOf('::')
+  if (last <= 0) return last
+  const isFile = (idx: number): boolean => {
+    try {
+      return fs.statSync(resolveAgainstProjectRoot(spec.slice(0, idx), projectRoot)).isFile()
+    } catch {
+      return false
+    }
+  }
+  if (isFile(last)) return last
+  for (let idx = spec.indexOf('::'); idx !== -1 && idx < last; idx = spec.indexOf('::', idx + 1)) {
+    if (idx > 0 && isFile(idx)) return idx
+  }
+  return last
+}
+
 export function runSection(opts: SectionOptions): { text: string; code: number } {
   const crossFilePairs = parseCrossFileMultiSpec(opts.spec)
   if (crossFilePairs !== null) return runSectionCrossFile(crossFilePairs, opts)
 
-  const colonIdx = findSpecSeparator(opts.spec)
+  const colonIdx = findSectionSeparator(opts.spec, opts.projectRoot)
   if (colonIdx === -1) {
     return { text: `Invalid section spec — expected "file::Heading", got: ${opts.spec}`, code: 1 }
   }
