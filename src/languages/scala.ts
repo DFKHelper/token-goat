@@ -1,9 +1,4 @@
-/**
- * Scala symbol extractor — regex-based (no tree-sitter grammar needed).
- *
- * Extracts: classes, objects, traits, case classes, Scala 3 enums, functions (def),
- * fields (val/var), and `import` directives.
- */
+/** Scala symbol extractor — regex-based (no tree-sitter grammar needed). Extracts: classes, objects, traits, case classes, Scala 3 enums, functions (def), fields (val/var), and `import` directives. */
 
 import type { SymbolEntry } from '../parser_types.js'
 import {
@@ -31,6 +26,30 @@ interface TypeFrame {
   colonBody: boolean
   // Column of the first line of an indentation-syntax body, which is the column its direct members sit at. Null until that line is seen.
   bodyIndent: number | null
+  // Index in `symbols` of the type this frame opened, so its one-line span can be widened to the indentation body when the frame is popped.
+  symbolIndex: number
+}
+
+// Declaration kinds whose `=`-terminated head hands the body to the lines below it.
+const MEMBER_KINDS: ReadonlySet<string> = new Set(['function', 'val', 'var'])
+
+/** The symbol widened to run through `endLine`, with its body re-sliced from the source lines. */
+function withSpanEnd(sym: SymbolEntry, endLine: number, lines: readonly string[]): SymbolEntry {
+  if (endLine <= sym.lineStart) return sym
+  return { ...sym, lineEnd: endLine, body: lines.slice(sym.lineStart - 1, endLine).join('\n') }
+}
+
+/** Last line of the run of lines after `startLine` (1-based) that sit deeper than `declIndent`, which is where an `=`-terminated definition's body ends when it has no braces. Blank and comment-only lines neither end the run nor extend it, so trailing ones are left out of the span. */
+function indentedBodyEnd(lines: readonly string[], startLine: number, declIndent: number): number {
+  let end = startLine
+  for (let j = startLine; j < lines.length; j++) {
+    const text = lines[j] ?? ''
+    const trimmed = text.trim()
+    if (trimmed === '' || trimmed.startsWith('//')) continue
+    if (indentOf(text) <= declIndent) break
+    end = j + 1
+  }
+  return end
 }
 
 // Leading-whitespace width of an already comment-stripped line, counting a tab as one column (Scala 3's own indentation rules treat tabs as opaque and the language reference discourages mixing them, so no tab-expansion table is warranted here).
@@ -41,13 +60,10 @@ function indentOf(line: string): number {
 // `import scala.util.matching.Regex` or `import java.util._` (wildcard imports)
 const IMPORT_RE = /^import\s+([A-Za-z_][A-Za-z0-9_.]*(?:\._)?)/
 
-// `import foo.bar.{A, B, C}` -- Scala's idiomatic multi-selector import. IMPORT_RE alone can't
-// express this: its character class stops at `{`, so it captures only the truncated,
-// non-actionable prefix `foo.bar.` and silently drops every selector actually being imported.
+// `import foo.bar.{A, B, C}` -- Scala's idiomatic multi-selector import. IMPORT_RE alone can't express this: its character class stops at `{`, so it captures only the truncated, non-actionable prefix `foo.bar.` and silently drops every selector actually being imported.
 const BRACE_IMPORT_RE = /^import\s+([A-Za-z_][A-Za-z0-9_.]*)\.\{([^}]*)\}/
 
-// The modifier prefix shared by every declaration pattern below. The group is `(?:...\s+)*` (zero or MORE, not the old `?` zero-or-one) because real Scala routinely stacks several modifiers before the keyword -- `sealed abstract class Shape` (the idiomatic Scala ADT base-class pattern) and `final case class Foo(...)` (an extremely common case-class form) both carry two modifiers. With the old `?` cap, matching one modifier left the following keyword expected immediately after it; the second modifier word sat where `class`/`object`/`trait`/`def`/`val`/`var` was expected, so the WHOLE line failed to match and the declaration -- plus, for a type, every symbol nested in its body -- was silently dropped from the index entirely.
-// Two further widenings, each of which loses the whole declaration (and, for a type header, every symbol in its body) when it is missing. First, `private` and `protected` may carry a qualifier in square brackets naming the scope the declaration stays visible within: `private[this] val cached`, `private[pkg] class Hidden`, `protected[pkg] def helper`. Second, Scala 3 added the soft modifiers `open` (a class explicitly declared extensible), `inline`, `transparent` (as in `transparent inline def`) and `infix`. All four are soft keywords, so they are also legal identifiers: that is safe here only because MODS is always immediately followed by one of the reserved words `class`/`object`/`trait`/`enum`/`def`/`val`/`var`, which cannot begin anything but a definition, so a word sitting directly before one of them is a modifier by construction. A `val open = true` or a `def infix(x: Int)` still resolves to the right name, because MODS is `*` and the engine backtracks to the split that satisfies the keyword.
+// The modifier prefix shared by every declaration pattern below. The group is `(?:...\s+)*` (zero or MORE, not the old `?` zero-or-one) because real Scala routinely stacks several modifiers before the keyword -- `sealed abstract class Shape` (the idiomatic Scala ADT base-class pattern) and `final case class Foo(...)` (an extremely common case-class form) both carry two modifiers. With the old `?` cap, matching one modifier left the following keyword expected immediately after it; the second modifier word sat where `class`/`object`/`trait`/`def`/`val`/`var` was expected, so the WHOLE line failed to match and the declaration -- plus, for a type, every symbol nested in its body -- was silently dropped from the index entirely. Two further widenings, each of which loses the whole declaration (and, for a type header, every symbol in its body) when it is missing. First, `private` and `protected` may carry a qualifier in square brackets naming the scope the declaration stays visible within: `private[this] val cached`, `private[pkg] class Hidden`, `protected[pkg] def helper`. Second, Scala 3 added the soft modifiers `open` (a class explicitly declared extensible), `inline`, `transparent` (as in `transparent inline def`) and `infix`. All four are soft keywords, so they are also legal identifiers: that is safe here only because MODS is always immediately followed by one of the reserved words `class`/`object`/`trait`/`enum`/`def`/`val`/`var`, which cannot begin anything but a definition, so a word sitting directly before one of them is a modifier by construction. A `val open = true` or a `def infix(x: Int)` still resolves to the right name, because MODS is `*` and the engine backtracks to the split that satisfies the keyword.
 const MODS = '(?:(?:implicit|lazy|sealed|abstract|final|(?:private|protected)(?:\\[[A-Za-z_][A-Za-z0-9_]*\\])?|override|covariant|contravariant|case|open|inline|transparent|infix)\\s+)*'
 
 // Scala lets any declaration be named with a backtick-quoted identifier holding characters a bare identifier cannot (spaces, punctuation, reserved words), and the ScalaTest/munit convention of writing test and helper names as prose makes that spelling routine in real sources. Every pattern below admitted only the bare identifier class, so a backtick-quoted class, object, trait, def, val or var produced no symbol at all -- and for a quoted type header no frame was pushed either, so every member declared inside its body was dropped too. Widen by ALTERNATIVE: the quoted form carries its own backtick delimiters, so it cannot run past the declaration boundary. Adding a backtick and a space to the bare identifier class instead would let a name bleed into the following `extends`/`with`/self-type clause and capture trailing whitespace.
@@ -67,12 +83,7 @@ const OBJECT_RE = new RegExp('^\\s*(?:package\\s+)?' + MODS + 'object\\s+(' + NA
 // `trait Viewable`, `trait Comparable[T]`
 const TRAIT_RE = new RegExp('^\\s*' + MODS + 'trait\\s+(' + NAME + ')(?:\\s|\\[|:|$)')
 
-// Scala 3 (2021) `enum` type declaration: `enum Color`, `enum Option[+T]`,
-// `enum Color(val rgb: Int)`. A brand-new type keyword absent from CLASS_RE/OBJECT_RE/
-// TRAIT_RE (none of which contains the literal `enum`), so an `enum Color { ... }` block AND
-// every `def` nested in its body were dropped from the index entirely -- the same
-// missing-type-keyword gap class already closed for Swift `actor` and Dart `mixin class`.
-// The only legal leading modifiers on an enum are access modifiers (`private`/`protected`).
+// Scala 3 (2021) `enum` type declaration: `enum Color`, `enum Option[+T]`, `enum Color(val rgb: Int)`. A brand-new type keyword absent from CLASS_RE/OBJECT_RE/ TRAIT_RE (none of which contains the literal `enum`), so an `enum Color { ... }` block AND every `def` nested in its body were dropped from the index entirely -- the same missing-type-keyword gap class already closed for Swift `actor` and Dart `mixin class`. The only legal leading modifiers on an enum are access modifiers (`private`/`protected`).
 const ENUM_RE = new RegExp('^\\s*(?:private|protected)?\\s*enum\\s+(' + NAME + ')(?:\\s|\\[|\\(|:|$)')
 
 // A Scala method name has three spellings a bare identifier cannot express, each added as its own ALTERNATIVE: backtick-quoted prose, a pure operator, and the alphanumeric-then-operator form Scala reserves behind a trailing underscore (`def unary_-` for a prefix operator, `def value_=` for a setter). `:` belongs in the operator class because it is a Scala operator character and the cons-style `:::`, `::` and `+:` operators are core collection API; the operator alternative can only fire when the name's first character is an operator character, so `def foo: Int` still captures `foo` via the bare-identifier alternative.
@@ -81,9 +92,7 @@ const DEF_NAME = '(?:`[^`\\r\\n]+`|[A-Za-z_][A-Za-z0-9_]*_[+\\-*/%=!<>&|^~:]+|[+
 // Scala function/method: `def foo()`, `def bar[T]()`, `def baz: Int` (no-arg form), infix operators like `def +(other: Int)`. Generics come between name and params.
 const FUNC_RE = new RegExp('^\\s*' + MODS + 'def\\s+(' + DEF_NAME + ')(?:\\s*\\[|\\s*\\(|\\s*:)')
 
-// `val x: Int = 5`, `val y = "hello"`, `lazy val config = ...`, `private final val MAX = 5`
-// Scala allows `val` to bind multiple names in pattern-match style (`val (a, b) = tuple`),
-// but for simplicity we extract only the first word-boundary identifier after `val`.
+// `val x: Int = 5`, `val y = "hello"`, `lazy val config = ...`, `private final val MAX = 5` Scala allows `val` to bind multiple names in pattern-match style (`val (a, b) = tuple`), but for simplicity we extract only the first word-boundary identifier after `val`.
 const VAL_RE = new RegExp('^\\s*' + MODS + 'val\\s+(' + NAME + ')')
 
 // `var x: Int = 5`, `var y = "hello"` — same pattern as val.
@@ -114,6 +123,14 @@ export function extractScala(
   let braceDepth = 0
   let inComment = false
   let mlState: MultilineStringState | null = null
+  // Last line that held code, which is where an indentation-syntax body ends once a dedent (or the end of the file) closes it.
+  let lastCodeLine = 0
+
+  // Widen an indentation-syntax type to its body. A closing `end Name` marker belongs to the span when it names the type.
+  const closeColonFrame = (frame: TypeFrame, endLine: number): void => {
+    const open = symbols[frame.symbolIndex]
+    if (open !== undefined) symbols[frame.symbolIndex] = withSpanEnd(open, endLine, lines)
+  }
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
@@ -127,8 +144,7 @@ export function extractScala(
       mlState = masked.state
     }
 
-    // Strip /* */ block-comment spans (state carried across lines via inComment) so braces
-    // inside commented-out code are not counted toward braceDepth.
+    // Strip /* */ block-comment spans (state carried across lines via inComment) so braces inside commented-out code are not counted toward braceDepth.
     const { code: blockStripped, inComment: nextInComment } = stripBlockCommentSpan(mlLine, inComment)
     inComment = nextInComment
 
@@ -148,9 +164,13 @@ export function extractScala(
     // Close every indentation-syntax frame this line has dedented out of, then record the body column of the innermost one still open. Done before any declaration matching so the frame stack reflects where this line actually sits.
     while (typeStack.length > 0) {
       const top = typeStack[typeStack.length - 1]!
-      if (top.colonBody && indent <= top.declIndent) typeStack.pop()
-      else break
+      if (!top.colonBody || indent > top.declIndent) break
+      typeStack.pop()
+      const closesWithMarker = indent === top.declIndent && stripped === `end ${top.name}`
+      closeColonFrame(top, closesWithMarker ? lineNum : lastCodeLine)
+      if (closesWithMarker) lastCodeLine = lineNum
     }
+    lastCodeLine = lineNum
     const colonTop = typeStack.length > 0 && typeStack[typeStack.length - 1]!.colonBody ? typeStack[typeStack.length - 1]! : null
     if (colonTop !== null && colonTop.bodyIndent === null) {
       colonTop.bodyIndent = indent
@@ -163,10 +183,7 @@ export function extractScala(
     const braceImportM = BRACE_IMPORT_RE.exec(stripped)
     if (braceImportM) {
       const base = braceImportM[1] ?? ''
-      // Each selector may itself be a rename (`Old => New`) or the wildcard `_` -- for a rename
-      // the imported symbol is the left-hand (original) name, matching what call sites actually
-      // reference; a bare `_` means "everything under base", so keep it as base._ rather than
-      // emitting a bogus `base._` per underscore.
+      // Each selector may itself be a rename (`Old => New`) or the wildcard `_` -- for a rename the imported symbol is the left-hand (original) name, matching what call sites actually reference; a bare `_` means "everything under base", so keep it as base._ rather than emitting a bogus `base._` per underscore.
       const selectors = (braceImportM[2] ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '')
       for (const sel of selectors) {
         const original = sel.split(/\s*=>\s*/)[0]?.trim() ?? sel
@@ -190,20 +207,11 @@ export function extractScala(
       }
     }
 
-    // class/object/trait — recognized at column 0 (top-level), or indented while
-    // one brace level inside another type's body (a real nested type member).
-    // Matches kotlin.ts's classDetectionGateOk pattern.
+    // class/object/trait — recognized at column 0 (top-level), or indented while one brace level inside another type's body (a real nested type member). Matches kotlin.ts's classDetectionGateOk pattern.
     const outerFrame = typeStack.length > 0 ? typeStack[typeStack.length - 1]! : null
     const outerDepthInType = outerFrame !== null ? braceDepth - outerFrame.startDepth : 0
     const typeDetectionGateOk = typeStack.length === 0 || outerDepthInType === 1 || inColonBody
-    // `matched` tracks whether this line was already classified as a class/object/trait/
-    // func/val/var declaration. Unlike an early `continue`, classification must still fall
-    // through to the brace-counting block below so a same-line opening `{` (e.g. `class Foo {`
-    // or `def foo(): Unit = {`) is counted and can flip `bodyEntered` -- skipping that via
-    // `continue` was the original bug: a same-line brace was silently dropped, `bodyEntered`
-    // never flipped true, the frame never popped, and `typeDetectionGateOk` stayed false for
-    // every subsequent top-level declaration in the file (mirrors kotlin.ts's real pattern,
-    // which pushes the frame but does NOT `continue` -- it falls through to brace-counting).
+    // `matched` tracks whether this line was already classified as a class/object/trait/ func/val/var declaration. Unlike an early `continue`, classification must still fall through to the brace-counting block below so a same-line opening `{` (e.g. `class Foo {` or `def foo(): Unit = {`) is counted and can flip `bodyEntered` -- skipping that via `continue` was the original bug: a same-line brace was silently dropped, `bodyEntered` never flipped true, the frame never popped, and `typeDetectionGateOk` stayed false for every subsequent top-level declaration in the file (mirrors kotlin.ts's real pattern, which pushes the frame but does NOT `continue` -- it falls through to brace-counting).
     let matched = false
 
     // A Scala 3 indentation-syntax declaration ends in `:` and opens no brace on its own line (Scala 3 Reference, "Other New Features" > "Optional Braces"): `object Foo:`, `class Bar(x: Int) extends Baz:`, `trait Qux:`. A declaration that also opens a brace here keeps the brace-counted extent it has always had.
@@ -214,7 +222,7 @@ export function extractScala(
       const cname = unquoteName(cm[1] ?? '')
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, cname, 'class', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
-      typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false, openParens: 0, declIndent: indent, colonBody: opensColonBody, bodyIndent: null })
+      typeStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false, openParens: 0, declIndent: indent, colonBody: opensColonBody, bodyIndent: null, symbolIndex: symbols.length - 1 })
       matched = true
     }
 
@@ -223,7 +231,7 @@ export function extractScala(
       const oname = unquoteName(om[1] ?? '')
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, oname, 'object', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
-      typeStack.push({ name: oname, startDepth: braceDepth, bodyEntered: false, openParens: 0, declIndent: indent, colonBody: opensColonBody, bodyIndent: null })
+      typeStack.push({ name: oname, startDepth: braceDepth, bodyEntered: false, openParens: 0, declIndent: indent, colonBody: opensColonBody, bodyIndent: null, symbolIndex: symbols.length - 1 })
       matched = true
     }
 
@@ -232,7 +240,7 @@ export function extractScala(
       const tname = unquoteName(tm[1] ?? '')
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, tname, 'trait', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
-      typeStack.push({ name: tname, startDepth: braceDepth, bodyEntered: false, openParens: 0, declIndent: indent, colonBody: opensColonBody, bodyIndent: null })
+      typeStack.push({ name: tname, startDepth: braceDepth, bodyEntered: false, openParens: 0, declIndent: indent, colonBody: opensColonBody, bodyIndent: null, symbolIndex: symbols.length - 1 })
       matched = true
     }
 
@@ -241,7 +249,7 @@ export function extractScala(
       const enname = unquoteName(enm[1] ?? '')
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, enname, 'enum', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
-      typeStack.push({ name: enname, startDepth: braceDepth, bodyEntered: false, openParens: 0, declIndent: indent, colonBody: opensColonBody, bodyIndent: null })
+      typeStack.push({ name: enname, startDepth: braceDepth, bodyEntered: false, openParens: 0, declIndent: indent, colonBody: opensColonBody, bodyIndent: null, symbolIndex: symbols.length - 1 })
       matched = true
     }
 
@@ -249,9 +257,7 @@ export function extractScala(
     const frame = typeStack.length > 0 ? typeStack[typeStack.length - 1]! : null
     if (!matched && frame !== null) {
       const depthInType = braceDepth - frame.startDepth
-      // === 1, not >= 1: a local def inside a method body sits at depthInType 2+
-      // (matches kotlin.ts/csharp.ts, which gate the same way).
-      // `inColonBody && frame === colonTop` is the indentation-syntax equivalent of `depthInType === 1`: same brace depth as the declaration, sitting exactly at the body column.
+      // === 1, not >= 1: a local def inside a method body sits at depthInType 2+ (matches kotlin.ts/csharp.ts, which gate the same way). `inColonBody && frame === colonTop` is the indentation-syntax equivalent of `depthInType === 1`: same brace depth as the declaration, sitting exactly at the body column.
       if (depthInType === 1 || (inColonBody && frame === colonTop)) {
         const fm = FUNC_RE.exec(stripped)
         if (fm) {
@@ -273,9 +279,7 @@ export function extractScala(
         }
       }
     } else if (!matched && frame === null && !isIndented) {
-      // Top-level function/val/var (Scala script/worksheet style, or Scala 3's top-level
-      // definitions outside any object) -- matches kotlin.ts's top-level branch, which checks
-      // both TOP_FUN_RE and CONST_RE, rather than only the function regex.
+      // Top-level function/val/var (Scala script/worksheet style, or Scala 3's top-level definitions outside any object) -- matches kotlin.ts's top-level branch, which checks both TOP_FUN_RE and CONST_RE, rather than only the function regex.
       const fm = FUNC_RE.exec(stripped)
       if (fm) {
         symbols.push(makeLineSymbol(filePath, unquoteName(fm[1] ?? ''), 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
@@ -294,6 +298,12 @@ export function extractScala(
           symbols.push(makeLineSymbol(filePath, unquoteName(varm[1] ?? ''), 'var', lineNum, stripped.slice(0, 200), undefined, lines, 'c'))
         }
       }
+    }
+
+    // A definition that ends its line in `=` with no brace has its body on the deeper-indented lines below it (`def f(x: Int): Int =` then an indented block), so its span runs through them.
+    const lastSymbol = symbols[symbols.length - 1]
+    if (lastSymbol !== undefined && lastSymbol.lineStart === lineNum && MEMBER_KINDS.has(lastSymbol.kind) && stripped.endsWith('=') && !stripped.includes('{')) {
+      symbols[symbols.length - 1] = withSpanEnd(lastSymbol, indentedBodyEnd(lines, lineNum, indent), lines)
     }
 
     // Brace-count on a string-stripped copy
@@ -326,6 +336,12 @@ export function extractScala(
         break
       }
     }
+  }
+
+  // A colon body running to the end of the file has no dedent to close it.
+  while (typeStack.length > 0) {
+    const top = typeStack.pop()!
+    if (top.colonBody) closeColonFrame(top, lastCodeLine)
   }
 
   return { symbols, imports }

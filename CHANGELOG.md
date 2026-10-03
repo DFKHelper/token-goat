@@ -107,6 +107,9 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **Ruby methods called without parentheses or a receiver were never recorded as references.** A bare `helper` or `save!` inside another method counts as a call in Ruby, yet `refs --callers`, `impact` and `dead` saw nothing calling it. These calls are now indexed like `helper()`.
+- **Scala definitions written as `def f(...) =` with the body on the next line, and every Scala 3 type declared with a colon and an indented body, were stored as one line.** `read` returned the signature alone. The span now runs to the end of the body.
+- **Elixir functions whose `do` sat on a later line were stored as their first line.** `mix format` wraps long argument lists and `when` guards that way, so `read` returned only `def name(`. The span now starts at `def` and runs to the matching `end`.
 - **`token-goat answer` refused any subject written as `file::Class.method`.** It now resolves the subject the way `read` does, and when the name matches more than one definition it lists each one with the spelling that picks it.
 - **`token-goat impact` skipped a caller that shared the symbol's name, and later hops followed the callers of unrelated methods with the same name.** Each step now looks only at references to the definition it is expanding.
 - **`callers`, `brief`, `impact` and `call-chain` dropped a TypeScript call when the calling file defined its own method of the same name.** They now check what the call is bound to first, as `refs` already did, and keep the call when it reaches the symbol you asked about.

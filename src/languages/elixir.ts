@@ -1,11 +1,4 @@
-/**
- * Elixir symbol extractor — regex-based (no tree-sitter grammar needed).
- *
- * Extracts: modules (defmodule), protocols (defprotocol), protocol implementations
- * (defimpl), functions (def/defp/defdelegate), macros (defmacro/defmacrop), guards
- * (defguard/defguardp), and structs (defstruct/defexception). Private and macro
- * forms are extracted with a 'function' kind (no separate private variant).
- */
+/** Elixir symbol extractor — regex-based (no tree-sitter grammar needed). Extracts: modules (defmodule), protocols (defprotocol), protocol implementations (defimpl), functions (def/defp/defdelegate), macros (defmacro/defmacrop), guards (defguard/defguardp), and structs (defstruct/defexception). Private and macro forms are extracted with a 'function' kind (no separate private variant). */
 
 import type { SymbolEntry } from '../parser_types.js'
 import {
@@ -19,16 +12,33 @@ import {
 interface ModuleFrame {
   name: string
   endKeywordNeeded: boolean
-  // true for a non-def/defmodule block frame (quote/case/cond/try/receive/if/unless/with,
-  // or any other `do ... end` construct) pushed only to keep the stack balanced against its
-  // own `end` -- it must never be reported as a parent, so parent lookup walks past these to
-  // the nearest real def/defmodule frame. Mirrors lua.ts's isBlock/nearestFunctionName fix.
+  // true for a non-def/defmodule block frame (quote/case/cond/try/receive/if/unless/with, or any other `do ... end` construct) pushed only to keep the stack balanced against its own `end` -- it must never be reported as a parent, so parent lookup walks past these to the nearest real def/defmodule frame. Mirrors lua.ts's isBlock/nearestFunctionName fix.
   isBlock: boolean
-  // Index in `symbols` of the def/defmodule this frame opened, so its one-line placeholder span
-  // can be widened to the real body when the matching `end` pops the frame. Undefined for block
-  // frames, which own no symbol.
+  // Index in `symbols` of the def/defmodule this frame opened, so its one-line placeholder span can be widened to the real body when the matching `end` pops the frame. Undefined for block frames, which own no symbol.
   symbolIndex?: number
 }
+
+// A def head still waiting for the line that opens its `do ... end` block.
+interface PendingDefHead {
+  name: string
+  symbolIndex: number
+  // Net unclosed `(`/`[`/`{` across the head lines so far.
+  depth: number
+  // The last head line ends in a binary operator, `when` or a comma, so the next line continues it.
+  dangling: boolean
+}
+
+// Net bracket count of one line with string literals blanked, so a `")"` inside a string does not close the head.
+function bracketDelta(line: string): number {
+  const code = line.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '')
+  return (code.match(/[([{]/g)?.length ?? 0) - (code.match(/[)\]}]/g)?.length ?? 0)
+}
+
+// A head line that ends in `when`, a comma or a binary operator cannot be the last line of the head.
+const DANGLING_RE = /(?:,|\bwhen|\band|\bor|\bin|&&|\|\||[+\-*/<>=!|&])\s*$/
+
+// The keyword-list form `do: expr` of a one-line def body.
+const DO_KEYWORD_RE = /(?:^|[\s,)])do:/
 
 /** Nearest enclosing real def/defmodule name, skipping past non-def block frames. */
 function nearestDefName(stack: readonly ModuleFrame[]): string | undefined {
@@ -42,18 +52,10 @@ function nearestDefName(stack: readonly ModuleFrame[]): string | undefined {
 // `defmodule Foo` or `defmodule Foo.Bar` (qualified module names are common)
 const MODULE_RE = /^defmodule\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/
 
-// `defprotocol Sizeable do` / `defprotocol My.Nested.Proto do` -- a protocol is a named,
-// module-like container (a `do ... end` body of `def` signatures). It was absent here, so the
-// protocol name was dropped AND its body pushed only an anonymous *block* frame: every `def`
-// inside it was orphaned to the top level (parent lost) instead of attributed to the protocol.
-// `defprotocol` never false-matches FUNC_RE/PRIVATE_FUNC_RE (`def(?:macro)?`/`defp` both
-// require whitespace immediately after the keyword, which the `protocol`/`rotocol` tail denies).
+// `defprotocol Sizeable do` / `defprotocol My.Nested.Proto do` -- a protocol is a named, module-like container (a `do ... end` body of `def` signatures). It was absent here, so the protocol name was dropped AND its body pushed only an anonymous *block* frame: every `def` inside it was orphaned to the top level (parent lost) instead of attributed to the protocol. `defprotocol` never false-matches FUNC_RE/PRIVATE_FUNC_RE (`def(?:macro)?`/`defp` both require whitespace immediately after the keyword, which the `protocol`/`rotocol` tail denies).
 const PROTOCOL_RE = /^defprotocol\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/
 
-// `def name(...)`, `def name do`, `defmacro name(...)`, operator functions like `def +(...)`
-// (Elixir allows operator overloads). This also matches `defmacro` -- there is no separate
-// macro regex, since `def(?:macro)?` already covers both and both are indexed as 'function'.
-// The Kernel module defines four more named-callable forms with the same `keyword name(...)` head (Elixir Kernel docs: defmacrop/2, defguard/1, defguardp/1, defdelegate/2); none matched before, because `def(?:macro)?\s+` needs whitespace right after `defmacro`, so a private macro, every guard, and every delegated function was absent from the index.
+// `def name(...)`, `def name do`, `defmacro name(...)`, operator functions like `def +(...)` (Elixir allows operator overloads). This also matches `defmacro` -- there is no separate macro regex, since `def(?:macro)?` already covers both and both are indexed as 'function'. The Kernel module defines four more named-callable forms with the same `keyword name(...)` head (Elixir Kernel docs: defmacrop/2, defguard/1, defguardp/1, defdelegate/2); none matched before, because `def(?:macro)?\s+` needs whitespace right after `defmacro`, so a private macro, every guard, and every delegated function was absent from the index.
 const FUNC_RE = /^def(?:macrop?|guardp?|delegate)?\s+([A-Za-z_][A-Za-z0-9_!?]*|[+\-*/%=!<>&|^~]+)/
 
 // `defimpl Size, for: Map do` (Elixir Kernel docs: defimpl/3) defines the module `Size.Map`, so that is the name it is indexed under; with no `for:` the implementation is for the enclosing module. It used to push only an anonymous block frame, so each `def` in the body was reported with no parent and read as a stray top-level function.
@@ -75,16 +77,23 @@ export function extractElixir(
 
   const moduleStack: ModuleFrame[] = []
   let mlState: MultilineStringState | null = null
+  let pending: PendingDefHead | undefined
+
+  // Open the def's block frame when its own line ends in `do`, keep it pending when the head is unfinished, and leave a `, do: expr` one-liner frameless.
+  const settleDefHead = (name: string, stripped: string): void => {
+    const symbolIndex = symbols.length - 1
+    if (/\bdo\s*$/.test(stripped)) {
+      moduleStack.push({ name, endKeywordNeeded: true, isBlock: false, symbolIndex })
+    } else if (!DO_KEYWORD_RE.test(stripped)) {
+      pending = { name, symbolIndex, depth: bracketDelta(stripped), dangling: DANGLING_RE.test(stripped) }
+    }
+  }
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
 
-    // Mask heredoc spans (`"""` / `'''`, state carried across lines) before anything reads the
-    // line. `@doc`/`@moduledoc` bodies are heredocs and routinely hold example code, so without
-    // this a `def` in a doc example was indexed as a real function AND stole the parent of the
-    // next real one, while a bare `end` in an `iex>` example popped the enclosing module frame
-    // and orphaned every symbol declared after it.
+    // Mask heredoc spans (`"""` / `'''`, state carried across lines) before anything reads the line. `@doc`/`@moduledoc` bodies are heredocs and routinely hold example code, so without this a `def` in a doc example was indexed as a real function AND stole the parent of the next real one, while a bare `end` in an `iex>` example popped the enclosing module frame and orphaned every symbol declared after it.
     const { code: masked, state: nextMlState } = stripMultilineStringSpan(rawLine, mlState, 'elixir')
     mlState = nextMlState
 
@@ -96,21 +105,33 @@ export function extractElixir(
       continue
     }
 
-    // Whether this line's construct opens a `do ... end` block that will need a matching
-    // `end` to close (the standard multi-line `def foo(x) do` form). A one-liner like
-    // `def foo(x), do: expr` does NOT open a block -- it has no matching `end` -- so it must
-    // NOT push a frame, or the next real `end` in the file would incorrectly pop it instead
-    // of the enclosing module/function frame it actually belongs to.
+    // A def head that has not reached its `do` yet (multi-line params, a `when` guard on the next line, `),` then `do: expr`) stays pending: its continuation lines belong to the head, so they must not be read as new constructs, and the `do` line is the one that opens the block the matching `end` closes.
+    if (pending !== undefined) {
+      const startsContinuation = /^(?:when\b|do\b|,|\|)/.test(stripped)
+      if (pending.depth <= 0 && !pending.dangling && !startsContinuation) {
+        pending = undefined
+      } else {
+        pending.depth += bracketDelta(stripped)
+        pending.dangling = DANGLING_RE.test(stripped)
+        if (pending.depth <= 0 && /\bdo\s*$/.test(stripped)) {
+          moduleStack.push({ name: pending.name, endKeywordNeeded: true, isBlock: false, symbolIndex: pending.symbolIndex })
+          pending = undefined
+        } else if (pending.depth <= 0 && DO_KEYWORD_RE.test(stripped)) {
+          // `def f(x),` then `do: expr` on its own line: the one-liner ends on the line that carries `do:`.
+          const open = symbols[pending.symbolIndex]
+          if (open !== undefined && lineNum > open.lineStart) {
+            symbols[pending.symbolIndex] = { ...open, lineEnd: lineNum, body: lines.slice(open.lineStart - 1, lineNum).join('\n') }
+          }
+          pending = undefined
+        }
+        continue
+      }
+    }
+
+    // Whether this line's construct opens a `do ... end` block that will need a matching `end` to close (the standard multi-line `def foo(x) do` form). A one-liner like `def foo(x), do: expr` does NOT open a block -- it has no matching `end` -- so it must NOT push a frame, or the next real `end` in the file would incorrectly pop it instead of the enclosing module/function frame it actually belongs to.
     const opensDoBlock = /\bdo\s*$/.test(stripped)
 
-    // Whether this line opens a `fn ... end` block -- Elixir's anonymous-function keyword
-    // closes with a bare `end`, never with `do`, so a do-less multi-clause fn stored to a
-    // variable (`handler = fn`) or passed inline (`Enum.map(list, fn x ->`) was invisible to
-    // opensDoBlock above: no frame was pushed for it, so its closing `end` fell through to the
-    // final pop-check below and prematurely popped the enclosing function/module's real frame
-    // instead, corrupting parent attribution for every symbol declared after it. A `fn ... end`
-    // that is fully self-contained on one line (already balanced) must NOT push a frame, hence
-    // the `!/\bend\b/` guard.
+    // Whether this line opens a `fn ... end` block -- Elixir's anonymous-function keyword closes with a bare `end`, never with `do`, so a do-less multi-clause fn stored to a variable (`handler = fn`) or passed inline (`Enum.map(list, fn x ->`) was invisible to opensDoBlock above: no frame was pushed for it, so its closing `end` fell through to the final pop-check below and prematurely popped the enclosing function/module's real frame instead, corrupting parent attribution for every symbol declared after it. A `fn ... end` that is fully self-contained on one line (already balanced) must NOT push a frame, hence the `!/\bend\b/` guard.
     const opensFnBlock = /\bfn\b/.test(stripped) && !/\bend\b/.test(stripped) && /(?:fn|->)\s*$/.test(stripped)
 
     // defmodule Foo / defmodule Foo.Bar
@@ -122,8 +143,7 @@ export function extractElixir(
       continue
     }
 
-    // defprotocol Sizeable -- index as a named 'protocol' type and push a real (non-block)
-    // frame so the `def` signatures in its body are parented to it, mirroring defmodule.
+    // defprotocol Sizeable -- index as a named 'protocol' type and push a real (non-block) frame so the `def` signatures in its body are parented to it, mirroring defmodule.
     const protoM = PROTOCOL_RE.exec(stripped)
     if (protoM) {
       const protoName = protoM[1] ?? ''
@@ -145,11 +165,7 @@ export function extractElixir(
       continue
     }
 
-    // def/defp/defmacro inside a module. Each pushes its own frame when it opens a `do`
-    // block, so its own `end` pops itself rather than prematurely popping the enclosing
-    // module frame (the bug this fix addresses: previously only defmodule pushed a frame,
-    // so the FIRST function's `end` popped the module, and every function after it in the
-    // same module lost its parent attribution).
+    // def/defp/defmacro inside a module. Each pushes its own frame when it opens a `do` block, so its own `end` pops itself rather than prematurely popping the enclosing module frame (the bug this fix addresses: previously only defmodule pushed a frame, so the FIRST function's `end` popped the module, and every function after it in the same module lost its parent attribution).
     const fm = FUNC_RE.exec(stripped)
     if (fm) {
       const fname = fm[1] ?? ''
@@ -160,9 +176,7 @@ export function extractElixir(
         // Top-level function (not inside a module) — still index it
         symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
       }
-      if (opensDoBlock) {
-        moduleStack.push({ name: fname, endKeywordNeeded: true, isBlock: false, symbolIndex: symbols.length - 1 })
-      }
+      settleDefHead(fname, stripped)
       continue
     }
 
@@ -176,9 +190,7 @@ export function extractElixir(
       } else {
         symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
       }
-      if (opensDoBlock) {
-        moduleStack.push({ name: fname, endKeywordNeeded: true, isBlock: false, symbolIndex: symbols.length - 1 })
-      }
+      settleDefHead(fname, stripped)
       continue
     }
 
@@ -191,26 +203,13 @@ export function extractElixir(
       continue
     }
 
-    // Any other `do ... end` construct (quote/case/cond/try/receive/if/unless/with, etc.), or
-    // a do-less `fn ... end` block -- push a placeholder block frame so its `end` doesn't
-    // prematurely pop a real def/module frame and corrupt parent attribution for whatever
-    // comes after it.
+    // Any other `do ... end` construct (quote/case/cond/try/receive/if/unless/with, etc.), or a do-less `fn ... end` block -- push a placeholder block frame so its `end` doesn't prematurely pop a real def/module frame and corrupt parent attribution for whatever comes after it.
     if (opensDoBlock || opensFnBlock) {
       moduleStack.push({ name: '', endKeywordNeeded: true, isBlock: true })
       continue
     }
 
-    // Pop finished frames when we see `end` keyword. `\b` after `end` (not just a following
-    // space or end-of-string) also matches the very common `end)`/`end,`/`end}` closers that
-    // appear when an anonymous fn or a nested block is itself the last argument of a call, e.g.
-    // `Enum.map(list, fn x -> x end)`: without the boundary check, that line matched none of the
-    // old three checks, so the fn block's frame was never popped and the NEXT real `end` in the
-    // file (the enclosing def's own) was consumed to close it instead, ballooning that def's span
-    // into everything after it and misattributing every following sibling's parent. Widen the
-    // popped def/defmodule's placeholder span to its real body (its `end` line) so `read
-    // "mod.ex::fn"` returns the whole function, not just its signature line. Block frames carry
-    // no symbolIndex and are skipped. Guarded on lineNum so a malformed source cannot produce an
-    // inverted span.
+    // Pop finished frames when we see `end` keyword. `\b` after `end` (not just a following space or end-of-string) also matches the very common `end)`/`end,`/`end}` closers that appear when an anonymous fn or a nested block is itself the last argument of a call, e.g. `Enum.map(list, fn x -> x end)`: without the boundary check, that line matched none of the old three checks, so the fn block's frame was never popped and the NEXT real `end` in the file (the enclosing def's own) was consumed to close it instead, ballooning that def's span into everything after it and misattributing every following sibling's parent. Widen the popped def/defmodule's placeholder span to its real body (its `end` line) so `read "mod.ex::fn"` returns the whole function, not just its signature line. Block frames carry no symbolIndex and are skipped. Guarded on lineNum so a malformed source cannot produce an inverted span.
     if (/^end\b/.test(stripped)) {
       if (moduleStack.length > 0) {
         const popped = moduleStack.pop()

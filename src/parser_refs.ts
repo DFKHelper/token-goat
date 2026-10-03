@@ -1,6 +1,4 @@
-/**
- * Call-site reference extraction via tree-sitter AST traversal.
- */
+/** Call-site reference extraction via tree-sitter AST traversal. */
 
 import type { TsNode } from './parser_ts_types.js'
 import type { Language, RefEntry } from './parser_types.js'
@@ -206,6 +204,12 @@ const REF_NOISE_BY_LANG: ReadonlyMap<Language, ReadonlySet<string>> = new Map([
       'sleep',
       'exit',
       'freeze',
+      'private',
+      'protected',
+      'public',
+      'module_function',
+      'block_given?',
+      'binding',
     ]),
   ],
 ])
@@ -220,12 +224,7 @@ function lastSegment(text: string): string {
   return parts[parts.length - 1] ?? text
 }
 
-/**
- * Resolve the name of the enclosing symbol a `node` introduces, or `null` if it
- * does not introduce a named scope. Handles TS/JS `const f = () => {}` arrow and
- * function-expression bindings as named scopes in addition to the declaration
- * node types in {@link SCOPE_TYPES_BY_LANG}.
- */
+/** Resolve the name of the enclosing symbol a `node` introduces, or `null` if it does not introduce a named scope. Handles TS/JS `const f = () => {}` arrow and function-expression bindings as named scopes in addition to the declaration node types in {@link SCOPE_TYPES_BY_LANG}. */
 function scopeName(node: TsNode, language: Language): string | null {
   if (
     (language === 'typescript' || language === 'javascript') &&
@@ -265,14 +264,7 @@ function cFunctionName(node: TsNode): string | null {
   return null
 }
 
-/**
- * Resolve the callee name of a call-site `node` for `language`.
- *
- * Returns the bare identifier for plain calls (`foo()`), the property/field for
- * member or selector calls (`obj.foo()` → `foo`, `pkg.Fn()` → `Fn`), the macro
- * name for Rust macro invocations, and the constructor name for `new` / object
- * creation expressions. Returns `null` for shapes with no resolvable name.
- */
+/** Resolve the callee name of a call-site `node` for `language`. Returns the bare identifier for plain calls (`foo()`), the property/field for member or selector calls (`obj.foo()` → `foo`, `pkg.Fn()` → `Fn`), the macro name for Rust macro invocations, and the constructor name for `new` / object creation expressions. Returns `null` for shapes with no resolvable name. */
 /** Bare callee identifier of a C/C++ call's `function` child, or null when the position names no identifier. Walks the wrappers structurally rather than slicing text: a templated call site nests its name in a `template_function`/`template_method` node whose own text carries the argument list (`make_unique<Foo>`), so reading that text records a name no lookup of the real callee can match, and a bare `tmpl<int>(x)` is dropped entirely. */
 function cppCalleeName(node: TsNode): string | null {
   switch (node.type) {
@@ -375,24 +367,7 @@ function calleeName(call: TsNode, language: Language): string | null {
   }
 }
 
-/**
- * Bare-identifier "value position" usages of a name, scoped to `node` itself (not recursive --
- * the caller's own tree walk already visits every descendant, so this only needs to recognise
- * the specific container shapes below whenever `node` happens to be one of them).
- *
- * A call-site walk alone (see extractRefs) misses a symbol that is used without being invoked
- * directly -- passed as a callback (`arr.map(myHelperFunction)`), assigned to a binding (`const
- * x = myHelperFunction`), or stored as an object-literal value (`{ onClick: myHelperFunction
- * }`). Those reads are real usages: `dead` should not flag the symbol as unreferenced, and
- * `refs`/`callers` should surface them. Scoped to TypeScript/JavaScript/Python (the languages in
- * REF_LANGUAGES with directly analogous grammar shapes for these three patterns);
- * Go/Rust/Java/C/C++/Ruby keep call-site-only extraction for now.
- *
- * Deliberately narrow: only a bare `identifier` sitting directly in one of these three field
- * positions counts. A nested expression (`a.b`, `a + b`, a call result, a string/comment) never
- * matches, since tree-sitter already gives those their own distinct node types -- this needs no
- * separate string/comment-stripping pass the way a regex-based extractor would.
- */
+/** Bare-identifier "value position" usages of a name, scoped to `node` itself (not recursive -- the caller's own tree walk already visits every descendant, so this only needs to recognise the specific container shapes below whenever `node` happens to be one of them). A call-site walk alone (see extractRefs) misses a symbol that is used without being invoked directly -- passed as a callback (`arr.map(myHelperFunction)`), assigned to a binding (`const x = myHelperFunction`), or stored as an object-literal value (`{ onClick: myHelperFunction }`). Those reads are real usages: `dead` should not flag the symbol as unreferenced, and `refs`/`callers` should surface them. Scoped to TypeScript/JavaScript/Python (the languages in REF_LANGUAGES with directly analogous grammar shapes for these three patterns); Go/Rust/Java/C/C++/Ruby keep call-site-only extraction for now. Deliberately narrow: only a bare `identifier` sitting directly in one of these three field positions counts. A nested expression (`a.b`, `a + b`, a call result, a string/comment) never matches, since tree-sitter already gives those their own distinct node types -- this needs no separate string/comment-stripping pass the way a regex-based extractor would. */
 // Wrappers that change a value's type or grouping without changing which binding it names, so `const a = h as X` still references h. Every branch below matched a bare `identifier` child only, which meant one of these in between silently dropped the reference and left the symbol looking unused.
 const VALUE_WRAPPER_TYPES = new Set([
   'parenthesized_expression',
@@ -440,19 +415,13 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
     }
   }
 
-  // Python keyword argument bound to an existing name: foo(on_first_page=myHelperFunction).
-  // argument_list's namedChildren case above only matches a bare `identifier` child, so a
-  // keyword argument's nested value (a keyword_argument node's `value` field) is otherwise
-  // never walked.
+  // Python keyword argument bound to an existing name: foo(on_first_page=myHelperFunction). argument_list's namedChildren case above only matches a bare `identifier` child, so a keyword argument's nested value (a keyword_argument node's `value` field) is otherwise never walked.
   if (isPy && node.type === 'keyword_argument') {
     const value = node.childForFieldName('value')
     pushValueIdentifier(result, value)
   }
 
-  // Logical/nullish fallback operand bound to an existing name: const fn = override ?? myHelperFunction,
-  // or a fallback called directly: (override ?? myHelperFunction)(x). Restricted to ??/||/&& --
-  // the "pick one of two possible values" idiom this mirrors the ternary/ assignment cases above --
-  // rather than every binary operator, to avoid pulling in unrelated comparison/arithmetic operands.
+  // Logical/nullish fallback operand bound to an existing name: const fn = override ?? myHelperFunction, or a fallback called directly: (override ?? myHelperFunction)(x). Restricted to ??/||/&& -- the "pick one of two possible values" idiom this mirrors the ternary/ assignment cases above -- rather than every binary operator, to avoid pulling in unrelated comparison/arithmetic operands.
   if (isJs && node.type === 'binary_expression') {
     const operator = node.childForFieldName('operator')?.text
     if (operator === '??' || operator === '||' || operator === '&&') {
@@ -479,27 +448,20 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
     pushValueIdentifier(result, value)
   }
 
-  // Default parameter value bound to an existing name: function f(cb = myHelperFunction) {},
-  // or with a type annotation: function f(cb: () => void = myHelperFunction) {}. Both parse to
-  // a required_parameter/optional_parameter node with a `value` field, independent of whether a
-  // `type` field is also present.
+  // Default parameter value bound to an existing name: function f(cb = myHelperFunction) {}, or with a type annotation: function f(cb: () => void = myHelperFunction) {}. Both parse to a required_parameter/optional_parameter node with a `value` field, independent of whether a `type` field is also present.
   if (isJs && (node.type === 'required_parameter' || node.type === 'optional_parameter')) {
     const value = node.childForFieldName('value')
     pushValueIdentifier(result, value)
   }
 
-  // Array-literal element bound to an existing name: const handlers = [myHelperFunction, other].
-  // JS `array` and Python `list` both expose their elements as plain namedChildren, no field name.
-  // Python tuples and sets expose elements the same way as a list. Their assignment-target lookalikes are distinct node types (pattern_list, tuple_pattern), so a name being written rather than read is not picked up here.
+  // Array-literal element bound to an existing name: const handlers = [myHelperFunction, other]. JS `array` and Python `list` both expose their elements as plain namedChildren, no field name. Python tuples and sets expose elements the same way as a list. Their assignment-target lookalikes are distinct node types (pattern_list, tuple_pattern), so a name being written rather than read is not picked up here.
   if ((isJs && node.type === 'array') || (isPy && (node.type === 'list' || node.type === 'tuple' || node.type === 'set'))) {
     for (const child of node.namedChildren) {
       pushValueIdentifier(result, child)
     }
   }
 
-  // Ternary/conditional branch bound to an existing name: const fn = cond ? myHelperFunction : other,
-  // or Python's `myHelperFunction if cond else other`. Only the two chosen-value branches are value
-  // positions -- the condition itself is a predicate, not a candidate value, so it's excluded.
+  // Ternary/conditional branch bound to an existing name: const fn = cond ? myHelperFunction : other, or Python's `myHelperFunction if cond else other`. Only the two chosen-value branches are value positions -- the condition itself is a predicate, not a candidate value, so it's excluded.
   if (isJs && node.type === 'ternary_expression') {
     const consequence = node.childForFieldName('consequence')
     const alternative = node.childForFieldName('alternative')
@@ -513,44 +475,31 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
     pushValueIdentifier(result, alternative)
   }
 
-  // Class field initializer bound to an existing name: class C { handler = myHelperFunction }.
-  // Python's equivalent (a class-body assignment) is already covered by the `assignment` case above.
-  // TypeScript spells this node public_field_definition and JavaScript spells it field_definition; loadGrammar loads two separate grammar modules, so matching only the TypeScript name skipped every .js file outright.
+  // Class field initializer bound to an existing name: class C { handler = myHelperFunction }. Python's equivalent (a class-body assignment) is already covered by the `assignment` case above. TypeScript spells this node public_field_definition and JavaScript spells it field_definition; loadGrammar loads two separate grammar modules, so matching only the TypeScript name skipped every .js file outright.
   if (isJs && (node.type === 'public_field_definition' || node.type === 'field_definition')) {
     const value = node.childForFieldName('value')
     pushValueIdentifier(result, value)
   }
 
-  // Bare-identifier return: return myHelperFunction. Neither grammar names this a field, so it's
-  // only walked when the return statement has exactly one named child (avoids matching e.g. a
-  // Python bare `return` with no value, which has zero).
+  // Bare-identifier return: return myHelperFunction. Neither grammar names this a field, so it's only walked when the return statement has exactly one named child (avoids matching e.g. a Python bare `return` with no value, which has zero).
   if (node.type === 'return_statement' && node.namedChildren.length === 1) {
     const value = node.namedChildren[0]
     pushValueIdentifier(result, value)
   }
 
-  // Destructuring default bound to an existing name: const [cb = myHelperFunction] = arr, or
-  // const { cb = myHelperFunction } = opts. Both array- and object-pattern defaults expose the
-  // fallback value via a `right` field.
+  // Destructuring default bound to an existing name: const [cb = myHelperFunction] = arr, or const { cb = myHelperFunction } = opts. Both array- and object-pattern defaults expose the fallback value via a `right` field.
   if (isJs && (node.type === 'assignment_pattern' || node.type === 'object_assignment_pattern')) {
     const value = node.childForFieldName('right')
     pushValueIdentifier(result, value)
   }
 
-  // Template-literal interpolation of an existing name: `value: ${myHelperFunction}`. The
-  // substitution wraps its expression as a single namedChild with no field name.
+  // Template-literal interpolation of an existing name: `value: ${myHelperFunction}`. The substitution wraps its expression as a single namedChild with no field name.
   if (isJs && node.type === 'template_substitution' && node.namedChildren.length === 1) {
     const value = node.namedChildren[0]
     pushValueIdentifier(result, value)
   }
 
-  // Base class named in an extends clause: class Impl extends Base {}, or a member-expression
-  // base like class Impl extends ns.Base {} (captures the object, `ns`). Unlike Python, whose
-  // base list is an `argument_list` already matched above, JS/TS wraps the extends target in its
-  // own class_heritage/extends_clause nodes with no field name -- so it's otherwise never walked,
-  // and every base class permanently false-positives as a zero-ref dead symbol.
-  // The wrapper differs by grammar: TypeScript nests class_heritage > extends_clause > base, while JavaScript puts the base directly under class_heritage with no extends_clause at all. Matching both is safe rather than double-counting, because on the TypeScript side class_heritage's first named child is the extends_clause itself, which is neither an identifier nor a member_expression and so contributes nothing.
-  // Shorthand object property: const handlers = { myHelperFunction }. The name is the whole node rather than an `identifier` child of a `pair`, so the pair branch above never sees it.
+  // Base class named in an extends clause: class Impl extends Base {}, or a member-expression base like class Impl extends ns.Base {} (captures the object, `ns`). Unlike Python, whose base list is an `argument_list` already matched above, JS/TS wraps the extends target in its own class_heritage/extends_clause nodes with no field name -- so it's otherwise never walked, and every base class permanently false-positives as a zero-ref dead symbol. The wrapper differs by grammar: TypeScript nests class_heritage > extends_clause > base, while JavaScript puts the base directly under class_heritage with no extends_clause at all. Matching both is safe rather than double-counting, because on the TypeScript side class_heritage's first named child is the extends_clause itself, which is neither an identifier nor a member_expression and so contributes nothing. Shorthand object property: const handlers = { myHelperFunction }. The name is the whole node rather than an `identifier` child of a `pair`, so the pair branch above never sees it.
   if (isJs && node.type === 'object') {
     for (const child of node.namedChildren) {
       if (child.type === 'shorthand_property_identifier') result.push(child)
@@ -615,14 +564,50 @@ function valueRefIdentifiers(node: TsNode, language: Language): TsNode[] {
   return result
 }
 
-/**
- * Walk a tree-sitter tree collecting call-site and value-position references.
- *
- * Maintains a stack of enclosing scope names (functions / methods / classes) so
- * each reference records its innermost enclosing symbol in `context` -- the data
- * `refs --callers` groups on. References are deduplicated per (name, line) and
- * single-character / builtin callees are dropped to keep the index focused.
- */
+// Ruby scopes. A `def`, class, module or the file itself starts a fresh set of local variables; a block or lambda reads the enclosing set as well as its own.
+const RUBY_FRESH_SCOPES: ReadonlySet<string> = new Set(['program', 'method', 'singleton_method', 'class', 'singleton_class', 'module'])
+const RUBY_BLOCK_SCOPES: ReadonlySet<string> = new Set(['block', 'do_block', 'lambda'])
+
+interface RubyScope {
+  vars: Set<string>
+  inherits: boolean
+}
+
+// Ruby 3.4's implicit block parameter and the numbered ones, which are never method calls.
+const RUBY_IMPLICIT_PARAM = /^(?:it|_[1-9])$/
+
+function sameNode(a: TsNode | null, b: TsNode): boolean {
+  return a !== null && a.type === b.type && a.startPosition.row === b.startPosition.row && a.startPosition.column === b.startPosition.column && a.endPosition.column === b.endPosition.column
+}
+
+function rubyIsLocal(scopes: readonly RubyScope[], name: string): boolean {
+  for (let i = scopes.length - 1; i >= 0; i--) {
+    const scope = scopes[i]!
+    if (scope.vars.has(name)) return true
+    if (!scope.inherits) return false
+  }
+  return false
+}
+
+/** What a Ruby `identifier` node is. tree-sitter-ruby gives a local variable, a parameter and a method called with no receiver and no parentheses (`header` on a line of its own) the same node type, so the position decides: a declaration binds a local, a skip is a name that is not a use (the `def` name, the callee of a `call`, which `calleeName` already records), and a use is a local read or a bare method call. */
+function rubyIdentifierRole(node: TsNode): 'declare' | 'skip' | 'use' {
+  const parent = node.parent
+  if (parent === null) return 'use'
+  const t = parent.type
+  if (t === 'method' || t === 'singleton_method') return sameNode(parent.childForFieldName('name'), node) ? 'skip' : 'use'
+  if (t === 'call') return sameNode(parent.childForFieldName('method'), node) ? 'skip' : 'use'
+  if (t === 'alias' || t === 'undef' || t === 'scope_resolution') return 'skip'
+  if (t.endsWith('_parameters') || t === 'destructured_parameter') return 'declare'
+  if (t.endsWith('_parameter')) return sameNode(parent.childForFieldName('name'), node) ? 'declare' : 'use'
+  if (t === 'assignment' || t === 'operator_assignment') return sameNode(parent.childForFieldName('left'), node) ? 'declare' : 'use'
+  if (t === 'left_assignment_list' || t === 'rest_assignment' || t === 'destructured_left_assignment' || t === 'exception_variable') return 'declare'
+  if (t === 'for') return sameNode(parent.childForFieldName('pattern'), node) ? 'declare' : 'use'
+  if (t === 'in_clause') return sameNode(parent.childForFieldName('pattern'), node) ? 'declare' : 'use'
+  if (t.endsWith('_pattern')) return 'declare'
+  return 'use'
+}
+
+/** Walk a tree-sitter tree collecting call-site and value-position references. Maintains a stack of enclosing scope names (functions / methods / classes) so each reference records its innermost enclosing symbol in `context` -- the data `refs --callers` groups on. References are deduplicated per (name, line) and single-character / builtin callees are dropped to keep the index focused. */
 export function extractRefs(root: TsNode, filePath: string, language: Language): RefEntry[] {
   const out: RefEntry[] = []
   const seen = new Set<string>()
@@ -632,6 +617,7 @@ export function extractRefs(root: TsNode, filePath: string, language: Language):
       ? JS_NOISE
       : (REF_NOISE_BY_LANG.get(language) ?? EMPTY_STRING_SET)
   const stack: string[] = []
+  const rubyScopes: RubyScope[] = []
 
   const record = (name: string, node: TsNode): void => {
     if (name.length <= 1 || noise.has(name)) return
@@ -652,6 +638,13 @@ export function extractRefs(root: TsNode, filePath: string, language: Language):
     const enclosing = scopeName(node, language)
     if (enclosing !== null && enclosing !== '') stack.push(enclosing)
 
+    let rubyScoped = false
+    if (language === 'ruby') {
+      rubyScoped = RUBY_FRESH_SCOPES.has(node.type) || RUBY_BLOCK_SCOPES.has(node.type)
+      if (rubyScoped) rubyScopes.push({ vars: new Set(), inherits: RUBY_BLOCK_SCOPES.has(node.type) })
+      visitRubyBinding(node)
+    }
+
     if (callTypes.has(node.type)) {
       const callee = calleeName(node, language)
       if (callee !== null) record(callee, node)
@@ -663,7 +656,23 @@ export function extractRefs(root: TsNode, filePath: string, language: Language):
 
     for (const child of node.namedChildren) visit(child)
 
+    if (rubyScoped) rubyScopes.pop()
     if (enclosing !== null && enclosing !== '') stack.pop()
+  }
+
+  // Ruby: bind the locals a node declares, and record an identifier that is a bare method call (not a local) as a call-site reference.
+  const visitRubyBinding = (node: TsNode): void => {
+    const scope = rubyScopes[rubyScopes.length - 1]
+    if (scope === undefined) return
+    if (node.type === 'keyword_pattern' && node.childForFieldName('value') === null) {
+      const key = node.childForFieldName('key')
+      if (key !== null) scope.vars.add(key.text)
+      return
+    }
+    if (node.type !== 'identifier') return
+    const role = rubyIdentifierRole(node)
+    if (role === 'declare') scope.vars.add(node.text)
+    else if (role === 'use' && !RUBY_IMPLICIT_PARAM.test(node.text) && !rubyIsLocal(rubyScopes, node.text)) record(node.text, node)
   }
 
   visit(root)
