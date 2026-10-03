@@ -404,9 +404,9 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
           emit(jsonText)
           recordReadStat('xml_query', fullSourceBytes, jsonText, detail)
         } else {
-          emit(`No attributes matched path: '${displaySafeText(queryPath)}'`)
+          emitErr(`No attributes matched path: '${displaySafeText(queryPath)}'`)
         }
-        return 0
+        return 1
       }
 
       const totalCount = result.attributeValues.length
@@ -506,9 +506,9 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
         emit(jsonText)
         recordReadStat('xml_query', fullSourceBytes, jsonText, detail)
       } else {
-        emit(`No elements matched path: '${displaySafeText(queryPath)}'`)
+        emitErr(`No elements matched path: '${displaySafeText(queryPath)}'`)
       }
-      return 0
+      return 1
     }
 
     if (!result.fanned && result.items.length === 1) {

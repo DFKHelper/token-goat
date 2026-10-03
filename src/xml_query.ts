@@ -9,8 +9,23 @@ export interface XmlNode {
   attributes: Record<string, string>
   children: XmlNode[]
   text: string
+  /** Text and child elements in document order, set only when text follows a child element (mixed content). */
+  mixed?: Array<string | XmlNode>
   line: number
   lineEnd: number
+}
+
+// Adds text to a node and, once the node has a child element, keeps document order so a serializer can print `One<b>bold</b>Two` as written instead of `OneTwo` then `<b>`.
+function appendNodeText(node: XmlNode, chunk: string): void {
+  if (node.children.length > 0 && node.mixed === undefined) {
+    node.mixed = node.text ? [node.text, ...node.children] : [...node.children]
+  }
+  node.text += chunk
+  if (node.mixed !== undefined) {
+    const last = node.mixed[node.mixed.length - 1]
+    if (typeof last === 'string') node.mixed[node.mixed.length - 1] = last + chunk
+    else node.mixed.push(chunk)
+  }
 }
 
 export interface XmlOutlineSummary {
@@ -172,13 +187,13 @@ export function parseXmlTree(xmlText: string): {
       // Verbatim, and with no separator invented between chunks. Trimming each chunk and joining with a space turned `a<!--x-->b` into `a b` and threw away the spaces in `<![CDATA[ a ]]>`, which is the one thing CDATA exists to keep. A chunk that is nothing but whitespace is dropped, because that is the indentation of a pretty-printed document rather than content anybody asked for.
       const raw = text.slice(lastIndex, match.index)
       if (raw.trim()) {
-        stack[stack.length - 1]!.text += decodeXmlEntities(raw)
+        appendNodeText(stack[stack.length - 1]!, decodeXmlEntities(raw))
       }
     }
 
     if (cdataContent !== undefined) {
       if (stack.length > 0) {
-        stack[stack.length - 1]!.text += cdataContent
+        appendNodeText(stack[stack.length - 1]!, cdataContent)
       }
       lastIndex = tagRegex.lastIndex
       continue
@@ -233,7 +248,9 @@ export function parseXmlTree(xmlText: string): {
       if (stack.length === 0) {
         if (!rootNode) rootNode = newNode
       } else {
-        stack[stack.length - 1]!.children.push(newNode)
+        const parent = stack[stack.length - 1]!
+        parent.children.push(newNode)
+        parent.mixed?.push(newNode)
       }
 
       if (!isSelfClosing) {
@@ -478,6 +495,14 @@ export function serializeXmlNode(
 
   const lines: string[] = []
   lines.push(`${pad}<${node.tag}${attrStr}>`)
+  // A decoded embedded-XML body replaces the text wholesale, so it keeps the banner path below rather than being split around the children.
+  if (node.mixed !== undefined && !decodedTextBanner) {
+    for (const part of node.mixed) {
+      lines.push(typeof part === 'string' ? `${pad}  ${escapeXmlText(part)}` : serializeXmlNode(part, indent + 1, opts))
+    }
+    lines.push(`${pad}</${node.tag}>`)
+    return lines.join('\n')
+  }
   if (node.text) {
     if (decodedTextBanner) {
       lines.push(decodedTextBanner.trimEnd())
@@ -491,6 +516,18 @@ export function serializeXmlNode(
   }
   lines.push(`${pad}</${node.tag}>`)
   return lines.join('\n')
+}
+
+function parentMap(root: XmlNode): Map<XmlNode, XmlNode> {
+  const map = new Map<XmlNode, XmlNode>()
+  function walk(n: XmlNode) {
+    for (const c of n.children) {
+      map.set(c, n)
+      walk(c)
+    }
+  }
+  walk(root)
+  return map
 }
 
 function getAllDescendants(node: XmlNode): XmlNode[] {
@@ -577,7 +614,8 @@ export function queryXml(
   }
 
   const queryExpression = (opts.xpath ?? pathStr).trim()
-  const steps = parseXmlPath(queryExpression)
+  const isXpath = opts.xpath !== undefined
+  const steps = parseXmlPath(queryExpression, { oneBased: isXpath })
   if (steps.length === 0) {
     return { items: [root], fanned: false }
   }
@@ -634,6 +672,8 @@ export function queryXml(
       }
 
       let matching = targets.filter((c) => matchTag(c.tag, step.tag))
+      // A recursive step's candidates are children of many parents, and an XPath position counts within each parent.
+      const parentOf = isXpath && step.isRecursive ? parentMap(cand) : undefined
 
       const preds =
         step.predicates && step.predicates.length > 0
@@ -654,7 +694,21 @@ export function queryXml(
                 : []
 
       for (const pred of preds) {
-        if (pred.kind === 'index') {
+        if (pred.kind === 'index' && parentOf !== undefined) {
+          const groups = new Map<XmlNode | null, XmlNode[]>()
+          for (const m of matching) {
+            const key = parentOf.get(m) ?? null
+            const g = groups.get(key)
+            if (g) g.push(m)
+            else groups.set(key, [m])
+          }
+          const kept = new Set<XmlNode>()
+          for (const g of groups.values()) {
+            const idx = pred.index < 0 ? g.length + pred.index : pred.index
+            if (idx >= 0 && idx < g.length) kept.add(g[idx]!)
+          }
+          matching = matching.filter((m) => kept.has(m))
+        } else if (pred.kind === 'index') {
           const total = matching.length
           const idx = pred.index < 0 ? total + pred.index : pred.index
           if (idx >= 0 && idx < total) {

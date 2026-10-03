@@ -54,15 +54,14 @@ export function _applyFiltersAndPrint(
   fenceByProvenance = false,
   fenceTag: string = UNTRUSTED_WEB_TAG,
 ): string {
+  // Said on stderr after the body: a line inside the content fence is escaped as payload and reads as part of the text it describes.
+  let capNotice: string | undefined
   // Fetched-page recall only. The injection scan is documented as unconditional for fetched pages, and a `web-output <id>` recall puts that same attacker-written text in front of the model -- but only the WebFetch post-hook fenced it, so the copy served from the cache came back bare. Scanning here rather than at store time means the fence wraps exactly what the caller sees, so a --grep/--head slice that keeps the payload is fenced and one that drops it is not. Recall of cached Bash and MCP output is scanned too, under a tag naming tool output rather than a fetched page. Neither is a page token-goat fetched, but both carry text written by a third party -- a dependency's build or test output, a remote MCP server's result -- and the recall channel put it in front of the model unmarked. The fence is decided by provenance -- `fenceByProvenance` -- and not by whether the scan matched: it used to appear only on a positive hit, which meant any payload the eight deliberately-narrow regexes miss was emitted bare. The scan now only decides whether the notice names pattern(s) and whether a stat is recorded.
   const emit = (text: string): string => {
-    if (!fenceByProvenance || text === '') {
-      out(text)
-      return text
-    }
-    const fenced = fenceUntrusted(text, fenceTag)
-    out(fenced)
-    return fenced
+    const shown = !fenceByProvenance || text === '' ? text : fenceUntrusted(text, fenceTag)
+    out(shown)
+    if (capNotice !== undefined) process.stderr.write(capNotice + '\n')
+    return shown
   }
   // fenceByProvenance true means this is third-party content (a fetched page, a recalled cache entry, a document the caller only named rather than authored), the same population the injection fence covers -- redact it before any narrowing so --grep's long-line clip can never cut a secret in half and leave a fragment the redactor no longer recognises. Idempotent on content already redacted at write time (bash/web/mcp caches).
   if (fenceByProvenance) content = redactSecrets(content).text
@@ -124,7 +123,7 @@ export function _applyFiltersAndPrint(
       previous = i
     }
     if (cap !== undefined && hits.length > cap) {
-      next.push({ n: null, text: '[token-goat: showing first ' + cap + ' of ' + hits.length + ' matching lines; raise --max-matches for more]' })
+      capNotice = '[token-goat: showing first ' + cap + ' of ' + hits.length + ' matching lines; raise --max-matches for more]'
     }
     rows = next
   }

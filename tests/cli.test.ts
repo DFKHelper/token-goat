@@ -203,7 +203,11 @@ describe('token-goat CLI', () => {
     try {
       const r = await run(['bash-output', '--file', tmpFile, '--grep', 'MATCH', '--max-matches', '3'])
       expect(r.status).toBe(0)
-      expect(r.stdout).toContain('showing first 3 of 10 matching lines')
+      // Provenance: CAPTURE. Real run of this bundle (bash-output --file --grep MATCH --max-matches 2 over four MATCH lines) printed the fenced body on stdout and the notice on stderr; before the fix the notice sat inside the fence as `&#91;token-goat: showing first ...`.
+      const notice = '[token-goat: showing first 3 of 10 matching lines; raise --max-matches for more]'
+      expect(r.stdout).not.toContain('showing first')
+      expect(r.stdout).not.toContain('&#91;token-goat')
+      expect(r.stderr).toContain(notice)
       expect(r.stdout).toContain('MATCH line 0')
       expect(r.stdout).toContain('MATCH line 2')
       expect(r.stdout).not.toContain('MATCH line 9')
@@ -221,7 +225,8 @@ describe('token-goat CLI', () => {
       const r = await run(['bash-output', '--file', tmpFile, '--grep', 'MATCH', '--max-matches', '0'])
       expect(r.status).toBe(0)
       expect(r.stdout).not.toContain('MATCH line')
-      expect(r.stdout).toContain('showing first 0 of 10 matching lines')
+      expect(r.stdout).not.toContain('showing first')
+      expect(r.stderr).toContain('[token-goat: showing first 0 of 10 matching lines')
     } finally {
       fs.rmSync(tmpFile, { force: true })
     }

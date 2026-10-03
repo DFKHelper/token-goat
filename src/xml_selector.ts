@@ -92,14 +92,15 @@ function splitTopLevel(str: string, delimiter: string): string[] {
   return parts
 }
 
-function parseSinglePredicate(predStr: string): XmlPredicate | null {
+// XPath 1.0 positions start at 1 (W3C XPath 1.0 section 2.4), while the dotted path syntax counts from 0. `oneBased` selects the XPath convention.
+function parseSinglePredicate(predStr: string, oneBased = false): XmlPredicate | null {
   const s = predStr.trim()
   if (!s) return null
 
   // `or` binds loosest (XPath 1.0 §3.4), so it has to be split first: splitting `and` first parses `@a='1' or @b='2' and @c='3'` as `(A or B) and C` and answers a three-book catalog with one book instead of two. Splitting on the loosest operator first is what puts it at the root of the tree.
   const orParts = splitTopLevel(s, ' or ')
   if (orParts.length > 1) {
-    const predicates = orParts.map(parseSinglePredicate)
+    const predicates = orParts.map((p) => parseSinglePredicate(p, oneBased))
     if (predicates.some((p) => p === null)) return null
     return { kind: 'or', predicates: predicates as XmlPredicate[] }
   }
@@ -107,13 +108,15 @@ function parseSinglePredicate(predStr: string): XmlPredicate | null {
   // A sub-predicate this parser cannot read makes the whole conjunction unreadable. Filtering the nulls out instead would quietly evaluate `@a='1' and not(@b)` as `@a='1'`, widening the match to rows the caller asked to exclude.
   const andParts = splitTopLevel(s, ' and ')
   if (andParts.length > 1) {
-    const predicates = andParts.map(parseSinglePredicate)
+    const predicates = andParts.map((p) => parseSinglePredicate(p, oneBased))
     if (predicates.some((p) => p === null)) return null
     return { kind: 'and', predicates: predicates as XmlPredicate[] }
   }
 
   if (/^-?\d+$/.test(s)) {
     const n = parseInt(s, 10)
+    // A position below 1 selects nothing in XPath; a huge index is out of range for any sibling list.
+    if (oneBased) return { kind: 'index', index: n >= 1 ? n - 1 : Number.MAX_SAFE_INTEGER }
     return { kind: 'index', index: n }
   }
 
@@ -251,7 +254,8 @@ export function evalPredicate(node: XmlNode, pred: XmlPredicate, indexInMatch: n
 }
 
 /** Parses a query selector/path into a sequence of steps. Examples: "catalog/book" "feed.entry[0]" "//item[@id='101']" "//DTS:Executable[@DTS:ExecutableType='Microsoft.ExecuteSQLTask']" "items/item[status=active]" "//entry[title='Example']" */
-export function parseXmlPath(pathStr: string): XmlSelectorStep[] {
+export function parseXmlPath(pathStr: string, opts: { oneBased?: boolean } = {}): XmlSelectorStep[] {
+  const oneBased = opts.oneBased === true
   let normalized = pathStr.trim()
   if (normalized === '' || normalized === '/') return []
 
@@ -367,7 +371,7 @@ export function parseXmlPath(pathStr: string): XmlSelectorStep[] {
 
     let unreadablePredicate = false
     for (const rawP of rawPredicates) {
-      const parsedP = parseSinglePredicate(rawP)
+      const parsedP = parseSinglePredicate(rawP, oneBased)
       if (!parsedP) {
         unreadablePredicate = true
         break
