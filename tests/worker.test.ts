@@ -411,6 +411,31 @@ describe('claimWorkerPidFile (TOCTOU race regression)', () => {
       bystander.kill()
     }
   })
+
+  // Regression: two claimers that both judged the same pid stale each removed the pid file and recreated it, so the second remove deleted the file the first had just written and both claims succeeded. The losing daemon never saw its own pid on disk, so runWorkerLoop's ownership check never retired it, and two daemons drained one queue.
+  it('lets only one of two interleaved reclaimers win a stale slot', () => {
+    // HAND-DERIVED: the second claimer runs inside the first one's liveness probe of the stale pid, which is the window between its judgement and its remove that two real `worker start` processes can interleave in; this process's own pid stands in for the second claimer's live daemon.
+    const stalePid = 999999999
+    fs.writeFileSync(workerPidPath(DIR), `${stalePid}\n`)
+    const realKill = process.kill.bind(process)
+    let inner: boolean | undefined
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
+      if (pid === stalePid && inner === undefined) {
+        inner = false
+        inner = claimWorkerPidFile(DIR, process.pid)
+      }
+      return realKill(pid, signal)
+    })
+    try {
+      const outer = claimWorkerPidFile(DIR, 424242)
+      expect(inner).toBeDefined()
+      expect([outer, inner].filter(Boolean)).toHaveLength(1)
+      expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe(outer ? '424242' : String(process.pid))
+      expect(fs.existsSync(`${workerPidPath(DIR)}.reclaim`)).toBe(false)
+    } finally {
+      killSpy.mockRestore()
+    }
+  })
 })
 
 describe('getDirtyPathsFor', () => {

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { dataDir } from './constants.js'
 import { withEnvProxyEnabled } from './env_proxy.js'
 import { displaySafeText } from './paths.js'
-import { atomicWriteText, ensureDirSync, extractErrorMessage } from './util.js'
+import { atomicWriteText, ensureDirSync, extractErrorMessage, withFileLock } from './util.js'
 
 /** Options shared by the in-thread and detached worker entry points. */
 export interface WorkerOptions {
@@ -248,7 +248,7 @@ function discardSpawnedWorker(child: ChildProcess, pid: number): void {
   child.unref()
 }
 
-/** Atomically claim the worker pid file for `pid`, closing the TOCTOU race where two near-simultaneous `worker start` invocations could otherwise both pass an {@link isWorkerRunning} pre-check and then unconditionally overwrite each other's pid file -- orphaning whichever daemon lost, with no pid file left pointing at it for a later {@link stopWorker} to find. Uses exclusive-create (`wx`) so only one writer can ever create the file fresh; a losing writer sees `EEXIST` instead of silently clobbering the winner's entry, and then checks whether the pid already recorded there is a live process: - alive: refuse -- a real daemon already holds the slot. Returns false. - dead/stale/unreadable: safe to reclaim -- remove the stale file and retry the exclusive create once. Exported for tests; the boolean return lets {@link startDetachedWorker} decide whether to kill the child process it just spawned when it loses the race. */
+/** Atomically claim the worker pid file for `pid`, closing the TOCTOU race where two near-simultaneous `worker start` invocations could otherwise both pass an {@link isWorkerRunning} pre-check and then unconditionally overwrite each other's pid file -- orphaning whichever daemon lost, with no pid file left pointing at it for a later {@link stopWorker} to find. Uses exclusive-create (`wx`) so only one writer can ever create the file fresh; a losing writer sees `EEXIST` instead of silently clobbering the winner's entry, and then checks whether the pid already recorded there is a live process: - alive: refuse -- a real daemon already holds the slot. Returns false. - dead/stale/unreadable: safe to reclaim -- under a `worker.pid.reclaim` lock, remove the stale file and retry the exclusive create once; a claimer that finds the lock held refuses. Exported for tests; the boolean return lets {@link startDetachedWorker} decide whether to kill the child process it just spawned when it loses the race. */
 export function claimWorkerPidFile(dir: string, pid: number): boolean {
   const pidPath = workerPidPath(dir)
   try {
@@ -257,6 +257,13 @@ export function claimWorkerPidFile(dir: string, pid: number): boolean {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
   }
+  // The judgement and the remove-and-recreate run under one lock: two claimers that both judged the same pid stale would otherwise each remove the file, and the second remove would land on the pid file the first had just written, so both would win and the loser's daemon, never having seen its own pid on disk, would never retire. A claimer that finds the lock held loses, since whoever holds it is reclaiming the same slot.
+  return withFileLock(`${pidPath}.reclaim`, () => reclaimStalePidFile(dir, pid), { waitMs: 0 }) ?? false
+}
+
+/** Replaces the pid file with `pid` when the pid it names holds no worker lease; returns false when that pid is a live worker or another claimer wins the recreate. Runs only under claimWorkerPidFile's reclaim lock. */
+function reclaimStalePidFile(dir: string, pid: number): boolean {
+  const pidPath = workerPidPath(dir)
   const existingPid = readPidFile(dir)
   if (
     existingPid !== null
@@ -275,7 +282,7 @@ export function claimWorkerPidFile(dir: string, pid: number): boolean {
     fs.writeFileSync(pidPath, `${pid}\n`, { flag: 'wx' })
     return true
   } catch (e2) {
-    // Lost a second, much narrower race on the reclaim retry itself: be conservative and report already-running rather than clobber whoever just won it.
+    // A first-time claimer's create, which takes no lock, landed between the remove and this create: report already-running rather than clobber it.
     if ((e2 as NodeJS.ErrnoException).code === 'EEXIST') return false
     throw e2
   }
