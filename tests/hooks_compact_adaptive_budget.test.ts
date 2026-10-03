@@ -222,7 +222,8 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
     wide.compact_assist.max_manifest_chars = 100_000
     saveConfig(wide)
     invalidateConfigCache()
-    const full = buildManifest(sid)
+    // The trailing newline lets the line match the last row too: an edit-only file has no SAFE_TO_DISCARD row, so `a.ts` can be the manifest's final line.
+    const full = buildManifest(sid) + '\n'
     const cutAt = full.indexOf(`- ${dir}/a.ts\n`)
     expect(cutAt, 'both rows must render, or this asserts nothing').toBeGreaterThan(full.indexOf(`- ${dir}/a.tsx\n`))
 
