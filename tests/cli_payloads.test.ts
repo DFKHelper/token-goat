@@ -9,7 +9,8 @@ import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.
 import { recordEvidence } from '../src/evidence_cache.js'
 import type { HookEvent } from '../src/hook_registry.js'
 import { sessionStartHandler } from '../src/hooks_session_start.js'
-import { installClaudeMd, installedClaudeMdBlock, installSkill } from '../src/install.js'
+import { CANONICAL_SKILL_MD } from '../src/canonical_skill.js'
+import { installClaudeMd, installedClaudeMdBlock, installSkill, skillPath } from '../src/install.js'
 import { findProject } from '../src/project.js'
 import { memoryPath } from '../src/project_memory.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -215,7 +216,17 @@ describe('measurePayloads', () => {
     installSkill()
     const after = measurePayloads(root, tempDir())
     expect(after.installed[0]?.chars).toBe(installedClaudeMdBlock()!.length)
-    expect(after.installed[1]?.chars).toBeGreaterThan(0)
+    const description = CANONICAL_SKILL_MD.split('\n').find((line) => line.startsWith('description: '))!
+    expect(after.installed[1]?.chars).toBe(description.length)
+  })
+
+  // FORMAT-DERIVED: the skill row measures the description of the SKILL.md on disk, so a hand edit there shows up.
+  it('measures the description of the installed skill file, not a rebuilt one', () => {
+    const { root } = project([])
+    installSkill()
+    const p = skillPath()
+    fs.writeFileSync(p, fs.readFileSync(p, 'utf8').replace(/^description: .*$/m, 'description: x'))
+    expect(measurePayloads(root, tempDir()).installed[1]?.chars).toBe('description: x'.length)
   })
 
   // HAND-DERIVED: the manifest cap is the configured max_manifest_chars, and turning compaction assist off removes it.

@@ -107,6 +107,7 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **`token-goat stats --payloads` measures the skill description that is actually installed.** The skill row rebuilt the Kimi Code skill's longer description line instead of reading the Claude Code skill, so its size was wrong. It now reads the `description:` line from the installed SKILL.md. A comment in the installer that said the Claude Code skill used that shared line is corrected, and a test checks that both descriptions open with the same routing pitch.
 - **`xml-query --xpath` counted positions from 0, so `/root/item[1]` returned the second item and `/root/item[3]` returned nothing.** Positions now start at 1 as in XPath, `[0]` matches nothing, and `//b[1]` picks the first `b` under each parent. The dotted path form still counts from 0.
 - **`xml-query` printed all of an element's text before its child elements, so `<p>One<b>bold</b>Two</p>` came out as "One", "Two", then `<b>bold</b>`.** Text and child elements now print in the order they appear in the file.
 - **`xml-query` exited 0 when nothing matched, unlike `json-query` and `yaml-query`.** It now prints the "No elements matched" or "No attributes matched" message on stderr and exits 1.

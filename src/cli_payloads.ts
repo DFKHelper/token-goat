@@ -2,10 +2,9 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { skillDescriptionLine } from './bridges/guidance_block.js'
 import { loadConfig } from './config.js'
 import { buildDeltaCapsule } from './evidence_cache.js'
-import { installedClaudeMdBlock, skillPath } from './install.js'
+import { installedClaudeMdBlock, installedSkillDescription, skillPath } from './install.js'
 import { displaySafeJson, normalizePath } from './paths.js'
 import { findProject } from './project.js'
 import { anchorStatus } from './note_anchor.js'
@@ -142,12 +141,11 @@ export function measurePayloads(cwd: string, dir?: string): PayloadReport {
   // Assembled the way sessionStartOutput joins its parts, so the total is the injected text, separators included.
   const assembled = [reminder, capsule, notes].filter((part): part is string => part !== null).join('\n\n')
 
-  const gdrive = config.gdrive.enabled
   const claudeMd = installedClaudeMdBlock()
-  const skillInstalled = fs.existsSync(skillPath())
+  const skillDescription = installedSkillDescription()
   const installed = [
     block('CLAUDE.md gate block', claudeMd, claudeMd === null ? 'not installed' : 'loaded with ~/.claude/CLAUDE.md, every session'),
-    block('skill description', skillInstalled ? skillDescriptionLine(gdrive) : null, skillInstalled ? 'listed with the skills, every session' : 'skill not installed'),
+    block('skill description', skillDescription, skillDescription !== null ? 'listed with the skills, every session' : fs.existsSync(skillPath()) ? 'installed skill has no description line' : 'skill not installed'),
   ]
 
   const manifestCap = config.compact_assist.enabled ? config.compact_assist.max_manifest_chars : null

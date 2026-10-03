@@ -618,7 +618,7 @@ export function findStrayClaudeMdBlocks(searchRoot?: string): string[] {
 
 // --- token-goat skill writer --- README documents ~/.claude/skills/token-goat/SKILL.md as part of the base install too -- "the same routing guidance in skill form", run under the same wantsClaudeCodeBase gate as the CLAUDE.md block above, never by a scoped harness flag. Unlike CLAUDE.md, this directory belongs entirely to token-goat (nothing else writes into it), so install/uninstall can write/remove the whole file rather than patching a delimited region.
 
-// The frontmatter `description` comes from the shared skillDescriptionLine() (bridges/guidance_block.ts), so the Claude Code and Kimi Code skills cannot drift apart; see that function for why its wording is exempt from the gate phrasing. Only the body (rendered from the shared builder) is the gate. The allowed-tools frontmatter keeps Copilot-style loaders from body-scanning the skill prose and mistaking quoted command names for implicit tool identifiers. It MUST list real harness tool identifiers, not token-goat subcommands: loaders validate every entry against their tool registry and warn on each miss, so a subcommand list here produces one "Unknown tool name in the tool allowlist" warning per entry. token-goat itself runs through the shell tool.
+// The whole skill, frontmatter `description` included, is CANONICAL_SKILL_MD, generated from src/canonical_skill.md by `npm run skill:canonical`; edit the .md, never this writer. Its description stays separate from the Kimi skill's shared line in bridges/guidance_block.ts on purpose: it must fit the 240-character limit of the skill collection the file is synced into, and it names `/token-goat audit`; tests/skill_description_shared.test.ts keeps the two opening with the same routing pitch. The allowed-tools frontmatter keeps Copilot-style loaders from body-scanning the skill prose and mistaking quoted command names for implicit tool identifiers. It MUST list real harness tool identifiers, not token-goat subcommands: loaders validate every entry against their tool registry and warn on each miss, so a subcommand list here produces one "Unknown tool name in the tool allowlist" warning per entry. token-goat itself runs through the shell tool.
 function skillMdContent(): string {
   return CANONICAL_SKILL_MD
 }
@@ -631,6 +631,23 @@ export function skillDir(): string {
 /** Absolute path to `~/.claude/skills/token-goat/SKILL.md`. */
 export function skillPath(): string {
   return path.join(skillDir(), 'SKILL.md')
+}
+
+/** The frontmatter `description:` line of the installed skill as it sits on disk, or null when the skill is absent or its frontmatter has none. */
+export function installedSkillDescription(): string | null {
+  let text: string
+  try {
+    text = fs.readFileSync(skillPath(), 'utf8')
+  } catch {
+    return null
+  }
+  const lines = text.split(/\r?\n/)
+  if (lines[0] !== '---') return null
+  for (const line of lines.slice(1)) {
+    if (line === '---') return null
+    if (line.startsWith('description:')) return line
+  }
+  return null
 }
 
 /** Outcome of an {@link installSkill} call. */
