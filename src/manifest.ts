@@ -255,7 +255,8 @@ function buildSafeToDiscardSection(files: FileEntry[]): FitSection[] {
 
   const supersededReadRows: string[] = []
   for (const f of files) {
-    if (f.readCount > 1 || f.wasEdited) {
+    // A file only edited, never read, has no read to supersede.
+    if (f.readCount > 1 || (f.wasEdited && f.readCount > 0)) {
       const reason = f.wasEdited ? 'edited after being read' : ('re-read ' + f.readCount + 'x')
       supersededReadRows.push('- ' + displaySafePath(f.path) + ' (' + reason + ' — only the latest content already in context is current)')
     }

@@ -248,7 +248,7 @@ export async function cmdXlsxRange(file: string, opts: { sheet?: string; range: 
   recordXlsxStat('xlsx_range', file, text)
 }
 
-export async function cmdXlsxQuery(file: string, opts: { sheet?: string; columns?: string; where?: string[]; head?: string; json?: boolean }): Promise<void> {
+export async function cmdXlsxQuery(file: string, opts: { sheet?: string; columns?: string; where?: string[]; head?: string; json?: boolean; header?: boolean }): Promise<void> {
   const columns = opts.columns
     ? opts.columns
         .split(',')
@@ -260,6 +260,7 @@ export async function cmdXlsxQuery(file: string, opts: { sheet?: string; columns
     ...(columns !== undefined ? { columns } : {}),
     ...(wheres !== undefined ? { wheres } : {}),
     ...(opts.head !== undefined ? { head: requireNonNegativeInt('--head', opts.head) } : {}),
+    ...(opts.header === false ? { noHeader: true } : {}),
   })
   if (opts.json === true) {
     // The header row is the sheet author's text as much as any cell, and it becomes every row's keys, so it goes through the same per-field fence once: a fence cannot wrap a key in place, so a flagged header's fenced form is the key.
@@ -383,7 +384,7 @@ export async function cmdDocxText(
   file: string,
   opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
 ): Promise<void> {
-  const text = redactSecrets(await docxText(file)).text
+  const text = redactSecrets(await docxText(file, { markdownHeadings: true })).text
   const printed = _applyFiltersAndPrint(text, opts, true, UNTRUSTED_FILE_TAG)
   recordDocStat('docx_text', file, printed)
 }

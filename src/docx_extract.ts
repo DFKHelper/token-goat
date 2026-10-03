@@ -23,6 +23,13 @@ function paragraphStyleVal(p: unknown): string | undefined {
   return (p as ParagraphLike)['w:pPr']?.['w:pStyle']?.['@_w:val']
 }
 
+function gridSpanOf(tc: unknown): number {
+  const raw = (tc as { 'w:tcPr'?: { 'w:gridSpan'?: { '@_w:val'?: string } } })['w:tcPr']?.['w:gridSpan']?.['@_w:val']
+  const n = raw === undefined ? 1 : parseInt(String(raw), 10)
+  // Bounded so a hostile w:val cannot allocate millions of cells; Word itself caps a table at 63 columns.
+  return Number.isFinite(n) && n > 1 ? Math.min(n, 64) : 1
+}
+
 function headingLevel(styleVal: string | undefined): number | null {
   if (styleVal === undefined) return null
   if (/^title$/i.test(styleVal)) return 1
@@ -57,10 +64,17 @@ export async function docxOutline(filePath: string): Promise<DocxHeading[]> {
   return out
 }
 
-export async function docxText(filePath: string): Promise<string> {
+/** `markdownHeadings` prefixes each Heading N / Title paragraph with N `#`s (the same levels docxOutline reports) so a `--section` filter can find it; the embedding extractor leaves it off and keeps the plain lines. */
+export async function docxText(filePath: string, opts: { markdownHeadings?: boolean } = {}): Promise<string> {
   const parsed = await loadDocumentBody(filePath)
   const paragraphs = collectElements(parsed, 'w:p')
-  const lines = paragraphs.map((p) => collectTextRuns(p, 'w:t').join('')).filter((t) => t.trim().length > 0)
+  const lines = paragraphs
+    .map((p) => {
+      const text = collectTextRuns(p, 'w:t').join('')
+      const level = opts.markdownHeadings === true ? headingLevel(paragraphStyleVal(p)) : null
+      return level !== null && text.trim().length > 0 ? `${'#'.repeat(level)} ${text.trim()}` : text
+    })
+    .filter((t) => t.trim().length > 0)
   return lines.join('\n\n')
 }
 
@@ -80,12 +94,15 @@ export async function docxTables(filePath: string): Promise<DocxTable[]> {
       const tcElements = collectElements(tr, 'w:tc')
       const rowCells: string[] = []
       for (const tc of tcElements) {
+        // A merged cell (w:gridSpan, ECMA-376 17.4.17) covers n grid columns but is one w:tc, so without padding every later cell lands n-1 columns too far left. The text sits in the first column it covers and the rest are blank (not repeated, so a value is never counted twice). A w:vMerge continuation cell is a real, empty w:tc in each row it spans, so it already keeps its column.
+        const span = gridSpanOf(tc)
         // Paragraph-aware, and blind to a nested table: the nested rows are reported as their own table instead of being flattened into this cell. A line break is already a `\n` run by the time the tree is parsed (see inlineRunSeparators), and a markdown cell cannot hold a newline, so it becomes a space here.
         const cellText = collectParagraphTexts(tc, 'w:p', 'w:t', ['w:tbl'])
           .map((t) => t.replace(/\r?\n/g, ' ').trim())
           .filter((t) => t.length > 0)
           .join(' ')
         rowCells.push(cellText)
+        for (let k = 1; k < span; k++) rowCells.push('')
       }
       if (rowCells.length > maxCols) maxCols = rowCells.length
       rows.push(rowCells)

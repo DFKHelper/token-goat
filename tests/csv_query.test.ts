@@ -375,3 +375,31 @@ Line 2"`;
     expect(result.rows[1]).toEqual(['2', 'Laptop', '15.6" OLED']);
   });
 });
+
+describe('blank header cells (O1)', () => {
+  // Provenance: HAND-DERIVED from the input text. Blank header cells at positions 2 and 3 must stay distinct columns named by 1-based position.
+  const BLANKS = 'id,,,total\n1,x,y,9\n2,p,q,8\n';
+
+  it('gives each blank header its own colN name so values do not overwrite each other', () => {
+    const r = queryCsv(BLANKS, {});
+    expect(r.header).toEqual(['id', 'col2', 'col3', 'total']);
+    expect(r.rows[0]).toEqual(['1', 'x', 'y', '9']);
+  });
+
+  it('selects and filters on a synthesized name', () => {
+    const r = queryCsv(BLANKS, { columns: ['col3'], wheres: parseWhereSpecs(['col2=p']) });
+    expect(r.rows).toEqual([['q']]);
+  });
+
+  it('profiles each blank column separately', () => {
+    expect(profileCsv(BLANKS).map((p) => p.name)).toEqual(['id', 'col2', 'col3', 'total']);
+  });
+
+  it('picks a name that cannot collide with a real header', () => {
+    // HAND-DERIVED: a real column already named col2 sits beside a blank one at position 2.
+    const r = queryCsv('col2,\n1,2\n', {});
+    expect(new Set(r.header).size).toBe(2);
+    expect(r.header[0]).toBe('col2');
+    expect(r.rows[0]).toEqual(['1', '2']);
+  });
+});

@@ -71,9 +71,21 @@ function parseRecords(content: string, opts: { delimiter?: string; noHeader?: bo
     )
   }
   // relax_column_count: a ragged row omits its missing trailing keys (read back as '') instead of aborting the file; an over-long row's extra fields past the header are dropped. relax_quotes: unescaped quotes inside values are preserved instead of failing with Invalid Opening Quote.
-  const records = parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter, bom: true, relax_column_count: true, relax_quotes: true }) as Array<Record<string, string>>
+  const records = parse(content, { columns: () => header, skip_empty_lines: true, trim: true, delimiter, bom: true, relax_column_count: true, relax_quotes: true }) as Array<Record<string, string>>
   // The header line, not the first record's keys: a short first data row omits its trailing keys.
   return { records, columns: header }
+}
+
+/** A blank header cell names no column, and every blank one shares the key '' under an object-keyed record, so their values overwrite each other. Each gets its 1-based column position as `colN`, the same naming --no-header uses; a name a real header already holds (or an earlier synthesized one) gets a trailing underscore until it is free, so a synthesized name can never collide with a real one. */
+function nameBlankHeaders(raw: string[]): string[] {
+  const taken = new Set(raw.filter((name) => name !== ''))
+  return raw.map((name, i) => {
+    if (name !== '') return name
+    let synth = `col${i + 1}`
+    while (taken.has(synth)) synth += '_'
+    taken.add(synth)
+    return synth
+  })
 }
 
 /** Resolve the real header column names, even when the file has zero data rows. `parseRecords`'s `columns: true` mode returns an EMPTY records array for a header-only CSV -- there is nothing to `Object.keys()` a header out of, which is what `queryCsv`'s `allColumns` deliberately still does (its emptiness is how the CLI layer detects "no data rows" and prints a friendly message instead of an empty table -- see read_commands.ts's runCsvQuery). But that same emptiness was also being used as the sole "does this column exist" check for `--columns`/`--where`: a spec naming a column that is honestly present in the header line -- just with zero data rows to show for it -- threw a misleading `unknown column: X (available: )`, as if the column itself didn't exist, rather than either working (returning the correctly-empty result) or falling into the same friendly "no data rows" message. This resolves the REAL header (independent of whether any data rows exist) so `--columns`/`--where` validation can tell "genuinely absent from this file" apart from "present, just nothing to show". `noHeader` files have no header line to recover (their `colN` names are synthesized from data-row cell counts, which zero rows can't supply either) -- `[]` there is the honest answer, not a gap to paper over. */
@@ -82,7 +94,7 @@ function csvHeader(content: string, opts: { delimiter?: string; noHeader?: boole
   const delimiter = opts.delimiter ?? detectDelimiter(content)
   try {
     const rows = parse(content, { columns: false, skip_empty_lines: true, trim: true, delimiter, bom: true, to: 1, relax_quotes: true }) as string[][]
-    return rows[0] ?? []
+    return nameBlankHeaders(rows[0] ?? [])
   } catch {
     return []
   }

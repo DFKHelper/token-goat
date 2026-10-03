@@ -57,6 +57,9 @@ import {
 } from './cli_structured.js'
 import { cmdInsertSection, cmdReplace, cmdWriteFile } from './cli_file_ops.js'
 
+// Shared by csv-query, csv-profile and xlsx-query; a blank header cell is named by its position the same way, so the help says so once.
+const NO_HEADER_DESCRIPTION = 'treat the first row as data, not a header (columns become col1, col2, ...); a blank header cell is also named colN by its position'
+
 export type GuardFn = (fn: (...a: never[]) => void | Promise<void>) => (...args: unknown[]) => Promise<void>
 
 export function fenceOcrText(text: string): string {
@@ -254,6 +257,7 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
     )
     .option('--head <n>', 'max rows to show')
     .option('--json', 'emit rows as a JSON array of objects instead of a table')
+    .option('--no-header', NO_HEADER_DESCRIPTION)
     .action(guard(cmdXlsxQuery))
 
   program
@@ -300,7 +304,7 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
     .option('--head <n>', 'show only the first N lines')
     .option('--tail <n>', 'show only the last N lines')
     .option('--grep <pattern>', 'filter to lines matching this regex')
-    .option('--section <heading>', 'extract one markdown section by heading')
+    .option('--section <heading>', 'extract one section by heading (Heading N / Title paragraphs, see docx-outline)')
     .option('--max-matches <n>', 'cap the number of --grep matches shown')
     .action(guard(cmdDocxText))
 
@@ -332,14 +336,14 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
     .option('--head <n>', 'limit to the first N matching rows')
     .option('--json', 'emit rows as a JSON array of objects instead of CSV')
     .option('--delimiter <char>', 'field delimiter (default: ,)')
-    .option('--no-header', 'treat the first row as data, not a header (columns become col1, col2, ...)')
+    .option('--no-header', NO_HEADER_DESCRIPTION)
     .action(guard(cmdCsvQuery))
 
   program
     .command('csv-profile <file>')
     .description('per-column type/null/distinct/range summary of a CSV instead of a raw Read')
     .option('--delimiter <char>', 'field delimiter (default: ,)')
-    .option('--no-header', 'treat the first row as data, not a header (columns become col1, col2, ...)')
+    .option('--no-header', NO_HEADER_DESCRIPTION)
     .action(guard(cmdCsvProfile))
 
   program

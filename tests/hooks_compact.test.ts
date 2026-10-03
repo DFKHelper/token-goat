@@ -332,6 +332,15 @@ describe('SAFE_TO_DISCARD section', () => {
     expect(manifest).toContain('edited after being read')
   })
 
+  // HAND-DERIVED: a file edited without ever being read has no earlier read in context to supersede.
+  it('does not list a file that was only edited, never read, as a superseded read', () => {
+    const p = makeTmpFile('hello')
+    recordFileEdit(p)
+    const manifest = buildManifest()
+    expect(manifest).not.toContain('Superseded file reads')
+    expect(manifest).not.toContain('edited after being read')
+  })
+
   it('does not flag a file read exactly once and never edited', () => {
     const p = makeTmpFile('hello')
     recordFileRead(p)
