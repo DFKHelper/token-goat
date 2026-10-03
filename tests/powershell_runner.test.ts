@@ -4,6 +4,21 @@ import { spawnSync } from 'node:child_process'
 import { run, spawnTarget } from '../src/bash_runner.js'
 import { stripAnsiEscapes } from '../src/render/ansi.js'
 
+// Provenance: CAPTURE, exit code and trimmed stdout lines of a direct `pwsh -NoProfile -NonInteractive -Command <cmd>` (PowerShell 7.6.4) and `powershell.exe -NoProfile -NonInteractive -Command <cmd>` (Windows PowerShell 5.1), each invoked through pwsh's call operator on Windows 11, 2026-10-02, the two agreeing on every row: a break or continue label that converts to an empty string ($null, '', "", @()) acts as no label at all and stops only the innermost loop, while 0, $false and ' ' are labels no loop declares and leave the whole script.
+const EMPTY_LABEL_CASES: Array<[string, number, string[]]> = [
+  ['$x = $null; foreach ($i in 1,2) { Write-Output $i; break $x }; Write-Output after', 0, ['1', 'after']],
+  ["$x = ''; foreach ($i in 1,2) { Write-Output $i; break $x }; Write-Output after", 0, ['1', 'after']],
+  ['foreach ($i in 1,2) { Write-Output $i; break "" }; Write-Output after', 0, ['1', 'after']],
+  ["foreach ($i in 1,2) { Write-Output $i; break '' }; Write-Output after", 0, ['1', 'after']],
+  ['foreach ($i in 1,2) { Write-Output $i; break @() }; Write-Output after', 0, ['1', 'after']],
+  ['$x = $null; foreach ($i in 1,2) { Write-Output $i; continue $x }; Write-Output after', 0, ['1', '2', 'after']],
+  ['$x = 0; foreach ($i in 1,2) { Write-Output $i; break $x }; Write-Output after', 0, ['1']],
+  ['$x = $false; foreach ($i in 1,2) { Write-Output $i; break $x }; Write-Output after', 0, ['1']],
+  ["$x = ' '; foreach ($i in 1,2) { Write-Output $i; break $x }; Write-Output after", 0, ['1']],
+  ['$x = $null; Get-Item ./nope; break $x', 1, []],
+  ['Get-Item ./nope; break ""', 1, []],
+]
+
 describe('PowerShell runner integration and resolution', () => {
   it('resolves PowerShell binary based on platform or environment override', () => {
     const customPs = 'C:\\Custom\\pwsh.exe'
@@ -121,6 +136,7 @@ describe('PowerShell runner integration and resolution', () => {
     ["$x = 'lbl'; Get-Item ./nope; break $x", 1, []],
     [":l foreach ($i in 1,2) { $x = 'l'; Write-Output $i; break $x }; Write-Output after", 0, ['1', 'after']],
     [':outer foreach ($i in 1,2) { foreach ($j in 3,4) { Write-Output $j; continue outer } }; Write-Output done', 0, ['3', '3', 'done']],
+    ...EMPTY_LABEL_CASES,
     ['Write-Output "unterminated', 1, []],
   ])('wrapped exit code and output match direct pwsh for %s', async (cmd, expected, lines) => {
     const target = spawnTarget(cmd, undefined, 'pwsh')
@@ -138,6 +154,7 @@ describe('PowerShell runner integration and resolution', () => {
     ['begin { Get-Item ./nope }', 1, []],
     ["Get-Item ./nope; break 'quoted-label'", 1, []],
     ["$x = 'lbl'; Get-Item ./nope; break $x", 1, []],
+    ...EMPTY_LABEL_CASES,
   ])('wrapped exit code and output match direct Windows PowerShell 5.1 for %s', (cmd, expected, lines) => {
     const prev = process.env['TOKEN_GOAT_POWERSHELL']
     process.env['TOKEN_GOAT_POWERSHELL'] = `${process.env['SystemRoot'] ?? 'C:/Windows'}/System32/WindowsPowerShell/v1.0/powershell.exe`
