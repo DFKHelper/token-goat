@@ -1,18 +1,8 @@
-// Client for the built bundle's `--batch-serve` mode: run bundle invocations against one
-// long-lived server process instead of spawning a fresh one per call.
+// Client for the built bundle's `--batch-serve` mode: run bundle invocations against one long-lived server process instead of spawning a fresh one per call.
 //
-// A bundle spawn costs ~259ms whether or not the command does anything, because that time is Node
-// starting and evaluating a 3.3 MB bundle rather than token-goat working. Tests that assert on
-// real bundle output therefore pay ~228ms of pure overhead each, and there are hundreds of them.
-// This pays it once per test file.
+// A bundle spawn costs ~259ms whether or not the command does anything, because that time is Node starting and evaluating a 3.3 MB bundle rather than token-goat working. Tests that assert on real bundle output therefore pay ~228ms of pure overhead each, and there are hundreds of them. This pays it once per test file.
 //
-// `runBatched` is a drop-in for the `spawnSync(node, [BUNDLE, ...args])` shape those tests use and
-// returns the same `{status, stdout, stderr}`. What it does not give you is a fresh process: the
-// server restores cwd, environment and `process.exitCode` and clears the module-cache registry
-// between requests, but a command that mutates state no reset covers would be visible to the next
-// one. Use it for commands that read; keep spawning for anything whose whole point is process
-// startup (hook shims, daemon launches, exit-path behaviour), and see
-// tests/batch_serve_equivalence.test.ts, which runs a sample both ways and compares byte for byte.
+// `runBatched` is a drop-in for the `spawnSync(node, [BUNDLE, ...args])` shape those tests use and returns the same `{status, stdout, stderr}`. What it does not give you is a fresh process: the server restores cwd, environment and `process.exitCode` and clears the module-cache registry between requests, but a command that mutates state no reset covers would be visible to the next one. Use it for commands that read; keep spawning for anything whose whole point is process startup (hook shims, daemon launches, exit-path behaviour), and see tests/batch_serve_equivalence.test.ts, which runs a sample both ways and compares byte for byte.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import * as crypto from 'node:crypto'
 
@@ -42,6 +32,8 @@ function start(): ChildProcess {
   const proc = spawn(process.execPath, [BUNDLE, '--batch-serve', token], {
     stdio: ['pipe', 'pipe', 'pipe'],
   })
+  // A server that exits before reading a request fails the write with EPIPE; the exit handler below already rejects the request in flight.
+  proc.stdin?.on('error', () => undefined)
   let buffered = ''
   proc.stdout?.setEncoding('utf8')
   proc.stdout?.on('data', (chunk: string) => {
@@ -51,9 +43,7 @@ function start(): ChildProcess {
       if (nl === -1) break
       const line = buffered.slice(0, nl)
       buffered = buffered.slice(nl + 1)
-      // Anything not carrying this session's token is stray output from a served command, not a
-      // reply. Dropping it rather than parsing it is what keeps a fixture's own text from being
-      // mistaken for protocol.
+      // Anything not carrying this session's token is stray output from a served command, not a reply. Dropping it rather than parsing it is what keeps a fixture's own text from being mistaken for protocol.
       if (!line.startsWith(`${token} `)) continue
       const res = JSON.parse(line.slice(token.length + 1)) as { id: number } & RunResult
       const waiter = pending.get(res.id)
