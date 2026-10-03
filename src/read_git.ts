@@ -9,6 +9,7 @@ import type { SymbolEntry } from './parser_types.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { emitGuarded, guardJsonRows, guardText, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
 import { emit, emitErr } from './emit.js'
+import type { GitResult } from './types.js'
 import { resolveProjectConfinement, resolveSymbolSpecOrEmitError } from './read_spec.js'
 import { trimBlankLines } from './read_suggest.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
@@ -187,10 +188,38 @@ function literalPathspec(file: string): string {
   return `:(literal)${file}`
 }
 
+// A pathspec of only a renamed file's new name hides the old path from git, which then diffs the file as wholly added and every symbol in it reads as changed. Adding each rename's old path lets `-M` pair them, so the diff carries only the real edits.
+function withRenameSources(cwd: string, ref: string, files: readonly string[]): string[] {
+  const wanted = new Set(files)
+  const paths = [...files]
+  try {
+    const result = runGit(['diff', ref, '--name-status', '-M'], { cwd })
+    if (result.exitCode !== 0) return paths
+    const unquote = (f: string): string => (f.startsWith('"') && f.endsWith('"') && f.length > 1 ? unquoteGitPath(f.slice(1, -1)) : f)
+    for (const row of result.stdout.split(/\r?\n/)) {
+      const [status, from, to] = row.split('\t')
+      if (status?.startsWith('R') !== true || from === undefined || to === undefined) continue
+      if (wanted.has(unquote(to))) paths.push(unquote(from))
+    }
+  } catch {
+    // Without the rename sources the diff degrades to the new-name-only view.
+  }
+  return paths
+}
+
+// The zero-context diff of `files`; a wholly-added file in it (`--- /dev/null`) may be a rename whose old path the pathspec hid, so only then are the rename sources looked up and the diff taken again with them.
+function unifiedDiffOf(cwd: string, ref: string, files: readonly string[], extraArgs: readonly string[] = []): GitResult {
+  const run = (paths: readonly string[]): GitResult => runGit(['diff', ref, '-M', '--unified=0', ...extraArgs, '--', ...paths.map(literalPathspec)], { cwd })
+  const first = run(files)
+  if (first.exitCode !== 0 || !first.stdout.includes('--- /dev/null')) return first
+  const paths = withRenameSources(cwd, ref, files)
+  return paths.length > files.length ? run(paths) : first
+}
+
 function changedDiffBaselineBytes(cwd: string, ref: string, files: readonly string[]): number {
   if (files.length === 0) return 0
   try {
-    const result = runGit(['diff', ref, '--unified=0', '--', ...files.map(literalPathspec)], { cwd })
+    const result = unifiedDiffOf(cwd, ref, files)
     if (result.exitCode === 0) return deliveredOutputBytes(Buffer.byteLength(result.stdout, 'utf8'))
   } catch {
     // Fall through to the 0 baseline below.
@@ -289,7 +318,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
     let hunksByFile = new Map<string, Array<{ start: number; end: number }>>()
     let symbolDiffBaselineBytes = 0
     try {
-      const diffResult = runGit(['diff', ref, '--unified=0', '--src-prefix=a/', '--dst-prefix=b/', '--', ...changedFiles.map(literalPathspec)], { cwd: projectRoot })
+      const diffResult = unifiedDiffOf(projectRoot, ref, changedFiles, ['--src-prefix=a/', '--dst-prefix=b/'])
       if (diffResult.exitCode === 0) {
         hunksByFile = parseDiffHunks(diffResult.stdout)
         symbolDiffBaselineBytes = deliveredOutputBytes(Buffer.byteLength(diffResult.stdout, 'utf8'))

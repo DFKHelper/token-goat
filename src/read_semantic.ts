@@ -157,7 +157,8 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
     return opts.warm === true ? withExplicitDownload(check) : check()
   }
 
-  if (opts.preflight === true) {
+  // `--warm` with no query is the foreground warm-up command: it loads the model and reports readiness the way `--preflight` does, rather than searching for ''.
+  if (opts.preflight === true || (opts.warm === true && query === '')) {
     const preflight = await readiness()
     if (opts.json === true) {
       return { text: displaySafeJson(preflight), code: preflight.status === 'ready' ? 0 : 1 }

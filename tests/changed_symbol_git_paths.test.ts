@@ -117,3 +117,34 @@ describe('parseDiffHunks reads the path git writes on a +++ line', () => {
     expect(hunks.get('q"u\\o\tx.ts')).toEqual([{ start: 3, end: 6 }])
   })
 })
+
+describe('changed --symbol on a renamed and lightly edited file', () => {
+  // HAND-DERIVED: BEFORE and AFTER differ only on beta's return line, so the edit touches beta alone; `git mv` stages the rename and `git diff HEAD -M` pairs it as one hunk on that line.
+  function renameAndEdit(root: string, from: string, to: string): void {
+    const src = join(root, from)
+    mkdirSync(join(src, '..'), { recursive: true })
+    writeFileSync(src, BEFORE)
+    git(root, 'add', '.')
+    git(root, 'commit', '-m', 'init')
+    mkdirSync(join(root, to, '..'), { recursive: true })
+    git(root, 'mv', from, to)
+    writeFileSync(join(root, to), AFTER)
+    indexFileSync(normalizePath(join(root, to)))
+  }
+
+  it('lists only the edited function, not every symbol of the moved file', () => {
+    const root = makeRepo()
+    renameAndEdit(root, 'm.ts', 'n.ts')
+    const out = changedOutput({ ref: 'HEAD', projectRoot: root, symbolMode: true })
+    expect(out).toContain('beta (function) — n.ts:5')
+    expect(out).not.toContain('alpha')
+  })
+
+  it('pairs a rename across directories for a name with a space', () => {
+    const root = makeRepo()
+    renameAndEdit(root, 'old dir/m.ts', 'pkg/my file.ts')
+    const out = changedOutput({ ref: 'HEAD', projectRoot: root, symbolMode: true })
+    expect(out).toContain('beta')
+    expect(out).not.toContain('alpha')
+  })
+})

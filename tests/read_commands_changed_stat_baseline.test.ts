@@ -100,3 +100,32 @@ describe('changed prices a large diff at what the harness would have delivered',
     }
   })
 })
+
+describe('changed credits the paired rename diff, not the file as wholly added', () => {
+  it('a one-line edit on a renamed large file books far less than the file size', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tg-changed-baseline-rename-'))
+    try {
+      execFileSync('git', ['init'], { cwd: root, stdio: 'ignore' })
+      execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: root, stdio: 'ignore' })
+      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: root, stdio: 'ignore' })
+      // HAND-DERIVED: 150 distinct lines, one of which is edited after `git mv`, so `git diff HEAD -M` is one hunk against a ~12KB file, while the new name alone reads as a ~12KB addition.
+      const lines: string[] = []
+      for (let i = 0; i < 150; i++) lines.push(`export function renamedFn${i}() { return ${i} } // padding padding padding padding`)
+      writeFileSync(join(root, 'old.ts'), lines.join('\n') + '\n')
+      execFileSync('git', ['add', '.'], { cwd: root, stdio: 'ignore' })
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: root, stdio: 'ignore' })
+      execFileSync('git', ['mv', 'old.ts', 'new.ts'], { cwd: root, stdio: 'ignore' })
+      lines[75] = 'export function renamedFn75() { return 999999 } // padding padding padding padding CHANGED'
+      writeFileSync(join(root, 'new.ts'), lines.join('\n') + '\n')
+      const fileBytes = statSync(join(root, 'new.ts')).size
+      expect(fileBytes).toBeGreaterThan(10_000)
+      expect(fileBytes).toBeLessThan(CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES)
+
+      const before = sumChangedLookup()
+      expect(runChanged({ ref: 'HEAD', projectRoot: root })).toBe(0)
+      expect(sumChangedLookup().bytes - before.bytes, 'must not credit the renamed file as a whole-file addition').toBeLessThan(fileBytes / 10)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})

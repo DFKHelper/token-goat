@@ -25,6 +25,10 @@ const _DOCKER_PROGRESS_RE = /^\s*#\d+\s+\d+(?:\.\d+)?(?:MB|kB|GB)\s+\//
 const _DOCKER_STEP_RE = /^\s*=>\s|^\s*#\d+\s+\[(internal|build|stage)/
 // #N 0.123s some body line — step body (drop unless step header or error)
 const _DOCKER_STEP_BODY_RE = /^\s*#\d+\s+\d+(?:\.\d+)?\s+/
+// #N ERROR: process "..." did not complete successfully — BuildKit's verdict line for a failed step; capture group 1 is the step number
+const _DOCKER_STEP_FAILED_RE = /^\s*#(\d+)\s+ERROR:/
+// the step number of a body line, to match it against a failed step
+const _DOCKER_STEP_NUMBER_RE = /^\s*#(\d+)\s/
 // #N CACHED — layer reused from cache; dozens appear on warm builds
 const _DOCKER_CACHED_RE = /^\s*#\d+\s+CACHED\s*$/
 // push noise: "Layer already exists" / "Mounted from …" / "Pushing N:"
@@ -63,6 +67,13 @@ export class DockerFilter extends ToolFilter {
     let droppedPushNoise = 0
     let droppedPullLayers = 0
 
+    // The failing RUN step's own output is the diagnosis (tools spell it 'Error:', 'npm error', 'error:'), so its whole body is kept; BuildKit's summary box repeats only the last 10 lines of it.
+    const failedSteps = new Set<string>()
+    for (const line of lines) {
+      const failed = _DOCKER_STEP_FAILED_RE.exec(line)
+      if (failed) failedSteps.add(failed[1]!)
+    }
+
     for (const line of lines) {
       if (_DOCKER_DIGEST_RE.test(line)) { droppedDigest++; continue }
       if (_DOCKER_PROGRESS_RE.test(line)) { droppedProgress++; continue }
@@ -74,7 +85,8 @@ export class DockerFilter extends ToolFilter {
         _DOCKER_STEP_BODY_RE.test(line) &&
         !_DOCKER_STEP_RE.test(line) &&
         !line.includes('ERROR') &&
-        !line.toUpperCase().includes('WARN')
+        !line.toUpperCase().includes('WARN') &&
+        !failedSteps.has(_DOCKER_STEP_NUMBER_RE.exec(line)?.[1] ?? '')
       ) {
         droppedBody++
         continue

@@ -1,0 +1,94 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 162B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:20-alpine
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [1/4] FROM docker.io/library/node:20-alpine
+#4 DONE 0.0s
+
+#5 [2/4] WORKDIR /app
+#5 CACHED
+
+#6 [3/4] RUN echo "step one" && for i in $(seq 1 60); do echo "progress line $i"; done
+#6 0.161 step one
+#6 0.162 progress line 1
+#6 0.162 progress line 2
+#6 0.162 progress line 3
+#6 0.162 progress line 4
+#6 0.162 progress line 5
+#6 0.162 progress line 6
+#6 0.162 progress line 7
+#6 0.162 progress line 8
+#6 0.162 progress line 9
+#6 0.162 progress line 10
+#6 0.162 progress line 11
+#6 0.162 progress line 12
+#6 0.162 progress line 13
+#6 0.162 progress line 14
+#6 0.162 progress line 15
+#6 0.162 progress line 16
+#6 0.162 progress line 17
+#6 0.162 progress line 18
+#6 0.162 progress line 19
+#6 0.162 progress line 20
+#6 0.162 progress line 21
+#6 0.162 progress line 22
+#6 0.162 progress line 23
+#6 0.162 progress line 24
+#6 0.162 progress line 25
+#6 0.162 progress line 26
+#6 0.162 progress line 27
+#6 0.162 progress line 28
+#6 0.162 progress line 29
+#6 0.162 progress line 30
+#6 0.162 progress line 31
+#6 0.162 progress line 32
+#6 0.162 progress line 33
+#6 0.162 progress line 34
+#6 0.162 progress line 35
+#6 0.162 progress line 36
+#6 0.162 progress line 37
+#6 0.162 progress line 38
+#6 0.162 progress line 39
+#6 0.162 progress line 40
+#6 0.162 progress line 41
+#6 0.162 progress line 42
+#6 0.162 progress line 43
+#6 0.162 progress line 44
+#6 0.162 progress line 45
+#6 0.162 progress line 46
+#6 0.162 progress line 47
+#6 0.162 progress line 48
+#6 0.162 progress line 49
+#6 0.162 progress line 50
+#6 0.162 progress line 51
+#6 0.162 progress line 52
+#6 0.162 progress line 53
+#6 0.162 progress line 54
+#6 0.162 progress line 55
+#6 0.162 progress line 56
+#6 0.162 progress line 57
+#6 0.162 progress line 58
+#6 0.162 progress line 59
+#6 0.162 progress line 60
+#6 DONE 0.2s
+
+#7 [4/4] RUN echo done
+#7 0.199 done
+#7 DONE 0.2s
+
+#8 exporting to image
+#8 exporting layers 0.1s done
+#8 writing image sha256:e8b07e1e0169028eb1bad9d584e0eb7f0da36009623745e7985deb032e6bad65 done
+#8 naming to docker.io/library/tgr10cdk5 done
+#8 DONE 0.1s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/rmwxfs5jla2jxk4st068m49a4

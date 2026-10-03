@@ -2,6 +2,9 @@
 //
 // Golden tests ported from the Python TestDockerFilter / TestKubectlFilter test classes, plus additional coverage for DockerComposeFilter, KubectlLogsFilter, and HelmFilter and a dispatch ordering smoke test.
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 import {
   DockerFilter,
@@ -904,5 +907,46 @@ describe('KubectlLogsFilter dedup flush regression', () => {
     expect(omitIdx).toBeGreaterThanOrEqual(0)
     expect(diffIdx).toBeGreaterThanOrEqual(0)
     expect(omitIdx).toBeLessThan(diffIdx)
+  })
+})
+
+describe('DockerFilter keeps the failing RUN step diagnostics of a real BuildKit build', () => {
+  // CAPTURE: docker 29.7.2 (Docker Desktop, BuildKit) `docker build --no-cache --progress=plain` 2>&1 over throwaway Dockerfiles, 2026-10-03; rows in tests/fixtures/PROVENANCE.tsv. Real tools spell the failure 'Error:', 'npm error' and 'error:', never the uppercase 'ERROR' the step-body rule matched on.
+  const capture = (name: string): string => readFileSync(join(__dirname, 'fixtures/tool_output', name), 'utf8')
+  const f = new DockerFilter()
+  const build = ['docker', 'build', '--progress=plain', '.']
+
+  it('keeps the node module-not-found line and its require stack', () => {
+    const text = capture('docker-29.7.2-build-plain-failing-node-module.txt')
+    const out = apply(f, text, '', 1, build)
+    for (const line of ["#6 0.206 Error: Cannot find module './server-config.js'", '#6 0.206 Require stack:', '#6 0.206 - /app/[eval]']) {
+      expect(out).toContain(line)
+    }
+    expect(out).toContain('#6 ERROR: process')
+  })
+
+  it('keeps the npm 404 lines of a failing npm install', () => {
+    const text = capture('docker-29.7.2-build-plain-failing-npm-404.txt')
+    const out = apply(f, text, '', 1, build)
+    expect(out).toContain('#6 0.733 npm error code E404')
+    expect(out).toContain('#6 0.733 npm error 404 Not Found - GET https://registry.npmjs.org/tg-nonexistent-pkg-zzq-98765 - Not found')
+  })
+
+  it('keeps the compiler diagnostic of a failing step and still drops the earlier successful step body', () => {
+    const text = capture('docker-29.7.2-build-plain-failing-gcc.txt')
+    const out = apply(f, text, '', 2, build)
+    expect(out).toContain("#7 0.235 src/main.c:42:7: error: expected ';' before 'return'")
+    expect(out).toContain('#7 0.235 compiling src/main.c')
+    expect(out).not.toContain('progress line 30')
+    expect(out.length).toBeLessThan(text.length)
+  })
+
+  it('still compresses a successful build and drops every step body line', () => {
+    const text = capture('docker-29.7.2-build-plain-success.txt')
+    const out = apply(f, text, '', 0, build)
+    expect(out).not.toContain('progress line 30')
+    expect(out).not.toContain('#7 0.199 done')
+    expect(out.length).toBeLessThan(text.length * 0.7)
+    expect(out).toContain('#7 [4/4] RUN echo done')
   })
 })

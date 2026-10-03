@@ -107,6 +107,9 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **Compressed `docker build` output keeps the whole failing step.** The filter kept the `ERROR:` line and dropped the step's earlier lines, so the compiler error, missing module or npm 404 that explained the failure was gone. Every line of a step that ends in an error now survives, and successful steps are still collapsed.
+- **`changed --symbol` lists only the edited symbols of a file that was renamed and edited.** Git reported the new path as a brand-new file, so every symbol in it showed up as changed. The diff now detects renames and compares the file against its old path.
+- **`semantic --warm` with no query reports whether embeddings are ready.** It used to demand a query and exit with a usage error, so the warm-up the hint recommends could not be run on its own.
 - **`install`, `uninstall` and `doctor` failed with "malformed MCP JSON" for Cursor, VS Code, Visual Studio, Zed and Copilot CLI when the config file started with a UTF-8 byte-order mark.** Notepad, PowerShell 5 and Visual Studio can save files that way, and `doctor` then reported token-goat as not installed. These files, and the Claude Code, Grok, Antigravity, Copilot CLI and JetBrains configs, are now read with the mark ignored. When token-goat rewrites one of them, the mark is dropped and the rest of the file is kept.
 - **`refs` found no use of a React component that was only rendered, and `dead` listed it as unused.** JSX tags such as `<Button />`, `<Card>` and `<UI.Panel>` are now recorded as references to the component. Lowercase tags like `<div>` are left out.
 - **A Java `new Pair<>(a, b)` was recorded as a reference to `Pair<>`, so `refs Pair` missed it.** The type arguments are now dropped and the reference is stored under `Pair`.
