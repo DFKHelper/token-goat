@@ -107,6 +107,8 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **A 32-bit BMP saved by a Windows capture tool reached the model fully transparent.** Windows leaves the fourth byte of each pixel at 0, and token-goat read it as alpha, so the shrunk image was blank. That byte now counts as alpha only when the file declares an alpha mask or some pixel actually uses it.
+- **A truncated BMP was shown to the model as a mostly black image.** A BMP whose pixel data stops short is now treated like every other truncated image: the read passes through unchanged.
 - **Haskell functions written with guards were missing or cut short.** A function whose head line had no `=` because its body was a set of guards on the following lines was left out of the index, or only its type signature was returned. A signature continued onto lines that start with `::` or `->` was cut short in the same way. Both now index and read as whole definitions.
 - **Haskell and OCaml ranges ran one line past the end of the file, and a shared Haskell signature listed a name twice.** The last definition in a file now ends on its last line, and `baz, qux :: Int` lists each name once.
 - **Clojure definitions with reader metadata were indexed under the metadata.** `(defn ^:private helper ...)`, `^String`, `^{:doc ...}` and `#^` now index under the real name, so `read` and `symbol` find them.

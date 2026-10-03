@@ -520,6 +520,33 @@ export function encodePng(width: number, height: number, rgba: Uint8Array): Buff
   return Buffer.concat([signature, ihdrChunk, idatChunk, iendChunk])
 }
 
+interface BmpPixelLayout {
+  compression: number
+  bpp: number
+  pixelOffset: number
+  rowStride: number
+  width: number
+  height: number
+}
+
+/** Whether a 32bpp BMP's fourth byte is alpha. BI_RGB leaves it unused (GDI GetDIBits writes 0), so it counts only under BI_BITFIELDS with an alpha mask or when some pixel has it nonzero. */
+function bmpHasAlpha(buf: Buffer, layout: BmpPixelLayout): boolean {
+  const { compression, bpp, pixelOffset, rowStride, width, height } = layout
+  if (bpp !== 32) return false
+  // BITMAPINFOHEADER (40 bytes) carries three masks after the header; V3 and later add the alpha mask at header offset 52.
+  const dibSize = buf.readUInt32LE(14)
+  if (compression === 3 && dibSize >= 56 && buf.length >= 14 + 56) {
+    return buf.readUInt32LE(14 + 52) !== 0
+  }
+  for (let y = 0; y < height; y++) {
+    const rowOffset = pixelOffset + y * rowStride
+    for (let x = 0; x < width; x++) {
+      if (buf[rowOffset + x * 4 + 3] !== 0) return true
+    }
+  }
+  return false
+}
+
 export function decodeBmp(buf: Buffer): DecodedImage {
   if (buf.length < 54 || buf[0] !== 0x42 || buf[1] !== 0x4d) {
     throw new Error("Invalid BMP signature")
@@ -548,8 +575,15 @@ export function decodeBmp(buf: Buffer): DecodedImage {
   // rather than merely a small one -- assertDecodableSize rejects on sign and finiteness first.
   assertDecodableSize("BMP", width, height, 4)
 
-  const outRgba = Buffer.alloc(width * height * 4)
   const rowStride = Math.floor((bpp * width + 31) / 32) * 4
+
+  // Every other decoder throws on a short file and the hook then passes the read through; reading past the end here filled the missing rows with black. The last row's padding is not required, some writers omit it.
+  if (pixelOffset + (height - 1) * rowStride + width * (bpp / 8) > buf.length) {
+    throw new Error("BMP pixel data truncated")
+  }
+
+  const outRgba = Buffer.alloc(width * height * 4)
+  const alphaIsReal = bmpHasAlpha(buf, { compression, bpp, pixelOffset, rowStride, width, height })
 
   for (let y = 0; y < height; y++) {
     const srcY = topDown ? y : (height - 1 - y)
@@ -567,7 +601,7 @@ export function decodeBmp(buf: Buffer): DecodedImage {
         outRgba[outIdx] = buf[pxOffset + 2] ?? 0
         outRgba[outIdx + 1] = buf[pxOffset + 1] ?? 0
         outRgba[outIdx + 2] = buf[pxOffset] ?? 0
-        outRgba[outIdx + 3] = buf[pxOffset + 3] ?? 255
+        outRgba[outIdx + 3] = alphaIsReal ? (buf[pxOffset + 3] ?? 255) : 255
       }
     }
   }
