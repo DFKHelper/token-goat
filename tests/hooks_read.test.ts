@@ -571,6 +571,23 @@ describe('preReadHandler', () => {
       }
     })
 
+    // Regression: the session keeps a file's key in the casing of its first read, and isProtectedRecentRead compared that key to the re-read's path exactly, so on a case-insensitive filesystem a re-read under another casing found its session entry but no rank, and was denied as though it had left the protected window. HAND-DERIVED: the expected verdict follows from the config (window of 5, one file read) and the platform's case-folding, not from the ranking code.
+    it.skipIf(process.platform !== 'win32' && process.platform !== 'darwin')('exempts a just-read file re-read under different casing on a case-insensitive filesystem', () => {
+      const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 5
+      saveConfig(cfg)
+
+      const p = makeTmpFile('x'.repeat(60 * 1024))
+      recordFileRead(normalizePath(p))
+      const variant = path.join(path.dirname(p), path.basename(p).toUpperCase())
+      expect(variant).not.toBe(p)
+      // Precondition: the filesystem resolves the other casing to the same file, so this is a genuine re-read rather than a read of a missing path.
+      expect(fs.statSync(variant).ino).toBe(fs.statSync(p).ino)
+
+      const result = preReadHandler(readEvent(variant))
+      expect(result.hookType).not.toBe('deny')
+    })
+
     // Regression: isProtectedRecentRead's rank sort broke lastReadAt ties with a[0].localeCompare(b[0]) -- unlocaled, so it resolves to the host's default ICU collation (Windows regional setting, or LANG/LC_ALL on Linux/CI), which can order two tied paths differently on different machines and silently protect a different file from the re-read deny depending on locale. lastReadAt ties are realistic in practice: two files read within the same event-loop tick (fake timers below pin them to the exact same instant) or two entries reloaded from session_store.ts's second-granularity persisted timestamps (`lastReadTs * 1000`) both tie exactly. The fix uses a plain ordinal (UTF-16 code-unit) comparison instead, matching graph_commands.ts's compareHopEntries fix for the identical class of bug -- so localeCompare must never be invoked by this code path at all.
     it('breaks lastReadAt ties without calling the locale-dependent String.prototype.localeCompare', () => {
       const cfg = defaultConfig()

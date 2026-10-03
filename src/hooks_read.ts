@@ -525,7 +525,9 @@ function isProtectedRecentRead(normalized: string, n: number): boolean {
     const byRecency = b[1].lastReadAt - a[1].lastReadAt
     return byRecency !== 0 ? byRecency : a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0
   })
-  const rank = ranked.findIndex(([filePath]) => filePath === normalized)
+  // A session key keeps the casing of the file's first read (session.ts's resolveFilesKey), so a re-read under another casing on a case-insensitive filesystem must match it folded, the way getSessionFileEntry above already found its entry.
+  const target = foldPath(normalized)
+  const rank = ranked.findIndex(([filePath]) => foldPath(filePath) === target)
   return rank !== -1 && rank < n
 }
 
