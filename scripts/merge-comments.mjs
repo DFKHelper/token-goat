@@ -5,9 +5,10 @@
 //
 // Usage: `node scripts/merge-comments.mjs FILE...` rewrites in place, `--check FILE...` reports and changes nothing (exit 1 if a file would change), and `--self-test` runs the cases below.
 
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
 import { transformSync } from 'esbuild'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 
 const BLOCK_OPEN = /^\s*\/\*/
@@ -167,5 +168,12 @@ function main(argv) {
   return check && changed ? 1 : 0
 }
 
-// Only act when run as a command. Importing this module (a test, or a caller that wants `mergeComments` alone) must not execute a rewrite or exit the process.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) process.exit(main(process.argv.slice(2)))
+// Only act when run as a command. Importing this module (a test, or a caller that wants `mergeComments` alone) must not execute a rewrite or exit the process. Both sides are real paths: Node resolves symlinks in import.meta.url but leaves argv[1] as typed, so a run through a linked directory would otherwise skip main and exit 0.
+const realOrResolved = (p) => {
+  try {
+    return realpathSync.native(p)
+  } catch {
+    return path.resolve(p)
+  }
+}
+if (process.argv[1] && realOrResolved(process.argv[1]) === realOrResolved(fileURLToPath(import.meta.url))) process.exit(main(process.argv.slice(2)))

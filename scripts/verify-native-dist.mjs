@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-/** The publish gate for the native hook client: refuses a dist/native that is not exactly the release binaries (all four, or the two Linux ones under `--without-windows`), each a statically linked executable for its target and byte-identical to the hash its producing job recorded, with both Windows files carrying an Authenticode signature. Run by the publish job of .github/workflows/publish.yml, which holds the registry token, so it imports nothing but Node builtins: no dependency code runs beside the credential. The signature check is structural (the PE certificate table is present and holds a WIN_CERTIFICATE wrapping a PKCS#7 signedData ContentInfo); the sign job has already verified the signature cryptographically, and the hash match is what ties the file here to the file it verified. Usage: `node scripts/verify-native-dist.mjs [--without-windows] <dist/native> <SHA256SUMS>...`, where every manifest is in `sha256sum` format with paths relative to the directory; `--without-windows` is the release with no Windows signing configuration, which ships the two Linux binaries and no Windows one, so Windows installs keep the Node hook. `node scripts/verify-native-dist.mjs --pack <dist/native>` is the prepack check, which npm runs on `npm pack` and on `npm publish` from a directory, so a tarball packed by hand cannot carry what a direct publish would refuse: no manifests, so it checks shape only, and a missing directory passes. Exits 0 when everything holds, otherwise 1 with one line per problem. */
+/** The publish gate for the native hook client: refuses a dist/native that is not exactly the release binaries (all four, or the two Linux ones under `--without-windows`), each a statically linked executable for its target and byte-identical to the hash its producing job recorded, with both Windows files carrying an Authenticode signature. Run by the publish job of .github/workflows/publish.yml, which holds the registry token, so it imports nothing but Node builtins: no dependency code runs beside the credential. The signature check binds the signature to these bytes without trusting a certificate chain: the PE certificate table must end the file and hold a WIN_CERTIFICATE wrapping a PKCS#7 SignedData with a signer, and the Authenticode image digest that SignedData signs must equal the digest of the file itself, so a signature lifted from another binary is refused; the sign job has already verified the signature cryptographically, and the hash match is what ties the file here to the file it verified. Usage: `node scripts/verify-native-dist.mjs [--without-windows] <dist/native> <SHA256SUMS>...`, where every manifest is in `sha256sum` format with paths relative to the directory; `--without-windows` is the release with no Windows signing configuration, which ships the two Linux binaries and no Windows one, so Windows installs keep the Node hook. `node scripts/verify-native-dist.mjs --pack <dist/native>` is the prepack check, which npm runs on `npm pack` and on `npm publish` from a directory, so a tarball packed by hand cannot carry what a direct publish would refuse: no manifests, so it checks shape only, and a missing directory passes. Exits 0 when everything holds, otherwise 1 with one line per problem. */
 import { createHash } from 'node:crypto'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
 /** Every target a release ships: the rustc triple CI builds, the directory the installer (src/native_hook.ts packagedNativeBinary) looks in, the file name there, and the machine the executable header must declare. Linux is built against musl so one static binary serves glibc and musl distributions alike. */
 export const NATIVE_TARGETS = Object.freeze([
@@ -18,7 +18,7 @@ const CERTIFICATE_TABLE = 4
 const WIN_CERT_REVISION_2_0 = 0x0200
 const WIN_CERT_TYPE_PKCS_SIGNED_DATA = 0x0002
 
-/** Why `buf` is not a signed PE for `machine`, or undefined when its certificate table holds a well-formed PKCS#7 WIN_CERTIFICATE. */
+/** Why `buf` is not a signed PE for `machine`, or undefined when its certificate table ends the file and holds a PKCS#7 WIN_CERTIFICATE whose signed Authenticode image digest is the digest of `buf` itself. */
 export function peSignatureProblem(buf, machine) {
   if (buf.length < 0x40 || buf.readUInt16LE(0) !== 0x5a4d) return 'is not a PE file (no MZ header)'
   const pe = buf.readUInt32LE(0x3c)
@@ -48,12 +48,64 @@ export function peSignatureProblem(buf, machine) {
   const contentType = derElement(buf, contentInfo.start, contentInfo.end)
   if (contentType?.tag !== 0x06 || !buf.subarray(contentType.start, contentType.end).equals(OID_PKCS7_SIGNED_DATA)) return 'has a WIN_CERTIFICATE whose ContentInfo is not PKCS#7 signedData'
   const explicit = derElement(buf, contentType.end, contentInfo.end)
-  if (explicit?.tag !== 0xa0 || derElement(buf, explicit.start, explicit.end)?.tag !== 0x30) return 'has a WIN_CERTIFICATE whose signedData content is missing or truncated'
+  const signedData = explicit?.tag === 0xa0 ? derElement(buf, explicit.start, explicit.end) : undefined
+  if (signedData?.tag !== 0x30) return 'has a WIN_CERTIFICATE whose signedData content is missing or truncated'
+  if (offset + size !== buf.length) return 'has data after its certificate table, which the signature does not cover'
+  const signed = signedImageDigest(buf, signedData)
+  if (typeof signed === 'string') return `has a WIN_CERTIFICATE whose signedData ${signed}`
+  const actual = authenticodeDigest(buf, signed.algorithm, optional + 64, optional + entry, offset)
+  if (!actual.equals(signed.digest)) return 'has an Authenticode signature whose image digest does not match the file, so the signature belongs to other bytes'
   return undefined
+}
+
+/** The image digest a SignedData SEQUENCE signs, per the Authenticode PE specification: SignedData { version, digestAlgorithms SET, encapContentInfo { SPC_INDIRECT_DATA OID, [0] SpcIndirectDataContent { data, DigestInfo { AlgorithmIdentifier, OCTET STRING } } }, [0] certificates?, [1] crls?, signerInfos SET }. A string says what is missing; signerInfos must hold at least one signer. */
+function signedImageDigest(buf, signedData) {
+  const version = derElement(buf, signedData.start, signedData.end)
+  const algorithms = version?.tag === 0x02 ? derElement(buf, version.end, signedData.end) : undefined
+  const encap = algorithms?.tag === 0x31 ? derElement(buf, algorithms.end, signedData.end) : undefined
+  if (encap?.tag !== 0x30) return 'is not version, digest algorithms and content'
+  const eContentType = derElement(buf, encap.start, encap.end)
+  if (eContentType?.tag !== 0x06 || !buf.subarray(eContentType.start, eContentType.end).equals(OID_SPC_INDIRECT_DATA)) return 'does not sign Authenticode indirect data'
+  const eContent = derElement(buf, eContentType.end, encap.end)
+  const indirect = eContent?.tag === 0xa0 ? derElement(buf, eContent.start, eContent.end) : undefined
+  const data = indirect?.tag === 0x30 ? derElement(buf, indirect.start, indirect.end) : undefined
+  const digestInfo = data?.tag === 0x30 ? derElement(buf, data.end, indirect.end) : undefined
+  const algorithmId = digestInfo?.tag === 0x30 ? derElement(buf, digestInfo.start, digestInfo.end) : undefined
+  const algorithmOid = algorithmId?.tag === 0x30 ? derElement(buf, algorithmId.start, algorithmId.end) : undefined
+  const digest = algorithmOid?.tag === 0x06 ? derElement(buf, algorithmId.end, digestInfo.end) : undefined
+  if (digest?.tag !== 0x04) return 'carries no image digest'
+  const algorithm = DIGEST_ALGORITHMS.get(buf.subarray(algorithmOid.start, algorithmOid.end).toString('hex'))
+  if (algorithm === undefined) return 'uses an image digest algorithm this check does not know'
+  let rest = encap.end
+  let element = derElement(buf, rest, signedData.end)
+  while (element?.tag === 0xa0 || element?.tag === 0xa1) {
+    rest = element.end
+    element = derElement(buf, rest, signedData.end)
+  }
+  if (element?.tag !== 0x31 || element.end === element.start) return 'has no signer'
+  return { algorithm, digest: buf.subarray(digest.start, digest.end) }
+}
+
+/** The Authenticode image hash of `buf`: every byte before the certificate table except the CheckSum field and the Certificate Table directory entry. This is the specification's section-by-section hash for an image whose headers and sections are contiguous, which is how linkers lay them out and how signing tools hash them. */
+function authenticodeDigest(buf, algorithm, checksumAt, entryAt, tableAt) {
+  return createHash(algorithm)
+    .update(buf.subarray(0, checksumAt))
+    .update(buf.subarray(checksumAt + 4, entryAt))
+    .update(buf.subarray(entryAt + 8, tableAt))
+    .digest()
 }
 
 // 1.2.840.113549.1.7.2, the PKCS#7 signedData content type, as DER OID content bytes.
 const OID_PKCS7_SIGNED_DATA = Buffer.from([0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02])
+// 1.3.6.1.4.1.311.2.1.4, SPC_INDIRECT_DATA_OBJID, the content type an Authenticode signature signs.
+const OID_SPC_INDIRECT_DATA = Buffer.from([0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x04])
+// Digest algorithm OIDs (RFC 3279 for SHA-1, RFC 5754 for the SHA-2 family) as DER content hex, to Node hash names.
+const DIGEST_ALGORITHMS = new Map([
+  ['2b0e03021a', 'sha1'],
+  ['608648016503040201', 'sha256'],
+  ['608648016503040202', 'sha384'],
+  ['608648016503040203', 'sha512'],
+])
 
 /** The DER element (X.690) whose identifier octet is at `at`: its tag, and where its content starts and ends. Undefined when the header or the content runs past `limit`, or the length is the indefinite form DER forbids. Only single-octet tags are read, which every element of a ContentInfo header uses. */
 function derElement(buf, at, limit) {
@@ -70,7 +122,7 @@ function derElement(buf, at, limit) {
   return start + len > limit ? undefined : { tag: buf[at], start, end: start + len }
 }
 
-/** Why `buf` is not a static 64-bit little-endian ELF executable for `machine`, or undefined when it is. Header layout per the System V ABI (elf(5)): e_machine at 18, e_phoff at 32, e_phentsize and e_phnum at 54 and 56. A program header of type PT_INTERP (3) names a dynamic loader, which a musl-static build does not have and a glibc build does; a DT_NEEDED entry in the dynamic segment names a shared library, which a static-pie build does not have either. */
+/** Why `buf` is not a static 64-bit little-endian ELF executable for `machine`, or undefined when it is. Header layout per the System V ABI (elf(5)): e_machine at 18, e_phoff at 32, e_phentsize and e_phnum at 54 and 56. A program header of type PT_INTERP (3) names a dynamic loader, which a musl-static build does not have and a glibc build does; a DT_NEEDED entry in the dynamic segment names a shared library, which a static-pie build does not have either. A PT_LOAD (1) segment's file bytes (p_offset at 8, p_filesz at 32) must lie inside the file, and at least one must carry PF_X (p_flags at 4), so a header with nothing to run behind it is refused. */
 export function elfProblem(buf, machine) {
   if (buf.length < 64 || buf.readUInt32BE(0) !== 0x7f454c46) return 'is not an ELF file'
   if (buf[4] !== 2 || buf[5] !== 1) return 'is not a 64-bit little-endian ELF file'
@@ -83,12 +135,17 @@ export function elfProblem(buf, machine) {
   const phnum = buf.readUInt16LE(56)
   if (phentsize < ELF64_PHDR_SIZE || phoff + phentsize * phnum > buf.length) return 'has program headers that do not fit in the file'
   const dynamicSegments = []
+  let executable = false
   for (let i = 0; i < phnum; i++) {
     const at = phoff + i * phentsize
     const segment = buf.readUInt32LE(at)
     if (segment === PT_INTERP) return 'is dynamically linked (it names an ELF interpreter); the release ships musl-static binaries only'
     if (segment === PT_DYNAMIC) dynamicSegments.push(at)
+    if (segment !== PT_LOAD) continue
+    if (Number(buf.readBigUInt64LE(at + 8)) + Number(buf.readBigUInt64LE(at + 32)) > buf.length) return 'has a loadable segment that does not fit in the file'
+    if ((buf.readUInt32LE(at + 4) & PF_X) !== 0) executable = true
   }
+  if (!executable) return 'has no executable loadable segment, so it holds no code to run'
   // A static-pie has a PT_DYNAMIC segment for its own relocations but no DT_NEEDED entry; a DT_NEEDED names a shared library some loader would have to supply. Entries are 16 bytes (d_tag, d_val), ending at DT_NULL.
   for (const at of dynamicSegments) {
     const start = Number(buf.readBigUInt64LE(at + 8))
@@ -103,11 +160,13 @@ export function elfProblem(buf, machine) {
   return undefined
 }
 
-// elf(5): e_type values, program header types, the dynamic tags read above, and the size of an Elf64_Phdr.
+// elf(5): e_type values, program header types, the execute permission flag, the dynamic tags read above, and the size of an Elf64_Phdr.
 const ET_EXEC = 2
 const ET_DYN = 3
+const PT_LOAD = 1
 const PT_DYNAMIC = 2
 const PT_INTERP = 3
+const PF_X = 1
 const DT_NULL = 0n
 const DT_NEEDED = 1n
 const ELF64_PHDR_SIZE = 56
@@ -180,16 +239,31 @@ export function verifyNativeDist(dir, manifests, { withoutWindows = false } = {}
       problems.push(`${rel}: missing`)
       continue
     }
-    const buf = readFileSync(path.join(dir, rel))
+    const read = readBinary(dir, rel)
+    if (typeof read === 'string') {
+      problems.push(`${rel}: ${read}`)
+      continue
+    }
     const want = hashes.get(rel)
-    const got = createHash('sha256').update(buf).digest('hex')
+    const got = createHash('sha256').update(read).digest('hex')
     if (want === undefined) problems.push(`${rel}: no manifest records its sha256`)
     else if (want !== got) problems.push(`${rel}: sha256 ${got} does not match the recorded ${want}`)
-    const shape = target.format === 'pe' ? peSignatureProblem(buf, target.machine) : elfProblem(buf, target.machine)
+    const shape = shapeProblem(read, target)
     if (shape !== undefined) problems.push(`${rel}: ${shape}`)
   }
   return problems
 }
+
+/** The bytes of `dir/rel`, or why they cannot be read: a dangling link or a link to a directory is listed as a file but has none. */
+function readBinary(dir, rel) {
+  try {
+    return readFileSync(path.join(dir, rel))
+  } catch (e) {
+    return `cannot be read (${e instanceof Error ? e.message : String(e)})`
+  }
+}
+
+const shapeProblem = (buf, target) => (target.format === 'pe' ? peSignatureProblem(buf, target.machine) : elfProblem(buf, target.machine))
 
 const PACK_REMEDY = 'delete dist/native, or publish through the release workflow, which signs it'
 
@@ -210,8 +284,8 @@ export function verifyPackDir(dir) {
       problems.push(`${rel}: is not a release binary; ${PACK_REMEDY}`)
       continue
     }
-    const buf = readFileSync(path.join(dir, rel))
-    const shape = target.format === 'pe' ? peSignatureProblem(buf, target.machine) : elfProblem(buf, target.machine)
+    const read = readBinary(dir, rel)
+    const shape = typeof read === 'string' ? read : shapeProblem(read, target)
     if (shape !== undefined) problems.push(`${rel}: ${shape}; ${PACK_REMEDY}`)
   }
   return problems
@@ -258,4 +332,12 @@ function main(argv) {
   return 0
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) process.exit(main(process.argv.slice(2)))
+// Node resolves symlinks in the module URL but not in argv[1], so both sides are resolved: comparing the raw path let a run through a linked directory (an npm link or a global install of a checkout) skip the check and exit 0.
+const realOrResolved = (p) => {
+  try {
+    return realpathSync.native(p)
+  } catch {
+    return path.resolve(p)
+  }
+}
+if (process.argv[1] && realOrResolved(process.argv[1]) === realOrResolved(fileURLToPath(import.meta.url))) process.exit(main(process.argv.slice(2)))

@@ -344,9 +344,17 @@ export function syncArchDocs({ check = false } = {}) {
   return { ok: true, count: modules.length }
 }
 
+// Both sides are real paths: Node resolves symlinks in import.meta.url but leaves argv[1] as typed, so a run through a linked directory would otherwise skip main and exit 0.
+const realOrResolved = (p) => {
+  try {
+    return fs.realpathSync.native(p)
+  } catch {
+    return path.resolve(p)
+  }
+}
 const invokedDirectly =
   process.argv[1] !== undefined &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
+  realOrResolved(process.argv[1]) === realOrResolved(fileURLToPath(import.meta.url))
 
 if (invokedDirectly) {
   const check = process.argv.includes('--check')

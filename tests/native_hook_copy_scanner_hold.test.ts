@@ -7,13 +7,15 @@ import type * as NodeFs from 'node:fs'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-const holds = vi.hoisted(() => ({ remaining: 0, denyDelete: false }))
+const holds = vi.hoisted(() => ({ remaining: 0, denyDelete: false, deny: undefined as ((from: string, to: string) => boolean) | undefined, watch: undefined as string | undefined, seen: [] as boolean[] }))
 
 vi.mock('node:fs', async (importOriginal) => {
   const original = await importOriginal<typeof NodeFs>()
   const renameSync = (from: fs.PathLike, to: fs.PathLike): void => {
-    if (holds.remaining > 0 && String(from).endsWith('.new')) {
-      holds.remaining--
+    const held = holds.remaining > 0 && String(from).endsWith('.new')
+    if (held || holds.deny?.(String(from), String(to)) === true) {
+      if (held) holds.remaining--
+      if (holds.watch !== undefined) holds.seen.push(original.existsSync(holds.watch))
       throw Object.assign(new Error(`EPERM: operation not permitted, rename '${String(from)}' -> '${String(to)}'`), { code: 'EPERM' })
     }
     original.renameSync(from, to)
@@ -32,6 +34,9 @@ let root: string | undefined
 afterEach(() => {
   holds.remaining = 0
   holds.denyDelete = false
+  holds.deny = undefined
+  holds.watch = undefined
+  holds.seen = []
   if (root !== undefined) fs.rmSync(root, { recursive: true, force: true })
   root = undefined
 })
@@ -60,6 +65,20 @@ describe('syncNativeCopy under a scanner hold on the staged file', () => {
     expect(syncNativeCopy(src, dest)).toBe(true)
     expect(fs.readFileSync(dest, 'utf8')).toBe('binary-v2')
   })
+
+  it('leaves the older copy in place for as long as the hold lasts', () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-native-hold-'))
+    const src = path.join(root, 'tg-hook.exe')
+    const dest = path.join(root, 'native', 'abc', 'tg-hook.exe')
+    fs.writeFileSync(src, 'binary-v1')
+    expect(syncNativeCopy(src, dest)).toBe(true)
+    fs.writeFileSync(src, 'binary-v2')
+    holds.remaining = 4
+    holds.watch = dest
+    expect(syncNativeCopy(src, dest)).toBe(true)
+    expect(fs.readFileSync(dest, 'utf8')).toBe('binary-v2')
+    expect(holds.seen).toEqual([true, true, true, true])
+  })
 })
 
 // A hold that outlasts every retry, with the scanner also refusing the delete of the staged file (EPERM from rmSync, which `force` does not suppress): install must fall back to the Node command, not throw out of nativeHookBinary, and must not leave hooks naming a copy that was moved aside.
@@ -87,5 +106,19 @@ describe('syncNativeCopy when the scanner hold outlasts the retries', () => {
     expect(syncNativeCopy(src, dest)).toBe(false)
     expect(fs.readFileSync(dest, 'utf8')).toBe('binary-v1')
     expect(fs.readdirSync(path.dirname(dest)).filter((n) => n.endsWith('.old'))).toEqual([])
+  })
+
+  it('puts the older copy back even when the first attempts to restore it are refused', () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-native-hold-'))
+    const src = path.join(root, 'tg-hook.exe')
+    const dest = path.join(root, 'native', 'abc', 'tg-hook.exe')
+    fs.writeFileSync(src, 'binary-v1')
+    expect(syncNativeCopy(src, dest)).toBe(true)
+    fs.writeFileSync(src, 'binary-v2')
+    let restoreRefusals = 2
+    holds.deny = (from, to) => to === dest && (from.endsWith('.new') || (from.endsWith('.old') && restoreRefusals-- > 0))
+    expect(syncNativeCopy(src, dest)).toBe(false)
+    expect(fs.readFileSync(dest, 'utf8')).toBe('binary-v1')
+    expect(fs.readdirSync(path.dirname(dest))).toEqual(['tg-hook.exe'])
   })
 })

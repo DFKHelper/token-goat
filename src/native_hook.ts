@@ -68,7 +68,7 @@ function reclaimLeftovers(dir: string): void {
   }
 }
 
-/** Make `dest` a byte-identical copy of `src`, returning false when it could not be. The new bytes are written beside `dest` and renamed over it. Windows refuses that rename while `dest` is running, but lets the running file itself be renamed, so it is moved aside to a `.old` name first, and a later install deletes it once nothing runs it. A hook starting in the gap between the two renames finds no binary and fails that one call; the gap is two renames long. */
+/** Make `dest` a byte-identical copy of `src`, returning false when it could not be. The new bytes are written beside `dest` and renamed over it. Windows refuses that rename while `dest` is running, but lets the running file itself be renamed, so it is moved aside to a `.old` name first, and a later install deletes it once nothing runs it. A hook starting in the gap between the two renames finds no binary and fails that one call; the gap is two renames long, because a scanner's hold on the new bytes is outwaited before the old copy moves. */
 export function syncNativeCopy(src: string, dest: string): boolean {
   let want: Buffer
   try {
@@ -98,26 +98,34 @@ export function syncNativeCopy(src: string, dest: string): boolean {
   } catch {
     // dest is running, or a scanner still holds the file just written
   }
+  // Outwait a scanner's hold on the staged file while dest is still in place: renaming it succeeds only once the hold is gone, so dest goes missing for no longer than the two renames below.
+  const ready = `${dest}.${crypto.randomBytes(6).toString('hex')}.new`
+  try {
+    withRetryOnLock(() => fs.renameSync(staged, ready))
+  } catch {
+    discardStaged(staged)
+    return false
+  }
   const aside = `${dest}.${tag}.old`
   let movedAside = false
   try {
-    // A running dest can be renamed but not replaced; an absent one (nothing to move aside) leaves only the scanner's hold on the staged file, which the retry outwaits.
+    // A running dest can be renamed but not replaced, so it is moved aside first.
     if (fs.existsSync(dest)) {
       withRetryOnLock(() => fs.renameSync(dest, aside))
       movedAside = true
     }
-    withRetryOnLock(() => fs.renameSync(staged, dest))
+    withRetryOnLock(() => fs.renameSync(ready, dest))
     return true
   } catch {
     // Put the old copy back so hooks already naming dest keep a binary to run; a failure here leaves it as a leftover the next install reclaims.
     if (movedAside) {
       try {
-        fs.renameSync(aside, dest)
+        withRetryOnLock(() => fs.renameSync(aside, dest))
       } catch {
         // dest stays missing; doctor reports it and the next install rewrites it
       }
     }
-    discardStaged(staged)
+    discardStaged(ready)
     return false
   }
 }

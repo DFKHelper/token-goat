@@ -18,6 +18,7 @@ interface Step {
   'continue-on-error'?: boolean | string
   uses?: string
   run?: string
+  shell?: string
   with?: Record<string, string>
   env?: Record<string, string>
 }
@@ -29,10 +30,12 @@ interface Job {
   outputs?: Record<string, string>
   env?: Record<string, string>
   strategy?: { matrix?: { include?: Record<string, string>[] } }
+  defaults?: { run?: { shell?: string } }
   steps: Step[]
 }
 
 interface Workflow {
+  defaults?: { run?: { shell?: string } }
   jobs: Record<string, Job>
 }
 
@@ -158,6 +161,7 @@ function publishAssemblesFromReleaseArtifacts(doc: Workflow): string[] {
 }
 
 const GATE_LINE = /^\s*node scripts\/verify-native-dist\.mjs (--without-windows )?dist\/native /
+const GATE_COMMAND = /^\s*node scripts\/verify-native-dist\.mjs (--without-windows )?dist\/native( "[^"]*")+\s*$/
 const LINUX_MANIFESTS = ['native/linux-x64.sha256', 'native/linux-arm64.sha256']
 
 /** The verify gate runs in the publish job after assembly and before `npm publish`, over dist/native and the manifest of every job that produced a binary: all three when Windows was signed, and the two Linux ones under --without-windows when it was not. */
@@ -176,6 +180,13 @@ function publishVerifiesBeforePublishing(doc: Workflow): string[] {
     if (steps[gate]!.if !== undefined) problems.push(`the verify gate step is conditional (if: ${steps[gate]!.if}), so a run that skips it still publishes`)
     const lenient = steps[gate]!['continue-on-error']
     if (lenient !== undefined && lenient !== false) problems.push(`the verify gate step has continue-on-error: ${String(lenient)}, so a refusal does not stop npm publish`)
+    // A refusal stops the step only if the shell exits on the first failing command and nothing after the gate's own arguments discards its status: `|| true`, a pipe into another command, or a `set +e` earlier in the script all let a refused build reach npm publish.
+    const shell = steps[gate]!.shell ?? job(doc, PUBLISH_JOB).defaults?.run?.shell ?? doc.defaults?.run?.shell
+    if (shell !== undefined && shell !== 'bash') problems.push(`the verify gate step runs under shell: ${shell}, not bash, so its set -euo pipefail does not apply`)
+    const script = steps[gate]!.run!.split('\n').map((l) => l.trim()).filter((l) => l !== '' && !l.startsWith('#'))
+    if (script[0] !== 'set -euo pipefail') problems.push(`the verify gate step does not start with set -euo pipefail, so a refusal can be ignored: ${script[0]}`)
+    for (const line of script) if (/^set\s+\+[a-z]*e|^set\s+\+o\s+(errexit|pipefail)/.test(line)) problems.push(`the verify gate step turns failure handling off: ${line}`)
+    for (const line of steps[gate]!.run!.split('\n').filter((l) => GATE_LINE.test(l))) if (!GATE_COMMAND.test(line)) problems.push(`scripts/verify-native-dist.mjs is followed by more than its arguments, which can discard its exit status: ${line.trim()}`)
     const runs = steps[gate]!.run!.split('\n').filter((l) => GATE_LINE.test(l))
     const signed = runs.find((l) => !l.includes('--without-windows'))
     const unsigned = runs.find((l) => l.includes('--without-windows'))
@@ -317,6 +328,41 @@ const CHECKS: ReadonlyArray<readonly [string, (doc: Workflow) => string[], (doc:
       doc.jobs[PUBLISH_JOB]!.steps.find((s) => /verify-native-dist\.mjs/.test(s.run ?? ''))!['continue-on-error'] = true
     },
     'the verify gate step has continue-on-error: true, so a refusal does not stop npm publish',
+  ],
+  [
+    'publish stops when the verify gate refuses, whatever follows the command',
+    publishVerifiesBeforePublishing,
+    (doc) => {
+      const gate = doc.jobs[PUBLISH_JOB]!.steps.find((s) => /verify-native-dist\.mjs/.test(s.run ?? ''))!
+      gate.run = gate.run!.split('linux-arm64.sha256"\nelse').join('linux-arm64.sha256" || true\nelse')
+    },
+    'scripts/verify-native-dist.mjs is followed by more than its arguments, which can discard its exit status: node scripts/verify-native-dist.mjs dist/native "$RUNNER_TEMP/native-signed/SHA256SUMS" "$RUNNER_TEMP/native/linux-x64.sha256" "$RUNNER_TEMP/native/linux-arm64.sha256" || true',
+  ],
+  [
+    'publish stops when the verify gate refuses, whatever the script turns off first',
+    publishVerifiesBeforePublishing,
+    (doc) => {
+      const gate = doc.jobs[PUBLISH_JOB]!.steps.find((s) => /verify-native-dist\.mjs/.test(s.run ?? ''))!
+      gate.run = gate.run!.split('set -euo pipefail\n').join('set -euo pipefail\nset +e\n')
+    },
+    'the verify gate step turns failure handling off: set +e',
+  ],
+  [
+    'publish stops when the verify gate refuses, whichever shell runs it',
+    publishVerifiesBeforePublishing,
+    (doc) => {
+      doc.jobs[PUBLISH_JOB]!.steps.find((s) => /verify-native-dist\.mjs/.test(s.run ?? ''))!.shell = 'sh'
+    },
+    'the verify gate step runs under shell: sh, not bash, so its set -euo pipefail does not apply',
+  ],
+  [
+    'publish stops when the verify gate refuses, because the script exits on the first failure',
+    publishVerifiesBeforePublishing,
+    (doc) => {
+      const gate = doc.jobs[PUBLISH_JOB]!.steps.find((s) => /verify-native-dist\.mjs/.test(s.run ?? ''))!
+      gate.run = gate.run!.split('set -euo pipefail\n').join('')
+    },
+    'the verify gate step does not start with set -euo pipefail, so a refusal can be ignored: if [ "$WINDOWS_SIGNED" = true ]; then',
   ],
   [
     'Windows binaries are signed, downloaded, copied and verified only when signing is configured',

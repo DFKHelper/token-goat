@@ -5,7 +5,7 @@
 //
 // Usage: `node scripts/sync-agent-gates.mjs AGENTS_DIR` rewrites the gate in each `*.md` there, and `--check AGENTS_DIR` writes nothing and exits 1 when any file is stale. A missing directory exits 0, because `.claude/` is gitignored and absent on CI and fresh clones. A file with neither the markers nor a `## Read gate (mandatory)` heading is not an agent with a gate and is left alone; on the first run the heading through the end of the file is replaced.
 
-import { readFileSync, writeFileSync, readdirSync, existsSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, readdirSync, existsSync, statSync, realpathSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildSync } from 'esbuild'
@@ -68,4 +68,12 @@ async function main(argv) {
   return check && stale > 0 ? 1 : 0
 }
 
-if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) process.exitCode = await main(process.argv.slice(2))
+// Both sides are real paths: Node resolves symlinks in import.meta.url but leaves argv[1] as typed, so a run through a linked directory would otherwise skip main and exit 0.
+const realOrResolved = (p) => {
+  try {
+    return realpathSync.native(p)
+  } catch {
+    return resolve(p)
+  }
+}
+if (process.argv[1] && realOrResolved(process.argv[1]) === realOrResolved(fileURLToPath(import.meta.url))) process.exitCode = await main(process.argv.slice(2))

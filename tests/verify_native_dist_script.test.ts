@@ -1,4 +1,4 @@
-/** scripts/verify-native-dist.mjs is the last gate before `npm publish`: it must refuse an unsigned Windows binary, a binary whose bytes differ from what its producing job recorded, a dynamically linked Linux binary (the glibc build the test run leaves in dist/native), and anything in dist/native that is not one of the four release binaries. Provenance, per fixture: the binary this run built (tests/helpers/native_bin.ts) is CAPTURE, a real unsigned executable from scripts/build-native.mjs; the synthetic PE and ELF files are FORMAT-DERIVED, laid out from the Microsoft PE/COFF specification (https://learn.microsoft.com/en-us/windows/win32/debug/pe-format, sections "Optional Header Data Directories" and "The Attribute Certificate Table") and the System V ABI ELF header, program header and dynamic section layout (elf(5), https://man7.org/linux/man-pages/man5/elf.5.html: e_type, PT_DYNAMIC, Elf64_Dyn, DT_NEEDED), with the certificate content encoded per RFC 5652 section 3 (ContentInfo, https://www.rfc-editor.org/rfc/rfc5652#section-3) in DER per ITU-T X.690; every expected sha256 is HAND-DERIVED, computed here from the fixture bytes. */
+/** scripts/verify-native-dist.mjs is the last gate before `npm publish`: it must refuse an unsigned Windows binary, a binary whose bytes differ from what its producing job recorded, a dynamically linked Linux binary (the glibc build the test run leaves in dist/native), and anything in dist/native that is not one of the four release binaries. Provenance, per fixture: the binary this run built (tests/helpers/native_bin.ts) is CAPTURE, a real unsigned executable from scripts/build-native.mjs; the synthetic PE and ELF files are FORMAT-DERIVED, laid out from the Microsoft PE/COFF specification (https://learn.microsoft.com/en-us/windows/win32/debug/pe-format, sections "Optional Header Data Directories" and "The Attribute Certificate Table") and the System V ABI ELF header, program header and dynamic section layout (elf(5), https://man7.org/linux/man-pages/man5/elf.5.html: e_type, PT_DYNAMIC, Elf64_Dyn, DT_NEEDED), with the certificate content encoded per RFC 5652 sections 3 and 5 (ContentInfo and SignedData, https://www.rfc-editor.org/rfc/rfc5652) in DER per ITU-T X.690, its SpcIndirectDataContent and image digest laid out from the Authenticode PE specification (Windows Authenticode Portable Executable Signature Format, https://download.microsoft.com/download/9/c/5/9c5b2167-8017-4bae-9fde-d599bac8184a/Authenticode_PE.docx, sections "Authenticode-Specific Structures" and "Calculating the PE Image Hash"); the signed node.exe running the suite is CAPTURE, a real Authenticode signature from a real signing tool; every expected sha256 is HAND-DERIVED, computed here from the fixture bytes. */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
@@ -21,13 +21,40 @@ const IMAGE_FILE_MACHINE_ARM64 = 0xaa64
 const EM_X86_64 = 62
 const EM_AARCH64 = 183
 
-// DER (X.690) for the RFC 5652 ContentInfo header: the signedData OID 1.2.840.113549.1.7.2, and a SignedData reduced to SEQUENCE { INTEGER 1 }, its version field. Real signatures carry far more inside, but the script's check is structural and stops at the SignedData SEQUENCE.
+// DER (X.690) object identifiers: signedData 1.2.840.113549.1.7.2 (RFC 5652), SHA-256 2.16.840.1.101.3.4.2.1 and SHA-224 2.16.840.1.101.3.4.2.4 (RFC 5754), and SPC_INDIRECT_DATA_OBJID 1.3.6.1.4.1.311.2.1.4 and SPC_PE_IMAGE_DATAOBJ 1.3.6.1.4.1.311.2.1.15 (Authenticode). SIGNED_DATA is a SignedData cut down to its version field, the shape the check accepted before it bound the signature to the file.
 const OID_SIGNED_DATA = [0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02]
+const OID_SHA256 = Buffer.from([0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01])
+const OID_SHA224 = Buffer.from([0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x04])
+const OID_SPC_INDIRECT_DATA = Buffer.from([0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x04])
+const OID_SPC_PE_IMAGE_DATA = Buffer.from([0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x0f])
+const DER_NULL = Buffer.from([0x05, 0x00])
 const SIGNED_DATA = [0x30, 0x03, 0x02, 0x01, 0x01]
-const CONTENT_INFO = Buffer.from([0x30, 0x12, ...OID_SIGNED_DATA, 0xa0, 0x05, ...SIGNED_DATA])
+
+/** One DER element: `tag`, its length (the long form once the body passes 127 bytes, or whenever `longForm` asks for it), then `body`. */
+function tlv(tag: number, body: Buffer | readonly number[], longForm = false): Buffer {
+  const content = Buffer.from(body)
+  const octets: number[] = []
+  for (let n = content.length; n > 0 || octets.length === 0; n >>= 8) octets.unshift(n & 0xff)
+  const length = content.length < 0x80 && !longForm ? [content.length] : [0x80 | octets.length, ...octets]
+  return Buffer.concat([Buffer.from([tag, ...length]), content])
+}
+
+type Envelope = { algorithm?: Buffer; contentType?: Buffer; digestTag?: number; signers?: Buffer; certificates?: boolean; longForm?: boolean }
+
+/** An Authenticode ContentInfo signing `digest`: SignedData { version, digestAlgorithms, encapContentInfo { SPC_INDIRECT_DATA, [0] SpcIndirectDataContent { SpcAttributeTypeAndOptionalValue { SPC_PE_IMAGE_DATA, SpcPeImageData }, DigestInfo { algorithm, digest } } }, [0] certificates and [1] crls when asked, signerInfos }. The signer is a placeholder SEQUENCE, since the check stops at whether one exists. */
+function authenticodeContentInfo(digest: Buffer, opts: Envelope = {}): Buffer {
+  const long = opts.longForm === true
+  const algorithm = tlv(0x30, Buffer.concat([opts.algorithm ?? OID_SHA256, DER_NULL]), long)
+  const digestInfo = tlv(0x30, Buffer.concat([algorithm, tlv(opts.digestTag ?? 0x04, digest, long)]), long)
+  const imageData = tlv(0x30, Buffer.concat([OID_SPC_PE_IMAGE_DATA, tlv(0x30, [0x03, 0x01, 0x00])]), long)
+  const encap = tlv(0x30, Buffer.concat([opts.contentType ?? OID_SPC_INDIRECT_DATA, tlv(0xa0, tlv(0x30, Buffer.concat([imageData, digestInfo]), long), long)]), long)
+  const extras = opts.certificates === true ? [tlv(0xa0, tlv(0x30, digestInfo)), tlv(0xa1, tlv(0x30, [0x02, 0x01, 0x00]))] : []
+  const signedData = tlv(0x30, Buffer.concat([Buffer.from([0x02, 0x01, 0x01]), tlv(0x31, algorithm), encap, ...extras, tlv(0x31, opts.signers ?? tlv(0x30, [0x02, 0x01, 0x01]))]), long)
+  return tlv(0x30, Buffer.concat([Buffer.from(OID_SIGNED_DATA), tlv(0xa0, signedData, long)]), long)
+}
 
 /** A WIN_CERTIFICATE (dwLength, wRevision 0x0200, wCertificateType 0x0002 PKCS_SIGNED_DATA, bCertificate) holding `content`, padded to the quadword boundary the spec requires. */
-function winCertificate(content: Buffer = CONTENT_INFO): Buffer {
+function winCertificate(content: Buffer): Buffer {
   const header = Buffer.alloc(8)
   header.writeUInt32LE(8 + content.length, 0)
   header.writeUInt16LE(0x0200, 4)
@@ -42,10 +69,13 @@ function certificateDirectoryAt(pe: Buffer): number {
   return optional + (pe.readUInt16LE(optional) === 0x20b ? 112 : 96) + 4 * 8
 }
 
-/** `pe` with a WIN_CERTIFICATE appended at an 8-byte-aligned offset and the Certificate Table pointed at it, the placement Authenticode signing tools use. */
-function withCertificateTable(pe: Buffer, content?: Buffer): Buffer {
+/** `pe` with a WIN_CERTIFICATE appended at an 8-byte-aligned offset and the Certificate Table pointed at it, the placement Authenticode signing tools use. The certificate holds `content` verbatim when given bytes, and otherwise an Authenticode envelope over the SHA-256 image hash, which per "Calculating the PE Image Hash" covers the file up to the certificate table except the CheckSum field (optional header +64) and the Certificate Table entry itself. */
+function withCertificateTable(pe: Buffer, content?: Buffer | Envelope): Buffer {
   const aligned = Buffer.concat([pe, Buffer.alloc((8 - (pe.length % 8)) % 8)])
-  const cert = winCertificate(content)
+  const entry = certificateDirectoryAt(aligned)
+  const checksum = aligned.readUInt32LE(0x3c) + 24 + 64
+  const digest = createHash('sha256').update(aligned.subarray(0, checksum)).update(aligned.subarray(checksum + 4, entry)).update(aligned.subarray(entry + 8)).digest()
+  const cert = winCertificate(Buffer.isBuffer(content) ? content : authenticodeContentInfo(digest, content))
   const out = Buffer.concat([aligned, cert])
   const at = certificateDirectoryAt(out)
   out.writeUInt32LE(aligned.length, at)
@@ -70,7 +100,7 @@ function syntheticPe(machine: number, magic: 0x20b | 0x10b = 0x20b): Buffer {
 }
 
 /** A 64-bit little-endian ELF header for `machine` followed by one 56-byte program header per entry of `types` (PT_LOAD is 1, PT_INTERP is 3). With `dynamic`, a PT_DYNAMIC (2) header is added whose p_offset (+8) and p_filesz (+32) cover those (d_tag, d_val) pairs, appended after the headers; `dynamicSize` overrides p_filesz. */
-function syntheticElf(machine: number, types: readonly number[], opts: { type?: number; dynamic?: ReadonlyArray<readonly [bigint, bigint]>; dynamicSize?: number } = {}): Buffer {
+function syntheticElf(machine: number, types: readonly number[], opts: { type?: number; dynamic?: ReadonlyArray<readonly [bigint, bigint]>; dynamicSize?: number; loadFlags?: number; loadSize?: number } = {}): Buffer {
   const headers = opts.dynamic === undefined ? types : [...types, 2]
   const dynamicAt = 64 + 56 * headers.length
   const buf = Buffer.alloc(dynamicAt + 16 * (opts.dynamic?.length ?? 0))
@@ -85,6 +115,12 @@ function syntheticElf(machine: number, types: readonly number[], opts: { type?: 
   buf.writeUInt16LE(56, 54)
   buf.writeUInt16LE(headers.length, 56)
   headers.forEach((t, i) => buf.writeUInt32LE(t, 64 + 56 * i))
+  // Each PT_LOAD maps the file from offset 0 with p_flags (+4) PF_R|PF_X by default, so the binary carries code to run; p_filesz (+32) stays inside the file unless a test widens it.
+  types.forEach((t, i) => {
+    if (t !== 1) return
+    buf.writeUInt32LE(opts.loadFlags ?? 5, 64 + 56 * i + 4)
+    buf.writeBigUInt64LE(BigInt(opts.loadSize ?? 64), 64 + 56 * i + 32)
+  })
   if (opts.dynamic !== undefined) {
     const header = 64 + 56 * types.length
     buf.writeBigUInt64LE(BigInt(dynamicAt), header + 8)
@@ -129,6 +165,15 @@ function writeLinuxRelease(): string {
   const files = new Map([...validRelease()].filter(([rel]) => rel.startsWith('linux-')))
   writeFiles(files)
   return [...files].map(([rel, buf]) => `${sha256(buf)}  ${rel}\n`).join('')
+}
+
+/** Replaces `rel` under the scratch dir with a link to a path that does not exist (a junction on Windows, which needs no privilege; a symlink elsewhere), so it lists as an entry but cannot be read. */
+function danglingLink(rel: string): void {
+  const link = path.join(dir, rel)
+  fs.rmSync(link, { force: true })
+  fs.mkdirSync(path.dirname(link), { recursive: true })
+  if (process.platform === 'win32') fs.symlinkSync(path.join(dir, 'missing-target'), link, 'junction')
+  else fs.symlinkSync('missing-target', link)
 }
 
 type CliResult = { status: number | null; stdout: string; stderr: string }
@@ -247,8 +292,48 @@ describe('peSignatureProblem (FORMAT-DERIVED)', () => {
   })
 
   it('reads the long-form lengths a real signature uses', () => {
-    const longForm = Buffer.from([0x30, 0x82, 0x00, 0x13, ...OID_SIGNED_DATA, 0xa0, 0x81, 0x05, ...SIGNED_DATA])
-    expect(peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), longForm), IMAGE_FILE_MACHINE_AMD64)).toBeUndefined()
+    expect(peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), { longForm: true }), IMAGE_FILE_MACHINE_AMD64)).toBeUndefined()
+  })
+
+  it('refuses a well-formed signedData envelope that signs nothing, the shape the check once accepted', () => {
+    const bare = Buffer.from([0x30, 0x12, ...OID_SIGNED_DATA, 0xa0, 0x05, ...SIGNED_DATA])
+    expect(peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), bare), IMAGE_FILE_MACHINE_AMD64)).toBe('has a WIN_CERTIFICATE whose signedData is not version, digest algorithms and content')
+  })
+
+  it('refuses a signature whose image digest belongs to other bytes, while ignoring the checksum field the digest skips', () => {
+    const pe = withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64))
+    const tampered = Buffer.from(pe)
+    tampered[0x10] ^= 1
+    expect(peSignatureProblem(tampered, IMAGE_FILE_MACHINE_AMD64)).toBe('has an Authenticode signature whose image digest does not match the file, so the signature belongs to other bytes')
+    const rechecksummed = Buffer.from(pe)
+    rechecksummed.writeUInt32LE(0xdeadbeef, rechecksummed.readUInt32LE(0x3c) + 24 + 64)
+    expect(peSignatureProblem(rechecksummed, IMAGE_FILE_MACHINE_AMD64)).toBeUndefined()
+  })
+
+  it('refuses bytes appended after the certificate table, which no signature covers', () => {
+    const pe = withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64))
+    expect(peSignatureProblem(Buffer.concat([pe, Buffer.alloc(8)]), IMAGE_FILE_MACHINE_AMD64)).toBe('has data after its certificate table, which the signature does not cover')
+  })
+
+  it('refuses an envelope with no signer, an unknown digest algorithm, a non-Authenticode content type, or no digest', () => {
+    const problem = (opts: Envelope): string | undefined => peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), opts), IMAGE_FILE_MACHINE_AMD64)
+    expect(problem({ signers: Buffer.alloc(0) })).toBe('has a WIN_CERTIFICATE whose signedData has no signer')
+    expect(problem({ algorithm: OID_SHA224 })).toBe('has a WIN_CERTIFICATE whose signedData uses an image digest algorithm this check does not know')
+    // pkcs7-data (1.2.840.113549.1.7.1) as the encapsulated content type.
+    expect(problem({ contentType: Buffer.from([...OID_SIGNED_DATA.slice(0, -1), 0x01]) })).toBe('has a WIN_CERTIFICATE whose signedData does not sign Authenticode indirect data')
+    expect(problem({ digestTag: 0x03 })).toBe('has a WIN_CERTIFICATE whose signedData carries no image digest')
+    expect(problem({ certificates: true })).toBeUndefined()
+  })
+
+  // CAPTURE: the node.exe running this suite is Authenticode-signed by the Node.js project, so it is a real signature produced by a real signing tool rather than one laid out from the spec.
+  it.runIf(process.platform === 'win32')('accepts the signed node.exe running this suite, and refuses it once a byte changes or bytes are appended', () => {
+    const node = fs.readFileSync(process.execPath)
+    const machine = node.readUInt16LE(node.readUInt32LE(0x3c) + 4)
+    expect(peSignatureProblem(node, machine)).toBeUndefined()
+    const flipped = Buffer.from(node)
+    flipped[0x2000] ^= 1
+    expect(peSignatureProblem(flipped, machine)).toBe('has an Authenticode signature whose image digest does not match the file, so the signature belongs to other bytes')
+    expect(peSignatureProblem(Buffer.concat([node, Buffer.alloc(8)]), machine)).toBe('has data after its certificate table, which the signature does not cover')
   })
 
   it('refuses a PE built for the other architecture', () => {
@@ -280,6 +365,12 @@ describe('elfProblem (FORMAT-DERIVED)', () => {
     expect(elfProblem(syntheticElf(EM_X86_64, [1, 1], { type: 1 }), EM_X86_64)).toBe('is not an executable (e_type 1)')
     expect(elfProblem(syntheticElf(EM_X86_64, [1, 1], { type: 4 }), EM_X86_64)).toBe('is not an executable (e_type 4)')
     expect(elfProblem(syntheticElf(EM_X86_64, [1, 1], { type: 2 }), EM_X86_64)).toBeUndefined()
+  })
+
+  it('refuses an ELF with no executable loadable segment, and one whose loadable segment runs past the end of the file', () => {
+    expect(elfProblem(syntheticElf(EM_X86_64, []), EM_X86_64)).toBe('has no executable loadable segment, so it holds no code to run')
+    expect(elfProblem(syntheticElf(EM_X86_64, [1, 1], { loadFlags: 4 }), EM_X86_64)).toBe('has no executable loadable segment, so it holds no code to run')
+    expect(elfProblem(syntheticElf(EM_X86_64, [1], { loadSize: 1 << 20 }), EM_X86_64)).toBe('has a loadable segment that does not fit in the file')
   })
 
   it('refuses the other architecture and a non-ELF file', () => {
@@ -337,6 +428,14 @@ describe('verifyNativeDist (HAND-DERIVED hashes over FORMAT-DERIVED binaries)', 
       'linux-x64/tg-hook: missing',
       'linux-arm64/tg-hook: no manifest records its sha256',
     ])
+  })
+
+  it('reports a release binary that lists but cannot be read, and checks the rest', () => {
+    const m = writeRelease(validRelease())
+    danglingLink('linux-x64/tg-hook')
+    const problems = verifyNativeDist(dir, { windows: m.windows, linux: m.linux })
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toMatch(/^linux-x64\/tg-hook: cannot be read \(/)
   })
 
   it('refuses a manifest naming a file the release does not ship, or two manifests claiming one file', () => {
@@ -461,10 +560,46 @@ describe('the prepack check on a working-tree pack or publish (FORMAT-DERIVED bi
     expect(r.stderr).toContain('verify-native-dist: refusing to publish\n')
   })
 
+  // HAND-DERIVED: the linked layout is the one `npm install -g .` and `npm link` produce (the global package path is a link to the checkout), and macOS gives the same shape through /var -> /private/var. Node resolves links in import.meta.url but not in argv[1], so a guard comparing the two as typed skipped the check and exited 0 on a tampered binary.
+  it('still refuses when the script is run through a linked directory', () => {
+    writeFiles(new Map([['win32-x64/tg-hook.exe', syntheticPe(IMAGE_FILE_MACHINE_AMD64)]]))
+    const linkRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-verify-link-'))
+    const linked = path.join(linkRoot, 'scripts')
+    try {
+      fs.symlinkSync(path.dirname(script), linked, process.platform === 'win32' ? 'junction' : 'dir')
+      const r = spawnSync(process.execPath, [path.join(linked, 'verify-native-dist.mjs'), '--pack', dir], { encoding: 'utf8' })
+      expect(r.stderr).toContain('verify-native-dist: refusing to publish\n')
+      expect(r.stderr).toContain(`win32-x64/tg-hook.exe: carries no Authenticode signature (its certificate table is empty); ${PACK_REMEDY}`)
+      expect(r.status).toBe(1)
+    } finally {
+      // The link goes first and on its own (a recursive removal through a junction deletes the target's contents), and a failure to remove it throws before the recursive removal below runs.
+      if (fs.existsSync(linked)) {
+        try {
+          fs.unlinkSync(linked)
+        } catch {
+          fs.rmdirSync(linked)
+        }
+      }
+      fs.rmSync(linkRoot, { recursive: true, force: true })
+    }
+  })
+
   it('refuses a dist/native that exists but cannot be read as a directory', () => {
     const file = path.join(dir, 'native')
     fs.writeFileSync(file, 'not a directory')
     expect(verifyPackDir(file)).toEqual([expect.stringMatching(/^.*native: cannot be read \(/)])
+  })
+
+  it('reports an entry that lists but cannot be read instead of failing the whole check, through the command too', () => {
+    writeFiles(new Map([...validRelease()].filter(([rel]) => rel.startsWith('win32-'))))
+    danglingLink('linux-x64/tg-hook')
+    const problems = verifyPackDir(dir)
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toMatch(/^linux-x64\/tg-hook: cannot be read \(.*\); delete dist\/native, or publish through the release workflow, which signs it$/)
+    const r = runScript('--pack', dir)
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('linux-x64/tg-hook: cannot be read (')
+    expect(r.stderr).toContain('verify-native-dist: refusing to publish\n')
   })
 
   it('is the command package.json runs before a working-tree npm pack or publish, and it refuses an unsigned build from the package root', () => {
