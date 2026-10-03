@@ -94,6 +94,17 @@ function appendToLiveQueue(queuePath: string, data: string): boolean {
   }
 }
 
+/** Render `absPaths` as queue lines, each terminated by a newline. */
+function renderDirtyQueueLines(absPaths: readonly string[]): string {
+  return absPaths.map((p) => `${encodeDirtyQueueLine(p)}\n`).join('')
+}
+
+/** Append `absPaths` to the queue-format file at `filePath`, creating it if absent, behind the same torn-line guard the live queue uses. For a file only its writer appends to, such as the worker's per-cycle requeue sidecar, so there is no claim to race and no inode check. Throws when the file cannot be written. */
+export function appendDirtyQueueFile(filePath: string, absPaths: readonly string[]): void {
+  if (absPaths.length === 0) return
+  fs.appendFileSync(filePath, `${dirtyQueueLeadingNewline(filePath)}${renderDirtyQueueLines(absPaths)}`)
+}
+
 /** Append every path in `absPaths` to the dirty queue under `dir`, one path per line, in one filesystem append, and report whether they reached the live queue. Throws when the `queue/` directory or the file cannot be written. Creates both on first use. Uses append mode so concurrent producers accumulate; a trailing newline terminates each entry so {@link parseDirtyQueueLines} can split cleanly. The torn-line guard is consulted once for the whole batch, which is correct because the batch is written as a single append: only the first line of it can ever meet a partial line. The worker claims the queue by renaming it, and a handle opened before that rename still writes into the renamed file, which the worker deletes once it has read it a last time. A write landing after that read went out with the delete. So each append checks, after writing, that the file it wrote is still the one named `dirty.txt`, and writes again if a claim took it: from that point on the path is in a file the worker has yet to claim. A duplicate costs the drain one unchanged-sha skip. Every producer appends through here, the hooks and CLI through hooks_index.ts::appendDirtyPaths and the worker's own requeues through worker.ts::appendToDirtyQueue. */
 export function appendDirtyQueuePaths(dir: string, absPaths: readonly string[]): boolean {
   if (absPaths.length === 0) return true
@@ -104,7 +115,7 @@ export function appendDirtyQueuePaths(dir: string, absPaths: readonly string[]):
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST' || !fs.existsSync(queueDir)) throw e
   }
-  const body = absPaths.map((p) => `${encodeDirtyQueueLine(p)}\n`).join('')
+  const body = renderDirtyQueueLines(absPaths)
   for (let attempt = 0; attempt < 3; attempt++) {
     if (appendToLiveQueue(queuePath, `${dirtyQueueLeadingNewline(queuePath)}${body}`)) return true
   }

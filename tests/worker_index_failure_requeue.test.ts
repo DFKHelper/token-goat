@@ -101,6 +101,55 @@ describe('a path whose indexing failed is retried, not dropped', () => {
     expect(errorLog(DIR)).toContain('busy.ts')
   })
 
+  // Provenance: HAND-DERIVED. drainOnce deletes a recovered `.draining` file before it appends that cycle's deferred requeues to the live queue, so a crash in between (here, stage (b)'s batch throwing, the shape a kill mid-batch leaves on disk) used to lose the requeued path for good.
+  it('keeps a deferred requeue on disk when the cycle dies before reaching the live queue', () => {
+    const requeued = path.join(DIR, 'requeued.ts')
+    fs.writeFileSync(requeued, 'export function requeuedSymbol() { return 1 }\n')
+    const crashing = path.join(DIR, 'crashing.ts')
+    fs.writeFileSync(crashing, 'export function crashingSymbol() { return 2 }\n')
+    const queueDir = path.join(DIR, 'queue')
+    fs.mkdirSync(queueDir, { recursive: true })
+    fs.writeFileSync(path.join(queueDir, 'dirty.txt.draining'), `${requeued}\n`)
+    writeQueue(DIR, [crashing])
+    const realConfig = vi.mocked(loadConfig)()
+    const real = parserModule.indexFileSync
+    vi.spyOn(parserModule, 'indexFileSync').mockImplementationOnce(() => {
+      // The stage (a) index fails transiently, and the next batch to start, stage (b)'s, dies.
+      vi.mocked(loadConfig).mockImplementation(() => {
+        throw new Error('simulated crash')
+      })
+      throw new Error('EBUSY: resource busy or locked')
+    })
+
+    expect(() => drainOnce(DIR)).toThrow('simulated crash')
+
+    const sidecars = fs.readdirSync(queueDir).filter((n) => n.startsWith('dirty.txt.draining.alt-requeue-'))
+    expect(sidecars).toHaveLength(1)
+    expect(fs.readFileSync(path.join(queueDir, sidecars[0]!), 'utf8').trim()).toBe(requeued)
+
+    vi.mocked(loadConfig).mockReturnValue(realConfig)
+    vi.mocked(parserModule.indexFileSync).mockImplementation(real)
+    drainOnce(DIR)
+
+    const db = getDb(path.join(DIR, 'global.db'))
+    expect(db.prepare("SELECT name FROM symbols WHERE name IN ('requeuedSymbol', 'crashingSymbol') ORDER BY name").all()).toEqual([{ name: 'crashingSymbol' }, { name: 'requeuedSymbol' }])
+    expect(fs.readdirSync(queueDir).filter((n) => n.includes('.draining'))).toEqual([])
+  })
+
+  it('leaves no requeue sidecar behind once a cycle completes', () => {
+    const target = path.join(DIR, 'busy.ts')
+    fs.writeFileSync(target, 'export const x = 1\n')
+    writeQueue(DIR, [target])
+    vi.spyOn(parserModule, 'indexFileSync').mockImplementation(() => {
+      throw new Error('EBUSY: resource busy or locked')
+    })
+
+    drainOnce(DIR)
+
+    expect(queuedNormalized(DIR)).toEqual([normalizePath(target)])
+    expect(fs.readdirSync(path.join(DIR, 'queue')).filter((n) => n.includes('.draining'))).toEqual([])
+  })
+
   it('indexes the file on the next cycle once the failure clears, which is the point of requeuing it', () => {
     const target = path.join(DIR, 'transient.ts')
     fs.writeFileSync(target, 'export const y = 2\n')

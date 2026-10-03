@@ -26,7 +26,7 @@ import { findProject, isUnderSystemTemp } from './project.js'
 import { registerReset } from './reset.js'
 import { modelDownloadHeld } from './embed_preflight.js'
 import { failedAtOf } from './model_download_gate.js'
-import { appendDirtyQueuePaths, dirtyQueuePathFor, parseDirtyQueueLines } from './dirty_queue.js'
+import { appendDirtyQueueFile, appendDirtyQueuePaths, dirtyQueuePathFor, parseDirtyQueueLines } from './dirty_queue.js'
 import { createQueueWaker, noteOwnQueueWrite } from './queue_waker.js'
 import { appendWorkerErrorLog, readPidFile, resolvePollIntervalMs, workerErrorLogPath, workerPidPath, writeDrainHeartbeat } from './worker_lifecycle.js'
 
@@ -489,8 +489,16 @@ export function drainOnce(
 
   // A transient read failure in stage (a) (recovering an abandoned .draining file) must not be requeued straight onto the live dirty.txt: stage (b) below claims that same live queue microseconds later, in this SAME drainOnce call, and would immediately reprocess the path while the lock/condition that caused the original failure has almost certainly not cleared yet -- double-bumping its retry count once per cycle instead of once, roughly halving the effective MAX_TRANSIENT_RETRIES budget. Collect this cycle's requeues here and only write them to the live queue once BOTH stages have finished claiming/processing their batches, so a requeued path is guaranteed to wait for the NEXT drainOnce cycle. bumpAndCheckRetry (which increments the retry counter and enforces MAX_TRANSIENT_RETRIES) still runs immediately, at the point of failure -- only the disk append is deferred.
   const deferredRequeues: string[] = []
+  // Each deferred requeue is also written at once to a sidecar named like a stage (b) fallback claim, because the queue files that named these paths are deleted before the live append below: a kill, or a throw out of stage (b), in between would otherwise lose them. This cycle's stage (a) listed its files before the sidecar existed, so only a later cycle recovers it, and the deferral holds.
+  const requeueSidecar = `${draining}.alt-requeue-${process.pid}-${Date.now()}`
   const requeueFn = (requeueDir: string, absPath: string): void => {
-    if (bumpAndCheckRetry(requeueDir, absPath)) deferredRequeues.push(absPath)
+    if (!bumpAndCheckRetry(requeueDir, absPath)) return
+    deferredRequeues.push(absPath)
+    try {
+      appendDirtyQueueFile(requeueSidecar, [absPath])
+    } catch {
+      // The in-memory copy still reaches the live queue at the end of this cycle; only a kill before then loses it.
+    }
   }
 
   // (a) Crash recovery: absorb any `.draining` (and `.draining.alt-*` fallback) files abandoned by a previous crashed or stuck drain. Multiple files can accumulate when a Windows sharing violation keeps the primary `.draining` name locked across cycles (see stage (b)'s fallback-claim comment) -- recover every one of them, not just the first, so a single stuck file can never starve the rest of the queue from ever draining.
@@ -593,6 +601,15 @@ export function drainOnce(
     // If the claim-rename never succeeded after 5 retries, the live queue is left untouched and will be retried on the next poll cycle.
   }
 
+  // Now that both stages above have finished claiming/processing their batches for this cycle, it is safe to actually append this cycle's transient-failure requeues to the live queue -- see deferredRequeues' doc comment above for why this must not happen sooner. It runs before the prune sweep so a slow sweep does not hold them in memory, and the sidecar goes only once they are in the live queue.
+  if (deferredRequeues.length > 0 && appendToDirtyQueue(dir, ...deferredRequeues)) {
+    try {
+      fs.rmSync(requeueSidecar, { force: true })
+    } catch {
+      // A sidecar left behind is recovered by the next cycle's stage (a), which costs one duplicate unchanged-sha skip per path.
+    }
+  }
+
   // (c) Opportunistic prune sweep for renamed/deleted files that never enqueued via the Edit hook path (git mv, git checkout, git clean). Runs after all normal dirty-queue work above, on a low cadence (see PRUNE_EVERY_N_DRAINS' doc comment), so it never delays draining the queue itself and a slow sweep on a huge repo only pushes out the NEXT sweep's schedule, not this cycle's already-completed dirty-queue work.
   const cycle = (drainCycleCounts.get(dir) ?? 0) + 1
   drainCycleCounts.set(dir, cycle)
@@ -606,9 +623,6 @@ export function drainOnce(
       }
     }
   }
-
-  // Now that both stages above have finished claiming/processing their batches for this cycle, it is safe to actually append this cycle's transient-failure requeues to the live queue -- see deferredRequeues' doc comment above for why this must happen last.
-  for (const p of deferredRequeues) appendToDirtyQueue(dir, p)
 
   // Touch the heartbeat marker last even when the queue was empty, and keep it fresh during long batches through processDirtyBatch.
   writeDrainHeartbeat(dir, true)
