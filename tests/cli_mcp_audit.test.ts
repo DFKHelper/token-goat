@@ -400,5 +400,61 @@ describe('mcp-audit', () => {
       const output = captureStdout(() => { printReport(report) })
       expect(output).toMatch(/plugin-provided mcp servers/i)
     })
+
+    // FORMAT-DERIVED: https://code.claude.com/docs/en/mcp -- user-scoped servers live in ~/.claude.json top-level `mcpServers`, local-scoped ones in `projects[path].mcpServers` and project-scoped ones in .mcp.json; Claude Code loads all three, taking a name defined in several scopes from the highest one (local > project > user).
+    describe('Claude Code scopes (local, project, user) are read together', () => {
+      const fwd = (): string => tempDir.replace(/\\/g, '/')
+
+      it('finds user-scoped servers from the top-level mcpServers of ~/.claude.json', () => {
+        const claudeJsonPath = path.join(homeDir, '.claude.json')
+        fs.writeFileSync(claudeJsonPath, JSON.stringify({ mcpServers: { sentry: { command: 'sentry-mcp' } } }))
+        const report = buildMcpAuditReport(tempDir, homeDir)
+        expect(report.configFound).toBe(true)
+        expect(report.configSourcePath).toBe(claudeJsonPath)
+        expect(report.servers.map((s) => s.name)).toEqual(['sentry'])
+      })
+
+      it('lists servers from every scope, not just the first file that declares any', () => {
+        const claudeJsonPath = path.join(homeDir, '.claude.json')
+        const mcpJsonPath = path.join(tempDir, '.mcp.json')
+        fs.writeFileSync(claudeJsonPath, JSON.stringify({
+          mcpServers: { sentry: { command: 'sentry-mcp' } },
+          projects: { [fwd()]: { mcpServers: { github: { command: 'gh-mcp' } } } },
+        }))
+        fs.writeFileSync(mcpJsonPath, JSON.stringify({ mcpServers: { linear: { command: 'linear-mcp' } } }))
+        const report = buildMcpAuditReport(tempDir, homeDir)
+        expect(report.servers.map((s) => s.name).sort()).toEqual(['github', 'linear', 'sentry'])
+        expect(report.configSourcePaths).toEqual([claudeJsonPath, mcpJsonPath])
+        const output = captureStdout(() => { printReport(report) })
+        expect(output).toContain(`Config found: yes (${claudeJsonPath}, ${mcpJsonPath})`)
+      })
+
+      it('lists a name defined in local, project and user scope once', () => {
+        fs.writeFileSync(path.join(homeDir, '.claude.json'), JSON.stringify({
+          mcpServers: { github: { command: 'user-gh' } },
+          projects: { [fwd()]: { mcpServers: { github: { command: 'local-gh' } } } },
+        }))
+        fs.writeFileSync(path.join(tempDir, '.mcp.json'), JSON.stringify({ mcpServers: { github: { command: 'project-gh' } } }))
+        const report = buildMcpAuditReport(tempDir, homeDir)
+        expect(report.servers.map((s) => s.name)).toEqual(['github'])
+      })
+
+      it('ignores Copilot CLI config once any Claude Code scope declares servers', () => {
+        fs.writeFileSync(path.join(homeDir, '.claude.json'), JSON.stringify({ mcpServers: { sentry: { command: 'sentry-mcp' } } }))
+        const copilotDir = path.join(homeDir, '.copilot')
+        fs.mkdirSync(copilotDir, { recursive: true })
+        fs.writeFileSync(path.join(copilotDir, 'mcp-config.json'), JSON.stringify({ mcpServers: { confluence: { command: 'confluence-mcp' } } }))
+        const report = buildMcpAuditReport(tempDir, homeDir)
+        expect(report.servers.map((s) => s.name)).toEqual(['sentry'])
+      })
+    })
+
+    // HAND-DERIVED: `in` walks the prototype chain, so a recorded call to a server called toString looked declared by every config object and was dropped from the report.
+    it('lists a recorded call to a server named like an Object.prototype member that the config does not declare', () => {
+      fs.writeFileSync(path.join(tempDir, '.mcp.json'), JSON.stringify({ mcpServers: { github: { command: 'gh-mcp' } } }))
+      storeBlob(BASH_OUTPUT_SUBDIR, 'mcp_proto', { id: 'mcp_proto', command: 'mcp:mcp__toString__run {}', output: '{}', exitCode: 0, storedAt: Date.now(), sizeBytes: 400 })
+      const report = buildMcpAuditReport(tempDir, homeDir)
+      expect(report.servers.map((s) => s.name).sort()).toEqual(['github', 'toString'])
+    })
   })
 })

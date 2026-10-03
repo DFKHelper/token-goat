@@ -107,6 +107,7 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **`token-goat mcp-audit` missed MCP servers added at user scope, such as with `claude mcp add --scope user`, and listed only one file's servers when several scopes declared some.** It now reads local, project and user scope together, as Claude Code does, and the "Config found" line names every file it read. A name declared in more than one scope is listed once. A recorded call to an undeclared server whose name matches a built-in JavaScript property, such as `toString`, is now listed as unconfigured instead of being skipped.
 - **`token-goat read "README.md::Usage"` and `brief` printed only the heading line of a markdown section.** The header still claimed the whole section, for example "7 lines" over a single line. Both commands and their `--json` output now print the full section, and `brief --json` includes the body for HTML headings too.
 - **Swift files with an interpolation such as `"\(name.isEmpty ? "}" : name)"` lost every symbol after that line.** Members after it were also attached to the wrong type. The brace inside the interpolated string no longer counts as code. Upgrading reindexes.
 - **Kotlin, Scala, Dart, C# and Swift classes and methods came out cut short, or ran into the next symbol, when an interpolation held a nested string containing `{` or `}`.** For example `"${x.replace("}", "")}"` in Kotlin or `$"{d["}"]}"` in C#. Upgrading reindexes.

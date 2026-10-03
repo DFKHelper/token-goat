@@ -33,8 +33,10 @@ interface McpServerConfig {
 interface McpAuditReport {
   projectRoot: string
   configFound: boolean
-  /** Path of the config file discovery actually read servers from, or null if none was readable. */
+  /** First path discovery read servers from, or null if none was readable; `configSourcePaths` lists every one. */
   configSourcePath: string | null
+  /** Every path discovery read servers from, highest scope first. */
+  configSourcePaths: string[]
   /** Every path discovery checked, in order, for the "no" case's message. */
   configSourcesChecked: string[]
   /**
@@ -54,8 +56,17 @@ interface McpAuditReport {
 
 interface McpConfigDiscovery {
   servers: McpServerConfig | null
-  sourcePath: string | null
+  sourcePaths: string[]
   sourcesChecked: string[]
+}
+
+interface ClaudeJsonScopes {
+  local: McpServerConfig | null
+  user: McpServerConfig | null
+}
+
+function asServerMap(value: unknown): McpServerConfig | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as McpServerConfig : null
 }
 
 function readMcpJsonFile(configPath: string): McpServerConfig | null {
@@ -80,13 +91,6 @@ export function readMcpConfig(projectRoot: string): McpServerConfig | null {
 }
 
 /**
- * Read this project's `mcpServers` entry out of Claude Code's own `~/.claude.json`. Claude Code
- * keys the `projects` map by the literal absolute path it saw when the session started, which on
- * Windows can be either slash form (`C:\Projects\x` from a native launch, `C:/Projects/x` from a
- * Git-Bash/WSL-interop launch) depending on how the harness was started -- both are checked
- * rather than assuming one.
- */
-/**
  * `projectRoot` in and out of `resolveProjectRoot` (see resolveFilter's cwd handling in
  * dispatch.ts for the same class of case-mismatch) is canonicalized to a lowercase drive letter,
  * but `~/.claude.json` keys `projects` by whatever casing Claude Code literally saw at session
@@ -100,45 +104,45 @@ function driveLetterCaseVariants(p: string): string[] {
   return [`${drive.toLowerCase()}${rest}`, `${drive.toUpperCase()}${rest}`]
 }
 
-function readClaudeJsonConfig(claudeJsonPath: string, projectRoot: string): McpServerConfig | null {
+/** Read Claude Code's own `~/.claude.json`: `user` is its top-level `mcpServers` (what `claude mcp add --scope user` writes) and `local` is this project's `projects[path].mcpServers`, keyed by the literal absolute path Claude Code saw at session start, which on Windows can be either slash form (`C:\Projects\x` from a native launch, `C:/Projects/x` from a Git-Bash/WSL-interop launch), so both are tried. */
+function readClaudeJsonConfig(claudeJsonPath: string, projectRoot: string): ClaudeJsonScopes {
+  const none: ClaudeJsonScopes = { local: null, user: null }
   try {
-    if (!fs.existsSync(claudeJsonPath)) return null
+    if (!fs.existsSync(claudeJsonPath)) return none
     const parsed = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf-8'))
-    const projects = parsed && typeof parsed === 'object' ? parsed.projects : null
-    if (!projects || typeof projects !== 'object') return null
-    const slashForms = [projectRoot, projectRoot.replace(/\\/g, '/'), projectRoot.replace(/\//g, '\\')]
-    const candidates = [...new Set(slashForms.flatMap(driveLetterCaseVariants))]
-    for (const key of candidates) {
-      const entry = (projects as Record<string, unknown>)[key]
-      if (entry && typeof entry === 'object') {
-        const servers = (entry as Record<string, unknown>)['mcpServers']
-        if (servers && typeof servers === 'object') return servers as McpServerConfig
+    if (!parsed || typeof parsed !== 'object') return none
+    const projects = parsed.projects
+    let local: McpServerConfig | null = null
+    if (projects && typeof projects === 'object') {
+      const slashForms = [projectRoot, projectRoot.replace(/\\/g, '/'), projectRoot.replace(/\//g, '\\')]
+      const candidates = [...new Set(slashForms.flatMap(driveLetterCaseVariants))]
+      for (const key of candidates) {
+        const entry = (projects as Record<string, unknown>)[key]
+        local = entry && typeof entry === 'object' ? asServerMap((entry as Record<string, unknown>)['mcpServers']) : null
+        if (local !== null) break
       }
     }
-    return null
+    return { local, user: asServerMap(parsed.mcpServers) }
   } catch {
-    return null
+    return none
   }
 }
 
-/**
- * Discover MCP server config from every readable on-disk source token-goat knows about: the
- * project's own `.mcp.json`, then this project's entry in Claude Code's `~/.claude.json`.
- * Plugin-provided MCP servers (`mcp__plugin_*`) have no on-disk config at all -- there is no
- * third source to add for those, which is why `printReport` always carries a caveat about them.
- */
+/** Discover MCP servers the way Claude Code loads them: local scope (this project's entry in `~/.claude.json`), project scope (`.mcp.json`) and user scope (the top-level `mcpServers` of `~/.claude.json`) are merged, a name declared in several scopes listed once, and Copilot CLI's `mcp-config.json` is read only when no Claude Code scope declares anything; plugin-provided servers (`mcp__plugin_*`) have no on-disk config at all, which is why `printReport` always carries a caveat about them. */
 function discoverMcpConfig(projectRoot: string, home: string): McpConfigDiscovery {
   const mcpJsonPath = path.join(projectRoot, '.mcp.json')
   const claudeJsonFile = claudeGlobalJsonPath(home)
   const copilotJsonPath = path.join(copilotCliUserRoot(home), 'mcp-config.json')
   const sourcesChecked = [mcpJsonPath, claudeJsonFile, copilotJsonPath]
-  const fromMcpJson = readMcpJsonFile(mcpJsonPath)
-  if (fromMcpJson !== null) return { servers: fromMcpJson, sourcePath: mcpJsonPath, sourcesChecked }
-  const fromClaudeJson = readClaudeJsonConfig(claudeJsonFile, projectRoot)
-  if (fromClaudeJson !== null) return { servers: fromClaudeJson, sourcePath: claudeJsonFile, sourcesChecked }
+  const claudeJson = readClaudeJsonConfig(claudeJsonFile, projectRoot)
+  const scopes: Array<[McpServerConfig | null, string]> = [[claudeJson.local, claudeJsonFile], [readMcpJsonFile(mcpJsonPath), mcpJsonPath], [claudeJson.user, claudeJsonFile]]
+  const found = scopes.filter((scope): scope is [McpServerConfig, string] => scope[0] !== null)
+  if (found.length > 0) {
+    const servers: McpServerConfig = Object.fromEntries(found.flatMap(([scope]) => Object.entries(scope)))
+    return { servers, sourcePaths: [...new Set(found.map(([, sourcePath]) => sourcePath))], sourcesChecked }
+  }
   const fromCopilotJson = readMcpJsonFile(copilotJsonPath)
-  if (fromCopilotJson !== null) return { servers: fromCopilotJson, sourcePath: copilotJsonPath, sourcesChecked }
-  return { servers: null, sourcePath: null, sourcesChecked }
+  return { servers: fromCopilotJson, sourcePaths: fromCopilotJson !== null ? [copilotJsonPath] : [], sourcesChecked }
 }
 
 /**
@@ -231,7 +235,7 @@ export function buildMcpAuditReport(projectRoot: string, home: string = os.homed
 
   // Add servers from cache that aren't in config
   for (const [name, metrics] of cacheMetrics) {
-    if (!config || !(name in config)) {
+    if (!config || !Object.hasOwn(config, name)) {
       const cost = metrics.perCallEstimate * metrics.callCount
       servers.push({
         name: displaySafeText(name),
@@ -248,10 +252,11 @@ export function buildMcpAuditReport(projectRoot: string, home: string = os.homed
 
   return {
     projectRoot,
-    configFound: discovery.sourcePath !== null,
-    configSourcePath: discovery.sourcePath,
+    configFound: discovery.sourcePaths.length > 0,
+    configSourcePath: discovery.sourcePaths[0] ?? null,
+    configSourcePaths: discovery.sourcePaths,
     configSourcesChecked: discovery.sourcesChecked,
-    costKnown: discovery.sourcePath !== null || cacheMetrics.size > 0,
+    costKnown: discovery.sourcePaths.length > 0 || cacheMetrics.size > 0,
     servers,
     totalCost,
   }
@@ -262,8 +267,8 @@ export function printReport(report: McpAuditReport): void {
 
   w('\n# token-goat mcp-audit\n')
   w(`Project: ${report.projectRoot}\n`)
-  w(report.configSourcePath !== null
-    ? `Config found: yes (${report.configSourcePath})\n`
+  w(report.configSourcePaths.length > 0
+    ? `Config found: yes (${report.configSourcePaths.join(', ')})\n`
     : `Config found: no (checked: ${report.configSourcesChecked.join(', ')})\n`)
 
   w('\n## MCP servers\n')
