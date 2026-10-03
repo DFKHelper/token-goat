@@ -562,6 +562,14 @@ const GO_LOCAL_KINDS: ReadonlySet<string> = new Set([
 // the assigned values live under an `expression_list`, so neither can be mistaken for a name.
 const GO_MULTI_NAME_SPECS: ReadonlySet<string> = new Set(['var_spec', 'const_spec'])
 
+// The type a Go method is declared on: the receiver's parameter type with the pointer star, any parentheses and generic type parameters (`*Box[T]` -> `Box`) stripped. Empty for a receiver with no readable type.
+function goReceiverType(node: TsNode): string {
+  const receiver = node.childForFieldName('receiver')
+  const param = receiver?.namedChildren.find((c) => c.type === 'parameter_declaration')
+  const typeText = param?.childForFieldName('type')?.text ?? ''
+  return typeText.replace(/\[[^\]]*\]/g, '').replace(/[*()\s]/g, '')
+}
+
 export function extractGoSymbols(root: TsNode, filePath: string, lines: readonly string[]): SymbolEntry[] {
   const out: SymbolEntry[] = []
 
@@ -582,7 +590,9 @@ export function extractGoSymbols(root: TsNode, filePath: string, lines: readonly
       } else {
         const name = nodeName(node)
         if (name !== null && name !== '') {
-          out.push(makeSymbol(filePath, name, kind, node, lines, 'c'))
+          const sym = makeSymbol(filePath, name, kind, node, lines, 'c')
+          const receiverType = node.type === 'method_declaration' ? goReceiverType(node) : ''
+          out.push(receiverType !== '' ? { ...sym, parent: receiverType } : sym)
         }
       }
     }

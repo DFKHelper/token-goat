@@ -10,6 +10,8 @@ import { querySymbols, queryRefs, queryRefsByContext } from './index_reader.js'
 import { resolveProjectRoot } from './project.js'
 import { findSpecSeparator } from './read_commands.js'
 import { foldPath } from './util.js'
+import { resolveQualifiedSpecDef } from './read_spec.js'
+import { isTsPath, resolveTypedRefs } from './ts_refs.js'
 import { UNBOUNDED_QUERY_LIMIT } from './query_limits.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 
@@ -126,6 +128,24 @@ export function parseGraphSymbolSpec(spec: string): { name: string; file?: strin
   return { name: spec.slice(colonIdx + 2), file: spec.slice(0, colonIdx) }
 }
 
+/** Like parseGraphSymbolSpec, but a qualified `file::Parent.method` spec is resolved through the same candidate lookup `read` uses, so the name to query is the method's own name and `def` is the one definition it names. A spec that resolves to nothing, or to several, keeps the raw name so each command's own not-found/ambiguity message still fires. */
+export function resolveGraphSpec(spec: string, rootDir: string): { name: string; file?: string; def?: SymbolEntry } {
+  const parsed = parseGraphSymbolSpec(spec)
+  if (parsed.file === undefined || !parsed.name.includes('.')) return parsed
+  const def = resolveQualifiedSpecDef(spec, rootDir)
+  return def === undefined ? parsed : { name: def.name, file: parsed.file, def }
+}
+
+/** Narrows name-matched references to the ones that bind to `def` when the type checker can tell (TypeScript only); otherwise returns them unchanged, since the refs table is keyed by name alone. */
+export function narrowRefsToDef(refs: RefEntry[], def: SymbolEntry | undefined): RefEntry[] {
+  if (def === undefined || refs.length === 0 || !isTsPath(def.filePath)) return refs
+  try {
+    return resolveTypedRefs({ defFile: def.filePath, defLineStart: def.lineStart, defLineEnd: def.lineEnd, symbolName: def.name, candidates: refs }) ?? refs
+  } catch {
+    return refs
+  }
+}
+
 export function buildFileSymCache(): (fp: string) => SymbolEntry[] {
   const cache = new Map<string, SymbolEntry[]>()
   return (fp: string): SymbolEntry[] => {
@@ -161,12 +181,12 @@ export function filterRefsForSymbol(
 }
 
 /** Resolves callers of a symbol. */
-export function resolveCallers(name: string, limit?: number, filePath?: string, rootDir?: string, excludeTests?: boolean): CallerEntry[] {
+export function resolveCallers(name: string, limit?: number, filePath?: string, rootDir?: string, excludeTests?: boolean, def?: SymbolEntry): CallerEntry[] {
   const resolvedRootDir = rootDir ?? resolveProjectRoot({ project: process.cwd() })
   const queryLimit = excludeTests === true ? UNBOUNDED_REF_LIMIT : (limit ?? 500)
   const refs = queryRefs({ name, limit: queryLimit, rootDir: resolvedRootDir })
   const getSyms = buildFileSymCache()
-  const scoped = filePath === undefined ? refs : filterRefsForSymbol(refs, name, filePath, getSyms)
+  const scoped = narrowRefsToDef(filePath === undefined ? refs : filterRefsForSymbol(refs, name, filePath, getSyms), def)
 
   return scoped.map((ref) => {
     const enc = enclosingSymbol(getSyms(ref.filePath), ref.line)

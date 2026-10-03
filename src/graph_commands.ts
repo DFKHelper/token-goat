@@ -40,7 +40,8 @@ import {
   enclosingSymbol,
   type CallersOfFn,
   bfsCallChains,
-  parseGraphSymbolSpec,
+  resolveGraphSpec,
+  narrowRefsToDef,
   buildFileSymCache,
   filterRefsForSymbol,
   resolveCallers,
@@ -73,7 +74,7 @@ export function runCallers(opts: CallersOptions): number {
   }
 
   const rootDir = resolveProjectRoot({ project: process.cwd() })
-  const { name, file } = parseGraphSymbolSpec(opts.symbol)
+  const { name, file, def } = resolveGraphSpec(opts.symbol, rootDir)
   const fileHint = file !== undefined ? resolveSpecPath(file, rootDir) : undefined
   if (fileHint !== undefined && querySymbols({ name, filePath: fileHint, limit: 1 }).length === 0) {
     emitErr(`Symbol '${name}' not found in '${file}'`)
@@ -82,7 +83,7 @@ export function runCallers(opts: CallersOptions): number {
 
   const unbounded = opts.excludeTests === true || opts.grep !== undefined || fileHint !== undefined
   const requestedLimit = opts.limit ?? DEFAULT_REF_QUERY_LIMIT
-  const probed = resolveCallers(name, unbounded ? opts.limit : requestedLimit + 1, fileHint, rootDir, unbounded)
+  const probed = resolveCallers(name, unbounded ? opts.limit : requestedLimit + 1, fileHint, rootDir, unbounded, def)
   const sqlTruncated = !unbounded && probed.length > requestedLimit
   const resolved = sqlTruncated ? probed.slice(0, requestedLimit) : probed
 
@@ -198,7 +199,7 @@ export function runCallChain(opts: CallChainOptions): number {
   }
   const maxDepth = opts.depth ?? 8
   const rootDir = resolveProjectRoot({ project: process.cwd() })
-  const { name, file } = parseGraphSymbolSpec(opts.symbol)
+  const { name, file, def } = resolveGraphSpec(opts.symbol, rootDir)
   const fileHint = file !== undefined ? resolveSpecPath(file, rootDir) : undefined
 
   if (fileHint !== undefined) {
@@ -231,7 +232,7 @@ export function runCallChain(opts: CallChainOptions): number {
   const callersOf: CallersOfFn = (n: string): string[] => {
     const refs = queryRefs({ name: n, limit: UNBOUNDED_REF_LIMIT, rootDir })
     if (refs.length === 0) return []
-    const scoped = fileHint !== undefined && n === name ? filterRefsForSymbol(refs, n, fileHint, getSyms) : refs
+    const scoped = fileHint !== undefined && n === name ? narrowRefsToDef(filterRefsForSymbol(refs, n, fileHint, getSyms), def) : refs
     const names = new Set<string>()
     for (const ref of scoped) {
       if (opts.excludeTests === true && isTestFile(ref.filePath)) {
@@ -316,7 +317,7 @@ export function runImpact(opts: ImpactOptions): number {
   const top = opts.top ?? 20
   const DEPTH_CAP = 8
   const rootDir = resolveProjectRoot({ project: process.cwd() })
-  const { name: rootName, file } = parseGraphSymbolSpec(opts.symbol)
+  const { name: rootName, file, def: rootDef } = resolveGraphSpec(opts.symbol, rootDir)
   const fileHint = file !== undefined ? resolveSpecPath(file, rootDir) : undefined
   if (fileHint !== undefined && querySymbols({ name: rootName, filePath: fileHint, limit: 1 }).length === 0) {
     emitErr(`Symbol '${rootName}' not found in '${file}'`)
@@ -335,7 +336,7 @@ export function runImpact(opts: ImpactOptions): number {
     const [name, depth] = item
     if (depth >= DEPTH_CAP) { depthCapped += 1; continue }
     const refs = queryRefs({ name, limit: UNBOUNDED_REF_LIMIT, rootDir })
-    const scoped = fileHint !== undefined && name === rootName ? filterRefsForSymbol(refs, name, fileHint, getSyms) : refs
+    const scoped = fileHint !== undefined && name === rootName ? narrowRefsToDef(filterRefsForSymbol(refs, name, fileHint, getSyms), rootDef) : refs
     for (const ref of scoped) {
       if (opts.excludeTests === true && isTestFile(ref.filePath)) {
         suppressedCount += 1

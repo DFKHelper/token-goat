@@ -6,13 +6,13 @@ import { emit, emitErr } from './emit.js'
 import { refBlindKindVerdict } from './graph_commands.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 import { querySymbols, queryRefs, countRefs, DEFAULT_QUERY_LIMIT } from './index_reader.js'
-import { detectLanguageOfFile, type RefEntry } from './parser_types.js'
+import { detectLanguageOfFile, type RefEntry, type SymbolEntry } from './parser_types.js'
 import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { UNBOUNDED_QUERY_LIMIT } from './query_limits.js'
 import { DELETED_TAG, emitGuarded, fileIsGone, findSpecSeparator, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, recordReadStat, sinkGoneRows, truncationFooter, truncationNotice, warnIfFilesStale, type TruncationTotal } from './read_commands.js'
-import { confinedProjectRoot, confinementRefusal, parseCrossFileMultiSpec, parseReadSpec, resolveProjectConfinement } from './read_spec.js'
+import { confinedProjectRoot, confinementRefusal, parseCrossFileMultiSpec, parseReadSpec, resolveProjectConfinement, resolveQualifiedSpecDef } from './read_spec.js'
 import { unknownSymbolSuggestion } from './read_suggest.js'
 import { isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote, REF_BLIND_DEF_PROBE_LIMIT } from './ref_blindness.js'
 import { isTsPath, resolveTypedRefs } from './ts_refs.js'
@@ -78,12 +78,14 @@ function applyTypedRefsTier(
   symName: string,
   file: string | undefined,
   results: RefEntry[],
+  qualifiedDef?: SymbolEntry,
 ): RefEntry[] {
   if (results.length === 0) return results
   try {
     const symbolQueryOpts: Parameters<typeof querySymbols>[0] = { name: symName, limit: 2 }
     if (file !== undefined) symbolQueryOpts.filePath = file
-    const defs = querySymbols(symbolQueryOpts)
+    // A qualified spec already named its one definition, which a same-file name collision (Circle.area / Square.area) would otherwise make ambiguous here.
+    const defs = qualifiedDef !== undefined ? [qualifiedDef] : querySymbols(symbolQueryOpts)
     if (defs.length !== 1) return results
     const def = defs[0]
     if (def === undefined || !isTsPath(def.filePath)) return results
@@ -143,7 +145,10 @@ interface CollectedRefs {
 }
 
 /** Query and filter one name's references the same way for every spec form -- single symbol, same-file multi-symbol, cross-file pairs: the query window, the typed tier, `--exclude-tests`, `--grep`, then the requested-limit slice when a client-side filter ran. These steps were written out twice, once in runRefsSingle and once in the multi-target loop, and the copies had drifted: only the single form resolved the defining file before the typed tier looked it up. */
-function collectRefs(symName: string, defFile: string | undefined, opts: RefsOptions): CollectedRefs {
+function collectRefs(requestedName: string, defFile: string | undefined, opts: RefsOptions, resolvedDef?: SymbolEntry): CollectedRefs {
+  // The multi-symbol paths pass `Parent.method` through unresolved; the single path has already resolved it.
+  const qualifiedDef = resolvedDef ?? (defFile !== undefined && requestedName.includes('.') ? resolveQualifiedSpecDef(`${defFile}::${requestedName}`, opts.projectRoot ?? process.cwd()) : undefined)
+  const symName = qualifiedDef?.name ?? requestedName
   const queryOpts: Parameters<typeof queryRefs>[0] = { name: symName }
   // `defFile` (the `file` in `file::symbol`) names where the symbol is DEFINED, used only to disambiguate a same-named symbol elsewhere in the index (fed to applyTypedRefsTier's querySymbols({name, filePath}) call, where filePath genuinely is the defining file). It must never be passed to queryRefs/countRefs: refs.file_path there is the file a REFERENCE occurs in, not where the symbol is defined, so doing so would wrongly narrow every result (not just --callers) to same-file references only. Resolved to the absolute path the index stores, since a relative spelling matches no definition and silently skips the typed tier.
   const defFileHint = defFile !== undefined ? resolveSpecPath(defFile, opts.projectRoot ?? process.cwd()) : undefined
@@ -162,7 +167,7 @@ function collectRefs(symName: string, defFile: string | undefined, opts: RefsOpt
   // How full the query window came back, and how big that window was, so a client-side filter drawn from a window that filled can report its count as a floor rather than as a total. See {@link refsTotal}.
   const preScanCount = scanned.length
   const scanLimit = queryOpts.limit ?? DEFAULT_QUERY_LIMIT
-  let results = applyTypedRefsTier(symName, defFileHint, scanned)
+  let results = applyTypedRefsTier(symName, defFileHint, scanned, qualifiedDef)
   // Whether the type-based tier filter itself dropped anything, not merely whether it ran: a query where it dropped nothing is still entitled to the exact-total form. Measured before --exclude-tests/--grep can drop further rows of their own, so this reflects only the typed filter's own effect on the scanned window.
   const typedFilterDropped = results.length < scanned.length
   let suppressed = 0
@@ -336,9 +341,11 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
 /** Handle ``token-goat refs file::symbol``. */
 function runRefsSingle(opts: RefsOptions): number {
   const { file, symbol } = parseReadSpec(opts.spec)
-  const symName = symbol ?? file
+  // A qualified `file::Parent.method` resolves to the method's own name plus its one definition, so refs are keyed by the real name and the typed tier knows which declaration is meant.
+  const qualifiedDef = resolveQualifiedSpecDef(opts.spec, opts.projectRoot ?? process.cwd())
+  const symName = qualifiedDef?.name ?? symbol ?? file
   // A bare-name spec parses as a file with no symbol, and names no defining file at all.
-  const { queryOpts, defFileHint, results, preScanCount, scanLimit, suppressed, preGrepCount, clientFiltered, filteredTotal } = collectRefs(symName, symbol !== undefined ? file : undefined, opts)
+  const { queryOpts, defFileHint, results, preScanCount, scanLimit, suppressed, preGrepCount, clientFiltered, filteredTotal } = collectRefs(symName, symbol !== undefined ? file : undefined, opts, qualifiedDef)
 
   if (results.length === 0) {
     // Distinguish "--grep matched none of the N references that do exist" from a symbol that genuinely has no references (or none outside tests) -- same "filtered store renders as populated" trap already fixed for dead/deps/types. Checked first so it takes priority over the --exclude-tests message below when both filters are active and --grep is what zeroed the remaining set.

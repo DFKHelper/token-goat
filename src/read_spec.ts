@@ -438,6 +438,14 @@ export function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectR
   return finalize(candidates, displaySymbol)
 }
 
+/** The one definition a qualified `file::Parent.method` spec names, or undefined when the spec is not qualified or does not resolve to exactly one symbol. */
+export function resolveQualifiedSpecDef(spec: string, projectRoot: string | undefined): SymbolEntry | undefined {
+  const { symbol } = parseReadSpec(spec)
+  if (symbol === undefined || !symbol.includes('.')) return undefined
+  const resolution = resolveSymbolSpec(spec, undefined, projectRoot)
+  return resolution.kind === 'ok' ? resolution.entry : undefined
+}
+
 export function resolveSymbolSpecOrEmitError(
   commandName: string,
   spec: string,
