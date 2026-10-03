@@ -14,7 +14,7 @@ import {
   WHOLE_FILE_NOTE_SYMBOL,
 } from './notes.js'
 import { isInsideRoot } from './path_containment.js'
-import { resolveIndexPath } from './paths.js'
+import { displaySafeText, resolveIndexPath } from './paths.js'
 import type { SymbolEntry } from './parser_types.js'
 import { anchorLine, type NoteAnchor } from './project_memory.js'
 import { findSpecSeparator, healStaleIndex } from './read_commands.js'
@@ -203,10 +203,17 @@ function decodeBase64Buffer(payload: string, label: string): Buffer {
   return Buffer.from(normalized, 'base64')
 }
 
-/** The indexed symbol `name` in `resolvedPath`, or a CliError listing the closest names the file does have. */
-function requireSymbolMatch(resolvedPath: string, file: string, name: string): SymbolEntry {
+/** The one indexed declaration `name` names in `resolvedPath`, or a CliError listing the qualified names that pick each declaration of an ambiguous name, spelled for `flag` (the option the name came in on), or the closest names the file does have. */
+function requireSymbolMatch(resolvedPath: string, file: string, name: string, flag: '--anchor' | '--symbol'): SymbolEntry {
   const match = resolveSymbolMatch(resolvedPath, name)
-  if (match !== null) return match
+  if (match.kind === 'ok') return match.entry
+  if (match.kind === 'ambiguous') {
+    const retry = (qualified: string): string => (flag === '--anchor' ? `--anchor "${file}::${qualified}"` : `--symbol "${qualified}"`)
+    throw new CliError([
+      `Ambiguous symbol '${displaySafeText(match.symbol)}' in '${displaySafeText(file)}': ${countNoun(match.candidates.length, 'declaration')} match, and a note binds to one. Retry with its qualified name:`,
+      ...match.candidates.map((c) => `  - ${displaySafeText(c.qualifiedName)} (line ${c.entry.lineStart})  ->  ${displaySafeText(retry(c.qualifiedName))}`),
+    ])
+  }
   const messages = [`No symbol named '${name}' is indexed in '${file}'`]
   const allNames = symbolNamesInFile(resolvedPath)
   const available = rankSimilarNames(allNames, name)
@@ -226,7 +233,7 @@ export function resolveNoteAnchor(spec: string, root: string, base: string = pro
   // A note belongs to one project, and session start resolves its anchor against that project's root.
   if (!isInsideRoot(resolvedPath, root)) throw new CliError(`--anchor must name a file inside this project (${root}), got '${file}'`)
   healStaleIndex(resolvedPath)
-  const match = requireSymbolMatch(resolvedPath, file, symbol)
+  const match = requireSymbolMatch(resolvedPath, file, symbol, '--anchor')
   let rel = path.relative(root, resolvedPath)
   // The root is canonical and the cwd-resolved path may not be (a macOS temp dir is /var through a link to /private/var); isInsideRoot already followed the links, so the real paths agree.
   if (rel.startsWith('..') || path.isAbsolute(rel)) rel = path.relative(fs.realpathSync(root), fs.realpathSync(resolvedPath))
@@ -285,7 +292,7 @@ export function cmdNoteAdd(file: string, opts: { symbol?: string; contentFrom?: 
   let symbol = WHOLE_FILE_NOTE_SYMBOL
   let fingerprint: string
   if (opts.symbol !== undefined) {
-    const match = requireSymbolMatch(resolvedPath, file, opts.symbol)
+    const match = requireSymbolMatch(resolvedPath, file, opts.symbol, '--symbol')
     symbol = opts.symbol
     fingerprint = fingerprintContent(match.body)
   } else {

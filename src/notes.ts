@@ -7,6 +7,8 @@ import { fingerprintContent } from './fingerprint.js'
 import { querySymbols } from './index_reader.js'
 import { indexedSourceText } from './indexed_source.js'
 import type { SymbolEntry } from './parser_types.js'
+import { FIND_SCAN_LIMIT } from './query_limits.js'
+import { findParentName, findSymbolCandidates } from './read_spec.js'
 import { pathEqClause as pathEq } from './sql_path.js'
 import { foldPath } from './util.js'
 
@@ -47,22 +49,65 @@ function toNoteRow(row: NoteDbRow): NoteRow {
   }
 }
 
-/** Deterministic tie-break when more than one indexed symbol in a file shares a name (e.g. overloads, or two same-named methods on different classes): the earliest starting line wins. Used consistently both when a note is written and whenever its fingerprint is later recomputed, so a note always tracks the same symbol occurrence across calls. */
-function pickEarliest(matches: readonly SymbolEntry[]): SymbolEntry {
-  return matches.reduce((best, s) => (s.lineStart < best.lineStart ? s : best))
+/** What a symbol name names in one file: nothing, exactly one declaration, or declarations in several containers, each with the qualified name that picks it. */
+export type SymbolMatch =
+  | { kind: 'ok'; entry: SymbolEntry }
+  | { kind: 'none' }
+  | { kind: 'ambiguous'; symbol: string; candidates: { entry: SymbolEntry; qualifiedName: string }[] }
+
+/** Split same-named rows into declaration groups by container: rows under one container are one declaration (TypeScript overloads and their implementation, a type and a value sharing a name, a redefined Python function), while a function and a method, or two classes' same-named methods, are different declarations. Grouping by container alone keeps every group nameable, since two groups never share a qualified name. */
+function declarationGroups(rows: readonly SymbolEntry[], dbPath: string): { parent: string | null; rows: SymbolEntry[] }[] {
+  const fileSymbols = new Map<string, SymbolEntry[]>()
+  const groups = new Map<string, { parent: string | null; rows: SymbolEntry[] }>()
+  for (const row of rows) {
+    let siblings = fileSymbols.get(row.filePath)
+    if (siblings === undefined) {
+      siblings = querySymbols({ filePath: row.filePath, limit: FIND_SCAN_LIMIT }, dbPath)
+      fileSymbols.set(row.filePath, siblings)
+    }
+    const parent = findParentName(row, siblings)
+    const key = JSON.stringify([row.filePath, parent])
+    const group = groups.get(key)
+    if (group === undefined) groups.set(key, { parent, rows: [row] })
+    else group.rows.push(row)
+  }
+  return [...groups.values()]
 }
 
-/** Resolve `symbolName` against the symbols currently indexed for `filePath`. Returns `null` when no match exists -- the caller decides what that means (a hard error at note-add time; unconditional staleness at note-list time). A match whose stored `body` is empty gets it filled in from the source file over the symbol's line range, mirroring read_commands.ts's `resolveBody`. Both consumers of this function fingerprint `match.body` to detect that the code under a note has changed, and an empty body fingerprints to the same constant for every such symbol -- so without this fallback a note attached to one would never go stale. Bodies are legitimately empty for symbols an extractor emits without text, and for any symbol over parser.ts's MAX_SYMBOL_BODY_CHARS, which is stored elided precisely so readers re-derive it from source. */
+/** One entry standing for a whole declaration group: its first row with the bodies of every row, in line order, joined, so a note on an overloaded function goes stale when the implementation changes and not only when its first signature does. A lone row with a stored body is returned unchanged. */
+function groupEntry(group: readonly SymbolEntry[]): SymbolEntry {
+  const rows = [...group].sort((x, y) => x.lineStart - y.lineStart)
+  const first = rows[0] as SymbolEntry
+  if (rows.length === 1 && first.body !== '') return first
+  const body = rows.map((r) => (r.body !== '' ? r.body : bodyFromSource(r))).join('\n')
+  return { ...first, lineEnd: Math.max(...rows.map((r) => r.lineEnd)), body }
+}
+
+/** Resolve `symbolName` against the symbols currently indexed for `filePath`, the way `token-goat read file::symbol` does: a qualified `Class.method` is narrowed to that container, and a bare name shared by unrelated declarations is `ambiguous` instead of bound to whichever starts first. `none` is for the caller to interpret (a hard error at note-add time; unconditional staleness at note-list time). An `ok` entry's `body` is filled in from the source file over the symbol's line range when the stored one is empty, mirroring read_commands.ts's `resolveBody`. Both consumers of this function fingerprint `body` to detect that the code under a note has changed, and an empty body fingerprints to the same constant for every such symbol -- so without this fallback a note attached to one would never go stale. Bodies are legitimately empty for symbols an extractor emits without text, and for any symbol over parser.ts's MAX_SYMBOL_BODY_CHARS, which is stored elided precisely so readers re-derive it from source. */
 export function resolveSymbolMatch(
   filePath: string,
   symbolName: string,
   dbPath: string = globalDbPath(),
-): SymbolEntry | null {
-  const matches = querySymbols({ filePath, name: symbolName }, dbPath)
-  if (matches.length === 0) return null
-  const match = pickEarliest(matches)
-  if (match.body !== '') return match
-  return { ...match, body: bodyFromSource(match) }
+): SymbolMatch {
+  const { candidates, displaySymbol } = findSymbolCandidates(filePath, filePath, symbolName, undefined, dbPath)
+  const seen = new Set<string>()
+  const distinct = candidates.filter((c) => {
+    const key = `${c.filePath}|${c.lineStart}|${c.lineEnd}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  if (distinct.length === 0) return { kind: 'none' }
+  if (distinct.length === 1) return { kind: 'ok', entry: groupEntry(distinct) }
+  const groups = declarationGroups(distinct, dbPath)
+  if (groups.length === 1) return { kind: 'ok', entry: groupEntry((groups[0] as { rows: SymbolEntry[] }).rows) }
+  // A bare name means the file-level declaration that holds it, as it does in the source, and `Class.method` names each of the others; a note cannot store `read`'s `name@line` form, so this is the only way to pick the file-level one.
+  const fileLevel = groups.find((g) => g.parent === null)
+  if (fileLevel !== undefined && !symbolName.includes('.')) return { kind: 'ok', entry: groupEntry(fileLevel.rows) }
+  const declarations = groups
+    .map((g) => ({ entry: groupEntry(g.rows), qualifiedName: g.parent === null ? displaySymbol : `${g.parent}.${displaySymbol}` }))
+    .sort((x, y) => x.entry.lineStart - y.entry.lineStart)
+  return { kind: 'ambiguous', symbol: displaySymbol, candidates: declarations }
 }
 
 /** Source text over `entry`'s line range, or '' when the file is unreadable (deleted, permissions). */
@@ -95,14 +140,25 @@ export function computeFileFingerprint(filePath: string, dbPath: string = global
   return fingerprintContent(manifest)
 }
 
-/** Fingerprint anchor for a symbol-attached note: the resolved symbol's current body text. `null` when the symbol name no longer resolves in that file (renamed or removed) -- there is nothing left to fingerprint, so the caller ({@link isNoteStale}) treats `null` as unconditionally stale. */
+/** Every fingerprint `symbolName` currently has in `filePath`: none when it no longer resolves (renamed or removed), one when it names a single declaration, several when it has since become ambiguous (a note set before another same-named symbol appeared is still current while the declaration it was bound to is unchanged). */
+export function computeSymbolFingerprints(
+  filePath: string,
+  symbolName: string,
+  dbPath: string = globalDbPath(),
+): string[] {
+  const match = resolveSymbolMatch(filePath, symbolName, dbPath)
+  if (match.kind === 'none') return []
+  return (match.kind === 'ok' ? [match.entry] : match.candidates.map((c) => c.entry)).map((e) => fingerprintContent(e.body))
+}
+
+/** Fingerprint anchor for a symbol-attached note: the resolved symbol's current body text. `null` unless the name resolves to exactly one declaration in that file (renamed, removed, or ambiguous) -- there is nothing single to fingerprint. */
 export function computeSymbolFingerprint(
   filePath: string,
   symbolName: string,
   dbPath: string = globalDbPath(),
 ): string | null {
-  const match = resolveSymbolMatch(filePath, symbolName, dbPath)
-  return match === null ? null : fingerprintContent(match.body)
+  const all = computeSymbolFingerprints(filePath, symbolName, dbPath)
+  return all.length === 1 ? (all[0] as string) : null
 }
 
 /** Insert-or-update the note for `(filePath, symbol)` -- re-running note-add for the same attachment point overwrites content/fingerprint/updated_at rather than accumulating duplicate rows; the match is path-fold aware, like getNote. */
@@ -156,9 +212,6 @@ export function listNotes(dbPath: string = globalDbPath()): NoteRow[] {
 
 /** True when `note`'s stored fingerprint no longer matches the current indexed state of what it's attached to -- i.e. the underlying code changed (or, for a symbol note, the symbol itself vanished or was renamed) since the note was written. Purely a read: never mutates or deletes the note. */
 export function isNoteStale(note: NoteRow, dbPath: string = globalDbPath()): boolean {
-  const current =
-    note.symbol === WHOLE_FILE_NOTE_SYMBOL
-      ? computeFileFingerprint(note.filePath, dbPath)
-      : computeSymbolFingerprint(note.filePath, note.symbol, dbPath)
-  return current === null || current !== note.fingerprint
+  if (note.symbol !== WHOLE_FILE_NOTE_SYMBOL) return !computeSymbolFingerprints(note.filePath, note.symbol, dbPath).includes(note.fingerprint)
+  return computeFileFingerprint(note.filePath, dbPath) !== note.fingerprint
 }

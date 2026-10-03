@@ -1,9 +1,4 @@
-/**
- * Unit coverage for src/notes.ts -- the pure DB-layer for the `notes` table (schema in db.ts).
- * Mirrors index_reader.test.ts's convention: a fresh throwaway DB per test, symbol rows
- * inserted directly via raw SQL (no parser/tree-sitter involvement -- that's parser.test.ts's
- * job), and every notes.ts function exercised against it directly.
- */
+/** Unit coverage for src/notes.ts -- the pure DB-layer for the `notes` table (schema in db.ts). Mirrors index_reader.test.ts's convention: a fresh throwaway DB per test, symbol rows inserted directly via raw SQL (no parser/tree-sitter involvement -- that's parser.test.ts's job), and every notes.ts function exercised against it directly. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -85,24 +80,65 @@ describe('resolveSymbolMatch / symbolNamesInFile', () => {
     const dbPath = tmpDbPath()
     seedSymbol(dbPath, 'a.ts', 'login', 'function', 10, 20, 'function login() {}')
     const match = resolveSymbolMatch('a.ts', 'login', dbPath)
-    expect(match?.name).toBe('login')
-    expect(match?.lineStart).toBe(10)
+    expect(match.kind === 'ok' && match.entry.name).toBe('login')
+    expect(match.kind === 'ok' && match.entry.lineStart).toBe(10)
   })
 
-  it('returns null for a symbol name that is not indexed in that file', () => {
+  it('is none for a symbol name that is not indexed in that file', () => {
     const dbPath = tmpDbPath()
     seedSymbol(dbPath, 'a.ts', 'login', 'function', 10, 20, 'function login() {}')
-    expect(resolveSymbolMatch('a.ts', 'logout', dbPath)).toBeNull()
-    expect(resolveSymbolMatch('b.ts', 'login', dbPath)).toBeNull()
+    expect(resolveSymbolMatch('a.ts', 'logout', dbPath)).toEqual({ kind: 'none' })
+    expect(resolveSymbolMatch('b.ts', 'login', dbPath)).toEqual({ kind: 'none' })
   })
 
-  it('picks the earliest-starting-line match when a name is duplicated in one file (e.g. overloads)', () => {
+  // HAND-DERIVED: three same-named top-level functions of one kind are one TypeScript overload set (two signatures and the implementation); the expected body is those three bodies in line order.
+  it('treats same-named rows of one kind and container as one declaration, bodied by all of them in line order', () => {
     const dbPath = tmpDbPath()
-    seedSymbol(dbPath, 'a.ts', 'run', 'function', 40, 45, 'function run(x: number) {}')
-    seedSymbol(dbPath, 'a.ts', 'run', 'function', 5, 10, 'function run(x: string) {}')
+    seedSymbol(dbPath, 'a.ts', 'run', 'function', 40, 45, 'function run(x: any) { impl }')
+    seedSymbol(dbPath, 'a.ts', 'run', 'function', 5, 5, 'function run(x: string): void')
+    seedSymbol(dbPath, 'a.ts', 'run', 'function', 6, 6, 'function run(x: number): void')
     const match = resolveSymbolMatch('a.ts', 'run', dbPath)
-    expect(match?.lineStart).toBe(5)
-    expect(match?.body).toBe('function run(x: string) {}')
+    expect(match.kind).toBe('ok')
+    const entry = match.kind === 'ok' ? match.entry : undefined
+    expect(entry?.lineStart).toBe(5)
+    expect(entry?.lineEnd).toBe(45)
+    expect(entry?.body).toBe('function run(x: string): void\nfunction run(x: number): void\nfunction run(x: any) { impl }')
+  })
+
+  // HAND-DERIVED: `type Id = string` and `const Id = ...` are a TypeScript type and value sharing one name in one scope, which a reader names as one thing, so the two rows of different kinds bind as one declaration.
+  it('treats same-named rows of different kinds in one container as one declaration', () => {
+    const dbPath = tmpDbPath()
+    seedSymbol(dbPath, 'a.ts', 'Id', 'type', 1, 1, 'type Id = string')
+    seedSymbol(dbPath, 'a.ts', 'Id', 'variable', 2, 2, 'const Id = (s: string): Id => s')
+    const match = resolveSymbolMatch('a.ts', 'Id', dbPath)
+    expect(match.kind).toBe('ok')
+    expect(match.kind === 'ok' && match.entry.body).toBe('type Id = string\nconst Id = (s: string): Id => s')
+  })
+
+  // HAND-DERIVED: a top-level `run` at lines 1-3 and a `run` method inside Box (lines 5-9) at lines 6-8; a bare `run` in the source names the top-level one, and `Box.run` names the method.
+  it('binds a bare name to the file-level declaration when a class also has a method of that name', () => {
+    const dbPath = tmpDbPath()
+    seedSymbol(dbPath, 'a.ts', 'run', 'function', 1, 3, 'function run() { return 0 }')
+    seedSymbol(dbPath, 'a.ts', 'Box', 'class', 5, 9, 'class Box {}')
+    seedSymbol(dbPath, 'a.ts', 'run', 'method', 6, 8, 'run() { return 1 }')
+    const bare = resolveSymbolMatch('a.ts', 'run', dbPath)
+    expect(bare.kind === 'ok' && bare.entry.body).toBe('function run() { return 0 }')
+    const method = resolveSymbolMatch('a.ts', 'Box.run', dbPath)
+    expect(method.kind === 'ok' && method.entry.body).toBe('run() { return 1 }')
+  })
+
+  // HAND-DERIVED: Alpha spans lines 1-5 and Beta lines 7-11, each containing one `run` method, so the two `run` rows sit in different containers.
+  it('is ambiguous for a name two classes each define, and a qualified name picks one', () => {
+    const dbPath = tmpDbPath()
+    seedSymbol(dbPath, 'a.ts', 'Alpha', 'class', 1, 5, 'class Alpha {}')
+    seedSymbol(dbPath, 'a.ts', 'run', 'method', 2, 4, 'run() { return 1 }')
+    seedSymbol(dbPath, 'a.ts', 'Beta', 'class', 7, 11, 'class Beta {}')
+    seedSymbol(dbPath, 'a.ts', 'run', 'method', 8, 10, 'run() { return 2 }')
+    const bare = resolveSymbolMatch('a.ts', 'run', dbPath)
+    expect(bare.kind).toBe('ambiguous')
+    expect(bare.kind === 'ambiguous' && bare.candidates.map((c) => [c.qualifiedName, c.entry.lineStart])).toEqual([['Alpha.run', 2], ['Beta.run', 8]])
+    const beta = resolveSymbolMatch('a.ts', 'Beta.run', dbPath)
+    expect(beta.kind === 'ok' && beta.entry.body).toBe('run() { return 2 }')
   })
 
   it('symbolNamesInFile returns distinct sorted names scoped to the file', () => {
@@ -135,10 +171,7 @@ describe('computeFileFingerprint / computeSymbolFingerprint', () => {
     seedSymbol(dbPath, 'a.ts', 'foo', 'function', 1, 5, 'function foo() { return 1 }')
     const fp1 = computeFileFingerprint('a.ts', dbPath)
 
-    // Same manifest (name/kind/line-range), different body text -> file fingerprint unchanged.
-    // This is deliberate: the file-level fingerprint tracks symbol *shape*, not body content --
-    // a whole-file note's staleness anchor is "did the symbol set shift", not "did any single
-    // symbol's implementation change" (that finer-grained signal is what a --symbol note gets).
+    // Same manifest (name/kind/line-range), different body text -> file fingerprint unchanged. This is deliberate: the file-level fingerprint tracks symbol *shape*, not body content -- a whole-file note's staleness anchor is "did the symbol set shift", not "did any single symbol's implementation change" (that finer-grained signal is what a --symbol note gets).
     getDb(dbPath).prepare('DELETE FROM symbols WHERE name = ?').run('foo')
     seedSymbol(dbPath, 'a.ts', 'foo', 'function', 1, 5, 'function foo() { return 2 }')
     expect(computeFileFingerprint('a.ts', dbPath)).toBe(fp1)
@@ -164,8 +197,7 @@ describe('computeFileFingerprint / computeSymbolFingerprint', () => {
     const dbPath = tmpDbPath()
     seedManySymbols(dbPath, 'a.ts', 1_000_001)
     const fp1 = computeFileFingerprint('a.ts', dbPath)
-    // sym1000000 is the 1,000,001st symbol (0-indexed), past the old 1,000,000-row cap: if the
-    // manifest silently dropped it, removing it would leave the fingerprint unchanged.
+    // sym1000000 is the 1,000,001st symbol (0-indexed), past the old 1,000,000-row cap: if the manifest silently dropped it, removing it would leave the fingerprint unchanged.
     getDb(dbPath).prepare('DELETE FROM symbols WHERE name = ?').run('sym1000000')
     expect(computeFileFingerprint('a.ts', dbPath)).not.toBe(fp1)
   }, 300000)
@@ -255,6 +287,33 @@ describe('isNoteStale', () => {
     const note = getNote('a.ts', 'login', dbPath)!
 
     getDb(dbPath).prepare('DELETE FROM symbols WHERE name = ?').run('login')
+    expect(isNoteStale(note, dbPath)).toBe(true)
+  })
+
+  // HAND-DERIVED: the note was bound to Beta.run's body; Alpha.run is another declaration of the same bare name, so the bare name now matches two. The note stays current while some declaration still has the recorded body, and goes stale when none does.
+  it('a note recorded against one of two same-named declarations tracks that one, not the other', () => {
+    const dbPath = tmpDbPath()
+    seedSymbol(dbPath, 'a.ts', 'Alpha', 'class', 1, 5, 'class Alpha {}')
+    seedSymbol(dbPath, 'a.ts', 'run', 'method', 2, 4, 'run() { return 1 }')
+    seedSymbol(dbPath, 'a.ts', 'Beta', 'class', 7, 11, 'class Beta {}')
+    seedSymbol(dbPath, 'a.ts', 'run', 'method', 8, 10, 'run() { return 2 }')
+    upsertNote('a.ts', 'run', 'note', fingerprintContent('run() { return 2 }'), dbPath)
+    const note = getNote('a.ts', 'run', dbPath)!
+    expect(isNoteStale(note, dbPath)).toBe(false)
+
+    getDb(dbPath).prepare('UPDATE symbols SET body = ? WHERE line_start = 8').run('run() { return 3 }')
+    expect(isNoteStale(note, dbPath)).toBe(true)
+  })
+
+  it('a note on an overloaded function goes stale when the implementation changes, not only the first signature', () => {
+    const dbPath = tmpDbPath()
+    seedSymbol(dbPath, 'a.ts', 'run', 'function', 1, 1, 'function run(x: string): void')
+    seedSymbol(dbPath, 'a.ts', 'run', 'function', 2, 4, 'function run(x: any) { impl 1 }')
+    upsertNote('a.ts', 'run', 'note', computeSymbolFingerprint('a.ts', 'run', dbPath)!, dbPath)
+    const note = getNote('a.ts', 'run', dbPath)!
+    expect(isNoteStale(note, dbPath)).toBe(false)
+
+    getDb(dbPath).prepare('UPDATE symbols SET body = ? WHERE line_start = 2').run('function run(x: any) { impl 2 }')
     expect(isNoteStale(note, dbPath)).toBe(true)
   })
 })

@@ -2,7 +2,7 @@
 
 import * as fs from 'node:fs';
 import { globalDbPath } from './constants.js';
-import { computeSymbolFingerprint, symbolNamesInFile } from './notes.js';
+import { computeSymbolFingerprints, symbolNamesInFile } from './notes.js';
 import { resolveIndexPath } from './paths.js';
 import type { AnchorStatus, NoteAnchor } from './project_memory.js';
 
@@ -11,8 +11,10 @@ export function anchorStatus(root: string, anchor: NoteAnchor, dbPath: string = 
   try {
     const abs = resolveIndexPath(anchor.file, root);
     if (!fs.existsSync(abs)) return 'gone';
-    const now = computeSymbolFingerprint(abs, anchor.symbol, dbPath);
-    if (now !== null) return now === anchor.sha ? 'current' : 'changed';
+    const now = computeSymbolFingerprints(abs, anchor.symbol, dbPath);
+    if (now.length === 1) return now[0] === anchor.sha ? 'current' : 'changed';
+    // A name that has become ambiguous since the note was set is current while the declaration it was bound to is unchanged; otherwise which one it meant is unknowable.
+    if (now.length > 1) return now.includes(anchor.sha) ? 'current' : 'unknown';
     // No row for the symbol. That means it is gone only when the file has rows at all; a file the index has not reached yet says nothing about it.
     return symbolNamesInFile(abs, dbPath).length > 0 ? 'gone' : 'unknown';
   } catch {

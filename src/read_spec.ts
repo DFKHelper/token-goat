@@ -332,6 +332,74 @@ export function stripHtmlIdSpelling(name: string, filePath: string): string {
   return name.startsWith('#') && detectLanguage(filePath) === 'html' ? name.slice(1) : name
 }
 
+/** The indexed rows a `file::symbol` spec's symbol part names in `resolved`, narrowed to one container when the symbol is a qualified `Class.method`, with the name a miss or ambiguity should print. Shared by `read` and the note anchors, so a name means the same symbol to both. `file` is the spelling the caller typed, used only to find the file's rows when `resolved` has none. */
+export function findSymbolCandidates(
+  file: string,
+  resolved: string,
+  symbol: string,
+  projectRoot?: string,
+  dbPath?: string,
+): { candidates: SymbolEntry[]; displaySymbol: string } {
+  // Without a database the lookups take querySymbols' own default, exactly as `read` always called it.
+  const query = (opts: Parameters<typeof querySymbols>[0]): SymbolEntry[] => (dbPath === undefined ? querySymbols(opts) : querySymbols(opts, dbPath))
+  if (symbol.includes('.')) {
+    const exactMatch = query({ name: symbol, filePath: resolved, limit: 10 })
+    if (exactMatch.length > 0) return { candidates: exactMatch, displaySymbol: symbol }
+  }
+
+  const dotParts = symbol.split('.')
+  const [symBase, methodName] =
+    dotParts.length > 1
+      ? [dotParts[0] ?? symbol, dotParts[dotParts.length - 1]]
+      : [symbol, undefined]
+
+  const lookupName = methodName ?? symBase
+  let candidates = query({ name: lookupName, filePath: resolved, limit: 10 })
+  if (candidates.length === 0) {
+    const foldedFile = foldPath(file)
+    const baseName = file.slice(Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\')) + 1)
+    candidates = query({
+      name: lookupName,
+      limit: 50,
+      ...(baseName !== '' ? { fileBaseName: baseName } : {}),
+      ...(projectRoot !== undefined ? { rootDir: projectRoot } : {}),
+    }).filter((s) => {
+      const foldedFilePath = foldPath(s.filePath)
+      return (
+        foldedFilePath === foldedFile ||
+        endsWithPathBoundary(foldedFilePath, foldedFile) ||
+        endsWithPathBoundary(foldedFile, foldedFilePath)
+      )
+    })
+  }
+
+  if (methodName !== undefined && candidates.length > 1) {
+    const containerBaseName = file.slice(Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\')) + 1)
+    const containers = query({
+      name: symBase,
+      limit: 50,
+      ...(containerBaseName !== '' ? { fileBaseName: containerBaseName } : {}),
+      ...(projectRoot !== undefined ? { rootDir: projectRoot } : {}),
+    })
+    const symBaseLower = symBase.toLowerCase()
+    const scoped = candidates.filter((c) => {
+      const cParent = c.parent ?? ''
+      if (cParent.toLowerCase() === symBaseLower) return true
+      if (cParent === '' && c.docstring.toLowerCase() === symBaseLower) return true
+      return containers.some(
+        (cls) =>
+          cls.filePath === c.filePath &&
+          !(cls.lineStart === c.lineStart && cls.lineEnd === c.lineEnd) &&
+          c.lineStart >= cls.lineStart &&
+          c.lineEnd <= cls.lineEnd,
+      )
+    })
+    if (scoped.length > 0) candidates = scoped
+  }
+
+  return { candidates, displaySymbol: lookupName }
+}
+
 export function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectRoot?: string): SymbolResolution {
   const { file, symbol: rawSymbol } = parseReadSpec(spec)
   if (rawSymbol === undefined || rawSymbol === '') return { kind: 'none' }
@@ -366,64 +434,8 @@ export function resolveSymbolSpec(spec: string, forceRefresh?: boolean, projectR
     return { kind: 'ambiguous', symbol: displaySymbol, file, candidates: anchored }
   }
 
-  if (symbol.includes('.')) {
-    const exactMatch = querySymbols({ name: symbol, filePath: resolved, limit: 10 })
-    if (exactMatch.length > 0) {
-      return finalize(exactMatch, symbol)
-    }
-  }
-
-  const dotParts = symbol.split('.')
-  const [symBase, methodName] =
-    dotParts.length > 1
-      ? [dotParts[0] ?? symbol, dotParts[dotParts.length - 1]]
-      : [symbol, undefined]
-
-  const lookupName = methodName ?? symBase
-  let candidates = querySymbols({ name: lookupName, filePath: resolved, limit: 10 })
-  if (candidates.length === 0) {
-    const foldedFile = foldPath(file)
-    const baseName = file.slice(Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\')) + 1)
-    candidates = querySymbols({
-      name: lookupName,
-      limit: 50,
-      ...(baseName !== '' ? { fileBaseName: baseName } : {}),
-      ...(projectRoot !== undefined ? { rootDir: projectRoot } : {}),
-    }).filter((s) => {
-      const foldedFilePath = foldPath(s.filePath)
-      return (
-        foldedFilePath === foldedFile ||
-        endsWithPathBoundary(foldedFilePath, foldedFile) ||
-        endsWithPathBoundary(foldedFile, foldedFilePath)
-      )
-    })
-  }
-
-  if (methodName !== undefined && candidates.length > 1) {
-    const containerBaseName = file.slice(Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\')) + 1)
-    const containers = querySymbols({
-      name: symBase,
-      limit: 50,
-      ...(containerBaseName !== '' ? { fileBaseName: containerBaseName } : {}),
-      ...(projectRoot !== undefined ? { rootDir: projectRoot } : {}),
-    })
-    const symBaseLower = symBase.toLowerCase()
-    const scoped = candidates.filter((c) => {
-      const cParent = c.parent ?? ''
-      if (cParent.toLowerCase() === symBaseLower) return true
-      if (cParent === '' && c.docstring.toLowerCase() === symBaseLower) return true
-      return containers.some(
-        (cls) =>
-          cls.filePath === c.filePath &&
-          !(cls.lineStart === c.lineStart && cls.lineEnd === c.lineEnd) &&
-          c.lineStart >= cls.lineStart &&
-          c.lineEnd <= cls.lineEnd,
-      )
-    })
-    if (scoped.length > 0) candidates = scoped
-  }
-
-  return finalize(candidates, lookupName)
+  const { candidates, displaySymbol } = findSymbolCandidates(file, resolved, symbol, projectRoot)
+  return finalize(candidates, displaySymbol)
 }
 
 export function resolveSymbolSpecOrEmitError(
