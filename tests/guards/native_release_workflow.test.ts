@@ -1,5 +1,7 @@
 /** The release path for the native hook client in .github/workflows/publish.yml: four binaries built in jobs that hold no secret, the two Windows ones Authenticode-signed in a job that runs no repository or dependency code and is the only reader of the signing credentials, the two Linux ones given build provenance, and a publish job that rebuilds dist/native from those artifacts alone and runs a gate that refuses anything unsigned or substituted before `npm publish`. Each property is a check that returns its problems, run twice: on the workflow as committed, where it must find none, and on a copy mutated in memory to break exactly that property, where it must name the break, so no check can pass by reading nothing. Provenance: CAPTURE, parsed from `.github/workflows/publish.yml` itself, the file GitHub executes; the mutations are HAND-DERIVED edits of that parse. The target list is compared against scripts/verify-native-dist.mjs and src/native_hook.ts, the two places the release and the installer name it. */
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 
 import * as yaml from 'js-yaml'
@@ -7,9 +9,12 @@ import { describe, expect, it } from 'vitest'
 
 import { NATIVE_TARGETS } from '../../scripts/verify-native-dist.mjs'
 import { ROOT } from '../helpers/bundle.js'
+import { HOOK_BASH } from '../helpers/hook-bash.js'
 
 interface Step {
   name?: string
+  id?: string
+  if?: string
   uses?: string
   run?: string
   with?: Record<string, string>
@@ -20,6 +25,7 @@ interface Job {
   needs?: string | string[]
   environment?: string | { name: string }
   permissions?: Record<string, string>
+  outputs?: Record<string, string>
   env?: Record<string, string>
   strategy?: { matrix?: { include?: Record<string, string>[] } }
   steps: Step[]
@@ -150,11 +156,14 @@ function publishAssemblesFromReleaseArtifacts(doc: Workflow): string[] {
   return problems
 }
 
-/** The verify gate runs in the publish job after assembly and before `npm publish`, over dist/native and the manifest of every job that produced a binary. */
+const GATE_LINE = /^\s*node scripts\/verify-native-dist\.mjs (--without-windows )?dist\/native /
+const LINUX_MANIFESTS = ['native/linux-x64.sha256', 'native/linux-arm64.sha256']
+
+/** The verify gate runs in the publish job after assembly and before `npm publish`, over dist/native and the manifest of every job that produced a binary: all three when Windows was signed, and the two Linux ones under --without-windows when it was not. */
 function publishVerifiesBeforePublishing(doc: Workflow): string[] {
   const problems: string[] = []
   const steps = job(doc, PUBLISH_JOB).steps
-  const gate = steps.findIndex((s) => /^node scripts\/verify-native-dist\.mjs dist\/native /.test(s.run ?? ''))
+  const gate = steps.findIndex((s) => (s.run ?? '').split('\n').some((l) => GATE_LINE.test(l)))
   const publish = steps.findIndex((s) => /\bnpm publish\b/.test(s.run ?? ''))
   const assembly = steps.findIndex((s) => /^\s*rm -rf dist\/native\s*$/m.test(s.run ?? ''))
   if (publish < 0) problems.push(`${PUBLISH_JOB} has no npm publish step`)
@@ -162,7 +171,59 @@ function publishVerifiesBeforePublishing(doc: Workflow): string[] {
   else {
     if (publish >= 0 && gate > publish) problems.push('scripts/verify-native-dist.mjs runs after npm publish')
     if (gate < assembly) problems.push('scripts/verify-native-dist.mjs runs before dist/native is assembled')
-    for (const manifest of ['native-signed/SHA256SUMS', 'native/linux-x64.sha256', 'native/linux-arm64.sha256']) if (!steps[gate]!.run!.includes(manifest)) problems.push(`scripts/verify-native-dist.mjs is not given ${manifest}`)
+    const runs = steps[gate]!.run!.split('\n').filter((l) => GATE_LINE.test(l))
+    const signed = runs.find((l) => !l.includes('--without-windows'))
+    const unsigned = runs.find((l) => l.includes('--without-windows'))
+    if (signed === undefined) problems.push('scripts/verify-native-dist.mjs has no run for a release with signed Windows binaries')
+    else for (const manifest of ['native-signed/SHA256SUMS', ...LINUX_MANIFESTS]) if (!signed.includes(manifest)) problems.push(`scripts/verify-native-dist.mjs is not given ${manifest}`)
+    if (unsigned === undefined) problems.push('scripts/verify-native-dist.mjs has no --without-windows run for a release without signing')
+    else {
+      for (const manifest of LINUX_MANIFESTS) if (!unsigned.includes(manifest)) problems.push(`scripts/verify-native-dist.mjs --without-windows is not given ${manifest}`)
+      if (unsigned.includes('native-signed')) problems.push('scripts/verify-native-dist.mjs --without-windows is given the signed Windows manifest')
+    }
+  }
+  return problems
+}
+
+const SIGNED_STEP = "steps.cfg.outputs.configured == 'true'"
+const SIGNED_JOB = "needs.sign-windows.outputs.signed == 'true'"
+const SIGNED_ENV = '${{ needs.sign-windows.outputs.signed }}'
+const SIGNED_BRANCH = 'if [ "$WINDOWS_SIGNED" = true ]; then'
+
+/** Which branch of the `if [ "$WINDOWS_SIGNED" = true ]` block each line of a run script sits in. */
+function signedBranches(run: string): Array<readonly [string, 'outside' | 'then' | 'else']> {
+  let state: 'outside' | 'then' | 'else' = 'outside'
+  return run.split('\n').map((line) => {
+    const t = line.trim()
+    if (t === SIGNED_BRANCH) state = 'then'
+    else if (t === 'else' && state === 'then') state = 'else'
+    else if (t === 'fi' && state !== 'outside') state = 'outside'
+    return [t, state] as const
+  })
+}
+
+/** Without a signing configuration the release ships no Windows binary rather than failing or shipping an unsigned one: the sign job's first step records whether signing is configured, every later step there runs only when it is, the job exports that as `signed`, and the publish job downloads, copies and verifies Windows binaries only on that branch. */
+function windowsShipsOnlyWhenSigned(doc: Workflow): string[] {
+  const problems: string[] = []
+  const sign = job(doc, SIGN_JOB)
+  const cfgAt = sign.steps.findIndex((s) => s.id === 'cfg')
+  if (cfgAt !== 0) problems.push(`${SIGN_JOB} does not open with a step id'd cfg that records whether signing is configured`)
+  else {
+    const last = (sign.steps[0]!.run ?? '').trim().split('\n').at(-1)?.trim()
+    if (last !== 'echo "configured=true" >> "$GITHUB_OUTPUT"') problems.push(`${SIGN_JOB}: the configuration check does not end by recording configured=true`)
+    for (const step of sign.steps.slice(1)) if (step.if !== SIGNED_STEP) problems.push(`${SIGN_JOB}: ${step.name ?? step.uses ?? '(unnamed step)'} runs without signing configured`)
+  }
+  if (sign.outputs?.['signed'] !== '${{ steps.cfg.outputs.configured }}') problems.push(`${SIGN_JOB} does not export the configuration check as outputs.signed`)
+  for (const step of job(doc, PUBLISH_JOB).steps) {
+    const label = step.name ?? step.uses ?? '(unnamed step)'
+    if (step.with?.['name'] === 'native-windows-signed' && step.if !== SIGNED_JOB) problems.push(`${PUBLISH_JOB}: ${label} runs when nothing was signed`)
+    const run = step.run ?? ''
+    if (!/win32|verify-native-dist\.mjs/.test(run)) continue
+    if (step.env?.['WINDOWS_SIGNED'] !== SIGNED_ENV) problems.push(`${PUBLISH_JOB}: ${label} does not read whether ${SIGN_JOB} signed anything`)
+    for (const [line, state] of signedBranches(run)) {
+      if (/win32|native-signed/.test(line) && state !== 'then') problems.push(`${PUBLISH_JOB}: ${label}: ${line} runs outside the signed branch`)
+      if (line.includes('--without-windows') && state !== 'else') problems.push(`${PUBLISH_JOB}: ${label}: ${line} runs outside the unsigned branch`)
+    }
   }
   return problems
 }
@@ -224,17 +285,26 @@ const CHECKS: ReadonlyArray<readonly [string, (doc: Workflow) => string[], (doc:
       const assembly = doc.jobs[PUBLISH_JOB]!.steps.find((s) => s.name === 'Assemble dist/native from the release artifacts')!
       assembly.run = assembly.run!.replace('rm -rf dist/native\n', '')
     },
-    'Assemble dist/native from the release artifacts: touches dist/native before deleting it: mkdir -p dist/native/win32-x64 dist/native/win32-arm64 dist/native/linux-x64 dist/native/linux-arm64',
+    'Assemble dist/native from the release artifacts: touches dist/native before deleting it: mkdir -p dist/native/linux-x64 dist/native/linux-arm64',
   ],
   [
     'publish runs the verify gate before npm publish',
     publishVerifiesBeforePublishing,
     (doc) => {
       const steps = doc.jobs[PUBLISH_JOB]!.steps
-      const gate = steps.findIndex((s) => s.run?.startsWith('node scripts/verify-native-dist.mjs'))
+      const gate = steps.findIndex((s) => /verify-native-dist\.mjs/.test(s.run ?? ''))
       steps.push(...steps.splice(gate, 1))
     },
     'scripts/verify-native-dist.mjs runs after npm publish',
+  ],
+  [
+    'Windows binaries are signed, downloaded, copied and verified only when signing is configured',
+    windowsShipsOnlyWhenSigned,
+    (doc) => {
+      const assembly = doc.jobs[PUBLISH_JOB]!.steps.find((s) => s.name === 'Assemble dist/native from the release artifacts')!
+      assembly.run = assembly.run!.replace(`${SIGNED_BRANCH}\n`, '').replace(/\n\s*fi\s*$/, '\n')
+    },
+    `${PUBLISH_JOB}: Assemble dist/native from the release artifacts: mkdir -p dist/native/win32-x64 dist/native/win32-arm64 runs outside the signed branch`,
   ],
   [
     'the build matrix is exactly the shipped target list',
@@ -258,6 +328,65 @@ describe('the native release in publish.yml', () => {
       expect(check(doc)).toContain(expected)
     })
   }
+})
+
+describe('the signing configuration check, run under bash', () => {
+  // HAND-DERIVED cases: unset must release without Windows binaries rather than fail, and each provider's variable and secret names are FORMAT-DERIVED from jsign's storetype docs (https://ebourg.github.io/jsign/), the same names the step's env block passes.
+  const NAMES = ['WINDOWS_SIGNING_STORETYPE', 'WINDOWS_SIGNING_ALIAS', 'ESIGNER_USERNAME', 'ESIGNER_PASSWORD', 'ESIGNER_TOTP_SECRET', 'DIGICERT_API_KEY', 'DIGICERT_CLIENT_CERT_P12_BASE64', 'DIGICERT_CLIENT_CERT_PASSWORD']
+  const ESIGNER = { WINDOWS_SIGNING_STORETYPE: 'ESIGNER', WINDOWS_SIGNING_ALIAS: 'a', ESIGNER_USERNAME: 'u', ESIGNER_PASSWORD: 'p', ESIGNER_TOTP_SECRET: 't' }
+  const DIGICERT = { WINDOWS_SIGNING_STORETYPE: 'DIGICERTONE', WINDOWS_SIGNING_ALIAS: 'a', DIGICERT_API_KEY: 'k', DIGICERT_CLIENT_CERT_P12_BASE64: 'c', DIGICERT_CLIENT_CERT_PASSWORD: 'p' }
+
+  function runCfg(vars: Record<string, string>): { status: number | null; output: string; log: string } {
+    const step = job(real(), SIGN_JOB).steps.find((s) => s.id === 'cfg')
+    expect(step?.run, `${SIGN_JOB} has no step id'd cfg to run`).toBeDefined()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-signcfg-'))
+    try {
+      const out = path.join(dir, 'GITHUB_OUTPUT')
+      fs.writeFileSync(out, '')
+      const env: NodeJS.ProcessEnv = { ...process.env, GITHUB_OUTPUT: out, ...vars }
+      for (const name of NAMES) if (!(name in vars)) delete env[name]
+      const r = spawnSync(HOOK_BASH!, ['-c', step!.run!], { env, encoding: 'utf8' })
+      return { status: r.status, output: fs.readFileSync(out, 'utf8'), log: r.stdout + r.stderr }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it.skipIf(HOOK_BASH === null)('with no storetype, succeeds and records that nothing will be signed', () => {
+    const r = runCfg({})
+    expect(r.status, r.log).toBe(0)
+    expect(r.output).toBe('configured=false\n')
+    expect(r.log).toContain('this release ships no Windows binaries')
+  })
+
+  it.skipIf(HOOK_BASH === null)('with an empty storetype, behaves as unset', () => {
+    const r = runCfg({ WINDOWS_SIGNING_STORETYPE: '' })
+    expect(r.status, r.log).toBe(0)
+    expect(r.output).toBe('configured=false\n')
+  })
+
+  for (const [label, vars] of [['ESIGNER', ESIGNER], ['DIGICERTONE', DIGICERT]] as const) {
+    it.skipIf(HOOK_BASH === null)(`with ${label} and every secret, records that signing is configured`, () => {
+      const r = runCfg(vars)
+      expect(r.status, r.log).toBe(0)
+      expect(r.output).toBe('configured=true\n')
+    })
+
+    it.skipIf(HOOK_BASH === null)(`with ${label} and a secret missing, fails and names it`, () => {
+      const last = Object.keys(vars).at(-1)!
+      const r = runCfg(Object.fromEntries(Object.entries(vars).filter(([k]) => k !== last)))
+      expect(r.status).toBe(1)
+      expect(r.output).toBe('')
+      expect(r.log).toContain(`is missing: ${last}`)
+    })
+  }
+
+  it.skipIf(HOOK_BASH === null)('with an unknown storetype, fails rather than releasing without Windows binaries', () => {
+    const r = runCfg({ ...ESIGNER, WINDOWS_SIGNING_STORETYPE: 'esigner' })
+    expect(r.status).toBe(1)
+    expect(r.output).toBe('')
+    expect(r.log).toContain("WINDOWS_SIGNING_STORETYPE is 'esigner'")
+  })
 })
 
 describe('the release target list', () => {

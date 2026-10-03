@@ -158,7 +158,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # Authenticode-signs both Windows binaries with a certificate held in a cloud HSM, through jsign, which speaks to either provider: SSL.com eSigner or DigiCert KeyLocker, chosen by the WINDOWS_SIGNING_STORETYPE variable (ESIGNER or DIGICERTONE). The provider's credentials live in the `signing` environment, so a protection rule there can require approval, and no other job in this workflow can read them. This job checks out nothing and installs no npm or Cargo package: it runs jsign and osslsigncode, each downloaded from a pinned URL and checked against a pinned sha256 before use, over the two binaries the native jobs uploaded. Until the certificate and its secrets exist this job fails at its first step, naming what is missing, and the publish job, which needs it, never starts.
+  # Authenticode-signs both Windows binaries with a certificate held in a cloud HSM, through jsign, which speaks to either provider: SSL.com eSigner or DigiCert KeyLocker, chosen by the WINDOWS_SIGNING_STORETYPE variable (ESIGNER or DIGICERTONE). The provider's credentials live in the `signing` environment, so a protection rule there can require approval, and no other job in this workflow can read them. This job checks out nothing and installs no npm or Cargo package: it runs jsign and osslsigncode, each downloaded from a pinned URL and checked against a pinned sha256 before use, over the two binaries the native jobs uploaded. With WINDOWS_SIGNING_STORETYPE unset it signs nothing and reports `signed` as false, so the release ships the Linux binaries alone and Windows installs keep the Node hook rather than an unsigned executable that SmartScreen or Smart App Control would block; a storetype that is set but unknown, or missing one of its secrets, still fails here and stops the release.
   sign-windows:
     name: Sign the Windows binaries
     needs: native
@@ -170,6 +170,8 @@ jobs:
       name: signing
     permissions:
       contents: read
+    outputs:
+      signed: ${{ steps.cfg.outputs.configured }}
     env:
       JSIGN_URL: https://github.com/ebourg/jsign/releases/download/7.5/jsign-7.5.jar
       JSIGN_SHA256: 602a51c3545a6dc4fb99bd2ea7152b26d1345916d0c93ddfbd5936cb735af91c
@@ -177,6 +179,7 @@ jobs:
       OSSLSIGNCODE_SHA256: 1aee7be603102633e80b4c67cd939bba2e16a62813e4a3035696727783f632b0
     steps:
       - name: Require the signing configuration
+        id: cfg
         env:
           WINDOWS_SIGNING_STORETYPE: ${{ vars.WINDOWS_SIGNING_STORETYPE }}
           WINDOWS_SIGNING_ALIAS: ${{ vars.WINDOWS_SIGNING_ALIAS }}
@@ -189,10 +192,15 @@ jobs:
         run: |
           set -euo pipefail
           case "${WINDOWS_SIGNING_STORETYPE:-}" in
+            '')
+              echo "::notice::Windows signing is not configured, so this release ships no Windows binaries and Windows installs keep the Node hook. To ship signed ones, set the WINDOWS_SIGNING_STORETYPE variable to ESIGNER (SSL.com eSigner) or DIGICERTONE (DigiCert KeyLocker) and add that provider's secrets to the signing environment."
+              echo "configured=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
             ESIGNER) required=(WINDOWS_SIGNING_ALIAS ESIGNER_USERNAME ESIGNER_PASSWORD ESIGNER_TOTP_SECRET) ;;
             DIGICERTONE) required=(WINDOWS_SIGNING_ALIAS DIGICERT_API_KEY DIGICERT_CLIENT_CERT_P12_BASE64 DIGICERT_CLIENT_CERT_PASSWORD) ;;
             *)
-              echo "::error::Windows signing is not configured: set the WINDOWS_SIGNING_STORETYPE variable to ESIGNER (SSL.com eSigner) or DIGICERTONE (DigiCert KeyLocker) and add that provider's secrets to the signing environment. No release can publish until then, because the publish job refuses unsigned Windows binaries."
+              echo "::error::WINDOWS_SIGNING_STORETYPE is '$WINDOWS_SIGNING_STORETYPE'; it must be ESIGNER (SSL.com eSigner) or DIGICERTONE (DigiCert KeyLocker), or unset to release without Windows binaries."
               exit 1
               ;;
           esac
@@ -201,24 +209,29 @@ jobs:
             if [ -z "${!name:-}" ]; then missing+=("$name"); fi
           done
           if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::Windows signing with $WINDOWS_SIGNING_STORETYPE is missing: ${missing[*]}. Add them to the signing environment (WINDOWS_SIGNING_ALIAS is a variable, the rest are secrets). No release can publish until then, because the publish job refuses unsigned Windows binaries."
+            echo "::error::Windows signing with $WINDOWS_SIGNING_STORETYPE is missing: ${missing[*]}. Add them to the signing environment (WINDOWS_SIGNING_ALIAS is a variable, the rest are secrets), or unset WINDOWS_SIGNING_STORETYPE to release without Windows binaries."
             exit 1
           fi
+          echo "configured=true" >> "$GITHUB_OUTPUT"
       - name: Download the win32-x64 binary
+        if: steps.cfg.outputs.configured == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: native-win32-x64
           path: unsigned/
       - name: Download the win32-arm64 binary
+        if: steps.cfg.outputs.configured == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: native-win32-arm64
           path: unsigned/
       # Signs exactly the bytes the build jobs recorded, not whatever reached this job under their names.
       - name: Check the binaries against the hashes their build recorded
+        if: steps.cfg.outputs.configured == 'true'
         working-directory: unsigned
         run: sha256sum -c win32-x64.sha256 win32-arm64.sha256
       - name: Install jsign and osslsigncode
+        if: steps.cfg.outputs.configured == 'true'
         run: |
           set -euo pipefail
           curl -sSfL -o "$RUNNER_TEMP/jsign.jar" "$JSIGN_URL"
@@ -231,6 +244,7 @@ jobs:
           "$RUNNER_TEMP/osslsigncode/usr/bin/osslsigncode" --version
       # Every signature carries an RFC 3161 timestamp from the provider's authority, so it stays valid after the certificate expires. Credentials reach jsign through `env:` references rather than its command line. WINDOWS_SIGNING_KEYSTORE is optional and overrides the provider's default endpoint (a regional DigiCert host, for example).
       - name: Sign
+        if: steps.cfg.outputs.configured == 'true'
         env:
           WINDOWS_SIGNING_STORETYPE: ${{ vars.WINDOWS_SIGNING_STORETYPE }}
           WINDOWS_SIGNING_ALIAS: ${{ vars.WINDOWS_SIGNING_ALIAS }}
@@ -267,6 +281,7 @@ jobs:
           done
       # A cryptographic check of what was just signed: the signed digest must match the file, the certificate chain must reach a trusted root, and the timestamp must verify. The runner's CA bundle is the trust store; WINDOWS_SIGNING_ROOT_CA_PEM (a variable, since a root certificate is public) adds the issuing root if the provider's code-signing root is not in that bundle.
       - name: Verify the signatures
+        if: steps.cfg.outputs.configured == 'true'
         env:
           WINDOWS_SIGNING_ROOT_CA_PEM: ${{ vars.WINDOWS_SIGNING_ROOT_CA_PEM }}
         run: |
@@ -289,9 +304,11 @@ jobs:
             grep -E '^(Signature verification|Timestamp Server Signature verification|Timestamp time)' "$report" || true
           done
       - name: Record the signed hashes
+        if: steps.cfg.outputs.configured == 'true'
         working-directory: signed
         run: sha256sum win32-x64/tg-hook.exe win32-arm64/tg-hook.exe | tee SHA256SUMS
       - name: Upload the signed binaries
+        if: steps.cfg.outputs.configured == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-windows-signed
@@ -365,24 +382,38 @@ jobs:
           name: native-linux-arm64
           path: ${{ runner.temp }}/native/
       - name: Download the signed Windows binaries
+        if: needs.sign-windows.outputs.signed == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: native-windows-signed
           path: ${{ runner.temp }}/native-signed/
-      # dist/native is rebuilt from the release artifacts alone. The bundle's copy is deleted first, because the build job's test run builds a glibc binary into dist/native/linux-x64 for its own tests, and that one must never ship. Artifact downloads do not keep the executable bit, so the Linux binaries get it back here.
+      # dist/native is rebuilt from the release artifacts alone. The bundle's copy is deleted first, because the build job's test run builds a glibc binary into dist/native/linux-x64 for its own tests, and that one must never ship. Artifact downloads do not keep the executable bit, so the Linux binaries get it back here. The Windows binaries are copied only when sign-windows signed them; otherwise the package carries none and Windows installs use the Node hook.
       - name: Assemble dist/native from the release artifacts
+        env:
+          WINDOWS_SIGNED: ${{ needs.sign-windows.outputs.signed }}
         run: |
           set -euo pipefail
           rm -rf dist/native
-          mkdir -p dist/native/win32-x64 dist/native/win32-arm64 dist/native/linux-x64 dist/native/linux-arm64
-          cp "$RUNNER_TEMP/native-signed/win32-x64/tg-hook.exe" dist/native/win32-x64/tg-hook.exe
-          cp "$RUNNER_TEMP/native-signed/win32-arm64/tg-hook.exe" dist/native/win32-arm64/tg-hook.exe
+          mkdir -p dist/native/linux-x64 dist/native/linux-arm64
           cp "$RUNNER_TEMP/native/linux-x64/tg-hook" dist/native/linux-x64/tg-hook
           cp "$RUNNER_TEMP/native/linux-arm64/tg-hook" dist/native/linux-arm64/tg-hook
           chmod 755 dist/native/linux-x64/tg-hook dist/native/linux-arm64/tg-hook
-      # The publish gate: exactly the four release binaries, each matching the hash the job that produced it recorded, both Windows files signed. scripts/verify-native-dist.mjs imports only Node builtins, so this runs no dependency code beside the token.
+          if [ "$WINDOWS_SIGNED" = true ]; then
+            mkdir -p dist/native/win32-x64 dist/native/win32-arm64
+            cp "$RUNNER_TEMP/native-signed/win32-x64/tg-hook.exe" dist/native/win32-x64/tg-hook.exe
+            cp "$RUNNER_TEMP/native-signed/win32-arm64/tg-hook.exe" dist/native/win32-arm64/tg-hook.exe
+          fi
+      # The publish gate: exactly the release binaries, each matching the hash the job that produced it recorded, and both Windows files signed when there are any. Without signing, --without-windows makes any Windows file at all a refusal, so an unsigned executable cannot ride along. scripts/verify-native-dist.mjs imports only Node builtins, so this runs no dependency code beside the token.
       - name: Refuse unsigned or substituted native binaries
-        run: node scripts/verify-native-dist.mjs dist/native "$RUNNER_TEMP/native-signed/SHA256SUMS" "$RUNNER_TEMP/native/linux-x64.sha256" "$RUNNER_TEMP/native/linux-arm64.sha256"
+        env:
+          WINDOWS_SIGNED: ${{ needs.sign-windows.outputs.signed }}
+        run: |
+          set -euo pipefail
+          if [ "$WINDOWS_SIGNED" = true ]; then
+            node scripts/verify-native-dist.mjs dist/native "$RUNNER_TEMP/native-signed/SHA256SUMS" "$RUNNER_TEMP/native/linux-x64.sha256" "$RUNNER_TEMP/native/linux-arm64.sha256"
+          else
+            node scripts/verify-native-dist.mjs --without-windows dist/native "$RUNNER_TEMP/native/linux-x64.sha256" "$RUNNER_TEMP/native/linux-arm64.sha256"
+          fi
       - name: Publish
         run: npm publish --provenance --access public --ignore-scripts
         env:

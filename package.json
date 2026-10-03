@@ -39,6 +39,7 @@
     "dev": "tsx src/main.ts",
     "sync": "node scripts/post-merge.mjs",
     "prepare": "node scripts/install-git-hooks.mjs",
+    "prepublishOnly": "node scripts/verify-native-dist.mjs --pack dist/native",
     "parser:fingerprint": "node scripts/parser-fingerprint.mjs",
     "parser:fingerprint:check": "node scripts/parser-fingerprint.mjs --check",
     "skill:canonical": "node scripts/generate-canonical-skill.mjs",

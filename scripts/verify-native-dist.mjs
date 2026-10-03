@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** The publish gate for the native hook client: refuses a dist/native that is not exactly the four release binaries, each byte-identical to the hash its producing job recorded, with both Windows files carrying an Authenticode signature. Run by the publish job of .github/workflows/publish.yml, which holds the registry token, so it imports nothing but Node builtins: no dependency code runs beside the credential. The signature check is structural (the PE certificate table is present and holds a PKCS#7 WIN_CERTIFICATE); the sign job has already verified the signature cryptographically, and the hash match is what ties the file here to the file it verified. Usage: `node scripts/verify-native-dist.mjs <dist/native> <SHA256SUMS>...`, where every manifest is in `sha256sum` format with paths relative to the directory. Exits 0 when everything holds, otherwise 1 with one line per problem. */
+/** The publish gate for the native hook client: refuses a dist/native that is not exactly the four release binaries, each byte-identical to the hash its producing job recorded, with both Windows files carrying an Authenticode signature. Run by the publish job of .github/workflows/publish.yml, which holds the registry token, so it imports nothing but Node builtins: no dependency code runs beside the credential. The signature check is structural (the PE certificate table is present and holds a PKCS#7 WIN_CERTIFICATE); the sign job has already verified the signature cryptographically, and the hash match is what ties the file here to the file it verified. Usage: `node scripts/verify-native-dist.mjs [--without-windows] <dist/native> <SHA256SUMS>...`, where every manifest is in `sha256sum` format with paths relative to the directory; `--without-windows` is the release with no Windows signing configuration, which ships the two Linux binaries and no Windows one, so Windows installs keep the Node hook. `node scripts/verify-native-dist.mjs --pack <dist/native>` is the prepublishOnly check for a publish from a working tree: no manifests, so it checks shape only, and a missing directory passes. Exits 0 when everything holds, otherwise 1 with one line per problem. */
 import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -94,10 +94,18 @@ function filesUnder(dir) {
   return out.sort()
 }
 
+const targetPath = (t) => `${t.platformArch}/${t.exe}`
+
+/** The targets a release ships: all of them, or only the Linux ones when there is no Windows signing configuration, since a Windows binary ships signed or not at all. */
+export const releaseTargets = (withoutWindows = false) => (withoutWindows ? NATIVE_TARGETS.filter((t) => t.format !== 'pe') : NATIVE_TARGETS)
+
+const UNSIGNED_RELEASE = 'Windows binaries ship only signed, and this release has no Windows signing configuration'
+
 /** Every reason `dir` must not be published, given the manifests' text keyed by a label for messages. Empty when the directory holds exactly the release binaries, each matching exactly one manifest entry and, for Windows, signed. */
-export function verifyNativeDist(dir, manifests) {
+export function verifyNativeDist(dir, manifests, { withoutWindows = false } = {}) {
   const problems = []
-  const expected = new Map(NATIVE_TARGETS.map((t) => [`${t.platformArch}/${t.exe}`, t]))
+  const expected = new Map(releaseTargets(withoutWindows).map((t) => [targetPath(t), t]))
+  const windows = new Set(NATIVE_TARGETS.filter((t) => t.format === 'pe').map(targetPath))
   const hashes = new Map()
   for (const [label, text] of Object.entries(manifests)) {
     const parsed = parseManifest(text, label)
@@ -114,7 +122,10 @@ export function verifyNativeDist(dir, manifests) {
   } catch (e) {
     return [...problems, `${dir}: cannot be read (${e instanceof Error ? e.message : String(e)})`]
   }
-  for (const rel of present) if (!expected.has(rel)) problems.push(`${rel}: is not a release binary; dist/native must hold the release artifacts and nothing else`)
+  for (const rel of present) {
+    if (expected.has(rel)) continue
+    problems.push(withoutWindows && windows.has(rel) ? `${rel}: ${UNSIGNED_RELEASE}` : `${rel}: is not a release binary; dist/native must hold the release artifacts and nothing else`)
+  }
   for (const [rel, target] of expected) {
     if (!present.includes(rel)) {
       problems.push(`${rel}: missing`)
@@ -131,10 +142,55 @@ export function verifyNativeDist(dir, manifests) {
   return problems
 }
 
+const PACK_REMEDY = 'delete dist/native, or publish through the release workflow, which signs it'
+
+/** Every reason a publish from a working tree must not pack `dir`. A missing directory is the supported state, since the Node hook serves every platform without it; anything present must be a release target in its release shape, so a local `npm run build:native` output, an unsigned Windows build above all, never reaches the registry. No manifest exists here, so this checks shape, not provenance. */
+export function verifyPackDir(dir) {
+  let present
+  try {
+    present = filesUnder(dir)
+  } catch (e) {
+    if (e && typeof e === 'object' && 'code' in e && e.code === 'ENOENT') return []
+    return [`${dir}: cannot be read (${e instanceof Error ? e.message : String(e)})`]
+  }
+  const targets = new Map(NATIVE_TARGETS.map((t) => [targetPath(t), t]))
+  const problems = []
+  for (const rel of present) {
+    const target = targets.get(rel)
+    if (target === undefined) {
+      problems.push(`${rel}: is not a release binary; ${PACK_REMEDY}`)
+      continue
+    }
+    const buf = readFileSync(path.join(dir, rel))
+    const shape = target.format === 'pe' ? peSignatureProblem(buf, target.machine) : elfProblem(buf, target.machine)
+    if (shape !== undefined) problems.push(`${rel}: ${shape}; ${PACK_REMEDY}`)
+  }
+  return problems
+}
+
+const USAGE = 'usage: node scripts/verify-native-dist.mjs [--without-windows] <dist/native> <SHA256SUMS>...\n       node scripts/verify-native-dist.mjs --pack <dist/native>\n'
+
+function refuse(problems) {
+  for (const p of problems) process.stderr.write(`verify-native-dist: ${p}\n`)
+  process.stderr.write('verify-native-dist: refusing to publish\n')
+  return 1
+}
+
 function main(argv) {
-  const [dir, ...manifestPaths] = argv
-  if (dir === undefined || manifestPaths.length === 0) {
-    process.stderr.write('usage: node scripts/verify-native-dist.mjs <dist/native> <SHA256SUMS>...\n')
+  if (argv[0] === '--pack') {
+    if (argv.length !== 2) {
+      process.stderr.write(USAGE)
+      return 2
+    }
+    const problems = verifyPackDir(argv[1])
+    if (problems.length > 0) return refuse(problems)
+    process.stdout.write(`verify-native-dist: ${argv[1]} holds no unsigned or unexpected native binary\n`)
+    return 0
+  }
+  const withoutWindows = argv[0] === '--without-windows'
+  const [dir, ...manifestPaths] = withoutWindows ? argv.slice(1) : argv
+  if (dir === undefined || dir.startsWith('--') || manifestPaths.length === 0) {
+    process.stderr.write(USAGE)
     return 2
   }
   const manifests = {}
@@ -146,13 +202,10 @@ function main(argv) {
       return 1
     }
   }
-  const problems = verifyNativeDist(dir, manifests)
-  if (problems.length > 0) {
-    for (const p of problems) process.stderr.write(`verify-native-dist: ${p}\n`)
-    process.stderr.write('verify-native-dist: refusing to publish\n')
-    return 1
-  }
-  process.stdout.write(`verify-native-dist: ${NATIVE_TARGETS.length} native binaries verified\n`)
+  const problems = verifyNativeDist(dir, manifests, { withoutWindows })
+  if (problems.length > 0) return refuse(problems)
+  const note = withoutWindows ? ' (no Windows binaries: Windows installs keep the Node hook)' : ''
+  process.stdout.write(`verify-native-dist: ${releaseTargets(withoutWindows).length} native binaries verified${note}\n`)
   return 0
 }
 

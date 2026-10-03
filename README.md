@@ -349,7 +349,7 @@ token-goat install
 token-goat doctor          # confirms hooks are wired; reports any failure it finds
 ```
 
-Three commands. Hooks register and start working immediately: no terminal popups, no tray icon, no service to babysit. That wires up Claude Code; other agent CLIs are added with a flag (`--codex`, `--copilot`, and siblings). On Windows and Linux, each hook runs through a small native client, `tg-hook`, that hands the call to token-goat's resident hook server instead of starting Node, and runs the Node command itself when the server is away; the Windows binaries are code-signed and the Linux ones carry build provenance. Details and the opt-out: [Native hook client](docs/install.md#what-gets-installed).
+Three commands. Hooks register and start working immediately: no terminal popups, no tray icon, no service to babysit. That wires up Claude Code; other agent CLIs are added with a flag (`--codex`, `--copilot`, and siblings). On Windows and Linux, each hook runs through a small native client, `tg-hook`, that hands the call to token-goat's resident hook server instead of starting Node, and runs the Node command itself when the server is away; a Windows binary ships only when it is code-signed (without one, Windows uses the Node command as macOS does), and the Linux ones carry build provenance. Details and the opt-out: [Native hook client](docs/install.md#what-gets-installed).
 
 > **WSL performance tip:** Keep active repositories on WSL's native ext4 filesystem (`~/projects/...`) rather than Windows mounts (`/mnt/c/...`) to avoid 9P cross-OS filesystem translation overhead during initial indexing.
 
