@@ -107,6 +107,10 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **Haskell functions written with guards were missing or cut short.** A function whose head line had no `=` because its body was a set of guards on the following lines was left out of the index, or only its type signature was returned. A signature continued onto lines that start with `::` or `->` was cut short in the same way. Both now index and read as whole definitions.
+- **Haskell and OCaml ranges ran one line past the end of the file, and a shared Haskell signature listed a name twice.** The last definition in a file now ends on its last line, and `baz, qux :: Int` lists each name once.
+- **Clojure definitions with reader metadata were indexed under the metadata.** `(defn ^:private helper ...)`, `^String`, `^{:doc ...}` and `#^` now index under the real name, so `read` and `symbol` find them.
+- **An OCaml nested module lost its closing `end`.** `module Inner = struct ... end` now includes the `end` line in its range.
 - **`uninstall -p` and `uninstall --all --project` also removed your personal setup.** They now touch only the project, and print a note naming the setups that live in your user profile and were left alone.
 - **`doctor` and `doctor --repair` stopped partway when the stats database was damaged.** They now report the damaged database and still run every other check.
 - **Installing into a settings file that was a symlink replaced the link with a plain file.** Install now writes through the link to the real file, which matters for settings kept in a dotfiles repo. A link owned by another user is not followed.

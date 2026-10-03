@@ -187,3 +187,19 @@ describe('performance on pathological input', () => {
     expect(elapsed).toBeLessThan(100)
   })
 })
+
+describe('a nested module keeps its closing `end` (The OCaml Manual, "Module expressions", https://v2.ocaml.org/manual/modules.html)', () => {
+  // HAND-DERIVED: `module M = struct ... end` is one module expression, so its last line is the `end`.
+  const src = ['let before = 1', 'module Inner = struct', '  let deep x = x', 'end', '', 'let after = 2', ''].join('\n')
+
+  it('spans the column-0 `end` that closes `struct`', () => {
+    const inner = extractOcaml(src, 'lib.ml').find((s) => s.name === 'Inner')!
+    expect([inner.lineStart, inner.lineEnd]).toEqual([2, 5])
+    expect(inner.body.split('\n')).toContain('end')
+  })
+
+  it('does not run the last symbol past EOF when the file ends in a newline', () => {
+    const after = extractOcaml(src, 'lib.ml').find((s) => s.name === 'after')!
+    expect([after.lineStart, after.lineEnd]).toEqual([6, 6])
+  })
+})

@@ -178,6 +178,18 @@ function readToken(masked: string, i: number): { word: string; start: number; en
   return { word: masked.slice(start, p), start, end: p }
 }
 
+/** Reads the name token after a definer, first skipping any reader metadata (`^:private`, `^String`, `^{:doc "..."}`, several in a row): clojure.org/reference/reader, "Metadata". */
+function readNameToken(masked: string, i: number): { word: string; start: number; end: number } | undefined {
+  let p = i
+  for (;;) {
+    while (isSpace(masked[p])) p++
+    if (masked[p] === '#' && masked[p + 1] === '^') p++
+    if (masked[p] !== '^') break
+    p = datumEnd(masked, p + 1)
+  }
+  return readToken(masked, p)
+}
+
 export function extractClojure(content: string, filePath: string): StatementAdapterResult {
   if (content.includes('\0')) return { symbols: [], imports: [] }
   const rawLines = content.split(/\r?\n/)
@@ -204,7 +216,7 @@ export function extractClojure(content: string, filePath: string): StatementAdap
         // `(define (name args) ...)`).
         const kind = DEFINERS.get(tok.word.toLowerCase())
         if (kind !== undefined) {
-          const nameTok = readToken(masked, tok.end)
+          const nameTok = readNameToken(masked, tok.end)
           const name = nameTok?.word.replace(/^:+/, '') ?? ''
           const idx = spans.open(name, kind, lineOf(i), owner())
           stack.push({ index: idx, depth })

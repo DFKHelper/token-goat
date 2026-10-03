@@ -265,7 +265,8 @@ export function extractOcaml(content: string, filePath: string): SymbolEntry[] {
   const rawLines = content.split(/\r?\n/)
   const masked = maskOcaml(content)
   const maskedLines = masked.split(/\r?\n/)
-  const n = rawLines.length
+  // The empty string after a final newline is not a line.
+  const n = rawLines.length > 1 && rawLines[rawLines.length - 1] === '' ? rawLines.length - 1 : rawLines.length
 
   interface Boundary {
     readonly num: number
@@ -278,6 +279,7 @@ export function extractOcaml(content: string, filePath: string): SymbolEntry[] {
     const maskedLine = maskedLines[idx] ?? ''
     const trimmed = maskedLine.trim()
     if (trimmed === '') continue // a full-line comment, masked away
+    if (/^end\b/.test(trimmed)) continue // closes a `struct`/`sig`: part of the module before it
     const def = classify(trimmed)
     boundaries.push(def === undefined ? { num: idx + 1 } : { num: idx + 1, def })
   }

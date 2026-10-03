@@ -245,3 +245,32 @@ describe('a definition-shaped form inside a real string or line comment is not e
     expect(names(result)).toContain('real')
   })
 })
+
+describe('Clojure reader metadata before a definition name (clojure.org/reference/reader, "Metadata")', () => {
+  // HAND-DERIVED from the Metadata section: `^:kw` is `^{:kw true}`, `^Type` is `^{:tag Type}`, `^{..}` is a map; each is read, attached to the next form and is not itself the name.
+  const src = [
+    '(defn ^:private helper [x] (inc x))',
+    '(def ^:dynamic *level* 1)',
+    '(defn ^String greet [n] (str "hi " n))',
+    '(def ^{:doc "the answer"} answer 42)',
+    '(def ^:private ^:dynamic ^String stacked "s")',
+    '(defn- ^{:tag long} plain [] 1)',
+    '',
+  ].join('\n')
+
+  it('names each definition after the symbol following its metadata forms', () => {
+    const result = extractClojure(src, 'meta.clj').symbols
+    expect(result.map((s) => `${s.name}@${s.lineStart}`)).toEqual([
+      'helper@1',
+      '*level*@2',
+      'greet@3',
+      'answer@4',
+      'stacked@5',
+      'plain@6',
+    ])
+  })
+
+  it('never names a definition after a metadata form', () => {
+    expect(names(extractClojure(src, 'meta.clj')).filter((x) => x.startsWith('^') || x === '')).toEqual([])
+  })
+})

@@ -148,3 +148,54 @@ describe('performance on pathological input (a prior nested-comment masker regre
     expect(elapsed).toBeLessThan(100)
   })
 })
+
+describe('multi-line equation heads and signatures (Haskell 2010 Report sections 4.4.3 and 4.4.1)', () => {
+  // HAND-DERIVED from the Report: a function clause is `funlhs rhs` and `rhs` may be guards (`| g = e`) on the lines after the head (4.4.3.1); a type signature `vars :: type` may break before `::` (4.4.1) since layout only starts a new declaration at the declaration column.
+  const span = (r: ReturnType<typeof extractHaskell>, name: string): string[] =>
+    r.filter((s) => s.name === name).map((s) => `${s.lineStart}-${s.lineEnd}`)
+
+  it('a guard-style function with a signature spans the signature and every guard line', () => {
+    const src = ['bar :: Int -> Int', 'bar x', '  | x > 0 = x', '  | otherwise = negate x', 'next :: Int', 'next = 1', ''].join('\n')
+    const r = extractHaskell(src, 'Main.hs')
+    expect(span(r, 'bar')).toEqual(['1-4'])
+    expect(span(r, 'next')).toEqual(['5-6'])
+  })
+
+  it('a guard-style function without a signature is indexed', () => {
+    const src = ['absVal x', '  | x < 0 = negate x', '  | otherwise = x', ''].join('\n')
+    expect(span(extractHaskell(src, 'More.hs'), 'absVal')).toEqual(['1-3'])
+  })
+
+  it('a guard-only head followed by `=` on its own line is indexed', () => {
+    const src = ['pick x', '  | x > 0', '  = 1', '  | otherwise', '  = 2', ''].join('\n')
+    expect(span(extractHaskell(src, 'A.hs'), 'pick')).toEqual(['1-5'])
+  })
+
+  it('a parenthesized operator with guards on the next lines is indexed', () => {
+    const src = ['(<+>) a b', '  | a > b = a', '  | otherwise = b', ''].join('\n')
+    expect(span(extractHaskell(src, 'A.hs'), '<+>')).toEqual(['1-3'])
+  })
+
+  it('a leading-arrow signature starts at the name line', () => {
+    const src = ['render', '  :: Int', '  -> String', 'render n = show n', ''].join('\n')
+    expect(span(extractHaskell(src, 'A.hs'), 'render')).toEqual(['1-4'])
+  })
+
+  it('a bare identifier followed by an unrelated column-0 line is still not a function', () => {
+    const src = ['justAName', 'other = 1', ''].join('\n')
+    expect(names(extractHaskell(src, 'A.hs'))).toEqual(['other'])
+  })
+
+  it('the last symbol of a newline-terminated file does not end past EOF', () => {
+    const src = ['final :: Int', 'final = 1', ''].join('\n')
+    expect(span(extractHaskell(src, 'A.hs'), 'final')).toEqual(['1-2'])
+  })
+
+  it('a multi-name signature emits each name once, with its own equations', () => {
+    const src = ['baz, qux :: Int', 'baz = 1', 'qux = 2', ''].join('\n')
+    const r = extractHaskell(src, 'A.hs')
+    expect(names(r).sort()).toEqual(['baz', 'qux'])
+    expect(span(r, 'baz')).toEqual(['1-2'])
+    expect(span(r, 'qux')).toEqual(['1-3'])
+  })
+})

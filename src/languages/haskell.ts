@@ -216,7 +216,7 @@ function afterContext(rest: string): string {
 }
 
 /** Classifies one masked, trimmed, column-0 line as zero or more definitions it opens. */
-function classify(line: string): Def[] | undefined {
+function classify(line: string, continued = false): Def[] | undefined {
   let m: RegExpExecArray | null
 
   if ((m = /^module\s+([A-Za-z_][A-Za-z0-9_.']*)/.exec(line))) return [{ kind: 'module', name: m[1]! }]
@@ -249,12 +249,12 @@ function classify(line: string): Def[] | undefined {
   // `name args... = ...` / `name = ...` -- a prefix equation.
   if ((m = /^([a-z_][A-Za-z0-9_']*)\b/.exec(line))) {
     const name = m[1]!
-    if (!RESERVED_TOP.has(name) && hasTopLevelEquals(line)) return [{ kind: 'function', name }]
+    if (!RESERVED_TOP.has(name) && (continued || hasTopLevelEquals(line))) return [{ kind: 'function', name }]
     return undefined
   }
   // `(op) args... = ...` -- a parenthesized-operator equation.
   if ((m = /^\(([^()]+)\)/.exec(line))) {
-    if (hasTopLevelEquals(line)) return [{ kind: 'function', name: m[1]!.trim() }]
+    if (continued || hasTopLevelEquals(line)) return [{ kind: 'function', name: m[1]!.trim() }]
   }
 
   return undefined
@@ -265,7 +265,18 @@ export function extractHaskell(content: string, filePath: string): SymbolEntry[]
   const rawLines = content.split(/\r?\n/)
   const masked = maskHaskell(content)
   const maskedLines = masked.split(/\r?\n/)
-  const n = rawLines.length
+  // The empty string after a final newline is not a line.
+  const n = rawLines.length > 1 && rawLines[rawLines.length - 1] === '' ? rawLines.length - 1 : rawLines.length
+
+  // True when the next non-blank continuation line is indented and opens a guard, an `=` body or a `::` signature.
+  const headContinues = (idx: number): boolean => {
+    for (let j = idx + 1; j < n; j++) {
+      if ((maskedLines[j] ?? '').trim() === '') continue
+      if (!/^\s/.test(rawLines[j] ?? '')) return false
+      return /^(?:\|(?!\|)|=(?![=>])|::)/.test((maskedLines[j] ?? '').trim())
+    }
+    return false
+  }
 
   interface Boundary {
     readonly num: number
@@ -279,7 +290,7 @@ export function extractHaskell(content: string, filePath: string): SymbolEntry[]
     const maskedLine = maskedLines[idx] ?? ''
     const trimmed = maskedLine.trim()
     if (trimmed === '') continue // a full-line comment/pragma, masked away
-    const defs = classify(trimmed)
+    const defs = classify(trimmed) ?? classify(trimmed, headContinues(idx))
     if (defs === undefined) {
       boundaries.push({ num: idx + 1, consumed: false })
       continue
@@ -300,6 +311,18 @@ export function extractHaskell(content: string, filePath: string): SymbolEntry[]
       ) {
         boundaries[endIdx + 1]!.consumed = true
         endIdx++
+      }
+      // `a, b :: T` opens two same-line boundaries; each name then absorbs its own later equations across the sibling's, so no name is emitted twice.
+      if (boundaries.some((o, k) => k !== i && o.num === b.num && o.def?.kind === 'function')) {
+        let k = endIdx + 1
+        while (k < boundaries.length && boundaries[k]!.def?.kind === 'function' && boundaries[k]!.def?.name !== b.def.name) k++
+        if (k < boundaries.length && boundaries[k]!.def?.kind === 'function' && !boundaries[k]!.consumed) {
+          while (k < boundaries.length && boundaries[k]!.def?.kind === 'function' && boundaries[k]!.def?.name === b.def.name) {
+            boundaries[k]!.consumed = true
+            endIdx = k
+            k++
+          }
+        }
       }
     }
     const next = boundaries[endIdx + 1]
