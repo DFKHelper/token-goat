@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { deleteFileEmbeddings } from './embeddings.js'
+import { indexedFileIsGone } from './fingerprint.js'
 import { isTooShallowToPrune } from './known_roots.js'
 import { deleteFileRows } from './parser.js'
 import { isUnderSystemTemp } from './project.js'
@@ -49,16 +50,8 @@ function foldedPathsUnderRoot(rootPrefix: string, dbPath: string): string[] {
 function findDeletablePaths(rootPrefix: string, dbPath: string): string[] {
   const deletable: string[] = []
   for (const p of foldedPathsUnderRoot(rootPrefix, dbPath)) {
-    let stillExists: boolean
-    try {
-      // isFile, not mere existence: `files` rows are source files, and a path now occupied by a directory (or a symlink to one) means the indexed file is gone even though something answers at that path. Bare existence kept its symbols, references and embedding chunks in the index forever, with no event that could ever clear them.
-      const st = fs.statSync(p, { throwIfNoEntry: false })
-      stillExists = st !== undefined && st.isFile()
-    } catch {
-      // Stat failed for a reason other than "file is gone" (EPERM, EBUSY, an antivirus/search-indexer holding a transient lock, etc.). We can't confirm the file was actually deleted, so don't treat it as deletable this pass -- it will be re-evaluated the next time pruning runs.
-      continue
-    }
-    if (!stillExists) deletable.push(p)
+    // Not mere existence: `files` rows are source files, and a path now occupied by a directory (or a symlink to one) means the indexed file is gone even though something answers at that path (see indexedFileIsGone, which also leaves a path it cannot stat alone: it will be re-evaluated the next time pruning runs). Bare existence kept its symbols, references and embedding chunks in the index forever, with no event that could ever clear them.
+    if (indexedFileIsGone(p)) deletable.push(p)
   }
   return deletable
 }
@@ -86,15 +79,7 @@ function removeDeletedFilesBestEffort(db: DbHandle, paths: string[]): string[] {
   // Checked immediately before each delete, one path at a time. Filtering the whole list first and deleting afterwards left the first path's window open across every remaining stat AND every delete -- the full-scan-then-delete-all shape this exists to avoid, just one stage later. Now the window really is the gap between one path's stat and its own delete, as described above.
   const removed: string[] = []
   for (const p of paths) {
-    let gone: boolean
-    try {
-      const st = fs.statSync(p, { throwIfNoEntry: false })
-      gone = st === undefined || !st.isFile()
-    } catch {
-      // Can't confirm the file is actually gone (EPERM/EBUSY/etc) -- don't delete this pass.
-      continue
-    }
-    if (!gone) continue
+    if (!indexedFileIsGone(p)) continue
     try {
       removeFileFromIndex(db, p)
       removed.push(p)
@@ -162,19 +147,10 @@ function orphanedChunkGroups(db: DbHandle): Array<{ representative: string; spel
   return [...byFolded.values()]
 }
 
-/** Paths with a transient-read-failure counter whose file is no longer on disk. Exactly the same unreachability as {@link findOrphanedChunkPaths}, arrived at from the other direction. Every path-scoped prune enumerates `SELECT DISTINCT path FROM files`, and the whole point of keeping these counters out of `files` is that a path which has never been indexed has no row there -- so a counter for a file that was never successfully read is invisible to all of them, and its row would outlive the file forever. {@link removeFileFromIndex} covers the other case, a path that was indexed before it started failing. Existence is checked one path at a time and re-checked immediately before each delete, for the reason {@link removeDeletedFilesBestEffort} gives: a counter belongs to a file that exists but cannot be read right now, so deleting on a stale observation would hand a still-locked file a fresh retry budget on every sweep and let the worker hammer it indefinitely. */
+/** Paths with a transient-read-failure counter whose file is no longer on disk (a directory now standing at the path counts, as in {@link indexedFileIsGone}; a path that cannot be statted keeps its counter, since those are the very conditions a retry counter exists for). Exactly the same unreachability as {@link findOrphanedChunkPaths}, arrived at from the other direction. Every path-scoped prune enumerates `SELECT DISTINCT path FROM files`, and the whole point of keeping these counters out of `files` is that a path which has never been indexed has no row there -- so a counter for a file that was never successfully read is invisible to all of them, and its row would outlive the file forever. {@link removeFileFromIndex} covers the other case, a path that was indexed before it started failing. Existence is checked one path at a time and re-checked immediately before each delete, for the reason {@link removeDeletedFilesBestEffort} gives: a counter belongs to a file that exists but cannot be read right now, so deleting on a stale observation would hand a still-locked file a fresh retry budget on every sweep and let the worker hammer it indefinitely. */
 export function findDeadRetryPaths(dbPath: string = globalDbPath()): string[] {
   const rows = getDb(dbPath).prepare('SELECT path FROM index_retries').all() as Array<{ path: string }>
-  return rows.map((r) => r.path).filter(pathIsGone)
-}
-
-/** True when nothing is at `p` on disk. A stat that fails for any other reason (EPERM/EBUSY, the very conditions a retry counter exists for) answers false, so an unreadable file keeps its counter. */
-function pathIsGone(p: string): boolean {
-  try {
-    return fs.statSync(p, { throwIfNoEntry: false }) === undefined
-  } catch {
-    return false
-  }
+  return rows.map((r) => r.path).filter(indexedFileIsGone)
 }
 
 /** Delete the retry counters {@link findDeadRetryPaths} finds, re-checking each path's absence immediately before its own delete. Returns the paths cleared. */
@@ -183,7 +159,7 @@ export function pruneDeadRetryRows(dbPath: string = globalDbPath()): string[] {
   const stmt = db.prepare(`DELETE FROM index_retries WHERE ${pathEqClause('path')}`)
   const removed: string[] = []
   for (const p of findDeadRetryPaths(dbPath)) {
-    if (!pathIsGone(p)) continue
+    if (!indexedFileIsGone(p)) continue
     try {
       stmt.run(foldPath(p))
       removed.push(p)

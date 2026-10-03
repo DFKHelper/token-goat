@@ -224,7 +224,24 @@ function lastSegment(text: string): string {
   return parts[parts.length - 1] ?? text
 }
 
-/** Resolve the name of the enclosing symbol a `node` introduces, or `null` if it does not introduce a named scope. Handles TS/JS `const f = () => {}` arrow and function-expression bindings as named scopes in addition to the declaration node types in {@link SCOPE_TYPES_BY_LANG}. */
+const TSJS_FUNCTION_VALUE_TYPES: ReadonlySet<string> = new Set(['arrow_function', 'function_expression', 'function'])
+
+/** Name of a TS/JS class field or object-literal property whose value is an arrow/function, mirroring how parser_treesitter.ts indexes them as methods (class fields keep the raw member text, object keys drop their quotes); `undefined` when `node` is not such a member. */
+function tsJsFunctionValuedMemberName(node: TsNode): string | undefined {
+  // TS exposes a class field's name on `name`, JS on `property`; a `pair` is a scope only directly inside an object literal.
+  const isField = node.type === 'public_field_definition' || node.type === 'field_definition'
+  const isPair = node.type === 'pair' && node.parent?.type === 'object'
+  if (!isField && !isPair) return undefined
+  const value = node.childForFieldName('value')
+  if (value === null || !TSJS_FUNCTION_VALUE_TYPES.has(value.type)) return undefined
+  if (isField) return (node.childForFieldName('name') ?? node.childForFieldName('property'))?.text
+  const key = node.childForFieldName('key')
+  if (key === null || (key.type !== 'identifier' && key.type !== 'property_identifier' && key.type !== 'string')) return undefined
+  const name = key.text.replace(/^['"]|['"]$/g, '')
+  return name === '' ? undefined : name
+}
+
+/** Resolve the name of the enclosing symbol a `node` introduces, or `null` if it does not introduce a named scope. Handles TS/JS `const f = () => {}` arrow and function-expression bindings, class-field arrows and object-literal function properties as named scopes in addition to the declaration node types in {@link SCOPE_TYPES_BY_LANG}. */
 function scopeName(node: TsNode, language: Language): string | null {
   if (
     (language === 'typescript' || language === 'javascript') &&
@@ -240,6 +257,10 @@ function scopeName(node: TsNode, language: Language): string | null {
       return node.childForFieldName('name')?.text ?? null
     }
     return null
+  }
+  if (language === 'typescript' || language === 'javascript') {
+    const member = tsJsFunctionValuedMemberName(node)
+    if (member !== undefined) return member
   }
   const scopeTypes = SCOPE_TYPES_BY_LANG.get(language)
   if (scopeTypes !== undefined && scopeTypes.has(node.type)) {

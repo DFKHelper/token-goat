@@ -137,6 +137,44 @@ describe('Elixir spans cover a def head that wraps before its `do`', () => {
     ].join('\n')
     expect(spans('elixir', content, 'size.ex')).toEqual(['Size 1-4', 'size 2-2', 'other 3-3'])
   })
+
+  // Fixture provenance: FORMAT-DERIVED. The shape is what the Elixir formatter (Code.format_string!/2, https://hexdocs.pm/elixir/Code.html#format_string!/2) emits for a keyword-form body too long for one line: `do:` alone on its line, the expression indented one level deeper. `mix` is not installed here, so this is not a CAPTURE. Line numbers are HAND-DERIVED from the snippet.
+  it('spans a `do:` keyword body that continues on more-indented lines, stopping at a blank line or the next def', () => {
+    const content = [
+      'defmodule Fmt do', //                                      1
+      '  def label(user, opts),', //                              2
+      '    do:', //                                               3
+      '      user.name', //                                       4
+      '      |> String.trim()', //                                5
+      '      |> String.pad_leading(opts[:width])', //             6
+      '', //                                                      7
+      '  def next(x), do: x', //                                  8
+      '', //                                                      9
+      '  def wide(value, opts), do:', //                         10
+      '    value', //                                            11
+      '    |> to_string()', //                                   12
+      '  def after_wide(y), do: y', //                           13
+      '', //                                                     14
+      '  def commented(a),', //                                  15
+      '    do:', //                                              16
+      '      a', //                                              17
+      '      # trailing note', //                                18
+      '      |> inspect()', //                                   19
+      '  defp last(z) do', //                                    20
+      '    z', //                                                21
+      '  end', //                                                 22
+      'end', //                                                  23
+    ].join('\n')
+    expect(spans('elixir', content, 'fmt.ex')).toEqual([
+      'Fmt 1-23',
+      'label 2-6',
+      'next 8-8',
+      'wide 10-12',
+      'after_wide 13-13',
+      'commented 15-19',
+      'last 20-22',
+    ])
+  })
 })
 
 describe('Ruby bare method calls are recorded as call-site refs', () => {

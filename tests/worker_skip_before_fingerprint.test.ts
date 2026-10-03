@@ -45,7 +45,7 @@ afterEach(() => {
   fs.rmSync(DIR, { recursive: true, force: true })
 })
 
-// Provenance: HAND-DERIVED. fingerprintFile reads the whole file, so the worker must decide a file is skip-eligible from its path and stat before that read: a log over large_file_skip_kb was otherwise loaded whole on every drain only to be skipped, and one Node cannot read whole (over 2 GiB, ERR_FS_FILE_TOO_LARGE) was requeued as a transient failure until its retries ran out, with its stale rows never purged. A directory standing where the indexed file was is the portable stand-in for a file that exists but cannot be read whole.
+// Provenance: HAND-DERIVED. fingerprintFile reads the whole file, so the worker must decide a file is skip-eligible from its path and stat before that read: a log over large_file_skip_kb was otherwise loaded whole on every drain only to be skipped, and one Node cannot read whole (over 2 GiB, ERR_FS_FILE_TOO_LARGE) was requeued as a transient failure until its retries ran out, with its stale rows never purged. A file over 2 GiB cannot be created portably, so the skip-eligible case is a file excluded by skip_files after it was indexed, asserted never to reach fingerprintFile; a directory at the path is a deletion now (indexedFileIsGone) and is covered by tests/dir_replacing_indexed_file_is_pruned.test.ts.
 describe('worker skip-eligibility is decided before the file is read', () => {
   it('reads an ordinary file to fingerprint it', () => {
     const src = path.join(DIR, 'plain.ts')
@@ -84,11 +84,11 @@ describe('worker skip-eligibility is decided before the file is read', () => {
     expect(drainOnce(DIR)).toBe(1)
     expect(querySymbols({ name: 'hugeWorkerSymbol', limit: 10 }, db).length).toBe(1)
 
-    fs.rmSync(src)
-    fs.mkdirSync(src)
     setIndexing({ skip_files: ['huge.ts'] })
+    vi.mocked(fingerprintFile).mockClear()
     enqueue([norm])
     expect(drainOnce(DIR)).toBe(1)
+    expect(vi.mocked(fingerprintFile).mock.calls.map((c) => c[0])).not.toContain(norm)
     expect(querySymbols({ name: 'hugeWorkerSymbol', limit: 10 }, db).length).toBe(0)
     expect(getFileEntry(norm, db)).toBeNull()
     expect(getDirtyPathsFor(DIR)).not.toContain(norm)

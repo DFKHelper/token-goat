@@ -20,8 +20,22 @@ import { store } from '../src/snapshots.js'
 import { foldPath } from '../src/util.js'
 import { pathEqClause } from '../src/sql_path.js'
 import { tokenGoatHome } from '../src/disk_cache.js'
+import type * as Fingerprint from '../src/fingerprint.js'
 
 vi.mock('../src/config.js', async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), loadConfig: vi.fn() }))
+
+// A file that is on disk and is a regular file but cannot be read right now (an AV scanner or sync client holding a lock): stat says file, fingerprintFile says null. A directory at the path used to stand in for this, but a directory standing where an indexed file was is a deletion now (indexedFileIsGone), so the failure is injected here instead. Everything else goes to the real module. Provenance: HAND-DERIVED failure injection; the lock itself cannot be created portably from Node.
+const unreadablePaths = vi.hoisted(() => new Set<string>())
+vi.mock('../src/fingerprint.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof Fingerprint>()
+  return { ...actual, fingerprintFile: (filePath: string) => (unreadablePaths.has(normalizePath(filePath)) ? null : actual.fingerprintFile(filePath)) }
+})
+
+/** Create a real file at `filePath` whose read fails every time, as a locked file's does. */
+function makeUnreadable(filePath: string): void {
+  fs.writeFileSync(filePath, 'export const locked = 1\n')
+  unreadablePaths.add(normalizePath(filePath))
+}
 
 // tests/setup/isolate-home.ts pins TOKEN_GOAT_NO_WORKER_SPAWN='1' by default for the whole suite so an incidental ensureWorkerAlive call elsewhere never spawns a real daemon -- but this file's own tests deliberately exercise real startDetachedWorker/ensureWorkerAlive spawning (pid-file claiming, stale-pid replacement, real process lifecycle), so it opts back out here, same "a test that sets its own value wins" pattern documented in isolate-home.ts.
 process.env['TOKEN_GOAT_NO_WORKER_SPAWN'] = '0'
@@ -64,6 +78,7 @@ function countFilesRows(dbPath: string, absPath: string): number {
 
 beforeEach(() => {
   DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-worker-'))
+  unreadablePaths.clear()
   // Permissive default so existing tests (which don't set blocked_roots) are unaffected; individual tests override as needed. indexing.* size/skip_dirs fields are set generously permissive too, so this fixture-sized test content never trips indexFileSync/ indexFileEmbeddings' size gates.
   vi.mocked(loadConfig).mockReturnValue({
     worker: { blocked_roots: [] },
@@ -574,7 +589,7 @@ describe('processDirtyBatch', () => {
   // Regression: a dirty path that exists (fs.existsSync true) but whose fingerprintFile call returns null -- a transient read failure such as a lock held by an AV scanner/editor/OneDrive sync, a permission error, or a race with an external writer -- used to be silently dropped: `continue`d past with no log entry and no way to retry short of the file being touched again, since drainOnce unconditionally clears the .draining marker right after this function returns. Trigger the failure with a REAL, unmocked read error (a directory sitting at the dirty-queued path, so fs.existsSync is true but fs.readFileSync throws EISDIR and fingerprintFile returns null) rather than mocking fingerprintFile, exercising the actual production call.
   it('logs and requeues a path whose fingerprintFile call fails despite the file existing', () => {
     const lockedPath = path.join(DIR, 'locked.ts')
-    fs.mkdirSync(lockedPath) // exists (fs.existsSync true), but reading it as a file throws EISDIR
+    makeUnreadable(lockedPath) // a regular file on disk whose read fails every time (transient failure)
     const real = path.join(DIR, 'real.ts')
     fs.writeFileSync(real, 'export const x = 1\n')
 
@@ -603,7 +618,7 @@ describe('processDirtyBatch', () => {
   // Regression: bumpRetryCount/clearRetryCount used to fold the RAW absPath as given by the caller instead of normalizing it first. The files.path column is always written in normalizePath()'d (forward-slash) form by every real writer, so a caller that referenced the same file via a native-separator (backslash) path on a second call would never match the row written under the normalized form, silently falling into the INSERT branch instead of incrementing the existing row's retry_count. Drive two real transient-read failures on the SAME file, one queued in its native path.join() form and one in its normalizePath()'d form, and confirm they share one counter (accumulates to 2) instead of each starting a fresh row at 1.
   it('accumulates retry_count on one shared row across calls that reference the same file via different path forms (backslash vs normalized)', () => {
     const lockedPath = path.join(DIR, 'locked-crossform.ts')
-    fs.mkdirSync(lockedPath) // exists, but reading it as a file throws EISDIR (transient failure)
+    makeUnreadable(lockedPath) // a regular file on disk whose read fails every time (transient failure)
     const lockedPathNormalized = normalizePath(lockedPath)
     const dbPath = path.join(DIR, 'global.db')
 
@@ -614,10 +629,10 @@ describe('processDirtyBatch', () => {
     expect(getRetryCount(dbPath, lockedPath)).toBe(2)
   })
 
-  // PROVENANCE: CAPTURE. Reproduced against the code this replaced, by the same technique the two tests above use (a directory at the queued path, so the read fails for real). One transient failure on a never-indexed file inserted `(path, retry_count=1)` into `files` with every other column NULL. `getFileEntry` coerces a NULL sha to '', and three readers -- `indexMatchesDisk` (index_freshness.ts) and `healStaleIndex`/`staleWarning` (read_commands.ts) -- read a row with no sha as a legacy pre-fingerprinting entry and accept it as-is. So the file looked indexed while having no symbols at all, and the on-demand heal that exists for exactly this case ("the worker has not caught up") was disabled for it permanently: `token-goat read "file::sym"` answered "not found" until something edited the file again. Measured on the shipped CLI: the same command returned the symbol body once the placeholder row was deleted.
+  // PROVENANCE: CAPTURE. Reproduced against the code this replaced, by the same technique the two tests above use (a file at the queued path whose read fails). One transient failure on a never-indexed file inserted `(path, retry_count=1)` into `files` with every other column NULL. `getFileEntry` coerces a NULL sha to '', and three readers -- `indexMatchesDisk` (index_freshness.ts) and `healStaleIndex`/`staleWarning` (read_commands.ts) -- read a row with no sha as a legacy pre-fingerprinting entry and accept it as-is. So the file looked indexed while having no symbols at all, and the on-demand heal that exists for exactly this case ("the worker has not caught up") was disabled for it permanently: `token-goat read "file::sym"` answered "not found" until something edited the file again. Measured on the shipped CLI: the same command returned the symbol body once the placeholder row was deleted.
   it('does not mint a files row for a path that failed to be read and was never indexed', () => {
     const lockedPath = path.join(DIR, 'locked-noplaceholder.ts')
-    fs.mkdirSync(lockedPath) // exists, but reading it as a file throws EISDIR (transient failure)
+    makeUnreadable(lockedPath) // a regular file on disk whose read fails every time (transient failure)
     const dbPath = path.join(DIR, 'global.db')
 
     processDirtyBatch([lockedPath], undefined, undefined, DIR)
@@ -629,7 +644,7 @@ describe('processDirtyBatch', () => {
 
   it('clearRetryCount clears the counter even when called with a differently-formed path than the one that wrote it', () => {
     const lockedPath = path.join(DIR, 'locked-reset.ts')
-    fs.mkdirSync(lockedPath)
+    makeUnreadable(lockedPath) // a regular file on disk whose read fails every time (transient failure)
     const dbPath = path.join(DIR, 'global.db')
 
     processDirtyBatch([lockedPath], undefined, undefined, DIR)
@@ -639,10 +654,10 @@ describe('processDirtyBatch', () => {
     expect(getRetryCount(dbPath, lockedPath)).toBe(0)
   })
 
-  // Regression (worker requeueDirtyPath had no retry cap/backoff): a permanently stuck path (e.g. a lock that never clears) used to be requeued into dirty.txt forever, every single drain cycle, with no bound and no visibility into the fact that it was stuck. Drive the REAL drain path (drainOnce -- the same call runWorkerLoop makes every ~2s) across many cycles with a path that fails every single time via a REAL, unmocked read error (a directory sitting at the dirty-queued path, same technique as the test above), and confirm it is eventually dropped instead of requeued forever, exactly one throttled warning is logged for it (not one per cycle), and a healthy path queued in the same initial batch is indexed once and never starved or reprocessed just because it shares a batch with the stuck path.
+  // Regression (worker requeueDirtyPath had no retry cap/backoff): a permanently stuck path (e.g. a lock that never clears) used to be requeued into dirty.txt forever, every single drain cycle, with no bound and no visibility into the fact that it was stuck. Drive the REAL drain path (drainOnce -- the same call runWorkerLoop makes every ~2s) across many cycles with a path that fails every single time via an injected read error on a real file (see makeUnreadable, same technique as the test above), and confirm it is eventually dropped instead of requeued forever, exactly one throttled warning is logged for it (not one per cycle), and a healthy path queued in the same initial batch is indexed once and never starved or reprocessed just because it shares a batch with the stuck path.
   it('caps transient-read-failure retries for a permanently stuck path without starving healthy paths', () => {
     const lockedPath = path.join(DIR, 'stuck.ts')
-    fs.mkdirSync(lockedPath) // exists (fs.existsSync true), but reading it as a file throws EISDIR every time
+    makeUnreadable(lockedPath) // a regular file on disk whose read fails every time (transient failure)
     const healthy = path.join(DIR, 'healthy.ts')
     fs.writeFileSync(healthy, 'export const x = 1\n')
     writeQueue(DIR, [lockedPath, healthy])
@@ -670,7 +685,7 @@ describe('processDirtyBatch', () => {
   // Regression: the retry count was cleared on a *successful* read (processDirtyBatch) but never on a fresh edit re-dirtying the path -- so a path that once exhausted its retry budget during a transient lock episode stayed permanently exhausted for the rest of the daemon's lifetime, even after the file was edited again. The fix is clearRetryCount, which processDirtyBatch calls for every path whose fingerprintFile read succeeds during a drain, so the budget comes back as soon as the file can actually be read again. (appendDirtyPath in hooks_index.ts used to call it too, on the edit-hook path; that call was removed on purpose because it opened a full DB connection on every single edit to run a reset that is a no-op for virtually every file -- its comment there has the reasoning.) Pass this test's own DIR-scoped DB explicitly, so it names the same DB drainOnce(DIR) itself reads, exactly as a real hook-process/daemon-process pair would both resolve to the one shared global.db.
   it('gives a fresh retry budget to a path re-dirtied after exhausting its retry cap', () => {
     const lockedPath = path.join(DIR, 'stuck2.ts')
-    fs.mkdirSync(lockedPath)
+    makeUnreadable(lockedPath) // a regular file on disk whose read fails every time (transient failure)
     writeQueue(DIR, [lockedPath])
     const dbPath = path.join(DIR, 'global.db')
 
@@ -703,7 +718,7 @@ describe('processDirtyBatch', () => {
   // Regression (the actual cross-process bug, not just the same-process behavior above): the retry count used to live only in a worker.ts module-level Map, so clearRetryCount -- called from appendDirtyPath in the short-lived hook CLI process -- could never reach the long-lived detached daemon's own copy of that Map. A same-process test calling clearRetryCount and then drainOnce in immediate succession would pass even with that bug, because both calls shared the one process's Map (the "wrong-oracle" trap: the test never actually exercised the missing cross-process link). This test instead closes every cached DB connection (clearModuleCaches -> closeAllDbs) between each step, forcing drainOnce/clearRetryCount to open a brand-new connection object every time -- the closest a single Node process can get to proving the persisted DB row, not any process-local cache, is what carries the reset across. If retry state lived in memory again, this would regress back to zero new "giving up" output after the reset.
   it('persists the retry-count reset through the DB even when every in-process DB connection is closed and reopened between steps (cross-process simulation)', () => {
     const lockedPath = path.join(DIR, 'stuck3.ts')
-    fs.mkdirSync(lockedPath)
+    makeUnreadable(lockedPath) // a regular file on disk whose read fails every time (transient failure)
     writeQueue(DIR, [lockedPath])
     const dbPath = path.join(DIR, 'global.db')
 
@@ -1172,7 +1187,7 @@ describe('drainOnce', () => {
     // Regression (same-cycle retry double-bump): when a transient read failure happens while recovering an abandoned .draining file in stage (a), the old requeueDirtyPath appended the path straight to the LIVE dirty.txt -- which stage (b) of this SAME drainOnce call then claims and reprocesses microseconds later, while the lock/condition that caused the original failure has almost certainly not cleared yet. That silently bumped the transient retry counter TWICE per drain cycle instead of once, roughly halving the effective MAX_TRANSIENT_RETRIES budget (5 real failure cycles exhausted it in ~3 calls instead of 5). No live dirty.txt exists before this call -- isolating the bug to exactly the stage (a)-recovers/stage (b)-immediately-reclaims interaction, not any pre-existing queue content.
     it('bumps the transient-retry count only once per drainOnce call when stage (a) recovering an abandoned .draining file requeues a path stage (b) of the SAME cycle would otherwise immediately reclaim', () => {
       const lockedPath = path.join(DIR, 'stuck-samecycle.ts')
-      fs.mkdirSync(lockedPath) // exists (fs.existsSync true), but reading it as a file throws EISDIR every time
+      makeUnreadable(lockedPath) // a regular file on disk whose read fails every time (transient failure)
       const dbPath = path.join(DIR, 'global.db')
       const queuePath = path.join(DIR, 'queue', 'dirty.txt')
       const drainingPath = `${queuePath}.draining`

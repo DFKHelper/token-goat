@@ -40,6 +40,20 @@ const DANGLING_RE = /(?:,|\bwhen|\band|\bor|\bin|&&|\|\||[+\-*/<>=!|&])\s*$/
 // The keyword-list form `do: expr` of a one-line def body.
 const DO_KEYWORD_RE = /(?:^|[\s,)])do:/
 
+// A line whose last token is `do:`, so the keyword body continues on the following, more-indented lines (the shape `mix format` emits for a one-liner too long for one line).
+const DO_KEYWORD_AT_EOL_RE = /(?:^|[\s,)])do:$/
+
+// A `do:` keyword body still being read: its continuation lines are those indented deeper than the def head's own line.
+interface KeywordBody {
+  symbolIndex: number
+  headIndent: number
+}
+
+/** Leading whitespace width of a line. */
+function indentOf(line: string): number {
+  return line.length - line.trimStart().length
+}
+
 /** Nearest enclosing real def/defmodule name, skipping past non-def block frames. */
 function nearestDefName(stack: readonly ModuleFrame[]): string | undefined {
   for (let i = stack.length - 1; i >= 0; i--) {
@@ -78,6 +92,23 @@ export function extractElixir(
   const moduleStack: ModuleFrame[] = []
   let mlState: MultilineStringState | null = null
   let pending: PendingDefHead | undefined
+  let keywordBody: KeywordBody | undefined
+
+  // Widen a def's recorded span so it ends on `lineEnd`, re-slicing the stored body to match.
+  const extendDefSpan = (symbolIndex: number, lineEnd: number): void => {
+    const open = symbols[symbolIndex]
+    if (open !== undefined && lineEnd > open.lineStart) {
+      symbols[symbolIndex] = { ...open, lineEnd, body: lines.slice(open.lineStart - 1, lineEnd).join('\n') }
+    }
+  }
+
+  // A `do:` that ends its line leaves the body on the next lines: track it so they extend the def's span.
+  const trackKeywordBody = (symbolIndex: number, stripped: string): void => {
+    const open = symbols[symbolIndex]
+    if (open !== undefined && DO_KEYWORD_AT_EOL_RE.test(stripped)) {
+      keywordBody = { symbolIndex, headIndent: indentOf(lines[open.lineStart - 1] ?? '') }
+    }
+  }
 
   // Open the def's block frame when its own line ends in `do`, keep it pending when the head is unfinished, and leave a `, do: expr` one-liner frameless.
   const settleDefHead = (name: string, stripped: string): void => {
@@ -86,6 +117,8 @@ export function extractElixir(
       moduleStack.push({ name, endKeywordNeeded: true, isBlock: false, symbolIndex })
     } else if (!DO_KEYWORD_RE.test(stripped)) {
       pending = { name, symbolIndex, depth: bracketDelta(stripped), dangling: DANGLING_RE.test(stripped) }
+    } else {
+      trackKeywordBody(symbolIndex, stripped)
     }
   }
 
@@ -100,6 +133,18 @@ export function extractElixir(
     // Strip a trailing `#` line comment (Elixir uses `#` for line comments).
     const line = stripLineComment(masked, ['#']).trimEnd()
     const stripped = line.trim()
+
+    // A `do:` keyword body ends at a blank line or the first line that is not indented deeper than its def; deeper lines belong to the body, so they extend the def's span and are never read as new constructs.
+    if (keywordBody !== undefined) {
+      if (rawLine.trim() === '') {
+        keywordBody = undefined
+      } else if (stripped && indentOf(masked) <= keywordBody.headIndent) {
+        keywordBody = undefined
+      } else {
+        if (stripped) extendDefSpan(keywordBody.symbolIndex, lineNum)
+        continue
+      }
+    }
 
     if (!stripped) {
       continue
@@ -117,11 +162,9 @@ export function extractElixir(
           moduleStack.push({ name: pending.name, endKeywordNeeded: true, isBlock: false, symbolIndex: pending.symbolIndex })
           pending = undefined
         } else if (pending.depth <= 0 && DO_KEYWORD_RE.test(stripped)) {
-          // `def f(x),` then `do: expr` on its own line: the one-liner ends on the line that carries `do:`.
-          const open = symbols[pending.symbolIndex]
-          if (open !== undefined && lineNum > open.lineStart) {
-            symbols[pending.symbolIndex] = { ...open, lineEnd: lineNum, body: lines.slice(open.lineStart - 1, lineNum).join('\n') }
-          }
+          // `def f(x),` then `do: expr` on its own line: the one-liner ends on the line that carries `do:`, unless the `do:` ends the line and its body follows.
+          extendDefSpan(pending.symbolIndex, lineNum)
+          trackKeywordBody(pending.symbolIndex, stripped)
           pending = undefined
         }
         continue

@@ -107,6 +107,9 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **`refs --callers` left out calls made from arrow functions stored on a class property or from functions stored in an object.** Those calls are now credited to the property or key name, the same way a method's calls are. Upgrading reindexes each project once to pick this up.
+- **An Elixir `def name(args),` with `do:` on the next line was indexed as one line.** The function now gets its full span, so `read` returns its body.
+- **Replacing an indexed file with a folder of the same name left the old file's symbols in the index.** Reconcile and the background worker now drop the stale file, so `symbol` stops finding code that is gone.
 - **A failed `cargo build` kept the warnings and cut the error.** Compressed output now keeps every `error[...]` block whole, with its source location and notes, and folds the warnings into one line that says how many there were.
 - **`image-meta` called a valid AVIF file unreadable and exited 1.** It now reports the width, height and format of AVIF, HEIC and HEIF images, and says that token-goat does not re-encode them.
 - **`install --copilot --project` and `install --pi --project` wrote the user-scope config.** Both only listened to `--local`. Now `-p`/`--project` picks the project-local target too (`<project>/.github/hooks/token-goat.json`, `<project>/.pi/extensions/token-goat.ts`), on install and on uninstall, and the help text says so.
