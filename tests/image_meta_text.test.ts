@@ -3,7 +3,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import sharp from 'sharp'
+import sharp, { type CreateRaw } from 'sharp'
 
 import { runImageMeta, runImageText } from '../src/read_commands.js'
 import { run } from '../src/cli.js'
@@ -89,8 +89,47 @@ describe('runImageMeta', () => {
     const meta = await runImageMeta(file)
     expect(meta.shrinkable).toBe(true)
     expect(meta.wouldShrink).toBe(false)
+    expect(meta.shrinkRefusal).toBeNull()
     const output = await captureStdout(() => run(['node', 'token-goat', 'image-meta', file]))
     expect(output).toContain('Shrink: no benefit')
+  })
+
+  it('reports a 16-bit PNG the re-encoder refuses as not attempted, naming the reason, not as no benefit', async () => {
+    // HAND-DERIVED: PNG spec IHDR layout (signature 8, length 4, "IHDR" 4, width 4, height 4, then bit depth at file offset 24 and interlace at 28); the assertion below checks the fixture really has bit depth 16 rather than trusting the sharp options that asked for it.
+    const w = 64
+    const h = 64
+    const samples = new Uint16Array(w * h * 3)
+    for (let i = 0; i < samples.length; i++) samples[i] = (i * 2654435761) >>> 16
+    const png = await sharp(Buffer.from(samples.buffer), { raw: { width: w, height: h, channels: 3, depth: 'ushort' } as CreateRaw }).toColourspace('rgb16').png().toBuffer()
+    expect(png[24]).toBe(16)
+    const file = path.join(TMP, 'deep16.png')
+    fs.writeFileSync(file, png)
+
+    const meta = await runImageMeta(file)
+    expect(meta.shrinkable).toBe(true)
+    expect(meta.wouldShrink).toBe(false)
+    expect(meta.shrinkRefusal).toMatch(/bit depth: 16/)
+
+    const output = await captureStdout(() => run(['node', 'token-goat', 'image-meta', file]))
+    expect(output).toContain('Shrink: not attempted (')
+    expect(output).toContain('bit depth: 16')
+    expect(output).not.toContain('no benefit')
+    const json = JSON.parse(await captureStdout(() => run(['node', 'token-goat', 'image-meta', '--json', file]))) as { shrinkRefusal: string | null }
+    expect(json.shrinkRefusal).toMatch(/bit depth: 16/)
+  })
+
+  it('reports an interlaced PNG as not attempted, naming the reason', async () => {
+    // HAND-DERIVED: same IHDR layout as above; the interlace method byte at file offset 28 is 1 (Adam7) for this fixture, asserted below.
+    const png = await sharp({ create: { width: 64, height: 64, channels: 3, background: { r: 1, g: 2, b: 3 } } }).png({ progressive: true }).toBuffer()
+    expect(png[28]).toBe(1)
+    const file = path.join(TMP, 'adam7.png')
+    fs.writeFileSync(file, png)
+
+    const meta = await runImageMeta(file)
+    expect(meta.shrinkRefusal).toMatch(/interlace method: 1/)
+    const output = await captureStdout(() => run(['node', 'token-goat', 'image-meta', file]))
+    expect(output).toContain('Shrink: not attempted (')
+    expect(output).not.toContain('no benefit')
   })
 
   it('rejects a nonexistent file with the same wording as the pdf family', async () => {

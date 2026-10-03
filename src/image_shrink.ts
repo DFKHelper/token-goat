@@ -191,6 +191,18 @@ export function canShrinkFormat(format: string | null | undefined): boolean {
   return format != null && SINGLE_FRAME_DECODERS.has(format)
 }
 
+/** Why the decoder for `format` refuses `input`, or null when it decodes it (or there is no decoder). `shrinkImage` folds a refused decode into the same null a measured no-benefit returns, so a caller that must tell the two apart, `image-meta`, asks here: a 16-bit or interlaced PNG is a capability limit, not a verdict that the image is already small. */
+export function decoderRefusal(input: Buffer, format: string | null | undefined): string | null {
+  const decode = SINGLE_FRAME_DECODERS.get(format ?? '')
+  if (decode === undefined) return null
+  try {
+    decode(input)
+    return null
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e)
+  }
+}
+
 /** Telemetry returned for a successful shrink. */
 export interface ShrinkResult {
   /** Re-encoded image bytes. */

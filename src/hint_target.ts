@@ -290,11 +290,11 @@ export function fileQueryHint(shownPath: string, reason = '', grepSubject = 'pat
 /** The command a deny leads with, as leadWithCommand fenced it, or the first fenced `token-goat` command anywhere in it. */
 const LED_COMMAND_RE = /`(token-goat [^`\r\n]+)`/
 
-/** A deny this agent already received for this exact call, since the last compaction, comes back as its command and one line instead of the whole explanation again: 283 of 2,764 measured token-goat denies were a verbatim repeat, and the model that already holds the long version gains nothing from a second copy. Keyed by tool, message and compaction epoch in the per-agent session state relay.ts loads, so a repeat after a compaction (which may have dropped the first) gets the full text again. The session and agent go into the key as well: loadSessionState keeps the previous in-memory state when a session has nothing on disk yet, so a process serving a second session would otherwise read the first one's refusals as its own. */
+/** A deny this agent already received for this exact call, since the last compaction, comes back as its command and one line instead of the whole explanation again: 283 of 2,764 measured token-goat denies were a verbatim repeat, and the model that already holds the long version gains nothing from a second copy. Keyed by tool, tool input, message and compaction epoch (two different calls can draw the same refusal text, a webfetch.deny pattern names no URL, and only a verbatim repeat may be cut) in the per-agent session state relay.ts loads, so a repeat after a compaction (which may have dropped the first) gets the full text again. The session and agent go into the key as well: loadSessionState keeps the previous in-memory state when a session has nothing on disk yet, so a process serving a second session would otherwise read the first one's refusals as its own. */
 export function sharpenRepeatedDeny(event: HookEvent, output: HookOutput): HookOutput {
   // A deny that delivers the content (DELIVERS_CONTENT_RE) is the content itself the second time too, so it is never cut down to a pointer.
   if (output.hookType !== 'deny' || !event.sessionId || DELIVERS_CONTENT_RE.test(output.message)) return output
-  const key = 'deny-repeat:' + sessionStateKey(event) + ':' + (event.toolName ?? '') + ':' + getCompactedAt() + ':' + shortFingerprint(output.message)
+  const key = 'deny-repeat:' + sessionStateKey(event) + ':' + (event.toolName ?? '') + ':' + getCompactedAt() + ':' + shortFingerprint(output.message) + ':' + shortFingerprint(JSON.stringify(event.toolInput))
   if (!wasHintShown(key)) {
     markHintShown(key)
     return output

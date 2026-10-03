@@ -1,6 +1,6 @@
 /** Linear-time matchers for header-like lines. Each replaces a regex that backtracked quadratically on a long run of whitespace (a 500 KB single line stalled the shared indexing worker for about a minute) and is differentially tested against that regex. */
 
-const ATX_OPEN_RE = /^(#{1,6})(\s+)/
+const ATX_OPEN_RE = /^ {0,3}(#{1,6})(\s+)/
 const TABLE_OPEN_RE = /^\s*\[+/
 const TOML_OPEN_RE = /^\s*\[/
 const TABLE_TAIL_RE = /^\s*(?:[#;].*)?$/

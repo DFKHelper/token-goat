@@ -176,4 +176,33 @@ describe('Zed install refuses to clobber a foreign token-goat entry', () => {
     expect(() => installZed()).toThrow()
     expect(fs.readFileSync(settingsPath, 'utf8')).toBe('{ not valid json')
   })
+
+  it('leaves no shim behind when the install is rejected for a malformed settings.json', () => {
+    // CAPTURE: `install --zed` against '{ "theme": "One", oops }' exited 1 with "malformed Zed MCP JSON" and left token-goat-mcp.cmd in the Zed directory (r15 lifecycle run).
+    const settingsPath = zedSettingsPath()
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, '{ "theme": "One", oops }')
+    expect(() => installZed()).toThrow(/malformed/i)
+    expect(fs.existsSync(zedShimPath())).toBe(false)
+  })
+
+  it('leaves no shim behind when the install is rejected for a foreign token-goat entry', () => {
+    // HAND-DERIVED: the foreign-entry guard throws on the same path as the byte-for-byte test above, so the directory must hold only the user's settings.json.
+    const settingsPath = zedSettingsPath()
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(settingsPath, JSON.stringify({ context_servers: { 'token-goat': { command: '/not/ours', timeout: 1 } } }))
+    expect(() => installZed()).toThrow(/already has a "token-goat" context server entry/)
+    expect(fs.readdirSync(path.dirname(settingsPath))).toEqual([path.basename(settingsPath)])
+  })
+})
+
+describe('Zed uninstall with a settings.json that no longer parses', () => {
+  it('still removes the shim it owns, and still reports the parse failure', () => {
+    // CAPTURE: `uninstall --zed` against a malformed settings.json threw before reaching the shim removal, so token-goat-mcp.cmd stayed on disk (r15 lifecycle run).
+    const result = installZed()
+    fs.writeFileSync(result.settingsPath, '{ "theme": "One", oops }')
+    expect(() => uninstallZed()).toThrow(/malformed/i)
+    expect(fs.existsSync(result.shimPath)).toBe(false)
+    expect(fs.readFileSync(result.settingsPath, 'utf8')).toBe('{ "theme": "One", oops }')
+  })
 })

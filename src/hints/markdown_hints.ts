@@ -28,10 +28,15 @@ export function extractMarkdownHeadings(content: string, limit: number = MAX_HEA
   // Front matter is metadata, not prose: start after it so its closing fence cannot underline a key as a setext heading.
   const fmEnd = frontMatterEndIndex(lines)
   const unfenced = Array.from(eachUnfencedLine(lines)).filter(([i]) => i >= fmEnd)
+  // Index in `unfenced` of the first line of the open paragraph, or -1 when no paragraph is open.
+  let paraStart = -1
 
   for (let u = 0; u < unfenced.length; u++) {
     const [i, line] = unfenced[u]!
-    if (!line) continue
+    if (!line) {
+      paraStart = -1
+      continue
+    }
     // Seven or more hashes is no heading, and the setext check below skips any line starting with `#`.
     const atx = matchAtxHeading(line, ATX_CLASS_BREAK_RE, true)
     if (atx !== null) {
@@ -44,36 +49,36 @@ export function extractMarkdownHeadings(content: string, limit: number = MAX_HEA
         })
         if (headings.length >= limit) break
       }
+      paraStart = -1
       continue
     }
 
+    // A paragraph is a run of adjacent text lines; a gap (blank line, fence) ends it. The whole paragraph above an underline is the heading.
+    if (paraStart !== -1 && i !== unfenced[u - 1]![0] + 1) paraStart = -1
     const trimmed = line.trim()
-    if (
+    if (paraStart !== -1 && /^(=+|-+)$/.test(trimmed)) {
+      headings.push({
+        level: trimmed.startsWith('=') ? 1 : 2,
+        text: unfenced
+          .slice(paraStart, u)
+          .map(([, text]) => text.trim())
+          .join(' '),
+        lineNumber: unfenced[paraStart]![0] + 1,
+      })
+      paraStart = -1
+      if (headings.length >= limit) break
+      continue
+    }
+    const isText =
       trimmed !== '' &&
       !trimmed.startsWith('#') &&
       !trimmed.startsWith('|') &&
       !trimmed.startsWith('```') &&
       !trimmed.startsWith('~~~') &&
       !/^([-*+]|\d+\.)\s/.test(trimmed) &&
-      u + 1 < unfenced.length
-    ) {
-      const [nextIdx, nextLine] = unfenced[u + 1]!
-      if (nextIdx === i + 1) {
-        let setextLevel = 0
-        if (/^\s*(=+)\s*$/.test(nextLine)) setextLevel = 1
-        else if (/^\s*(-+)\s*$/.test(nextLine)) setextLevel = 2
-
-        if (setextLevel > 0) {
-          headings.push({
-            level: setextLevel,
-            text: trimmed,
-            lineNumber: i + 1,
-          })
-          u++
-          if (headings.length >= limit) break
-        }
-      }
-    }
+      !/^(=+|-+)$/.test(trimmed)
+    if (!isText) paraStart = -1
+    else if (paraStart === -1) paraStart = u
   }
 
   return headings

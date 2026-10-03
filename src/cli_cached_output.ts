@@ -14,10 +14,11 @@ import { extractTranscriptText } from './read_inspect.js'
 import { compileGuardedRegex } from './regex_guard.js'
 import { stripAnsiEscapes } from './render/ansi.js'
 import { redactSecrets } from './secret_redact.js'
+import { AMBIGUOUS_HEADING_LIMIT } from './read_section.js'
 import { extractSection } from './section_reader.js'
 import { clipLongMatchLine } from './tool_filters/helpers.js'
 import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
-import { decodeSource, isWindows } from './util.js'
+import { countNoun, decodeSource, isWindows } from './util.js'
 import { getWebOutput, getWebOutputRaw } from './web_cache.js'
 
 /** The narrowing flags every cached-output recall command shares; the three recall-by-position flags (`--lines`, `-n`, `--context`) are optional so callers that never register them (cli_office.ts) compile unchanged. */
@@ -69,15 +70,25 @@ export function _applyFiltersAndPrint(
   // fenceByProvenance true means this is third-party content (a fetched page, a recalled cache entry, a document the caller only named rather than authored), the same population the injection fence covers -- redact it before any narrowing so --grep's long-line clip can never cut a secret in half and leave a fragment the redactor no longer recognises. Idempotent on content already redacted at write time (bash/web/mcp caches).
   if (fenceByProvenance) content = redactSecrets(content).text
   const render = (rows: RecallRow[]): string => rows.map((r) => (opts.lineNumbers === true && r.n !== null ? `${r.n}:${r.text}` : r.text)).join('\n')
+  let firstLine = 1
   if (opts.section !== undefined) {
     const sectionResult = extractSection(content, opts.section)
     if (sectionResult === null) {
       throw new CliError(`section '${opts.section}' not found`)
     }
+    // Said as a refusal, like `section` on a duplicated heading: printing the first match alone reads as the only one.
+    if (sectionResult.occurrences !== undefined) {
+      const picks = sectionResult.occurrences.slice(0, AMBIGUOUS_HEADING_LIMIT).map((line, i) => `line ${line} -> --section "${opts.section}#${i + 1}"`)
+      const more = sectionResult.occurrences.length - AMBIGUOUS_HEADING_LIMIT
+      if (more > 0) picks.push(`${more} more not shown`)
+      throw new CliError(`Ambiguous heading '${opts.section}': ${countNoun(sectionResult.occurrences.length, 'heading')} match. Retry with one of: ${picks.join('; ')}`)
+    }
     content = sectionResult.content
+    // -n numbers stay in the stored output's own coordinates, as they are without --section.
+    firstLine = sectionResult.lineStart
   }
 
-  let rows: RecallRow[] = content.split(/\r?\n/).map((text, i) => ({ n: i + 1, text }))
+  let rows: RecallRow[] = content.split(/\r?\n/).map((text, i) => ({ n: firstLine + i, text }))
   // --full below keeps this raw split, trailing "" included, so the verbatim blob is unchanged; every other path drops the phantom trailing row.
   const dropPhantom = (r: RecallRow[]): RecallRow[] => (r.length > 1 && r[r.length - 1]?.text === '' ? r.slice(0, -1) : r)
 

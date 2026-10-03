@@ -509,6 +509,18 @@ function plsqlStructure(
   return { ends, children }
 }
 
+// Statement kinds whose body can hold a `;` before the real end (BEGIN...END, $$ bodies, PL/SQL units), so the first top-level `;` is not their terminator. Every other kind is a single statement and ends at that `;`.
+const BODY_KINDS: ReadonlySet<string> = new Set([
+  'sql_function', 'sql_procedure', 'sql_trigger', 'sql_type', 'sql_type_body', 'sql_package', 'sql_package_body', 'sql_rule',
+])
+
+// Walk a span's end back over trailing lines that are blank once comments are stripped, bounded by the span's own first line.
+function trimBlankTail(lines: readonly string[], start: number, end: number): number {
+  let e = end
+  while (e > start && (lines[e - 1] ?? '').trim() === '') e--
+  return e
+}
+
 export function extractSql(content: string, filePath: string): SymbolEntry[] {
   const symbols: SymbolEntry[] = []
   const sections: MiniSection[] = []
@@ -552,13 +564,13 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
           const line = offsetToLine(lineIndex, m.index ?? 0)
           createStarts.push(m.index ?? 0)
           const semiIdx = findStatementTerminator(noStrings, m.index ?? 0)
-          if (semiIdx !== -1 && offsetToLine(lineIndex, semiIdx) === line) {
+          if (semiIdx !== -1 && (offsetToLine(lineIndex, semiIdx) === line || !BODY_KINDS.has(kind))) {
             // kind must be part of the key, same reasoning as makeSymbolEmitter's own `seen`
             // key: a name can legitimately repeat across kinds on the same line (e.g. a
             // same-line `CREATE TABLE foo (...); CREATE FUNCTION foo() ...`), and a name+line-
             // only key would let one kind's single-line pin leak onto a different kind sharing
             // that same name and line.
-            singleLineEndLines.set(`${name}\0${kind}\0${line}`, line)
+            singleLineEndLines.set(`${name}\0${kind}\0${line}`, offsetToLine(lineIndex, semiIdx))
           } else if (PLSQL_UNIT_KINDS.has(kind)) {
             units.push({ name, kind, index: m.index ?? 0, matchEnd: (m.index ?? 0) + m[0].length, line })
           }
@@ -576,12 +588,14 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
   sections.sort((a, b) => a.line - b.line)
   symbols.sort((a, b) => a.lineStart - b.lineStart)
   assignFlatEndLines(sections, totalLines)
+  const noLines = noStrings.split('\n')
   const pinned = propagateEndLinesToSymbols(symbols, sections).map((sym) => {
     const key = `${sym.name}\0${sym.kind}\0${sym.lineStart}`
-    const pinnedEndLine = singleLineEndLines.get(key) ?? plsql.ends.get(key)
-    return pinnedEndLine !== undefined && pinnedEndLine !== sym.lineEnd
-      ? { ...sym, lineEnd: pinnedEndLine }
-      : sym
+    const semiEnd = singleLineEndLines.get(key)
+    // A `;` pin never runs past the flat end: under a client DELIMITER the first `;` can sit inside the next statement's body.
+    const pinnedEndLine = semiEnd !== undefined ? Math.min(semiEnd, sym.lineEnd) : plsql.ends.get(key)
+    const end = pinnedEndLine ?? trimBlankTail(noLines, sym.lineStart, sym.lineEnd)
+    return end !== sym.lineEnd ? { ...sym, lineEnd: end } : sym
   })
   if (plsql.children.length === 0) return pinned
   return [...pinned, ...plsql.children].sort((a, b) => a.lineStart - b.lineStart)

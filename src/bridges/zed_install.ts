@@ -74,14 +74,15 @@ function installZedFiles(): ZedInstallResult {
   const settingsPath = zedSettingsPath()
   const shimPath = zedShimPath()
 
-  const shimChanged = writeIfDifferent(shimPath, buildShimScript())
-  if (process.platform !== 'win32') fs.chmodSync(shimPath, 0o755)
-
   const config = readServersJson(settingsPath, 'Zed')
   const current = serversOf(config, settingsPath, 'Zed', CONTEXT_SERVERS_KEY)[TOKEN_GOAT_ENTRY_KEY]
   if (current !== undefined && !isZedManagedServer(current)) {
     throw new Error(`Zed settings.json already has a "${TOKEN_GOAT_ENTRY_KEY}" context server entry token-goat did not write, at ${settingsPath}; remove it manually first`)
   }
+
+  // The shim is written only once settings.json has parsed and passed the ownership check above, so a rejected install leaves no file behind.
+  const shimChanged = writeIfDifferent(shimPath, buildShimScript())
+  if (process.platform !== 'win32') fs.chmodSync(shimPath, 0o755)
 
   const desired = zedManagedServer()
   const alreadyInstalled = current !== undefined && !shimChanged
@@ -101,25 +102,29 @@ export function uninstallZed(): boolean {
   const shimPath = zedShimPath()
 
   let entryRemoved = false
-  if (fs.existsSync(settingsPath)) {
-    const config = readServersJson(settingsPath, 'Zed')
-    if (isZedManagedServer(serversOf(config, settingsPath, 'Zed', CONTEXT_SERVERS_KEY)[TOKEN_GOAT_ENTRY_KEY])) {
-      const next = dropEmptyServers(setTokenGoatServer(config.text, undefined, CONTEXT_SERVERS_KEY), settingsPath, CONTEXT_SERVERS_KEY)
-      if (/^\s*\{\s*\}\s*$/.test(next) && takeCreatedConfig(settingsPath)) {
-        fs.rmSync(settingsPath, { force: true })
-      } else {
-        backupFile(settingsPath)
-        atomicWriteText(settingsPath, next)
+  let shimRemoved: boolean
+  try {
+    if (fs.existsSync(settingsPath)) {
+      const config = readServersJson(settingsPath, 'Zed')
+      if (isZedManagedServer(serversOf(config, settingsPath, 'Zed', CONTEXT_SERVERS_KEY)[TOKEN_GOAT_ENTRY_KEY])) {
+        const next = dropEmptyServers(setTokenGoatServer(config.text, undefined, CONTEXT_SERVERS_KEY), settingsPath, CONTEXT_SERVERS_KEY)
+        if (/^\s*\{\s*\}\s*$/.test(next) && takeCreatedConfig(settingsPath)) {
+          fs.rmSync(settingsPath, { force: true })
+        } else {
+          backupFile(settingsPath)
+          atomicWriteText(settingsPath, next)
+        }
+        // The timestamped backups this bridge made for settingsPath are token-goat's own litter, so a full uninstall takes them with it.
+        removeCreatedBackups(settingsPath)
+        entryRemoved = true
       }
-      // The timestamped backups this bridge made for settingsPath are token-goat's own litter, so a full uninstall takes them with it.
-      removeCreatedBackups(settingsPath)
-      entryRemoved = true
     }
+  } finally {
+    // The shim is token-goat's own file, so a settings.json that will not parse (the error still propagates) must not strand it.
+    shimRemoved = fs.existsSync(shimPath)
+    if (shimRemoved) fs.rmSync(shimPath, { force: true })
+    removeCreatedTree([settingsPath, shimPath])
   }
-
-  const shimRemoved = fs.existsSync(shimPath)
-  if (shimRemoved) fs.rmSync(shimPath, { force: true })
-  removeCreatedTree([settingsPath, shimPath])
 
   return entryRemoved || shimRemoved
 }

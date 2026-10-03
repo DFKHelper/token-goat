@@ -772,6 +772,11 @@ export class JsonArrayFilter extends ToolFilter {
     return this.binaries.has(pathStem(argv[0]!).toLowerCase())
   }
 
+  // The `json` CLI prints a pretty array by default but one compact line under `-o json-0`.
+  protected override consumesWholeJson(_argv: string[]): boolean {
+    return true
+  }
+
   override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
     const text = stdout.trim() ? stdout : stdout + stderr
     const stripped = text.trim()

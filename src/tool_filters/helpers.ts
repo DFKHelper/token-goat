@@ -61,6 +61,18 @@ export function clipWideLines(text: string, maxChars = INPUT_MAX_LINE_CHARS): st
   return clipped === 0 ? text : out.join('\n')
 }
 
+/** True when the trimmed text is exactly one JSON object or array. JSON.parse is linear, so a stream that passes needs no per-line width bound: that bound exists for the line-oriented regexes, which a whole-document JSON consumer does not run on the raw text. */
+export function isWholeJsonDocument(text: string): boolean {
+  const t = text.trim()
+  if (t[0] !== '{' && t[0] !== '[') return false
+  try {
+    JSON.parse(t)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function clampKeepingEnds(text: string, maxBytes: number): string | null {
   const buf = Buffer.from(text, 'utf8')
   if (buf.length <= maxBytes) return null

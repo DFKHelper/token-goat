@@ -45,7 +45,7 @@ import {
   formatDescriptionSlice,
 } from './pr_slice.js'
 import { extractPdfMeta, extractPdfOutline, extractPdfText, locatePdfPages, readPdfFileWithinBounds, type PdfLocateResult, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
-import { canShrinkFormat, isImagePath, probeImageMeta, shrinkImage, ImageDecodeError } from './image_shrink.js'
+import { canShrinkFormat, decoderRefusal, isImagePath, probeImageMeta, shrinkImage, ImageDecodeError } from './image_shrink.js'
 import { ocrImage, isTextHeavy, isOcrEngineAvailable, ocrIntegrityFailed } from './image_ocr.js'
 import { takeScreenshot } from './screenshot.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
@@ -915,6 +915,8 @@ export interface ImageMeta {
   shrinkable: boolean
   wouldShrink: boolean
   shrunkBytes: number | null
+  /** Set when the format has a decoder but it refused this file (a 16-bit or interlaced PNG): the shrink was not attempted, which is not the same as having no benefit. Null otherwise. */
+  shrinkRefusal: string | null
 }
 
 /** Thin async wrapper (same rationale as runPdfExtractText above): sharp metadata only -- never runs OCR, a cheap "should I even look at this" probe. `wouldShrink`/`shrunkBytes` reuse shrinkImage (forcing sizeThresholdBytes 0) to report what a real shrink would cost without actually re-encoding for the caller. */
@@ -938,7 +940,7 @@ export async function runImageMeta(file: string): Promise<ImageMeta> {
     throw e
   }
   if (probe === null) {
-    return { width: 0, height: 0, format: null, bytes, decodable: false, shrinkable: false, wouldShrink: false, shrunkBytes: null }
+    return { width: 0, height: 0, format: null, bytes, decodable: false, shrinkable: false, wouldShrink: false, shrunkBytes: null, shrinkRefusal: null }
   }
   const shrinkable = canShrinkFormat(probe.format)
   const shrink = shrinkable ? await shrinkImage(data, { sizeThresholdBytes: 0 }) : null
@@ -951,6 +953,7 @@ export async function runImageMeta(file: string): Promise<ImageMeta> {
     shrinkable,
     wouldShrink: shrink !== null,
     shrunkBytes: shrink !== null ? shrink.shrunkBytes : null,
+    shrinkRefusal: shrinkable && shrink === null ? decoderRefusal(data, probe.format) : null,
   }
 }
 

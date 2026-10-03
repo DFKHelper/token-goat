@@ -78,12 +78,14 @@ export async function cmdImageMeta(file: string, opts: { json?: boolean } = {}) 
     out(text)
     return
   }
-  // Three outcomes, not two. A header probe reads webp and tiff, which the re-encoder has no decoder for, so folding that case into "no benefit" told the reader a 3000x3000 webp was already optimal.
+  // Four outcomes, not two (a decoder that refuses the file, a 16-bit or interlaced PNG, is the fourth). A header probe reads webp and tiff, which the re-encoder has no decoder for, so folding that case into "no benefit" told the reader a 3000x3000 webp was already optimal.
   const shrinkLine = meta.wouldShrink && meta.shrunkBytes !== null
     ? `Shrink: would save ${meta.bytes - meta.shrunkBytes} bytes (${meta.bytes} -> ${meta.shrunkBytes})`
     : !meta.shrinkable
       ? `Shrink: not attempted (token-goat re-encodes png, jpeg, bmp and gif; this is ${meta.format ?? 'an unknown format'})`
-      : 'Shrink: no benefit (already small/optimal)'
+      : meta.shrinkRefusal !== null
+        ? `Shrink: not attempted (the re-encoder refused this ${meta.format ?? 'image'}: ${meta.shrinkRefusal})`
+        : 'Shrink: no benefit (already small/optimal)'
   const lines = [
     `Dimensions: ${meta.width}x${meta.height}`,
     `Format: ${meta.format ?? '(unknown)'}`,

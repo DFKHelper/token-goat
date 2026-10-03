@@ -115,7 +115,8 @@ function maskContinuationAndDefines(text: string): MaskResult {
 // `\#` is a legally-escaped literal hash in a target name (GNU Make) - excluded by the bare `#`
 // exclusion below unless allowed back in explicitly, same treatment as the `:(?=[\\/])` exemption
 // already given to a Windows drive-letter colon.
-const TARGET_RE = /^((?:[^\t\n#:=]|:(?=[\\/])|\\#)(?:[^:\n#=]|:(?=[\\/])|\\#)*):{1,2}(?![:=])\s*(?:[^=\n]|$)/gm
+// A target-specific variable assignment (`build: CFLAGS += -g`, `t: override VAR := x`) shares the `target:` shape but defines a variable, not a rule, so the second lookahead after the colon (same-line only, `[ \t]`) rejects `[modifiers] NAME <op>=` where op is `=`, `:=`, `::=`, `:::=`, `?=`, `+=` or `!=`.
+const TARGET_RE = /^((?:[^\t\n#:=]|:(?=[\\/])|\\#)(?:[^:\n#=]|:(?=[\\/])|\\#)*):{1,2}(?![:=])(?![ \t]*(?:(?:override|export|private)[ \t]+)*[^\s:=#]+[ \t]*(?:[?+!]|:{0,3})=)\s*(?:[^=\n]|$)/gm
 
 // define VARNAME, tolerating GNU make's legal leading spaces and modifier prefixes (matching
 // DEFINE_LINE_RE's tolerance in maskContinuationAndDefines - a leading tab is never legal here

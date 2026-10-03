@@ -476,6 +476,11 @@ export class GhFilter extends ToolFilter {
   readonly name = 'gh'
   override readonly binaries = new Set(['gh'])
 
+  // `gh api` prints compact single-line JSON when stdout is not a TTY, so a response over the clip width reached compressGhApi and redactGhBase64Content cut in half.
+  protected override consumesWholeJson(argv: string[]): boolean {
+    return positionalArgs(argv.slice(1), GH_GLOBAL_VALUE_FLAGS)[0] === 'api'
+  }
+
   override compress(stdout: string, stderr: string, _exitCode: number, argv: string[]): string {
     const redactedStdout = redactGhBase64Content(stdout)
     const positionals = positionalArgs(argv.slice(1), GH_GLOBAL_VALUE_FLAGS)

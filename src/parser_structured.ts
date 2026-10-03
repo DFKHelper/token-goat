@@ -83,6 +83,8 @@ export function extractMarkdownSymbols(content: string, filePath: string): Symbo
   const unfenced = Array.from(eachUnfencedLine(lines)).filter(([i]) => i >= fmEnd)
   // Every heading, including a nameless one that yields no symbol, ends the section of any heading at its level or deeper.
   const bounds: Array<{ line: number; level: number; at: number }> = []
+  // Index in `unfenced` of the first line of the open paragraph, or -1 when no paragraph is open.
+  let paraStart = -1
 
   for (let u = 0; u < unfenced.length; u++) {
     const [i, line] = unfenced[u]!
@@ -104,39 +106,41 @@ export function extractMarkdownSymbols(content: string, filePath: string): Symbo
         })
       }
       bounds.push({ line: i + 1, level: atx.level, at })
+      paraStart = -1
       continue
     }
 
+    // A paragraph is a run of adjacent text lines; a gap (blank line, fence) ends it.
+    if (paraStart !== -1 && i !== unfenced[u - 1]![0] + 1) paraStart = -1
     const trimmed = line.trim()
-    if (
+    if (paraStart !== -1 && /^(=+|-+)$/.test(trimmed)) {
+      // The whole paragraph above the underline is the heading, not just its last line.
+      const para = unfenced.slice(paraStart, u).map(([, text]) => text.trim())
+      const at = out.length
+      out.push({
+        filePath,
+        name: para.join(' '),
+        kind: 'heading',
+        lineStart: unfenced[paraStart]![0] + 1,
+        lineEnd: i + 1,
+        body: `${para.join('\n')}\n${trimmed}`,
+        docstring: '',
+        parent: '',
+      })
+      bounds.push({ line: unfenced[paraStart]![0] + 1, level: trimmed.startsWith('=') ? 1 : 2, at })
+      paraStart = -1
+      continue
+    }
+    const isText =
       trimmed !== '' &&
       !trimmed.startsWith('#') &&
       !trimmed.startsWith('|') &&
       !trimmed.startsWith('```') &&
       !trimmed.startsWith('~~~') &&
       !/^([-*+]|\d+\.)\s/.test(trimmed) &&
-      u + 1 < unfenced.length
-    ) {
-      const [nextIdx, nextLine] = unfenced[u + 1]!
-      if (nextIdx === i + 1) {
-        const isUnderline = /^\s*(=+|-+)\s*$/.test(nextLine)
-        if (isUnderline) {
-          const at = out.length
-          out.push({
-            filePath,
-            name: trimmed,
-            kind: 'heading',
-            lineStart: i + 1,
-            lineEnd: i + 2,
-            body: `${trimmed}\n${nextLine.trim()}`,
-            docstring: '',
-            parent: '',
-          })
-          bounds.push({ line: i + 1, level: nextLine.trim().startsWith('=') ? 1 : 2, at })
-          u++
-        }
-      }
-    }
+      !/^(=+|-+)$/.test(trimmed)
+    if (!isText) paraStart = -1
+    else if (paraStart === -1) paraStart = u
   }
 
   // A heading symbol spans its whole section, like the HTML adapters', so a line in the body resolves to its heading and a changed body marks it changed; trailing blank lines stay out, as in the section reader.
@@ -668,31 +672,65 @@ export function extractCssSymbols(content: string, filePath: string): SymbolEntr
   return out
 }
 
+// A heredoc operand (`<<EOT`, `<<-EOT`, `<<"EOT"`, `<<'EOT'`) on a RUN, COPY or ADD instruction; `<<<` is a shell here-string, and a bare `<<` or a numeric operand is a shift.
+const DOCKERFILE_HEREDOC_RE = /(?<!<)<<(-?)(["']?)([A-Za-z_][\w.-]*)\2/g
+
+function endsWithContinuation(line: string): boolean {
+  return line.trimEnd().endsWith('\\')
+}
+
+/** Index of the last physical line of the instruction starting at line `i`: trailing-backslash continuations are followed, and a whole-line `#` comment inside a continued instruction is skipped without ending it, as Docker does. */
+function dockerfileInstructionEnd(lines: readonly string[], i: number): number {
+  let end = i
+  let continued = endsWithContinuation(lines[i] ?? '')
+  while (continued && end + 1 < lines.length) {
+    end++
+    const next = lines[end] ?? ''
+    if (!next.trim().startsWith('#')) continued = endsWithContinuation(next)
+  }
+  return end
+}
+
+/** Index of the line closing the last heredoc opened on instruction lines `i..end`, or `end` when there is none or any body is unterminated (so a stray `<<word` in a quoted string cannot swallow the rest of the file). */
+function dockerfileHeredocEnd(lines: readonly string[], i: number, end: number): number {
+  const text = lines.slice(i, end + 1).join('\n')
+  let cursor = end
+  for (const m of text.matchAll(DOCKERFILE_HEREDOC_RE)) {
+    const stripTabs = m[1] === '-'
+    let close = -1
+    for (let j = cursor + 1; j < lines.length; j++) {
+      const candidate = stripTabs ? (lines[j] ?? '').replace(/^\t+/, '') : (lines[j] ?? '')
+      if (candidate.trimEnd() === m[3]) {
+        close = j
+        break
+      }
+    }
+    if (close === -1) return end
+    cursor = close
+  }
+  return cursor
+}
+
 export function extractDockerfileSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)
-
-  // Dockerfile instructions may span multiple physical lines via a trailing backslash continuation (e.g. `RUN apt-get update && \`), and every non-first physical line of that logical instruction is shell text, not a new directive. Without tracking this, a continuation line that happens to start with a shell token colliding with a Dockerfile keyword under the case-insensitive match below (most commonly the `env VAR=val cmd` shell idiom, but also run/copy/add/user/label/arg/from) is misread as a standalone directive.
-  let continuing = false
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
 
-    if (continuing) {
-      continuing = line.trimEnd().endsWith('\\')
-      continue
-    }
-
     // A whole-line `#` comment never starts or continues a directive: Docker does not extend comments across lines via continuation, so a trailing backslash on a comment is just part of the comment text, not a real line-continuation marker.
-    const isComment = line.trim().startsWith('#')
-    const match = isComment
-      ? null
-      : /^\s*(FROM|RUN|COPY|ADD|EXPOSE|ENV|WORKDIR|CMD|ENTRYPOINT|ARG|LABEL|VOLUME|USER|HEALTHCHECK|ONBUILD|SHELL|STOPSIGNAL|MAINTAINER)\s+(.+)/i.exec(
-          line,
-        )
+    if (line.trim().startsWith('#')) continue
+
+    // Every non-first physical line of a continued instruction is shell text, not a new directive: a continuation line that starts with a word colliding with a Dockerfile keyword under the case-insensitive match below (most commonly the `env VAR=val cmd` shell idiom, but also run/copy/add/user/label/arg/from) must not be misread as a standalone directive. The same holds for a heredoc body, which is script text up to its terminator line.
+    let end = dockerfileInstructionEnd(lines, i)
+    const match =
+      /^\s*(FROM|RUN|COPY|ADD|EXPOSE|ENV|WORKDIR|CMD|ENTRYPOINT|ARG|LABEL|VOLUME|USER|HEALTHCHECK|ONBUILD|SHELL|STOPSIGNAL|MAINTAINER)\s+(.+)/i.exec(
+        line,
+      )
     if (match !== null && match[1] !== undefined) {
       const cmd = match[1]
+      if (/^(?:RUN|COPY|ADD)$/i.test(cmd)) end = dockerfileHeredocEnd(lines, i, end)
       const arg = (match[2] ?? '').substring(0, 40)
       const name = `${cmd} ${arg}`.trim()
       out.push({
@@ -700,14 +738,13 @@ export function extractDockerfileSymbols(content: string, filePath: string): Sym
         name,
         kind: 'directive',
         lineStart: i + 1,
-        lineEnd: i + 1,
-        body: line.trim(),
+        lineEnd: end + 1,
+        body: lines.slice(i, end + 1).join('\n').trim(),
         docstring: '',
         parent: '',
       })
     }
-
-    continuing = !isComment && line.trimEnd().endsWith('\\')
+    i = end
   }
 
   return out

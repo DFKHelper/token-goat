@@ -200,6 +200,19 @@ describe('a repeated identical deny, through the real relay', () => {
     expect(other).toBe(first)
   })
 
+  it('gives a different call that draws the same refusal text the full reason, and cuts only a verbatim repeat', () => {
+    // HAND-DERIVED: two WebFetch inputs with different urls and prompts; the message is the one text hooks_fetch.ts prints for any URL matching a webfetch.deny pattern (it names no URL), so the two calls differ only in toolInput.
+    const session = uniq('webfetch')
+    const message = '[tg] WebFetch blocked: URL matches a configured webfetch.deny pattern.'
+    const deny = { hookType: 'deny' as const, message }
+    const a = makeHookEvent({ toolName: 'WebFetch', sessionId: session, toolInput: { url: 'https://a.example.com/page1', prompt: 'x' } })
+    const b = makeHookEvent({ toolName: 'WebFetch', sessionId: session, toolInput: { url: 'https://b.example.com/other', prompt: 'different' } })
+    expect(sharpenRepeatedDeny(a, deny)).toBe(deny)
+    expect(sharpenRepeatedDeny(b, deny)).toBe(deny)
+    const again = sharpenRepeatedDeny(a, deny)
+    expect(again).toMatchObject({ hookType: 'deny', message: expect.stringContaining('Repeat refusal of this exact call') })
+  })
+
   it('never cuts a deny that is itself the delivered content', () => {
     const event = makeHookEvent({ toolName: 'Skill', sessionId: uniq('deliver') })
     const out = { hookType: 'deny' as const, message: '[tg] Skill `x` is large; its heading tree (8 headings) is inlined below instead of the full body.\n\n## A' }

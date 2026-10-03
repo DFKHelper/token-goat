@@ -12,14 +12,15 @@ import { skillNameFromBody } from '../src/resident_context.js'
 import { ATX_CLASS_BREAK_RE, ATX_DOT_BREAK_RE, matchAtxHeading, matchCssSelectorSpan, matchRuleBannerTitle, matchTableHeaderName, matchTomlSectionName } from '../src/line_matchers.js'
 
 // Provenance: HAND-DERIVED these four oracles are the regexes removed from src/parser_structured.ts and src/section_reader.ts, copied verbatim from the parent commit.
-const ATX_PARSER_ORACLE = /^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$/
-const ATX_SECTION_ORACLE = /^(#{1,6})\s+([^\r\n]+?)(?:\s+#+)?\s*$/
+const ATX_PARSER_ORACLE = /^ {0,3}(#{1,6})\s+(.+?)(?:\s+#+\s*)?$/
+const ATX_SECTION_ORACLE = /^ {0,3}(#{1,6})\s+([^\r\n]+?)(?:\s+#+)?\s*$/
+// Provenance: HAND-DERIVED from CommonMark 0.31.2 section 4.2 (ATX headings): the opening run of `#` may be preceded by up to three spaces of indentation, so the three heading oracles above carry ` {0,3}` where the parent commit's regexes anchored at column 0.
 const TOML_ORACLE = /^\s*\[\[?\s*([^\]]+)\s*\]/
 const TABLE_ORACLE = /^\s*\[+\s*([^\]]+?)\s*\]+\s*(?:[#;].*)?$/
 const CSS_ORACLE = /^[ \t]*([^{}@][^{]*)\{/d
 // Provenance: HAND-DERIVED the regexes removed from src/section_reader.ts (shell rule banner), src/hints/markdown_hints.ts, src/doc_compact.ts and src/resident_context.ts, copied verbatim from the parent commit.
 const RULE_ORACLE = /^#\s*[-=]{2,}\s*(\S(?:.*?\S)?)\s*[-=]{2,}$/
-const HINT_ORACLE = /^(#+)\s+([^\r\n]+?)(?:\s+#+)?\s*$/
+const HINT_ORACLE = /^ {0,3}(#+)\s+([^\r\n]+?)(?:\s+#+)?\s*$/
 const COMPACT_ORACLE = /^#{1,6}\s+(.*?)(?:\s+#+)?\s*$/
 
 /** skillNameFromBody as it stood in the parent commit. */

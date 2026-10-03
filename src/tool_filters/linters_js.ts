@@ -249,9 +249,50 @@ function _eslintSingleLineIssuePath(line: string): string | null {
   return null
 }
 
+// Shape per https://eslint.org/docs/latest/use/formatters/#json: an array of { filePath, messages: [{ ruleId, severity (1 warning, 2 error), message, line, column }] }.
+function _eslintJsonToStylish(stdout: string): string | null {
+  const text = stdout.trim()
+  if (!text.startsWith('[') || !text.endsWith(']')) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (!Array.isArray(parsed)) return null
+  const out: string[] = []
+  let errors = 0
+  let warnings = 0
+  for (const entry of parsed) {
+    if (typeof entry !== 'object' || entry === null) return null
+    const { filePath, messages } = entry as { filePath?: unknown; messages?: unknown }
+    if (typeof filePath !== 'string' || !Array.isArray(messages)) return null
+    if (messages.length === 0) continue
+    out.push(filePath)
+    for (const m of messages as Array<{ ruleId?: unknown; severity?: unknown; message?: unknown; line?: unknown; column?: unknown }>) {
+      const isError = m.severity === 2
+      if (isError) errors++
+      else warnings++
+      const where = `${typeof m.line === 'number' ? m.line : 0}:${typeof m.column === 'number' ? m.column : 0}`
+      const msg = (typeof m.message === 'string' ? m.message : '').replace(/\s+/g, ' ').trim()
+      out.push(`  ${where}  ${isError ? 'error' : 'warning'}  ${msg}${typeof m.ruleId === 'string' ? `  ${m.ruleId}` : ''}`)
+    }
+    out.push('')
+  }
+  const problems = errors + warnings
+  if (problems === 0) return 'ESLint: no problems'
+  out.push(`✖ ${problems} problem${problems === 1 ? '' : 's'} (${errors} error${errors === 1 ? '' : 's'}, ${warnings} warning${warnings === 1 ? '' : 's'})`)
+  return out.join('\n')
+}
+
 class ESLintFilter extends ToolFilter {
   readonly name = 'eslint'
   override readonly binaries = new Set(['eslint'])
+
+  // `-f json` prints the whole report on one line, which the generic wide-line clip cuts to its two ends before compress runs, so the other files and every count are gone. Rewritten here as the stylish report compress already groups.
+  protected override preClip(stdout: string, _argv: string[]): string {
+    return _eslintJsonToStylish(stdout) ?? stdout
+  }
 
   override compress(stdout: string, stderr: string, exitCode: number, _argv: string[], ctx: CompressContext = {}): string {
     const merged = this.combineOutput(stdout, stderr)
@@ -344,7 +385,10 @@ class ESLintFilter extends ToolFilter {
       const fileOut: string[] = [header]
       const errorsByRule = new Map<string, string[]>()
       const warningsByRule = new Map<string, string[]>()
-      for (const issue of issues) {
+      // The blank line stylish prints after a stanza separates it from the next file, so it goes after the grouped warnings rather than between the errors and them.
+      let lastBody = issues.length
+      while (lastBody > 0 && issues[lastBody - 1]?.trim() === '') lastBody--
+      for (const issue of issues.slice(0, lastBody)) {
         const severity = _eslintIssueSeverity(issue)
         const byRule = severity === 'warning' ? warningsByRule : tier === 1 && severity === 'error' ? errorsByRule : null
         if (byRule === null) {
@@ -362,6 +406,7 @@ class ESLintFilter extends ToolFilter {
           if (entries.length > 3) fileOut.push(`  [token-goat: +${entries.length - 3} more ${rule} ${noun}s]`)
         }
       }
+      fileOut.push(...issues.slice(lastBody))
       return fileOut
     }
 

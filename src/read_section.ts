@@ -1,6 +1,8 @@
 import * as fs from 'node:fs'
 
 import { querySymbols } from './index_reader.js'
+import { ATX_CLASS_BREAK_RE, matchAtxHeading } from './line_matchers.js'
+import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage } from './parser_types.js'
 import { displaySafeJson } from './paths.js'
 import { guardText, healStaleIndex, readFileText, recordReadStat, resolveAgainstProjectRoot, sumFileSizes } from './read_commands.js'
@@ -43,8 +45,10 @@ function filterBodyByGrep(content: string, pattern: string): { content: string; 
   const out: string[] = []
   let matched = 0
   let pendingHeading: string | null = null
+  // An ATX heading may be indented up to three spaces; a `#` comment inside a code fence is not a heading.
+  const unfenced = new Set(Array.from(eachUnfencedLine(lines), ([i]) => i))
   for (const [i, line] of lines.entries()) {
-    const isHeading = /^#{1,6}\s/.test(line)
+    const isHeading = unfenced.has(i) && matchAtxHeading(line, ATX_CLASS_BREAK_RE, true) !== null
     if (i === 0 && isHeading) out.push(line)
     else if (isHeading) pendingHeading = line
     const hit = matches(line)

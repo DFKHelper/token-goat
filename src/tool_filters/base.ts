@@ -15,6 +15,7 @@ import {
   fallbackTruncate,
   clampKeepingEnds,
   clipWideLines,
+  isWholeJsonDocument,
   INPUT_MAX_LINE_CHARS,
   getMaxInputBytes,
   LONG_LINE_MAX_CHARS,
@@ -214,6 +215,16 @@ export abstract class ToolFilter {
     return squeezeBlankLines(kept.join('\n'))
   }
 
+  /** True when this invocation's stdout is a JSON document the filter parses whole. Default false; only a filter whose tool can print that document on one line over the clip width (compact JSON on a non-TTY pipe) opts in, because the clip stays on for every other filter. */
+  protected consumesWholeJson(_argv: string[]): boolean {
+    return false
+  }
+
+  /** Hook applied to stdout before the wide-line clip. Identity by default; a filter whose tool prints one machine-readable line wider than the clip (a JSON formatter) overrides it to turn that line into rows first, since the clip would otherwise cut the document in half before {@link compress} ran. */
+  protected preClip(stdout: string, _argv: string[]): string {
+    return stdout
+  }
+
   /**
    * Hook applied to each stream right after {@link normalise}. Identity by default; the git filter family overrides it to strip CRLF warnings. Keeps `apply` free of per-family name checks.
    */
@@ -280,7 +291,9 @@ export abstract class ToolFilter {
     }
 
     // Step 2b: bound every line's width before normalisation or any per-tool filter regex runs. The byte clamp above bounds a stream, not a line, and the filter regexes are line-oriented with polynomial backtracking suppressed on the premise that a line is short. Nothing enforced that premise.
-    const soClipped = clipWideLines(so)
+    so = this.preClip(so, argv)
+    // A filter that parses the whole stdout as JSON declares it, and then skips the clip when the stream really is one JSON value: the clip would cut the document and make its JSON.parse fail.
+    const soClipped = this.consumesWholeJson(argv) && isWholeJsonDocument(so) ? so : clipWideLines(so)
     const seClipped = clipWideLines(se)
     if (soClipped !== so || seClipped !== se) {
       so = soClipped

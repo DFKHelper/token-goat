@@ -74,6 +74,16 @@ describe('section --grep filters the section body', () => {
     expect(res.text).not.toContain('unrelated middle line')
   })
 
+  // Provenance: HAND-DERIVED. CommonMark allows an ATX heading to be indented up to three spaces and treats a `#` line inside a fenced code block as code; the survivors are read off the document by hand.
+  it('attributes a match to an indented sub-heading and never to a `#` comment inside a code fence', () => {
+    fs.writeFileSync(file, ['# Doc', '', '## A', '  ### Indented', 'the lock race', '### Shell', '```sh', '# install deps', 'lock it', '```', ''].join('\n'))
+    const res = runSection({ spec: `${file}::A`, grep: 'lock' })
+    expect(res.code).toBe(0)
+    expect(res.text).toContain('  ### Indented\nthe lock race')
+    expect(res.text).toContain('### Shell\nlock it')
+    expect(res.text).not.toContain('# install deps')
+  })
+
   it('filters each spec of a cross-file read', () => {
     const other = path.join(dir, 'other.md')
     fs.writeFileSync(other, '# O\n\n## C\nlock here\nnot this\n')

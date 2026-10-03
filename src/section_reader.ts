@@ -96,41 +96,40 @@ export function findMarkdownHeaders(lines: readonly string[]): SectionHeader[] {
   // Front matter is metadata, not prose: start after it so its closing fence cannot underline a key as a setext heading.
   const fmEnd = frontMatterEndIndex(lines)
   const unfenced = Array.from(eachUnfencedLine(lines)).filter(([i]) => i >= fmEnd)
+  // Index in `unfenced` of the first line of the open paragraph, or -1 when no paragraph is open.
+  let paraStart = -1
 
   for (let u = 0; u < unfenced.length; u++) {
     const [i, line] = unfenced[u]!
     const atx = matchAtxHeading(line, ATX_CLASS_BREAK_RE, true)
     if (atx !== null) {
       headers.push({ heading: atx.name, level: atx.level, index: i })
+      paraStart = -1
       continue
     }
 
-    // Setext headings: non-blank text line followed immediately by an underline line (= or -) Both lines must be unfenced and consecutive in source lines (i + 1).
+    // Setext headings: a paragraph of adjacent unfenced text lines followed immediately by an underline line (= or -); the whole paragraph is the heading. A gap (blank line, fence) ends the paragraph.
+    if (paraStart !== -1 && i !== unfenced[u - 1]![0] + 1) paraStart = -1
     const trimmed = line.trim()
-    if (
+    if (paraStart !== -1 && /^(=+|-+)$/.test(trimmed)) {
+      const heading = unfenced
+        .slice(paraStart, u)
+        .map(([, text]) => text.trim())
+        .join(' ')
+      headers.push({ heading, level: trimmed.startsWith('=') ? 1 : 2, index: unfenced[paraStart]![0] })
+      paraStart = -1
+      continue
+    }
+    const isText =
       trimmed !== '' &&
       !trimmed.startsWith('#') &&
       !trimmed.startsWith('|') &&
       !trimmed.startsWith('```') &&
       !trimmed.startsWith('~~~') &&
       !/^([-*+]|\d+\.)\s/.test(trimmed) &&
-      u + 1 < unfenced.length
-    ) {
-      const [nextIdx, nextLine] = unfenced[u + 1]!
-      if (nextIdx === i + 1) {
-        const eqMatch = /^\s*(=+)\s*$/.exec(nextLine)
-        const dashMatch = /^\s*(-+)\s*$/.exec(nextLine)
-        if (eqMatch !== null) {
-          headers.push({ heading: trimmed, level: 1, index: i })
-          u++
-          continue
-        } else if (dashMatch !== null) {
-          headers.push({ heading: trimmed, level: 2, index: i })
-          u++
-          continue
-        }
-      }
-    }
+      !/^(=+|-+)$/.test(trimmed)
+    if (!isText) paraStart = -1
+    else if (paraStart === -1) paraStart = u
   }
   return headers
 }
