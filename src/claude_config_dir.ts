@@ -10,6 +10,12 @@ export function claudeConfigDir(homeDir: string = os.homedir()): string {
   return path.join(homeDir, '.claude')
 }
 
+/** Path of Claude Code's global `.claude.json` (per-project MCP servers live in it). Claude Code hangs it off `CLAUDE_CONFIG_DIR` when that is set non-empty and otherwise off the bare home directory, NOT off `~/.claude`, so `claudeConfigDir()` cannot stand in for it. */
+export function claudeGlobalJsonPath(homeDir: string = os.homedir()): string {
+  const override = process.env['CLAUDE_CONFIG_DIR']
+  return path.join(override !== undefined && override !== '' ? override : homeDir, '.claude.json')
+}
+
 /** Directory Claude Code stores a project's session transcripts under: every non-alphanumeric character of the resolved project root becomes `-`, with no trimming, the slug convention `findMemoryMd` in cli_context_stats.ts already relies on. It lives here rather than beside the transcript analyser in waste.ts because the Bash post hook resolves a session's tool-results directory through it on every call, and importing it from waste.ts put that whole analyser on the hook's eager path. */
 export function projectTranscriptsDir(projectRoot: string): string {
   const rootStr = path.resolve(projectRoot)

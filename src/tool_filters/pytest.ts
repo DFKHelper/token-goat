@@ -26,7 +26,7 @@ const COV_TOTAL_RE = /^TOTAL\s+\d/
 // A `--- Docs: https://…` warnings footer (always the same URL).
 const WARN_DOCS_RE = /^\s*--\s+Docs:\s+https?:\/\//
 // A warning message line inside the warnings summary section.
-const WARN_MSG_RE = /^\s+\S[^:\r\n]*:\d+:\s+\S[^\r\n]*Warning\b/
+const WARN_MSG_RE = /^\s+(?:[A-Za-z]:)?\S[^:\r\n]*:\d+:\s+\S[^\r\n]*Warning\b/
 // A bare node-id header line preceding a warning message, e.g. `tests/test_foo.py::test_bar`
 // (no leading whitespace, contains the pytest node-id `::` separator). Deferred until we know
 // whether the message under it survives dedup, so a fully-deduped group never orphans its header.
@@ -72,8 +72,8 @@ export class PytestFilter extends ToolFilter {
       // Strip the pytest-xdist worker prefix so downstream logic sees clean lines.
       if (XDIST_PREFIX_RE.test(line)) line = line.replace(XDIST_PREFIX_RE, '')
 
-      // Drop the dots/percent progress line entirely, in both its bare and its path-led form.
-      if (DOTS_RE.test(line) || FILE_DOTS_RE.test(line)) continue
+      // Drop the dots/percent progress line entirely, in both its bare and its path-led form. Inside FAILURES/ERRORS a dots-only line is captured stdout or stderr the failing test printed, so it stays.
+      if (!inFailures && !inErrors && (DOTS_RE.test(line) || FILE_DOTS_RE.test(line))) continue
       // Drop constant banner lines (platform/cachedir/rootdir/…), zero signal.
       if (BANNER_RE.test(line)) continue
       // Drop `collecting …` preamble lines before the session starts.

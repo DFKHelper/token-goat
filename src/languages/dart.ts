@@ -12,10 +12,13 @@ import {
   stripLineComment,
   stripMultilineStringSpan,
   stripStringLiterals,
+  type StripStringOpts,
   type AdapterImport,
   type MultilineStringState,
   makeLineSymbol,
 } from './common.js'
+
+const DART_STRIP: StripStringOpts = { tripleQuotes: true, singleQuoteHoles: true }
 
 interface TypeFrame {
   name: string
@@ -101,13 +104,13 @@ export function extractDart(
     const stripped = line.trim()
 
     if (!stripped) {
-      const braceLine = stripStringLiterals(line, { tripleQuotes: true })
+      const braceLine = stripStringLiterals(line, DART_STRIP)
       braceDepth += (braceLine.match(/\{/g) ?? []).length - (braceLine.match(/\}/g) ?? []).length
       continue
     }
 
     // The line with string literals blanked to spaces, for matchers that must read structure rather than text. Every other declaration matcher here is `^`-anchored, so a literal cannot reach one; FUNC_RE is the exception, and it has to be, because a Dart method declaration carries no keyword and is only recognisable as `Type name(`. That shape occurs in ordinary prose, so `String a = ' Foo baz(';` filed a phantom method named `baz`. Blanking preserves offsets and cannot touch a real declaration, which never has a literal before its own `(`.
-    const structural = stripStringLiterals(stripped, { tripleQuotes: true })
+    const structural = stripStringLiterals(stripped, DART_STRIP)
 
     const isIndented = line[0] === ' ' || line[0] === '\t'
 
@@ -242,7 +245,7 @@ export function extractDart(
     }
 
     // Brace-count on a string-stripped copy
-    const braceLine = stripStringLiterals(line, { tripleQuotes: true })
+    const braceLine = stripStringLiterals(line, DART_STRIP)
     for (const ch of braceLine) {
       if (ch === '{') {
         braceDepth++

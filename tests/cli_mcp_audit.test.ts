@@ -281,6 +281,47 @@ describe('mcp-audit', () => {
       expect(report.servers.some((s) => s.name === 'confluence')).toBe(true)
     })
 
+    // FORMAT-DERIVED: Claude Code resolves its global config as join(CLAUDE_CONFIG_DIR || homedir(), '.claude.json') (read off the shipping claude binary, noted at claudeConfigDir in src/claude_config_dir.ts); Copilot CLI documents COPILOT_HOME as replacing ~/.copilot (https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks).
+    it('reads .claude.json from CLAUDE_CONFIG_DIR instead of the home directory when it is set', () => {
+      const ccd = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-audit-ccd-'))
+      const prev = process.env['CLAUDE_CONFIG_DIR']
+      process.env['CLAUDE_CONFIG_DIR'] = ccd
+      try {
+        const claudeJsonPath = path.join(ccd, '.claude.json')
+        fs.writeFileSync(claudeJsonPath, JSON.stringify({
+          projects: { [tempDir.replace(/\\/g, '/')]: { mcpServers: { github: { command: 'gh-mcp' } } } },
+        }))
+        const report = buildMcpAuditReport(tempDir, homeDir)
+        expect(report.configFound).toBe(true)
+        expect(report.configSourcePath).toBe(claudeJsonPath)
+        expect(report.configSourcesChecked).toContain(claudeJsonPath)
+        expect(report.servers.some((s) => s.name === 'github')).toBe(true)
+      } finally {
+        if (prev === undefined) delete process.env['CLAUDE_CONFIG_DIR']
+        else process.env['CLAUDE_CONFIG_DIR'] = prev
+        fs.rmSync(ccd, { recursive: true, force: true })
+      }
+    })
+
+    it('reads mcp-config.json from COPILOT_HOME instead of ~/.copilot when it is set', () => {
+      const cph = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-audit-cph-'))
+      const prev = process.env['COPILOT_HOME']
+      process.env['COPILOT_HOME'] = cph
+      try {
+        const copilotJsonPath = path.join(path.resolve(cph), 'mcp-config.json')
+        fs.writeFileSync(copilotJsonPath, JSON.stringify({ mcpServers: { linear: { command: 'linear-mcp' } } }))
+        const report = buildMcpAuditReport(tempDir, homeDir)
+        expect(report.configFound).toBe(true)
+        expect(report.configSourcePath).toBe(copilotJsonPath)
+        expect(report.configSourcesChecked).toContain(copilotJsonPath)
+        expect(report.servers.some((s) => s.name === 'linear')).toBe(true)
+      } finally {
+        if (prev === undefined) delete process.env['COPILOT_HOME']
+        else process.env['COPILOT_HOME'] = prev
+        fs.rmSync(cph, { recursive: true, force: true })
+      }
+    })
+
     // resolveProjectRoot canonicalizes the drive letter to lowercase, but Claude Code's
     // ~/.claude.json keys `projects` by whatever casing it literally saw (often uppercase on
     // Windows) -- a drive-letter-case mismatch must not hide a config that is genuinely there.

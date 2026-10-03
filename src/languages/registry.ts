@@ -101,7 +101,7 @@ function sectionsToHeadingSymbols(
 
 // One entry per adapter-backed `regex` row of src/language_specs.ts, required by the type: a new row without an extractor fails the type check. html/liquid keep their extra sectionsToHeadingSymbols composition inline.
 export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLanguage>, SymbolExtractor> = {
-  csharp: (content, filePath) => assignBraceBlockSpans(extractCsharp(content, filePath).symbols, content, { lineComment: '//', stringEscapes: 'csharp', rawStringQuotes: true, expressionBodies: true }),
+  csharp: (content, filePath) => assignBraceBlockSpans(extractCsharp(content, filePath).symbols, content, { lineComment: '//', stringEscapes: 'csharp', rawStringQuotes: true, expressionBodies: true, interpolation: 'csharp' }),
   // Both halves walk the SAME masked text: the brace pass used to span raw file content, so it nested on braces in the inline HTML the extractor is no longer reading.
   php: (content, filePath) => {
     const code = maskPhpInlineHtml(content)
@@ -142,13 +142,13 @@ export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLangua
     const r = extractTwig(content, filePath)
     return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
   },
-  kotlin: (content, filePath) => assignBraceBlockSpans(extractKotlin(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', expressionBodies: 'kotlin' }),
-  swift: (content, filePath) => assignBraceBlockSpans(extractSwift(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', multilineLang: 'swift' }),
-  scala: (content, filePath) => assignBraceBlockSpans(extractScala(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last' }),
+  kotlin: (content, filePath) => assignBraceBlockSpans(extractKotlin(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', expressionBodies: 'kotlin', interpolation: 'kotlin' }),
+  swift: (content, filePath) => assignBraceBlockSpans(extractSwift(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', multilineLang: 'swift', interpolation: 'swift' }),
+  scala: (content, filePath) => assignBraceBlockSpans(extractScala(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', interpolation: 'scala' }),
   lua: (content, filePath) => extractLua(content, filePath).symbols,
   vb: (content, filePath) => extractVb(content, filePath).symbols,
   elixir: (content, filePath) => extractElixir(content, filePath).symbols,
-  dart: (content, filePath) => assignBraceBlockSpans(extractDart(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleSingleQuote: true, tripleQuoteRunClose: 'first' }),
+  dart: (content, filePath) => assignBraceBlockSpans(extractDart(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleSingleQuote: true, tripleQuoteRunClose: 'first', interpolation: 'dart' }),
   zig: (content, filePath) => assignBraceBlockSpans(extractZig(content, filePath).symbols, content, { lineComment: '//', blockComment: null, lineStringPrefix: '\\\\' }),
   r: (content, filePath) => extractR(content, filePath).symbols,
   graphql: (content, filePath) => extractGraphql(content, filePath).symbols,

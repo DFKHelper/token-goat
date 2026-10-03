@@ -113,7 +113,7 @@ export function runBriefCore(opts: BriefOptions): { text: string; code: number }
       ? shown.map((c) => ({ ...c, contextLines: buildContextWindow(c.file, c.line, opts.context ?? 0) ?? [] }))
       : shown
     const result: BriefResult = {
-      symbol: { ...match, filePath: toDisplayPath(rootDir, match.filePath) },
+      symbol: { ...match, body: resolveBody(match), filePath: toDisplayPath(rootDir, match.filePath) },
       callers: callersWithContext.map((c) => ({ ...c, file: toDisplayPath(rootDir, c.file) })),
       totalCallers,
       truncated,

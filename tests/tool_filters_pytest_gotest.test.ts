@@ -255,6 +255,61 @@ describe('pytest filter', () => {
     expect(selectFilter(['uv', 'run', 'pytest', '-v'])?.name).toBe('pytest')
     expect(detectFromCommand('python -m pytest tests/')?.filter.name).toBe('pytest')
   })
+
+  it('dedupes repeated warnings whose locations are Windows drive-letter paths', () => {
+    // CAPTURE: the warnings-summary shape is trimmed from a real `python -m pytest` run on Windows (pytest 9.0.3, Python 3.13.1) over a 30-test file whose every test called a function emitting the same DeprecationWarning; three of its 30 groups are kept.
+    const dir = 'C:\\tgwt\\r13-outputs-scratch\\py3\\test_dep.py'
+    const text =
+      '============================== warnings summary ===============================\n' +
+      'test_dep.py::test_0\n' +
+      `  ${dir}:6: DeprecationWarning: old() is deprecated, use new()\n` +
+      '    old()\n' +
+      '\n' +
+      'test_dep.py::test_1\n' +
+      `  ${dir}:9: DeprecationWarning: old() is deprecated, use new()\n` +
+      '    old()\n' +
+      '\n' +
+      'test_dep.py::test_2\n' +
+      `  ${dir}:12: DeprecationWarning: old() is deprecated, use new()\n` +
+      '    old()\n' +
+      '\n' +
+      '-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n' +
+      '======================= 30 passed, 30 warnings in 0.22s =======================\n'
+    const out = pytestFilter.compress(text, '', 0, ['pytest'])
+    expect(out.split('DeprecationWarning: old() is deprecated, use new()').length - 1).toBe(1)
+    expect(out).toContain(`${dir}:6: DeprecationWarning`)
+    expect(out).toContain('30 passed, 30 warnings')
+  })
+
+  it('keeps dots-only lines a failing test printed inside the FAILURES block', () => {
+    // CAPTURE: a real `python -m pytest test_w.py -p no:cacheprovider` run on Windows (pytest 9.0.3) where the failing test called print("....") and print("F"); both lines sit under `Captured stdout call` exactly as below.
+    const text =
+      '=================================== FAILURES ===================================\n' +
+      '_________________________________ test_warn2 __________________________________\n' +
+      '\n' +
+      '>       assert f(10) == 21\n' +
+      'E       assert 20 == 21\n' +
+      '\n' +
+      'test_w.py:10: AssertionError\n' +
+      '---------------------------- Captured stdout call -----------------------------\n' +
+      '....\n' +
+      'F\n' +
+      '============================== warnings summary ===============================\n' +
+      '======================== 1 failed, 1 warning in 0.54s =========================\n'
+    const out = pytestFilter.compress(text, '', 0, ['pytest'])
+    const lines = out.split('\n')
+    const at = lines.indexOf('---------------------------- Captured stdout call -----------------------------')
+    expect(at).toBeGreaterThanOrEqual(0)
+    expect(lines.slice(at + 1, at + 3)).toEqual(['....', 'F'])
+  })
+
+  it('still drops the progress line that precedes the FAILURES block', () => {
+    // HAND-DERIVED: the path-led and bare progress shapes before the first section header, as in the default-run test above.
+    const out = pytestFilter.compress('test_w.py .F   [ 50%]\n..   [100%]\n= FAILURES =\nboom\n', '', 0, ['pytest'])
+    expect(out).not.toContain('[ 50%]')
+    expect(out).not.toContain('[100%]')
+    expect(out).toContain('boom')
+  })
 })
 
 describe('go-test filter', () => {

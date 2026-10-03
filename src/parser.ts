@@ -458,6 +458,7 @@ function extractNoTreeSitter(
       stringEscapes: 'csharp',
       rawStringQuotes: true,
       expressionBodies: true,
+      interpolation: 'csharp',
     })
     return { symbols, refs: r.refs }
   }

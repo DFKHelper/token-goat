@@ -1003,6 +1003,35 @@ describe('stripDelimitedBlock / upsertDelimitedBlock', () => {
     expect(readFileSync(filePath, 'utf8')).toBe(`# Intro\n${BEGIN}\nnew\n${END}\n# Outro\n`)
   })
 
+  // HAND-DERIVED: the input bytes are written out literally below and the expected bytes are the same text with every line ending CRLF, computed independently of the helpers. The round trip (install then uninstall must give back the original bytes) is the spec the JSONC bridges already meet.
+  it('upsertDelimitedBlock writes the block with CRLF into a CRLF file, and stripDelimitedBlock restores the original bytes', () => {
+    const original = '# Project\r\n\r\nRules here.\r\n'
+    writeFileSync(filePath, original, 'utf8')
+    expect(upsertDelimitedBlock(filePath, BEGIN, END, `${BEGIN}\nblock\n${END}`)).toBe(true)
+    expect(readFileSync(filePath, 'utf8')).toBe(`${original}\r\n${BEGIN}\r\nblock\r\n${END}\r\n`)
+    expect(stripDelimitedBlock(filePath, BEGIN, END)).toBe(true)
+    expect(readFileSync(filePath, 'utf8')).toBe(original)
+  })
+
+  it('upsertDelimitedBlock replaces a CRLF block in place with CRLF, and a re-run with the same block is a no-op', () => {
+    writeFileSync(filePath, `# Intro\r\n${BEGIN}\r\nold\r\n${END}\r\n# Outro\r\n`, 'utf8')
+    expect(upsertDelimitedBlock(filePath, BEGIN, END, `${BEGIN}\nnew\n${END}`)).toBe(true)
+    expect(readFileSync(filePath, 'utf8')).toBe(`# Intro\r\n${BEGIN}\r\nnew\r\n${END}\r\n# Outro\r\n`)
+    expect(upsertDelimitedBlock(filePath, BEGIN, END, `${BEGIN}\nnew\n${END}`)).toBe(false)
+  })
+
+  it('stripDelimitedBlock joins the surrounding content of a CRLF file with CRLF', () => {
+    writeFileSync(filePath, `# Intro\r\n\r\n${BEGIN}\r\nx\r\n${END}\r\n\r\n# Outro\r\n`, 'utf8')
+    expect(stripDelimitedBlock(filePath, BEGIN, END)).toBe(true)
+    expect(readFileSync(filePath, 'utf8')).toBe('# Intro\r\n\r\n# Outro\r\n')
+  })
+
+  it('upsertDelimitedBlock keeps an LF file all-LF', () => {
+    writeFileSync(filePath, '# Project\n\nRules here.\n', 'utf8')
+    upsertDelimitedBlock(filePath, BEGIN, END, `${BEGIN}\nblock\n${END}`)
+    expect(readFileSync(filePath, 'utf8')).toBe(`# Project\n\nRules here.\n\n${BEGIN}\nblock\n${END}\n`)
+  })
+
   it('upsertDelimitedBlock returns false without writing when the block is already exactly current (mutation-testing gap: a no-op re-run must not touch the file or its mtime)', () => {
     const content = `# Intro\n${BEGIN}\nsame\n${END}\n# Outro\n`
     writeFileSync(filePath, content, 'utf8')

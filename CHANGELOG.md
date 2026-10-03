@@ -107,6 +107,14 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **`token-goat read "README.md::Usage"` and `brief` printed only the heading line of a markdown section.** The header still claimed the whole section, for example "7 lines" over a single line. Both commands and their `--json` output now print the full section, and `brief --json` includes the body for HTML headings too.
+- **Swift files with an interpolation such as `"\(name.isEmpty ? "}" : name)"` lost every symbol after that line.** Members after it were also attached to the wrong type. The brace inside the interpolated string no longer counts as code. Upgrading reindexes.
+- **Kotlin, Scala, Dart, C# and Swift classes and methods came out cut short, or ran into the next symbol, when an interpolation held a nested string containing `{` or `}`.** For example `"${x.replace("}", "")}"` in Kotlin or `$"{d["}"]}"` in C#. Upgrading reindexes.
+- **Dart single-quoted strings with a `${...}` hole holding a brace, and Scala plain strings containing `${`, no longer confuse the symbol index.** Only an `s"..."`-style interpolator opens a hole in Scala, as in the compiler.
+- **Compressed pytest output on Windows kept every repeated warning.** A warning whose location starts with a drive letter, such as `C:\project\test_x.py:6:`, now collapses to one line the way it already did on Linux and macOS.
+- **Compressed pytest output dropped lines a failing test printed when they held only `.`, `F`, `E` or `s` characters.** Those lines looked like the progress bar. They now stay under the failure's captured output.
+- **`token-goat mcp-audit` reported "Config found: no" when `CLAUDE_CONFIG_DIR` or `COPILOT_HOME` was set.** It now reads `.claude.json` from `CLAUDE_CONFIG_DIR` and `mcp-config.json` from `COPILOT_HOME`, and the line that names what it checked shows those real paths.
+- **Installing into a CLAUDE.md or copilot-instructions.md with Windows line endings left the file with mixed line endings, and uninstalling did not give the original back.** The block now uses the file's own line endings, so an install followed by an uninstall restores the file byte for byte.
 - **`install -p` still wrote the CLAUDE.md block and skill into your home directory.** With `-p`/`--project` they now go to `<project>/CLAUDE.md` and `<project>/.claude/skills/token-goat/`, and `uninstall -p` takes them back out of the project without touching the user-wide copies.
 - **`uninstall -p` left an empty `.claude` folder behind in the project.** A settings file that now holds nothing, the empty `skills` folder and the `.claude` folder above them are removed when this install created them. A `.claude` folder you already had, and anything you keep in it, stays.
 - **Uninstalling the VS Code, Cursor, Visual Studio, Copilot or Zed MCP server deleted an empty `servers` block you had written yourself.** Uninstall now removes that block only when install added it.

@@ -533,6 +533,12 @@ export interface StripStringOpts {
   /** Scala, where a `'` that opens no character literal is a symbol literal or a quoted block and
    *  never closes. See {@link scalaCharLiteralLength}. */
   symbolLiterals?: boolean
+  /** Swift, where `\( ... )` inside a string is an interpolation hole whose content is code, so a nested string literal in it must not close the outer string. */
+  swiftInterpolation?: boolean
+  /** Dart, where a single-quoted string interpolates `${ ... }` just as a double-quoted one does, and a raw `r'...'` string does not. */
+  singleQuoteHoles?: boolean
+  /** Scala, where only a string written with an interpolator prefix (`s"`, `f"`, `raw"`) has holes: a plain `"${"` is text. */
+  interpolatorPrefix?: boolean
 }
 
 /**
@@ -564,7 +570,22 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
   // it). A hole frame passes its content through unblanked - it's real code - tracking nested
   // `{`/`}` depth so a nested code brace doesn't close the hole early, and pushing a new string
   // frame for any quote it encounters (e.g. the nested string in `Replace("}", "")`).
-  type Frame = { kind: 'string'; quote: string; bareBraceHole: boolean } | { kind: 'hole'; depth: number }
+  type Frame = { kind: 'string'; quote: string; bareBraceHole: boolean; plain: boolean } | { kind: 'hole'; depth: number; paren?: boolean }
+
+  // The frame for the string whose opening quote is at `idx`. A `$` before the quote (or `$@`/`@$`) marks a C# interpolated string, where a bare `{` (not `${`) opens an interpolation hole. A `plain` string has no holes: a Scala string with no interpolator prefix, or a Dart raw string.
+  const stringFrame = (idx: number, delim: string): Frame => {
+    const quote = line[idx] as string
+    const prev = line[idx - 1] ?? ''
+    const bareBraceHole =
+      quote === '"' &&
+      ((idx > 0 && prev === '$') ||
+        (idx > 1 && prev === '@' && line[idx - 2] === '$') ||
+        (idx > 1 && prev === '$' && line[idx - 2] === '@'))
+    const plain =
+      (opts.interpolatorPrefix === true && !/[A-Za-z0-9_]/.test(prev)) ||
+      (opts.singleQuoteHoles === true && prev === 'r' && !/[A-Za-z0-9_$]/.test(line[idx - 2] ?? ''))
+    return { kind: 'string', quote: delim, bareBraceHole, plain }
+  }
 
   // With `tripleQuotes`, a run of three identical quotes opens a frame whose delimiter is all three, so a lone interior quote stays blanked string content instead of closing the string and letting the rest of the line (braces included) through as code.
   const openDelim = (idx: number): string => {
@@ -606,15 +627,8 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
         continue
       }
       if (ch === '"' || ch === "'") {
-        // A `$` before the opening `"` (or `$@`/`@$`) marks a C# interpolated string, where a bare
-        // `{` (not `${`) opens an interpolation hole.
-        const bareBraceHole =
-          ch === '"' &&
-          ((i > 0 && line[i - 1] === '$') ||
-            (i > 1 && line[i - 1] === '@' && line[i - 2] === '$') ||
-            (i > 1 && line[i - 1] === '$' && line[i - 2] === '@'))
         const delim = openDelim(i)
-        stack.push({ kind: 'string', quote: delim, bareBraceHole })
+        stack.push(stringFrame(i, delim))
         out += delim
         i += delim.length
         continue
@@ -625,19 +639,36 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
     }
 
     if (top.kind === 'hole') {
+      // A Swift hole ends at its balancing `)`; a brace inside it is ordinary code.
+      if (top.paren === true && (ch === '(' || ch === ')')) {
+        if (ch === '(') {
+          top.depth++
+          out += ch
+        } else {
+          if (top.depth > 0) {
+            top.depth--
+            out += ch
+          } else {
+            stack.pop()
+            out += ' '
+          }
+        }
+        i++
+        continue
+      }
+      if (top.paren === true && (ch === '{' || ch === '}')) {
+        out += ch
+        i++
+        continue
+      }
       if (opts.symbolLiterals === true && ch === "'" && scalaCharLiteralLength(line, i) === 0) {
         out += ch
         i++
         continue
       }
       if (ch === '"' || ch === "'") {
-        const bareBraceHole =
-          ch === '"' &&
-          ((i > 0 && line[i - 1] === '$') ||
-            (i > 1 && line[i - 1] === '@' && line[i - 2] === '$') ||
-            (i > 1 && line[i - 1] === '$' && line[i - 2] === '@'))
         const delim = openDelim(i)
-        stack.push({ kind: 'string', quote: delim, bareBraceHole })
+        stack.push(stringFrame(i, delim))
         out += delim
         i += delim.length
         continue
@@ -664,6 +695,12 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
     }
 
     // top.kind === 'string'
+    if (opts.swiftInterpolation === true && top.quote === '"' && ch === '\\' && line[i + 1] === '(') {
+      stack.push({ kind: 'hole', depth: 0, paren: true })
+      out += '  '
+      i += 2
+      continue
+    }
     // `line[i + 1] !== '\n'` because a backslash is never an escape for the line break that follows it in any language this runs over, and consuming the pair here would skip past the `\n` handler above -- the one that closes a frame a stray apostrophe in a comment opened. An Apex comment ending in a path like `C:\` did exactly that: the newline was replaced by a space, the stack never reset, and the open frame blanked every following method until the next stray quote. Leaving the backslash to fall through costs nothing, since it is blanked as ordinary string content on the next pass and the newline then terminates the frame.
     if (ch === '\\' && i + 1 < line.length && line[i + 1] !== '\n') {
       out += '  '
@@ -676,7 +713,7 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
       i += top.quote.length
       continue
     }
-    if (top.quote === '"') {
+    if (!top.plain && (top.quote === '"' || (opts.singleQuoteHoles === true && top.quote[0] === "'"))) {
       if (top.bareBraceHole && ch === '{') {
         if (line[i + 1] === '{') {
           // C# `{{` is the escape for a literal `{` inside an interpolated string, not a hole
@@ -1836,6 +1873,8 @@ export interface BraceSpanOpts {
   lineStringPrefix?: string
   /** Blank this language's multi-line-capable string literals before walking braces, via {@link maskMultilineStrings}. The per-literal {@link BraceScanOpts} flags cover the forms whose delimiters are fixed; this covers the ones whose closer is decided by the opener, which a character-at-a-time walk cannot recognise: a PHP heredoc (`<<<EOT`) and a Swift raw string (`#"..."#`). A `}` inside either is text, and without this it decrements the brace depth and ends the enclosing function at that line. The extractors for those languages already mask with the same function to find declarations, so this makes the span walk read the same text they did. */
   multilineLang?: MultilineStringLang
+  /** See {@link BraceScanOpts.interpolation}. */
+  interpolation?: InterpolationLang
   /** Span a C# expression-bodied member (`=> expr;`) through its terminating `;` at bracket depth 0, however many lines the expression takes, instead of leaving it on its first line. */
   expressionBodies?: boolean | 'kotlin'
 }
@@ -1874,6 +1913,8 @@ export interface BraceScanOpts {
   rRawStrings?: boolean
   /** Whether ''' opens a triple-quoted string on the same terms as {@link tripleQuote}. Dart has both spellings; Kotlin, Scala and Swift have only the double-quoted one, and there ''' is something else. Without this a Dart literal holding an odd number of single quotes, such as '''a ' } b''', re-pairs them so the brace between them is read as code and the enclosing method ends on it. */
   tripleSingleQuote?: boolean
+  /** The language's string-interpolation syntax, so a `}` or quote inside a hole (`"${raw.replace("}", "")}"`) is read as code of the hole and never closes the outer string or counts as a brace. */
+  interpolation?: InterpolationLang
   /** Which quotes of a closing run longer than three end a {@link tripleQuote}/{@link tripleSingleQuote} literal: see {@link QuoteRunClose} for each language's rule and its citation. Defaults to `'last'`, which is Kotlin's, Scala's and Swift's; Dart must pass `'first'`. */
   tripleQuoteRunClose?: QuoteRunClose
 }
@@ -1958,6 +1999,8 @@ export function findMatchingBraceEndLine(
   const rRaw = opts?.rRawStrings === true
   const tripleDelims = tripleQuoteDelimiters(opts)
   const lineString = opts?.lineStringPrefix
+  const interpolation = opts?.interpolation
+  let interpolated = false
   let depth = 0
   let quote: string | null = null
   // Set when `quote` was opened by a C# verbatim string: inside one, `\` is an ordinary character and a doubled `""` is the escaped quote.
@@ -1965,6 +2008,10 @@ export function findMatchingBraceEndLine(
   for (let i = openBraceIndex; i < content.length; i++) {
     const ch = content[i]
     if (quote !== null) {
+      if (interpolated && interpolation !== undefined) {
+        const past = skipInterpolationAt(content, i, content.length, interpolation)
+        if (past !== null) { i = past - 1; continue }
+      }
       if (verbatim) {
         if (ch === quote) {
           if (content[i + 1] === quote) { i++; continue }
@@ -2029,6 +2076,7 @@ export function findMatchingBraceEndLine(
     if (ch === '"' || ch === "'" || (backtick && ch === '`')) {
       quote = ch
       verbatim = escapes === 'csharp' && ch === '"' && opensCsharpVerbatimString(content, i)
+      interpolated = interpolation !== undefined && opensInterpolatedString(content, i, interpolation)
       continue
     }
     if (ch === '{') depth++
@@ -2102,6 +2150,7 @@ export function assignBraceBlockSpans(
     rawStringQuotes: opts.rawStringQuotes ?? false,
     tripleSingleQuote: opts.tripleSingleQuote ?? false,
     tripleQuoteRunClose: opts.tripleQuoteRunClose ?? 'last',
+    ...(opts.interpolation === undefined ? {} : { interpolation: opts.interpolation }),
     ...(blockComment === undefined ? {} : { blockComment, nestedBlockComments }),
     ...(lineStringPrefix === undefined ? {} : { lineStringPrefix }),
     ...(opts.lineCommentExceptions === undefined ? {} : { lineCommentExceptions: opts.lineCommentExceptions }),
@@ -2288,6 +2337,78 @@ function skipKotlinLiteral(content: string, i: number, to: number): number | nul
   return to
 }
 
+/** The languages whose strings interpolate code, each with its own hole syntax: Kotlin, Dart and Scala `${ ... }`, C# `{ ... }` inside `$"..."`, Swift `\( ... )`. */
+export type InterpolationLang = 'kotlin' | 'dart' | 'scala' | 'csharp' | 'swift'
+
+/** Whether the quote at `i` opens a string that interpolates: C# only after a `$`, Scala only after an interpolator prefix (`s"`, `f"`, `raw"`), Dart not for a raw `r"..."` string, and Swift/Kotlin always for a double-quoted one. */
+function opensInterpolatedString(content: string, i: number, lang: InterpolationLang): boolean {
+  const q = content[i]
+  const prev = content[i - 1] ?? ''
+  if (lang === 'csharp') return q === '"' && (prev === '$' || (prev === '@' && content[i - 2] === '$'))
+  if (lang === 'scala') return q === '"' && /[A-Za-z0-9_]/.test(prev)
+  if (lang === 'dart') return !(prev === 'r' && !/[A-Za-z0-9_$]/.test(content[i - 2] ?? ''))
+  return q === '"'
+}
+
+/** Index just past the interpolation hole that opens at `i` inside an interpolated string (or past a C# `{{` escape), or null when `i` opens none. */
+function skipInterpolationAt(content: string, i: number, to: number, lang: InterpolationLang): number | null {
+  const ch = content[i]
+  if (lang === 'swift') return ch === '\\' && content[i + 1] === '(' ? skipInterpolationHole(content, i + 1, to, lang) : null
+  if (lang === 'csharp') {
+    if (ch !== '{') return null
+    return content[i + 1] === '{' ? i + 2 : skipInterpolationHole(content, i, to, lang)
+  }
+  return ch === '$' && content[i + 1] === '{' ? skipInterpolationHole(content, i + 1, to, lang) : null
+}
+
+/** Index just past the hole whose opening `{` or `(` is at `i`, skipping every literal nested in it. A Swift hole counts parentheses and the others count braces, so a code brace inside a Swift hole is irrelevant and a closure brace inside a Kotlin hole does not end it. */
+function skipInterpolationHole(content: string, i: number, to: number, lang: InterpolationLang): number {
+  const open = content[i]
+  const close = open === '(' ? ')' : '}'
+  let depth = 0
+  for (let k = i; k < to; k++) {
+    const lit = skipNestedLiteral(content, k, to, lang)
+    if (lit !== null) { k = lit - 1; continue }
+    const ch = content[k]
+    if (ch === open) depth++
+    else if (ch === close && --depth === 0) return k + 1
+  }
+  return to
+}
+
+/** Index just past the string or character literal that starts at `i` inside a hole, or null when `i` starts none. */
+function skipNestedLiteral(content: string, i: number, to: number, lang: InterpolationLang): number | null {
+  const ch = content[i]
+  if (lang === 'csharp') return skipCsharpLiteral(content, i, to)
+  if (lang === 'kotlin') return skipKotlinLiteral(content, i, to)
+  if (ch === "'" && lang === 'scala') {
+    const len = scalaCharLiteralLength(content, i)
+    return len > 0 ? i + len : null
+  }
+  if (ch !== '"' && !(ch === "'" && lang === 'dart')) return null
+  return skipInterpolatedString(content, i, to, lang, opensInterpolatedString(content, i, lang))
+}
+
+/** Index just past the single-line Swift/Dart/Scala string that opens at `i`, skipping any hole it carries; a string never runs past a newline, so an unterminated one stops there. A triple-quoted literal runs verbatim to its closer. */
+function skipInterpolatedString(content: string, i: number, to: number, lang: InterpolationLang, interpolated: boolean): number {
+  const q = content[i] as string
+  if (content.startsWith(q + q + q, i)) {
+    const end = content.indexOf(q + q + q, i + 3)
+    return end === -1 || end >= to ? to : end + 3
+  }
+  for (let k = i + 1; k < to; k++) {
+    const ch = content[k]
+    if (ch === '\n') return k
+    if (interpolated) {
+      const past = skipInterpolationAt(content, k, to, lang)
+      if (past !== null) { k = past - 1; continue }
+    }
+    if (ch === '\\') { k++; continue }
+    if (ch === q) return k + 1
+  }
+  return to
+}
+
 /** Whether a Kotlin expression body whose line ends at `lastSig` carries on to the next line: it ends in an operator, `else`, or the `)` of an `if (...)` header, or the next code line opens with a token that can only continue an expression (`.foo`, `?.`, `?:`, `&&`, `||`, `else`, `as`, `catch`, `finally`). A leading `+` or `-` does not count, since Kotlin starts a new statement there. */
 function kotlinBodyContinues(content: string, lastSig: number, ifParenClosedAt: number, nextLineFrom: number): boolean {
   const c = content[lastSig]
@@ -2412,6 +2533,8 @@ function findBlockOpenBrace(
   if (from === undefined) return null
   // One past the last searchable line, so the scan covers lastSearchLine in full.
   const to = lineIndex[lastSearchLine] ?? content.length
+  const interpolation = opts?.interpolation
+  let interpolated = false
   let quote: string | null = null
   // Round/square-bracket depth, so a keyword inside a multi-line parameter list or call is not
   // mistaken for the start of a new statement (see the keyword stop below).
@@ -2425,6 +2548,11 @@ function findBlockOpenBrace(
     const ch = content[i]
     if (ch === undefined) break
     if (quote !== null) {
+      // Mirrors findMatchingBraceEndLine's hole skip, so both halves of the span walk agree on where an interpolated string ends.
+      if (interpolated && interpolation !== undefined) {
+        const past = skipInterpolationAt(content, i, to, interpolation)
+        if (past !== null) { i = past - 1; continue }
+      }
       if (verbatim) {
         if (ch === quote) {
           if (content[i + 1] === quote) { i++; continue }
@@ -2489,6 +2617,7 @@ function findBlockOpenBrace(
     if (ch === '"' || ch === "'") {
       quote = ch
       verbatim = stringEscapes === 'csharp' && ch === '"' && opensCsharpVerbatimString(content, i)
+      interpolated = interpolation !== undefined && opensInterpolatedString(content, i, interpolation)
       continue
     }
     if (ch === '(' || ch === '[') parenDepth++

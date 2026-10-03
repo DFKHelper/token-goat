@@ -13,7 +13,7 @@ import {
 } from './common.js'
 
 /** Scala spells a character literal `'a'`, but a `'` that opens none is a symbol literal or a Scala 3 quoted block and never closes. Every read of a Scala line -- blanking its strings and finding its `//` -- has to apply that same rule, or the two disagree about where the line's code ends. */
-const SCALA_STRIP: StripStringOpts = { symbolLiterals: true }
+const SCALA_STRIP: StripStringOpts = { symbolLiterals: true, interpolatorPrefix: true }
 
 interface TypeFrame {
   name: string

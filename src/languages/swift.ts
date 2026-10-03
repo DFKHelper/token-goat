@@ -13,10 +13,13 @@ import {
   stripMultilineStringSpan,
   stripNestedBlockCommentSpan,
   stripStringLiterals,
+  type StripStringOpts,
   type MultilineStringState,
   type AdapterImport,
   makeLineSymbol,
 } from './common.js'
+
+const SWIFT_STRIP: StripStringOpts = { swiftInterpolation: true }
 
 interface TypeFrame {
   name: string
@@ -280,7 +283,7 @@ export function extractSwift(
     const stripped = line.trim()
 
     if (!stripped) {
-      const braceLine = stripRegexLiterals(stripStringLiterals(line))
+      const braceLine = stripRegexLiterals(stripStringLiterals(line, SWIFT_STRIP))
       braceDepth += (braceLine.match(/\{/g) ?? []).length - (braceLine.match(/\}/g) ?? []).length
       continue
     }
@@ -349,7 +352,7 @@ export function extractSwift(
     // open-count minus close-count) so a same-line open+close (`struct Empty {}`) still marks
     // bodyEntered -- the net delta for that line is zero, but depth genuinely peaked one above
     // the frame's start in between the two braces, which a batched delta can never observe.
-    const braceLine = stripRegexLiterals(stripStringLiterals(line))
+    const braceLine = stripRegexLiterals(stripStringLiterals(line, SWIFT_STRIP))
     for (const ch of braceLine) {
       if (ch === '{') {
         braceDepth++

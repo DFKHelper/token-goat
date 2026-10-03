@@ -187,6 +187,19 @@ describe('uninstall -p/--project leaves user-scope integrations alone', () => {
     expect(fs.readFileSync(projectMd, 'utf8')).not.toContain('token-goat')
   })
 
+  // Provenance: CAPTURE of a real run of the built bundle (`printf '# Project\r\n\r\nRules here.\r\n' > CLAUDE.md; token-goat install -p; token-goat uninstall -p; cmp`) showing the block landed with LF endings and the file came back with the CR lost; the expected bytes are the original input, HAND-DERIVED.
+  it('install -p then uninstall -p leaves a CRLF project CLAUDE.md byte-identical, with the block in CRLF', async () => {
+    const projectMd = path.join(userProject, 'CLAUDE.md')
+    const original = '# Project\r\n\r\nRules here.\r\n'
+    fs.writeFileSync(projectMd, original)
+    await runCli(['install', '-p', '--no-index'])
+    const installed = fs.readFileSync(projectMd, 'utf8')
+    expect(installed).toContain('<!-- token-goat-begin -->')
+    expect(installed.replace(/\r\n/g, '')).not.toMatch(/[\r\n]/)
+    await runCli(['uninstall', '-p'])
+    expect(fs.readFileSync(projectMd, 'utf8')).toBe(original)
+  })
+
   it('an explicitly named user-only harness is still removed alongside --all --project', async () => {
     await runCli(['install', '--all', '--no-index'])
     const codexDir = path.join(home, '.codex')

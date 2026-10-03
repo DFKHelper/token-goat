@@ -115,6 +115,11 @@ export function stripStaleGroupHooks<H extends HookEntryLike, G extends MatcherG
   return next
 }
 
+/** The line ending a text file uses: CRLF when it carries any CRLF, otherwise LF (an empty file is LF). */
+function detectEol(text: string): '\r\n' | '\n' {
+  return text.includes('\r\n') ? '\r\n' : '\n'
+}
+
 /**
  * Shared by install.ts's `stripClaudeMdBlock` and codex_install.ts's `stripAgentsBlock`:
  * remove a delimited block (everything from `beginMarker` through the end of `endMarker`,
@@ -138,10 +143,11 @@ export function stripDelimitedBlock(p: string, beginMarker: string, endMarker: s
   const after = existing.slice(endIdx + endMarker.length).replace(/^\s+/, '')
 
   let next: string
+  const eol = detectEol(existing)
   if (before.length > 0 && after.length > 0) {
-    next = `${before}\n\n${after}`
+    next = `${before}${eol}${eol}${after}`
   } else if (before.length > 0) {
-    next = `${before}\n`
+    next = `${before}${eol}`
   } else {
     next = after
   }
@@ -156,7 +162,7 @@ export function stripDelimitedBlock(p: string, beginMarker: string, endMarker: s
  * Shared by install.ts's `writeClaudeMdBlock` and codex_install.ts's `writeAgentsBlock`:
  * insert or update a delimited block in the file at `p`.
  */
-export function upsertDelimitedBlock(p: string, beginMarker: string, endMarker: string, block: string): boolean {
+export function upsertDelimitedBlock(p: string, beginMarker: string, endMarker: string, blockText: string): boolean {
   assertWriteInScope(p)
   let existing: string
   try {
@@ -164,6 +170,8 @@ export function upsertDelimitedBlock(p: string, beginMarker: string, endMarker: 
   } catch {
     existing = ''
   }
+  const eol = detectEol(existing)
+  const block = eol === '\n' ? blockText : blockText.replace(/\r?\n/g, eol)
 
   const beginIdx = existing.indexOf(beginMarker)
   const endIdx = existing.indexOf(endMarker)
@@ -180,7 +188,7 @@ export function upsertDelimitedBlock(p: string, beginMarker: string, endMarker: 
   }
 
   const trimmed = existing.replace(/\s+$/, '')
-  const next = trimmed.length > 0 ? `${trimmed}\n\n${block}\n` : `${block}\n`
+  const next = trimmed.length > 0 ? `${trimmed}${eol}${eol}${block}${eol}` : `${block}${eol}`
   ensureDirSync(path.dirname(p))
   backupFile(p)
   atomicWriteText(p, next)

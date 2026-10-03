@@ -267,15 +267,17 @@ export function isValidUtf8(buf: Buffer): boolean {
   return Buffer.compare(Buffer.from(buf.toString('utf-8'), 'utf-8'), buf) === 0
 }
 
-/** Symbols indexed with an empty stored `body` (e.g. HTML/Liquid heading symbols produced by `sectionsToHeadingSymbols`, which store `body: ''`) need their content re-read from disk by line range instead of rendering blank. Shared by runSymbol, runRead, and runBrief so all three read surfaces resolve empty-body symbols the same way. */
-export function resolveBody(entry: { body: string; filePath: string; lineStart: number; lineEnd: number }): string {
-  if (entry.body !== '') return entry.body
+/** Symbols indexed with an empty stored `body` (e.g. HTML/Liquid heading symbols produced by `sectionsToHeadingSymbols`, which store `body: ''`) need their content re-read from disk by line range instead of rendering blank. Markdown heading symbols span their whole section but store only the heading line (hint_target.ts parses its level from it), so they are re-read the same way, provided the file still has that heading line at lineStart -- an edited file keeps the stored line rather than splicing in unrelated text. Shared by runSymbol, runRead, and runBrief so all three read surfaces resolve these symbols the same way. */
+export function resolveBody(entry: { body: string; filePath: string; lineStart: number; lineEnd: number; kind?: string }): string {
+  const storedFirstLine = entry.body.split(/\r?\n/)[0]!
+  const storedLineCount = entry.body === '' ? 0 : entry.body.split(/\r?\n/).length
+  const widenedHeading = entry.kind === 'heading' && storedLineCount > 0 && storedLineCount < entry.lineEnd - entry.lineStart + 1
+  if (entry.body !== '' && !widenedHeading) return entry.body
   const source = readFileText(entry.filePath)
   if (source === null) return entry.body
-  return indexedSourceText(entry.filePath, source)
-    .split(/\r?\n/)
-    .slice(Math.max(0, entry.lineStart - 1), entry.lineEnd)
-    .join('\n')
+  const diskLines = indexedSourceText(entry.filePath, source).split(/\r?\n/)
+  if (widenedHeading && diskLines[entry.lineStart - 1]?.trim() !== storedFirstLine.trim()) return entry.body
+  return diskLines.slice(Math.max(0, entry.lineStart - 1), entry.lineEnd).join('\n')
 }
 
 // The one-line warning prepended by staleWarning() when the on-disk file has changed since the index last saw it. Reuses fingerprintFile/files.sha -- the same sha the worker's dirty-queue gate (makeIndexer in worker.ts) compares against -- so "stale" here means exactly what it means there, rather than reinventing a second freshness signal.
