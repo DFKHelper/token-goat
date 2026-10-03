@@ -9,6 +9,7 @@ import { querySymbols, queryRefs, countRefs, searchSymbolsFts } from './index_re
 import { toDisplayPath, displaySafeJson, displaySafeText } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
 import { resolveProjectRoot } from './project.js'
+import { specScopeRoot } from './read_spec.js'
 import {
   REF_BLIND_DEF_PROBE_LIMIT,
   isRefIndexedFile,
@@ -73,9 +74,15 @@ export function runCallers(opts: CallersOptions): number {
     return 1
   }
 
-  const rootDir = resolveProjectRoot({ project: process.cwd() })
-  const { name, file, def } = resolveGraphSpec(opts.symbol, rootDir)
-  const fileHint = file !== undefined ? resolveSpecPath(file, rootDir) : undefined
+  const cwdRoot = resolveProjectRoot({ project: process.cwd() })
+  const scope = specScopeRoot(opts.symbol, cwdRoot)
+  if (scope.denial !== null) {
+    emitErr(scope.denial)
+    return 1
+  }
+  const rootDir = scope.root
+  const { name, file, def } = resolveGraphSpec(opts.symbol, cwdRoot)
+  const fileHint = file !== undefined ? resolveSpecPath(file, cwdRoot) : undefined
   if (fileHint !== undefined && querySymbols({ name, filePath: fileHint, limit: 1 }).length === 0) {
     emitErr(`Symbol '${name}' not found in '${file}'`)
     return 1
@@ -198,9 +205,15 @@ export function runCallChain(opts: CallChainOptions): number {
     return 1
   }
   const maxDepth = opts.depth ?? 8
-  const rootDir = resolveProjectRoot({ project: process.cwd() })
-  const { name, file, def } = resolveGraphSpec(opts.symbol, rootDir)
-  const fileHint = file !== undefined ? resolveSpecPath(file, rootDir) : undefined
+  const cwdRoot = resolveProjectRoot({ project: process.cwd() })
+  const scope = specScopeRoot(opts.symbol, cwdRoot)
+  if (scope.denial !== null) {
+    emitErr(scope.denial)
+    return 1
+  }
+  const rootDir = scope.root
+  const { name, file, def } = resolveGraphSpec(opts.symbol, cwdRoot)
+  const fileHint = file !== undefined ? resolveSpecPath(file, cwdRoot) : undefined
 
   if (fileHint !== undefined) {
     if (querySymbols({ name, filePath: fileHint, limit: 1 }).length === 0) {
@@ -316,9 +329,15 @@ export function runImpact(opts: ImpactOptions): number {
   }
   const top = opts.top ?? 20
   const DEPTH_CAP = 8
-  const rootDir = resolveProjectRoot({ project: process.cwd() })
-  const { name: rootName, file, def: rootDef } = resolveGraphSpec(opts.symbol, rootDir)
-  const fileHint = file !== undefined ? resolveSpecPath(file, rootDir) : undefined
+  const cwdRoot = resolveProjectRoot({ project: process.cwd() })
+  const scope = specScopeRoot(opts.symbol, cwdRoot)
+  if (scope.denial !== null) {
+    emitErr(scope.denial)
+    return 1
+  }
+  const rootDir = scope.root
+  const { name: rootName, file, def: rootDef } = resolveGraphSpec(opts.symbol, cwdRoot)
+  const fileHint = file !== undefined ? resolveSpecPath(file, cwdRoot) : undefined
   if (fileHint !== undefined && querySymbols({ name: rootName, filePath: fileHint, limit: 1 }).length === 0) {
     emitErr(`Symbol '${rootName}' not found in '${file}'`)
     return 1

@@ -1130,6 +1130,8 @@ describe('read_commands', () => {
       mockQuerySymbols.mockImplementation((opts: QuerySymbolsOpts = {}) => {
         if (opts.name === 'render') return [renderInA, renderInB] as unknown as ReturnType<typeof mockQuerySymbols>
         if (opts.name === 'ClassB') return [classB] as unknown as ReturnType<typeof mockQuerySymbols>
+        // The qualifier is now checked against the file's whole row set (its enclosing chain), so the file-scoped scan answers too
+        if (opts.name === undefined && opts.filePath !== undefined) return [classB, renderInA, renderInB] as unknown as ReturnType<typeof mockQuerySymbols>
         return []
       })
       const { text: stdout } = runRead({ spec: 'src/comp.ts::ClassB.render' })

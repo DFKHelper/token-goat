@@ -20,7 +20,7 @@ import { formatSymbolLocation } from './indexed_source.js'
 import type { SymbolEntry } from './parser_types.js'
 import { fileIsGone, findSpecSeparator, guardText, indexFreshness, readFileText, recordReadStat, recordStaleServed, resolveBody, staleWarning, sumFileSizes } from './read_commands.js'
 import { emit, emitErr } from './emit.js'
-import { formatAmbiguity, parseCrossFileMultiSpec, parseReadSpec, resolveSymbolSpec } from './read_spec.js'
+import { formatAmbiguity, parseCrossFileMultiSpec, parseReadSpec, resolveSymbolSpec, specScopeRoot } from './read_spec.js'
 import { formatBareNameSpecError, trimBlankLines } from './read_suggest.js'
 
 export interface BriefOptions {
@@ -86,8 +86,8 @@ export function runBriefCore(opts: BriefOptions): { text: string; code: number }
   }
   const match = resolution.entry
 
-  // resolveCallers(name) with no explicit limit still applies its own internal default cap (500, in graph_commands.ts's queryRefs call) -- so a capped callers.length is not the true count once more than 500 references exist. The earlier fix for that took the total from a separate COUNT(*) query (queryRefCounts), but queryRefCounts keys by symbol NAME project-wide while resolveCallers additionally scopes to THIS definition site (filterRefsForSymbol drops refs living in a file that defines its own same-named symbol), so for a name defined in two files brief printed the other definition's callers into its own "Callers (N)" header and invented an "...(N more elided)" tail for rows that were never going to be listed. The scoped scan is the only thing that knows the real total, so it always runs unbounded here and its post-filter length is the total.
-  const rootDir = resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() })
+  // resolveCallers(name) with no explicit limit still applies its own internal default cap (500, in graph_commands.ts's queryRefs call) -- so a capped callers.length is not the true count once more than 500 references exist. The earlier fix for that took the total from a separate COUNT(*) query (queryRefCounts), but queryRefCounts keys by symbol NAME project-wide while resolveCallers additionally scopes to THIS definition site (filterRefsForSymbol drops refs living in a file that defines its own same-named symbol), so for a name defined in two files brief printed the other definition's callers into its own "Callers (N)" header and invented an "...(N more elided)" tail for rows that were never going to be listed. The scoped scan is the only thing that knows the real total, so it always runs unbounded here and its post-filter length is the total. The root of the project that owns the matched file, not the one the command ran from: a spec naming a sibling project's file must count that project's callers
+  const rootDir = specScopeRoot(opts.spec, resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() })).root
   const excludeTests = opts.excludeTests === true
   // The unbounded scan also covers --grep and --exclude-tests, which both filter client-side below -- otherwise a high-fanout symbol's grep match could hide inside the callers that fell past resolveCallers' 500-row default page before the filter ever ran. resolveCallers' last argument makes it scan unbounded instead of stopping at its 500 default, but it does NOT filter -- like runCallers, the test-file drop happens here, on the call SITE (c.file), so a production symbol exercised mostly by tests still yields a full page of real callers rather than whatever survived a pre-filter cap. rootDir is threaded in for the same reason runCallers threads it: it is already resolved, and resolveCallers would otherwise shell out to git a second time for the identical value. Only a method can share its name with a sibling in the same file, which is what the checker tier tells apart.
   const allCallers = resolveCallers(match.name, undefined, match.filePath, rootDir, true, ...(match.kind === 'method' ? [match] : []))

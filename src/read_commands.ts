@@ -66,6 +66,7 @@ import {
   parseCrossFileMultiSpec,
   parseLineRange,
   parseReadSpec,
+  qualifiedSpellings,
   resolveSymbolSpec,
   runLineRange,
   runLineRegion,
@@ -594,7 +595,8 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     const resolved = resolveSpecPath(file, opts.projectRoot ?? process.cwd())
     // Query a bounded superset (FIND_SCAN_LIMIT) scoped to this one file, THEN rank by similarity and cap at DIDYOUMEAN_LIMIT -- capping in the query itself would return an arbitrary storage-order first-N that can omit the actual closest match entirely.
     const scanned = querySymbols({ filePath: resolved, limit: FIND_SCAN_LIMIT }).map((s) => s.name)
-    const closes = rankSimilarNames(scanned, symbol)
+    const qualified = symbol.includes('.') ? qualifiedSpellings(resolved, symbol.slice(symbol.lastIndexOf('.') + 1)) : []
+    const closes = qualified.length > 0 ? qualified : rankSimilarNames(scanned, symbol)
     if (closes.length > 0) messages.push(didYouMean(closes))
     // No candidate resembled the query -- point at the command that lists the file's real symbols instead of leaving the miss with no next step.
     else if (scanned.length > 0) {

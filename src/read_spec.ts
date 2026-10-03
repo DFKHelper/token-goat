@@ -7,9 +7,9 @@ import { detectLanguage } from './parser_types.js'
 import type { SymbolEntry } from './parser_types.js'
 import { resolveLineRegions, type LineRegion } from './line_regions.js'
 export { resolveLineRegions, type LineRegion } from './line_regions.js'
-import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
+import { displaySafeJson, displaySafeText, normalizePath, toDisplayPath } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
-import { getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
+import { findProject, getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
 import { fileExists, findSpecSeparator, guardText, healStaleIndex, indexFileSyncPinned, indexFreshness, readFileText, recordStaleServed, resolveAgainstProjectRoot, staleWarning, type ReadOptions } from './read_commands.js'
 import { emitErr } from './emit.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
@@ -327,9 +327,62 @@ export function fileConfinementRefusal(label: string, file: string, projectRoot:
   return confinementRefusal(label, resolveSpecPath(file, projectRoot ?? process.cwd()), root)
 }
 
+/** The project root a `file::symbol` graph command (`callers`, `impact`, `call-chain`, `brief`) scopes its queries to, and the refusal when `indexing.cross_project_symbols = false` keeps the spec's file out of reach, the same confinement `refs` applies. `cwdRoot` is the project the command runs from, which a relative file is resolved against. A file inside it keeps it; a file outside it scopes to the project that owns the file, so a spec naming a sibling project's file looks up that project's rows rather than coming back empty. A spec with no file (a bare name) keeps `cwdRoot`. */
+export function specScopeRoot(spec: string, cwdRoot: string): { root: string; denial: string | null } {
+  const { file, symbol } = parseReadSpec(spec)
+  if (symbol === undefined || file === '') return { root: cwdRoot, denial: null }
+  const abs = resolveSpecPath(file, cwdRoot)
+  const { root: confined, denial } = resolveProjectConfinement(undefined)
+  if (denial !== null) return { root: cwdRoot, denial }
+  if (confined !== null) return { root: confined, denial: confinementRefusal('This file', abs, confined) }
+  if (isInsideRoot(abs, cwdRoot)) return { root: cwdRoot, denial: null }
+  // A file in a directory with no project marker belongs to no project, so the cwd project stays the scope and the file keeps its absolute spelling
+  const dir = path.dirname(abs)
+  const owner = resolveProjectRoot({ project: dir })
+  return { root: findProject(dir) === null && normalizePath(owner) === normalizePath(dir) ? cwdRoot : owner, denial: null }
+}
+
 /** `#id` is the CSS-selector spelling an agent reaches for; accept it as a spelling of the html_id symbol name in read/section/symbol alike, for html files only. */
 export function stripHtmlIdSpelling(name: string, filePath: string): string {
   return name.startsWith('#') && detectLanguage(filePath) === 'html' ? name.slice(1) : name
+}
+
+const CONTAINER_KINDS = new Set(['class', 'struct', 'interface', 'type', 'namespace', 'module', 'trait', 'enum', 'impl', 'object', 'package', 'exception', 'module_type', 'package_body'])
+
+// Whether the last qualifier.length names of an ancestor chain are exactly the (lowercased) qualifier
+function endsWithChain(chain: string[], qualifier: string[]): boolean {
+  if (qualifier.length === 0 || chain.length < qualifier.length) return false
+  const offset = chain.length - qualifier.length
+  return qualifier.every((q, i) => chain[offset + i]!.toLowerCase() === q)
+}
+
+// The outermost-first names enclosing an entry: the rows whose span holds it, or the recorded parent or parent-in-docstring for languages whose methods sit outside their type
+function chainsOf(entry: SymbolEntry, fileSymbols: SymbolEntry[]): string[][] {
+  const enclosing = fileSymbols.filter((s) => {
+    if (s === entry || s.filePath !== entry.filePath) return false
+    if (s.lineStart === entry.lineStart && s.lineEnd === entry.lineEnd) {
+      return s.kind !== entry.kind && CONTAINER_KINDS.has(s.kind) && !CONTAINER_KINDS.has(entry.kind)
+    }
+    return s.lineStart <= entry.lineStart && s.lineEnd >= entry.lineEnd
+  })
+  enclosing.sort((x, y) => x.lineStart - y.lineStart || y.lineEnd - x.lineEnd)
+  const chains: string[][] = [enclosing.map((s) => s.name)]
+  const parent = (entry.parent ?? '').trim()
+  if (parent !== '') chains.push([parent])
+  else if (entry.docstring !== '' && PARENT_IDENTIFIER_RE.test(entry.docstring)) chains.push([entry.docstring])
+  return chains
+}
+
+/** The `Class.method` spellings the rows named `name` in `resolved` answer to, for a miss on a wrong qualifier to suggest. */
+export function qualifiedSpellings(resolved: string, name: string): string[] {
+  const rows = querySymbols({ filePath: resolved, limit: FIND_SCAN_LIMIT })
+  const spellings: string[] = []
+  for (const row of rows) {
+    if (row.name !== name) continue
+    const chain = chainsOf(row, rows).find((c) => c.length > 0)
+    if (chain !== undefined) spellings.push([...chain, name].join('.'))
+  }
+  return [...new Set(spellings)]
 }
 
 /** The indexed rows a `file::symbol` spec's symbol part names in `resolved`, narrowed to one container when the symbol is a qualified `Class.method`, with the name a miss or ambiguity should print. Shared by `read` and the note anchors, so a name means the same symbol to both. `file` is the spelling the caller typed, used only to find the file's rows when `resolved` has none. */
@@ -373,28 +426,19 @@ export function findSymbolCandidates(
     })
   }
 
-  if (methodName !== undefined && candidates.length > 1) {
-    const containerBaseName = file.slice(Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\')) + 1)
-    const containers = query({
-      name: symBase,
-      limit: 50,
-      ...(containerBaseName !== '' ? { fileBaseName: containerBaseName } : {}),
-      ...(projectRoot !== undefined ? { rootDir: projectRoot } : {}),
-    })
-    const symBaseLower = symBase.toLowerCase()
-    const scoped = candidates.filter((c) => {
-      const cParent = c.parent ?? ''
-      if (cParent.toLowerCase() === symBaseLower) return true
-      if (cParent === '' && c.docstring.toLowerCase() === symBaseLower) return true
-      return containers.some(
-        (cls) =>
-          cls.filePath === c.filePath &&
-          !(cls.lineStart === c.lineStart && cls.lineEnd === c.lineEnd) &&
-          c.lineStart >= cls.lineStart &&
-          c.lineEnd <= cls.lineEnd,
-      )
-    })
-    if (scoped.length > 0) candidates = scoped
+  // A qualifier always narrows, even for a single candidate, and a qualifier that names no enclosing chain is a miss rather than a fallback to the unscoped rows
+  if (methodName !== undefined) {
+    const qualifier = dotParts.slice(0, -1).map((p) => p.toLowerCase())
+    const fileRows = new Map<string, SymbolEntry[]>()
+    const rowsOf = (filePath: string): SymbolEntry[] => {
+      let rows = fileRows.get(filePath)
+      if (rows === undefined) {
+        rows = query({ filePath, limit: FIND_SCAN_LIMIT })
+        fileRows.set(filePath, rows)
+      }
+      return rows
+    }
+    candidates = candidates.filter((c) => chainsOf(c, rowsOf(c.filePath)).some((chain) => endsWithChain(chain, qualifier)))
   }
 
   return { candidates, displaySymbol: lookupName }
@@ -483,7 +527,9 @@ export function resolveSymbolSpecOrEmitError(
     if (crossFileLead !== '') messages.push(crossFileLead)
     const resolved = resolveSpecPath(file, projectRoot ?? process.cwd())
     const scanned = querySymbols({ filePath: resolved, limit: FIND_SCAN_LIMIT }).map((s) => s.name)
-    const closes = rankSimilarNames(scanned, symbol)
+    const methodPart = symbol.slice(symbol.lastIndexOf('.') + 1)
+    const qualified = symbol.includes('.') ? qualifiedSpellings(resolved, methodPart) : []
+    const closes = qualified.length > 0 ? qualified : rankSimilarNames(scanned, symbol)
     if (closes.length > 0) messages.push(didYouMean(closes))
     else if (scanned.length > 0) messages.push(`Try: token-goat outline ${file}`)
     emitErr(messages.join('\n'))

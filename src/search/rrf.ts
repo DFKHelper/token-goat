@@ -60,7 +60,10 @@ export function fuseChannelHits(
   // Group candidate hits by normalized file path
   const fileClusters = new Map<string, Cluster[]>();
 
-  for (const hit of pooledHits) {
+  // Named hits form their clusters first so an unnamed hit always sees every enclosing symbol, whatever line order the pool sorted into
+  const clusterOrder = [...pooledHits.filter((h) => h.name), ...pooledHits.filter((h) => !h.name)];
+
+  for (const hit of clusterOrder) {
     const normPath = hit.filePath.replace(/\\/g, '/');
 
     let clusters = fileClusters.get(normPath);
@@ -70,37 +73,52 @@ export function fuseChannelHits(
     }
 
     let matchedCluster: Cluster | undefined;
+    let growsSpan = true;
 
-    for (const cluster of clusters) {
-      // If both have names, they only match if they share the exact symbol name
-      if (hit.name && cluster.name) {
+    if (hit.name) {
+      for (const cluster of clusters) {
         if (
+          cluster.name &&
           hit.name.toLowerCase() === cluster.name.toLowerCase() &&
           withinFusionWindow(cluster.lineStart, cluster.lineEnd, hit.lineStart, hit.lineEnd)
         ) {
           matchedCluster = cluster;
           break;
         }
-        continue;
       }
-
-      // If one is a named symbol and the other is an unnamed text/semantic match: match if the unnamed hit falls within or directly borders the symbol range
-      if (cluster.name && !hit.name) {
-        if (hit.lineStart >= cluster.lineStart - 5 && hit.lineEnd <= cluster.lineEnd + 5) {
+    } else {
+      // An unnamed hit joins the tightest symbol that contains it, else the nearest one within the slack window, and never widens that symbol
+      let bestSpan = Infinity;
+      let bestDist = Infinity;
+      let bestContains = false;
+      for (const cluster of clusters) {
+        if (!cluster.name) continue;
+        const contains = hit.lineStart >= cluster.lineStart && hit.lineEnd <= cluster.lineEnd;
+        const near = hit.lineStart >= cluster.lineStart - 5 && hit.lineEnd <= cluster.lineEnd + 5;
+        if (!contains && !near) continue;
+        const span = cluster.lineEnd - cluster.lineStart;
+        const dist = contains ? 0 : Math.max(cluster.lineStart - hit.lineEnd, hit.lineStart - cluster.lineEnd, 0);
+        const better =
+          !matchedCluster ||
+          (contains && !bestContains) ||
+          (contains === bestContains && (contains ? span < bestSpan : dist < bestDist || (dist === bestDist && span < bestSpan)));
+        if (better) {
           matchedCluster = cluster;
-          break;
+          bestSpan = span;
+          bestDist = dist;
+          bestContains = contains;
         }
-      } else if (!cluster.name && hit.name) {
-        if (cluster.lineStart >= hit.lineStart - 5 && cluster.lineEnd <= hit.lineEnd + 5) {
-          matchedCluster = cluster;
-          break;
-        }
-      } else {
-        // Both unnamed: match if ranges overlap or are within a 6-line locality margin
-        const overlap = Math.max(cluster.lineStart, hit.lineStart) <= Math.min(cluster.lineEnd, hit.lineEnd) + 6;
-        if (overlap && withinFusionWindow(cluster.lineStart, cluster.lineEnd, hit.lineStart, hit.lineEnd)) {
-          matchedCluster = cluster;
-          break;
+      }
+      if (matchedCluster) growsSpan = false;
+      else {
+        for (const cluster of clusters) {
+          if (cluster.name) continue;
+          // Both unnamed: match if ranges overlap or are within a 6-line locality margin
+          const overlap = Math.max(cluster.lineStart, hit.lineStart) <= Math.min(cluster.lineEnd, hit.lineEnd) + 6;
+          if (overlap && withinFusionWindow(cluster.lineStart, cluster.lineEnd, hit.lineStart, hit.lineEnd)) {
+            matchedCluster = cluster;
+            break;
+          }
         }
       }
     }
@@ -111,8 +129,10 @@ export function fuseChannelHits(
         matchedCluster.bestRankPerChannel.set(hit.channel, hit.rank);
       }
       matchedCluster.hits.push(hit);
-      matchedCluster.lineStart = Math.min(matchedCluster.lineStart, hit.lineStart);
-      matchedCluster.lineEnd = Math.max(matchedCluster.lineEnd, hit.lineEnd);
+      if (growsSpan) {
+        matchedCluster.lineStart = Math.min(matchedCluster.lineStart, hit.lineStart);
+        matchedCluster.lineEnd = Math.max(matchedCluster.lineEnd, hit.lineEnd);
+      }
 
       // Retain symbol name/kind if the existing cluster lacked it
       if (!matchedCluster.name && hit.name) matchedCluster.name = hit.name;
