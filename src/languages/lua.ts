@@ -27,6 +27,12 @@ interface FunctionFrame {
   symbolIndex?: number
 }
 
+// The table a `function Queue:push` / `function Account.new` / `M.sub = function` definition belongs to: the last segment before the method name, which is the parent the qualified `read file::Queue.push` spec resolves against. Undefined for a plain name with no receiver.
+function receiverName(fname: string): string | undefined {
+  const parts = fname.split(/[.:]/)
+  return parts.length > 1 ? parts[parts.length - 2] : undefined
+}
+
 /** Nearest enclosing real function name, skipping past control-flow block frames. */
 function nearestFunctionName(stack: readonly FunctionFrame[]): string | undefined {
   for (let i = stack.length - 1; i >= 0; i--) {
@@ -165,7 +171,7 @@ export function extractLua(
       // matters as much as the dot: `function M:bar()` is the idiomatic method form, and splitting
       // on the dot alone stored it whole as `M:bar`, which no lookup by method name ever finds.
       const baseName = fname.split(/[.:]/).pop() ?? fname
-      const parent = nearestFunctionName(funcStack)
+      const parent = receiverName(fname) ?? nearestFunctionName(funcStack)
       if (parent !== undefined) {
         symbols.push(makeLineSymbol(filePath, baseName, 'function', lineNum, stripped.slice(0, 200), parent))
       } else {
@@ -203,7 +209,7 @@ export function extractLua(
       const fname = afm[1] ?? ''
       // Extract just the final name after any dot/colon path, matching FUNC_RE's convention.
       const baseName = fname.split(/[.:]/).pop() ?? fname
-      const parent = nearestFunctionName(funcStack)
+      const parent = receiverName(fname) ?? nearestFunctionName(funcStack)
       if (parent !== undefined) {
         symbols.push(makeLineSymbol(filePath, baseName, 'function', lineNum, stripped.slice(0, 200), parent))
       } else {

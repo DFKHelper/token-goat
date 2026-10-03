@@ -41,6 +41,9 @@ const EXTENSION_TYPE_RE = /^extension\s+type\s+([A-Za-z_][A-Za-z0-9_]*)/
 // `void foo()`, `int bar()`, `String baz()` — requires either `void` keyword or an explicit return type. This guards against matching function calls like `print("text")` as function declarations. The return-type class admits `?` so a nullable type argument, `Future<Invoice?> find()`, `List<String?> names()`, `Map<String, int?> counts()`, still reads as a type: with `?` left out the class stopped at the `?`, the trailing-`?` group consumed it, and the whitespace the name needs was a `>` instead, so every method returning a nullable-argument generic was dropped from the index.
 const FUNC_RE = new RegExp('(?:^|\\s)(?:static\\s+)?(?:(?:void|Future|Stream|async|external)\\s+|[A-Za-z_][A-Za-z0-9_<>?]*(?:\\s*\\?)?\\s+)([A-Za-z_][A-Za-z0-9_]*)\\s*(?:' + GENERIC_CLAUSE + ')?\\s*\\(')
 
+// `Point operator +(Point other) => ...`, `bool operator ==(Object o)`, `int operator [](int i)`, `operator -()`. The operator symbol sits where FUNC_RE needs a name, so no overload ever matched it; the symbol itself is the member's name, `+`, which is what the `operator` normalisation at the FUNC_RE call sites always intended. Longer symbols are listed first so `>>>` and `[]=` are not cut short.
+const OPERATOR_RE = /(?:^|\s)(?:(?:external|abstract)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>?,]*(?:\s*\?)?\s+)?operator\s*(\[\]=|\[\]|>>>|<<|>>|<=|>=|==|~\/|[-+*/%<>&|^~])\s*\(/
+
 // `int get value => 1;`, `String get name { ... }`, `static bool get ok => true`. A getter has no parameter list, so FUNC_RE (which anchors on the opening paren) never matched one, while the matching `set value(int v)` was picked up incidentally -- `set` reads as a return type to FUNC_RE. A class exposing a value through a getter/setter pair therefore indexed the write half and dropped the read half. The return-type class admits `?` for the same reason FUNC_RE's does: `Future<int?> get pending` and `Map<String, int?> get counts` were dropped, while `int? get maybe` survived only because its `?` sits last, where the trailing group reaches it.
 const GETTER_RE = /^(?:(?:static|external|abstract|covariant)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>,?\s]*(?:\s*\?)?\s+)?get\s+([A-Za-z_][A-Za-z0-9_]*)/
 
@@ -198,6 +201,12 @@ export function extractDart(
 
         // A field can carry an initialiser call that looks just like a declaration to FUNC_RE.
         if (!member && FIELD_START_RE.test(stripped)) {
+          member = true
+        }
+
+        const om = !member ? OPERATOR_RE.exec(structural) : null
+        if (om) {
+          symbols.push(makeLineSymbol(filePath, om[1] ?? '', 'function', lineNum, stripped.slice(0, 200), frame.name, lines, 'c'))
           member = true
         }
 

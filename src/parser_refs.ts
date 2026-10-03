@@ -38,8 +38,8 @@ const SCOPE_TYPES_BY_LANG: ReadonlyMap<Language, ReadonlySet<string>> = new Map(
 
 // Node types that represent a call site, per language.
 const CALL_TYPES_BY_LANG: ReadonlyMap<Language, ReadonlySet<string>> = new Map([
-  ['typescript', new Set(['call_expression', 'new_expression'])],
-  ['javascript', new Set(['call_expression', 'new_expression'])],
+  ['typescript', new Set(['call_expression', 'new_expression', 'jsx_self_closing_element', 'jsx_opening_element'])],
+  ['javascript', new Set(['call_expression', 'new_expression', 'jsx_self_closing_element', 'jsx_opening_element'])],
   ['python', new Set(['call'])],
   ['go', new Set(['call_expression'])],
   ['rust', new Set(['call_expression', 'macro_invocation'])],
@@ -305,6 +305,15 @@ function calleeName(call: TsNode, language: Language): string | null {
   switch (language) {
     case 'typescript':
     case 'javascript': {
+      // Rendering `<Button />`, `<Button>..</Button>` or `<UI.Button>` uses the component the way a call does. Lowercase bare tags are intrinsic elements (`<div>`), never a binding in scope; a member tag is always a component, recorded under its last segment like a member call.
+      if (call.type === 'jsx_self_closing_element' || call.type === 'jsx_opening_element') {
+        const tag = call.childForFieldName('name')
+        if (tag === null) return null
+        if (tag.type === 'identifier') return /^[A-Z]/.test(tag.text) ? tag.text : null
+        if (tag.type === 'member_expression') return tag.childForFieldName('property')?.text ?? null
+        if (tag.type === 'nested_identifier') return lastSegment(tag.text)
+        return null
+      }
       if (call.type === 'new_expression') {
         const c = call.childForFieldName('constructor')
         if (c === null) return null
@@ -349,7 +358,10 @@ function calleeName(call: TsNode, language: Language): string | null {
     case 'java': {
       // method_invocation and object_creation_expression both expose `name`/`type`.
       const n = call.childForFieldName('name') ?? call.childForFieldName('type')
-      return n !== null ? lastSegment(n.text) : null
+      if (n === null) return null
+      // `new Pair<>(a, b)` / `new ArrayList<String>()` carry a generic_type whose text includes the type arguments; its first named child is the type's own (possibly qualified) name.
+      const named = n.type === 'generic_type' ? (n.namedChildren[0] ?? n) : n
+      return lastSegment(named.text)
     }
     case 'c':
     case 'cpp': {

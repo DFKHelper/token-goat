@@ -107,6 +107,10 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **`refs` found no use of a React component that was only rendered, and `dead` listed it as unused.** JSX tags such as `<Button />`, `<Card>` and `<UI.Panel>` are now recorded as references to the component. Lowercase tags like `<div>` are left out.
+- **A Java `new Pair<>(a, b)` was recorded as a reference to `Pair<>`, so `refs Pair` missed it.** The type arguments are now dropped and the reference is stored under `Pair`.
+- **`read "file.lua::Queue.push"` could not find `function Queue:push` or `function Account.new`.** These functions are now indexed with their table as the parent, so the qualified name resolves.
+- **Dart operator overloads such as `Point operator +(Point other)` were missing from the index.** They are now indexed under the operator symbol with the class as parent, and `read "shape.dart::operator +"` finds them.
 - **Copilot CLI and VS Code project hooks were rewritten, with a new backup each time, when `install` or `doctor --repair` ran from a folder spelled with a lower-case drive letter.** `c:\proj` and `C:\proj` are the same folder on Windows. The drive letter is now upper-cased before the hook commands are written, so the file stays as it was.
 - **`doctor` said Claude Code's settings.json had probably been overwritten or deleted when only one hook event was missing.** That message is now kept for settings with no token-goat hook at all, and a partly wired file gets the row that names the missing events.
 - **`uninstall` left behind the empty config files and folders that install had created for Gemini CLI, Qwen Code, OpenClaw, Kimi, Codex, Grok, Cursor, opencode, pi and Zed.** Install now records what it creates, and uninstall removes those files and folders once nothing else is in them. A file or folder that was there before install stays.

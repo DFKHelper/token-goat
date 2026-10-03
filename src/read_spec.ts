@@ -350,9 +350,11 @@ export function specScopeRoot(spec: string, cwdRoot: string): { root: string; de
   return { root: findProject(dir) === null && normalizePath(owner) === normalizePath(dir) ? cwdRoot : owner, denial: null }
 }
 
-/** `#id` is the CSS-selector spelling an agent reaches for; accept it as a spelling of the html_id symbol name in read/section/symbol alike, for html files only. */
+/** `#id` is the CSS-selector spelling an agent reaches for; accept it as a spelling of the html_id symbol name in read/section/symbol alike, for html files only. Likewise Dart's own `operator +` spelling (bare or after a `Point.` qualifier) names the member indexed as `+`. */
 export function stripHtmlIdSpelling(name: string, filePath: string): string {
-  return name.startsWith('#') && detectLanguage(filePath) === 'html' ? name.slice(1) : name
+  const language = detectLanguage(filePath)
+  if (language === 'dart') return name.replace(/(^|\.)operator\s+/, '$1')
+  return name.startsWith('#') && language === 'html' ? name.slice(1) : name
 }
 
 const CONTAINER_KINDS = new Set(['class', 'struct', 'interface', 'type', 'namespace', 'module', 'trait', 'enum', 'impl', 'object', 'package', 'exception', 'module_type', 'package_body'])
