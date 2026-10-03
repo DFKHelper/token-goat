@@ -71,7 +71,7 @@ export function recordXlsxStat(kind: string, file: string, emitted: string): voi
 
 export async function cmdPdfExtract(
   file: string,
-  opts: { pages?: string; head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; layout?: boolean },
+  opts: { pages?: string; head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; layout?: boolean; full?: boolean; lines?: string },
 ): Promise<void> {
   const text = redactSecrets(await runPdfExtractText(file, opts.pages, opts.layout === true)).text
   const printed = _applyFiltersAndPrint(text, opts, true, UNTRUSTED_FILE_TAG)
@@ -382,7 +382,7 @@ export async function cmdDocxTables(file: string, opts: { table?: string; json?:
 
 export async function cmdDocxText(
   file: string,
-  opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
+  opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; full?: boolean; lines?: string },
 ): Promise<void> {
   const text = redactSecrets(await docxText(file, { markdownHeadings: true })).text
   const printed = _applyFiltersAndPrint(text, opts, true, UNTRUSTED_FILE_TAG)

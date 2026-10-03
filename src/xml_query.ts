@@ -530,6 +530,12 @@ function parentMap(root: XmlNode): Map<XmlNode, XmlNode> {
   return map
 }
 
+function uniqueInDocumentOrder(nodes: XmlNode[], root: XmlNode): XmlNode[] {
+  const order = new Map<XmlNode, number>()
+  for (const n of [root, ...getAllDescendants(root)]) order.set(n, order.size)
+  return [...new Set(nodes)].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0))
+}
+
 function getAllDescendants(node: XmlNode): XmlNode[] {
   const desc: XmlNode[] = []
   function walk(n: XmlNode) {
@@ -631,7 +637,9 @@ export function queryXml(
       const attrVals: string[] = []
       const attrNodes: Array<{ value: string; node: XmlNode; attrName: string }> = []
       const attrName = step.attributeSelect
-      for (const cand of currentCandidates) {
+      // `//@id` and `a//@id` read the attributes of every descendant-or-self element, not only the candidates themselves.
+      const attrOwners = step.isRecursive ? uniqueInDocumentOrder(currentCandidates.flatMap((c) => [c, ...getAllDescendants(c)]), root) : currentCandidates
+      for (const cand of attrOwners) {
         if (attrName === '*') {
           for (const [k, v] of Object.entries(cand.attributes)) {
             attrVals.push(v)
@@ -666,7 +674,8 @@ export function queryXml(
       if (evaluateOnCurrentNode) {
         targets = [cand]
       } else if (step.isRecursive) {
-        targets = [cand, ...getAllDescendants(cand)]
+        // Only the leading `//` is descendant-or-self of the document; a later `a//b` is descendant::b, so a candidate never matches its own name.
+        targets = sIdx === 0 ? [cand, ...getAllDescendants(cand)] : getAllDescendants(cand)
       } else {
         targets = cand.children
       }
@@ -735,7 +744,8 @@ export function queryXml(
       pushAll(nextCandidates, matching)
     }
 
-    currentCandidates = nextCandidates
+    // A node reachable from several candidates (nested `//a//b`) is one node of the result set: dedupe, in document order.
+    currentCandidates = step.isRecursive && currentCandidates.length > 1 ? uniqueInDocumentOrder(nextCandidates, root) : nextCandidates
   }
 
   return { items: currentCandidates, fanned: hasFanned || currentCandidates.length > 1 }

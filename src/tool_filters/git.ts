@@ -586,23 +586,42 @@ function _trimHunkTrailingContext(hunkLines: string[], maxTrail = 2): [string[],
   return [hunkLines.slice(0, lastChanged + 1 + maxTrail), nTrim]
 }
 
-/**
- * Detect whether a hunk's changed lines are entirely whitespace/EOL-only noise:
- * an equal count of removed/added lines where each removed line pairs (in
- * order) to an added line that is byte-identical once ALL whitespace is
- * stripped from both (this also covers a trailing `\r` / CRLF-vs-LF-only
- * difference, since `\r` is itself a whitespace character). Unequal `-`/`+`
- * counts, or any single pair that differs on non-whitespace content, makes
- * the whole hunk ineligible -- a real change anywhere in the hunk must never
- * be hidden by this collapse. Returns the pair count when eligible, else null.
- */
+// Normalise one source line for the whitespace-only comparison: leading indentation is kept exactly, trailing whitespace and CR are dropped, text inside quotes is kept exactly, and outside quotes whitespace touching a non-word character vanishes while any other run collapses to one space (so `int x` never equals `intx`).
+function _normalizeLineForWhitespaceCompare(line: string): string {
+  const trimmed = line.replace(/\s+$/, '')
+  const indent = /^\s*/.exec(trimmed)![0]
+  const body = trimmed.slice(indent.length)
+  let out = ''
+  let pending = false
+  let quote = ''
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i]!
+    if (quote) {
+      out += ch
+      if (ch === '\\' && i + 1 < body.length) out += body[++i]!
+      else if (ch === quote) quote = ''
+      continue
+    }
+    if (/\s/.test(ch)) {
+      pending = true
+      continue
+    }
+    if (pending && /\w/.test(ch) && /\w$/.test(out)) out += ' '
+    pending = false
+    out += ch
+    if (ch === '"' || ch === "'" || ch === '`') quote = ch
+  }
+  return indent + out
+}
+
+// A hunk is whitespace/EOL-only when -/+ counts match and each pair is identical under _normalizeLineForWhitespaceCompare; any other difference (indentation, whitespace inside a string literal, content) makes the whole hunk ineligible. Returns the pair count when eligible, else null.
 function _hunkWhitespaceEolOnlyPairCount(hunkLines: string[]): number | null {
   const removed = hunkLines.filter(isDiffRemove).map((ln) => ln.slice(1))
   const added = hunkLines.filter(isDiffAdd).map((ln) => ln.slice(1))
   if (removed.length === 0 || added.length === 0) return null
   if (removed.length !== added.length) return null
   for (let i = 0; i < removed.length; i++) {
-    if (removed[i]!.replace(/\s+/g, '') !== added[i]!.replace(/\s+/g, '')) return null
+    if (_normalizeLineForWhitespaceCompare(removed[i]!) !== _normalizeLineForWhitespaceCompare(added[i]!)) return null
   }
   return removed.length
 }

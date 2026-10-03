@@ -165,6 +165,8 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
     .option('--grep <pattern>', 'filter to lines matching this regex')
     .option('--section <heading>', 'extract one markdown section by heading')
     .option('--max-matches <n>', 'cap the number of --grep matches shown')
+    .option('--full', 'print the entire extracted text with no head/tail elision')
+    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405')
     .action(guard(cmdPdfExtract))
 
   program
@@ -306,6 +308,8 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
     .option('--grep <pattern>', 'filter to lines matching this regex')
     .option('--section <heading>', 'extract one section by heading (Heading N / Title paragraphs, see docx-outline)')
     .option('--max-matches <n>', 'cap the number of --grep matches shown')
+    .option('--full', 'print the entire body text with no head/tail elision')
+    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405')
     .action(guard(cmdDocxText))
 
   program
