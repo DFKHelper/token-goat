@@ -10,6 +10,7 @@ import { powershellHookLine } from '../process_util.js'
 import { HookCommandRewriteError, hookCommandRewrittenSpan, nativeHookBinary, nativeHookCommandLine, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
 import { GROK_HOOK_SCRIPT } from './grok.js'
 import { LEGACY_SHIM_FILE, SHIM_FILE, legacyShimForwarder } from './shim_common.js'
+import { stripBom } from '../jsonc_text.js'
 
 /** Grok's own hook event keys that token-goat wires -- mirrors `../install.ts`'s `HOOK_EVENT_MAP`. */
 const GROK_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'PreCompact', 'UserPromptSubmit', 'SubagentStop'] as const
@@ -69,7 +70,7 @@ export function grokHookCommandFor(scriptPath: string, eventArg: string, opts: {
 export function wiredGrokHookWords(): WiredHookEntry[] {
   let config: Partial<GrokHookConfig>
   try {
-    config = JSON.parse(fs.readFileSync(grokConfigPath(), 'utf8')) as Partial<GrokHookConfig>
+    config = JSON.parse(stripBom(fs.readFileSync(grokConfigPath(), 'utf8'))) as Partial<GrokHookConfig>
   } catch {
     return []
   }

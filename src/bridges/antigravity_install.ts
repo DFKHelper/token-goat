@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { atomicWriteText, extractErrorMessage, quoteShellPath, writeJsonSettings } from '../util.js'
 
 import { ensureDirRecordingCreation, hasCreatedConfig, recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, takeCreatedConfig } from './created_configs.js'
+import { stripBom } from '../jsonc_text.js'
 
 /** The hook name token-goat's entries live under in its plugin's hooks.json; any other name there is left alone. */
 const HOOK_NAME = 'token-goat'
@@ -76,7 +77,7 @@ function readJsonObject(p: string, label: string, opts: { strict?: boolean; comm
   }
   let parsed: unknown
   try {
-    parsed = JSON.parse(raw)
+    parsed = JSON.parse(stripBom(raw))
   } catch (e) {
     if (opts.strict === true) throw refuse('exists but contains invalid JSON', extractErrorMessage(e))
     return undefined

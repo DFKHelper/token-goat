@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ParseError } from 'jsonc-parser'
-import { jsonc } from '../jsonc_text.js'
+import { jsonc, stripBom } from '../jsonc_text.js'
 
 /** Resolves the shipping `dist/token-goat.mjs` path from within a bridge module; shared with `./zed_install.ts`'s shim script, which needs the identical bundle path but cannot use `managedServer()`'s stdio-args shape (Zed shell-executes a single `command` string, not `command`+`args`). */
 export function bundledCliPath(): string {
@@ -44,7 +44,7 @@ export interface ServersJsonConfig {
 
 /** Reads an MCP JSON file (a missing one reads as `{}`); `label` names the host in the error, e.g. "VS Code". */
 export function readServersJson(filePath: string, label: string): ServersJsonConfig {
-  const text = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '{}\n'
+  const text = fs.existsSync(filePath) ? stripBom(fs.readFileSync(filePath, 'utf8')) : '{}\n'
   const errors: ParseError[] = []
   const parsed = jsonc().parse(text, errors, { allowTrailingComma: true, disallowComments: false })
   if (errors.length > 0) {

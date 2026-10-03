@@ -51,6 +51,7 @@ import { type ProcessInfo, checkMcpProcessHealth, readWindowsProcesses, checkWor
 import { checkGlobalMcpConfig, checkVscodeUserScopeHooks, checkVscodeClaudeHooks, checkClaudeHookEvents, checkClaudeHooksGone, checkVisualStudio, checkZed, checkCursor, checkStrayClaudeMdBlocks, checkVscodeProjectMcp } from './cli_doctor_platforms.js'
 import { checkInstructionGates, checkHarnessCacheEfficiency, repairInstructionGates } from './cli_doctor_guidance.js'
 import { checkSecurityPosture } from './cli_doctor_security.js'
+import { stripBom } from './jsonc_text.js'
 
 /** Check if token-goat binary is installed and accessible. */
 export function checkInstall(): DoctorResult {
@@ -337,7 +338,7 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
 
   let config: { hooks?: Partial<Record<string, Array<{ command?: string }>>> }
   try {
-    config = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
+    config = JSON.parse(stripBom(fs.readFileSync(configPath, 'utf-8')))
   } catch (err) {
     return {
       name,

@@ -107,6 +107,7 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **`install`, `uninstall` and `doctor` failed with "malformed MCP JSON" for Cursor, VS Code, Visual Studio, Zed and Copilot CLI when the config file started with a UTF-8 byte-order mark.** Notepad, PowerShell 5 and Visual Studio can save files that way, and `doctor` then reported token-goat as not installed. These files, and the Claude Code, Grok, Antigravity, Copilot CLI and JetBrains configs, are now read with the mark ignored. When token-goat rewrites one of them, the mark is dropped and the rest of the file is kept.
 - **`refs` found no use of a React component that was only rendered, and `dead` listed it as unused.** JSX tags such as `<Button />`, `<Card>` and `<UI.Panel>` are now recorded as references to the component. Lowercase tags like `<div>` are left out.
 - **A Java `new Pair<>(a, b)` was recorded as a reference to `Pair<>`, so `refs Pair` missed it.** The type arguments are now dropped and the reference is stored under `Pair`.
 - **`read "file.lua::Queue.push"` could not find `function Queue:push` or `function Account.new`.** These functions are now indexed with their table as the parent, so the qualified name resolves.

@@ -10,7 +10,7 @@ import { canonicalProjectRoot, copilotHooksFilePaths, installCopilotHooksFile, r
 import { assertProjectScopeTarget, projectPathIsConsultable, projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, takeCreatedConfig } from './created_configs.js'
 import { dropEmptyServers, hasManagedServer, isManagedServer, isResidueServersJson, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
-import { jsonc } from '../jsonc_text.js'
+import { jsonc, stripBom } from '../jsonc_text.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
 
 /** Markers of the VS Code guidance block; exported so the Visual Studio block can tell when it shares a file with this one. */
@@ -113,7 +113,7 @@ export function vscodeUsesClaudeHooks(settingsPath = vscodeUserSettingsPath()): 
   } catch {
     return false
   }
-  const parsed: unknown = jsonc().parse(text, [], { allowTrailingComma: true, disallowComments: false })
+  const parsed: unknown = jsonc().parse(stripBom(text), [], { allowTrailingComma: true, disallowComments: false })
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false
   return (parsed as Record<string, unknown>)['chat.useClaudeHooks'] === true
 }

@@ -6,6 +6,7 @@ import { writeJsonSettings } from '../util_config.js';
 import { removeCreatedBackups } from './created_configs.js';
 import { assertProjectScopeTarget, withInstallScope } from './project_scope_guard.js';
 import { bundledCliPath } from './mcp_servers_json.js';
+import { stripBom } from '../jsonc_text.js';
 
 export const JETBRAINS_GUIDANCE_BEGIN = '<!-- TOKEN_GOAT_JETBRAINS_BEGIN -->';
 export const JETBRAINS_GUIDANCE_END = '<!-- TOKEN_GOAT_JETBRAINS_END -->';
@@ -51,7 +52,7 @@ export function isJetbrainsInstalled(options: JetbrainsScopeOptions = {}): boole
   if (!fs.existsSync(mcpPath)) return false;
   try {
     const raw = fs.readFileSync(mcpPath, 'utf8');
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(stripBom(raw));
     return Boolean(parsed.mcpServers?.['token-goat']);
   } catch {
     return false;
@@ -98,7 +99,7 @@ function installJetbrainsScoped(options: JetbrainsScopeOptions = {}): JetbrainsI
     }
     let parsed: unknown;
     try {
-      parsed = JSON.parse(raw);
+      parsed = JSON.parse(stripBom(raw));
     } catch (err: unknown) {
       throw new Error(`Cannot modify JetBrains MCP configuration at ${mcpPath}: file contains invalid JSON. Please fix or remove the file manually.`, { cause: err });
     }
@@ -193,7 +194,7 @@ function uninstallJetbrainsScoped(options: JetbrainsScopeOptions = {}): boolean 
   if (raw !== undefined) {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(raw);
+      parsed = JSON.parse(stripBom(raw));
     } catch (err: unknown) {
       throw refuse('exists but contains invalid JSON', extractErrorMessage(err));
     }

@@ -64,7 +64,7 @@ function readQwenSettings(p: string, opts: { strict?: boolean; command?: 'instal
   }
   let parsed: unknown
   try {
-    parsed = parseJsonOrJsonc(raw.replace(/^\uFEFF/, ''), { allowTrailingComma: false })
+    parsed = parseJsonOrJsonc(raw, { allowTrailingComma: false })
   } catch (e) {
     if (opts.strict === true) throw refuse('exists but contains invalid JSON', extractErrorMessage(e))
     return {}

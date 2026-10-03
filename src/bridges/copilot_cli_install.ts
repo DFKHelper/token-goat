@@ -14,6 +14,7 @@ import { copilotCliCacheRoot, copilotCliMcpToolsDir, copilotCliUserRoot } from '
 import { copilotHooksOwnersPath, HOOKS_CONFIG_FILE, readCopilotHooksOwners, type CopilotHooksOwner } from './copilot_hooks_owners.js'
 import { copilotMcpConfigPath, installCopilotMcpServer, uninstallCopilotMcpServer } from './copilot_mcp_install.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
+import { stripBom } from '../jsonc_text.js'
 
 /** Scope selector shared by every Copilot CLI path helper below, mirroring PiScopeOptions. */
 export interface CopilotCliScopeOptions {
@@ -158,7 +159,7 @@ export function copilotHookCommandsFor(scriptPath: string, event: CopilotCliHook
 export function wiredCopilotHookWords(opts: CopilotCliScopeOptions = {}): WiredHookEntry[] {
   let config: Partial<CopilotCliConfig>
   try {
-    config = JSON.parse(fs.readFileSync(copilotCliConfigPath(opts), 'utf8')) as Partial<CopilotCliConfig>
+    config = JSON.parse(stripBom(fs.readFileSync(copilotCliConfigPath(opts), 'utf8'))) as Partial<CopilotCliConfig>
   } catch {
     return []
   }

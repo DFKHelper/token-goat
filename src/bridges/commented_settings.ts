@@ -1,7 +1,7 @@
 /** Comment-keeping writes for the JSON settings files whose real consumer accepts comments (Gemini CLI, Qwen Code, OpenClaw): a plain `JSON.stringify` rewrite would drop every comment the user wrote. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { parseJsonOrJsonc } from '../jsonc_text.js'
+import { parseJsonOrJsonc, stripBom } from '../jsonc_text.js'
 import { atomicWriteText, backupFile, ensureDirSync, writeJsonSettings } from '../util.js'
 import { editAt } from './mcp_servers_json.js'
 
@@ -47,7 +47,7 @@ export function writeSettingsKeepingComments(p: string, next: unknown, opts: Com
   } catch {
     // Not strict JSON: fall through to the comment-keeping edit.
   }
-  const body = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw
+  const body = stripBom(raw)
   let prev: unknown
   try {
     prev = parseJsonOrJsonc(body, opts)

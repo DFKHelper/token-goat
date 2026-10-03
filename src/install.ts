@@ -19,6 +19,7 @@ import { ensureDirRecordingCreation, recordCreatedConfig, removeCreatedBackups, 
 import { assertWriteInScope, withInstallScope } from './bridges/project_scope_guard.js'
 import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, extractErrorMessage, hookCommandFor, hookExecPartsFor, removeFileInScope, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
 import { commandHookFields, isOwnHookEntry } from './util_config.js'
+import { stripBom } from './jsonc_text.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
 export type HookScope = 'user' | 'project'
@@ -241,7 +242,7 @@ function readSettings(p: string, opts: { strict?: boolean; command?: 'install' |
   }
   let parsed: unknown
   try {
-    parsed = JSON.parse(raw)
+    parsed = JSON.parse(stripBom(raw))
   } catch {
     if (opts.strict === true) throw refuse('exists but contains invalid JSON')
     // Corrupt JSON: do not clobber it silently — but for our read we treat it as empty so callers can decide. (installHooks rewrites the whole file.)

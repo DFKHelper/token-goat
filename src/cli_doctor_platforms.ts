@@ -11,6 +11,7 @@ import { zedManagedEntry } from './bridges/zed_install.js'
 import { copilotMcpConfigPath } from './bridges/copilot_mcp_install.js'
 import type { DoctorResult } from './doctor_result.js'
 import { displaySafeText, normalizePath } from './paths.js'
+import { stripBom } from './jsonc_text.js'
 
 export function globalMcpConfigPath(): string {
   return copilotMcpConfigPath()
@@ -23,7 +24,7 @@ export function checkGlobalMcpConfig(configPath = globalMcpConfigPath()): Doctor
 
   let parsed: unknown
   try {
-    parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+    parsed = JSON.parse(stripBom(fs.readFileSync(configPath, 'utf8')))
   } catch {
     return {
       name: 'Global MCP configuration',
