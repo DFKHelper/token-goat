@@ -1,6 +1,6 @@
 /** Regression: `changed --symbol` listed every symbol of a changed file (or none) when git's idea of a path differed from the cwd's. `git diff --name-only` prints paths relative to the repository top level, but the hunk diff took them back as cwd-relative pathspecs, so from a subdirectory they matched nothing and the all-symbols fallback fired. The hunk parser also lost files whose path git tab-terminates (a space) or C-quotes. Provenance: CAPTURE for the git header lines below (real `git diff --unified=0` on git 2.53.0.windows.1, a temp repo holding `my file.ts` and `café.ts`); the repo-level tests drive runChanged end to end against real temp git repositories; expected symbol names are HAND-DERIVED from the source text each test writes. */
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -198,6 +198,8 @@ describe('changed --symbol on a file git reports with no hunks', () => {
     writeFileSync(join(root, 'a.ts'), BEFORE)
     git(root, 'add', '.')
     git(root, 'commit', '-m', 'init')
+    // `git diff HEAD` compares against the working tree: with core.fileMode on (POSIX) it reads the mode from disk, with it off (Windows) from the index, so the change is made in both places.
+    chmodSync(join(root, 'a.ts'), 0o755)
     git(root, 'update-index', '--chmod=+x', 'a.ts')
     indexFileSync(normalizePath(join(root, 'a.ts')))
     const out = changedOutput({ ref: 'HEAD', projectRoot: root, symbolMode: true })
