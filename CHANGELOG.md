@@ -107,6 +107,9 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **`config-get` finds dotted keys in `.properties` files and `export`ed keys in `.env` files.** A key such as `spring.datasource.url` was split at its first dot into a section and a key, which `.properties` files do not have, so the lookup came back empty. Lines written as `key: value` or `key value` were also missed, and so was `export KEY=value` in a `.env` file. The whole key is now tried first, and all three separators and the `export` prefix are understood.
+- **The Grep hint names the symbol you searched for.** A search for `function beta` in an indexed file pointed at whichever symbol the file listed first. The hint now picks the symbol the pattern names.
+- **Deny hints only name commands that work on the file in question.** A `.properties` file was offered `outline`, a `.rst` file `outline`, a `.txt` file `section`, and a stylesheet `section`, none of which return anything for those files. They now get `config-get` or a grep, `section`, a grep, and `outline` respectively.
 - **Compressed `docker build` output keeps the whole failing step.** The filter kept the `ERROR:` line and dropped the step's earlier lines, so the compiler error, missing module or npm 404 that explained the failure was gone. Every line of a step that ends in an error now survives, and successful steps are still collapsed.
 - **`changed --symbol` lists only the edited symbols of a file that was renamed and edited.** Git reported the new path as a brand-new file, so every symbol in it showed up as changed. The diff now detects renames and compares the file against its old path.
 - **`semantic --warm` with no query reports whether embeddings are ready.** It used to demand a query and exit with a usage error, so the warm-up the hint recommends could not be run on its own.

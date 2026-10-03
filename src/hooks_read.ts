@@ -8,7 +8,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
 import { preToolPathDeclined } from './vscode_path_gate.js'
-import { leadWithCommand } from './hint_suggestion_guard.js'
+import { leadWithCommand, docNavigation } from './hint_suggestion_guard.js'
 import { headingTreeParts, hintTarget, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
 import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, displaySafeText, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
@@ -265,6 +265,9 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
 
   if (isXmlFile) {
     return leadWithCommand(`token-goat xml-outline "${filePath}"`, `for structure, or \`token-goat xml-query "${filePath}" "<selector>"\` for nodes`)
+  } else if (isDocFile && !docNavigation(filePath).section) {
+    // A .txt file has no headings, so `section` exits 1 on it; grep is the command that runs.
+    return fileQueryHint(filePath, '', 'pattern')
   } else if (isDocFile) {
     // The lead name comes from hintTarget, which passes over a document's lone title (its section is the whole file just refused); the list after it is the first headings in file order, as before.
     let top: string[] = []
@@ -292,8 +295,9 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
   } else if (isHtmlFile) {
     return leadWithCommand(`token-goat section "${filePath}::${hintTarget(filePath, 'section', { content: fileContent, placeholder: 'HeadingName' }).name}"`, `or \`token-goat outline "${filePath}"\` to navigate HTML structure`)
   } else if (isSectionFile) {
-    // TOML tables only: a stylesheet has no heading or table header hintTarget could name, so it keeps the placeholder.
-    const table = /\.toml$/i.test(basename) ? hintTarget(filePath, 'section', { content: fileContent, placeholder: 'name' }).name : 'name'
+    // A stylesheet has no headings (`section` exits 1 on it), but `outline` lists its selectors and `read` returns one rule.
+    if (!/\.toml$/i.test(basename)) return leadWithCommand(`token-goat outline "${filePath}"`, 'to list every selector')
+    const table = hintTarget(filePath, 'section', { content: fileContent, placeholder: 'name' }).name
     return leadWithCommand(`token-goat section "${filePath}::${table}"`, 'to extract a part')
   } else {
     const isShellScript = /\.(sh|bash|zsh|ksh)$/i.test(basename)

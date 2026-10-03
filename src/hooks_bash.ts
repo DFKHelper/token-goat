@@ -2,7 +2,7 @@
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { leadWithCommand, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { leadWithCommand, docSectionHint, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { contextOutput, denyOutput, passOutput, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import type { HookOutput } from './types.js'
@@ -579,7 +579,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath } = mdHeadingGrep
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    return pathHint(hintPath, leadWithCommand('token-goat section "' + hintPath + '::' + targetFor(hintPath, 'section').name + '"', 'to read one section, or `token-goat outline "' + hintPath + '"` for every heading with line ranges'))
+    return pathHint(hintPath, docSectionHint(hintPath, targetFor(hintPath, 'section').name))
   }
 
   // Bare identifier search on a single source file — symbol lookup is cheaper

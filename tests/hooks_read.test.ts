@@ -3133,8 +3133,27 @@ content here` },
       expect(result.hookType).toBe('deny')
       if (result.hookType === 'deny') {
         expect(result.message).toContain('unchanged since last read')
-        // .css is section-style
-        expect(result.message).toContain('token-goat section')
+        // .css has no headings for `section`, so the hint names outline and read (measured against the built binary 2026-10-03)
+        expect(result.message).toContain('token-goat outline')
+        expect(result.message).not.toContain('token-goat section')
+      }
+    })
+  })
+
+  it('flag ON: re-read of an unchanged .txt names a grep, never section (a .txt has no headings)', () => {
+    pinProtectRecentReadsToZero()
+    withDiffFlag(true, () => {
+      const content = 'plain line one\nplain line two\nplain line three\n'
+      const p = tmpFileExt(content, '.txt')
+      snapshotFirstRead(p, content)
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('unchanged since last read')
+        // HAND-DERIVED from the CAPTURE in tests/bash_deny_names_a_runnable_target.test.ts: `section` on a .txt exits 1 ("has no headings"), `grep` exits 0
+        expect(result.message).toContain('token-goat grep')
+        expect(result.message).not.toContain('token-goat section')
       }
     })
   })

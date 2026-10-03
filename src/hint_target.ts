@@ -7,7 +7,7 @@ import { indexMatchesDisk } from './index_freshness.js'
 import { commandPathIsTouchable } from './vscode_path_gate.js'
 import { extractMarkdownHeadings, formatHeadingTreeParts, type MarkdownHeading } from './hints/markdown_hints.js'
 import { extractQuickSymbolSamples } from './hooks_read.js'
-import { stripUnsafeSuggestions, leadWithCommand } from './hint_suggestion_guard.js'
+import { stripUnsafeSuggestions, leadWithCommand, grepLinesHint } from './hint_suggestion_guard.js'
 import { getCompactedAt, markHintShown, wasHintShown } from './session.js'
 import { shortFingerprint } from './fingerprint.js'
 import { sessionStateKey, type HookEvent } from './hook_registry.js'
@@ -31,6 +31,8 @@ export interface HintTargetSource {
   readonly content?: string | undefined
   readonly headings?: readonly MarkdownHeading[]
   readonly placeholder?: string
+  /** The regex or text a Grep call searched for: a symbol slice then prefers the symbol that pattern names over the file's first one. */
+  readonly pattern?: string
 }
 
 /** The fill-in-the-blank each slice fell back to before this module, kept as the answer when no real name is found so an unresolvable file reads exactly as it did. */
@@ -47,6 +49,9 @@ const HINT_TARGET_CANDIDATES = 20
 
 /** A name longer than this is prose caught by a pattern, not a heading or identifier worth pasting. */
 const MAX_HINT_NAME_CHARS = 120
+
+/** Words a structural Grep pattern leads with, which are never the symbol it targets. */
+const DECLARATION_WORDS = /^(?:def|class|function|async|export|default|interface|type|const|enum)$/
 
 const SECTION_PATH_RE = /\.(?:md|mdx|markdown|rst|txt|html?|toml|ini|cfg|conf)$/i
 const TABLE_HEADER_PATH_RE = /\.(?:toml|ini|cfg|conf)$/i
@@ -92,6 +97,16 @@ function quotable(raw: string): string | null {
   if (displaySafeText(name) !== name) return null
   const probe = 'token-goat read "' + name + '"'
   return stripUnsafeSuggestions(probe) === probe ? name : null
+}
+
+/** The candidate a Grep pattern targets, or null when no identifier in it is a symbol the file holds. A dotted pair both of which the file holds (`Box.open`) names the method as the pair, which `read` resolves; otherwise a candidate whose name is a bare identifier of the pattern, in file order. */
+function pickForPattern(candidates: ReadonlyArray<{ name: string; level: number }>, pattern: string): string | null {
+  const held = new Set<string | null>(candidates.map((c) => quotable(c.name)))
+  const text = pattern.replace(/\\[A-Za-z]/g, ' ')
+  const pair = Array.from(text.matchAll(/([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)/g)).find((m) => held.has(m[1]!) && held.has(m[2]!))
+  if (pair !== undefined) return pair[1] + '.' + pair[2]
+  const words: string[] = text.match(/[A-Za-z_$][\w$]*/g) ?? []
+  return Array.from(held).find((name) => name !== null && words.includes(name) && !DECLARATION_WORDS.test(name)) ?? null
 }
 
 /** First usable name in line order. For sections, a heading that occurs twice is skipped (`section` refuses an ambiguous one) and a lone top-level title is passed over for the heading after it, since the title's section is the whole document the deny just refused. */
@@ -196,8 +211,11 @@ export function hintTarget(filePath: string, slice: HintSlice, source: HintTarge
       const onDisk = hostPathOfIndexKey(resolved)
       if (!statSync(onDisk).isFile()) return null
       const indexed = indexedCandidates(resolved, onDisk, slice)
-      const fromIndex = indexed === null ? null : pick(indexed, slice)
-      return fromIndex ?? pick(scanText(readHead(onDisk), resolved, slice), slice)
+      const byPattern = (c: Array<{ name: string; level: number }>): string | null => source.pattern === undefined || slice !== 'symbol' ? null : pickForPattern(c, source.pattern)
+      const fromIndex = indexed === null ? null : byPattern(indexed) ?? pick(indexed, slice)
+      if (fromIndex !== null) return fromIndex
+      const scanned = scanText(readHead(onDisk), resolved, slice)
+      return byPattern(scanned) ?? pick(scanned, slice)
     } catch {
       // A name that cannot be resolved is a reason to keep the placeholder, never to guess one.
       return null
@@ -244,7 +262,7 @@ export function fileQueryHint(shownPath: string, reason = '', grepSubject = 'pat
   }
   if (/\.(toml|ini|cfg)$/i.test(shownPath)) return leadWithCommand('token-goat config-get "' + shownPath + '" "<key>"', 'to read one value', reason)
   if (/\.(xml|csproj)$/i.test(shownPath)) return leadWithCommand('token-goat xml-outline "' + shownPath + '"', 'to see the element structure, then `token-goat xml-query "' + shownPath + '" "<path>"` to read one element', reason)
-  return leadWithCommand('token-goat grep "<' + grepSubject + '>" "' + shownPath + '" -C 3', 'to read the matching lines', reason)
+  return grepLinesHint('<' + grepSubject + '>', shownPath, reason)
 }
 
 /** The command a deny leads with, as leadWithCommand fenced it, or the first fenced `token-goat` command anywhere in it. */

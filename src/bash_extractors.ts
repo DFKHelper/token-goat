@@ -9,7 +9,7 @@ import { hasBareBackgroundOrNewline, hasUnquotedOperator, isRedirectAmpersand } 
 import { getFileLineRanges } from './session.js'
 import { escapeRegExp } from './util.js'
 import { FALSY_ENV_VALUES } from './env.js'
-import { leadWithCommand } from './hint_suggestion_guard.js'
+import { leadWithCommand, docSectionHint, grepLinesHint } from './hint_suggestion_guard.js'
 import type { HintTarget } from './hint_target.js'
 
 // Defined beside preToolPathDeclined, the rule it applies, so hint_target.ts can gate a path without pulling this module into the core bundle.
@@ -49,6 +49,12 @@ export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: bool
   const outline = outlineCommand(hintPath)
   if (isXml) return leadWithCommand('token-goat xml-outline "' + hintPath + '"', 'to inspect structure, or `token-goat xml-query "' + hintPath + '" "<selector>"` to query specific nodes', reason)
   if (isEnv) return leadWithCommand('token-goat config-get "' + hintPath + '" ' + target.name, 'to read a specific variable', reason)
+  // .properties has no outline extractor (measured 2026-10-03: `outline app.properties` exits 1), so it gets config-get for a key it holds and a grep otherwise.
+  if (isConfig && /\.properties$/i.test(hintPath)) {
+    return target.real
+      ? leadWithCommand('token-goat config-get "' + hintPath + '" ' + target.name, 'to read a specific value', reason)
+      : grepLinesHint('<key>', hintPath, reason)
+  }
   if (isConfig) {
     const structured = structuredDataHint(hintPath, target.real ? target.name : null, reason)
     if (structured !== null) return structured
@@ -56,7 +62,7 @@ export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: bool
       ? leadWithCommand('token-goat config-get "' + hintPath + '" ' + target.name, 'to read a specific value, or `' + outline + '` for every key with line ranges', reason)
       : leadWithCommand('token-goat section "' + hintPath + '::' + target.name + '"', 'to read one table, or `' + outline + '` for every key with line ranges', reason)
   }
-  if (isDoc) return leadWithCommand('token-goat section "' + hintPath + '::' + target.name + '"', 'to read one section, or `' + outline + '` for every heading with line ranges', reason)
+  if (isDoc) return docSectionHint(hintPath, target.name, reason)
   // A source file with no nameable symbol leads with outline, which always runs, rather than a `read "file::SymbolName"` that never does.
   return target.real
     ? leadWithCommand('token-goat read "' + hintPath + '::' + target.name + '"', 'to read one function or class, or `' + outline + '` for all of them', reason)

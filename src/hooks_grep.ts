@@ -4,7 +4,7 @@ import { registerHook } from './hook_registry.js'
 import type { HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { emitRewrite, makeDedupHintHandlers, passOutput, contextOutput, getCwd, getToolName, getToolInput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
-import { leadWithCommand } from './hint_suggestion_guard.js'
+import { leadWithCommand, docNavigation, docSectionHint } from './hint_suggestion_guard.js'
 import { hintTarget } from './hint_target.js'
 import { recordGrepQuery, getGrepMatchCount } from './session.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
@@ -178,14 +178,15 @@ function preGrepHandler(event: HookEvent): HookOutput {
     if (getToolName(event) !== 'Grep') return passOutput()
     const toolInput = getToolInput(event)
     const structSearch = extractGrepStructuralSearch(toolInput)
-    if (structSearch !== null) {
+    // A .txt file has no headings for `section` and no extractor for `outline`, so a doc search there gets no structural hint rather than one naming a command that exits 1.
+    if (structSearch !== null && (!structSearch.isDoc || docNavigation(structSearch.filePath).section)) {
       recordStat('session_hint', 0, 0)
       // The Grep tool's `path` argument, so a repository chose it, and the hint below goes out on the context channel, which unlike the deny channel neither fences its payload nor escapes the markers token-goat speaks in. Not reachable today: extractGrepStructuralSearch refuses any path containing a `[`, which every spoken marker needs, though it refuses it as a glob character rather than for this reason. This is the layer that survives that check being relaxed, and it is the identity function on any path without a marker or a control character in it.
       const { isDoc } = structSearch
       const filePath = displaySafePath(structSearch.filePath)
-      const target = hintTarget(structSearch.filePath, isDoc ? 'section' : 'symbol', { cwd: getCwd(event) ?? process.cwd(), event })
+      const target = hintTarget(structSearch.filePath, isDoc ? 'section' : 'symbol', { cwd: getCwd(event) ?? process.cwd(), event, pattern: String(toolInput['pattern'] ?? '') })
       const hint = isDoc
-        ? leadWithCommand('token-goat section "' + filePath + '::' + target.name + '"', 'to read one section, or `token-goat outline "' + filePath + '"` to see the document outline', 'Scanning a document for headings loads large match output.')
+        ? docSectionHint(filePath, target.name, 'Scanning a document for headings loads large match output.')
         : target.real
           ? leadWithCommand('token-goat read "' + filePath + '::' + target.name + '"', 'to inspect one symbol, or `token-goat skeleton "' + filePath + '"` to see the file structure', 'Scanning a source file for symbols loads large match output.')
           : leadWithCommand('token-goat skeleton "' + filePath + '"', 'to see the file structure, or `token-goat read "' + filePath + '::SymbolName"` to inspect a specific symbol', 'Scanning a source file for symbols loads large match output.')

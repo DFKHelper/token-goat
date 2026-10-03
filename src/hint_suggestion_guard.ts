@@ -62,3 +62,21 @@ export function leadWithCommand(command: string, purpose = '', reason = ''): str
   const tail = reason.trim()
   return 'Run `' + command + '`' + (purpose === '' ? '' : ' ' + purpose) + '.' + (tail === '' ? '' : (tail.includes('`') ? '\n' : ' ') + tail)
 }
+
+/** Which of `section` and `outline` can serve a prose document, by extension, so a hint names only the one that runs. Measured against the built binary on 2026-10-03: `section "d.rst::Sub"` returns the reStructuredText section while `outline d.rst` exits 1 (no extractor), and a .txt file has neither (`section` exits 1 with "has no headings"). */
+export function docNavigation(filePath: string): { section: boolean; outline: boolean } {
+  const ext = /\.(txt|rst)$/i.exec(filePath)?.[1]?.toLowerCase()
+  return { section: ext !== 'txt', outline: ext === undefined }
+}
+
+/** A grep over one file, the command that runs where neither `section` nor `outline` can serve it. */
+export function grepLinesHint(pattern: string, shownPath: string, reason = ''): string {
+  return leadWithCommand('token-goat grep "' + pattern + '" "' + shownPath + '" -C 3', 'to read the matching lines', reason)
+}
+
+/** The hint for one section of a prose document: `section` with the `outline` alternative only where it runs, and a plain grep for a file type neither serves. */
+export function docSectionHint(shownPath: string, heading: string, reason = ''): string {
+  const nav = docNavigation(shownPath)
+  if (!nav.section) return grepLinesHint('<pattern>', shownPath, reason)
+  return leadWithCommand('token-goat section "' + shownPath + '::' + heading + '"', 'to read one section' + (nav.outline ? ', or `token-goat outline "' + shownPath + '"` for every heading with line ranges' : ''), reason)
+}

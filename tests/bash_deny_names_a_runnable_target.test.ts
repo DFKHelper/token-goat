@@ -12,6 +12,8 @@ import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import { indexFileSync } from '../src/parser.js'
 import { globalDbPath, configPath } from '../src/constants.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { ROOT, runBundle } from './helpers/bundle.js'
+import { DOTENV_VALUE_PLACEHOLDER } from '../src/dotenv_redact.js'
 
 const PLACEHOLDER_SECTION_FAILS = "Section 'SectionHeading' not found in 'CHANGELOG.md'"
 const PLACEHOLDER_KEY_FAILS = "Key 'KEY_NAME' not found in package.json"
@@ -101,6 +103,32 @@ describe('hintTarget for a path written in a command', () => {
   })
 })
 
+describe('hintTarget for a symbol a Grep pattern names', () => {
+  const SRC = 'export function alpha() { return 1 }\nexport function beta() { return 2 }\nexport class Box {\n  open() { return 4 }\n}\n'
+
+  // HAND-DERIVED: the symbol each pattern targets is read off the pattern text against SRC, not off the resolver.
+  it.each([
+    ['function beta', 'beta'],
+    ['function Box.open', 'Box.open'],
+    ['open', 'open'],
+    ['function nothingHere', 'alpha'],
+    ['', 'alpha'],
+  ])('resolves pattern %j to %s in an indexed file', (pattern, expected) => {
+    indexed('a.ts', SRC)
+    expect(hintTarget('a.ts', 'symbol', { cwd: dir, pattern })).toEqual(real(expected, 'symbol'))
+  })
+
+  it('resolves the pattern against the file head when the file was never indexed', () => {
+    write('b.ts', SRC)
+    expect(hintTarget('b.ts', 'symbol', { cwd: dir, pattern: 'function beta' })).toEqual(real('beta', 'symbol'))
+  })
+
+  it('ignores the pattern when the call carries none', () => {
+    indexed('a.ts', SRC)
+    expect(hintTarget('a.ts', 'symbol', { cwd: dir })).toEqual(real('alpha', 'symbol'))
+  })
+})
+
 describe('surgicalHintFor with a resolved target', () => {
   it('leads with the real heading for a doc, and still offers outline for the rest', () => {
     const hint = surgicalHintFor('doc.md', false, false, true, false, real('First Heading', 'section'), '`cat` loads the entire file into context.')
@@ -120,7 +148,7 @@ describe('surgicalHintFor with a resolved target', () => {
 
   it('sends a .properties key to config-get', () => {
     const hint = surgicalHintFor('app.properties', false, true, false, false, real('db.url', 'key'))
-    expect(hint).toBe('Run `token-goat config-get "app.properties" db.url` to read a specific value, or `token-goat outline "app.properties"` for every key with line ranges.')
+    expect(hint).toBe('Run `token-goat config-get "app.properties" db.url` to read a specific value.')
     expect(PLACEHOLDER_KEY_FAILS).toContain('not found')
   })
 
@@ -171,5 +199,167 @@ describe('surgicalHintFor with a resolved target', () => {
     const xml = surgicalHintFor('a.xml', false, false, false, true, real('root', 'section'))
     expect(xml.startsWith('Run `token-goat xml-outline "a.xml"`')).toBe(true)
     expect(xml).toContain('<selector>')
+  })
+})
+
+// FIXTURE PROVENANCE for the describes below. Properties lines are FORMAT-DERIVED from the java.util.Properties#load(Reader) javadoc (https://docs.oracle.com/javase/8/docs/api/java/util/Properties.html): a key ends at the first unescaped `=`, `:` or white space, a line may start with white space, `#` and `!` open a comment line, and the javadoc's own examples `Truth = Beauty`, ` Truth:Beauty` and `fruits                           apple, banana, pear` all define one key each (the last one with value "apple, banana, pear"); there is no inline comment, so `#` inside a value stays in it. The `export KEY=value` .env line is FORMAT-DERIVED from the python-dotenv README ("export" prefix, https://github.com/theskumar/python-dotenv#file-format). The hint shapes asserted are CAPTURE: a PreToolUse payload piped to the built bundle on 2026-10-03, before this change `config-get "application.properties" spring.datasource.url` exited 1 with "Key 'spring.datasource.url' not found in application.properties" and `outline application.properties` exited 1 with "token-goat has no symbol extractor for this file type (.properties)".
+describe('the commands a deny names run against the file', () => {
+  let home: string
+  let proj: string
+
+  const env = (): NodeJS.ProcessEnv => ({ ...process.env, TOKEN_GOAT_HOME: home, LOCALAPPDATA: home, XDG_DATA_HOME: home })
+
+  /** Splits a printed `token-goat ARG "ARG"` command into argv, honouring the double quotes the hint guard requires. */
+  function argvOf(command: string): string[] {
+    return Array.from(command.slice('token-goat '.length).matchAll(/"([^"]*)"|(\S+)/g), (m) => m[1] ?? m[2] ?? '')
+  }
+
+  /** Every fenced command in a hook's output text. */
+  function namedCommands(stdout: string): string[] {
+    const parsed = JSON.parse(stdout) as { reason?: string; hookSpecificOutput?: { additionalContext?: string } }
+    const text = parsed.reason ?? parsed.hookSpecificOutput?.additionalContext ?? ''
+    return Array.from(text.matchAll(/`(token-goat [^`\r\n]+)`/g), (m) => m[1]!)
+  }
+
+  function hook(tool: string, input: Record<string, unknown>): string {
+    const payload = { session_id: 'deny-runs', hook_event_name: 'PreToolUse', tool_name: tool, cwd: proj, tool_input: input }
+    return runBundle(['hook', 'pre_tool_use'], { cwd: proj, env: env(), input: JSON.stringify(payload) }).stdout
+  }
+
+  function run(command: string): { status: number | null; stdout: string; stderr: string } {
+    return runBundle(argvOf(command), { cwd: proj, env: env() })
+  }
+
+  function configGet(file: string, key: string): { status: number | null; stdout: string } {
+    const r = runBundle(['config-get', file, key], { cwd: proj, env: env() })
+    return { status: r.status, stdout: r.stdout.trim() }
+  }
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-deny-run-home-'))
+    // Under the repo's ignored .tmp, not the system temp: the Bash hook lets a read of a system-temp file through, so a project there would never be denied.
+    fs.mkdirSync(path.join(ROOT, '.tmp'), { recursive: true })
+    proj = fs.mkdtempSync(path.join(ROOT, '.tmp', 'tg-deny-run-proj-'))
+  })
+
+  afterEach(() => {
+    for (const d of [home, proj]) fs.rmSync(d, { recursive: true, force: true })
+  })
+
+  it.each([
+    ['application.properties', 'spring.datasource.url=jdbc:x\nserver.port=8080\n', 'jdbc:x'],
+    ['.env.local', 'export API_KEY=abc\nexport PORT=1\n', DOTENV_VALUE_PLACEHOLDER],
+    ['.env', 'DATABASE_URL=postgres://h/db\nPORT=2\n', DOTENV_VALUE_PLACEHOLDER],
+  ])('cat of %s is denied with commands that all exit 0, the first returning the value', (file, body, value) => {
+    fs.writeFileSync(path.join(proj, file), body, 'utf8')
+    const commands = namedCommands(hook('Bash', { command: 'cat ' + file }))
+    expect(commands.length).toBeGreaterThan(0)
+    const results = commands.map((c) => ({ c, ...run(c) }))
+    // The hint names only commands that run; a command nobody executed is how `outline app.properties` shipped.
+    expect(results.filter((r) => r.status !== 0).map((r) => r.c + ' => ' + r.stderr)).toEqual([])
+    expect(results[0]?.stdout.trim()).toBe(value)
+  })
+
+  it('never offers outline for a .properties file, which has no extractor', () => {
+    fs.writeFileSync(path.join(proj, 'app.properties'), 'a.b=1\n', 'utf8')
+    expect(namedCommands(hook('Bash', { command: 'cat app.properties' })).join('\n')).not.toContain('outline')
+  })
+
+  it('names no config-get or placeholder key for an empty .properties file, where no key exists to name', () => {
+    fs.writeFileSync(path.join(proj, 'empty.properties'), '# nothing here\n', 'utf8')
+    const joined = namedCommands(hook('Bash', { command: 'cat empty.properties' })).join('\n')
+    expect(joined).not.toContain('KEY_NAME')
+    expect(joined).not.toContain('config-get')
+    expect(joined).not.toContain('outline')
+  })
+
+  // CAPTURE 2026-10-03 against the built bundle: `section "d.rst::Sub"` returns the section, `outline d.rst` exits 1 (no extractor), `section` on a .txt exits 1 ("has no headings").
+  it('cat of a .rst file names section but never outline, and the named commands run', () => {
+    fs.writeFileSync(path.join(proj, 'd.rst'), 'Title\n=====\n\nIntro\n\nSub\n---\n\nbody\n'.repeat(1), 'utf8')
+    const commands = namedCommands(hook('Bash', { command: 'cat d.rst' }))
+    expect(commands.length).toBeGreaterThan(0)
+    expect(commands.join('\n')).not.toContain('outline')
+    expect(commands.filter((c) => run(c).status !== 0)).toEqual([])
+  })
+
+  it('cat of a .txt file names no section or outline, only a grep that runs', () => {
+    fs.writeFileSync(path.join(proj, 'n.txt'), 'alpha\nbeta\n'.repeat(400), 'utf8')
+    const commands = namedCommands(hook('Bash', { command: 'cat n.txt' }))
+    const joined = commands.join('\n')
+    expect(joined).not.toContain('outline')
+    expect(joined).not.toContain('token-goat section')
+    expect(commands.filter((c) => run(c.replace('<pattern>', 'beta')).status !== 0)).toEqual([])
+  })
+
+  it('the Grep tool on a .txt file gets no structural hint', () => {
+    fs.writeFileSync(path.join(proj, 'n.txt'), 'class A\n'.repeat(400), 'utf8')
+    const out = hook('Grep', { pattern: 'class A', path: path.join(proj, 'n.txt') })
+    expect(namedCommands(out || '{}').join('\n')).not.toMatch(/section|outline/)
+  })
+
+  describe('config-get on flat key/value files', () => {
+    it.each([
+      ['a dotted key held whole', 'app.properties', 'spring.datasource.url=jdbc:x\nserver.port=8080\n', 'server.port', '8080'],
+      ['a colon separator', 'app.properties', 'name : bob\n', 'name', 'bob'],
+      ['a colon with no spaces', 'app.properties', ' Truth:Beauty\n', 'Truth', 'Beauty'],
+      ['a whitespace separator keeping the rest of the line', 'app.properties', 'fruits                           apple, banana, pear\n', 'fruits', 'apple, banana, pear'],
+      ['an equals with spaces', 'app.properties', 'Truth = Beauty\n', 'Truth', 'Beauty'],
+      ['no inline comment in a value', 'app.properties', 'url=jdbc:x#frag;more\n', 'url', 'jdbc:x#frag;more'],
+      ['a bracket line that is not a section', 'app.properties', '[x]\nafter=1\n', 'after', '1'],
+      // A .env value is redacted by config-get (src/dotenv_redact.ts), so finding the export line shows as the placeholder and a miss shows as exit 1.
+      ['an export prefix', '.env', 'export PORT=1\n', 'PORT', DOTENV_VALUE_PLACEHOLDER],
+      ['an export prefix in a named env file', 'prod.env', 'export PORT=3\n', 'PORT', DOTENV_VALUE_PLACEHOLDER],
+    ])('reads %s', (_, file, body, key, expected) => {
+      fs.writeFileSync(path.join(proj, file), body, 'utf8')
+      expect(configGet(file, key)).toEqual({ status: 0, stdout: expected })
+    })
+
+    it('still splits a dotted key into INI section and leaf, after trying it whole', () => {
+      fs.writeFileSync(path.join(proj, 'c.ini'), '[sec.sub]\nk=v\n', 'utf8')
+      expect(configGet('c.ini', 'sec.sub.k')).toEqual({ status: 0, stdout: 'v' })
+    })
+
+    it('prefers the whole key over a section split when both exist', () => {
+      fs.writeFileSync(path.join(proj, 'app.properties'), 'a.b=flat\n', 'utf8')
+      expect(configGet('app.properties', 'a.b')).toEqual({ status: 0, stdout: 'flat' })
+    })
+
+    it('does not give an INI file the properties separators, so a prefix-sharing key is not mistaken for it', () => {
+      fs.writeFileSync(path.join(proj, 'c.ini'), 'name extra = v\n', 'utf8')
+      expect(configGet('c.ini', 'name').status).toBe(1)
+    })
+
+    it('does not accept an export prefix outside an env file', () => {
+      fs.writeFileSync(path.join(proj, 'c.ini'), 'export K=v\n', 'utf8')
+      expect(configGet('c.ini', 'K').status).toBe(1)
+    })
+
+    it('still reports a missing key', () => {
+      fs.writeFileSync(path.join(proj, 'app.properties'), 'a=1\n', 'utf8')
+      expect(configGet('app.properties', 'b').status).toBe(1)
+    })
+  })
+
+  describe('the Grep structural-search hint', () => {
+    const SRC = 'export function alpha() { return 1 }\nexport function beta() { return 2 }\nexport function gamma() { return 3 }\nexport class Box {\n  open() { return 4 }\n}\n'
+
+    // HAND-DERIVED: which symbol each pattern targets is read off the pattern text, not off the resolver.
+    it.each([
+      ['function beta', 'a.ts::beta'],
+      ['export function gamma', 'a.ts::gamma'],
+      ['class Box', 'a.ts::Box'],
+      ['^class Box', 'a.ts::Box'],
+      ['function nothingHere', 'a.ts::alpha'],
+    ])('for pattern %s names the symbol it targets, and the command runs', (pattern, spec) => {
+      fs.writeFileSync(path.join(proj, 'a.ts'), SRC, 'utf8')
+      const commands = namedCommands(hook('Grep', { pattern, path: 'a.ts' }))
+      expect(commands[0]).toBe('token-goat read "' + spec + '"')
+      expect(run(commands[0]!).status).toBe(0)
+    })
+
+    it('names the targeted Python def, whatever order the file defines them in', () => {
+      fs.writeFileSync(path.join(proj, 'b.py'), 'def alpha():\n    return 1\n\ndef beta():\n    return 2\n', 'utf8')
+      expect(namedCommands(hook('Grep', { pattern: 'def beta', path: 'b.py' }))[0]).toBe('token-goat read "b.py::beta"')
+    })
   })
 })

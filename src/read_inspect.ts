@@ -420,34 +420,54 @@ export function runConfigGet(opts: ConfigGetOptions): number {
     return 0
   }
 
-  const keyParts = opts.key.split('.')
-  const leafKey = keyParts.at(-1) ?? opts.key
-  const sectionPath = keyParts.length > 1 ? keyParts.slice(0, -1).join('.') : null
+  const flavour = flatKeyFlavour(opts.file)
   const lines = text.split('\n')
-
-  let currentSection = ''
-  for (const line of lines) {
-    const trimmed = line.trim()
-    const headerMatch = /^\[([^\]\r\n]+)\]\s*(?:[;#].*)?$/.exec(trimmed)
-    if (headerMatch) {
-      currentSection = (headerMatch[1] ?? '').trim()
-      continue
-    }
-
-    if (currentSection !== (sectionPath ?? '')) {
-      continue
-    }
-
-    if (new RegExp(`^${escapeRegExp(leafKey)}\\s*=`).test(trimmed)) {
-      const eqIdx = trimmed.indexOf('=')
-      const rawValue = stripInlineComment(trimmed.slice(eqIdx + 1)).trim()
-      emit(stripPairedQuotes(rawValue))
+  // A flat key such as `spring.datasource.url` is looked up whole first, since a .properties or .env file has no sections; the section split is the INI/TOML reading of the same dots.
+  const keyParts = opts.key.split('.')
+  const attempts = [{ section: '', leaf: opts.key }]
+  if (keyParts.length > 1) attempts.push({ section: keyParts.slice(0, -1).join('.'), leaf: keyParts.at(-1) ?? opts.key })
+  for (const attempt of attempts) {
+    const value = lookupFlatKey(lines, attempt.section, attempt.leaf, flavour)
+    if (value !== null) {
+      emit(value)
       return 0
     }
   }
 
   emitErr(`Key '${opts.key}' not found in ${opts.file}`)
   return 1
+}
+
+type FlatKeyFlavour = 'properties' | 'env' | 'ini'
+
+/** Which flat key/value dialect `file` is written in, by name. */
+function flatKeyFlavour(file: string): FlatKeyFlavour {
+  const base = (file.split(/[\\/]/).pop() ?? '').toLowerCase()
+  if (base.endsWith('.properties')) return 'properties'
+  if (/^\.env(?:\.|$)/.test(base) || base.endsWith('.env')) return 'env'
+  return 'ini'
+}
+
+/** The value of `leaf` inside INI section `section` ('' for the top of the file), or null. A .properties key ends at its first `=`, `:` or whitespace and has no inline comments (java.util.Properties#load); a .env line may lead with `export `; an INI/TOML key takes `=` only. */
+function lookupFlatKey(lines: readonly string[], section: string, leaf: string, flavour: FlatKeyFlavour): string | null {
+  const prefix = flavour === 'env' ? '(?:export[ \\t]+)?' : ''
+  const separator = flavour === 'properties' ? '(?:[ \\t]*[=:][ \\t]*|[ \\t]+)' : '\\s*=\\s*'
+  const lineRe = new RegExp(`^${prefix}${escapeRegExp(leaf)}${separator}(.*)$`)
+  let currentSection = ''
+  for (const line of lines) {
+    const trimmed = line.trim()
+    const headerMatch = flavour === 'properties' ? null : /^\[([^\]\r\n]+)\]\s*(?:[;#].*)?$/.exec(trimmed)
+    if (headerMatch) {
+      currentSection = (headerMatch[1] ?? '').trim()
+      continue
+    }
+    if (currentSection !== section) continue
+    const m = lineRe.exec(trimmed)
+    if (m === null) continue
+    const raw = m[1] ?? ''
+    return stripPairedQuotes((flavour === 'properties' ? raw : stripInlineComment(raw)).trim())
+  }
+  return null
 }
 
 export interface ImportsExportsOptions {
