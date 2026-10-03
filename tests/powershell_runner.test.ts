@@ -89,7 +89,7 @@ describe('PowerShell runner integration and resolution', () => {
     expect(exitCode).toBe(expected)
   })
 
-  // Provenance: CAPTURE, exit code and trimmed stdout lines of a direct `pwsh -NoProfile -NonInteractive -Command <cmd>` spawned from node, PowerShell 7.6.4 on Windows 11, 2026-10-02. A statement-terminating error (unknown command, .NET exception, divide by zero) does not stop the script, `return X` and a top-level break keep the `$?` of the statement before them, a finally that runs last decides the exit, a break whose label nothing catches still exits 1, and a user variable named like the wrapper's own does not change the result.
+  // Provenance: CAPTURE, exit code and trimmed stdout lines of a direct `pwsh -NoProfile -NonInteractive -Command <cmd>` spawned from node, PowerShell 7.6.4 on Windows 11, 2026-10-02. A statement-terminating error (unknown command, .NET exception, divide by zero) does not stop the script, `return X` and a top-level break keep the `$?` of the statement before them, a finally that runs last decides the exit, a break whose label nothing catches still exits 1 whether the label is quoted, dotted or computed, a label a loop declares still reaches that loop, a named begin, process or end block reports the `$?` of its own last statement with an empty block passing its predecessor's on, a clean block's failure decides the exit while its output never reaches stdout, and a user variable named like the wrapper's own does not change the result.
   it.each([
     ['nonexistentcmd-xyz; Write-Output after', 0, ['after']],
     ["[int]::Parse('x'); Write-Output after", 0, ['after']],
@@ -109,6 +109,18 @@ describe('PowerShell runner integration and resolution', () => {
     [':l foreach ($i in 1) { Get-Item ./nope; break l }; Write-Output after', 0, ['after']],
     ['function f { Get-Item ./nope; break }; f; Write-Output after', 0, []],
     ['$global:TgOk = $false; Write-Output x', 0, ['x']],
+    ['begin { Get-Item ./nope }', 1, []],
+    ['process { Get-Item ./nope }', 1, []],
+    ['begin { Write-Output b } process { Get-Item ./nope }', 1, ['b']],
+    ['process { Get-Item ./nope } end { }', 1, []],
+    ['begin { Get-Item ./nope } end { Write-Output e }', 0, ['e']],
+    ['end { Write-Output e } clean { Get-Item ./nope }', 1, ['e']],
+    ['end { Get-Item ./nope } clean { Write-Output c }', 0, []],
+    ["Get-Item ./nope; break 'quoted-label'", 1, []],
+    ['Get-Item ./nope; break a.b', 1, []],
+    ["$x = 'lbl'; Get-Item ./nope; break $x", 1, []],
+    [":l foreach ($i in 1,2) { $x = 'l'; Write-Output $i; break $x }; Write-Output after", 0, ['1', 'after']],
+    [':outer foreach ($i in 1,2) { foreach ($j in 3,4) { Write-Output $j; continue outer } }; Write-Output done', 0, ['3', '3', 'done']],
     ['Write-Output "unterminated', 1, []],
   ])('wrapped exit code and output match direct pwsh for %s', async (cmd, expected, lines) => {
     const target = spawnTarget(cmd, undefined, 'pwsh')
@@ -116,6 +128,29 @@ describe('PowerShell runner integration and resolution', () => {
     expect(r.status).toBe(expected)
     expect(r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)).toEqual(lines)
     expect(await run(cmd, { filterName: 'powershell', shellType: 'pwsh', writeStdout: () => {}, writeStderr: () => {} })).toBe(expected)
+  })
+
+  // Provenance: CAPTURE, exit code and trimmed stdout lines of a direct `powershell.exe -NoProfile -NonInteractive -Command <cmd>` spawned from node, Windows PowerShell 5.1 on Windows 11, 2026-10-02. Windows PowerShell 5.1 is what resolvePowerShell falls back to when pwsh is absent, and under -Command it never runs a process block, where pwsh 7 runs it once, so the wrapper must skip it there too or a process block's side effects and failure would happen that a direct run never has.
+  it.runIf(process.platform === 'win32').each([
+    ['process { Get-Item ./nope }', 0, []],
+    ['process { Write-Output p } end { }', 0, []],
+    ['begin { Write-Output b } process { Get-Item ./nope }', 0, ['b']],
+    ['begin { Get-Item ./nope }', 1, []],
+    ["Get-Item ./nope; break 'quoted-label'", 1, []],
+    ["$x = 'lbl'; Get-Item ./nope; break $x", 1, []],
+  ])('wrapped exit code and output match direct Windows PowerShell 5.1 for %s', (cmd, expected, lines) => {
+    const prev = process.env['TOKEN_GOAT_POWERSHELL']
+    process.env['TOKEN_GOAT_POWERSHELL'] = `${process.env['SystemRoot'] ?? 'C:/Windows'}/System32/WindowsPowerShell/v1.0/powershell.exe`
+    try {
+      const target = spawnTarget(cmd, undefined, 'powershell')
+      expect(target.file).toMatch(/powershell\.exe$/i)
+      const r = spawnSync(target.file, target.args, { encoding: 'utf8', env: { ...process.env, ...target.cmdEnv } })
+      expect(r.status).toBe(expected)
+      expect(r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)).toEqual(lines)
+    } finally {
+      if (prev === undefined) delete process.env['TOKEN_GOAT_POWERSHELL']
+      else process.env['TOKEN_GOAT_POWERSHELL'] = prev
+    }
   })
 
   // Provenance: CAPTURE, PowerShell 7.6.4 on Windows 11, 2026-10-02: a direct `pwsh -NoProfile -NonInteractive -Command 'Write-Output "unterminated'` spawned from node exits 1 with empty stdout and stderr, and the previous wrapper printed `MethodInvocationException: Exception calling "Create"`, which names neither the cause nor the line.
