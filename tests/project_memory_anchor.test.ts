@@ -5,7 +5,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { dataDir } from '../src/constants.js'
 import {
@@ -78,8 +78,19 @@ describe('anchored project notes', () => {
   })
 
   it('drops the anchor with the note when it is evicted at capacity', () => {
-    setEntry('p', 'k', 'v', ANCHOR)
-    for (let i = 0; i < MAX_ENTRIES; i++) setEntry('p', `n${i}`, 'x')
+    // HAND-DERIVED: k is set one second before every other note, so it is the oldest and the one the capacity eviction must drop. The clock is pinned because notes set in the same millisecond tie and fall back to ordinal key order, where k sorts ahead of every n key and would survive. Only Date is faked, so the notes lock keeps its real timers.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const T0 = Date.parse('2026-01-01T00:00:00.000Z')
+      vi.setSystemTime(T0)
+      setEntry('p', 'k', 'v', ANCHOR)
+      for (let i = 0; i < MAX_ENTRIES; i++) {
+        vi.setSystemTime(T0 + (i + 1) * 1000)
+        setEntry('p', `n${i}`, 'x')
+      }
+    } finally {
+      vi.useRealTimers()
+    }
     expect(Object.keys(loadEntries('p'))).not.toContain('k')
     expect(fileLines('p')).not.toContain(LINE)
   })
