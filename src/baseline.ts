@@ -15,6 +15,7 @@ import { projectScopeClause } from './sql_path.js'
 import { foldPath, isCaseInsensitiveFs, isTestFile } from './util.js'
 import { displaySafeText, normalizePath, toDisplayPath } from './paths.js'
 import { findClaudeMdFiles } from './cli_context_stats.js'
+import { hasSkipSegmentBelowRoot } from './skip_scope.js'
 
 /** Summary of a project's shape: file/language counts and headline symbols. */
 export interface ProjectMap {
@@ -54,11 +55,10 @@ export const SKIP_DIRS: ReadonlySet<string> = new Set([
   '.vscode',
 ])
 
-/** True when any directory segment of `p` names a {@link SKIP_DIRS} tree -- vendored, generated, or tool metadata. The indexing walk refuses to descend into these, but rows still reach the index out of band: a hook indexes whatever file was just read, and `token-goat index <file>` names one directly. This repo's own index carries `.git/config` and six files under `node_modules/` for exactly that reason, so any consumer that reads the index as "this project's source" has to filter again here. */
-export function isIgnoredIndexPath(p: string): boolean {
-  const segments = foldPath(p).split(/[/\\]/)
-  // The last segment is the file name: a file called `dist` is not inside a `dist` directory.
-  return segments.slice(0, -1).some((s) => SKIP_DIRS.has(s))
+/** True when any directory segment of `p` names a {@link SKIP_DIRS} tree -- vendored, generated, or tool metadata. The indexing walk refuses to descend into these, but rows still reach the index out of band: a hook indexes whatever file was just read, and `token-goat index <file>` names one directly. This repo's own index carries `.git/config` and six files under `node_modules/` for exactly that reason, so any consumer that reads the index as "this project's source" has to filter again here. `projectRoot`, when the caller has one, bounds the test to the segments below it; see skip_scope.ts. */
+export function isIgnoredIndexPath(p: string, projectRoot?: string): boolean {
+  // Only segments below the project root count, and the file name is never one: a file called `dist` is not inside a `dist` directory, and a project kept under an ancestor named `build` is not a build tree.
+  return hasSkipSegmentBelowRoot(p, projectRoot, (s) => SKIP_DIRS.has(foldPath(s)))
 }
 
 // Cap the walk so a pathological tree cannot make `map` run unbounded. Also the "too much stuff" ceiling for the non-git walk-index fallback (see walk_index.ts).

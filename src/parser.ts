@@ -17,6 +17,7 @@ import { isEmbeddableDocument, extractEmbeddableDocumentText, isDocumentRefusal,
 import { MAX_DOCUMENT_WORK_MILLIS } from './document_refusal.js'
 import { fingerprintContent } from './fingerprint.js'
 import { pathEqClause } from './sql_path.js'
+import { hasSkipSegmentBelowRoot } from './skip_scope.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { detectLanguage, refineLanguageByContent, TREE_SITTER_LANGUAGES } from './parser_types.js'
 import type { Language, RefEntry, SymbolEntry } from './parser_types.js'
@@ -493,16 +494,15 @@ export function isMinifiedBundlePath(filePath: string): boolean {
   return /(?:\.min\.(?:js|mjs|cjs|css)|-min\.js)$/i.test(path.basename(filePath))
 }
 
-/** True when any directory segment of `filePath` matches a basename in `skipDirs` -- the `indexing.skip_dirs` config knob. Splits on either separator since callers pass both forward-slash-normalized keys (resolveIndexPath) and raw absolute paths. */
-export function isUnderSkipDir(filePath: string, skipDirs: readonly string[]): boolean {
+/** True when any directory segment of `filePath` BELOW the project root matches a basename in `skipDirs` -- the `indexing.skip_dirs` config knob. The segments above the root are where the user keeps the project, not part of it: a project at `C:/work/build/app` is not vendored output. `projectRoot` is the root the caller knows (cmdIndex's walk root); omitted, it is derived from project markers (see skip_scope.ts). Splits on either separator since callers pass both forward-slash-normalized keys (resolveIndexPath) and raw absolute paths. */
+export function isUnderSkipDir(filePath: string, skipDirs: readonly string[], projectRoot?: string): boolean {
   if (skipDirs.length === 0) return false
-  const segments = filePath.split(/[/\\]/)
-  return segments.slice(0, -1).some((seg) => skipDirs.includes(seg))
+  return hasSkipSegmentBelowRoot(filePath, projectRoot, (seg) => skipDirs.includes(seg))
 }
 
 /** True when `filePath` is excluded from the syntactic parse entirely by `indexing.skip_dirs`, a generated-report basename configured via `indexing.skip_files` (defaults to coverage.json / coverage-final.json -- single-line minified JSON blobs whose indexed "property" symbols bloat the index and trip the oversized-symbol doctor check for zero benefit), or `indexing.large_file_skip_kb`. Must be evaluated UNCONDITIONALLY (independent of any sha/parseUnchanged gate) because a file that becomes skip-eligible via a config change alone must still have its stale rows purged. A stat failure is treated as "not skip-eligible". */
-export function isParseSkipEligible(filePath: string, cfg: IndexingConfig): boolean {
-  if (isUnderSkipDir(filePath, cfg.skip_dirs)) return true
+export function isParseSkipEligible(filePath: string, cfg: IndexingConfig, projectRoot?: string): boolean {
+  if (isUnderSkipDir(filePath, cfg.skip_dirs, projectRoot)) return true
   if (cfg.skip_files.includes(path.basename(filePath))) return true
   if (cfg.skip_minified !== false && isMinifiedBundlePath(filePath)) return true
   try {

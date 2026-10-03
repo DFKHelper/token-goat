@@ -156,7 +156,7 @@ function resolveSymbolHit(subject: string, rootDir: string): { name: string; fil
   for (let offset = 0; ; offset += SYMBOL_SCAN_PAGE) {
     const rows = querySymbols({ name: subject, rootDir, limit: SYMBOL_SCAN_PAGE, offset })
     if (rows.length === 0) return null
-    const hit = rows.find((r) => !isIgnoredIndexPath(r.filePath))
+    const hit = rows.find((r) => !isIgnoredIndexPath(r.filePath, rootDir))
     if (hit) return { name: hit.name, file: hit.filePath }
     if (rows.length < SYMBOL_SCAN_PAGE) return null
   }
@@ -167,7 +167,7 @@ function collectSymbolDefs(subject: string, rootDir: string): { name: string; fi
   const defs: { name: string; file: string }[] = []
   for (let offset = 0; ; offset += SYMBOL_SCAN_PAGE) {
     const rows = querySymbols({ name: subject, rootDir, limit: SYMBOL_SCAN_PAGE, offset })
-    for (const r of rows) if (!isIgnoredIndexPath(r.filePath)) defs.push({ name: r.name, file: r.filePath })
+    for (const r of rows) if (!isIgnoredIndexPath(r.filePath, rootDir)) defs.push({ name: r.name, file: r.filePath })
     if (rows.length < SYMBOL_SCAN_PAGE) return defs
   }
 }
@@ -175,13 +175,13 @@ function collectSymbolDefs(subject: string, rootDir: string): { name: string; fi
 /** The subject read as a file: an exact path, else the project's file list matched by basename ("config.ts") or by extensionless stem ("config"). Several matches is reported as ambiguity rather than resolved by picking one, which would be a confident wrong answer. The match runs over the `files` table rather than over symbol rows: `files` is the authoritative list of what is indexed (a file with no extracted symbols has no symbol rows at all), it needs one query instead of a capped path-suffix scan, and it makes the candidate set independent of how many symbols each file happens to contain. */
 function resolveFileHit(subject: string, rootDir: string): ResolvedSubject | null {
   const entry = getFileEntry(resolveSpecPath(subject))
-  if (entry && !isIgnoredIndexPath(entry.filePath)) return { kind: 'file', path: entry.filePath }
+  if (entry && !isIgnoredIndexPath(entry.filePath, rootDir)) return { kind: 'file', path: entry.filePath }
   if (subject.includes('/') || subject.includes('\\')) return null
 
   const want = foldPath(subject)
   const matches: string[] = []
   for (const [folded, indexed] of getOwnProjectFileEntries(rootDir)) {
-    if (isIgnoredIndexPath(folded)) continue
+    if (isIgnoredIndexPath(folded, rootDir)) continue
     const base = folded.slice(Math.max(folded.lastIndexOf('/'), folded.lastIndexOf('\\')) + 1)
     const dot = base.lastIndexOf('.')
     if (base === want || (dot > 0 && base.slice(0, dot) === want)) matches.push(indexed.filePath)
@@ -202,7 +202,7 @@ export function resolveSubject(subject: string, mode: SubjectMode = 'symbol-firs
   if (sep > 0 && sep + 2 < subject.length) {
     const file = resolveSpecPath(subject.slice(0, sep))
     const hit = querySymbols({ filePath: file, name: subject.slice(sep + 2), rootDir, limit: 1 })[0]
-    if (hit && !isIgnoredIndexPath(hit.filePath)) return { kind: 'symbol', name: hit.name, file: hit.filePath }
+    if (hit && !isIgnoredIndexPath(hit.filePath, rootDir)) return { kind: 'symbol', name: hit.name, file: hit.filePath }
     return null
   }
 

@@ -16,6 +16,7 @@ import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
 import { dataDir, ENV_KEYS, globalDbPath, VERSION } from './constants.js'
 import { assetEmbedSha, indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors, maxChunksEmbedSha } from './parser.js'
+import { withDeclaredSkipScopeRoot } from './skip_scope.js'
 import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { pruneUnembeddableChunks } from './embed_backfill.js'
 import { foregroundDownloadDeferred, offlineEmbedNotice, WARM_COMMAND } from './embed_preflight.js'
@@ -294,6 +295,8 @@ export async function cmdIndex(
   }
   const blockedRoots = loadConfig().worker.blocked_roots
   const ixCfg = loadConfig().indexing
+  // The root whose segments indexing.skip_dirs is tested against: a project kept under an ancestor named `build` must not read as vendored. Spelled like the keys it is compared with.
+  const walkRootKey = resolveIndexPath(root)
   // Whether a file is embedded is decided by its own project's configuration, through the rule the worker's drain applies to the same file (see embedPolicyResolver), never by the directory this command runs in: run inside a monorepo package, or given a path from elsewhere, the index and the drain stamped one file two ways and each undid the other. The other indexing keys this function reads through loadConfig() with no root are right from any root only because each is in PROJECT_LOCKED_KEYS, so no project file can set one.
   const embedPolicy = embedPolicyResolver()
   let indexed = 0
@@ -333,7 +336,7 @@ export async function cmdIndex(
     // PDF/DOCX/PPTX/XLSX have no Language entry (no code symbols) so they report 'unknown', but they must still reach indexFileEmbeddings below for extracted-text embedding. The language is read from the file's head, as the walk that listed it did: a path-only check skipped every `.p`, `.w`, `.m` and `.t` a content sniff admits, so it was never indexed or counted.
     if (detectLanguageOfFile(key) === 'unknown' && !isEmbeddableDocument(key)) continue
     // indexing.skip_dirs / large_file_skip_kb: filter here, before the sha/entry work below. Without this pre-filter, indexFileSync's internal purge would run and then the unconditional indexFileEmbeddings call below would immediately re-embed a file meant to be fully excluded (origin's indexFileEmbeddings has no skip_dirs/size-cap branch).
-    if (isParseSkipEligible(key, ixCfg)) {
+    if (isParseSkipEligible(key, ixCfg, walkRootKey)) {
       removeFileFromIndex(getDb(dbPath), key)
       continue
     }
@@ -386,7 +389,7 @@ export async function cmdIndex(
     if (!parseUnchanged) {
       paintProgress('parsing')
       try {
-        indexFileSync(key, dbPath)
+        withDeclaredSkipScopeRoot(walkRootKey, () => indexFileSync(key, dbPath))
       } catch (e) {
         // A single locked/permission-denied file (AV scan, open editor, OneDrive sync -- all common on Windows) must not abort the rest of a bulk walk. indexFileSync itself only fail-softs on ENOENT (the file vanished between discovery and read, a benign race) and rethrows everything else so callers can report it -- worker.ts's makeIndexer already catches and logs that per-file via an INDEX_FAILED sentinel, but this foreground loop had no try/catch at all, so the same rethrow aborted the whole command uncaught.
         failed += 1

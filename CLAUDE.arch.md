@@ -533,6 +533,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/sharepoint_resolve.ts`](src/sharepoint_resolve.ts) | Best-effort resolution of a SharePoint/OneDrive sharing URL to a local synced file path, so `token-goat` can read a document an agent was only given a share link for instead of fai |
 | [`src/shell.ts`](src/shell.ts) | Exports: `locateBashOnPath`, `resolveWindowsBash`, `wrappedShell`, `canRunWrappedShell` |
 | [`src/skill_version_drift.ts`](src/skill_version_drift.ts) | Session-scoped nudge for token-goat's own version drift. |
+| [`src/skip_scope.ts`](src/skip_scope.ts) | Which directory segments of an indexed file's path count when the path is tested against a skip-directory set. |
 | [`src/spec_path.ts`](src/spec_path.ts) | `expandSpecPath()` and `resolveSpecPath()`: `~` and Windows shell mount paths in a typed file spec, shared by every file-spec command and its MCP tool. |
 | [`src/sql_path.ts`](src/sql_path.ts) | Exports: `pathEqClause`, `pathSuffixClause`, `projectScopeClause` |
 | [`src/stdin_json.ts`](src/stdin_json.ts) | Reading a JSON payload off stdin, with a timeout and a byte cap. |
