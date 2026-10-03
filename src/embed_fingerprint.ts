@@ -5,7 +5,7 @@ export const EMBED_FINGERPRINT = 'cc1473250448a0b3'
 
 // Per-kind digests, each over the global sources above plus that extraction kind's own. Keyed by the kind embedKindForPath() in src/embed_stamp.ts resolves a file to, which is what ensureEmbeddingProvenance scopes a re-embed by. A change to one document extractor moves one entry here, so only that format's already-embedded files are re-embedded; before this was per-kind, an edit to pdf_extract.ts re-embedded every file on the machine -- 243,238 chunks across 17,876 files on one real index.
 export const EMBED_KIND_FINGERPRINTS: ReadonlyMap<string, string> = new Map([
-  ['docx', '29165443695b7a10'],
+  ['docx', 'b5cd278f43ad3bc4'],
   ['markdown', '20f5e7009656e21e'],
   ['pdf', '4434fdde0b223e59'],
   ['pptx', '80869ac80388fbbc'],

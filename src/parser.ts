@@ -457,6 +457,7 @@ function extractNoTreeSitter(
       lineComment: '//',
       stringEscapes: 'csharp',
       rawStringQuotes: true,
+      expressionBodies: true,
     })
     return { symbols, refs: r.refs }
   }

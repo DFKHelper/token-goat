@@ -28,6 +28,114 @@ const FUNC_NAME = '[A-Za-z_][A-Za-z0-9_.+:-]*'
 const FUNC_KEYWORD_RE = new RegExp(`^function\\s+(${FUNC_NAME})\\s*(?:\\(\\s*\\))?`)
 const FUNC_POSIX_RE = new RegExp(`^(${FUNC_NAME})\\s*\\(\\s*\\)`)
 const VAR_RE = /^(?:(?:export|declare|readonly)\s+(?:-\w+\s+)*)?([A-Za-z_]\w*)=/
+const COMPOUND_OPENERS = new Set(['if', 'for', 'while', 'until', 'select', 'case'])
+const COMPOUND_CLOSERS = new Set(['fi', 'done', 'esac'])
+const COMPOUND_PREFIX_WORDS = new Set(['then', 'do', 'else', '!', 'time'])
+const COMPOUND_BODY_START_RE = /^(?:if|for|while|until|select|case)\b/
+const COMPOUND_SEGMENT_SPLIT_RE = /;|&&|\|\||\||&|\(|\{|\)|\}/
+
+// Cleans one source line for structural scanning: no comment, no string contents.
+function cleanForScan(line: string): string {
+  return stripStringLiterals(stripBashComment(line)).trim()
+}
+
+// Net change in compound-command nesting on one cleaned line, counting only words in command position so `echo if` is not an opener.
+function compoundDelta(text: string): number {
+  let delta = 0
+  for (const segment of text.split(COMPOUND_SEGMENT_SPLIT_RE)) {
+    const words = segment.trim().split(/\s+/)
+    let w = 0
+    while (w < words.length && COMPOUND_PREFIX_WORDS.has(words[w] ?? '')) w++
+    const first = words[w] ?? ''
+    if (COMPOUND_OPENERS.has(first)) delta++
+    else if (COMPOUND_CLOSERS.has(first)) delta--
+  }
+  return delta
+}
+
+const SUBSHELL_TOKEN_RE = /;;&|;;|;&|\|\||&&|[()]|[;&|]|[^\s()&;|]+/g
+const CASE_ARM_ENDS = new Set([';;', ';&', ';;&'])
+const COMMAND_POSITION_WORDS = new Set(['then', 'do', 'else', 'elif', '!', 'time', '{'])
+
+// Paren nesting of a subshell function body (`f() ( ... )`), read token by token across lines. A case pattern's `)` and its optional leading `(` are not nesting, so a `case` inside the body does not end the function at its first arm.
+class SubshellParenScanner {
+  private depth = 0
+  // One entry per open `case`: 'subject' until `in`, 'pattern' while reading an arm's pattern, 'body' inside an arm.
+  private readonly cases: Array<'subject' | 'pattern' | 'body'> = []
+  private commandPosition = true
+
+  // Feeds one cleaned line; true once the body's opening `(` has been closed.
+  closes(text: string): boolean {
+    for (const tok of text.match(SUBSHELL_TOKEN_RE) ?? []) {
+      const top = this.cases.length - 1
+      const state = this.cases[top]
+      if (state === 'subject') {
+        if (tok === 'in') this.cases[top] = 'pattern'
+        continue
+      }
+      if (state === 'pattern') {
+        if (tok === 'esac') {
+          this.cases.pop()
+          this.commandPosition = false
+        } else if (tok === ')') {
+          this.cases[top] = 'body'
+          this.commandPosition = true
+        }
+        continue
+      }
+      if (state === 'body' && CASE_ARM_ENDS.has(tok)) {
+        this.cases[top] = 'pattern'
+        continue
+      }
+      if (tok === '(') {
+        this.depth++
+        this.commandPosition = true
+        continue
+      }
+      if (tok === ')') {
+        this.depth--
+        if (this.depth <= 0) return true
+        this.commandPosition = false
+        continue
+      }
+      if (this.commandPosition && tok === 'case') this.cases.push('subject')
+      else if (this.commandPosition && tok === 'esac' && state === 'body') this.cases.pop()
+      this.commandPosition = /^[;&|]/.test(tok) || COMMAND_POSITION_WORDS.has(tok)
+    }
+    // A newline ends a command, so the next line starts in command position.
+    this.commandPosition = true
+    return false
+  }
+}
+
+// A function body need not be a brace group: bash accepts any compound command, so `f() ( ... )`, `f() if ...; fi`, `f() [[ ... ]]` and `f() while ...; done` are all functions. Returns the 1-based line the body ends on, or null when the body is a brace group (or no compound command follows) so the caller keeps its brace tracking. `rest` is the header line's text after the name and `()`; when it is empty the body starts on the next non-blank line.
+function findCompoundBodyEnd(lines: string[], headerIdx: number, rest: string): number | null {
+  let startIdx = headerIdx
+  let text = rest
+  if (text === '') {
+    let j = headerIdx + 1
+    while (j < lines.length && cleanForScan(lines[j] ?? '') === '') j++
+    if (j >= lines.length) return null
+    startIdx = j
+    text = cleanForScan(lines[j] ?? '')
+  }
+  const kind = text.startsWith('(') ? 'paren' : text.startsWith('[[') ? 'test' : COMPOUND_BODY_START_RE.test(text) ? 'keyword' : null
+  if (kind === null) return null
+  let depth = 0
+  const parens = kind === 'paren' ? new SubshellParenScanner() : null
+  for (let k = startIdx; k < lines.length; k++) {
+    const cur = k === startIdx ? text : cleanForScan(lines[k] ?? '')
+    if (parens !== null) {
+      if (parens.closes(cur)) return k + 1
+    } else if (kind === 'test') {
+      if (cur.includes(']]')) return k + 1
+    } else {
+      depth += compoundDelta(cur)
+      if (depth <= 0) return k + 1
+    }
+  }
+  return null
+}
 
 /**
  * Strips a bash `#` line comment, respecting bash's own word-boundary comment rule: `#` only
@@ -133,6 +241,8 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
   // to end-of-file and swallows every function below it.
   let openFunctionIndex: number | null = null
   let openHeadingIndex: number | null = null
+  // Last line (1-based) of a compound-command function body already spanned; lines up to it are skipped.
+  let skipUntil = 0
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
@@ -149,7 +259,7 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
 
     // Heading comment banners in shell scripts: recognize procedural section dividers
     // (## Section, # -- Section --, # [Section], # REGION:) outside functions
-    if (!inFunction && braceDepth === 0) {
+    if (!inFunction && braceDepth === 0 && lineNum > skipUntil) {
       const banner = extractShellBannerHeading(rawLine)
       if (banner !== null) {
         if (openHeadingIndex !== null) {
@@ -190,6 +300,9 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
     arithmeticDepth = opened.depth
     heredocs.push(...opened.terminators)
 
+    // Inside a compound-command function body already spanned above: nothing here is a new declaration or brace nesting.
+    if (lineNum <= skipUntil) continue
+
     if (!stripped) continue
 
     if (!inFunction && !awaitingFunctionBrace && braceDepth === 0) {
@@ -214,7 +327,19 @@ export function extractBash(content: string, filePath: string): SymbolEntry[] {
           pushedIndex = symbols.length
           symbols.push(makeLineSymbol(filePath, fname, 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'hash'))
         }
-        if (fname) {
+        const rest = stripped.slice(funcMatch[0].length).trim()
+        const compoundEnd = fname && !rest.startsWith('{') ? findCompoundBodyEnd(lines, i, rest) : null
+        if (compoundEnd !== null) {
+          // Subshell / `if` / `[[` / loop body: its extent is known now, so widen the span and skip the body rather than await a brace that belongs to the next function.
+          if (pushedIndex !== null) {
+            const open = symbols[pushedIndex]
+            if (open !== undefined && compoundEnd > lineNum) {
+              symbols[pushedIndex] = { ...open, lineEnd: compoundEnd, body: lines.slice(lineNum - 1, compoundEnd).join('\n') }
+            }
+          }
+          skipUntil = compoundEnd
+          continue
+        } else if (fname) {
           if (stripped.includes('{')) {
             const braceLine = stripStringLiterals(stripped)
             const openCount = (braceLine.match(/\{/g) ?? []).length

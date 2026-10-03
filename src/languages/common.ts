@@ -1836,6 +1836,8 @@ export interface BraceSpanOpts {
   lineStringPrefix?: string
   /** Blank this language's multi-line-capable string literals before walking braces, via {@link maskMultilineStrings}. The per-literal {@link BraceScanOpts} flags cover the forms whose delimiters are fixed; this covers the ones whose closer is decided by the opener, which a character-at-a-time walk cannot recognise: a PHP heredoc (`<<<EOT`) and a Swift raw string (`#"..."#`). A `}` inside either is text, and without this it decrements the brace depth and ends the enclosing function at that line. The extractors for those languages already mask with the same function to find declarations, so this makes the span walk read the same text they did. */
   multilineLang?: MultilineStringLang
+  /** Span a C# expression-bodied member (`=> expr;`) through its terminating `;` at bracket depth 0, however many lines the expression takes, instead of leaving it on its first line. */
+  expressionBodies?: boolean
 }
 
 /** Opt-in extras for {@link findMatchingBraceEndLine}. Each defaults to the pre-existing behaviour,
@@ -2107,6 +2109,13 @@ export function assignBraceBlockSpans(
   return symbols.map((sym) => {
     if (sym.lineEnd !== sym.lineStart) return sym
     const nextStart = starts.find((s) => s > sym.lineStart)
+    if (opts.expressionBodies === true) {
+      const arrowLast = Math.min(nextStart !== undefined ? nextStart - 1 : totalLines, sym.lineStart + BRACE_SEARCH_MAX_LINES)
+      const arrowEnd = findArrowBodyEndLine(scanContent, lineIndex, sym.lineStart, arrowLast)
+      if (arrowEnd !== null) {
+        return arrowEnd <= sym.lineStart ? sym : { ...sym, lineEnd: arrowEnd, body: lines.slice(sym.lineStart - 1, arrowEnd).join('\n') }
+      }
+    }
     // Cap the window so the last symbol in a file cannot reach an unrelated brace far below it.
     const lastSearchLine = Math.min(nextStart !== undefined ? nextStart - 1 : totalLines, sym.lineStart + BRACE_SEARCH_MAX_LINES)
     const openIndex = findBlockOpenBrace(scanContent, lineIndex, sym.lineStart, lastSearchLine, lineCommentPrefix, scanOpts)
@@ -2127,6 +2136,103 @@ export function assignBraceBlockSpans(
  * search.
  */
 const BRACE_SEARCH_MAX_LINES = 10
+
+/** Index just past the `{ ... }` hole that opens at `i` inside a C# interpolated string, skipping any literal nested in it. */
+function skipCsharpInterpolationHole(content: string, i: number, to: number): number {
+  let depth = 0
+  for (let k = i; k < to; k++) {
+    const lit = skipCsharpLiteral(content, k, to)
+    if (lit !== null) { k = lit - 1; continue }
+    const ch = content[k]
+    if (ch === '{') depth++
+    else if (ch === '}' && --depth === 0) return k + 1
+  }
+  return to
+}
+
+/** Index just past the C# string or char literal that starts at `i` (a plain, verbatim, interpolated, raw, or char literal), or null when `i` does not start one. Interpolation holes are walked as code, so a quote or brace inside one does not end the literal early. */
+function skipCsharpLiteral(content: string, i: number, to: number): number | null {
+  const first = content[i]
+  if (first === "'") {
+    if (content[i + 1] === '\\') {
+      const close = content.indexOf("'", i + 3)
+      return close === -1 || close >= to ? null : close + 1
+    }
+    return content[i + 2] === "'" ? i + 3 : null
+  }
+  let j = i
+  while ((content[j] === '$' || content[j] === '@') && j - i < 3) j++
+  if (content[j] !== '"') return null
+  const prefix = content.slice(i, j)
+  if (j > i && /[A-Za-z0-9_]/.test(content[i - 1] ?? '')) return null
+  const interpolated = prefix.includes('$')
+  const verbatim = prefix.includes('@')
+  const run = quoteRunLength(content, j)
+  if (run >= 3) {
+    const end = skipRawStringQuotes(content, j + run, run)
+    return end === -1 ? to : end
+  }
+  for (let k = j + 1; k < to; k++) {
+    const ch = content[k]
+    if (ch === undefined) break
+    if (verbatim) {
+      if (ch === '"') {
+        if (content[k + 1] === '"') { k++; continue }
+        return k + 1
+      }
+    } else if (ch === '\\') { k++; continue }
+    else if (ch === '"') return k + 1
+    if (interpolated) {
+      if (ch === '{') {
+        if (content[k + 1] === '{') { k++; continue }
+        k = skipCsharpInterpolationHole(content, k, to) - 1
+      }
+    }
+  }
+  return to
+}
+
+/** Last line of a C# expression-bodied member (`Name(args) => expr;`, `Prop => expr;`) that starts on `startLine`, or null when the declaration has no `=>` body: a `{` or `;` reached at bracket depth 0 before any `=>` means a block body or a bodiless declaration, and the brace walk owns those. The body ends at the first `;` at depth 0, so a multi-line `a &&\n b;` is spanned whole. Strings, chars, comments, verbatim, interpolated and raw strings are skipped, so a `;` or `=>` inside one is text. */
+function findArrowBodyEndLine(content: string, lineIndex: readonly number[], startLine: number, lastSearchLine: number): number | null {
+  const from = lineIndex[startLine - 1]
+  if (from === undefined) return null
+  const to = lineIndex[lastSearchLine] ?? content.length
+  let depth = 0
+  let seenArrow = false
+  for (let i = from; i < to; i++) {
+    const ch = content[i]
+    if (ch === undefined) break
+    if (ch === '/' && content[i + 1] === '/') {
+      while (i + 1 < to && content[i + 1] !== '\n') i++
+      continue
+    }
+    if (ch === '/' && content[i + 1] === '*') {
+      const end = content.indexOf('*/', i + 2)
+      if (end === -1) return null
+      i = end + 1
+      continue
+    }
+    const lit = skipCsharpLiteral(content, i, to)
+    if (lit !== null) { i = lit - 1; continue }
+    if (ch === '(' || ch === '[') depth++
+    else if (ch === ')' || ch === ']') { if (depth > 0) depth-- }
+    else if (ch === '=' && content[i + 1] === '>' && depth === 0) { seenArrow = true; i++ }
+    else if (ch === '{') {
+      if (!seenArrow && depth === 0) return null
+      depth++
+    } else if (ch === '}') {
+      if (depth === 0) return null
+      depth--
+    } else if (ch === ';' && depth === 0) {
+      if (!seenArrow) return null
+      // The terminator's own line, found by counting the newlines between the start and it.
+      let line = startLine
+      for (let k = from; k < i; k++) if (content[k] === '\n') line++
+      return line
+    }
+  }
+  return null
+}
 
 /**
  * Blank every multi-line-capable string literal in `content` for `lang`, carrying open state across

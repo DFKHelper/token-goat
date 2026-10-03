@@ -101,7 +101,7 @@ function sectionsToHeadingSymbols(
 
 // One entry per adapter-backed `regex` row of src/language_specs.ts, required by the type: a new row without an extractor fails the type check. html/liquid keep their extra sectionsToHeadingSymbols composition inline.
 export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLanguage>, SymbolExtractor> = {
-  csharp: (content, filePath) => assignBraceBlockSpans(extractCsharp(content, filePath).symbols, content, { lineComment: '//', stringEscapes: 'csharp', rawStringQuotes: true }),
+  csharp: (content, filePath) => assignBraceBlockSpans(extractCsharp(content, filePath).symbols, content, { lineComment: '//', stringEscapes: 'csharp', rawStringQuotes: true, expressionBodies: true }),
   // Both halves walk the SAME masked text: the brace pass used to span raw file content, so it nested on braces in the inline HTML the extractor is no longer reading.
   php: (content, filePath) => {
     const code = maskPhpInlineHtml(content)
