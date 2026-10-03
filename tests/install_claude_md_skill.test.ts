@@ -250,7 +250,8 @@ describe('installSkill', () => {
     expect(content).toContain('### audit — session retrospective')
     expect(content).toContain('## Anti-Patterns')
     expect(content).toContain('## Related Skills')
-    expect(content).toContain('## Changelog')
+    // The skill lands in a claude-skills checkout, which keeps history in the skill's CHANGELOG.md and refuses a SKILL.md carrying its own.
+    expect(content).not.toContain('## Changelog')
   })
 })
 

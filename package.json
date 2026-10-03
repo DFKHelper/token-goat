@@ -41,6 +41,8 @@
     "prepare": "node scripts/install-git-hooks.mjs",
     "parser:fingerprint": "node scripts/parser-fingerprint.mjs",
     "parser:fingerprint:check": "node scripts/parser-fingerprint.mjs --check",
+    "skill:canonical": "node scripts/generate-canonical-skill.mjs",
+    "skill:canonical:check": "node scripts/generate-canonical-skill.mjs --check",
     "schema:copilot": "node scripts/extract_harness_schema.mjs auto --harness copilot_cli --out schemas/copilot_cli.hooks.json",
     "schema:copilot:check": "node scripts/extract_harness_schema.mjs auto --harness copilot_cli --out schemas/copilot_cli.hooks.json --check",
     "docs:arch": "node scripts/sync-arch-docs.mjs",
