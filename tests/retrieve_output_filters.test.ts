@@ -176,6 +176,19 @@ describe('cached-output recall: ranges, line numbers, context and the elision ma
     expect(body(r.stdout)).toEqual(['400:line 400', '401:line 401', '402:line 402'])
   })
 
+  // HAND-DERIVED: recallFile() holds "line N" for N in 1..600, so NOMATCHXYZ occurs nowhere and --lines 3-4 leaves exactly two lines, neither containing FAIL.
+  it('--grep with no matching line says so on stderr and exits 1, instead of printing a bare empty line', () => {
+    const r = runIsolated(['bash-output', '--file', recallFile(), '--grep', 'NOMATCHXYZ'])
+    expect(r.status).toBe(1)
+    expect(r.stdout.trim()).toBe('')
+    expect(r.stderr).toContain('--grep matched no lines of 600')
+    expect(r.stderr).toContain('NOMATCHXYZ')
+
+    const ranged = runIsolated(['bash-output', '--file', recallFile(), '--lines', '3-4', '--grep', 'FAIL'])
+    expect(ranged.status).toBe(1)
+    expect(ranged.stderr).toContain('--grep matched no lines of 2')
+  })
+
   it('--grep --context N shows the neighbouring lines, and separates groups with --', () => {
     const one = runIsolated(['bash-output', '--file', recallFile(), '--grep', 'line 300', '--context', '1'])
     expect(one.status, one.stderr).toBe(0)

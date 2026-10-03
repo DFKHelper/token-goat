@@ -3,18 +3,26 @@ import { applyHintTracking, uncorrelatedHint } from './hint_stats.js'
 import { registerHook } from './hook_registry.js'
 import type { HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { contextOutput, passOutput, getToolInput, getToolName, makeDedupHintHandlers } from './hooks_common.js'
-import { displaySafeText } from './paths.js'
+import { contextOutput, passOutput, getCwd, getToolInput, getToolName, makeDedupHintHandlers } from './hooks_common.js'
+import { displaySafeText, normalizePath } from './paths.js'
+import { foldPath } from './path_containment.js'
 import { recordGlobQuery, getGlobMatchCount } from './session.js'
 import { recordStat } from './stats.js'
 
-/** Returns true if pattern is a broad catch-all glob on a root or unscoped directory (e.g. wildcards on empty, dot, or top-level roots). */
-export function isBroadCatchAllGlob(pattern: string, pathArg?: string): boolean {
+/** Whether `target` names the same directory as `cwd`, the absolute form Claude Code sends for a whole-project Glob. Compared as spelled (no disk access), folded on case-insensitive filesystems. */
+function isSameDirAsCwd(target: string, cwd: string): boolean {
+  const norm = (p: string): string => foldPath(normalizePath(p).replace(/\/+$/, ''))
+  return norm(target) === norm(cwd)
+}
+
+/** Returns true if pattern is a broad catch-all glob on a root or unscoped directory (e.g. wildcards on empty, dot, top-level roots, or an absolute path equal to the event's `cwd`). */
+export function isBroadCatchAllGlob(pattern: string, pathArg?: string, cwd?: string): boolean {
   const p = pattern.trim()
   const isBroad = p === '*' || p === '**/*' || p === '**' || p === '*.*' || p === '**/*.*' || p === '**/*.**'
   if (!isBroad) return false
   const target = (pathArg ?? '').trim().replace(/[\\/]+$/, '')
-  return target === '' || target === '.' || target === './' || target === '.\\' || (!target.includes('/') && !target.includes('\\'))
+  if (target === '' || target === '.' || target === './' || target === '.\\' || (!target.includes('/') && !target.includes('\\'))) return true
+  return cwd !== undefined && isSameDirAsCwd(target, cwd)
 }
 
 /** Session-scoped identity for a Glob call: two calls with the same signature searched the same thing the same way. Returns null when there is no pattern to key on. Glob's tool_input has only `pattern` and optional `path` (no output_mode/glob/type/case-sensitivity knobs like Grep has -- confirmed against the tool's own schema), so those two fields are the whole signature. */
@@ -49,7 +57,7 @@ function preGlobHandler(event: HookEvent): HookOutput {
             ? toolInput['paths'][0]
             : undefined
 
-    if (pattern && isBroadCatchAllGlob(pattern, pathArg)) {
+    if (pattern && isBroadCatchAllGlob(pattern, pathArg, getCwd(event))) {
       recordStat('session_hint', 0, 0)
       return contextOutput(
         'Broad recursive glob pattern "' +

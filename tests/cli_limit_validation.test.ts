@@ -330,6 +330,23 @@ describe('stats --window-days validation', () => {
   })
 })
 
+// Regression guard: `--top` on refs/impact/dead/similar/context-for/coverage-gaps/arch/ask was parsed non-negative at dispatch, then 0 was rejected again inside the command with a different, unprefixed message, so -2 said "non-negative" and 0 said "positive". HAND-DERIVED: the expected text is the shared requirePositiveInt wording with the raw value quoted. CAPTURE of the pre-fix output: `impact src/a.ts::delta --top -2` printed 'token-goat: --top must be a non-negative number, got: "-2"'.
+describe('--top on commands that reject zero validates once, with one message', () => {
+  const commands = [['impact', 'x'], ['refs', 'x'], ['dead'], ['similar', 'a.ts::x'], ['context-for', 'task'], ['coverage-gaps'], ['arch'], ['ask', 'q']]
+  for (const cmd of commands) {
+    for (const bad of ['-2', '0']) {
+      it(`${cmd[0]} --top ${bad} says the value must be positive`, async () => {
+        captureStderr()
+        const code = await runCli([...cmd, '--top', bad])
+        expect(code).toBe(1)
+        const message = stderr.join('')
+        expect(message).toContain(`--top must be a positive number, got: "${bad}"`)
+        expect(message).not.toContain('non-negative')
+      })
+    }
+  }
+})
+
 // Regression guard: cmdWaste's --top flag was the only --top-style flag in the CLI parsed via requirePositiveInt instead of requireNonNegativeInt, contradicting the documented convention (cli_dispatch.ts's requireNonNegativeInt comment: "Zero is fine ... so only strictly-negative is rejected") that every other --top/--limit/--head/--tail flag follows, and that waste.ts::topExpensiveCalls's own `.slice(0, n)` call handles correctly for n=0. So `waste --top 0` threw "--top must be a positive number" instead of returning zero top calls like the analogous `tokens --top 0` / `impact --top 0` / etc. do.
 describe('waste --top 0 validation', () => {
   // Without --transcript, cmdWaste resolves the project root to this repo's real cwd and findLatestTranscript (waste.ts) falls back to os.homedir()/.claude/projects/<slug>, which isolate-home.ts's setup does NOT sandbox (it isolates TOKEN_GOAT_HOME and the platform data dir, not os.homedir() outside its darwin branch). On a machine actively running Claude Code against this repo -- i.e. any real dogfooding session, including the one that authored this fix -- that resolves to the developer's own live, actively-growing session transcript (observed at 76 MB and climbing), read synchronously and parsed line-by-line on every call. Unloaded that alone took ~6.7s; under full-suite parallel-fork contention that's enough margin to blow the 30s test timeout, attributed to the `await runCli(...)` call itself (a timeout, not an assertion failure) -- this reproduced the reported flake's code frame. A synthetic, isolated, single-line transcript makes these --top-parsing tests hermetic and fast regardless of what the host machine's real Claude Code session looks like.

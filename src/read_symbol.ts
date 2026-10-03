@@ -309,11 +309,16 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   const text = guardText(warning + blocks.join('\n\n'), 'symbol')
   recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file ?? opts.grep)
   // Under a client-side filter the sweep walked every row in scope, so its kept count is the exact total rather than a floor.
-  const symbolTotal = (): TruncationTotal =>
-    anyClientFilter ? { count: sweep.keptCount, exact: true } : { count: countSymbols(queryOpts), exact: true }
+  let cachedTotal: TruncationTotal | undefined
+  const symbolTotal = (): TruncationTotal => {
+    cachedTotal ??= anyClientFilter ? { count: sweep.keptCount, exact: true } : { count: countSymbols(queryOpts), exact: true }
+    return cachedTotal
+  }
   const footer = truncationFooter(results.length, effectiveLimit, symbolTotal, 'matches', '--limit')
   // Only said when a page was cut and some of it is this project's: the reader needs to know the leading rows are theirs and how to see only them.
   const mineTotal = footer !== '' && preferRoot !== undefined ? (anyClientFilter ? sweep.mineKept : countSymbols({ ...queryOpts, rootDir: preferRoot })) : 0
-  const mineNote = mineTotal > 0 ? `\ntoken-goat: ${mineTotal} of the matches are in this project and listed first; pass -p to search only it` : ''
+  // `-p` only narrows the search when some matches live in other projects: with every match already local the flag is a no-op.
+  const someElsewhere = mineTotal > 0 && mineTotal < symbolTotal().count
+  const mineNote = someElsewhere ? `\ntoken-goat: ${mineTotal} of the matches are in this project and listed first; pass -p to search only it` : ''
   return { text: text + footer + mineNote, code: 0 }
 }

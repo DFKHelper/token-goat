@@ -464,3 +464,62 @@ describe('ts_refs — a shorthand property is a use of the value, not just a pro
     expect(result, 'a shorthand naming an unrelated local was accepted, which is the false positive this filter exists to remove').toHaveLength(0)
   })
 })
+
+describe('ts_refs — an import specifier the program cannot resolve is undecidable, not a mismatch', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ts-refs-unresolved-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  // HAND-DERIVED: the monorepo shape from the bug report -- `@x/core` is a workspace package, and with no node_modules link in this directory the ad-hoc program cannot resolve it. Probe against the real checker: getAliasedSymbol on that import returns the declaration-less symbol named 'unknown'.
+  it('keeps a caller that imports the definition through a bare package specifier', () => {
+    const defSrc = ['export function coreFn() {', '  return 1', '}', ''].join('\n')
+    const callerSrc = ["import { coreFn } from '@x/core'", 'export function webFn() {', '  return coreFn()', '}', ''].join('\n')
+    const defFile = path.join(dir, 'core', 'index.ts')
+    const callerFile = path.join(dir, 'web', 'app.ts')
+    fs.mkdirSync(path.dirname(defFile), { recursive: true })
+    fs.mkdirSync(path.dirname(callerFile), { recursive: true })
+    fs.writeFileSync(defFile, defSrc)
+    fs.writeFileSync(callerFile, callerSrc)
+
+    const result = resolveTypedRefs({
+      defFile,
+      defLineStart: 1,
+      defLineEnd: 3,
+      symbolName: 'coreFn',
+      candidates: [ref(callerFile, 3, colOf(callerSrc, 3, 'coreFn'), 'coreFn', 'webFn')],
+    })
+
+    expect(result, 'the resolver declined entirely, so this is not measuring the unresolved import').not.toBeNull()
+    expect(result, 'a caller behind an unresolvable package specifier was dropped as if it named a different symbol').toHaveLength(1)
+  })
+
+  // The counterpart: a RESOLVABLE import of a different same-named function is a proven mismatch and must still be dropped.
+  it('still drops a caller whose resolvable import names a different function of the same name', () => {
+    const defSrc = ['export function coreFn() {', '  return 1', '}', ''].join('\n')
+    const otherSrc = ['export function coreFn() {', '  return 2', '}', ''].join('\n')
+    const callerSrc = ["import { coreFn } from './other'", 'export function webFn() {', '  return coreFn()', '}', ''].join('\n')
+    const defFile = path.join(dir, 'def.ts')
+    const otherFile = path.join(dir, 'other.ts')
+    const callerFile = path.join(dir, 'app.ts')
+    fs.writeFileSync(defFile, defSrc)
+    fs.writeFileSync(otherFile, otherSrc)
+    fs.writeFileSync(callerFile, callerSrc)
+
+    const result = resolveTypedRefs({
+      defFile,
+      defLineStart: 1,
+      defLineEnd: 3,
+      symbolName: 'coreFn',
+      candidates: [ref(callerFile, 3, colOf(callerSrc, 3, 'coreFn'), 'coreFn', 'webFn')],
+    })
+
+    expect(result).not.toBeNull()
+    expect(result).toHaveLength(0)
+  })
+})

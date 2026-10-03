@@ -191,7 +191,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
       runExit(() =>
         runImpact({
           symbol,
-          ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
+          ...(opts.top !== undefined ? { top: requirePositiveInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),
           ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
@@ -213,7 +213,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
         runDead({
           ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
           ...(opts.includePrivate === true ? { includePrivate: true } : {}),
-          ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
+          ...(opts.top !== undefined ? { top: requirePositiveInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),
           ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
@@ -267,7 +267,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
       runExit(() =>
         runSimilar({
           spec,
-          ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
+          ...(opts.top !== undefined ? { top: requirePositiveInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),
@@ -283,7 +283,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
       runExit(() =>
         runContextFor({
           task,
-          ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
+          ...(opts.top !== undefined ? { top: requirePositiveInt('--top', opts.top) } : {}),
           ...(opts.budget !== undefined ? { budget: requireInt('--budget', opts.budget) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
@@ -307,7 +307,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
     .action((opts: { top?: string; includePrivate?: boolean; json?: boolean }) =>
       runExit(() =>
         runCoverageGaps({
-          ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
+          ...(opts.top !== undefined ? { top: requirePositiveInt('--top', opts.top) } : {}),
           ...(opts.includePrivate === true ? { includePrivate: true } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
@@ -323,7 +323,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
     .action((opts: { top?: string; json?: boolean; modules?: boolean }) =>
       runExit(() =>
         runArch({
-          ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
+          ...(opts.top !== undefined ? { top: requirePositiveInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.modules === true ? { modules: true } : {}),
         }),
@@ -367,7 +367,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
       runExit(() =>
         runAsk({
           question,
-          ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
+          ...(opts.top !== undefined ? { top: requirePositiveInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),

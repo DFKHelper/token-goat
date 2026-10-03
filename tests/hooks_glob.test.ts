@@ -183,6 +183,20 @@ describe('isBroadCatchAllGlob', () => {
     expect(isBroadCatchAllGlob('**/*', 'src')).toBe(true)
   })
 
+  // CAPTURE: a real Claude Code Glob transcript call, {"pattern":"src/**/*config*get*","path":"C:/Projects/token-goat"}, sends the project root as an absolute path; the payload's cwd is that same root.
+  it('returns true when an absolute path equals the event cwd, however it is spelled', () => {
+    expect(isBroadCatchAllGlob('**/*', 'C:/Projects/token-goat', 'C:/Projects/token-goat')).toBe(true)
+    expect(isBroadCatchAllGlob('**/*', 'C:/Projects/token-goat/', 'C:/Projects/token-goat')).toBe(true)
+    expect(isBroadCatchAllGlob('**/*', 'C:\\Projects\\token-goat', 'C:/Projects/token-goat')).toBe(true)
+    expect(isBroadCatchAllGlob('**/*', '/work/proj', '/work/proj')).toBe(true)
+  })
+
+  it('returns false for an absolute path that is a subdirectory of, or unrelated to, the cwd', () => {
+    expect(isBroadCatchAllGlob('**/*', '/work/proj/src', '/work/proj')).toBe(false)
+    expect(isBroadCatchAllGlob('**/*', '/other/proj', '/work/proj')).toBe(false)
+    expect(isBroadCatchAllGlob('**/*', '/work/proj')).toBe(false)
+  })
+
   it('returns false for narrow patterns or deeply scoped paths', () => {
     expect(isBroadCatchAllGlob('*.ts')).toBe(false)
     expect(isBroadCatchAllGlob('src/**/*.ts')).toBe(false)
@@ -200,6 +214,19 @@ describe('preGlobHandler', () => {
       expect(result.context).toContain('**/*')
     }
     expect(vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'session_hint')).toBeDefined()
+  })
+
+  // HAND-DERIVED: path and cwd are the same string, so the glob covers the whole project exactly like the no-path call.
+  it('advises map --compact when the absolute path equals the payload cwd', () => {
+    const event = makeHookEvent({
+      toolName: 'Glob',
+      toolInput: { pattern: '**/*', path: '/work/proj' },
+      sessionId: 'test',
+      raw: { cwd: '/work/proj' },
+    })
+    const result = preGlobHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') expect(result.context).toContain('token-goat map --compact')
   })
 
   it('delegates narrow globs to preGlobDedupHandler without broad warning', () => {

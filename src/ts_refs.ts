@@ -331,6 +331,8 @@ function refMatchesDefinition(
   if (symbol === defSymbol) return true
 
   const declarations = symbol.getDeclarations() ?? []
+  // An import whose module the ad-hoc program cannot resolve (a workspace package specifier like '@x/core') aliases to the checker's declaration-less "unknown" symbol. That says nothing about which definition the call reaches, so it is undecidable rather than a mismatch.
+  if (declarations.length === 0 && String(symbol.escapedName) === 'unknown') return null
   const defDeclarations = defSymbol.getDeclarations() ?? []
   for (const d of declarations) {
     for (const dd of defDeclarations) {

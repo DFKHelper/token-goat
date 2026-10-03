@@ -1056,7 +1056,7 @@ export function buildProgram(): Command {
           ...(opts.callers === true ? { callers: true } : {}),
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
-          ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
+          ...(opts.top !== undefined ? { top: requirePositiveInt('--top', opts.top) } : {}),
           ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),
           ...(opts.grep !== undefined ? { grep: opts.grep } : {}),

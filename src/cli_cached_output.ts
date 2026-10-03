@@ -8,7 +8,7 @@ import { requireNonNegativeInt } from './cli_dispatch.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { fenceUntrustedContent, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG } from './injection_scan.js'
 import { queryJson } from './json_query.js'
-import { displaySafeJson } from './paths.js'
+import { displaySafeJson, displaySafeText } from './paths.js'
 import { guardJsonRows } from './read_commands.js'
 import { extractTranscriptText } from './read_inspect.js'
 import { compileGuardedRegex } from './regex_guard.js'
@@ -104,6 +104,8 @@ export function _applyFiltersAndPrint(
     rows.forEach((r, i) => {
       if (matches(r.text)) hits.push(i)
     })
+    // Said as an error, like a --section that is not found: an empty line at exit 0 reads the same as an empty cache entry or a failed recall.
+    if (hits.length === 0) throw new CliError(`--grep matched no lines of ${dropPhantom(rows).length}: "${displaySafeText(opts.grep)}"`)
     const cap = opts.maxMatches !== undefined ? requireNonNegativeInt('--max-matches', opts.maxMatches) : undefined
     const kept = cap !== undefined && hits.length > cap ? hits.slice(0, cap) : hits
     const ctx = opts.context !== undefined ? requireNonNegativeInt('--context', opts.context) : 0
