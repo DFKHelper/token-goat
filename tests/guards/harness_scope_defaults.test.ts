@@ -156,10 +156,14 @@ describe('harness scope defaults are classified', () => {
     expect(listed).toEqual(noScope)
   })
 
-  it('gates the user CLAUDE.md and skill removal behind user scope', () => {
-    // The CLAUDE.md block and the skill live under the user config dir whatever scope installed them, so only a user-scope uninstall may strip them.
-    const gated = /if \(scope === 'project'\) \{[^}]*\} else \{[\s\S]*?uninstallClaudeMd\(\)[\s\S]*?uninstallSkill\(\)/.test(code)
-    expect(gated, 'uninstallClaudeMd/uninstallSkill must sit in the user-scope branch of cmdUninstall').toBe(true)
+  it('removes the CLAUDE.md block and skill from the scope that installed them', () => {
+    // `install -p` writes the block and skill into the project, so `uninstall -p` must strip them there and a user-scope uninstall must strip the user copies: both calls carry the scope, and neither may run unscoped (which would always mean the user home).
+    expect(code).toMatch(/uninstallClaudeMd\(scope\)/)
+    expect(code).toMatch(/uninstallSkill\(scope\)/)
+    expect(code).not.toMatch(/uninstallClaudeMd\(\)/)
+    expect(code).not.toMatch(/uninstallSkill\(\)/)
+    expect(code).toMatch(/installClaudeMd\(scope\)/)
+    expect(code).toMatch(/installSkill\(scope\)/)
   })
 
   it('keeps the --user opt-out registered on both install and uninstall', () => {

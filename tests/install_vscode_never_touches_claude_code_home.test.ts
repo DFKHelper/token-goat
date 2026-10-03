@@ -94,7 +94,9 @@ describe('install --vscode against a disposable HOME never touches the Claude Co
     expect(r.status, r.stderr).toBe(0)
 
     expect(fs.existsSync(path.join(project, '.claude', 'settings.json'))).toBe(true)
-    expect(fs.existsSync(path.join(home, '.claude', 'CLAUDE.md'))).toBe(true)
-    expect(fs.existsSync(path.join(home, '.claude', 'skills', 'token-goat', 'SKILL.md'))).toBe(true)
+    // `--project` scopes the gate block and the skill to the project too, so they land beside the project's settings rather than under the user home.
+    expect(fs.existsSync(path.join(project, 'CLAUDE.md'))).toBe(true)
+    expect(fs.existsSync(path.join(project, '.claude', 'skills', 'token-goat', 'SKILL.md'))).toBe(true)
+    expect(fs.existsSync(path.join(home, '.claude', 'CLAUDE.md'))).toBe(false)
   })
 })

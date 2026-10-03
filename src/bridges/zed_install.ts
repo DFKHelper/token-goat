@@ -4,7 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { recordCreatedBy, removeCreatedBackups, removeCreatedTree, takeCreatedConfig } from './created_configs.js'
-import { bundledCliPath, dropEmptyServers, hasManagedServer, managedServerEntry, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
+import { bundledCliPath, dropEmptyServers, hasManagedServer, managedServerEntry, noteRootKeyCreation, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 import { atomicWriteText, backupFile, writeIfDifferent } from '../util.js'
 
 const CONTEXT_SERVERS_KEY = 'context_servers'
@@ -89,6 +89,7 @@ function installZedFiles(): ZedInstallResult {
     const nextText = setTokenGoatServer(config.text, desired, CONTEXT_SERVERS_KEY)
     backupFile(settingsPath)
     atomicWriteText(settingsPath, nextText)
+    noteRootKeyCreation(settingsPath, config, CONTEXT_SERVERS_KEY)
   }
 
   return { settingsPath, shimPath, alreadyInstalled }
@@ -103,7 +104,7 @@ export function uninstallZed(): boolean {
   if (fs.existsSync(settingsPath)) {
     const config = readServersJson(settingsPath, 'Zed')
     if (isZedManagedServer(serversOf(config, settingsPath, 'Zed', CONTEXT_SERVERS_KEY)[TOKEN_GOAT_ENTRY_KEY])) {
-      const next = dropEmptyServers(setTokenGoatServer(config.text, undefined, CONTEXT_SERVERS_KEY), CONTEXT_SERVERS_KEY)
+      const next = dropEmptyServers(setTokenGoatServer(config.text, undefined, CONTEXT_SERVERS_KEY), settingsPath, CONTEXT_SERVERS_KEY)
       if (/^\s*\{\s*\}\s*$/.test(next) && takeCreatedConfig(settingsPath)) {
         fs.rmSync(settingsPath, { force: true })
       } else {

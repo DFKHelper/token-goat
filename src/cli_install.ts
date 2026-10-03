@@ -233,7 +233,7 @@ export async function cmdInstall(opts: {
         : `Installed token-goat hooks (${scope}) → ${result.settingsPath}`,
     )
 
-    const claudeMdResult = installClaudeMd()
+    const claudeMdResult = installClaudeMd(scope)
     out(
       claudeMdResult.alreadyInstalled
         ? `CLAUDE.md block already up to date → ${claudeMdResult.path}`
@@ -241,11 +241,11 @@ export async function cmdInstall(opts: {
     )
 
     // A block relocated into some other markdown file is invisible to install/uninstall, so the write above just created a second copy. Say so rather than leaving a silent duplicate.
-    for (const stray of findStrayClaudeMdBlocks()) {
+    for (const stray of scope === 'user' ? findStrayClaudeMdBlocks() : []) {
       out(`WARNING: stray token-goat block in ${stray} — not managed by install/uninstall; delete it to avoid duplicate, stale guidance.`)
     }
 
-    const skillResult = installSkill()
+    const skillResult = installSkill(scope)
     out(
       skillResult.alreadyInstalled
         ? `token-goat skill already up to date → ${skillResult.path}`
@@ -564,21 +564,17 @@ export async function cmdUninstall(opts: {
     // Tells doctor's Claude Code hooks check this removal was asked for, so it does not report the hooks as lost.
     if (removed) recordStat(CLAUDE_HOOKS_UNINSTALLED_KIND)
 
-    // Neither the CLAUDE.md block nor the skill has a project-scope form (install writes them under the user config dir whatever the scope), so a project-scope uninstall leaves both and says so.
-    if (scope === 'project') {
-      out('NOTE: the token-goat CLAUDE.md block and skill are user-scope and were not touched. Run "token-goat uninstall" to remove them.')
-    } else {
-      const claudeMdRemoved = uninstallClaudeMd()
-      out(claudeMdRemoved ? 'Removed token-goat block from CLAUDE.md.' : 'No token-goat block in CLAUDE.md to remove.')
+    // A project-scope uninstall removes the project's own CLAUDE.md block and skill (what a project-scope install wrote) and never reaches the user's.
+    const claudeMdRemoved = uninstallClaudeMd(scope)
+    out(claudeMdRemoved ? 'Removed token-goat block from CLAUDE.md.' : 'No token-goat block in CLAUDE.md to remove.')
 
-      // Strays live in files token-goat doesn't own, so uninstall reports them rather than deleting: silently editing a user's own markdown is worse than leaving a line behind.
-      for (const stray of findStrayClaudeMdBlocks()) {
-        out(`NOTE: a token-goat block remains in ${stray} — outside CLAUDE.md, so it was not removed. Delete it manually if unwanted.`)
-      }
-
-      const skillRemoved = uninstallSkill()
-      out(skillRemoved ? 'Removed token-goat skill.' : 'No token-goat skill to remove.')
+    // Strays live in files token-goat doesn't own, so uninstall reports them rather than deleting: silently editing a user's own markdown is worse than leaving a line behind.
+    for (const stray of scope === 'user' ? findStrayClaudeMdBlocks() : []) {
+      out(`NOTE: a token-goat block remains in ${stray} — outside CLAUDE.md, so it was not removed. Delete it manually if unwanted.`)
     }
+
+    const skillRemoved = uninstallSkill(scope)
+    out(skillRemoved ? 'Removed token-goat skill.' : 'No token-goat skill to remove.')
   }
 
   // --codex/--gemini/--pi/--openclaw/--copilot/--opencode are each additive on both install and uninstall (README: "Add --codex ... to also strip those integrations"), so they run on top of the base uninstall above rather than replacing it. --local or -p/--project (pi, copilot) narrows removal to the project-local scope only; without it, the uninstaller cleans up wherever the integration actually is (global and/or local) instead of requiring the caller to remember which scope it was originally installed with.

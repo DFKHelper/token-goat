@@ -4,6 +4,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ParseError } from 'jsonc-parser'
 import { jsonc, stripBom } from '../jsonc_text.js'
+import { hasCreatedConfig, recordCreatedRootKey, takeCreatedRootKey } from './created_configs.js'
 
 /** Resolves the shipping `dist/token-goat.mjs` path from within a bridge module; shared with `./zed_install.ts`'s shim script, which needs the identical bundle path but cannot use `managedServer()`'s stdio-args shape (Zed shell-executes a single `command` string, not `command`+`args`). */
 export function bundledCliPath(): string {
@@ -109,10 +110,16 @@ export function isResidueServersJson(text: string, rootKey = 'servers'): boolean
   return servers !== null && typeof servers === 'object' && !Array.isArray(servers) && Object.keys(servers).length === 0
 }
 
-/** Drops a `servers` object left empty by a removal, so a file install only added `servers` to reads back exactly as it was. */
-export function dropEmptyServers(text: string, rootKey = 'servers'): string {
+/** Records that an install is about to add the `rootKey` object to `filePath`, so uninstall can tell it from one the user already had. Call it with the config read before the write, and only once the write has happened. */
+export function noteRootKeyCreation(filePath: string, config: ServersJsonConfig, rootKey = 'servers'): void {
+  if (config.value[rootKey] === undefined) recordCreatedRootKey(filePath, rootKey)
+}
+
+/** Drops a `rootKey` object left empty by a removal, but only one an install added: the ledger marker {@link noteRootKeyCreation} wrote, or a file token-goat created whole (installs from before the marker existed). A user's own empty object, and any comment inside it, stays byte for byte. The marker is forgotten either way, since the entry it described is gone. */
+export function dropEmptyServers(text: string, filePath: string, rootKey = 'servers'): string {
+  const owned = takeCreatedRootKey(filePath, rootKey) || hasCreatedConfig(filePath)
   const parsed = parseObject(text)
-  if (parsed === null) return text
+  if (!owned || parsed === null) return text
   const servers = parsed[rootKey]
   if (servers === null || typeof servers !== 'object' || Array.isArray(servers) || Object.keys(servers).length > 0) return text
   return editAt(text, [rootKey], undefined)

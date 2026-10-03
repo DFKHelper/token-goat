@@ -8,7 +8,7 @@ import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './
 import { buildGuidanceBody } from './guidance_block.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { loadConfig } from '../config.js'
-import { dropEmptyServers, dropLoneEmptyMcpServers, ensureMcpServersKey, hasManagedServer, holdsOnlyManagedServer, isManagedServer, managedServer, managedServerEntry, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
+import { dropEmptyServers, dropLoneEmptyMcpServers, ensureMcpServersKey, hasManagedServer, holdsOnlyManagedServer, isManagedServer, managedServer, managedServerEntry, noteRootKeyCreation, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 
 const LABEL = 'Visual Studio'
 
@@ -173,6 +173,7 @@ function installVisualStudioScoped(opts: VisualStudioScopeOptions): VisualStudio
     ensureDirSync(path.dirname(mcpPath))
     backupFile(mcpPath)
     atomicWriteText(mcpPath, next)
+    noteRootKeyCreation(mcpPath, config)
     if (!mcpExisted || ownedAlready) recordCreatedConfig(mcpPath)
   }
   const guidanceChanged = writeGuidance(instructionsPath)
@@ -190,7 +191,7 @@ function uninstallVisualStudioScoped(opts: VisualStudioScopeOptions): boolean {
   if (fs.existsSync(mcpPath)) {
     const config = readServersJson(mcpPath, LABEL)
     if (isManagedServer(serversOf(config, mcpPath, LABEL)['token-goat'])) {
-      const next = dropEmptyServers(setTokenGoatServer(config.text, undefined))
+      const next = dropEmptyServers(setTokenGoatServer(config.text, undefined), mcpPath)
       // Empty is not evidence the file is ours: a user's pre-existing `{"mcpServers": {}}` project stub walks back to exactly the same bytes. Only a file this install created is deleted; anything else is left holding its empty stub.
       if (/^\s*\{\s*\}\s*$/.test(dropLoneEmptyMcpServers(next)) && takeCreatedConfig(mcpPath)) removeFileInScope(mcpPath)
       else {

@@ -15,6 +15,7 @@ import { modelFilesPresent } from './embed_model.js'
 import { isEmbedFresh, oversizeEmbedSha } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { getDb } from './db.js'
+import { isZeroLengthDb, quickCheckDb } from './db_integrity.js'
 import { indexSizeBytes } from './index_reclaim.js'
 import type { DoctorResult } from './doctor_result.js'
 
@@ -122,6 +123,13 @@ export function checkDbExists(dataDir: string, maxDbSizeMb?: number): DoctorResu
     }
   }
   const sizeBytes = indexSizeBytes(dbPath)
+  if (isZeroLengthDb(dbPath)) {
+    return {
+      name: 'Database',
+      status: 'warn',
+      message: `global.db at ${dbPath} is empty (0 bytes); token-goat creates a fresh database in it on next use, so run token-goat index to rebuild this project's index`,
+    }
+  }
   const SQLITE_HEADER = 'SQLite format 3\0'
   let header = ''
   let headerBytes = Buffer.alloc(0)
@@ -142,7 +150,16 @@ export function checkDbExists(dataDir: string, maxDbSizeMb?: number): DoctorResu
     return {
       name: 'Database',
       status: 'fail',
-      message: `global.db at ${dbPath} is not a valid SQLite file (${sizeBytes} bytes) — likely truncated or corrupt`,
+      message: `global.db at ${dbPath} is not a valid SQLite file (${sizeBytes} bytes) — likely truncated or corrupt; run token-goat doctor --repair to move it aside and rebuild the index`,
+    }
+  }
+  // A valid header says nothing about the pages behind it: quick_check is what turns a malformed index into a failed row instead of a healthy one whose every other check warns.
+  const integrity = quickCheckDb(dbPath)
+  if (!integrity.ok) {
+    return {
+      name: 'Database',
+      status: 'fail',
+      message: `global.db at ${dbPath} is malformed (${integrity.detail}); run token-goat doctor --repair to move it aside and rebuild the index`,
     }
   }
   // An index that has grown into the gigabytes is not merely a disk-space matter: every reindex transaction scales with it, and once a write outlasts db.ts's 15s busy_timeout the failure presents to the user as an unexplained "database is locked" plus long stalls during `token-goat index`. Surface the size directly, because the symptom points nowhere near the cause. A healthy index is tens of MB; exceeding max_db_size_mb (default 1500 MB) means something is storing far more per symbol than it should.

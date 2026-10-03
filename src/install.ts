@@ -15,7 +15,7 @@ import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
 import { resolveOnPath, spawnResolvedSync } from './process_util.js'
 import type { HookEventName } from './types.js'
-import { ensureDirRecordingCreation, recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty } from './bridges/created_configs.js'
+import { ensureDirRecordingCreation, recordCreatedBy, recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, removeCreatedTree } from './bridges/created_configs.js'
 import { assertWriteInScope, withInstallScope } from './bridges/project_scope_guard.js'
 import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, extractErrorMessage, hookCommandFor, hookExecPartsFor, removeFileInScope, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
 import { commandHookFields, isOwnHookEntry } from './util_config.js'
@@ -396,7 +396,7 @@ function installHooksScoped(scope: HookScope): InstallResult {
   // Only touch settings.json when its own content actually changed: a run that merely repaired the shim must not rewrite (and re-timestamp) a file the user may be watching or version-controlling.
   if (settingsChanged) {
     settings.hooks = hooks
-    writeJsonSettings(p, settings)
+    recordCreatedBy([p], () => writeJsonSettings(p, settings))
   }
   return { scope, settingsPath: p, alreadyInstalled: false, ...(skippedEvents.length > 0 ? { skippedEvents } : {}) }
 }
@@ -426,7 +426,10 @@ function uninstallHooksScoped(scope: HookScope): boolean {
     })
   }
 
-  return finishHookUninstall(p, settings, removed) || removedScript
+  const result = finishHookUninstall(p, settings, removed) || removedScript
+  // A settings file left holding `{}`, and the `.claude` directory above it, go only when the ledger says this install created them.
+  removeCreatedTree([p])
+  return result
 }
 
 /** The end of every JSON-settings hook uninstall, whatever it found. When `removed` says token-goat's entries were just stripped from `settings`, the file is written back, dropping a `hooks` map left empty. Either way the timestamped backups token-goat made of the file are deleted: they are its own litter, so they leave with it, including when an earlier uninstall or the user already took the entries out. The Claude Code, Gemini CLI and Qwen Code uninstalls all end here and return what this returns, which is `removed`. `write` defaults to the plain JSON writer; the Gemini and Qwen uninstalls pass the comment-keeping one. */
@@ -507,9 +510,9 @@ export function hookEventGaps(scope: HookScope = 'user'): HookEventGaps | null {
 const CLAUDE_MD_BEGIN = '<!-- token-goat-begin -->'
 const CLAUDE_MD_END = '<!-- token-goat-end -->'
 
-/** Absolute path to `~/.claude/CLAUDE.md`. */
-export function claudeMdPath(): string {
-  return path.join(claudeConfigDir(), 'CLAUDE.md')
+/** Absolute path to `~/.claude/CLAUDE.md` (or `$CLAUDE_CONFIG_DIR/CLAUDE.md`), or with `'project'` the `CLAUDE.md` at the working directory's root, which Claude Code loads as that project's memory. */
+export function claudeMdPath(scope: HookScope = 'user'): string {
+  return scope === 'user' ? path.join(claudeConfigDir(), 'CLAUDE.md') : path.join(normalizeDarwinSystemAlias(process.cwd()), 'CLAUDE.md')
 }
 
 function buildClaudeMdBlock(): string {
@@ -550,21 +553,25 @@ export interface ClaudeMdInstallResult {
   readonly alreadyInstalled: boolean
 }
 
-/** Add or refresh the token-goat block in `~/.claude/CLAUDE.md`, preserving any existing content. */
-export function installClaudeMd(): ClaudeMdInstallResult {
-  const p = claudeMdPath()
-  const existed = fs.existsSync(p)
-  const changed = writeClaudeMdBlock(p)
-  if (!existed) recordCreatedConfig(p)
-  return { path: p, alreadyInstalled: !changed }
+/** Add or refresh the token-goat block in the `scope` CLAUDE.md, preserving any existing content. */
+export function installClaudeMd(scope: HookScope = 'user'): ClaudeMdInstallResult {
+  return withInstallScope(hookScopeRoot(scope), () => {
+    const p = claudeMdPath(scope)
+    const existed = fs.existsSync(p)
+    const changed = writeClaudeMdBlock(p)
+    if (!existed) recordCreatedConfig(p)
+    return { path: p, alreadyInstalled: !changed }
+  })
 }
 
-/** Remove the token-goat block from `~/.claude/CLAUDE.md`, leaving the rest of the file intact, and the file itself when {@link installClaudeMd} created it and nothing but the block was ever in it. */
-export function uninstallClaudeMd(): boolean {
-  const p = claudeMdPath()
-  const stripped = stripClaudeMdBlock(p)
-  removeCreatedIfEmpty(p)
-  return stripped
+/** Remove the token-goat block from the `scope` CLAUDE.md, leaving the rest of the file intact, and the file itself when {@link installClaudeMd} created it and nothing but the block was ever in it. */
+export function uninstallClaudeMd(scope: HookScope = 'user'): boolean {
+  return withInstallScope(hookScopeRoot(scope), () => {
+    const p = claudeMdPath(scope)
+    const stripped = stripClaudeMdBlock(p)
+    removeCreatedIfEmpty(p)
+    return stripped
+  })
 }
 
 /** Find token-goat marker blocks sitting in some markdown file *other* than `~/.claude/CLAUDE.md`. The block is plain markdown in a file the user is explicitly told they own and edit, so relocating it into a tidier "reference" file is a natural thing to do -- and it silently breaks: {@link installClaudeMd} and {@link uninstallClaudeMd} both resolve the single hardcoded {@link claudeMdPath}, so a relocated copy is never refreshed (it freezes at whatever version was current when it moved) and never removed on uninstall. Worse, the next install sees CLAUDE.md missing its block and appends a fresh one, leaving the guidance duplicated across two files with only one of them live. Detection only -- callers report; nothing here edits or deletes a user's file. Matches a real block, not a mention of one: both markers must appear on their own lines. Prose that references `<!-- token-goat-begin -->` inline -- a pointer explaining where the managed block actually lives, which is exactly what a user is told to leave behind after relocating one -- would otherwise be flagged forever as the very thing it documents. Bounded walk: skips `node_modules`/`.git`, caps depth, and ignores symlinked directories (`Dirent.isDirectory()` is false for a symlink), so it cannot loop. */
@@ -624,14 +631,14 @@ function skillMdContent(): string {
   return CANONICAL_SKILL_MD
 }
 
-/** Absolute path to the token-goat skill directory, `~/.claude/skills/token-goat`. */
-export function skillDir(): string {
-  return path.join(claudeConfigDir(), 'skills', 'token-goat')
+/** Absolute path to the token-goat skill directory, `~/.claude/skills/token-goat`, or with `'project'` the `.claude/skills/token-goat` under the working directory. */
+export function skillDir(scope: HookScope = 'user'): string {
+  return path.join(scope === 'user' ? claudeConfigDir() : path.join(normalizeDarwinSystemAlias(process.cwd()), '.claude'), 'skills', 'token-goat')
 }
 
-/** Absolute path to `~/.claude/skills/token-goat/SKILL.md`. */
-export function skillPath(): string {
-  return path.join(skillDir(), 'SKILL.md')
+/** Absolute path to `~/.claude/skills/token-goat/SKILL.md` (the `scope` skill directory's file). */
+export function skillPath(scope: HookScope = 'user'): string {
+  return path.join(skillDir(scope), 'SKILL.md')
 }
 
 /** The frontmatter `description:` line of the installed skill as it sits on disk, or null when the skill is absent or its frontmatter has none. */
@@ -658,9 +665,13 @@ export interface SkillInstallResult {
   readonly alreadyInstalled: boolean
 }
 
-/** Write (or refresh) the token-goat skill at `~/.claude/skills/token-goat/SKILL.md`. */
-export function installSkill(): SkillInstallResult {
-  const p = skillPath()
+/** Write (or refresh) the token-goat skill at the `scope` `skills/token-goat/SKILL.md`. */
+export function installSkill(scope: HookScope = 'user'): SkillInstallResult {
+  return withInstallScope(hookScopeRoot(scope), () => installSkillScoped(scope))
+}
+
+function installSkillScoped(scope: HookScope): SkillInstallResult {
+  const p = skillPath(scope)
   let existing: string | null = null
   try {
     existing = fs.readFileSync(p, 'utf8')
@@ -669,25 +680,28 @@ export function installSkill(): SkillInstallResult {
   }
   const skillContent = skillMdContent()
   if (existing === skillContent) return { path: p, alreadyInstalled: true }
-  ensureDirRecordingCreation(path.dirname(skillDir()))
-  ensureDirSync(skillDir())
+  recordCreatedBy([skillDir(scope)], () => ensureDirSync(skillDir(scope)))
   backupFile(p)
   atomicWriteText(p, skillContent)
   return { path: p, alreadyInstalled: false }
 }
 
-/** Remove the token-goat skill directory entirely, then the `skills` directory holding it when {@link installSkill} created that and nothing else lives in it. */
-export function uninstallSkill(): boolean {
-  const dir = skillDir()
+/** Remove the token-goat skill directory entirely, then each directory above it that {@link installSkill} created and that nothing else lives in. */
+export function uninstallSkill(scope: HookScope = 'user'): boolean {
+  return withInstallScope(hookScopeRoot(scope), () => uninstallSkillScoped(scope))
+}
+
+function uninstallSkillScoped(scope: HookScope): boolean {
+  const dir = skillDir(scope)
   const present = fs.existsSync(dir)
   if (present) {
     // The directory removal below takes SKILL.md's own timestamped backups with it; this only drops the now-dangling ledger entries for them, mirroring uninstallHooks's cleanup.
-    removeCreatedBackups(skillPath())
-    // Written out rather than routed through a helper because no helper fits: this is a RECURSIVE DIRECTORY removal and `removeFileInScope` is deliberately file-only. The check is the same one the write helpers make. It is a no-op in the user scope this path actually runs in, and that is the point -- it stops a future project-scoped skill directory being deleted through a checked-in directory symlink without anyone having to notice this line again.
+    removeCreatedBackups(skillPath(scope))
+    // Written out rather than routed through a helper because no helper fits: this is a RECURSIVE DIRECTORY removal and `removeFileInScope` is deliberately file-only. The check is the same one the write helpers make. It is a no-op in user scope, and in project scope it stops the project's skill directory being deleted through a checked-in directory symlink.
     assertWriteInScope(dir)
     fs.rmSync(dir, { recursive: true, force: true })
   }
-  // Whether or not the skill directory was still there: an empty `skills` directory this install created is litter either way.
-  removeCreatedIfEmpty(path.dirname(dir))
+  // Whether or not the skill directory was still there: an empty `skills` directory, and a `.claude` directory above it, that this install created are litter either way.
+  removeCreatedTree([dir])
   return present
 }

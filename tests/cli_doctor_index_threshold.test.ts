@@ -9,6 +9,7 @@ import { getDb } from '../src/db.js'
 import { reclaimIndex, indexSizeBytes } from '../src/index_reclaim.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { clearUpdateCheck, seedUpdateCheck } from './helpers/update-check.js'
+import { writeRealDb } from './helpers/real-db.js'
 
 describe('doctor index size threshold and auto-reclaim', () => {
   let tmpHome: string
@@ -58,10 +59,8 @@ describe('doctor index size threshold and auto-reclaim', () => {
 
   it('checkDbExists warns when global.db exceeds custom max_db_size_mb threshold', () => {
     const dbPath = path.join(tmpHome, 'global.db')
-    // Write valid sqlite header followed by padding to simulate 2 MB db
-    const header = Buffer.from('SQLite format 3\0')
-    const padding = Buffer.alloc(2 * 1024 * 1024 - header.length)
-    fs.writeFileSync(dbPath, Buffer.concat([header, padding]))
+    // A real SQLite file of about 2 MB: doctor now runs quick_check, so a header followed by padding fails as malformed.
+    writeRealDb(dbPath, 2 * 1024 * 1024)
 
     // With threshold 1 MB, it should warn
     const warnResult = checkDbExists(tmpHome, 1)

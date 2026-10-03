@@ -43,6 +43,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | Module | Role |
 |--------|------|
 | [`src/constants.ts`](src/constants.ts) | `dataDir()` (platform-keyed data root), `globalDbPath()`, `configPath()`, `ENV_KEYS` |
+| [`src/db_integrity.ts`](src/db_integrity.ts) | Integrity probe and quarantine for the global index database. |
 | [`src/db.ts`](src/db.ts) | SQLite connection cache (`getDb()`/`closeDb()`/`closeAllDbs()`); `initConnection()` applies WAL, `SCHEMA_SQL` (files/symbols/refs/chunks), `FTS_SQL` (symbols_fts FTS5 virtual table plus sync triggers), and optional sqlite-vec `chunk_vectors` table |
 | [`src/index_reader.ts`](src/index_reader.ts) | Query layer over the index DB: `querySymbols()`, `queryRefs()`, `getFileEntry()`, `searchSymbolsFts()` |
 | [`src/section_reader.ts`](src/section_reader.ts) | Section/heading extraction (`readSection()`, `listAllSections()`) for `token-goat section` |

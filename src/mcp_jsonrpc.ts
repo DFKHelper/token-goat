@@ -43,7 +43,8 @@ export interface JsonRpcResponse {
 
 export interface JsonRpcErrorResponse {
   jsonrpc: '2.0'
-  id: JsonRpcId
+  /** Absent when the request's id could not be read, e.g. a line that was not a JSON object at all: the MCP schema types an error's id as optional and has no null, and a null would fail an SDK client's own parse of the reply. */
+  id?: JsonRpcId | undefined
   error: { code: number; message: string; data?: unknown }
 }
 
@@ -198,6 +199,11 @@ export class McpServer {
   }
 
   private async handleMessage(message: JsonRpcMessage): Promise<void> {
+    // A line can parse to any JSON value, and `'method' in null` throws inside a floating promise, which kills the process. A batch array lands here too: this server speaks no batches, and JSON-RPC 2.0 says an unusable request is answered with -32600, and with no readable id the reply carries none.
+    if (message === null || typeof message !== 'object' || Array.isArray(message)) {
+      await this.sendError(undefined, JSONRPC_INVALID_REQUEST, 'Invalid Request: a JSON-RPC message must be a JSON object')
+      return
+    }
     // One check, and it is the whole rule: only a message carrying an id gets a reply. That covers both things we drop. Responses to requests we never send have an id but no method. Notifications (`initialized`, `cancelled`, and whatever a future client adds) have a method but no id, and the JSON-RPC spec forbids replying to one at all -- so an unknown notification must be dropped silently rather than answered with "method not found", which is the mistake a `default:` branch invites. There was a separate `isNotification` guard above this line; it was removed because it could never fire, since a notification fails the id test anyway, and a branch that cannot fire is not a guard however much it reads like one.
     if (!isRequest(message)) return
     const { id, method } = message
@@ -226,8 +232,8 @@ export class McpServer {
     }
   }
 
-  private async sendError(id: JsonRpcId, code: number, message: string): Promise<void> {
-    await this.send({ jsonrpc: '2.0', id, error: { code, message } })
+  private async sendError(id: JsonRpcId | undefined, code: number, message: string): Promise<void> {
+    await this.send(id === undefined ? { jsonrpc: '2.0', error: { code, message } } : { jsonrpc: '2.0', id, error: { code, message } })
   }
 
   private initializeResult(params: Record<string, unknown>): Record<string, unknown> {

@@ -7,6 +7,7 @@ import { McpServer as SdkMcpServer } from '@modelcontextprotocol/sdk/server/mcp.
 import { z } from 'zod'
 
 import {
+  JSONRPC_INVALID_REQUEST,
   JSONRPC_METHOD_NOT_FOUND,
   LATEST_PROTOCOL_VERSION,
   McpServer,
@@ -257,6 +258,22 @@ describe('mcp_jsonrpc protocol handling', () => {
     // A clean "method not found" is the contract for the surfaces we deliberately do not implement. A stub that answered `resources/list` with an empty list would tell a client we have no resources, which is a different and false statement.
     expect((sent[1] as any).error.code).toBe(JSONRPC_METHOD_NOT_FOUND)
     expect((sent[1] as any).error.message).toContain('resources/list')
+  })
+
+  it('answers a message that is not a JSON object with -32600 and no id, and keeps serving', async () => {
+    const { transport, sent, deliver } = rawTransport()
+    const server = new McpServer({ name: 't', version: '1' })
+    await server.connect(transport)
+    // Provenance: HAND-DERIVED from JSON-RPC 2.0 section 5 (an unreadable id is answered with -32600), section 4.2 (a batch is an Array), and the MCP schema's JSONRPCError (id optional, never null; the SDK's own parse of a reply rejects a null). The values are the four lines the bug report sent to the real `mcp-serve`: null, 42, "x", [].
+    for (const raw of [null, 42, 'x', []]) deliver(raw as unknown as JsonRpcMessage)
+    deliver({ jsonrpc: '2.0', id: 9, method: 'ping' })
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+    expect(sent).toHaveLength(5)
+    for (const reply of sent.slice(0, 4)) {
+      expect('id' in (reply as object)).toBe(false)
+      expect((reply as any).error.code).toBe(JSONRPC_INVALID_REQUEST)
+    }
+    expect(sent[4]).toEqual({ jsonrpc: '2.0', id: 9, result: {} })
   })
 
   it('never replies to a notification', async () => {

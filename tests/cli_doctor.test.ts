@@ -16,6 +16,7 @@ import { createRequire } from 'node:module'
 import { dirtyQueuePathFor } from '../src/dirty_queue.js'
 import { drainHeartbeatPathFor, workerPidPath } from '../src/worker_lifecycle.js'
 import { getDb } from '../src/db.js'
+import { writeRealDb } from './helpers/real-db.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { setTsModuleForTesting } from '../src/ts_compiler.js'
 import { setSkillOutputsDirForTesting } from '../src/skill_cache.js'
@@ -207,7 +208,7 @@ describe('cli_doctor', () => {
   describe('checkDbExists', () => {
     it('returns ok when database exists', () => {
       const dbPath = path.join(tempDir, 'global.db')
-      fs.writeFileSync(dbPath, 'SQLite format 3\0mock db content')
+      writeRealDb(dbPath)
 
       const result = checkDbExists(tempDir)
       expect(result.status).toBe('ok')
@@ -224,21 +225,24 @@ describe('cli_doctor', () => {
 
     it('includes file size in message', () => {
       const dbPath = path.join(tempDir, 'global.db')
-      fs.writeFileSync(dbPath, 'SQLite format 3\0' + 'x'.repeat(2048))
+      writeRealDb(dbPath, 2048)
 
       const result = checkDbExists(tempDir)
       expect(result.message).toMatch(/\d+ KB/)
     })
 
     // Regression (task #172): checkDbExists only checked fs.existsSync + reported size, so a 0-byte or truncated file (e.g. from a crash mid-creation) still reported 'ok'. It now validates the SQLite magic header ("SQLite format 3\0") the same way checkConfigValid parses TOML content instead of just checking file presence.
-    it('returns fail (not ok) for a 0-byte global.db', () => {
+    // CAPTURE (round 12 dogfood, built bundle, isolated home): `doctor` on a 0-byte global.db failed this row and named --repair, then its own later checks opened the file and left a valid 303,104-byte database behind, so --repair found nothing to do. SQLite opens a zero-length file as an empty database; the row says so instead of calling it corrupt.
+    it('returns warn (not ok, not fail) for a 0-byte global.db, naming the index rebuild rather than --repair', () => {
       const dbPath = path.join(tempDir, 'global.db')
       fs.writeFileSync(dbPath, '')
 
       const result = checkDbExists(tempDir)
       expect(result.status).not.toBe('ok')
-      expect(result.status).toBe('fail')
-      expect(result.message).toContain('not a valid SQLite file')
+      expect(result.status).toBe('warn')
+      expect(result.message).toContain('empty (0 bytes)')
+      expect(result.message).toContain('token-goat index')
+      expect(result.message).not.toContain('--repair')
     })
 
     it('returns fail (not ok) for a truncated global.db missing the SQLite header', () => {

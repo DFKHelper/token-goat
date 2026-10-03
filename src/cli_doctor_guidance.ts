@@ -1,6 +1,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { DoctorResult } from './doctor_result.js'
+import { recordCreatedBy } from './bridges/created_configs.js'
 import { buildGuidanceBlock } from './bridges/guidance_block.js'
 import { upsertDelimitedBlock } from './util.js'
 import { loadConfig } from './config.js'
@@ -182,11 +183,11 @@ export function repairInstructionGates(rootDir: string = process.cwd()): { repai
         fallbackToolClause: target.fallbackToolClause,
         gdrive,
       })
-      const parentDir = path.dirname(target.fullPath)
-      if (!fs.existsSync(parentDir)) {
-        fs.mkdirSync(parentDir, { recursive: true })
-      }
-      upsertDelimitedBlock(target.fullPath, target.beginMarker, target.endMarker, block)
+      // Recorded as created when it was not there before, so `uninstall -p` removes the file once stripping the block leaves it empty, as it does for the CLAUDE.md install writes.
+      recordCreatedBy([target.fullPath], () => {
+        fs.mkdirSync(path.dirname(target.fullPath), { recursive: true })
+        upsertDelimitedBlock(target.fullPath, target.beginMarker, target.endMarker, block)
+      })
       repairs.push(`Injected token-goat routing gate into ${target.relativePath}`)
     } catch (e) {
       errors.push(`Failed to inject routing gate into ${target.relativePath}: ${e instanceof Error ? e.message : String(e)}`)

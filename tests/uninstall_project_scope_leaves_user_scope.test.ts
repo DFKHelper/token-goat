@@ -108,7 +108,9 @@ describe('uninstall -p/--project leaves user-scope integrations alone', () => {
     expect(output).not.toContain('Removed token-goat block from CLAUDE.md')
     expect(output).not.toContain('Removed token-goat skill')
     expect(output).not.toMatch(/Removed token-goat (Codex|Gemini|Qwen|Kimi|OpenClaw|opencode|Grok|Antigravity|Zed)/)
-    expect(output).toContain('NOTE: the token-goat CLAUDE.md block and skill are user-scope and were not touched')
+    // This project never had a project-scope install, so there is nothing of the project's to remove; the user's block and skill (compared byte for byte above) are not what -p names.
+    expect(output).toContain('No token-goat block in CLAUDE.md to remove.')
+    expect(output).toContain('No token-goat skill to remove.')
     expect(output).toContain('--codex, --gemini, --qwen, --kimi, --openclaw, --opencode, --grok, --antigravity, --zed are user-scope only')
     // One summary NOTE instead of a "still installed" line per skipped harness.
     expect(output).not.toContain('is still installed')
@@ -122,6 +124,7 @@ describe('uninstall -p/--project leaves user-scope integrations alone', () => {
     const userSettingsBefore = fs.readFileSync(path.join(claude, 'settings.json'), 'utf8')
     const claudeMdBefore = fs.readFileSync(path.join(claude, 'CLAUDE.md'), 'utf8')
     expect(claudeMdBefore).toContain('token-goat')
+    expect(fs.readFileSync(path.join(userProject, 'CLAUDE.md'), 'utf8')).toContain('token-goat')
     const skillsBefore = fs.readdirSync(path.join(claude, 'skills'))
     expect(skillsBefore.length).toBeGreaterThan(0)
 
@@ -131,6 +134,57 @@ describe('uninstall -p/--project leaves user-scope integrations alone', () => {
     expect(fs.readFileSync(path.join(claude, 'settings.json'), 'utf8')).toBe(userSettingsBefore)
     expect(fs.readFileSync(path.join(claude, 'CLAUDE.md'), 'utf8')).toBe(claudeMdBefore)
     expect(fs.readdirSync(path.join(claude, 'skills'))).toEqual(skillsBefore)
+  })
+
+  // Provenance: HAND-DERIVED. Paths follow the project-scope convention install already uses for the hooks file (`<cwd>/.claude/settings.json`, src/install.ts::settingsPath) and Claude Code's documented project memory file `<cwd>/CLAUDE.md`; the expectations are "user home unchanged" and "project files gone", computed from the issue statement rather than from the implementation.
+  it('install -p writes the gate block and skill into the project only, and uninstall -p takes them back out', async () => {
+    const userBefore = userScopeSnapshot()
+    await runCli(['install', '-p', '--no-index'])
+
+    const projectMd = path.join(userProject, 'CLAUDE.md')
+    const projectSkill = path.join(userProject, '.claude', 'skills', 'token-goat', 'SKILL.md')
+    expect(fs.readFileSync(projectMd, 'utf8')).toContain('<!-- token-goat-begin -->')
+    expect(fs.readFileSync(projectSkill, 'utf8')).toContain('name: token-goat')
+    // Only the documented shared shim may appear under the user's Claude config dir.
+    const userAfterInstall = [...userScopeSnapshot().keys()].filter((f) => !userBefore.has(f))
+    expect(userAfterInstall.every((f) => f.includes(`${path.sep}hooks${path.sep}`)), userAfterInstall.join(', ')).toBe(true)
+    expect(fs.existsSync(path.join(claude, 'CLAUDE.md'))).toBe(false)
+    expect(fs.existsSync(path.join(claude, 'skills'))).toBe(false)
+
+    const output = await runCli(['uninstall', '-p'])
+    expect(output).toContain('Removed token-goat block from CLAUDE.md.')
+    expect(output).toContain('Removed token-goat skill.')
+    expect(fs.existsSync(projectMd)).toBe(false)
+    expect(fs.existsSync(path.join(userProject, '.claude', 'skills'))).toBe(false)
+    // The `.claude` directory, and the settings.json the hooks went into, did not exist before install -p, so nothing of them is left behind.
+    expect(fs.existsSync(path.join(userProject, '.claude'))).toBe(false)
+  })
+
+  // Provenance: HAND-DERIVED from the issue statement: a directory or file the user had before install is theirs, so uninstall may take out only what install put in. The settings.json content is a minimal user hooks file written for this test.
+  it('uninstall -p leaves a .claude directory and settings.json the user already had', async () => {
+    const dotClaude = path.join(userProject, '.claude')
+    fs.mkdirSync(dotClaude)
+    const notes = path.join(dotClaude, 'notes.md')
+    fs.writeFileSync(notes, 'mine\n')
+    const settings = path.join(dotClaude, 'settings.json')
+    fs.writeFileSync(settings, '{}\n')
+    await runCli(['install', '-p', '--no-index'])
+    expect(fs.readFileSync(settings, 'utf8')).toContain('token-goat')
+    await runCli(['uninstall', '-p'])
+    expect(fs.readFileSync(notes, 'utf8')).toBe('mine\n')
+    expect(fs.existsSync(settings)).toBe(true)
+    expect(fs.readFileSync(settings, 'utf8')).not.toContain('token-goat')
+    expect(fs.existsSync(path.join(dotClaude, 'skills'))).toBe(false)
+  })
+
+  it('uninstall -p keeps a project CLAUDE.md the user already had, minus our block', async () => {
+    const projectMd = path.join(userProject, 'CLAUDE.md')
+    fs.writeFileSync(projectMd, '# My project\n\nBuild with make.\n')
+    await runCli(['install', '-p', '--no-index'])
+    expect(fs.readFileSync(projectMd, 'utf8')).toContain('<!-- token-goat-begin -->')
+    await runCli(['uninstall', '-p'])
+    expect(fs.readFileSync(projectMd, 'utf8')).toContain('Build with make.')
+    expect(fs.readFileSync(projectMd, 'utf8')).not.toContain('token-goat')
   })
 
   it('an explicitly named user-only harness is still removed alongside --all --project', async () => {

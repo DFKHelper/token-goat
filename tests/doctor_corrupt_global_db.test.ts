@@ -55,10 +55,11 @@ describe('doctor with a corrupt global.db', () => {
     const database = results.find((r) => r.name === 'Database')
     expect(database?.status).toBe('fail')
     expect(database?.message).toContain('not a valid SQLite file')
+    expect(database?.message).toContain('doctor --repair')
     expect(results.some((r) => r.name === 'Savings receipt')).toBe(true)
   })
 
-  it('doctor and doctor --repair print the check list and return the failure code, not a thrown error', async () => {
+  it('doctor prints the check list and returns the failure code, and --repair moves the file aside byte for byte', async () => {
     const lines: string[] = []
     vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
       lines.push(args.map(String).join(' '))
@@ -68,7 +69,11 @@ describe('doctor with a corrupt global.db', () => {
     expect(lines.join('\n')).toMatch(/\[FAIL\] Database/)
     lines.length = 0
     const repaired = await runDoctorAndExit({ dataDir: path.dirname(globalDbPath()), rootDir: root, processes: [], repair: true })
-    expect(repaired).toBe(1)
-    expect(lines.join('\n')).toMatch(/\[FAIL\] Database/)
+    expect(typeof repaired).toBe('number')
+    expect(lines.join('\n')).toContain('Moved the malformed global.db aside')
+    expect(lines.join('\n')).not.toMatch(/\[FAIL\] Database/)
+    const moved = fs.readdirSync(path.dirname(globalDbPath())).filter((f) => f.startsWith('global.db.') && f.endsWith('.malformed'))
+    expect(moved).toHaveLength(1)
+    expect(fs.readFileSync(path.join(path.dirname(globalDbPath()), moved[0] as string), 'utf8')).toBe(GARBAGE)
   })
 })

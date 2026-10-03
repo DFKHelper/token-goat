@@ -4,7 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { recordCreatedBy, removeCreatedBackups, removeCreatedTree, takeCreatedConfig } from './created_configs.js'
-import { bundledCliPath, dropEmptyServers, hasManagedServer, managedServerEntry, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
+import { bundledCliPath, dropEmptyServers, hasManagedServer, managedServerEntry, noteRootKeyCreation, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { atomicWriteText, backupFile, ensureDirSync, removeFileInScope } from '../util.js'
 
@@ -85,6 +85,7 @@ function installCursorScoped(opts: CursorScopeOptions): CursorInstallResult {
       ensureDirSync(path.dirname(mcpPath))
       backupFile(mcpPath)
       atomicWriteText(mcpPath, nextText)
+      noteRootKeyCreation(mcpPath, config, MCP_SERVERS_KEY)
     })
   }
 
@@ -103,7 +104,7 @@ function uninstallCursorScoped(opts: CursorScopeOptions): boolean {
   const config = readServersJson(mcpPath, 'Cursor')
   if (!isCursorManagedServer(serversOf(config, mcpPath, 'Cursor', MCP_SERVERS_KEY)[TOKEN_GOAT_ENTRY_KEY])) return false
 
-  const next = dropEmptyServers(setTokenGoatServer(config.text, undefined, MCP_SERVERS_KEY), MCP_SERVERS_KEY)
+  const next = dropEmptyServers(setTokenGoatServer(config.text, undefined, MCP_SERVERS_KEY), mcpPath, MCP_SERVERS_KEY)
   if (/^\s*\{\s*\}\s*$/.test(next) && takeCreatedConfig(mcpPath)) {
     removeFileInScope(mcpPath)
   } else {

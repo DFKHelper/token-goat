@@ -61,6 +61,21 @@ export function takeCreatedConfig(filePath: string): boolean {
   return true
 }
 
+/** The ledger key for "this install added the `rootKey` object to `filePath`": the file's own key plus a marker, so it can never equal a real path or a backup entry. */
+function rootKeyMarker(filePath: string, rootKey: string): string {
+  return `${filePath}#root-key=${rootKey}`
+}
+
+/** Remember that an install added the `rootKey` object (e.g. `servers`) to `filePath`, which `dropEmptyServers` needs on uninstall: once the managed entry is gone, an object install added and one the user already had are the same bytes. */
+export function recordCreatedRootKey(filePath: string, rootKey: string): void {
+  recordCreatedConfig(rootKeyMarker(filePath, rootKey))
+}
+
+/** True when an install added the `rootKey` object to `filePath`, forgetting the marker in the same step. */
+export function takeCreatedRootKey(filePath: string, rootKey: string): boolean {
+  return takeCreatedConfig(rootKeyMarker(filePath, rootKey))
+}
+
 /** Remember that token-goat wrote the backup at `backupPath`. Backups share the created-configs ledger because they pose the identical question. Once written, a `<config>.bak.<stamp>` token-goat made is indistinguishable on disk from one a user made by hand, so uninstall cannot tell them apart by name -- and a glob over `*.bak.*` would delete the user's. Creation is recorded instead, exactly as it is for a config file. */
 export function recordCreatedBackup(backupPath: string): void {
   recordCreatedConfig(backupPath)

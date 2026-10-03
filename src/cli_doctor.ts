@@ -43,6 +43,7 @@ import { getDb } from './db.js'
 import { HOOK_PROBE_ENV, firstReceiptShownAt, readUnmappedTools, pruneStalePatternCoveredUnmappedTools } from './stats.js'
 import { claudeHookActivity, formatAgeSeconds, hookLatencyBreakdown, type HookLatencyRow } from './hook_latency.js'
 import { checkNativeHooks } from './cli_doctor_native.js'
+import { hasSqliteHeader, isZeroLengthDb, quarantineMalformedDb, quickCheckDb, recreateDb } from './db_integrity.js'
 import { checkDbExists, checkSymbolCount, checkDirtyQueueHealth, checkEmbeddingCoverage, checkParserFreshness } from './cli_doctor_index.js'
 import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
 import { reclaimIndex, indexSizeBytes } from './index_reclaim.js'
@@ -888,6 +889,23 @@ export async function runDoctorRepair(opts?: {
     }
   }
 
+  // 5b. A database whose pages are malformed, or a file with no SQLite header at all (truncated, or written over), fails the Database check; move it aside (never deleted) and start a fresh one for the index to refill.
+  let rebuiltDb = false
+  if (fs.existsSync(dbPath) && !isZeroLengthDb(dbPath) && (!hasSqliteHeader(dbPath) || !quickCheckDb(dbPath).ok)) {
+    const quarantined = quarantineMalformedDb(dbPath, actualDataDir)
+    if (quarantined.status === 'quarantined') {
+      try {
+        recreateDb(dbPath)
+        rebuiltDb = true
+        repairs.push(`Moved the malformed global.db aside to ${displaySafeText(quarantined.quarantinePath)} and created a fresh one`)
+      } catch (e) {
+        errors.push(`Moved the malformed global.db aside to ${displaySafeText(quarantined.quarantinePath)} but could not create a fresh one (${extractErrorMessage(e)}); run: token-goat index`)
+      }
+    } else {
+      errors.push(`global.db is malformed and could not be moved aside (${quarantined.error}); stop token-goat (token-goat worker stop), rename ${displaySafeText(dbPath)} by hand, then run: token-goat index`)
+    }
+  }
+
   // 6. Repair missing instruction gates
   const gateRepair = repairInstructionGates(opts?.rootDir)
   repairs.push(...gateRepair.repairs)
@@ -902,11 +920,12 @@ export async function runDoctorRepair(opts?: {
   // 6c. Repair parser freshness mismatch by enqueuing project for background reindexing
   try {
     const actualRoot = path.resolve(opts?.rootDir ?? process.cwd())
-    const freshness = checkParserFreshness(dbPath, actualRoot)
-    if (freshness.status === 'warn') {
-      const { queueInstallIndex } = await import('./install_index.js')
-      queueInstallIndex(actualRoot)
-      repairs.push('Queued project for parser freshness reindexing')
+    if (rebuiltDb || checkParserFreshness(dbPath, actualRoot).status === 'warn') {
+      const { formatInstallIndexResult, queueInstallIndex } = await import('./install_index.js')
+      const queued = queueInstallIndex(actualRoot)
+      if (queued.status === 'queued') repairs.push(rebuiltDb ? 'Queued project for reindexing into the fresh database' : 'Queued project for parser freshness reindexing')
+      else if (queued.status === 'failed') errors.push(`Could not queue this project for reindexing (${queued.error}); run: token-goat index`)
+      else if (rebuiltDb) notices.push(formatInstallIndexResult(queued) ?? 'The project was not queued for reindexing; run: token-goat index')
     }
   } catch {
     // Non-fatal if queue or db unavailable

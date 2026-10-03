@@ -120,8 +120,8 @@ describe('every installer write site backs up the file it overwrites', () => {
     what: 'installer write sites (atomicWriteText/writeFileSync/writeIfDifferent/writeJsonSettings/upsertDelimitedBlock/stripDelimitedBlock calls in src/install.ts and src/bridges/*_install.ts)',
     items: allSites.map((s) => `${s.file}::${s.fn}::${s.call}`),
     floor: 30,
-    // EXACT, not substring. These two anchors were `mustInclude` and one of them was already a near-miss: `vscode_install.ts::installVscode` kept matching after every write in that function moved into a new `installVscodeScoped` wrapper, purely because the new name CONTAINS the old one. The anchor was green while pinned to a function with no write site left in it, and it would have survived deleting `installVscode` entirely. Repinned to `installVscodeScoped`, which is where the writes actually are, and matched at a `::` boundary so the next rename fails loudly instead.
-    mustIncludeExact: ['src/bridges/vscode_install.ts::installVscodeScoped', 'src/install.ts::installSkill'],
+    // EXACT, not substring. These two anchors were `mustInclude` and one of them was already a near-miss: `vscode_install.ts::installVscode` kept matching after every write in that function moved into a new `installVscodeScoped` wrapper, purely because the new name CONTAINS the old one. The anchor was green while pinned to a function with no write site left in it, and it would have survived deleting `installVscode` entirely. Repinned to `installVscodeScoped`, which is where the writes actually are, and matched at a `::` boundary so the next rename fails loudly instead. `installSkill` went the same way when `install -p` gave the skill a project destination: its writes now live in `installSkillScoped`, so that is the pinned member.
+    mustIncludeExact: ['src/bridges/vscode_install.ts::installVscodeScoped', 'src/install.ts::installSkillScoped'],
   })
 
   it('positive control: the population really does include a covered site (writeJsonSettings) and a would-be-uncovered one an exemption legitimately excuses', () => {

@@ -9,7 +9,7 @@ import { loadConfig } from '../config.js'
 import { canonicalProjectRoot, copilotHooksFilePaths, installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
 import { assertProjectScopeTarget, projectPathIsConsultable, projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, takeCreatedConfig } from './created_configs.js'
-import { dropEmptyServers, hasManagedServer, isManagedServer, isResidueServersJson, managedServer, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
+import { dropEmptyServers, hasManagedServer, isManagedServer, isResidueServersJson, managedServer, noteRootKeyCreation, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
 import { jsonc, stripBom } from '../jsonc_text.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
 
@@ -227,6 +227,7 @@ function installVscodeScoped(opts: VscodeScopeOptions): VscodeInstallResult {
   if (config.text !== next) {
     backupFile(mcpPath)
     atomicWriteText(mcpPath, next)
+    noteRootKeyCreation(mcpPath, config)
     if (!mcpExisted) recordCreatedConfig(mcpPath)
   }
   // Remembered before the write, like the mcp.json above: the project file and its `.github` directory are only token-goat's to remove if this install made them. User scope is left out: its frontmatter-only file is recognised by content on uninstall and its directory is shared.
@@ -266,7 +267,7 @@ function uninstallVscodeScoped(opts: VscodeScopeOptions): boolean {
     }
     if (servers && isManagedServer((servers as Record<string, unknown>)['token-goat'])) {
       // Walking back the entry used to leave an empty `servers` object behind as a residue file. The sibling Visual Studio bridge already dropped the empty key and deleted what it had created; this is the same rule, including the part that matters most: a file left empty is only deleted when this install is the one that made it.
-      const next = dropEmptyServers(updateConfig(config.text, undefined))
+      const next = dropEmptyServers(updateConfig(config.text, undefined), mcpPath)
       if (/^\s*\{\s*\}\s*$/.test(next) && takeCreatedConfig(mcpPath)) {
         removeFileInScope(mcpPath)
         if (opts.project === true) {

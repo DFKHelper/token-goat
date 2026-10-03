@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './created_configs.js'
-import { bundledCliPath, dropEmptyServers, hasManagedServer, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
+import { bundledCliPath, dropEmptyServers, hasManagedServer, noteRootKeyCreation, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 import { copilotCliUserRoot } from '../copilot_home.js'
 import { atomicWriteText, backupFile, ensureDirSync, removeFileInScope } from '../util.js'
 
@@ -60,6 +60,7 @@ export function installCopilotMcpServer(): boolean {
   if (!fileExisted) recordCreatedConfig(mcpPath)
   backupFile(mcpPath)
   atomicWriteText(mcpPath, nextText)
+  noteRootKeyCreation(mcpPath, config, MCP_SERVERS_KEY)
   return true
 }
 
@@ -69,7 +70,7 @@ export function uninstallCopilotMcpServer(): boolean {
   if (!fs.existsSync(mcpPath)) return false
   const config = readServersJson(mcpPath, LABEL)
   if (!isCopilotManagedServer(serversOf(config, mcpPath, LABEL, MCP_SERVERS_KEY)[TOKEN_GOAT_ENTRY_KEY])) return false
-  const next = dropEmptyServers(setTokenGoatServer(config.text, undefined, MCP_SERVERS_KEY), MCP_SERVERS_KEY)
+  const next = dropEmptyServers(setTokenGoatServer(config.text, undefined, MCP_SERVERS_KEY), mcpPath, MCP_SERVERS_KEY)
   if (/^\s*\{\s*\}\s*$/.test(next) && takeCreatedConfig(mcpPath)) {
     removeFileInScope(mcpPath)
   } else {

@@ -159,7 +159,8 @@ describe('the shared Claude Code shim outlives a project-scope uninstall while t
 
     expect(uninstallHooks('project')).toBe(true)
 
-    expect(fs.readFileSync(settingsPath('project'), 'utf8')).not.toContain('token-goat')
+    // Install created the project settings file, so uninstall removes it once it holds nothing.
+    expect(fs.existsSync(settingsPath('project'))).toBe(false)
     expect(fs.existsSync(claudeHookScriptPath())).toBe(true)
     expect(fs.readFileSync(user, 'utf8')).toBe(broken)
   })
