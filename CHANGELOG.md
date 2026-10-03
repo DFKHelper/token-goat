@@ -107,6 +107,8 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **`install --copilot --project` and `install --pi --project` wrote the user-scope config.** Both only listened to `--local`. Now `-p`/`--project` picks the project-local target too (`<project>/.github/hooks/token-goat.json`, `<project>/.pi/extensions/token-goat.ts`), on install and on uninstall, and the help text says so.
+- **A freshly `git init`-ed project was reported as "not a git repository".** When a project has no tracked files yet but is its own git top level, install now says exactly that, and names `git add` followed by `token-goat index`, or `token-goat index --walk`, as the way to get it indexed.
 - **`config-get` finds dotted keys in `.properties` files and `export`ed keys in `.env` files.** A key such as `spring.datasource.url` was split at its first dot into a section and a key, which `.properties` files do not have, so the lookup came back empty. Lines written as `key: value` or `key value` were also missed, and so was `export KEY=value` in a `.env` file. The whole key is now tried first, and all three separators and the `export` prefix are understood.
 - **The Grep hint names the symbol you searched for.** A search for `function beta` in an indexed file pointed at whichever symbol the file listed first. The hint now picks the symbol the pattern names.
 - **Deny hints only name commands that work on the file in question.** A `.properties` file was offered `outline`, a `.rst` file `outline`, a `.txt` file `section`, and a stylesheet `section`, none of which return anything for those files. They now get `config-get` or a grep, `section`, a grep, and `outline` respectively.

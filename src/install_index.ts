@@ -1,5 +1,7 @@
 /** First index of the project `install` runs in. Before this, a fresh install indexed nothing: session start deliberately reconciles only a project that already has symbols (see hooks_session_start.ts::reconcileNote), so every surgical-read command came back empty until the user found and ran `token-goat index` themselves, and a user who never did saw the product do nothing. The work is queued, never done inline: the files go onto the dirty queue through the same sweep session start uses (reconcile.ts::reconcileProject), and that sweep's batch enqueue wakes the background worker (hooks_index.ts::enqueueDirtyPathsSafe), so install returns in the time a `git ls-files` takes rather than the minutes a whole-repository parse takes. */
 
+import * as fs from 'node:fs'
+
 import { countSymbols } from './index_reader.js'
 import { globalDbPath } from './constants.js'
 import { loadConfig } from './config.js'
@@ -7,7 +9,8 @@ import { envBool } from './env.js'
 import { findProject, isUnderSystemTemp } from './project.js'
 import { reconcileProject } from './reconcile.js'
 import { getTrackedFiles } from './repomap.js'
-import { countNoun, extractErrorMessage, isUnderBlockedRoot } from './util.js'
+import { canonicalize, foldPath } from './path_containment.js'
+import { countNoun, extractErrorMessage, isUnderBlockedRoot, runGit } from './util.js'
 import { assertWalkableRoot } from './walk_index.js'
 
 /** Long enough to list any real repository: for a project with no rows every tracked file is "added" at the cost of one map lookup, so the budget bounds only a pathological tree. A truncated sweep saves its cursor and session start's own reconcile picks up the rest. */
@@ -18,8 +21,15 @@ export const INSTALL_INDEX_ENV = 'TOKEN_GOAT_INSTALL_INDEX'
 
 export type InstallIndexResult =
   | { status: 'queued'; root: string; files: number }
-  | { status: 'skipped'; reason: 'disabled' | 'no-project' | 'broad-root' | 'temp' | 'blocked' | 'indexed' | 'not-git' | 'nothing-queued'; root?: string }
+  | { status: 'skipped'; reason: 'disabled' | 'no-project' | 'broad-root' | 'temp' | 'blocked' | 'indexed' | 'not-git' | 'untracked' | 'nothing-queued'; root?: string }
   | { status: 'failed'; error: string }
+
+/** True when `root` is itself a git top level: a repository with nothing tracked yet, as opposed to a plain folder (or one nested in somebody else's repository, whose top level is a different directory). */
+function isOwnGitToplevel(root: string): boolean {
+  const toplevel = runGit(['rev-parse', '--show-toplevel'], { cwd: root })
+  if (toplevel.exitCode !== 0 || toplevel.stdout.trim() === '') return false
+  return foldPath(canonicalize(fs.realpathSync(toplevel.stdout.trim()))) === foldPath(canonicalize(fs.realpathSync(root)))
+}
 
 /** Queue the project containing `cwd` for its first index and wake the worker. Default on, with `--no-index` or TOKEN_GOAT_INSTALL_INDEX=0 as the opt-out: an install that indexes nothing is the failure this module exists to remove. Never throws: install has already succeeded by the time this runs, and a failure here must not turn that into an error. */
 export function queueInstallIndex(cwd: string, opts: { enabled?: boolean | undefined } = {}): InstallIndexResult {
@@ -39,7 +49,7 @@ export function queueInstallIndex(cwd: string, opts: { enabled?: boolean | undef
     // Already indexed means session start's reconcile owns it from here; sweeping it again at install would only duplicate that.
     if (countSymbols({ rootDir: root }, globalDbPath()) > 0) return { status: 'skipped', reason: 'indexed', root }
     // reconcileProject enumerates through git, so a non-git folder would come back as zero files and read as "nothing to do". It is said instead, because `index --walk` is the way in for that folder.
-    if (getTrackedFiles(root).length === 0) return { status: 'skipped', reason: 'not-git', root }
+    if (getTrackedFiles(root).length === 0) return { status: 'skipped', reason: isOwnGitToplevel(root) ? 'untracked' : 'not-git', root }
     const result = reconcileProject({ cwd: root, budgetMs: INSTALL_INDEX_BUDGET_MS })
     if (result.enqueued === 0) return { status: 'skipped', reason: 'nothing-queued', root }
     return { status: 'queued', root, files: result.enqueued }
@@ -65,6 +75,8 @@ export function formatInstallIndexResult(result: InstallIndexResult): string | n
       return `${result.root ?? 'This folder'} is under the system temp directory, so install does not index it automatically; run \`token-goat index\` there to index it.`
     case 'not-git':
       return `${result.root ?? 'This folder'} is not a git repository, so it was not indexed. Run \`token-goat index --walk\` inside it to index it anyway.`
+    case 'untracked':
+      return `${result.root ?? 'This folder'} is a git repository with no tracked files yet, so it was not indexed. Run \`token-goat index --walk\` inside it, or \`git add\` the files and run \`token-goat index\`.`
     case 'blocked':
       return `${result.root ?? 'This folder'} is excluded by worker.blocked_roots, so it was not indexed.`
     default:

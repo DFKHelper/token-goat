@@ -139,6 +139,7 @@ export async function cmdInstall(opts: {
   if (opts.project === true && opts.user === true) {
     throw new Error('install takes either -p/--project or --user, not both.')
   }
+  const localScope = opts.local === true || opts.project === true
 
   if (opts.detect === true) {
     const ecosystems = detectEcosystems({ projectRoot: process.cwd() })
@@ -292,9 +293,9 @@ export async function cmdInstall(opts: {
     printBridgeVerificationNotice('kimi')
   }
 
-  // --pi is additive on both install and uninstall, exactly like --codex. --local only has meaning combined with --pi; passed alone it is silently ignored (no dedicated validation), matching this CLI's existing convention of independently-parsed boolean flags (e.g. -p/--project has no combination guard with anything else either).
+  // --pi is additive on both install and uninstall, exactly like --codex. --local and -p/--project both select the project-local scope for --pi and --copilot; passed without either of those flags they are ignored.
   if (opts.pi === true) {
-    const piResult = installPi({ local: opts.local === true })
+    const piResult = installPi({ local: opts.local === true || opts.project === true })
     if (piResult.alreadyInstalled) {
       out(`pi extension already installed → ${piResult.extensionPath}`)
     } else {
@@ -316,13 +317,13 @@ export async function cmdInstall(opts: {
 
   // --copilot is additive, exactly like --codex above.
   if (opts.copilot === true) {
-    const copilotResult = installCopilotCli({ local: opts.local === true })
+    const copilotResult = installCopilotCli({ local: opts.local === true || opts.project === true })
     if (copilotResult.alreadyInstalled) {
       out(`Copilot CLI integration already installed → ${copilotResult.configPath}`)
     } else {
       out(`Installed token-goat Copilot CLI integration → ${[copilotResult.configPath, copilotResult.scriptPath, copilotResult.instructionsPath, ...(copilotResult.mcpConfigPath !== undefined ? [copilotResult.mcpConfigPath] : [])].join(', ')}`)
     }
-    if (opts.local === true) out(projectHooksCommitNote([copilotResult.configPath], copilotResult.configPath))
+    if (localScope) out(projectHooksCommitNote([copilotResult.configPath], copilotResult.configPath))
     printBridgeVerificationNotice('copilot_cli')
   }
 
@@ -534,6 +535,7 @@ export async function cmdUninstall(opts: {
   if (opts.project === true && opts.user === true) {
     throw new Error('uninstall takes either -p/--project or --user, not both.')
   }
+  const localScope = opts.local === true || opts.project === true
   if (opts.all === true) {
     opts.codex = true
     opts.gemini = true
@@ -574,15 +576,15 @@ export async function cmdUninstall(opts: {
     out(skillRemoved ? 'Removed token-goat skill.' : 'No token-goat skill to remove.')
   }
 
-  // --codex/--gemini/--pi/--openclaw/--copilot/--opencode are each additive on both install and uninstall (README: "Add --codex ... to also strip those integrations"), so they run on top of the base uninstall above rather than replacing it. --local (pi, copilot) narrows removal to the project-local scope only; without it, the uninstaller cleans up wherever the integration actually is (global and/or local) instead of requiring the caller to remember which scope it was originally installed with.
+  // --codex/--gemini/--pi/--openclaw/--copilot/--opencode are each additive on both install and uninstall (README: "Add --codex ... to also strip those integrations"), so they run on top of the base uninstall above rather than replacing it. --local or -p/--project (pi, copilot) narrows removal to the project-local scope only; without it, the uninstaller cleans up wherever the integration actually is (global and/or local) instead of requiring the caller to remember which scope it was originally installed with.
   const removals: Array<{ flag: boolean; run: () => boolean; label: string }> = [
     { flag: opts.codex === true, run: uninstallCodex, label: 'Codex CLI integration' },
     { flag: opts.gemini === true, run: uninstallGemini, label: 'Gemini CLI integration' },
     { flag: opts.qwen === true, run: uninstallQwen, label: 'Qwen Code integration' },
     { flag: opts.kimi === true, run: uninstallKimi, label: 'Kimi Code integration' },
-    { flag: opts.pi === true, run: () => (opts.local === true ? uninstallPi({ local: true }) : uninstallPi()), label: 'pi extension' },
+    { flag: opts.pi === true, run: () => (localScope ? uninstallPi({ local: true }) : uninstallPi()), label: 'pi extension' },
     { flag: opts.openclaw === true, run: uninstallOpenclaw, label: 'OpenClaw integration' },
-    { flag: opts.copilot === true, run: () => (opts.local === true ? uninstallCopilotCli({ local: true }) : uninstallCopilotCli()), label: 'Copilot CLI integration' },
+    { flag: opts.copilot === true, run: () => (localScope ? uninstallCopilotCli({ local: true }) : uninstallCopilotCli()), label: 'Copilot CLI integration' },
     { flag: opts.opencode === true, run: uninstallOpencode, label: 'opencode plugin' },
     { flag: opts.grok === true, run: uninstallGrok, label: 'Grok CLI integration' },
     { flag: opts.antigravity === true, run: uninstallAntigravity, label: 'Antigravity CLI integration' },

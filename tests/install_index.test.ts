@@ -139,6 +139,20 @@ describe('queueInstallIndex', () => {
     expect(result).toMatchObject({ status: 'skipped', reason: 'not-git' })
     expect(formatInstallIndexResult(result)).toContain('token-goat index --walk')
   })
+
+  // HAND-DERIVED: a just-initialised repository (git init, nothing added) is a git repository, so telling the user it is not one is false. The one untracked file and the git init are written by the test; the expected reason and wording come from the task's stated behavior, not from the implementation.
+  it('says a freshly initialised repository with only untracked files is a git repository, not that it is not one', () => {
+    const dir = indexableDir()
+    fs.writeFileSync(path.join(dir, 'fresh.ts'), 'export const fresh = 1\n')
+    git(dir, 'init', '-q')
+    const result = queueInstallIndex(dir)
+    expect(result).toMatchObject({ status: 'skipped', reason: 'untracked' })
+    const msg = formatInstallIndexResult(result)
+    expect(msg).toContain('index --walk')
+    expect(msg).toContain('git add')
+    expect(msg).not.toContain('not a git repository')
+    expect(queued()).toEqual([])
+  })
 })
 
 describe('formatInstallIndexResult', () => {
@@ -148,6 +162,7 @@ describe('formatInstallIndexResult', () => {
     expect(line({ status: 'queued', root: '/p', files: 1 })).toContain('(1 file queued)')
     expect(line({ status: 'failed', error: 'boom' })).toContain('boom')
     for (const reason of ['no-project', 'broad-root', 'temp'] as const) expect(line({ status: 'skipped', reason })).toContain('token-goat index')
+    expect(line({ status: 'skipped', reason: 'untracked', root: '/p' })).toContain('index --walk')
     expect(line({ status: 'skipped', reason: 'blocked', root: '/p' })).toContain('worker.blocked_roots')
     for (const reason of ['disabled', 'indexed', 'nothing-queued'] as const) expect(line({ status: 'skipped', reason, root: '/p' })).toBeNull()
   })

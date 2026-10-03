@@ -69,6 +69,8 @@ function classify(arg: string): ScopeDefault | null {
   if (/^\{ project: opts\.project === true \}$/.test(normalized)) return 'user-default'
   if (/^\{ project: true \}$/.test(normalized)) return 'user-default'
   if (/^\{ local: (?:true|opts\.local === true) \}$/.test(normalized)) return 'user-default'
+  // --local and -p/--project are synonyms for pi and Copilot CLI; with neither flag the scope is still user.
+  if (/^\{ local: opts\.local === true \|\| opts\.project === true \}$/.test(normalized)) return 'user-default'
   if (/^scope$/.test(normalized)) return 'no-scope'
   return null
 }
