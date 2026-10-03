@@ -44,7 +44,8 @@ import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 
 import { getDb } from '../src/db.js'
-import { isAvailable, mergeNearbyHits, searchSemantic } from '../src/embeddings.js'
+import { isAvailable, searchSemantic } from '../src/embeddings.js'
+import { mergeNearbyHits } from '../src/semantic_merge.js'
 import { modelFilesPresent } from '../src/embed_model.js'
 import Database from '../src/sqlite_driver.js'
 

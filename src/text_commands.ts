@@ -13,7 +13,7 @@ import { displaySafeText, toDisplayPath, displaySafeJson } from './paths.js'
 import { autoNoteAnchor, resolveNoteAnchor } from './cli_file_ops.js'
 import { anchorStatus } from './note_anchor.js'
 import { findProject, getDisplayRoot, type Project } from './project.js'
-import { anchorLabel, clearAll, loadDatedEntries, loadEntries, MAX_ENTRIES as MAX_NOTE_ENTRIES, noteAgeLabel, setEntry, unsetEntry } from './project_memory.js'
+import { anchorLabel, clearAll, loadDatedEntries, loadEntries, MAX_ENTRIES as MAX_NOTE_ENTRIES, noteAgeLabel, oneLineNoteValue, setEntry, unsetEntry } from './project_memory.js'
 import { getSessionFiles } from './session.js'
 import { foldPath, requireNonNegativeStrictInt } from './util.js'
 import { suggestPackageNames } from './util_suggest.js'
@@ -511,7 +511,7 @@ export function cmdNote(
         const now = Date.now()
         for (const [k, note] of pairs) {
           const flag = note.anchor === undefined ? '' : anchorLabel(anchorStatus(project.root, note.anchor))
-          process.stdout.write(`${k}${noteAgeLabel(note, now)}${flag} = ${note.value}\n`)
+          process.stdout.write(`${k}${noteAgeLabel(note, now)}${flag} = ${oneLineNoteValue(note.value)}\n`)
         }
       }
     }
@@ -538,7 +538,7 @@ export function cmdNote(
   if (act === 'unset') {
     if (key === undefined) throw new Error('note unset requires a key')
     const hash = resolveProjectHash()
-    unsetEntry(hash, key)
+    if (!unsetEntry(hash, key)) throw new Error(`Key not found: ${key}`)
     process.stdout.write(`Unset: ${key}\n`)
     return
   }

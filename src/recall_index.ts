@@ -25,6 +25,7 @@ import * as fs from 'node:fs'
 import { getDb } from './db.js'
 import { globalDbPath } from './constants.js'
 import { sanitizeFtsQuery } from './index_reader.js'
+import { stripAnsiEscapes } from './render/ansi.js'
 import { blobPath, DEFAULT_MAX_AGE_MS } from './disk_cache.js'
 
 export type RecallCacheType = 'bash' | 'web' | 'mcp'
@@ -95,7 +96,8 @@ export function indexRecallEntry(cacheType: RecallCacheType, id: string, label: 
          label = excluded.label,
          content = excluded.content,
          stored_at = excluded.stored_at`,
-    ).run({ cacheType, id, label, content, storedAt })
+    // Stripped so a query spanning a colour boundary matches the text a reader sees; the cached blob itself stays raw.
+    ).run({ cacheType, id, label: stripAnsiEscapes(label), content: stripAnsiEscapes(content), storedAt })
   } catch {
     // Fail-soft: see doc comment above.
   }
@@ -165,7 +167,8 @@ export function clearRecallEntriesForTesting(): void {
 
 /** Build a short, single-line excerpt of `content` centered on the first case-insensitive occurrence of any query token, falling back to a leading slice when no token is found verbatim (e.g. an FTS prefix/stem match). */
 function buildSnippet(content: string, query: string, maxLen = 160): string {
-  const flat = content.replace(/\s+/g, ' ').trim()
+  // Rows indexed before write-time stripping still hold raw escape codes, and a snippet is shown to a reader.
+  const flat = stripAnsiEscapes(content).replace(/\s+/g, ' ').trim()
   const tokens = query.split(/\s+/).filter(Boolean)
   let idx = -1
   const lowerFlat = flat.toLowerCase()

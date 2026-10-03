@@ -64,6 +64,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/embed_tokenizer.ts`](src/embed_tokenizer.ts) | A BERT WordPiece tokenizer for exactly the spec `bge-small-en-v1.5`'s `tokenizer.json` declares: BertNormalizer(clean_text, handle_chinese_chars, strip_accents=null, lowercase=true |
 | [`src/embeddings.ts`](src/embeddings.ts) | [`src/embed_model.ts`](src/embed_model.ts) (pinned `Xenova/bge-small-en-v1.5`, 384 dimensions; hashed into EMBED_FINGERPRINT) over [`src/embed_runtime.ts`](src/embed_runtime.ts) (unhashed: native `onnxruntime-node` when it loads, else the bundled `onnxruntime-web` WASM build whose `.wasm` is fetched once, SHA-pinned, by [`src/embed_runtime_web.ts`](src/embed_runtime_web.ts) behind a dynamic import; the runtime's name and major.minor go in the provenance stamp instead), downloads through [`src/pinned_file.ts`](src/pinned_file.ts) (its fetch in [`src/pinned_fetch.ts`](src/pinned_fetch.ts), also lazy), and [`src/embed_tokenizer.ts`](src/embed_tokenizer.ts); `chunkFile()` splits source into overlapping windows; `upsertChunks()` writes to `chunks` and `chunk_vectors`; `searchSemantic()` queries `chunk_vectors` via vec0 KNN |
 | [`src/semantic_distances.ts`](src/semantic_distances.ts) | The `semantic_queries` ledger: one text-free row per semantic query, and the `semantic --distances` report that turns those rows into something a user can tune `semantic.weak_dista |
+| [`src/semantic_merge.ts`](src/semantic_merge.ts) | Exports: `mergeNearbyHits` |
 
 **Paths, Filesystem, and Project Detection**
 

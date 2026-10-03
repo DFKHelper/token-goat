@@ -203,6 +203,11 @@ export function noteAgeLabel(note: NoteEntry, now = Date.now()): string {
   return ` (set ${formatAge(Math.max(0, now - Date.parse(note.setAt)))} ago)`;
 }
 
+/** A note's value as one line: each line break (CRLF, CR, LF, NEL, LS, PS) becomes a visible two-character `\n`, so a multi-line value cannot start a heading, bullet or code fence of its own in the block it is printed into. */
+export function oneLineNoteValue(value: string): string {
+  return value.replace(/\r\n|[\r\n\u0085\u2028\u2029]/g, '\\n');
+}
+
 /** Order notes newest-set first, then undated ones in ordinal key order; dated notes set in the same millisecond also fall back to ordinal order. setEntry evicts from the tail of this order and buildInjection prints from its head, so the note dropped at capacity and the note omitted at the size cap are both the oldest. */
 function byRecency(a: string, aSetAt: string | undefined, b: string, bSetAt: string | undefined): number {
   const ta = aSetAt === undefined ? Number.NEGATIVE_INFINITY : Date.parse(aSetAt);
@@ -271,10 +276,11 @@ function underNotesLock(p: string, update: () => true): void {
   throw new Error(`Could not lock ${p} for writing; no note was changed. Another token-goat process may be writing notes: try again.`);
 }
 
-/** Remove key from this project's memory (no-op if absent). */
-export function unsetEntry(projectHash: string, key: string): void {
+/** Remove key from this project's memory; false when the key was not there, decided under the same lock that removes it. */
+export function unsetEntry(projectHash: string, key: string): boolean {
   validateKey(key);
   const p = memoryPath(projectHash);
+  let removed = false;
   const doUnset = (): true => {
     const setAt = new Map<string, string>();
     const anchors = new Map<string, NoteAnchor>();
@@ -282,10 +288,12 @@ export function unsetEntry(projectHash: string, key: string): void {
     if (Object.hasOwn(entries, key)) {
       delete entries[key];
       save(p, entries, setAt, anchors);
+      removed = true;
     }
     return true;
   };
   underNotesLock(p, doUnset);
+  return removed;
 }
 
 /** Remove all memory entries for project_hash. */
@@ -327,7 +335,7 @@ export function buildInjection(projectHash: string, root?: string, statusOf?: An
       const display = val.length <= MAX_VALUE_LEN ? val : val.slice(0, MAX_VALUE_LEN) + '…';
       // The anchor marker is part of the line too, so the cap counts it. Without the project root there is nothing to resolve the anchored file against, and without a resolver nothing to ask, and the note shows unmarked.
       const flag = root === undefined || statusOf === undefined || note.anchor === undefined ? '' : anchorLabel(statusOf(root, note.anchor));
-      const line = `- **${key}**${noteAgeLabel(note, now)}${flag}: ${display}`;
+      const line = `- **${key}**${noteAgeLabel(note, now)}${flag}: ${oneLineNoteValue(display)}`;
       if (render([...shown, line], entries_list.length - shown.length - 1).length > MAX_TOTAL_CHARS) break;
       shown.push(line);
     }

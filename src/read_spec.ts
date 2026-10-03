@@ -376,9 +376,10 @@ function chainsOf(entry: SymbolEntry, fileSymbols: SymbolEntry[]): string[][] {
     return s.lineStart <= entry.lineStart && s.lineEnd >= entry.lineEnd
   })
   enclosing.sort((x, y) => x.lineStart - y.lineStart || y.lineEnd - x.lineEnd)
-  const chains: string[][] = [enclosing.map((s) => s.name)]
+  // A TOML table header is one symbol named with its dotted path (`tool.ruff`), so its parts count as separate chain links, the way the qualifier's `.`-split spells them
+  const chains: string[][] = [enclosing.flatMap((s) => s.name.split('.'))]
   const parent = (entry.parent ?? '').trim()
-  if (parent !== '') chains.push([parent])
+  if (parent !== '') chains.push(parent.split('.'))
   else if (entry.docstring !== '' && PARENT_IDENTIFIER_RE.test(entry.docstring)) chains.push([entry.docstring])
   return chains
 }

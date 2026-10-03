@@ -205,9 +205,15 @@ describe('project_memory', () => {
 
     it('should be no-op when key does not exist', () => {
       setEntry('test', 'existing', 'value');
-      unsetEntry('test', 'nonexistent');
+      expect(unsetEntry('test', 'nonexistent')).toBe(false);
       const entries = loadEntries('test');
       expect(entries['existing']).toBe('value');
+    });
+
+    it('reports whether it removed anything', () => {
+      setEntry('test', 'present', 'v');
+      expect(unsetEntry('test', 'present')).toBe(true);
+      expect(unsetEntry('test', 'present')).toBe(false);
     });
 
     it('should throw on invalid key', () => {
@@ -259,6 +265,26 @@ describe('project_memory', () => {
       const result = buildInjection('test');
       expect(result).toContain('**key1**');
       expect(result).toContain('**key2**');
+    });
+
+    it('keeps a multi-line note on its one bullet, with the breaks shown as a literal backslash-n', () => {
+      // CAPTURE: the value is the one that rendered a raw `## Fake heading`, a `- injected: bullet` and an unclosed code fence at top level in a real `hook session_start` run before the fix. HAND-DERIVED: the expected single line follows from replacing each break with backslash-n.
+      setEntry('test', 'normal', 'after');
+      setEntry('test', 'multi', 'line one\n## Fake heading\n- injected: bullet\n```\nfence\r\nwin\rcr');
+      const result = buildInjection('test')!;
+      const lines = result.split('\n');
+      expect(lines.filter((l) => l.startsWith('- **multi**'))).toHaveLength(1);
+      expect(lines.find((l) => l.startsWith('- **multi**'))).toMatch(/: line one\\n## Fake heading\\n- injected: bullet\\n```\\nfence\\nwin\\ncr$/);
+      expect(lines.some((l) => l.startsWith('## Fake heading') || l.startsWith('- injected:'))).toBe(false);
+      expect(lines.filter((l) => l.startsWith('- **'))).toHaveLength(2);
+    });
+
+    it('truncates a long multi-line note before escaping, so an escape is never cut in half', () => {
+      // HAND-DERIVED: 299 characters then a break puts the break at the 300-character cut; the cut keeps 300 characters and the break turns into the whole two-character escape after it.
+      setEntry('test', 'long', `${'a'.repeat(299)}\nb\nc`);
+      const line = buildInjection('test')!.split('\n').find((l) => l.startsWith('- **long**'))!;
+      expect(line.endsWith(`${'a'.repeat(299)}\\n…`)).toBe(true);
+      expect(line).not.toMatch(/\\$/);
     });
 
     it('fences the notes as data, and a note cannot close the fence or forge its notice', () => {

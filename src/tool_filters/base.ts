@@ -27,6 +27,7 @@ import {
   squeezeBlankLines,
   truncateMiddleSmart,
 } from './helpers.js'
+import { stripAnsiEscapes } from '../render/ansi.js'
 import { redactSecrets } from '../secret_redact.js'
 import { loadConfig } from '../config.js'
 import { savedTokensFromBytes } from '../stats.js'
@@ -35,6 +36,7 @@ import { savedTokensFromBytes } from '../stats.js'
  * Default `bash_compress.min_net_savings_bytes` floor, used when config fails to load. Mirrored here (not just in config.ts's own default) because {@link resolveMinNetSavingsBytes} must still return a sane value when `loadConfig()` itself throws.
  */
 const DEFAULT_MIN_NET_SAVINGS_BYTES = 100
+const GENERIC_FILTER_NAME = 'generic'
 const EARLY_EXIT_NOTE = 'early-exit: normalisation alone sufficient'
 
 /**
@@ -296,9 +298,10 @@ export abstract class ToolFilter {
     }
 
     let body: string
+    let filterRan = this.name
     try {
-      // Byte count of the (already truncated) pre-normalisation streams, so the "did normalisation itself help" check below isn't credited for size reduction that truncation alone already produced.
-      const preNormBytes = byteLength(so) + byteLength(se)
+      // Byte count of the (already truncated) pre-normalisation streams, so the "did normalisation itself help" check below isn't credited for size reduction that truncation alone already produced. Colour codes are not counted: stripping them is not the work this check credits, and a colour-heavy tsc/vitest run used to clear the 40% bar on escape bytes alone and skip the per-tool filter for text it never saw.
+      const preNormBytes = byteLength(stripAnsiEscapes(so)) + byteLength(stripAnsiEscapes(se))
       const normOut = this.postNormalise(normalise(so, { skipProgress }))
       const normErr = this.postNormalise(normalise(se, { skipProgress }))
       const normBytes = byteLength(normOut) + byteLength(normErr)
@@ -307,6 +310,8 @@ export abstract class ToolFilter {
       if (preNormBytes > 0 && normBytes <= preNormBytes * 0.6) {
         body = compressBashOutput(normOut, normErr)
         notes.push(EARLY_EXIT_NOTE)
+        // The per-tool filter did not run on this path, so the footer must not credit it.
+        filterRan = GENERIC_FILTER_NAME
       } else if (normBytes > MAX_INSPECT_BYTES) {
         // Step 6b: runaway log — head/tail truncate rather than per-line scan.
         notes.push(`input exceeded inspect budget (${Math.floor(MAX_INSPECT_BYTES / 1024)} KiB); fell back to truncation`)
@@ -339,6 +344,6 @@ export abstract class ToolFilter {
     const shown = notes.filter((n) => n !== EARLY_EXIT_NOTE)
     if (shown.length) body = `[${shown.join('; ')}]\n${body}`
 
-    return new CompressedOutput(body, originalBytes, byteLength(body), this.name, exitCode, notes)
+    return new CompressedOutput(body, originalBytes, byteLength(body), filterRan, exitCode, notes)
   }
 }

@@ -346,13 +346,16 @@ export function buildCopilotWasteReport(eventsPath: string): CopilotWasteReport 
   for (const line of readFileLines(eventsPath)) {
     const trimmed = line.trim()
     if (trimmed === '') continue
-    let event: Record<string, unknown>
+    let parsed: unknown
     try {
-      event = JSON.parse(trimmed) as Record<string, unknown>
+      parsed = JSON.parse(trimmed)
     } catch {
       // A partially-flushed final line is normal on a live session; skip it rather than abort.
       continue
     }
+    // Valid JSON that is not an object (a `null` line) has no `type` to read.
+    if (parsed === null || typeof parsed !== 'object') continue
+    const event = parsed as Record<string, unknown>
     const type = typeof event['type'] === 'string' ? (event['type'] as string) : ''
     const data = (event['data'] ?? {}) as Record<string, unknown>
 

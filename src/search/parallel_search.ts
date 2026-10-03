@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import { getDb } from '../db.js';
 import { globalDbPath } from '../constants.js';
-import { searchSemantic, mergeNearbyHits, DEFAULT_MODEL, DEFAULT_DISTANCE_THRESHOLD } from '../embeddings.js';
+import { searchSemantic, DEFAULT_MODEL, DEFAULT_DISTANCE_THRESHOLD } from '../embeddings.js';
+import { mergeNearbyHits } from '../semantic_merge.js';
 import { checkSemanticReadiness } from '../embed_preflight.js';
 import { getOwnProjectFileEntries } from '../index_reader.js';
 import { searchSymbolsFtsByKind } from './symbol_fts.js';

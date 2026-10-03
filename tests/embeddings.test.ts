@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import * as embeddings from '../src/embeddings.js'
 import type { SearchHit } from '../src/embeddings.js'
+import { mergeNearbyHits } from '../src/semantic_merge.js'
 import { defaultConfig, saveConfig, invalidateConfigCache } from '../src/config.js'
 import { modelFilesPresent } from '../src/embed_model.js'
 
@@ -521,7 +522,7 @@ describe('embeddings module', () => {
 
   describe('mergeNearbyHits()', () => {
     it('should return empty array for empty input', () => {
-      const result = embeddings.mergeNearbyHits([])
+      const result = mergeNearbyHits([])
       expect(result).toEqual([])
     })
 
@@ -536,7 +537,7 @@ describe('embeddings module', () => {
           text: 'test',
         },
       ]
-      const result = embeddings.mergeNearbyHits(hits)
+      const result = mergeNearbyHits(hits)
       expect(result).toEqual(hits)
     })
 
@@ -559,7 +560,7 @@ describe('embeddings module', () => {
           text: 'test2',
         },
       ]
-      const result = embeddings.mergeNearbyHits(hits, 20)
+      const result = mergeNearbyHits(hits, 20)
       // Overlapping ranges [1,10] and [5,15] merge into exactly one hit covering [1,15].
       expect(result.length).toBe(1)
       expect(result[0].startLine).toBe(1)
@@ -585,7 +586,7 @@ describe('embeddings module', () => {
           text: 'test2',
         },
       ]
-      const result = embeddings.mergeNearbyHits(hits)
+      const result = mergeNearbyHits(hits)
       expect(result.length).toBe(2)
     })
 
@@ -608,7 +609,7 @@ describe('embeddings module', () => {
           text: 'test2',
         },
       ]
-      const result = embeddings.mergeNearbyHits(hits, 5)
+      const result = mergeNearbyHits(hits, 5)
       // Should not merge (gap > proximity)
       expect(result.length).toBe(2)
     })
@@ -633,7 +634,7 @@ describe('embeddings module', () => {
           text: 'test2',
         },
       ]
-      const result = embeddings.mergeNearbyHits(hits, 5)
+      const result = mergeNearbyHits(hits, 5)
       expect(result.length).toBe(1)
       expect(result[0]?.startLine).toBe(1)
       expect(result[0]?.endLine).toBe(20)
@@ -658,7 +659,7 @@ describe('embeddings module', () => {
           text: 'test1',
         },
       ]
-      const result = embeddings.mergeNearbyHits(hits)
+      const result = mergeNearbyHits(hits)
       // Should be sorted by distance (ascending)
       for (let i = 0; i < result.length - 1; i++) {
         expect(result[i].distance).toBeLessThanOrEqual(result[i + 1].distance)
@@ -684,11 +685,70 @@ describe('embeddings module', () => {
           text: 'test2',
         },
       ]
-      const result = embeddings.mergeNearbyHits(hits, 20)
+      const result = mergeNearbyHits(hits, 20)
       // Overlapping ranges [1,10] and [8,15] merge into exactly one hit.
       expect(result.length).toBe(1)
       // Merged result should have the best (lowest) distance
       expect(result[0].distance).toBe(0.5)
+    })
+
+    // HAND-DERIVED: ranges are the py_mod.py chunks from the reported repro (imports 1-12, class 13-43, a gap chunk 44-53, fibonacci_sequence 54-61), distances chosen so the last one wins.
+    const symbolChunk = (startLine: number, endLine: number, distance: number, text: string, kind = 'symbol'): SearchHit => ({
+      filePath: 'py_mod.py',
+      startLine,
+      endLine,
+      kind,
+      distance,
+      text,
+    })
+
+    it('does not fuse adjacent per-symbol chunks into a whole-file span, and keeps the best chunk as the hit', () => {
+      const result = mergeNearbyHits([
+        symbolChunk(1, 12, 0.9, 'import functools'),
+        symbolChunk(13, 43, 0.8, 'class Worker'),
+        symbolChunk(44, 53, 0.85, 'def helper'),
+        symbolChunk(54, 61, 0.526, 'def fibonacci_sequence(n)'),
+      ])
+      expect(result.length).toBe(4)
+      expect(result[0]).toMatchObject({ startLine: 54, endLine: 61, kind: 'symbol', distance: 0.526 })
+      expect(result[0]?.text).toBe('def fibonacci_sequence(n)')
+    })
+
+    it('takes kind and preview from the best chunk when overlapping chunks of one symbol merge', () => {
+      // HAND-DERIVED: two sub-split pieces of one oversized symbol share lines 30-40 by design; the later piece matches better.
+      const result = mergeNearbyHits([
+        symbolChunk(1, 40, 0.7, 'early piece', 'section'),
+        symbolChunk(30, 70, 0.3, 'best piece', 'symbol'),
+      ])
+      expect(result.length).toBe(1)
+      expect(result[0]).toMatchObject({ startLine: 1, endLine: 70, kind: 'symbol', distance: 0.3 })
+      expect(result[0]?.text.startsWith('best piece')).toBe(true)
+    })
+
+    it('does not chain window chunks: only those near the best chunk join it', () => {
+      // HAND-DERIVED: five windows 25 lines apart; each pair is within the default 20-line proximity of its neighbour, but each merged group is one anchor plus the windows near it, so five windows make three hits (1-65, 81-145, 161-185) where a chain would make one.
+      const windows = [0, 1, 2, 3, 4].map((i) => symbolChunk(1 + i * 40, 25 + i * 40, i === 0 ? 0.1 : 0.9, `w${i}`, 'window'))
+      const result = mergeNearbyHits(windows)
+      expect(result.length).toBe(3)
+      expect(result[0]).toMatchObject({ startLine: 1, endLine: 65, kind: 'window' })
+    })
+
+    it('keeps real chunkFile symbol chunks distinct when every chunk is a candidate', () => {
+      // FORMAT-DERIVED: chunkFile (src/embeddings.ts) emits one chunk per symbol boundary; its own output is the candidate pool, as the 4x over-fetch yields.
+      const lines = Array.from({ length: 61 }, (_, i) => `line ${i + 1} ${'x'.repeat(40)}`)
+      const content = lines.join('\n')
+      const chunks = embeddings.chunkFile('py_mod.py', content, 2000, 200, [
+        { start: 1, end: 12, kind: 'symbol' },
+        { start: 13, end: 43, kind: 'symbol' },
+        { start: 44, end: 53, kind: 'symbol' },
+        { start: 54, end: 61, kind: 'symbol' },
+      ])
+      expect(chunks.length).toBe(4)
+      const hits = chunks.map((c, i) => ({ ...c, distance: i === 3 ? 0.5 : 0.9 }))
+      const result = mergeNearbyHits(hits)
+      expect(result.length).toBe(4)
+      expect(result[0]).toMatchObject({ startLine: 54, endLine: 61 })
+      expect(result[0]?.text).toContain('line 54')
     })
   })
 
@@ -715,7 +775,7 @@ describe('embeddings module', () => {
     it('drops a mergeable hit when truncating to n before merging (the pre-fix composition)', () => {
       // Old cmdSemantic: searchSemantic already truncated to n=2 raw hits (best-first: A, B)
       // before mergeNearbyHits ever ran, so chunk C never gets a chance to merge with chunk A.
-      const preFixResult = embeddings.mergeNearbyHits(rawHits.slice(0, n))
+      const preFixResult = mergeNearbyHits(rawHits.slice(0, n))
       expect(preFixResult.length).toBe(2)
       const authHit = preFixResult.find((h) => h.startLine === 1)
       expect(authHit?.endLine).toBe(10) // NOT extended to 25 - the merge that should happen never does
@@ -724,7 +784,7 @@ describe('embeddings module', () => {
     it('merges the over-fetched candidate pool before truncating to n (the fixed composition)', () => {
       // New cmdSemantic: searchSemantic over-fetches all 3 candidates, mergeNearbyHits runs on
       // the full pool first, and only the merged result is truncated to n.
-      const postFixResult = embeddings.mergeNearbyHits(rawHits).slice(0, n)
+      const postFixResult = mergeNearbyHits(rawHits).slice(0, n)
       expect(postFixResult.length).toBe(2)
       const mergedHit = postFixResult.find((h) => h.startLine === 1)
       expect(mergedHit?.endLine).toBe(25) // extended to cover chunk C - the merge happened

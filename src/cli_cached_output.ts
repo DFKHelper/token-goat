@@ -12,6 +12,7 @@ import { displaySafeJson, displaySafeText } from './paths.js'
 import { guardJsonRows } from './read_commands.js'
 import { extractTranscriptText } from './read_inspect.js'
 import { compileGuardedRegex } from './regex_guard.js'
+import { stripAnsiEscapes } from './render/ansi.js'
 import { redactSecrets } from './secret_redact.js'
 import { extractSection } from './section_reader.js'
 import { clipLongMatchLine } from './tool_filters/helpers.js'
@@ -63,6 +64,8 @@ export function _applyFiltersAndPrint(
     if (capNotice !== undefined) process.stderr.write(capNotice + '\n')
     return shown
   }
+  // Cached output keeps its ANSI colour codes and every display path strips them for a non-colour stdout, so a --grep or --section run on the raw text missed a pattern the printed text visibly contained whenever a colour boundary fell inside it (`error TS2322` in tsc --pretty output). Strip before anything narrows the text, and before the redactor so a secret split by a colour code is still one token.
+  content = stripAnsiEscapes(content)
   // fenceByProvenance true means this is third-party content (a fetched page, a recalled cache entry, a document the caller only named rather than authored), the same population the injection fence covers -- redact it before any narrowing so --grep's long-line clip can never cut a secret in half and leave a fragment the redactor no longer recognises. Idempotent on content already redacted at write time (bash/web/mcp caches).
   if (fenceByProvenance) content = redactSecrets(content).text
   const render = (rows: RecallRow[]): string => rows.map((r) => (opts.lineNumbers === true && r.n !== null ? `${r.n}:${r.text}` : r.text)).join('\n')

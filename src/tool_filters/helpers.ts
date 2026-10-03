@@ -276,7 +276,8 @@ export function dedupeConsecutive(
   let count = 0
   const flush = (): void => {
     if (prev === null) return
-    if (count >= minRun) out.push(fmt(prev, count))
+    // A run of blank lines is squeezed to one blank line: `fmt` would render it as a free-standing `  (×2)` line with nothing for the counter to describe.
+    if (count >= minRun) out.push(prev.trim() === '' ? '' : fmt(prev, count))
     else for (let i = 0; i < count; i++) out.push(prev)
   }
   for (const line of lines) {
@@ -287,7 +288,7 @@ export function dedupeConsecutive(
       out.push(line)
       continue
     }
-    if (line === prev) {
+    if (line === prev || (prev !== null && prev.trim() === '' && line.trim() === '')) {
       count += 1
       continue
     }

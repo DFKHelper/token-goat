@@ -18,13 +18,13 @@ import {
   MAX_CHUNK_CHARS,
   MAX_CHUNK_TOKENS,
   MAX_OVER_FETCH,
-  mergeNearbyHits,
   OVER_FETCH_FACTOR,
   QUERY_INSTRUCTION_PREFIX,
   rerankHits,
   type Chunk,
   type SearchHit,
 } from '../src/embeddings.js'
+import { mergeNearbyHits } from '../src/semantic_merge.js'
 import { canonicalizeIndexPath } from '../src/parser.js'
 import { resolveLabel, type GoldenLabel } from '../evals/retrieval/labels.js'
 import { bootstrapCI, firstRelevantRank, mean, pairedBootstrapDelta, reciprocalRank, hitAtK, splitOf, type Interval, type RelevantSpan } from '../evals/retrieval/metrics.js'

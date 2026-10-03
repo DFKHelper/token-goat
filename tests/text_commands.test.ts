@@ -1679,6 +1679,39 @@ describe('note command', () => {
     expect(rGet.status).toBe(1)
   })
 
+  it('unset of a key that was never set reports it as not found, like get', async () => {
+    // HAND-DERIVED: no note named never-set-key is created anywhere in this suite; the wording is the one `note get` already prints for a missing key.
+    const r = await run(['note', 'unset', 'never-set-key'], { env: noteEnv, cwd: ROOT })
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('Key not found: never-set-key')
+    expect(r.stdout).not.toContain('Unset')
+  })
+
+  it('unset of a key twice succeeds once and then reports it as not found', async () => {
+    // HAND-DERIVED: the first unset removes the only note under this key, so the second finds nothing.
+    await run(['note', 'set', 'twice-key', 'v'], { env: noteEnv, cwd: ROOT })
+    const first = await run(['note', 'unset', 'twice-key'], { env: noteEnv, cwd: ROOT })
+    expect(first.status, first.stderr).toBe(0)
+    expect(first.stdout).toContain('Unset: twice-key')
+    const second = await run(['note', 'unset', 'twice-key'], { env: noteEnv, cwd: ROOT })
+    expect(second.status).toBe(1)
+    expect(second.stderr).toContain('Key not found: twice-key')
+  })
+
+  it('list prints a multi-line note on one line, and list --json keeps the real value', async () => {
+    // HAND-DERIVED: the value is a heading, a bullet and a code fence on their own lines; each must stay inside the one `multi-list` line as a literal backslash-n.
+    const value = 'line one\n## Fake heading\n- injected: bullet\n```\nfence'
+    await run(['note', 'set', 'multi-list', value], { env: noteEnv, cwd: ROOT })
+    const r = await run(['note', 'list'], { env: noteEnv, cwd: ROOT })
+    expect(r.status, r.stderr).toBe(0)
+    const line = r.stdout.split('\n').find((l) => l.startsWith('multi-list'))
+    expect(line).toMatch(/ = line one\\n## Fake heading\\n- injected: bullet\\n```\\nfence$/)
+    expect(r.stdout).not.toMatch(/^## Fake heading/m)
+    const rJson = await run(['note', 'list', '--json'], { env: noteEnv, cwd: ROOT })
+    const parsed = JSON.parse(rJson.stdout) as Record<string, string>
+    expect(parsed['multi-list']).toBe(value)
+  })
+
   it('clear removes all keys', async () => {
     await run(['note', 'set', 'tempkey', 'tempval'], { env: noteEnv, cwd: ROOT })
     const rClear = await run(['note', 'clear'], { env: noteEnv, cwd: ROOT })

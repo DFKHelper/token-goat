@@ -195,15 +195,26 @@ export function upsertDelimitedBlock(p: string, beginMarker: string, endMarker: 
   return true
 }
 
-/**
- * Shared by install.ts, bridges/gemini_install.ts, and bridges/openclaw_install.ts: persist a
- * settings object as pretty-printed JSON with a trailing newline, backing up the prior file
- * first and creating `p`'s parent directory if needed.
- */
+/** Shared by install.ts, the Gemini, OpenClaw, Antigravity and JetBrains installers: persist a settings object as pretty-printed JSON, backing up the prior file first and creating `p`'s parent directory if needed. A file that already exists keeps its line ending, indent unit and trailing-newline habit; a new file gets two spaces, LF and a trailing newline. */
 export function writeJsonSettings(p: string, settings: unknown): void {
   ensureDirSync(path.dirname(p))
+  let existing = ''
+  try {
+    existing = readFileSync(p, 'utf8')
+  } catch {
+    // A new (or unreadable) file takes the default format below.
+  }
   backupFile(p)
-  atomicWriteText(p, `${JSON.stringify(settings, null, 2)}\n`)
+  const eol = detectEol(existing)
+  const body = JSON.stringify(settings, null, detectJsonIndent(existing)).replace(/\n/g, eol)
+  atomicWriteText(p, existing.length > 0 && !existing.endsWith('\n') ? body : `${body}${eol}`)
+}
+
+/** The indent unit an existing pretty-printed JSON file uses (a tab, or its first indented line's run of spaces), or two spaces when it has none to copy. */
+function detectJsonIndent(text: string): string {
+  const lead = /^([ \t]+)\S/m.exec(text)?.[1]
+  if (lead === undefined) return '  '
+  return lead.startsWith('\t') ? '\t' : lead.slice(0, 10)
 }
 
 /**

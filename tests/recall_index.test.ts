@@ -54,6 +54,8 @@ import {
 } from '../src/recall_index.js'
 import { DEFAULT_MAX_AGE_MS } from '../src/disk_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { getDb } from '../src/db.js'
+import { globalDbPath } from '../src/constants.js'
 
 // Every seeded entry still uses a randomized nonce prefix, on top of the private db above, so
 // assertions search for that nonce rather than "the whole index" and stay robust to any
@@ -251,5 +253,31 @@ describe('likeSearch (LIKE fallback) — literal backslash in the query', () => 
     const hits = likeSearchForTesting(`C:\\Users\\alice\\project-${n}`)
     expect(hits.length).toBe(1)
     expect(hits[0]?.id).toBe(`bsl-${n}`)
+  })
+})
+
+describe('recall index holds the plain text a reader sees, not colour codes', () => {
+  // Provenance: CAPTURE the `error`/`TS2322` colour split is the one `tsc --noEmit --pretty` (TypeScript 6.0.3, stdout piped) emitted: error in bright red, then a grey span starting at the code.
+  const coloured = (n: string): string => `\u001b[91merror\u001b[0m\u001b[90m TS2322: \u001b[0mType mismatch ${n}`
+
+  it('finds an entry by a phrase that spans a colour boundary, and its snippet has no escape bytes', () => {
+    const n = nonce()
+    indexRecallEntry('bash', `ansi-${n}`, `tsc ${n}`, `tsc ${n}\n${coloured(n)}`, Date.now())
+    const hits = searchRecall(`TS2322 Type mismatch ${n}`)
+    expect(hits.length).toBe(1)
+    expect(hits[0]?.snippet).toContain(`error TS2322: Type mismatch ${n}`)
+    expect(hits[0]?.snippet).not.toContain('\u001b')
+  })
+
+  it('strips escape residue from the snippet of a row indexed before write-time stripping', () => {
+    const n = nonce()
+    // Raw insert stands in for a row an older version stored with its escape codes intact.
+    getDb(globalDbPath())
+      .prepare('INSERT INTO cache_recall (cache_type, entry_id, label, content, stored_at) VALUES (?, ?, ?, ?, ?)')
+      .run('bash', `old-${n}`, `old ${n}`, `old ${n}\n${coloured(n)}`, Date.now())
+    const hits = likeSearchForTesting(`Type mismatch ${n}`)
+    expect(hits.length).toBe(1)
+    expect(hits[0]?.snippet).toContain(`error TS2322: Type mismatch ${n}`)
+    expect(hits[0]?.snippet).not.toContain('\u001b')
   })
 })

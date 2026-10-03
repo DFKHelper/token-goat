@@ -526,6 +526,14 @@ function toolResultText(content: unknown): string {
   return ''
 }
 
+/** The fields auditOneFile reads off a transcript line's `message`; each is unchecked until used, because a hand-edited or truncated transcript can hold anything there. */
+interface TranscriptMessage {
+  id?: unknown
+  model?: unknown
+  usage?: Record<string, unknown>
+  content?: unknown
+}
+
 interface PerCallUsage {
   inputTotal: number
   cacheRead: number
@@ -702,14 +710,19 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
       s.lines += 1
       const lineBytes = Buffer.byteLength(line, 'utf8')
       s.totalBytes += lineBytes
-      let obj: Record<string, unknown>
+      let parsed: unknown
       try {
-        obj = JSON.parse(line) as Record<string, unknown>
+        parsed = JSON.parse(line)
       } catch {
+        parsed = undefined
+      }
+      // A line that is valid JSON but not an object (`null`, a number, an array) is as unusable as one that does not parse.
+      if (parsed === undefined || parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
         s.parseFailedLines += 1
         addCategory(s.estimated.otherLocal, lineBytes)
         continue
       }
+      const obj = parsed as Record<string, unknown>
       const type = typeof obj['type'] === 'string' ? obj['type'] : (typeof obj['kind'] === 'number' ? `vscode:kind${obj['kind']}` : '(untyped)')
       const census = (s.lineTypes[type] ??= { lines: 0, bytes: 0 })
       census.lines += 1
@@ -718,9 +731,9 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
         addCategory(s.estimated.otherLocal, lineBytes)
         continue
       }
-      const message = obj['message'] as { id?: unknown; model?: unknown; usage?: Record<string, unknown>; content?: unknown } | undefined
+      const message = (obj['message'] !== null && typeof obj['message'] === 'object' && !Array.isArray(obj['message']) ? obj['message'] : undefined) as TranscriptMessage | undefined
       if (type === 'assistant' && message !== undefined) {
-        const usage = message.usage
+        const usage = message.usage !== null && typeof message.usage === 'object' ? message.usage : undefined
         if (usage !== undefined && typeof message.id === 'string' && !usageSeenIds.has(message.id)) {
           usageSeenIds.add(message.id)
           const num = (k: string): number => (typeof usage[k] === 'number' ? (usage[k] as number) : 0)
@@ -1129,6 +1142,25 @@ function aggregateDenyOutcomes(rows: DenyRawRow[]): DenyOutcomeKindRollup[] {
 
 // ---- entry point -------------------------------------------------------------
 
+/** Snapshots every accumulator auditOneFile writes to and returns the function that rolls them back (the append-only arrays are truncated, the rest restored from a deep copy). */
+export function checkpointAudit(summary: SessionAuditSummary, maps: Map<string, object>[], arrays: unknown[][], toolErrorAcc: ToolErrorAccumulator): () => void {
+  const savedSummary = structuredClone(summary)
+  const savedMaps = maps.map((m) => structuredClone([...m]))
+  const lengths = arrays.map((a) => a.length)
+  const restoreErrors = toolErrorAcc.checkpoint()
+  return () => {
+    Object.assign(summary, savedSummary)
+    maps.forEach((m, i) => {
+      m.clear()
+      for (const [k, v] of savedMaps[i]!) m.set(k, v)
+    })
+    arrays.forEach((a, i) => {
+      a.length = lengths[i]!
+    })
+    restoreErrors()
+  }
+}
+
 /** Stream every transcript under the corpus root and aggregate the audit. Throws (message suitable for CliError wrapping) when the corpus root does not exist or contains no transcripts, so an empty corpus can never render as a populated-but-zero report. */
 export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promise<SessionAuditSummary> {
   const corpusDir = path.resolve(opts.dir ?? defaultCorpusDir())
@@ -1191,10 +1223,13 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
   const bashHeadMap = new Map<string, BashHeadRollup>()
   const denyRows: DenyRawRow[] = []
   for (const file of files) {
+    // A file that throws partway has already added its earlier lines to every accumulator; put them all back so an unreadable file contributes nothing.
+    const restore = checkpointAudit(summary, [toolMap, attachmentMap, hookMap, bashHeadMap], [laneObservations, denyRows], toolErrorAcc)
     try {
       await auditOneFile(file, summary, toolMap, attachmentMap, hookMap, laneObservations, bashHeadMap, denyRows, toolErrorAcc)
       summary.filesScanned += 1
     } catch {
+      restore()
       summary.filesFailed += 1
     }
   }

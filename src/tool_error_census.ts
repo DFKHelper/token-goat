@@ -41,6 +41,8 @@ export interface ToolErrorAccumulator {
   countError(tool: string, model: string | undefined, errorText: string, flags: ToolErrorFlags): void
   /** Sorts what was counted into a {@link ToolErrorCensus}. */
   finish(): ToolErrorCensus
+  /** Returns a function that puts the counts back to what they are now, so a file that fails mid-read leaves nothing behind. */
+  checkpoint(): () => void
 }
 
 /** How many unknown prefixes the census keeps, in JSON as in text: enough to show what to classify next without printing the corpus's error text wholesale. */
@@ -101,6 +103,15 @@ export function newToolErrorAccumulator(): ToolErrorAccumulator {
     finish() {
       const topUnknown = [...unknownPrefixes.values()].sort((a, b) => b.count - a.count || byCodeUnit(a.tool, b.tool) || byCodeUnit(a.prefix, b.prefix)).slice(0, UNKNOWN_PREFIX_LIMIT)
       return { byTool: sortTallies(tools), byModel: sortTallies(models), unknownPrefixes: topUnknown }
+    },
+    checkpoint() {
+      const saved = structuredClone([[...tools], [...models], [...unknownPrefixes]] as const)
+      return () => {
+        for (const [live, copy] of [[tools, saved[0]], [models, saved[1]], [unknownPrefixes, saved[2]]] as const) {
+          live.clear()
+          for (const [k, v] of copy) (live as Map<string, unknown>).set(k, v)
+        }
+      }
     },
   }
 }
