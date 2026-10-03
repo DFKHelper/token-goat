@@ -507,6 +507,37 @@ const CARGO_CHECKING_RE = /^\s+Checking\s+/
 const CARGO_PROGRESS_RE =
   /^\s+(?:Downloading|Downloaded|Fetching|Updating|Documenting|Building|Blocking|Waiting)\s+/
 const CARGO_FINISHED_RE = /^\s+Finished\s+/
+const CARGO_ERROR_HEADER_RE = /^error(?:\[[A-Z]\d+\]:|: could not compile)/
+const CARGO_WARNING_HEADER_RE = /^warning(?:\[[\w-]+\])?:/
+const CARGO_DIAG_LOCATION_RE = /^\s*--> /
+
+/** Remove every rustc warning block that carries a `-->` location from `lines` in place and return how many were removed. A block runs from its `warning:` header to the next blank line; location-less warnings (manifest keys, the `generated N warnings` summary) are kept. */
+function collapseCargoWarnings(lines: string[]): number {
+  const out: string[] = []
+  let removed = 0
+  let i = 0
+  while (i < lines.length) {
+    if (!CARGO_WARNING_HEADER_RE.test(lines[i]!)) {
+      out.push(lines[i]!)
+      i++
+      continue
+    }
+    let end = i + 1
+    while (end < lines.length && lines[end]!.trim() !== '') end++
+    if (lines.slice(i + 1, end).some((l) => CARGO_DIAG_LOCATION_RE.test(l))) {
+      removed++
+      // Swallow the blank separator too so the survivors do not gain a gap.
+      i = end < lines.length ? end + 1 : end
+    } else {
+      out.push(...lines.slice(i, end))
+      i = end
+    }
+  }
+  lines.length = 0
+  lines.push(...out)
+  return removed
+}
+
 const CARGO_TEST_RUNNING_RE = /^running \d+ tests?/
 const CARGO_TEST_PASS_RE = /^test .+ \.\.\. ok$/
 const CARGO_TEST_FAIL_RE = /^test .+ \.\.\. FAILED$/
@@ -569,6 +600,10 @@ export class CargoFilter extends ToolFilter {
 
     const notes: string[] = []
     maybeNote(notes, droppedProgress, `dropped ${droppedProgress} Checking/Downloading/progress lines`)
+    // A failed build keeps each error whole and collapses the located warning blocks: left in, they crowd the budget and the later middle truncation elides an error's source line and label while keeping a warning's help text.
+    const failed = exitCode !== 0 || kept.some((l) => CARGO_ERROR_HEADER_RE.test(l))
+    const collapsedWarnings = failed ? collapseCargoWarnings(kept) : 0
+    maybeNote(notes, collapsedWarnings, `collapsed ${collapsedWarnings} warning block(s) because the build failed`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }

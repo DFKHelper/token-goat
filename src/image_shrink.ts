@@ -24,6 +24,7 @@ import { DEFAULT_MAX_AGE_MS, tokenGoatHome } from './disk_cache.js'
 import {
   applyExifOrientation,
   type DecodedImage,
+  type ImageMeta,
   probeBufferMeta,
   decodePng,
   encodePng,
@@ -228,8 +229,17 @@ export { IMAGE_EXTENSIONS, isImagePath }
 /** Sentinel thrown by {@link probeImageMeta} when bytes will not decode as a valid image or exceed pixel limit. */
 export class ImageDecodeError extends Error {}
 
-export async function probeImageMeta(input: Buffer): Promise<{ width: number; height: number; format: string | null; pages: number; orientation?: number } | null> {
+/** Header-only probe of every format token-goat can describe. AVIF/HEIC/HEIF are probe-only (no decoder, so `canShrinkFormat` is false and every shrink path passes them through), and their parser loads only when the bytes open with an ISO-BMFF `ftyp` box, which keeps it out of the hook entry's eager set. */
+async function probeAnyMeta(input: Buffer): Promise<ImageMeta | null> {
   const meta = probeBufferMeta(input)
+  if (meta !== null || input.length < 16 || input.toString('latin1', 4, 8) !== 'ftyp') return meta
+  const { probeIsoBmffMeta } = await import('./image_isobmff.js')
+  const isoBmff = probeIsoBmffMeta(input)
+  return isoBmff === null ? null : { ...isoBmff, pages: 1 }
+}
+
+export async function probeImageMeta(input: Buffer): Promise<{ width: number; height: number; format: string | null; pages: number; orientation?: number } | null> {
+  const meta = await probeAnyMeta(input)
   if (meta === null) {
     throw new ImageDecodeError('image could not be decoded')
   }
@@ -247,9 +257,9 @@ export async function probeImageMeta(input: Buffer): Promise<{ width: number; he
   }
 }
 
-/** Whether the header's declared pixel count alone is why `probeImageMeta` would throw for `input` -- computed independently (and before) that throw, off the same header-only `probeBufferMeta` read, so a caller can tell "over the configured limit" apart from every other decode failure and record it as its own event rather than folding it into a generic skip. */
-function exceedsConfiguredPixelLimit(input: Buffer): boolean {
-  const meta = probeBufferMeta(input)
+/** Whether the header's declared pixel count alone is why `probeImageMeta` would throw for `input` -- computed independently (and before) that throw, off the same header-only `probeAnyMeta` read, so a caller can tell "over the configured limit" apart from every other decode failure and record it as its own event rather than folding it into a generic skip. */
+async function exceedsConfiguredPixelLimit(input: Buffer): Promise<boolean> {
+  const meta = await probeAnyMeta(input)
   if (meta === null) return false
   const cfg = loadConfig().image_shrink
   const limitInputPixels = cfg.max_image_pixels > 0 ? cfg.max_image_pixels : false
@@ -739,7 +749,7 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
 
   // A pass here is a file that was never a candidate, which is not the same event as a candidate the re-encode declined below, so it deliberately records nothing -- except when the reason it never became a candidate is the pixel-limit check inside probeImageMeta throwing, which is otherwise invisible to the stats surface and to anyone debugging "why didn't this shrink": an image over the configured ceiling is recorded distinctly, the same way image_shrink_skipped is recorded below for a candidate the re-encode declined.
   if (!(await imageQualifiesForShrink(input))) {
-    if (exceedsConfiguredPixelLimit(input)) recordStat('image_shrink_over_pixel_limit')
+    if (await exceedsConfiguredPixelLimit(input)) recordStat('image_shrink_over_pixel_limit')
     return passOutput()
   }
 

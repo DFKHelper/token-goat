@@ -107,6 +107,8 @@ Upgrading reparses the index. The parser stamp moves for every language, so each
 
 ### Fixed
 
+- **A failed `cargo build` kept the warnings and cut the error.** Compressed output now keeps every `error[...]` block whole, with its source location and notes, and folds the warnings into one line that says how many there were.
+- **`image-meta` called a valid AVIF file unreadable and exited 1.** It now reports the width, height and format of AVIF, HEIC and HEIF images, and says that token-goat does not re-encode them.
 - **`install --copilot --project` and `install --pi --project` wrote the user-scope config.** Both only listened to `--local`. Now `-p`/`--project` picks the project-local target too (`<project>/.github/hooks/token-goat.json`, `<project>/.pi/extensions/token-goat.ts`), on install and on uninstall, and the help text says so.
 - **A freshly `git init`-ed project was reported as "not a git repository".** When a project has no tracked files yet but is its own git top level, install now says exactly that, and names `git add` followed by `token-goat index`, or `token-goat index --walk`, as the way to get it indexed.
 - **`config-get` finds dotted keys in `.properties` files and `export`ed keys in `.env` files.** A key such as `spring.datasource.url` was split at its first dot into a section and a key, which `.properties` files do not have, so the lookup came back empty. Lines written as `key: value` or `key value` were also missed, and so was `export KEY=value` in a `.env` file. The whole key is now tried first, and all three separators and the `export` prefix are understood.

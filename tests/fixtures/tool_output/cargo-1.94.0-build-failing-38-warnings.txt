@@ -1,0 +1,249 @@
+   Compiling rproj v0.1.0 (C:\tgwt\r11a-scratch\rproj)
+error[E0425]: cannot find value `nope_35` in this scope
+  --> src\main.rs:37:28
+   |
+37 | fn unused_35() { let v35 = nope_35; }
+   |                            ^^^^^^^ not found in this scope
+
+error[E0308]: mismatched types
+  --> src\main.rs:22:32
+   |
+22 | fn unused_20() { let v20: u8 = "x"; }
+   |                           --   ^^^ expected `u8`, found `&str`
+   |                           |
+   |                           expected due to this
+
+warning: unused variable: `v0`
+ --> src\main.rs:2:21
+  |
+2 | fn unused_0() { let v0 = 0; }
+  |                     ^^ help: if this is intentional, prefix it with an underscore: `_v0`
+  |
+  = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `v1`
+ --> src\main.rs:3:21
+  |
+3 | fn unused_1() { let v1 = 1; }
+  |                     ^^ help: if this is intentional, prefix it with an underscore: `_v1`
+
+warning: unused variable: `v2`
+ --> src\main.rs:4:21
+  |
+4 | fn unused_2() { let v2 = 2; }
+  |                     ^^ help: if this is intentional, prefix it with an underscore: `_v2`
+
+warning: unused variable: `v3`
+ --> src\main.rs:5:21
+  |
+5 | fn unused_3() { let v3 = 3; }
+  |                     ^^ help: if this is intentional, prefix it with an underscore: `_v3`
+
+warning: unused variable: `v4`
+ --> src\main.rs:6:21
+  |
+6 | fn unused_4() { let v4 = 4; }
+  |                     ^^ help: if this is intentional, prefix it with an underscore: `_v4`
+
+warning: unused variable: `v5`
+ --> src\main.rs:7:21
+  |
+7 | fn unused_5() { let v5 = 5; }
+  |                     ^^ help: if this is intentional, prefix it with an underscore: `_v5`
+
+warning: unused variable: `v6`
+ --> src\main.rs:8:21
+  |
+8 | fn unused_6() { let v6 = 6; }
+  |                     ^^ help: if this is intentional, prefix it with an underscore: `_v6`
+
+warning: unused variable: `v7`
+ --> src\main.rs:9:21
+  |
+9 | fn unused_7() { let v7 = 7; }
+  |                     ^^ help: if this is intentional, prefix it with an underscore: `_v7`
+
+warning: unused variable: `v8`
+  --> src\main.rs:10:21
+   |
+10 | fn unused_8() { let v8 = 8; }
+   |                     ^^ help: if this is intentional, prefix it with an underscore: `_v8`
+
+warning: unused variable: `v9`
+  --> src\main.rs:11:21
+   |
+11 | fn unused_9() { let v9 = 9; }
+   |                     ^^ help: if this is intentional, prefix it with an underscore: `_v9`
+
+warning: unused variable: `v10`
+  --> src\main.rs:12:22
+   |
+12 | fn unused_10() { let v10 = 10; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v10`
+
+warning: unused variable: `v11`
+  --> src\main.rs:13:22
+   |
+13 | fn unused_11() { let v11 = 11; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v11`
+
+warning: unused variable: `v12`
+  --> src\main.rs:14:22
+   |
+14 | fn unused_12() { let v12 = 12; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v12`
+
+warning: unused variable: `v13`
+  --> src\main.rs:15:22
+   |
+15 | fn unused_13() { let v13 = 13; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v13`
+
+warning: unused variable: `v14`
+  --> src\main.rs:16:22
+   |
+16 | fn unused_14() { let v14 = 14; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v14`
+
+warning: unused variable: `v15`
+  --> src\main.rs:17:22
+   |
+17 | fn unused_15() { let v15 = 15; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v15`
+
+warning: unused variable: `v16`
+  --> src\main.rs:18:22
+   |
+18 | fn unused_16() { let v16 = 16; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v16`
+
+warning: unused variable: `v17`
+  --> src\main.rs:19:22
+   |
+19 | fn unused_17() { let v17 = 17; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v17`
+
+warning: unused variable: `v18`
+  --> src\main.rs:20:22
+   |
+20 | fn unused_18() { let v18 = 18; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v18`
+
+warning: unused variable: `v19`
+  --> src\main.rs:21:22
+   |
+21 | fn unused_19() { let v19 = 19; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v19`
+
+warning: unused variable: `v21`
+  --> src\main.rs:23:22
+   |
+23 | fn unused_21() { let v21 = 21; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v21`
+
+warning: unused variable: `v22`
+  --> src\main.rs:24:22
+   |
+24 | fn unused_22() { let v22 = 22; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v22`
+
+warning: unused variable: `v23`
+  --> src\main.rs:25:22
+   |
+25 | fn unused_23() { let v23 = 23; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v23`
+
+warning: unused variable: `v24`
+  --> src\main.rs:26:22
+   |
+26 | fn unused_24() { let v24 = 24; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v24`
+
+warning: unused variable: `v25`
+  --> src\main.rs:27:22
+   |
+27 | fn unused_25() { let v25 = 25; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v25`
+
+warning: unused variable: `v26`
+  --> src\main.rs:28:22
+   |
+28 | fn unused_26() { let v26 = 26; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v26`
+
+warning: unused variable: `v27`
+  --> src\main.rs:29:22
+   |
+29 | fn unused_27() { let v27 = 27; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v27`
+
+warning: unused variable: `v28`
+  --> src\main.rs:30:22
+   |
+30 | fn unused_28() { let v28 = 28; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v28`
+
+warning: unused variable: `v29`
+  --> src\main.rs:31:22
+   |
+31 | fn unused_29() { let v29 = 29; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v29`
+
+warning: unused variable: `v30`
+  --> src\main.rs:32:22
+   |
+32 | fn unused_30() { let v30 = 30; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v30`
+
+warning: unused variable: `v31`
+  --> src\main.rs:33:22
+   |
+33 | fn unused_31() { let v31 = 31; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v31`
+
+warning: unused variable: `v32`
+  --> src\main.rs:34:22
+   |
+34 | fn unused_32() { let v32 = 32; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v32`
+
+warning: unused variable: `v33`
+  --> src\main.rs:35:22
+   |
+35 | fn unused_33() { let v33 = 33; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v33`
+
+warning: unused variable: `v34`
+  --> src\main.rs:36:22
+   |
+36 | fn unused_34() { let v34 = 34; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v34`
+
+warning: unused variable: `v36`
+  --> src\main.rs:38:22
+   |
+38 | fn unused_36() { let v36 = 36; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v36`
+
+warning: unused variable: `v37`
+  --> src\main.rs:39:22
+   |
+39 | fn unused_37() { let v37 = 37; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v37`
+
+warning: unused variable: `v38`
+  --> src\main.rs:40:22
+   |
+40 | fn unused_38() { let v38 = 38; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v38`
+
+warning: unused variable: `v39`
+  --> src\main.rs:41:22
+   |
+41 | fn unused_39() { let v39 = 39; }
+   |                      ^^^ help: if this is intentional, prefix it with an underscore: `_v39`
+
+Some errors have detailed explanations: E0308, E0425.
+For more information about an error, try `rustc --explain E0308`.
+warning: `rproj` (bin "rproj") generated 38 warnings
+error: could not compile `rproj` (bin "rproj") due to 2 previous errors; 38 warnings emitted
