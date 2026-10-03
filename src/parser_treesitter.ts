@@ -284,6 +284,46 @@ function isModuleWrapperCallback(node: TsNode): boolean {
   return false
 }
 
+// Right-hand sides that make an assignment a definition rather than a value.
+const TSJS_FN_VALUE_TYPES: ReadonlySet<string> = new Set(['arrow_function', 'function_expression', 'function'])
+
+// Is this node the bare `module.exports` member expression?
+function isModuleExports(node: TsNode): boolean {
+  if (node.type !== 'member_expression') return false
+  const obj = node.childForFieldName('object')
+  const prop = node.childForFieldName('property')
+  return obj !== null && prop !== null && obj.type === 'identifier' && obj.text === 'module' && prop.text === 'exports'
+}
+
+// The symbol a module-scope CommonJS or prototype assignment defines, or null. `exports.X` / `module.exports.X` bound to a function is function X, `A.prototype.X` bound to a function is method X of A, and `module.exports = function name() {}` (or a named class) is that name. Anonymous exports and non-function values are not definitions.
+function commonJsAssignmentSymbol(stmt: TsNode, filePath: string, lines: readonly string[]): SymbolEntry | null {
+  const assign = stmt.namedChildren[0]
+  if (assign === undefined || assign.type !== 'assignment_expression') return null
+  const left = assign.childForFieldName('left')
+  const right = assign.childForFieldName('right')
+  if (left === null || right === null || left.type !== 'member_expression') return null
+  const isFn = TSJS_FN_VALUE_TYPES.has(right.type)
+  if (isModuleExports(left)) {
+    // `module.exports = <named function or class>` takes the expression's own name; an anonymous one has none to index.
+    const own = right.type === 'function_expression' || right.type === 'class' ? right.childForFieldName('name') : null
+    if (own === null || own.text === '') return null
+    return makeSymbol(filePath, own.text, right.type === 'class' ? 'class' : 'function', stmt, lines, 'c')
+  }
+  if (!isFn) return null
+  const obj = left.childForFieldName('object')
+  const prop = left.childForFieldName('property')
+  if (obj === null || prop === null || prop.type !== 'property_identifier') return null
+  if (obj.type === 'identifier' && obj.text === 'exports') return makeSymbol(filePath, prop.text, 'function', stmt, lines, 'c')
+  if (isModuleExports(obj)) return makeSymbol(filePath, prop.text, 'function', stmt, lines, 'c')
+  if (obj.type === 'member_expression' && obj.childForFieldName('property')?.text === 'prototype') {
+    const owner = obj.childForFieldName('object')
+    if (owner === null) return null
+    const sym = makeSymbol(filePath, prop.text, 'method', stmt, lines, 'c')
+    return { ...sym, parent: owner.text }
+  }
+  return null
+}
+
 /**
  * Walk a TS/JS tree collecting symbols. Descends into export statements (so
  * `export function f` is captured) and class bodies (for methods), and unwraps
@@ -368,6 +408,11 @@ export function extractTsJsSymbols(root: TsNode, filePath: string, lines: readon
           }
         }
       }
+    }
+    // CommonJS exports and prototype assignments at module scope: `exports.start = function () {}`, `Animal.prototype.speak = () => {}`, `module.exports = function named() {}`.
+    if (!insideFunction && node.type === 'expression_statement') {
+      const assigned = commonJsAssignmentSymbol(node, filePath, lines)
+      if (assigned !== null) out.push(assigned)
     }
     // Class fields bound to a function/arrow are method-equivalent members (auto-bound handlers); index them as 'method'. Data fields are skipped, matching the no-member-indexing convention. TS exposes the field name on `name`, JS on `property`.
     if (node.type === 'public_field_definition' || node.type === 'field_definition') {
@@ -760,6 +805,7 @@ function extractSimpleSymbols(
   lines: readonly string[],
   style: DocCommentStyle,
   nameFor: (node: TsNode) => string | null = nodeName,
+  parentFor?: (node: TsNode) => string,
 ): SymbolEntry[] {
   const out: SymbolEntry[] = []
 
@@ -768,7 +814,9 @@ function extractSimpleSymbols(
     if (kind !== undefined) {
       const name = nameFor(node)
       if (name !== null && name !== '') {
-        out.push(makeSymbol(filePath, name, kind, node, lines, style))
+        const sym = makeSymbol(filePath, name, kind, node, lines, style)
+        const parent = parentFor === undefined ? '' : parentFor(node)
+        out.push(parent !== '' ? { ...sym, parent } : sym)
       }
     }
 
@@ -873,8 +921,41 @@ export function extractCppSymbols(root: TsNode, filePath: string, lines: readonl
           ? cTypedefAliasName(node)
           : node.type === 'declaration'
             ? cFunctionPrototypeName(node)
-            : nodeName(node),
+            : C_TAG_SPECIFIER_TYPES.has(node.type) && node.childForFieldName('body') === null
+              ? null
+              : nodeName(node),
+    cMethodParent,
   )
+}
+
+// A struct/class/union/enum specifier names a definition only when it carries a body. Without one it is a forward declaration (`class Engine;`) or a use of the type (`struct list *next;`, a parameter, a cast), and indexing those buried the one real definition under a symbol per mention.
+const C_TAG_SPECIFIER_TYPES: ReadonlySet<string> = new Set(['struct_specifier', 'class_specifier', 'union_specifier', 'enum_specifier'])
+
+// The class a C++ member function belongs to: the class whose body holds it, else the scope written before the name of an out-of-class definition (`Widget::~Widget`, `ns::Widget::run`). `''` for a free function or anything that is not a function.
+function cMethodParent(node: TsNode): string {
+  if (node.type !== 'function_definition' && node.type !== 'declaration') return ''
+  const body = node.parent
+  const owner = body?.parent ?? null
+  if (body !== null && body.type === 'field_declaration_list' && owner !== null && (owner.type === 'class_specifier' || owner.type === 'struct_specifier' || owner.type === 'union_specifier')) {
+    return owner.childForFieldName('name')?.text ?? ''
+  }
+  let cur: TsNode | null = node.childForFieldName('declarator')
+  for (let i = 0; cur !== null && i < 16; i++) {
+    if (cur.type === 'qualified_identifier') {
+      // `ns::Widget::run` nests as qualified(ns, qualified(Widget, run)); the owner is the scope of the innermost level.
+      let inner: TsNode = cur
+      for (let j = 0; j < 16; j++) {
+        const next = inner.childForFieldName('name')
+        if (next === null || next.type !== 'qualified_identifier') break
+        inner = next
+      }
+      const scope = inner.childForFieldName('scope')
+      // A template scope (`Box<T>::get`) is the class `Box`; a global `::f` has no scope text.
+      return scope === null ? '' : scope.text.replace(/<.*$/s, '').trim()
+    }
+    cur = innerDeclarator(cur)
+  }
+  return ''
 }
 
 /**
@@ -895,12 +976,12 @@ function cFunctionPrototypeName(node: TsNode): string | null {
     if (cur.type === 'function_declarator') {
       const inner = cur.childForFieldName('declarator')
       if (inner === null) return null
-      if (inner.type === 'identifier' || inner.type === 'field_identifier') return inner.text
+      if (inner.type === 'identifier' || inner.type === 'field_identifier' || inner.type === 'destructor_name' || inner.type === 'operator_name') return inner.text
       if (inner.type === 'qualified_identifier') return lastSegment(inner.text)
       return null // e.g. parenthesized_declarator -- a function-pointer *variable*, not a prototype
     }
     if (cur.type === 'pointer_declarator' || cur.type === 'reference_declarator') {
-      cur = cur.childForFieldName('declarator')
+      cur = innerDeclarator(cur)
       continue
     }
     return null // not a function-shaped declarator (plain variable, extern, etc.)
@@ -929,13 +1010,22 @@ function lastSegment(text: string): string {
 }
 
 /** Descend a C/C++ function_definition's `declarator` chain to its identifier. */
+// The declarator nested inside this one. A pointer_declarator names it `declarator`, but a C++ reference_declarator (`Widget& f()`, `int&& g()`) has no such field and holds it as its first named child, so a lookup by field alone lost every function that returns a reference.
+function innerDeclarator(node: TsNode): TsNode | null {
+  const named = node.childForFieldName('declarator')
+  if (named !== null) return named
+  return node.type === 'reference_declarator' ? (node.namedChildren[0] ?? null) : null
+}
+
 function cFunctionName(node: TsNode): string | null {
   let cur: TsNode | null = node.childForFieldName('declarator')
   // Bound the walk so a malformed/unexpected tree can never loop forever.
   for (let i = 0; cur !== null && i < 16; i++) {
     if (cur.type === 'identifier' || cur.type === 'field_identifier') return cur.text
+    // `~Widget` and `operator==` are their own node types, spelled the way the ref extractor spells a call to them.
+    if (cur.type === 'destructor_name' || cur.type === 'operator_name') return cur.text
     if (cur.type === 'qualified_identifier') return lastSegment(cur.text)
-    cur = cur.childForFieldName('declarator')
+    cur = innerDeclarator(cur)
   }
   return null
 }

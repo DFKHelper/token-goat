@@ -324,12 +324,18 @@ export function yamlLineClosesQuote(line: string, quote: '"' | "'"): boolean {
   return false
 }
 
+// A top-level YAML key at column zero: bare (`name`, `2024`, `a.b`), double-quoted, or single-quoted. The bare alternative cannot start with a quote, so a quoted key never double-matches; `(?!//)` keeps a URL scheme from reading as a key.
+const YAML_TOP_KEY_RE = /^(?:([a-zA-Z_0-9][\w.-]*)|"((?:[^"\\]|\\.)*)"|'((?:[^']|'')*)')\s*:(?!\/\/)/
+
 export function extractYamlSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)
 
   // A top-level key's double/single-quoted value can wrap across multiple lines (YAML folds the embedded newline into a space). Without tracking that, a continuation line that happens to contain its own `word:` -shaped text (e.g. wrapped prose mentioning "ratio: 16:9", or any string content resembling a key) was read as a brand new top-level key.
   let openQuote: '"' | "'" | null = null
+  // Line indices (0-based) that end the block above them: every top-level key, and every document marker.
+  const boundaries: number[] = []
+  const keyAt = new Map<number, number>()
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
@@ -340,12 +346,27 @@ export function extractYamlSymbols(content: string, filePath: string): SymbolEnt
       continue
     }
 
+    // A document marker closes the previous document's last key without starting a key of its own.
+    if (/^(?:---|\.\.\.)(?:\s|$)/.test(line)) {
+      boundaries.push(i)
+      continue
+    }
+
     // A bare URL on its own line (e.g. `https://example.com`) must NOT match as a false `https` key - the colon there is a URL scheme separator immediately followed by `//`, not a key/value split. The key charset includes `.` so a flat/dotted top-level key (e.g. `server.host:`) is captured whole rather than silently dropped. Mirrors the same guard and charset the live section reader's KEYVALUE_HEADER_RE already applies (section_reader.ts).
-    const match = /^([a-zA-Z_][\w.-]*)\s*:(?!\/\/)/.exec(line)
-    if (match !== null && match[1] !== undefined) {
+    const match = YAML_TOP_KEY_RE.exec(line)
+    if (match !== null) {
+      // A quoted key is indexed unquoted, the way a reader names it; an unquoted one (letters, `_`, or digit-led like `2024`) is already bare.
+      const name =
+        match[2] !== undefined
+          ? match[2].replace(/\\(["\\/])/g, '$1')
+          : match[3] !== undefined
+            ? match[3].replace(/''/g, "'")
+            : (match[1] ?? '')
+      boundaries.push(i)
+      keyAt.set(i, out.length)
       out.push({
         filePath,
-        name: match[1],
+        name,
         kind: 'key',
         lineStart: i + 1,
         lineEnd: i + 1,
@@ -355,6 +376,14 @@ export function extractYamlSymbols(content: string, filePath: string): SymbolEnt
       })
       openQuote = yamlOpenQuoteAfter(line, match[0].length)
     }
+  }
+
+  // A top-level key owns its whole indented block, up to the line before the next top-level key or document marker. Blank lines and column-zero comments just above that next key are not part of it; an indented `#` line can be block-scalar content, so it stays.
+  for (const [start, at] of keyAt) {
+    const sym = out[at]!
+    let end = (boundaries.find((b) => b > start) ?? lines.length) - 1
+    while (end > start && (lines[end]!.trim() === '' || lines[end]!.startsWith('#'))) end--
+    out[at] = { ...sym, lineEnd: end + 1, body: lines.slice(start, end + 1).join('\n').trim() }
   }
 
   return out
@@ -484,6 +513,16 @@ export function extractTomlSymbols(content: string, filePath: string): SymbolEnt
     openDelim = lineOpenDelimiterAfter(code, 0)
     if (openDelim === null) arrayDepth = Math.max(0, tomlBracketDelta(code))
   }
+
+  // A table or array-of-tables header owns the lines through its last key, up to the line before the next header (a header inside a string or array was never indexed, so the next indexed one is the real next table). Trailing blank and comment lines belong to nothing.
+  const headers = out.filter((sym) => sym.kind === 'section')
+  headers.forEach((sym, h) => {
+    const next = headers[h + 1]
+    let end = (next === undefined ? lines.length : next.lineStart - 1) - 1
+    while (end > sym.lineStart - 1 && (lines[end]!.trim() === '' || lines[end]!.trim().startsWith('#'))) end--
+    const at = out.indexOf(sym)
+    out[at] = { ...sym, lineEnd: end + 1, body: lines.slice(sym.lineStart - 1, end + 1).join('\n').trim() }
+  })
 
   return out
 }
