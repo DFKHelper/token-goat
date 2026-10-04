@@ -47,10 +47,14 @@ export function mergeManifestFiles(parent: FileEntry[], siblingFiles: FileEntry[
       continue
     }
     const mergedSymbols = [...new Set([...(prev.symbols_read ?? []), ...(f.symbols_read ?? [])])]
+    const fullReadCount = Math.max(prev.fullReadCount ?? 0, f.fullReadCount ?? 0)
+    const lastFullReadAt = Math.max(prev.lastFullReadAt ?? -1, f.lastFullReadAt ?? -1)
     byPath.set(key, {
       path: prev.path,
       readCount: Math.max(prev.readCount, f.readCount),
       lastReadAt: Math.max(prev.lastReadAt, f.lastReadAt),
+      ...(fullReadCount > 0 ? { fullReadCount } : {}),
+      ...(lastFullReadAt >= 0 ? { lastFullReadAt } : {}),
       wasEdited: prev.wasEdited || f.wasEdited,
       sizeBytes: f.lastReadAt >= prev.lastReadAt ? f.sizeBytes : prev.sizeBytes,
       ...(prev.wasTruncated || f.wasTruncated ? { wasTruncated: true } : {}),
@@ -236,7 +240,14 @@ function notesSection(notes: string): FitSection {
   return { header: ['', ...lines.slice(0, open + 1)], rows, footer: lines.slice(close), priority: 2, maxRows: MAX_ROWS }
 }
 
-/** Build the SAFE_TO_DISCARD manifest section: provably-inert prior context that compaction can drop without losing data, because it is recoverable through an existing recall command. Conservative by construction -- only three classes, each backed by an explicit session-state signal (never inferred): 1. Superseded identical-command bash reruns: a store call this session overwrote an already-cached entry under the exact same command key (see recordBashRerun in session.ts, wired from hooks_bash_post.ts's Item F delta-folding path). The raw transcript copy of the OLDER run is dead -- the surviving cached id already holds the freshest output. 2. File reads superseded by a later Edit/Write/Read of the same file: readCount > 1 (re-read at least once) or wasEdited (the file changed after being read) both mean an earlier textual copy in the transcript no longer reflects the file's current content. 3. Every other bash output still tracked in the session's cache index -- each is recallable verbatim via bash-output <id>, so its inline transcript copy is redundant regardless of whether it was ever rerun. Reruns already itemized under (1) are excluded here to avoid double counting the same command under two headings. Always labels the section with an explicit item count and the recall command needed to get each item's data back -- never implies data is gone, only that the inline copy is a redundant duplicate of something recallable. */
+/** Whether the earlier read content of `f` in context is replaced by something later, which needs a whole-file read: two of them, a ranged read followed by one, or an edit after one. readCount also counts offset/limit slices, and disjoint slices (lines 1-300 then 301-600) replace nothing, so neither a run of slices nor an edit after slices alone qualifies; a file only edited, never read, has no read to supersede. */
+function readIsSuperseded(f: FileEntry): boolean {
+  const fullReads = f.fullReadCount ?? 0
+  if (f.wasEdited) return fullReads > 0
+  return fullReads > 1 || (f.readCount > 1 && f.lastFullReadAt !== undefined && f.lastFullReadAt >= f.lastReadAt)
+}
+
+/** Build the SAFE_TO_DISCARD manifest section: provably-inert prior context that compaction can drop without losing data, because it is recoverable through an existing recall command. Conservative by construction -- only three classes, each backed by an explicit session-state signal (never inferred): 1. Superseded identical-command bash reruns: a store call this session overwrote an already-cached entry under the exact same command key (see recordBashRerun in session.ts, wired from hooks_bash_post.ts's Item F delta-folding path). The raw transcript copy of the OLDER run is dead -- the surviving cached id already holds the freshest output. 2. File reads superseded by a later Edit/Write/Read of the same file, as decided by {@link readIsSuperseded}: a later whole-file read, or an edit after a whole-file read, means an earlier textual copy in the transcript no longer reflects the file's current content; ranged slices never qualify, since a later slice of other lines replaces none of them. 3. Every other bash output still tracked in the session's cache index -- each is recallable verbatim via bash-output <id>, so its inline transcript copy is redundant regardless of whether it was ever rerun. Reruns already itemized under (1) are excluded here to avoid double counting the same command under two headings. Always labels the section with an explicit item count and the recall command needed to get each item's data back -- never implies data is gone, only that the inline copy is a redundant duplicate of something recallable. */
 function buildSafeToDiscardSection(files: FileEntry[]): FitSection[] {
   const rerunHashes = getSessionBashReruns()
   const bashOutputs = getSessionBashOutputs()
@@ -255,8 +266,7 @@ function buildSafeToDiscardSection(files: FileEntry[]): FitSection[] {
 
   const supersededReadRows: string[] = []
   for (const f of files) {
-    // A file only edited, never read, has no read to supersede.
-    if (f.readCount > 1 || (f.wasEdited && f.readCount > 0)) {
+    if (readIsSuperseded(f)) {
       const reason = f.wasEdited ? 'edited after being read' : ('re-read ' + f.readCount + 'x')
       supersededReadRows.push('- ' + displaySafePath(f.path) + ' (' + reason + ' — only the latest content already in context is current)')
     }

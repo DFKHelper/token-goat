@@ -348,6 +348,52 @@ describe('SAFE_TO_DISCARD section', () => {
     expect(manifest).not.toContain('Superseded file reads')
   })
 
+  /** Record reads of `p` one millisecond apart (whole-file when true), so which read came last does not depend on two calls landing in the same millisecond. */
+  function readInOrder(p: string, ...whole: boolean[]): void {
+    let t = Date.now()
+    const now = vi.spyOn(Date, 'now')
+    try {
+      for (const full of whole) {
+        now.mockReturnValue(++t)
+        recordFileRead(p, full)
+      }
+    } finally {
+      now.mockRestore()
+    }
+  }
+
+  // HAND-DERIVED: three offset/limit slices of one file (lines 1-300, 301-600, 601-900) are three different pieces of it, so none replaces another; recordFileRead's second argument is false for a sliced Read, as hooks_read.ts passes it.
+  it('does not list disjoint ranged reads of one file as superseded', () => {
+    const p = makeTmpFile('hello')
+    readInOrder(p, false, false, false)
+    const manifest = buildManifest()
+    expect(manifest).not.toContain('Superseded file reads')
+    expect(manifest).not.toContain('re-read 3x')
+  })
+
+  it('does not list a whole-file read followed only by a slice as superseded', () => {
+    const p = makeTmpFile('hello')
+    readInOrder(p, true, false)
+    expect(buildManifest()).not.toContain('Superseded file reads')
+  })
+
+  it('lists slices followed by a whole-file read as superseded', () => {
+    const p = makeTmpFile('hello')
+    readInOrder(p, false, false, true)
+    const manifest = buildManifest()
+    expect(manifest).toContain('Superseded file reads (1):')
+    expect(manifest).toContain('re-read 3x')
+  })
+
+  it('does not list a file edited after only a slice of it was read as superseded', () => {
+    const p = makeTmpFile('hello')
+    recordFileRead(p, false)
+    recordFileEdit(p)
+    const manifest = buildManifest()
+    expect(manifest).not.toContain('Superseded file reads')
+    expect(manifest).not.toContain('edited after being read')
+  })
+
   it('collapses an embedded newline in a rerun command so the row stays on one line', async () => {
     const multiline = 'echo one\necho two'
     const rerunId = await storeBashOutput(multiline, 'one\ntwo', 0)
@@ -590,6 +636,29 @@ describe('mergeManifestFiles sibling collision keeps symbols_read', () => {
     const row = manifest.split('\n').find((l) => l.startsWith(`- ${key} (symbols:`))
     expect(row).toBeDefined()
     expect(row).toMatch(/symbols: (alpha, beta|beta, alpha)\)$/)
+  })
+
+  it('keeps whole-file read counts when a sibling blob read the same path', () => {
+    const p = makeTmpFile('export const a = 1\n')
+
+    importSessionState(JSON.parse(JSON.stringify(EMPTY_STATE)))
+    loadSessionState(agentKey('agent-full'))
+    recordFileRead(p)
+    recordFileRead(p)
+    saveSessionState(agentKey('agent-full'))
+
+    importSessionState(JSON.parse(JSON.stringify(EMPTY_STATE)))
+    loadSessionState(agentKey('agent-slice'))
+    recordFileRead(p, false)
+    saveSessionState(agentKey('agent-slice'))
+
+    importSessionState(JSON.parse(JSON.stringify(EMPTY_STATE)))
+    loadSessionState(sessionId)
+
+    // Two whole-file reads by one sibling supersede the earlier copy whichever order the blobs merge in.
+    const manifest = buildManifest(sessionId)
+    expect(manifest).toContain('Superseded file reads (1):')
+    expect(manifest).toContain('re-read 2x')
   })
 })
 
