@@ -26,6 +26,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **A `json-query`, `yaml-query` or `mcp-output --json-query` search that hit its traversal limit before finding anything now says so.** On a deeply nested or very large document, a `..key` search that stopped at the limit with no matches printed only "these are not necessarily all the matches" with nothing above it. It now says no matches were found before the search stopped, and that the unsearched part may still hold some. The exit code stays 0, since a search cut short is not a definite miss.
 - **`json-query`, `yaml-query` and `xml-query` errors now start with `token-goat:` like other command failures.** A missing key, a fan-out that matched nothing, an unreadable or unparseable file, or a bad `--head` printed a bare message on stderr, so it read as if another program had failed. These errors now go through the same printer as other command failures.
+- **The `stats.record_zero_savings` config key is gone, because nothing read it.** `config set` accepted it and `config get` reported it, but setting it changed nothing: it was carried over from the Python version, where it filtered zero-saving stat rows, and the current stats count those events on purpose. A config.toml that still holds `[stats] record_zero_savings = ...` (every save before sparse saving wrote it) loads as before, `config validate` does not flag it, and the next save drops it.
 
 ## [2.9.30] - 2026-10-03
 

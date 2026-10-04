@@ -15,7 +15,6 @@ import type {
   ScreenshotConfig,
   RepomapConfig,
   OverflowGuardConfig,
-  StatsConfig,
   HintsConfig,
   HooksConfig,
   WebFetchConfig,
@@ -31,6 +30,9 @@ import type {
   HintStatsConfig,
   SemanticConfig,
 } from './config_types.js'
+
+/** Dotted keys token-goat once read and no longer does. Saves before sparse persistence wrote every key, so many config.toml files still spell these out; loading already ignores them, and `config validate` skips them rather than flagging a file the user never edited, while the next save drops them. `stats.record_zero_savings` gated zero-saving stat rows in the Python version and was carried into the TypeScript port as a parsed key nothing read: the TypeScript stats deliberately record zero-saving events as counts. */
+export const RETIRED_CONFIG_KEYS: ReadonlySet<string> = new Set(['stats.record_zero_savings'])
 
 export const CONFIG_DEFAULTS: Record<string, object> = {
   compact_assist: {
@@ -112,9 +114,6 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
   overflow_guard: {
     enabled: true,
     max_tokens: 25000,
-  },
-  stats: {
-    record_zero_savings: false,
   },
   hints: {
     quiet_hours: '',
@@ -257,7 +256,6 @@ export function defaultConfig(): Config {
     screenshot: getDefaultConfig('screenshot') as ScreenshotConfig,
     repomap: getDefaultConfig('repomap') as RepomapConfig,
     overflow_guard: getDefaultConfig('overflow_guard') as OverflowGuardConfig,
-    stats: getDefaultConfig('stats') as StatsConfig,
     hints: getDefaultConfig('hints') as HintsConfig,
     hooks: getDefaultConfig('hooks') as HooksConfig,
     webfetch: getDefaultConfig('webfetch') as WebFetchConfig,

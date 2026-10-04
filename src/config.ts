@@ -30,7 +30,6 @@ import type {
   WorkerConfig,
   RepomapConfig,
   OverflowGuardConfig,
-  StatsConfig,
   HooksConfig,
   WebFetchConfig,
   IndexingConfig,
@@ -703,10 +702,6 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   og.enabled = envBool('TOKEN_GOAT_OVERFLOW_GUARD', og.enabled)
   og.max_tokens = envInt('TOKEN_GOAT_OVERFLOW_MAX_TOKENS', og.max_tokens, ...boundsOf('overflow_guard.max_tokens'))
 
-  const st_raw = section(raw, 'stats')
-  const st = getDefaultConfig('stats') as StatsConfig
-  st.record_zero_savings = validatedBool(st_raw['record_zero_savings'], st.record_zero_savings)
-
   const hi_raw = section(raw, 'hints')
   const hi = getDefaultConfig('hints') as HintsConfig
   hi.quiet_hours = validatedStr(hi_raw['quiet_hours'], hi.quiet_hours)
@@ -923,7 +918,6 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
     screenshot: sc_cfg,
     repomap: rm,
     overflow_guard: og,
-    stats: st,
     hints: hi,
     hooks: hk,
     webfetch: wf,
@@ -1139,9 +1133,6 @@ export function saveConfig(config: Config, explicitKeys: readonly string[] = [])
     overflow_guard: {
       enabled: config.overflow_guard.enabled,
       max_tokens: config.overflow_guard.max_tokens,
-    },
-    stats: {
-      record_zero_savings: config.stats.record_zero_savings,
     },
     hints: {
       quiet_hours: config.hints.quiet_hours,

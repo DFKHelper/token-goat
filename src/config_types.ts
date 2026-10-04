@@ -99,10 +99,6 @@ export interface OverflowGuardConfig {
   max_tokens: number
 }
 
-export interface StatsConfig {
-  record_zero_savings: boolean
-}
-
 export interface PromptTrigger {
   keywords: string[]
   hint: string
@@ -275,7 +271,6 @@ export interface Config {
   screenshot: ScreenshotConfig
   repomap: RepomapConfig
   overflow_guard: OverflowGuardConfig
-  stats: StatsConfig
   hints: HintsConfig
   hooks: HooksConfig
   webfetch: WebFetchConfig

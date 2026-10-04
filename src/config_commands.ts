@@ -18,6 +18,7 @@ import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
 import { ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt, foldPath, extractErrorMessage, cappedSourceBytesSaved } from './util.js'
 import { displaySafeText, normalizePath, displaySafeJson } from './paths.js'
 import { configPath } from './constants.js'
+import { RETIRED_CONFIG_KEYS } from './config_defaults.js'
 import { performHttpFetch } from './webfetch.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { emit, emitErr } from './emit.js'
@@ -360,6 +361,11 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     } else {
       for (const section of Object.keys(raw)) {
         const knownSecs = Object.keys(defCfg)
+        const rawSec = raw[section]
+        const isRetired = (subkey: string): boolean => RETIRED_CONFIG_KEYS.has(`${section}.${subkey}`)
+        const rawSecKeys = typeof rawSec === 'object' && rawSec !== null && !Array.isArray(rawSec) ? Object.keys(rawSec) : []
+        // A section holding nothing but retired keys is what an older save left behind, not a typo, so it gets no finding.
+        if (!knownSecs.includes(section) && rawSecKeys.length > 0 && rawSecKeys.every(isRetired)) continue
         if (!knownSecs.includes(section)) {
           const suggestions = closestKeys(section, knownSecs)
           const finding: { kind: string; key: string; suggestion?: string } = { kind: 'unknown_section', key: section }
@@ -372,7 +378,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
         if (typeof rawSection !== 'object' || rawSection === null) continue
         for (const subkey of Object.keys(rawSection as Record<string, unknown>)) {
           const knownKeys = Object.keys(defSection)
-          if (!knownKeys.includes(subkey)) {
+          if (!knownKeys.includes(subkey) && !isRetired(subkey)) {
             const suggestions = closestKeys(subkey, knownKeys)
             const finding: { kind: string; key: string; suggestion?: string } = { kind: 'unknown_key', key: `${section}.${subkey}` }
             if (suggestions.length > 0) finding.suggestion = suggestions.join(', ')
@@ -390,6 +396,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
         findings.push({ kind: 'project_parse_error', key: validateProjectInfo.path, suggestion: validateProjectInfo.parseError })
       } else {
         for (const k of validateProjectInfo.keys) {
+          if (RETIRED_CONFIG_KEYS.has(k)) continue
           const eff = walkGet(effCfg, k.split('.'))
           const state = resolveConfigKeyLayer(k, eff.found ? eff.value : undefined, effCfg, validateProjectInfo)
           if (state.layer !== 'project-invalid') continue

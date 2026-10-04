@@ -555,6 +555,16 @@ describe('cmdConfig layer attribution', () => {
     })
   })
 
+  it('config validate does not report the retired stats.record_zero_savings key in a project file', () => {
+    // HAND-DERIVED: the key was a valid project override until it was retired, so a checked-in .token-goat.toml may still carry it.
+    inProjectDir('[stats]\nrecord_zero_savings = true\n', () => {
+      cmdConfig({ action: 'validate', json: true })
+      const parsed = JSON.parse(captured()) as { findings: Array<{ kind: string; key: string }>; ok: boolean }
+      expect(parsed.findings).toEqual([])
+      expect(parsed.ok).toBe(true)
+    })
+  })
+
   it('config set warns about a project value that is clamped, naming both values, because the project layer still displaces the save', () => {
     // _buildConfig merges the project raw tree OVER the global one and validates the merged result, so a clamped project value still wins over config.toml -- the save is as much a no-op as in the clean case. Staying silent here would be the mirror of the mislabel this whole change removes.
     inProjectDir('[compact_assist]\nmax_manifest_chars = 43210\n', () => {
@@ -1081,6 +1091,50 @@ describe('cmdConfig validate', () => {
     const out = captured()
     expect(out).toContain('unknown_key')
     expect(out).toContain('no_such_key_xyz')
+  })
+
+  // HAND-DERIVED: `[stats] record_zero_savings = false` is the section a pre-11c73905 full-snapshot save wrote into every config.toml (the key's default was false), worked out from that save path, not from running validate.
+  describe('the retired stats.record_zero_savings key', () => {
+    const OLD_SAVE = '[stats]\nrecord_zero_savings = false\n\n[hints]\nmin_file_lines_for_hint = 7\n'
+
+    it('is no longer a config key: get and set both refuse it', () => {
+      expect(() => cmdConfig({ action: 'get', key: 'stats.record_zero_savings' })).toThrow('key not found')
+      expect(() => cmdConfig({ action: 'set', key: 'stats.record_zero_savings', value: 'true' })).toThrow()
+      expect('stats' in (loadConfig() as unknown as Record<string, unknown>)).toBe(false)
+    })
+
+    it('still loads from an old config.toml, with the other keys in it intact', () => {
+      fs.writeFileSync(_testConfigPath, OLD_SAVE, 'utf8')
+      invalidateConfigCache()
+      expect(loadConfig().hints.min_file_lines_for_hint).toBe(7)
+    })
+
+    it('gives validate nothing to report and leaves the exit code clean', () => {
+      fs.writeFileSync(_testConfigPath, OLD_SAVE, 'utf8')
+      invalidateConfigCache()
+      process.exitCode = undefined
+      cmdConfig({ action: 'validate' })
+      expect(captured()).toContain('no issues found')
+      expect(process.exitCode).toBeUndefined()
+    })
+
+    it('still flags a real typo next to it in the same section', () => {
+      fs.writeFileSync(_testConfigPath, '[stats]\nrecord_zero_savings = false\nbogus_key = 1\n', 'utf8')
+      invalidateConfigCache()
+      cmdConfig({ action: 'validate' })
+      expect(captured()).toContain('stats')
+      expect(captured()).toContain('issue(s) found')
+      process.exitCode = undefined
+    })
+
+    it('drops out of config.toml on the next save', () => {
+      fs.writeFileSync(_testConfigPath, OLD_SAVE, 'utf8')
+      invalidateConfigCache()
+      cmdConfig({ action: 'set', key: 'hints.min_file_lines_for_hint', value: '9' })
+      const saved = fs.readFileSync(_testConfigPath, 'utf8')
+      expect(saved).not.toContain('record_zero_savings')
+      expect(saved).toContain('min_file_lines_for_hint = 9')
+    })
   })
 
   it('suggests a close match for an unknown section', () => {
