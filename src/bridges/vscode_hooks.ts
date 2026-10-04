@@ -56,6 +56,11 @@ export function materializeShrunkImageFile(context: string): string | undefined 
   }
 }
 
+/** Whether a pre_tool_use context is an image-shrink payload. Only a host that writes the copy to a file itself can deliver one; as context text it is base64 the model cannot see as a picture, so VS Code's serializer and serializeOutput's Claude Code path both drop it. */
+export function isShrunkImagePayload(eventName: HookEventName, context: string): boolean {
+  return eventName === 'pre_tool_use' && context.includes('data:image/')
+}
+
 /** Events whose decision fields VS Code reads from inside `hookSpecificOutput` rather than the top level. */
 const NESTED_DECISION_EVENTS = new Set<HookEventName>(['stop', 'subagent_stop'])
 
@@ -82,7 +87,7 @@ export function serializeVscodeOutput(
       // Same systemMessage form serializeOutput gives these two everywhere else; VS Code never fires either through the Copilot hooks file, so this only keeps the contract uniform.
       if (eventName === 'pre_compact' || eventName === 'notification') return JSON.stringify({ systemMessage: output.context })
       // preReadImageHandler writes the shrunk copy itself on VS Code and answers view_image with a rewriteInput, so a base64 payload reaching here has no channel and would only cost tokens as context text.
-      if (eventName === 'pre_tool_use' && output.context.includes('data:image/')) return '{}'
+      if (isShrunkImagePayload(eventName, output.context)) return '{}'
       return JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: output.context } })
     }
     case 'rewriteInput': {

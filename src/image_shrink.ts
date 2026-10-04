@@ -36,8 +36,8 @@ import {
   calculateFitInside,
 } from './image_engine.js'
 import { ensureDirSync, atomicWriteBytes, toKB } from './util.js'
-import { getFilePath } from './hooks_common.js'
-import { preToolPathDeclined } from './vscode_path_gate.js'
+import { getCwd, getFilePath } from './hooks_common.js'
+import { preToolPathDeclined, vscodePathAllowed } from './vscode_path_gate.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { VSCODE_TOOL_NAME_KEY } from './hooks_cli.js'
@@ -584,6 +584,9 @@ function pruneShrinkCache(): void {
 /** Harnesses whose host writes the shrunk copy to a temp file in its own process (MATERIALIZE_SHRUNK_IMAGE_JS in bridges/shrink_block.ts, and pi.ts's typed twin) after this hook has answered. opencode and OpenClaw pin no harness when they call the hook, so they are recognized only when their session variable is set. */
 const HOST_MATERIALIZED_HARNESSES: ReadonlySet<HarnessName> = new Set<HarnessName>(['copilot_cli', 'pi', 'opencode', 'openclaw'])
 
+/** Harnesses whose PreToolUse honours a rewritten tool input, so this process writes the shrunk copy and points the read at it. Claude Code caps additionalContext at 10,000 characters (https://code.claude.com/docs/en/hooks), so the data URL the context channel used to carry there arrived as a 2,000-character base64 preview while the Read loaded the original. */
+const PATH_REWRITE_HARNESSES: ReadonlySet<HarnessName> = new Set<HarnessName>(['vscode', 'claudecode'])
+
 async function finalizeShrinkResult(result: ShrinkResult, filePath: string, event: HookEvent): Promise<HookOutput> {
   // The image's own file name, so a cloned repository chooses it, and both summaries below reach the model on the context channel, which neither fences nor escapes the markers token-goat speaks in. The OCR body text beside it was already fenced; the name it was announced under was not. Sanitized once here rather than at each use, which also keeps the stats label it feeds from carrying a forged field.
   const basename = displaySafePath(path.basename(filePath))
@@ -613,8 +616,8 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string, even
 
   // A saving is booked only for a shrunk copy that reaches the model. The context channel below delivers it with this hook's own response; the two branches here do not.
   const harness = detectHarness()
-  if (harness === 'vscode') {
-    // VS Code takes the copy only as a rewritten view_image path, so the file is written here, in the process that books the saving, and a failed write passes and books nothing. OCR is skipped: text cannot replace the image on this channel.
+  if (PATH_REWRITE_HARNESSES.has(harness)) {
+    // VS Code and Claude Code take the copy only as a rewritten Read/view_image path, so the file is written here, in the process that books the saving, and a failed write passes and books nothing. OCR is skipped: text beside the call cannot stop the Read loading the image, so it would only add to what the model receives.
     const file = materializeShrunkImageFile(formatShrinkSummary(result, basename).dataUrl)
     if (file === undefined) return passOutput()
     recordStat('image_shrink', shrinkSaved, shrinkTokens, undefined, basename)
@@ -694,6 +697,8 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
   if (!isImagePath(filePath)) return passOutput()
   // Before any stat or read of the path: see preToolPathDeclined.
   if (preToolPathDeclined(event, filePath)) return passOutput()
+  // Claude Code's rewrite is answered with permissionDecision "allow", which would skip the prompt it shows before a Read outside the working directory (https://code.claude.com/docs/en/permissions), so only an image inside it is shrunk there.
+  if (detectHarness() === 'claudecode' && !vscodePathAllowed(filePath, getCwd(event))) return passOutput()
 
   pruneShrinkCache()
 

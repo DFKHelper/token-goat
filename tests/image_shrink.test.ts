@@ -90,7 +90,10 @@ afterAll(() => {
 // assertion here exercising exactly the path it always has -- OCR's own success/fallback
 // behavior gets its dedicated coverage in image_ocr.test.ts and the OCR-specific cases in
 // this file's own describe block below.
+// Pinned to a harness that takes the shrink as a context payload, so the data URL these cases decode is what the handler returns. Claude Code (the suite-wide default) and VS Code get a rewritten Read path instead: tests/image_shrink_claudecode_delivery.test.ts and tests/image_shrink_saving_follows_delivery.test.ts.
+const priorHarness = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
 beforeEach(() => {
+  process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'generic'
   try {
     fs.unlinkSync(_testConfigPath)
   } catch {
@@ -102,6 +105,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  if (priorHarness === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+  else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = priorHarness
   try {
     fs.unlinkSync(_testConfigPath)
   } catch {

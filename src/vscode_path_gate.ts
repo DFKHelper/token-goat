@@ -21,7 +21,7 @@ function resolvesToUncPath(target: string, cwd: string | undefined): boolean {
   }
 }
 
-/** Whether `filePath` may be opened by a hook running in `workspace` on VS Code. */
+/** Whether `filePath` may be opened by a hook running in `workspace` on VS Code. image_shrink.ts asks the same question of Claude Code's working directory before it answers a Read with an allow. */
 export function vscodePathAllowed(filePath: string, workspace: string | undefined): boolean {
   if (isUncOrDevicePath(filePath)) return false
   if (workspace === undefined || isUncOrDevicePath(workspace)) return false

@@ -66,9 +66,10 @@ describe('built bundle image shrink (real sharp dlopen through the full CLI impo
     // tesseract.js's confidence score for random noise (low, but not a contract) rather than
     // deterministically exercising the pixel-shrink path this test actually targets. OCR's
     // own built-bundle wiring gets its own smoke test below.
+    // A harness that takes the shrink as a data-URL context payload, so the shrunk pixels are in stdout; Claude Code gets a rewritten Read path instead, covered by the case below.
     const r = run(['hook', 'pre_tool_use'], {
       input: payload,
-      env: { ...tgEnv(dataBase), TOKEN_GOAT_OCR_ENABLED: 'false' },
+      env: { ...tgEnv(dataBase), TOKEN_GOAT_OCR_ENABLED: 'false', TOKEN_GOAT_HARNESS_OVERRIDE: 'generic' },
     })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stderr).not.toContain('sharp unavailable')
@@ -79,6 +80,28 @@ describe('built bundle image shrink (real sharp dlopen through the full CLI impo
     const context = out.hookSpecificOutput?.additionalContext ?? ''
     expect(context).toContain('smaller')
     expect(context).toMatch(/data:image\/(jpeg|webp);base64,/)
+  }, 30000)
+
+  // FORMAT-DERIVED from https://code.claude.com/docs/en/hooks: Claude Code caps additionalContext at 10,000 characters, so the shrunk copy reaches it only as an updatedInput file_path, which the shipped bundle must write and point the Read at.
+  it('rewrites a Claude Code Read inside its working directory to a shrunk copy through the built bundle', async () => {
+    const side = 700
+    const noise = Buffer.allocUnsafe(side * side * 3)
+    for (let i = 0; i < noise.length; i++) noise[i] = Math.floor(Math.random() * 256)
+    const jpegBuf = await sharp(noise, { raw: { width: side, height: side, channels: 3 } }).jpeg({ quality: 100 }).toBuffer()
+    const imgDir = mkIsolated('tg-matrix-cc-img-')
+    const imgPath = path.join(imgDir, 'big.jpg')
+    fs.writeFileSync(imgPath, jpegBuf)
+    const payload = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: imgPath }, session_id: 'matrix-image-shrink-cc', cwd: imgDir })
+    const r = run(['hook', 'pre_tool_use'], { cwd: imgDir, input: payload, env: { ...tgEnv(dataBase), TOKEN_GOAT_OCR_ENABLED: 'false', TOKEN_GOAT_HARNESS_OVERRIDE: 'claudecode' } })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout.length, 'the hook reply must fit Claude Code\'s 10,000-character field cap').toBeLessThan(10_000)
+    const hso = (JSON.parse(r.stdout) as { hookSpecificOutput?: { permissionDecision?: string; additionalContext?: string; updatedInput?: { file_path?: string } } }).hookSpecificOutput
+    expect(hso?.permissionDecision).toBe('allow')
+    expect(hso?.additionalContext ?? '').not.toContain('data:image/')
+    const shrunk = hso?.updatedInput?.file_path ?? ''
+    expect(shrunk).not.toBe(imgPath)
+    expect(fs.statSync(shrunk).size).toBeLessThan(jpegBuf.length)
+    fs.rmSync(shrunk, { force: true })
   }, 30000)
 
   // Regression coverage for the same class of bug the test above guards against, but for
@@ -118,7 +141,8 @@ describe('built bundle image shrink (real sharp dlopen through the full CLI impo
       session_id: 'matrix-image-ocr',
     })
     // network.offline, so the spawned bundle takes the OCR path without fetching the 5 MB tesseract language data from cdn.jsdelivr.net. Measured by wrapping fetch for a whole suite run: this was the only test that reached that host, and it cost 12 s per run plus a hard dependency on the internet for a case whose own assertion below already accepts either outcome. What it still proves is the thing it was written for: the built bundle dispatches a large text-heavy image through the real hook path, loads its native addons in the right order, and answers without crashing or hanging. The OCR engine's own wiring -- the child script, the pinned langPath, the cache directory, the integrity refusal -- is covered by tests/image_ocr_integrity.test.ts and tests/image_ocr.test.ts against stubs.
-    const r = run(['hook', 'pre_tool_use'], { input: payload, env: { ...tgEnv(dataBase), TOKEN_GOAT_OFFLINE: '1' } })
+    // Pinned to a context-channel harness, whose reply carries either marker this case accepts; on Claude Code the OCR branch is skipped and the shrink is a rewritten path.
+    const r = run(['hook', 'pre_tool_use'], { input: payload, env: { ...tgEnv(dataBase), TOKEN_GOAT_OFFLINE: '1', TOKEN_GOAT_HARNESS_OVERRIDE: 'generic' } })
     expect(r.status, r.stderr).toBe(0)
 
     const out = JSON.parse(r.stdout) as {

@@ -32,3 +32,15 @@ export const HARNESS_DETECTION_ENV_KEYS = [
   'GOOGLE_API_KEY',
   'TOKEN_GOAT_HARNESS_OVERRIDE',
 ] as const
+
+/** Run `fn` with `TOKEN_GOAT_HARNESS_OVERRIDE` set to `harness`, restoring the prior value (or its absence) afterwards even when `fn` throws. */
+export async function withHarnessOverride<T>(harness: string, fn: () => Promise<T>): Promise<T> {
+  const prior = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+  process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = harness
+  try {
+    return await fn()
+  } finally {
+    if (prior === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+    else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = prior
+  }
+}

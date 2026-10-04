@@ -8,6 +8,7 @@ import omggif from 'omggif'
 import { decodeGif, probeBufferMeta, quantizeRgbaToIndexed } from '../src/image_engine.js'
 import { preReadImageHandler } from '../src/image_shrink.js'
 import { makeHookEvent } from './helpers/hook-event.js'
+import { withHarnessOverride } from './helpers/harness-env.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -189,7 +190,8 @@ describe('the shrink path delivers composited, transparency-preserving GIFs', ()
     const dir = fs.mkdtempSync(path.join(process.env.TEMP ?? '/tmp', 'tg-gifc-'))
     const file = path.join(dir, `${tag}.gif`)
     fs.writeFileSync(file, buf)
-    const out = await preReadImageHandler(makeHookEvent({ toolName: 'Read', toolInput: { file_path: file } }))
+    // A harness that takes the shrink as a data-URL payload, so the delivered GIF is in the result; Claude Code gets a rewritten Read path instead (tests/image_shrink_claudecode_delivery.test.ts).
+    const out = await withHarnessOverride('generic', () => preReadImageHandler(makeHookEvent({ toolName: 'Read', toolInput: { file_path: file } })))
     const text = JSON.stringify(out ?? {})
     const m = /data:image\/gif;base64,([A-Za-z0-9+/=]+)/.exec(text)
     return { text, gif: m ? Buffer.from(m[1]!, 'base64') : null }

@@ -6,7 +6,7 @@ import { foldToolName } from './tool_name_fold.js'
 import { recordUnmappedTool } from './stats.js'
 import type { HookEventName, HookOutput } from './types.js'
 import { replaceToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, BODY_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
-import { serializeVscodeOutput } from './bridges/vscode_hooks.js'
+import { isShrunkImagePayload, serializeVscodeOutput } from './bridges/vscode_hooks.js'
 import { serializeAntigravityOutput } from './bridges/antigravity_hooks.js'
 
 /** The event object passed to every {@link HookHandler}. `toolInput` and `raw` are kept as `Record<string, unknown>` rather than a narrower TypedDict-style shape so handlers can read harness-specific keys the registry doesn't model. `toolName` is `undefined` for non-tool events (notification, stop, pre_compact). */
@@ -219,6 +219,10 @@ export function serializeOutput(
       }
       if (EVENTS_WITHOUT_ADDITIONAL_CONTEXT.has(eventName)) {
         return JSON.stringify({ systemMessage: output.context })
+      }
+      // Claude Code caps additionalContext at 10,000 characters and moves anything longer to a file behind a 2,000-character preview (https://code.claude.com/docs/en/hooks), so a shrunk image sent here reached the model as base64 text while the Read loaded the original. preReadImageHandler rewrites the Read's path instead; this keeps any other route from shipping the payload.
+      if (harness === 'claudecode' && isShrunkImagePayload(eventName, output.context)) {
+        return JSON.stringify(noticeField(output.notice, harness))
       }
       return JSON.stringify({
         ...noticeField(output.notice, harness),
