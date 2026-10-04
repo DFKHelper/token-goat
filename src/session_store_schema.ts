@@ -11,6 +11,7 @@ import { resolve } from 'node:path'
 import type { HookEvent } from './hook_registry.js'
 import { getToolName } from './hooks_common.js'
 import { displaySafeJson } from './paths.js'
+import { CliError, formatCommandError, formatFailedResultText } from './command_error.js'
 
 export interface SessionStoreColumn {
   readonly name: string
@@ -559,7 +560,7 @@ export function runSessionSchema(opts: { table?: string | undefined; json?: bool
   const found = getSessionStoreTable(opts.table)
   if (!found) {
     const avail = SESSION_STORE_TABLES.map((t) => t.name).join(', ')
-    process.stderr.write(`Unknown session store table '${opts.table}'. Available tables: ${avail}\nRun 'token-goat session-schema' to see all tables.\n`)
+    process.stderr.write(formatCommandError(new CliError([`Unknown session store table '${opts.table}'. Available tables: ${avail}`, "Run 'token-goat session-schema' to see all tables."])) + '\n')
     return 1
   }
   process.stdout.write(formatSessionStoreTable(found, { json: opts.json }) + '\n')
@@ -569,7 +570,7 @@ export function runSessionSchema(opts: { table?: string | undefined; json?: bool
 export async function runDescribe(opts: { target?: string | undefined; table?: string | undefined; json?: boolean | undefined }): Promise<number> {
   const result = await describeTarget(opts.target, opts.table, { json: opts.json })
   if (result.exitCode !== 0) {
-    process.stderr.write(result.text + '\n')
+    process.stderr.write(formatFailedResultText(result.text) + '\n')
   } else {
     process.stdout.write(result.text + '\n')
   }

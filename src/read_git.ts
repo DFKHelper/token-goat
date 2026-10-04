@@ -23,6 +23,7 @@ import {
 } from './util.js'
 import { walkProject } from './baseline.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
+import { formatCommandError } from './command_error.js'
 
 export interface ConflictsCliOptions {
   path?: string
@@ -41,7 +42,7 @@ export function runConflicts(opts: ConflictsCliOptions): number {
     try {
       stat = fs.statSync(abs)
     } catch {
-      emitErr(`Could not read: ${opts.path}`)
+      emitErr(formatCommandError(`Could not read: ${opts.path}`))
       return 1
     }
     files = stat.isDirectory() ? walkProject(abs).files : [abs]
@@ -275,7 +276,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
   // Symbol mode answers from the machine-wide index, unlike the file list, which git reads from the working tree, so only it refuses a root outside what indexing.cross_project_symbols = false admits.
   const projectDenial = opts.symbolMode === true ? resolveProjectConfinement(opts.projectRoot).denial : null
   if (projectDenial !== null) {
-    emitErr(projectDenial)
+    emitErr(formatCommandError(projectDenial))
     return 1
   }
   const cwd = opts.projectRoot ?? process.cwd()
@@ -288,7 +289,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
       emitErr(`git diff failed: ${result.stderr}`)
       const hint = buildChangedRefHint(cwd, ref)
       if (hint !== null) {
-        emitErr(hint)
+        emitErr(formatCommandError(hint))
       }
       return 1
     }
@@ -299,7 +300,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
       .filter(Boolean)
       .map((f) => (f.startsWith('"') && f.endsWith('"') && f.length > 1 ? unquoteGitPath(f.slice(1, -1)) : f))
   } catch {
-    emitErr(`Could not run git diff against '${ref}'`)
+    emitErr(formatCommandError(`Could not run git diff against '${ref}'`))
     return 1
   }
 
@@ -466,11 +467,11 @@ export function runDiff(opts: DiffOptions): number {
   try {
     diffResult = runGit(diffArgs, { cwd })
   } catch {
-    emitErr(`Could not run git diff for '${match.filePath}'`)
+    emitErr(formatCommandError(`Could not run git diff for '${match.filePath}'`))
     return 1
   }
   if (diffResult.exitCode !== 0) {
-    emitErr(`git diff failed: ${diffResult.stderr}`)
+    emitErr(formatCommandError(`git diff failed: ${diffResult.stderr}`))
     return 1
   }
 
@@ -592,11 +593,11 @@ export function runLog(opts: LogOptions): number {
   try {
     logResult = runGit(logArgs, { cwd })
   } catch {
-    emitErr(`Could not run git log for '${match.filePath}'`)
+    emitErr(formatCommandError(`Could not run git log for '${match.filePath}'`))
     return 1
   }
   if (logResult.exitCode !== 0) {
-    emitErr(`git log failed: ${displaySafeText(logResult.stderr)}`)
+    emitErr(formatCommandError(`git log failed: ${displaySafeText(logResult.stderr)}`))
     return 1
   }
 

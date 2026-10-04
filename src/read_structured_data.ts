@@ -24,7 +24,7 @@ import {
 } from './openapi_query.js'
 import { emitGuarded, guardJsonRows, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
-import { formatCommandError } from './command_error.js'
+import { CliError, formatCommandError } from './command_error.js'
 import { emit, emitErr } from './emit.js'
 import { headElidedNotice, traversalLimitNotice } from './query_notices.js'
 import { fenceUntrusted } from './untrusted_fence.js'
@@ -56,7 +56,7 @@ export interface CsvQueryCliOptions {
 export function runCsvQuery(opts: CsvQueryCliOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(`Could not read: ${opts.file}`)
+    emitErr(formatCommandError(`Could not read: ${opts.file}`))
     return 1
   }
 
@@ -71,7 +71,7 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
   try {
     head = opts.head !== undefined ? requireNonNegativeStrictInt('--head', opts.head) : undefined
   } catch (e) {
-    emitErr(extractErrorMessage(e))
+    emitErr(formatCommandError(e))
     return 1
   }
 
@@ -103,7 +103,7 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
     }
     return 0
   } catch (e) {
-    emitErr(extractErrorMessage(e))
+    emitErr(formatCommandError(e))
     return 1
   }
 }
@@ -117,7 +117,7 @@ export interface CsvProfileCliOptions {
 export function runCsvProfile(opts: CsvProfileCliOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(`Could not read: ${opts.file}`)
+    emitErr(formatCommandError(`Could not read: ${opts.file}`))
     return 1
   }
   try {
@@ -135,7 +135,7 @@ export function runCsvProfile(opts: CsvProfileCliOptions): number {
     recordReadStat('csv_profile', fullSourceBytes, profileText, opts.file)
     return 0
   } catch (e) {
-    emitErr(extractErrorMessage(e))
+    emitErr(formatCommandError(e))
     return 1
   }
 }
@@ -150,7 +150,7 @@ export interface JsonOutlineCliOptions {
 function runOutlineCommand(opts: JsonOutlineCliOptions, parse: (text: string) => unknown, formatLabel: string, kind: string): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(`Could not read: ${opts.file}`)
+    emitErr(formatCommandError(`Could not read: ${opts.file}`))
     return 1
   }
 
@@ -158,14 +158,14 @@ function runOutlineCommand(opts: JsonOutlineCliOptions, parse: (text: string) =>
   try {
     data = parse(text)
   } catch {
-    emitErr(`Failed to parse ${formatLabel}: ${opts.file}`)
+    emitErr(formatCommandError(`Failed to parse ${formatLabel}: ${opts.file}`))
     return 1
   }
 
   const outline = outlineJson(data, opts.filter === undefined ? {} : { keyFilter: opts.filter })
   // Named rather than ignored: an array or scalar has no keys to narrow, and an unfiltered listing returned for a filtered request reads as though every entry matched.
   if (opts.filter !== undefined && outline.kind !== 'object') {
-    emitErr(`--filter narrows an object's keys, and the top level of ${opts.file} is ${outline.kind === 'array' ? 'an array' : 'a scalar'}`)
+    emitErr(formatCommandError(`--filter narrows an object's keys, and the top level of ${opts.file} is ${outline.kind === 'array' ? 'an array' : 'a scalar'}`))
     return 1
   }
   const fullSourceBytes = sumFileSizes([opts.file])
@@ -348,7 +348,7 @@ export interface XmlOutlineCliOptions {
 export function runXmlOutline(opts: XmlOutlineCliOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(`Could not read: ${opts.file}`)
+    emitErr(formatCommandError(`Could not read: ${opts.file}`))
     return 1
   }
 
@@ -356,7 +356,7 @@ export function runXmlOutline(opts: XmlOutlineCliOptions): number {
   try {
     summary = outlineXml(text, { ...(opts.maxDepth !== undefined ? { maxDepth: opts.maxDepth } : {}) })
   } catch (e) {
-    emitErr(`Failed to parse XML: ${opts.file}\n${extractErrorMessage(e)}`)
+    emitErr(formatCommandError(new CliError([`Failed to parse XML: ${opts.file}`, extractErrorMessage(e)])))
     return 1
   }
 
@@ -602,7 +602,7 @@ export interface HtmlOutlineCliOptions {
 export function runHtmlOutline(opts: HtmlOutlineCliOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(`Could not read: ${opts.file}`)
+    emitErr(formatCommandError(`Could not read: ${opts.file}`))
     return 1
   }
 
@@ -632,7 +632,7 @@ export interface HtmlQueryCliOptions {
 export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(`Could not read: ${opts.file}`)
+    emitErr(formatCommandError(`Could not read: ${opts.file}`))
     return 1
   }
 
@@ -640,7 +640,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
   try {
     head = opts.head !== undefined ? requireNonNegativeStrictInt('--head', opts.head) : undefined
   } catch (e) {
-    emitErr(extractErrorMessage(e))
+    emitErr(formatCommandError(e))
     return 1
   }
 
@@ -728,7 +728,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
     }
     return 0
   } catch (e) {
-    emitErr(extractErrorMessage(e))
+    emitErr(formatCommandError(e))
     return 1
   }
 }
@@ -742,7 +742,7 @@ export interface HtmlLintCliOptions {
 export function runHtmlLint(opts: HtmlLintCliOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(`Could not read: ${opts.file}`)
+    emitErr(formatCommandError(`Could not read: ${opts.file}`))
     return 1
   }
 
@@ -795,7 +795,7 @@ export interface OpenApiOutlineCliOptions {
 function loadOpenApiOperations(file: string): ReturnType<typeof extractOperations> | null {
   const text = readFileText(file)
   if (text === null) {
-    emitErr(`Could not read: ${file}`)
+    emitErr(formatCommandError(`Could not read: ${file}`))
     return null
   }
 
@@ -803,7 +803,7 @@ function loadOpenApiOperations(file: string): ReturnType<typeof extractOperation
   try {
     spec = parseOpenApiSpec(text, file)
   } catch {
-    emitErr(`Failed to parse OpenAPI spec (not valid JSON or YAML): ${file}`)
+    emitErr(formatCommandError(`Failed to parse OpenAPI spec (not valid JSON or YAML): ${file}`))
     return null
   }
 
@@ -842,7 +842,7 @@ export function runOpenApiOp(opts: OpenApiOpCliOptions): number {
     const closes = rankSimilarNames(operations.map(operationLabel), opts.operation)
     if (closes.length > 0) messages.push(didYouMean(closes))
     else if (operations.length > 0) messages.push(`Try: token-goat openapi-outline ${opts.file}`)
-    emitErr(messages.join('\n'))
+    emitErr(formatCommandError(new CliError(messages)))
     return 1
   }
 

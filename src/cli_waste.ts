@@ -19,6 +19,7 @@ import { countNoun } from './util.js'
 import { formatBytes, formatTokenEstimate } from './resident_context.js'
 import { estimateTokensFromLength } from './overflow_guard.js'
 import { displaySafeJson } from './paths.js'
+import { formatCommandError } from './command_error.js'
 
 export interface WasteCommandOptions {
   project?: string
@@ -245,7 +246,7 @@ export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<v
         process.exitCode = 1
         return
       }
-      process.stderr.write(`token-goat: transcript not found: ${resolvedPath}\n`)
+      process.stderr.write(formatCommandError(`transcript not found: ${resolvedPath}`) + '\n')
       process.exitCode = 1
       return
     }

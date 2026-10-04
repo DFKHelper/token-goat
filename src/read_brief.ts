@@ -22,6 +22,7 @@ import { fileIsGone, findSpecSeparator, guardText, indexFreshness, readFileText,
 import { emit, emitErr } from './emit.js'
 import { formatAmbiguity, parseCrossFileMultiSpec, parseReadSpec, resolveSymbolSpec, specScopeRoot } from './read_spec.js'
 import { formatBareNameSpecError, trimBlankLines } from './read_suggest.js'
+import { formatCommandError, formatFailedResultText } from './command_error.js'
 
 export interface BriefOptions {
   spec: string
@@ -227,7 +228,7 @@ export function runBriefCrossFile(pairs: { file: string; symbol: string }[], opt
 export function runBrief(opts: BriefOptions): number {
   // Same reasoning as runRefs/runFind/runTypes: a limit of 0 (or negative) would silently slice the caller list down to zero entries instead of surfacing a clear "you asked for nothing" error, consistent with every other --limit flag in this codebase. Validated once here rather than inside runBriefCore because --limit applies to the whole invocation, so a multi-symbol spec must report it once, not once per symbol.
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    emitErr(formatCommandError(`--limit must be a positive number, got: ${opts.limit}`))
     return 1
   }
 
@@ -236,7 +237,7 @@ export function runBrief(opts: BriefOptions): number {
   if (crossFilePairs !== null) {
     const { text, code } = runBriefCrossFile(crossFilePairs, opts)
     if (code === 0) emit(text)
-    else emitErr(text)
+    else emitErr(formatFailedResultText(text))
     return code
   }
 
@@ -246,13 +247,13 @@ export function runBrief(opts: BriefOptions): number {
     if (multiSymbols.length > 1) {
       const { text, code } = runBriefMulti(file, multiSymbols, opts)
       if (code === 0) emit(text)
-      else emitErr(text)
+      else emitErr(formatFailedResultText(text))
       return code
     }
   }
 
   const { text, code } = runBriefCore(opts)
   if (code === 0) emit(text)
-  else emitErr(text)
+  else emitErr(formatFailedResultText(text))
   return code
 }

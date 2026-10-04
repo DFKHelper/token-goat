@@ -16,6 +16,7 @@ import { runSymbol } from './read_symbol.js'
 import { runBrief } from './read_brief.js'
 import { emit, emitErr } from './emit.js'
 import { type AnswerRoute, recordStat } from './stats.js'
+import { formatCommandError } from './command_error.js'
 
 export interface AnswerOptions {
   question: string
@@ -319,7 +320,7 @@ function recordAnswer(route: AnswerRoute, outcome: string): void {
 
 function refuse(reason: RefusalReason, why: string, suggestion: string): number {
   recordAnswer('refused', reason)
-  emitErr(refusal(why, suggestion))
+  emitErr(formatCommandError(refusal(why, suggestion)))
   return 1
 }
 

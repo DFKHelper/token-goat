@@ -45,6 +45,7 @@ import {
   requireNonNegativeStrictInt,
 } from './util.js'
 import { ZipInputTooLargeError, ZipOutputTooLargeError } from './zip_bounds.js'
+import { CliError, formatCommandError } from './command_error.js'
 
 export interface ZipListCliOptions {
   file: string
@@ -62,13 +63,13 @@ export async function runZipList(opts: ZipListCliOptions): Promise<number> {
     data = readFileBytes(opts.file)
   } catch (err) {
     if (err instanceof ZipInputTooLargeError) {
-      emitErr(err.message)
+      emitErr(formatCommandError(err.message))
       return 1
     }
     throw err
   }
   if (data === null) {
-    emitErr(`Could not read: ${opts.file}`)
+    emitErr(formatCommandError(`Could not read: ${opts.file}`))
     return 1
   }
 
@@ -76,7 +77,7 @@ export async function runZipList(opts: ZipListCliOptions): Promise<number> {
   try {
     entries = await listZipEntries(data)
   } catch (err) {
-    emitErr(archiveReadFailure(err, opts.file))
+    emitErr(formatCommandError(archiveReadFailure(err, opts.file)))
     return 1
   }
 
@@ -105,13 +106,13 @@ export async function runZipRead(opts: ZipReadCliOptions): Promise<number> {
     data = readFileBytes(opts.file)
   } catch (err) {
     if (err instanceof ZipInputTooLargeError) {
-      emitErr(err.message)
+      emitErr(formatCommandError(err.message))
       return 1
     }
     throw err
   }
   if (data === null) {
-    emitErr(`Could not read: ${opts.file}`)
+    emitErr(formatCommandError(`Could not read: ${opts.file}`))
     return 1
   }
 
@@ -121,13 +122,13 @@ export async function runZipRead(opts: ZipReadCliOptions): Promise<number> {
     entries = await listZipEntries(data)
     content = await extractZipEntry(data, opts.entry)
   } catch (err) {
-    emitErr(archiveReadFailure(err, opts.file))
+    emitErr(formatCommandError(archiveReadFailure(err, opts.file)))
     return 1
   }
 
   const matchedEntry = entries.find((e) => e.path === opts.entry)
   if (matchedEntry?.isDirectory === true) {
-    emitErr(`Entry '${opts.entry}' is a directory, not a file, in '${opts.file}'`)
+    emitErr(formatCommandError(`Entry '${opts.entry}' is a directory, not a file, in '${opts.file}'`))
     return 1
   }
 
@@ -136,7 +137,7 @@ export async function runZipRead(opts: ZipReadCliOptions): Promise<number> {
     const closes = rankSimilarNames(entries.map((e) => e.path), opts.entry)
     if (closes.length > 0) messages.push(didYouMean(closes))
     else if (entries.length > 0) messages.push(`Try: token-goat zip-list ${opts.file}`)
-    emitErr(messages.join('\n'))
+    emitErr(formatCommandError(new CliError(messages)))
     return 1
   }
 
@@ -175,7 +176,7 @@ export function runSqliteSchema(opts: SqliteSchemaCliOptions): number {
     }
     return 0
   } catch (e) {
-    emitErr(extractErrorMessage(e))
+    emitErr(formatCommandError(e))
     return 1
   }
 }
@@ -200,7 +201,7 @@ export function runSqliteTables(opts: SqliteTablesCliOptions): number {
     }
     return 0
   } catch (e) {
-    emitErr(extractErrorMessage(e))
+    emitErr(formatCommandError(e))
     return 1
   }
 }
@@ -217,7 +218,7 @@ export function runSqliteQuery(opts: SqliteQueryCliOptions): number {
   try {
     head = opts.head !== undefined ? requireNonNegativeStrictInt('--head', opts.head) : undefined
   } catch (e) {
-    emitErr(extractErrorMessage(e))
+    emitErr(formatCommandError(e))
     return 1
   }
 
@@ -254,7 +255,7 @@ export function runSqliteQuery(opts: SqliteQueryCliOptions): number {
     }
     return 0
   } catch (e) {
-    emitErr(extractErrorMessage(e))
+    emitErr(formatCommandError(e))
     return 1
   }
 }
@@ -268,7 +269,7 @@ export interface CoverageReportGapsCliOptions {
 export function runCoverageReportGaps(opts: CoverageReportGapsCliOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(`Could not read: ${opts.file}`)
+    emitErr(formatCommandError(`Could not read: ${opts.file}`))
     return 1
   }
 
@@ -276,7 +277,7 @@ export function runCoverageReportGaps(opts: CoverageReportGapsCliOptions): numbe
   try {
     report = parseCoverageReport(text)
   } catch (e) {
-    emitErr(`Failed to parse coverage report (not valid LCOV or Istanbul JSON): ${opts.file}\n${extractErrorMessage(e)}`)
+    emitErr(formatCommandError(new CliError([`Failed to parse coverage report (not valid LCOV or Istanbul JSON): ${opts.file}`, extractErrorMessage(e)])))
     return 1
   }
 
@@ -372,7 +373,7 @@ export interface ConfigGetOptions {
 export function runConfigGet(opts: ConfigGetOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(`Could not read: ${opts.file}`)
+    emitErr(formatCommandError(`Could not read: ${opts.file}`))
     return 1
   }
 
@@ -380,7 +381,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
   if (frontmatterLines !== null) {
     const value = lookupYaml(frontmatterLines, opts.key)
     if (value === null) {
-      emitErr(`Key '${opts.key}' not found in ${opts.file}`)
+      emitErr(formatCommandError(`Key '${opts.key}' not found in ${opts.file}`))
       return 1
     }
     emit(value)
@@ -395,19 +396,19 @@ export function runConfigGet(opts: ConfigGetOptions): number {
       let obj: any = parseJsonOrJsonc(text)
       for (const part of opts.key.split('.')) {
         if (typeof obj !== 'object' || obj === null) {
-          emitErr(`Key '${opts.key}' not found in ${opts.file}`)
+          emitErr(formatCommandError(`Key '${opts.key}' not found in ${opts.file}`))
           return 1
         }
         obj = obj[part]
         if (obj === undefined) {
-          emitErr(`Key '${opts.key}' not found in ${opts.file}`)
+          emitErr(formatCommandError(`Key '${opts.key}' not found in ${opts.file}`))
           return 1
         }
       }
       emit(displaySafeJson(obj, 0))
       return 0
     } catch {
-      emitErr(`Failed to parse JSON: ${opts.file}`)
+      emitErr(formatCommandError(`Failed to parse JSON: ${opts.file}`))
       return 1
     }
   }
@@ -415,7 +416,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
   if (ext === '.yaml' || ext === '.yml') {
     const value = lookupYaml(text.split(/\r?\n/), opts.key)
     if (value === null) {
-      emitErr(`Key '${opts.key}' not found in ${opts.file}`)
+      emitErr(formatCommandError(`Key '${opts.key}' not found in ${opts.file}`))
       return 1
     }
     emit(value)
@@ -426,7 +427,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
     const toml = lookupToml(text, opts.key)
     if (toml !== undefined) {
       if (toml === null) {
-        emitErr(`Key '${opts.key}' not found in ${opts.file}`)
+        emitErr(formatCommandError(`Key '${opts.key}' not found in ${opts.file}`))
         return 1
       }
       emit(toml)
@@ -445,7 +446,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
     if (value !== null) {
       // A TOML file that failed to parse reaches this line scan; a value it can only see the first line of must not print as if whole.
       if (ext === '.toml' && isTomlFragment(value)) {
-        emitErr(`Key '${opts.key}' in ${opts.file} spans several lines and the file is not valid TOML, so it cannot be read whole`)
+        emitErr(formatCommandError(`Key '${opts.key}' in ${opts.file} spans several lines and the file is not valid TOML, so it cannot be read whole`))
         return 1
       }
       emit(value)
@@ -453,7 +454,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
     }
   }
 
-  emitErr(`Key '${opts.key}' not found in ${opts.file}`)
+  emitErr(formatCommandError(`Key '${opts.key}' not found in ${opts.file}`))
   return 1
 }
 
@@ -584,7 +585,7 @@ export function runExports(opts: ImportsExportsOptions): number {
 
   const confined = fileConfinementRefusal('This file', opts.file, opts.projectRoot)
   if (confined !== null) {
-    emitErr(confined)
+    emitErr(formatCommandError(confined))
     return 1
   }
 
@@ -605,7 +606,7 @@ export function runExports(opts: ImportsExportsOptions): number {
   const ext = path.extname(opts.file).toLowerCase()
   const text = readFileText(diskPath)
   if (text === null && symbols.length === 0) {
-    emitErr(`Could not read: ${opts.file}`)
+    emitErr(formatCommandError(`Could not read: ${opts.file}`))
     return 1
   }
   if (text !== null) {
@@ -668,7 +669,7 @@ export function runImports(opts: ImportsExportsOptions): number {
   const diskPath = resolveAgainstProjectRoot(opts.file, opts.projectRoot)
   const text = readFileText(diskPath)
   if (text === null) {
-    emitErr(`Could not read: ${opts.file}`)
+    emitErr(formatCommandError(`Could not read: ${opts.file}`))
     return 1
   }
   const imports = extractImports(text, importsExtensionFor(opts.file))
@@ -830,7 +831,7 @@ export interface FindOptions {
 
 export function runFind(opts: FindOptions): number {
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    emitErr(formatCommandError(`--limit must be a positive number, got: ${opts.limit}`))
     return 1
   }
 
@@ -862,7 +863,7 @@ export function runFind(opts: FindOptions): number {
   const truncated = limitDropped > 0
 
   if (files.length === 0) {
-    emitErr(`No indexed files match '${opts.pattern}'`)
+    emitErr(formatCommandError(`No indexed files match '${opts.pattern}'`))
     return 1
   }
 
@@ -908,7 +909,7 @@ export interface LocateHit {
 
 export function runLocate(opts: LocateOptions): number {
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    emitErr(formatCommandError(`--limit must be a positive number, got: ${opts.limit}`))
     return 1
   }
 
@@ -980,7 +981,7 @@ export function runLocate(opts: LocateOptions): number {
   const shown = sinkGoneRows(combined, (s) => s.filePath).slice(0, limit)
 
   if (shown.length === 0) {
-    emitErr(`No landmark or symbol located for '${targetSpec}'`)
+    emitErr(formatCommandError(`No landmark or symbol located for '${targetSpec}'`))
     return 1
   }
 
@@ -1033,10 +1034,10 @@ export function runListSections(opts: ListSectionsOptions): number {
 
   if (sections.length === 0) {
     if (!fileExists(opts.file)) {
-      emitErr(`Could not read: ${opts.file}`)
+      emitErr(formatCommandError(`Could not read: ${opts.file}`))
       return 1
     }
-    emitErr(`No sections found in '${opts.file}'`)
+    emitErr(formatCommandError(`No sections found in '${opts.file}'`))
     return 1
   }
 

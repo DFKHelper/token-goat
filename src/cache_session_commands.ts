@@ -19,6 +19,7 @@ import { loadConfig } from './config.js'
 import { envBool } from './env.js'
 import { displaySafeText, displaySafeJson } from './paths.js'
 import { emitErr } from './emit.js'
+import { CliError } from './command_error.js'
 
 /** Cap a listing to `limit` rows and say so on stderr when rows were dropped. These listings serialize a bare JSON array under `--json`, so there is nowhere in-band to put a `truncated` flag without breaking every pipeline that consumes the array. stderr is the only channel left. A pipeline that discards stderr still cannot see the notice -- that residual risk is real, and named rather than hidden. What is not acceptable is disclosure on neither channel, which is what all three listings did: `--limit 10` against 200 cached entries printed ten rows that were byte-identical to a complete answer. Shared rather than written out three times because the three callers are the same listing with a different row shape, and a notice that exists in two of them is the failure this fixes. */
 function capAndNote<T>(rows: readonly T[], limit: number): T[] {
@@ -35,13 +36,11 @@ function parseLimitOpt(cmdName: string, limitStr: string | undefined, dflt = 30)
   let n: number
   try {
     n = requireNonNegativeStrictInt('--limit', limitStr)
-  } catch (e) {
-    emitErr(`${cmdName}: --limit must be a positive number, got: "${limitStr}"`)
-    throw new Error(`invalid --limit: ${limitStr}`, { cause: e })
+  } catch {
+    throw new CliError(`${cmdName}: --limit must be a positive number, got: "${limitStr}"`)
   }
   if (n === 0) {
-    emitErr(`${cmdName}: --limit must be a positive number, got: "${limitStr}"`)
-    throw new Error(`invalid --limit: ${limitStr}`)
+    throw new CliError(`${cmdName}: --limit must be a positive number, got: "${limitStr}"`)
   }
   return n
 }

@@ -18,6 +18,7 @@ import { isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindK
 import { typedRefsForDef } from './graph_traversal.js'
 import { compileGrepMatcher, countNoun, excludeTestsHiddenNote, grepFilteredToEmptyNotice, isTestFile } from './util.js'
 import { buildContextWindow, renderContextWindow, type SourceContextLine } from './util_context.js'
+import { CliError, formatCommandError } from './command_error.js'
 
 export interface RefsOptions {
   spec: string
@@ -210,7 +211,7 @@ function renderRefsTargets(
     if (file === undefined || !symbol.includes('.')) continue
     const qualified = resolveQualifiedSpec(`${file}::${symbol}`, opts.projectRoot ?? process.cwd())
     if (qualified?.kind !== 'ambiguous') continue
-    emitErr(formatAmbiguity(qualified.symbol, qualified.file, qualified.candidates, opts.projectRoot, 'refs'))
+    emitErr(formatCommandError(new CliError(formatAmbiguity(qualified.symbol, qualified.file, qualified.candidates, opts.projectRoot, 'refs').split('\n'))))
     return 1
   }
   // Every entry uses the same envelope shape as the single-symbol `refs`/`symbol`/`skeleton`/ `outline` JSON output ({ items, truncated, totalCount }), whether or not it was truncated — a JSON consumer should never have to branch on shape depending on truncation. `--top` opts into a distinct, deliberately different envelope ({ fileCounts, totalFiles, totalRefs, shown }) since the caller explicitly asked for the grouped summary shape instead.
@@ -286,26 +287,26 @@ function renderRefsTargets(
 export function runRefs(opts: RefsOptions): number {
   // A limit of 0 (or negative) would translate to SQL `LIMIT 0`, which always returns zero rows regardless of whether references exist -- silently reporting "no references found" for a symbol that's actually referenced. Reject it explicitly instead of querying with it. Both callers (this multi-symbol path and the single-symbol runRefsSingle it delegates to) are covered by this one check since runRefsSingle is never called from outside this file.
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    emitErr(formatCommandError(`--limit must be a positive number, got: ${opts.limit}`))
     return 1
   }
   // Same reasoning: --top 0 (or negative) is never a meaningful request -- reject explicitly rather than silently rendering an empty summary.
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(`--top must be a positive number, got: ${opts.top}`)
+    emitErr(formatCommandError(`--top must be a positive number, got: ${opts.top}`))
     return 1
   }
 
   // Same confinement the file-spec read commands enforce, applied before any query: an explicit --project or an out-of-root file in the spec would otherwise re-open the channel that refsRootDir closes for the bare-name form.
   const { root: confinedRoot, denial: projectDenial } = resolveProjectConfinement(opts.projectRoot)
   if (projectDenial !== null) {
-    emitErr(projectDenial)
+    emitErr(formatCommandError(projectDenial))
     return 1
   }
   if (confinedRoot !== null) {
     for (const file of refsSpecFiles(opts.spec)) {
       const denial = confinementRefusal('This file', resolveSpecPath(file, opts.projectRoot ?? process.cwd()), confinedRoot)
       if (denial !== null) {
-        emitErr(denial)
+        emitErr(formatCommandError(denial))
         return 1
       }
     }
@@ -344,7 +345,7 @@ function runRefsSingle(opts: RefsOptions): number {
   const qualified = resolveQualifiedSpec(opts.spec, opts.projectRoot ?? process.cwd())
   // An overloaded `Class.method` is a real symbol with several definitions: list them with their @line picks, as `read` does, instead of reporting a literal dotted name as not found.
   if (qualified?.kind === 'ambiguous') {
-    emitErr(formatAmbiguity(qualified.symbol, qualified.file, qualified.candidates, opts.projectRoot, 'refs'))
+    emitErr(formatCommandError(new CliError(formatAmbiguity(qualified.symbol, qualified.file, qualified.candidates, opts.projectRoot, 'refs').split('\n'))))
     return 1
   }
   const qualifiedDef = qualified?.kind === 'ok' ? qualified.entry : undefined
@@ -366,7 +367,7 @@ function runRefsSingle(opts: RefsOptions): number {
     }
     // "No references found" plus exit 1 for a symbol that IS referenced -- only from tests -- reads as "this symbol is unused", which invites deleting live code. Name the suppressed count so the filtered view is never mistaken for absence. Flag-absent output is untouched: suppressed is always 0 then.
     if (opts.excludeTests === true && suppressed > 0) {
-      emitErr(`No non-test references found for '${symName}' (${excludeTestsHiddenNote(suppressed)})`)
+      emitErr(formatCommandError(`No non-test references found for '${symName}' (${excludeTestsHiddenNote(suppressed)})`))
       return 1
     }
     // Distinguish "not indexed at all" from "indexed, genuinely zero references" -- the latter keeps today's message byte-identical (see unknownSymbolSuggestion's own doc comment for why this matters). Resolved here rather than hoisted to the top of the function since it's only ever paid once the query already came back empty.
@@ -374,7 +375,7 @@ function runRefsSingle(opts: RefsOptions): number {
     // Fetched as rows rather than as a bare existence count, because the defining file's LANGUAGE decides whether an empty result is an answer at all: parser.ts's REF_LANGUAGES walks call sites for nine tree-sitter languages only, and for a file outside that set the refs table is empty by construction. Capped rather than unbounded -- this only needs to know whether every definition of the name sits in a ref-blind language, and a name with more definitions than this cap in a single project is not a case where one more row changes that verdict.
     const defRows = querySymbols({ name: symName, rootDir, limit: REF_BLIND_DEF_PROBE_LIMIT })
     if (defRows.length === 0) {
-      emitErr(`Symbol not found: ${symName}${unknownSymbolSuggestion(symName, rootDir)}`)
+      emitErr(formatCommandError(`Symbol not found: ${symName}${unknownSymbolSuggestion(symName, rootDir)}`))
       // Same empty-index note as the "No references found" branch below -- an empty project index makes EVERY symbol look unindexed, so this must still surface the real cause instead of leaving the caller staring at a suggestion-free "not found" for a project that was simply never indexed.
       if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
       return 1
@@ -383,17 +384,17 @@ function runRefsSingle(opts: RefsOptions): number {
     const defPaths = defFileHint !== undefined ? [defFileHint] : defRows.map((r) => r.filePath)
     const firstDefPath = defPaths[0]
     if (firstDefPath !== undefined && defPaths.every((fp) => !isRefIndexedFile(fp))) {
-      emitErr(refBlindLanguageNotice(symName, detectLanguageOfFile(firstDefPath), refsDisplayPath(firstDefPath)))
+      emitErr(formatCommandError(refBlindLanguageNotice(symName, detectLanguageOfFile(firstDefPath), refsDisplayPath(firstDefPath))))
       return 1
     }
     // The kind half of the same gate, and the one that fires in TypeScript, where the language half correctly never does: `refs` on an interface returns "No references found" today no matter how many files annotate with it, because extractRefs walks value positions only. Checked after the language half so a symbol blind both ways gets the language message, which names a file and is the more actionable of the two. All-or-nothing, and exit 1, matching both the language gate and the ordinary empty result beside it.
     const kindRows = defFileHint !== undefined ? querySymbols({ name: symName, filePath: defFileHint, rootDir, limit: REF_BLIND_DEF_PROBE_LIMIT }) : defRows
     const kindVerdict = refBlindKindVerdict(kindRows)
     if (kindVerdict.allBlind) {
-      emitErr(refBlindKindNotice(symName, kindVerdict.blindKinds))
+      emitErr(formatCommandError(refBlindKindNotice(symName, kindVerdict.blindKinds)))
       return 1
     }
-    emitErr(`No references found for '${symName}'`)
+    emitErr(formatCommandError(`No references found for '${symName}'`))
     // A partial answer presented as a whole one is the same defect as a refusal that was not needed: the other definitions were genuinely searched, so the message above stands, but the ref-blind ones it cannot speak for are named rather than dropped.
     if (kindVerdict.blindCount > 0) emitErr(refBlindKindPartialNote(symName, kindVerdict.blindKinds, kindVerdict.blindCount, kindRows.length))
     // Only paid after the query already came back empty, and only in text mode -- this branch already emits plain prose regardless of --json (there's no separate opts.json check here), so there's no JSON envelope to protect either way.

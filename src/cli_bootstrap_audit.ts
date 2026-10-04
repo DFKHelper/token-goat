@@ -6,6 +6,7 @@ import { claudeConfigDir } from './claude_config_dir.js'
 import { buildStats } from './cli_context_stats.js'
 import { resolveProjectRoot } from './project.js'
 import { displaySafeText, displaySafeJson } from './paths.js'
+import { formatCommandError } from './command_error.js'
 
 export interface BootstrapAuditOptions {
   project?: string
@@ -292,7 +293,7 @@ export async function runBootstrapAudit(opts: BootstrapAuditOptions = {}): Promi
     if (result.largestTruncated) process.stdout.write(`  ...and ${result.largestTotal - result.largest.length} more (raise --top to see them).\n`)
     for (const diagnostic of result.diagnostics) process.stderr.write(`token-goat: bootstrap-audit: skipped ${displaySafeText(diagnostic.path)} (${displaySafeText(diagnostic.reason)})\n`)
     for (const warning of result.budgets.warnings) process.stderr.write(`token-goat: bootstrap-audit: warning: ${warning}\n`)
-    for (const failure of result.budgets.failures) process.stderr.write(`token-goat: bootstrap-audit: failure: ${failure}\n`)
+    for (const failure of result.budgets.failures) process.stderr.write(formatCommandError(`bootstrap-audit: failure: ${failure}`) + '\n')
   }
   if (result.budgets.failures.length > 0) process.exitCode = 3
 }

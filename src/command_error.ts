@@ -17,3 +17,24 @@ export function formatCommandError(e: unknown): string {
   if (e instanceof CliError && e.lines !== undefined) return 'token-goat: ' + e.lines.map(displaySafeText).join('\n')
   return 'token-goat: ' + displaySafeText(extractErrorMessage(e))
 }
+
+/** commander's own parse failures ("error: unknown option '--x'", "error: missing required argument 'spec'", then any "(Did you mean ...?)" line) in the same rendering: its `error:` label gives way to the `token-goat:` one. Takes and returns commander's newline-terminated string. */
+export function formatParseError(str: string): string {
+  const lines = (str.endsWith('\n') ? str.slice(0, -1) : str).split('\n')
+  if (lines[0]!.startsWith('error: ')) lines[0] = lines[0]!.slice('error: '.length)
+  return formatCommandError(new CliError(lines)) + '\n'
+}
+
+/** The stderr rendering of a `{ text, code }` handler's non-zero result: the same `token-goat:` first line a thrown error gets, each line escaped on its own. A JSON body is a `--json` caller's machine-readable answer and passes through untouched, so it still parses. */
+export function formatFailedResultText(text: string): string {
+  const head = text.trimStart()[0]
+  if (head === '{' || head === '[') {
+    try {
+      JSON.parse(text)
+      return text
+    } catch {
+      // Not JSON after all: an error message that happens to open with a bracket.
+    }
+  }
+  return formatCommandError(new CliError(text.split('\n')))
+}

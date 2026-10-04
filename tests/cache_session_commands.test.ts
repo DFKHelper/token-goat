@@ -217,21 +217,21 @@ describe('cmdBashHistory', () => {
   it('rejects a non-numeric --limit instead of silently reporting an empty cache', () => {
     const e = { id: 'real1', command: 'echo hi', output: '', exitCode: 0, storedAt: Date.now(), sizeBytes: 0 }
     storeBlob(BASH_OUTPUT_SUBDIR, 'real1', e)
-    expect(() => cmdBashHistory({ limit: 'abc' })).toThrow(/invalid --limit: abc/)
+    expect(() => cmdBashHistory({ limit: 'abc' })).toThrow('bash-history: --limit must be a positive number, got: "abc"')
   })
 
   // #232 regression: a bare Number.parseInt accepts trailing garbage ("30x" -> 30) and
   // exponential notation ("1e3" -> 1) instead of rejecting them.
   it('rejects trailing garbage in --limit instead of silently truncating', () => {
-    expect(() => cmdBashHistory({ limit: '30x' })).toThrow(/invalid --limit: 30x/)
+    expect(() => cmdBashHistory({ limit: '30x' })).toThrow('bash-history: --limit must be a positive number, got: "30x"')
   })
 
   it('rejects exponential notation in --limit instead of silently truncating', () => {
-    expect(() => cmdBashHistory({ limit: '1e3' })).toThrow(/invalid --limit: 1e3/)
+    expect(() => cmdBashHistory({ limit: '1e3' })).toThrow('bash-history: --limit must be a positive number, got: "1e3"')
   })
 
   it('rejects a negative --limit instead of silently clamping to 1', () => {
-    expect(() => cmdBashHistory({ limit: '-5' })).toThrow(/invalid --limit: -5/)
+    expect(() => cmdBashHistory({ limit: '-5' })).toThrow('bash-history: --limit must be a positive number, got: "-5"')
   })
 
   // --limit 0 is rejected outright rather than silently sliced to an empty result: a
@@ -242,7 +242,7 @@ describe('cmdBashHistory', () => {
   it('rejects --limit 0 instead of silently reporting an empty cache', () => {
     const e = { id: 'real1', command: 'echo hi', output: '', exitCode: 0, storedAt: Date.now(), sizeBytes: 0 }
     storeBlob(BASH_OUTPUT_SUBDIR, 'real1', e)
-    expect(() => cmdBashHistory({ limit: '0' })).toThrow(/invalid --limit: 0/)
+    expect(() => cmdBashHistory({ limit: '0' })).toThrow('bash-history: --limit must be a positive number, got: "0"')
   })
 })
 
@@ -286,17 +286,17 @@ describe('cmdWebHistory', () => {
   // failing loudly.
   it('rejects a non-numeric --limit instead of silently reporting an empty cache', () => {
     storeBlob(WEB_OUTPUT_SUBDIR, 'realweb1', { url: 'https://example.com', content: 'hello' })
-    expect(() => cmdWebHistory({ limit: 'abc' })).toThrow(/invalid --limit: abc/)
+    expect(() => cmdWebHistory({ limit: 'abc' })).toThrow('web-history: --limit must be a positive number, got: "abc"')
   })
 
   // #232 regression: same trailing-garbage / exponential-notation gap as cmdBashHistory's
   // --limit (see above).
   it('rejects trailing garbage in --limit instead of silently truncating', () => {
-    expect(() => cmdWebHistory({ limit: '30x' })).toThrow(/invalid --limit: 30x/)
+    expect(() => cmdWebHistory({ limit: '30x' })).toThrow('web-history: --limit must be a positive number, got: "30x"')
   })
 
   it('rejects exponential notation in --limit instead of silently truncating', () => {
-    expect(() => cmdWebHistory({ limit: '1e3' })).toThrow(/invalid --limit: 1e3/)
+    expect(() => cmdWebHistory({ limit: '1e3' })).toThrow('web-history: --limit must be a positive number, got: "1e3"')
   })
 
   // --limit 0 is rejected outright rather than silently sliced to an empty result: a
@@ -306,7 +306,7 @@ describe('cmdWebHistory', () => {
   // validation for the same failure mode.
   it('rejects --limit 0 instead of silently reporting an empty cache', () => {
     storeBlob(WEB_OUTPUT_SUBDIR, 'realweb1', { url: 'https://example.com', content: 'hello' })
-    expect(() => cmdWebHistory({ limit: '0' })).toThrow(/invalid --limit: 0/)
+    expect(() => cmdWebHistory({ limit: '0' })).toThrow('web-history: --limit must be a positive number, got: "0"')
   })
 })
 
@@ -337,21 +337,21 @@ describe('cmdMcpHistory', () => {
   it('rejects a non-numeric --limit instead of silently reporting an empty cache', () => {
     const e = { command: 'mcp:realtool preview', storedAt: Date.now(), sizeBytes: 0 }
     storeBlob(BASH_OUTPUT_SUBDIR, 'mcp_real1', e)
-    expect(() => cmdMcpHistory({ limit: 'abc' })).toThrow(/invalid --limit: abc/)
+    expect(() => cmdMcpHistory({ limit: 'abc' })).toThrow('mcp-history: --limit must be a positive number, got: "abc"')
   })
 
   it('rejects trailing garbage in --limit instead of silently truncating', () => {
-    expect(() => cmdMcpHistory({ limit: '30x' })).toThrow(/invalid --limit: 30x/)
+    expect(() => cmdMcpHistory({ limit: '30x' })).toThrow('mcp-history: --limit must be a positive number, got: "30x"')
   })
 
   it('rejects exponential notation in --limit instead of silently truncating', () => {
-    expect(() => cmdMcpHistory({ limit: '1e3' })).toThrow(/invalid --limit: 1e3/)
+    expect(() => cmdMcpHistory({ limit: '1e3' })).toThrow('mcp-history: --limit must be a positive number, got: "1e3"')
   })
 
   // Regression: the old Math.max(1, n) silently clamped a negative --limit to 1 (still
   // returning a row) instead of erroring, unlike cmdBashHistory/cmdWebHistory's --limit -5.
   it('rejects a negative --limit instead of silently clamping to 1', () => {
-    expect(() => cmdMcpHistory({ limit: '-5' })).toThrow(/invalid --limit: -5/)
+    expect(() => cmdMcpHistory({ limit: '-5' })).toThrow('mcp-history: --limit must be a positive number, got: "-5"')
   })
 
   // --limit 0 is rejected outright rather than silently sliced to an empty result: a
@@ -363,7 +363,7 @@ describe('cmdMcpHistory', () => {
   it('rejects --limit 0 instead of silently reporting an empty cache', () => {
     const e = { command: 'mcp:realtool preview', storedAt: Date.now(), sizeBytes: 0 }
     storeBlob(BASH_OUTPUT_SUBDIR, 'mcp_real1', e)
-    expect(() => cmdMcpHistory({ limit: '0', json: true })).toThrow(/invalid --limit: 0/)
+    expect(() => cmdMcpHistory({ limit: '0', json: true })).toThrow('mcp-history: --limit must be a positive number, got: "0"')
   })
 })
 

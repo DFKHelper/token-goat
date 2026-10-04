@@ -30,6 +30,7 @@ import {
   findCyclesCapped,
 } from './graph_traversal.js'
 import { emit, emitErr } from './emit.js'
+import { formatCommandError } from './command_error.js'
 
 // ---- similar ----------------------------------------------------------------
 
@@ -41,12 +42,12 @@ export interface SimilarOptions {
 
 export function runSimilar(opts: SimilarOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(`--top must be a positive number, got: ${opts.top}`)
+    emitErr(formatCommandError(`--top must be a positive number, got: ${opts.top}`))
     return 1
   }
   const sepIdx = opts.spec.lastIndexOf('::')
   if (sepIdx < 0) {
-    emitErr(`Invalid spec - expected "file::symbol", got: ${opts.spec}`)
+    emitErr(formatCommandError(`Invalid spec - expected "file::symbol", got: ${opts.spec}`))
     return 1
   }
   const top = opts.top ?? 10
@@ -85,7 +86,7 @@ export interface ContextForOptions {
 
 export function runContextFor(opts: ContextForOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(`--top must be a positive number, got: ${opts.top}`)
+    emitErr(formatCommandError(`--top must be a positive number, got: ${opts.top}`))
     return 1
   }
   const top = opts.top ?? 12
@@ -97,7 +98,7 @@ export function runContextFor(opts: ContextForOptions): number {
   const hits = fetched.slice(0, top)
 
   if (hits.length === 0) {
-    emitErr(`No matches found for '${opts.task}'`)
+    emitErr(formatCommandError(`No matches found for '${opts.task}'`))
     return 1
   }
 
@@ -164,7 +165,7 @@ export function runTestFor(opts: TestForOptions): number {
   const symbols = querySymbols({ filePath, limit: ALL_SYMBOLS_IN_FILE_LIMIT })
 
   if (!fs.existsSync(opts.file) && symbols.length === 0) {
-    emitErr(`Could not read: ${opts.file}`)
+    emitErr(formatCommandError(`Could not read: ${opts.file}`))
     return 1
   }
 
@@ -234,7 +235,7 @@ export interface CoverageGapsOptions {
 
 export function runCoverageGaps(opts: CoverageGapsOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(`--top must be a positive number, got: ${opts.top}`)
+    emitErr(formatCommandError(`--top must be a positive number, got: ${opts.top}`))
     return 1
   }
   const top = opts.top ?? 50
@@ -283,7 +284,7 @@ export interface ArchOptions {
 
 export function runArch(opts: ArchOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(`--top must be a positive number, got: ${opts.top}`)
+    emitErr(formatCommandError(`--top must be a positive number, got: ${opts.top}`))
     return 1
   }
   const cwd = opts.cwd ?? process.cwd()
@@ -332,7 +333,7 @@ export interface BlameOptions {
 export function runBlame(opts: BlameOptions): number {
   const sepIdx = opts.spec.lastIndexOf('::')
   if (sepIdx < 0) {
-    emitErr(`Invalid spec - expected "file::symbol", got: ${displaySafeText(opts.spec)}`)
+    emitErr(formatCommandError(`Invalid spec - expected "file::symbol", got: ${displaySafeText(opts.spec)}`))
     return 1
   }
   const cwd = opts.cwd ?? process.cwd()
@@ -347,12 +348,12 @@ export function runBlame(opts: BlameOptions): number {
   try {
     const result = runGit(['blame', '-L', `${start},${end}`, '--', filePath], { cwd })
     if (result.exitCode !== 0) {
-      emitErr(`git blame failed: ${displaySafeText(result.stderr)}`)
+      emitErr(formatCommandError(`git blame failed: ${displaySafeText(result.stderr)}`))
       return 1
     }
     raw = result.stdout
   } catch (e) {
-    emitErr(`git blame failed: ${extractErrorMessage(e)}`)
+    emitErr(formatCommandError(`git blame failed: ${extractErrorMessage(e)}`))
     return 1
   }
 

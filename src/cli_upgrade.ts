@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { VERSION } from './version.js'
 import { loadConfig } from './config.js'
 import { displaySafeJson } from './paths.js'
+import { formatCommandError } from './command_error.js'
 import { dataDir } from './constants.js'
 import { ensureDirSync } from './util.js'
 
@@ -353,11 +354,11 @@ export async function cmdUpgrade(
   const decision = currentUpgradeDecision(status)
   switch (decision) {
     case 'offline':
-      console.error(`token-goat: network.offline is set, so no update check was made and nothing was installed. Unset it (or TOKEN_GOAT_OFFLINE) to upgrade.`)
+      console.error(formatCommandError('network.offline is set, so no update check was made and nothing was installed. Unset it (or TOKEN_GOAT_OFFLINE) to upgrade.'))
       process.exitCode = 1
       return
     case 'unreachable':
-      console.error(`token-goat: ${status.error ?? 'could not determine the latest version'}. Nothing was installed.`)
+      console.error(formatCommandError(`${status.error ?? 'could not determine the latest version'}. Nothing was installed.`))
       process.exitCode = 1
       return
     case 'up-to-date':
@@ -375,7 +376,7 @@ export async function cmdUpgrade(
   console.log(`Upgrading token-goat v${status.current} -> v${status.latest}...`)
   const outcome = await performUpgrade(onSyncHooks)
   if (!outcome.ok) {
-    console.error(`token-goat: ${outcome.message}`)
+    console.error(formatCommandError(outcome.message))
     process.exitCode = 1
     return
   }

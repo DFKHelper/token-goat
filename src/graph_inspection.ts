@@ -35,6 +35,7 @@ import {
   TYPE_KINDS,
 } from './graph_traversal.js'
 import { emit, emitErr } from './emit.js'
+import { formatCommandError } from './command_error.js'
 
 // ---- dead -------------------------------------------------------------------
 
@@ -51,7 +52,7 @@ export interface DeadOptions {
 
 export function runDead(opts: DeadOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(`--top must be a positive number, got: ${opts.top}`)
+    emitErr(formatCommandError(`--top must be a positive number, got: ${opts.top}`))
     return 1
   }
   const kinds = opts.kind !== undefined
@@ -80,7 +81,7 @@ export function runDead(opts: DeadOptions): number {
   const assessableKinds = kinds.filter((k) => !REF_BLIND_KINDS.includes(k))
   if (blindKinds.length > 0 && assessableKinds.length === 0) {
     const blindLabel = blindKinds.length === 1 ? 'kind' : 'kinds'
-    emitErr(`Cannot assess deadness for ${blindLabel}: ${blindKinds.map((k) => `'${k}'`).join(', ')} -- ${REF_BLIND_KIND_REASON}.`)
+    emitErr(formatCommandError(`Cannot assess deadness for ${blindLabel}: ${blindKinds.map((k) => `'${k}'`).join(', ')} -- ${REF_BLIND_KIND_REASON}.`))
     emitErr(`Every symbol of ${blindKinds.length === 1 ? 'this kind' : 'these kinds'} would be reported dead, so no result is emitted rather than a wrong one. To hunt unused type declarations, list them with 'token-goat types --json' and search the source for each name directly.`)
     return 1
   }
@@ -201,7 +202,7 @@ function runDepsImporters(opts: DepsOptions): number {
   for (const f of files) trackedByFolded.set(foldPath(normalizePath(f)), f)
   const tracked = trackedByFolded.get(foldPath(normalizePath(abs)))
   if (tracked === undefined) {
-    emitErr(`importers come from git-tracked files; ${toDisplayPath(rootDir, normalizePath(abs))} is not tracked, or this is not a git repository`)
+    emitErr(formatCommandError(`importers come from git-tracked files; ${toDisplayPath(rootDir, normalizePath(abs))} is not tracked, or this is not a git repository`))
     return 1
   }
   // Named as git spells it, so a target typed in another case on a case-insensitive filesystem still reports the file's real name.
@@ -239,7 +240,7 @@ export function runDeps(opts: DepsOptions): number {
   try {
     text = decodeSource(fs.readFileSync(opts.file))
   } catch {
-    emitErr(`Could not read: ${opts.file}`)
+    emitErr(formatCommandError(`Could not read: ${opts.file}`))
     return 1
   }
   if (opts.importers === true) return runDepsImporters(opts)
@@ -334,7 +335,7 @@ export const TYPES_SCAN_LIMIT = -1
 
 export function runTypes(opts: TypesOptions): number {
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    emitErr(formatCommandError(`--limit must be a positive number, got: ${opts.limit}`))
     return 1
   }
 
@@ -374,7 +375,7 @@ export function runTypes(opts: TypesOptions): number {
 
   if (results.length === 0) {
     if (opts.file !== undefined && !fs.existsSync(opts.file)) {
-      emitErr(`Could not read: ${opts.file}`)
+      emitErr(formatCommandError(`Could not read: ${opts.file}`))
       return 1
     }
     const ctx = opts.file !== undefined ? ` in '${opts.file}'` : ''
@@ -386,7 +387,7 @@ export function runTypes(opts: TypesOptions): number {
       emit(`No non-test type declarations found${ctx} (${excludeTestsHiddenNote(suppressed)})`)
       return 0
     }
-    emitErr(`No type declarations found${ctx}`)
+    emitErr(formatCommandError(`No type declarations found${ctx}`))
     if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
     return 1
   }
@@ -451,7 +452,7 @@ export interface ScopeOptions {
 export function runScope(opts: ScopeOptions): number {
   const colonIdx = opts.spec.lastIndexOf(':')
   if (colonIdx <= 0) {
-    emitErr(`Invalid spec — expected "file:line", got: ${opts.spec}`)
+    emitErr(formatCommandError(`Invalid spec — expected "file:line", got: ${opts.spec}`))
     return 1
   }
 
@@ -459,18 +460,18 @@ export function runScope(opts: ScopeOptions): number {
   const lineStr = opts.spec.slice(colonIdx + 1)
 
   if (!/^\d+$/.test(lineStr)) {
-    emitErr(`Invalid line number: ${lineStr}`)
+    emitErr(formatCommandError(`Invalid line number: ${lineStr}`))
     return 1
   }
   const line = Number.parseInt(lineStr, 10)
   if (!Number.isSafeInteger(line) || line < 1) {
-    emitErr(`Invalid line number: ${lineStr}`)
+    emitErr(formatCommandError(`Invalid line number: ${lineStr}`))
     return 1
   }
 
   const confined = fileConfinementRefusal('This file', file, opts.projectRoot)
   if (confined !== null) {
-    emitErr(confined)
+    emitErr(formatCommandError(confined))
     return 1
   }
 
@@ -481,16 +482,16 @@ export function runScope(opts: ScopeOptions): number {
   if (enclosing.length === 0) {
     if (querySymbols({ filePath, limit: 1 }).length === 0) {
       if (!fs.existsSync(filePath)) {
-        emitErr(`Could not read: ${file}`)
+        emitErr(formatCommandError(`Could not read: ${file}`))
         return 1
       }
       emitErr(
-        symbolExtractorGap(file, filePath) ??
-          `No indexed symbols in '${file}' — the file exists but nothing is indexed for it, so every line looks empty`,
+        formatCommandError(symbolExtractorGap(file, filePath) ??
+          `No indexed symbols in '${file}' — the file exists but nothing is indexed for it, so every line looks empty`),
       )
       return 1
     }
-    emitErr(`No symbols enclosing line ${line} in '${file}'`)
+    emitErr(formatCommandError(`No symbols enclosing line ${line} in '${file}'`))
     return 1
   }
 

@@ -1,10 +1,10 @@
 /** Shared CLI execution and dispatch helpers. */
 
 import * as fs from 'node:fs'
-import { displaySafeText } from './paths.js'
 import { extractErrorMessage } from './util.js'
 import { extraFileArgsNote } from './read_spec.js'
 import { out, err, CliError } from './cli.js'
+import { formatCommandError, formatFailedResultText } from './command_error.js'
 
 export function readStdinPaths(): string[] {
   if (process.stdin.isTTY) {
@@ -23,19 +23,20 @@ export function runExit(fn: () => number): void {
   try {
     process.exitCode = fn()
   } catch (e) {
-    err(`token-goat: ${displaySafeText(extractErrorMessage(e))}`)
+    err(formatCommandError(e))
     process.exitCode = 1
   }
 }
 
-/** Same adapter as `runExit`, but for the `run*` handlers that return `{ text, code }` instead of printing directly. Writes `text` to stdout on success (code 0) or stderr otherwise, then maps `code` onto `process.exitCode` — preserving which stream each handler's message goes to (these handlers only ever write to one stream per call). */
+/** Same adapter as `runExit`, but for the `run*` handlers that return `{ text, code }` instead of printing directly. Writes `text` to stdout on success (code 0), or to stderr as a command error otherwise, then maps `code` onto `process.exitCode` — preserving which stream each handler's message goes to (these handlers only ever write to one stream per call). */
 export function runExitText(fn: () => { text: string; code: number }): void {
   try {
     const { text, code } = fn()
-    ;(code === 0 ? out : err)(text)
+    if (code === 0) out(text)
+    else err(formatFailedResultText(text))
     process.exitCode = code
   } catch (e) {
-    err(`token-goat: ${displaySafeText(extractErrorMessage(e))}`)
+    err(formatCommandError(e))
     process.exitCode = 1
   }
 }
@@ -51,6 +52,8 @@ export function noteExtraFileArgs(
 ): { text: string; code: number } {
   const result = fn()
   if (extras === undefined || extras.length === 0) return result
+  // On a failure the error leads and the note follows, so the `token-goat:` prefix runExitText gives a failure's first line lands on the error, not on the note.
+  if (result.code !== 0) return { text: `${result.text}\n${extraFileArgsNote(command, first, extras, opts)}`, code: result.code }
   return { text: `${extraFileArgsNote(command, first, extras, opts)}\n${result.text}`, code: result.code }
 }
 

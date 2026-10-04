@@ -20,6 +20,7 @@ import {
   rankSimilarNames,
 } from './read_suggest.js'
 import { countNoun, foldPath } from './util.js'
+import { CliError, formatCommandError } from './command_error.js'
 
 const PARENT_IDENTIFIER_RE = /^[\w$]+$/
 
@@ -513,27 +514,20 @@ export function resolveSymbolSpecOrEmitError(
 ): SymbolEntry | null {
   const { file, symbol } = parseReadSpec(spec)
   if (symbol === undefined || symbol === '') {
-    emitErr(`'token-goat ${commandName}' requires a 'file::symbol' spec (got '${spec}')`)
+    emitErr(formatCommandError(`'token-goat ${commandName}' requires a 'file::symbol' spec (got '${spec}')`))
     return null
   }
 
   const resolution = resolveSymbolSpec(spec, undefined, projectRoot)
 
   if (resolution.kind === 'confined') {
-    emitErr(resolution.message)
+    emitErr(formatCommandError(resolution.message))
     return null
   }
 
   if (resolution.kind === 'ambiguous') {
-    emitErr(
-      formatAmbiguity(
-        resolution.symbol,
-        resolution.file,
-        resolution.candidates,
-        projectRoot,
-        commandName,
-      ),
-    )
+    const ambiguity = formatAmbiguity(resolution.symbol, resolution.file, resolution.candidates, projectRoot, commandName)
+    emitErr(formatCommandError(new CliError(ambiguity.split('\n'))))
     return null
   }
 
@@ -548,7 +542,7 @@ export function resolveSymbolSpecOrEmitError(
     const closes = qualified.length > 0 ? qualified : rankSimilarNames(scanned, symbol)
     if (closes.length > 0) messages.push(didYouMean(closes))
     else if (scanned.length > 0) messages.push(`Try: token-goat outline ${file}`)
-    emitErr(messages.join('\n'))
+    emitErr(formatCommandError(new CliError(messages)))
     return null
   }
 

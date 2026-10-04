@@ -3,7 +3,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { CliError, out, err, requireInt, requirePositiveInt, requireNonNegativeInt } from './cli.js'
+import { CliError, formatCommandError, out, err, requireInt, requirePositiveInt, requireNonNegativeInt } from './cli.js'
 import { displaySafeJson, displaySafePath, displaySafeText } from './paths.js'
 import { runScreenshot } from './read_commands.js'
 import { runCoverageReportGaps } from './read_inspect.js'
@@ -123,7 +123,7 @@ export function cmdPack(
   if (opts.budget !== undefined) {
     const budgetN = requireInt('--budget', opts.budget)
     if (result.total_tokens > budgetN) {
-      err(`token-goat: pack: token count ${result.total_tokens} exceeds budget ${budgetN}`)
+      err(formatCommandError(`pack: token count ${result.total_tokens} exceeds budget ${budgetN}`))
       process.exitCode = 3
       return
     }
@@ -133,7 +133,7 @@ export function cmdPack(
     if (hits.length > 0) {
       for (const hit of hits) {
         // rel_path is a repository path. kind is a SECRET_PATTERNS key, so escaping it is a no-op today: it is escaped anyway so that making that table configurable later cannot reopen this line.
-        err(`token-goat: secret in ${displaySafePath(hit.rel_path)}:${hit.line}: ${displaySafeText(hit.kind)}`)
+        err(formatCommandError(`secret in ${displaySafePath(hit.rel_path)}:${hit.line}: ${displaySafeText(hit.kind)}`))
       }
       process.exitCode = 2
       return

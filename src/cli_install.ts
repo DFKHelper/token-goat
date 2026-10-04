@@ -33,7 +33,7 @@ import { contentHash, extractCompactFromMarker, storeCompact, skillOutputsDir } 
 import { formatBytes, purgeDataDirectories } from './purge.js'
 import { recordStat } from './stats.js'
 import { CLAUDE_HOOKS_UNINSTALLED_KIND } from './hook_latency.js'
-import { err, out } from './cli.js'
+import { err, formatCommandError, out } from './cli.js'
 import { formatInstallIndexResult, queueInstallIndex } from './install_index.js'
 
 /** Print the "how well is this bridge actually verified" caveat, if the bridge has one. Routed through {@link installVerificationNotice} rather than spelled out per branch: a caveat enumerated at nine callsites is a caveat that goes missing from the tenth, which is precisely the whitelist-drops-a-field shape that has shipped dead features from this codebase before. */
@@ -718,12 +718,12 @@ async function runPurge(): Promise<void> {
   // A resident hook server holds nothing open between requests, but one mid-request would recreate what this deletes.
   await queryServers('stop')
   if (isWorkerRunning()) {
-    err('token-goat: the background worker is running, so --purge would delete files it is about to rewrite. Run "token-goat worker stop" first.')
+    err(formatCommandError('the background worker is running, so --purge would delete files it is about to rewrite. Run "token-goat worker stop" first.'))
     return
   }
   const result = purgeDataDirectories()
   for (const root of result.absent) out(`Nothing to purge at ${displaySafePath(root)}.`)
   for (const removed of result.removed) out(`Purged ${displaySafePath(removed.path)} (${formatBytes(removed.bytes)} reclaimed).`)
   // The reason is an OS error string, which quotes the offending path back inside it.
-  for (const failure of result.failed) err(`token-goat: could not purge ${displaySafePath(failure.path)}: ${displaySafeText(failure.reason)}`)
+  for (const failure of result.failed) err(formatCommandError(`could not purge ${displaySafePath(failure.path)}: ${displaySafeText(failure.reason)}`))
 }

@@ -79,7 +79,7 @@ import { runBenchCommand } from './cli_bench.js'
 import { expandGlobs } from './cli_diagnostics.js'
 export { expandGlobs }
 import { compressText, createHandoff, resolveHandoff, retrieveText, CONTENT_MAX_INPUT_CHARS } from './content_store.js'
-import { CliError, formatCommandError } from './command_error.js'
+import { CliError, formatCommandError, formatFailedResultText, formatParseError } from './command_error.js'
 
 // Defined in a leaf so command modules cli.ts imports can render an error the same way without importing cli.ts back; re-exported here for the many modules that already take CliError from cli.js.
 export { CliError, formatCommandError }
@@ -199,8 +199,9 @@ async function cmdSemantic(query: string | undefined, more: string[], opts: { li
     ...(opts.warm === true ? { warm: true } : {}),
   }
   const { text, code } = more.length > 0 ? await runSemanticMulti([query ?? '', ...more], semanticOpts) : await runSemantic(query ?? '', semanticOpts)
-  // --json must always land on stdout so `| jq .` works even on a no-match/error exit -- only the text-mode path routes a non-zero code to stderr (preserved byte-identical below).
-  ;(opts.json === true || code === 0 ? out : err)(text)
+  // --json must always land on stdout so `| jq .` works even on a no-match/error exit -- only the text-mode path routes a non-zero code to stderr, as a command error.
+  if (opts.json === true || code === 0) out(text)
+  else err(formatFailedResultText(text))
   process.exitCode = code
 }
 
@@ -254,7 +255,8 @@ async function cmdSearch(
     json: opts.json === true,
     minScore,
   })
-  ;(opts.json === true || code === 0 ? out : err)(text)
+  if (opts.json === true || code === 0) out(text)
+  else err(formatFailedResultText(text))
   process.exitCode = code
 }
 
@@ -523,9 +525,7 @@ async function cmdMcpServe(): Promise<void> {
     ;({ createMcpServer } = await import('./mcp_server.js'))
     ;({ StdioServerTransport } = await import('./mcp_stdio.js'))
   } catch (err) {
-    process.stderr.write(
-      `token-goat: mcp-server unavailable (could not load the MCP server modules): ${String(err)}\n`,
-    )
+    process.stderr.write(formatCommandError(`mcp-server unavailable (could not load the MCP server modules): ${String(err)}`) + '\n')
     process.exitCode = 1
     return
   }
@@ -744,7 +744,7 @@ async function cmdCompress(
       opts = { ...opts, ...parsedOpts } as typeof opts
     }
     if (!command || command.trim() === '') {
-      err(`token-goat: either command arguments, -c/--cmd, or --cmd-b64 is required`)
+      err(formatCommandError('either command arguments, -c/--cmd, or --cmd-b64 is required'))
       process.exitCode = 1
       return
     }
@@ -1170,14 +1170,17 @@ export function buildProgram(): Command {
     .option('--validate', 'score the corpus with control filters instead: proves the ratio has a floor and the fidelity guard can actually fail')
     .option('-j, --json', 'output as JSON')
     .action((opts: { corpus?: string; tsv?: string; validate?: boolean; json?: boolean }) =>
-      runExitText(() =>
-        runBenchCommand({
+      // A report graded by its exit code, not an error message: it goes to stdout whether or not a check failed, the way doctor's does.
+      runExit(() => {
+        const { text, code } = runBenchCommand({
           corpus: opts.corpus ?? path.join('tests', 'fixtures', 'bench'),
           ...(opts.tsv !== undefined ? { tsv: opts.tsv } : {}),
           ...(opts.validate === true ? { validate: true } : {}),
           ...(opts.json === true ? { json: true } : {}),
-        }),
-      ),
+        })
+        out(text)
+        return code
+      }),
     )
 
   program
@@ -1444,7 +1447,7 @@ export function buildProgram(): Command {
           // Resolved before parsing, because commander answers `<unknown> --help` by printing the top-level help rather than by complaining: the caller asked about one command and silently got the list of all of them. Pre-existing behaviour exited 1 without ever saying why, which is the half of it worth keeping.
           const known = program.commands.some((sub) => sub.name() === cmd || sub.aliases().includes(cmd))
           if (!known) {
-            err(`token-goat: unknown command '${displaySafeText(cmd)}'. Run 'token-goat commands --grep <pattern>' to search the list.`)
+            err(formatCommandError(`unknown command '${displaySafeText(cmd)}'. Run 'token-goat commands --grep <pattern>' to search the list.`))
             process.exitCode = 1
             return
           }
@@ -1473,9 +1476,10 @@ export function buildProgram(): Command {
   return program
 }
 
-/** Applies commander's exitOverride to a command and, recursively, every subcommand under it. */
+/** Applies commander's exitOverride to a command and, recursively, every subcommand under it, along with the `token-goat:` rendering of its parse errors (formatParseError). */
 export function applyExitOverride(command: Command): void {
   command.exitOverride()
+  command.configureOutput({ outputError: (str, write) => write(formatParseError(str)) })
   for (const sub of command.commands) applyExitOverride(sub)
 }
 

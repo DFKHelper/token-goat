@@ -22,6 +22,7 @@ import { RETIRED_CONFIG_KEYS } from './config_defaults.js'
 import { performHttpFetch } from './webfetch.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { emit, emitErr } from './emit.js'
+import { CliError } from './command_error.js'
 import { levenshteinDistance } from './util_suggest.js'
 
 /** Ensure the config parent directory exists then call saveConfig. */
@@ -479,8 +480,7 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
 
   if (action === 'exclude') {
     if (!opts.pathArg) {
-      emitErr('project exclude requires a path argument')
-      throw new Error('missing path')
+      throw new CliError('project exclude requires a path argument')
     }
     const target = path.resolve(opts.pathArg)
     const cfg = loadPersistedConfig()
@@ -581,8 +581,7 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     return
   }
 
-  emitErr(`project: unknown action '${action}'. Use list, exclude, or prune.`)
-  throw new Error(`unknown project action: ${action}`)
+  throw new CliError(`project: unknown action '${action}'. Use list, exclude, or prune.`)
 }
 
 // ── compact-doc ───────────────────────────────────────────────────────────────
@@ -607,8 +606,7 @@ export function cmdCompactDoc(opts: {
   if (opts.heading !== undefined) {
     const result = compactDoc(resolved, opts.heading)
     if (result === null) {
-      emitErr(`compact-doc: could not read or compact '${resolved}'`)
-      throw new Error(`could not compact: ${resolved}`)
+      throw new CliError(`compact-doc: could not read or compact '${resolved}'`)
     }
     const legacyFullBytes = fs.statSync(resolved).size
     if (opts.json === true) {
@@ -626,9 +624,8 @@ export function cmdCompactDoc(opts: {
   if (opts.sentences !== undefined) {
     try {
       sentences = requirePositiveStrictInt('--sentences', opts.sentences)
-    } catch (e) {
-      emitErr(`compact-doc: --sentences must be a positive number, got: "${opts.sentences}"`)
-      throw new Error(`invalid --sentences: ${opts.sentences}`, { cause: e })
+    } catch {
+      throw new CliError(`compact-doc: --sentences must be a positive number, got: "${opts.sentences}"`)
     }
   }
 
@@ -643,8 +640,7 @@ export function cmdCompactDoc(opts: {
     try {
       sourceText = fs.readFileSync(resolved, 'utf-8')
     } catch {
-      emitErr(`compact-doc: could not read or compact '${resolved}'`)
-      throw new Error(`could not compact: ${resolved}`)
+      throw new CliError(`compact-doc: could not read or compact '${resolved}'`)
     }
     body = buildExtractiveCompact(sourceText, sentences)
     writeCompact(compactPath, resolved, body)
@@ -652,8 +648,7 @@ export function cmdCompactDoc(opts: {
   } else {
     const existing = readCompactBody(compactPath)
     if (existing === null) {
-      emitErr(`compact-doc: could not read or compact '${resolved}'`)
-      throw new Error(`could not compact: ${resolved}`)
+      throw new CliError(`compact-doc: could not read or compact '${resolved}'`)
     }
     body = existing
   }
@@ -729,8 +724,7 @@ export async function cmdFetchImage(opts: { url: string; out?: string; json?: bo
   try {
     fetched = await fetchBuffer(opts.url)
   } catch (e) {
-    emitErr(`fetch-image: network error — ${extractErrorMessage(e)}`)
-    throw new Error(`fetch failed: ${opts.url}`, { cause: e })
+    throw new CliError(`fetch-image: network error — ${extractErrorMessage(e)}`)
   }
   const buf = fetched.body
   // Default extension (when --out wasn't given) comes from the response content-type rather than a hardcoded `.bin`, so e.g. a JPEG response lands under `.jpg` even before any shrink.
@@ -774,14 +768,12 @@ export function cmdHistory(opts: { limit?: string; json?: boolean }): void {
   if (opts.limit !== undefined) {
     try {
       limit = requireNonNegativeStrictInt('--limit', opts.limit)
-    } catch (e) {
-      emitErr(`history: --limit must be a non-negative number, got: "${opts.limit}"`)
-      throw new Error(`invalid --limit: ${opts.limit}`, { cause: e })
+    } catch {
+      throw new CliError(`history: --limit must be a non-negative number, got: "${opts.limit}"`)
     }
     // --limit 0 would slice the merged bash/web list down to zero entries and print "No history entries found" -- an absolute claim about the cache's contents -- even when entries genuinely exist. Reject explicitly instead of silently rendering that false-clean result, matching runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top validation for the same failure mode.
     if (limit === 0) {
-      emitErr(`history: --limit must be a positive number, got: "${opts.limit}"`)
-      throw new Error(`invalid --limit: ${opts.limit}`)
+      throw new CliError(`history: --limit must be a positive number, got: "${opts.limit}"`)
     }
   }
 

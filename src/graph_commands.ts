@@ -54,6 +54,7 @@ import {
   compareHopEntries,
 } from './graph_traversal.js'
 import { emit, emitErr } from './emit.js'
+import { CliError, formatCommandError } from './command_error.js'
 
 // Re-export all graph traversal, inspection, and analysis APIs for 100% backward compatibility
 export * from './graph_traversal.js'
@@ -63,7 +64,7 @@ export { isTestFile }
 
 /** Prints the pick-one list `read` prints for an overloaded `file::Class.method` and returns the exit code. */
 function refuseAmbiguousSpec(command: string, ambiguous: NonNullable<ReturnType<typeof resolveGraphSpec>['ambiguous']>, rootDir: string): number {
-  emitErr(formatAmbiguity(ambiguous.symbol, ambiguous.file, ambiguous.candidates, rootDir, command))
+  emitErr(formatCommandError(new CliError(formatAmbiguity(ambiguous.symbol, ambiguous.file, ambiguous.candidates, rootDir, command).split('\n'))))
   return 1
 }
 
@@ -80,14 +81,14 @@ export interface CallersOptions {
 
 export function runCallers(opts: CallersOptions): number {
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(`--limit must be a positive number, got: ${opts.limit}`)
+    emitErr(formatCommandError(`--limit must be a positive number, got: ${opts.limit}`))
     return 1
   }
 
   const cwdRoot = resolveProjectRoot({ project: process.cwd() })
   const scope = specScopeRoot(opts.symbol, cwdRoot)
   if (scope.denial !== null) {
-    emitErr(scope.denial)
+    emitErr(formatCommandError(scope.denial))
     return 1
   }
   const rootDir = scope.root
@@ -95,7 +96,7 @@ export function runCallers(opts: CallersOptions): number {
   if (ambiguous !== undefined) return refuseAmbiguousSpec('callers', ambiguous, rootDir)
   const fileHint = file !== undefined ? resolveSpecPath(file, cwdRoot) : undefined
   if (fileHint !== undefined && querySymbols({ name, filePath: fileHint, limit: 1 }).length === 0) {
-    emitErr(`Symbol '${name}' not found in '${file}'`)
+    emitErr(formatCommandError(`Symbol '${name}' not found in '${file}'`))
     return 1
   }
 
@@ -127,13 +128,13 @@ export function runCallers(opts: CallersOptions): number {
         emit(displaySafeJson({ items: [], truncated: false, totalCount: 0, hiddenByExcludeTests: suppressed }))
         return 1
       }
-      emitErr(`No non-test references found for '${opts.symbol}' (${excludeTestsHiddenNote(suppressed)})`)
+      emitErr(formatCommandError(`No non-test references found for '${opts.symbol}' (${excludeTestsHiddenNote(suppressed)})`))
       return 1
     }
 
     const defRows = querySymbols({ name, rootDir, limit: REF_BLIND_DEF_PROBE_LIMIT })
     if (defRows.length === 0) {
-      emitErr(`Symbol not found: ${opts.symbol}${unknownSymbolSuggestion(name, rootDir)}`)
+      emitErr(formatCommandError(`Symbol not found: ${opts.symbol}${unknownSymbolSuggestion(name, rootDir)}`))
       if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
       return 1
     }
@@ -141,17 +142,17 @@ export function runCallers(opts: CallersOptions): number {
     const defPaths = fileHint !== undefined ? [fileHint] : defRows.map((r) => r.filePath)
     const firstDefPath = defPaths[0]
     if (firstDefPath !== undefined && defPaths.every((fp) => !isRefIndexedFile(fp))) {
-      emitErr(refBlindLanguageNotice(name, detectLanguageOfFile(firstDefPath), toDisplayPath(rootDir, firstDefPath)))
+      emitErr(formatCommandError(refBlindLanguageNotice(name, detectLanguageOfFile(firstDefPath), toDisplayPath(rootDir, firstDefPath))))
       return 1
     }
 
     const kindRows = fileHint !== undefined ? querySymbols({ name, filePath: fileHint, limit: REF_BLIND_DEF_PROBE_LIMIT }) : defRows
     const kindVerdict = refBlindKindVerdict(kindRows)
     if (kindVerdict.allBlind) {
-      emitErr(refBlindKindNotice(name, kindVerdict.blindKinds))
+      emitErr(formatCommandError(refBlindKindNotice(name, kindVerdict.blindKinds)))
       return 1
     }
-    emitErr(`No references found for '${opts.symbol}'`)
+    emitErr(formatCommandError(`No references found for '${opts.symbol}'`))
     if (kindVerdict.blindCount > 0) emitErr(refBlindKindPartialNote(name, kindVerdict.blindKinds, kindVerdict.blindCount, kindRows.length))
     if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
     return 1
@@ -212,14 +213,14 @@ export interface CallChainOptions {
 
 export function runCallChain(opts: CallChainOptions): number {
   if (opts.depth !== undefined && opts.depth <= 0) {
-    emitErr(`--depth must be a positive number, got: ${opts.depth}`)
+    emitErr(formatCommandError(`--depth must be a positive number, got: ${opts.depth}`))
     return 1
   }
   const maxDepth = opts.depth ?? 8
   const cwdRoot = resolveProjectRoot({ project: process.cwd() })
   const scope = specScopeRoot(opts.symbol, cwdRoot)
   if (scope.denial !== null) {
-    emitErr(scope.denial)
+    emitErr(formatCommandError(scope.denial))
     return 1
   }
   const rootDir = scope.root
@@ -229,12 +230,12 @@ export function runCallChain(opts: CallChainOptions): number {
 
   if (fileHint !== undefined) {
     if (querySymbols({ name, filePath: fileHint, limit: 1 }).length === 0) {
-      emitErr(`Symbol '${name}' not found in '${file}'`)
+      emitErr(formatCommandError(`Symbol '${name}' not found in '${file}'`))
       if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
       return 1
     }
   } else if (querySymbols({ name, rootDir, limit: 1 }).length === 0) {
-    emitErr(`Symbol not found: ${opts.symbol}${unknownSymbolSuggestion(name, rootDir)}`)
+    emitErr(formatCommandError(`Symbol not found: ${opts.symbol}${unknownSymbolSuggestion(name, rootDir)}`))
     if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
     return 1
   }
@@ -336,7 +337,7 @@ export interface ImpactOptions {
 
 export function runImpact(opts: ImpactOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(`--top must be a positive number, got: ${opts.top}`)
+    emitErr(formatCommandError(`--top must be a positive number, got: ${opts.top}`))
     return 1
   }
   const top = opts.top ?? 20
@@ -344,7 +345,7 @@ export function runImpact(opts: ImpactOptions): number {
   const cwdRoot = resolveProjectRoot({ project: process.cwd() })
   const scope = specScopeRoot(opts.symbol, cwdRoot)
   if (scope.denial !== null) {
-    emitErr(scope.denial)
+    emitErr(formatCommandError(scope.denial))
     return 1
   }
   const rootDir = scope.root
@@ -352,7 +353,7 @@ export function runImpact(opts: ImpactOptions): number {
   if (ambiguous !== undefined) return refuseAmbiguousSpec('impact', ambiguous, rootDir)
   const fileHint = file !== undefined ? resolveSpecPath(file, cwdRoot) : undefined
   if (fileHint !== undefined && querySymbols({ name: rootName, filePath: fileHint, limit: 1 }).length === 0) {
-    emitErr(`Symbol '${rootName}' not found in '${file}'`)
+    emitErr(formatCommandError(`Symbol '${rootName}' not found in '${file}'`))
     return 1
   }
 
@@ -467,30 +468,30 @@ export function runImpact(opts: ImpactOptions): number {
         emit(displaySafeJson([]))
         return 1
       }
-      emitErr(`No non-test impact found for '${opts.symbol}' (${excludeTestsHiddenNote(suppressedCount)})`)
+      emitErr(formatCommandError(`No non-test impact found for '${opts.symbol}' (${excludeTestsHiddenNote(suppressedCount)})`))
       return 1
     }
 
     const defRows = querySymbols({ name: rootName, rootDir, limit: REF_BLIND_DEF_PROBE_LIMIT })
     if (defRows.length === 0) {
-      emitErr(`Symbol not found: ${opts.symbol}${unknownSymbolSuggestion(rootName, rootDir)}`)
+      emitErr(formatCommandError(`Symbol not found: ${opts.symbol}${unknownSymbolSuggestion(rootName, rootDir)}`))
       return 1
     }
 
     const defPaths = fileHint !== undefined ? [fileHint] : defRows.map((r) => r.filePath)
     const firstDefPath = defPaths[0]
     if (firstDefPath !== undefined && defPaths.every((fp) => !isRefIndexedFile(fp))) {
-      emitErr(refBlindLanguageNotice(rootName, detectLanguageOfFile(firstDefPath), toDisplayPath(rootDir, firstDefPath)))
+      emitErr(formatCommandError(refBlindLanguageNotice(rootName, detectLanguageOfFile(firstDefPath), toDisplayPath(rootDir, firstDefPath))))
       return 1
     }
 
     const kindRows = fileHint !== undefined ? querySymbols({ name: rootName, filePath: fileHint, limit: REF_BLIND_DEF_PROBE_LIMIT }) : defRows
     const kindVerdict = refBlindKindVerdict(kindRows)
     if (kindVerdict.allBlind) {
-      emitErr(refBlindKindNotice(rootName, kindVerdict.blindKinds))
+      emitErr(formatCommandError(refBlindKindNotice(rootName, kindVerdict.blindKinds)))
       return 1
     }
-    emitErr(`No callers found for '${opts.symbol}'`)
+    emitErr(formatCommandError(`No callers found for '${opts.symbol}'`))
     if (kindVerdict.blindCount > 0) emitErr(refBlindKindPartialNote(rootName, kindVerdict.blindKinds, kindVerdict.blindCount, kindRows.length))
     return 1
   }
@@ -520,7 +521,7 @@ export interface AskOptions {
 
 export function runAsk(opts: AskOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(`--top must be a positive number, got: ${opts.top}`)
+    emitErr(formatCommandError(`--top must be a positive number, got: ${opts.top}`))
     return 1
   }
   const top = opts.top ?? 8

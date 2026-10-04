@@ -157,7 +157,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
   // A caller-supplied projectRoot must be an absolute, existing directory -- otherwise searchSemantic silently finds nothing under the bogus root and this function falls back to the (now project-scoped) FTS search using that same bogus root, which also finds nothing, and the caller gets a plain "no matches" instead of a clear signal that the scope they asked for doesn't exist. Fail loudly instead of silently widening/losing scope.
   if (opts.projectRoot !== undefined) {
     if (!path.isAbsolute(opts.projectRoot) || !fs.existsSync(opts.projectRoot) || !fs.statSync(opts.projectRoot).isDirectory()) {
-      const message = `token-goat: projectRoot must be an absolute, existing directory, got '${opts.projectRoot}'`
+      const message = `projectRoot must be an absolute, existing directory, got '${opts.projectRoot}'`
       if (opts.json === true) {
         return { text: displaySafeJson({ error: message }), code: 1 }
       }
@@ -542,8 +542,8 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
     return { text, code: 1 }
   }
   let text = indexEmpty
-    ? `token-goat: no matches for '${query}'\n${emptyIndexMessage(rootDir)}`
-    : `token-goat: no matches for '${query}'`
+    ? `no matches for '${query}'\n${emptyIndexMessage(rootDir)}`
+    : `no matches for '${query}'`
   const trimmedQuery = query.trim()
   const isIdentifier = /^[A-Za-z0-9_.:-]+$/.test(trimmedQuery)
   if (!indexEmpty && isIdentifier) {

@@ -16,7 +16,7 @@ import { recordKnownRootThrottled } from './known_roots.js'
 import { LARGE_SYMBOL_LINE_THRESHOLD } from './hints/file_type_handler.js'
 import { isReadOnlyDb } from './db.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
-import { decodeSource, runGit, PER_FILE_COUNTERFACTUAL_CEILING, foldCaseForContainment, countNoun, requirePositiveStrictInt, extractErrorMessage } from './util.js'
+import { decodeSource, runGit, PER_FILE_COUNTERFACTUAL_CEILING, foldCaseForContainment, countNoun, requirePositiveStrictInt } from './util.js'
 import { renderContextWindow } from './util_context.js'
 import { emit, emitErr } from './emit.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
@@ -75,6 +75,7 @@ import {
   formatStatsSuffix,
   symbolExtractorGap,
 } from './read_meta.js'
+import { formatCommandError } from './command_error.js'
 
 const GREP_MAX_LINES = 200
 
@@ -731,12 +732,12 @@ export interface PrSliceCliOptions {
 export function runPrSlice(opts: PrSliceCliOptions): number {
   const parsed = parsePrSliceArg(opts.slice)
   if (parsed === null) {
-    emitErr(`Invalid slice '${opts.slice}' -- expected one of: files, diff:<path>, comments, description`)
+    emitErr(formatCommandError(`Invalid slice '${opts.slice}' -- expected one of: files, diff:<path>, comments, description`))
     return 1
   }
 
   if (!isGhAvailable()) {
-    emitErr('gh (GitHub CLI) not found on PATH -- install it from https://cli.github.com and run `gh auth login`')
+    emitErr(formatCommandError('gh (GitHub CLI) not found on PATH -- install it from https://cli.github.com and run `gh auth login`'))
     return 1
   }
 
@@ -752,7 +753,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
     }
     const resolved = remoteUrl.length > 0 ? parseGithubRepoFromRemoteUrl(remoteUrl) : null
     if (resolved === null) {
-      emitErr("Could not resolve a GitHub repo from the current directory's git remote 'origin' -- pass --repo owner/repo")
+      emitErr(formatCommandError("Could not resolve a GitHub repo from the current directory's git remote 'origin' -- pass --repo owner/repo"))
       return 1
     }
     repo = resolved
@@ -760,16 +761,16 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
 
   // Checked after resolution rather than at argument parsing, so it covers both routes into `repo`: the `--repo` flag and the slug derived from the git remote. The remote route is the one that matters, because a repository controls its own `origin` URL and the slug lands in a `gh api` path sent with the user's token.
   if (!isSafeRepoSlug(repo)) {
-    emitErr(`"${repo}" is not a plain owner/name repository slug -- pass --repo owner/repo`)
+    emitErr(formatCommandError(`"${repo}" is not a plain owner/name repository slug -- pass --repo owner/repo`))
     return 1
   }
   if (!isSafePrNumber(opts.pr)) {
-    emitErr(`"${opts.pr}" is not a pull request number`)
+    emitErr(formatCommandError(`"${opts.pr}" is not a pull request number`))
     return 1
   }
 
   if (!isGhAuthenticated()) {
-    emitErr('gh is not authenticated -- run `gh auth login`')
+    emitErr(formatCommandError('gh is not authenticated -- run `gh auth login`'))
     return 1
   }
 
@@ -796,7 +797,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
         const diffText = fetchPrDiff(opts.pr, repo)
         const rawFileDiff = extractFileDiff(diffText, parsed.path)
         if (rawFileDiff === null) {
-          emitErr(`No diff found for '${parsed.path}' in PR #${opts.pr}`)
+          emitErr(formatCommandError(`No diff found for '${parsed.path}' in PR #${opts.pr}`))
           return 1
         }
         // A committed-then-reverted secret is a well known way one leaks: it survives in the diff even though the file on disk was cleaned up. Redact before fencing/formatting, mirroring hooks_websearch.ts's "redact once, reuse everywhere" discipline.
@@ -864,7 +865,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
       }
     }
   } catch (e) {
-    emitErr(extractErrorMessage(e))
+    emitErr(formatCommandError(e))
     return 1
   }
 }
@@ -1049,7 +1050,7 @@ export function runGrep(opts: GrepOptions): number {
   // Refused, not merely reported: an unbounded backtracking pattern cannot be interrupted once `test` has started, and the MCP server that reaches here is single-threaded, so one line of ordinary-looking text would take every other tool down with it. See regex_guard.ts.
   const guarded = compileGuardedRegex(opts.pattern)
   if (!guarded.ok) {
-    emitErr(`Invalid regex: ${opts.pattern} -- ${guarded.reason}`)
+    emitErr(formatCommandError(`Invalid regex: ${opts.pattern} -- ${guarded.reason}`))
     return 1
   }
   const regex = guarded.re
@@ -1150,7 +1151,7 @@ export function runGrep(opts: GrepOptions): number {
 
   for (const searchPath of searchPaths) {
     if (!pathExists(searchPath)) {
-      emitErr(`Path not found: ${searchPath}`)
+      emitErr(formatCommandError(`Path not found: ${searchPath}`))
       return 1
     }
 
@@ -1183,7 +1184,7 @@ export function runGrep(opts: GrepOptions): number {
   }
 
   if (hits.length === 0) {
-    emitErr(`No matches for '${opts.pattern}'`)
+    emitErr(formatCommandError(`No matches for '${opts.pattern}'`))
     return 1
   }
 

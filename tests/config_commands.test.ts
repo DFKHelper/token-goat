@@ -1440,8 +1440,8 @@ describe('cmdCompactDoc', () => {
   })
 
   it('throws when file does not exist', () => {
-    expect(() => cmdCompactDoc({ filePath: '/no/such/file.md' })).toThrow()
-    expect(capturedErr()).toContain('compact-doc')
+    expect(() => cmdCompactDoc({ filePath: '/no/such/file.md' })).toThrow('compact-doc')
+    expect(capturedErr()).toBe('')
   })
 
   it('--heading filters to a specific section', () => {
@@ -1539,28 +1539,28 @@ describe('cmdCompactDoc extractive sidecar pipeline', () => {
 
   it('rejects a non-positive --sentences value', () => {
     const md = writeDoc('bad-sentences.md')
-    expect(() => cmdCompactDoc({ filePath: md, sentences: '0' })).toThrow()
-    expect(capturedErr()).toContain('--sentences')
+    expect(() => cmdCompactDoc({ filePath: md, sentences: '0' })).toThrow('--sentences')
+    expect(capturedErr()).toBe('')
   })
 
   it('rejects a non-numeric --sentences value', () => {
     const md = writeDoc('nan-sentences.md')
-    expect(() => cmdCompactDoc({ filePath: md, sentences: 'abc' })).toThrow()
-    expect(capturedErr()).toContain('--sentences')
+    expect(() => cmdCompactDoc({ filePath: md, sentences: 'abc' })).toThrow('--sentences')
+    expect(capturedErr()).toBe('')
   })
 
   // #232 regression: the old `Number.parseInt(opts.sentences, 10)` accepted trailing garbage
   // ("3x" -> 3) and exponential notation ("1e1" -> 1) instead of rejecting them.
   it('rejects trailing garbage in --sentences instead of silently truncating', () => {
     const md = writeDoc('garbage-sentences.md')
-    expect(() => cmdCompactDoc({ filePath: md, sentences: '3x' })).toThrow()
-    expect(capturedErr()).toContain('--sentences')
+    expect(() => cmdCompactDoc({ filePath: md, sentences: '3x' })).toThrow('--sentences')
+    expect(capturedErr()).toBe('')
   })
 
   it('rejects exponential notation in --sentences instead of silently truncating', () => {
     const md = writeDoc('exp-sentences.md')
-    expect(() => cmdCompactDoc({ filePath: md, sentences: '1e1' })).toThrow()
-    expect(capturedErr()).toContain('--sentences')
+    expect(() => cmdCompactDoc({ filePath: md, sentences: '1e1' })).toThrow('--sentences')
+    expect(capturedErr()).toBe('')
   })
 
   it('reuses a fresh sidecar without --force (rebuilt: false)', () => {
@@ -1611,8 +1611,8 @@ describe('cmdCompactDoc extractive sidecar pipeline', () => {
 describe('cmdFetchImage security hardening (regression: fetchBuffer now routes through webfetch.ts\'s SSRF/size/redirect-capped performHttpFetch instead of a bare, unguarded http.get)', () => {
   it('rejects a loopback/private-IP URL with a clear SSRF error, using the real (unmocked) SSRF check', async () => {
     const out = path.join(tmpHome, 'ssrf-blocked.bin')
-    await expect(cmdFetchImage({ url: 'http://127.0.0.1:1/image.png', out })).rejects.toThrow()
-    expect(capturedErr()).toMatch(/blocked by ssrf safety check/i)
+    await expect(cmdFetchImage({ url: 'http://127.0.0.1:1/image.png', out })).rejects.toThrow(/blocked by ssrf safety check/i)
+    expect(capturedErr()).toBe('')
     expect(fs.existsSync(out)).toBe(false)
   })
 
@@ -1643,8 +1643,8 @@ describe('cmdFetchImage security hardening (regression: fetchBuffer now routes t
       body: Buffer.alloc(0),
     }))
     const out = path.join(tmpHome, 'not-found.bin')
-    await expect(cmdFetchImage({ url: 'http://example.test/missing.png', out })).rejects.toThrow()
-    expect(capturedErr()).toMatch(/HTTP 404/)
+    await expect(cmdFetchImage({ url: 'http://example.test/missing.png', out })).rejects.toThrow(/HTTP 404/)
+    expect(capturedErr()).toBe('')
   })
 
   it('propagates a too-many-redirects rejection from performHttpFetch instead of swallowing it', async () => {
@@ -1652,8 +1652,8 @@ describe('cmdFetchImage security hardening (regression: fetchBuffer now routes t
       throw new Error('Too many redirects fetching http://redirect-loop.example.test/start')
     })
     const out = path.join(tmpHome, 'redirect-loop.bin')
-    await expect(cmdFetchImage({ url: 'http://redirect-loop.example.test/start', out })).rejects.toThrow()
-    expect(capturedErr()).toMatch(/too many redirects/i)
+    await expect(cmdFetchImage({ url: 'http://redirect-loop.example.test/start', out })).rejects.toThrow(/too many redirects/i)
+    expect(capturedErr()).toBe('')
   })
 
   // Regression: with no --out, the default destination was always `.bin` regardless of the
@@ -1821,21 +1821,21 @@ describe('cmdHistory', () => {
     // Pre-fix, Number.parseInt('abc', 10) produced NaN, Math.max(1, NaN) stayed NaN, and
     // Array.prototype.slice(0, NaN) returns [] — so an invalid --limit silently printed "No
     // history entries found" even though entries existed, instead of raising a clear error.
-    expect(() => cmdHistory({ limit: 'abc' })).toThrow()
-    expect(capturedErr()).toContain('--limit')
+    expect(() => cmdHistory({ limit: 'abc' })).toThrow('--limit')
+    expect(capturedErr()).toBe('')
   })
 
   // #232 regression: trailing garbage ("30x" -> 30 via Number.parseInt), exponential notation
   // ("1e3" -> 1), and a negative value (silently clamped up to 1 by the old Math.max(1, n)) must
   // all be rejected instead of silently coerced.
   it('rejects trailing garbage in --limit instead of silently truncating', () => {
-    expect(() => cmdHistory({ limit: '30x' })).toThrow()
-    expect(capturedErr()).toContain('--limit')
+    expect(() => cmdHistory({ limit: '30x' })).toThrow('--limit')
+    expect(capturedErr()).toBe('')
   })
 
   it('rejects exponential notation in --limit instead of silently truncating', () => {
-    expect(() => cmdHistory({ limit: '1e3' })).toThrow()
-    expect(capturedErr()).toContain('--limit')
+    expect(() => cmdHistory({ limit: '1e3' })).toThrow('--limit')
+    expect(capturedErr()).toBe('')
   })
 
   // A --limit of 0 would slice the merged bash/web list down to zero entries and print "No
@@ -1845,13 +1845,13 @@ describe('cmdHistory', () => {
   // graph_commands.ts's --top validation for the same failure mode.
   it('rejects --limit 0 instead of silently reporting an empty history', () => {
     storeBlob(BASH_OUTPUT_SUBDIR, 'real1', { command: 'npm run build', storedAt: Date.now(), exitCode: 0, sizeBytes: 100 })
-    expect(() => cmdHistory({ limit: '0' })).toThrow()
-    expect(capturedErr()).toContain('--limit')
+    expect(() => cmdHistory({ limit: '0' })).toThrow('--limit')
+    expect(capturedErr()).toBe('')
   })
 
   it('rejects a negative --limit instead of silently clamping to 1', () => {
-    expect(() => cmdHistory({ limit: '-5' })).toThrow()
-    expect(capturedErr()).toContain('--limit')
+    expect(() => cmdHistory({ limit: '-5' })).toThrow('--limit')
+    expect(capturedErr()).toBe('')
   })
 
   it('--json emits an array', () => {

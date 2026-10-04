@@ -14,6 +14,7 @@ import {
   type CopilotWasteReport,
 } from './copilot_waste.js'
 import { displaySafeJson } from './paths.js'
+import { formatCommandError } from './command_error.js'
 
 export interface AuditCommandOptions {
   project?: string | undefined
@@ -145,7 +146,7 @@ export async function runAuditCommand(opts: AuditCommandOptions = {}): Promise<v
       if (opts.json === true) {
         process.stdout.write(`${displaySafeJson({ error: err }, 0)}\n`)
       } else {
-        process.stderr.write(`token-goat: ${err}\n`)
+        process.stderr.write(formatCommandError(err) + '\n')
       }
       process.exitCode = 1
       return
