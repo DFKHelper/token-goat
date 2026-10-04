@@ -13,7 +13,7 @@ npm run lint                 # ESLint
 
 ## Lefthook (pre-commit / pre-push)
 
-Lefthook wires three fast checks into `pre-commit` — lint, then typecheck, then `npm run test:guards` — and the full test suite into `pre-push`.
+Lefthook runs lint, the typechecks (source, tests, VS Code extension), `npm audit signatures`, the VS Code extension tests, a secrets scan and `npm run test:guards` on `pre-commit`, the commit-message checks on `commit-msg`, and the full test suite on `pre-push`. After a pull, merge or rebase, the `post-merge` and `post-rewrite` hooks run `scripts/post-merge.mjs`, which reinstalls dependencies when `package-lock.json` changed, rebuilds `dist/token-goat.mjs`, stops the resident hook servers, restarts the worker, refreshes the harness shims and instructions, and triggers a reindex, so a running agent never keeps using a bundle the checkout has replaced.
 
 `lefthook` is a devDependency and `npm install` runs `prepare` → `lefthook install`, so a fresh clone gets the hooks automatically. If `.git/hooks/pre-commit` is missing, run `npx lefthook install` — the guards below only protect you if the hook actually exists.
 
@@ -55,6 +55,10 @@ The same trick applies to any tool that takes URL-style paths on the command lin
 3. Commit, push `main`, create the GitHub release (`gh release create vX.Y.Z`).
 4. The release event triggers `.github/workflows/publish.yml` which runs `npm publish`.
 5. Verify at `https://www.npmjs.com/package/token-goat`.
+
+## Adoption numbers
+
+`npm run adoption` prints npm downloads, GitHub stars and GitHub forks for each week since the repository was created, newest week first. It rebuilds the table from the public npm and GitHub APIs on every run and stores nothing. GitHub does not list stargazers without a token, so set `GH_TOKEN` (`GH_TOKEN=$(gh auth token) npm run adoption` works locally). `--json` prints the rows as data and `--since YYYY-MM-DD` starts later. The scheduled `adoption.yml` workflow puts the same table in its job summary every Monday. The script lives in the repository and does not ship in the npm package.
 
 ## Session mining for improvements
 

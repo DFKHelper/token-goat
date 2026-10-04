@@ -2,7 +2,7 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
-## [Unreleased]
+## [2.9.30] - 2026-10-03
 
 Upgrading reparses the index. The parser stamp moves for every language, so each file is read once more. CSS, SCSS, Less, Vue, Svelte and Astro files come back with their full rule and declaration spans, and minified bundles already in the index are removed in the same pass. Every indexed file is also re-embedded once, because the embedding stamp moved with the check that stops a slow embedding run from overwriting newer vectors; Markdown files that open with a front-matter block come back with corrected heading boundaries. The heading-matcher and spreadsheet-redaction fixes below move the parser, Markdown and Excel stamps too, and the same single pass covers them.
 
