@@ -565,6 +565,26 @@ describe('cmdConfig layer attribution', () => {
     })
   })
 
+  it('config validate reports an unknown project section or key as unknown, with the near-miss the global file gets', () => {
+    // HAND-DERIVED: quiet_hour is one edit from the hints key quiet_hours and compact_asist one edit from the compact_assist section, worked out by hand from src/config_defaults.ts; foo matches no section at all.
+    inProjectDir('[foo]\nbar = 1\n\n[hints]\nquiet_hour = "x"\n\n[compact_asist]\nmax_manifest_chars = 5\n', () => {
+      cmdConfig({ action: 'validate', json: true })
+      const parsed = JSON.parse(captured()) as { findings: Array<{ kind: string; key: string; suggestion?: string }>; ok: boolean }
+      expect(parsed.findings.map((f) => [f.kind, f.key])).toEqual([['project_unknown_section', 'foo'], ['project_unknown_key', 'hints.quiet_hour'], ['project_unknown_section', 'compact_asist']])
+      expect(parsed.findings[1]?.suggestion).toBe('quiet_hours')
+      expect(parsed.findings[2]?.suggestion).toBe('compact_assist')
+      expect(parsed.ok).toBe(false)
+      expect(process.exitCode).toBe(1)
+      process.exitCode = 0
+      stdoutLines.length = 0
+      cmdConfig({ action: 'validate' })
+      expect(captured()).toContain('[project_unknown_key] hints.quiet_hour (did you mean: quiet_hours?)')
+      expect(captured()).toContain('[project_unknown_section] compact_asist (did you mean: compact_assist?)')
+      expect(captured()).not.toContain('not usable')
+      expect(captured()).toContain('config validate: 3 issue(s) found')
+    })
+  })
+
   it('config set warns about a project value that is clamped, naming both values, because the project layer still displaces the save', () => {
     // _buildConfig merges the project raw tree OVER the global one and validates the merged result, so a clamped project value still wins over config.toml -- the save is as much a no-op as in the clean case. Staying silent here would be the mirror of the mislabel this whole change removes.
     inProjectDir('[compact_assist]\nmax_manifest_chars = 43210\n', () => {

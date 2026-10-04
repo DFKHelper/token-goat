@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { parse } from 'smol-toml'
 
-import { readConfigSource, loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField, validateEnumField, getLastConfigParseError, getProjectConfigInfo, resolveConfigKeyLayer } from './config.js'
+import { readConfigSource, loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField, validateEnumField, getLastConfigParseError, getProjectConfigInfo, readConfigToml, resolveConfigKeyLayer } from './config.js'
 import type { ConfigKeyLayer } from './config.js'
 import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
@@ -37,6 +37,36 @@ function closestKeys(unknown: string, known: string[]): string[] {
     .sort((a, b) => a.d - b.d)
     .slice(0, 3)
     .map((x) => x.k)
+}
+
+/** `<prefix>unknown_section` / `<prefix>unknown_key` findings, with near-miss suggestions, for a raw config tree; a retired key, or a section holding only retired keys, is what an older save left behind rather than a typo, so it gets no finding. */
+function unknownConfigKeyFindings(raw: Record<string, unknown>, defCfg: Record<string, unknown>, kindPrefix: string): Array<{ kind: string; key: string; suggestion?: string }> {
+  const findings: Array<{ kind: string; key: string; suggestion?: string }> = []
+  const knownSecs = Object.keys(defCfg)
+  for (const section of Object.keys(raw)) {
+    const rawSec = raw[section]
+    const isRetired = (subkey: string): boolean => RETIRED_CONFIG_KEYS.has(`${section}.${subkey}`)
+    const rawSecKeys = typeof rawSec === 'object' && rawSec !== null && !Array.isArray(rawSec) ? Object.keys(rawSec) : []
+    if (!knownSecs.includes(section) && rawSecKeys.length > 0 && rawSecKeys.every(isRetired)) continue
+    if (!knownSecs.includes(section)) {
+      const suggestions = closestKeys(section, knownSecs)
+      const finding: { kind: string; key: string; suggestion?: string } = { kind: `${kindPrefix}unknown_section`, key: section }
+      if (suggestions.length > 0) finding.suggestion = suggestions.join(', ')
+      findings.push(finding)
+      continue
+    }
+    if (typeof rawSec !== 'object' || rawSec === null) continue
+    const knownKeys = Object.keys(defCfg[section] as Record<string, unknown>)
+    for (const subkey of Object.keys(rawSec as Record<string, unknown>)) {
+      if (!knownKeys.includes(subkey) && !isRetired(subkey)) {
+        const suggestions = closestKeys(subkey, knownKeys)
+        const finding: { kind: string; key: string; suggestion?: string } = { kind: `${kindPrefix}unknown_key`, key: `${section}.${subkey}` }
+        if (suggestions.length > 0) finding.suggestion = suggestions.join(', ')
+        findings.push(finding)
+      }
+    }
+  }
+  return findings
 }
 
 /** ` (did you mean: a, b?)` suffix for an unrecognized dotted config key, or '' if no near match. */
@@ -359,33 +389,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     if (parseErr !== null) {
       findings.push({ kind: 'parse_error', key: cfgFile, suggestion: parseErr })
     } else {
-      for (const section of Object.keys(raw)) {
-        const knownSecs = Object.keys(defCfg)
-        const rawSec = raw[section]
-        const isRetired = (subkey: string): boolean => RETIRED_CONFIG_KEYS.has(`${section}.${subkey}`)
-        const rawSecKeys = typeof rawSec === 'object' && rawSec !== null && !Array.isArray(rawSec) ? Object.keys(rawSec) : []
-        // A section holding nothing but retired keys is what an older save left behind, not a typo, so it gets no finding.
-        if (!knownSecs.includes(section) && rawSecKeys.length > 0 && rawSecKeys.every(isRetired)) continue
-        if (!knownSecs.includes(section)) {
-          const suggestions = closestKeys(section, knownSecs)
-          const finding: { kind: string; key: string; suggestion?: string } = { kind: 'unknown_section', key: section }
-          if (suggestions.length > 0) finding.suggestion = suggestions.join(', ')
-          findings.push(finding)
-          continue
-        }
-        const defSection = defCfg[section] as Record<string, unknown>
-        const rawSection = raw[section]
-        if (typeof rawSection !== 'object' || rawSection === null) continue
-        for (const subkey of Object.keys(rawSection as Record<string, unknown>)) {
-          const knownKeys = Object.keys(defSection)
-          if (!knownKeys.includes(subkey) && !isRetired(subkey)) {
-            const suggestions = closestKeys(subkey, knownKeys)
-            const finding: { kind: string; key: string; suggestion?: string } = { kind: 'unknown_key', key: `${section}.${subkey}` }
-            if (suggestions.length > 0) finding.suggestion = suggestions.join(', ')
-            findings.push(finding)
-          }
-        }
-      }
+      findings.push(...unknownConfigKeyFindings(raw, defCfg, ''))
     }
 
     // A project .token-goat.toml value that validation rejects or clamps is otherwise invisible: nothing errors, and it only surfaces if the user happens to `config get` that one key. `validate` is where a config problem is meant to be found, so report it here too -- via the same resolver `get`/`list`/`set` use, so all four agree about the key.
@@ -395,8 +399,13 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       if (validateProjectInfo.parseError !== null) {
         findings.push({ kind: 'project_parse_error', key: validateProjectInfo.path, suggestion: validateProjectInfo.parseError })
       } else {
+        // An unknown project key is a typo, not a rejected value: report it with the near-miss config.toml gets, and keep it out of project_value_ignored, which could only call it "not usable; in effect: undefined".
+        const unknownProject = unknownConfigKeyFindings(readConfigToml(validateProjectInfo.path).raw, defCfg, 'project_')
+        findings.push(...unknownProject)
+        const unknownNames = new Set(unknownProject.map((f) => f.key))
         for (const k of validateProjectInfo.keys) {
           if (RETIRED_CONFIG_KEYS.has(k)) continue
+          if (unknownNames.has(k) || unknownNames.has(k.split('.')[0] ?? k)) continue
           const eff = walkGet(effCfg, k.split('.'))
           const state = resolveConfigKeyLayer(k, eff.found ? eff.value : undefined, effCfg, validateProjectInfo)
           if (state.layer !== 'project-invalid') continue
@@ -429,7 +438,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     }
     for (const f of findings) {
       // "did you mean" only fits the kinds whose suggestion IS a near-miss key name. For the others the suggestion is an explanation (a parse error, a rejected value), and wrapping those in "did you mean:" asked the reader whether they meant a sentence.
-      const isNearMiss = f.kind === 'unknown_section' || f.kind === 'unknown_key'
+      const isNearMiss = /^(?:project_)?unknown_(?:section|key)$/.test(f.kind)
       const hint = f.suggestion === undefined ? '' : isNearMiss ? ` (did you mean: ${f.suggestion}?)` : ` (${f.suggestion})`
       emit(`[${f.kind}] ${f.key}${hint}`)
     }
