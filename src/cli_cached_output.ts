@@ -68,7 +68,7 @@ export function _applyFiltersAndPrint(
   // Cached output keeps its ANSI colour codes and every display path strips them for a non-colour stdout, so a --grep or --section run on the raw text missed a pattern the printed text visibly contained whenever a colour boundary fell inside it (`error TS2322` in tsc --pretty output). Strip before anything narrows the text, and before the redactor so a secret split by a colour code is still one token.
   content = stripAnsiEscapes(content)
   // fenceByProvenance true means this is third-party content (a fetched page, a recalled cache entry, a document the caller only named rather than authored), the same population the injection fence covers -- redact it before any narrowing so --grep's long-line clip can never cut a secret in half and leave a fragment the redactor no longer recognises. Idempotent on content already redacted at write time (bash/web/mcp caches).
-  if (fenceByProvenance) content = redactSecrets(content).text
+  if (fenceByProvenance) content = redactSecrets(content, undefined, { keepLineCount: true }).text
   const render = (rows: RecallRow[]): string => rows.map((r) => (opts.lineNumbers === true && r.n !== null ? `${r.n}:${r.text}` : r.text)).join('\n')
   let firstLine = 1
   if (opts.section !== undefined) {
@@ -88,14 +88,15 @@ export function _applyFiltersAndPrint(
     firstLine = sectionResult.lineStart
   }
 
-  let rows: RecallRow[] = content.split(/\r?\n/).map((text, i) => ({ n: firstLine + i, text }))
-  // --full below keeps this raw split, trailing "" included, so the verbatim blob is unchanged; every other path drops the phantom trailing row.
-  const dropPhantom = (r: RecallRow[]): RecallRow[] => (r.length > 1 && r[r.length - 1]?.text === '' ? r.slice(0, -1) : r)
+  const split = content.split(/\r?\n/)
+  // Text that ends in a newline splits into a trailing "" that is not a line of the text. It is dropped here, once, on the whole text: dropping it after a --lines or --grep slice removed a real blank line that happened to end the slice. Counting it made `--tail N` return N-1 real lines and let `--grep '^$'` match a line that is not there.
+  const trailingNewline = split.length > 1 && split[split.length - 1] === ''
+  let rows: RecallRow[] = (trailingNewline ? split.slice(0, -1) : split).map((text, i) => ({ n: firstLine + i, text }))
 
   let ranged = false
   if (opts.lines !== undefined) {
     const { from, to } = parseLineRange(opts.lines)
-    const total = dropPhantom(rows).length
+    const total = rows.length
     // The range is in the same numbering -n prints, so after --section it counts from the stored text's first line, not the section's.
     const last = firstLine + total - 1
     if (opts.section !== undefined && (from > last || to < firstLine)) {
@@ -124,12 +125,11 @@ export function _applyFiltersAndPrint(
       if (matches(r.text)) hits.push(i)
     })
     // Said as an error, like a --section that is not found: an empty line at exit 0 reads the same as an empty cache entry or a failed recall.
-    if (hits.length === 0) throw new CliError(`--grep matched no lines of ${dropPhantom(rows).length}: "${displaySafeText(opts.grep)}"`)
+    if (hits.length === 0) throw new CliError(`--grep matched no lines of ${rows.length}: "${displaySafeText(opts.grep)}"`)
     const cap = opts.maxMatches !== undefined ? requireNonNegativeInt('--max-matches', opts.maxMatches) : undefined
     const kept = cap !== undefined && hits.length > cap ? hits.slice(0, cap) : hits
     const ctx = opts.context !== undefined ? requireNonNegativeInt('--context', opts.context) : 0
-    // The phantom trailing row is not a line of the text, so context never pulls it in.
-    const lastReal = dropPhantom(rows).length - 1
+    const lastReal = rows.length - 1
     const wanted = new Set<number>()
     for (const h of kept) {
       for (let i = Math.max(0, h - ctx); i <= Math.min(lastReal, h + ctx); i++) wanted.add(i)
@@ -151,12 +151,10 @@ export function _applyFiltersAndPrint(
 
   // --full is the only way to get the whole stored blob back (colour codes stripped, as on every path here; `retrieve` with no flag bypasses this function for its byte-verbatim contract). The blob store itself is lossless, but every render path below elides the middle past head+tail, so without this flag an elision marker pointing a reader at `mcp-output <id>` promises a full report the CLI cannot actually produce -- which is exactly what hooks_agent_spawn.ts's envelope compaction relies on. Deliberately bypasses only the elision, not --section/--grep/--max-matches above: those are explicit narrowing the caller asked for.
   if (opts.full === true) {
-    // With -n the trailing "" after a final newline would print as a bare `N:` line that is not in the text, so number only the real lines and keep the newline.
-    const real = dropPhantom(rows)
-    return emit(opts.lineNumbers === true && real.length < rows.length ? render(real) + '\n' : render(rows))
+    // The whole text (or --section's) keeps the final newline it ended with, so the verbatim blob is unchanged; a --lines or --grep slice is a set of lines, not the text's end.
+    return emit(render(rows) + (trailingNewline && opts.lines === undefined && opts.grep === undefined ? '\n' : ''))
   }
-  // Text that ends in a newline splits into a trailing "" that is not a line of output. Counting it made `--tail N` return N-1 real lines (`--tail 1` returned nothing at all) and made the default elision drop the last line of every long capture. `--full` above keeps the raw split so the verbatim blob is unchanged.
-  const lines = dropPhantom(rows)
+  const lines = rows
   // An explicit --lines range is the caller asking for exactly those lines, so the default head/tail window must not cut into it.
   if (ranged && opts.head === undefined && opts.tail === undefined) {
     return emit(render(lines))

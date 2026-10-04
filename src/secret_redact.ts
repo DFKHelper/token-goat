@@ -200,13 +200,15 @@ export function hasPreciseSecret(text: string, config: Config = loadConfig()): b
 }
 
 /** Scan `text` for high-confidence secret patterns and replace each match with `[REDACTED:<kind>]`. Never partially reveals a matched secret. Pure and synchronous: callers decide how to handle a thrown error (regex engine failures are not expected in practice given the patterns above, but this function does not swallow them itself; see `storeBlob()` for the fail-safe wrapping applied at the actual disk-write choke point). */
-export function redactSecrets(text: string, config: Config = loadConfig()): RedactResult {
+export function redactSecrets(text: string, config: Config = loadConfig(), opts: { keepLineCount?: boolean } = {}): RedactResult {
   let count = 0
   let out = text
+  // With keepLineCount a match spanning lines (a PEM private-key block, a custom pattern) leaves one placeholder per line it covered and keeps each line break, so a caller that numbers lines (`bash-output --file -n`, `--lines A-B`) stays aligned with the original text after it; the default collapses the match to one placeholder.
+  const placeholder = (tag: string, match: string): string => (opts.keepLineCount === true ? match.split(/(\r?\n)/).map((part, i) => (i % 2 === 1 ? part : tag)).join('') : tag)
   for (const [kind, pattern] of SECRET_PATTERNS) {
-    out = out.replace(pattern, () => {
+    out = out.replace(pattern, (match) => {
       count++
-      return `[REDACTED:${kind}]`
+      return placeholder(`[REDACTED:${kind}]`, match)
     })
   }
 
@@ -215,7 +217,7 @@ export function redactSecrets(text: string, config: Config = loadConfig()): Reda
       // A zero-width match (a lookbehind-only pattern, say) would insert a marker at a point and hide nothing
       if (match.length === 0) return match
       count++
-      return '[REDACTED:custom]'
+      return placeholder('[REDACTED:custom]', match)
     })
   }
 
