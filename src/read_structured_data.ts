@@ -25,6 +25,7 @@ import {
 import { emitGuarded, guardJsonRows, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
 import { emit, emitErr } from './emit.js'
+import { headElidedNotice } from './query_notices.js'
 import { fenceUntrusted } from './untrusted_fence.js'
 import { extractErrorMessage, requireNonNegativeStrictInt } from './util.js'
 import {
@@ -278,7 +279,7 @@ function runQueryCommand(
     } else {
       const lines = limited.map((item) => displaySafeJson(item, 0))
       if (headTruncated) {
-        lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
+        lines.push(headElidedNotice(totalCount - limited.length, 'item'))
       }
       if (result.truncated) {
         lines.push(`...(the search stopped early at this tool's traversal limit; these are not necessarily all the matches. Narrow the path to search less of the document.)`)
@@ -503,7 +504,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
           }
         }
         if (headTruncated) {
-          lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
+          lines.push(headElidedNotice(totalCount - limited.length, 'item'))
         }
         const plainText = lines.join('\n')
         emitGuarded(plainText, 'xml-query')
@@ -579,7 +580,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
         return block
       })
       if (headTruncated) {
-        blocks.push(`...(${totalCount - limited.length} more elements elided; use --head to see more)`)
+        blocks.push(headElidedNotice(totalCount - limited.length, 'element'))
       }
       const plainText = blocks.join('\n')
       emitGuarded(plainText, 'xml-query')
@@ -671,7 +672,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
       } else {
         const lines = limited.map((item) => item)
         if (headTruncated) {
-          lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
+          lines.push(headElidedNotice(totalCount - limited.length, 'item'))
         }
         const plainText = lines.join('\n')
         emitGuarded(fenceHtmlText(plainText), 'html-query')
@@ -710,7 +711,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
     } else if (opts.text === true) {
       const textLines = limited.map((n) => extractNodeText(n, text)).filter(Boolean)
       if (headTruncated) {
-        textLines.push(`...(${totalCount - limited.length} more elements elided; use --head to see more)`)
+        textLines.push(headElidedNotice(totalCount - limited.length, 'element'))
       }
       const plainText = textLines.join('\n\n')
       emitGuarded(fenceHtmlText(plainText), 'html-query')
@@ -718,7 +719,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
     } else {
       const blocks = limited.map((node) => serializeHtmlNode(node, 0, text))
       if (headTruncated) {
-        blocks.push(`...(${totalCount - limited.length} more elements elided; use --head to see more)`)
+        blocks.push(headElidedNotice(totalCount - limited.length, 'element'))
       }
       const plainText = blocks.join('\n\n')
       emitGuarded(fenceHtmlText(plainText), 'html-query')

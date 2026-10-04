@@ -81,6 +81,7 @@ const NOT_EMBEDDING: Record<string, string> = {
   'src/process_util.ts': 'process/shell-quoting utilities for installers, reached only via util.ts, unrelated to chunking',
   'src/skip_scope.ts': 'decides which directory segments of an indexed path count against skip_dirs, i.e. whether a file is embedded at all, never its chunk content',
   'src/project.ts': 'project-root detection and hashing for scoping the index database, not chunk content',
+  'src/query_notices.ts': 'formats the trailing --head/traversal-limit notices on structured-query CLI output (reached through csv_query.ts, which the embedding path never calls); no chunk text or boundary passes through it',
   'src/reset.ts': 'test/dev module-cache clearing utility, never runs in a production embed',
   'src/sqlite_driver.ts': 'sqlite driver initialization, infrastructure like src/db.ts',
   'src/regex_guard.ts': 'ReDoS-safety guard for the CLI grep-pattern surfaces in pdf_extract.ts/pptx_extract.ts (pdfTextGrep/pptxTextGrep); the embedding extraction functions (extractPdfText, docxText, pptxAllSlidesText, allSheetsHeadText) never call it',

@@ -319,6 +319,13 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
+    'headElidedNotice',
+    {
+      bucket: 'shortens-a-count-or-a-digest-not-free-text',
+      reason: 'Formats a count of rows/items a --head cut hid into a fixed notice line; it receives a number and a fixed noun, shortens nothing, and carries no free text.',
+    },
+  ],
+  [
     'previewUnavailable',
     {
       bucket: 'shortens-a-count-or-a-digest-not-free-text',

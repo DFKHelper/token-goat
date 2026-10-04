@@ -5,6 +5,7 @@ import { compileGuardedRegexCached } from './regex_guard.js'
 
 import { parse } from 'csv-parse/sync'
 
+import { headElidedNotice } from './query_notices.js'
 import { filtersFilteredToEmptyNotice } from './util.js'
 
 export type CsvWhereOp = '=' | '!=' | '>' | '<' | '>=' | '<=' | '~='
@@ -232,7 +233,7 @@ export function formatCsvTable(result: CsvQueryResult, activeFilters: string[] =
     ...result.rows.map((r) => r.map(quoteCsvCell).join(','))
   ]
   if (result.totalRows > result.rows.length) {
-    lines.push(`...(${result.totalRows - result.rows.length} more rows elided; use --head to see more)`)
+    lines.push(headElidedNotice(result.totalRows - result.rows.length, 'row'))
   }
   // A --where that matched nothing rendered as a bare header line, byte-identical to a file that has no data at all -- except the latter gets its own "No data rows found" message and this silently read as a definitive answer about the file. Checked on totalRows (post-where, pre-head) so a --head 0 keeps the elision line above instead of claiming the filter emptied the result. Shared here rather than in each CLI wrapper so xlsx-query gets the same notice as csv-query.
   if (result.totalRows === 0 && result.preFilterRows > 0) {

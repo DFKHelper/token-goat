@@ -10,6 +10,7 @@ import { fenceUntrustedContent, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG } from './
 import { noMatchMessage, queryJson } from './json_query.js'
 import { displaySafeJson, displaySafeText } from './paths.js'
 import { guardJsonRows } from './read_commands.js'
+import { headElidedNotice } from './query_notices.js'
 import { extractTranscriptText } from './read_inspect.js'
 import { compileGuardedRegex } from './regex_guard.js'
 import { stripAnsiEscapes } from './render/ansi.js'
@@ -395,7 +396,7 @@ export function cmdMcpOutput(
     } else {
       const lines = limited.map((item) => displaySafeJson(item, 0))
       if (headTruncated) {
-        lines.push(`...(${totalCount - limited.length} more items elided; use --head to see more)`)
+        lines.push(headElidedNotice(totalCount - limited.length, 'item'))
       }
       if (queryResult.truncated) {
         lines.push(`...(the search stopped early at this tool's traversal limit; these are not necessarily all the matches. Narrow the path to search less of the document.)`)

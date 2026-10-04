@@ -88,6 +88,7 @@ const NOT_EXTRACTION: Record<string, string> = {
   'src/pptx_extract.ts': 'PPTX text extraction feeding indexFileEmbeddings only, gated by files.embed_sha',
   'src/process_util.ts': 'process/shell-quoting utilities for installers, unrelated to parsing',
   'src/project.ts': 'project-root detection and hashing for scoping the index database, not content extraction',
+  'src/query_notices.ts': 'formats the trailing --head/traversal-limit notices on structured-query CLI output (reached through csv_query.ts); writes no symbol, ref or section row',
   'src/regex_guard.ts': 'ReDoS-safety guard for user-supplied CLI regex flags (grep/affected/secret-redact); reached in this closure only via util.ts, never by a language extractor\'s own pattern',
   'src/reset.ts': 'test/dev module-cache clearing utility, never runs in a production parse',
   'src/skip_scope.ts': 'decides which directory segments of an indexed path count against skip_dirs, i.e. whether a file is parsed at all, never what a parse yields',
