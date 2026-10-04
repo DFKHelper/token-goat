@@ -268,9 +268,12 @@ async function cmdSearch(
   process.exitCode = code
 }
 
+/** How long `index` spends embedding in the foreground, after the first file, before it leaves the rest to the background worker. */
+export const INDEX_INLINE_EMBED_BUDGET_MS = 20_000
+
 export async function cmdIndex(
   pathArg?: string,
-  opts: { walk?: boolean; dbPath?: string; force?: boolean; forceWalk?: boolean } = {},
+  opts: { walk?: boolean; dbPath?: string; force?: boolean; forceWalk?: boolean; embed?: boolean; embedBudgetMs?: number } = {},
 ): Promise<void> {
   // A bulk walk is long-running background work even though the user typed it: they start it and go back to their editor. The daemon lowers its own priority for the same reason; doing it here too is what makes "both indexing paths" true rather than only the invisible one.
   applyIndexingPriority()
@@ -306,6 +309,11 @@ export async function cmdIndex(
   const embedPolicy = embedPolicyResolver()
   let indexed = 0
   let embedsDeferred = 0
+  // Embedding runs at roughly ten chunks a second on the bundled WebAssembly runtime, so embedding a repository of a few thousand files inline kept this command running for hours. Once the inline embeds have used their time budget, the rest are left for the worker's backlog sweep, the path `install` already uses. The first embed is not counted because it includes loading, and on a first run downloading, the model. --embed waits for every file here instead.
+  const embedBudgetMs = opts.embed === true ? Number.POSITIVE_INFINITY : (opts.embedBudgetMs ?? INDEX_INLINE_EMBED_BUDGET_MS)
+  let embedsInline = 0
+  let embedSpentMs = 0
+  let embedsBackground = 0
   let failed = 0
   let skipped = 0
   const failureGroups = new Map<string, { example: string; count: number }>()
@@ -415,10 +423,18 @@ export async function cmdIndex(
     // A model that is not on this machine and cannot be fetched now (offline, the last download failed recently, or this process would go around the machine's proxy to get it) makes every embed below fail the same way, one file at a time. Skipping leaves embed_sha unset, so the worker, or the next run, embeds the file once the download succeeds. Only a file that would really download is deferred: with embeddings off, or the embedding packages absent, the call below writes the terminal marker that keeps the file from being retried, and that needs no download.
     if (!embedFresh && depsAvailable && foregroundDownloadDeferred()) {
       embedsDeferred += 1
+    } else if (!embedFresh && depsAvailable && embedsInline > 0 && embedSpentMs >= embedBudgetMs) {
+      // Left with embed_sha unset, so the worker's backlog sweep embeds it. Only a file that would really embed is handed over: with embeddings off or their packages absent, the call below writes a terminal marker in no time and must still run.
+      embedsBackground += 1
     } else if (!embedFresh) {
       paintProgress('embedding')
+      const embedStart = Date.now()
       // Best-effort semantic-embeddings step for the same file, run right after its syntactic parse; awaited here because this is a one-shot foreground command the caller waits on, unlike the worker's incremental drain which fires this and forgets it. Passing sha lets it stamp files.embed_sha on success, the same embed-freshness gate makeIndexer uses. It reads `embeddings_enabled` with no root to pass, as its first synchronous statement, so the file's own project is the one loadConfig() resolves for that stretch, as in worker.ts's embedFileSerialized.
       await withConfigProjectRoot(configRoot, () => indexFileEmbeddings(key, dbPath, sha ?? undefined))
+      if (depsAvailable) {
+        if (embedsInline > 0) embedSpentMs += Date.now() - embedStart
+        embedsInline += 1
+      }
     }
     indexed += 1
   }
@@ -445,6 +461,10 @@ export async function cmdIndex(
     const offlineNotice = offlineEmbedNotice(countNoun(embedsDeferred, 'file'), root)
     if (offlineNotice !== null) err(offlineNotice)
     else err(`token-goat: index: ${countNoun(embedsDeferred, 'file')} not embedded yet: the embedding model is not downloaded. The background worker downloads it and embeds them; to do it now, run \`${WARM_COMMAND}\` and then \`token-goat index\` again.`)
+  }
+  if (embedsBackground > 0) {
+    ensureWorkerAlive()
+    err(`token-goat: index: ${countNoun(embedsBackground, 'file')} left for the background worker to embed; \`semantic\` uses keyword search for them until it finishes. To embed them here instead, run \`token-goat index --embed\`.`)
   }
   // A run where every file failed and none indexed is a total indexing failure, not a no-op success -- callers scripting on `$?` must be able to detect it.
   if (indexed === 0 && failed > 0) {
@@ -1107,6 +1127,7 @@ export function buildProgram(): Command {
     .option('--walk', 'if not a git repo, index a bounded directory walk instead (skips .env / generated / oversized trees)')
     .option('--force', 'bypass the SHA-freshness cache and reindex every tracked file, even byte-identical ones (e.g. after a parser upgrade changes what gets extracted)')
     .option('--force-walk', `index a non-git folder via --walk and raise its ${MAX_FILES_SCANNED} source-file refusal to ${MAX_FILES_SCANNED_FORCED} (slow; produces a large index)`)
+    .option('--embed', `embed every file before returning; without it, files still waiting after ${INDEX_INLINE_EMBED_BUDGET_MS / 1000} s of embedding are left to the background worker`)
     .action(guard(cmdIndex))
 
   program
