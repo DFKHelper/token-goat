@@ -2,6 +2,12 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **Files `index` leaves for the background worker are embedded even when the worker is already running.** Once `index` has spent its 20 seconds on embedding, or when only the worker may download the embedding model, it parses the remaining files and leaves their embedding to the worker. It never told a running worker about them, and a worker only looks for unembedded files once, when it starts, so they stayed out of `semantic` until it was next restarted: in a repository of 2,001 files, 1,448 were still unembedded minutes after `index` returned. `index` now puts those files on the worker's queue, and a running worker starts on them straight away.
+
 ## [2.9.30] - 2026-10-03
 
 Upgrading reparses the index. The parser stamp moves for every language, so each file is read once more. CSS, SCSS, Less, Vue, Svelte and Astro files come back with their full rule and declaration spans, and minified bundles already in the index are removed in the same pass. Every indexed file is also re-embedded once, because the embedding stamp moved with the check that stops a slow embedding run from overwriting newer vectors; Markdown files that open with a front-matter block come back with corrected heading boundaries. The heading-matcher and spreadsheet-redaction fixes below move the parser, Markdown and Excel stamps too, and the same single pass covers them.

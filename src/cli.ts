@@ -35,6 +35,7 @@ import { runParallelSearch } from './search/search_cli.js'
 import { ALL_CHANNELS, type SearchChannel } from './search/types.js'
 import { embedPolicyResolver, runDetachedWorkerDaemon } from './worker.js'
 import { ensureWorkerAlive, isWorkerRunning, startDetachedWorker, stopWorker, WorkerAlreadyRunningError } from './worker_lifecycle.js'
+import { enqueueDirtyPathsSafe } from './hooks_index.js'
 // Loaded on demand inside cmdCompress, not at module scope: bash_runner pulls in the whole bash tool-filter registry (every language, linter, cloud and package-manager filter), which only the compress command ever uses. See the same reasoning for relay in cmdHook.
 import { runRead, runPrSlice } from './read_commands.js'
 import { runSymbol } from './read_symbol.js'
@@ -309,11 +310,13 @@ export async function cmdIndex(
   const embedPolicy = embedPolicyResolver()
   let indexed = 0
   let embedsDeferred = 0
-  // Embedding runs at roughly ten chunks a second on the bundled WebAssembly runtime, so embedding a repository of a few thousand files inline kept this command running for hours. Once the inline embeds have used their time budget, the rest are left for the worker's backlog sweep, the path `install` already uses. The first embed is not counted because it includes loading, and on a first run downloading, the model. --embed waits for every file here instead.
+  // Embedding runs at roughly ten chunks a second on the bundled WebAssembly runtime, so embedding a repository of a few thousand files inline kept this command running for hours. Once the inline embeds have used their time budget, the rest are put on the worker's dirty queue, the path `install` already uses. The first embed is not counted because it includes loading, and on a first run downloading, the model. --embed waits for every file here instead.
   const embedBudgetMs = opts.embed === true ? Number.POSITIVE_INFINITY : (opts.embedBudgetMs ?? INDEX_INLINE_EMBED_BUDGET_MS)
   let embedsInline = 0
   let embedSpentMs = 0
   let embedsBackground = 0
+  // Every file left for the worker to embed, deferred or past the budget, put on its dirty queue once the walk is done.
+  const leftForWorker: string[] = []
   let failed = 0
   let skipped = 0
   const failureGroups = new Map<string, { example: string; count: number }>()
@@ -423,9 +426,11 @@ export async function cmdIndex(
     // A model that is not on this machine and cannot be fetched now (offline, the last download failed recently, or this process would go around the machine's proxy to get it) makes every embed below fail the same way, one file at a time. Skipping leaves embed_sha unset, so the worker, or the next run, embeds the file once the download succeeds. Only a file that would really download is deferred: with embeddings off, or the embedding packages absent, the call below writes the terminal marker that keeps the file from being retried, and that needs no download.
     if (!embedFresh && depsAvailable && foregroundDownloadDeferred()) {
       embedsDeferred += 1
+      leftForWorker.push(key)
     } else if (!embedFresh && depsAvailable && embedsInline > 0 && embedSpentMs >= embedBudgetMs) {
-      // Left with embed_sha unset, so the worker's backlog sweep embeds it. Only a file that would really embed is handed over: with embeddings off or their packages absent, the call below writes a terminal marker in no time and must still run.
+      // Left with embed_sha unset and handed to the worker below. Only a file that would really embed is handed over: with embeddings off or their packages absent, the call below writes a terminal marker in no time and must still run.
       embedsBackground += 1
+      leftForWorker.push(key)
     } else if (!embedFresh) {
       paintProgress('embedding')
       const embedStart = Date.now()
@@ -455,7 +460,8 @@ export async function cmdIndex(
       `${pruned > 0 ? ` Pruned ${pruned} deleted file(s).` : ''}` +
       `${failed > 0 ? ` Failed to index ${failed} file(s) (see stderr).` : ''}`,
   )
-  // The worker's backlog sweep embeds every file left without an embed_sha, and it is the process whose downloads go through the proxy, so it is started here rather than left for the next hook to start.
+  // The files left without an embed go on the worker's dirty queue, which wakes a worker that is running and starts one that is not; the worker is also the process whose downloads go through the proxy. Leaving them to its backlog sweep was not enough: the sweep walks the index once per worker start, so a worker an earlier hook started had finished that walk before this run began, and the files stayed out of `semantic` until it next restarted.
+  if (leftForWorker.length > 0) enqueueDirtyPathsSafe(leftForWorker, { alreadyResolved: true })
   if (embedsDeferred > 0) {
     ensureWorkerAlive()
     const offlineNotice = offlineEmbedNotice(countNoun(embedsDeferred, 'file'), root)
