@@ -41,7 +41,7 @@ const EXEMPT: readonly Exemption[] = [
   },
   {
     file: 'tests/guards/omission_markers_are_all_countable.test.ts',
-    table: 'markers.map((m) => [`${m.file}: ${m.template}`, m.rendered] as const)',
+    table: 'markers.map((m) => [`${m.file} (n=${m.n}): ${m.template}`, m.rendered, m.n] as const)',
     reason: 'markers is the return value of renderedMarkers(), which passes its scan through pinnedPopulation() with a floor of 8 and two anchors before returning, so a filter tree that stopped yielding markers fails there rather than registering zero cases here.',
   },
   {

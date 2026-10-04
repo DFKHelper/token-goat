@@ -114,7 +114,7 @@ describe('headSheet', () => {
     expect(lines[0]).toBe('name,age,dept')
     expect(lines[1]).toBe('Alice,30,Eng')
     expect(lines[2]).toBe('Bob,25,Sales')
-    expect(text).toContain('more rows elided')
+    expect(text).toContain('...(1 more row elided; use --rows to see more')
   })
 
   it('throws a clear error for an unknown sheet', async () => {

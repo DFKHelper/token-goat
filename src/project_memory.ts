@@ -7,7 +7,7 @@ import { dataDir } from './constants.js';
 import { findProject } from './project.js';
 import { fenceUntrustedFileContent } from './injection_scan.js';
 import { formatAge } from './skill_cache.js';
-import { atomicWriteText, ensureDirSync, LOCK_WAIT_MS_HARDENED, sleepSync, withFileLock, withRetryOnLock } from './util.js';
+import { atomicWriteText, countNoun, ensureDirSync, LOCK_WAIT_MS_HARDENED, sleepSync, withFileLock, withRetryOnLock } from './util.js';
 
 export const MAX_ENTRIES = 30;
 const MAX_VALUE_LEN = 300;
@@ -322,7 +322,7 @@ export function buildInjection(projectHash: string, root?: string, statusOf?: An
     const render = (shown: string[], skipped: number): string => {
       const parts = [header];
       if (shown.length > 0) parts.push(fenceUntrustedFileContent(shown.join('\n')));
-      if (skipped > 0) parts.push(`- (+${skipped} more memory entries omitted)`);
+      if (skipped > 0) parts.push(`- (+${countNoun(skipped, 'more memory entry', 'more memory entries')} omitted)`);
       return parts.join('\n');
     };
 

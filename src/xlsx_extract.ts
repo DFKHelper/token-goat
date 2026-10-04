@@ -1,5 +1,6 @@
 /** Excel (.xlsx) narrow-slice reader. Reads the OOXML container directly through `xlsx_reader.ts`, which shares the zip+XML core in `ooxml_extract.ts` with the .docx and .pptx readers -- so the size cap, the not-a-file guard and the path-leak-safe error messages are one implementation rather than three. */
 
+import { countNoun } from './util.js'
 import { loadConfig, type Config } from './config.js'
 import { DocumentRefusedError } from './document_refusal.js'
 import { assertOoxmlWithinDeadline, ooxmlWorkDeadline } from './ooxml_extract.js'
@@ -218,7 +219,7 @@ function headSheetFromWorksheet(ws: ExcelWorksheet, rows: number, columns?: stri
   for (const r of dataRows) lines.push(r.map(quoteCsvCell).join(','))
   // From rowCount, not from aoa: the scan no longer reaches the end of the sheet, and the count of what was left out is exactly what a truncated scan cannot see. The old expression was `aoa.length - 1`, which was equal to this only because the loop above visited every row.
   if (rowCount - 1 > dataRows.length) {
-    lines.push(`...(${rowCount - 1 - dataRows.length} more rows elided; use --rows to see more, or xlsx-query for filtering)`)
+    lines.push(`...(${countNoun(rowCount - 1 - dataRows.length, 'more row')} elided; use --rows to see more, or xlsx-query for filtering)`)
   }
   return lines.join('\n')
 }

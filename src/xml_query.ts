@@ -1,7 +1,7 @@
 /** XML structure inspection and querying for token-goat. Provides lightweight, generic, security-safe XML parsing without external entity resolution (XXE safe) for structural outlining (`xml-outline`) and tag/path querying (`xml-query`). Deliberately generic and schema-agnostic: makes no assumptions about specific XML vocabularies, namespaces, or domain models. */
 
 import { displaySafeText } from './paths.js'
-import { pushAll } from './util.js'
+import { countNoun, pushAll } from './util.js'
 import { evalPredicate, getAttrValue, matchTag, parseXmlPath } from './xml_selector.js'
 
 export interface XmlNode {
@@ -306,7 +306,7 @@ export function outlineXml(xmlText: string, opts: { maxDepth?: number } = {}): X
         if (count > 5 && existingWithTag >= 3) {
           if (existingWithTag === 3) {
             children.push({
-              tag: `... (${count - 3} more <${child.tag}> elements)`,
+              tag: `... (${countNoun(count - 3, `more <${child.tag}> element`)})`,
               attributes: {},
               childCount: 0,
               children: [],
@@ -433,7 +433,7 @@ export function tryDecodeEmbeddedXml(
     const lines = formatted.split('\n')
     if (lines.length > maxLines) {
       const bounded = lines.slice(0, maxLines)
-      bounded.push(`... (${lines.length - maxLines} more lines of decoded embedded XML elided; bounded)`)
+      bounded.push(`... (${countNoun(lines.length - maxLines, 'more line')} of decoded embedded XML elided; bounded)`)
       return { decoded: true, text: bounded.join('\n') }
     }
     return { decoded: true, text: formatted }

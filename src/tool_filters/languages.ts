@@ -4,6 +4,7 @@
 //
 // Factory usage: ErlangFilter, CrystalFilter, HaskellFilter, ElmFilter, JuliaFilter, PowerShellFilter use makeLanguageFilter (shared loop skeleton). SwiftLintFilter uses makeLinterFilter. The remaining 12 are bespoke classes.
 
+import { countNoun } from '../util.js'
 import { ToolFilter } from './base.js'
 import {
   makeLanguageFilter,
@@ -115,7 +116,7 @@ export class PythonFilter extends ToolFilter {
         for (const group of frameGroups) out.push(...group)
       } else {
         for (const group of frameGroups.slice(0, 2)) out.push(...group)
-        out.push(`    ... [${frameGroups.length - 5} more frames elided by token-goat]`)
+        out.push(`    ... [${countNoun(frameGroups.length - 5, 'more frame')} elided by token-goat]`)
         for (const group of frameGroups.slice(frameGroups.length - 3)) out.push(...group)
       }
       frameGroups = []
@@ -292,7 +293,7 @@ export class BunFilter extends ToolFilter {
 
     const nonEmpty = lines.filter((l) => l.trim())
     if (nonEmpty.length <= 80) return this.finalize(lines)
-    return headTailCompress(lines, 60, 20, 'lines')
+    return headTailCompress(lines, 60, 20, 'line')
   }
 
   private _compressInstall(lines: string[]): string {
@@ -437,7 +438,7 @@ export class DenoFilter extends ToolFilter {
   private _compressGeneric(lines: string[]): string {
     const nonEmpty = lines.filter((l) => l.trim())
     if (nonEmpty.length <= 30) return this.finalize(lines)
-    return headTailCompress(lines, 40, 20, 'lines')
+    return headTailCompress(lines, 40, 20, 'line')
   }
 }
 

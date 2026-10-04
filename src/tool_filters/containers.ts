@@ -4,6 +4,7 @@
 //
 // Dispatch ordering in CONTAINER_FILTERS: 1. KubectlLogsFilter before KubectlFilter — both match `kubectl`/`k`; KubectlLogsFilter's custom matches() gate (requires the `logs` positional arg) is the more specific guard and must win first. 2. DockerComposeFilter before DockerFilter — both match `docker`; the compose-subcommand check in DockerComposeFilter.matches() would lose to DockerFilter's generic binary match if DockerFilter came first.
 
+import { countNoun } from '../util.js'
 import { ToolFilter } from './base.js'
 import {
   ERROR_SIGNAL_RE,
@@ -223,13 +224,13 @@ export class DockerComposeFilter extends ToolFilter {
 
     // Flush pulled-count summary
     if (pullingCount > pullingKept) {
-      kept.push(`[token-goat: ${pullingCount - pullingKept} more Pulling lines elided]`)
+      kept.push(`[token-goat: ${countNoun(pullingCount - pullingKept, 'more Pulling line')} elided]`)
     }
 
     // Flush health-check summaries
     for (const [containerKey, count] of [...healthCounts.entries()].sort()) {
       if (count > 1) {
-        kept.push(`[token-goat: ${count - 1} more health-check wait lines for ${containerKey}]`)
+        kept.push(`[token-goat: ${countNoun(count - 1, 'more health-check wait line')} for ${containerKey}]`)
       }
     }
 
@@ -335,7 +336,7 @@ function _compressKubectlDescribe(text: string): string {
       }
       kept.push(...entries.slice(0, 3))
       if (entries.length > 3) {
-        kept.push(' '.repeat(headerIndent + 2) + `[token-goat: ${entries.length - 3} more entries elided]`)
+        kept.push(' '.repeat(headerIndent + 2) + `[token-goat: ${countNoun(entries.length - 3, 'more entry', 'more entries')} elided]`)
       }
       continue
     }
@@ -455,7 +456,7 @@ export class KubectlFilter extends ToolFilter {
       if (text.includes('\n')) {
         const nonEmpty = text.split('\n').filter((l) => l.trim())
         if (nonEmpty.length > 50) {
-          text = headTailCompress(nonEmpty, 30, 20, 'log lines')
+          text = headTailCompress(nonEmpty, 30, 20, 'log line')
         } else {
           text = nonEmpty.join('\n')
         }
@@ -466,7 +467,7 @@ export class KubectlFilter extends ToolFilter {
       const diffLines = text.split('\n')
       if (diffLines.length > 50) {
         // Same 50-line budget, no longer spent entirely on the front. A `kubectl diff` lists resources in whatever order the manifests were given, so the change that matters is as likely to be in the last resource as the first, and a tail of zero meant every resource past the budget vanished with only a count to show for it.
-        text = headTailCompress(diffLines, 35, 15, 'diff lines')
+        text = headTailCompress(diffLines, 35, 15, 'diff line')
       }
     }
 
@@ -543,7 +544,7 @@ function _collapseStackTraces(lines: string[]): string[] {
       }
       out.push(...frames.slice(0, MAX_FRAMES).flat())
       if (frames.length > MAX_FRAMES) {
-        out.push(`    ... ${frames.length - MAX_FRAMES} more frames`)
+        out.push(`    ... ${countNoun(frames.length - MAX_FRAMES, 'more frame')}`)
       }
       i = j
     } else {
@@ -575,7 +576,7 @@ function _dedupLogLinesWithPodPrefix(lines: string[], keepFirstN = 3): string[] 
       if (prevKey !== null && prevKey !== key) {
         const pendingOmit = omit.get(prevKey) ?? 0
         if (pendingOmit > 0) {
-          out.push(`[token-goat: ${pendingOmit} more similar lines omitted]`)
+          out.push(`[token-goat: ${countNoun(pendingOmit, 'more similar line')} omitted]`)
           omit.set(prevKey, 0)
         }
       }
@@ -590,7 +591,7 @@ function _dedupLogLinesWithPodPrefix(lines: string[], keepFirstN = 3): string[] 
   const flushed = new Set<string>()
   for (const [key, count] of omit.entries()) {
     if (count > 0 && !flushed.has(key)) {
-      out.push(`[token-goat: ${count} more similar lines omitted]`)
+      out.push(`[token-goat: ${countNoun(count, 'more similar line')} omitted]`)
       flushed.add(key)
     }
   }
@@ -673,7 +674,7 @@ export class KubectlLogsFilter extends ToolFilter {
     // Step 5: hard head+tail cap
     let result: string
     if (nonEmpty.length > 200) {
-      result = headTailCompress(nonEmpty, 40, 40, 'log lines')
+      result = headTailCompress(nonEmpty, 40, 40, 'log line')
     } else {
       result = nonEmpty.join('\n')
     }
@@ -732,7 +733,7 @@ function _compressHelmTemplate(lines: string[]): string {
     if (line.trim().startsWith('---')) sections.push(line)
   }
   if (sections.length === 0) {
-    return headTailCompress(lines, 10, 10, 'template lines')
+    return headTailCompress(lines, 10, 10, 'template line')
   }
   sections.push(
     `[token-goat: helm template ${total} total lines; showing ${sections.length} document headers only]`,

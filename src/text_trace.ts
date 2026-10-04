@@ -6,7 +6,7 @@ import { displaySafeText, normalizeDarwinSystemAlias, resolveIndexPath, displayS
 import { canonicalize } from './project.js'
 import { resolveBody, warnIfFilesStale } from './read_commands.js'
 import { formatSymbolLocation } from './indexed_source.js'
-import { foldPath, requireNonNegativeStrictInt } from './util.js'
+import { countNoun, foldPath, requireNonNegativeStrictInt } from './util.js'
 
 interface TraceFrame {
   file: string
@@ -338,8 +338,7 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
     const projectFrameCount = blocks[blockIndex]?.frames.filter((f) => isProjectFrame(f.file, cwd)).length ?? 0
     const droppedByKeep = projectFrameCount - block.frames.length
     if (droppedByKeep > 0) {
-      const noun = droppedByKeep === 1 ? 'frame' : 'frames'
-      process.stdout.write(`  ...(${droppedByKeep} more ${noun} elided; use a higher --keep to see more)\n`)
+      process.stdout.write(`  ...(${countNoun(droppedByKeep, 'more frame')} elided; use a higher --keep to see more)\n`)
     }
     for (const f of block.frames) {
       process.stdout.write(`  File "${displaySafeText(f.file)}", line ${f.lineNo}, in ${displaySafeText(f.func)}\n`)

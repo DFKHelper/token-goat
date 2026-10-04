@@ -1,5 +1,6 @@
 // Python linter and formatter filters (Batch C): ruff (check and format), mypy, pylint, and black with isort. Each is a faithful TypeScript port of its Python counterpart in bash_compress.py, and LINTER_FILTERS in linters.ts sets its dispatch position.
 
+import { countNoun } from '../util.js'
 import { ToolFilter } from './base.js'
 import { plural } from './families.js'
 import { ERROR_SIGNAL_RE, maybeNote, pathStem, positionalArgs, squeezeBlankLines } from './helpers.js'
@@ -396,7 +397,7 @@ class BlackIsortFilter extends ToolFilter {
 
     const out: string[] = [...reformatSample]
     if (reformatExtra) {
-      out.push(`[token-goat: +${reformatExtra} more reformatted files; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`)
+      out.push(`[token-goat: +${countNoun(reformatExtra, 'more reformatted file')}; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`)
     }
     out.push(...kept)
     return this.finalize(out)
@@ -422,7 +423,7 @@ class BlackIsortFilter extends ToolFilter {
 
     const out: string[] = [...fixSample]
     if (fixExtra) {
-      out.push(`[token-goat: +${fixExtra} more fixed files; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`)
+      out.push(`[token-goat: +${countNoun(fixExtra, 'more fixed file')}; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`)
     }
     out.push(...kept)
     return this.finalize(out)

@@ -6,6 +6,7 @@
 //
 // CRLF warning stripping runs via postNormalise on every stream before the per-subcommand compressor sees the text — the base class pipeline calls it after normalise() on both stdout and stderr.
 
+import { countNoun } from '../util.js'
 import { ToolFilter } from './base.js'
 import type { CompressContext } from './base.js'
 import { collapseDiffBlocksToCap, isDiffAdd, isDiffRemove } from './diff_blocks.js'
@@ -300,7 +301,7 @@ function _capStatLinesInBlock(block: string, maxFiles: number): string {
       if (statIdx < maxFiles) {
         newLines.push(ln)
       } else if (!replaced) {
-        newLines.push(`[token-goat: +${elided} more stat lines omitted]`)
+        newLines.push(`[token-goat: +${countNoun(elided, 'more stat line')} omitted]`)
         replaced = true
       }
       statIdx++
@@ -379,8 +380,8 @@ function _compressGitLogEnhanced(
       const elided = blocks.length - ONELINE_CAP
       // `elided` is counted over whatever survived the pre-filter clamp, so on a clamped log it is the number of commits THIS filter dropped and not the number the reader is missing: the clamp already discarded some upstream. Ship it as a floor in that case rather than as a total nothing here can prove.
       const elidedNote = inputTruncated
-        ? `[token-goat: at least ${elided} more commits (counted over a truncated input)]`
-        : `[token-goat: +${elided} more commits]`
+        ? `[token-goat: at least ${countNoun(elided, 'more commit')} (counted over a truncated input)]`
+        : `[token-goat: +${countNoun(elided, 'more commit')}]`
       keptLines = [...blocks.slice(0, ONELINE_CAP), elidedNote]
     } else {
       keptLines = blocks
@@ -530,7 +531,7 @@ function _compressGitDiffStat(stdout: string, stderr: string, argv: string[]): s
       }
       const keptStat = [
         ...statLines.slice(0, HEAD_FILES),
-        ` [token-goat: +${elided} more files changed, +${adds} -${dels} lines]`,
+        ` [token-goat: +${countNoun(elided, 'more file')} changed, +${adds} -${dels} lines]`,
       ]
       out = [...otherLines, ...keptStat, ...summaryLines].join('\n')
     } else {
@@ -661,7 +662,7 @@ function _capHunksByDensity(hunks: string[], maxHunksPerFile: number): { hunks: 
   const kept = scored.filter((x) => keepSet.has(x.i)).map((x) => x.h)
   return {
     hunks: [hunks[0] ?? '', ...kept],
-    note: `[token-goat: ${dropped.length} more hunks, avg density ${avg.toFixed(2)} — likely whitespace/formatting]`,
+    note: `[token-goat: ${countNoun(dropped.length, 'more hunk')}, avg density ${avg.toFixed(2)} — likely whitespace/formatting]`,
   }
 }
 
@@ -923,7 +924,7 @@ function _compressGitBlameAnnotated(lines: string[], stderr: string): string {
     out.push(runStartLine)
     if (runCount > 1) {
       const hashShort = currentHash ? currentHash.slice(0, 8) : '?'
-      out.push(`[token-goat: ${runCount - 1} more lines by ${currentAuthor} (${hashShort})]`)
+      out.push(`[token-goat: ${countNoun(runCount - 1, 'more line')} by ${currentAuthor} (${hashShort})]`)
     }
   }
 
@@ -972,7 +973,7 @@ function _compressGitBlamePorcelain(lines: string[], stderr: string): string {
     out.push(...blockLines)
     if (runCount > 1) {
       const hashShort = currentHash ? currentHash.slice(0, 8) : '?'
-      out.push(`[token-goat: ${runCount - 1} more lines by ${currentAuthor} (${hashShort})]`)
+      out.push(`[token-goat: ${countNoun(runCount - 1, 'more line')} by ${currentAuthor} (${hashShort})]`)
     }
   }
 
@@ -1321,7 +1322,7 @@ function _compressGitPush(stdout: string, stderr: string): string {
     const MAX_ERROR_LINES = 30
     const flushCapMarker = () => {
       if (capReached) {
-        kept.push(`[token-goat: +${omittedCount} more error lines omitted]`)
+        kept.push(`[token-goat: +${countNoun(omittedCount, 'more error line')} omitted]`)
       }
     }
     const resetBlock = () => {
@@ -1385,7 +1386,7 @@ function _truncateListing(stdout: string, stderr: string, head = 100): string {
   } else {
     merged =
       lines.slice(0, head).join('\n') +
-      `\n[token-goat: +${lines.length - head} more lines elided]`
+      `\n[token-goat: +${countNoun(lines.length - head, 'more line')} elided]`
   }
   if (stderr.trim()) merged += '\n---\n' + stderr.replace(/\s+$/, '')
   return merged

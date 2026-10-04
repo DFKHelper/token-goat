@@ -509,7 +509,7 @@ function deepStringBytes(value: unknown): number {
 
 /** The generic mid-trim marker every tool filter's line cap emits (tool_filters/helpers.ts), plus the git.ts spellings. */
 // `more` is optional because not every filter writes it: the cloud filter's spelling is `[token-goat: N plan detail lines omitted]`, which fell straight through this and left its discarded lines out of the census entirely. tests/guards/omission_markers_are_all_countable.test.ts renders every marker template in src/tool_filters against this pattern, so the next spelling fails the suite rather than going uncounted.
-export const OMISSION_MARKER_RE = /(?:--- (\d+) lines omitted ---|\[token-goat: \+?(\d+) (?:more )?[a-z ]*lines omitted\]|--- patch: (\d+) lines omitted by token-goat ---|\.\.\. (\d+) lines omitted by token-goat \.\.\.)/g
+export const OMISSION_MARKER_RE = /(?:--- (\d+) lines omitted ---|\[token-goat: \+?(\d+) (?:more )?[a-z ]*lines? omitted\]|--- patch: (\d+) lines omitted by token-goat ---|\.\.\. (\d+) lines omitted by token-goat \.\.\.)/g
 
 /** Flatten a tool_result `content` field (string or array of text blocks) to its text length and text. */
 function toolResultText(content: unknown): string {

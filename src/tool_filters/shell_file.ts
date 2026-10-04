@@ -2,6 +2,7 @@
 //
 // Ported faithfully from the Python bash_compress.py shell/file family. Dispatch ordering note: RgFilter must precede GrepFilter — both claim `rg`/`grep`, but RgFilter's matches() only claims commands that carry a context flag (-A/-B/-C/--context) for its context-line stripping; GrepFilter is the catch-all for plain rg/grep matches plus ag/ack/egrep/fgrep and git grep. EzaFilter must precede LsFilter — both claim `ls` (an aliased `alias ls=eza` shell setup means token-goat only ever sees the literal "ls ..." command text), but EzaFilter's matches() only claims a bare 'ls' invocation when an eza-only flag (--tree/--icons/--git/--level/...) is present; a plain `ls` with none of those falls through to LsFilter's simpler truncation.
 
+import { countNoun } from '../util.js'
 import { ToolFilter, type CompressContext } from './base.js'
 import { collapseDiffBlocksToCap, isDiffAdd, isDiffRemove } from './diff_blocks.js'
 import { loadConfig } from '../config.js'
@@ -273,7 +274,7 @@ export class RgFilter extends ToolFilter {
     const tied = firstDropped !== undefined && firstDropped === lastKept
     return (
       joined +
-      `\n[token-goat: ${suppressed} more match groups suppressed${tied ? ', tied on match count with the ones kept and separated only by filename order' : ', each with fewer matches than those kept'}: rerun with -l for filenames only]`
+      `\n[token-goat: ${countNoun(suppressed, 'more match group')} suppressed${tied ? ', tied on match count with the ones kept and separated only by filename order' : ', each with fewer matches than those kept'}: rerun with -l for filenames only]`
     )
   }
 
@@ -319,8 +320,8 @@ export class RgFilter extends ToolFilter {
 const _LS_PASSTHROUGH = 25
 const _LS_MAX_ENTRIES = 10
 const _LS_HIDDEN_MARKER =
-  '[token-goat: {n} more entries — use eza --tree or ls | grep PATTERN to filter]'
-const _LS_HIDDEN_MARKER_EXT = '[token-goat: {n} more entries — by type: {ext_summary}]'
+  '[token-goat: {n} — use eza --tree or ls | grep PATTERN to filter]'
+const _LS_HIDDEN_MARKER_EXT = '[token-goat: {n} — by type: {ext_summary}]'
 
 function _lsExtFromLine(line: string): string | null {
   const stripped = line.trimEnd()
@@ -406,8 +407,8 @@ export class LsFilter extends ToolFilter {
       .filter(l => !_DIR_EXE_DIR_ENTRY_RE.test(l))
     const extPart = _lsExtSummary(fileEntries)
     const hiddenMarker = extPart
-      ? _LS_HIDDEN_MARKER_EXT.replace('{n}', String(hiddenCount)).replace('{ext_summary}', () => extPart)
-      : _LS_HIDDEN_MARKER.replace('{n}', String(hiddenCount))
+      ? _LS_HIDDEN_MARKER_EXT.replace('{n}', () => countNoun(hiddenCount, 'more entry', 'more entries')).replace('{ext_summary}', () => extPart)
+      : _LS_HIDDEN_MARKER.replace('{n}', () => countNoun(hiddenCount, 'more entry', 'more entries'))
 
     const out: string[] = []
     let hiddenMarkerEmitted = false
@@ -449,9 +450,9 @@ export class LsFilter extends ToolFilter {
     const hidden = entries.length - _LS_MAX_ENTRIES
     const extPart = _lsExtSummary(entries.slice(_LS_MAX_ENTRIES))
     if (extPart) {
-      out.push(_LS_HIDDEN_MARKER_EXT.replace('{n}', String(hidden)).replace('{ext_summary}', () => extPart))
+      out.push(_LS_HIDDEN_MARKER_EXT.replace('{n}', () => countNoun(hidden, 'more entry', 'more entries')).replace('{ext_summary}', () => extPart))
     } else {
-      out.push(_LS_HIDDEN_MARKER.replace('{n}', String(hidden)))
+      out.push(_LS_HIDDEN_MARKER.replace('{n}', () => countNoun(hidden, 'more entry', 'more entries')))
     }
     return out
   }
@@ -539,7 +540,7 @@ export class EzaFilter extends ToolFilter {
 
   private _compressTree(nonEmpty: string[]): string {
     if (nonEmpty.length <= 60) return nonEmpty.join('\n').trimEnd()
-    return headTailCompress(nonEmpty, 40, 10, 'items').trimEnd()
+    return headTailCompress(nonEmpty, 40, 10, 'item').trimEnd()
   }
 
   private _compressFlatListing(nonEmpty: string[], _argv: string[]): string {
@@ -555,7 +556,7 @@ export class EzaFilter extends ToolFilter {
 
     const dataLines = nonEmpty.slice(headerIdx)
     if (dataLines.length > 30) {
-      const compressed = headTailCompress(dataLines, 25, 5, 'entries')
+      const compressed = headTailCompress(dataLines, 25, 5, 'entry', 'entries')
       kept.push(...compressed.split('\n'))
     } else {
       kept.push(...dataLines)
@@ -666,7 +667,7 @@ export class FdFilter extends ToolFilter {
     const lines = text.split('\n')
     const nonEmpty = lines.filter(l => l.trim())
     if (nonEmpty.length <= _FD_COMPRESS_THRESHOLD) return text.trimEnd()
-    return headTailCompress(nonEmpty, 35, 5, 'paths')
+    return headTailCompress(nonEmpty, 35, 5, 'path')
   }
 }
 
@@ -726,7 +727,7 @@ export class BatFilter extends ToolFilter {
     const lines = _stripBatBorders(text.split('\n'))
     const nonEmpty = lines.filter(l => l.trim())
     if (nonEmpty.length <= 50) return lines.join('\n').trimEnd()
-    return headTailCompress(nonEmpty, 40, 10, 'lines').trimEnd()
+    return headTailCompress(nonEmpty, 40, 10, 'line').trimEnd()
   }
 }
 
@@ -758,7 +759,7 @@ export class DeltaFilter extends ToolFilter {
     const lines = _stripDeltaSeparators(text.split('\n'))
     const nonEmpty = lines.filter(l => l.trim())
     if (nonEmpty.length <= 80) return lines.join('\n').trimEnd()
-    return headTailCompress(nonEmpty, 60, 20, 'lines').trimEnd()
+    return headTailCompress(nonEmpty, 60, 20, 'line').trimEnd()
   }
 }
 
@@ -781,7 +782,7 @@ export class FzfFilter extends ToolFilter {
     const lines = text.split('\n')
     const nonEmpty = lines.filter(l => l.trim())
     if (nonEmpty.length <= 50) return text.trimEnd()
-    return headTailCompress(nonEmpty, 40, 10, 'lines').trimEnd()
+    return headTailCompress(nonEmpty, 40, 10, 'line').trimEnd()
   }
 }
 
@@ -828,7 +829,7 @@ export class JqFilter extends ToolFilter {
     const lines = text.split('\n')
     const nonEmpty = lines.filter(l => l.trim())
     if (nonEmpty.length <= 200) return text.trimEnd()
-    return headTailCompress(nonEmpty, 150, 50, 'lines').trimEnd()
+    return headTailCompress(nonEmpty, 150, 50, 'line').trimEnd()
   }
 }
 
@@ -851,7 +852,7 @@ export class YqFilter extends ToolFilter {
     const lines = text.split('\n')
     const nonEmpty = lines.filter(l => l.trim())
     if (nonEmpty.length <= 150) return text.trimEnd()
-    return headTailCompress(nonEmpty, 100, 50, 'lines').trimEnd()
+    return headTailCompress(nonEmpty, 100, 50, 'line').trimEnd()
   }
 }
 
@@ -1121,7 +1122,7 @@ function _scoreAndCapHunks(hunkLines: string[], maxHunks: number): string[] {
     if (keepSet.has(i)) out.push(...(actual[i] ?? []))
   }
   out.push(
-    `[... ${dropped.length} more hunks, avg density ${avg.toFixed(2)} — likely whitespace/formatting]`,
+    `[... ${countNoun(dropped.length, 'more hunk')}, avg density ${avg.toFixed(2)} — likely whitespace/formatting]`,
   )
   return out
 }
@@ -1437,7 +1438,7 @@ export class FileTypeFilter extends ToolFilter {
     const lines = merged.split(/\r?\n/)
     if (lines.length <= _FILE_BATCH_LIMIT) return merged
     const remaining = lines.length - _FILE_BATCH_LIMIT
-    const kept = [...lines.slice(0, _FILE_BATCH_LIMIT), `[token-goat: ${remaining} more file entries truncated]\n`]
+    const kept = [...lines.slice(0, _FILE_BATCH_LIMIT), `[token-goat: ${countNoun(remaining, 'more file entry', 'more file entries')} truncated]\n`]
     return this.finalize(kept)
   }
 }

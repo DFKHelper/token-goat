@@ -7617,7 +7617,7 @@ describe('runRefs --top (high-fanout grouped-by-file summary, #333)', () => {
     expect(stdout).toContain('2  src/b.ts')
     // Only the top 2 are listed by name -- c.ts is elided, not silently dropped.
     expect(stdout).not.toContain('src/c.ts')
-    expect(stdout).toContain('1 more files, 1 more references elided')
+    expect(stdout).toContain('1 more file, 1 more reference elided')
     // --top replaces the per-line dump entirely -- no individual file:line: context lines.
     expect(stdout).not.toContain(':1: x')
   })

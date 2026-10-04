@@ -7,7 +7,7 @@ import { extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, resolveToolR
 import { displaySafePath, hostPathOfIndexKey } from './paths.js'
 import { leadWithCommand } from './hint_suggestion_guard.js'
 import { hintTarget, sliceCommand, sliceForPath } from './hint_target.js'
-import { decodeSource, statSize, toKB } from './util.js'
+import { countNoun, decodeSource, statSize, toKB } from './util.js'
 import { load as snapshotLoad } from './snapshots.js'
 import { BYTE_RANGE_ADVICE } from './hints/file_type_handler.js'
 
@@ -316,7 +316,7 @@ function buildLineDiffDetailed(oldContent: string, newContent: string, label: st
     out.push(...allChanges)
   } else {
     out.push(...allChanges.slice(0, MAX_LINES))
-    out.push(`... (${allChanges.length - MAX_LINES} more changed lines)`)
+    out.push(`... (${countNoun(allChanges.length - MAX_LINES, 'more changed line')})`)
   }
 
   return { text: out.join('\n'), truncated }

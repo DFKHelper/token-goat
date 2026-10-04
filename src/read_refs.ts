@@ -472,7 +472,7 @@ function renderTopFilesSummary(refs: RefEntry[], topN: number, suppressed?: numb
   const omittedFiles = grouped.length - shown.length
   if (omittedFiles > 0) {
     const shownRefs = shown.reduce((sum, g) => sum + g.count, 0)
-    lines.push(`  ...(${omittedFiles} more files, ${refs.length - shownRefs} more references elided; use a higher --top to see more)`)
+    lines.push(`  ...(${countNoun(omittedFiles, 'more file')}, ${countNoun(refs.length - shownRefs, 'more reference')} elided; use a higher --top to see more)`)
   }
   return lines
 }

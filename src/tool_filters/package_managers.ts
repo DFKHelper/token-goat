@@ -2,6 +2,7 @@
 //
 // Each filter subclasses ToolFilter and lives in the PACKAGE_MANAGER_FILTERS export array, which dispatch.ts spreads into TOOL_FILTERS after the Batch-A test-runner filters.
 
+import { countNoun } from '../util.js'
 import { ToolFilter } from './base.js'
 import { makePackageManagerFilter } from './families.js'
 import { ERROR_SIGNAL_RE, capTokens, maybeNote, pathStem, positionalArgs, squeezeBlankLines } from './helpers.js'
@@ -496,7 +497,7 @@ class PipFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    if (collects > 5) notes.push(`+${collects - 5} more 'Collecting' lines elided`)
+    if (collects > 5) notes.push(`+${countNoun(collects - 5, "more 'Collecting' line")} elided`)
     maybeNote(notes, downloads, `dropped ${downloads} download/cache-hit lines`)
     maybeNote(notes, buildNoise, `dropped ${buildNoise} build-wheel/metadata lines`)
     maybeNote(notes, verboseDropped, `dropped ${verboseDropped} verbose debug/trace lines`)
@@ -646,7 +647,7 @@ class CondaFilter extends ToolFilter {
     if (pkgLines.length <= CONDA_LIST_THRESHOLD) return text.trimEnd()
     const shown = [...header, ...pkgLines.slice(0, CONDA_LIST_SHOW)]
     const remaining = pkgLines.length - CONDA_LIST_SHOW
-    shown.push(`[token-goat: ${remaining} more packages elided; run conda list for full output]`)
+    shown.push(`[token-goat: ${countNoun(remaining, 'more package')} elided; run conda list for full output]`)
     return shown.join('\n')
   }
 
@@ -673,7 +674,7 @@ class CondaFilter extends ToolFilter {
     const result = [
       ...otherLines.slice(0, insertAt),
       ...depLines.slice(0, CONDA_LIST_SHOW),
-      `  # [token-goat: ${remaining} more dependencies elided]`,
+      `  # [token-goat: ${countNoun(remaining, 'more dependency', 'more dependencies')} elided]`,
       ...otherLines.slice(insertAt),
     ]
     return result.join('\n')
@@ -1180,7 +1181,7 @@ class DepListFilter extends ToolFilter {
     const nMore = lines.length - DEP_LIST_THRESHOLD
     const shown = lines.slice(0, DEP_LIST_THRESHOLD)
     const hint = this._depCmdHint(argv)
-    const trailer = `...[${nMore} more packages — use '${hint}' to see full output]`
+    const trailer = `...[${countNoun(nMore, 'more package')} — use '${hint}' to see full output]`
     return shown.join('\n') + '\n' + trailer
   }
 

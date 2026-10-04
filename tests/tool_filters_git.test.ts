@@ -151,7 +151,7 @@ describe('GitLogFilter oneline', () => {
   it('51 oneline commits triggers truncation', () => {
     const text = makeOneline(51)
     const result = apply(gitLogFilter, text, ['git', 'log', '--oneline'])
-    expect(result).toContain('+1 more commits')
+    expect(result).toContain('+1 more commit]')
   })
 
   // Regression: `git log --graph --oneline` intersperses real commit lines (each prefixed with

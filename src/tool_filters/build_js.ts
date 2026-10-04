@@ -1,5 +1,6 @@
 // JavaScript workspace and bundler filters (Batch E): the nx, lerna and turbo task runners, and webpack, which also takes esbuild and `vite build`. Each is a faithful TypeScript port of its Python counterpart in bash_compress.py, and BUILD_FILTERS in build.ts sets its dispatch position.
 
+import { countNoun } from '../util.js'
 import { ToolFilter } from './base.js'
 import { ERROR_SIGNAL_RE, maybeNote, pathStem, pathName } from './helpers.js'
 
@@ -122,7 +123,7 @@ export class LernaFilter extends ToolFilter {
     }
 
     const out: string[] = [...ranSample]
-    if (ranExtra) out.push(`[token-goat: …and ${ranExtra} more 'info run Ran' lines]`)
+    if (ranExtra) out.push(`[token-goat: …and ${countNoun(ranExtra, "more 'info run Ran' line")}]`)
     out.push(...kept)
     return this.finalize(out)
   }

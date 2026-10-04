@@ -39,6 +39,7 @@ import {
   BunFilter,
 } from '../src/tool_filters/index.js'
 import { detectFromCommand, selectFilter, TOOL_FILTERS } from '../src/tool_filters/dispatch.js'
+import { headTailCompress } from '../src/tool_filters/helpers.js'
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -1118,6 +1119,24 @@ describe('JsonArrayFilter compression', () => {
     const jsonPart = out.slice(0, out.lastIndexOf('\n[... '))
     const parsed = JSON.parse(jsonPart)
     expect(parsed).toHaveLength(50)
+  })
+
+  it('says "1 more item" when the cap hides a single item, and "1 duplicate object" for a single repeat', () => {
+    // HAND-DERIVED: 51 structurally distinct objects is one past the 50-item cap, and one exact repeat of the first object is one duplicate; both counts follow from the input, not from the filter.
+    const arr: Record<string, unknown>[] = Array.from({ length: 51 }, (_, i) => ({ id: i, [`unique_${i}`]: true }))
+    arr.push({ id: 0, unique_0: true })
+    const out = apply(jsonArrayFilter, JSON.stringify(arr), ['json'])
+    expect(out).toContain('[... 1 more item not shown]')
+    expect(out).toContain('[... 1 duplicate object with keys {id, unique_0} omitted]')
+    expect(out).not.toMatch(/\b1 more items\b|\b1 duplicate objects\b/)
+  })
+
+  it('headTailCompress names one hidden line in the singular and keeps an irregular plural', () => {
+    // HAND-DERIVED: 5 lines with head 2 and tail 2 hides exactly one; 6 with the same window hides two.
+    const five = ['a', 'b', 'c', 'd', 'e']
+    expect(headTailCompress(five, 2, 2, 'line')).toBe('a\nb\n... [1 more line elided by token-goat]\nd\ne')
+    expect(headTailCompress([...five, 'f'], 2, 2, 'entry', 'entries')).toContain('... [2 more entries elided by token-goat]')
+    expect(headTailCompress(five, 2, 2, 'entry', 'entries')).toContain('... [1 more entry elided by token-goat]')
   })
 
   it('does NOT dedup distinct records that merely share the same fields (regression)', () => {

@@ -1,4 +1,5 @@
 /** Turning a delivered slice of a source file into a folded one: pick the spans, render the notices. Split out of hooks_read.ts when the shell read path became a second caller. The two surfaces gate very differently (a Read is a whole file with a numbered rendering around it, a shell read is bare text from a command that may or may not pin its line numbers) but everything between "here are the delivered rows" and "here is the folded text" is identical, and that middle is where the index-freshness rule and the notice wording live. One copy, so a change to either reaches both. */
+import { countNoun } from './util.js'
 import { readFileSync, statSync } from 'node:fs'
 
 import { commentSyntaxFor, mergeFolds, planBodyFolds, planCommentFolds, planProseFolds, type BodyFold, type FoldSpan } from './code_fold.js'
@@ -35,7 +36,7 @@ export function bodyFoldNotice(name: string, firstLine: number, lastLine: number
   const anchor = declLine === undefined ? '' : `@${declLine}`
   // The symbol name comes from the file being read, so it is untrusted text on a line this notice speaks in token-goat's own voice: a name shaped like one of our spoken markers would read as a directive rather than as a symbol. The path beside it is escaped by every caller already; the name was not.
   const safeName = displaySafeText(name)
-  return `... ${n} more lines of ${safeName} (${firstLine}-${lastLine}) folded -- token-goat read "${shownPath}::${safeName}${anchor}"`
+  return `... ${countNoun(n, 'more line')} of ${safeName} (${firstLine}-${lastLine}) folded -- token-goat read "${shownPath}::${safeName}${anchor}"`
 }
 
 /** True when any of the three folds is enabled. The two hook entry points gate on this rather than on one setting each: which kind of fold a given file is eligible for is decided inside {@link foldDelivery} by what the file actually is, and a caller checking only one setting would make a file unfoldable no matter how the other two were left. */
@@ -63,7 +64,7 @@ export function proseFoldNotice(keep: string, line: number, shownPath: string, n
 /** The line standing in for a folded comment block. A comment has no symbol to name, so there is no `token-goat read "file::symbol"` that returns it. What does return it is a ranged Read of the exact span. That Read cannot fold its own answer, because the span is one comment run from edge to edge and a windowed delivery drops any fold touching its first or last row ({@link strictlyInteriorOnWindow}). Nor may it be refused as lines already read: a fold from a ranged delivery takes back the line range that delivery was recorded under (hooks_read_post.ts::forgetFoldedWindow, and the shell-read fold in hooks_bash_post.ts). */
 export function commentFoldNotice(firstLine: number, lastLine: number, shownPath: string): string {
   const n = lastLine - firstLine + 1
-  return `... ${n} more comment lines (${firstLine}-${lastLine}) folded -- Read "${shownPath}" with offset=${firstLine}, limit=${n}`
+  return `... ${countNoun(n, 'more comment line')} (${firstLine}-${lastLine}) folded -- Read "${shownPath}" with offset=${firstLine}, limit=${n}`
 }
 
 /** One delivered line. `raw` is the form the caller has to put back on the wire (numbered, for a Read); `text` is the file's own line, which is what the served-output store compares against. On a shell read the two are the same string. */

@@ -2,6 +2,7 @@
 //
 // Faithful TypeScript port of the Python bash_compress.py runner, CSS-preprocessor, system-package, util, and generic catch-all sub-families; the db-client sub-family lives in ./db_clients.ts. Dispatch note: - PlaywrightFilter and CypressFilter are exported individually and must be registered in dispatch.ts BEFORE BunFilter so that `bunx playwright test` and `bunx cypress run` route here rather than to the generic bun handler. - MISC_FILTERS (the other 17 filters, opening with the four DB clients imported from ./db_clients.ts) spreads AFTER LANGUAGE_FILTERS. - The five generic catch-alls (DotenvFilter, EnvFilter, JsonArrayFilter, SeverityLogFilter, TailTruncFilter) are at the tail of MISC_FILTERS. - TailTruncFilter MUST be the very last entry: it's content-based and applied explicitly (via filterByName or post-execution paths), not auto-matched by command — matches() always returns false — so its tail position is precautionary, not load-bearing.
 
+import { countNoun } from '../util.js'
 import { ToolFilter } from './base.js'
 import { loadConfig } from '../config.js'
 import {
@@ -265,7 +266,7 @@ export class SysPackageFilter extends ToolFilter {
       kept.push(line)
     }
     const out: string[] = [...progressSample]
-    if (progressExtra) out.push(`[token-goat: +${progressExtra} more brew progress lines collapsed]`)
+    if (progressExtra) out.push(`[token-goat: +${countNoun(progressExtra, 'more brew progress line')} collapsed]`)
     out.push(...kept)
     return this.finalize(out)
   }
@@ -404,7 +405,7 @@ export class SassFilter extends ToolFilter {
     }
 
     const out: string[] = [...writeSample]
-    if (writeExtra) out.push(`[token-goat: +${writeExtra} more compiled CSS files; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`)
+    if (writeExtra) out.push(`[token-goat: +${countNoun(writeExtra, 'more compiled CSS file')}; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`)
     out.push(...kept)
     const notes: string[] = []
     maybeNote(notes, droppedMap, `dropped ${droppedMap} source-map write lines`)
@@ -817,13 +818,13 @@ export class JsonArrayFilter extends ToolFilter {
     if (dupCounts.size) {
       for (const [ks, n] of dupCounts) {
         const keysRepr = ks.split(',').join(', ')
-        suffixLines.push(`[... ${n} duplicate objects with keys {${keysRepr}} omitted]`)
+        suffixLines.push(`[... ${countNoun(n, 'duplicate object')} with keys {${keysRepr}} omitted]`)
       }
     }
     if (kept.length > JSON_ARRAY_MAX_ITEMS) {
       const extra = kept.length - JSON_ARRAY_MAX_ITEMS
       kept.splice(JSON_ARRAY_MAX_ITEMS)
-      suffixLines.push(`[... ${extra} more items not shown]`)
+      suffixLines.push(`[... ${countNoun(extra, 'more item')} not shown]`)
       changed = true
     }
     if (!changed) return text

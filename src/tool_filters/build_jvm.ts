@@ -1,5 +1,6 @@
 // JVM build-tool filters (Batch E): gradle, maven, ant, sbt and javac, each a faithful TypeScript port of its Python counterpart in bash_compress.py. BUILD_FILTERS in build.ts sets their dispatch position.
 
+import { countNoun } from '../util.js'
 import { ToolFilter } from './base.js'
 import { headTailCompress, maybeNote, pathStem, pathName, positionalArgs } from './helpers.js'
 
@@ -45,10 +46,10 @@ export class GradleFilter extends ToolFilter {
     const sub = posArgs[0]?.toLowerCase() ?? ''
 
     if (sub === 'dependencies' || sub === 'deps') {
-      return headTailCompress(merged.split('\n'), 10, 10, 'lines')
+      return headTailCompress(merged.split('\n'), 10, 10, 'line')
     }
     if (sub === 'tasks') {
-      return headTailCompress(merged.split('\n'), 20, 5, 'lines')
+      return headTailCompress(merged.split('\n'), 20, 5, 'line')
     }
     return this._compressBuild(merged)
   }
@@ -71,7 +72,7 @@ export class GradleFilter extends ToolFilter {
     // A stack trace truncated at MAX_STACK_FRAMES with no marker reads as a trace that genuinely ended there, so record how many frames the cap ate and say so where they were cut.
     const flushSuppressedFrames = () => {
       if (suppressedInTrace > 0) {
-        kept.push(`[token-goat: …and ${suppressedInTrace} more stack frames]`)
+        kept.push(`[token-goat: …and ${countNoun(suppressedInTrace, 'more stack frame')}]`)
         suppressedInTrace = 0
       }
     }
@@ -193,15 +194,15 @@ export class MavenFilter extends ToolFilter {
     const sub = posArgs[0] ?? ''
 
     if (sub === 'dependency:tree') {
-      return headTailCompress(lines, 10, 10, 'lines')
+      return headTailCompress(lines, 10, 10, 'line')
     }
     if (sub === 'install') {
-      return headTailCompress(lines, 5, 30, 'lines')
+      return headTailCompress(lines, 5, 30, 'line')
     }
     if (sub === 'test' || sub === 'verify' || sub === 'package') {
       return this._compressTest(lines)
     }
-    return headTailCompress(lines, 10, 10, 'lines')
+    return headTailCompress(lines, 10, 10, 'line')
   }
 
   private _compressTest(lines: string[]): string {

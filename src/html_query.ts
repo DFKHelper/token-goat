@@ -6,6 +6,7 @@
  * (`html-lint`).
  */
 
+import { countNoun } from './util.js'
 import { displaySafeText } from './paths.js'
 
 export interface HtmlNode {
@@ -489,7 +490,7 @@ export function formatHtmlOutline(summary: HtmlOutlineSummary): string {
       lines.push(`  ${'  '.repeat(h.level - 1)}[h${h.level}] ${displaySafeText(h.text)} (line ${h.line})`)
     }
     if (summary.headings.length > 30) {
-      lines.push(`  ... (${summary.headings.length - 30} more headings elided)`)
+      lines.push(`  ... (${countNoun(summary.headings.length - 30, 'more heading')} elided)`)
     }
   }
 

@@ -437,6 +437,14 @@ describe('headingTreeParts reports the true heading count when the list was capp
     expect(sectionsList.match(/\((\d+) more headings\)/g)).toEqual([`(${150 - listed} more headings)`])
   })
 
+  it('says "1 more heading" when exactly one heading is past the cap, and replaces rather than repeats the capped line', () => {
+    // HAND-DERIVED: 41 level-2 headings against the 40-entry display cap leaves exactly one unlisted.
+    const one = Array.from({ length: 41 }, (_, i) => `## Part ${i}\n\ntext\n`).join('\n')
+    const { sectionsList } = headingTreeParts(extractMarkdownHeadings(one), '/one.md', one)
+    expect(sectionsList.endsWith('  ... (1 more heading)')).toBe(true)
+    expect(sectionsList.match(/more heading/g)).toHaveLength(1)
+  })
+
   it('leaves the plain count alone when nothing was cut', () => {
     const small = '## A\n\nx\n\n## B\n\nx\n\n## C\n\nx\n'
     const { guidance, sectionsList } = headingTreeParts(extractMarkdownHeadings(small), '/s.md', small)

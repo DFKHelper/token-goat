@@ -4,6 +4,7 @@
 //
 // `swiftlintFilter` is produced by the `makeLinterFilter` factory in families.ts — it shares the simple "per-rule warning dedup + always-keep error" loop with any future filter that fits that model.
 
+import { countNoun } from '../util.js'
 import { ToolFilter } from './base.js'
 import { makeLinterFilter } from './families.js'
 import { ERROR_SIGNAL_RE, maybeNote, pathStem } from './helpers.js'
@@ -98,7 +99,7 @@ class GolangciLintFilter extends ToolFilter {
         const lnt = mPh[2]!
         const total = issueCounts.get(`${fp}\x00${lnt}`) ?? GolangciLintFilter._KEEP_FIRST_N + 1
         const extra = total - GolangciLintFilter._KEEP_FIRST_N
-        final.push(`[token-goat: +${extra} more ${lnt} issues in ${fp} omitted]`)
+        final.push(`[token-goat: +${countNoun(extra, `more ${lnt} issue`)} in ${fp} omitted]`)
       } else {
         final.push(line)
       }
@@ -164,7 +165,7 @@ class KtlintFilter extends ToolFilter {
           kept.push(line)
         } else {
           if (count === KtlintFilter._KEEP_PER_RULE + 1) {
-            pendingPlaceholders.push({ index: kept.length, rule, suffix: 'violations', indent: '  ' })
+            pendingPlaceholders.push({ index: kept.length, rule, suffix: 'violation', indent: '  ' })
             kept.push('')
           }
           deduplicated++
@@ -187,7 +188,7 @@ class KtlintFilter extends ToolFilter {
             pendingPlaceholders.push({
               index: kept.length,
               rule,
-              suffix: severity === 'warning' ? 'warnings' : 'violations',
+              suffix: severity === 'warning' ? 'warning' : 'violation',
               indent: '',
             })
             kept.push('')
@@ -205,7 +206,7 @@ class KtlintFilter extends ToolFilter {
     for (const { index, rule, suffix, indent } of pendingPlaceholders) {
       const elided = (ruleCounts.get(rule) ?? 0) - KtlintFilter._KEEP_PER_RULE
       kept[index] =
-        `${indent}[token-goat: +${elided} more ${rule} ${suffix}; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`
+        `${indent}[token-goat: +${countNoun(elided, `more ${rule} ${suffix}`)}; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`
     }
 
     const notes: string[] = []

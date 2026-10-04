@@ -1,5 +1,6 @@
 // JavaScript and TypeScript linter filters (Batch C): tsc, eslint, oxlint, biome and prettier, plus the generic LinterFilter, whose stylelint and rome path reuses the ESLint stanza compressor defined here. Each is a faithful TypeScript port of its Python counterpart in bash_compress.py, and LINTER_FILTERS in linters.ts sets its dispatch position.
 
+import { countNoun } from '../util.js'
 import { ToolFilter } from './base.js'
 import type { CompressContext } from './base.js'
 import { plural } from './families.js'
@@ -20,7 +21,7 @@ function _emitEslintRules(perRule: Map<string, string[]>): string[] {
   const out: string[] = []
   for (const [rule, entries] of [...perRule.entries()].sort()) {
     out.push(...entries.slice(0, 3))
-    if (entries.length > 3) out.push(`  [token-goat: +${entries.length - 3} more ${rule} violations]`)
+    if (entries.length > 3) out.push(`  [token-goat: +${countNoun(entries.length - 3, `more ${rule} violation`)}]`)
   }
   return out
 }
@@ -403,7 +404,7 @@ class ESLintFilter extends ToolFilter {
       for (const [byRule, noun] of [[errorsByRule, 'error'], [warningsByRule, 'warning']] as const) {
         for (const [rule, entries] of [...byRule.entries()].sort()) {
           fileOut.push(...entries.slice(0, 3))
-          if (entries.length > 3) fileOut.push(`  [token-goat: +${entries.length - 3} more ${rule} ${noun}s]`)
+          if (entries.length > 3) fileOut.push(`  [token-goat: +${countNoun(entries.length - 3, `more ${rule} ${noun}`)}]`)
         }
       }
       fileOut.push(...issues.slice(lastBody))
@@ -687,7 +688,7 @@ class PrettierFilter extends ToolFilter {
 
     const out: string[] = [...changedSample]
     if (changedExtra) {
-      out.push(`[token-goat: +${changedExtra} more formatted files; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`)
+      out.push(`[token-goat: +${countNoun(changedExtra, 'more formatted file')}; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`)
     }
     out.push(...kept)
     const notes: string[] = []

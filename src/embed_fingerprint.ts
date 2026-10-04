@@ -9,7 +9,7 @@ export const EMBED_KIND_FINGERPRINTS: ReadonlyMap<string, string> = new Map([
   ['markdown', 'de29ba5c7727414d'],
   ['pdf', '00d8016f6fe64e3d'],
   ['pptx', '77f40fb0c9a27493'],
-  ['xlsx', 'cef9deddd1b37457'],
+  ['xlsx', 'de5189aaa179f246'],
 ])
 
 // The single whole-set digest EMBED_FINGERPRINT carried before the split above, shipped by v2.9.18 and every release before it. Frozen as a literal in scripts/parser-fingerprint.mjs rather than computed, because the split edited embeddings.ts, one of the sources that digest hashed. ensureEmbeddingProvenance treats a database stamped with exactly this value, in the same vector space, as already agreeing with every stamp above, so the upgrade re-embeds nothing; any other stored digest is re-embedded as before.

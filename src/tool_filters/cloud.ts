@@ -87,7 +87,7 @@ export class TerraformFilter extends ToolFilter {
       const filtered = lines.filter((ln) => !_TF_REFRESH_RE.test(ln))
       if (filtered.length > 30) {
         const nonEmpty = filtered.filter((ln) => ln.trim())
-        text = headTailCompress(nonEmpty, 10, 20, 'lines')
+        text = headTailCompress(nonEmpty, 10, 20, 'line')
       } else if (filtered.length < lines.length) {
         text = filtered.join('\n')
       }
@@ -287,7 +287,7 @@ export class TerraformFilter extends ToolFilter {
     const notes: string[] = []
     maybeNote(notes, providerCollapsed, `collapsed ${providerCollapsed} provider install/find lines`)
     if (nonEmpty.length > 12) {
-      let compressed = headTailCompress(nonEmpty, 5, 5, 'lines')
+      let compressed = headTailCompress(nonEmpty, 5, 5, 'line')
       if (notes.length) compressed = `${compressed.replace(/\s+$/, '')}\n[token-goat: ${notes.join('; ')}]`
       return compressed
     }
@@ -339,7 +339,7 @@ export class TerraformFilter extends ToolFilter {
     if (collapsedTotal === 0) {
       const nonEmpty = kept.filter((ln) => ln.trim())
       if (nonEmpty.length > 30) {
-        return headTailCompress(nonEmpty, 20, 10, 'lines')
+        return headTailCompress(nonEmpty, 20, 10, 'line')
       }
     }
     const notes: string[] = []
@@ -539,7 +539,7 @@ export class AnsibleFilter extends ToolFilter {
     const merged = this.combineOutput(stdout, stderr)
     const nonEmpty = merged.split('\n').filter((ln) => ln.trim())
     if (nonEmpty.length > 10) {
-      return headTailCompress(nonEmpty, 5, 5, 'galaxy lines')
+      return headTailCompress(nonEmpty, 5, 5, 'galaxy line')
     }
     return nonEmpty.join('\n')
   }

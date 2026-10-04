@@ -4,6 +4,7 @@
 //
 // Ported faithfully from the Python `bash_compress.py` foundation so the per-tool filters that depend on these primitives compress identically.
 
+import { countNoun } from '../util.js'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -477,12 +478,12 @@ export function capTokens(text: string, maxTokens: number): string {
 
 // --------------------------------------------------------------------------- Line-shaping utilities shared across filters ---------------------------------------------------------------------------
 
-/** Head lines + count marker + tail lines when `lines` exceeds `head + tail`; otherwise the lines joined unchanged. */
-export function headTailCompress(lines: string[], head: number, tail: number, label = 'items'): string {
+/** Head lines + count marker + tail lines when `lines` exceeds `head + tail`; otherwise the lines joined unchanged. `noun` is singular so the marker agrees with a count of one; pass `plural` when it is not `noun` + "s". */
+export function headTailCompress(lines: string[], head: number, tail: number, noun = 'item', plural = `${noun}s`): string {
   const total = lines.length
   if (total <= head + tail) return lines.join('\n')
   const elided = total - head - tail
-  return [...lines.slice(0, head), `... [${elided} more ${label} elided by token-goat]`, ...lines.slice(total - tail)].join(
+  return [...lines.slice(0, head), `... [${countNoun(elided, `more ${noun}`, `more ${plural}`)} elided by token-goat]`, ...lines.slice(total - tail)].join(
     '\n',
   )
 }
@@ -504,8 +505,8 @@ export function truncateTableRows(text: string, maxRows: number, hint: string): 
   const kept = [...wanted].sort((a, b) => a - b)
   const elided = rows.length - kept.length
   const note = anomalies
-    ? `[token-goat: ${elided} more rows; ${anomalies} row(s) kept for a not-ready status, the rest from the top; ${hint}]`
-    : `[token-goat: ${elided} more rows; ${hint}]`
+    ? `[token-goat: ${countNoun(elided, 'more row')}; ${anomalies} row(s) kept for a not-ready status, the rest from the top; ${hint}]`
+    : `[token-goat: ${countNoun(elided, 'more row')}; ${hint}]`
   return `${[header, ...kept.map((i) => rows[i] as string)].join('\n')}\n${note}`
 }
 
@@ -523,7 +524,7 @@ export function trimRepeatedPrefix(lines: string[], pattern: RegExp, keep: numbe
       out.push(line)
     }
   }
-  if (dropped) out.push(`[token-goat: +${dropped} more lines matching ${pattern.source}]`)
+  if (dropped) out.push(`[token-goat: +${countNoun(dropped, 'more line')} matching ${pattern.source}]`)
   return out
 }
 

@@ -1,4 +1,5 @@
 /** Resolves the real name a deny or read hint's suggested command carries -- a heading, symbol, key or table the file actually holds -- so the command it leads with runs as printed, and sharpens a deny the same call already received once. Measured over 3,692 local Claude Code transcripts, the most frequent token-goat denies named a literal placeholder (`section "file::SectionHeading"`, `config-get "file" KEY_NAME`, `read "file::SymbolName"`), which exits 1 when run verbatim, and after a deny the next call was the named command only 4 times in 39 sampled. A placeholder is still the answer when nothing better is found: the claim is "this command runs", never "this is the part you wanted". */
+import { countNoun } from './util.js'
 import { openSync, readSync, closeSync, statSync } from 'node:fs'
 
 import { resolveIndexPath, displaySafeText, hostPathOfIndexKey } from './paths.js'
@@ -215,7 +216,7 @@ export function headingTreeParts(headings: MarkdownHeading[], filePath: string, 
   const guidance = parts.guidance.replace(`Large markdown file (${headings.length} headings)`, () => `Large markdown file (showing the first ${headings.length} of ${total} headings)`)
   const lines = parts.sectionsList.split('\n')
   const kept = lines.filter((l) => !MORE_HEADINGS_LINE_RE.test(l))
-  return { guidance, sectionsList: [...kept, `  ... (${total - kept.length} more headings)`].join('\n') }
+  return { guidance, sectionsList: [...kept, `  ... (${countNoun(total - kept.length, 'more heading')})`].join('\n') }
 }
 
 /** A real name for `slice` inside `filePath`, else the slice's placeholder. Looks, in order, at what the caller already holds (a heading tree, the text), then the index, then the first HINT_TARGET_SCAN_BYTES of the file. A path as written in a command (`source.cwd` set) is gated with commandPathIsTouchable before resolveIndexPath, which is itself an fs call on Windows (an 8.3 segment expands through realpathSync.native), so a UNC path is refused before anything dials it. */
