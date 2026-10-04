@@ -15,7 +15,7 @@ import { countNoun, extractErrorMessage } from './util.js'
 import { claimFirstSavingsReceipt, recordStat } from './stats.js'
 import { detectHarness } from './bridges/registry.js'
 import { projectNotesFor } from './project_memory.js'
-import { buildReminder, isIndexedProject } from './session_reminder.js'
+import { buildReminder } from './session_reminder.js'
 
 /** Sweep the project for index drift and enqueue whatever no longer matches disk. Returns a one-line note when drift was found, or null when the index is already correct -- which is the overwhelmingly common case, and stays silent so the session-start context does not grow a line that says nothing. Only runs against an already-indexed project: on an unindexed one every tracked file is legitimately absent from the index, so the sweep would report the entire repository as drift and enqueue it, which is `token-goat index .`'s job and not a hook's. Never throws. Its caller is a session-start hook, and a sweep that failed is a missed repair, not a reason to degrade the reminder the hook exists to deliver. */
 function reconcileNote(cwd: string, indexed: boolean): string | null {
@@ -102,7 +102,9 @@ async function sessionStartOutput(event: HookEvent): Promise<HookOutput> {
   const tailOnly = (): HookOutput => (tail === '' ? passOutput() : contextOutput(tail))
   try {
     if (!loadConfig().hints.session_start_reminder) return tailOnly()
-    const indexed = isIndexedProject(cwd)
+    // Computed once and passed to both the reminder and the drift sweep: a second lookup could disagree with the first if an index finished between them. Loaded here rather than imported, like note_anchor.js above, to keep it off the eager path of every other hook.
+    const { isIndexedRoot } = await import('./indexed_roots.js')
+    const indexed = isIndexedRoot(cwd)
     let context = buildReminder(indexed)
     if (cwd !== undefined) {
       // Runs before the capsule so a drifted file is already queued while the rest of the hook finishes: the worker picks it up on its next 2 s drain rather than on the next command.

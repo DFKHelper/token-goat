@@ -9,7 +9,8 @@ import { displaySafeJson, normalizePath } from './paths.js'
 import { findProject } from './project.js'
 import { anchorStatus } from './note_anchor.js'
 import { loadDatedEntries, projectNotesFor } from './project_memory.js'
-import { buildReminder, isIndexedProject } from './session_reminder.js'
+import { isIndexedRoot } from './indexed_roots.js'
+import { buildReminder } from './session_reminder.js'
 import { sessionsDir } from './sessions_dir.js'
 
 /** One block of injected text. `chars` is null when the block is absent (not installed, nothing to inject). */
@@ -128,7 +129,7 @@ export function measurePayloads(cwd: string, dir?: string): PayloadReport {
   const project = findProject(cwd)
   const reminderOn = config.hints.session_start_reminder
 
-  const reminder = reminderOn ? buildReminder(isIndexedProject(cwd)) : null
+  const reminder = reminderOn ? buildReminder(isIndexedRoot(cwd)) : null
   const capsule = reminderOn ? buildDeltaCapsule(cwd) : null
   // With the resolver session start passes, so the measured block carries the same markers.
   const notes = projectNotesFor(cwd, anchorStatus)

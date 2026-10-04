@@ -1,9 +1,8 @@
-/** First index of the project `install` runs in. Before this, a fresh install indexed nothing: session start deliberately reconciles only a project that already has symbols (see hooks_session_start.ts::reconcileNote), so every surgical-read command came back empty until the user found and ran `token-goat index` themselves, and a user who never did saw the product do nothing. The work is queued, never done inline: the files go onto the dirty queue through the same sweep session start uses (reconcile.ts::reconcileProject), and that sweep's batch enqueue wakes the background worker (hooks_index.ts::enqueueDirtyPathsSafe), so install returns in the time a `git ls-files` takes rather than the minutes a whole-repository parse takes. */
+/** First index of the project `install` runs in. Before this, a fresh install indexed nothing: session start deliberately reconciles only a project that was indexed on purpose (see hooks_session_start.ts::reconcileNote and indexed_roots.ts), so every surgical-read command came back empty until the user found and ran `token-goat index` themselves, and a user who never did saw the product do nothing. The work is queued, never done inline: the files go onto the dirty queue through the same sweep session start uses (reconcile.ts::reconcileProject), and that sweep's batch enqueue wakes the background worker (hooks_index.ts::enqueueDirtyPathsSafe), so install returns in the time a `git ls-files` takes rather than the minutes a whole-repository parse takes. */
 
 import * as fs from 'node:fs'
 
-import { countSymbols } from './index_reader.js'
-import { globalDbPath } from './constants.js'
+import { isIndexedRoot, recordIndexedRoot } from './indexed_roots.js'
 import { loadConfig } from './config.js'
 import { envBool } from './env.js'
 import { findProject, isUnderSystemTemp } from './project.js'
@@ -47,10 +46,12 @@ export function queueInstallIndex(cwd: string, opts: { enabled?: boolean | undef
     if (isUnderSystemTemp(root)) return { status: 'skipped', reason: 'temp', root }
     if (isUnderBlockedRoot(root, loadConfig().worker.blocked_roots)) return { status: 'skipped', reason: 'blocked', root }
     // Already indexed means session start's reconcile owns it from here; sweeping it again at install would only duplicate that.
-    if (countSymbols({ rootDir: root }, globalDbPath()) > 0) return { status: 'skipped', reason: 'indexed', root }
+    if (isIndexedRoot(root)) return { status: 'skipped', reason: 'indexed', root }
     // reconcileProject enumerates through git, so a non-git folder would come back as zero files and read as "nothing to do". It is said instead, because `index --walk` is the way in for that folder.
     if (getTrackedFiles(root).length === 0) return { status: 'skipped', reason: isOwnGitToplevel(root) ? 'untracked' : 'not-git', root }
     const result = reconcileProject({ cwd: root, budgetMs: INSTALL_INDEX_BUDGET_MS })
+    // Marked whether or not anything was queued: nothing queued means every tracked file is already indexed, which is an indexed project too.
+    recordIndexedRoot(root)
     if (result.enqueued === 0) return { status: 'skipped', reason: 'nothing-queued', root }
     return { status: 'queued', root, files: result.enqueued }
   } catch (e) {

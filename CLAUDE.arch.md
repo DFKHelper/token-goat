@@ -478,6 +478,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/index_freshness.ts`](src/index_freshness.ts) | Whether the index's record of a file still matches what is on disk. |
 | [`src/index_health.ts`](src/index_health.ts) | Shared "this project has zero indexed files" diagnosis, reused by doctor's Symbols check (cli_doctor_index.ts's checkSymbolCount) and by every query command that can dead-end on an empty |
 | [`src/index_reclaim.ts`](src/index_reclaim.ts) | Index-space reclamation (`token-goat reclaim-index`). |
+| [`src/indexed_roots.ts`](src/indexed_roots.ts) | Which projects were indexed on purpose: by `token-goat index`, or by the first index `install` queues. |
 | [`src/indexed_source.ts`](src/indexed_source.ts) | Resolves the document a stored symbol line range actually addresses. |
 | [`src/injection_scan.ts`](src/injection_scan.ts) | Lexical scan for prompt-injection attack patterns in untrusted fetched content. |
 | [`src/install_index.ts`](src/install_index.ts) | First index of the project `install` runs in. |

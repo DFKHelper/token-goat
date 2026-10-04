@@ -27,6 +27,7 @@ import * as symbolBodyProbe from '../src/symbol_body_probe.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { getDb } from '../src/db.js'
+import { recordIndexedRoot } from '../src/indexed_roots.js'
 import { normalizePath } from '../src/paths.js'
 import { recordEvidence } from '../src/evidence_cache.js'
 import { exportSessionState, recordFileEdit } from '../src/session.js'
@@ -104,6 +105,7 @@ describe('sessionStartHandler', () => {
       db.prepare(
         'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
       ).run(`${forwardSlashDir}/b.ts`, 'bar', 'function', 1, 2, '', '')
+      recordIndexedRoot(projectDir, _testDbPath)
 
       const result = await sessionStartHandler(makeEvent(projectDir))
       expect(result.hookType).toBe('context')
@@ -131,6 +133,7 @@ describe('sessionStartHandler', () => {
       db.prepare(
         'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
       ).run(`${forwardSlashDir}/a.ts`, 'foo', 'function', 1, 2, '', '')
+      recordIndexedRoot(projectDir, _testDbPath)
 
       const before = await sessionStartHandler(makeEvent(projectDir))
       expect(before.hookType).toBe('context')
@@ -147,7 +150,26 @@ describe('sessionStartHandler', () => {
       expect(after.hookType).toBe('context')
 
       if (before.hookType === 'context' && after.hookType === 'context') {
+        expect(before.context).toContain('this project is indexed')
         expect(after.context).toBe(before.context)
+      }
+    } finally {
+      fs.rmSync(projectDir, { recursive: true, force: true })
+    }
+  })
+
+  // HAND-DERIVED: the symbol rows stand in for the one file the edit hook's worker drain indexes in a project nobody ran `token-goat index` in; symbols alone used to read as "indexed".
+  it('keeps the generic reminder for a project whose only symbols came from a file the edit hook indexed', async () => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-start-edited-only-'))
+    try {
+      getDb(_testDbPath)
+        .prepare('INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(`${normalizePath(projectDir)}/a.ts`, 'foo', 'function', 1, 2, '', '')
+      const result = await sessionStartHandler(makeEvent(projectDir))
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).toContain('Run `token-goat index .` if this project is not indexed yet.')
+        expect(result.context).not.toContain('this project is indexed')
       }
     } finally {
       fs.rmSync(projectDir, { recursive: true, force: true })

@@ -428,6 +428,32 @@ describe('getDb schema version', () => {
     ])
   })
 
+  // HAND-DERIVED: the roots and paths are made up; what is pinned is the rule that a v16 index counted any root with symbols as indexed, and the v17 table must keep that answer for those roots and no others.
+  it('migrates a v16 DB up to SCHEMA_VERSION, marking as indexed exactly the known roots that already have symbols', () => {
+    const p = tmpDbPath()
+    getDb(p)
+    closeDb(p)
+
+    const raw = new Database(p)
+    // The symbols table carries TG_LOWER expression indexes, so an insert needs the function getDb registers; these ASCII paths fold the same under toLowerCase.
+    raw.function('TG_LOWER', { deterministic: true }, (value: unknown) => (value === null ? null : String(value).toLowerCase()))
+    raw.exec('DROP TABLE indexed_roots')
+    const root = raw.prepare('INSERT INTO known_roots (root, last_seen_ms, first_missing_ms) VALUES (?, ?, NULL)')
+    root.run('/work/app', 1111)
+    root.run('/work/app-docs', 2222)
+    root.run('/work/empty', 3333)
+    const sym = raw.prepare("INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, 'function', 1, 2, '', '')")
+    sym.run('/work/app/src/a.ts', 'a')
+    // A sibling whose name extends the indexed root's: its prefix must not read as being under /work/app, nor /work/app's symbols as under it.
+    sym.run('/work/app-docsite/b.ts', 'b')
+    raw.pragma('user_version = 16')
+    raw.close()
+
+    const db = getDb(p)
+    expect(Number(db.pragma('user_version', { simple: true }))).toBe(SCHEMA_VERSION)
+    expect(db.prepare('SELECT root, indexed_ms FROM indexed_roots ORDER BY root').all()).toEqual([{ root: '/work/app', indexed_ms: 1111 }])
+  })
+
   it('refuses to open a DB whose user_version is newer than this build supports', () => {
     const p = tmpDbPath()
     getDb(p)

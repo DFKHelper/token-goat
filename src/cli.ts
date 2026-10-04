@@ -23,6 +23,7 @@ import { foregroundDownloadDeferred, offlineEmbedNotice, WARM_COMMAND } from './
 import { rerunWithEnvProxy } from './env_proxy.js'
 import { allowReadOnlyIndex, getDb } from './db.js'
 import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
+import { recordIndexedRoot } from './indexed_roots.js'
 import { recordKnownRootThrottled } from './known_roots.js'
 import { fingerprintFile } from './fingerprint.js'
 import { getFileEntry } from './index_reader.js'
@@ -452,6 +453,8 @@ export async function cmdIndex(
     )
   }
   const pruned = pruneDeletedFiles(resolveIndexPath(root), dbPath)
+  // What session start and install read as "this project is indexed": the symbols this walk wrote cannot say it, because the edit hook writes symbols for single files too.
+  recordIndexedRoot(root, dbPath)
   out(
     `Indexed ${countNoun(indexed, 'file')} into the symbol index.` +
       `${skipped > 0 ? ` Skipped ${skipped} unchanged file(s).` : ''}` +

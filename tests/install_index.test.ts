@@ -1,4 +1,4 @@
-/** `install` queues the project it runs in for a first index (src/install_index.ts). Before it, a fresh install indexed nothing, because session start reconciles only a project that already has symbols, so every surgical read answered empty until the user ran `token-goat index` themselves. Why didn't a test catch this: nothing asserted what the index holds after an install. Install tests assert on settings files, and the indexing tests all start by calling `index` themselves, which is the step a new user never took. The first case below drives the shipped default with the env opt-out unset and the real worker drain with no injected indexer, and asserts a known symbol resolves; the last two spawn the built bundle's `install`. PROVENANCE: HAND-DERIVED. One-function TypeScript files and marker files written by the test; the queue and symbols are read back through the same modules the product uses. */
+/** `install` queues the project it runs in for a first index (src/install_index.ts). Before it, a fresh install indexed nothing, because session start reconciles only a project that was indexed, so every surgical read answered empty until the user ran `token-goat index` themselves. Why didn't a test catch this: nothing asserted what the index holds after an install. Install tests assert on settings files, and the indexing tests all start by calling `index` themselves, which is the step a new user never took. The first case below drives the shipped default with the env opt-out unset and the real worker drain with no injected indexer, and asserts a known symbol resolves; the last two spawn the built bundle's `install`. PROVENANCE: HAND-DERIVED. One-function TypeScript files and marker files written by the test; the queue and symbols are read back through the same modules the product uses. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { defaultConfig, saveConfig } from '../src/config.js'
 import { dataDir, globalDbPath } from '../src/constants.js'
 import { closeAllDbs } from '../src/db.js'
-import { dirtyQueuePathFor } from '../src/dirty_queue.js'
+import { appendDirtyQueuePaths, dirtyQueuePathFor } from '../src/dirty_queue.js'
 import { querySymbols } from '../src/index_reader.js'
 import { formatInstallIndexResult, queueInstallIndex, type InstallIndexResult } from '../src/install_index.js'
 import { normalizePath } from '../src/paths.js'
@@ -75,6 +75,20 @@ describe('queueInstallIndex', () => {
     const again = queueInstallIndex(dir)
     expect(again).toMatchObject({ status: 'skipped', reason: 'indexed' })
     expect(formatInstallIndexResult(again)).toBeNull()
+  })
+
+  // HAND-DERIVED: the one queued file stands in for what the edit hook queues after an Edit in a project nobody indexed; the drain is the worker's own, with its production indexer.
+  it('still queues a project whose only symbols came from one file the edit hook had the worker index', () => {
+    const { dir, file } = gitProject('editedOnlyProbe')
+    const untouched = path.join(dir, 'untouched.ts')
+    fs.writeFileSync(untouched, 'export function untouchedProbe(): number {\n  return 2\n}\n')
+    git(dir, 'add', '.')
+    appendDirtyQueuePaths(dataDir(), [file])
+    expect(drainOnce(dataDir())).toBe(1)
+    expect(querySymbols({ name: 'editedOnlyProbe' }, globalDbPath()), 'calibration: the edited file is indexed').toHaveLength(1)
+
+    expect(queueInstallIndex(dir)).toMatchObject({ status: 'queued', files: 1 })
+    expect(queued().map(norm)).toEqual([norm(untouched)])
   })
 
   it('queues nothing when TOKEN_GOAT_INSTALL_INDEX=0 or --no-index turned it off', () => {

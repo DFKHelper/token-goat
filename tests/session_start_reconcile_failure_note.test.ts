@@ -59,6 +59,7 @@ import { sessionStartHandler } from '../src/hooks_session_start.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { getDb } from '../src/db.js'
+import { recordIndexedRoot } from '../src/indexed_roots.js'
 import { getGlobalDb } from '../src/stats.js'
 import { normalizePath } from '../src/paths.js'
 
@@ -109,6 +110,7 @@ describe('sessionStartHandler when reconcileProject throws', () => {
       db.prepare(
         'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
       ).run(`${forwardSlashDir}/a.ts`, 'foo', 'function', 1, 2, '', '')
+      recordIndexedRoot(projectDir, _testDbPath)
 
       const before = db.prepare("SELECT count(*) AS n FROM stats WHERE kind = 'reconcile_note_failed'").get() as { n: number }
       expect(before.n, 'calibration: a prior write already exists under this kind').toBe(0)
