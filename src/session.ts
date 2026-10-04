@@ -92,6 +92,8 @@ let _fileServedOutputs = new Map<string, string[]>()
 // Snapshots of the two maps above at hydration time, so `consumedFileLineRangeKeys`/`consumedFileServedOutputKeys` can tell "this process explicitly cleared this file's history" (recordFileEdit for the ranges, markCompacted for either) apart from "this process never touched it" -- same removal-is-not-a-union-op reason as `_curlDownloadsAtLoad`: without this, session_store.ts's plain per-file union would resurrect the cleared ranges/served ids straight off a stale disk read.
 let _fileLineRangesAtLoad = new Map<string, Array<[number, number]>>()
 let _fileServedOutputsAtLoad = new Map<string, string[]>()
+// Folded keys whose ranges this process dropped through resetFileLineRanges. A reset followed by a fresh range for the same file in the same hook call leaves the key present, which `_fileLineRangesAtLoad` alone reads as a plain append, so session_store.ts's union put the dropped ranges straight back from disk.
+let _fileLineRangesReset = new Set<string>()
 
 // Unix-ms of the most recent context compaction (0 = never compacted this session). After Claude Code compacts, the model's context no longer holds any file content it read earlier, so every read whose `lastReadAt` predates this stamp must be treated as NOT read -- see `wasFileReadThisSession`. Stored as a monotonically increasing scalar rather than resetting each entry's `readCount` to 0 because session_store.ts's `mergeFileEntry` reconciles `readCount` as "freshest disk count + this process's own increments since load", so an in-memory reset to 0 contributes a 0 delta and the disk value is handed straight back -- the reset would be silently resurrected across concurrent hook processes. A max-merged scalar has no such resurrection path.
 let _compactedAt = 0
@@ -535,13 +537,13 @@ export function consumedCurlDownloadKeys(): string[] {
   return consumed
 }
 
-/** Folded file paths present at load but cleared (consumed by {@link recordFileEdit}) since -- tombstones for session_store.ts's merge, same removal-is-not-a-union-op reason as {@link consumedCurlDownloadKeys}: an edit's per-file deletion must actually stick instead of being resurrected by a plain disk/mem union. */
+/** Folded file paths present at load but cleared (consumed by {@link recordFileEdit}) since, plus every path {@link resetFileLineRanges} cleared whether or not a range was recorded for it again afterwards -- tombstones for session_store.ts's merge, same removal-is-not-a-union-op reason as {@link consumedCurlDownloadKeys}: a per-file deletion must actually stick instead of being resurrected by a plain disk/mem union. */
 export function consumedFileLineRangeKeys(): string[] {
-  const consumed: string[] = []
+  const consumed = new Set(_fileLineRangesReset)
   for (const key of _fileLineRangesAtLoad.keys()) {
-    if (!_fileLineRanges.has(key)) consumed.push(key)
+    if (!_fileLineRanges.has(key)) consumed.add(key)
   }
-  return consumed
+  return [...consumed]
 }
 
 /** Same as {@link consumedFileLineRangeKeys}, for the served-output index {@link markCompacted} clears wholesale. Unlike the line ranges, {@link recordFileEdit} does not clear this one -- it is matched on the served bytes, so a stale id simply fails to match. */
@@ -570,15 +572,18 @@ function statIdentity(absPath: string): { size: number; mtimeMs: number } | unde
 export function recordFileLineRange(filePath: string, start: number, end: number): void {
   const normalized = normalizePath(filePath)
   const key = foldPath(normalized)
+  const entryKey = resolveFilesKey(normalized)
+  const entry = _files.get(entryKey)
+  const identity = statIdentity(normalized)
+  const prior = entry?.rangeFileIdentity
+  // The ranges on record were served while the file had the identity stamped beside them. Re-stamping it for this range without dropping them would let the repeated-range deny in hooks_read.ts vouch for text the model was never shown, since every later read of any other window also refreshes the snapshot it diffs against.
+  if (prior !== undefined && identity !== undefined && (prior.size !== identity.size || prior.mtimeMs !== identity.mtimeMs)) resetFileLineRanges(normalized)
   const ranges = _fileLineRanges.get(key) ?? []
   if (!ranges.some(([s, e]) => s === start && e === end)) {
     ranges.push([start, end])
     if (ranges.length > MAX_RANGES_PER_FILE) ranges.splice(0, ranges.length - MAX_RANGES_PER_FILE)
     _fileLineRanges.set(key, ranges)
   }
-  const entryKey = resolveFilesKey(normalized)
-  const entry = _files.get(entryKey)
-  const identity = statIdentity(normalized)
   if (entry && identity) _files.set(entryKey, { ...entry, rangeFileIdentity: identity })
 }
 
@@ -589,7 +594,9 @@ export function getFileLineRanges(filePath: string): ReadonlyArray<readonly [num
 
 /** Drop every recorded line range for `filePath` without marking it edited (unlike {@link recordFileEdit}, which does both): a change discovered on disk that the session itself never made -- an edit outside this session, or a Read/Write by another process -- still invalidates the ranges the exact-overlap dedup trusts, but it must not falsely mark the file as edited by this session for the compaction manifest and resume logic that read `wasEdited`. */
 export function resetFileLineRanges(filePath: string): void {
-  _fileLineRanges.delete(foldPath(normalizePath(filePath)))
+  const key = foldPath(normalizePath(filePath))
+  _fileLineRanges.delete(key)
+  _fileLineRangesReset.add(key)
 }
 
 /** Cap on retained served-output ids per file. Deliberately small: every id retained here is a blob the containment check may have to read from disk before it can decide, so this is a bound on that read fan-out and not just on memory. Newest ids are kept, since a later body is the more likely container of the next read of the same file. */
@@ -744,6 +751,7 @@ export function importSessionState(s: SerializedSession): void {
   _curlDownloadsAtLoad = new Map(_curlDownloads)
   _fileLineRanges = new Map(s.fileLineRanges ?? [])
   _fileLineRangesAtLoad = new Map(_fileLineRanges)
+  _fileLineRangesReset = new Set()
   _fileServedOutputs = new Map(s.fileServedOutputs ?? [])
   _fileServedOutputsAtLoad = new Map(_fileServedOutputs)
   _cliReads = new Set(s.cliReads ?? [])
@@ -773,6 +781,7 @@ registerReset(() => {
   _curlDownloadsAtLoad = new Map()
   _fileLineRanges = new Map()
   _fileLineRangesAtLoad = new Map()
+  _fileLineRangesReset = new Set()
   _fileServedOutputs = new Map()
   _fileServedOutputsAtLoad = new Map()
   _cliReads = new Set()
