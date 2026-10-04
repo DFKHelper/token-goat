@@ -74,7 +74,8 @@ describe('symbol NAME with no confinement leads with the current project', () =>
     const { text } = fromMine(() => runSymbol({ name: 'parseThing9k', limit: 20 }))
     expect(text).toContain('showing 20 of 26 matches')
     expect(text).toContain('1 of the matches are in this project and listed first')
-    expect(text).toContain('-p')
+    // The note's own words, not a bare `-p`: every row header carries a mkdtemp path, and a random suffix starting with p puts `-p` in the output whatever the note says.
+    expect(text).toContain('pass -p to search only it')
   })
 
   // HAND-DERIVED: onlyHere9k is defined 25 times, all under the cwd project and nowhere else, so a 20-row page is truncated yet every match is local and -p changes nothing.
@@ -82,7 +83,7 @@ describe('symbol NAME with no confinement leads with the current project', () =>
     const { text } = fromMine(() => runSymbol({ name: 'onlyHere9k', limit: 20 }))
     expect(text).toContain('showing 20 of 25 matches')
     expect(text).not.toContain('are in this project')
-    expect(text).not.toContain('-p')
+    expect(text).not.toContain('pass -p')
   })
 
   it('leaves a confined lookup unchanged: -p from the other project sees only that project', () => {

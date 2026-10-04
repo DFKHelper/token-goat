@@ -35,11 +35,15 @@ afterEach(() => {
   resetDecoderCheckedForTests()
 })
 
-/** What one scrub of `text` costs, averaged over `runs`. Averaged and taken off the high-resolution clock because the assertion is a ratio: a single `Date.now()` scrub of the smaller input can measure 0 or 1 ms, and a ratio against a number that coarse compares noise to noise. */
-function scrubMillis(text: string, runs: number): number {
-  const started = performance.now()
-  for (let i = 0; i < runs; i++) scrubPii(text)
-  return (performance.now() - started) / runs
+/** What one scrub of `text` costs: averaged over `runs`, and the cheapest of `batches` such averages. Taken off the high-resolution clock because the assertion is a ratio and a `Date.now()` scrub of the smaller input measures 0 or 1 ms; the cheapest batch rather than one batch because the smaller input costs under a tenth of a millisecond, so a single collector pause or preemption landing in it moved the ratio past its bound on a shared macOS runner. Noise only ever adds time, so the minimum is the estimate it touches least. */
+function scrubMillis(text: string, runs: number, batches = 7): number {
+  let cheapest = Infinity
+  for (let b = 0; b < batches; b++) {
+    const started = performance.now()
+    for (let i = 0; i < runs; i++) scrubPii(text)
+    cheapest = Math.min(cheapest, (performance.now() - started) / runs)
+  }
+  return cheapest
 }
 
 describe('scrubbing personal data out of a selection', () => {
