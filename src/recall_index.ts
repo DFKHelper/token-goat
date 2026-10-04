@@ -1,24 +1,4 @@
-/**
- * Cross-cache full-text search index for `token-goat recall`.
- *
- * bash-output, web-output, and mcp-output entries are already persisted through
- * disk_cache.ts's `storeBlob()` at their three write call sites
- * (`storeBashOutput` in bash_output_cache.ts, `storeWebOutput` in web_cache.ts,
- * `storeMcpOutput` in mcp_cache.ts). Each of those calls {@link indexRecallEntry}
- * right after, so the recall index stays current with no separate rebuild step
- * and no second on-disk store to maintain.
- *
- * The index itself is a table in the same SQLite database as the code index
- * (`globalDbPath()`, see db.ts) rather than a second database file, reusing the
- * existing connection-pool/pragma/migration machinery. `cache_recall_fts` is a
- * content-linked FTS5 virtual table over `cache_recall`, defined in db.ts's
- * SCHEMA_SQL/FTS_SQL exactly like `symbols_fts`. FTS5 is confirmed available in
- * the SQLite build Node bundles (symbols_fts already relies on it), but
- * db.ts's schema setup wraps FTS_SQL in a try/catch as defense in depth for a
- * SQLite build that lacks it -- {@link searchRecall} mirrors that by falling
- * back to a plain `LIKE` scan over `cache_recall` (no ranking, most-recent-first)
- * when `cache_recall_fts` does not exist.
- */
+/** Cross-cache full-text search index for `token-goat recall`. bash-output, web-output, and mcp-output entries are already persisted through disk_cache.ts's `storeBlob()` at their three write call sites (`storeBashOutput` in bash_output_cache.ts, `storeWebOutput` in web_cache.ts, `storeMcpOutput` in mcp_cache.ts). Each of those calls {@link indexRecallEntry} right after, so the recall index stays current with no separate rebuild step and no second on-disk store to maintain. The index itself is a table in the same SQLite database as the code index (`globalDbPath()`, see db.ts) rather than a second database file, reusing the existing connection-pool/pragma/migration machinery. `cache_recall_fts` is a content-linked FTS5 virtual table over `cache_recall`, defined in db.ts's SCHEMA_SQL/FTS_SQL exactly like `symbols_fts`. FTS5 is confirmed available in the SQLite build Node bundles (symbols_fts already relies on it), but db.ts's schema setup wraps FTS_SQL in a try/catch as defense in depth for a SQLite build that lacks it -- {@link searchRecall} mirrors that by falling back to a plain `LIKE` scan over `cache_recall` (no ranking, most-recent-first) when `cache_recall_fts` does not exist. */
 
 import * as fs from 'node:fs'
 
@@ -41,13 +21,7 @@ export interface RecallHit {
   readonly blobPresent: boolean
 }
 
-/**
- * `cache_recall` rows are indexed once and read forever, but the blob they point at
- * (`bash_outputs`/`web_outputs`, via disk_cache.ts's `storeBlob`) is pruned on its own
- * age/count/bytes budget -- see {@link pruneCacheRecallRows}'s doc comment for why age alone
- * cannot guarantee the two stay in sync. mcp entries share bash-output's blob-store subdir
- * (see cli_recall.ts's RECALL_COMMAND comment), so both map to 'bash_outputs' here.
- */
+/** `cache_recall` rows are indexed once and read forever, but the blob they point at (`bash_outputs`/`web_outputs`, via disk_cache.ts's `storeBlob`) is pruned on its own age/count/bytes budget -- see {@link pruneCacheRecallRows}'s doc comment for why age alone cannot guarantee the two stay in sync. mcp entries share bash-output's blob-store subdir (see cli_recall.ts's RECALL_COMMAND comment), so both map to 'bash_outputs' here. */
 function subdirForCacheType(cacheType: RecallCacheType): string {
   return cacheType === 'web' ? 'web_outputs' : 'bash_outputs'
 }
@@ -64,29 +38,14 @@ function blobStillExists(cacheType: RecallCacheType, id: string): boolean {
 
 const VALID_TYPES: readonly RecallCacheType[] = ['bash', 'web', 'mcp']
 
-/**
- * Rows returned when a caller passes no explicit limit.
- *
- * Exported because the command layer must compute the same effective limit to run its
- * "are there more" probe. A second copy of this number in cli_recall.ts would disagree silently
- * the moment either moved, and the symptom would be a listing that under- or over-reports a
- * remainder rather than anything that fails loudly.
- */
+/** Rows returned when a caller passes no explicit limit. Exported because the command layer must compute the same effective limit to run its "are there more" probe. A second copy of this number in cli_recall.ts would disagree silently the moment either moved, and the symptom would be a listing that under- or over-reports a remainder rather than anything that fails loudly. */
 export const RECALL_DEFAULT_LIMIT = 10
 
 export function isRecallCacheType(value: string): value is RecallCacheType {
   return (VALID_TYPES as readonly string[]).includes(value)
 }
 
-/**
- * Persist/refresh one searchable entry keyed by (cacheType, id).
- *
- * Fail-soft: never throws, mirroring disk_cache.ts's `storeBlob` contract, so a
- * recall-indexing failure (e.g. a locked or corrupt index DB) never blocks the
- * cache write it accompanies -- the underlying bash/web/mcp cache entry is
- * still stored and recallable by its own id even if it doesn't become
- * searchable via `recall`.
- */
+/** Persist/refresh one searchable entry keyed by (cacheType, id). Fail-soft: never throws, mirroring disk_cache.ts's `storeBlob` contract, so a recall-indexing failure (e.g. a locked or corrupt index DB) never blocks the cache write it accompanies -- the underlying bash/web/mcp cache entry is still stored and recallable by its own id even if it doesn't become searchable via `recall`. */
 export function indexRecallEntry(cacheType: RecallCacheType, id: string, label: string, content: string, storedAt: number): void {
   try {
     const db = getDb(globalDbPath())
@@ -102,26 +61,11 @@ export function indexRecallEntry(cacheType: RecallCacheType, id: string, label: 
   } catch {
     // Fail-soft: see doc comment above.
   }
-  // Prune on write, mirroring storeBlob()'s own prune-after-write in disk_cache.ts -- both this
-  // row's expiry and the blob's age eviction derive from the one shared DEFAULT_MAX_AGE_MS
-  // constant, so the two lifetimes cannot drift back apart the way they did before this fix
-  // (rows had no expiry at all: 25,062 of 30,655 live rows, 81.8%, were already older than the
-  // blob's 24h window, 145.8 MB of text pointing at nothing). This does not by itself guarantee
-  // every surviving row has a live blob -- storeBlob also evicts early on count/bytes budgets,
-  // an axis this age-only prune can't see -- which is why {@link blobStillExists} additionally
-  // gates the printed/JSON pointer at read time regardless of row age.
+  // Prune on write, mirroring storeBlob()'s own prune-after-write in disk_cache.ts -- both this row's expiry and the blob's age eviction derive from the one shared DEFAULT_MAX_AGE_MS constant, so the two lifetimes cannot drift back apart the way they did before this fix (rows had no expiry at all: 25,062 of 30,655 live rows, 81.8%, were already older than the blob's 24h window, 145.8 MB of text pointing at nothing). This does not by itself guarantee every surviving row has a live blob -- storeBlob also evicts early on count/bytes budgets, an axis this age-only prune can't see -- which is why {@link blobStillExists} additionally gates the printed/JSON pointer at read time regardless of row age.
   pruneCacheRecallRows()
 }
 
-/**
- * Delete `cache_recall` rows older than `maxAgeMs` (default: the same {@link DEFAULT_MAX_AGE_MS}
- * disk_cache.ts prunes blobs on), so the recall index's row lifetime cannot silently outlive the
- * blob lifetime again. Bounded by `stored_at` on every call -- safe to interrupt (a partial run
- * just leaves more expired rows for the next write's prune) and safe against a database this
- * function has never seen before (no schema-version assumption beyond the `cache_recall` table
- * this module already owns). Fail-soft, matching every other write path in this module: a prune
- * failure never blocks the insert it accompanies.
- */
+/** Delete `cache_recall` rows older than `maxAgeMs` (default: the same {@link DEFAULT_MAX_AGE_MS} disk_cache.ts prunes blobs on), so the recall index's row lifetime cannot silently outlive the blob lifetime again. Bounded by `stored_at` on every call -- safe to interrupt (a partial run just leaves more expired rows for the next write's prune) and safe against a database this function has never seen before (no schema-version assumption beyond the `cache_recall` table this module already owns). Fail-soft, matching every other write path in this module: a prune failure never blocks the insert it accompanies. */
 export function pruneCacheRecallRows(maxAgeMs: number = DEFAULT_MAX_AGE_MS): void {
   try {
     const db = getDb(globalDbPath())
@@ -152,15 +96,7 @@ export function resetRecallFtsCacheForTesting(): void {
   _ftsAvailable = null
 }
 
-/**
- * Test-only: delete every row from `cache_recall` (the `cache_recall_ad` AFTER DELETE trigger
- * keeps `cache_recall_fts` in sync automatically). Nonce-prefixed ids keep separate tests' rows
- * from ever matching each other's queries, but SQLite FTS5's `bm25()` ranking is computed from
- * corpus-wide statistics (average document length, total row count) regardless of which rows a
- * query actually matches -- so a ranking-order assertion between two specific rows can flip
- * simply because unrelated rows accumulated earlier in the same shared worker process shifted
- * those corpus statistics. Call this to give a ranking test a clean, single-tenant corpus.
- */
+/** Test-only: delete every row from `cache_recall` (the `cache_recall_ad` AFTER DELETE trigger keeps `cache_recall_fts` in sync automatically). Nonce-prefixed ids keep separate tests' rows from ever matching each other's queries, but SQLite FTS5's `bm25()` ranking is computed from corpus-wide statistics (average document length, total row count) regardless of which rows a query actually matches -- so a ranking-order assertion between two specific rows can flip simply because unrelated rows accumulated earlier in the same shared worker process shifted those corpus statistics. Call this to give a ranking test a clean, single-tenant corpus. */
 export function clearRecallEntriesForTesting(): void {
   const db = getDb(globalDbPath())
   db.exec('DELETE FROM cache_recall')
@@ -183,11 +119,7 @@ function buildSnippet(content: string, query: string, maxLen = 160): string {
   return snippetAround(flat, Math.max(0, idx), maxLen)
 }
 
-/** Quote each whitespace-separated token of `query` as an FTS5 string literal via the shared
- * {@link sanitizeFtsQuery} (index_reader.ts), so arbitrary user input -- including FTS5
- * operators like `-`, `*`, `:`, `(` -- is always treated as literal text to match rather than
- * risking a MATCH syntax error. Returns null for an all-whitespace/empty query so callers can
- * skip the search instead of running a MATCH against an empty string. */
+/** Quote each whitespace-separated token of `query` as an FTS5 string literal via the shared {@link sanitizeFtsQuery} (index_reader.ts), so arbitrary user input -- including FTS5 operators like `-`, `*`, `:`, `(` -- is always treated as literal text to match rather than risking a MATCH syntax error. Returns null for an all-whitespace/empty query so callers can skip the search instead of running a MATCH against an empty string. */
 function toFtsMatchExpr(query: string): string | null {
   if (query.trim().length === 0) return null
   return sanitizeFtsQuery(query)
@@ -284,16 +216,7 @@ export function likeSearchForTesting(query: string, type?: RecallCacheType, limi
   return likeSearch(query, type, limit)
 }
 
-/**
- * Browse the cross-cache recall index with no query: every cached entry, newest
- * first, optionally narrowed to one cache type. This is the browse counterpart to
- * {@link searchRecall}, and it exists for the same reason `recall` does at all --
- * an agent that doesn't know which cache type holds a result shouldn't have to run
- * `bash-history`, `web-history`, and `mcp-history` in turn. Snippets are built with
- * an empty query, which {@link buildSnippet} renders as a leading extract.
- * Fail-soft like the rest of this module: any query-time failure yields no rows
- * rather than surfacing an error for a best-effort lookup.
- */
+/** Browse the cross-cache recall index with no query: every cached entry, newest first, optionally narrowed to one cache type. This is the browse counterpart to {@link searchRecall}, and it exists for the same reason `recall` does at all -- an agent that doesn't know which cache type holds a result shouldn't have to run `bash-history`, `web-history`, and `mcp-history` in turn. Snippets are built with an empty query, which {@link buildSnippet} renders as a leading extract. Fail-soft like the rest of this module: any query-time failure yields no rows rather than surfacing an error for a best-effort lookup. */
 export function listRecentRecall(opts: RecallSearchOptions = {}): RecallHit[] {
   const limit = opts.limit ?? RECALL_DEFAULT_LIMIT
   const columns = `SELECT entry_id AS id, cache_type AS cacheType, label, content, stored_at AS storedAt FROM cache_recall`
@@ -310,12 +233,7 @@ export function listRecentRecall(opts: RecallSearchOptions = {}): RecallHit[] {
   }
 }
 
-/**
- * Search the cross-cache recall index. Empty/whitespace-only `query` returns no
- * hits (never throws, never returns every entry) -- {@link listRecentRecall} is
- * the deliberate "list all" entry point, so that a caller asking to *search* for
- * nothing never silently receives everything.
- */
+/** Search the cross-cache recall index. Empty/whitespace-only `query` returns no hits (never throws, never returns every entry) -- {@link listRecentRecall} is the deliberate "list all" entry point, so that a caller asking to *search* for nothing never silently receives everything. */
 export function searchRecall(query: string, opts: RecallSearchOptions = {}): RecallHit[] {
   const limit = opts.limit ?? RECALL_DEFAULT_LIMIT
   if (query.trim() === '') return []

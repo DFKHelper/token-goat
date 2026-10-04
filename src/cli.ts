@@ -728,8 +728,7 @@ async function cmdCompress(
       }
       if (!usedBase64 || !command || !/^\s*(?:token-goat|tg)\s+(?:compress|bash|run)(?:\s|$)/.test(command)) break
 
-      // Reuse the CLI grammar so aliases, positional commands and runner options
-      // survive unwrapping without starting another token-goat process.
+      // Reuse the CLI grammar so aliases, positional commands and runner options survive unwrapping without starting another token-goat process.
       const { shlexSplit } = await import('./tool_filters/helpers.js')
       const nested = buildProgram()
       applyExitOverride(nested)
