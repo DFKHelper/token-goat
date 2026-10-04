@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** The publish gate for the native hook client: refuses a dist/native that is not exactly the release binaries (all four, or the two Linux ones under `--without-windows`), each a statically linked executable for its target and byte-identical to the hash its producing job recorded, with both Windows files carrying an Authenticode signature. Run by the publish job of .github/workflows/publish.yml, which holds the registry token, so it imports nothing but Node builtins: no dependency code runs beside the credential. The signature check binds the signature to these bytes without trusting a certificate chain: the PE certificate table must end the file and hold a WIN_CERTIFICATE wrapping a PKCS#7 SignedData with a signer, and the Authenticode image digest that SignedData signs must equal the digest of the file itself, so a signature lifted from another binary is refused; the sign job has already verified the signature cryptographically, and the hash match is what ties the file here to the file it verified. Usage: `node scripts/verify-native-dist.mjs [--without-windows] <dist/native> <SHA256SUMS>...`, where every manifest is in `sha256sum` format with paths relative to the directory; `--without-windows` is the release with no Windows signing configuration, which ships the two Linux binaries and no Windows one, so Windows installs keep the Node hook. `node scripts/verify-native-dist.mjs --pack <dist/native>` is the prepack check, which npm runs on `npm pack` and on `npm publish` from a directory, so a tarball packed by hand cannot carry what a direct publish would refuse: no manifests, so it checks shape only, and a missing directory passes. Exits 0 when everything holds, otherwise 1 with one line per problem. */
+/** The publish gate for the native hook client: refuses a dist/native that is not exactly the release binaries (all four, or the two Linux ones under `--without-windows`), each a statically linked executable for its target and byte-identical to the hash its producing job recorded, with both Windows files carrying an Authenticode signature. Run by the publish job of .github/workflows/publish.yml, which holds the registry token, so it imports nothing but Node builtins: no dependency code runs beside the credential. The signature check binds the signature to these bytes without trusting a certificate chain: the PE certificate table must end the file and hold a WIN_CERTIFICATE wrapping a PKCS#7 SignedData with exactly one signer, every constructed DER element in it holding whole elements and nothing else, and the Authenticode image digest that SignedData signs must equal the digest of the file itself, so a signature lifted from another binary is refused; the sign job has already verified the signature cryptographically, and the hash match is what ties the file here to the file it verified. Usage: `node scripts/verify-native-dist.mjs [--without-windows] <dist/native> <SHA256SUMS>...`, where every manifest is in `sha256sum` format with paths relative to the directory; `--without-windows` is the release with no Windows signing configuration, which ships the two Linux binaries and no Windows one, so Windows installs keep the Node hook. `node scripts/verify-native-dist.mjs --pack <dist/native>` is the prepack check, which npm runs on `npm pack` and on `npm publish` from a directory, so a tarball packed by hand cannot carry what a direct publish would refuse: no manifests, so it checks shape only, and a missing directory passes. Exits 0 when everything holds, otherwise 1 with one line per problem. */
 import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
@@ -54,6 +54,7 @@ export function peSignatureProblem(buf, machine) {
   if (signedData?.tag !== 0x30) return 'has a WIN_CERTIFICATE whose signedData content is missing or truncated'
   // The signature covers the image, not the WIN_CERTIFICATE around it, so bytes after the DER (the CVE-2013-3900 shape) are refused unless they are the at most 7 zero bytes signers pad to a quadword with.
   if (explicit.end !== contentInfo.end || signedData.end !== explicit.end) return 'has a WIN_CERTIFICATE whose ContentInfo holds bytes after its signedData, which the signature does not cover'
+  if (!derTiles(buf, contentInfo)) return 'has a WIN_CERTIFICATE whose DER is malformed: a constructed element holds bytes that are not whole elements, or nests past 64 levels'
   const tail = offset + size - contentInfo.end
   if (tail > 7) return `has ${tail} bytes in its certificate table after its signature, which the signature does not cover`
   if (buf.subarray(contentInfo.end, offset + size).some((b) => b !== 0)) return 'pads its signature with non-zero bytes, which the signature does not cover'
@@ -65,32 +66,27 @@ export function peSignatureProblem(buf, machine) {
   return undefined
 }
 
-/** The image digest a SignedData SEQUENCE signs, per the Authenticode PE specification: SignedData { version, digestAlgorithms SET, encapContentInfo { SPC_INDIRECT_DATA OID, [0] SpcIndirectDataContent { data, DigestInfo { AlgorithmIdentifier, OCTET STRING } } }, [0] certificates?, [1] crls?, signerInfos SET }. A string says what is missing; signerInfos must hold at least one signer. */
+/** The image digest a SignedData SEQUENCE signs, per RFC 5652 and the Authenticode PE specification: SignedData { version, digestAlgorithms SET, encapContentInfo { SPC_INDIRECT_DATA OID, [0] SpcIndirectDataContent { data, DigestInfo { AlgorithmIdentifier { OID, NULL? }, OCTET STRING } } }, [0] certificates?, [1] crls?, signerInfos SET { SignerInfo } }, each holding exactly those elements in that order, so no element carries one the shape leaves out. A string says what does not match. Authenticode allows one signer, a SignerInfo { version, sid, digestAlgorithm, [0] signedAttrs, signatureAlgorithm, signature, [1] unsignedAttrs? }; a second signature nests inside the first's unsigned attributes. */
 function signedImageDigest(buf, signedData) {
-  const version = derElement(buf, signedData.start, signedData.end)
-  const algorithms = version?.tag === 0x02 ? derElement(buf, version.end, signedData.end) : undefined
-  const encap = algorithms?.tag === 0x31 ? derElement(buf, algorithms.end, signedData.end) : undefined
-  if (encap?.tag !== 0x30) return 'is not version, digest algorithms and content'
-  const eContentType = derElement(buf, encap.start, encap.end)
-  if (eContentType?.tag !== 0x06 || !buf.subarray(eContentType.start, eContentType.end).equals(OID_SPC_INDIRECT_DATA)) return 'does not sign Authenticode indirect data'
-  const eContent = derElement(buf, eContentType.end, encap.end)
-  const indirect = eContent?.tag === 0xa0 ? derElement(buf, eContent.start, eContent.end) : undefined
-  const data = indirect?.tag === 0x30 ? derElement(buf, indirect.start, indirect.end) : undefined
-  const digestInfo = data?.tag === 0x30 ? derElement(buf, data.end, indirect.end) : undefined
-  const algorithmId = digestInfo?.tag === 0x30 ? derElement(buf, digestInfo.start, digestInfo.end) : undefined
-  const algorithmOid = algorithmId?.tag === 0x30 ? derElement(buf, algorithmId.start, algorithmId.end) : undefined
-  const digest = algorithmOid?.tag === 0x06 ? derElement(buf, algorithmId.end, digestInfo.end) : undefined
-  if (digest?.tag !== 0x04) return 'carries no image digest'
+  const parts = derChildren(buf, signedData) ?? []
+  const tags = derTags(parts)
+  const head = /^02 31 30( a0)?( a1)? 31/.exec(tags)
+  if (head === null) return 'is not version, digest algorithms, content, optional certificates and CRLs, then signers'
+  if (head[0].length !== tags.length) return 'holds bytes after its signers, which the signature does not cover'
+  const encap = derShaped(buf, parts[2], /^06 a0$/)
+  if (encap === undefined) return 'has encapsulated content that is not exactly a content type and one [0] content'
+  if (!buf.subarray(encap[0].start, encap[0].end).equals(OID_SPC_INDIRECT_DATA)) return 'does not sign Authenticode indirect data'
+  const [indirect] = derShaped(buf, encap[1], /^30$/) ?? []
+  const [, digestInfo] = (indirect && derShaped(buf, indirect, /^30 30$/)) ?? []
+  const [algorithmId, digest] = (digestInfo && derShaped(buf, digestInfo, /^30 04$/)) ?? []
+  const [algorithmOid] = (algorithmId && derShaped(buf, algorithmId, /^06( 05)?$/)) ?? []
+  if (algorithmOid === undefined) return 'carries no image digest as one SpcIndirectDataContent of data and a DigestInfo'
   const algorithm = DIGEST_ALGORITHMS.get(buf.subarray(algorithmOid.start, algorithmOid.end).toString('hex'))
   if (algorithm === undefined) return 'uses an image digest algorithm this check does not know'
-  let rest = encap.end
-  let element = derElement(buf, rest, signedData.end)
-  while (element?.tag === 0xa0 || element?.tag === 0xa1) {
-    rest = element.end
-    element = derElement(buf, rest, signedData.end)
-  }
-  if (element?.tag !== 0x31 || element.end === element.start) return 'has no signer'
-  if (element.end !== signedData.end) return 'holds bytes after its signers, which the signature does not cover'
+  const signers = derChildren(buf, parts[parts.length - 1]) ?? []
+  if (signers.length === 0) return 'has no signer'
+  if (signers.length > 1) return `has ${signers.length} signers where Authenticode allows one`
+  if (signers[0].tag !== 0x30 || derShaped(buf, signers[0], /^02 (30|80) 30 a0 30 04( a1)?$/) === undefined) return 'has a signer that is not version, signer identifier, digest algorithm, signed attributes, signature algorithm, signature and optional unsigned attributes'
   return { algorithm, digest: buf.subarray(digest.start, digest.end) }
 }
 
@@ -115,11 +111,17 @@ const DIGEST_ALGORITHMS = new Map([
   ['608648016503040203', 'sha512'],
 ])
 
-/** The DER element (X.690) whose identifier octet is at `at`: its tag, and where its content starts and ends. Undefined when the header or the content runs past `limit`, or the length is the indefinite form DER forbids. Only single-octet tags are read, which every element of a ContentInfo header uses. */
+/** The DER element (X.690) whose identifier octets start at `at`: its first identifier octet as `tag`, and where its content starts and ends. Undefined when the header or the content runs past `limit`, the length is the indefinite form DER forbids, or a high tag number runs past four octets. */
 function derElement(buf, at, limit) {
-  if (at + 2 > limit) return undefined
-  const first = buf[at + 1]
-  let start = at + 2
+  let header = at + 1
+  // Tag number bits all set mean the number follows in base-128 octets, the last with bit 8 clear.
+  if (at < limit && (buf[at] & 0x1f) === 0x1f) {
+    while (header < limit && header - at <= 4 && buf[header] & 0x80) header++
+    if (++header - at > 5) return undefined
+  }
+  if (header + 1 > limit) return undefined
+  const first = buf[header]
+  let start = header + 1
   let len = first
   if (first >= 0x80) {
     const octets = first & 0x7f
@@ -128,6 +130,36 @@ function derElement(buf, at, limit) {
     start += octets
   }
   return start + len > limit ? undefined : { tag: buf[at], start, end: start + len }
+}
+
+/** The elements `parent`'s content holds, or undefined when they do not tile it exactly: X.690 makes a constructed element's content whole elements, so a gap or an overrun is bytes no element accounts for. */
+function derChildren(buf, parent) {
+  const children = []
+  for (let at = parent.start; at < parent.end; at = children[children.length - 1].end) {
+    const child = derElement(buf, at, parent.end)
+    if (child === undefined) return undefined
+    children.push(child)
+  }
+  return children
+}
+
+/** Whether every constructed element within `element`, itself included, holds whole elements and nothing else, nesting no deeper than 64 levels. Primitive content is opaque bytes, so only constructed content is walked. */
+function derTiles(buf, element, depth = 0) {
+  if ((element.tag & 0x20) === 0) return true
+  if (depth >= 64) return false
+  const children = derChildren(buf, element)
+  return children !== undefined && children.every((child) => derTiles(buf, child, depth + 1))
+}
+
+/** `parent`'s children when their tags, as derTags lays them out, match `shape`; undefined otherwise. */
+function derShaped(buf, parent, shape) {
+  const children = derChildren(buf, parent)
+  return children !== undefined && shape.test(derTags(children)) ? children : undefined
+}
+
+/** The first identifier octet of each of `elements`, as two-digit hex joined by spaces, the form the shape patterns match. */
+function derTags(elements) {
+  return elements.map((element) => element.tag.toString(16).padStart(2, '0')).join(' ')
 }
 
 /** Why `buf` is not a static 64-bit little-endian ELF executable for `machine`, or undefined when it is. Header layout per the System V ABI (elf(5)): e_machine at 18, e_phoff at 32, e_phentsize and e_phnum at 54 and 56. A program header of type PT_INTERP (3) names a dynamic loader, which a musl-static build does not have and a glibc build does; a DT_NEEDED entry in the dynamic segment names a shared library, which a static-pie build does not have either. A PT_LOAD (1) segment's file bytes (p_offset at 8, p_filesz at 32) must lie inside the file, and at least one must carry PF_X (p_flags at 4), so a header with nothing to run behind it is refused. */

@@ -39,17 +39,36 @@ function tlv(tag: number, body: Buffer | readonly number[], longForm = false): B
   return Buffer.concat([Buffer.from([tag, ...length]), content])
 }
 
-type Envelope = { algorithm?: Buffer; contentType?: Buffer; digestTag?: number; signers?: Buffer; certificates?: boolean; longForm?: boolean; afterSigners?: Buffer }
+// A SignerInfo's fields per RFC 5652 section 5.3: version, sid (an IssuerAndSerialNumber of an empty Name and serial 1), digestAlgorithm, [0] signedAttrs holding one Attribute, signatureAlgorithm and signature. The signature bytes are filler, since the check binds the image digest and leaves the signature to osslsigncode.
+const SIGNER_FIELDS: readonly Buffer[] = [
+  Buffer.from([0x02, 0x01, 0x01]),
+  tlv(0x30, [0x30, 0x00, 0x02, 0x01, 0x01]),
+  tlv(0x30, Buffer.concat([OID_SHA256, DER_NULL])),
+  tlv(0xa0, tlv(0x30, [0x06, 0x01, 0x2a, 0x31, 0x02, 0x04, 0x00])),
+  tlv(0x30, Buffer.concat([OID_SHA256, DER_NULL])),
+  tlv(0x04, Buffer.alloc(64, 0x5a)),
+]
 
-/** An Authenticode ContentInfo signing `digest`: SignedData { version, digestAlgorithms, encapContentInfo { SPC_INDIRECT_DATA, [0] SpcIndirectDataContent { SpcAttributeTypeAndOptionalValue { SPC_PE_IMAGE_DATA, SpcPeImageData }, DigestInfo { algorithm, digest } } }, [0] certificates and [1] crls when asked, signerInfos }. The signer is a placeholder SEQUENCE, since the check stops at whether one exists. */
+/** A SignerInfo SEQUENCE holding `fields`. */
+function signerInfo(fields: readonly Buffer[] = SIGNER_FIELDS): Buffer {
+  return tlv(0x30, Buffer.concat(fields))
+}
+
+type Nested = 'encap' | 'content' | 'indirect' | 'digestInfo' | 'algorithm'
+
+type Envelope = { algorithm?: Buffer; parameters?: Buffer; contentType?: Buffer; digestTag?: number; signers?: Buffer; certificates?: boolean | Buffer[]; longForm?: boolean; afterSigners?: Buffer; inside?: Partial<Record<Nested, Buffer>> }
+
+/** An Authenticode ContentInfo signing `digest`: SignedData { version, digestAlgorithms, encapContentInfo { SPC_INDIRECT_DATA, [0] SpcIndirectDataContent { SpcAttributeTypeAndOptionalValue { SPC_PE_IMAGE_DATA, SpcPeImageData }, DigestInfo { algorithm, digest } } }, [0] certificates and [1] crls when asked (or the elements `certificates` lists, verbatim), signerInfos }. The signer is one SignerInfo of SIGNER_FIELDS unless `signers` gives the SET's content, and `inside` appends bytes at the end of the named nested element. */
 function authenticodeContentInfo(digest: Buffer, opts: Envelope = {}): Buffer {
   const long = opts.longForm === true
-  const algorithm = tlv(0x30, Buffer.concat([opts.algorithm ?? OID_SHA256, DER_NULL]), long)
-  const digestInfo = tlv(0x30, Buffer.concat([algorithm, tlv(opts.digestTag ?? 0x04, digest, long)]), long)
+  const extra = (at: Nested): Buffer => opts.inside?.[at] ?? Buffer.alloc(0)
+  const algorithm = tlv(0x30, Buffer.concat([opts.algorithm ?? OID_SHA256, opts.parameters ?? DER_NULL, extra('algorithm')]), long)
+  const digestInfo = tlv(0x30, Buffer.concat([algorithm, tlv(opts.digestTag ?? 0x04, digest, long), extra('digestInfo')]), long)
   const imageData = tlv(0x30, Buffer.concat([OID_SPC_PE_IMAGE_DATA, tlv(0x30, [0x03, 0x01, 0x00])]), long)
-  const encap = tlv(0x30, Buffer.concat([opts.contentType ?? OID_SPC_INDIRECT_DATA, tlv(0xa0, tlv(0x30, Buffer.concat([imageData, digestInfo]), long), long)]), long)
-  const extras = opts.certificates === true ? [tlv(0xa0, tlv(0x30, digestInfo)), tlv(0xa1, tlv(0x30, [0x02, 0x01, 0x00]))] : []
-  const signedData = tlv(0x30, Buffer.concat([Buffer.from([0x02, 0x01, 0x01]), tlv(0x31, algorithm), encap, ...extras, tlv(0x31, opts.signers ?? tlv(0x30, [0x02, 0x01, 0x01])), opts.afterSigners ?? Buffer.alloc(0)]), long)
+  const indirect = tlv(0x30, Buffer.concat([imageData, digestInfo, extra('indirect')]), long)
+  const encap = tlv(0x30, Buffer.concat([opts.contentType ?? OID_SPC_INDIRECT_DATA, tlv(0xa0, Buffer.concat([indirect, extra('content')]), long), extra('encap')]), long)
+  const extras = opts.certificates === true ? [tlv(0xa0, tlv(0x30, digestInfo)), tlv(0xa1, tlv(0x30, [0x02, 0x01, 0x00]))] : opts.certificates || []
+  const signedData = tlv(0x30, Buffer.concat([Buffer.from([0x02, 0x01, 0x01]), tlv(0x31, algorithm), encap, ...extras, tlv(0x31, opts.signers ?? signerInfo()), opts.afterSigners ?? Buffer.alloc(0)]), long)
   return tlv(0x30, Buffer.concat([Buffer.from(OID_SIGNED_DATA), tlv(0xa0, signedData, long)]), long)
 }
 
@@ -82,6 +101,16 @@ function derSpan(der: Buffer): number {
 /** The body of the DER element at the start of `der`, without its tag and length. */
 function derBody(der: Buffer): Buffer {
   return der.subarray(der[1]! < 0x80 ? 2 : 2 + (der[1]! & 0x7f), derSpan(der))
+}
+
+/** `der` with `extra` appended to the content of the element `path` names (child indices from the root), every length on the way re-encoded so the outer elements stay consistent. */
+function derAppended(der: Buffer, path: readonly number[], extra: Buffer): Buffer {
+  const body = derBody(der)
+  if (path.length === 0) return tlv(der[0]!, Buffer.concat([body, extra]))
+  const children: Buffer[] = []
+  for (let at = 0; at < body.length; at += derSpan(body.subarray(at))) children.push(body.subarray(at, at + derSpan(body.subarray(at))))
+  children[path[0]!] = derAppended(children[path[0]!]!, path.slice(1), extra)
+  return tlv(der[0]!, Buffer.concat(children))
 }
 
 /** `pe` with its WIN_CERTIFICATE re-laid around `edit` of the ContentInfo it holds, followed by exactly `tail`, with dwLength and the table size both set to the result and no quadword padding, so `tail` is every byte between the DER and the end of the table. The image digest skips the table, so the signature still matches. */
@@ -341,7 +370,7 @@ describe('peSignatureProblem (FORMAT-DERIVED)', () => {
 
   it('refuses a well-formed signedData envelope that signs nothing, the shape the check once accepted', () => {
     const bare = Buffer.from([0x30, 0x12, ...OID_SIGNED_DATA, 0xa0, 0x05, ...SIGNED_DATA])
-    expect(peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), bare), IMAGE_FILE_MACHINE_AMD64)).toBe('has a WIN_CERTIFICATE whose signedData is not version, digest algorithms and content')
+    expect(peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), bare), IMAGE_FILE_MACHINE_AMD64)).toBe('has a WIN_CERTIFICATE whose signedData is not version, digest algorithms, content, optional certificates and CRLs, then signers')
   })
 
   it('refuses a signature whose image digest belongs to other bytes, while ignoring the checksum field the digest skips', () => {
@@ -361,8 +390,11 @@ describe('peSignatureProblem (FORMAT-DERIVED)', () => {
 
   it('refuses bytes appended inside a certificate table grown to cover them, since the table size is outside the digest', () => {
     const pe = withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64))
-    expect(peSignatureProblem(grownCertificateTable(pe, 16), IMAGE_FILE_MACHINE_AMD64)).toBe('has 19 bytes in its certificate table beyond its WIN_CERTIFICATE, which the signature does not cover')
-    expect(peSignatureProblem(grownCertificateTable(pe, 8), IMAGE_FILE_MACHINE_AMD64)).toBe('has 11 bytes in its certificate table beyond its WIN_CERTIFICATE, which the signature does not cover')
+    const at = certificateDirectoryAt(pe)
+    const padding = pe.readUInt32LE(at + 4) - pe.readUInt32LE(pe.readUInt32LE(at))
+    expect(padding).toBeGreaterThan(0)
+    expect(peSignatureProblem(grownCertificateTable(pe, 16), IMAGE_FILE_MACHINE_AMD64)).toBe(`has ${16 + padding} bytes in its certificate table beyond its WIN_CERTIFICATE, which the signature does not cover`)
+    expect(peSignatureProblem(grownCertificateTable(pe, 8), IMAGE_FILE_MACHINE_AMD64)).toBe(`has ${8 + padding} bytes in its certificate table beyond its WIN_CERTIFICATE, which the signature does not cover`)
   })
 
   it('accepts a certificate table sized to its WIN_CERTIFICATE without the quadword padding, which covers no extra bytes', () => {
@@ -416,8 +448,80 @@ describe('peSignatureProblem (FORMAT-DERIVED)', () => {
     expect(problem({ algorithm: OID_SHA224 })).toBe('has a WIN_CERTIFICATE whose signedData uses an image digest algorithm this check does not know')
     // pkcs7-data (1.2.840.113549.1.7.1) as the encapsulated content type.
     expect(problem({ contentType: Buffer.from([...OID_SIGNED_DATA.slice(0, -1), 0x01]) })).toBe('has a WIN_CERTIFICATE whose signedData does not sign Authenticode indirect data')
-    expect(problem({ digestTag: 0x03 })).toBe('has a WIN_CERTIFICATE whose signedData carries no image digest')
+    expect(problem({ digestTag: 0x03 })).toBe('has a WIN_CERTIFICATE whose signedData carries no image digest as one SpcIndirectDataContent of data and a DigestInfo')
     expect(problem({ certificates: true })).toBeUndefined()
+  })
+
+  it('refuses an element the Authenticode shape leaves out, wherever in the signed content it sits', () => {
+    const problem = (opts: Envelope): string | undefined => peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), opts), IMAGE_FILE_MACHINE_AMD64)
+    const stray = tlv(0x04, Buffer.alloc(40, 0x41))
+    expect(problem({ inside: { encap: stray } })).toBe('has a WIN_CERTIFICATE whose signedData has encapsulated content that is not exactly a content type and one [0] content')
+    const noDigest = 'has a WIN_CERTIFICATE whose signedData carries no image digest as one SpcIndirectDataContent of data and a DigestInfo'
+    for (const at of ['content', 'indirect', 'digestInfo', 'algorithm'] as const) expect(problem({ inside: { [at]: stray } }), at).toBe(noDigest)
+    // RFC 5754 section 2 lets a SHA-2 AlgorithmIdentifier omit its NULL parameters.
+    expect(problem({ parameters: Buffer.alloc(0) })).toBeUndefined()
+  })
+
+  it('refuses certificates and CRLs out of order or repeated, and anything else between the content and the signers', () => {
+    const problem = (certificates: Buffer[]): string | undefined => peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), { certificates }), IMAGE_FILE_MACHINE_AMD64)
+    const cert = tlv(0x30, [0x02, 0x01, 0x00])
+    const order = 'has a WIN_CERTIFICATE whose signedData is not version, digest algorithms, content, optional certificates and CRLs, then signers'
+    expect(problem([tlv(0xa1, cert), tlv(0xa0, cert)])).toBe(order)
+    expect(problem([tlv(0xa0, cert), tlv(0xa0, cert)])).toBe(order)
+    expect(problem([tlv(0x04, Buffer.alloc(40, 0x41))])).toBe(order)
+    expect(problem([tlv(0xa0, cert)])).toBeUndefined()
+    expect(problem([tlv(0xa1, cert)])).toBeUndefined()
+  })
+
+  it('accepts exactly one SignerInfo of the RFC 5652 shape, with either signer identifier and optional unsigned attributes', () => {
+    const problem = (signers: Buffer): string | undefined => peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), { signers }), IMAGE_FILE_MACHINE_AMD64)
+    const unsigned = tlv(0xa1, tlv(0x30, [0x06, 0x01, 0x2a, 0x31, 0x02, 0x04, 0x00]))
+    const shape = 'has a WIN_CERTIFICATE whose signedData has a signer that is not version, signer identifier, digest algorithm, signed attributes, signature algorithm, signature and optional unsigned attributes'
+    expect(problem(Buffer.concat([signerInfo(), signerInfo()]))).toBe('has a WIN_CERTIFICATE whose signedData has 2 signers where Authenticode allows one')
+    expect(problem(signerInfo(SIGNER_FIELDS.filter((_, i) => i !== 3)))).toBe(shape)
+    expect(problem(signerInfo([...SIGNER_FIELDS, tlv(0x04, Buffer.alloc(40, 0x41))]))).toBe(shape)
+    expect(problem(signerInfo([...SIGNER_FIELDS, unsigned, unsigned]))).toBe(shape)
+    expect(problem(tlv(0x31, Buffer.concat(SIGNER_FIELDS)))).toBe(shape)
+    expect(problem(signerInfo([...SIGNER_FIELDS, unsigned]))).toBeUndefined()
+    // A [0] subjectKeyIdentifier in place of the IssuerAndSerialNumber, the other SignerIdentifier choice.
+    expect(problem(signerInfo([SIGNER_FIELDS[0]!, tlv(0x80, Buffer.alloc(20, 0x11)), ...SIGNER_FIELDS.slice(2)]))).toBeUndefined()
+  })
+
+  it('refuses a constructed element anywhere in the signature, unsigned parts included, whose content is not whole elements', () => {
+    const malformed = 'has a WIN_CERTIFICATE whose DER is malformed: a constructed element holds bytes that are not whole elements, or nests past 64 levels'
+    const problem = (opts: Envelope): string | undefined => peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), opts), IMAGE_FILE_MACHINE_AMD64)
+    // An INTEGER claiming 5 bytes where its SEQUENCE has 1 left, then a lone byte after a whole INTEGER.
+    expect(problem({ certificates: [tlv(0xa0, [0x30, 0x03, 0x02, 0x05, 0x01])] })).toBe(malformed)
+    expect(problem({ certificates: [tlv(0xa0, [0x30, 0x04, 0x02, 0x01, 0x01, 0xff])] })).toBe(malformed)
+    expect(problem({ certificates: [tlv(0xa1, [0x30, 0x04, 0x02, 0x01, 0x01, 0xff])] })).toBe(malformed)
+    expect(problem({ signers: signerInfo([...SIGNER_FIELDS, tlv(0xa1, [0x30, 0x05, 0x06, 0x01, 0x2a])]) })).toBe(malformed)
+    // A primitive's content is opaque, so bytes that would not parse as elements are fine inside one.
+    expect(problem({ certificates: [tlv(0xa0, tlv(0x30, tlv(0x04, [0x30, 0x05, 0xff])))] })).toBeUndefined()
+  })
+
+  // HAND-DERIVED depth count: ContentInfo is level 1, its [0] level 2, SignedData level 3, the certificates [0] level 4, so n SEQUENCEs nested inside it put the innermost at level 4 + n, and 64 levels is the most the check walks.
+  it('refuses DER nested past 64 levels and accepts it at 64', () => {
+    const problem = (n: number): string | undefined => {
+      let nested = tlv(0x04, [])
+      for (let i = 0; i < n; i++) nested = tlv(0x30, nested)
+      return peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), { certificates: [tlv(0xa0, nested)] }), IMAGE_FILE_MACHINE_AMD64)
+    }
+    expect(problem(60)).toBeUndefined()
+    expect(problem(61)).toBe('has a WIN_CERTIFICATE whose DER is malformed: a constructed element holds bytes that are not whole elements, or nests past 64 levels')
+  })
+
+  // X.690 section 8.1.2.4: tag number bits 11111 mean the number follows in base-128 octets, bit 8 set on all but the last.
+  it('reads high tag numbers of up to four octets, primitive or constructed', () => {
+    const malformed = 'has a WIN_CERTIFICATE whose DER is malformed: a constructed element holds bytes that are not whole elements, or nests past 64 levels'
+    const problem = (element: number[]): string | undefined => peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), { certificates: [tlv(0xa0, tlv(0x30, element))] }), IMAGE_FILE_MACHINE_AMD64)
+    expect(problem([0x9f, 0x21, 0x01, 0x00])).toBeUndefined()
+    expect(problem([0x9f, 0x81, 0x81, 0x81, 0x01, 0x01, 0x00])).toBeUndefined()
+    expect(problem([0xbf, 0x21, 0x03, 0x02, 0x01, 0x01])).toBeUndefined()
+    expect(problem([0x9f, 0x81, 0x81, 0x81, 0x81, 0x01, 0x01, 0x00])).toBe(malformed)
+    // A fifth tag octet still flagged as continued must not be read as a length: here that misreading would make a whole empty element.
+    expect(problem([0x9f, 0x81, 0x81, 0x81, 0x81, 0x00])).toBe(malformed)
+    expect(problem([0xbf, 0x21, 0x03, 0x02, 0x05, 0x01])).toBe(malformed)
+    expect(problem([0x9f, 0x81, 0x81])).toBe(malformed)
   })
 
   // CAPTURE: the node.exe running this suite is Authenticode-signed by the Node.js project, so it is a real signature produced by a real signing tool rather than one laid out from the spec.
@@ -437,6 +541,29 @@ describe('peSignatureProblem (FORMAT-DERIVED)', () => {
     expect(peSignatureProblem(padded, machine)).toBe('pads its signature with non-zero bytes, which the signature does not cover')
     expect(peSignatureProblem(rewrappedCertificate(node, Buffer.alloc(4000, 0x41)), machine)).toBe('has 4000 bytes in its certificate table after its signature, which the signature does not cover')
     expect(peSignatureProblem(rewrappedCertificate(node, Buffer.alloc(0)), machine)).toBeUndefined()
+  })
+
+  // CAPTURE, edited: node.exe's own signature with one element grown inside it and every enclosing length re-encoded, so only the inner structure differs. Paths run ContentInfo, its [0], then SignedData's children: 2 the encapsulated content, 3 the certificates, 4 the signer set, whose one SignerInfo holds unsigned attributes at 6.
+  it.runIf(process.platform === 'win32')('refuses node.exe once its signature carries bytes the image digest does not cover, in its certificates, unsigned attributes, content or signers', () => {
+    const node = fs.readFileSync(process.execPath)
+    const machine = node.readUInt16LE(node.readUInt32LE(0x3c) + 4)
+    const edited = (path: number[], extra: Buffer): string | undefined => peSignatureProblem(rewrappedCertificate(node, Buffer.alloc(0), (der) => derAppended(der, path, extra)), machine)
+    const malformed = 'has a WIN_CERTIFICATE whose DER is malformed: a constructed element holds bytes that are not whole elements, or nests past 64 levels'
+    expect(edited([1, 0, 3], Buffer.alloc(0))).toBeUndefined()
+    expect(edited([1, 0, 3], Buffer.from([0x00]))).toBe(malformed)
+    expect(edited([1, 0, 3, 0], Buffer.from([0x04, 0x05, 0x41]))).toBe(malformed)
+    expect(edited([1, 0, 4, 0, 6], Buffer.from([0x00]))).toBe(malformed)
+    expect(edited([1, 0, 2], tlv(0x04, Buffer.alloc(40, 0x41)))).toBe('has a WIN_CERTIFICATE whose signedData has encapsulated content that is not exactly a content type and one [0] content')
+    expect(edited([1, 0], tlv(0x04, Buffer.alloc(40, 0x41)))).toBe('has a WIN_CERTIFICATE whose signedData holds bytes after its signers, which the signature does not cover')
+    let signer: Buffer = node.subarray(node.readUInt32LE(certificateDirectoryAt(node)) + 8)
+    for (const index of [1, 0, 4, 0]) {
+      const body = derBody(signer)
+      let at = 0
+      for (let i = 0; i < index; i++) at += derSpan(body.subarray(at))
+      signer = body.subarray(at, at + derSpan(body.subarray(at)))
+    }
+    expect(signer[0]).toBe(0x30)
+    expect(edited([1, 0, 4], signer)).toBe('has a WIN_CERTIFICATE whose signedData has 2 signers where Authenticode allows one')
   })
 
   it('refuses a PE built for the other architecture', () => {
