@@ -350,8 +350,10 @@ export function parseJsonPath(spec: string): PathOp[] {
       i += 2
       let j = i
       while (j < n && spec[j] !== '.' && spec[j] !== '[' && spec[j] !== '{' && spec[j] !== '|') j++
-      if (j === i) throw new Error(`invalid path spec: expected property name after '..' in '${spec}'`)
-      ops.push({ kind: 'recursive_key', name: spec.slice(i, j) })
+      // Trailing blanks belong to the separator after the name, as for a bare key below: `..address | city` names `address`.
+      const name = spec.slice(i, j).trimEnd()
+      if (name === '') throw new Error(`invalid path spec: expected property name after '..' in '${spec}'`)
+      ops.push({ kind: 'recursive_key', name })
       i = j
       continue
     }
@@ -489,8 +491,10 @@ export function parseJsonPath(spec: string): PathOp[] {
     }
     let j = i
     while (j < n && spec[j] !== '.' && spec[j] !== '[' && spec[j] !== '{' && spec[j] !== '|') j++
-    if (j === i) throw new Error(`invalid path spec: '${spec}'`)
-    ops.push({ kind: 'key', name: spec.slice(i, j) })
+    // The scan stops only at a separator, so untrimmed, the space written before a pipe (`org | {name, tier}`) would become part of the key and fail the lookup; a key that really ends in whitespace is spelled as a quoted segment, `["org "]`.
+    const name = spec.slice(i, j).trimEnd()
+    if (name === '') throw new Error(`invalid path spec: '${spec}'`)
+    ops.push({ kind: 'key', name })
     i = j
   }
   return ops
