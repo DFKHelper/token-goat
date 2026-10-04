@@ -3,11 +3,11 @@
 import * as fs from 'node:fs'
 
 import { getBashOutput } from './bash_output_cache.js'
-import { CliError, out } from './cli.js'
+import { CliError, err, out } from './cli.js'
 import { requireNonNegativeInt } from './cli_dispatch.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { fenceUntrustedContent, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG } from './injection_scan.js'
-import { queryJson } from './json_query.js'
+import { noMatchMessage, queryJson } from './json_query.js'
 import { displaySafeJson, displaySafeText } from './paths.js'
 import { guardJsonRows } from './read_commands.js'
 import { extractTranscriptText } from './read_inspect.js'
@@ -378,6 +378,14 @@ export function cmdMcpOutput(
     }
 
     const totalCount = queryResult.items.length
+    // Same miss handling as json-query: exit 1 with the reason, and the empty envelope on stdout under --json.
+    if (totalCount === 0 && !queryResult.truncated) {
+      if (opts.json !== true) throw new CliError(noMatchMessage(opts.jsonQuery, queryResult))
+      out(displaySafeJson({ items: [], truncated: false, totalCount: 0 }, 0))
+      err(`token-goat: ${displaySafeText(noMatchMessage(opts.jsonQuery, queryResult))}`)
+      process.exitCode = 1
+      return
+    }
     const limited = head !== undefined ? queryResult.items.slice(0, head) : queryResult.items
     const headTruncated = limited.length < totalCount
 

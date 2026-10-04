@@ -12,7 +12,7 @@ import {
   serializeHtmlNode,
 } from './html_query.js'
 import { UNTRUSTED_HTML_TAG } from './injection_scan.js'
-import { formatJsonOutline, outlineJson, queryJson } from './json_query.js'
+import { formatJsonOutline, noMatchMessage, outlineJson, queryJson } from './json_query.js'
 import { parseJsonOrJsonc } from './jsonc_text.js'
 import {
   extractOperations,
@@ -257,6 +257,16 @@ function runQueryCommand(
     }
 
     const totalCount = result.items.length
+    // Zero matches is a miss, exit 1 like a missing key, and xml-query's empty envelope under --json; a search the traversal limit cut short is not conclusive, so it keeps its notice below.
+    if (totalCount === 0 && !result.truncated) {
+      if (opts.json === true) {
+        const jsonText = displaySafeJson({ items: [], truncated: false, totalCount: 0 }, 0)
+        emit(jsonText)
+        recordReadStat(kind, fullSourceBytes, jsonText, detail)
+      }
+      emitErr(displaySafeText(noMatchMessage(opts.path, result)))
+      return 1
+    }
     const limited = head !== undefined ? result.items.slice(0, head) : result.items
     const headTruncated = limited.length < totalCount
 

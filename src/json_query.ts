@@ -507,12 +507,54 @@ export interface JsonQueryResult {
   items: unknown[]
   /** True when one of this module's ceilings stopped the evaluation, so `items` is a prefix of the answer rather than the answer. Always present, never left undefined on the complete case: a field that appears only on failure is one every caller forgets to read. */
   truncated: boolean
+  /** Set when a fanned query ends with no items: which step left nothing, and what it reached, so a front-end can say why instead of printing an empty line. */
+  emptiedBy?: string
+}
+
+function describeValue(value: unknown, withArticle: boolean): string {
+  const a = (word: string, article: string): string => (withArticle ? `${article} ${word}` : word)
+  if (Array.isArray(value)) return value.length === 0 ? a('empty array', 'an') : withArticle ? `an array of ${value.length}` : 'array'
+  if (value !== null && typeof value === 'object') return Object.keys(value).length === 0 ? a('empty object', 'an') : a('object', 'an')
+  const type = jsonType(value)
+  return type === 'null' ? 'null' : a(type, 'a')
+}
+
+function describeReached(inputs: readonly unknown[]): string {
+  if (inputs.length === 1) return `the value it reached is ${describeValue(inputs[0], true)}`
+  const labels = [...new Set(inputs.map((v) => describeValue(v, false)))]
+  return `the ${inputs.length} values it reached are ${labels.length === 1 ? `all ${labels[0] as string}` : labels.join(', ')}`
+}
+
+/** Why the step `op` produced nothing from `inputs`, worded for a person: the step as written, then what it found there. */
+function describeEmptyStep(op: PathOp, inputs: readonly unknown[]): string {
+  switch (op.kind) {
+    case 'key':
+      return `.${op.name} found no such key: ${describeReached(inputs)}`
+    case 'recursive_key':
+      return `..${op.name} found no key named '${op.name}' anywhere under ${inputs.length === 1 ? 'the value it searched' : `the ${inputs.length} values it searched`}`
+    case 'index':
+      // An index is only ever reached with nothing to show after a fan-out (unfanned, a miss throws), and there it applies to each item, which is the step people mistake for indexing the list of results.
+      return `[${op.index}] found nothing to index: ${describeReached(inputs)}. After a fan-out an index applies to each item, not to the list of results; ${op.index === 0 ? 'to keep only the first result, drop the index and pass --head 1' : `to pick one result by position, index the array before the fan-out, as in list[${op.index}].field`}`
+    case 'wildcard':
+      return `[*] found nothing to iterate: ${describeReached(inputs)}`
+    case 'filter':
+      return `[${op.field}=${op.value}] matched no element: ${describeReached(inputs)}`
+    case 'project_list':
+    case 'project_object':
+      return `the projection found nothing to project: ${describeReached(inputs)}`
+  }
+}
+
+/** The message a front-end shows when a fanned query matched nothing, so zero matches reads as a miss, like a missing key does, rather than as an empty line. */
+export function noMatchMessage(spec: string, result: JsonQueryResult): string {
+  return `no match for '${spec}': ${result.emptiedBy ?? 'the path matched no values'}`
 }
 
 /** Evaluates a parsed path against a JSON document. Plain key/index traversal (no wildcard or filter yet reached) throws on a missing key or out-of-range index, since there is exactly one intended target. Once fanned out by `[*]` or `[field=value]`, a per-item miss (a key absent on one of several matched objects, say) is dropped rather than failing the whole query -- projecting across a heterogeneous array is the normal case, not an error. */
 export function evalJsonPath(data: unknown, ops: readonly PathOp[]): JsonQueryResult {
   let current: unknown[] = [data]
   let fanned = false
+  let emptiedBy: string | undefined
   // One allowance for the whole path, opened here rather than inside the op that spends it -- see QueryBudget.
   const budget: QueryBudget = { nodesLeft: MAX_RECURSIVE_NODES, exhausted: false }
 
@@ -617,10 +659,11 @@ export function evalJsonPath(data: unknown, ops: readonly PathOp[]): JsonQueryRe
         }
       }
     }
+    if (emptiedBy === undefined && current.length > 0 && next.length === 0) emptiedBy = describeEmptyStep(op, current)
     current = next
   }
 
-  return { fanned, items: current, truncated: budget.exhausted }
+  return emptiedBy === undefined ? { fanned, items: current, truncated: budget.exhausted } : { fanned, items: current, truncated: budget.exhausted, emptiedBy }
 }
 
 /** Convenience wrapper: parse + eval a path spec in one call. */
