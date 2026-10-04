@@ -12,12 +12,19 @@ import { fuseChannelHits } from './rrf.js';
 import { bodyFromDeclaration } from '../read_suggest.js';
 import { pathPriorityWeight } from './path_weight.js';
 import { loadConfig } from '../config.js';
+import { snippetAround } from '../snippet_window.js';
 import { ALL_CHANNELS, type ChannelHit, type SearchChannel, type SearchExecutionSummary, type SearchOptions } from './types.js';
 
 /** A symbol hit's preview: its docstring, else the first 140 characters of its body from the declaration on, so a decorated symbol previews as `def area(...)` rather than `@property`. */
 export function symbolPreview(sym: { name: string; docstring?: string | null; body?: string | null }): string {
   if (sym.docstring) return sym.docstring;
   return sym.body ? bodyFromDeclaration(sym.body).slice(0, 140).trim() : `Symbol: ${sym.name}`;
+}
+
+/** A text hit's preview: a window of its line around the match, sized to fit the terminal's 120-character preview, so a match past the line's opening columns is still in what gets printed. */
+function matchPreview(line: string, lowerQuery: string): string {
+  const text = line.trim();
+  return snippetAround(text, Math.max(0, text.toLowerCase().indexOf(lowerQuery)), 114);
 }
 
 /** Searches symbols via Full-Text Search and symbol queries. */
@@ -109,7 +116,7 @@ async function searchTextChannel(query: string, limit: number, rootDir?: string)
           const line = lines[i];
           if (line && line.toLowerCase().includes(lowerQuery)) {
             found.count++;
-            if (found.lines.length < PER_FILE_HITS) found.lines.push({ line: i + 1, preview: line.slice(0, 140).trim() });
+            if (found.lines.length < PER_FILE_HITS) found.lines.push({ line: i + 1, preview: matchPreview(line, lowerQuery) });
           }
         }
         if (found.count > 0) matched.push(found);

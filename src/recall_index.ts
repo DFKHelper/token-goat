@@ -26,6 +26,7 @@ import { getDb } from './db.js'
 import { globalDbPath } from './constants.js'
 import { sanitizeFtsQuery } from './index_reader.js'
 import { stripAnsiEscapes } from './render/ansi.js'
+import { snippetAround } from './snippet_window.js'
 import { blobPath, DEFAULT_MAX_AGE_MS } from './disk_cache.js'
 
 export type RecallCacheType = 'bash' | 'web' | 'mcp'
@@ -179,14 +180,7 @@ function buildSnippet(content: string, query: string, maxLen = 160): string {
       break
     }
   }
-  if (idx === -1) {
-    return flat.length > maxLen ? flat.slice(0, maxLen) + '...' : flat
-  }
-  const start = Math.max(0, idx - Math.floor(maxLen / 3))
-  const end = Math.min(flat.length, start + maxLen)
-  const prefix = start > 0 ? '...' : ''
-  const suffix = end < flat.length ? '...' : ''
-  return prefix + flat.slice(start, end) + suffix
+  return snippetAround(flat, Math.max(0, idx), maxLen)
 }
 
 /** Quote each whitespace-separated token of `query` as an FTS5 string literal via the shared

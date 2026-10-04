@@ -226,6 +226,13 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
+    'matchPreview',
+    {
+      bucket: 'read-tool-or-transcript-content-not-in-scope-of-the-tool-output-redaction-boundary',
+      reason: 'search/parallel_search.ts text-hit preview for `token-goat search`: a window of one line of a file in the user\'s own project, read from disk, around the matched query -- project source, not tool output.',
+    },
+  ],
+  [
     'clipDocSummary',
     {
       bucket: 'read-tool-or-transcript-content-not-in-scope-of-the-tool-output-redaction-boundary',

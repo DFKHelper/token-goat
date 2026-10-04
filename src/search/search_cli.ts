@@ -14,7 +14,8 @@ function formatTerminalHit(hit: FusedSearchResult, rank: number): string {
 
   const lines = [`${rank}. ${loc}${symInfo} ${hit.channels.join('+')}`];
 
-  const shownPreview = showMatch && hit.matchPreview ? hit.matchPreview : hit.preview;
+  // A one-line hit shows its text match too: the fused preview is the longest of its channels' previews, and a semantic chunk's opening outlengths a line windowed on the match.
+  const shownPreview = hit.matchPreview && (showMatch || hit.matchLine === hit.lineStart) ? hit.matchPreview : hit.preview;
   if (shownPreview) {
     const cleanPreview = shownPreview.replace(/\r?\n/g, ' ').slice(0, 120).trim();
     if (cleanPreview) lines.push(`   ${cleanPreview}`);
