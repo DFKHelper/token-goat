@@ -35,7 +35,8 @@ export function insideComment(source: string, index: number): boolean {
 
 /** The syntactic positions a module specifier can occupy in esbuild's output, as regex source with `SPEC` standing in for the specifier pattern the caller wants. The last entry covers the `createRequire(import.meta.url)('jsonc-parser')` shape, where the specifier follows a call rather than the `require` keyword. It is anchored on `createRequire` rather than on a bare `)(`, which in a bundle full of IIFEs would match almost anything, and allows the digits esbuild appends when two modules in one chunk import the name: once webfetch loaded `http` through `createRequire`, the jsonc-parser loader in the same chunk became `createRequire2(import.meta.url)("jsonc-parser")`. */
 const FORMS = [
-  '\\bfrom\\s*SPEC',
+  // Not after a hyphen: a CLI flag such as `--old-from "<oldfile>"` inside a hint string is data, and the `from` keyword never follows one.
+  '(?<!-)\\bfrom\\s*SPEC',
   '\\bimport\\s*\\(\\s*SPEC',
   '\\b__?require\\w*\\s*\\(\\s*SPEC',
   '\\brequire\\s*\\(\\s*SPEC',

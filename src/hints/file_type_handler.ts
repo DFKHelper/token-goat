@@ -64,7 +64,7 @@ export function handlePdf(filePath: string, contentLength: number): FileTypeResu
     message: [
       `PDF file (${formatBytes(contentLength)}) — Read cannot return PDF content; this is not retryable with different Read parameters.`,
       `Inspect first: token-goat pdf-meta "${filePath}" and token-goat pdf-outline "${filePath}"`,
-      `Then extract relevant pages: token-goat pdf-extract "${filePath}" --pages <range>`,
+      `Then extract relevant pages: token-goat pdf-extract "${filePath}" --pages "<range>"`,
     ].join('\n'),
   }
 }
@@ -257,7 +257,7 @@ export function handleXlsx(filePath: string): FileTypeResult {
     message: [
       `Excel file — Read cannot return spreadsheet content; this is not retryable with different Read parameters.`,
       `List sheets: token-goat xlsx-sheets "${filePath}"`,
-      `Then preview a sheet: token-goat xlsx-head "${filePath}" --sheet <name>, or filter rows: token-goat xlsx-query "${filePath}" --sheet <name> --where col=value`,
+      `Then preview a sheet: token-goat xlsx-head "${filePath}" --sheet "<name>", or filter rows: token-goat xlsx-query "${filePath}" --sheet "<name>" --where col=value`,
     ].join('\n'),
   }
 }
@@ -269,7 +269,7 @@ export function handlePptx(filePath: string): FileTypeResult {
     message: [
       `PowerPoint file — Read cannot return slide content; this is not retryable with different Read parameters.`,
       `List slides: token-goat pptx-outline "${filePath}"`,
-      `Then read one slide: token-goat pptx-slide "${filePath}" --slide <n>`,
+      `Then read one slide: token-goat pptx-slide "${filePath}" --slide "<n>"`,
     ].join('\n'),
   }
 }

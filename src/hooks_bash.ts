@@ -328,7 +328,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     const target = filePath ? displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath) : '<file>'
     return pathHint(filePath ? [target] : [],
-      `token-goat available for this file type, consider 'token-goat xml-query "${target}" "<xpath>"' or 'token-goat xml-outline "${target}"' first instead of terminal XML parsing (${toolOrScript}).`,
+      `token-goat available for this file type, consider \`token-goat xml-query "${target}" "<xpath>"\` or \`token-goat xml-outline "${target}"\` first instead of terminal XML parsing (${toolOrScript}).`,
     )
   }
 

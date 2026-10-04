@@ -382,7 +382,7 @@ export function estimateTruncatedLineCount(normalized: string): number {
 export function editAnywayHint(rawPath: string): string {
   const normalized = displaySafePath(rawPath)
   return (
-    'To edit it anyway, use `token-goat replace "' + normalized + '" --old-b64 <base64> --new-b64 <base64>` (preferred — no temp files needed) or `--old-from <oldfile> --new-from <newfile>` for a snippet edit, or `token-goat write-file "' + normalized + '" --b64 <base64>` (or `--from <newfile>`) to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.'
+    'To edit it anyway, use `token-goat replace "' + normalized + '" --old-b64 "<base64>" --new-b64 "<base64>"` (preferred — no temp files needed) or `--old-from "<oldfile>" --new-from "<newfile>"` for a snippet edit, or `token-goat write-file "' + normalized + '" --b64 "<base64>"` (or `--from "<newfile>"`) to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.'
   )
 }
 

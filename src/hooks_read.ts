@@ -886,7 +886,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     return denyOutput(
       shown + ' was already read this session. Tool output spill files should not be re-read whole. ' +
-      'Use `token-goat json-query "' + shown + '" \'<path>\'` or `token-goat mcp-output --file "' + shown + '" --json-query \'<path>\'` to extract what you need.',
+      'Use `token-goat json-query "' + shown + '" "<path>"` or `token-goat mcp-output --file "' + shown + '" --json-query "<path>"` to extract what you need.',
     )
   }
 

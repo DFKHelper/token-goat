@@ -40,7 +40,7 @@ describe('handlePdf', () => {
     expect(result.message).toContain('pdf-meta')
     expect(result.message).toContain('pdf-outline')
     expect(result.message).toContain('pdf-extract')
-    expect(result.message).toContain('--pages <range>')
+    expect(result.message).toContain('--pages "<range>"')
     expect(result.message).toContain('/path/to/doc.pdf')
   })
 
