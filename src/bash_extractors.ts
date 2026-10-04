@@ -6,7 +6,7 @@ import { commandPathIsTouchable } from './vscode_path_gate.js'
 import { hostPathOfIndexKey, resolveIndexPath, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import type { HookEvent } from './hook_registry.js'
 import { hasBareBackgroundOrNewline, hasUnquotedOperator, isRedirectAmpersand } from './tool_filters/index.js'
-import { getFileLineRanges } from './session.js'
+import { dropFileLineRangesIfChanged, getFileLineRanges } from './session.js'
 import { escapeRegExp } from './util.js'
 import { FALSY_ENV_VALUES } from './env.js'
 import { leadWithCommand, docSectionHint, grepLinesHint } from './hint_suggestion_guard.js'
@@ -780,8 +780,11 @@ export function leadingLinesHint(
   end: number,
   preHookCwd: string | null,
   substitute: RangeSubstituteFigures | null,
+  event: HookEvent,
 ): string | null {
   const key = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
+  // Lines served before the file changed on disk are not in context any more, so their ranges go before this read is measured against them. Stat'ing the path is gated the way pricing it is: this runs before the command is approved.
+  if (commandPathIsTouchable(hintPath, event)) dropFileLineRangesIfChanged(key)
   const prior = findRangeOverlap(getFileLineRanges(key), start, end)
   if (prior !== null) return sedOverlapHint(hintPath, prior, start, end)
   if (substitute === null) return null

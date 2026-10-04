@@ -129,6 +129,18 @@ function asPyFileEntry(dictKey: string, raw: unknown): FileEntry | null {
   return { path: p, readCount, lastReadAt: lastReadTs * 1000, wasEdited, sizeBytes }
 }
 
+/** Coerce an untrusted value into the persisted per-file range identities (size + mtimeMs), dropping anything malformed. Never throws. */
+function asRangeIdentities(raw: unknown): Array<[string, { size: number; mtimeMs: number }]> {
+  if (!Array.isArray(raw)) return []
+  const out: Array<[string, { size: number; mtimeMs: number }]> = []
+  for (const pair of raw) {
+    if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== 'string') continue
+    const id = pair[1] as Record<string, unknown> | null
+    if (id !== null && typeof id === 'object' && typeof id['size'] === 'number' && typeof id['mtimeMs'] === 'number') out.push([pair[0], { size: id['size'], mtimeMs: id['mtimeMs'] }])
+  }
+  return out
+}
+
 /** Coerce an untrusted value into the persisted line-ranges shape, dropping anything malformed. Never throws. */
 function asLineRanges(raw: unknown): Array<[string, Array<[number, number]>]> {
   if (!Array.isArray(raw)) return []
@@ -228,6 +240,7 @@ function coerce(raw: unknown): SerializedSession {
           Array.isArray(p) && p.length === 2 && typeof p[0] === 'string' && typeof p[1] === 'number',
       )
     : []
+  const rangeIdentities = asRangeIdentities(o['fileLineRangeIdentities'])
   return {
     files,
     hintsShown,
@@ -236,6 +249,7 @@ function coerce(raw: unknown): SerializedSession {
     bashOutputs: asStringPairs(o['bashOutputs']),
     curlDownloads: migrateKeys(asStringPairs(o['curlDownloads']), migrateCurlDownloadKey),
     fileLineRanges: asLineRanges(o['fileLineRanges']),
+    ...(rangeIdentities.length > 0 ? { fileLineRangeIdentities: rangeIdentities } : {}),
     fileServedOutputs: asServedOutputs(o['fileServedOutputs']),
     cliReads,
     bashReruns,
@@ -415,6 +429,12 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
   const clearedServedFiles = new Set(consumedFileServedOutputKeys())
   const diskRanges = rawDiskRanges.filter(([path]) => !clearedRangeFiles.has(path))
   const diskServed = rawDiskServed.filter(([path]) => !clearedServedFiles.has(path))
+  const fileLineRanges = mergeLineRanges(diskRanges, memRanges)
+  // A file's range identity goes and comes with its ranges: the same epoch filter and cleared-file tombstones, this process's stamp over disk's, and none kept for a file left without ranges.
+  const rangedFiles = new Set(fileLineRanges.map(([path]) => path))
+  const rawDiskIdentities = (disk.compactedAt ?? 0) === compactedAt ? (disk.fileLineRangeIdentities ?? []) : []
+  const memIdentities = (mem.compactedAt ?? 0) === compactedAt ? (mem.fileLineRangeIdentities ?? []) : []
+  const fileLineRangeIdentities = mergePairs(rawDiskIdentities.filter(([path]) => !clearedRangeFiles.has(path)), memIdentities).filter(([path]) => rangedFiles.has(path))
   return {
     files: Array.from(byPath.values()),
     hintsShown: Array.from(new Set([...disk.hintsShown, ...mem.hintsShown])),
@@ -422,7 +442,8 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     webFetches: mergePairs(disk.webFetches, mem.webFetches),
     bashOutputs: mergePairs(disk.bashOutputs, mem.bashOutputs),
     curlDownloads: mergeCurlDownloads(disk.curlDownloads, mem.curlDownloads),
-    fileLineRanges: mergeLineRanges(diskRanges, memRanges),
+    fileLineRanges,
+    ...(fileLineRangeIdentities.length > 0 ? { fileLineRangeIdentities } : {}),
     fileServedOutputs: mergeServedOutputs(diskServed, memServed),
     ...(compactedAt > 0 ? { compactedAt } : {}),
     // Same epoch filter as the line ranges above: a CLI read recorded before the winning compaction is not in the model's context any more, so merging it back would resurrect the "you already ran this" note the compaction just cleared.

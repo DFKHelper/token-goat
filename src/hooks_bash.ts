@@ -6,7 +6,7 @@ import { leadWithCommand, docSectionHint, stripUnsafeSuggestions } from './hint_
 import { contextOutput, denyOutput, passOutput, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, getCurlDownloadPath, clearCurlDownload, getFileLineRanges, recordBashStartCwd, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, wasFileReadThisSession } from './session.js'
+import { getBashOutputId, getCurlDownloadPath, clearCurlDownload, dropFileLineRangesIfChanged, getFileLineRanges, recordBashStartCwd, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, wasFileReadThisSession } from './session.js'
 import { resolveIndexPath, displaySafePath, hostPathOfTypedPath, isFileAtIndexKey } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
@@ -347,6 +347,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-cased) — a relative and an absolute reference to the same file must collide under one key, matching how the CLI surgical-read dedup above already resolves paths. Multi-range `sed -n 'A,Bp;C,Dp'` commands are checked and recorded per-range (not as one combined min-max span) so a gap between ranges that was already read separately doesn't get misreported as newly-overlapping, and so each range's own history is tracked.
       hintPaths.push(hintPath)
       const sedDedupKey = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
+      // Ranges served before the file changed on disk describe text that is no longer there, so they go before anything is measured against them, as the Read path drops them.
+      dropFileLineRangesIfChanged(sedDedupKey)
       // A range from line 1 to the last line is `cat` spelled another way, and gets `cat`'s answer: pricing it against a surgical read of the same lines finds no saving, since that read is the whole file too, so `awk 'NR>=1 && NR<=324'` over a 324-line, 54KB skill passed with no word while `cat` of it was refused. Checked before the range is recorded, so a refusal does not count the lines as served.
       const whole = singleLineRangeRead === null ? null : wholeFileRange(filePath, hintPath, hintCwd, ranges, tool)
       if (whole !== null && findRangeOverlap(getFileLineRanges(sedDedupKey), whole.start, whole.end) === null) {
@@ -393,7 +395,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (gcSelectResult !== null) {
     const { filePath, n } = gcSelectResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
-    const gcSelectHint = leadingLinesHint('`Select-Object -First` bypasses read hooks. ', hintPath, 1, n, preHookCwd, pricedSubstitute(hintPath, 1, n))
+    const gcSelectHint = leadingLinesHint('`Select-Object -First` bypasses read hooks. ', hintPath, 1, n, preHookCwd, pricedSubstitute(hintPath, 1, n), event)
     if (gcSelectHint === null) return declineUnpriced(hintPath)
     recordStat('session_hint', 0, 0)
     return pathHint(hintPath, gcSelectHint)
@@ -403,7 +405,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (gcHeadResult !== null) {
     const { filePath, n } = gcHeadResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
-    const gcHeadHint = leadingLinesHint('`Get-Content -TotalCount` bypasses read hooks. ', hintPath, 1, n, preHookCwd, pricedSubstitute(hintPath, 1, n))
+    const gcHeadHint = leadingLinesHint('`Get-Content -TotalCount` bypasses read hooks. ', hintPath, 1, n, preHookCwd, pricedSubstitute(hintPath, 1, n), event)
     if (gcHeadHint === null) return declineUnpriced(hintPath)
     recordStat('session_hint', 0, 0)
     return pathHint(hintPath, gcHeadHint)
@@ -520,7 +522,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (headResult !== null) {
     const { filePath, n } = headResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
-    const headHint = leadingLinesHint('`head` bypasses read hooks. ', hintPath, 1, n, preHookCwd, pricedSubstitute(hintPath, 1, n))
+    const headHint = leadingLinesHint('`head` bypasses read hooks. ', hintPath, 1, n, preHookCwd, pricedSubstitute(hintPath, 1, n), event)
     if (headHint === null) return declineUnpriced(hintPath)
     recordStat('session_hint', 0, 0)
     return pathHint(hintPath, headHint)

@@ -94,6 +94,8 @@ let _fileLineRangesAtLoad = new Map<string, Array<[number, number]>>()
 let _fileServedOutputsAtLoad = new Map<string, string[]>()
 // Folded keys whose ranges this process dropped through resetFileLineRanges. A reset followed by a fresh range for the same file in the same hook call leaves the key present, which `_fileLineRangesAtLoad` alone reads as a plain append, so session_store.ts's union put the dropped ranges straight back from disk.
 let _fileLineRangesReset = new Set<string>()
+// Folded path -> the file's identity (size + mtimeMs) when a range of it was last recorded, kept beside `_fileLineRanges` whether or not the file has a session entry. `FileEntry.rangeFileIdentity` is stamped only on an existing entry, and a file read only through `sed -n`/`head` has none, so nothing could tell that its ranges had outlived a change made on disk outside the session.
+let _fileLineRangeIdentities = new Map<string, { size: number; mtimeMs: number }>()
 
 // Unix-ms of the most recent context compaction (0 = never compacted this session). After Claude Code compacts, the model's context no longer holds any file content it read earlier, so every read whose `lastReadAt` predates this stamp must be treated as NOT read -- see `wasFileReadThisSession`. Stored as a monotonically increasing scalar rather than resetting each entry's `readCount` to 0 because session_store.ts's `mergeFileEntry` reconciles `readCount` as "freshest disk count + this process's own increments since load", so an in-memory reset to 0 contributes a 0 delta and the disk value is handed straight back -- the reset would be silently resurrected across concurrent hook processes. A max-merged scalar has no such resurrection path.
 let _compactedAt = 0
@@ -206,6 +208,7 @@ export function recordFileEdit(filePath: string): void {
   const normalized = normalizePath(filePath)
   const key = resolveFilesKey(normalized)
   _fileLineRanges.delete(foldPath(normalized))
+  _fileLineRangeIdentities.delete(foldPath(normalized))
   // Deliberately NOT `_fileServedOutputs.delete(...)`: that index is matched on the served bytes, never on line position, so an edit needs no invalidation here. A line the edit rewrote stops matching on its own; a line it left alone was still served verbatim this session, and dropping the whole file's history throws that evidence away for the (usually large) untouched remainder -- measured as repeated whole re-reads of one file's opening block across an edit-read-edit loop.
   const prev = _files.get(key)
   if (prev === undefined) {
@@ -248,6 +251,7 @@ export function markCompacted(now: number = Date.now()): void {
   if (now <= _compactedAt) return
   _compactedAt = now
   _fileLineRanges = new Map()
+  _fileLineRangeIdentities = new Map()
   // Same assumption at whole-body granularity: after compaction the served text is no longer in context, so it can no longer justify withholding a later read.
   _fileServedOutputs = new Map()
   // The same, for the exact-repeat CLI-read ledger: a `token-goat read` the model ran before the compaction is no longer in its context, so a repeat is not a re-run of something it still holds.
@@ -574,17 +578,25 @@ export function recordFileLineRange(filePath: string, start: number, end: number
   const key = foldPath(normalized)
   const entryKey = resolveFilesKey(normalized)
   const entry = _files.get(entryKey)
-  const identity = statIdentity(normalized)
-  const prior = entry?.rangeFileIdentity
   // The ranges on record were served while the file had the identity stamped beside them. Re-stamping it for this range without dropping them would let the repeated-range deny in hooks_read.ts vouch for text the model was never shown, since every later read of any other window also refreshes the snapshot it diffs against.
-  if (prior !== undefined && identity !== undefined && (prior.size !== identity.size || prior.mtimeMs !== identity.mtimeMs)) resetFileLineRanges(normalized)
+  const identity = dropFileLineRangesIfChanged(normalized)
   const ranges = _fileLineRanges.get(key) ?? []
   if (!ranges.some(([s, e]) => s === start && e === end)) {
     ranges.push([start, end])
     if (ranges.length > MAX_RANGES_PER_FILE) ranges.splice(0, ranges.length - MAX_RANGES_PER_FILE)
     _fileLineRanges.set(key, ranges)
   }
+  if (identity) _fileLineRangeIdentities.set(key, identity)
   if (entry && identity) _files.set(entryKey, { ...entry, rangeFileIdentity: identity })
+}
+
+/** Drop `filePath`'s recorded line ranges when the file no longer has the size and mtime it had when they were recorded, and return its current identity (undefined when it cannot be stat'd). The Bash pre hook calls this before it measures a `sed -n`/`head` read against those ranges, as {@link recordFileLineRange} does before it adds one: measured first, a re-read of lines changed outside the session was told to recall them from earlier output. */
+export function dropFileLineRangesIfChanged(filePath: string): { size: number; mtimeMs: number } | undefined {
+  const normalized = normalizePath(filePath)
+  const identity = statIdentity(normalized)
+  const prior = _fileLineRangeIdentities.get(foldPath(normalized)) ?? _files.get(resolveFilesKey(normalized))?.rangeFileIdentity
+  if (prior !== undefined && identity !== undefined && (prior.size !== identity.size || prior.mtimeMs !== identity.mtimeMs)) resetFileLineRanges(normalized)
+  return identity
 }
 
 /** Inclusive line ranges of `filePath` already served via sed this session (empty if none). */
@@ -596,6 +608,7 @@ export function getFileLineRanges(filePath: string): ReadonlyArray<readonly [num
 export function resetFileLineRanges(filePath: string): void {
   const key = foldPath(normalizePath(filePath))
   _fileLineRanges.delete(key)
+  _fileLineRangeIdentities.delete(key)
   _fileLineRangesReset.add(key)
 }
 
@@ -691,6 +704,8 @@ export interface SerializedSession {
   bashReruns?: string[]
   curlDownloads: Array<[string, string]>
   fileLineRanges?: Array<[string, Array<[number, number]>]>
+  /** path -> the file's size and mtime when a range of it was last recorded. See `_fileLineRangeIdentities`. Optional: sessions written before this field existed simply have none. */
+  fileLineRangeIdentities?: Array<[string, { size: number; mtimeMs: number }]>
   /** path -> bash-output ids whose body this session was shown as a read of that file, oldest first. Optional: sessions written before this field existed simply have none. */
   fileServedOutputs?: Array<[string, string[]]>
   cliReads?: string[]
@@ -721,6 +736,7 @@ export function exportSessionState(): SerializedSession {
     bashReruns: Array.from(_bashReruns),
     curlDownloads: Array.from(_curlDownloads.entries()),
     fileLineRanges: Array.from(_fileLineRanges.entries()),
+    ...(_fileLineRangeIdentities.size > 0 ? { fileLineRangeIdentities: Array.from(_fileLineRangeIdentities.entries()) } : {}),
     ...(_fileServedOutputs.size > 0 ? { fileServedOutputs: Array.from(_fileServedOutputs.entries()) } : {}),
     cliReads: Array.from(_cliReads),
     pendingLargeFileHints: Array.from(_pendingLargeFileHints.entries()),
@@ -752,6 +768,7 @@ export function importSessionState(s: SerializedSession): void {
   _fileLineRanges = new Map(s.fileLineRanges ?? [])
   _fileLineRangesAtLoad = new Map(_fileLineRanges)
   _fileLineRangesReset = new Set()
+  _fileLineRangeIdentities = new Map(s.fileLineRangeIdentities ?? [])
   _fileServedOutputs = new Map(s.fileServedOutputs ?? [])
   _fileServedOutputsAtLoad = new Map(_fileServedOutputs)
   _cliReads = new Set(s.cliReads ?? [])
@@ -782,6 +799,7 @@ registerReset(() => {
   _fileLineRanges = new Map()
   _fileLineRangesAtLoad = new Map()
   _fileLineRangesReset = new Set()
+  _fileLineRangeIdentities = new Map()
   _fileServedOutputs = new Map()
   _fileServedOutputsAtLoad = new Map()
   _cliReads = new Set()

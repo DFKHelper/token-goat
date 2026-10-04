@@ -113,6 +113,13 @@ const SESSION_FIELD_COVERAGE: ReadonlyMap<string, FieldCoverage> = new Map([
     },
   ],
   [
+    'fileLineRangeIdentities',
+    {
+      coverage: 'structural-no-free-text',
+      reason: 'Keyed by file path, value is the numeric { size, mtimeMs } the file had when its line ranges were recorded -- no free text.',
+    },
+  ],
+  [
     'fileServedOutputs',
     {
       coverage: 'structural-no-free-text',
