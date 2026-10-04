@@ -73,6 +73,7 @@ function signedImageDigest(buf, signedData) {
   const head = /^02 31 30( a0)?( a1)? 31/.exec(tags)
   if (head === null) return 'is not version, digest algorithms, content, optional certificates and CRLs, then signers'
   if (head[0].length !== tags.length) return 'holds bytes after its signers, which the signature does not cover'
+  if (!/^0[1345]$/.test(buf.subarray(parts[0].start, parts[0].end).toString('hex'))) return 'has a version that is not one of the four RFC 5652 gives SignedData'
   const encap = derShaped(buf, parts[2], /^06 a0$/)
   if (encap === undefined) return 'has encapsulated content that is not exactly a content type and one [0] content'
   if (!buf.subarray(encap[0].start, encap[0].end).equals(OID_SPC_INDIRECT_DATA)) return 'does not sign Authenticode indirect data'
@@ -86,7 +87,9 @@ function signedImageDigest(buf, signedData) {
   const signers = derChildren(buf, parts[parts.length - 1]) ?? []
   if (signers.length === 0) return 'has no signer'
   if (signers.length > 1) return `has ${signers.length} signers where Authenticode allows one`
-  if (signers[0].tag !== 0x30 || derShaped(buf, signers[0], /^02 (30|80) 30 a0 30 04( a1)?$/) === undefined) return 'has a signer that is not version, signer identifier, digest algorithm, signed attributes, signature algorithm, signature and optional unsigned attributes'
+  const signer = signers[0].tag === 0x30 ? derShaped(buf, signers[0], /^02 (30|80) 30 a0 30 04( a1)?$/) : undefined
+  if (signer === undefined) return 'has a signer that is not version, signer identifier, digest algorithm, signed attributes, signature algorithm, signature and optional unsigned attributes'
+  if (buf.subarray(signer[0].start, signer[0].end).toString('hex') !== (signer[1].tag === 0x30 ? '01' : '03')) return 'has a signer whose version is not 1 for an issuer and serial number or 3 for a key identifier'
   return { algorithm, digest: buf.subarray(digest.start, digest.end) }
 }
 

@@ -56,7 +56,7 @@ function signerInfo(fields: readonly Buffer[] = SIGNER_FIELDS): Buffer {
 
 type Nested = 'encap' | 'content' | 'indirect' | 'digestInfo' | 'algorithm'
 
-type Envelope = { algorithm?: Buffer; parameters?: Buffer; contentType?: Buffer; digestTag?: number; signers?: Buffer; certificates?: boolean | Buffer[]; longForm?: boolean; afterSigners?: Buffer; inside?: Partial<Record<Nested, Buffer>> }
+type Envelope = { version?: Buffer; algorithm?: Buffer; parameters?: Buffer; contentType?: Buffer; digestTag?: number; signers?: Buffer; certificates?: boolean | Buffer[]; longForm?: boolean; afterSigners?: Buffer; inside?: Partial<Record<Nested, Buffer>> }
 
 /** An Authenticode ContentInfo signing `digest`: SignedData { version, digestAlgorithms, encapContentInfo { SPC_INDIRECT_DATA, [0] SpcIndirectDataContent { SpcAttributeTypeAndOptionalValue { SPC_PE_IMAGE_DATA, SpcPeImageData }, DigestInfo { algorithm, digest } } }, [0] certificates and [1] crls when asked (or the elements `certificates` lists, verbatim), signerInfos }. The signer is one SignerInfo of SIGNER_FIELDS unless `signers` gives the SET's content, and `inside` appends bytes at the end of the named nested element. */
 function authenticodeContentInfo(digest: Buffer, opts: Envelope = {}): Buffer {
@@ -68,7 +68,7 @@ function authenticodeContentInfo(digest: Buffer, opts: Envelope = {}): Buffer {
   const indirect = tlv(0x30, Buffer.concat([imageData, digestInfo, extra('indirect')]), long)
   const encap = tlv(0x30, Buffer.concat([opts.contentType ?? OID_SPC_INDIRECT_DATA, tlv(0xa0, Buffer.concat([indirect, extra('content')]), long), extra('encap')]), long)
   const extras = opts.certificates === true ? [tlv(0xa0, tlv(0x30, digestInfo)), tlv(0xa1, tlv(0x30, [0x02, 0x01, 0x00]))] : opts.certificates || []
-  const signedData = tlv(0x30, Buffer.concat([Buffer.from([0x02, 0x01, 0x01]), tlv(0x31, algorithm), encap, ...extras, tlv(0x31, opts.signers ?? signerInfo()), opts.afterSigners ?? Buffer.alloc(0)]), long)
+  const signedData = tlv(0x30, Buffer.concat([opts.version ?? Buffer.from([0x02, 0x01, 0x01]), tlv(0x31, algorithm), encap, ...extras, tlv(0x31, opts.signers ?? signerInfo()), opts.afterSigners ?? Buffer.alloc(0)]), long)
   return tlv(0x30, Buffer.concat([Buffer.from(OID_SIGNED_DATA), tlv(0xa0, signedData, long)]), long)
 }
 
@@ -484,7 +484,22 @@ describe('peSignatureProblem (FORMAT-DERIVED)', () => {
     expect(problem(tlv(0x31, Buffer.concat(SIGNER_FIELDS)))).toBe(shape)
     expect(problem(signerInfo([...SIGNER_FIELDS, unsigned]))).toBeUndefined()
     // A [0] subjectKeyIdentifier in place of the IssuerAndSerialNumber, the other SignerIdentifier choice.
-    expect(problem(signerInfo([SIGNER_FIELDS[0]!, tlv(0x80, Buffer.alloc(20, 0x11)), ...SIGNER_FIELDS.slice(2)]))).toBeUndefined()
+    expect(problem(signerInfo([Buffer.from([0x02, 0x01, 0x03]), tlv(0x80, Buffer.alloc(20, 0x11)), ...SIGNER_FIELDS.slice(2)]))).toBeUndefined()
+  })
+
+  it('refuses a SignedData or SignerInfo version RFC 5652 does not give it, including a padded one that would carry bytes', () => {
+    const problem = (opts: Envelope): string | undefined => peSignatureProblem(withCertificateTable(syntheticPe(IMAGE_FILE_MACHINE_AMD64), opts), IMAGE_FILE_MACHINE_AMD64)
+    const signedData = 'has a WIN_CERTIFICATE whose signedData has a version that is not one of the four RFC 5652 gives SignedData'
+    const signer = 'has a WIN_CERTIFICATE whose signedData has a signer whose version is not 1 for an issuer and serial number or 3 for a key identifier'
+    const keyId = tlv(0x80, Buffer.alloc(20, 0x11))
+    // RFC 5652 section 5.1: SignedData is version 1, 3, 4 or 5; section 5.3: a SignerInfo is 1 with an IssuerAndSerialNumber and 3 with a SubjectKeyIdentifier.
+    for (const v of [1, 3, 4, 5]) expect(problem({ version: Buffer.from([0x02, 0x01, v]) })).toBeUndefined()
+    for (const v of [0, 2, 6]) expect(problem({ version: Buffer.from([0x02, 0x01, v]) })).toBe(signedData)
+    expect(problem({ version: tlv(0x02, [0x00, 0x01]) })).toBe(signedData)
+    expect(problem({ version: tlv(0x02, Buffer.concat([Buffer.from([0x01]), Buffer.alloc(1024, 0x41)])) })).toBe(signedData)
+    expect(problem({ signers: signerInfo([Buffer.from([0x02, 0x01, 0x03]), ...SIGNER_FIELDS.slice(1)]) })).toBe(signer)
+    expect(problem({ signers: signerInfo([SIGNER_FIELDS[0]!, keyId, ...SIGNER_FIELDS.slice(2)]) })).toBe(signer)
+    expect(problem({ signers: signerInfo([tlv(0x02, Buffer.concat([Buffer.from([0x01]), Buffer.alloc(1024, 0x41)])), ...SIGNER_FIELDS.slice(1)]) })).toBe(signer)
   })
 
   it('refuses a constructed element anywhere in the signature, unsigned parts included, whose content is not whole elements', () => {
