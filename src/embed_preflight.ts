@@ -120,5 +120,5 @@ export function offlineEmbedNotice(fileCount: string, rootDir?: string): string 
       : state.layer === 'project'
         ? `${displaySafeText(state.path)} sets network.offline`
         : 'network.offline is on in config.toml'
-  return `token-goat: index: ${fileCount} not embedded: the embedding model is not downloaded and ${holder}, so nothing will download it. symbol, read, outline and section work now; semantic falls back to keyword search. To embed them, unset it so the worker can download the model, or copy the pinned model files into ${modelDir()}; then run \`token-goat index\` again.`
+  return `token-goat: index: ${fileCount} not embedded: the embedding model is not downloaded and ${holder}, so nothing will download it. symbol, read, outline and section work now; semantic falls back to keyword search. To embed them, unset it so the model can be downloaded, or copy the pinned model files into ${modelDir()}; then run \`token-goat index\` again.`
 }

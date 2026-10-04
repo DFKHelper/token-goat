@@ -1,13 +1,13 @@
 /** `token-goat index` on a real repository: once the foreground embeds have used their time budget, the files still waiting are parsed but left for the background worker, which is started, and the user is told how to wait for them instead. Embedding on the bundled WebAssembly runtime runs at about ten chunks a second, so before this a repository of a few thousand files kept `index` running for hours, and the release smoke test that runs `index .` on this repository never finished. Provenance: HAND-DERIVED. The embedder is replaced by one that takes a fixed time per file, so the expected split is computed from that time and the budget, not read off the command's output. */
 
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { invalidateConfigCache } from '../src/config.js'
 import { canonicalize } from '../src/project.js'
+import { indexableDir } from './helpers/temp-config.js'
 
 import type * as ParserModule from '../src/parser.js'
 import type * as WorkerLifecycleModule from '../src/worker_lifecycle.js'
@@ -56,9 +56,9 @@ afterAll(() => {
   invalidateConfigCache()
 })
 
-/** A fresh non-git project of FILE_COUNT indexable files, so every run starts with nothing indexed. */
+/** A fresh non-git project of FILE_COUNT indexable files, so every run starts with nothing indexed. It sits outside the OS temp dir: the worker never embeds a file there, so `index` embeds a project under it in full whatever the budget (tests/index_temp_project_embeds_inline.test.ts). */
 function freshProject(): string {
-  const dir = canonicalize(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-embedbudget-'))))
+  const dir = canonicalize(fs.realpathSync.native(indexableDir()))
   fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"embed-budget-fixture"}\n')
   for (let i = 0; i < SOURCE_FILES; i += 1) fs.writeFileSync(path.join(dir, `mod${i}.ts`), `export function handler${i}(n: number): number {\n  return n + ${i}\n}\n`)
   return dir

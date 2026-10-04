@@ -10,6 +10,7 @@ import { invalidateConfigCache } from '../src/config.js'
 import { modelDir } from '../src/embed_model.js'
 import { nodeFetchHonoursEnvProxy } from '../src/env_proxy.js'
 import { canonicalize } from '../src/project.js'
+import { indexableDir } from './helpers/temp-config.js'
 
 import type * as EmbeddingsModule from '../src/embeddings.js'
 import type * as ParserModule from '../src/parser.js'
@@ -41,6 +42,8 @@ const { WARM_COMMAND } = await import('../src/embed_preflight.js')
 const { downloadFailureRecordPath } = await import('../src/model_download_gate.js')
 
 const TMP = canonicalize(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-semdefer-'))))
+// The worker never embeds a file under the OS temp dir, so `index` hands a deferred embed to it only for a project outside it (tests/index_temp_project_embeds_inline.test.ts).
+const INDEXABLE = canonicalize(fs.realpathSync.native(indexableDir()))
 const SAVED = ['TOKEN_GOAT_EMBEDDINGS_ENABLED', 'TOKEN_GOAT_MODEL_CACHE_DIR', 'HTTPS_PROXY', 'NODE_USE_ENV_PROXY'] as const
 const prev: Partial<Record<(typeof SAVED)[number], string | undefined>> = {}
 
@@ -52,7 +55,7 @@ beforeAll(() => {
   // A port nothing listens on: nothing here should connect, and if something does it fails at once rather than reaching the internet.
   process.env['HTTPS_PROXY'] = 'http://127.0.0.1:9'
   delete process.env['NODE_USE_ENV_PROXY']
-  fs.writeFileSync(path.join(TMP, 'auth.ts'), 'export function refreshCredential(id: string): string {\n  return id\n}\n')
+  for (const dir of [TMP, INDEXABLE]) fs.writeFileSync(path.join(dir, 'auth.ts'),'export function refreshCredential(id: string): string {\n  return id\n}\n')
 })
 
 afterAll(() => {
@@ -63,8 +66,8 @@ afterAll(() => {
   }
 })
 
-/** Run the CLI from inside the fixture directory, collecting what it prints. */
-async function runCli(args: string[]): Promise<{ warnings: string[]; stderr: string }> {
+/** Run the CLI from inside a fixture directory (the temp-dir one unless told otherwise), collecting what it prints. */
+async function runCli(args: string[], dir: string = TMP): Promise<{ warnings: string[]; stderr: string }> {
   const warnings: string[] = []
   const errChunks: string[] = []
   const warn = vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => {
@@ -77,7 +80,7 @@ async function runCli(args: string[]): Promise<{ warnings: string[]; stderr: str
   })
   const exitCode = process.exitCode
   const cwd = process.cwd()
-  process.chdir(TMP)
+  process.chdir(dir)
   try {
     await run(['node', 'token-goat', ...args])
   } finally {
@@ -109,7 +112,7 @@ describe.skipIf(!nodeFetchHonoursEnvProxy())('semantic with a proxy the process 
   })
 
   it('index parses every file, embeds none of them here, and hands the embedding to the worker', async () => {
-    const { stderr } = await runCli(['index', '--walk'])
+    const { stderr } = await runCli(['index', '--walk'], INDEXABLE)
     expect(indexFileEmbeddings).not.toHaveBeenCalled()
     expect(ensureWorkerAlive).toHaveBeenCalled()
     expect(stderr).toContain('1 file not embedded yet')

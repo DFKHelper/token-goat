@@ -30,7 +30,7 @@ import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { detectLanguageOfFile } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { displaySafeText, hostPathOfTypedPath, resolveIndexPath, displaySafeJson } from './paths.js'
-import { resolveProjectRoot } from './project.js'
+import { isUnderSystemTemp, resolveProjectRoot } from './project.js'
 import { runParallelSearch } from './search/search_cli.js'
 import { ALL_CHANNELS, type SearchChannel } from './search/types.js'
 import { embedPolicyResolver, runDetachedWorkerDaemon } from './worker.js'
@@ -310,6 +310,7 @@ export async function cmdIndex(
   const embedPolicy = embedPolicyResolver()
   let indexed = 0
   let embedsDeferred = 0
+  let embedsDeferredNoWorker = 0
   // Embedding runs at roughly ten chunks a second on the bundled WebAssembly runtime, so embedding a repository of a few thousand files inline kept this command running for hours. Once the inline embeds have used their time budget, the rest are put on the worker's dirty queue, the path `install` already uses. The first embed is not counted because it includes loading, and on a first run downloading, the model. --embed waits for every file here instead.
   const embedBudgetMs = opts.embed === true ? Number.POSITIVE_INFINITY : (opts.embedBudgetMs ?? INDEX_INLINE_EMBED_BUDGET_MS)
   let embedsInline = 0
@@ -423,11 +424,17 @@ export async function cmdIndex(
     }
     // Re-read the stamp the parse above just wrote rather than trusting the one captured before it: writeParseResult clears the carried embed_sha when a reparse moved this file's embedding boundaries (see embeddingBoundariesMoved), and `embedUnchanged` was computed from the pre-parse row. Without this the re-embed is deferred to whatever run happens next, so a single `token-goat index` after an adapter change leaves the file's vectors cut on boundaries that no longer exist.
     const embedFresh = parseUnchanged ? embedUnchanged : embedFreshFor(getFileEntry(key, dbPath)?.embedSha)
+    // The worker's dirty queue and its backlog sweep both pass over a path under the OS temp dir (see isUnderSystemTemp), so a file there that this run leaves unembedded stays out of `semantic` for good. Such a file is embedded here whatever the budget, and when only the worker could download the model it is reported without promising that the worker will embed it.
+    const workerWillEmbed = !embedFresh && depsAvailable && !isUnderSystemTemp(key)
     // A model that is not on this machine and cannot be fetched now (offline, the last download failed recently, or this process would go around the machine's proxy to get it) makes every embed below fail the same way, one file at a time. Skipping leaves embed_sha unset, so the worker, or the next run, embeds the file once the download succeeds. Only a file that would really download is deferred: with embeddings off, or the embedding packages absent, the call below writes the terminal marker that keeps the file from being retried, and that needs no download.
     if (!embedFresh && depsAvailable && foregroundDownloadDeferred()) {
-      embedsDeferred += 1
-      leftForWorker.push(key)
-    } else if (!embedFresh && depsAvailable && embedsInline > 0 && embedSpentMs >= embedBudgetMs) {
+      if (workerWillEmbed) {
+        embedsDeferred += 1
+        leftForWorker.push(key)
+      } else {
+        embedsDeferredNoWorker += 1
+      }
+    } else if (workerWillEmbed && embedsInline > 0 && embedSpentMs >= embedBudgetMs) {
       // Left with embed_sha unset and handed to the worker below. Only a file that would really embed is handed over: with embeddings off or their packages absent, the call below writes a terminal marker in no time and must still run.
       embedsBackground += 1
       leftForWorker.push(key)
@@ -467,6 +474,10 @@ export async function cmdIndex(
     const offlineNotice = offlineEmbedNotice(countNoun(embedsDeferred, 'file'), root)
     if (offlineNotice !== null) err(offlineNotice)
     else err(`token-goat: index: ${countNoun(embedsDeferred, 'file')} not embedded yet: the embedding model is not downloaded. The background worker downloads it and embeds them; to do it now, run \`${WARM_COMMAND}\` and then \`token-goat index\` again.`)
+  }
+  if (embedsDeferredNoWorker > 0) {
+    const files = countNoun(embedsDeferredNoWorker, 'file')
+    err(offlineEmbedNotice(files, root) ?? `token-goat: index: ${files} not embedded: the embedding model is not downloaded, and the background worker does not embed files under the system temp directory. To embed them, run \`${WARM_COMMAND}\` and then \`token-goat index\` again.`)
   }
   if (embedsBackground > 0) {
     ensureWorkerAlive()
