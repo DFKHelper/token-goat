@@ -24,6 +24,7 @@ import {
 } from './openapi_query.js'
 import { emitGuarded, guardJsonRows, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
+import { formatCommandError } from './command_error.js'
 import { emit, emitErr } from './emit.js'
 import { headElidedNotice, traversalLimitNotice } from './query_notices.js'
 import { fenceUntrusted } from './untrusted_fence.js'
@@ -194,18 +195,18 @@ export interface JsonQueryCliOptions {
 function readQueryInput(file: string): string | null {
   if (file === '-') {
     if (process.stdin.isTTY) {
-      emitErr('stdin is a terminal: pipe a document in or pass a file')
+      emitErr(formatCommandError('stdin is a terminal: pipe a document in or pass a file'))
       return null
     }
     let text: string
     try {
       text = fs.readFileSync(0, 'utf8')
     } catch (e) {
-      emitErr(`Could not read stdin: ${e instanceof Error ? e.message : String(e)}`)
+      emitErr(formatCommandError(`Could not read stdin: ${e instanceof Error ? e.message : String(e)}`))
       return null
     }
     if (text.trim() === '') {
-      emitErr('stdin was empty: pipe a document in or pass a file')
+      emitErr(formatCommandError('stdin was empty: pipe a document in or pass a file'))
       return null
     }
     return text
@@ -223,7 +224,7 @@ function runQueryCommand(
   const text = readQueryInput(opts.file)
   if (text === null) {
     if (opts.file !== '-') {
-      emitErr(`Could not read: ${opts.file}`)
+      emitErr(formatCommandError(`Could not read: ${opts.file}`))
     }
     return 1
   }
@@ -232,7 +233,7 @@ function runQueryCommand(
   try {
     data = parse(text)
   } catch {
-    emitErr(`Failed to parse ${formatLabel}: ${opts.file === '-' ? '<stdin>' : opts.file}`)
+    emitErr(formatCommandError(`Failed to parse ${formatLabel}: ${opts.file === '-' ? '<stdin>' : opts.file}`))
     return 1
   }
 
@@ -240,7 +241,7 @@ function runQueryCommand(
   try {
     head = opts.head !== undefined ? requireNonNegativeStrictInt('--head', opts.head) : undefined
   } catch (e) {
-    emitErr(extractErrorMessage(e))
+    emitErr(formatCommandError(e))
     return 1
   }
 
@@ -265,7 +266,7 @@ function runQueryCommand(
         emit(jsonText)
         recordReadStat(kind, fullSourceBytes, jsonText, detail)
       }
-      emitErr(displaySafeText(noMatchMessage(opts.path, result)))
+      emitErr(formatCommandError(noMatchMessage(opts.path, result)))
       return 1
     }
     const limited = head !== undefined ? result.items.slice(0, head) : result.items
@@ -290,7 +291,7 @@ function runQueryCommand(
     }
     return 0
   } catch (e) {
-    emitErr(extractErrorMessage(e))
+    emitErr(formatCommandError(e))
     return 1
   }
 }
@@ -386,14 +387,14 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
   const text = readQueryInput(opts.file)
   if (text === null) {
     if (opts.file !== '-') {
-      emitErr(`Could not read: ${opts.file}`)
+      emitErr(formatCommandError(`Could not read: ${opts.file}`))
     }
     return 1
   }
 
   const queryPath = (opts.xpath ?? opts.path ?? '').trim()
   if (!queryPath) {
-    emitErr('Must provide a path or --xpath <expression>')
+    emitErr(formatCommandError('Must provide a path or --xpath <expression>'))
     return 1
   }
 
@@ -401,7 +402,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
   try {
     head = opts.head !== undefined ? requireNonNegativeStrictInt('--head', opts.head) : undefined
   } catch (e) {
-    emitErr(extractErrorMessage(e))
+    emitErr(formatCommandError(e))
     return 1
   }
 
@@ -417,7 +418,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
           emit(jsonText)
           recordReadStat('xml_query', fullSourceBytes, jsonText, detail)
         } else {
-          emitErr(`No attributes matched path: '${displaySafeText(queryPath)}'`)
+          emitErr(formatCommandError(`No attributes matched path: '${queryPath}'`))
         }
         return 1
       }
@@ -519,7 +520,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
         emit(jsonText)
         recordReadStat('xml_query', fullSourceBytes, jsonText, detail)
       } else {
-        emitErr(`No elements matched path: '${displaySafeText(queryPath)}'`)
+        emitErr(formatCommandError(`No elements matched path: '${queryPath}'`))
       }
       return 1
     }
@@ -588,7 +589,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
     }
     return 0
   } catch (e) {
-    emitErr(extractErrorMessage(e))
+    emitErr(formatCommandError(e))
     return 1
   }
 }

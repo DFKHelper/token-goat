@@ -4816,7 +4816,7 @@ describe('read_commands', () => {
       let code = -1
       const { stderr } = capture(() => { code = runYamlQuery({ file: f, path: 'a' }) })
       expect(code).toBe(1)
-      expect(stderr).toBe("path not found: key 'a' does not exist on null value\n")
+      expect(stderr).toBe("token-goat: path not found: key 'a' does not exist on null value\n")
     })
 
     it('returns 1 with a clear error for an out-of-range array index', () => {

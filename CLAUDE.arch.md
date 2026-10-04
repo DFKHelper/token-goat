@@ -417,6 +417,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/cli_structured.ts`](src/cli_structured.ts) | Exports: `cmdCsvQuery`, `cmdCsvProfile`, `cmdJsonOutline`, `cmdJsonQuery` |
 | [`src/cli_upgrade.ts`](src/cli_upgrade.ts) | Upgrade command for token-goat. |
 | [`src/cli_waste.ts`](src/cli_waste.ts) | CLI handler for `token-goat waste`. |
+| [`src/command_error.ts`](src/command_error.ts) | The one stderr rendering of a command failure (`token-goat: <message>`) and the error class command handlers throw to reach it. |
 | [`src/command_intent.ts`](src/command_intent.ts) | Intent-based suggestions for command names that don't exist. |
 | [`src/config_commands.ts`](src/config_commands.ts) | D3 commands: config, project, compact-doc, fetch-image, history. |
 | [`src/config_defaults.ts`](src/config_defaults.ts) | Default configuration values and factory functions for token-goat. |

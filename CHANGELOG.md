@@ -25,6 +25,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **The note under a query cut short by `--head` now says "1 more item", not "1 more items".** When `--head` hid exactly one match, `json-query`, `yaml-query`, `xml-query`, `html-query`, `csv-query`, `xlsx-query` and `mcp-output --json-query` reported "1 more items elided" (or "1 more elements", "1 more rows"). The count and its noun now agree.
 
 - **A `json-query`, `yaml-query` or `mcp-output --json-query` search that hit its traversal limit before finding anything now says so.** On a deeply nested or very large document, a `..key` search that stopped at the limit with no matches printed only "these are not necessarily all the matches" with nothing above it. It now says no matches were found before the search stopped, and that the unsearched part may still hold some. The exit code stays 0, since a search cut short is not a definite miss.
+- **`json-query`, `yaml-query` and `xml-query` errors now start with `token-goat:` like other command failures.** A missing key, a fan-out that matched nothing, an unreadable or unparseable file, or a bad `--head` printed a bare message on stderr, so it read as if another program had failed. These errors now go through the same printer as other command failures.
 
 ## [2.9.30] - 2026-10-03
 
