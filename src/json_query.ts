@@ -1,7 +1,7 @@
 /** Narrow structural summary + path-based extraction for `token-goat json-outline` / `json-query`, so a multi-thousand-line JSON document never needs a full `Read` just to answer "what does this contain" or "what's at path X". Deliberately no JSONPath/jq compatibility -- a dot-path with `[n]` index, `[*]` wildcard, and `[field=value]` filter segments covers the common case, matching the project's "no premature abstraction" bar (see csv_query.ts for the same philosophy applied to CSV). `json-query` is the general-purpose sibling of `config-get`'s JSON branch: config-get only resolves a single dotted key to a scalar (no array indexing/wildcard/filter), which is enough for flat config lookups. json-query adds array navigation and filtering on top, for querying JSON data files rather than config. */
 
 import { displaySafeText } from './paths.js'
-import { pushAll } from './util.js'
+import { countNoun, pushAll } from './util.js'
 
 export type JsonValueType = 'null' | 'string' | 'number' | 'boolean' | 'array' | 'object'
 
@@ -521,8 +521,21 @@ function describeValue(value: unknown, withArticle: boolean): string {
 
 function describeReached(inputs: readonly unknown[]): string {
   if (inputs.length === 1) return `the value it reached is ${describeValue(inputs[0], true)}`
-  const labels = [...new Set(inputs.map((v) => describeValue(v, false)))]
-  return `the ${inputs.length} values it reached are ${labels.length === 1 ? `all ${labels[0] as string}` : labels.join(', ')}`
+  const subject = inputs.length === 2 ? 'both values it reached are' : `the ${inputs.length} values it reached are`
+  // Each kind of value once, in first-seen order, with how many there were and the first one (for its "an object" / "an array of 3" spelling when there is only one).
+  const groups = new Map<string, { count: number; first: unknown }>()
+  for (const v of inputs) {
+    const label = describeValue(v, false)
+    const g = groups.get(label)
+    if (g) g.count++
+    else groups.set(label, { count: 1, first: v })
+  }
+  if (groups.size === 1) {
+    const label = [...groups.keys()][0] as string
+    return `${subject} ${inputs.length === 2 ? '' : 'all '}${label}s`
+  }
+  const parts = [...groups].map(([label, g]) => (g.count === 1 ? describeValue(g.first, true) : countNoun(g.count, label)))
+  return `${subject} ${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1] as string}`
 }
 
 /** Why the step `op` produced nothing from `inputs`, worded for a person: the step as written, then what it found there. */

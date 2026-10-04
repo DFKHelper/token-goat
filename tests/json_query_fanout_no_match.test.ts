@@ -13,9 +13,9 @@ const DOC = { items: [{ name: 'a' }, { name: 'b' }], empty: [] as unknown[] }
 
 // Each of these fanned out and then matched nothing, and every front-end printed one empty line with exit 0: indistinguishable from a value that is an empty string, and unlike an unfanned miss, which exits 1.
 const MISSES: Array<[string, RegExp]> = [
-  ['items[*].name | [0]', /\[0\] found nothing to index: the 2 values it reached are all string.*--head 1/],
-  ['items[*] | [1]', /\[1\] found nothing to index: the 2 values it reached are all object.*list\[1\]\.field/],
-  ['items[*].missing', /\.missing found no such key: the 2 values it reached are all object/],
+  ['items[*].name | [0]', /\[0\] found nothing to index: both values it reached are strings.*--head 1/],
+  ['items[*] | [1]', /\[1\] found nothing to index: both values it reached are objects.*list\[1\]\.field/],
+  ['items[*].missing', /\.missing found no such key: both values it reached are objects/],
   ['empty[*]', /\[\*\] found nothing to iterate: the value it reached is an empty array/],
   ['..nokey', /\.\.nokey found no key named 'nokey'/],
   ['items[name=zz]', /\[name=zz\] matched no element: the value it reached is an array of 2/],
@@ -27,6 +27,18 @@ describe('a fanned query that matches nothing says which step came up empty', ()
     expect(res.items).toEqual([])
     expect(res.fanned).toBe(true)
     expect(noMatchMessage(spec, res)).toMatch(why)
+  })
+
+  // HAND-DERIVED: each document's `items` holds the values listed, so what `.nope` reached is read straight off the input.
+  it.each([
+    [{ items: [{}, {}] }, 'both values it reached are empty objects'],
+    [{ items: [{ a: 1 }, { b: 2 }, { c: 3 }] }, 'the 3 values it reached are all objects'],
+    [{ items: [{ a: 1 }] }, 'the value it reached is an object'],
+    [{ items: [{ a: 1 }, 1, 2, 's'] }, 'the 4 values it reached are an object, 2 numbers and a string'],
+    [{ items: [null, []] }, 'both values it reached are null and an empty array'],
+  ])('names what a fan-out reached in agreement with its count (%j)', (doc, reached) => {
+    const res = queryJson(doc, 'items[*].nope')
+    expect(noMatchMessage('items[*].nope', res)).toBe(`no match for 'items[*].nope': .nope found no such key: ${reached}`)
   })
 
   it('applies a piped index to each item, so it still reads one element of each array', () => {
