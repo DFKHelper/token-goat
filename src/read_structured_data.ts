@@ -25,7 +25,7 @@ import {
 import { emitGuarded, guardJsonRows, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
 import { emit, emitErr } from './emit.js'
-import { headElidedNotice } from './query_notices.js'
+import { headElidedNotice, traversalLimitNotice } from './query_notices.js'
 import { fenceUntrusted } from './untrusted_fence.js'
 import { extractErrorMessage, requireNonNegativeStrictInt } from './util.js'
 import {
@@ -282,7 +282,7 @@ function runQueryCommand(
         lines.push(headElidedNotice(totalCount - limited.length, 'item'))
       }
       if (result.truncated) {
-        lines.push(`...(the search stopped early at this tool's traversal limit; these are not necessarily all the matches. Narrow the path to search less of the document.)`)
+        lines.push(traversalLimitNotice(totalCount))
       }
       const plainText = lines.join('\n')
       emitGuarded(plainText, guardTag)

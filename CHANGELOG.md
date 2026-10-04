@@ -24,6 +24,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **The note under a query cut short by `--head` now says "1 more item", not "1 more items".** When `--head` hid exactly one match, `json-query`, `yaml-query`, `xml-query`, `html-query`, `csv-query`, `xlsx-query` and `mcp-output --json-query` reported "1 more items elided" (or "1 more elements", "1 more rows"). The count and its noun now agree.
 
+- **A `json-query`, `yaml-query` or `mcp-output --json-query` search that hit its traversal limit before finding anything now says so.** On a deeply nested or very large document, a `..key` search that stopped at the limit with no matches printed only "these are not necessarily all the matches" with nothing above it. It now says no matches were found before the search stopped, and that the unsearched part may still hold some. The exit code stays 0, since a search cut short is not a definite miss.
+
 ## [2.9.30] - 2026-10-03
 
 Upgrading reparses the index. The parser stamp moves for every language, so each file is read once more. CSS, SCSS, Less, Vue, Svelte and Astro files come back with their full rule and declaration spans, and minified bundles already in the index are removed in the same pass. Every indexed file is also re-embedded once, because the embedding stamp moved with the check that stops a slow embedding run from overwriting newer vectors; Markdown files that open with a front-matter block come back with corrected heading boundaries. The heading-matcher and spreadsheet-redaction fixes below move the parser, Markdown and Excel stamps too, and the same single pass covers them.
