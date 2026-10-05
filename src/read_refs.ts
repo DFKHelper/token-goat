@@ -277,10 +277,15 @@ function renderRefsTargets(
     if (anyFound) recordReadStat('symbol_read', fullSourceBytes, text, opts.spec)
     return anyFound ? 0 : 1
   }
+  // Every target missed, so the call failed: its per-target reasons are the error, written to stderr under one token-goat: line as the single-symbol miss is, never to stdout beside an exit 1. Under --json the map above stays the stdout answer, as writeCommandFailure keeps a --json body.
+  if (!anyFound) {
+    emitErr(formatCommandError(new CliError(lines)))
+    return 1
+  }
   const text = lines.join('\n')
   emitGuarded(text, 'symbol')
-  if (anyFound) recordReadStat('symbol_read', fullSourceBytes, text, opts.spec)
-  return anyFound ? 0 : 1
+  recordReadStat('symbol_read', fullSourceBytes, text, opts.spec)
+  return 0
 }
 
 /** Handle ``token-goat refs <spec>``. A comma-separated spec (`a,b,c` or `file::a,b`) merges the references of several symbols into one call, each group headed by its symbol name; a single symbol keeps the original behavior verbatim via {@link runRefsSingle}. */

@@ -6928,14 +6928,38 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
     expect(refresh.totalCount).toBe(1)
   })
 
-  it('returns exit 1 when no symbol in a multi-spec has any references', () => {
+  // HAND-DERIVED: an exit 1 is a failure, so its reason goes to stderr as one token-goat: error, the way the single-symbol miss and writeCommandFailure's text mode report it; stdout carrying the reason under exit 1 was the defect.
+  it('returns exit 1 when no symbol in a multi-spec has any references, with the reason on stderr and nothing on stdout', () => {
     mockQueryRefs.mockReturnValue([])
-    const { stdout } = capture(() => {
+    const { stdout, stderr } = capture(() => {
       const code = runRefs({ spec: 'nope1,nope2' })
       expect(code).toBe(1)
     })
-    expect(stdout).toContain('nope1: (no references found)')
-    expect(stdout).toContain('nope2: (no references found)')
+    expect(stdout).toBe('')
+    expect(stderr).toBe('token-goat: nope1: (no references found)\nnope2: (no references found)\n')
+  })
+
+  // HAND-DERIVED: the cross-file pair form renders through the same loop, so an all-miss there fails the same way.
+  it('reports an all-miss cross-file pair spec on stderr too', () => {
+    mockQueryRefs.mockReturnValue([])
+    const { stdout, stderr } = capture(() => {
+      const code = runRefs({ spec: 'src/a.ts::nope1,src/b.ts::nope2' })
+      expect(code).toBe(1)
+    })
+    expect(stdout).toBe('')
+    expect(stderr.startsWith('token-goat: ')).toBe(true)
+    expect(stderr).toContain('nope2: (no references found)')
+  })
+
+  // HAND-DERIVED: under --json the per-symbol map stays the stdout answer so it still parses, as writeCommandFailure's --json mode keeps its body there.
+  it('keeps the per-symbol map on stdout under --json when no symbol has references', () => {
+    mockQueryRefs.mockReturnValue([])
+    const { stdout, stderr } = capture(() => {
+      const code = runRefs({ spec: 'nope1,nope2', json: true })
+      expect(code).toBe(1)
+    })
+    expect(Object.keys(JSON.parse(stdout) as Record<string, unknown>)).toEqual(['nope1', 'nope2'])
+    expect(stderr).toBe('')
   })
 
   // `LIMIT 0` in SQL always returns zero rows, so a symbol that genuinely has references would otherwise be reported as "no references found" -- a wrong answer, not just a permissive input. limit: 0 (or negative) must be rejected up front instead of reaching queryRefs, for both the single-symbol path and the multi-symbol merged path.
