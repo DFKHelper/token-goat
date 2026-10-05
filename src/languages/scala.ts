@@ -107,8 +107,24 @@ function startsDeclaration(stripped: string): boolean {
     ENUM_RE.test(stripped) ||
     FUNC_RE.test(stripped) ||
     VAL_RE.test(stripped) ||
-    VAR_RE.test(stripped)
+    VAR_RE.test(stripped) ||
+    extensionClauseTail(stripped) !== null
   )
+}
+
+// What follows a Scala 3 extension clause (`extension (c: Circle)`, `extension [T](xs: List[T])(using o: Ordering[T])`) on its own line: a one-line `def ...`, a `{`, or nothing when its methods sit in the indented block below. Null when the line opens no extension clause, so a value or a call named `extension` is left alone.
+function extensionClauseTail(stripped: string): string | null {
+  if (!/^extension\s*[[(]/.test(stripped)) return null
+  const blanked = stripStringLiterals(stripped, SCALA_STRIP)
+  let i = 'extension'.length
+  let depth = 0
+  for (; i < blanked.length; i++) {
+    const ch = blanked[i]!
+    if (ch === '(' || ch === '[') depth++
+    else if (ch === ')' || ch === ']') depth--
+    else if (depth === 0 && ch !== ' ' && ch !== '\t') break
+  }
+  return depth === 0 ? stripped.slice(i).trim() : null
 }
 
 export function extractScala(
@@ -125,6 +141,8 @@ export function extractScala(
   let mlState: MultilineStringState | null = null
   // Last line that held code, which is where an indentation-syntax body ends once a dedent (or the end of the file) closes it.
   let lastCodeLine = 0
+  // An open extension block: its methods are members of the scope the clause sits in, at the column and brace depth of the block's first line.
+  let extBlock: { indent: number; depth: number; parent: string | undefined; bodyIndent: number | null; bodyDepth: number } | null = null
 
   // Widen an indentation-syntax type to its body. A closing `end Name` marker belongs to the span when it names the type.
   const closeColonFrame = (frame: TypeFrame, endLine: number): void => {
@@ -255,6 +273,27 @@ export function extractScala(
 
     // Methods/functions nested inside a type, or top-level functions.
     const frame = typeStack.length > 0 ? typeStack[typeStack.length - 1]! : null
+
+    // Scala 3 extension methods hang off an `extension (...)` clause, on its line or in a block below it, so neither the line-anchored FUNC_RE nor the type frames reach them; the block ends at the first line back at the clause's column and brace depth.
+    if (extBlock !== null && braceDepth <= extBlock.depth && indent <= extBlock.indent) extBlock = null
+    if (!matched && extBlock !== null) {
+      if (extBlock.bodyIndent === null) {
+        extBlock.bodyIndent = indent
+        extBlock.bodyDepth = braceDepth
+      }
+      const fm = indent === extBlock.bodyIndent && braceDepth === extBlock.bodyDepth ? FUNC_RE.exec(stripped) : null
+      if (fm) symbols.push(makeLineSymbol(filePath, unquoteName(fm[1] ?? ''), 'function', lineNum, stripped.slice(0, 200), extBlock.parent, lines, 'c'))
+      matched = true
+    }
+    const memberSlot = frame === null ? !isIndented : braceDepth - frame.startDepth === 1 || (inColonBody && frame === colonTop)
+    const extTail = !matched && memberSlot ? extensionClauseTail(stripped) : null
+    if (extTail !== null) {
+      const fm = FUNC_RE.exec(extTail)
+      if (fm) symbols.push(makeLineSymbol(filePath, unquoteName(fm[1] ?? ''), 'function', lineNum, stripped.slice(0, 200), frame?.name, lines, 'c'))
+      else extBlock = { indent, depth: braceDepth, parent: frame?.name, bodyIndent: null, bodyDepth: braceDepth }
+      matched = true
+    }
+
     if (!matched && frame !== null) {
       const depthInType = braceDepth - frame.startDepth
       // === 1, not >= 1: a local def inside a method body sits at depthInType 2+ (matches kotlin.ts/csharp.ts, which gate the same way). `inColonBody && frame === colonTop` is the indentation-syntax equivalent of `depthInType === 1`: same brace depth as the declaration, sitting exactly at the body column.
