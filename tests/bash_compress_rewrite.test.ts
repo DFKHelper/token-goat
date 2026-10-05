@@ -400,6 +400,31 @@ describe('compression rewrite (built-bundle e2e)', () => {
     )
   })
 
+  // FORMAT-DERIVED from https://developers.openai.com/codex/rules (a forbidden prefix_rule in CODEX_HOME/rules/*.rules blocks a command whose words start with its pattern): the shipped bundle loads Codex's rules check through its dynamic import before the rewrite decision, so a rule for the original stops the wrapper that would hide it. The payload's cwd is the filesystem root because Codex rules are also read from every .codex folder above the cwd, and the temp directory sits under the developer's own home and its real rules.
+  it('on Codex, rewrites a build command only while no rules file names it', () => {
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-compress-e2e-codex-'))
+    try {
+      fs.mkdirSync(path.join(codexHome, 'rules'))
+      const run = (): { hookSpecificOutput?: { permissionDecision?: string; updatedInput?: { command?: string } } } => {
+        const res = spawnSync(process.execPath, [BUNDLE, 'hook', 'pre_tool_use'], {
+          env: { ...process.env, TOKEN_GOAT_HOME: tgHome, LOCALAPPDATA: tgHome, XDG_DATA_HOME: tgHome, TOKEN_GOAT_HARNESS_OVERRIDE: 'codex', CODEX_HOME: codexHome },
+          input: JSON.stringify({ session_id: 'e2e-compress-codex', hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: path.parse(tgHome).root, tool_input: { command: 'go vet ./...' } }),
+          encoding: 'utf8',
+          cwd: tgHome,
+        })
+        expect(res.status).toBe(0)
+        return (res.stdout.trim() === '' ? {} : JSON.parse(res.stdout)) as ReturnType<typeof run>
+      }
+      const before = run()
+      expect(before.hookSpecificOutput?.permissionDecision).toBe('allow')
+      expect(before.hookSpecificOutput?.updatedInput?.command).toContain('token-goat compress')
+      fs.writeFileSync(path.join(codexHome, 'rules', 'default.rules'), 'prefix_rule(pattern = ["go", "vet"], decision = "forbidden")\n')
+      expect(run().hookSpecificOutput?.updatedInput).toBeUndefined()
+    } finally {
+      fs.rmSync(codexHome, { recursive: true, force: true })
+    }
+  })
+
   it('rewrites a registered test-runner command to its specific filter (batch A)', () => {
     // `npx vitest run` must select the registered `vitest` filter, not the `generic` fallback — proving the batch-A registration survives esbuild bundling and detectFromCommand prefers the specific filter.
     const out = runHook({

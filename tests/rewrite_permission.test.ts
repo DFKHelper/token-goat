@@ -4,9 +4,9 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { decideRewrite, loadPermissionSnapshot, permissionNeutralRewrite, resetPermissionSourceCache, snapshotFromDocs, type RewriteRequest, type SettingsDoc } from '../src/rewrite_permission.js'
+import { decideRewrite, loadCodexRules, loadPermissionSnapshot, permissionNeutralRewrite, resetPermissionSourceCache, snapshotFromDocs, type RewriteRequest, type SettingsDoc } from '../src/rewrite_permission.js'
 import { CAN_JUNCTION } from './helpers/can-symlink.js'
 import { shortNameOf } from './helpers/short-name.js'
 
@@ -411,6 +411,159 @@ describe('loadPermissionSnapshot and permissionNeutralRewrite read the real sett
 
   it('harnesses that never read Claude Code settings get the rewrite with no approval, whatever the files say', () => {
     writeJson(path.join(configDir, 'settings.json'), { permissions: { deny: ['Bash(curl:*)'] } })
-    expect(permissionNeutralRewrite({ command: 'x' }, { ...curl(project), harness: 'codex' })).toEqual({ hookType: 'rewriteInput', updatedInput: { command: 'x' }, approve: false })
+    expect(permissionNeutralRewrite({ command: 'x' }, { ...curl(project), harness: 'opencode' })).toEqual({ hookType: 'rewriteInput', updatedInput: { command: 'x' }, approve: false })
+  })
+})
+
+// FORMAT-DERIVED from https://developers.openai.com/codex/rules (rules/*.rules beside the user's ~/.codex and a project's .codex, prefix_rule fields, the gh pr view example, splitting of plain `&&` chains, whole `bash -lc` evaluation otherwise) and openai/codex codex-rs/execpolicy/src/parser.rs (prefix_rule, network_rule, host_executable builtins): the wrapper hides the original's words from every prefix_rule, so any rule that could match the original stops the rewrite.
+describe('permissionNeutralRewrite on Codex: rules files', () => {
+  let root: string
+  let codexHome: string
+  let project: string
+  const saved = { codex: process.env['CODEX_HOME'], home: process.env['HOME'], profile: process.env['USERPROFILE'] }
+
+  beforeAll(async () => {
+    await loadCodexRules()
+  })
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-perm-codex-'))
+    codexHome = path.join(root, 'codex-home')
+    project = path.join(root, 'proj')
+    fs.mkdirSync(path.join(codexHome, 'rules'), { recursive: true })
+    fs.mkdirSync(path.join(project, 'sub'), { recursive: true })
+    process.env['CODEX_HOME'] = codexHome
+  })
+
+  afterEach(() => {
+    for (const [key, value] of [['CODEX_HOME', saved.codex], ['HOME', saved.home], ['USERPROFILE', saved.profile]] as const) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  const rules = (text: string, dir = path.join(codexHome, 'rules'), name = 'default.rules'): void => {
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, name), text)
+  }
+  const codex = (command: string, cwd = project, kind: RewriteRequest['kind'] = 'shell-wrap') => permissionNeutralRewrite({ command: wrap(command) }, { kind, harness: 'codex', mode: undefined, cwd, original: command, rewritten: wrap(command) })
+  const shipped = (command: string) => ({ hookType: 'rewriteInput', updatedInput: { command: wrap(command) }, approve: false })
+
+  it('with no rules files every command is rewritten', () => {
+    expect(codex('curl https://example.com')).toEqual(shipped('curl https://example.com'))
+  })
+
+  it('a forbidden, prompt or allow rule matching the original stops the rewrite, and other commands still ship', () => {
+    for (const decision of ['forbidden', 'prompt', 'allow']) {
+      rules(`prefix_rule(pattern = ["curl"], decision = "${decision}")\n`)
+      expect(codex('curl https://example.com')).toBeNull()
+      expect(codex('go build ./...')).toEqual(shipped('go build ./...'))
+    }
+  })
+
+  it('reads the documented example with comments, alternatives, examples and trailing commas', () => {
+    rules([
+      '# Prompt before running commands with the prefix `gh pr view` outside the sandbox.',
+      'prefix_rule(',
+      '    # The prefix to match.',
+      '    pattern = ["gh", "pr", ["view", "list"]],',
+      '    decision = "prompt",',
+      '    justification = "Viewing PRs is allowed with approval",',
+      '    match = [',
+      '        "gh pr view 7888",',
+      '        "gh pr view --repo openai/codex",',
+      '    ],',
+      '    not_match = [',
+      '        "gh pr --repo openai/codex view 7888",',
+      '    ],',
+      ')',
+      "network_rule(host = 'example.com', protocol = 'https', decision = 'deny')",
+      'host_executable(name = "git", paths = ["/usr/bin/git"])',
+      '',
+    ].join('\n'))
+    expect(codex('gh pr view 7888')).toBeNull()
+    expect(codex('gh pr list --state open')).toBeNull()
+    expect(codex('gh issue list')).toEqual(shipped('gh issue list'))
+  })
+
+  it('a rule matching any command of a chain stops the rewrite, as Codex splits plain && chains', () => {
+    rules('prefix_rule(pattern = ["rm", "-rf"], decision = "forbidden")\n')
+    expect(codex('git add . && rm -rf build')).toBeNull()
+    expect(codex('git add . && rm build.log')).toEqual(shipped('git add . && rm build.log'))
+  })
+
+  it('a rule naming a shell stops every rewrite, since Codex matches an unsplittable script as the shell call', () => {
+    rules('prefix_rule(pattern = ["bash", "-lc"], decision = "prompt")\n')
+    expect(codex('go build ./...')).toBeNull()
+  })
+
+  // CAPTURE (shape only, with the path and script replaced): Codex's TUI on Windows saves an approved command as `prefix_rule(pattern=["C:\\...\\pwsh.exe", "-Command", "<the exact script>"], decision="allow")` in ~/.codex/rules/default.rules, one line per approval.
+  it('a rule naming a shell and a script stops only that script', () => {
+    rules('prefix_rule(pattern=["C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe", "-Command", "& \'C:\\\\Python312\\\\python.exe\' -m pytest -q"], decision="allow")\n')
+    expect(codex("& 'C:\\Python312\\python.exe' -m pytest -q")).toBeNull()
+    expect(codex('go build ./...')).toEqual(shipped('go build ./...'))
+  })
+
+  it('a rule naming a Windows path matches the same spelling in the command', () => {
+    rules('prefix_rule(pattern = ["C:\\\\tools\\\\curl.exe"], decision = "forbidden")\n')
+    expect(codex('C:\\tools\\curl.exe https://example.com')).toBeNull()
+  })
+
+  it('an empty token in a rule matches any word there, and the check still returns', () => {
+    rules('prefix_rule(pattern = ["go", ""], decision = "forbidden")\n')
+    expect(codex('go build')).toBeNull()
+    expect(codex('curl https://example.com')).toEqual(shipped('curl https://example.com'))
+  })
+
+  // FORMAT-DERIVED: developers.openai.com/codex/enterprise/managed-configuration, "%ProgramData%\OpenAI\Codex\requirements.toml" on Windows and its `[rules] prefix_rules` example; the system rules folder is the same layer's `rules/` (developers.openai.com/codex/rules).
+  it.runIf(process.platform === 'win32')('the system layer counts: its rules folder, and a requirements.toml with prefix_rules stops every rewrite', () => {
+    const savedProgramData = process.env['ProgramData']
+    try {
+      process.env['ProgramData'] = path.join(root, 'programdata')
+      const system = path.join(root, 'programdata', 'OpenAI', 'Codex')
+      rules('prefix_rule(pattern = ["curl"], decision = "forbidden")\n', path.join(system, 'rules'))
+      expect(codex('curl https://example.com')).toBeNull()
+      expect(codex('go build ./...')).toEqual(shipped('go build ./...'))
+      fs.writeFileSync(path.join(system, 'requirements.toml'), 'allowed_approval_policies = ["on-request"]\n\n[rules]\nprefix_rules = [\n  { pattern = [{ any_of = ["bash", "sh", "zsh"] }], decision = "prompt", justification = "Require explicit approval for shell entry points" },\n]\n')
+      expect(codex('go build ./...')).toBeNull()
+    } finally {
+      if (savedProgramData === undefined) delete process.env['ProgramData']
+      else process.env['ProgramData'] = savedProgramData
+    }
+  })
+
+  it('rules files in a .codex folder above the cwd and in the home folder count', () => {
+    rules('prefix_rule(pattern = ["curl"], decision = "forbidden")\n', path.join(project, '.codex', 'rules'), 'project.rules')
+    expect(codex('curl https://example.com', path.join(project, 'sub'))).toBeNull()
+    fs.rmSync(path.join(project, '.codex'), { recursive: true })
+    delete process.env['CODEX_HOME']
+    const home = path.join(root, 'home')
+    process.env['HOME'] = home
+    process.env['USERPROFILE'] = home
+    rules('prefix_rule(["curl"])\n', path.join(home, '.codex', 'rules'))
+    expect(codex('curl https://example.com')).toBeNull()
+    expect(codex('go build ./...')).toEqual(shipped('go build ./...'))
+  })
+
+  it('a rules file this reader cannot follow stops every rewrite', () => {
+    for (const text of ['CURL = ["curl"]\nprefix_rule(pattern = CURL)\n', 'load("x.star", "y")\n', 'prefix_rule(pattern = ["curl"], justification = """multi\nline""")\n', 'prefix_rule(pattern = ["curl"]\n', 'prefix_rule(pattern = [])\n', 'prefix_rule(pattern = ["a\\qb"])\n']) {
+      rules(text)
+      expect(codex('go build ./...')).toBeNull()
+    }
+  })
+
+  it('a non-shell rewrite is left to the rewrite, since rules match commands only', () => {
+    rules('prefix_rule(pattern = ["curl"], decision = "forbidden")\n')
+    expect(permissionNeutralRewrite({ file_path: 'x' }, { kind: 'read', harness: 'codex', mode: undefined, cwd: project, original: 'curl.png', rewritten: 'x' })).toEqual({ hookType: 'rewriteInput', updatedInput: { file_path: 'x' }, approve: false })
+  })
+
+  it('a Codex shell rewrite is skipped until the rules check has loaded', async () => {
+    vi.resetModules()
+    const fresh = await import('../src/rewrite_permission.js')
+    const req: RewriteRequest = { kind: 'shell-wrap', harness: 'codex', mode: undefined, cwd: project, original: 'go build ./...', rewritten: wrap('go build ./...') }
+    expect(fresh.permissionNeutralRewrite({ command: wrap('go build ./...') }, req)).toBeNull()
+    await fresh.loadCodexRules()
+    expect(fresh.permissionNeutralRewrite({ command: wrap('go build ./...') }, req)).toEqual(shipped('go build ./...'))
   })
 })

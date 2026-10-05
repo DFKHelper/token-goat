@@ -1,4 +1,4 @@
-/** Decides whether a PreToolUse input rewrite may ship, and whether it may carry Claude Code's `permissionDecision: "allow"`, so that rewriting a tool call never changes the permission outcome the user's own rules give the ORIGINAL call. Claude Code evaluates its permission rules against a hook's `updatedInput`, not the input the model wrote (claude.exe 2.1.289: the PreToolUse result's `updatedInput` replaces the input before `canUseTool` runs, and an `allow` logs "Hook approved tool use ..., bypassing permission prompt"), so a `token-goat compress -c '<cmd>'` wrapper or a shrunk image's temp path is what a `Bash(curl *)` or `Read(./private/**)` rule gets matched against. Answering every rewrite with `allow`, as serializeOutput once did, therefore skipped the user's prompt for any wrapped command and let deny and ask rules miss. Every rewriteInput producer routes through {@link permissionNeutralRewrite}: it returns null (do not rewrite) whenever a deny or ask rule could match the original call, or the settings cannot be read; `approve` only when the original call is provably auto-allowed anyway and no auto-mode classifier would have reviewed it (a trusted allow rule matching a simple command, Claude Code's built-in read-only commands, a Read inside the working directory); otherwise a rewrite with no decision, which Claude Code runs through its normal permission flow. Losing a compression is fine; bypassing a user's rule is not, so every doubt resolves to null. Settings sources and precedence are from https://code.claude.com/docs/en/settings, https://code.claude.com/docs/en/managed-settings and https://code.claude.com/docs/en/permissions. Node built-ins plus the config-dir accessor, paths.ts's share check, path_containment.ts's containment and case fold, nested_worktrees.ts's common git dir, util.ts's runGit and types only, all already on every hook's path, so every hook can import it without dragging a subsystem onto the hook's eager path. */
+/** Decides whether a PreToolUse input rewrite may ship, and whether it may carry Claude Code's `permissionDecision: "allow"`, so that rewriting a tool call never changes the permission outcome the user's own rules give the ORIGINAL call. Claude Code evaluates its permission rules against a hook's `updatedInput`, not the input the model wrote (claude.exe 2.1.289: the PreToolUse result's `updatedInput` replaces the input before `canUseTool` runs, and an `allow` logs "Hook approved tool use ..., bypassing permission prompt"), so a `token-goat compress -c '<cmd>'` wrapper or a shrunk image's temp path is what a `Bash(curl *)` or `Read(./private/**)` rule gets matched against. Answering every rewrite with `allow`, as serializeOutput once did, therefore skipped the user's prompt for any wrapped command and let deny and ask rules miss. Every rewriteInput producer routes through {@link permissionNeutralRewrite}: it returns null (do not rewrite) whenever a deny or ask rule could match the original call, or the settings cannot be read; `approve` only when the original call is provably auto-allowed anyway and no auto-mode classifier would have reviewed it (a trusted allow rule matching a simple command, Claude Code's built-in read-only commands, a Read inside the working directory); otherwise a rewrite with no decision, which Claude Code runs through its normal permission flow. Losing a compression is fine; bypassing a user's rule is not, so every doubt resolves to null. Settings sources and precedence are from https://code.claude.com/docs/en/settings, https://code.claude.com/docs/en/managed-settings and https://code.claude.com/docs/en/permissions. Node built-ins plus the config-dir accessor, paths.ts's share check, path_containment.ts's containment and case fold, nested_worktrees.ts's common git dir, util.ts's runGit and types only, all already on every hook's path, so every hook can import it without dragging a subsystem onto the hook's eager path; Codex's rules parser lives in codex_rules.ts, imported dynamically by loadCodexRules. */
 
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -121,7 +121,7 @@ function ruleToolIs(rule: PermissionRule, names: readonly string[]): boolean {
 }
 
 /** The texts a rule's literal pieces are searched in: lowercased, quotes dropped, once with each backslash read as a separator and once with it dropped, since a shell drops an escaping backslash and a Windows path uses it as a separator. */
-function haystacks(parts: readonly string[]): string[] {
+export function haystacks(parts: readonly string[]): string[] {
   const base = parts.join('\n').toLowerCase().replace(/["']/g, '')
   return [base.split('\\').join('/'), base.split('\\').join('')]
 }
@@ -157,14 +157,14 @@ function isWordChar(ch: string | undefined): boolean {
 }
 
 /** One literal piece of a Bash rule's content, and whether a `*` touches its left or right end, where Claude Code's glob lets the match run on into a word. */
-interface RulePiece {
+export interface RulePiece {
   readonly text: string
   readonly openLeft: boolean
   readonly openRight: boolean
 }
 
 /** Whether `piece` occurs in `text` with no letter or digit beside it on any side a `*` does not touch. */
-function containsPiece(text: string, piece: RulePiece): boolean {
+export function containsPiece(text: string, piece: RulePiece): boolean {
   let at = text.indexOf(piece.text)
   while (at >= 0) {
     if ((piece.openLeft || !isWordChar(text[at - 1])) && (piece.openRight || !isWordChar(text[at + piece.text.length]))) return true
@@ -388,22 +388,29 @@ export function snapshotFromDocs(docs: readonly SettingsDoc[]): PermissionSnapsh
 /** Test isolation only: tests/setup/isolate-home.ts puts a predicate under this global symbol so a unit test reads neither this machine's managed policy nor the developer's own `.claude` files above its fixture. It is given a file path, or `registry:<key>` for a Windows policy key. A global symbol rather than a module variable so a test's vi.resetModules() keeps it; the shipped CLI never sets it. */
 const SOURCE_FILTER_SLOT = Symbol.for('token-goat.permission-source-filter')
 
-function sourceAllowed(source: string): boolean {
+export function sourceAllowed(source: string): boolean {
   const filter = (globalThis as unknown as Record<symbol, unknown>)[SOURCE_FILTER_SLOT]
   return typeof filter !== 'function' || (filter as (source: string) => unknown)(source) === true
 }
 
-/** Parse one settings file: undefined when it does not exist, throws when it exists but cannot be read or is not a JSON object. */
-function readSettingsFile(file: string): Record<string, unknown> | undefined {
+/** A file's text, or the names in a directory: undefined when it does not exist or a test's source filter hides it, throws when it exists but cannot be read. */
+export function readIfExists(file: string, list: true): string[] | undefined
+export function readIfExists(file: string): string | undefined
+export function readIfExists(file: string, list?: true): string | string[] | undefined {
   if (!sourceAllowed(file)) return undefined
-  let text: string
   try {
-    text = fs.readFileSync(file, 'utf8')
+    return list === true ? fs.readdirSync(file) : fs.readFileSync(file, 'utf8')
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
     if (code === 'ENOENT' || code === 'ENOTDIR') return undefined
     throw err
   }
+}
+
+/** Parse one settings file: undefined when it does not exist, throws when it exists but cannot be read or is not a JSON object. */
+function readSettingsFile(file: string): Record<string, unknown> | undefined {
+  const text = readIfExists(file)
+  if (text === undefined) return undefined
   const json = asObject(JSON.parse(text))
   if (json === null) throw new Error(`${file} is not a JSON object`)
   return json
@@ -426,15 +433,7 @@ function readRegistrySettings(key: string): Record<string, unknown> | undefined 
 function managedFileDocs(dir: string, group: string, out: SettingsDoc[]): void {
   const main = readSettingsFile(path.join(dir, 'managed-settings.json'))
   if (main !== undefined) out.push({ role: 'managed', json: main, managedGroup: group })
-  let names: string[]
-  if (!sourceAllowed(path.join(dir, 'managed-settings.d'))) return
-  try {
-    names = fs.readdirSync(path.join(dir, 'managed-settings.d'))
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    if (code === 'ENOENT' || code === 'ENOTDIR') return
-    throw err
-  }
+  const names = readIfExists(path.join(dir, 'managed-settings.d'), true) ?? []
   for (const name of names.filter((n) => n.endsWith('.json') && !n.startsWith('.')).sort()) {
     const json = readSettingsFile(path.join(dir, 'managed-settings.d', name))
     if (json !== undefined) out.push({ role: 'managed', json, managedGroup: group })
@@ -507,7 +506,7 @@ function gitMainRoot(dir: string): string | undefined {
 }
 
 /** Every directory from `dir` up to the filesystem root. */
-function selfAndAncestors(dir: string): string[] {
+export function selfAndAncestors(dir: string): string[] {
   const out: string[] = []
   let d = dir
   for (let depth = 0; depth < 64; depth++) {
@@ -559,9 +558,21 @@ export function loadPermissionSnapshot(cwd: string, projectDir: string | undefin
   }
 }
 
-/** The rewriteInput output for `updatedInput`, or null when the rewrite must not ship. Claude Code's own settings are read only on the harnesses that read them (Claude Code, and VS Code, which also loads `.claude` settings); every other harness gets the rewrite with no decision, and its serializer decides what it needs. */
+let codexDecide: ((req: RewriteRequest) => RewriteVerdict) | undefined
+
+/** Load Codex's rules check (codex_rules.ts) for a Codex Bash hook; a dynamic import so its parser stays off every other hook's eager path. */
+export async function loadCodexRules(): Promise<void> {
+  if (codexDecide !== undefined) return
+  const { decideCodex } = await import('./codex_rules.js')
+  const helpers = { containsPiece, haystacks, readIfExists, selfAndAncestors, sourceAllowed }
+  codexDecide = (req) => decideCodex(req, helpers)
+}
+
+/** The rewriteInput output for `updatedInput`, or null when the rewrite must not ship. Claude Code's own settings are read only on the harnesses that read them (Claude Code, and VS Code, which also loads `.claude` settings); a Codex shell rewrite is checked against Codex's rules files; every other harness gets the rewrite with no decision, and its serializer decides what it needs. */
 export function permissionNeutralRewrite(updatedInput: Record<string, unknown>, req: RewriteRequest): HookOutput | null {
-  const verdict = req.harness === 'claudecode' || req.harness === 'vscode' ? decideRewrite(loadPermissionSnapshot(req.cwd), req) : 'rewrite'
+  // Codex's rules match commands only, and until loadCodexRules has run its check cannot, so an unchecked Codex shell rewrite is skipped.
+  const codexShell = req.harness === 'codex' && (req.kind === 'shell-wrap' || req.kind === 'shell-query')
+  const verdict = req.harness === 'claudecode' || req.harness === 'vscode' ? decideRewrite(loadPermissionSnapshot(req.cwd), req) : codexShell ? (codexDecide?.(req) ?? 'skip') : 'rewrite'
   if (verdict === 'skip') return null
   return { hookType: 'rewriteInput', updatedInput, approve: verdict === 'approve' }
 }

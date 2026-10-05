@@ -55,6 +55,8 @@ for (const key of ['LOCALAPPDATA', 'XDG_DATA_HOME', 'APPDATA', 'XDG_CONFIG_HOME'
 delete process.env['CLAUDE_CONFIG_DIR']
 // CLAUDE_PROJECT_DIR anchors rewrite_permission.ts's settings walk, and a suite started from a Claude Code hook inherits the developer's own project, so it is deleted too; a test that wants it sets its own.
 delete process.env['CLAUDE_PROJECT_DIR']
+// CODEX_HOME points rewrite_permission.ts at Codex's rules files, and an inherited one would hand spawned bundles the developer's own rules; a test that wants it sets its own.
+delete process.env['CODEX_HOME']
 
 const dataHome = path.join(runRoot(), `tg-test-data-${workerScope}`)
 try {

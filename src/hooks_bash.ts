@@ -17,7 +17,7 @@ import { detectHarness } from './bridges/registry.js'
 import { detectFromCommand, hasBareBackground } from './tool_filters/index.js'
 import { canRunWrappedShell, canRunPowerShell } from './shell.js'
 import { detectStructuralIndexRewrite } from './bash_structural_index.js'
-import { permissionNeutralRewrite } from './rewrite_permission.js'
+import { loadCodexRules, permissionNeutralRewrite } from './rewrite_permission.js'
 import { rangeSubstituteFor } from './bash_range_savings.js'
 import { hintTarget, sliceCommand, sliceForPath, type HintSlice, type HintTarget } from './hint_target.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
@@ -774,4 +774,5 @@ export function preBashHandler(event: HookEvent): HookOutput {
   return applyHintTracking(event, preBashHandlerInner(event), classifyBashHint)
 }
 
-registerHook('pre_tool_use', preBashHandler, { toolName: 'Bash' })
+// A Codex call loads Codex's rules check first, which rewrite_permission.ts needs before it lets a Codex shell rewrite ship.
+registerHook('pre_tool_use', (event) => (detectHarness() === 'codex' ? loadCodexRules().then(() => preBashHandler(event)) : preBashHandler(event)), { toolName: 'Bash' })
