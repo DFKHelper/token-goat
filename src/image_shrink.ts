@@ -583,8 +583,8 @@ function pruneShrinkCache(): void {
  * either way; only the (unmeasured) re-encode CPU cost differs, and this function has no
  * visibility into that.
  */
-/** Harnesses whose host writes the shrunk copy to a temp file in its own process (MATERIALIZE_SHRUNK_IMAGE_JS in bridges/shrink_block.ts, and pi.ts's typed twin) after this hook has answered. opencode and OpenClaw pin no harness when they call the hook, so they are recognized from their environment (opencode by its OPENCODE_PID) or not at all. */
-const HOST_MATERIALIZED_HARNESSES: ReadonlySet<HarnessName> = new Set<HarnessName>(['copilot_cli', 'pi', 'opencode', 'openclaw'])
+/** Harnesses whose host writes the shrunk copy to a temp file in its own process (MATERIALIZE_SHRUNK_IMAGE_JS in bridges/shrink_block.ts, and pi.ts's typed twin) after this hook has answered. OpenClaw pins no harness when it calls the hook, so it is recognized from its environment or not at all. opencode is left out: its read tool asks the `read` permission against the path the plugin hands it, so a copy's temp path would slip past a rule on the original. */
+const HOST_MATERIALIZED_HARNESSES: ReadonlySet<HarnessName> = new Set<HarnessName>(['copilot_cli', 'pi', 'openclaw'])
 
 /** Harnesses whose PreToolUse honours a rewritten tool input, so this process writes the shrunk copy and points the read at it. Claude Code caps additionalContext at 10,000 characters (https://code.claude.com/docs/en/hooks), so the data URL the context channel used to carry there arrived as a 2,000-character base64 preview while the Read loaded the original. */
 const PATH_REWRITE_HARNESSES: ReadonlySet<HarnessName> = new Set<HarnessName>(['vscode', 'claudecode'])
@@ -614,7 +614,7 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string, even
     recordFileRead(filePath)
     return rewrite
   }
-  // A host (or generic, an opencode or OpenClaw host that pinned no harness) writes the copy in its own process after this one has answered and falls back to the original image if that write fails, so this process never sees the delivery and books nothing. No OCR text either: the host finds no data URL in it and sends the original image, so the text would only add to what the model receives.
+  // A host (or generic, an OpenClaw host that pinned no harness) writes the copy in its own process after this one has answered and falls back to the original image if that write fails, so this process never sees the delivery and books nothing. No OCR text either: the host finds no data URL in it and sends the original image, so the text would only add to what the model receives.
   const { summary, dataUrl } = formatShrinkSummary(result, basename)
   // Recorded for the same reason as the rewrite above: the host delivers the copy or falls back to the original, and either way the model has read this image.
   recordFileRead(filePath)

@@ -391,6 +391,13 @@ describe('preReadImageHandler', () => {
     expect(summarize(30).by_kind['image_shrink']?.events ?? 0).toBe(before)
   })
 
+  // FORMAT-DERIVED: opencode-ai 1.18.16's ReadTool.execute, which runs after the plugin's tool.execute.before, asks external_directory and then `read` with patterns [path relative to the worktree] for the path it holds, so a copy's temp path would be checked instead of the image's.
+  it('passes on opencode, whose read permission would be asked of the copy instead of the original', async () => {
+    process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'opencode'
+    const out = await preReadImageHandler(makeEvent(largePngPath))
+    expect(out.hookType).toBe('pass')
+  })
+
   it('records an image_shrink_skipped stat row through the real global stats DB when a qualifying image cannot be shrunk (regression: image_shrink_skipped was registered in KIND_TO_SOURCE and _KIND_GROUPS but no recordStat call site ever existed anywhere in src/, so the kind was permanently empty in `token-goat stats --full` -- this drives the real production hook path, not a unit test of shrinkImage in isolation)', async () => {
     // A real JPEG header, so the probe reads its format and dimensions and the file qualifies, over
     // a body corrupted past recognition, so the decode throws inside shrinkImage's try/catch and it

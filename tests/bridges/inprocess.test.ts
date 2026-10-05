@@ -815,36 +815,39 @@ describe('image shrink materialization: the shrink payload becomes a rewritten p
     delete process.env['TOKEN_GOAT_OFFLINE']
   })
 
-  it('opencode: tool.execute.before rewrites args.filePath to a materialized shrunk copy of a large image', async () => {
-    const cwd = mkIsolated()
-    const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
-    writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
-    const pluginPath = join(cwd, 'plugin.mjs')
-    writeFileSync(pluginPath, OPENCODE_PLUGIN_SCRIPT, 'utf8')
+  // FORMAT-DERIVED: opencode-ai 1.18.16 runs tool.execute.before, then ReadTool.execute, which asks external_directory and then `read` with patterns [path relative to the worktree] for the path it holds; a copy's temp path would be asked instead of the image's, so a `read` rule on the original stopped applying. Both a detected opencode (OPENCODE_PID) and an undetected one, whose hook still answers with the data URL, must leave filePath alone.
+  it.each([
+    ['detected from OPENCODE_PID', String(process.pid)],
+    ['undetected, so the hook answers as generic', undefined],
+  ])('opencode (%s): tool.execute.before leaves args.filePath on the original image', async (_label, opencodePid) => {
+    const saved = new Map(HARNESS_DETECTION_ENV_KEYS.map((k) => [k, process.env[k]]))
+    for (const k of HARNESS_DETECTION_ENV_KEYS) delete process.env[k]
+    if (opencodePid !== undefined) process.env['OPENCODE_PID'] = opencodePid
+    try {
+      const cwd = mkIsolated()
+      const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+      writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+      const pluginPath = join(cwd, 'plugin.mjs')
+      writeFileSync(pluginPath, OPENCODE_PLUGIN_SCRIPT, 'utf8')
 
-    // A stale previously-materialized copy in the OS temp dir: the materialize step's best-effort sweep must remove it (prefix-confined, age-gated), proving temp files from prior calls do not accumulate forever.
-    const stalePath = join(tmpdir(), `token-goat-shrink-999999-0-staletest${Math.random().toString(36).slice(2)}.jpeg`)
-    writeFileSync(stalePath, 'stale')
-    const old = new Date(Date.now() - 2 * 60 * 60 * 1000)
-    utimesSync(stalePath, old, old)
+      const imgPath = await makeLargeJpegFixture(cwd)
+      const mod = (await import(pathToFileURL(pluginPath).href)) as {
+        TokenGoatPlugin: (opts: { directory: string }) => Promise<Record<string, (input: unknown, output: unknown) => Promise<void>>>
+      }
+      const hooks = await mod.TokenGoatPlugin({ directory: cwd })
+      const sessionID = 'inprocess-shrink-test-' + Math.random().toString(36).slice(2)
 
-    const imgPath = await makeLargeJpegFixture(cwd)
-    const mod = (await import(pathToFileURL(pluginPath).href)) as {
-      TokenGoatPlugin: (opts: { directory: string }) => Promise<Record<string, (input: unknown, output: unknown) => Promise<void>>>
+      const output = { args: { filePath: imgPath } as Record<string, unknown> }
+      await hooks['tool.execute.before']!({ tool: 'read', sessionID, args: {} }, output)
+
+      expect(output.args).toEqual({ filePath: imgPath })
+      expect(existsSync(markerPath)).toBe(false)
+    } finally {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
     }
-    const hooks = await mod.TokenGoatPlugin({ directory: cwd })
-    const sessionID = 'inprocess-shrink-test-' + Math.random().toString(36).slice(2)
-
-    const output = { args: { filePath: imgPath } as Record<string, unknown> }
-    await hooks['tool.execute.before']!({ tool: 'read', sessionID, args: {} }, output)
-
-    const rewritten = output.args['filePath'] as string
-    expect(rewritten).not.toBe(imgPath)
-    expect(basename(rewritten)).toMatch(/^token-goat-shrink-\d+-\d+-[a-z0-9-]+\.(jpeg|webp)$/)
-    expect(existsSync(rewritten)).toBe(true)
-    expect(statSync(rewritten).size).toBeLessThan(statSync(imgPath).size)
-    expect(existsSync(stalePath)).toBe(false)
-    expect(existsSync(markerPath)).toBe(false)
   })
 
   it('openclaw: before_tool_call returns rewritten params with OpenClaw\'s own "path" key pointing at the shrunk copy, preserving every other original param', async () => {
@@ -858,6 +861,12 @@ describe('image shrink materialization: the shrink payload becomes a rewritten p
     expect(transformed).not.toBe(OPENCLAW_PLUGIN_SCRIPT)
     const pluginPath = join(cwd, 'plugin.mjs')
     writeFileSync(pluginPath, transformed, 'utf8')
+
+    // A stale previously-materialized copy in the OS temp dir: the materialize step's best-effort sweep must remove it (prefix-confined, age-gated), proving temp files from prior calls do not accumulate forever.
+    const stalePath = join(tmpdir(), `token-goat-shrink-999999-0-staletest${Math.random().toString(36).slice(2)}.jpeg`)
+    writeFileSync(stalePath, 'stale')
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000)
+    utimesSync(stalePath, old, old)
 
     const imgPath = await makeLargeJpegFixture(cwd)
     const mod = (await import(pathToFileURL(pluginPath).href)) as {
@@ -884,6 +893,7 @@ describe('image shrink materialization: the shrink payload becomes a rewritten p
     expect(existsSync(rewritten)).toBe(true)
     expect(statSync(rewritten).size).toBeLessThan(statSync(imgPath).size)
     expect(result.params?.['offset']).toBe(1)
+    expect(existsSync(stalePath)).toBe(false)
     expect(existsSync(markerPath)).toBe(false)
   })
 

@@ -148,7 +148,7 @@ The hooks were checked loading and running under agy 1.2.11 on Windows, and the 
 token-goat install --opencode
 ```
 
-The `--opencode` flag drops a TypeScript bridge plugin into opencode's plugins directory. Image shrinking, post-edit indexing, compact assist, and rewritten tool results (prompt-injection fencing, secret redaction, and output compression replace the raw result, the same protection Claude Code sessions get) work. So do repeat-search denial for `websearch`, repeat-load denial for `skill`, and the subagent prompt briefing for `task` — all three tool ids and their argument keys were verified against opencode's own source at the installed release's tag. Session hints don't — opencode's plugin API has no way to inject context before a tool read.
+The `--opencode` flag drops a TypeScript bridge plugin into opencode's plugins directory. Post-edit indexing, compact assist, and rewritten tool results (prompt-injection fencing, secret redaction, and output compression replace the raw result, the same protection Claude Code sessions get) work. So do repeat-search denial for `websearch`, repeat-load denial for `skill`, and the subagent prompt briefing for `task` — all three tool ids and their argument keys were verified against opencode's own source at the installed release's tag. Session hints don't — opencode's plugin API has no way to inject context before a tool read. Neither does image shrinking: the only way to hand opencode a smaller image is to point its `read` at a copy, and opencode checks its `read` and outside-directory permissions against that copy's path instead of the image's, so a rule you set on the image would stop applying. Shell commands are not wrapped for compression either, since opencode's permission rules can come from an organization account or a well-known URL no hook reads; their output is still compressed after they run.
 
 ### openclaw users
 
@@ -484,7 +484,7 @@ Three things follow, and they are worth knowing before you decide. It never leav
 
 | Path | What |
 |------|------|
-| `~/.config/opencode/plugins/token-goat.ts` on every platform, Windows included (`$XDG_CONFIG_HOME/opencode/plugins/token-goat.ts` when that is set) | TypeScript bridge plugin. Fires on `tool.execute.before`, `tool.execute.after`, and `experimental.session.compacting`. Covers image shrinking, post-edit indexing, and compact assist. |
+| `~/.config/opencode/plugins/token-goat.ts` on every platform, Windows included (`$XDG_CONFIG_HOME/opencode/plugins/token-goat.ts` when that is set) | TypeScript bridge plugin. Fires on `tool.execute.before`, `tool.execute.after`, and `experimental.session.compacting`. Covers post-edit indexing, compact assist, and rewritten tool results. |
 
 **With `--pi`** (pi extension)
 
