@@ -199,7 +199,7 @@ describe('Claude Code shim: async-detach makes duration_ms report what the harne
 })
 
 describe('opencode plugin: in-process hook call replaces the second node spawn', () => {
-  // Pin the harness these tests claim to exercise. detectHarness() reads ambient env, and a suite run from inside a Claude Code session inherits CLAUDE_CODE_SESSION_ID, so without this the in-process plugin was detected as claudecode and got claudecode wire shapes -- an env leak the assertions below could not feel until serializeOutput started varying by harness. Real opencode sets OPENCODE_SESSION_ID, so the override restores the detection this bridge really sees.
+  // Pin the harness these tests claim to exercise. detectHarness() reads ambient env, and a suite run from inside a Claude Code session inherits CLAUDE_CODE_SESSION_ID, so without this the in-process plugin was detected as claudecode and got claudecode wire shapes -- an env leak the assertions below could not feel until serializeOutput started varying by harness. Real opencode sets OPENCODE_PID to its own pid, which this in-process call would match, so the override restores the detection this bridge really sees.
   const _priorHarness = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
   beforeEach(() => {
     process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'opencode'
@@ -322,11 +322,11 @@ describe('opencode plugin: in-process hook call replaces the second node spawn',
     }
   })
 
-  // Relay seeds CLAUDE_CODE_SESSION_ID from the wire, and detectHarness() used to take that seed for Claude Code, so from the host's second hook call on opencode got Claude Code's pre_compact wire form: raw text the plugin cannot parse, so the compaction manifest never arrived. The opencode signal is OPENCODE_SESSION_ID (bridges/registry.ts), not the override the rest of this block pins.
+  // Relay seeds CLAUDE_CODE_SESSION_ID from the wire, and detectHarness() used to take that seed for Claude Code, so from the host's second hook call on opencode got Claude Code's pre_compact wire form: raw text the plugin cannot parse, so the compaction manifest never arrived. The opencode signal is the OPENCODE_PID opencode sets to its own pid (bridges/registry.ts), not the override the rest of this block pins.
   it('keeps detecting opencode after relay has seeded the session id, so a compaction still receives the manifest', async () => {
     const saved = new Map(HARNESS_DETECTION_ENV_KEYS.map((k) => [k, process.env[k]]))
     for (const k of HARNESS_DETECTION_ENV_KEYS) delete process.env[k]
-    process.env['OPENCODE_SESSION_ID'] = 'inprocess-opencode-host'
+    process.env['OPENCODE_PID'] = String(process.pid)
     try {
       const cwd = mkIsolated()
       const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
@@ -347,6 +347,36 @@ describe('opencode plugin: in-process hook call replaces the second node spawn',
 
       expect(compacted.context).toHaveLength(1)
       expect(compacted.context[0]).toContain('## Session context')
+      expect(existsSync(markerPath)).toBe(false)
+    } finally {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+  })
+
+  // FORMAT-DERIVED: opencode-ai 1.18.16 runs tool.execute.before before the tool's own execute, where ShellTool asks the bash and external_directory permissions against the command it then holds (tools.ts plugin.trigger then item.execute), and permission rules can come from an org account or a well-known URL no hook reads; so a wrapped command would be checked as token-goat's, not the model's.
+  it('leaves a shell command unrewritten in a real opencode process, detected from its OPENCODE_PID with no override', async () => {
+    const saved = new Map(HARNESS_DETECTION_ENV_KEYS.map((k) => [k, process.env[k]]))
+    for (const k of HARNESS_DETECTION_ENV_KEYS) delete process.env[k]
+    process.env['OPENCODE_PID'] = String(process.pid)
+    try {
+      const cwd = mkIsolated()
+      const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+      writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+      const pluginPath = join(cwd, 'plugin.mjs')
+      writeFileSync(pluginPath, OPENCODE_PLUGIN_SCRIPT, 'utf8')
+      const mod = (await import(pathToFileURL(pluginPath).href)) as {
+        TokenGoatPlugin: (opts: { directory: string }) => Promise<Record<string, (input: unknown, output: unknown) => Promise<void>>>
+      }
+      const hooks = await mod.TokenGoatPlugin({ directory: cwd })
+      const sessionID = 'inprocess-shell-' + Math.random().toString(36).slice(2)
+
+      const output = { args: { command: 'cd ../outside && go vet ./...' } as Record<string, unknown> }
+      await hooks['tool.execute.before']!({ tool: 'bash', sessionID, args: {} }, output)
+
+      expect(output.args).toEqual({ command: 'cd ../outside && go vet ./...' })
       expect(existsSync(markerPath)).toBe(false)
     } finally {
       for (const [k, v] of saved) {

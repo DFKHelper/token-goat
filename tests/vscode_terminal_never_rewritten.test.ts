@@ -1,7 +1,7 @@
 /**
  * VS Code's run_in_terminal command is never wrapped in `token-goat compress`.
  *
- * VS Code runs the command in whatever shell the user's terminal uses and its hook payload does not say which, so a quoting that is safe in one shell can end the wrapped string early in another. The rewrite used to be sent for any vscode command without an ASCII single quote. These drive the real registry, normalizer and serializer, and pin that the Claude Code and Copilot CLI rewrites are unchanged.
+ * VS Code runs the command in whatever shell the user's terminal uses and its hook payload does not say which, so a quoting that is safe in one shell can end the wrapped string early in another. The rewrite used to be sent for any vscode command without an ASCII single quote. These drive the real registry, normalizer and serializer, and pin that the Claude Code rewrite is unchanged and that a Copilot CLI command is left alone.
  *
  * PROVENANCE: FORMAT-DERIVED. The VS Code envelope and run_in_terminal input keys (command, explanation, goal, mode) are the ones cited in tests/vscode_hooks.test.ts from VS Code 1.136.0's ChatHookService and the workbench bundle's run_in_terminal schema. The Claude Code payload is Claude Code's PreToolUse shape (tool_name "Bash", tool_input.command), and the Copilot CLI one is what the shared shim forwards after mapping `bash` to `Bash` (src/bridges/copilot_cli.ts). Commands are HAND-DERIVED.
  */
@@ -15,7 +15,6 @@ import { normalizePayload } from '../src/hooks_cli.js'
 import { buildEvent } from '../src/relay.js'
 import { runHook, serializeOutput } from '../src/hook_registry.js'
 import type { HarnessName } from '../src/bridges/types.js'
-import { canRunPowerShell } from '../src/shell.js'
 
 const savedOverride = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-terminal-'))
@@ -66,14 +65,11 @@ describe('the same command is still rewritten where the shell is known to be bas
     expect(input?.['command']).toMatch(WRAPPED)
     expect(input?.['description']).toBe('build')
   })
+})
 
-  // Copilot CLI's shell tool defaults to bash everywhere except Windows, where it runs through PowerShell instead (see the shellToolName comment in src/bridges/copilot_cli.ts) -- on Windows it wraps with PowerShell runner when available.
-  it('Copilot CLI wraps npm run build in token-goat compress, except on Windows where its shell tool is PowerShell', async () => {
-    const input = updatedInput(await preToolUse('copilot_cli', 'npm run build'))
-    if (process.platform === 'win32' && !canRunPowerShell()) {
-      expect(input).toBeUndefined()
-    } else {
-      expect(input?.['command']).toMatch(WRAPPED)
-    }
+describe('Copilot CLI is never rewritten either, for a different reason', () => {
+  // Its --allow-tool and --deny-tool rules arrive on its command line, where no hook can read them, so a wrapper could carry a command past a rule the user set (UNSEEN_SHELL_RULES in src/rewrite_permission.ts).
+  it('Copilot CLI leaves npm run build unwrapped on every platform', async () => {
+    expect(updatedInput(await preToolUse('copilot_cli', 'npm run build'))).toBeUndefined()
   })
 })

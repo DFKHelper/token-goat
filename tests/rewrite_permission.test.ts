@@ -411,7 +411,16 @@ describe('loadPermissionSnapshot and permissionNeutralRewrite read the real sett
 
   it('harnesses that never read Claude Code settings get the rewrite with no approval, whatever the files say', () => {
     writeJson(path.join(configDir, 'settings.json'), { permissions: { deny: ['Bash(curl:*)'] } })
-    expect(permissionNeutralRewrite({ command: 'x' }, { ...curl(project), harness: 'opencode' })).toEqual({ hookType: 'rewriteInput', updatedInput: { command: 'x' }, approve: false })
+    expect(permissionNeutralRewrite({ command: 'x' }, { ...curl(project), harness: 'pi' })).toEqual({ hookType: 'rewriteInput', updatedInput: { command: 'x' }, approve: false })
+  })
+
+  // FORMAT-DERIVED: Copilot CLI 1.0.91 takes --allow-tool/--deny-tool on its command line and evaluates hooks in compiled runtime.node (src/hooks.rs); opencode-ai 1.18.16's ShellTool asks external_directory for the path arguments of cd/rm/cp/... and merges config from an org account and a well-known URL; Grok's hooks doc (xai-org/grok-build 10-hooks.md) runs ~/.claude/settings.json hooks and lets "the plan-mode gate, the permission prompt, the tool itself" see the rewritten input.
+  it('never ships a shell rewrite on a harness whose shell rules no hook can read, while an Agent prompt rewrite still ships', () => {
+    for (const harness of ['copilot_cli', 'opencode', 'grok'] as const) {
+      expect(permissionNeutralRewrite({ command: 'x' }, { ...curl(project), harness })).toBeNull()
+      expect(permissionNeutralRewrite({ command: 'x' }, { ...curl(project), harness, kind: 'shell-query' })).toBeNull()
+      expect(permissionNeutralRewrite({ prompt: 'p' }, { kind: 'agent', harness, mode: 'default', cwd: project, original: 'o', rewritten: 'p' })).toEqual({ hookType: 'rewriteInput', updatedInput: { prompt: 'p' }, approve: false })
+    }
   })
 })
 

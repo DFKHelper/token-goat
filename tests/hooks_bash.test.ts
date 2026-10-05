@@ -573,6 +573,27 @@ describe('preBashHandler — Copilot CLI on Windows wraps via PowerShell runner 
     const result = preBashHandler(event)
     expect(result.hookType).toBe('rewriteInput')
   })
+
+  // FORMAT-DERIVED: the Copilot shim (bridges/copilot_cli.ts) sets TOKEN_GOAT_HARNESS_OVERRIDE=copilot_cli for its inner hook call, and Copilot CLI 1.0.91 takes --allow-tool/--deny-tool on its command line, which no hook can read.
+  it('leaves the command unrewritten in a real Copilot CLI hook call, whose shell rules no hook can read', () => {
+    const prior = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+    process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'copilot_cli'
+    clearModuleCaches()
+    try {
+      const event = makeHookEvent({
+        toolName: 'Bash',
+        toolInput: { command: 'rg "TODO" src/foo.ts' },
+        sessionId: 'test-session-copilot-real',
+        agentId: undefined,
+        raw: { tool_name: 'Bash', tool_input: { command: 'rg "TODO" src/foo.ts' }, _tg_harness: 'copilot_cli' },
+      })
+      expect(preBashHandler(event).hookType).not.toBe('rewriteInput')
+    } finally {
+      if (prior === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+      else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = prior
+      clearModuleCaches()
+    }
+  })
 })
 
 describe('preBashHandler — test-run budget advice', () => {
