@@ -70,19 +70,46 @@ describe('decideRewrite: shell wrap', () => {
     expect(decideRewrite(NONE, shell('go build ./...', 'yolo'))).toBe('skip')
   })
 
-  it('bypassPermissions already runs the original with no prompt, so the rewrite needs no allow and gets none', () => {
-    expect(decideRewrite(NONE, shell('go build ./...', 'bypassPermissions'))).toBe('rewrite')
-    expect(decideRewrite(NONE, shell('ls -la src', 'bypassPermissions'))).toBe('rewrite')
-    expect(decideRewrite(snap({ allow: ['Bash(go build *)'] }), shell('go build ./...', 'bypassPermissions'))).toBe('rewrite')
+  // HAND-DERIVED from the bypass rule (the user is never prompted in bypassPermissions): the original runs with no prompt, so the rewrite either carries allow, keeping it prompt-free, or is not made.
+  it('bypassPermissions approves a rewrite no visible or hidden rule could catch, and skips it otherwise', () => {
+    const open = (): boolean => false
+    const hidden = (): boolean => true
+    expect(decideRewrite(NONE, shell('go build ./...', 'bypassPermissions'), open)).toBe('approve')
+    expect(decideRewrite(NONE, shell('ls -la src', 'bypassPermissions'), open)).toBe('approve')
+    expect(decideRewrite(snap({ allow: ['Bash(go build *)'] }), shell('go build ./...', 'bypassPermissions'), open)).toBe('approve')
+    expect(decideRewrite(NONE, shell('go build ./...', 'bypassPermissions'), hidden)).toBe('skip')
+    expect(decideRewrite(snap({ deny: ['Bash(curl:*)'] }), shell('curl https://example.com', 'bypassPermissions'), open)).toBe('skip')
+    expect(decideRewrite(snap({ ask: ['Bash(curl *)'] }), shell('curl https://example.com', 'bypassPermissions'), open)).toBe('skip')
   })
 
-  // HAND-DERIVED from https://code.claude.com/docs/en/permission-modes ("How auto mode evaluates actions": entering auto mode drops Bash(*), interpreter wildcards and package-manager run rules, and with server-side review read-only shell commands wait for the classifier; plan mode with auto available has the classifier review shell commands).
-  it.each(['auto', 'plan'] as const)('%s mode never says allow, so the auto-mode classifier still reviews the call', (mode) => {
-    expect(decideRewrite(snap({ allow: ['Bash(npm run *)'] }), shell('npm run build', mode))).toBe('skip')
-    expect(decideRewrite(snap({ allow: ['Bash(*)'] }), shell('go build ./...', mode))).toBe('skip')
-    expect(decideRewrite(NONE, shell('ls -la src', mode))).toBe('skip')
-    expect(decideRewrite(NONE, shell('git status --short', mode))).toBe('skip')
-    expect(decideRewrite(NONE, shell('go build ./...', mode))).toBe('rewrite')
+  it('bypassPermissions skips every rewrite until the hidden rule check is loaded', () => {
+    expect(decideRewrite(NONE, shell('go build ./...', 'bypassPermissions'))).toBe('skip')
+  })
+
+  it('a PermissionRequest hook in any settings file can add session rules, so bypassPermissions skips', () => {
+    const hooked = snapshotFromDocs([{ role: 'user', json: { hooks: { PermissionRequest: [{ hooks: [{ type: 'command', command: 'x' }] }] } } }])
+    expect(hooked.permissionHooks).toBe(true)
+    expect(decideRewrite(hooked, shell('go build ./...', 'bypassPermissions'), () => false)).toBe('skip')
+    expect(decideRewrite(hooked, shell('go build ./...', 'default'), () => false)).toBe('rewrite')
+  })
+
+  // HAND-DERIVED from the bypass rule applied to auto mode: its classifier reviews the call a hook allow would wave through, and a deferred wrapper is a call it may stop to ask about, so no rewrite ships.
+  it('auto mode skips every rewrite, of every kind', () => {
+    for (const command of ['npm run build', 'go build ./...', 'ls -la src', 'git status --short']) {
+      expect(decideRewrite(snap({ allow: ['Bash(*)'] }), shell(command, 'auto'), () => false)).toBe('skip')
+      expect(decideRewrite(NONE, shell(command, 'auto'), () => false)).toBe('skip')
+    }
+    expect(decideRewrite(NONE, { kind: 'read', harness: 'claudecode', mode: 'auto', cwd: CWD, original: path.join(CWD, 'a.png'), rewritten: path.join(os.tmpdir(), 'token-goat-shrink-1-a.png'), insideCwd: true }, () => false)).toBe('skip')
+    expect(decideRewrite(NONE, { kind: 'agent', harness: 'claudecode', mode: 'auto', cwd: CWD, original: 'p', rewritten: 'p b' }, () => false)).toBe('skip')
+  })
+
+  // HAND-DERIVED from https://code.claude.com/docs/en/permission-modes (plan mode with auto available has the classifier review shell commands).
+  it('plan mode never says allow, so the auto-mode classifier still reviews the call', () => {
+    expect(decideRewrite(snap({ allow: ['Bash(npm run *)'] }), shell('npm run build', 'plan'))).toBe('skip')
+    expect(decideRewrite(snap({ allow: ['Bash(*)'] }), shell('go build ./...', 'plan'))).toBe('skip')
+    expect(decideRewrite(NONE, shell('ls -la src', 'plan'))).toBe('skip')
+    expect(decideRewrite(NONE, shell('git status --short', 'plan'))).toBe('skip')
+    expect(decideRewrite(NONE, shell('go build ./...', 'plan'))).toBe('rewrite')
   })
 
   it('a trusted allow rule matching the simple original proves it auto-allowed', () => {

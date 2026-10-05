@@ -44,7 +44,7 @@ import { VSCODE_TOOL_NAME_KEY } from './hooks_cli.js'
 import { contextOutput, passOutput } from './hooks_common.js'
 import { materializeShrunkImageFile } from './bridges/vscode_hooks.js'
 import { detectHarness } from './bridges/registry.js'
-import { permissionNeutralRewrite } from './rewrite_permission.js'
+import { loadingHiddenRuleCheck, permissionNeutralRewrite } from './rewrite_permission.js'
 import type { HarnessName } from './bridges/types.js'
 import { displaySafePath } from './paths.js'
 import { recordFileRead } from './session.js'
@@ -757,4 +757,4 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
   return finalizeShrinkResult(result, filePath, event)
 }
 
-registerHook('pre_tool_use', preReadImageHandler, { toolName: 'Read' })
+registerHook('pre_tool_use', loadingHiddenRuleCheck(preReadImageHandler), { toolName: 'Read' })

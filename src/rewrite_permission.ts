@@ -1,4 +1,4 @@
-/** Decides whether a PreToolUse input rewrite may ship, and whether it may carry Claude Code's `permissionDecision: "allow"`, so that rewriting a tool call never changes the permission outcome the user's own rules give the ORIGINAL call. Claude Code evaluates its permission rules against a hook's `updatedInput`, not the input the model wrote (claude.exe 2.1.289: the PreToolUse result's `updatedInput` replaces the input before `canUseTool` runs, and an `allow` logs "Hook approved tool use ..., bypassing permission prompt"), so a `token-goat compress -c '<cmd>'` wrapper or a shrunk image's temp path is what a `Bash(curl *)` or `Read(./private/**)` rule gets matched against. Answering every rewrite with `allow`, as serializeOutput once did, therefore skipped the user's prompt for any wrapped command and let deny and ask rules miss. Every rewriteInput producer routes through {@link permissionNeutralRewrite}: it returns null (do not rewrite) whenever a deny or ask rule could match the original call, or the settings cannot be read; `approve` only when the original call is provably auto-allowed anyway and no auto-mode classifier would have reviewed it (a trusted allow rule matching a simple command, Claude Code's built-in read-only commands, a Read inside the working directory); otherwise a rewrite with no decision, which Claude Code runs through its normal permission flow. Losing a compression is fine; bypassing a user's rule is not, so every doubt resolves to null. On Copilot CLI, opencode and Grok, whose shell rules no hook can read, a shell rewrite never ships. Settings sources and precedence are from https://code.claude.com/docs/en/settings, https://code.claude.com/docs/en/managed-settings and https://code.claude.com/docs/en/permissions. Node built-ins plus the config-dir accessor, paths.ts's share check, path_containment.ts's containment and case fold, nested_worktrees.ts's common git dir, util.ts's runGit and types only, all already on every hook's path, so every hook can import it without dragging a subsystem onto the hook's eager path; Codex's rules parser lives in codex_rules.ts, imported dynamically by loadCodexRules. */
+/** Decides whether a PreToolUse input rewrite may ship, and whether it may carry Claude Code's `permissionDecision: "allow"`, so that rewriting a tool call never changes the permission outcome the user's own rules give the ORIGINAL call. Claude Code evaluates its permission rules against a hook's `updatedInput`, not the input the model wrote (claude.exe 2.1.289: the PreToolUse result's `updatedInput` replaces the input before `canUseTool` runs, and an `allow` logs "Hook approved tool use ..., bypassing permission prompt"), so a `token-goat compress -c '<cmd>'` wrapper or a shrunk image's temp path is what a `Bash(curl *)` or `Read(./private/**)` rule gets matched against. Answering every rewrite with `allow`, as serializeOutput once did, therefore skipped the user's prompt for any wrapped command and let deny and ask rules miss. Every rewriteInput producer routes through {@link permissionNeutralRewrite}: it returns null (do not rewrite) whenever a deny or ask rule could match the original call, or the settings cannot be read; `approve` only when the original call is provably auto-allowed anyway and no auto-mode classifier would have reviewed it (a trusted allow rule matching a simple command, Claude Code's built-in read-only commands, a Read inside the working directory); otherwise a rewrite with no decision, which Claude Code runs through its normal permission flow. In auto and bypassPermissions a rewrite must never add a prompt, so there it is approved or skipped, never deferred: auto mode skips every rewrite, and bypassPermissions approves one only when claude_hidden_rules.ts finds no rule source the hook cannot read (a host's canUseTool, --disallowedTools, a skill's disallowed-tools, a PermissionRequest hook adding session rules). Losing a compression is fine; bypassing a user's rule is not, so every doubt resolves to null. On Copilot CLI, opencode and Grok, whose shell rules no hook can read, a shell rewrite never ships. Settings sources and precedence are from https://code.claude.com/docs/en/settings, https://code.claude.com/docs/en/managed-settings and https://code.claude.com/docs/en/permissions. Node built-ins plus the config-dir accessor, paths.ts's share check, path_containment.ts's containment and case fold, nested_worktrees.ts's common git dir, util.ts's runGit and types only, all already on every hook's path, so every hook can import it without dragging a subsystem onto the hook's eager path; Codex's rules parser lives in codex_rules.ts, imported dynamically by loadCodexRules, and the hidden-source check in claude_hidden_rules.ts, imported dynamically by loadHiddenRuleCheck. */
 
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -33,6 +33,8 @@ export interface PermissionSnapshot {
   readonly deny: readonly PermissionRule[]
   readonly ask: readonly PermissionRule[]
   readonly blockReadsOutside: boolean
+  /** Whether any settings file registers a PermissionRequest hook, whose answers can add session rules no file shows. */
+  readonly permissionHooks: boolean
 }
 
 /** One parsed settings document and the role it plays. `managedGroup` names the managed delivery mechanism it came from, since Claude Code applies only one of those unless told to merge. */
@@ -283,10 +285,10 @@ function decideShell(snapshot: PermissionSnapshot, req: RewriteRequest, mode: st
       if (pathExpands || pathRuleMayMatch(rule, hays) || (linked.length > 0 && pathRuleMayMatch(rule, realHays))) return 'skip'
     }
   }
-  // bypassPermissions runs the original with no prompt either way, so the wrapper needs no allow there, and the hook does not vouch for a call it cannot see every rule for (--disallowedTools, --settings, SDK options).
+  // bypassPermissions runs the original with no prompt, so allow rules decide nothing there: decideRewrite turns this into an allow or a skip.
   if (mode === 'bypassPermissions') return 'rewrite'
-  // auto mode drops broad allow rules (Bash(*), interpreter wildcards, package-manager runs) and has the classifier review even read-only commands, and plan mode runs that classifier by default: an allow there would skip the review, so the wrapper is left to it.
-  if (mode !== 'auto' && mode !== 'plan' && provenAllowed(snapshot, original)) return 'approve'
+  // plan mode runs the auto-mode classifier by default, which reviews even read-only commands: an allow there would skip the review, so the wrapper is left to it.
+  if (mode !== 'plan' && provenAllowed(snapshot, original)) return 'approve'
   // dontAsk turns a prompt into a denial, so an unproven wrapper could refuse a call a rule we cannot see allowed.
   if (mode === 'dontAsk') return 'skip'
   const allowHays = req.kind === 'shell-wrap' ? hays : haystacks([original])
@@ -328,20 +330,27 @@ function decideAgent(snapshot: PermissionSnapshot): RewriteVerdict {
   return 'rewrite'
 }
 
-/** The pure decision, given the merged settings (null when any source could not be read). */
-export function decideRewrite(snapshot: PermissionSnapshot | null, req: RewriteRequest): RewriteVerdict {
+let hiddenCheck: ((req: RewriteRequest) => boolean) | undefined
+
+/** The pure decision, given the merged settings (null when any source could not be read). In auto and bypassPermissions no rewrite may ever add a prompt, so a verdict there is only `skip` or `approve`: auto mode always skips, since its classifier reviews the call a hook allow would wave through and a deferred wrapper is a call it may stop to ask about; bypassPermissions approves a rewrite only when no rule source the hook cannot read could apply (`hidden`, which is true until loadHiddenRuleCheck has run), and skips otherwise. */
+export function decideRewrite(snapshot: PermissionSnapshot | null, req: RewriteRequest, hidden: (req: RewriteRequest) => boolean = (r) => hiddenCheck?.(r) ?? true): RewriteVerdict {
   if (snapshot === null) return 'skip'
   const mode = req.harness === 'claudecode' ? normalizedMode(req.mode) : 'default'
-  if (mode === null) return 'skip'
+  if (mode === null || mode === 'auto') return 'skip'
+  let verdict: RewriteVerdict
   switch (req.kind) {
     case 'shell-wrap':
     case 'shell-query':
-      return decideShell(snapshot, req, mode)
+      verdict = decideShell(snapshot, req, mode)
+      break
     case 'read':
-      return decideRead(snapshot, req)
+      verdict = decideRead(snapshot, req)
+      break
     case 'agent':
-      return decideAgent(snapshot)
+      verdict = decideAgent(snapshot)
   }
+  if (mode !== 'bypassPermissions' || verdict === 'skip') return verdict
+  return snapshot.permissionHooks || hidden(req) ? 'skip' : 'approve'
 }
 
 function asObject(value: unknown): Record<string, unknown> | null {
@@ -356,7 +365,9 @@ export function snapshotFromDocs(docs: readonly SettingsDoc[]): PermissionSnapsh
   let blockReadsOutside = false
   const managedGroups = new Set(docs.filter((d) => d.role === 'managed').map((d) => d.managedGroup ?? 'managed'))
   const managedOnly = docs.some((d) => d.role === 'managed' && d.json['allowManagedPermissionRulesOnly'] !== undefined && d.json['allowManagedPermissionRulesOnly'] !== false)
+  let permissionHooks = false
   for (const doc of docs) {
+    if (asObject(doc.json['hooks'])?.['PermissionRequest'] !== undefined) permissionHooks = true
     const permissions = doc.json['permissions']
     if (permissions === undefined) continue
     const perms = asObject(permissions)
@@ -387,7 +398,7 @@ export function snapshotFromDocs(docs: readonly SettingsDoc[]): PermissionSnapsh
       for (const entry of entries) list.push(parseRule(entry, key === 'allow' && trusted))
     }
   }
-  return { allow, deny, ask, blockReadsOutside }
+  return { allow, deny, ask, blockReadsOutside, permissionHooks }
 }
 
 /** Test isolation only: tests/setup/isolate-home.ts puts a predicate under this global symbol so a unit test reads neither this machine's managed policy nor the developer's own `.claude` files above its fixture. It is given a file path, or `registry:<key>` for a Windows policy key. A global symbol rather than a module variable so a test's vi.resetModules() keeps it; the shipped CLI never sets it. */
@@ -445,21 +456,27 @@ function managedFileDocs(dir: string, group: string, out: SettingsDoc[]): void {
   }
 }
 
+/** The directories Claude Code reads managed settings, and managed skills under `.claude`, from on this platform. */
+export function managedDirs(): string[] {
+  if (process.platform === 'darwin') return ['/Library/Application Support/ClaudeCode']
+  if (process.platform !== 'win32') return ['/etc/claude-code']
+  const dirs = new Map<string, string>()
+  for (const base of [process.env['ProgramFiles'], 'C:\\Program Files']) {
+    if (base !== undefined && base !== '') dirs.set(path.join(base, 'ClaudeCode').toLowerCase(), path.join(base, 'ClaudeCode'))
+  }
+  return [...dirs.values()]
+}
+
 /** Every managed settings source on this machine (https://code.claude.com/docs/en/managed-settings#where-each-mechanism-stores-the-policy), plus the server-managed cache. */
 function managedDocs(): SettingsDoc[] {
   const out: SettingsDoc[] = []
+  for (const dir of managedDirs()) managedFileDocs(dir, 'file', out)
   if (process.platform === 'win32') {
-    const dirs = new Map<string, string>()
-    for (const base of [process.env['ProgramFiles'], 'C:\\Program Files']) {
-      if (base !== undefined && base !== '') dirs.set(path.join(base, 'ClaudeCode').toLowerCase(), path.join(base, 'ClaudeCode'))
-    }
-    for (const dir of dirs.values()) managedFileDocs(dir, 'file', out)
     const hklm = readRegistrySettings('HKLM\\SOFTWARE\\Policies\\ClaudeCode')
     if (hklm !== undefined) out.push({ role: 'managed', json: hklm, managedGroup: 'hklm' })
     const hkcu = readRegistrySettings('HKCU\\SOFTWARE\\Policies\\ClaudeCode')
     if (hkcu !== undefined) out.push({ role: 'managed', json: hkcu, managedGroup: 'hkcu' })
   } else if (process.platform === 'darwin') {
-    managedFileDocs('/Library/Application Support/ClaudeCode', 'file', out)
     for (const plist of ['/Library/Managed Preferences/com.anthropic.claudecode.plist', path.join('/Library/Managed Preferences', os.userInfo().username, 'com.anthropic.claudecode.plist')]) {
       if (!sourceAllowed(plist) || !fs.existsSync(plist)) continue
       const res = spawnSync('plutil', ['-convert', 'json', '-o', '-', plist], { encoding: 'utf8', timeout: 5000 })
@@ -468,8 +485,6 @@ function managedDocs(): SettingsDoc[] {
       if (json === null) throw new Error(`${plist} is not a dictionary`)
       out.push({ role: 'managed', json, managedGroup: 'plist' })
     }
-  } else {
-    managedFileDocs('/etc/claude-code', 'file', out)
   }
   const remote = readSettingsFile(path.join(claudeConfigDir(), 'remote-settings.json'))
   if (remote !== undefined && Object.keys(remote).length > 0) out.push({ role: 'managed', json: remote, managedGroup: 'remote' })
@@ -571,6 +586,19 @@ export async function loadCodexRules(): Promise<void> {
   const { decideCodex } = await import('./codex_rules.js')
   const helpers = { containsPiece, haystacks, readIfExists, selfAndAncestors, sourceAllowed }
   codexDecide = (req) => decideCodex(req, helpers)
+}
+
+/** Load the check for Claude Code rule sources no settings file shows (claude_hidden_rules.ts); a dynamic import with this module's helpers injected, so it stays off every hook's eager path. */
+export async function loadHiddenRuleCheck(): Promise<void> {
+  if (hiddenCheck !== undefined) return
+  const { hiddenRuleSource } = await import('./claude_hidden_rules.js')
+  const helpers = { configDir: claudeConfigDir, managedDirs, runGit, selfAndAncestors, sourceAllowed }
+  hiddenCheck = (req) => hiddenRuleSource(req.cwd, process.env['CLAUDE_PROJECT_DIR'], process.env, helpers) !== null
+}
+
+/** Wrap a PreToolUse handler that may rewrite its call so that, on a bypassPermissions call, the hidden rule check is loaded before it runs: until then decideRewrite skips every rewrite there. */
+export function loadingHiddenRuleCheck<E extends { readonly raw: Record<string, unknown> }, R>(handler: (event: E) => R | Promise<R>): (event: E) => R | Promise<R> {
+  return (event) => (hiddenCheck === undefined && event.raw['permission_mode'] === 'bypassPermissions' ? loadHiddenRuleCheck().then(() => handler(event)) : handler(event))
 }
 
 /** Harnesses whose shell permission rules no hook can read, so a wrapped command would be matched against rules token-goat never saw: Copilot CLI takes `--allow-tool`/`--deny-tool` on its command line and runs its hooks from compiled code whose order against them is undocumented; opencode merges permission rules from an organization account and a well-known URL, and its check for directories outside the project reads the paths the wrapper hides; Grok runs Claude Code's hook settings and applies `updatedInput` before its own policy and prompt see the call. */

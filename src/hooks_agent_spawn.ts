@@ -30,7 +30,7 @@ import { loadConfig } from './config.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { getHarnessName } from './bridges/registry.js'
 import { isInsideRoot } from './project.js'
-import { permissionNeutralRewrite } from './rewrite_permission.js'
+import { loadingHiddenRuleCheck, permissionNeutralRewrite } from './rewrite_permission.js'
 
 /**
  * Target token budget for the entire briefing (project map + cached ids + reminder + report
@@ -707,9 +707,9 @@ function postAgentHandler(event: HookEvent): HookOutput {
 registerHook('subagent_start', subagentStartHandler)
 // advisory: hooks_session.ts's subagentStopHandler shares this event and must still run, whichever module registered first.
 registerHook('subagent_stop', subagentReportRewriteHandler, { advisory: true })
-registerHook('pre_tool_use', preAgentHandler, { toolName: 'Agent' })
-registerHook('pre_tool_use', preAgentHandler, { toolName: 'task' })
-registerHook('pre_tool_use', preAgentHandler, { toolName: 'Task' })
+registerHook('pre_tool_use', loadingHiddenRuleCheck(preAgentHandler), { toolName: 'Agent' })
+registerHook('pre_tool_use', loadingHiddenRuleCheck(preAgentHandler), { toolName: 'task' })
+registerHook('pre_tool_use', loadingHiddenRuleCheck(preAgentHandler), { toolName: 'Task' })
 registerHook('post_tool_use', postAgentHandler, { toolName: 'Agent' })
 registerHook('post_tool_use', postAgentHandler, { toolName: 'task' })
 registerHook('post_tool_use', postAgentHandler, { toolName: 'Task' })

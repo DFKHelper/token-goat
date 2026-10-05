@@ -1,5 +1,5 @@
 /** The shipped bundle's PreToolUse rewrites against real Claude Code settings files: a rewrite must never carry `permissionDecision: "allow"` past a rule the user wrote, and must not happen at all where a deny or ask rule could match the original. Claude Code matches its rules against the hook's `updatedInput` (https://code.claude.com/docs/en/hooks, PreToolUse decision control: `updatedInput` "Replaces the entire input object", `allow` "bypasses the permission prompt"), so a `token-goat compress` wrapper or a shrunk image's temp path is what a rule would see. PROVENANCE: FORMAT-DERIVED payload envelope from https://code.claude.com/docs/en/hooks (`session_id`, `cwd`, `permission_mode`, `hook_event_name`, `tool_name`, `tool_input`); FORMAT-DERIVED settings shape and rule syntax from https://code.claude.com/docs/en/settings and https://code.claude.com/docs/en/permissions (`permissions.deny`, `Bash(curl:*)`, `Read(./private/**)`); the image is random noise generated here (HAND-DERIVED). Every child runs with HOME, CLAUDE_CONFIG_DIR and the data dirs inside a temp tree and its cwd in the project there, so no developer settings take part. */
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -58,9 +58,9 @@ function sandbox(name: string, userSettings?: unknown, projectSettings?: unknown
   return { home, project, temp, env }
 }
 
-function hook(box: Sandbox, toolName: string, toolInput: Record<string, unknown>, mode = 'default'): Record<string, unknown> | undefined {
+function hook(box: Sandbox, toolName: string, toolInput: Record<string, unknown>, mode = 'default', env: NodeJS.ProcessEnv = {}): Record<string, unknown> | undefined {
   const payload = { session_id: `perm-e2e-${path.basename(path.dirname(box.home))}`, cwd: box.project, permission_mode: mode, hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput }
-  const res = spawnSync(process.execPath, [BUNDLE, 'hook', 'pre_tool_use'], { cwd: box.project, env: box.env, input: JSON.stringify(payload), encoding: 'utf8' })
+  const res = spawnSync(process.execPath, [BUNDLE, 'hook', 'pre_tool_use'], { cwd: box.project, env: { ...box.env, ...env }, input: JSON.stringify(payload), encoding: 'utf8' })
   expect(res.status, res.stderr).toBe(0)
   return (JSON.parse(res.stdout) as { hookSpecificOutput?: Record<string, unknown> }).hookSpecificOutput
 }
@@ -106,22 +106,6 @@ describe('shell rewrites honor Claude Code permission rules (built bundle)', () 
     expect(hso?.['permissionDecision']).toBe('allow')
   })
 
-  // HAND-DERIVED from https://code.claude.com/docs/en/permission-modes: entering auto mode drops package-manager run rules, and an unproven call goes to the classifier, which a hook allow would skip.
-  it('in auto mode an allow rule auto mode drops proves nothing: the original is left to the classifier', () => {
-    const box = sandbox('auto-npm-run', { permissions: { allow: ['Bash(npm run *)'] } })
-    expect(hook(box, 'Bash', { command: 'npm run build' })?.['permissionDecision']).toBe('allow')
-    expect(hook(box, 'Bash', { command: 'npm run build' }, 'auto')).toBeUndefined()
-    const hso = hook(sandbox('auto-go', { permissions: { allow: ['Bash(npm run *)'] } }), 'Bash', { command: 'go build ./...' }, 'auto')
-    expect(hso?.['updatedInput']).toEqual({ command: "token-goat compress -f go --timeout 600 -c 'go build ./...'" })
-    expect(hso !== undefined && 'permissionDecision' in hso).toBe(false)
-  })
-
-  it('bypassPermissions gets the rewrite with no permissionDecision', () => {
-    const box = sandbox('bypass-go')
-    const hso = hook(box, 'Bash', { command: 'go build ./...' }, 'bypassPermissions')
-    expect(hso?.['updatedInput']).toEqual({ command: "token-goat compress -f go --timeout 600 -c 'go build ./...'" })
-    expect(hso !== undefined && 'permissionDecision' in hso).toBe(false)
-  })
 })
 
 describe('image Read rewrites honor Claude Code Read rules (built bundle)', () => {
@@ -195,4 +179,94 @@ describe('read hints honor Claude Code Read rules (built bundle)', () => {
     const box = project('read-hint-quote', 'deny')
     expect(answer(box, 'Bash', { command: 'cat "secrets/app.ts' })).toContain('unclosed double quote')
   })
+})
+
+type Outcome = 'skip' | 'rewrite' | 'approve'
+
+/** What a PreToolUse answer did: no hookSpecificOutput is a skip, an updatedInput with `allow` an approve, one with no decision a rewrite; any other decision fails the test. */
+function outcome(hso: Record<string, unknown> | undefined): Outcome {
+  if (hso === undefined) return 'skip'
+  expect(hso['updatedInput']).toBeDefined()
+  if (!('permissionDecision' in hso)) return 'rewrite'
+  expect(hso['permissionDecision']).toBe('allow')
+  return 'approve'
+}
+
+// HAND-DERIVED from the bypass rule (in bypassPermissions the user is never prompted, and auto mode follows the same rule) and from https://code.claude.com/docs/en/permission-modes for the other modes: default, acceptEdits and plan may defer to Claude Code's own prompt, dontAsk turns that prompt into a denial, and nothing ever answers ask. The claude process is stood in for by an idle node process, whose command line the hook reads through CLAUDE_PID (FORMAT-DERIVED from claude.exe 2.1.x, which gives hooks CLAUDE_PID and CLAUDE_CODE_ENTRYPOINT).
+describe('rewrites in every permission mode (built bundle)', () => {
+  const idle: ChildProcess[] = []
+  let plainPid = ''
+  let disallowPid = ''
+
+  function fakeClaude(args: string[]): string {
+    const child = spawn(process.execPath, [path.join(root, 'idle.js'), ...args], { stdio: 'ignore', windowsHide: true })
+    idle.push(child)
+    return String(child.pid)
+  }
+
+  beforeAll(async () => {
+    fs.writeFileSync(path.join(root, 'idle.js'), 'setInterval(() => {}, 1 << 30)\n')
+    plainPid = fakeClaude(['--resume', 'abc'])
+    disallowPid = fakeClaude(['--resume', 'abc', '--disallowedTools', 'Bash(curl *)'])
+    await new Promise((resolve) => setTimeout(resolve, 300))
+  })
+
+  afterAll(() => {
+    for (const child of idle) child.kill()
+  })
+
+  function claudeEnv(box: Sandbox, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+    return { CLAUDE_PID: plainPid, CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_PROJECT_DIR: box.project, ...extra }
+  }
+
+  const MODES = ['default', 'acceptEdits', 'plan', 'dontAsk', 'auto', 'bypassPermissions'] as const
+  const CASES: Record<'safe' | 'unprovable' | 'deny' | 'ask', { readonly settings: unknown; readonly command: string; readonly expected: Record<(typeof MODES)[number], Outcome> }> = {
+    safe: { settings: { permissions: { allow: ['Bash(go build:*)'] } }, command: 'go build ./...', expected: { default: 'approve', acceptEdits: 'approve', plan: 'skip', dontAsk: 'approve', auto: 'skip', bypassPermissions: 'approve' } },
+    unprovable: { settings: {}, command: 'go build ./...', expected: { default: 'rewrite', acceptEdits: 'rewrite', plan: 'rewrite', dontAsk: 'skip', auto: 'skip', bypassPermissions: 'approve' } },
+    deny: { settings: { permissions: { deny: ['Bash(curl:*)'] } }, command: 'curl -s https://example.com', expected: { default: 'skip', acceptEdits: 'skip', plan: 'skip', dontAsk: 'skip', auto: 'skip', bypassPermissions: 'skip' } },
+    ask: { settings: { permissions: { ask: ['Bash(curl *)'] } }, command: 'curl -s https://example.com', expected: { default: 'skip', acceptEdits: 'skip', plan: 'skip', dontAsk: 'skip', auto: 'skip', bypassPermissions: 'skip' } },
+  }
+
+  for (const [name, c] of Object.entries(CASES)) {
+    it(`a ${name} Bash command gets the outcome its mode allows, and never a deferred rewrite in auto or bypassPermissions`, () => {
+      const box = sandbox(`matrix-${name}`, c.settings)
+      const got = Object.fromEntries(MODES.map((mode) => [mode, outcome(hook(box, 'Bash', { command: c.command }, mode, claudeEnv(box)))]))
+      expect(got).toEqual(c.expected)
+    }, 120_000)
+  }
+
+  it('in bypassPermissions a rule source the hook cannot read leaves even a safe command alone', () => {
+    const box = sandbox('bypass-hidden', { permissions: { allow: ['Bash(go build:*)'] } })
+    const run = (extra: NodeJS.ProcessEnv): Outcome => outcome(hook(box, 'Bash', { command: 'go build ./...' }, 'bypassPermissions', claudeEnv(box, extra)))
+    expect(run({})).toBe('approve')
+    expect(run({ CLAUDE_CODE_ENTRYPOINT: 'sdk-ts' })).toBe('skip')
+    expect(run({ CLAUDE_PID: disallowPid })).toBe('skip')
+    expect(run({ CLAUDE_PID: '' })).toBe('skip')
+    const skill = sandbox('bypass-hidden-skill', { permissions: { allow: ['Bash(go build:*)'] } })
+    fs.mkdirSync(path.join(skill.project, '.claude', 'skills', 'net'), { recursive: true })
+    fs.writeFileSync(path.join(skill.project, '.claude', 'skills', 'net', 'SKILL.md'), '---\nname: net\ndisallowed-tools: Bash(go build *)\n---\nbody\n')
+    expect(outcome(hook(skill, 'Bash', { command: 'go build ./...' }, 'bypassPermissions', claudeEnv(skill)))).toBe('skip')
+    const hooked = sandbox('bypass-hidden-hook', { hooks: { PermissionRequest: [{ hooks: [{ type: 'command', command: 'node x.js' }] }] } })
+    expect(outcome(hook(hooked, 'Bash', { command: 'go build ./...' }, 'bypassPermissions', claudeEnv(hooked)))).toBe('skip')
+  }, 120_000)
+
+  it('the image Read rewrite is approved in bypassPermissions only with no hidden rule source, and skipped in auto', async () => {
+    const box = sandbox('matrix-image')
+    const image = path.join(box.project, 'shot.jpg')
+    await writeNoiseJpeg(image)
+    expect(outcome(hook(box, 'Read', { file_path: image }, 'default', claudeEnv(box)))).toBe('approve')
+    expect(outcome(hook(box, 'Read', { file_path: image }, 'auto', claudeEnv(box)))).toBe('skip')
+    expect(outcome(hook(box, 'Read', { file_path: image }, 'bypassPermissions', claudeEnv(box, { CLAUDE_CODE_ENTRYPOINT: 'sdk-py' })))).toBe('skip')
+    expect(outcome(hook(box, 'Read', { file_path: image }, 'bypassPermissions', claudeEnv(box)))).toBe('approve')
+  }, 120_000)
+
+  it('the Agent prompt rewrite defers in default mode, is approved in bypassPermissions only with no hidden rule source, and is skipped in auto', () => {
+    const box = sandbox('matrix-agent')
+    const spawnAgent = (mode: string, extra: NodeJS.ProcessEnv = {}): Outcome => outcome(hook(box, 'Agent', { subagent_type: 'general-purpose', description: 'd', prompt: 'find the failing test in the parser module' }, mode, claudeEnv(box, extra)))
+    // Each spawn gets the subagent briefing, and each later one the near-duplicate advisory as well: either way the prompt is rewritten.
+    expect(spawnAgent('default')).toBe('rewrite')
+    expect(spawnAgent('auto')).toBe('skip')
+    expect(spawnAgent('bypassPermissions', { CLAUDE_PID: disallowPid })).toBe('skip')
+    expect(spawnAgent('bypassPermissions')).toBe('approve')
+  }, 120_000)
 })
