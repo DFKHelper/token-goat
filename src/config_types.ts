@@ -77,7 +77,6 @@ export interface ImageShrinkConfig {
   jpeg_quality: number
   max_image_pixels: number
   screenshot_redirect: boolean
-  ocr_enabled: boolean
   ocr_min_confidence: number
   ocr_lang: string
   vision_tier: VisionTier

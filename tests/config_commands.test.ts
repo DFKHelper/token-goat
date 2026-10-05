@@ -1177,6 +1177,61 @@ describe('cmdConfig validate', () => {
     })
   })
 
+  // HAND-DERIVED: `[image_shrink] ocr_enabled = true` is what every full-snapshot save wrote while the key existed (its default was true); the hook OCR it switched was removed in 0b292b91, so the key now switches nothing. Unlike [stats], [image_shrink] stays a live section, so validate's known-section path is the one that has to skip it.
+  describe('the retired image_shrink.ocr_enabled key', () => {
+    const OLD_SAVE = '[image_shrink]\nocr_enabled = false\njpeg_quality = 61\n\n[hints]\nmin_file_lines_for_hint = 7\n'
+
+    it('is no longer a config key: get and set both refuse it', () => {
+      expect(() => cmdConfig({ action: 'get', key: 'image_shrink.ocr_enabled' })).toThrow('key not found')
+      expect(() => cmdConfig({ action: 'set', key: 'image_shrink.ocr_enabled', value: 'false' })).toThrow()
+      expect('ocr_enabled' in (loadConfig().image_shrink as unknown as Record<string, unknown>)).toBe(false)
+    })
+
+    it('still loads from an old config.toml, with the other keys in it intact', () => {
+      fs.writeFileSync(_testConfigPath, OLD_SAVE, 'utf8')
+      invalidateConfigCache()
+      expect(loadConfig().image_shrink.jpeg_quality).toBe(61)
+      expect(loadConfig().hints.min_file_lines_for_hint).toBe(7)
+    })
+
+    it('gives validate nothing to report and leaves the exit code clean', () => {
+      fs.writeFileSync(_testConfigPath, OLD_SAVE, 'utf8')
+      invalidateConfigCache()
+      process.exitCode = undefined
+      cmdConfig({ action: 'validate' })
+      expect(captured()).toContain('no issues found')
+      expect(process.exitCode).toBeUndefined()
+    })
+
+    it('gives validate nothing to report in a project file either', () => {
+      inProjectDir('[image_shrink]\nocr_enabled = false\n', () => {
+        cmdConfig({ action: 'validate', json: true })
+        const parsed = JSON.parse(captured()) as { findings: Array<{ kind: string; key: string }>; ok: boolean }
+        expect(parsed.findings).toEqual([])
+        expect(parsed.ok).toBe(true)
+      })
+    })
+
+    it('still flags a real typo next to it in the same section', () => {
+      fs.writeFileSync(_testConfigPath, '[image_shrink]\nocr_enabled = false\nocr_enabeld = 1\n', 'utf8')
+      invalidateConfigCache()
+      cmdConfig({ action: 'validate' })
+      expect(captured()).toContain('ocr_enabeld')
+      expect(captured()).toContain('issue(s) found')
+      process.exitCode = undefined
+    })
+
+    it('drops out of config.toml on the next save', () => {
+      fs.writeFileSync(_testConfigPath, OLD_SAVE, 'utf8')
+      invalidateConfigCache()
+      cmdConfig({ action: 'set', key: 'hints.min_file_lines_for_hint', value: '9' })
+      const saved = fs.readFileSync(_testConfigPath, 'utf8')
+      expect(saved).not.toContain('ocr_enabled')
+      expect(saved).toContain('jpeg_quality = 61')
+      expect(saved).toContain('min_file_lines_for_hint = 9')
+    })
+  })
+
   it('suggests a close match for an unknown section', () => {
     fs.writeFileSync(_testConfigPath, '[compact_assit]\nenabled = true\n', 'utf8')
     invalidateConfigCache()

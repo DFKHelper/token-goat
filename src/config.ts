@@ -326,7 +326,7 @@ const ENV_KEYS = [
   'TOKEN_GOAT_INDEXING_AUTO_RECLAIM_EMBEDDINGS',
 ]
 
-// Every env var actually consulted by _buildConfig's envInt/envBool/envStr calls is registered in CONFIG_KEY_ENV_OVERRIDES (below) as the per-field canonical source of truth. Fold those in here rather than relying solely on the hand-maintained ENV_KEYS list above: a var added only to CONFIG_KEY_ENV_OVERRIDES (as happened for TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES and TOKEN_GOAT_OCR_ENABLED, both consumed in _buildConfig but omitted from ENV_KEYS) would otherwise silently drop out of the fingerprint, letting loadConfig()'s cache serve a stale config across a change to that var with no cache-invalidation signal at all.
+// Every env var actually consulted by _buildConfig's envInt/envBool/envStr calls is registered in CONFIG_KEY_ENV_OVERRIDES (below) as the per-field canonical source of truth. Fold those in here rather than relying solely on the hand-maintained ENV_KEYS list above: a var added only to CONFIG_KEY_ENV_OVERRIDES (as happened for TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES and the since-retired TOKEN_GOAT_OCR_ENABLED, both consumed in _buildConfig but omitted from ENV_KEYS) would otherwise silently drop out of the fingerprint, letting loadConfig()'s cache serve a stale config across a change to that var with no cache-invalidation signal at all.
 function allEnvKeys(): string[] {
   return [...new Set([...ENV_KEYS, ...Object.values(CONFIG_KEY_ENV_OVERRIDES).flat()])]
 }
@@ -535,7 +535,7 @@ export function invalidateConfigCache(): void {
 
 registerReset(invalidateConfigCache)
 
-/** Run `fn` with every config-affecting env var (the {@link allEnvKeys} registry, not just the hand-maintained {@link ENV_KEYS} list) temporarily cleared, then restore the original values. Safe because `_buildConfig` is fully synchronous — no other code can observe the env vars while they are unset. Using only ENV_KEYS here previously let a var missing from that list (e.g. TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES, TOKEN_GOAT_OCR_ENABLED) survive the clear and leak into buildPersistedConfig()'s output, defeating this function's whole purpose for that var: a transient env override would get permanently written to config.toml by `config set` on any unrelated key instead of staying scoped to the current invocation. */
+/** Run `fn` with every config-affecting env var (the {@link allEnvKeys} registry, not just the hand-maintained {@link ENV_KEYS} list) temporarily cleared, then restore the original values. Safe because `_buildConfig` is fully synchronous — no other code can observe the env vars while they are unset. Using only ENV_KEYS here previously let a var missing from that list (e.g. TOKEN_GOAT_GLOB_DEDUP_MIN_MATCHES, the since-retired TOKEN_GOAT_OCR_ENABLED) survive the clear and leak into buildPersistedConfig()'s output, defeating this function's whole purpose for that var: a transient env override would get permanently written to config.toml by `config set` on any unrelated key instead of staying scoped to the current invocation. */
 function withoutConfigEnv<T>(fn: () => T): T {
   const keys = allEnvKeys()
   const saved: Record<string, string | undefined> = {}
@@ -673,12 +673,10 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   // Legacy-sentinel guard: a pre-cb2a1dfa full-snapshot save persisted the then-default 16_000_000, which now loads as the current default instead of pinning the old cap.
   is_cfg.max_image_pixels = validatedIntWithLegacySentinel(is_raw['max_image_pixels'], is_cfg.max_image_pixels, 16_000_000, ...boundsOf('image_shrink.max_image_pixels'))
   is_cfg.screenshot_redirect = validatedBool(is_raw['screenshot_redirect'], is_cfg.screenshot_redirect)
-  is_cfg.ocr_enabled = validatedBool(is_raw['ocr_enabled'], is_cfg.ocr_enabled)
   is_cfg.ocr_min_confidence = validatedInt(is_raw['ocr_min_confidence'], is_cfg.ocr_min_confidence, ...boundsOf('image_shrink.ocr_min_confidence'))
   is_cfg.ocr_lang = validatedOcrLang(is_raw['ocr_lang'], is_cfg.ocr_lang)
   is_cfg.vision_tier = validatedVisionTier(is_raw['vision_tier'], is_cfg.vision_tier)
   is_cfg.max_image_pixels = envInt('TOKEN_GOAT_MAX_IMAGE_PIXELS', is_cfg.max_image_pixels, ...boundsOf('image_shrink.max_image_pixels'))
-  is_cfg.ocr_enabled = envBool('TOKEN_GOAT_OCR_ENABLED', is_cfg.ocr_enabled)
   is_cfg.ocr_lang = validatedOcrLang(process.env['TOKEN_GOAT_OCR_LANG'], is_cfg.ocr_lang)
   is_cfg.vision_tier = validatedVisionTier(process.env['TOKEN_GOAT_VISION_TIER'], is_cfg.vision_tier)
 
@@ -953,7 +951,6 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'skill_preservation.pre_skill_enabled': ['TOKEN_GOAT_PRE_SKILL'],
   'skill_preservation.orphan_sweep_enabled': ['TOKEN_GOAT_ORPHAN_SWEEP'],
   'image_shrink.max_image_pixels': ['TOKEN_GOAT_MAX_IMAGE_PIXELS'],
-  'image_shrink.ocr_enabled': ['TOKEN_GOAT_OCR_ENABLED'],
   'image_shrink.ocr_lang': ['TOKEN_GOAT_OCR_LANG'],
   'image_shrink.vision_tier': ['TOKEN_GOAT_VISION_TIER'],
   'screenshot.block_private_targets': ['TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS'],
@@ -1117,7 +1114,6 @@ export function saveConfig(config: Config, explicitKeys: readonly string[] = [])
       jpeg_quality: is_cfg.jpeg_quality,
       max_image_pixels: is_cfg.max_image_pixels,
       screenshot_redirect: is_cfg.screenshot_redirect,
-      ocr_enabled: is_cfg.ocr_enabled,
       ocr_min_confidence: is_cfg.ocr_min_confidence,
       ocr_lang: is_cfg.ocr_lang,
       vision_tier: is_cfg.vision_tier,

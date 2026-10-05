@@ -373,7 +373,7 @@ describe('loadConfig', () => {
     cfg.hints.git_hint_max_ms = 99
     cfg.worker.blocked_roots = ['/tmp/blocked']
     cfg.image_shrink.jpeg_quality = 85
-    cfg.image_shrink.ocr_enabled = false
+    cfg.image_shrink.screenshot_redirect = false
     cfg.image_shrink.ocr_min_confidence = 80
 
     saveConfig(cfg)
@@ -385,7 +385,7 @@ describe('loadConfig', () => {
     expect(loaded.hints.git_hint_max_ms).toBe(99)
     expect(loaded.worker.blocked_roots).toEqual(['/tmp/blocked'])
     expect(loaded.image_shrink.jpeg_quality).toBe(85)
-    expect(loaded.image_shrink.ocr_enabled).toBe(false)
+    expect(loaded.image_shrink.screenshot_redirect).toBe(false)
     expect(loaded.image_shrink.ocr_min_confidence).toBe(80)
   })
 
@@ -568,18 +568,19 @@ describe('loadConfig / loadPersistedConfig distinguish a parse failure from a mi
     }
   })
 
-  it('loadPersistedConfig() ignores a transient TOKEN_GOAT_OCR_ENABLED env override instead of baking it into the persisted-on-disk view (regression: same withoutConfigEnv omission as glob_dedup_min_matches above)', () => {
-    const orig = process.env['TOKEN_GOAT_OCR_ENABLED']
+  // TOKEN_GOAT_FOLD_CODE_BODIES stands in for the retired TOKEN_GOAT_OCR_ENABLED: a boolean override consumed in _buildConfig and absent from the hand-maintained ENV_KEYS list, the shape this regression is about.
+  it('loadPersistedConfig() ignores a transient boolean env override missing from ENV_KEYS instead of baking it into the persisted-on-disk view (regression: same withoutConfigEnv omission as glob_dedup_min_matches above)', () => {
+    const orig = process.env['TOKEN_GOAT_FOLD_CODE_BODIES']
     try {
-      const defaultOcrEnabled = defaultConfig().image_shrink.ocr_enabled
-      process.env['TOKEN_GOAT_OCR_ENABLED'] = defaultOcrEnabled ? 'false' : 'true'
+      const defaultFold = defaultConfig().hints.fold_code_bodies
+      process.env['TOKEN_GOAT_FOLD_CODE_BODIES'] = defaultFold ? 'false' : 'true'
       const cfg = loadPersistedConfig()
-      expect(cfg.image_shrink.ocr_enabled).toBe(defaultOcrEnabled)
+      expect(cfg.hints.fold_code_bodies).toBe(defaultFold)
     } finally {
       if (orig === undefined) {
-        delete process.env['TOKEN_GOAT_OCR_ENABLED']
+        delete process.env['TOKEN_GOAT_FOLD_CODE_BODIES']
       } else {
-        process.env['TOKEN_GOAT_OCR_ENABLED'] = orig
+        process.env['TOKEN_GOAT_FOLD_CODE_BODIES'] = orig
       }
     }
   })
@@ -631,7 +632,6 @@ describe('defaultConfig field spot-checks', () => {
     expect(cfg.image_shrink.jpeg_quality).toBe(75)
     expect(cfg.image_shrink.max_image_pixels).toBe(64_000_000)
     expect(cfg.image_shrink.screenshot_redirect).toBe(true)
-    expect(cfg.image_shrink.ocr_enabled).toBe(true)
     expect(cfg.image_shrink.ocr_min_confidence).toBe(65)
     // The floor of the two billing tiers, on purpose. Reporting a saving against the cheaper of the two bills can never credit one that was not there; the other direction is the over-credit class this repository has shipped repeatedly.
     expect(cfg.image_shrink.vision_tier).toBe('standard')
@@ -818,20 +818,21 @@ describe('cross-field config clamping', () => {
     })
   })
 
-  it('picks up a mid-process change to TOKEN_GOAT_OCR_ENABLED without an explicit invalidateConfigCache() call (regression: same ENV_KEYS omission as glob_dedup_min_matches above)', () => {
-    const orig = process.env['TOKEN_GOAT_OCR_ENABLED']
+  // TOKEN_GOAT_FOLD_CODE_BODIES stands in for the retired TOKEN_GOAT_OCR_ENABLED: a boolean override consumed in _buildConfig and absent from the hand-maintained ENV_KEYS list.
+  it('picks up a mid-process change to a boolean env override missing from ENV_KEYS without an explicit invalidateConfigCache() call (regression: same ENV_KEYS omission as glob_dedup_min_matches above)', () => {
+    const orig = process.env['TOKEN_GOAT_FOLD_CODE_BODIES']
     try {
-      delete process.env['TOKEN_GOAT_OCR_ENABLED']
+      delete process.env['TOKEN_GOAT_FOLD_CODE_BODIES']
       const before = loadConfig()
-      const defaultOcrEnabled = before.image_shrink.ocr_enabled
-      process.env['TOKEN_GOAT_OCR_ENABLED'] = defaultOcrEnabled ? 'false' : 'true'
+      const defaultFold = before.hints.fold_code_bodies
+      process.env['TOKEN_GOAT_FOLD_CODE_BODIES'] = defaultFold ? 'false' : 'true'
       const after = loadConfig()
-      expect(after.image_shrink.ocr_enabled).toBe(!defaultOcrEnabled)
+      expect(after.hints.fold_code_bodies).toBe(!defaultFold)
     } finally {
       if (orig === undefined) {
-        delete process.env['TOKEN_GOAT_OCR_ENABLED']
+        delete process.env['TOKEN_GOAT_FOLD_CODE_BODIES']
       } else {
-        process.env['TOKEN_GOAT_OCR_ENABLED'] = orig
+        process.env['TOKEN_GOAT_FOLD_CODE_BODIES'] = orig
       }
     }
   })
