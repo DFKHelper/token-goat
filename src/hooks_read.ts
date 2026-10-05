@@ -1252,8 +1252,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
   const size = statSize(onDisk)
 
-  // First-read symbol-aware policy: evaluate files with size >= first_read_symbol_bytes (default 50KB)
-  // on broad/whole-file reads when indexed symbols or headings exist.
+  // First-read symbol-aware policy: evaluate files with size >= first_read_symbol_bytes (default 50KB) on broad/whole-file reads when indexed symbols or headings exist.
   if (
     event.toolName !== 'Grep' &&
     size !== null &&
