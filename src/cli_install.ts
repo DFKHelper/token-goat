@@ -631,7 +631,7 @@ export async function cmdUninstall(opts: {
     out('No separate Hermes integration to remove (it shares the Claude Code hook entries).')
   }
 
-  if (opts.purge === true) await runPurge()
+  if (opts.purge === true) process.exitCode = await runPurge()
 }
 
 /** An integration still on disk whose removal flag the caller did not pass, so uninstall can name it rather than leave it wired in silence. */
@@ -713,17 +713,18 @@ export function leftoverIntegrations(opts: {
   return found
 }
 
-/** The destructive half of uninstall, opt-in behind --purge. Refuses while the worker is alive: it would rewrite the pid file and re-open the database under the directory being deleted, so the purge would report success over a directory that grows back. */
-async function runPurge(): Promise<void> {
+/** The destructive half of uninstall, opt-in behind --purge. Refuses while the worker is alive: it would rewrite the pid file and re-open the database under the directory being deleted, so the purge would report success over a directory that grows back. Returns the exit code: 1 when it refused or any directory would not delete, so a script that checks `$?` does not take a purge that did not happen for one that did. */
+export async function runPurge(): Promise<number> {
   // A resident hook server holds nothing open between requests, but one mid-request would recreate what this deletes.
   await queryServers('stop')
   if (isWorkerRunning()) {
     err(formatCommandError('the background worker is running, so --purge would delete files it is about to rewrite. Run "token-goat worker stop" first.'))
-    return
+    return 1
   }
   const result = purgeDataDirectories()
   for (const root of result.absent) out(`Nothing to purge at ${displaySafePath(root)}.`)
   for (const removed of result.removed) out(`Purged ${displaySafePath(removed.path)} (${formatBytes(removed.bytes)} reclaimed).`)
   // The reason is an OS error string, which quotes the offending path back inside it.
   for (const failure of result.failed) err(formatCommandError(`could not purge ${displaySafePath(failure.path)}: ${displaySafeText(failure.reason)}`))
+  return result.failed.length > 0 ? 1 : 0
 }
