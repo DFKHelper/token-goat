@@ -159,6 +159,32 @@ describe('runAuditCommand', () => {
     }
   })
 
+  // Regression: with no discoverable session the error went to stdout under a "# token-goat audit" report header while exiting 1. HAND-DERIVED: a fresh empty temp project, which no harness has a session for.
+  it('prints the no-session error to stderr with no report header', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'audit-no-session-'))
+    let errText = ''
+    let outText = ''
+    const origStderr = process.stderr.write
+    const origStdout = process.stdout.write
+    process.stderr.write = ((str: string) => { errText += str; return true }) as typeof process.stderr.write
+    process.stdout.write = ((str: string) => { outText += str; return true }) as typeof process.stdout.write
+    try {
+      await runAuditCommand({ project: dir })
+    } finally {
+      process.stderr.write = origStderr
+      process.stdout.write = origStdout
+    }
+    try {
+      expect(process.exitCode).toBe(1)
+      expect(errText).toMatch(/^token-goat: no session transcript found for /)
+      expect(errText).toContain('Pass --transcript <path>')
+      expect(outText).toBe('')
+    } finally {
+      process.exitCode = undefined
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('runs against a Copilot transcript fixture', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'tg-audit-copilot-'))
     let output = ''

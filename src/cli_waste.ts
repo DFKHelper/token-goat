@@ -11,6 +11,7 @@ import {
   findProjectSession,
   isCopilotTranscript,
   MCP_DISABLE_NOTE,
+  noSessionTranscriptMessage,
   unusedMcpServers,
   type CopilotWasteReport,
 } from './copilot_waste.js'
@@ -19,7 +20,7 @@ import { countNoun } from './util.js'
 import { formatBytes, formatTokenEstimate } from './resident_context.js'
 import { estimateTokensFromLength } from './overflow_guard.js'
 import { displaySafeJson } from './paths.js'
-import { formatCommandError } from './command_error.js'
+import { writeCommandFailure } from './command_error.js'
 
 export interface WasteCommandOptions {
   project?: string
@@ -235,19 +236,8 @@ export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<v
   if (opts.transcript !== undefined) {
     const resolvedPath = path.resolve(opts.transcript)
     if (!fs.existsSync(resolvedPath)) {
-      if (opts.copilot === true) {
-        const detail = `Copilot session event log not found: ${resolvedPath}`
-        if (opts.json === true) {
-          process.stdout.write(`${displaySafeJson({ error: detail }, 0)}\n`)
-        } else {
-          process.stdout.write('\n# token-goat waste (Copilot CLI)\n')
-          process.stdout.write(`${detail}\n`)
-        }
-        process.exitCode = 1
-        return
-      }
-      process.stderr.write(formatCommandError(`transcript not found: ${resolvedPath}`) + '\n')
-      process.exitCode = 1
+      const detail = opts.copilot === true ? `Copilot session event log not found: ${resolvedPath}` : `transcript not found: ${resolvedPath}`
+      writeCommandFailure(opts.json === true, { error: detail }, detail)
       return
     }
 
@@ -279,13 +269,7 @@ export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<v
       const detail = eventsPath === null
         ? 'no Copilot CLI session found under <copilot-home>/session-state'
         : `Copilot session event log not found: ${eventsPath}`
-      if (opts.json === true) {
-        process.stdout.write(`${displaySafeJson({ error: detail }, 0)}\n`)
-      } else {
-        process.stdout.write('\n# token-goat waste (Copilot CLI)\n')
-        process.stdout.write(`${detail}\n`)
-      }
-      process.exitCode = 1
+      writeCommandFailure(opts.json === true, { error: detail }, detail)
       return
     }
     const copilotReport = buildCopilotWasteReport(eventsPath)
@@ -301,14 +285,7 @@ export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<v
   const detected = findProjectSession(projectRoot)
 
   if (detected === null) {
-    if (opts.json === true) {
-      process.stdout.write(`${displaySafeJson({ error: 'no session transcript found', project: projectRoot }, 0)}\n`)
-    } else {
-      process.stdout.write('\n# token-goat waste\n')
-      process.stdout.write(`Project: ${projectRoot}\n`)
-      process.stdout.write('No session transcript found. Pass --transcript <path> to specify one explicitly.\n')
-    }
-    process.exitCode = 1
+    writeCommandFailure(opts.json === true, { error: 'no session transcript found', project: projectRoot }, noSessionTranscriptMessage(projectRoot))
     return
   }
 

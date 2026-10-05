@@ -186,20 +186,74 @@ describe('runWasteCommand', () => {
     expect(out.text()).toBe('')
   })
 
-  it('prints a text "no transcript found" message and sets exitCode 1 when none is discoverable and none is passed', async () => {
+  it('prints a stderr "no transcript found" error and sets exitCode 1 when none is discoverable and none is passed', async () => {
     // No --transcript given, and tempDir's slugged ~/.claude/projects/<slug> dir
     // won't exist, so findLatestTranscript resolves to null.
+    const err = captureStderr()
     const cap = captureStdout()
     try {
       await runWasteCommand({ project: tempDir })
     } finally {
       cap.restore()
+      err.restore()
     }
 
     // resolveProjectRoot canonicalizes (lowercased drive letter, forward slashes on
     // Windows), so compare the basename rather than the raw tempDir string.
-    expect(cap.text()).toContain('No session transcript found')
-    expect(cap.text()).toContain(path.basename(tempDir))
+    expect(err.text()).toMatch(/^token-goat: no session transcript found for /)
+    expect(err.text()).toContain(path.basename(tempDir))
+    expect(err.text()).toContain('Pass --transcript <path>')
+    // A failure prints no report header: stdout is the report, and there is none.
+    expect(cap.text()).toBe('')
+    expect(process.exitCode).toBe(1)
+  })
+
+  // Regression: the --copilot not-found errors went to stdout under a "# token-goat waste (Copilot CLI)" report header while exiting 1. HAND-DERIVED: a path that does not exist; the expected line is the `token-goat: <message>` shape src/command_error.ts documents.
+  it('prints the --copilot --transcript not-found error to stderr with no report header', async () => {
+    const missing = path.join(tempDir, 'nope.jsonl')
+    const err = captureStderr()
+    const out = captureStdout()
+    try {
+      await runWasteCommand({ project: tempDir, copilot: true, transcript: missing })
+    } finally {
+      err.restore()
+      out.restore()
+    }
+
+    expect(err.text()).toBe(`token-goat: Copilot session event log not found: ${missing}\n`)
+    expect(out.text()).toBe('')
+    expect(process.exitCode).toBe(1)
+  })
+
+  it('gives a --json caller a JSON document for a missing --transcript, as audit does', async () => {
+    const missing = path.join(tempDir, 'does-not-exist.jsonl')
+    const err = captureStderr()
+    const out = captureStdout()
+    try {
+      await runWasteCommand({ project: tempDir, transcript: missing, json: true })
+    } finally {
+      err.restore()
+      out.restore()
+    }
+
+    expect(JSON.parse(out.text())).toEqual({ error: `transcript not found: ${missing}` })
+    expect(err.text()).toBe('')
+    expect(process.exitCode).toBe(1)
+  })
+
+  it('keeps the --copilot --transcript not-found error a JSON document on stdout under --json', async () => {
+    const missing = path.join(tempDir, 'nope.jsonl')
+    const err = captureStderr()
+    const out = captureStdout()
+    try {
+      await runWasteCommand({ project: tempDir, copilot: true, transcript: missing, json: true })
+    } finally {
+      err.restore()
+      out.restore()
+    }
+
+    expect(JSON.parse(out.text())).toEqual({ error: `Copilot session event log not found: ${missing}` })
+    expect(err.text()).toBe('')
     expect(process.exitCode).toBe(1)
   })
 

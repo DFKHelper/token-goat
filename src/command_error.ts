@@ -1,6 +1,6 @@
 /** The one stderr rendering of a command failure (`token-goat: <message>`) and the error class command handlers throw to reach it. A leaf importing only paths.ts and util.ts, so a command module the CLI entry imports (or a hook path reaches) can print an error in the same shape without importing cli.ts back. */
 
-import { displaySafeText } from './paths.js'
+import { displaySafeJson, displaySafeText } from './paths.js'
 import { extractErrorMessage } from './util.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. Pass an array for a message of several lines: the stderr printer escapes each line on its own, so the breaks token-goat put between them survive while a newline inside a file-derived part stays escaped. */
@@ -37,4 +37,11 @@ export function formatFailedResultText(text: string): string {
     }
   }
   return formatCommandError(new CliError(text.split('\n')))
+}
+
+/** A report command's failure, written where its caller looks: with `--json` the `body` goes to stdout, so the caller still gets a document that parses, and otherwise `message` is the one `token-goat:` error on stderr, never a report header on stdout. Sets exit code 1 either way. */
+export function writeCommandFailure(json: boolean, body: Record<string, unknown>, message: string | readonly string[]): void {
+  if (json) process.stdout.write(`${displaySafeJson(body, 0)}\n`)
+  else process.stderr.write(formatCommandError(new CliError(message)) + '\n')
+  process.exitCode = 1
 }

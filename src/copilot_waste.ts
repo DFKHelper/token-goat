@@ -264,6 +264,11 @@ function ownClaudeTranscript(projectRoot: string): string | null {
   }
 }
 
+/** The error `waste` and `audit` both give when {@link findProjectSession} finds nothing: what was missing and for which project, then how to name a transcript instead. */
+export function noSessionTranscriptMessage(projectRoot: string): string[] {
+  return [`no session transcript found for ${projectRoot}`, 'Pass --transcript <path> to specify one explicitly.']
+}
+
 /** Discovers the session `waste` and `audit` should report on for a project, across Copilot CLI and Claude Code. The calling harness's own session wins when its id names one for this project: `COPILOT_AGENT_SESSION_ID` (the session-state directory name) or `CLAUDE_CODE_SESSION_ID` (the transcript's basename). Otherwise the most recently modified file wins. A live Copilot lock alone does not win: a Copilot session left open in another terminal holds its `inuse.<pid>.lock` for hours, and ranking it first made `waste` run inside Claude Code report the idle Copilot session instead of the caller's own. */
 export function findProjectSession(projectRoot: string): DetectedSession | null {
   const copilotSession = findActiveCopilotSession(projectRoot) ?? findLatestCopilotSession(projectRoot)

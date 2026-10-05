@@ -6,6 +6,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **`waste` and `audit` print a missing-transcript error as an error.** `waste --copilot --transcript` with a file that does not exist, `waste --copilot` with no Copilot session, and `waste` or `audit` with no session found for the project all wrote their message to standard output under a report heading such as `# token-goat waste (Copilot CLI)`, then exited 1, so the failure looked like the start of a report. Each now prints one `token-goat:` error line on standard error and no heading. With `--json` the error is still a JSON document on standard output, and `waste --transcript` with a missing file now gives that JSON document too instead of plain text.
+
 - **`uninstall --purge` now exits with an error when nothing was purged.** When it refused because the background worker was running, or a data directory would not delete, it printed the error and still exited 0, so a script checking the exit code believed the data was gone. Both cases now exit 1.
 
 - **The "use skeleton or outline" tip after reading a long source file now appears once.** It came back word for word on every read of the same file, so a file read in five slices carried five copies, and after a slice it still spoke of "a future full re-read" though nothing had been read in full. It now shows once per file until the conversation is compacted, and after a slice it says the commands replace paging through the file.

@@ -10,11 +10,12 @@ import {
   findProjectSession,
   isCopilotTranscript,
   MCP_DISABLE_NOTE,
+  noSessionTranscriptMessage,
   unusedMcpServers,
   type CopilotWasteReport,
 } from './copilot_waste.js'
 import { displaySafeJson } from './paths.js'
-import { formatCommandError } from './command_error.js'
+import { writeCommandFailure } from './command_error.js'
 
 export interface AuditCommandOptions {
   project?: string | undefined
@@ -143,12 +144,7 @@ export async function runAuditCommand(opts: AuditCommandOptions = {}): Promise<v
     const resolved = path.resolve(opts.transcript)
     if (!fs.existsSync(resolved)) {
       const err = `transcript not found: ${resolved}`
-      if (opts.json === true) {
-        process.stdout.write(`${displaySafeJson({ error: err }, 0)}\n`)
-      } else {
-        process.stderr.write(formatCommandError(err) + '\n')
-      }
-      process.exitCode = 1
+      writeCommandFailure(opts.json === true, { error: err }, err)
       return
     }
 
@@ -177,13 +173,7 @@ export async function runAuditCommand(opts: AuditCommandOptions = {}): Promise<v
   const detected = findProjectSession(projectRoot)
 
   if (detected === null) {
-    const err = 'no session transcript found for project'
-    if (opts.json === true) {
-      process.stdout.write(`${displaySafeJson({ error: err, project: projectRoot }, 0)}\n`)
-    } else {
-      process.stdout.write(`\n# token-goat audit\nProject: ${projectRoot}\nNo session transcript found. Pass --transcript <path> to specify one explicitly.\n`)
-    }
-    process.exitCode = 1
+    writeCommandFailure(opts.json === true, { error: 'no session transcript found for project', project: projectRoot }, noSessionTranscriptMessage(projectRoot))
     return
   }
 
