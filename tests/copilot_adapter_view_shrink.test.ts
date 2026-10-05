@@ -53,8 +53,8 @@ afterAll(() => {
 })
 
 // FORMAT-DERIVED: Copilot CLI's preToolUse payload (sessionId, workingDirectory, toolName, and toolArgs as a JSON string) per GitHub's hooks reference, and `view` with a `path` argument per @github/copilot-sdk's tool types, both cited in src/bridges/copilot_cli.ts. `viewRange` is HAND-DERIVED: an extra argument the rewrite has to carry, as in the shim's own test in tests/bridges/inprocess.test.ts.
-async function viewModifiedArgs(sessionId: string): Promise<Record<string, unknown> | undefined> {
-  const input = JSON.stringify({ sessionId, workingDirectory: project, toolName: 'view', toolArgs: JSON.stringify({ path: image, viewRange: [1, 40] }) })
+async function viewModifiedArgs(sessionId: string, file: string = image): Promise<Record<string, unknown> | undefined> {
+  const input = JSON.stringify({ sessionId, workingDirectory: project, toolName: 'view', toolArgs: JSON.stringify({ path: file, viewRange: [1, 40] }) })
   // The relay the hook server hands the adapter (src/hook_server.ts), minus its timing and after-reply plumbing.
   const result = await runAdapter('copilot_cli', { event: 'preToolUse', input }, { early: () => 0, relay: (event, payload, harnessWaitMs) => relayInProcess(event, payload, harnessWaitMs) })
   expect(result.exit).toBe(0)
@@ -70,6 +70,17 @@ describe('the Copilot CLI adapter on a view of a large image', () => {
     expect(path.basename(copy)).toMatch(/^token-goat-shrink-\d+-\d+-[a-z0-9-]+\.(jpeg|webp)$/)
     expect(fs.statSync(copy).size).toBeLessThan(fs.statSync(image).size)
     expect(args?.['viewRange']).toEqual([1, 40])
+  })
+
+  // FORMAT-DERIVED: Copilot CLI 1.0.91's `copilot --help` text in app.js ("By default, file access is restricted to paths within the current working directory and its subdirectories, plus the system temporary directory"), with the check itself in the native runtime (session.permissions.paths.isPathWithinAllowedDirectories), so a copy in the temp dir could carry an image from outside past the prompt its own path would raise.
+  it('leaves a view of an image outside the working directory alone and writes no copy', async () => {
+    const elsewhere = path.join(base, 'elsewhere')
+    fs.mkdirSync(elsewhere, { recursive: true })
+    const outside = path.join(elsewhere, 'shot.jpeg')
+    fs.copyFileSync(image, outside)
+    const copiesBefore = fs.readdirSync(tmp).filter((f) => f.startsWith('token-goat-shrink-')).length
+    expect(await viewModifiedArgs('copilot-view-shrink-outside', outside)).toBeUndefined()
+    expect(fs.readdirSync(tmp).filter((f) => f.startsWith('token-goat-shrink-')).length).toBe(copiesBefore)
   })
 
   it.skipIf(process.platform === 'win32')('writes the copy readable by its owner only (0600)', async () => {
