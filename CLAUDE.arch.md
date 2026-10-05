@@ -542,6 +542,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/sessions_dir.ts`](src/sessions_dir.ts) | Where per-session state blobs live on disk, and nothing else. |
 | [`src/sharepoint_resolve.ts`](src/sharepoint_resolve.ts) | Best-effort resolution of a SharePoint/OneDrive sharing URL to a local synced file path, so `token-goat` can read a document an agent was only given a share link for instead of fai |
 | [`src/shell.ts`](src/shell.ts) | Exports: `locateBashOnPath`, `resolveWindowsBash`, `wrappedShell`, `canRunWrappedShell` |
+| [`src/shrink_temp_copies.ts`](src/shrink_temp_copies.ts) | The shrunk image copies written to the OS temp dir for a host that can only point a Read at another path, and the age sweep that removes them. |
 | [`src/skill_version_drift.ts`](src/skill_version_drift.ts) | Session-scoped nudge for token-goat's own version drift. |
 | [`src/skip_scope.ts`](src/skip_scope.ts) | Which directory segments of an indexed file's path count when the path is tested against a skip-directory set. |
 | [`src/snippet_window.ts`](src/snippet_window.ts) | At most `maxLen` characters of `text` with the character at `idx` a third of the way in (or as near as the text's edges allow), marked `...` on each side that was cut. |

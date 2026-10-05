@@ -22,6 +22,7 @@ import { reclaimIndex } from './index_reclaim.js'
 import { applyIndexingPriority } from './process_priority.js'
 import { cleanup_stale } from './snapshots.js'
 import { sweepCacheRoots } from './disk_cache.js'
+import { sweepStaleShrinkCopies } from './shrink_temp_copies.js'
 import { findProject, isUnderSystemTemp } from './project.js'
 import { registerReset } from './reset.js'
 import { modelDownloadHeld } from './embed_preflight.js'
@@ -744,6 +745,8 @@ export async function runWorkerLoop(
       } catch {
         // Best-effort housekeeping; a cleanup failure must not kill the daemon either.
       }
+      // The shrunk image copies hosts read from the OS temp dir were otherwise swept only by the next copy a process writes, so the last ones of a session stayed indefinitely. The sweep keeps anything inside its one-hour delivery window.
+      sweepStaleShrinkCopies()
       lastSnapshotCleanupMs = Date.now()
     }
     // Auto-prune dead file rows across every known project root -- see sweepKnownRoots' docstring for the safety guarantees (grace period before treating an unreachable root as gone, anomaly-ratio guard against a mount-point outage under a live root). This is what keeps the shared global.db from silently accumulating dead rows indefinitely the way it used to, when pruning only ever ran via a manually-invoked `token-goat index`.

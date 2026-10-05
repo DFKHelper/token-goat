@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import type { HookEventName, HookOutput } from '../types.js'
 import type { HookEvent } from '../hook_registry.js'
 import { VSCODE_TOOL_NAME_KEY, vscodeNativeToolInput } from '../hooks_cli.js'
+import { SHRINK_COPY_MAX_AGE_MS, SHRINK_COPY_PREFIX, sweepStaleShrinkCopies } from '../shrink_temp_copies.js'
 
 /** The VS Code tool the model called, as stashed by normalizePayload's vscode branch; undefined for non-tool events. */
 export function vscodeToolName(event: HookEvent | undefined): string | undefined {
@@ -13,30 +14,14 @@ export function vscodeToolName(event: HookEvent | undefined): string | undefined
   return typeof name === 'string' ? name : undefined
 }
 
-const SHRINK_PREFIX = 'token-goat-shrink-'
-const MATERIALIZED_MAX_AGE_MS = 60 * 60 * 1000
 let lastMaterializedSweepAtMs = 0
 
 /** Delete this mechanism's own temp copies older than an hour; the prefix confines the sweep to files it wrote. Throttled per process, as MATERIALIZE_SHRUNK_IMAGE_JS is: a one-shot hook process sweeps on its one call, and the resident hook server sweeps at most hourly instead of listing the temp dir on every image. */
 function pruneMaterialized(): void {
   const now = Date.now()
-  if (now - lastMaterializedSweepAtMs < MATERIALIZED_MAX_AGE_MS) return
+  if (now - lastMaterializedSweepAtMs < SHRINK_COPY_MAX_AGE_MS) return
   lastMaterializedSweepAtMs = now
-  try {
-    const dir = os.tmpdir()
-    for (const file of fs.readdirSync(dir)) {
-      if (!file.startsWith(SHRINK_PREFIX)) continue
-      const full = path.join(dir, file)
-      try {
-        const st = fs.statSync(full)
-        if (st.isFile() && now - st.mtimeMs > MATERIALIZED_MAX_AGE_MS) fs.unlinkSync(full)
-      } catch {
-        // One bad entry must not stop the sweep.
-      }
-    }
-  } catch {
-    // A readdir failure must not stop the write below.
-  }
+  sweepStaleShrinkCopies(now)
 }
 
 /** Write the shrunk image in an image-shrink context ("<summary>\ndata:image/<fmt>;base64,<data>") to a temp file, for the hosts that can only point a read at another path: VS Code's agent (image_shrink.ts) and the Copilot CLI adapter the hook server runs (hook_adapters.ts). Typed twin of materializeShrunkImage in shrink_block.ts, the copy the installed shims embed. The file name comes from pid, time and a random UUID, never from the source image's name, and the suffix's character class admits no path separator. Returns undefined when the context is not a shrink payload or the write fails. */
@@ -47,7 +32,7 @@ export function materializeShrunkImageFile(context: string): string | undefined 
   if (!match) return undefined
   try {
     pruneMaterialized()
-    const file = path.join(os.tmpdir(), `${SHRINK_PREFIX}${process.pid}-${Date.now()}-${crypto.randomUUID()}.${match[1]!}`)
+    const file = path.join(os.tmpdir(), `${SHRINK_COPY_PREFIX}${process.pid}-${Date.now()}-${crypto.randomUUID()}.${match[1]!}`)
     // Owner-only: the copy is of a workspace image and sits in the shared temp dir.
     fs.writeFileSync(file, Buffer.from(match[2]!, 'base64'), { mode: 0o600 })
     return file
