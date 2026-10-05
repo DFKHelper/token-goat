@@ -9,6 +9,7 @@ import { indexedSourceText, isVirtualIndexedPath, virtualIndexedScopeNote } from
 import { displaySafeText, normalizePath, displaySafeJson } from './paths.js'
 import { expandSpecPath, resolveSpecPath } from './spec_path.js'
 import { indexFileSync } from './parser.js'
+import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { compileGuardedRegex } from './regex_guard.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { dataDir, globalDbPath } from './constants.js'
@@ -367,7 +368,8 @@ export function healStaleIndex(resolvedPath: string): void {
     return
   }
   const diskSha = fingerprintFile(resolvedPath)
-  if (diskSha === null || diskSha === entry.sha) return
+  // Rows an older extractor wrote are as stale as rows for older bytes: a project never run through `token-goat index` gets no session-start reconcile sweep, so without the parser_sha check a file indexed on demand there kept the old extractor's spans after every upgrade.
+  if (diskSha === null || (diskSha === entry.sha && entry.parserSha === parserFingerprintForLanguage(entry.language))) return
   try {
     indexFileSyncPinned(resolvedPath, globalDbPath())
     enqueueDirtyPathSafe(resolvedPath, { alreadyResolved: true })

@@ -116,6 +116,7 @@ import { ISSUES_URL, SUPPORT_EMAIL } from '../src/version.js'
 import { resolveCallers } from '../src/graph_commands.js'
 import { resolveProjectRoot } from '../src/project.js'
 import { fingerprintContent } from '../src/fingerprint.js'
+import { parserFingerprintForLanguage } from '../src/parser_stamp.js'
 import { enqueueDirtyPathSafe } from '../src/hooks_index.js'
 import { takeScreenshot } from '../src/screenshot.js'
 import { isIndexEmptyForProject } from '../src/index_health.js'
@@ -1578,9 +1579,9 @@ describe('read_commands', () => {
         const content = 'export function foo() {\n  return 1\n}'
         const f = path.join(tempDir, 'no-refresh.ts')
         fs.writeFileSync(f, content)
-        // The index is already present and current (sha matches the on-disk bytes), so neither the stale-sha reparse nor the never-indexed on-demand parse should fire -- and thus no gratuitous dirty-queue enqueue (which would trigger a needless re-embed). A null getFileEntry here would instead be the "never indexed" case, which now correctly parses on demand and DOES enqueue.
+        // The index is already present and current (sha matches the on-disk bytes, and the row carries this build's parser stamp), so neither the stale reparse nor the never-indexed on-demand parse should fire -- and thus no gratuitous dirty-queue enqueue (which would trigger a needless re-embed). A null getFileEntry here would instead be the "never indexed" case, which now correctly parses on demand and DOES enqueue.
         mockGetFileEntry.mockReturnValueOnce({
-          filePath: f, sha: fingerprintContent(content), mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
+          filePath: f, sha: fingerprintContent(content), mtime: 0, language: 'ts', indexedAt: 0, embedSha: '', parserSha: parserFingerprintForLanguage('ts'),
         } as never)
         mockQuerySymbols.mockReturnValue([
           { name: 'foo', filePath: f, lineStart: 1, lineEnd: 3, body: 'export function foo() {}' } as never,

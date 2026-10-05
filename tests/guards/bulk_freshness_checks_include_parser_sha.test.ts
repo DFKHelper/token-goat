@@ -98,14 +98,18 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
         'read_commands.ts (the judgement behind staleWarning) checks one file the caller\'s spec already named against a fresh disk read ' +
         '-- detecting content drift for that one file, not scanning the whole project and silently ' +
         'skipping ones that look unchanged. A parser-stale-but-content-unchanged file here is caught ' +
-        'by reconcile.ts\'s own sweep, not by this function.',
+        'by healStaleIndex, which the single-file commands run before it, and by reconcile.ts\'s sweep, not by this function.',
     },
   ],
   [
     'healStaleIndex',
     {
-      bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
-      reason: 'staleWarning\'s companion self-heal; same single-named-file scope, not a bulk sweep.',
+      bucket: 'gates-a-skip-decision-on-both-freshness-keys',
+      reason:
+        'staleWarning\'s companion self-heal skips the reparse only when the content sha AND entry.parserSha ' +
+        'match: a project never run through `token-goat index` gets no session-start reconcile sweep, so this ' +
+        'is the only place a file indexed on demand there is ever reparsed after a parser upgrade; see ' +
+        'tests/read_commands_parser_stale_heal.test.ts.',
     },
   ],
   [
