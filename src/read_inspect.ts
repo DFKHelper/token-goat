@@ -22,6 +22,7 @@ import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
 import { parseJsonOrJsonc } from './jsonc_text.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
+import { parseYamlDocument, parseYamlDocumentAsWritten } from './read_structured_data.js'
 import { DELETED_TAG, emitGuarded, fileExists, fileIsGone, guardJsonRows, healStaleIndex, isValidUtf8, readFileBytes, readFileText, recordReadStat, resolveAgainstProjectRoot, sinkGoneRows, sumFileSizes, healStaleResultFiles, warnIfFilesStale } from './read_commands.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
 import { emit, emitErr } from './emit.js'
@@ -330,30 +331,23 @@ function stripPairedQuotes(s: string): string {
   return s
 }
 
-function lookupYaml(lines: readonly string[], key: string): string | null {
-  const parts = key.split('.')
-  let depth = 0
-  let parentIndent = -1
-  let childIndent = -1
-  for (const line of lines) {
-    const trimmed = line.trim()
-    if (trimmed === '' || trimmed.startsWith('#')) continue
-    const indent = line.length - line.trimStart().length
-    if (depth > 0 && indent <= parentIndent) return null
-    if (childIndent !== -1 && indent !== childIndent) continue
-    const colon = trimmed.indexOf(':')
-    if (colon < 0) continue
-    if (childIndent === -1) childIndent = indent
-    const k = trimmed.slice(0, colon).trim()
-    if (k !== parts[depth]) continue
-    if (depth === parts.length - 1) {
-      return stripPairedQuotes(trimmed.slice(colon + 1).trim())
-    }
-    parentIndent = indent
-    childIndent = -1
-    depth++
+/** The printable value of `key` in YAML `text`: a scalar as the file spells it, a mapping or sequence as JSON, `null` for a key with no value; null when the document lacks the key, undefined when the text is not valid YAML. */
+function lookupYaml(text: string, key: string): string | null | undefined {
+  let typed: unknown
+  let written: unknown
+  try {
+    typed = parseYamlDocument(text)
+    written = parseYamlDocumentAsWritten(text)
+  } catch {
+    return undefined
   }
-  return null
+  const parts = key.split('.').map((name) => ({ name, joinable: true }))
+  const found = resolveConfigKey(typed, parts)
+  if (found === undefined) return null
+  if (found === null) return 'null'
+  if (typeof found === 'object' && !(found instanceof Date)) return displaySafeJson(found, 0)
+  const asWritten = resolveConfigKey(written, parts)
+  return typeof asWritten === 'string' ? asWritten : String(found)
 }
 
 function extractFrontmatter(lines: readonly string[]): string[] | null {
@@ -380,7 +374,11 @@ export function runConfigGet(opts: ConfigGetOptions): number {
 
   const frontmatterLines = extractFrontmatter(text.split(/\r?\n/))
   if (frontmatterLines !== null) {
-    const value = lookupYaml(frontmatterLines, opts.key)
+    const value = lookupYaml(frontmatterLines.join('\n'), opts.key)
+    if (value === undefined) {
+      emitErr(formatCommandError(`Failed to parse YAML frontmatter: ${opts.file}`))
+      return 1
+    }
     if (value === null) {
       emitErr(formatCommandError(`Key '${opts.key}' not found in ${opts.file}`))
       return 1
@@ -415,7 +413,11 @@ export function runConfigGet(opts: ConfigGetOptions): number {
   }
 
   if (ext === '.yaml' || ext === '.yml') {
-    const value = lookupYaml(text.split(/\r?\n/), opts.key)
+    const value = lookupYaml(text, opts.key)
+    if (value === undefined) {
+      emitErr(formatCommandError(`Failed to parse YAML: ${opts.file}`))
+      return 1
+    }
     if (value === null) {
       emitErr(formatCommandError(`Key '${opts.key}' not found in ${opts.file}`))
       return 1
@@ -499,8 +501,8 @@ function tomlProbePath(key: string, value: number): string[] | null {
   }
 }
 
-/** Resolve a dotted `key` against parsed TOML, trying longer runs of unquoted parts as one key so a quoted key containing a dot still resolves from its unquoted spelling; a quoted part is never merged with its neighbours. */
-function resolveTomlKey(node: unknown, parts: readonly TomlKeyPart[]): unknown {
+/** Resolve a dotted `key` against parsed TOML or YAML, trying longer runs of unquoted parts as one key so a quoted key containing a dot still resolves from its unquoted spelling; a quoted part is never merged with its neighbours. */
+function resolveConfigKey(node: unknown, parts: readonly TomlKeyPart[]): unknown {
   if (parts.length === 0) return node
   if (typeof node !== 'object' || node === null || Array.isArray(node) || node instanceof Date) return undefined
   const table = node as Record<string, unknown>
@@ -508,7 +510,7 @@ function resolveTomlKey(node: unknown, parts: readonly TomlKeyPart[]): unknown {
     if (n > 1 && !((parts[0] as TomlKeyPart).joinable && (parts[n - 1] as TomlKeyPart).joinable)) break
     const head = parts.slice(0, n).map((p) => p.name).join('.')
     if (!Object.hasOwn(table, head)) continue
-    const found = resolveTomlKey(table[head], parts.slice(n))
+    const found = resolveConfigKey(table[head], parts.slice(n))
     if (found !== undefined) return found
   }
   return undefined
@@ -522,7 +524,7 @@ function lookupToml(text: string, key: string): string | null | undefined {
   } catch {
     return undefined
   }
-  const found = resolveTomlKey(doc, splitTomlKeyPath(key))
+  const found = resolveConfigKey(doc, splitTomlKeyPath(key))
   if (found === undefined) return null
   if (typeof found === 'string') return found
   if (typeof found === 'object' && found !== null && !(found instanceof Date)) {

@@ -1,5 +1,5 @@
 import * as fs from 'fs'
-import { loadAll as loadAllYaml } from 'js-yaml'
+import { FAILSAFE_SCHEMA, loadAll as loadAllYaml, type LoadOptions } from 'js-yaml'
 
 import { formatCsvProfile, formatCsvTable, parseWhereSpecs, profileCsv, queryCsv } from './csv_query.js'
 import { displaySafeJson, displaySafeText } from './paths.js'
@@ -325,7 +325,16 @@ function resolveYamlMergeKeys(node: unknown): unknown {
 }
 
 export function parseYamlDocument(text: string): unknown {
-  const docs = loadAllYaml(text).map(resolveYamlMergeKeys)
+  return loadYamlDocument(text)
+}
+
+/** The same document with every scalar kept as the text it was written as (`2.0` stays `2.0`, `~` stays `~`), for printing one value back the way the file spells it. */
+export function parseYamlDocumentAsWritten(text: string): unknown {
+  return loadYamlDocument(text, { schema: FAILSAFE_SCHEMA })
+}
+
+function loadYamlDocument(text: string, options?: LoadOptions): unknown {
+  const docs = loadAllYaml(text, options).map(resolveYamlMergeKeys)
   // A trailing/leading `---` or a comment-only document parses to an empty (null) document; it must not turn a single real document into a stream.
   const real = docs.filter((d) => d !== null && d !== undefined)
   if (real.length === 0) return docs.length === 1 ? docs[0] : null
