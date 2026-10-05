@@ -8,6 +8,8 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
 import { preToolPathDeclined } from './vscode_path_gate.js'
+import { detectHarness } from './bridges/registry.js'
+import { readHintCrossesRule } from './rewrite_permission.js'
 import { leadWithCommand, docNavigation } from './hint_suggestion_guard.js'
 import { headingTreeParts, hintTarget, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
 import { isNodeModulesPath } from './path_containment.js'
@@ -1424,8 +1426,12 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 export function preReadHandler(event: HookEvent): HookOutput {
   // Before anything below stats or reads the path: this runs ahead of the user's approval, see preToolPathDeclined.
   const rawGrepPath = event.toolName === 'Grep' ? event.toolInput['path'] : undefined
-  if (preToolPathDeclined(event, getFilePath(event) ?? (typeof rawGrepPath === 'string' && rawGrepPath !== '' ? resolveEventPath(event, rawGrepPath) : undefined))) return passOutput()
-  return applyHintTracking(event, preReadHandlerInner(event), classifyReadHint)
+  const target = getFilePath(event) ?? (typeof rawGrepPath === 'string' && rawGrepPath !== '' ? resolveEventPath(event, rawGrepPath) : undefined)
+  if (preToolPathDeclined(event, target)) return passOutput()
+  const output = preReadHandlerInner(event)
+  // Every hint here names a token-goat command that reads the file itself, so on a path a deny or ask rule covers it would lead around the rule: Claude Code answers the call on its own.
+  if (output.hookType !== 'pass' && target !== undefined && readHintCrossesRule(detectHarness(), getCwd(event) ?? process.cwd(), [target])) return passOutput()
+  return applyHintTracking(event, output, classifyReadHint)
 }
 
 registerHook('pre_tool_use', preReadHandler, { toolName: 'Read' })

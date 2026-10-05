@@ -148,7 +148,7 @@ function realSpellings(p: string, cwd: string): string[] {
 }
 
 /** The words of a shell command that could name a file, for {@link realSpellings}: split at whitespace, quotes and shell operators, flags dropped, capped so a long command costs a bounded number of filesystem calls. */
-function shellPathWords(command: string): string[] {
+export function shellPathWords(command: string): string[] {
   return command.split(/[\s;&|<>()=,'"`]+/).filter((w) => w !== '' && !w.startsWith('-')).slice(0, 64)
 }
 
@@ -301,14 +301,19 @@ function decideShell(snapshot: PermissionSnapshot, req: RewriteRequest, mode: st
   return 'rewrite'
 }
 
+/** Whether a deny or ask rule could refuse or prompt for a read of a path named in these haystacks: a Read rule whose path could match, or a rule this module could not parse. */
+function readRuleMayCover(snapshot: PermissionSnapshot, hays: readonly string[]): boolean {
+  for (const rule of [...snapshot.deny, ...snapshot.ask]) {
+    if (rule.tool === undefined) return true
+    if (ruleToolIs(rule, ['read']) && pathRuleMayMatch(rule, hays)) return true
+  }
+  return false
+}
+
 function decideRead(snapshot: PermissionSnapshot, req: RewriteRequest): RewriteVerdict {
   if (snapshot.blockReadsOutside) return 'skip'
   // The real spellings too: a junction or short name in the original would otherwise hide the directory a rule names, while the copy's temp path carries none of it.
-  const hays = haystacks([req.original, req.rewritten, ...realSpellings(req.original, req.cwd), ...realSpellings(req.rewritten, req.cwd)])
-  for (const rule of [...snapshot.deny, ...snapshot.ask]) {
-    if (rule.tool === undefined) return 'skip'
-    if (ruleToolIs(rule, ['read']) && pathRuleMayMatch(rule, hays)) return 'skip'
-  }
+  if (readRuleMayCover(snapshot, haystacks([req.original, req.rewritten, ...realSpellings(req.original, req.cwd), ...realSpellings(req.rewritten, req.cwd)]))) return 'skip'
   if (req.harness !== 'claudecode') return 'rewrite'
   // The temp copy is outside the working directory, so Claude Code would prompt for it: approved only for an original it reads with no prompt.
   return req.insideCwd === true ? 'approve' : 'skip'
@@ -579,4 +584,13 @@ export function permissionNeutralRewrite(updatedInput: Record<string, unknown>, 
   const verdict = req.harness === 'claudecode' || req.harness === 'vscode' ? decideRewrite(loadPermissionSnapshot(req.cwd), req) : codexShell ? (codexDecide?.(req) ?? 'skip') : 'rewrite'
   if (verdict === 'skip') return null
   return { hookType: 'rewriteInput', updatedInput, approve: verdict === 'approve' }
+}
+
+/** Whether a hint naming a token-goat command that reads these paths must be held back on Claude Code or VS Code, which loads its settings: that command reads the file with no Read rule applying, so the hint would lead around a deny, or past an ask, Claude Code raises for the call it replaces. True for a Read deny or ask rule that could cover a path or the shell `command` naming it, an unreadable settings source, blocked reads outside the working directory, or a command whose `$`, `~` or glob names files no hook can see while any Read rule exists; a path the caller must not touch (`declined`) is matched as written, never resolved on disk. */
+export function readHintCrossesRule(harness: HarnessName, cwd: string, paths: readonly string[], command = '', declined?: (p: string) => boolean): boolean {
+  if (harness !== 'claudecode' && harness !== 'vscode') return false
+  const snapshot = loadPermissionSnapshot(cwd)
+  if (snapshot === null || snapshot.blockReadsOutside) return true
+  if (/[$`~*?[]/.test(command) && [...snapshot.deny, ...snapshot.ask].some((rule) => rule.tool === undefined || ruleToolIs(rule, ['read']))) return true
+  return readRuleMayCover(snapshot, haystacks([command, ...paths.map((p) => path.resolve(cwd, p)), ...paths.filter((p) => declined?.(p) !== true).flatMap((p) => realSpellings(p, cwd))]))
 }

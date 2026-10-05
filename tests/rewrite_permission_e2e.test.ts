@@ -145,3 +145,54 @@ describe('image Read rewrites honor Claude Code Read rules (built bundle)', () =
     expect(shrinkEvents(box)).toBe(1)
   }, 60_000)
 })
+
+// HAND-DERIVED from https://code.claude.com/docs/en/permissions: a Read deny or ask rule applies to Claude Code's Read and Grep tools and to its recognized file commands in Bash (cat, head, sed), but never to a token-goat command those calls are pointed at instead.
+describe('read hints honor Claude Code Read rules (built bundle)', () => {
+  const lock = JSON.stringify({ name: 'p', lockfileVersion: 3, packages: { '': { name: 'p' } } }, null, 2)
+  const source = Array.from({ length: 400 }, (_, i) => `export function f${i}(a: number): number {\n  return a + ${i}\n}\n`).join('')
+  let calls = 0
+
+  function project(name: string, rule: 'deny' | 'ask'): Sandbox {
+    const box = sandbox(name, undefined, { permissions: { [rule]: ['Read(./secrets/**)'] } })
+    for (const dir of ['secrets', 'open']) {
+      fs.mkdirSync(path.join(box.project, dir, 'node_modules', 'x'), { recursive: true })
+      fs.writeFileSync(path.join(box.project, dir, 'package-lock.json'), lock)
+      fs.writeFileSync(path.join(box.project, dir, 'node_modules', 'x', 'index.js'), 'module.exports = 1\n')
+      fs.writeFileSync(path.join(box.project, dir, 'app.ts'), source)
+    }
+    return box
+  }
+
+  // The whole answer, since a Claude Code refusal is a top-level decision rather than hookSpecificOutput; each call gets its own session so no once-per-session hint is spent by an earlier one.
+  function answer(box: Sandbox, toolName: string, toolInput: Record<string, unknown>): string {
+    const payload = { session_id: `read-hint-${calls++}`, cwd: box.project, permission_mode: 'default', hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput }
+    const res = spawnSync(process.execPath, [BUNDLE, 'hook', 'pre_tool_use'], { cwd: box.project, env: { ...box.env, CLAUDE_PROJECT_DIR: box.project }, input: JSON.stringify(payload), encoding: 'utf8' })
+    expect(res.status, res.stderr).toBe(0)
+    return res.stdout.trim()
+  }
+
+  for (const rule of ['deny', 'ask'] as const) {
+    it(`a Read ${rule} rule holds back the token-goat hints for a Read, a Grep or a cat under it, and leaves them for the files beside it`, () => {
+      const box = project(`read-hint-${rule}`, rule)
+      for (const dir of ['secrets', 'open']) {
+        const shown = dir === 'open'
+        const lockAnswer = answer(box, 'Read', { file_path: path.join(box.project, dir, 'package-lock.json') })
+        expect(lockAnswer.includes('token-goat json-outline'), lockAnswer).toBe(shown)
+        const modulesAnswer = answer(box, 'Read', { file_path: path.join(box.project, dir, 'node_modules', 'x', 'index.js') })
+        expect(modulesAnswer.includes('node_modules is typically noise'), modulesAnswer).toBe(shown)
+        const grepAnswer = answer(box, 'Grep', { pattern: '^export function', path: path.join(box.project, dir, 'app.ts') })
+        expect(grepAnswer.includes('token-goat skeleton'), grepAnswer).toBe(shown)
+        const catAnswer = answer(box, 'Bash', { command: `cat ${dir}/app.ts` })
+        expect(catAnswer.includes('token-goat read'), catAnswer).toBe(shown)
+        const catLockAnswer = answer(box, 'Bash', { command: `cat ${dir}/package-lock.json` })
+        expect(catLockAnswer.includes('token-goat json-query'), catLockAnswer).toBe(shown)
+        if (!shown) expect([lockAnswer, modulesAnswer, grepAnswer, catAnswer, catLockAnswer]).toEqual(['{}', '{}', '{}', '{}', '{}'])
+      }
+    })
+  }
+
+  it('a warning about how a command is written still reaches a command naming a covered file', () => {
+    const box = project('read-hint-quote', 'deny')
+    expect(answer(box, 'Bash', { command: 'cat "secrets/app.ts' })).toContain('unclosed double quote')
+  })
+})

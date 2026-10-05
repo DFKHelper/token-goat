@@ -17,7 +17,7 @@ import { detectHarness } from './bridges/registry.js'
 import { detectFromCommand, hasBareBackground } from './tool_filters/index.js'
 import { canRunWrappedShell, canRunPowerShell } from './shell.js'
 import { detectStructuralIndexRewrite } from './bash_structural_index.js'
-import { loadCodexRules, permissionNeutralRewrite } from './rewrite_permission.js'
+import { loadCodexRules, permissionNeutralRewrite, readHintCrossesRule, shellPathWords } from './rewrite_permission.js'
 import { rangeSubstituteFor } from './bash_range_savings.js'
 import { hintTarget, sliceCommand, sliceForPath, type HintSlice, type HintTarget } from './hint_target.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
@@ -196,6 +196,13 @@ function wholeFileRange(
 }
 
 /** pre_tool_use handler for the Bash tool. Emits a recall hint when the command is a known build tool and its output was already captured this session. Passes through for all other commands. */
+/** The answers about how a command is written rather than a file it reads, which preBashHandler's Read-rule gate leaves standing. */
+const SYNTAX_OUTPUTS = new WeakSet<HookOutput>()
+function syntaxOutput(output: HookOutput): HookOutput {
+  SYNTAX_OUTPUTS.add(output)
+  return output
+}
+
 function preBashHandlerInner(event: HookEvent): HookOutput {
   const rawCmd = extractCommand(event)
   if (rawCmd === undefined) return passOutput()
@@ -249,18 +256,18 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   // Claude Code's Bash tool on Windows passes the command to Git Bash as a `-c` argument, and the argv quoting plus the MSYS2 runtime's decoding halve every run of two or more backslashes, so the command that runs is not the one written and nothing reports the difference (anthropics/claude-code#85856). Denied rather than rewritten: a rewrite goes out as updatedInput, which permission rules evaluate again. `_tg_harness` is 'claude' for every harness relay.ts does not map, so detectHarness() is what pins this to Claude Code; the hook server answers under the caller's own environment, so it sees the same variables here.
   if (cfg.hints.deny_bash_double_backslash && process.platform === 'win32' && event.raw['_tg_harness'] === 'claude' && rawCmd.includes('\\\\') && detectHarness() === 'claudecode') {
     recordStat('session_hint', 0, 0)
-    return denyOutput(
+    return syntaxOutput(denyOutput(
       'This command has two backslashes in a row. Claude Code\'s Bash tool on Windows halves every run of two or more backslashes before Git Bash sees the command, so it would run with different text than you wrote, with no error (anthropics/claude-code#85856). Write text containing backslashes to a file with the Write tool and run it by path, or use the PowerShell tool, which passes the command unchanged. For paths, use forward slashes: C:/Users/me works in Git Bash. To turn this check off, set hints.deny_bash_double_backslash = false or TOKEN_GOAT_DENY_BASH_DOUBLE_BACKSLASH=0.',
-    )
+    ))
   }
   // Check for unbalanced shell quoting or unterminated heredocs
   if (cfg.hints.warn_unbalanced_shell_quoting) {
     const quoteError = detectUnbalancedShellSyntax(cmd)
     if (quoteError !== null) {
       recordStat('session_hint', 0, 0)
-      return contextOutput(
+      return syntaxOutput(contextOutput(
         'This command has ' + quoteError + '. If you\'re writing a multi-line string with embedded quotes or special characters, consider using the Write tool instead — it avoids shell quoting issues entirely.',
-      )
+      ))
     }
   }
 
@@ -771,7 +778,11 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
 /** Public wrapper: intercepts every `context` (hint) output from {@link preBashHandlerInner} for efficacy tracking/suppression — see hint_stats.ts's module doc comment for the category list and honesty design. */
 export function preBashHandler(event: HookEvent): HookOutput {
-  return applyHintTracking(event, preBashHandlerInner(event), classifyBashHint)
+  const output = preBashHandlerInner(event)
+  const command = event.toolInput['command']
+  // A hint naming a token-goat command that reads a file Claude Code's Read rules cover would lead around them, since Claude Code checks those rules against a cat or sed of the file but never against token-goat; a rewrite was already checked.
+  if ((output.hookType === 'deny' || output.hookType === 'context') && !SYNTAX_OUTPUTS.has(output) && typeof command === 'string' && readHintCrossesRule(detectHarness(), getCwd(event) ?? process.cwd(), shellPathWords(command), command, (p) => !commandPathIsTouchable(p, event))) return passOutput()
+  return applyHintTracking(event, output, classifyBashHint)
 }
 
 // A Codex call loads Codex's rules check first, which rewrite_permission.ts needs before it lets a Codex shell rewrite ship.

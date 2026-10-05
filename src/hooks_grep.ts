@@ -6,6 +6,8 @@ import type { HookOutput } from './types.js'
 import { emitRewrite, makeDedupHintHandlers, passOutput, contextOutput, getCwd, getToolName, getToolInput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
 import { leadWithCommand, docNavigation, docSectionHint } from './hint_suggestion_guard.js'
 import { hintTarget } from './hint_target.js'
+import { detectHarness } from './bridges/registry.js'
+import { readHintCrossesRule } from './rewrite_permission.js'
 import { recordGrepQuery, getGrepMatchCount } from './session.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { redactSecrets } from './secret_redact.js'
@@ -180,6 +182,8 @@ function preGrepHandler(event: HookEvent): HookOutput {
     const structSearch = extractGrepStructuralSearch(toolInput)
     // A .txt file has no headings for `section` and no extractor for `outline`, so a doc search there gets no structural hint rather than one naming a command that exits 1.
     if (structSearch !== null && (!structSearch.isDoc || docNavigation(structSearch.filePath).section)) {
+      // The hint's command reads the file itself, so on a path a deny or ask rule covers it would lead around the rule.
+      if (readHintCrossesRule(detectHarness(), getCwd(event) ?? process.cwd(), [structSearch.filePath])) return passOutput()
       recordStat('session_hint', 0, 0)
       // The Grep tool's `path` argument, so a repository chose it, and the hint below goes out on the context channel, which unlike the deny channel neither fences its payload nor escapes the markers token-goat speaks in. Not reachable today: extractGrepStructuralSearch refuses any path containing a `[`, which every spoken marker needs, though it refuses it as a glob character rather than for this reason. This is the layer that survives that check being relaxed, and it is the identity function on any path without a marker or a control character in it.
       const { isDoc } = structSearch
