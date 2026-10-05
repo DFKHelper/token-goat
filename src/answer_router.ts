@@ -17,6 +17,7 @@ import { runBrief } from './read_brief.js'
 import { emit, emitErr } from './emit.js'
 import { type AnswerRoute, recordStat } from './stats.js'
 import { formatCommandError } from './command_error.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 
 export interface AnswerOptions {
   question: string
@@ -260,6 +261,11 @@ function picksFor(subject: string, defs: SymbolEntry[]): DefinitionPick[] {
   return ambiguityPicks(subject, defs).map((p) => ({ file: p.candidate.filePath, qualifier: p.qualifier }))
 }
 
+/** A path argument in a `via:` line or a refusal's suggested command: quoted only when whitespace needs it, so the common line stays a command that splits on spaces into its own argv, while `src/my file.ts` stays one argument. */
+function viaArg(value: string): string {
+  return /\s/.test(value) ? quotedArg(value) : value
+}
+
 /** Routes a callers or impact question to the one definition the subject names: a `file::symbol` subject or a name with exactly one definition in this project. Several definitions refuse, and the delegate always receives the resolved `file::symbol` spec, since a bare name makes the graph command pick whichever definition it likes while the `via:` line claims the one resolved here. */
 function answerGraph(intent: 'callers' | 'impact', subject: string, resolved: { name: string; file: string; qualifier?: string }, rootDir: string): number {
   if (!subject.includes('::')) {
@@ -267,14 +273,12 @@ function answerGraph(intent: 'callers' | 'impact', subject: string, resolved: { 
     if (defs.length > 1) return refuseAmbiguousDefs(subject, picksFor(subject, defs), rootDir, intent)
   }
   const spec = `${toDisplayPath(rootDir, resolved.file)}::${resolved.qualifier ?? resolved.name}`
-  // Quoted only when a path with whitespace needs it, so the common via: line stays a command that splits on spaces into its own argv.
   const shown = displaySafeText(spec)
-  const arg = /\s/.test(shown) ? `"${shown}"` : shown
   if (intent === 'callers') {
-    emit(`via: token-goat callers ${arg} --limit ${ANSWER_DELEGATE_LIMIT}`)
+    emit(`via: token-goat callers ${viaArg(shown)} --limit ${ANSWER_DELEGATE_LIMIT}`)
     return routed('callers', runCallers({ symbol: spec, limit: ANSWER_DELEGATE_LIMIT }))
   }
-  emit(`via: token-goat impact ${arg} --top ${ANSWER_DELEGATE_LIMIT}`)
+  emit(`via: token-goat impact ${viaArg(shown)} --top ${ANSWER_DELEGATE_LIMIT}`)
   return routed('impact', runImpact({ symbol: spec, top: ANSWER_DELEGATE_LIMIT }))
 }
 
@@ -291,8 +295,8 @@ function answerExplain(question: string, subject: string, rootDir: string): numb
     target = defs[0] !== undefined ? { name: defs[0].name, file: defs[0].filePath } : null
     if (target === null) {
       const file = resolveSubject(subject, 'file-only')
-      if (file?.kind === 'file') return refuse('file-needs-symbol', `'${subject}' is a file, and explain needs a symbol`, `token-goat outline ${toDisplayPath(rootDir, file.path)}`)
-      if (file?.kind === 'ambiguous') return refuse('ambiguous', `'${subject}' names ${file.candidates.length} files in this project`, `token-goat outline ${toDisplayPath(rootDir, file.candidates[0] ?? '')}`)
+      if (file?.kind === 'file') return refuse('file-needs-symbol', `'${subject}' is a file, and explain needs a symbol`, `token-goat outline ${viaArg(toDisplayPath(rootDir, file.path))}`)
+      if (file?.kind === 'ambiguous') return refuse('ambiguous', `'${subject}' names ${file.candidates.length} files in this project`, `token-goat outline ${viaArg(toDisplayPath(rootDir, file.candidates[0] ?? ''))}`)
     }
   }
   if (target === null) return refuse('unresolved', `'${subject}' is not an indexed symbol`, `token-goat semantic "${question}"`)
@@ -331,7 +335,7 @@ function routed(route: Exclude<AnswerRoute, 'refused'>, code: number): number {
 }
 
 function answerImporters(file: string, display: string): number {
-  emit(`via: token-goat deps ${display} --importers`)
+  emit(`via: token-goat deps ${viaArg(display)} --importers`)
   return routed('deps', runDeps({ file, importers: true }))
 }
 
@@ -372,28 +376,28 @@ export function runAnswer(opts: AnswerOptions): number {
     // A symbol intent that got here fell through to the file reading, so re-asking it with one of these paths would refuse again for being a file: point at `outline` instead.
     const next = FILE_INTENTS.has(cls.intent)
       ? `token-goat answer "${FILE_INTENT_PHRASE[cls.intent] ?? ''} ${first}"`
-      : `token-goat outline ${first}`
+      : `token-goat outline ${viaArg(first)}`
     return refuse('ambiguous', `'${cls.subject}' names ${resolved.candidates.length} files in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, next)
   }
 
   if (resolved.kind === 'symbol-only') {
     const defining = toDisplayPath(rootDir, resolved.file)
-    return refuse('symbol-only', `'${cls.subject}' is a symbol; ${cls.intent === 'importers' ? 'importers are' : 'exports/imports are'} file-level`, cls.intent === 'importers' ? `token-goat deps ${defining} --importers` : `token-goat ${cls.intent} ${defining}`)
+    return refuse('symbol-only', `'${cls.subject}' is a symbol; ${cls.intent === 'importers' ? 'importers are' : 'exports/imports are'} file-level`, cls.intent === 'importers' ? `token-goat deps ${viaArg(defining)} --importers` : `token-goat ${cls.intent} ${viaArg(defining)}`)
   }
 
   if (FILE_INTENTS.has(cls.intent)) {
     const file = resolved.kind === 'symbol' ? resolved.file : resolved.path
     const display = toDisplayPath(rootDir, file)
     if (cls.intent === 'tests') {
-      emit(`via: token-goat test-for ${display}`)
+      emit(`via: token-goat test-for ${viaArg(display)}`)
       return routed('test-for', runTestFor({ file }))
     }
     if (cls.intent === 'exports') {
-      emit(`via: token-goat exports ${display}`)
+      emit(`via: token-goat exports ${viaArg(display)}`)
       return routed('exports', runExports({ file }))
     }
     if (cls.intent === 'importers') return answerImporters(file, display)
-    emit(`via: token-goat imports ${display}`)
+    emit(`via: token-goat imports ${viaArg(display)}`)
     return routed('imports', runImports({ file }))
   }
 
@@ -401,7 +405,7 @@ export function runAnswer(opts: AnswerOptions): number {
     const display = toDisplayPath(rootDir, resolved.path)
     // "What depends on src/x.ts" asks about a file, and a file's direct dependents are the files that import it: answering that beats refusing and pointing at an outline, which does not answer the question at all.
     if (cls.intent === 'impact') return answerImporters(resolved.path, display)
-    return refuse('file-needs-symbol', `'${cls.subject}' is a file, and ${cls.intent === 'where' ? 'where' : cls.intent} needs a symbol`, `token-goat outline ${display}`)
+    return refuse('file-needs-symbol', `'${cls.subject}' is a file, and ${cls.intent === 'where' ? 'where' : cls.intent} needs a symbol`, `token-goat outline ${viaArg(display)}`)
   }
 
   if (cls.intent === 'callers' || cls.intent === 'impact') return answerGraph(cls.intent, cls.subject, resolved, rootDir)

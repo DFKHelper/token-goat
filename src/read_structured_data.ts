@@ -38,6 +38,7 @@ import {
   xmlNodeToJson,
   type XmlOutlineSummary,
 } from './xml_query.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 
 function fenceHtmlText(text: string): string {
   return fenceUntrusted(text, UNTRUSTED_HTML_TAG)
@@ -841,7 +842,7 @@ export function runOpenApiOp(opts: OpenApiOpCliOptions): number {
     const messages = [`Operation '${opts.operation}' not found in '${opts.file}'`]
     const closes = rankSimilarNames(operations.map(operationLabel), opts.operation)
     if (closes.length > 0) messages.push(didYouMean(closes))
-    else if (operations.length > 0) messages.push(`Try: token-goat openapi-outline ${opts.file}`)
+    else if (operations.length > 0) messages.push(`Try: token-goat openapi-outline ${quotedArg(opts.file)}`)
     emitErr(formatCommandError(new CliError(messages)))
     return 1
   }

@@ -60,6 +60,11 @@ export function stripUnsafeSuggestions(text: string): string {
   }
 }
 
+/** One argument of a suggested `token-goat …` command, double-quoted: the form {@link stripUnsafeSuggestions} checks, and the only form that keeps a path holding a space in one argument (`token-goat scope my proj/a.ts:12` ran as `scope my` plus three stray arguments and exited 1). It escapes nothing: a value that would need escaping is the guard's to drop, not this function's to hide. */
+export function quotedArg(value: string): string {
+  return '"' + value + '"'
+}
+
 /** The one shape a deny or hint naming a file slice takes: the runnable command first, backtick-fenced with its argument double-quoted (the form {@link stripUnsafeSuggestions} checks, and the form hint_target.ts's sharpenRepeatedDeny lifts back out), then what it returns, then why the hook spoke. After a deny the next call was the named command 4 times in 39 sampled transcripts; a command buried behind the explanation is read last. A reason holding a backtick goes on its own line, because a suggestion the guard above drops is cut out to the last backtick on its line: on the same line, "`cat` loads the entire file into context." lost everything up to its own fence and read "Run `token-goat (command omitted: ...)` loads the entire file into context." A reason with no backtick stays on the line, where the guard cannot reach it, so a one-line hint stays one line (tests/guards/hook_hint_path_injection.test.ts holds the edit hint to no line breaks at all). */
 export function leadWithCommand(command: string, purpose = '', reason = ''): string {
   const tail = reason.trim()

@@ -950,7 +950,7 @@ describe('read_commands', () => {
       const { text, code } = runRead({ spec: 'src/util.ts::zzz_totally_unrelated' })
       expect(code).toBe(1)
       expect(text).not.toContain('Did you mean:')
-      expect(text).toContain('token-goat outline src/util.ts')
+      expect(text).toContain('token-goat outline "src/util.ts"')
     })
 
     // The database-layer cap used to be applied BEFORE ranking (querySymbols({ limit: DIDYOUMEAN_LIMIT })), so on a file with many symbols the true near-match could be outside the arbitrary storage-order first-N and never even considered for ranking. Fixed by scanning a bounded superset (FIND_SCAN_LIMIT) and ranking BEFORE capping. Query is 'parseConf' (a genuine forward-substring prefix of 'parseConfig'), not a typo like 'parseConfg' -- the reused substring-based matcher (same one runSymbol already uses) does not catch a missing-interior-character typo, only real substring relations.
@@ -1062,7 +1062,7 @@ describe('read_commands', () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const { text: stdout } = runRead({ spec: 'src/foo.ts::bigFn' })
-      expect(stdout).toContain('# for a narrower slice: token-goat grep "<pattern>" src/foo.ts -C 15 --symbol')
+      expect(stdout).toContain('# for a narrower slice: token-goat grep "<pattern>" "src/foo.ts" -C 15 --symbol')
     })
 
     it('does not add the narrower-slice header for a symbol under the large-symbol threshold', () => {
@@ -2362,7 +2362,7 @@ describe('read_commands', () => {
       const { text, code } = runSection({ spec: 'README.md::zzzz_totally_unrelated' })
       expect(code).toBe(1)
       expect(text).not.toContain('Did you mean:')
-      expect(text).toContain('token-goat outline README.md')
+      expect(text).toContain('token-goat outline "README.md"')
     })
 
     // A file with no headings at all is a different answer from one whose headings simply did not match: pointing at outline there would send the caller to a command that prints nothing.
@@ -6449,7 +6449,7 @@ describe('read_commands', () => {
         expect(runDiff({ spec: 'src/util.ts::zzz_totally_unrelated' })).toBe(1)
       })
       expect(stderr).not.toContain('Did you mean:')
-      expect(stderr).toContain('token-goat outline src/util.ts')
+      expect(stderr).toContain('token-goat outline "src/util.ts"')
     })
 
     // Defect-B regression for the shared resolveSymbolSpecOrEmitError path: the DB-layer cap used to be applied before ranking, so the true near-match could be outside the arbitrary storage-order first-N and never considered.
@@ -8174,7 +8174,7 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
       })
       expect(stderr).toContain("Entry 'zzz_totally_unrelated' not found")
       expect(stderr).not.toContain('Did you mean:')
-      expect(stderr).toContain(`token-goat zip-list ${zipPath}`)
+      expect(stderr).toContain(`token-goat zip-list "${zipPath}"`)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

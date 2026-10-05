@@ -31,6 +31,7 @@ import {
   sleepSync,
   withRetryOnLock,
 } from './util.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 
 function atomicWriteBuffer(dest: string, data: Buffer): void {
   try {
@@ -218,7 +219,7 @@ function requireSymbolMatch(resolvedPath: string, file: string, name: string, fl
   const allNames = symbolNamesInFile(resolvedPath)
   const available = rankSimilarNames(allNames, name)
   if (available.length > 0) messages.push(...didYouMeanLines(available))
-  else if (allNames.length > 0) messages.push(`Try: token-goat outline ${file}`)
+  else if (allNames.length > 0) messages.push(`Try: token-goat outline ${quotedArg(file)}`)
   throw new CliError(messages)
 }
 
@@ -650,7 +651,7 @@ export function cmdInsertSection(file: string, opts: { after: string; contentFro
     const messages = [`Section '${opts.after}' not found in '${file}'`]
     const available = filterSimilarHeadings(allHeadings, opts.after)
     if (available.length > 0) messages.push(...didYouMeanLines(available))
-    else if (allHeadings.length > 0) messages.push(`Try: token-goat outline ${file}`)
+    else if (allHeadings.length > 0) messages.push(`Try: token-goat outline ${quotedArg(file)}`)
     throw new CliError(messages)
   }
 

@@ -77,6 +77,7 @@ import {
   symbolExtractorGap,
 } from './read_meta.js'
 import { formatCommandError } from './command_error.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 
 const GREP_MAX_LINES = 200
 
@@ -606,26 +607,26 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     // No candidate resembled the query -- point at the command that lists the file's real symbols instead of leaving the miss with no next step.
     else if (scanned.length > 0) {
       if (/\.(yaml|yml)$/i.test(file)) {
-        messages.push(`Try: token-goat yaml-outline ${file}\nQuery subtree: token-goat yaml-query ${file} '<path>'`)
+        messages.push(`Try: token-goat yaml-outline ${quotedArg(file)}\nQuery subtree: token-goat yaml-query ${quotedArg(file)} "<path>"`)
       } else if (/\.xml$/i.test(file)) {
-        messages.push(`Try: token-goat xml-outline ${file}\nQuery subtree: token-goat xml-query ${file} '<path>'`)
+        messages.push(`Try: token-goat xml-outline ${quotedArg(file)}\nQuery subtree: token-goat xml-query ${quotedArg(file)} "<path>"`)
       } else if (/\.json$/i.test(file)) {
-        messages.push(`Try: token-goat json-outline ${file}\nQuery subtree: token-goat json-query ${file} '<path>'`)
+        messages.push(`Try: token-goat json-outline ${quotedArg(file)}\nQuery subtree: token-goat json-query ${quotedArg(file)} "<path>"`)
       } else {
-        messages.push(`Try: token-goat outline ${file}`)
+        messages.push(`Try: token-goat outline ${quotedArg(file)}`)
       }
     } else if (fs.existsSync(resolved)) {
       if (/\.(yaml|yml)$/i.test(file)) {
         messages.push(
-          `'${file}' is a YAML file -- YAML keys below top level are not symbols; inspect structure or query values with:\n  token-goat yaml-outline ${file}\n  token-goat yaml-query ${file} '<path>'`,
+          `'${file}' is a YAML file -- YAML keys below top level are not symbols; inspect structure or query values with:\n  token-goat yaml-outline ${quotedArg(file)}\n  token-goat yaml-query ${quotedArg(file)} "<path>"`,
         )
       } else if (/\.xml$/i.test(file)) {
         messages.push(
-          `'${file}' is an XML file -- inspect structure or query nodes with:\n  token-goat xml-outline ${file}\n  token-goat xml-query ${file} '<path>'`,
+          `'${file}' is an XML file -- inspect structure or query nodes with:\n  token-goat xml-outline ${quotedArg(file)}\n  token-goat xml-query ${quotedArg(file)} "<path>"`,
         )
       } else if (/\.json$/i.test(file)) {
         messages.push(
-          `'${file}' is a JSON file -- inspect structure or query values with:\n  token-goat json-outline ${file}\n  token-goat json-query ${file} '<path>'`,
+          `'${file}' is a JSON file -- inspect structure or query values with:\n  token-goat json-outline ${quotedArg(file)}\n  token-goat json-query ${quotedArg(file)} "<path>"`,
         )
       } else {
         const gap = symbolExtractorGap(file, resolved)
@@ -670,7 +671,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   const warning = staleWarning(match.filePath, 'read')
   // Appended after the overflow guard, not folded into the guarded lines, so this advisory note never shifts the "showing N of M lines" count the guard reports for the actual body.
   const narrowerSliceHint = bodyLen > LARGE_SYMBOL_LINE_THRESHOLD
-    ? `\n# for a narrower slice: token-goat grep "<pattern>" ${file} -C 15 --symbol`
+    ? `\n# for a narrower slice: token-goat grep "<pattern>" ${quotedArg(file)} -C 15 --symbol`
     : ''
   const text = guardText(warning + trimBlankLines(lines).join('\n'), 'symbol') + narrowerSliceHint
   if (opts.suppressStat !== true) recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)

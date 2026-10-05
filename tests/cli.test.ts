@@ -990,7 +990,7 @@ describe('token-goat CLI', () => {
         expect(r.stderr).not.toContain('Did you mean')
         expect(r.stderr).toContain('outline')
         // Two lines, not one line holding an escaped `\n`: the error printer escapes control characters, and it used to escape the break token-goat itself put between the two.
-        expect(r.stderr.trimEnd().split(/\r?\n/).slice(-2)).toEqual([`token-goat: Section 'Nonexistent Heading' not found in '${tmp}'`, `Try: token-goat outline ${tmp}`])
+        expect(r.stderr.trimEnd().split(/\r?\n/).slice(-2)).toEqual([`token-goat: Section 'Nonexistent Heading' not found in '${tmp}'`, `Try: token-goat outline "${tmp}"`])
         expect(fs.readFileSync(tmp, 'utf8')).toBe('# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 2\nsecond\n')
       } finally {
         fs.rmSync(tmp, { force: true })

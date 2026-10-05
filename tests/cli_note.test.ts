@@ -89,7 +89,7 @@ describe('note-add / note-get / note-list', () => {
       expect(r.stderr).toContain("No symbol named 'doesNotExistFn9k'")
       expect(r.stderr).not.toContain('Did you mean')
       expect(r.stderr).toContain('outline')
-      expect(r.stderr.trimEnd().split(/\r?\n/).slice(-2)).toEqual([`token-goat: No symbol named 'doesNotExistFn9k' is indexed in '${tmp}'`, `Try: token-goat outline ${tmp}`])
+      expect(r.stderr.trimEnd().split(/\r?\n/).slice(-2)).toEqual([`token-goat: No symbol named 'doesNotExistFn9k' is indexed in '${tmp}'`, `Try: token-goat outline "${tmp}"`])
     } finally {
       fs.rmSync(tmp, { force: true })
     }

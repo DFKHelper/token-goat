@@ -418,7 +418,7 @@ describe('runOpenApiOutline / runOpenApiOp', () => {
       expect(code).toBe(1)
       expect(stderr).toContain("Operation 'nonExistentOp' not found")
       expect(stderr).not.toContain('Did you mean:')
-      expect(stderr).toContain(`token-goat openapi-outline ${f}`)
+      expect(stderr).toContain(`token-goat openapi-outline "${f}"`)
     })
 
     it('returns 1 when the file does not exist', () => {

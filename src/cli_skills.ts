@@ -23,6 +23,7 @@ import {
 } from './skill_cache.js'
 import { formatLocalTimestamp, recordStat, savedTokensFromBytes } from './stats.js'
 import { decodeSource, extractErrorMessage, stripLower } from './util.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 
 export async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<void> {
   const filePath = await getSkillFilePath(name)
@@ -318,7 +319,7 @@ export async function cmdSkillSection(nameHeading: string, headingArg?: string):
     const available = filterSimilarHeadings(allHeadings, heading)
     if (available.length > 0) messages.push(...didYouMeanLines(available))
     else if (allHeadings.length === 0) messages.push(`skill '${skillName}' has no headings`)
-    else messages.push(`Try: token-goat outline ${filePath}`)
+    else messages.push(`Try: token-goat outline ${quotedArg(filePath)}`)
     throw new CliError(messages)
   }
   out(extracted)

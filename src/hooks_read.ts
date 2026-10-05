@@ -10,7 +10,7 @@ import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavin
 import { preToolPathDeclined } from './vscode_path_gate.js'
 import { detectHarness } from './bridges/registry.js'
 import { readHintCrossesRule } from './rewrite_permission.js'
-import { leadWithCommand, docNavigation } from './hint_suggestion_guard.js'
+import { leadWithCommand, docNavigation, quotedArg } from './hint_suggestion_guard.js'
 import { headingTreeParts, hintTarget, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
 import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, displaySafeText, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
@@ -333,7 +333,7 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
       try {
         const indexed = querySymbols({ filePath, name: sym, limit: 1 })[0]
         if (indexed !== undefined && isLargeSymbolSpan(indexed.lineStart, indexed.lineEnd, filePath)) {
-          return `\`${sym}\` spans ${indexed.lineEnd - indexed.lineStart + 1} lines -- use \`token-goat grep "<pattern>" ${filePath} -C 15 --symbol\` for a slice inside it, or \`token-goat scope ${filePath}:${indexed.lineStart}\` to confirm the enclosing symbol.`
+          return `\`${sym}\` spans ${indexed.lineEnd - indexed.lineStart + 1} lines -- use \`token-goat grep "<pattern>" ${quotedArg(filePath)} -C 15 --symbol\` for a slice inside it, or \`token-goat scope ${quotedArg(`${filePath}:${indexed.lineStart}`)}\` to confirm the enclosing symbol.`
         }
       } catch {
         // The index is advisory; retain the plain read recommendation when it is unavailable.
@@ -417,7 +417,7 @@ export function realSymbolReadHint(filePath: string, shown: string, range?: { st
   if (isLargeSymbolSpan(top.lineStart, top.lineEnd, filePath)) {
     const line = range !== undefined ? range.start : top.lineStart
     const span = top.lineEnd - top.lineStart + 1
-    return '`token-goat grep "<pattern>" ' + shown + ' -C 15 --symbol` for a slice inside `' + top.name + '` (' + span + ' lines), or `token-goat scope ' + shown + ':' + line + '` to confirm the enclosing symbol'
+    return '`token-goat grep "<pattern>" ' + quotedArg(shown) + ' -C 15 --symbol` for a slice inside `' + top.name + '` (' + span + ' lines), or `token-goat scope ' + quotedArg(shown + ':' + line) + '` to confirm the enclosing symbol'
   }
   const names = candidates.map((s) => s.name).slice(0, 3)
   const rest = names.length > 1 ? ' (or: ' + names.slice(1).join(', ') + ')' : ''
@@ -1019,7 +1019,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           return quietContextOutput(
             'This file may have already been read by another agent/session working in this project recently. ' +
             'If you are a subagent continuing shared work, consider whether you already have this content from context, ' +
-            'or use `' + (slice.real ? sliceCommand(shown, slice) : 'token-goat read ' + shown + '::SymbolName') + '` for a narrower slice instead of a full re-read.',
+            'or use `' + (slice.real ? sliceCommand(shown, slice) : 'token-goat read ' + quotedArg(shown + '::SymbolName')) + '` for a narrower slice instead of a full re-read.',
             [shown],
           )
         }
@@ -1223,7 +1223,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const pagingWindow = readRequestedSliceWindow(event)
     const activeRanges = getFileLineRanges(normalized)
     const pagingNote = (pagingWindow.isExplicitSlice && activeRanges.length >= 2)
-      ? ' Sequential line-range paging detected (' + (activeRanges.length + 1) + ' slices read). Prefer `token-goat skeleton ' + shown + '` or ' +
+      ? ' Sequential line-range paging detected (' + (activeRanges.length + 1) + ' slices read). Prefer `token-goat skeleton ' + quotedArg(shown) + '` or ' +
         realSymbolReadHint(normalized, shown, pagingWindow.offset !== undefined && pagingWindow.limit !== undefined ? { start: pagingWindow.offset, end: pagingWindow.offset + pagingWindow.limit - 1 } : undefined) + '.'
       : ''
     // A ranged Read whose window touches no line served before, with no whole-file read behind it, hands over lines the model has never seen: the already-read note would be false.

@@ -21,6 +21,7 @@ import {
 } from './read_suggest.js'
 import { countNoun, foldPath } from './util.js'
 import { CliError, formatCommandError } from './command_error.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 
 const PARENT_IDENTIFIER_RE = /^[\w$]+$/
 
@@ -541,7 +542,7 @@ export function resolveSymbolSpecOrEmitError(
     const qualified = symbol.includes('.') ? qualifiedSpellings(resolved, methodPart) : []
     const closes = qualified.length > 0 ? qualified : rankSimilarNames(scanned, symbol)
     if (closes.length > 0) messages.push(didYouMean(closes))
-    else if (scanned.length > 0) messages.push(`Try: token-goat outline ${file}`)
+    else if (scanned.length > 0) messages.push(`Try: token-goat outline ${quotedArg(file)}`)
     emitErr(formatCommandError(new CliError(messages)))
     return null
   }

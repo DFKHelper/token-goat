@@ -4071,8 +4071,8 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       expect(result.hookType).toBe('context')
       if (result.hookType === 'context') {
         expect(result.context).not.toContain('read "' + normalizePath(p) + '::bigFn"')
-        expect(result.context).toContain('grep "<pattern>" ' + normalizePath(p) + ' -C 15 --symbol')
-        expect(result.context).toContain('scope ' + normalizePath(p) + ':')
+        expect(result.context).toContain('grep "<pattern>" "' + normalizePath(p) + '" -C 15 --symbol')
+        expect(result.context).toContain('scope "' + normalizePath(p) + ':')
       }
     })
 

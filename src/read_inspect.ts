@@ -46,6 +46,7 @@ import {
 } from './util.js'
 import { ZipInputTooLargeError, ZipOutputTooLargeError } from './zip_bounds.js'
 import { CliError, formatCommandError } from './command_error.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 
 export interface ZipListCliOptions {
   file: string
@@ -136,7 +137,7 @@ export async function runZipRead(opts: ZipReadCliOptions): Promise<number> {
     const messages = [`Entry '${opts.entry}' not found in '${opts.file}'`]
     const closes = rankSimilarNames(entries.map((e) => e.path), opts.entry)
     if (closes.length > 0) messages.push(didYouMean(closes))
-    else if (entries.length > 0) messages.push(`Try: token-goat zip-list ${opts.file}`)
+    else if (entries.length > 0) messages.push(`Try: token-goat zip-list ${quotedArg(opts.file)}`)
     emitErr(formatCommandError(new CliError(messages)))
     return 1
   }
