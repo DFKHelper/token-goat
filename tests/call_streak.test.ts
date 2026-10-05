@@ -246,7 +246,8 @@ describe('call streak through the real relay (clock pinned to captured timings)'
     await at(t + 130, 'post_tool_use', grepPost(ctx, 'delta', 0))
     await at(t + 134, 'pre_tool_use', globPre(ctx))
     await at(t + 250, 'post_tool_use', globMissPost(ctx))
-    const pre = JSON.parse(await at(t + 254, 'pre_tool_use', bashPre(ctx, GREP_MISS_COMMAND))) as { hookSpecificOutput?: { updatedInput?: { command?: string } } }
+    // In default mode: bypassPermissions now wraps a command only when the hidden-rule check can read the claude process, and this test has none, so it would leave the grep alone.
+    const pre = JSON.parse(await at(t + 254, 'pre_tool_use', { ...bashPre(ctx, GREP_MISS_COMMAND), permission_mode: 'default' })) as { hookSpecificOutput?: { updatedInput?: { command?: string } } }
     const wrapped = pre.hookSpecificOutput?.updatedInput?.command
     expect(wrapped, 'the pre-hook must really rewrite the grep, or this proves nothing').toMatch(/^token-goat compress /)
     // FORMAT-DERIVED: the post event carries the command that ran, which is the wrapper: postBashHandler (src/hooks_bash_post.ts) unwraps it for the same reason. `token-goat compress` exits 1 with a bare newline on no match (dogfooded against the built bundle), which is Claude Code's bare `Exit code 1`.
