@@ -72,6 +72,28 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
       expect(adapted).toContain('| python -; Write-Output "part3"')
     })
 
+    // HAND-DERIVED: `mypy -c PROGRAM_TEXT` and `scrapy` end in "py" but are not Python; after `-m pytest` or a script path, `-c` is pytest's config flag or the script's own argument (python --help: "-m mod : run library module as a script (terminates option list)").
+    it('leaves a -c that does not belong to a python interpreter alone', () => {
+      for (const input of [
+        `mypy -c "x: int = 'a'"`,
+        `scrapy -c 'import os'`,
+        `python -m pytest -c "setup.cfg"`,
+        `python -mpytest -c "setup.cfg"`,
+        `python script.py -c "arg"`,
+        `git log; python3 tool.py -c 'x'`,
+      ]) {
+        expect(adaptInlinePython(input)).toBe(input)
+        expect(adaptPowerShellCommand(input)).toBe(input)
+      }
+    })
+
+    // HAND-DERIVED: python --help lists -X opt and -W arg as options with a separate value; `py -3` is the Windows launcher's version switch.
+    it('still adapts an interpreter path and options that take a value', () => {
+      expect(adaptInlinePython(`python -X utf8 -W ignore -c "print(1)"`)).toContain('| python -X utf8 -W ignore -')
+      expect(adaptInlinePython(`py -3 -c "print(1)"`)).toContain('| py -3 -')
+      expect(adaptInlinePython(`C:/Python312/python.exe -c "print(1)"`)).toContain('| C:/Python312/python.exe -')
+    })
+
     it('does not adapt python -c if it already receives pipeline input', () => {
       const input = `echo "data" | python -c "import sys; print(sys.stdin.read())"`
       // Stdin already used by upstream pipe; do not replace

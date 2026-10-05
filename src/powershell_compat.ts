@@ -27,7 +27,18 @@ const HEREDOC_RE = /(?:^|(?<=[;\r\n]|&&|\|\|))\s*([^\r\n;&|<]+?)\s*<<-?\s*(['"]?
  * Preceded by start of command, newline, semicolon, &&, or || (not pipe |).
  */
 // eslint-disable-next-line regexp/no-super-linear-backtracking
-const INLINE_PYTHON_RE = /(?:^|(?<=[;\r\n]|&&|\|\|))\s*((?:[A-Za-z0-9_./\\:-]*?(?:python3?|py)(?:\.exe)?))\s+([^;&|\r\n]*?)-c\s+/gi
+const INLINE_PYTHON_RE = /(?:^|(?<=[;\r\n]|&&|\|\|))\s*((?:[A-Za-z0-9_.:\\/-]*[\\/])?(?:python3?|py)(?:\.exe)?)\s+([^;&|\r\n]*?)-c\s+/gi
+
+// Whether the words before `-c` are all the interpreter's own options: a script path or `-m` ends them, so a later `-c` is the script's or module's argument (`python -m pytest -c setup.cfg`), and only `-X` and `-W` take a separate value.
+function interpreterOptionsOnly(preFlags: string): boolean {
+  const words = preFlags.split(/\s+/).filter((w) => w !== '')
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i] as string
+    if (!/^-[A-Za-z0-9.]+$/.test(w) || w.startsWith('-m')) return false
+    if (w === '-X' || w === '-W') i++
+  }
+  return true
+}
 
 /**
  * Adapts bash heredoc syntax into PowerShell base64 stdin piping.
@@ -69,6 +80,7 @@ export function adaptInlinePython(command: string): string {
     const matchEnd = INLINE_PYTHON_RE.lastIndex
     const pyBin = match[1] ?? 'python'
     const preFlags = (match[2] ?? '').trim()
+    if (!interpreterOptionsOnly(preFlags)) continue
 
     const rest = command.slice(matchEnd)
     if (!rest || (rest[0] !== "'" && rest[0] !== '"')) continue
