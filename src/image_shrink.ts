@@ -583,7 +583,7 @@ function pruneShrinkCache(): void {
  * either way; only the (unmeasured) re-encode CPU cost differs, and this function has no
  * visibility into that.
  */
-/** Harnesses whose host writes the shrunk copy to a temp file in its own process (MATERIALIZE_SHRUNK_IMAGE_JS in bridges/shrink_block.ts, and pi.ts's typed twin) after this hook has answered. opencode and OpenClaw pin no harness when they call the hook, so they are recognized only when their session variable is set. */
+/** Harnesses whose host writes the shrunk copy to a temp file in its own process (MATERIALIZE_SHRUNK_IMAGE_JS in bridges/shrink_block.ts, and pi.ts's typed twin) after this hook has answered. opencode and OpenClaw pin no harness when they call the hook, so they are recognized from their environment (opencode by its OPENCODE_PID) or not at all. */
 const HOST_MATERIALIZED_HARNESSES: ReadonlySet<HarnessName> = new Set<HarnessName>(['copilot_cli', 'pi', 'opencode', 'openclaw'])
 
 /** Harnesses whose PreToolUse honours a rewritten tool input, so this process writes the shrunk copy and points the read at it. Claude Code caps additionalContext at 10,000 characters (https://code.claude.com/docs/en/hooks), so the data URL the context channel used to carry there arrived as a 2,000-character base64 preview while the Read loaded the original. */

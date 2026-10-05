@@ -68,6 +68,22 @@ describe('harness detection', () => {
       expect(detectHarness()).toBe('opencode')
     })
 
+    // CAPTURE: opencode-ai 1.18.16's opencode.exe, CLI middleware `process.env.AGENT="1",process.env.OPENCODE="1",process.env.OPENCODE_PID=String(process.pid)`; the binary holds no OPENCODE_SESSION string at all.
+    it('returns opencode inside the opencode process, and under it, by the OPENCODE_PID opencode sets', () => {
+      process.env['OPENCODE'] = '1'
+      process.env['OPENCODE_PID'] = String(process.pid)
+      try {
+        expect(detectHarness()).toBe('opencode')
+        process.env['OPENCODE_PID'] = String(process.ppid)
+        expect(detectHarness()).toBe('opencode')
+        // Inherited by a different tool run from an opencode shell, whose own hooks are not opencode's.
+        process.env['OPENCODE_PID'] = String(process.pid + process.ppid + 1)
+        expect(detectHarness()).toBe('generic')
+      } finally {
+        delete process.env['OPENCODE']
+      }
+    })
+
     it('returns opencode when OPENCODE_SESSION is set', () => {
       process.env['OPENCODE_SESSION'] = 'xyz'
       expect(detectHarness()).toBe('opencode')
