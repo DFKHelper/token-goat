@@ -6,6 +6,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **Compressed shell commands no longer skip the auto-mode classifier.** In auto mode, and in plan mode, which runs the classifier by default, token-goat approved its rewrite of a read-only command or of one your allow rules covered, but auto mode drops broad allow rules such as `Bash(npm run *)` and reviews even read-only commands, so the approval let the call run unreviewed. Those modes now leave such a command unwrapped and send any other rewrite through with no decision. bypassPermissions no longer gets an approval either, since it runs the wrapper with no prompt anyway.
+
 - **A file name holding a curly double quote can no longer slip a second command into a suggestion for PowerShell users.** PowerShell ends a double-quoted string at “, ” and „ as well as at a plain `"`, so a repository file named to close the quote, run a command and reopen it got through the check that strips broken suggestions from hints, which only looked at plain quotes. Those suggestions are now replaced with "command omitted" like any other broken one. Curly apostrophes and en dashes in a file name stay literal inside the quotes, so those files keep their suggestions.
 
 - **Shrunk image copies no longer pile up in the system temp folder.** The smaller copy written for Claude Code, VS Code and Copilot CLI to read was only cleaned up when a later image was shrunk, so the last copies from each session stayed indefinitely. The background worker now deletes copies older than an hour on its hourly cleanup, and still never touches a copy young enough to be in use.

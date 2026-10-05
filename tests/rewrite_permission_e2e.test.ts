@@ -58,8 +58,8 @@ function sandbox(name: string, userSettings?: unknown, projectSettings?: unknown
   return { home, project, temp, env }
 }
 
-function hook(box: Sandbox, toolName: string, toolInput: Record<string, unknown>): Record<string, unknown> | undefined {
-  const payload = { session_id: `perm-e2e-${path.basename(path.dirname(box.home))}`, cwd: box.project, permission_mode: 'default', hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput }
+function hook(box: Sandbox, toolName: string, toolInput: Record<string, unknown>, mode = 'default'): Record<string, unknown> | undefined {
+  const payload = { session_id: `perm-e2e-${path.basename(path.dirname(box.home))}`, cwd: box.project, permission_mode: mode, hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput }
   const res = spawnSync(process.execPath, [BUNDLE, 'hook', 'pre_tool_use'], { cwd: box.project, env: box.env, input: JSON.stringify(payload), encoding: 'utf8' })
   expect(res.status, res.stderr).toBe(0)
   return (JSON.parse(res.stdout) as { hookSpecificOutput?: Record<string, unknown> }).hookSpecificOutput
@@ -104,6 +104,23 @@ describe('shell rewrites honor Claude Code permission rules (built bundle)', () 
     const box = sandbox('allow-go', { permissions: { allow: ['Bash(go build:*)'] } })
     const hso = hook(box, 'Bash', { command: 'go build ./...' })
     expect(hso?.['permissionDecision']).toBe('allow')
+  })
+
+  // HAND-DERIVED from https://code.claude.com/docs/en/permission-modes: entering auto mode drops package-manager run rules, and an unproven call goes to the classifier, which a hook allow would skip.
+  it('in auto mode an allow rule auto mode drops proves nothing: the original is left to the classifier', () => {
+    const box = sandbox('auto-npm-run', { permissions: { allow: ['Bash(npm run *)'] } })
+    expect(hook(box, 'Bash', { command: 'npm run build' })?.['permissionDecision']).toBe('allow')
+    expect(hook(box, 'Bash', { command: 'npm run build' }, 'auto')).toBeUndefined()
+    const hso = hook(sandbox('auto-go', { permissions: { allow: ['Bash(npm run *)'] } }), 'Bash', { command: 'go build ./...' }, 'auto')
+    expect(hso?.['updatedInput']).toEqual({ command: "token-goat compress -f go --timeout 600 -c 'go build ./...'" })
+    expect(hso !== undefined && 'permissionDecision' in hso).toBe(false)
+  })
+
+  it('bypassPermissions gets the rewrite with no permissionDecision', () => {
+    const box = sandbox('bypass-go')
+    const hso = hook(box, 'Bash', { command: 'go build ./...' }, 'bypassPermissions')
+    expect(hso?.['updatedInput']).toEqual({ command: "token-goat compress -f go --timeout 600 -c 'go build ./...'" })
+    expect(hso !== undefined && 'permissionDecision' in hso).toBe(false)
   })
 })
 

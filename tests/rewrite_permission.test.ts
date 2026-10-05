@@ -67,13 +67,25 @@ describe('decideRewrite: shell wrap', () => {
     expect(decideRewrite(NONE, shell('go build ./...', 'yolo'))).toBe('skip')
   })
 
-  it('bypassPermissions already runs the original with no prompt, so the rewrite may say allow', () => {
-    expect(decideRewrite(NONE, shell('go build ./...', 'bypassPermissions'))).toBe('approve')
+  it('bypassPermissions already runs the original with no prompt, so the rewrite needs no allow and gets none', () => {
+    expect(decideRewrite(NONE, shell('go build ./...', 'bypassPermissions'))).toBe('rewrite')
+    expect(decideRewrite(NONE, shell('ls -la src', 'bypassPermissions'))).toBe('rewrite')
+    expect(decideRewrite(snap({ allow: ['Bash(go build *)'] }), shell('go build ./...', 'bypassPermissions'))).toBe('rewrite')
+  })
+
+  // HAND-DERIVED from https://code.claude.com/docs/en/permission-modes ("How auto mode evaluates actions": entering auto mode drops Bash(*), interpreter wildcards and package-manager run rules, and with server-side review read-only shell commands wait for the classifier; plan mode with auto available has the classifier review shell commands).
+  it.each(['auto', 'plan'] as const)('%s mode never says allow, so the auto-mode classifier still reviews the call', (mode) => {
+    expect(decideRewrite(snap({ allow: ['Bash(npm run *)'] }), shell('npm run build', mode))).toBe('skip')
+    expect(decideRewrite(snap({ allow: ['Bash(*)'] }), shell('go build ./...', mode))).toBe('skip')
+    expect(decideRewrite(NONE, shell('ls -la src', mode))).toBe('skip')
+    expect(decideRewrite(NONE, shell('git status --short', mode))).toBe('skip')
+    expect(decideRewrite(NONE, shell('go build ./...', mode))).toBe('rewrite')
   })
 
   it('a trusted allow rule matching the simple original proves it auto-allowed', () => {
     expect(decideRewrite(snap({ allow: ['Bash(go build *)'] }), shell('go build ./...'))).toBe('approve')
     expect(decideRewrite(snap({ allow: ['Bash(go build:*)'] }), shell('go build ./...', 'dontAsk'))).toBe('approve')
+    expect(decideRewrite(snap({ allow: ['Bash(go build:*)'] }), shell('go build ./...', 'acceptEdits'))).toBe('approve')
   })
 
   it('a project allow rule proves nothing, and since it covers the original the wrapper would add a prompt: left alone', () => {
