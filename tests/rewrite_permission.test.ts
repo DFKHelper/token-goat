@@ -351,6 +351,64 @@ describe('loadPermissionSnapshot and permissionNeutralRewrite read the real sett
     expect(permissionNeutralRewrite({ command: wrap('go build ./...') }, goBuild(project))).toBeNull()
   })
 
+  // HAND-DERIVED from https://code.claude.com/docs/en/permissions (Working directories, "Additional directories grant file access, not configuration", "When your local settings file needs trust") and https://code.claude.com/docs/en/hooks (CLAUDE_PROJECT_DIR is the project root where the session started): project settings load from the starting directory, local settings from it or from the main checkout's root, never from wherever the shell's cwd has moved.
+  describe('anchored on CLAUDE_PROJECT_DIR as well as the cwd', () => {
+    const savedProjectDir = process.env['CLAUDE_PROJECT_DIR']
+    afterEach(() => {
+      if (savedProjectDir === undefined) delete process.env['CLAUDE_PROJECT_DIR']
+      else process.env['CLAUDE_PROJECT_DIR'] = savedProjectDir
+    })
+    const allowGoBuild = { permissions: { allow: ['Bash(go build *)'] } }
+    const shipped = (cwd: string): ReturnType<typeof permissionNeutralRewrite> => permissionNeutralRewrite({ command: wrap('go build ./...') }, goBuild(cwd))
+
+    it('a cwd outside the project skips, since the project rules it runs under are not in the cwd walk', () => {
+      const elsewhere = path.join(root, 'elsewhere')
+      fs.mkdirSync(elsewhere)
+      writeJson(path.join(project, '.claude', 'settings.json'), { permissions: { deny: ['Bash(go build *)'] } })
+      delete process.env['CLAUDE_PROJECT_DIR']
+      expect(shipped(elsewhere)).toEqual({ hookType: 'rewriteInput', updatedInput: { command: wrap('go build ./...') }, approve: false })
+      process.env['CLAUDE_PROJECT_DIR'] = project
+      expect(loadPermissionSnapshot(elsewhere)).toBeNull()
+      expect(shipped(elsewhere)).toBeNull()
+      expect(shipped(project)).toBeNull()
+      expect(loadPermissionSnapshot(path.join(project, 'sub'))).not.toBeNull()
+    })
+
+    it("a subdirectory's own settings.local.json allow does not approve, because Claude Code never loads it", () => {
+      expect(git(project, 'init', '-q')).toBe(0)
+      writeJson(path.join(project, 'sub', '.claude', 'settings.local.json'), allowGoBuild)
+      process.env['CLAUDE_PROJECT_DIR'] = project
+      expect(shipped(path.join(project, 'sub'))).toEqual({ hookType: 'rewriteInput', updatedInput: { command: wrap('go build ./...') }, approve: false })
+      process.env['CLAUDE_PROJECT_DIR'] = path.join(project, 'sub')
+      const startedInSub = shipped(path.join(project, 'sub'))
+      // Claude Code on Windows reads the starting directory's file; elsewhere it reads the repository root's, so only Windows can vouch for this one.
+      expect(startedInSub).toEqual({ hookType: 'rewriteInput', updatedInput: { command: wrap('go build ./...') }, approve: process.platform === 'win32' })
+    })
+
+    it("the project root's settings.local.json allow approves only while the cwd is the project root", () => {
+      expect(git(project, 'init', '-q')).toBe(0)
+      writeJson(path.join(project, '.claude', 'settings.local.json'), allowGoBuild)
+      process.env['CLAUDE_PROJECT_DIR'] = project
+      expect(shipped(project)).toEqual({ hookType: 'rewriteInput', updatedInput: { command: wrap('go build ./...') }, approve: true })
+      expect(shipped(path.join(project, 'sub'))).toEqual({ hookType: 'rewriteInput', updatedInput: { command: wrap('go build ./...') }, approve: false })
+    })
+
+    it("a linked worktree's session honours the main checkout's local deny rule", () => {
+      const main = path.join(root, 'main')
+      fs.mkdirSync(main)
+      expect(git(main, 'init', '-q')).toBe(0)
+      expect(git(main, '-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-q', '--allow-empty', '-m', 'init')).toBe(0)
+      const wt = path.join(root, 'wt')
+      expect(git(main, '-c', 'core.hooksPath=/dev/null', 'worktree', 'add', '-q', wt)).toBe(0)
+      fs.mkdirSync(path.join(main, '.claude'), { recursive: true })
+      writeJson(path.join(main, '.claude', 'settings.local.json'), { permissions: { deny: ['Bash(go build *)'] } })
+      process.env['CLAUDE_PROJECT_DIR'] = wt
+      expect(shipped(wt)).toBeNull()
+      fs.rmSync(path.join(main, '.claude', 'settings.local.json'))
+      expect(shipped(wt)).toEqual({ hookType: 'rewriteInput', updatedInput: { command: wrap('go build ./...') }, approve: false })
+    })
+  })
+
   it('harnesses that never read Claude Code settings get the rewrite with no approval, whatever the files say', () => {
     writeJson(path.join(configDir, 'settings.json'), { permissions: { deny: ['Bash(curl:*)'] } })
     expect(permissionNeutralRewrite({ command: 'x' }, { ...curl(project), harness: 'codex' })).toEqual({ hookType: 'rewriteInput', updatedInput: { command: 'x' }, approve: false })

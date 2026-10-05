@@ -16,7 +16,7 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>()
 
 /** The repository's common git directory for a checkout rooted at `root`, or null when `root` is not the top of a checkout. A `.git` directory is the common dir itself; a `.git` file (the root is a linked worktree) points at `.git/worktrees/<name>`, whose `commondir` names the shared directory, relative to it. */
-function commonGitDir(root: string): string | null {
+export function commonGitDir(root: string): string | null {
   const dotGit = path.join(root, '.git')
   let st: fs.Stats
   try {

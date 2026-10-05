@@ -1,4 +1,4 @@
-/** Decides whether a PreToolUse input rewrite may ship, and whether it may carry Claude Code's `permissionDecision: "allow"`, so that rewriting a tool call never changes the permission outcome the user's own rules give the ORIGINAL call. Claude Code evaluates its permission rules against a hook's `updatedInput`, not the input the model wrote (claude.exe 2.1.289: the PreToolUse result's `updatedInput` replaces the input before `canUseTool` runs, and an `allow` logs "Hook approved tool use ..., bypassing permission prompt"), so a `token-goat compress -c '<cmd>'` wrapper or a shrunk image's temp path is what a `Bash(curl *)` or `Read(./private/**)` rule gets matched against. Answering every rewrite with `allow`, as serializeOutput once did, therefore skipped the user's prompt for any wrapped command and let deny and ask rules miss. Every rewriteInput producer routes through {@link permissionNeutralRewrite}: it returns null (do not rewrite) whenever a deny or ask rule could match the original call, or the settings cannot be read; `approve` only when the original call is provably auto-allowed anyway and no auto-mode classifier would have reviewed it (a trusted allow rule matching a simple command, Claude Code's built-in read-only commands, a Read inside the working directory); otherwise a rewrite with no decision, which Claude Code runs through its normal permission flow. Losing a compression is fine; bypassing a user's rule is not, so every doubt resolves to null. Settings sources and precedence are from https://code.claude.com/docs/en/settings, https://code.claude.com/docs/en/managed-settings and https://code.claude.com/docs/en/permissions. Node built-ins plus the config-dir accessor, paths.ts's share check, util.ts's runGit and types only, all already on every hook's path, so every hook can import it without dragging a subsystem onto the hook's eager path. */
+/** Decides whether a PreToolUse input rewrite may ship, and whether it may carry Claude Code's `permissionDecision: "allow"`, so that rewriting a tool call never changes the permission outcome the user's own rules give the ORIGINAL call. Claude Code evaluates its permission rules against a hook's `updatedInput`, not the input the model wrote (claude.exe 2.1.289: the PreToolUse result's `updatedInput` replaces the input before `canUseTool` runs, and an `allow` logs "Hook approved tool use ..., bypassing permission prompt"), so a `token-goat compress -c '<cmd>'` wrapper or a shrunk image's temp path is what a `Bash(curl *)` or `Read(./private/**)` rule gets matched against. Answering every rewrite with `allow`, as serializeOutput once did, therefore skipped the user's prompt for any wrapped command and let deny and ask rules miss. Every rewriteInput producer routes through {@link permissionNeutralRewrite}: it returns null (do not rewrite) whenever a deny or ask rule could match the original call, or the settings cannot be read; `approve` only when the original call is provably auto-allowed anyway and no auto-mode classifier would have reviewed it (a trusted allow rule matching a simple command, Claude Code's built-in read-only commands, a Read inside the working directory); otherwise a rewrite with no decision, which Claude Code runs through its normal permission flow. Losing a compression is fine; bypassing a user's rule is not, so every doubt resolves to null. Settings sources and precedence are from https://code.claude.com/docs/en/settings, https://code.claude.com/docs/en/managed-settings and https://code.claude.com/docs/en/permissions. Node built-ins plus the config-dir accessor, paths.ts's share check, path_containment.ts's containment and case fold, nested_worktrees.ts's common git dir, util.ts's runGit and types only, all already on every hook's path, so every hook can import it without dragging a subsystem onto the hook's eager path. */
 
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -7,6 +7,8 @@ import * as path from 'node:path'
 
 import type { HarnessName } from './bridges/types.js'
 import { claudeConfigDir } from './claude_config_dir.js'
+import { commonGitDir } from './nested_worktrees.js'
+import { foldPathForContainment, isInsideRoot } from './path_containment.js'
 import { isUncOrDevicePath } from './paths.js'
 import type { HookOutput } from './types.js'
 import { runGit } from './util.js'
@@ -490,9 +492,44 @@ function localFileTrusted(file: string): boolean {
   return res.exitCode === 1
 }
 
-/** Read every settings source Claude Code could apply to a session in `cwd`. Null when any of them exists but cannot be read, so the caller skips the rewrite. */
-export function loadPermissionSnapshot(cwd: string): PermissionSnapshot | null {
+function samePath(a: string, b: string): boolean {
+  return foldPathForContainment(a) === foldPathForContainment(b)
+}
+
+/** The root of the git checkout holding `dir`, resolved through a linked worktree to the main checkout, where Claude Code keeps local settings; undefined outside a repository. */
+function gitMainRoot(dir: string): string | undefined {
+  for (const d of selfAndAncestors(dir)) {
+    if (!fs.existsSync(path.join(d, '.git'))) continue
+    const common = commonGitDir(d)
+    return common !== null && path.basename(common) === '.git' ? path.dirname(common) : d
+  }
+  return undefined
+}
+
+/** Every directory from `dir` up to the filesystem root. */
+function selfAndAncestors(dir: string): string[] {
+  const out: string[] = []
+  let d = dir
+  for (let depth = 0; depth < 64; depth++) {
+    out.push(d)
+    const parent = path.dirname(d)
+    if (parent === d) break
+    d = parent
+  }
+  return out
+}
+
+/** Read every settings source Claude Code could apply to a session in `cwd` whose project is `projectDir` (Claude Code's `CLAUDE_PROJECT_DIR`, where the session started). Null when any of them exists but cannot be read, or the session's cwd has left its project, so the caller skips the rewrite. */
+export function loadPermissionSnapshot(cwd: string, projectDir: string | undefined = process.env['CLAUDE_PROJECT_DIR']): PermissionSnapshot | null {
   try {
+    const here = path.resolve(cwd)
+    const project = projectDir !== undefined && path.isAbsolute(projectDir) ? path.resolve(projectDir) : undefined
+    // Claude Code loads the project's settings from where the session started, not from the shell's cwd, so a cwd outside it may be under rules this walk would never find.
+    if (project !== undefined && !isInsideRoot(here, project)) return null
+    const start = project ?? here
+    const mainRoot = gitMainRoot(start)
+    // Claude Code reads settings.local.json from the starting directory on Windows and in older versions, and from the main checkout's root elsewhere; its allow rules count only where both agree and the cwd is that directory, since a session moved with /cd reads the new directory's file instead.
+    const localDir = samePath(here, start) && (process.platform === 'win32' || mainRoot === undefined || samePath(mainRoot, start)) ? start : undefined
     const now = Date.now()
     if (managedCache === undefined || now - managedCache.at > MANAGED_CACHE_MS) managedCache = { at: now, docs: managedDocs() }
     const docs: SettingsDoc[] = [...managedCache.docs]
@@ -500,21 +537,21 @@ export function loadPermissionSnapshot(cwd: string): PermissionSnapshot | null {
     if (user !== undefined) docs.push({ role: 'user', json: user })
     const userLocal = readSettingsFile(path.join(claudeConfigDir(), 'settings.local.json'))
     if (userLocal !== undefined) docs.push({ role: 'ancestor', json: userLocal })
-    let dir = path.resolve(cwd)
-    for (let depth = 0; depth < 64; depth++) {
-      const atCwd = depth === 0
-      const project = readSettingsFile(path.join(dir, '.claude', 'settings.json'))
-      if (project !== undefined) docs.push({ role: atCwd ? 'project' : 'ancestor', json: project })
+    // Deny and ask rules count from every directory any of those three could be: the cwd, the project and the main checkout, and each of their ancestors.
+    const seen = new Set<string>()
+    for (const dir of [here, start, ...(mainRoot === undefined ? [] : [mainRoot])].flatMap(selfAndAncestors)) {
+      const key = process.platform === 'win32' ? dir.toLowerCase() : dir
+      if (seen.has(key)) continue
+      seen.add(key)
+      const projectSettings = readSettingsFile(path.join(dir, '.claude', 'settings.json'))
+      if (projectSettings !== undefined) docs.push({ role: samePath(dir, start) ? 'project' : 'ancestor', json: projectSettings })
       const localFile = path.join(dir, '.claude', 'settings.local.json')
       const local = readSettingsFile(localFile)
       if (local !== undefined) {
         const perms = asObject(local['permissions'])
         const hasAllow = Array.isArray(perms?.['allow']) && (perms['allow'] as unknown[]).length > 0
-        docs.push(atCwd ? { role: 'local', json: local, localTrusted: hasAllow && localFileTrusted(localFile) } : { role: 'ancestor', json: local })
+        docs.push(localDir !== undefined && samePath(dir, localDir) ? { role: 'local', json: local, localTrusted: hasAllow && localFileTrusted(localFile) } : { role: 'ancestor', json: local })
       }
-      const parent = path.dirname(dir)
-      if (parent === dir) break
-      dir = parent
     }
     return snapshotFromDocs(docs)
   } catch {
