@@ -44,6 +44,7 @@ import { VSCODE_TOOL_NAME_KEY } from './hooks_cli.js'
 import { contextOutput, passOutput } from './hooks_common.js'
 import { materializeShrunkImageFile } from './bridges/vscode_hooks.js'
 import { detectHarness } from './bridges/registry.js'
+import { permissionNeutralRewrite } from './rewrite_permission.js'
 import type { HarnessName } from './bridges/types.js'
 import { displaySafePath } from './paths.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
@@ -620,8 +621,19 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string, even
     // VS Code and Claude Code take the copy only as a rewritten Read/view_image path, so the file is written here, in the process that books the saving, and a failed write passes and books nothing. OCR is skipped: text beside the call cannot stop the Read loading the image, so it would only add to what the model receives.
     const file = materializeShrunkImageFile(formatShrinkSummary(result, basename).dataUrl)
     if (file === undefined) return passOutput()
+    // Claude Code checks Read rules against the rewritten path, so a rule that could match the original or the copy keeps the original Read, and the copy is removed rather than left for the age sweep.
+    const cwd = getCwd(event) ?? process.cwd()
+    const rewrite = permissionNeutralRewrite({ ...event.toolInput, file_path: file }, { kind: 'read', harness, mode: event.raw['permission_mode'], cwd, original: filePath, rewritten: file, insideCwd: vscodePathAllowed(filePath, cwd) })
+    if (rewrite === null) {
+      try {
+        fs.unlinkSync(file)
+      } catch {
+        // Left for pruneMaterialized's age sweep.
+      }
+      return passOutput()
+    }
     recordStat('image_shrink', shrinkSaved, shrinkTokens, undefined, basename)
-    return { hookType: 'rewriteInput', updatedInput: { ...event.toolInput, file_path: file } }
+    return rewrite
   }
   if (HOST_MATERIALIZED_HARNESSES.has(harness)) {
     // The host writes the copy in its own process after this one has answered, and falls back to the original image if that write fails, so this process can never see the delivery and books nothing. OCR is skipped for the same reason as on VS Code: the host finds no data URL in OCR text and would send the original image.
@@ -697,7 +709,7 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
   if (!isImagePath(filePath)) return passOutput()
   // Before any stat or read of the path: see preToolPathDeclined.
   if (preToolPathDeclined(event, filePath)) return passOutput()
-  // Claude Code's rewrite is answered with permissionDecision "allow", which would skip the prompt it shows before a Read outside the working directory (https://code.claude.com/docs/en/permissions), so only an image inside it is shrunk there.
+  // Claude Code's Read of the shrunk copy, which lives outside the working directory, needs permissionDecision "allow" to avoid a prompt, and an allow is only honest for an original Read that would not have prompted either (https://code.claude.com/docs/en/permissions), so only an image inside the working directory is shrunk there; rewrite_permission.ts makes the same check before the allow is sent.
   if (detectHarness() === 'claudecode' && !vscodePathAllowed(filePath, getCwd(event))) return passOutput()
 
   pruneShrinkCache()

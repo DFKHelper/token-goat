@@ -30,6 +30,7 @@ import { loadConfig } from './config.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { getHarnessName } from './bridges/registry.js'
 import { isInsideRoot } from './project.js'
+import { permissionNeutralRewrite } from './rewrite_permission.js'
 
 /**
  * Target token budget for the entire briefing (project map + cached ids + reminder + report
@@ -238,10 +239,8 @@ function preAgentHandler(event: HookEvent): HookOutput {
     const updatedPrompt = prompt + briefing + advisory
     const updatedInput = { ...toolInput, prompt: updatedPrompt }
 
-    return {
-      hookType: 'rewriteInput',
-      updatedInput,
-    }
+    // The prompt is all that changes and Agent rules match the subagent type, so the rewrite carries no permission decision; rewrite_permission.ts declines it only when a rule could look further.
+    return permissionNeutralRewrite(updatedInput, { kind: 'agent', harness: getHarnessName(), mode: event.raw['permission_mode'], cwd: getCwd(event) ?? process.cwd(), original: prompt, rewritten: updatedPrompt }) ?? passOutput()
   } catch {
     // Any unexpected error: fail open, never block the spawn
     return passOutput()

@@ -112,3 +112,9 @@ if (!process.env['TOKEN_GOAT_HOOK_SERVER']) {
 if (!process.env['TOKEN_GOAT_NATIVE_HOOKS']) {
   process.env['TOKEN_GOAT_NATIVE_HOOKS'] = '0'
 }
+// src/rewrite_permission.ts reads Claude Code's settings from the machine's managed policy and from every `.claude` directory above a hook's cwd, which for an event with no cwd is this repository. A developer's own untracked `.claude/settings.local.json` here then decided whether an in-process test saw a rewrite. In-process reads are confined to the run root, where every fixture lives; spawned bundles do not inherit this and pass their own cwd.
+const permissionRoot = path.resolve(runRoot())
+;(globalThis as unknown as Record<symbol, unknown>)[Symbol.for('token-goat.permission-source-filter')] = (source: string): boolean => {
+  const rel = path.relative(permissionRoot, path.resolve(source))
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)
+}

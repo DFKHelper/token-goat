@@ -17,6 +17,7 @@ import { detectHarness } from './bridges/registry.js'
 import { detectFromCommand, hasBareBackground } from './tool_filters/index.js'
 import { canRunWrappedShell, canRunPowerShell } from './shell.js'
 import { detectStructuralIndexRewrite } from './bash_structural_index.js'
+import { permissionNeutralRewrite } from './rewrite_permission.js'
 import { rangeSubstituteFor } from './bash_range_savings.js'
 import { hintTarget, sliceCommand, sliceForPath, type HintSlice, type HintTarget } from './hint_target.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
@@ -97,6 +98,11 @@ function cappedInterpreterRead(event: HookEvent, rawCmd: string, cmd: string, hi
   return maybeCompressRewrite(event, rawCmd, cmd, { maxTokens: INTERPRETER_READ_TOKEN_CAP, hint: stripUnsafeSuggestions(hint) }) ?? denyOutput(denial)
 }
 
+/** A rewrite of this Bash call's command, or null when rewrite_permission.ts finds it could change the permission outcome of the command the model wrote. */
+function shellRewrite(event: HookEvent, kind: 'shell-wrap' | 'shell-query', original: string, command: string): HookOutput | null {
+  return permissionNeutralRewrite({ ...event.toolInput, command }, { kind, harness: detectHarness(), mode: event.raw['permission_mode'], cwd: getCwd(event) ?? process.cwd(), original, rewritten: command })
+}
+
 /** Wrap a recognized command in `token-goat compress` so its output is structurally compressed on this run. Returns a `rewriteInput` HookOutput that replaces the Bash tool input wholesale (preserving description/timeout), or null when compression is disabled (`TOKEN_GOAT_BASH_COMPRESS=0` or config), the command is unsuitable, or the chosen filter is disabled. @param event  hook event; its toolInput is preserved verbatim except `command` @param rawCmd original command INCLUDING any `cd … &&` prefix and leading assignments (run by compress) @param cmd    the command with both stripped, used only to pick the filter */
 // `cap`, when given, runs the command through the passthrough filter under a token cap and names the narrower command to print if the cap cuts: set for an inline interpreter file read, whose output is a file's contents rather than tool output.
 function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string, cap?: { maxTokens: number; hint: string }): HookOutput | null {
@@ -156,13 +162,13 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string, cap
     // Guard against Windows CreateProcess 32,767 character command-line limit
     if (wrapped.length > 24000) return null
 
-    return { hookType: 'rewriteInput', updatedInput: { ...event.toolInput, command: wrapped } }
+    return shellRewrite(event, 'shell-wrap', rawCmd, wrapped)
   }
 
   const wrapped = `token-goat compress -f ${filterName} --timeout ${cfg.timeout_seconds}${capArgs} -c ${shellQuoteSingle(rawCmd)}`
   // A heredoc script can run to kilobytes, and single-quoting spends four characters on each quote it holds; past the same ceiling the pwsh branch keeps, the refusal is the safer answer than a command line Windows may cut.
   if (cap !== undefined && wrapped.length > 24000) return null
-  return { hookType: 'rewriteInput', updatedInput: { ...event.toolInput, command: wrapped } }
+  return shellRewrite(event, 'shell-wrap', rawCmd, wrapped)
 }
 
 /** The single range of a `sed`/`awk` line-range read when it runs from line 1 to the file's last line, on a file `cat` would be refused for, with the reason to give. Null for any other range, and for a file past SLICE_ESTIMATE_SCAN_CAP_BYTES or unreadable, since counting its lines means reading it. */
@@ -565,7 +571,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   // A plain-enumeration rg/grep structural search (whole-file symbols, headings, imports) has an exact index answer -- rewrite the command to it instead of just hinting, so the model gets the answer in this one tool result. Checked on rawCmd (not the cd-stripped cmd) ahead of the hint-only checks below: detectStructuralIndexRewrite's own detectFromCommand call rejects any `cd DIR &&` prefix as a compound command, which is the correct pass-through for that shape rather than something this call needs to special-case.
   const structuralRewrite = detectStructuralIndexRewrite(rawCmd, hintCwd, event)
   if (structuralRewrite !== null) {
-    return { hookType: 'rewriteInput', updatedInput: { ...event.toolInput, command: structuralRewrite.command } }
+    const rewrite = shellRewrite(event, 'shell-query', rawCmd, structuralRewrite.command)
+    if (rewrite !== null) return rewrite
   }
 
   if (extractGrepPipeChain(cmd)) {

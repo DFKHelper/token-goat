@@ -11,7 +11,12 @@ export type HookOutput =
       /** Words for the user, never the model: Claude Code's top-level `systemMessage`. claude.exe 2.1.284's hook runner turns it into a `hook_system_message` attachment, shown as "<hook> says: ..." and skipped when the conversation is sent to the API, so it costs no tokens. Other harnesses have no such channel and drop it. */
       readonly notice?: string
     }
-  | { readonly hookType: 'rewriteInput'; readonly updatedInput: Record<string, unknown> }
+  | {
+      readonly hookType: 'rewriteInput'
+      readonly updatedInput: Record<string, unknown>
+      /** Whether Claude Code may be told `permissionDecision: "allow"`: true only when rewrite_permission.ts proved the ORIGINAL call would run without a prompt anyway. Claude Code checks its rules against `updatedInput`, so an unconditional allow skipped the user's prompt for any rewritten call; false leaves the rewritten call to the normal permission flow. */
+      readonly approve: boolean
+    }
   | {
       readonly hookType: 'rewriteOutput'
       readonly updatedOutput: string

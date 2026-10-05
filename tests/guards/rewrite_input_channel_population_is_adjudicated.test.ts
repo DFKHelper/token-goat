@@ -14,17 +14,26 @@ const SRC_DIR = path.join(HERE, '..', '..', 'src')
 /** The emit boundary this guard walks: a literal rewriteInput object, not the shared helpers the sibling guards anchor on. */
 const REWRITE_INPUT_LITERAL = "hookType: 'rewriteInput'"
 
+/** The one builder every producer now goes through (rewrite_permission.ts), which owns the literal; a call to it reaches the channel just as the literal does. */
+const REWRITE_INPUT_BUILDER = 'permissionNeutralRewrite('
+
+function reachesChannel(body: string): boolean {
+  return body.includes(REWRITE_INPUT_LITERAL) || body.includes(REWRITE_INPUT_BUILDER)
+}
+
 /** Every function that reaches the literal, with what it interpolates and why that is safe. Keyed `file.ts::function`. */
 const ADJUDICATED: Readonly<Record<string, string>> = {
   'hooks_agent_spawn.ts::preAgentHandler':
     'Builds the duplicate-spawn advisory, which embeds a prior outstanding prompt (duplicateOf, truncated to 80 chars) -- a value the caller controls and may itself relay from untrusted content. Escaped with neutralizeSpokenMarkers before interpolation; the advisory prefix itself is now the pre-escaped `&#91;token-goat]` spelling rather than a raw bracket, matching the other advisories in this file.',
+  'rewrite_permission.ts::permissionNeutralRewrite': 'Builds the rewriteInput from the updatedInput its caller passes, adding only the boolean approve verdict; it interpolates nothing into any string, and each caller is adjudicated below for what its updatedInput carries.',
+  'hooks_bash.ts::shellRewrite': 'Passes the tool_input back with command replaced by the wrapped or structural command its two callers built, adjudicated below; it interpolates nothing of its own.',
   'hooks_bash.ts::maybeCompressRewrite':
     'Rewrites the Bash tool_input to wrap the command in `token-goat compress`, quoted with shellQuoteSingle. This is an executed shell command, not prose spoken in token-goat\'s voice, and contains no `[token-goat]`/`[tg]` marker literal for a caller-supplied bracket to forge.',
   'hooks_bash.ts::cappedInterpreterRead': 'Reaches maybeCompressRewrite, adjudicated above. The narrower-command hint it passes rides inside that shell command base64-encoded as `--cap-hint-b64`, so nothing it interpolates reaches this channel as raw text.',
-  'hooks_bash.ts::preBashHandlerInner': 'Reaches maybeCompressRewrite, adjudicated above. Interpolates nothing of its own on this channel.',
+  'hooks_bash.ts::preBashHandlerInner': 'Reaches maybeCompressRewrite, adjudicated above, and shellRewrite with the structural index command, a token-goat command line built from the parsed rg/grep arguments with shell quoting. Interpolates nothing of its own as prose on this channel.',
   'hooks_bash.ts::preBashHandler': 'Wrapper over preBashHandlerInner. Interpolates nothing of its own.',
   'image_shrink.ts::finalizeShrinkResult':
-    'VS Code only: points view_image at the shrunk temp copy. The one new value is a path token-goat built from pid, time and a random UUID, with a suffix whose character class admits no separator or bracket; the rest is the tool\'s own original input passed back unchanged. It is a tool argument, not prose in token-goat\'s voice, and carries no `[token-goat]`/`[tg]` marker for a caller-supplied bracket to forge.',
+    'VS Code and Claude Code: points view_image or Read at the shrunk temp copy. The one new value is a path token-goat built from pid, time and a random UUID, with a suffix whose character class admits no separator or bracket; the rest is the tool\'s own original input passed back unchanged. It is a tool argument, not prose in token-goat\'s voice, and carries no `[token-goat]`/`[tg]` marker for a caller-supplied bracket to forge.',
   'image_shrink.ts::preReadImageHandler': 'Reaches finalizeShrinkResult, adjudicated above. Interpolates nothing of its own on this channel.',
 }
 
@@ -61,11 +70,11 @@ function rewriteInputSites(): string[] {
   const out: string[] = []
   for (const file of srcFiles()) {
     const source = fs.readFileSync(file, 'utf8')
-    if (!source.includes(REWRITE_INPUT_LITERAL)) continue
+    if (!reachesChannel(source)) continue
     const fns: FnInfo[] = parseTopLevelFunctions(source)
     const map = functionMap(fns)
     for (const fn of fns) {
-      if (reachesRaw(fn, map, (body) => body.includes(REWRITE_INPUT_LITERAL))) out.push(`${path.basename(file)}::${fn.name}`)
+      if (reachesRaw(fn, map, reachesChannel)) out.push(`${path.basename(file)}::${fn.name}`)
     }
   }
   return out.sort()
@@ -77,7 +86,7 @@ describe('every function on the raw rewriteInput channel has been adjudicated', 
       what: "functions constructing a bare { hookType: 'rewriteInput', ... } in src/*.ts",
       items: rewriteInputSites(),
       floor: POPULATION_FLOOR,
-      mustInclude: ['hooks_agent_spawn.ts::preAgentHandler', 'hooks_bash.ts::maybeCompressRewrite'],
+      mustInclude: ['hooks_agent_spawn.ts::preAgentHandler', 'hooks_bash.ts::maybeCompressRewrite', 'rewrite_permission.ts::permissionNeutralRewrite', 'image_shrink.ts::finalizeShrinkResult'],
     })
   })
 

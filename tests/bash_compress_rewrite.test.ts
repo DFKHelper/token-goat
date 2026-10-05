@@ -72,11 +72,18 @@ afterAll(() => {
 })
 
 describe('serializeOutput: rewriteInput', () => {
-  it('emits the PreToolUse updatedInput wire shape', () => {
+  it('leaves permissionDecision out unless the rewrite was proven not to skip a prompt', () => {
+    // FORMAT-DERIVED: https://code.claude.com/docs/en/hooks (PreToolUse updatedInput; permissionDecision is optional and an "allow" bypasses the permission prompt).
+    const json = serializeOutput({ hookType: 'rewriteInput', updatedInput: { command: 'token-goat compress -f generic -c \'cargo build\'' }, approve: false }, 'pre_tool_use', 'claudecode')
+    expect(JSON.parse(json)).toEqual({ hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: { command: 'token-goat compress -f generic -c \'cargo build\'' } } })
+  })
+
+  it('emits the PreToolUse updatedInput wire shape with allow when approved', () => {
     const json = serializeOutput(
       {
         hookType: 'rewriteInput',
         updatedInput: { command: 'token-goat compress -f generic -c \'cargo build\'', description: 'build' },
+        approve: true,
       },
       'pre_tool_use',
       'claudecode',
@@ -364,15 +371,18 @@ describe('compression rewrite (built-bundle e2e)', () => {
       env: { ...process.env, TOKEN_GOAT_HOME: tgHome, LOCALAPPDATA: tgHome, XDG_DATA_HOME: tgHome },
       input: JSON.stringify(payload),
       encoding: 'utf8',
+      cwd: tgHome,
     })
     return { stdout: res.stdout ?? '', status: res.status }
   }
 
-  it('rewrites a build command to the compress wrapper with the correct wire shape', () => {
-    // `go build ./...` is a recognized build command not cached by any other test in this file, so the bundle's pre-hook produces a rewrite.
+  it('rewrites a build command to the compress wrapper with the correct wire shape, leaving the permission decision to Claude Code', () => {
+    // `go build ./...` is a recognized build command not cached by any other test in this file, so the bundle's pre-hook produces a rewrite. No settings file allows it and it is not a read-only command, so the original would prompt in default mode: the rewrite must not answer allow for it (https://code.claude.com/docs/en/hooks, PreToolUse decision control). The cwd is the sandbox home, so no developer `.claude` settings decide the outcome.
     const out = runHook({
       session_id: 'e2e-compress',
       tool_name: 'Bash',
+      cwd: tgHome,
+      permission_mode: 'default',
       tool_input: { command: 'go build ./...' },
     })
     expect(out.status).toBe(0)
@@ -384,7 +394,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
       }
     }
     expect(parsed.hookSpecificOutput?.hookEventName).toBe('PreToolUse')
-    expect(parsed.hookSpecificOutput?.permissionDecision).toBe('allow')
+    expect(parsed.hookSpecificOutput?.permissionDecision).toBeUndefined()
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
       "token-goat compress -f go --timeout 600 -c 'go build ./...'",
     )

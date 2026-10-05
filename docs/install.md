@@ -326,6 +326,8 @@ You can add wildcard rules to avoid repeated prompts for routine queries:
 
 To allow all `token-goat` commands without prompting:
 
+The rule below also matches the `token-goat compress` wrapper token-goat puts around commands whose output it compresses, so token-goat stops compressing commands it cannot prove you already allow: otherwise the rule would run them unprompted. The read-only list below does not have that effect.
+
 ```json
 {
   "permissions": {

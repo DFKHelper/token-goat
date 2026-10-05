@@ -148,18 +148,18 @@ describe('serializeOutput (antigravity): pre_tool_use', () => {
 
   it('a rewrite goes out as overwrite in the tool\'s own argument keys, with no decision', () => {
     const event = agyEvent('run_command', { CommandLine: 'npm test', Cwd: WORKSPACE })
-    const out = serialize({ hookType: 'rewriteInput', updatedInput: { command: 'token-goat compress -- npm test', Cwd: WORKSPACE } }, 'pre_tool_use', event)
+    const out = serialize({ hookType: 'rewriteInput', approve: true, updatedInput: { command: 'token-goat compress -- npm test', Cwd: WORKSPACE } }, 'pre_tool_use', event)
     expect(out).toEqual({ overwrite: { CommandLine: 'token-goat compress -- npm test', Cwd: WORKSPACE } })
   })
 
   it('a view_file rewrite maps startLine/endLine back to StartLine/EndLine', () => {
     const event = agyEvent('view_file', { AbsolutePath: '/w/a.ts' })
-    const out = serialize({ hookType: 'rewriteInput', updatedInput: { file_path: '/w/a.ts', startLine: 1, endLine: 80 } }, 'pre_tool_use', event)
+    const out = serialize({ hookType: 'rewriteInput', approve: true, updatedInput: { file_path: '/w/a.ts', startLine: 1, endLine: 80 } }, 'pre_tool_use', event)
     expect(out).toEqual({ overwrite: { AbsolutePath: '/w/a.ts', StartLine: 1, EndLine: 80 } })
   })
 
   it('a rewrite with no recorded agy tool name is sent as-is', () => {
-    expect(serialize({ hookType: 'rewriteInput', updatedInput: { command: 'x' } }, 'pre_tool_use')).toEqual({ overwrite: { command: 'x' } })
+    expect(serialize({ hookType: 'rewriteInput', approve: true, updatedInput: { command: 'x' } }, 'pre_tool_use')).toEqual({ overwrite: { command: 'x' } })
   })
 })
 

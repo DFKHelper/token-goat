@@ -377,7 +377,8 @@ describe('codex hookEventName', () => {
     const outputs: HookOutput[] = [
       { hookType: 'deny', message: 'no' },
       { hookType: 'context', context: 'hint' },
-      { hookType: 'rewriteInput', updatedInput: { command: 'ls' } },
+      { hookType: 'rewriteInput', updatedInput: { command: 'ls' }, approve: false },
+      { hookType: 'rewriteInput', updatedInput: { command: 'ls' }, approve: true },
       { hookType: 'rewriteOutput', updatedOutput: 'out' },
       { hookType: 'rewriteOutput', updatedOutput: 'out', updatedBlocks: [{ type: 'text', text: 'out' }] },
       { hookType: 'pass' },

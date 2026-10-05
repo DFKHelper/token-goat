@@ -93,7 +93,7 @@ describe('serializeOutput (vscode): rewrites', () => {
   for (const [tool, input] of Object.entries(NATIVE_INPUTS)) {
     it(`rewriteInput for ${tool} goes back to VS Code under the tool's own key names, with no permissionDecision`, () => {
       const event = vscodeEvent(tool, input)
-      const out = serialize({ hookType: 'rewriteInput', updatedInput: { ...event.toolInput } }, 'pre_tool_use', event)
+      const out = serialize({ hookType: 'rewriteInput', approve: true, updatedInput: { ...event.toolInput } }, 'pre_tool_use', event)
       const hso = out['hookSpecificOutput'] as Record<string, unknown>
       expect(hso['hookEventName']).toBe('PreToolUse')
       expect(hso['updatedInput']).toEqual(input)
@@ -103,11 +103,11 @@ describe('serializeOutput (vscode): rewrites', () => {
 
   it('a changed value survives the key reversal (replace_string_in_file newString, run_in_terminal command)', () => {
     const edit = vscodeEvent('replace_string_in_file', NATIVE_INPUTS['replace_string_in_file']!)
-    const editOut = serialize({ hookType: 'rewriteInput', updatedInput: { ...edit.toolInput, new_string: 'z' } }, 'pre_tool_use', edit)
+    const editOut = serialize({ hookType: 'rewriteInput', approve: true, updatedInput: { ...edit.toolInput, new_string: 'z' } }, 'pre_tool_use', edit)
     expect((editOut['hookSpecificOutput'] as Record<string, unknown>)['updatedInput']).toEqual({ filePath: '/w/a.ts', oldString: 'a', newString: 'z' })
 
     const term = vscodeEvent('run_in_terminal', NATIVE_INPUTS['run_in_terminal']!)
-    const termOut = serialize({ hookType: 'rewriteInput', updatedInput: { ...term.toolInput, command: 'token-goat compress -f npm -c x' } }, 'pre_tool_use', term)
+    const termOut = serialize({ hookType: 'rewriteInput', approve: true, updatedInput: { ...term.toolInput, command: 'token-goat compress -f npm -c x' } }, 'pre_tool_use', term)
     expect((termOut['hookSpecificOutput'] as Record<string, unknown>)['updatedInput']).toEqual({
       command: 'token-goat compress -f npm -c x',
       explanation: 'run tests',
@@ -144,7 +144,7 @@ describe('serializeOutput (vscode): context', () => {
   })
 
   it('a rewriteInput pointing view_image at a shrunk copy reaches VS Code under its own filePath key', () => {
-    const out = serialize({ hookType: 'rewriteInput', updatedInput: { file_path: '/tmp/token-goat-shrink-1-2-x.jpeg' } }, 'pre_tool_use', vscodeEvent('view_image', NATIVE_INPUTS['view_image']!))
+    const out = serialize({ hookType: 'rewriteInput', approve: true, updatedInput: { file_path: '/tmp/token-goat-shrink-1-2-x.jpeg' } }, 'pre_tool_use', vscodeEvent('view_image', NATIVE_INPUTS['view_image']!))
     expect(out).toEqual({ hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: { filePath: '/tmp/token-goat-shrink-1-2-x.jpeg' } } })
   })
 })
