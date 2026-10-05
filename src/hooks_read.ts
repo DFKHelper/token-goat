@@ -34,6 +34,7 @@ import {
 } from './hooks_read_slice.js'
 
 import type { HookOutput } from './types.js'
+import { evaluateFirstReadSymbolPolicy } from './hooks_read_policy.js'
 import { buildPackageManifestHint } from './hints.js'
 import { querySymbols, getFileEntry } from './index_reader.js'
 import { extractShellBannerHeading } from './section_reader.js'
@@ -1030,6 +1031,11 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const rereadCredit = counterfactualCredit(rereadCreditBasis)
 
     const config = loadConfig()
+    const window = readRequestedSliceWindow(event)
+    const isSmallUnseenSlice = window.isExplicitSlice && window.limit !== undefined && (
+      (requestedSlice.kind === 'bytes' && requestedSlice.bytes < config.hints.reread_deny_min_bytes) ||
+      requestedSlice.kind === 'nearSingleLine'
+    )
     if (config.hints.log_large_file_hint_outcomes) {
       const pendingSize = takePendingLargeFileHint(normalized)
       if (pendingSize !== null) {
@@ -1053,7 +1059,6 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         )
       }
 
-      const window = readRequestedSliceWindow(event)
       const prevRanges = getFileLineRanges(normalized)
       if (window.isExplicitSlice && window.offset !== undefined && window.limit !== undefined) {
         const start = window.offset
@@ -1128,7 +1133,6 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordStat('reread_deny_identity', 0, 0, undefined, `branch=${branch} identity=${identity} basis=${basis} edited=${entry?.wasEdited === true ? 1 : 0}`)
     }
     if (config.hints.reread_deny && !protectedRead) {
-      const window = readRequestedSliceWindow(event)
       // Item 1: file was truncated on last read — surgical reads only, gated on hints.truncated_read_min_lines (same gate as the doc/source diff-on-reread branch above) so a small file that happened to trip the token-based truncation marker doesn't get denied for a redirect that wouldn't help it.
       if (wasFileTruncatedThisSession(normalized)) {
         if (estimateTruncatedLineCount(normalized) >= config.hints.truncated_read_min_lines) {
@@ -1159,7 +1163,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
 
       // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
-      if (isSourceExt && fullReads >= 2) {
+      if (isSourceExt && fullReads >= 2 && !isSmallUnseenSlice) {
         // read_count_deny carries the credit for this blocked read. Both it and session_hint map to SOURCE_HINT (see stats.ts's KIND_TO_SOURCE), so a second, non-zero session_hint row here would double the same blocked bytes into the by_source rollup that hint-stats reads -- one deny, one blocked read, one credit. session_hint is still recorded (at 0, 0) so this branch stays visible in its own per-kind breakdown.
         recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
         recordStat('session_hint', 0, 0)
@@ -1170,7 +1174,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     }
 
     const hint = surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized))
-    if (config.hints.reread_deny && !protectedRead && ((fullReads >= 1 && rereadBytes >= config.hints.reread_deny_min_bytes) || fullReads >= 2)) {
+    if (config.hints.reread_deny && !protectedRead && !isSmallUnseenSlice && ((fullReads >= 1 && rereadBytes >= config.hints.reread_deny_min_bytes) || fullReads >= 2)) {
       recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-count-deny')
       bookDenyIdentity('count')
       // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
@@ -1208,6 +1212,49 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   }
 
   const size = statSize(onDisk)
+
+  // First-read symbol-aware policy: evaluate files with size >= first_read_symbol_bytes (default 50KB)
+  // on broad/whole-file reads when indexed symbols or headings exist.
+  if (
+    event.toolName !== 'Grep' &&
+    size !== null &&
+    !wasFileReadThisSession(normalized) &&
+    !isImagePath(normalized) &&
+    !isDispatchedFileType(normalized)
+  ) {
+    const policyDecision = evaluateFirstReadSymbolPolicy({
+      event,
+      normalizedPath: normalized,
+      shownPath: shown,
+      fileSize: size,
+      isFirstRead: true,
+      firstReadSymbolBytes: loadConfig().hints.first_read_symbol_bytes,
+      firstReadSymbolPolicy: loadConfig().hints.first_read_symbol_policy,
+    })
+
+    if (policyDecision.action === 'deny') {
+      const denyCredit = counterfactualCredit(size)
+      recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit), undefined, 'first-read-symbol-deny')
+      return denyOutput(policyDecision.message)
+    }
+
+    if (policyDecision.action === 'warn') {
+      const slice = estimateRequestedSlice(event, normalized)
+      const gateSize = slice.kind === 'bytes' ? Math.min(slice.bytes, size) : size
+      if (gateSize < largeFileDenyBytes()) {
+        recordActualRead(event, normalized)
+        recordActualSlice(event, normalized)
+        if (loadConfig().hints.log_large_file_hint_outcomes) {
+          recordLargeFileHintPending(normalized, size)
+        }
+        if (!isWithinQuietHours(loadConfig().hints.quiet_hours)) {
+          recordStat('session_hint', 0, 0)
+        }
+        return quietContextOutput(policyDecision.message + contextPressureAdvisorySuffix(), [shown])
+      }
+    }
+  }
+
   // Grep never reads/returns the whole file — its cost is the search pattern's match count, not the file's total size (same rationale as the re-read dedup exemption above), and estimateRequestedSlice() always reports 'unbounded' for it (no offset/limit on its schema), which would otherwise gate it on the full file size and hard-deny it with an "edit it anyway" message that makes no sense for a search operation.
   if (event.toolName !== 'Grep' && size !== null && size >= LARGE_FILE_BYTES && !isImagePath(normalized) && !isDispatchedFileType(normalized)) {
     // A genuine, bounded offset/limit request gates on the requested slice's size instead of the whole file's — a small window into a huge file should be let through. Whole-file requests (no offset/limit, or an unboundable window) keep gating on the real file size.

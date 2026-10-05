@@ -18,6 +18,7 @@ import type {
   Config,
   VisionTier,
   NativeHooksMode,
+  FirstReadSymbolPolicy,
   ProjectConfigInfo,
   ConfigKeyLayer,
   CompactAssistConfig,
@@ -87,6 +88,15 @@ function validatedVisionTier(raw: unknown, def: VisionTier): VisionTier {
 }
 
 /** Accept only the two modes, falling back to the default for anything else, as {@link validatedVisionTier} does. */
+
+function validatedFirstReadSymbolPolicy(raw: unknown, def: FirstReadSymbolPolicy): FirstReadSymbolPolicy {
+  return raw === 'warn' || raw === 'deny' || raw === 'off' ? raw : def
+}
+
+function envFirstReadSymbolPolicy(name: string, def: FirstReadSymbolPolicy): FirstReadSymbolPolicy {
+  const val = process.env[name]?.trim().toLowerCase()
+  return val === 'warn' || val === 'deny' || val === 'off' ? (val as FirstReadSymbolPolicy) : def
+}
 function validatedNativeHooksMode(raw: unknown, def: NativeHooksMode): NativeHooksMode {
   return raw === 'auto' || raw === 'off' ? raw : def
 }
@@ -178,6 +188,7 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
   'hints.min_session_hint_savings_bytes': {min: 0, max: 1_000_000},
   'hints.diff_hint_min_tokens_saved': {min: 0, max: 100_000},
   'hints.large_read_redirect_bytes': {min: 0, max: 100_000_000},
+  'hints.first_read_symbol_bytes': {min: 0, max: 100_000_000},
   'hints.reread_deny_min_bytes': {min: 0, max: 100_000_000},
   'hints.truncated_read_min_lines': {min: 0, max: 1_000_000},
   'hints.protect_recent_reads': {min: 0, max: 100},
@@ -249,6 +260,7 @@ const ENUM_FIELD_VALUES: Record<string, string[]> = {
   // Deliberately has no entry above `normal`. This table is what `config set` checks; a hand-edited TOML bypasses it, which is why resolveWorkerPriority (process_priority.ts) maps an unrecognized value back to the default rather than trusting whatever the file said.
   'worker.priority': ['below_normal', 'low', 'normal'],
   'hooks.native': ['auto', 'off'],
+  'hints.first_read_symbol_policy': ['warn', 'deny', 'off'],
 }
 
 /** Validate a single enum-valued string config field against its fixed set of allowed values. Used by config set to reject unrecognized values without rebuilding the entire config tree. Returns undefined if the field isn't enum-constrained (any string is fine) or the value is valid; returns the allowed-value list if the value is invalid. */
@@ -724,6 +736,8 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hi.diff_hint_min_tokens_saved = validatedInt(hi_raw['diff_hint_min_tokens_saved'], hi.diff_hint_min_tokens_saved, ...boundsOf('hints.diff_hint_min_tokens_saved'))
   // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all round trip (see saveConfig), so any pre-4b6f30dc user who ran `config set` for an unrelated key got the then-in-memory default large_read_redirect_bytes (45_000) permanently persisted, even though the field had zero consumers at the time and nobody could have deliberately chosen it. 4b6f30dc wired this key up as the real pressure-scaled first-read deny gate and bumped the in-code default to 512_000 -- but those stale 45_000s now load back in and silently make the gate ~11.4x more aggressive than intended. Treat an exactly-persisted 45_000 as that stale default and fall through to the current default instead of trusting it; any other persisted value (including a deliberate 45_000 set after upgrading) is respected as-is.
   hi.large_read_redirect_bytes = validatedIntWithLegacySentinel(hi_raw['large_read_redirect_bytes'], hi.large_read_redirect_bytes, 45_000, ...boundsOf('hints.large_read_redirect_bytes'))
+  hi.first_read_symbol_bytes = validatedInt(hi_raw['first_read_symbol_bytes'], hi.first_read_symbol_bytes, ...boundsOf('hints.first_read_symbol_bytes'))
+  hi.first_read_symbol_policy = validatedFirstReadSymbolPolicy(hi_raw['first_read_symbol_policy'], hi.first_read_symbol_policy)
   hi.reread_deny = validatedBool(hi_raw['reread_deny'], hi.reread_deny)
   // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all round trip (see saveConfig), so any pre-a1fad4c6 user who ran `config set` for an unrelated key got the then-in-memory default reread_deny_min_bytes (2048) permanently persisted, even though the field had zero consumers at the time and nobody could have deliberately chosen it. a1fad4c6 wired this key up as the real re-read-deny gate and bumped the in-code default to 51_200 -- but those stale 2048s now load back in and silently make the gate 25x more aggressive than intended. Treat an exactly-persisted 2048 as that stale default and fall through to the current default instead of trusting it; any other persisted value (including a deliberate 2048 set after upgrading) is respected as-is.
   hi.reread_deny_min_bytes = validatedIntWithLegacySentinel(hi_raw['reread_deny_min_bytes'], hi.reread_deny_min_bytes, 2048, ...boundsOf('hints.reread_deny_min_bytes'))
@@ -759,6 +773,8 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   // Scalar hints fields that were readable from config.toml but had no env override, so the only way to change them for a single run (a dogfood check, a one-off CLI invocation, a test) was to write a config.toml into the data dir and remember to delete it. Every other scalar hints field already had one; these were the leftovers. Registered in CONFIG_KEY_ENV_OVERRIDES below too, which is what feeds allEnvKeys() -- so each is automatically covered by loadConfig()'s cache fingerprint and by withoutConfigEnv()'s transient-override strip, and cannot leak into a persisted config.toml. `backoff_thresholds` is deliberately excluded: it is the one non-scalar hints field (number[]), and there is no existing env helper that parses a list, so giving it one would mean inventing a serialization format rather than following the established pattern -- see the coverage guard in tests/guards/hints_env_override_coverage.test.ts, which pins that exemption.
   hi.reread_deny = envBool('TOKEN_GOAT_REREAD_DENY', hi.reread_deny)
   hi.reread_deny_min_bytes = envInt('TOKEN_GOAT_REREAD_DENY_MIN_BYTES', hi.reread_deny_min_bytes, ...boundsOf('hints.reread_deny_min_bytes'))
+  hi.first_read_symbol_bytes = envInt('TOKEN_GOAT_FIRST_READ_SYMBOL_BYTES', hi.first_read_symbol_bytes, ...boundsOf('hints.first_read_symbol_bytes'))
+  hi.first_read_symbol_policy = envFirstReadSymbolPolicy('TOKEN_GOAT_FIRST_READ_SYMBOL_POLICY', hi.first_read_symbol_policy)
   hi.protect_recent_reads = envInt('TOKEN_GOAT_PROTECT_RECENT_READS', hi.protect_recent_reads, ...boundsOf('hints.protect_recent_reads'))
   hi.truncated_read_min_lines = envInt('TOKEN_GOAT_TRUNCATED_READ_MIN_LINES', hi.truncated_read_min_lines, ...boundsOf('hints.truncated_read_min_lines'))
   hi.diff_hint_min_tokens_saved = envInt('TOKEN_GOAT_DIFF_HINT_MIN_TOKENS_SAVED', hi.diff_hint_min_tokens_saved, ...boundsOf('hints.diff_hint_min_tokens_saved'))
@@ -959,6 +975,8 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hints.write_rewrite_min_lines': ['TOKEN_GOAT_WRITE_REWRITE_MIN_LINES'],
   'hints.write_rewrite_unchanged_pct': ['TOKEN_GOAT_WRITE_REWRITE_UNCHANGED_PCT'],
   'hints.large_read_redirect_bytes': ['TOKEN_GOAT_LARGE_READ_BYTES'],
+  'hints.first_read_symbol_bytes': ['TOKEN_GOAT_FIRST_READ_SYMBOL_BYTES'],
+  'hints.first_read_symbol_policy': ['TOKEN_GOAT_FIRST_READ_SYMBOL_POLICY'],
   'hints.warn_unbalanced_shell_quoting': ['TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING'],
   'hints.deny_bash_double_backslash': ['TOKEN_GOAT_DENY_BASH_DOUBLE_BACKSLASH'],
   'hints.serve_diff_on_reread': ['TOKEN_GOAT_SERVE_DIFF_ON_REREAD'],
@@ -1146,6 +1164,8 @@ export function saveConfig(config: Config, explicitKeys: readonly string[] = [])
       context_threshold_advisory: config.hints.context_threshold_advisory,
       diff_hint_min_tokens_saved: config.hints.diff_hint_min_tokens_saved,
       large_read_redirect_bytes: config.hints.large_read_redirect_bytes,
+      first_read_symbol_bytes: config.hints.first_read_symbol_bytes,
+      first_read_symbol_policy: config.hints.first_read_symbol_policy,
       reread_deny: config.hints.reread_deny,
       reread_deny_min_bytes: config.hints.reread_deny_min_bytes,
       stable_doc_compacts: config.hints.stable_doc_compacts,

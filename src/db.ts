@@ -7,7 +7,7 @@ import * as path from 'node:path'
 import Database from './sqlite_driver.js'
 import type { SqliteDatabase } from './sqlite_driver.js'
 
-import { dataDir, SYMBOL_BODY_CHAR_CAP } from './constants.js'
+import { dataDir, globalDbPath, SYMBOL_BODY_CHAR_CAP } from './constants.js'
 import { isDotenvPath } from './dotenv_redact.js'
 import { safeJoin } from './paths.js'
 import { ensureDirSync, foldCase, foldPath, sleepSync } from './util.js'
@@ -658,6 +658,41 @@ function connectionKey(dbPath: string): { resolved: string; key: string } {
 }
 
 /** Return the cached {@link SqliteDatabase} for `dbPath`, opening and initializing it on first access. The connection is opened with the schema applied, WAL enabled, and the optional FTS5 / sqlite-vec tables created when available. Subsequent calls with the same resolved path return the same handle. In a process that called {@link allowReadOnlyIndex}, a database it may not write is served through a read-only connection instead (see {@link openIndexReadOnly}); in every other process that refusal propagates. */
+
+/**
+ * Run a short, bounded read-only callback on the index database if it exists and is ready.
+ * Never runs migrations or DDL, sets busy_timeout to 250ms, and catches all errors (returning null).
+ * Ensures fail-open zero-contention behavior for pre-tool-use hooks.
+ */
+export function withProbeIndex<T>(
+  fn: (db: SqliteDatabase) => T,
+  dbPath?: string,
+): T | null {
+  const resolved = resolveDbPath(dbPath ?? globalDbPath())
+  if (!fs.existsSync(resolved)) return null
+  let conn: SqliteDatabase | null = null
+  try {
+    conn = new Database(resolved, { readonly: true, fileMustExist: true })
+    conn.pragma('busy_timeout = 250')
+    const storedVersion = Number(conn.pragma('user_version', { simple: true }))
+    if (storedVersion !== SCHEMA_VERSION) {
+      return null
+    }
+    registerTgLower(conn)
+    return fn(conn)
+  } catch {
+    return null
+  } finally {
+    if (conn) {
+      try {
+        conn.close()
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  }
+}
+
 export function getDb(dbPath: string): SqliteDatabase {
   // Fold only the cache key, not `resolved` itself -- the real-case path is still what gets passed to fs/Database below, so the file is created/opened with whatever casing the caller (or an existing file on disk) actually used.
   const { resolved, key } = connectionKey(dbPath)

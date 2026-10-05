@@ -96,6 +96,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/hooks_grep.ts`](src/hooks_grep.ts) | post_tool_use / pre_tool_use handlers for the Grep tool. |
 | [`src/hooks_index.ts`](src/hooks_index.ts) | `appendDirtyPath()` — atomic append to `queue/dirty.txt`; `preCompactIndexHandler()` — drains any remaining dirty queue before compaction |
 | [`src/hooks_mcp.ts`](src/hooks_mcp.ts) | `preMcpHandler()` / `postMcpHandler()` — cache read-only `mcp__*` results into the bash-output store; deny an identical repeat with a `bash-output <id>` recall hint |
+| [`src/hooks_read_policy.ts`](src/hooks_read_policy.ts) | Exports: `ReadPolicyContext`, `ReadPolicyDecision`, `evaluateFirstReadSymbolPolicy` |
 | [`src/hooks_read_post.ts`](src/hooks_read_post.ts) | `postReadHandler()` — snapshot update, session recording, `elideAlreadyServedLines()` and `foldCodeBodies()` on the delivered text |
 | [`src/hooks_read_slice.ts`](src/hooks_read_slice.ts) | Line windowing, slice estimation, line diffing, and truncated-read detection. |
 | [`src/hooks_read.ts`](src/hooks_read.ts) | `preReadHandler()` — session hint, diff-on-reread, image intercept, large-file gate, surgical-hint injection |

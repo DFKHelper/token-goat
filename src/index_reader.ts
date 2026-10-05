@@ -1,7 +1,8 @@
 /** Read side of the symbol index. Queries the `symbols`, `refs`, and `files` tables (schema in `db.ts`) that the `token-goat symbol`, `token-goat refs`, and related CLI commands surface. Mapping from snake_case DB columns to the camelCase {@link SymbolEntry} / {@link RefEntry} / {@link FileIndexEntry} shapes lives here so callers never touch raw rows. Each query accepts an optional `dbPath` (defaulting to the global index DB) so tests can point at a throwaway database. The path is passed straight to {@link getDb}, which caches one connection per resolved path. */
 
+import * as fs from 'node:fs'
 import { globalDbPath } from './constants.js'
-import { getDb } from './db.js'
+import { getDb, withProbeIndex } from './db.js'
 import { ownProjectScope } from './nested_worktrees.js'
 import type { FileIndexEntry, RefEntry, SymbolEntry } from './parser_types.js'
 import { normalizePath } from './paths.js'
@@ -384,3 +385,104 @@ export function searchSymbolsFts(
     return []
   }
 }
+
+
+export interface NavigationSymbol {
+  readonly name: string
+  readonly kind: string
+  readonly lineStart: number
+  readonly lineEnd: number
+}
+
+export interface NavigationEvidence {
+  readonly filePath: string
+  readonly symbolCount: number
+  readonly headingCount: number
+  readonly topSymbols: readonly NavigationSymbol[]
+  readonly topHeadings: readonly NavigationSymbol[]
+  readonly indexedMtime: number
+  readonly isStale: boolean
+}
+
+/**
+ * Fast, fail-open navigation probe for pre-read tool interception.
+ * Uses a non-blocking read-only connection without schema migrations or lock contention.
+ * Returns null if the file is not indexed or has no symbols/headings.
+ */
+export function getReadNavigationEvidence(
+  filePath: string,
+  dbPath?: string,
+): NavigationEvidence | null {
+  return withProbeIndex((db) => {
+    const key = indexKey(filePath)
+    let fileRow = db
+      .prepare(`SELECT path, mtime FROM files WHERE ${pathEq('path')}`)
+      .get(foldPath(key)) as { path: string; mtime?: number } | undefined
+
+    if (fileRow === undefined && (key.includes('/') || key.includes('\\'))) {
+      const alt = key.includes('/') ? key.replace(/\//g, '\\') : key.replace(/\\/g, '/')
+      fileRow = db
+        .prepare(`SELECT path, mtime FROM files WHERE ${pathEq('path')}`)
+        .get(foldPath(alt)) as { path: string; mtime?: number } | undefined
+    }
+
+    if (!fileRow) return null
+
+    let isStale = false
+    try {
+      const stat = fs.statSync(filePath)
+      if (fileRow.mtime !== undefined && Math.abs(stat.mtimeMs - fileRow.mtime) > 1000) {
+        isStale = true
+      }
+    } catch {
+      // file might be removed or inaccessible
+    }
+
+    const { clause, params } = buildSymbolWhere({ filePath: fileRow.path })
+    const rows = db
+      .prepare(
+        `SELECT name, kind, line_start, line_end FROM symbols ${clause} ORDER BY line_start ASC, rowid LIMIT 60`,
+      )
+      .all(...params) as Array<{ name: string; kind: string; line_start: number; line_end: number }>
+
+    if (!rows || rows.length === 0) return null
+
+    const countRow = db
+      .prepare(
+        `SELECT COUNT(*) as total, SUM(CASE WHEN kind = 'heading' THEN 1 ELSE 0 END) as headings FROM symbols ${clause}`,
+      )
+      .get(...params) as { total: number; headings: number | null } | undefined
+
+    const totalCount = countRow?.total ?? rows.length
+    const headingTotal = Number(countRow?.headings ?? 0)
+    const symbolTotal = Math.max(0, totalCount - headingTotal)
+
+    const topSymbols: NavigationSymbol[] = []
+    const topHeadings: NavigationSymbol[] = []
+
+    for (const r of rows) {
+      const item: NavigationSymbol = {
+        name: r.name,
+        kind: r.kind,
+        lineStart: r.line_start,
+        lineEnd: r.line_end,
+      }
+      if (r.kind === 'heading') {
+        if (topHeadings.length < 8) topHeadings.push(item)
+      } else {
+        if (topSymbols.length < 8) topSymbols.push(item)
+      }
+    }
+
+    return {
+      filePath: fileRow.path,
+      symbolCount: symbolTotal,
+      headingCount: headingTotal,
+      topSymbols,
+      topHeadings,
+      indexedMtime: fileRow.mtime ?? 0,
+      isStale,
+    }
+  }, dbPath)
+}
+

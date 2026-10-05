@@ -31,6 +31,8 @@ export const PROJECT_LOCKED_KEYS: readonly string[] = [
   'hints.outline_large_documents',
   // Same reasoning one file type over: a repository must not be able to decide, from its own checked-in config, how much of its source a reviewing agent is shown -- neither by turning the skeleton off to bury a declaration in a wall of bodies, nor by leaving it on to withhold the bodies themselves. The user's global config and TOKEN_GOAT_SKELETON_LARGE_SOURCES still set it freely.
   'hints.skeleton_large_sources',
+  'hints.first_read_symbol_bytes',
+  'hints.first_read_symbol_policy',
   // The widest blast radius of anything on this list. The fold keys above decide how much of a file an agent is shown; this decides how much of the whole session survives compaction. A checked-in `.token-goat.toml` setting it to a handful of characters would ask the summarizer to discard the session's accumulated state at every compaction boundary, and the loss is silent -- what comes back is a well-formed short summary, not an error. The user's own global config still sets it freely; only the project-supplied layer is refused.
   'compact_assist.summary_budget_chars',
   'image_shrink.max_image_pixels',

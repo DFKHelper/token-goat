@@ -108,6 +108,8 @@ export interface PromptTrigger {
   hint: string
 }
 
+export type FirstReadSymbolPolicy = 'warn' | 'deny' | 'off'
+
 export interface HintsConfig {
   quiet_hours: string
   json_sidecar: boolean
@@ -133,6 +135,8 @@ export interface HintsConfig {
   context_threshold_advisory: boolean
   diff_hint_min_tokens_saved: number
   large_read_redirect_bytes: number
+  first_read_symbol_bytes: number
+  first_read_symbol_policy: FirstReadSymbolPolicy
   reread_deny: boolean
   reread_deny_min_bytes: number
   stable_doc_compacts: boolean
