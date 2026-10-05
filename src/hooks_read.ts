@@ -1163,7 +1163,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
 
       // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
-      if (isSourceExt && fullReads >= 2 && !isSmallUnseenSlice) {
+      if (isSourceExt && fullReads >= 2) {
         // read_count_deny carries the credit for this blocked read. Both it and session_hint map to SOURCE_HINT (see stats.ts's KIND_TO_SOURCE), so a second, non-zero session_hint row here would double the same blocked bytes into the by_source rollup that hint-stats reads -- one deny, one blocked read, one credit. session_hint is still recorded (at 0, 0) so this branch stays visible in its own per-kind breakdown.
         recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
         recordStat('session_hint', 0, 0)
@@ -1238,20 +1238,16 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       return denyOutput(policyDecision.message)
     }
 
-    if (policyDecision.action === 'warn') {
-      const slice = estimateRequestedSlice(event, normalized)
-      const gateSize = slice.kind === 'bytes' ? Math.min(slice.bytes, size) : size
-      if (gateSize < largeFileDenyBytes()) {
-        recordActualRead(event, normalized)
-        recordActualSlice(event, normalized)
-        if (loadConfig().hints.log_large_file_hint_outcomes) {
-          recordLargeFileHintPending(normalized, size)
-        }
-        if (!isWithinQuietHours(loadConfig().hints.quiet_hours)) {
-          recordStat('session_hint', 0, 0)
-        }
-        return quietContextOutput(policyDecision.message + contextPressureAdvisorySuffix(), [shown])
+    if (policyDecision.action === 'warn' && size < LARGE_FILE_BYTES) {
+      recordActualRead(event, normalized)
+      recordActualSlice(event, normalized)
+      if (loadConfig().hints.log_large_file_hint_outcomes) {
+        recordLargeFileHintPending(normalized, size)
       }
+      if (!isWithinQuietHours(loadConfig().hints.quiet_hours)) {
+        recordStat('session_hint', 0, 0)
+      }
+      return quietContextOutput(policyDecision.message + contextPressureAdvisorySuffix(), [shown])
     }
   }
 
