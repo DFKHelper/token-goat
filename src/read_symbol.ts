@@ -1,7 +1,8 @@
 /** The `symbol` command: every indexed definition of a name, or of each name `--grep` matches, printed with a short body preview. A bare name searches every indexed project unless `--project` scopes it or `indexing.cross_project_symbols = false` confines it to the project it is run from. Each hit is tagged when its file is gone from disk or could not be reindexed, and a name with no match gets the nearest indexed names instead. */
 
 import { isIgnoredIndexPath } from './baseline.js'
-import { querySymbols, queryRefCounts, countSymbols, DEFAULT_QUERY_LIMIT } from './index_reader.js'
+import { querySymbols, queryRefCounts, countSymbols, distinctSymbolKinds, DEFAULT_QUERY_LIMIT } from './index_reader.js'
+import { CORE_SYMBOL_KINDS } from './graph_traversal.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import { toDisplayPath, displaySafeJson } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
@@ -11,7 +12,7 @@ import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import type { SymbolEntry } from './parser_types.js'
 import { FirstRows, forEachSymbol, projectStructuredFiles, symbolsById, type SymbolHead } from './symbol_scan.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
-import { DIDYOUMEAN_LIMIT, didYouMean, findStructuredKeyPath, nearNamesSkippedNote, nearSymbolNames } from './read_suggest.js'
+import { DIDYOUMEAN_LIMIT, didYouMean, findStructuredKeyPath, nearNamesSkippedNote, nearSymbolNames, rankSimilarNames } from './read_suggest.js'
 import { confinementRefusal, resolveProjectConfinement, stripHtmlIdSpelling } from './read_spec.js'
 import { formatStatsSuffix, hasRealDocstring } from './read_meta.js'
 import { DELETED_TAG, fileIsGone, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, indexFreshness, largestFileSize, recordReadStat, recordStaleServed, resolveBody, sinkGoneRows, staleWarning, truncationFooter, type TruncationTotal } from './read_commands.js'
@@ -206,6 +207,18 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
       return { text: displaySafeJson({ items: [], truncated: false, totalCount: 0 }), code: 0 }
     }
     let text = `No matches for '${opts.name ?? opts.grep ?? '*'}'`
+    // Kinds are matched exactly and stored lower-case, so `--kind Method` empties the scope on its own; name a kind no indexed symbol carries, as `dead --kind` does, instead of letting the miss read as an empty project. A recognized kind is skipped without a query: its absence is an ordinary miss.
+    if (opts.kind !== undefined && !CORE_SYMBOL_KINDS.includes(opts.kind)) {
+      const storedKinds = distinctSymbolKinds(opts.projectRoot)
+      if (!storedKinds.includes(opts.kind)) {
+        text += `\nno indexed symbol has kind '${opts.kind}'`
+        // A different-case spelling of a real kind is the answer on its own; ranking it beside every kind containing it would bury it under apex_method and lwc_api_method.
+        const lower = opts.kind.toLowerCase()
+        const recased = [...new Set([...storedKinds, ...CORE_SYMBOL_KINDS])].filter((k) => k.toLowerCase() === lower)
+        const closes = recased.length > 0 ? recased : rankSimilarNames(storedKinds, opts.kind)
+        if (closes.length > 0) text += `\n${didYouMean(closes)}`
+      }
+    }
     // Resolved once here, before the near-name ranking, because both the `Try: semantic` fallback and the trailing empty-index note need the answer -- and the fallback needs it to decide whether to print at all. Still only paid after the query already came back empty.
     const emptyIndexRoot = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
     const indexEmpty = isIndexEmptyForProject(globalDbPath(), emptyIndexRoot)
