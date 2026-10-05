@@ -43,7 +43,7 @@ paper over.
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | pre deny | M (d) | M (w)¹ | M (w)²⁸ | ? (doc, BE-06) | M (doc)² | ? (doc)³ | ? (doc)⁴ | M (w)⁵ | M (w)⁶ | M (doc) | M (w) |
 | pre context (hints) | M (c) | M (c)⁷ | M (w)²⁸ | ? (u, BE-06) | D (b)⁸ | ? (u) | ? (doc) | ? (u)⁹ | D (b)¹⁰ | D (b)¹⁰ | D (b)¹⁰ |
-| pre context (image shrink) | M (doc)³⁴ | M (w)¹¹ | M (w)²⁹ | ? (u) | D (b) | ? (u) | ? (doc) | D (w) | M (b)¹² | M (w)¹¹ | M (b)¹² |
+| pre context (image shrink) | M (doc)³⁴ | M (w)¹¹ | M (w)²⁹ | D (b)³⁵ | D (b) | D (b)³⁵ | D (b)³⁵ | D (w) | M (b)¹² | M (w)¹¹ | M (b)¹² |
 | pre rewriteInput | M (d) | M (w)¹³ | M (w)²⁸ ³² | ? (doc, BE-06) | D (b)⁸ | ? (u) | ? (doc) | D (w)⁵ | M (w) | M (w)¹¹ | M (w) |
 | post rewriteOutput | M (d) | M (c)¹⁴ | D (w)³⁰ | ? (doc, BE-06) | D (doc)² | ? (u) | ? (doc) | D (w)⁵ | M (b)¹⁵ | D (w)¹⁶ | M (w)¹⁶ |
 | post context | M (d) | M (c)¹⁷ | M (w)²⁸ | ? (u, BE-06) | D (doc)² | ? (u) | ? (doc) | D (w)⁵ | M (b)¹⁸ | D (w)¹⁶ | D (w)¹⁶ |
@@ -86,6 +86,7 @@ paper over.
 32. The channel works (see 29), but `run_in_terminal` never gets an `updatedInput`: it maps to Bash for hints only, so terminal output is not compressed in VS Code. VS Code does not tell the hook which shell will run the command, so rewriting it safely is not possible. The Bash rewrite on the other harnesses is unchanged.
 33. VS Code 1.137.0, `resources/app/extensions/copilot/dist/extension.js`: the `UserPromptSubmit` result handler reads `u.hookSpecificOutput?.additionalContext??u.additionalContext`, the joined text goes through `appendAdditionalHookContext`, and the prompt renders it with `this.props.additionalHookContext&&vscpp(ALt,{context:this.props.additionalHookContext})`. No live VS Code run is recorded.
 34. Was **M (c)** on the context channel, which was wrong in kind: Claude Code reads `additionalContext` as text, caps it at 10,000 characters, and replaces anything longer with a file path and a 2,000-character preview (https://code.claude.com/docs/en/hooks), so the shrunk image arrived as a base64 preview while the Read loaded the original. The shrunk copy is now written to a temp file and `updatedInput.file_path` points at it, with `permissionDecision: "allow"`. Because that allow skips the prompt Claude Code shows before a Read outside the working directory, only an image inside the payload's `cwd` is shrunk; serializeOutput also drops any shrink payload that still reaches it on Claude Code.
+35. Not sent. These harnesses can only add hook context beside a Read that still loads the original image, so the shrink there was a megabyte-scale base64 data URL on top of the image, not in place of it: Codex spills hook context over its 2,500-token default to a file behind a head-and-tail preview (https://developers.openai.com/codex/hooks, "Large hook output"), and Gemini CLI's BeforeTool output has no `additionalContext` field at all (https://geminicli.com/docs/hooks/reference/). On Qwen Code the context may reach the model, but the read_file beside it still loads the original. The hook now passes before any shrink work on every harness where the copy cannot replace the Read, and books an image_shrink saving only for a rewritten Read path it wrote itself (`deliveryReplacesRead` in src/image_shrink.ts).
 
 ## What this table exposed, and what was done
 

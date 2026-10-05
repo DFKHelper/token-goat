@@ -575,7 +575,7 @@ function pruneShrinkCache(): void {
 }
 
 /**
- * Shared tail of {@link preReadImageHandler}: OCR-or-pixel accounting and the `context` output,
+ * Shared tail of {@link preReadImageHandler}: saving accounting and the delivered output,
  * given a {@link ShrinkResult} regardless of whether it came from a fresh `shrinkImage()` call or
  * a cache hit. Keeping one code path here is what keeps a cache hit's `recordStat` honest -- it
  * reports the same savings a fresh shrink would have, because the model receives the same bytes
@@ -589,33 +589,9 @@ const HOST_MATERIALIZED_HARNESSES: ReadonlySet<HarnessName> = new Set<HarnessNam
 const PATH_REWRITE_HARNESSES: ReadonlySet<HarnessName> = new Set<HarnessName>(['vscode', 'claudecode'])
 
 async function finalizeShrinkResult(result: ShrinkResult, filePath: string, event: HookEvent): Promise<HookOutput> {
-  // The image's own file name, so a cloned repository chooses it, and both summaries below reach the model on the context channel, which neither fences nor escapes the markers token-goat speaks in. The OCR body text beside it was already fenced; the name it was announced under was not. Sanitized once here rather than at each use, which also keeps the stats label it feeds from carrying a forged field.
+  // The image's own file name, so a cloned repository chooses it; the summary below reaches the model on the context channel, which neither fences nor escapes the markers token-goat speaks in. Sanitized once here rather than at each use, which also keeps the stats label it feeds from carrying a forged field.
   const basename = displaySafePath(path.basename(filePath))
 
-  // The pixel-shrink saving (original bytes -> shrunk bytes) is real on every path this function
-  // takes, so record it up front, before the OCR branch below can return early. The OCR branch
-  // then adds an image_ocr row measured against the SHRUNK bytes rather than the original, so that
-  // when the OCR text is no larger than the shrunk image the two rows sum exactly to the true
-  // original->text saving with no double-counting -- which only holds if this image_shrink row is
-  // actually recorded on the OCR path too. (In the degenerate case where the OCR text is somehow
-  // larger than the shrunk image, image_ocr clamps to zero rather than record a negative saving,
-  // so the total is the shrink saving alone; that case does not arise for a genuinely text-heavy
-  // image, whose recognized text is far smaller than its downscaled pixels.)
-  // This recordStat previously sat after the OCR early-return, so a text-heavy image (exactly what
-  // OCR targets) recorded image_ocr alone and dropped the whole shrink saving from the ledger.
-  // Bytes and tokens are measured in different units here on purpose. The byte figure is the real
-  // wire saving. The token figure is NOT bytes/4: an image is billed as 28x28-pixel patches, so the
-  // bytes/4 approximation this used to record (a text-token rule of thumb, inherited because the
-  // Python original's exact vision-token delta was never ported to shrinkImage's return shape) was
-  // simply the wrong unit, and it was wrong in the direction that flatters -- it credited a
-  // megabyte-scale byte delta as a quarter-million tokens. visionTokensSaved prices both sides the
-  // way the API does, downscale included, so an original the API would have capped anyway is
-  // credited at the capped cost rather than at its full pixel count.
-  const shrinkSaved = result.originalBytes - result.shrunkBytes
-  const tier = loadConfig().image_shrink.vision_tier
-  const shrinkTokens = visionTokensSaved(result.originalWidth, result.originalHeight, result.width, result.height, tier)
-
-  // A saving is booked only for a shrunk copy that reaches the model. The context channel below delivers it with this hook's own response; the two branches here do not.
   const harness = detectHarness()
   if (PATH_REWRITE_HARNESSES.has(harness)) {
     // VS Code and Claude Code take the copy only as a rewritten Read/view_image path, so the file is written here, in the process that books the saving, and a failed write passes and books nothing. OCR is skipped: text beside the call cannot stop the Read loading the image, so it would only add to what the model receives.
@@ -632,53 +608,28 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string, even
       }
       return passOutput()
     }
-    recordStat('image_shrink', shrinkSaved, shrinkTokens, undefined, basename)
+    if (deliveryReplacesRead(harness, rewrite)) recordSavedShrink(result, basename)
     return rewrite
   }
-  if (HOST_MATERIALIZED_HARNESSES.has(harness)) {
-    // The host writes the copy in its own process after this one has answered, and falls back to the original image if that write fails, so this process can never see the delivery and books nothing. OCR is skipped for the same reason as on VS Code: the host finds no data URL in OCR text and would send the original image.
-    const { summary, dataUrl } = formatShrinkSummary(result, basename)
-    return contextOutput(`${summary}\n${dataUrl}`)
-  }
-
-  recordStat('image_shrink', shrinkSaved, shrinkTokens, undefined, basename)
-
-  // OCR runs on the already-shrunk bytes, not the raw file: it is resized to Claude Vision's
-  // optimal edge already (plenty of resolution for legible screenshot text) and is much
-  // cheaper to hand to a subprocess than the original, sometimes-many-MB source. A text-heavy
-  // result REPLACES the shrunk-image output below rather than supplementing it -- the whole
-  // point is to avoid spending vision tokens on pixels the model would only reconstruct back
-  // into this same text. Any failure here (dep unavailable, low confidence, short text, OCR
-  // subprocess timeout/crash) is silently absorbed by ocrImage/isTextHeavy and this handler
-  // falls through to the existing pixel-shrink path unchanged -- zero regression risk to the
-  // image-shrink feature this OCR path sits on top of.
-  if (loadConfig().image_shrink.ocr_enabled) {
-    const { ocrImage, isTextHeavy, formatOcrSummary } = await import('./image_ocr.js')
-    const ocr = await ocrImage(result.data)
-    if (ocr !== null && isTextHeavy(ocr, loadConfig().image_shrink.ocr_min_confidence)) {
-      // Measured against the shrunk image bytes (the realistic alternative this branch
-      // preempts), not the original file -- the shrink-step savings are recorded above, on the
-      // shared path before this branch, so this avoids double-counting the same bytes under two
-      // stat rows.
-      // Priced on the payload actually emitted, not on ocr.text alone: the summary line and the
-      // untrusted-content fence around the text are both part of what this branch puts into context,
-      // so crediting only the bare text would bill a smaller thing than the one that ships.
-      const emitted = formatOcrSummary(ocr, basename, result.originalBytes)
-      const emittedBytes = Buffer.byteLength(emitted, 'utf8')
-      const saved = Math.max(0, result.shrunkBytes - emittedBytes)
-      // This branch swaps units mid-trade: pixels go out, text comes back. So the two sides are
-      // priced by their own rules -- visual tokens for the image this branch preempts, the codebase's
-      // bytes/4 text approximation for the string it emits instead -- rather than by one rule applied
-      // to both. Pairs with the image_shrink row above, which covers original -> shrunk, so the two
-      // rows still sum to the true original -> text saving with nothing counted twice.
-      const tokensSaved = visionTokensSavedByText(result.width, result.height, emittedBytes, tier)
-      recordStat('image_ocr', saved, tokensSaved, undefined, basename)
-      return contextOutput(emitted)
-    }
-  }
-
+  // A host (or generic, an opencode or OpenClaw host that pinned no harness) writes the copy in its own process after this one has answered and falls back to the original image if that write fails, so this process never sees the delivery and books nothing. No OCR text either: the host finds no data URL in it and sends the original image, so the text would only add to what the model receives.
   const { summary, dataUrl } = formatShrinkSummary(result, basename)
   return contextOutput(`${summary}\n${dataUrl}`)
+}
+
+/** The one gate on booking an image_shrink saving: only a rewritten Read path this process wrote itself is a delivery it can vouch for. Context text sits beside a Read that still loads the original, and a host-materialized copy is written after this process has answered. */
+function deliveryReplacesRead(harness: HarnessName, output: HookOutput): boolean {
+  return output.hookType === 'rewriteInput' && PATH_REWRITE_HARNESSES.has(harness)
+}
+
+/** Whether a shrunk copy can take the original image's place on this harness at all. Every other harness only appends hook context beside a Read that still loads the original: Codex spills context over 2,500 tokens to a file behind a preview (https://developers.openai.com/codex/hooks) and Gemini's BeforeTool has no context field (https://geminicli.com/docs/hooks/reference/), so a 2.6 MB data URL there was pure added cost. */
+function shrinkCanReplaceRead(harness: HarnessName): boolean {
+  return PATH_REWRITE_HARNESSES.has(harness) || HOST_MATERIALIZED_HARNESSES.has(harness) || harness === 'generic'
+}
+
+/** Books the original-to-shrunk saving. The token figure prices both sides as 28x28-pixel vision patches, downscale included, rather than bytes/4, which credited a megabyte-scale byte delta as a quarter-million tokens. */
+function recordSavedShrink(result: ShrinkResult, basename: string): void {
+  const tier = loadConfig().image_shrink.vision_tier
+  recordStat('image_shrink', result.originalBytes - result.shrunkBytes, visionTokensSaved(result.originalWidth, result.originalHeight, result.width, result.height, tier), undefined, basename)
 }
 
 /**
@@ -711,6 +662,8 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
   if (preToolPathDeclined(event, filePath)) return passOutput()
   // Claude Code's Read of the shrunk copy, which lives outside the working directory, needs permissionDecision "allow" to avoid a prompt, and an allow is only honest for an original Read that would not have prompted either (https://code.claude.com/docs/en/permissions), so only an image inside the working directory is shrunk there; rewrite_permission.ts makes the same check before the allow is sent.
   if (detectHarness() === 'claudecode' && !vscodePathAllowed(filePath, getCwd(event))) return passOutput()
+  // Before any shrink work, so a harness whose Read the copy cannot replace is not handed a megabyte of base64 text beside the original either.
+  if (!shrinkCanReplaceRead(detectHarness())) return passOutput()
 
   pruneShrinkCache()
 

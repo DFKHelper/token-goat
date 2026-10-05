@@ -55,6 +55,8 @@ const NO_PRODUCER_ALLOWLIST: Record<string, string> = {
   predictive_prefetch_hit: 'vestigial Python-port name; no such prefetch exists in this tree',
   // The live Drive kind is the explicit gdrive_sections entry, which does not carry a colon. Nothing produces a colon-suffixed Drive kind.
   'gdrive:': 'the live Drive kind is the explicit gdrive_sections entry, not a colon-prefixed one',
+  // The Read hook used to answer a text-heavy image with its OCR text as hook context, but that text sat beside a Read that still loaded the image, so it replaced nothing and the hook no longer runs OCR. OCR on request is the image-text command, which books image_text. Kept registered so rows already in a user's stats DB still render under Images.
+  image_ocr: 'the Read hook no longer runs OCR, since context text replaced no image; image-text books image_text',
   // skill-compact regenerates and caches a compact slice; it emits no substitute for a body the model would otherwise have received, so there is no saving for it to book at that moment. The saving is booked when the slice is served (skill_body:compact, skill_compact_inlined).
   'skill_compact:': 'skill-compact caches a slice and emits no substitute, so it books nothing',
 }

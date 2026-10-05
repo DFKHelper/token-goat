@@ -27,6 +27,7 @@ import {
 import { resetOcrStateForTesting, setTesseractEntryForTesting } from '../src/image_ocr.js'
 import { summarize } from '../src/stats.js'
 import type { HookEvent } from '../src/hook_registry.js'
+import type { HookOutput } from '../src/types.js'
 // Importing relay registers EVERY hook module (hooks_read's large-file deny AND
 // image_shrink's preReadImageHandler) for its side-effects, so runHook dispatches
 // through the real production registry — the only way to observe the composed
@@ -41,6 +42,26 @@ function makeEvent(filePath: string | undefined): HookEvent {
     toolName: 'Read',
     toolInput: filePath === undefined ? {} : { file_path: filePath },
   })
+}
+
+// Claude Code's PreToolUse envelope carries cwd and permission_mode (FORMAT-DERIVED, https://code.claude.com/docs/en/hooks); the image sits in cwd, so the rewrite is permitted.
+function makeClaudeCodeEvent(filePath: string): HookEvent {
+  return makeHookEvent({ toolName: 'Read', toolInput: { file_path: filePath }, raw: { cwd: path.dirname(filePath), permission_mode: 'default' } })
+}
+
+const TEMP_KEYS = ['TEMP', 'TMP', 'TMPDIR'] as const
+const priorTemp = TEMP_KEYS.map((k) => process.env[k])
+
+// A rewritten Read of a copy this process wrote is the only delivery that books a saving (deliveryReplacesRead in src/image_shrink.ts), so the booking cases run as Claude Code; the copy goes to a scratch directory rather than the real tmpdir.
+function deliverOnClaudeCode(): void {
+  process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'claudecode'
+  const copies = fs.mkdtempSync(path.join(TMP, 'copies-'))
+  for (const k of TEMP_KEYS) process.env[k] = copies
+}
+
+function rewrittenBytes(out: HookOutput): Buffer {
+  if (out.hookType !== 'rewriteInput') throw new Error(`expected a rewritten Read, got ${out.hookType}`)
+  return fs.readFileSync(String(out.updatedInput['file_path']))
 }
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -107,6 +128,11 @@ beforeEach(() => {
 afterEach(() => {
   if (priorHarness === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
   else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = priorHarness
+  TEMP_KEYS.forEach((k, i) => {
+    const v = priorTemp[i]
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  })
   try {
     fs.unlinkSync(_testConfigPath)
   } catch {
@@ -330,17 +356,36 @@ describe('preReadImageHandler', () => {
   })
 
   it('records an image_shrink stat row through the real global stats DB on a successful shrink (#236: this recording was dropped entirely during the Python->TS port -- a synthetic DB insert would not catch its absence, so this drives the real production hook path with no test-only DB override)', async () => {
+    deliverOnClaudeCode()
     const before = summarize(30).by_kind['image_shrink']
     const beforeEvents = before?.events ?? 0
     const beforeBytesSaved = before?.bytes_saved ?? 0
 
-    const out = await preReadImageHandler(makeEvent(largePngPath))
-    expect(out.hookType).toBe('context')
+    const out = await preReadImageHandler(makeClaudeCodeEvent(largePngPath))
+    expect(out.hookType).toBe('rewriteInput')
 
     const after = summarize(30).by_kind['image_shrink']
     expect(after).toBeDefined()
-    expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
-    expect(after?.bytes_saved ?? 0).toBeGreaterThan(beforeBytesSaved)
+    expect(after?.events ?? 0).toBe(beforeEvents + 1)
+    expect(after?.bytes_saved ?? 0).toBe(beforeBytesSaved + fs.statSync(largePngPath).size - rewrittenBytes(out).length)
+  })
+
+  it('books nothing for the data URL it hands a generic harness, since only the host writing that copy can tell whether the original was replaced', async () => {
+    const before = summarize(30).by_kind['image_shrink']?.events ?? 0
+    const out = await preReadImageHandler(makeEvent(largePngPath))
+    expect(out.hookType).toBe('context')
+    if (out.hookType !== 'context') return
+    expect(out.context).toContain('data:image/')
+    expect(summarize(30).by_kind['image_shrink']?.events ?? 0).toBe(before)
+  })
+
+  // Codex spills hook context over its 2,500-token default to a file behind a preview (https://developers.openai.com/codex/hooks, "Large hook output") and Gemini's BeforeTool has no additionalContext field at all (https://geminicli.com/docs/hooks/reference/, "BeforeTool"): FORMAT-DERIVED. Either way the Read still loads the original image.
+  it.each(['codex', 'gemini', 'grok', 'qwen', 'kimi', 'hermes', 'visualstudio', 'antigravity'])('passes on %s, where hook context sits beside a Read that still loads the original, and books nothing', async (harness) => {
+    process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = harness
+    const before = summarize(30).by_kind['image_shrink']?.events ?? 0
+    const out = await preReadImageHandler(makeEvent(largePngPath))
+    expect(out.hookType).toBe('pass')
+    expect(summarize(30).by_kind['image_shrink']?.events ?? 0).toBe(before)
   })
 
   it('records an image_shrink_skipped stat row through the real global stats DB when a qualifying image cannot be shrunk (regression: image_shrink_skipped was registered in KIND_TO_SOURCE and _KIND_GROUPS but no recordStat call site ever existed anywhere in src/, so the kind was permanently empty in `token-goat stats --full` -- this drives the real production hook path, not a unit test of shrinkImage in isolation)', async () => {
@@ -488,9 +533,9 @@ describe('preReadImageHandler shrink cache', () => {
   })
 
   it('serves a warm cache hit without re-running the sharp re-encode, and still records the same image_shrink savings a fresh shrink would', async () => {
-    const firstOut = await preReadImageHandler(makeEvent(filePath))
-    expect(firstOut.hookType).toBe('context')
-    if (firstOut.hookType !== 'context') return
+    deliverOnClaudeCode()
+    const firstOut = await preReadImageHandler(makeClaudeCodeEvent(filePath))
+    const firstBytes = rewrittenBytes(firstOut)
 
     const entries = fs.readdirSync(cacheDir).filter((f) => f.startsWith('token-goat-shrink-'))
     expect(entries.length).toBe(1)
@@ -501,11 +546,9 @@ describe('preReadImageHandler shrink cache', () => {
     const beforeEvents = before?.events ?? 0
     const beforeBytesSaved = before?.bytes_saved ?? 0
 
-    const secondOut = await preReadImageHandler(makeEvent(filePath))
-    expect(secondOut.hookType).toBe('context')
-    if (secondOut.hookType !== 'context') return
-    // Same shrunk data URL both times -- the hit serves identical bytes to the miss.
-    expect(secondOut.context).toBe(firstOut.context)
+    const secondOut = await preReadImageHandler(makeClaudeCodeEvent(filePath))
+    // Same shrunk bytes both times -- the hit serves identical bytes to the miss.
+    expect(rewrittenBytes(secondOut).equals(firstBytes)).toBe(true)
 
     // The cache file's own mtime is untouched by the second call -- proof the handler served
     // the existing entry instead of running a fresh shrinkImage() and rewriting it (a real
@@ -517,8 +560,8 @@ describe('preReadImageHandler shrink cache', () => {
     const after = summarize(30).by_kind['image_shrink']
     // The cache-hit handler still reports honest savings: same accounting call, same
     // shape, as a fresh shrink -- see the "accounting honesty" requirement this covers.
-    expect(after?.events ?? 0).toBeGreaterThan(beforeEvents)
-    expect(after?.bytes_saved ?? 0).toBeGreaterThan(beforeBytesSaved)
+    expect(after?.events ?? 0).toBe(beforeEvents + 1)
+    expect(after?.bytes_saved ?? 0).toBe(beforeBytesSaved + largeJpeg.length - firstBytes.length)
   })
 
 
@@ -568,9 +611,10 @@ describe('preReadImageHandler shrink cache', () => {
   // wrong unit shipped: image_shrink recorded bytes/4, so a 6 MB screenshot was booked as saving
   // roughly 1.5 million tokens. Every existing test checked bytes_saved and passed regardless.
   it('prices the shrink in visual tokens, not bytes/4, and reports zero on a tier where the API had already capped the original', async () => {
+    deliverOnClaudeCode()
     const before = summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0
-    const out = await preReadImageHandler(makeEvent(filePath))
-    expect(out.hookType).toBe('context')
+    const out = await preReadImageHandler(makeClaudeCodeEvent(filePath))
+    expect(out.hookType).toBe('rewriteInput')
     const delta = (summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0) - before
 
     // The default tier is standard, where 3000x3000 and 1568x1568 cost the identical 1521 tokens.
@@ -584,9 +628,10 @@ describe('preReadImageHandler shrink cache', () => {
     fs.writeFileSync(_testConfigPath, '[image_shrink]\nvision_tier = "high"\n', 'utf8')
     invalidateConfigCache()
 
+    deliverOnClaudeCode()
     const before = summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0
-    const out = await preReadImageHandler(makeEvent(filePath))
-    expect(out.hookType).toBe('context')
+    const out = await preReadImageHandler(makeClaudeCodeEvent(filePath))
+    expect(out.hookType).toBe('rewriteInput')
     const delta = (summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0) - before
 
     // 4761 for the original the high-resolution tier would have billed, 3136 for the resize.
@@ -602,10 +647,11 @@ describe('preReadImageHandler shrink cache', () => {
     fs.writeFileSync(_testConfigPath, '[image_shrink]\nvision_tier = "high"\n', 'utf8')
     invalidateConfigCache()
 
+    deliverOnClaudeCode()
     const start = summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0
-    await preReadImageHandler(makeEvent(filePath))
+    expect((await preReadImageHandler(makeClaudeCodeEvent(filePath))).hookType).toBe('rewriteInput')
     const afterMiss = summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0
-    await preReadImageHandler(makeEvent(filePath))
+    expect((await preReadImageHandler(makeClaudeCodeEvent(filePath))).hookType).toBe('rewriteInput')
     const afterHit = summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0
 
     expect(afterMiss - start).toBe(4761 - 3136)
@@ -753,7 +799,7 @@ describe('preReadImageHandler shrink cache', () => {
   })
 })
 
-describe('preReadImageHandler + OCR wiring', () => {
+describe('preReadImageHandler runs no OCR', () => {
   const ocrStubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ocr-wiring-stub-'))
 
   function writeStub(name: string, body: string): string {
@@ -762,112 +808,45 @@ describe('preReadImageHandler + OCR wiring', () => {
     return file
   }
 
-  it('returns the OCR text instead of a data URL when the image is text-heavy (confidence above threshold)', async () => {
-    setTesseractEntryForTesting(
-      writeStub(
-        'text-heavy',
-        `module.exports.createWorker = async function () {
-          return {
-            recognize: async () => ({ data: { text: 'a'.repeat(100), confidence: 92 } }),
-            terminate: async () => {},
-          }
-        }`,
-      ),
+  // A stub engine that recognizes a confident wall of text and leaves a marker file when it is started, so a test can tell whether the hook ever reached for OCR.
+  function textHeavyStub(name: string): { entry: string; marker: string } {
+    const marker = path.join(ocrStubDir, `${name}.started`)
+    const entry = writeStub(
+      name,
+      `module.exports.createWorker = async function () {
+        require('fs').writeFileSync(${JSON.stringify(marker)}, 'started')
+        return {
+          recognize: async () => ({ data: { text: 'a'.repeat(100), confidence: 92 } }),
+          terminate: async () => {},
+        }
+      }`,
     )
-    const out = await preReadImageHandler(makeEvent(largePngPath))
-    expect(out.hookType).toBe('context')
-    if (out.hookType !== 'context') return
-    expect(out.context).toContain('a'.repeat(100))
-    expect(out.context).not.toContain('data:image/')
-  })
+    return { entry, marker }
+  }
 
-  it('still records the image_shrink pixel-saving row when the OCR branch fires, not only image_ocr (regression: the image_shrink recordStat sat below the OCR early-return, so a text-heavy image -- exactly what OCR targets -- dropped its whole pixel-shrink saving from the ledger and recorded image_ocr alone)', async () => {
-    setTesseractEntryForTesting(
-      writeStub(
-        'text-heavy-stats',
-        `module.exports.createWorker = async function () {
-          return {
-            recognize: async () => ({ data: { text: 'a'.repeat(100), confidence: 92 } }),
-            terminate: async () => {},
-          }
-        }`,
-      ),
-    )
-    const shrinkBefore = summarize(30).by_kind['image_shrink']
-    const shrinkEventsBefore = shrinkBefore?.events ?? 0
-    const shrinkBytesBefore = shrinkBefore?.bytes_saved ?? 0
-    const ocrBefore = summarize(30).by_kind['image_ocr']
-    const ocrEventsBefore = ocrBefore?.events ?? 0
-
-    const out = await preReadImageHandler(makeEvent(largePngPath))
-    expect(out.hookType).toBe('context')
-    if (out.hookType !== 'context') return
-    // OCR replaced the data URL -- confirms the OCR branch, not the plain shrink path, ran.
-    expect(out.context).toContain('a'.repeat(100))
-    expect(out.context).not.toContain('data:image/')
-
-    // The OCR row is recorded...
-    const ocrAfter = summarize(30).by_kind['image_ocr']
-    expect(ocrAfter?.events ?? 0).toBeGreaterThan(ocrEventsBefore)
-    // ...AND the pixel-shrink row is still recorded on the same call, with its real byte saving.
-    const shrinkAfter = summarize(30).by_kind['image_shrink']
-    expect(shrinkAfter).toBeDefined()
-    expect(shrinkAfter?.events ?? 0).toBeGreaterThan(shrinkEventsBefore)
-    expect(shrinkAfter?.bytes_saved ?? 0).toBeGreaterThan(shrinkBytesBefore)
-
-    // This path decodes an image into text and puts it straight into model context without anyone
-    // asking for OCR, so the recovered text is fenced on provenance rather than on a pattern hit.
-    expect(out.context).toContain('<untrusted-image-text>')
-
-    // The saving must be priced on the payload this branch actually emits, header and fence
-    // included. Crediting only the bare recognized text bills a smaller thing than the one that
-    // ships, which is the recurring shape of over-credit in this codebase.
-    const shrinkDelta = (shrinkAfter?.bytes_saved ?? 0) - shrinkBytesBefore
-    const shrunkBytes = fs.statSync(largePngPath).size - shrinkDelta
-    const ocrDelta = (ocrAfter?.bytes_saved ?? 0) - (ocrBefore?.bytes_saved ?? 0)
-    expect(ocrDelta).toBe(Math.max(0, shrunkBytes - Buffer.byteLength(out.context, 'utf8')))
-  })
-
-  it('falls back to the pixel-shrink data URL when OCR confidence is below the configured threshold', async () => {
-    setTesseractEntryForTesting(
-      writeStub(
-        'low-confidence',
-        `module.exports.createWorker = async function () {
-          return {
-            recognize: async () => ({ data: { text: 'STOP', confidence: 20 } }),
-            terminate: async () => {},
-          }
-        }`,
-      ),
-    )
+  // OCR text in hook context sits beside a Read that still loads the image, and a host that writes the copy from a data URL finds none in it and sends the original, so a text-heavy image is shrunk like any other and no image_ocr row is booked.
+  it('hands a text-heavy image the shrunk data URL on a generic harness, never its recognized text, and books no image_ocr row', async () => {
+    const stub = textHeavyStub('text-heavy')
+    setTesseractEntryForTesting(stub.entry)
+    const ocrBefore = summarize(30).by_kind['image_ocr']?.events ?? 0
     const out = await preReadImageHandler(makeEvent(largePngPath))
     expect(out.hookType).toBe('context')
     if (out.hookType !== 'context') return
     expect(out.context).toContain('data:image/')
+    expect(out.context).not.toContain('a'.repeat(100))
+    expect(fs.existsSync(stub.marker)).toBe(false)
+    expect(summarize(30).by_kind['image_ocr']?.events ?? 0).toBe(ocrBefore)
   })
 
-  it('falls back to the pixel-shrink data URL when ocr_enabled is false, without attempting OCR at all', async () => {
-    fs.writeFileSync(_testConfigPath, '[image_shrink]\nocr_enabled = false\n', 'utf8')
-    invalidateConfigCache()
-    // A stub that would throw if ever invoked -- proves the config gate short-circuits before spawning.
-    setTesseractEntryForTesting(
-      writeStub(
-        'should-not-run',
-        `module.exports.createWorker = async function () { throw new Error('OCR should not have been attempted') }`,
-      ),
-    )
-    const out = await preReadImageHandler(makeEvent(largePngPath))
-    expect(out.hookType).toBe('context')
-    if (out.hookType !== 'context') return
-    expect(out.context).toContain('data:image/')
-  })
-
-  it('falls back to the pixel-shrink data URL when OCR is unavailable (dep unresolved)', async () => {
-    setTesseractEntryForTesting(null)
-    const out = await preReadImageHandler(makeEvent(largePngPath))
-    expect(out.hookType).toBe('context')
-    if (out.hookType !== 'context') return
-    expect(out.context).toContain('data:image/')
+  it('rewrites a text-heavy image to its shrunk copy on Claude Code without starting the OCR engine', async () => {
+    deliverOnClaudeCode()
+    const stub = textHeavyStub('text-heavy-cc')
+    setTesseractEntryForTesting(stub.entry)
+    const ocrBefore = summarize(30).by_kind['image_ocr']?.events ?? 0
+    const out = await preReadImageHandler(makeClaudeCodeEvent(largePngPath))
+    expect(rewrittenBytes(out).length).toBeLessThan(fs.statSync(largePngPath).size)
+    expect(fs.existsSync(stub.marker)).toBe(false)
+    expect(summarize(30).by_kind['image_ocr']?.events ?? 0).toBe(ocrBefore)
   })
 })
 
