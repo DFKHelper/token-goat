@@ -1,4 +1,5 @@
 /** A PreToolUse input rewrite must never change the permission outcome the user's own Claude Code rules give the ORIGINAL call. Claude Code matches its rules against `updatedInput`, so the old unconditional `permissionDecision: "allow"` on every rewrite skipped the prompt for any wrapped command, and a `Bash(curl:*)` deny or a `Read(./private/**)` deny was matched against the wrapper or the temp copy and missed. PROVENANCE: HAND-DERIVED rule matrix: each case's expected verdict is worked out from the rule semantics documented at https://code.claude.com/docs/en/permissions (deny > ask > allow, Bash prefix/wildcard rules, the read-only command set, Read rules on `//`, `~/`, `./` paths) and https://code.claude.com/docs/en/permission-modes (deny blocks in every mode, dontAsk turns a prompt into a denial, bypassPermissions skips prompts), not from the module under test. Settings files are written into a temp tree with an explicit cwd, so no developer or machine settings take part. */
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -328,6 +329,24 @@ describe('loadPermissionSnapshot and permissionNeutralRewrite read the real sett
   it('with no rules the rewrite ships without approval for an unproven command and with it for a read-only one', () => {
     expect(permissionNeutralRewrite({ command: wrap('curl https://example.com') }, curl(project))).toEqual({ hookType: 'rewriteInput', updatedInput: { command: wrap('curl https://example.com') }, approve: false })
     expect(permissionNeutralRewrite({ command: wrap('ls') }, { ...curl(project), original: 'ls', rewritten: wrap('ls') })).toEqual({ hookType: 'rewriteInput', updatedInput: { command: wrap('ls') }, approve: true })
+  })
+
+  // HAND-DERIVED: git ls-files --error-unmatch exits 1 for an untracked file inside a repository and 128 outside one or in a repository git refuses (safe.directory); only the first proves Claude Code's untracked-local-file trust.
+  const goBuild = (cwd: string): RewriteRequest => ({ ...curl(cwd), original: 'go build ./...', rewritten: wrap('go build ./...') })
+  const git = (cwd: string, ...args: string[]): number => spawnSync('git', args, { cwd, stdio: 'ignore' }).status ?? -1
+
+  it('a settings.local.json allow outside any git repository is not trusted to approve', () => {
+    expect(git(project, 'rev-parse', '--git-dir')).toBe(128)
+    writeJson(path.join(project, '.claude', 'settings.local.json'), { permissions: { allow: ['Bash(go build *)'] } })
+    expect(permissionNeutralRewrite({ command: wrap('go build ./...') }, goBuild(project))).toBeNull()
+  })
+
+  it('an untracked settings.local.json allow inside a git repository approves, and a tracked one does not', () => {
+    expect(git(project, 'init', '-q')).toBe(0)
+    writeJson(path.join(project, '.claude', 'settings.local.json'), { permissions: { allow: ['Bash(go build *)'] } })
+    expect(permissionNeutralRewrite({ command: wrap('go build ./...') }, goBuild(project))).toEqual({ hookType: 'rewriteInput', updatedInput: { command: wrap('go build ./...') }, approve: true })
+    expect(git(project, 'add', '.claude/settings.local.json')).toBe(0)
+    expect(permissionNeutralRewrite({ command: wrap('go build ./...') }, goBuild(project))).toBeNull()
   })
 
   it('harnesses that never read Claude Code settings get the rewrite with no approval, whatever the files say', () => {

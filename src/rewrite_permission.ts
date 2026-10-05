@@ -486,8 +486,8 @@ function localFileTrusted(file: string): boolean {
     return false
   }
   const res = runGit(['ls-files', '--error-unmatch', path.basename(file)], { cwd: path.dirname(file), timeoutMs: 5000 })
-  // 1: not tracked. 128: not inside a repository, so nothing can track it. -1 (git missing or timed out) is doubt.
-  return res.exitCode === 1 || res.exitCode === 128
+  // Only 1 (untracked inside a repository) proves it; 128 also covers a repository git refuses (safe.directory) and a downloaded tree with no repository at all, -1 is git missing or timed out.
+  return res.exitCode === 1
 }
 
 /** Read every settings source Claude Code could apply to a session in `cwd`. Null when any of them exists but cannot be read, so the caller skips the rewrite. */
