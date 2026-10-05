@@ -619,6 +619,8 @@ async function maybeEmitLargeUncompressedHint(
     isTokenGoatOwnCommand(cmd) ||
     // a line-range read, piped or repeated, is already the narrow slice; compressing it saves nothing.
     extractLineRangeReadsCompound(cmd) !== null ||
+    // nor does compressing a whole-file read such as `cat f | head -200`: the file-read branch already folded whatever it could, and when it found nothing to fold this hint used to fire in its place.
+    pureFileReadPath(cmd) !== null ||
     (event.raw['_tg_harness'] !== 'vscode' && (isCompressibleSingleCommand(cmd) || !isUnwrapped))
   ) {
     return null

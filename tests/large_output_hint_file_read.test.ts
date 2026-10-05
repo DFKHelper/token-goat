@@ -1,4 +1,4 @@
-/** A line-range file read with an output pipeline, or a compound of such reads, must not draw the compress hint: compressing a file read saves nothing. Built bundle, fresh home. Provenance: the stdout is CAPTURE, the first 120 lines of src/served_lines.ts read at run time; the command shapes are CAPTURE from real transcripts (`sed -n A,Bp f | cut -c1-N`, `cd D && sed -n ... | cut`, `sed -n ...; echo ....; sed -n ...`). The mixed read-plus-script control is HAND-DERIVED. */
+/** A line-range file read with an output pipeline, or a compound of such reads, must not draw the compress hint: compressing a file read saves nothing. Built bundle, fresh home. Provenance: the stdout is CAPTURE, the leading lines of src/served_lines.ts read at run time, as many as it takes to pass 4500 bytes, so it sits above the 4 KB hint floor and below the generic filter's 2000-token cap (about 7000 characters) however that file's comments are wrapped; a fixed 120 lines grew past the cap once its comments were folded, and the control below was then compressed instead of hinted. The comment-free stdout in the whole-file pipeline case is HAND-DERIVED. The command shapes are CAPTURE from real transcripts (`sed -n A,Bp f | cut -c1-N`, `cd D && sed -n ... | cut`, `sed -n ...; echo ....; sed -n ...`). The mixed read-plus-script control is HAND-DERIVED. */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -19,12 +19,28 @@ function run(command: string, sessionId: string, stdout: string): { hint: string
   return { hint: parsed.hookSpecificOutput?.additionalContext ?? '', rewritten: res.stdout.includes('updatedToolOutput'), raw: res.stdout }
 }
 
-const BODY = readFileSync(join(ROOT, 'src', 'served_lines.ts'), 'utf-8').split('\n').slice(0, 120).join('\n') + '\n'
+function leadingLinesPast(text: string, bytes: number): string {
+  const kept: string[] = []
+  let size = 0
+  for (const line of text.split('\n')) {
+    if (size > bytes) break
+    kept.push(line)
+    size += Buffer.byteLength(line) + 1
+  }
+  return kept.join('\n') + '\n'
+}
+
+const BODY = leadingLinesPast(readFileSync(join(ROOT, 'src', 'served_lines.ts'), 'utf-8'), 4500)
+// Nothing in it for the file-read branch's comment fold to collapse, which is the case where a whole-file pipeline read used to fall through to the compress hint.
+const PLAIN_BODY = Array.from({ length: 100 }, (_, i) => `export const value${i} = compute(${i}, 'segment-${i}')`).join('\n') + '\n'
 const HINT = 'uncompressed'
 
 describe('large-output hint on file reads', () => {
   it('precondition: this stdout draws the hint under a foreign command', () => {
     expect(Buffer.byteLength(BODY)).toBeGreaterThan(4096)
+    expect(BODY.length / 3.5).toBeLessThan(2000)
+    expect(Buffer.byteLength(PLAIN_BODY)).toBeGreaterThan(4096)
+    expect(run('curl http://example.com/api && echo plain', 'pre-plain', PLAIN_BODY).hint).toContain(HINT)
     expect(run('curl http://example.com/api && echo done', 'pre', BODY).hint).toContain(HINT)
   })
 
@@ -42,6 +58,10 @@ describe('large-output hint on file reads', () => {
 
   it('stays silent on a whole-file read with an output pipeline', () => {
     expect(run('cat src/served_lines.ts | head -200', 'cat', BODY).hint).not.toContain(HINT)
+  })
+
+  it('stays silent on a whole-file read with an output pipeline when there is nothing to fold', () => {
+    expect(run('cat src/served_lines.ts | head -200', 'cat-plain', PLAIN_BODY).hint).not.toContain(HINT)
   })
 
   it('control: a bare line-range read stays silent', () => {
