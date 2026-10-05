@@ -152,8 +152,10 @@ describe('decideRewrite: shell wrap', () => {
   it('a rule with many stars against a long command is decided without catastrophic backtracking', () => {
     const started = Date.now()
     const deny = `Bash(${'*a'.repeat(16)}*b)`
-    expect(decideRewrite(snap({ deny: [deny] }), shell(`go build ${'a'.repeat(4000)}`))).toBe('rewrite')
-    expect(decideRewrite(snap({ deny: [deny] }), shell(`go build ${'a'.repeat(4000)}b`))).toBe('skip')
+    // A filesystem root as the cwd, since the cwd is in the haystack and a temp directory named tg-run-XXXXXb by mkdtemp supplied the b on its own.
+    const atRoot = (command: string): RewriteRequest => ({ ...shell(command), cwd: path.parse(CWD).root })
+    expect(decideRewrite(snap({ deny: [deny] }), atRoot(`go build ${'a'.repeat(4000)}`))).toBe('rewrite')
+    expect(decideRewrite(snap({ deny: [deny] }), atRoot(`go build ${'a'.repeat(4000)}b`))).toBe('skip')
     expect(Date.now() - started).toBeLessThan(2000)
   })
 
