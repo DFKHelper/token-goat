@@ -1,11 +1,12 @@
 /** Guard: token-goat's JSON/YAML commands (`json-query`, `yaml-query`, `json-outline`, `yaml-outline`) must be discoverable from the surfaces a model sees without asking for them. They were not. Every unprompted surface -- the shared guidance body written into CLAUDE.md, AGENTS.md, copilot-instructions.md and SKILL.md, and the SessionStart reminder -- listed only code-shaped commands. The guidance body even named `config-get file KEY`, so the absence of a JSON command read as a deliberate statement ("config has a command, JSON data does not") rather than as an omission. Probing then confirmed the wrong conclusion: `symbol better-sqlite3` answered `No matches` plus `Did you mean: sql`, a confident negative with a suggestion pointing away from the answer, because JSON files are indexed only to depth 1. This file covers the third surface: a `symbol` miss on a name that really is a nested JSON/YAML key must name the exact dot-path, so the next command is copy-pasteable. Asserted end-to-end against the built bundle, including running the suggested command verbatim -- a hint that prints a path the tool then rejects would be worse than silence. The other two surfaces are covered in tests/install_claude_md_skill.test.ts and tests/hooks_session_start.test.ts. */
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { beforeAll, describe, expect, it } from 'vitest'
 
+import { stripUnsafeSuggestions } from '../../src/hint_suggestion_guard.js'
 import { findStructuredKeyPath } from '../../src/read_suggest.js'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
@@ -45,7 +46,7 @@ describe('structured-data discoverability', () => {
     expect(r.status).not.toBe(0)
     expect(r.out).toContain("No matches for 'better-sqlite3'")
     expect(r.out).toContain('is a key in package.json at dependencies.better-sqlite3')
-    expect(r.out).toContain("token-goat json-query package.json 'dependencies.better-sqlite3'")
+    expect(r.out).toContain('read it with: `token-goat json-query "package.json" "dependencies.better-sqlite3"`')
     const q = run(['json-query', 'package.json', 'dependencies.better-sqlite3'], projectDir, homeDir)
     expect(q.status).toBe(0)
     expect(q.out.trim()).toBe('"^11.3.0"')
@@ -150,5 +151,22 @@ describe('structured-data discoverability', () => {
     expect(r.status).not.toBe(0)
     expect(r.out).not.toContain('is a key in')
     expect(r.out).not.toContain('json-query')
+  })
+
+  // HAND-DERIVED: the directory name and keys are written here, and each expected command is the path and dot-path those keys sit at, quoted the way the suggestion promises.
+  it('quotes a spaced file path and single-quotes a `$` key, so the suggested command runs and survives the suggestion guard', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-structdisc-e2e-spaced-'))
+    mkdirSync(join(dir, 'conf dir'))
+    writeFileSync(join(dir, 'conf dir', 'settings.json'), JSON.stringify({ server: { portNumber: 8080 }, defs: { item: { $ref: '#/x' } } }, null, 2))
+    const home = mkdtempSync(join(tmpdir(), 'tg-structdisc-e2e-spaced-home-'))
+    run(['index', '.', '--walk'], dir, home)
+    const spaced = run(['symbol', 'portNumber'], dir, home)
+    expect(spaced.out).toContain('read it with: `token-goat json-query "conf dir/settings.json" "server.portNumber"`')
+    expect(stripUnsafeSuggestions(spaced.out)).toBe(spaced.out)
+    const q = run(['json-query', 'conf dir/settings.json', 'server.portNumber'], dir, home)
+    expect(q.status).toBe(0)
+    expect(q.out.trim()).toBe('8080')
+    const dollar = run(['symbol', '$ref'], dir, home)
+    expect(dollar.out).toContain(`read it with: \`token-goat json-query "conf dir/settings.json" 'defs.item.$ref'\``)
   })
 })

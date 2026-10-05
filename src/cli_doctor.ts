@@ -53,6 +53,7 @@ import { checkGlobalMcpConfig, checkVscodeUserScopeHooks, checkVscodeClaudeHooks
 import { checkInstructionGates, checkHarnessCacheEfficiency, repairInstructionGates } from './cli_doctor_guidance.js'
 import { checkSecurityPosture } from './cli_doctor_security.js'
 import { stripBom } from './jsonc_text.js'
+import { fencedCommand } from './hint_suggestion_guard.js'
 
 /** Check if token-goat binary is installed and accessible. */
 export function checkInstall(): DoctorResult {
@@ -176,7 +177,7 @@ export function checkEmbeddings(config: Config): DoctorResult {
     return {
       name,
       status: 'warn',
-      message: `unavailable, so semantic falls back to keyword search: the ${bundled} is not downloaded yet; the last download, at ${new Date(runtimeFailure.at).toISOString()}, failed with ${runtimeFailure.message}. ${runtimeDownloadAdvice()} ("token-goat doctor --repair" retries it too.)`,
+      message: `unavailable, so semantic falls back to keyword search: the ${bundled} is not downloaded yet; the last download, at ${new Date(runtimeFailure.at).toISOString()}, failed with ${runtimeFailure.message}. ${runtimeDownloadAdvice()} (${fencedCommand('token-goat doctor --repair')} retries it too.)`,
     }
   }
   const binary = binaryPresent ? 'runtime binary downloaded' : 'runtime binary not downloaded yet, fetched once on first use'
@@ -207,7 +208,7 @@ export function checkEmbeddingModel(config: Config, rootDir?: string): DoctorRes
         name,
         status: 'warn',
         message:
-          'model files are missing and network is disabled (network.offline = true) — run "token-goat doctor --repair" to restore network and download model',
+          'model files are missing and network is disabled (network.offline = true) — run `token-goat doctor --repair` to restore network and download model',
       }
     }
     // A recorded failure is the one thing here a user can act on, so it leads: without it this read "run --repair" to someone whose network had just refused the same download.
@@ -216,14 +217,14 @@ export function checkEmbeddingModel(config: Config, rootDir?: string): DoctorRes
       return {
         name,
         status: 'warn',
-        message: `model files are missing: the last download, at ${new Date(failure.at).toISOString()}, failed with ${failure.message}. ${downloadAdvice()} ("token-goat doctor --repair" retries it too.)`,
+        message: `model files are missing: the last download, at ${new Date(failure.at).toISOString()}, failed with ${failure.message}. ${downloadAdvice()} (${fencedCommand('token-goat doctor --repair')} retries it too.)`,
       }
     }
     return {
       name,
       status: 'warn',
       message:
-        'model files are missing — they download by themselves (about 35 MB) the first time a file is embedded; run "token-goat doctor --repair" to download them now',
+        'model files are missing — they download by themselves (about 35 MB) the first time a file is embedded; run `token-goat doctor --repair` to download them now',
     }
   }
   return { name, status: 'ok', message: 'model files verified and ready' }

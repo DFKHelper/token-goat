@@ -12,6 +12,7 @@ import { copilotMcpConfigPath } from './bridges/copilot_mcp_install.js'
 import type { DoctorResult } from './doctor_result.js'
 import { displaySafeText, normalizePath } from './paths.js'
 import { stripBom } from './jsonc_text.js'
+import { fencedCommand } from './hint_suggestion_guard.js'
 
 export function globalMcpConfigPath(): string {
   return copilotMcpConfigPath()
@@ -76,15 +77,15 @@ export function checkGlobalMcpConfig(configPath = globalMcpConfigPath()): Doctor
 
 /** What `install --vscode` prints when it walked an existing user-scope install back to project scope. */
 export const VSCODE_USER_SCOPE_MIGRATED_NOTE =
-  'Moved the VS Code integration from user scope to this project. It used to live in ~/.copilot/hooks, where VS Code resolves its working directory to the FIRST folder of a multi-root workspace and nothing else, so read hints, image shrinking and edit interception were silently doing nothing for every other folder. The shared ~/.copilot/hooks files stay in place if "token-goat install --copilot" still needs them.'
+  'Moved the VS Code integration from user scope to this project. It used to live in ~/.copilot/hooks, where VS Code resolves its working directory to the FIRST folder of a multi-root workspace and nothing else, so read hints, image shrinking and edit interception were silently doing nothing for every other folder. The shared ~/.copilot/hooks files stay in place if `token-goat install --copilot` still needs them.'
 
 /** What `install --vscode` prints after a project-scope install, since it no longer covers every project. */
 export const VSCODE_PROJECT_SCOPE_COVERAGE_NOTE =
-  'This covers this project only. Run "token-goat install --vscode" once in each project you want it in, or "token-goat install --vscode --user" for one install covering every project (single-root workspaces only — see below).'
+  'This covers this project only. Run `token-goat install --vscode` once in each project you want it in, or `token-goat install --vscode --user` for one install covering every project (single-root workspaces only — see below).'
 
 /** What `install --vscode --user` prints, so the opt-out states the limitation it is opting into. */
 export const VSCODE_USER_SCOPE_MULTIROOT_NOTE =
-  'NOTE: a user-scope install works in every project, but VS Code runs it with the first folder of a multi-root workspace as its working directory, so it does nothing for the other folders. Use "token-goat install --vscode" (project scope, the default) in each folder that needs it.'
+  'NOTE: a user-scope install works in every project, but VS Code runs it with the first folder of a multi-root workspace as its working directory, so it does nothing for the other folders. Use `token-goat install --vscode` (project scope, the default) in each folder that needs it.'
 
 /** Report a VS Code hooks install still sitting in user scope, where it cannot see past folders[0]. */
 export function checkVscodeUserScopeHooks(userScope: boolean, projectScope: boolean): DoctorResult | null {
@@ -161,7 +162,7 @@ export function checkVisualStudio(mcpPaths: readonly string[], alsoReadPaths: re
     return {
       name: 'Visual Studio',
       status: 'warn',
-      message: `the token-goat MCP entry in ${displaySafeText(stale.mcpPath)} points at ${displaySafeText(stale.command)} ${displaySafeText(stale.bundlePath)}, which no longer exists; run "token-goat uninstall --visualstudio" and then "token-goat install --visualstudio" again (add -p for the project entry).`,
+      message: `the token-goat MCP entry in ${displaySafeText(stale.mcpPath)} points at ${displaySafeText(stale.command)} ${displaySafeText(stale.bundlePath)}, which no longer exists; run ${fencedCommand('token-goat uninstall --visualstudio')} and then ${fencedCommand('token-goat install --visualstudio')} again (add -p for the project entry).`,
     }
   }
   const registered = dedupeByResolvedPath([...found.map((e) => e.mcpPath), ...alsoReadPaths.filter((p) => visualStudioManagedEntry(p) !== null)])
@@ -169,7 +170,7 @@ export function checkVisualStudio(mcpPaths: readonly string[], alsoReadPaths: re
     return {
       name: 'Visual Studio',
       status: 'warn',
-      message: `Visual Studio reads ${registered.map(displaySafeText).join(' and ')}, and each registers token-goat, so it lists the token-goat server more than once. Keep one: "token-goat uninstall --vscode -p" drops the .vscode/mcp.json entry, "token-goat uninstall --visualstudio" (add -p for the project entry) drops a Visual Studio one.`,
+      message: `Visual Studio reads ${registered.map(displaySafeText).join(' and ')}, and each registers token-goat, so it lists the token-goat server more than once. Keep one: ${fencedCommand('token-goat uninstall --vscode -p')} drops the .vscode/mcp.json entry, ${fencedCommand('token-goat uninstall --visualstudio')} (add -p for the project entry) drops a Visual Studio one.`,
     }
   }
   return {

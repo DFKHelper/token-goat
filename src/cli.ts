@@ -1244,7 +1244,7 @@ export function buildProgram(): Command {
     .option('--vscode', 'configure a VS Code MCP server (the workspace .vscode/mcp.json by default; --user for the user-profile mcp.json) and Copilot routing guidance')
     .option('--visualstudio', 'configure a Visual Studio (2022 17.14+ / 2026) Copilot MCP server and routing guidance, no hooks (%USERPROFILE%\\.mcp.json and %USERPROFILE%\\copilot-instructions.md; -p/--project for <project>/.mcp.json and <project>/.github/copilot-instructions.md)')
     .option('--zed', 'register token-goat as a Zed MCP context server (%APPDATA%\\Zed\\settings.json on Windows, ~/.config/zed/settings.json elsewhere, plus a generated shim script); Zed has no hooks API, so this is user scope only, no -p/--project support')
-    .option('--cursor', 'register a Cursor MCP server (~/.cursor/mcp.json by default; -p/--project for <project>/.cursor/mcp.json); writes no Cursor hooks config -- Cursor already imports the Claude Code hooks "token-goat install" writes to ~/.claude/settings.json')
+    .option('--cursor', 'register a Cursor MCP server (~/.cursor/mcp.json by default; -p/--project for <project>/.cursor/mcp.json); writes no Cursor hooks config -- Cursor already imports the Claude Code hooks `token-goat install` writes to ~/.claude/settings.json')
     .option('--jetbrains', 'configure a JetBrains Suite (WebStorm, IntelliJ, PyCharm, Rider) MCP server and Copilot routing guidance')
     .option('--neovim', 'install Neovim Lua integration module (<project>/.nvim/token-goat.lua, or user plugin dir)')
     .option('--detect', 'inspect the current workspace and detect all IDEs and coding agent ecosystems')

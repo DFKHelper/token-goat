@@ -18,6 +18,7 @@ import { getDb } from './db.js'
 import { isZeroLengthDb, quickCheckDb } from './db_integrity.js'
 import { indexSizeBytes } from './index_reclaim.js'
 import type { DoctorResult } from './doctor_result.js'
+import { fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 
 /** Size at which the index DB stops being merely large and starts being a functional problem: write transactions scale with it, and once one outlasts db.ts's 15s `busy_timeout` the failure reaches the user as "database is locked" rather than as anything mentioning size. A healthy index for a large multi-project tree is tens of MB, so exceeding max_db_size_mb (default 1500 MB) is well clear of normal use and still catches the pathology early. */
 export const DB_SIZE_WARN_BYTES = 1500 * 1024 * 1024
@@ -107,7 +108,7 @@ export function oversizeDbMessage(
     const list = topConsumers.map((c) => `${path.basename(c.root) || c.root} (${countNoun(c.fileCount, 'file')})`).join(', ')
     base += ` Top index consumers: ${list}.`
     // Symbols and refs are most of any large index and grow with the files indexed, so the one command that shrinks them is taking a project out of the index; its rows are deleted at once and the pages come back on the next reclaim.
-    base += ` To shrink it, take out a project you do not need surgical reads in: 'token-goat project exclude "${displaySafeText(top.root)}"' removes its rows, then 'token-goat reclaim-index' returns the space.`
+    base += ` To shrink it, take out a project you do not need surgical reads in: ${fencedCommand('token-goat project exclude ' + quotedArg(displaySafeText(top.root)))} removes its rows, then ${fencedCommand('token-goat reclaim-index')} returns the space.`
   }
   return `${base} If this size is expected, raise indexing.max_db_size_mb above ${Math.ceil(sizeBytes / (1024 * 1024))}.`
 }

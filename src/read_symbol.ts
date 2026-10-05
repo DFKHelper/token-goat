@@ -16,6 +16,7 @@ import { DIDYOUMEAN_LIMIT, didYouMean, findStructuredKeyPath, nearNamesSkippedNo
 import { confinementRefusal, resolveProjectConfinement, stripHtmlIdSpelling } from './read_spec.js'
 import { formatStatsSuffix, hasRealDocstring } from './read_meta.js'
 import { DELETED_TAG, fileIsGone, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, indexFreshness, largestFileSize, recordReadStat, recordStaleServed, resolveBody, sinkGoneRows, staleWarning, truncationFooter, type TruncationTotal } from './read_commands.js'
+import { fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 
 /** Body lines shown per `symbol` match before the preview is cut and the cut is announced. */
 const SYMBOL_PREVIEW_LINES = 5
@@ -247,7 +248,9 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
       const hit = findStructuredKeyPath(opts.name, structuredFiles)
       if (hit !== null) {
         const display = toDisplayPath(rootDir, hit.filePath)
-        text += `\n'${opts.name}' is a key in ${display} at ${hit.dotPath} -- JSON/YAML keys below the top level are not symbols; read it with: token-goat ${hit.command} ${display} '${hit.dotPath}'`
+        // Double quotes keep a spaced path one argument and survive the suggestion guard; a key holding `$` (a JSON Schema `$ref`) keeps single quotes, which bash and PowerShell both leave unexpanded.
+        const keyArg = hit.dotPath.includes('$') ? `'${hit.dotPath}'` : quotedArg(hit.dotPath)
+        text += `\n'${opts.name}' is a key in ${display} at ${hit.dotPath} -- JSON/YAML keys below the top level are not symbols; read it with: ${fencedCommand(`token-goat ${hit.command} ${quotedArg(display)} ${keyArg}`)}`
       }
     }
     if (indexEmpty) {
@@ -314,7 +317,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     const dropped = bodyLines.length - SYMBOL_PREVIEW_LINES
     const elided =
       dropped > 0
-        ? `\n  ...(${countNoun(dropped, 'more line')}; full body: token-goat read "${toDisplayPath(symbolDisplayRoot, sym.filePath)}::${sym.name}")`
+        ? `\n  ...(${countNoun(dropped, 'more line')}; full body: ${fencedCommand('token-goat read ' + quotedArg(`${toDisplayPath(symbolDisplayRoot, sym.filePath)}::${sym.name}`))})`
         : ''
     return preview.trim() !== '' ? `${header}\n${preview}${elided}` : header
   })

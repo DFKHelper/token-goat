@@ -6,6 +6,7 @@ import path from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { canonicalize } from '../src/project.js'
+import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 
 import type * as EmbeddingsModule from '../src/embeddings.js'
 
@@ -241,6 +242,8 @@ describe('semantic with the runtime installed but its model files unobtainable',
     const { stderr, exitCode } = await runSemanticCli('Resolve-EmailRecipientGroup')
     expect(exitCode).toBe(1)
     expect(stderr).toContain("token-goat: no matches for 'Resolve-EmailRecipientGroup'")
-    expect(stderr).toContain("(note: 'Resolve-EmailRecipientGroup' is an indexed symbol name; use: token-goat symbol \"Resolve-EmailRecipientGroup\")")
+    expect(stderr).toContain("(note: 'Resolve-EmailRecipientGroup' is an indexed symbol name; use: `token-goat symbol \"Resolve-EmailRecipientGroup\"`)")
+    // Regression: unfenced, the suggestion guard read on past the closing `"` to the `)` and replaced the command with its omitted-command placeholder. HAND-DERIVED: the symbol row is constructed by this test.
+    expect(stripUnsafeSuggestions(stderr)).toBe(stderr)
   })
 })

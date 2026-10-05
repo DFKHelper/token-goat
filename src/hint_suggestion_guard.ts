@@ -65,10 +65,15 @@ export function quotedArg(value: string): string {
   return '"' + value + '"'
 }
 
+/** A whole suggested `token-goat …` command set in a sentence, backtick-fenced so the text after it is not read as part of it: {@link stripUnsafeSuggestions} ends a suggestion at the first backtick, while `use: token-goat symbol "x")` or `("token-goat doctor --repair" retries it too.)` ran on to the line's end and was dropped for the `)` it reached outside the quotes. */
+export function fencedCommand(command: string): string {
+  return '`' + command + '`'
+}
+
 /** The one shape a deny or hint naming a file slice takes: the runnable command first, backtick-fenced with its argument double-quoted (the form {@link stripUnsafeSuggestions} checks, and the form hint_target.ts's sharpenRepeatedDeny lifts back out), then what it returns, then why the hook spoke. After a deny the next call was the named command 4 times in 39 sampled transcripts; a command buried behind the explanation is read last. A reason holding a backtick goes on its own line, because a suggestion the guard above drops is cut out to the last backtick on its line: on the same line, "`cat` loads the entire file into context." lost everything up to its own fence and read "Run `token-goat (command omitted: ...)` loads the entire file into context." A reason with no backtick stays on the line, where the guard cannot reach it, so a one-line hint stays one line (tests/guards/hook_hint_path_injection.test.ts holds the edit hint to no line breaks at all). */
 export function leadWithCommand(command: string, purpose = '', reason = ''): string {
   const tail = reason.trim()
-  return 'Run `' + command + '`' + (purpose === '' ? '' : ' ' + purpose) + '.' + (tail === '' ? '' : (tail.includes('`') ? '\n' : ' ') + tail)
+  return 'Run ' + fencedCommand(command) + (purpose === '' ? '' : ' ' + purpose) + '.' + (tail === '' ? '' : (tail.includes('`') ? '\n' : ' ') + tail)
 }
 
 /** Which of `section` and `outline` can serve a prose document, by extension, so a hint names only the one that runs. Measured against the built binary on 2026-10-03: `section "d.rst::Sub"` returns the reStructuredText section while `outline d.rst` exits 1 (no extractor), and a .txt file has neither (`section` exits 1 with "has no headings"). */

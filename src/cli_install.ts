@@ -35,6 +35,7 @@ import { recordStat } from './stats.js'
 import { CLAUDE_HOOKS_UNINSTALLED_KIND } from './hook_latency.js'
 import { err, formatCommandError, out } from './cli.js'
 import { formatInstallIndexResult, queueInstallIndex } from './install_index.js'
+import { fencedCommand } from './hint_suggestion_guard.js'
 
 /** Print the "how well is this bridge actually verified" caveat, if the bridge has one. Routed through {@link installVerificationNotice} rather than spelled out per branch: a caveat enumerated at nine callsites is a caveat that goes missing from the tenth, which is precisely the whitelist-drops-a-field shape that has shipped dead features from this codebase before. */
 function printBridgeVerificationNotice(harness: HarnessName): void {
@@ -157,7 +158,7 @@ export async function cmdInstall(opts: {
       }
     }
     if (ecosystems.detectedFlags.length > 0) {
-      out('\nRun "token-goat install --auto" to automatically install token-goat across all detected environments.')
+      out('\nRun `token-goat install --auto` to automatically install token-goat across all detected environments.')
     }
     if (opts.auto !== true) return
   }
@@ -411,7 +412,7 @@ export async function cmdInstall(opts: {
     out(
       cursorResult.alreadyInstalled
         ? `Cursor MCP integration (${cursorResult.scope} scope) already installed → ${displaySafePath(cursorResult.mcpPath)}`
-        : `Installed token-goat Cursor MCP integration (${cursorResult.scope} scope) → ${displaySafePath(cursorResult.mcpPath)}. Cursor runs no token-goat hooks written by this installer: if you have also run "token-goat install" for Claude Code, Cursor already imports those hooks automatically from ~/.claude/settings.json.`,
+        : `Installed token-goat Cursor MCP integration (${cursorResult.scope} scope) → ${displaySafePath(cursorResult.mcpPath)}. Cursor runs no token-goat hooks written by this installer: if you have also run ${fencedCommand('token-goat install')} for Claude Code, Cursor already imports those hooks automatically from ~/.claude/settings.json.`,
     )
     if (cursorResult.scope === 'project') out(projectHooksCommitNote([cursorResult.mcpPath]))
   }
@@ -606,7 +607,7 @@ export async function cmdUninstall(opts: {
     out(removed ? `Removed token-goat ${removal.label}.` : `No token-goat ${removal.label} to remove.`)
   }
   if (skippedUserOnly.length > 0) {
-    out(`NOTE: ${skippedUserOnly.map((key) => `--${key}`).join(', ')} are user-scope only and were not touched by this project-scope uninstall. Run "token-goat uninstall" with those flags (without --project) to remove them.`)
+    out(`NOTE: ${skippedUserOnly.map((key) => `--${key}`).join(', ')} are user-scope only and were not touched by this project-scope uninstall. Run ${fencedCommand('token-goat uninstall')} with those flags (without --project) to remove them.`)
   }
 
   // An integration whose flag was not passed is left wired and, before this, was left silent: a plain `token-goat uninstall` printed three "Removed" lines while a Codex or Copilot hook still pointed at the binary about to be deleted. That is the offboarding case, and a Copilot preToolUse hook whose target is gone fails closed on every call. So each one that is still present is named here with the exact command that removes it, following the same report-rather-than-delete rule the stray CLAUDE.md blocks above already use: uninstall does not silently undo an integration the caller did not ask about.
@@ -718,7 +719,7 @@ export async function runPurge(): Promise<number> {
   // A resident hook server holds nothing open between requests, but one mid-request would recreate what this deletes.
   await queryServers('stop')
   if (isWorkerRunning()) {
-    err(formatCommandError('the background worker is running, so --purge would delete files it is about to rewrite. Run "token-goat worker stop" first.'))
+    err(formatCommandError('the background worker is running, so --purge would delete files it is about to rewrite. Run `token-goat worker stop` first.'))
     return 1
   }
   const result = purgeDataDirectories()

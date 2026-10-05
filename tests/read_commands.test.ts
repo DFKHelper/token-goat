@@ -96,6 +96,7 @@ vi.mock('../src/screenshot.js', () => ({
 
 import { runRead, runGrep, withPinnedReads, runScreenshot } from '../src/read_commands.js'
 import { runSymbol } from '../src/read_symbol.js'
+import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import { runSection } from '../src/read_section.js'
 import { runSkeleton, runOutline } from '../src/read_outline.js'
 import { runFind, runLocate, runListSections, runConfigGet, runSqliteSchema, runSqliteQuery, runExports, runImports, extractTranscriptText, runZipRead, runZipList } from '../src/read_inspect.js'
@@ -255,6 +256,9 @@ describe('read_commands', () => {
       // 12 body lines, 5 shown -> 7 dropped, so the marker must count 7 and name the retry command.
       expect(text, 'the preview must announce how many lines it cut').toContain('...(7 more lines;')
       expect(text, 'the marker must point at the full-body read').toContain('token-goat read "src/read_commands.ts::bigFn"')
+      // Regression: unfenced, the suggestion guard read on past the closing `"` to the `)` and replaced the command with its omitted-command placeholder. HAND-DERIVED: the symbol row is constructed by this test.
+      expect(text, 'the full-body read must be backtick-fenced').toContain('full body: `token-goat read "src/read_commands.ts::bigFn"`)')
+      expect(stripUnsafeSuggestions(text), 'the elision line must pass the suggestion guard unchanged').toBe(text)
       // The 6th body line onward must NOT be inline -- proof the preview really stopped at 5.
       expect(text, 'the preview must stop at the cap, not print the whole body').not.toContain('line6()')
     })

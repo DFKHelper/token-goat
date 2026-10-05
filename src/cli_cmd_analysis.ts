@@ -528,7 +528,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
 
   program
     .command('diff <spec> [ref]')
-    .description('show only the git diff hunk(s) that fall within one symbol\'s line range, e.g. `token-goat diff "file.ts::myFn" HEAD~3..HEAD` (also accepts the file::symbol@LINE anchor form documented under `read`)')
+    .description('show only the git diff hunk(s) that fall within one symbol\'s line range, e.g. `token-goat diff "file.ts::myFn" "HEAD~3..HEAD"` (also accepts the file::symbol@LINE anchor form documented under `read`)')
     .option('-j, --json', 'output as JSON')
     .action((spec: string, ref: string | undefined, opts: { json?: boolean }) =>
       runExit(() =>
@@ -542,7 +542,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
 
   program
     .command('log <spec> [ref]')
-    .description('show git commit history scoped to one symbol\'s line range, e.g. `token-goat log "file.ts::myFn" HEAD~10` (also accepts the file::symbol@LINE anchor form documented under `read`)')
+    .description('show git commit history scoped to one symbol\'s line range, e.g. `token-goat log "file.ts::myFn" "HEAD~10"` (also accepts the file::symbol@LINE anchor form documented under `read`)')
     .option('--max-count <n>', 'maximum number of commits to show (default 20)')
     .option('-j, --json', 'output as JSON')
     .action((spec: string, ref: string | undefined, opts: { maxCount?: string; json?: boolean }) =>

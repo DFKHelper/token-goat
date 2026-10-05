@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { freelistBytes, oversizeDbMessage } from '../src/cli_doctor_index.js'
+import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import { tempDir } from './helpers/temp-config.js'
 
 const MB = 1024 * 1024
@@ -73,8 +74,15 @@ describe('oversizeDbMessage', () => {
       { root: '/repos/huge-monorepo', fileCount: 27051 },
       { root: '/repos/website', fileCount: 8306 },
     ])
-    expect(msg).toContain(`'token-goat project exclude "/repos/huge-monorepo"' removes its rows, then 'token-goat reclaim-index' returns the space.`)
+    expect(msg).toContain('`token-goat project exclude "/repos/huge-monorepo"` removes its rows, then `token-goat reclaim-index` returns the space.')
     expect(msg).toContain('If this size is expected, raise indexing.max_db_size_mb above 4899.')
+  })
+
+  // Regression: the exclude command sat in single quotes, so the suggestion guard read on past its closing `"` to the line's end, met the `'` outside the quotes, and replaced the command with its omitted-command placeholder. HAND-DERIVED: the root, a path holding a space, is constructed by this test.
+  it('keeps the exclude command intact through the suggestion guard, for a root holding a space', () => {
+    const msg = oversizeDbMessage('/data/global.db', 4899 * MB, 1.2 * MB, 0, [], [{ root: '/repos/my monorepo', fileCount: 27051 }])
+    expect(msg).toContain('`token-goat project exclude "/repos/my monorepo"`')
+    expect(stripUnsafeSuggestions(msg)).toBe(msg)
   })
 
   it('still offers the threshold when no project can be named', () => {

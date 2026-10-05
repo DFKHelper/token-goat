@@ -304,7 +304,7 @@ describe('Visual Studio seeing token-goat in both .mcp.json and .vscode/mcp.json
   it('a Visual Studio user install plus vscode -p is a duplicate too, and the note names the user uninstall', () => {
     installVisualStudio()
     installVscode({ project: true, projectRoot: project })
-    expect(visualStudioDuplicateNote()).toMatch(/"token-goat uninstall --visualstudio"\.$/)
+    expect(visualStudioDuplicateNote()).toMatch(/`token-goat uninstall --visualstudio`\.$/)
   })
 
   it('doctor warns about the duplicate and is ok without it', () => {

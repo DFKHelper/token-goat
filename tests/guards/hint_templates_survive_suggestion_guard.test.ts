@@ -132,17 +132,7 @@ const NOT_RELAYED: ReadonlyArray<{ file: string; reason: string }> = [
   { file: 'bridges/opencode.ts', reason: 'the generated opencode plugin source' },
   { file: 'bridges/relay_block.ts', reason: 'a code comment inside a generated bridge script' },
   { file: 'bridges/shrink_block.ts', reason: 'a code comment inside a generated bridge script' },
-  { file: 'bridges/visualstudio_install.ts', reason: 'installer advice printed by `install --visualstudio`' },
   { file: 'bridges_status.ts', reason: 'evidence text shown by `doctor` and `bridges`' },
-  { file: 'cli.ts', reason: 'commander help text' },
-  { file: 'cli_cmd_analysis.ts', reason: 'commander help text' },
-  { file: 'cli_doctor.ts', reason: '`doctor` report lines' },
-  { file: 'cli_doctor_index.ts', reason: '`doctor` report lines; session start uses symbol_body_probe.ts, which names no command with a quoted argument' },
-  { file: 'cli_doctor_platforms.ts', reason: '`doctor` report lines' },
-  { file: 'cli_install.ts', reason: '`install`/`uninstall` output' },
-  { file: 'embed_model.ts', reason: 'an embedding-status suggestion read by `semantic`, `doctor` and the MCP server, none of which a hook relays' },
-  { file: 'read_semantic.ts', reason: '`semantic` command output' },
-  { file: 'read_symbol.ts', reason: '`symbol` command output' },
 ]
 
 function sourceFiles(dir: string): string[] {
@@ -160,13 +150,14 @@ const isConcat = (n: ts.Node): n is ts.BinaryExpression => ts.isBinaryExpression
 /** The helpers that put one argument of a suggested command in double quotes: quotedArg (src/hint_suggestion_guard.ts) always, and answer_router.ts's viaArg whenever the value holds whitespace, which every stand-in below that tests quoting does. */
 const QUOTING_HELPERS = new Set(['quotedArg', 'viaArg'])
 
-/** A string expression's text with each interpolated value replaced by `standIn`, and a value passed through a quoting helper by `standIn` in double quotes. */
+/** A string expression's text with each interpolated value replaced by `standIn`, a value passed through a quoting helper by `standIn` in double quotes, and a command passed through fencedCommand (src/hint_suggestion_guard.ts) by its own flattened text in backticks, so the sentence around a fenced command is checked with the command in it rather than with a bare stand-in. */
 function flatten(node: ts.Expression, standIn = PLAIN): string {
   if (ts.isParenthesizedExpression(node)) return flatten(node.expression, standIn)
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text
   if (ts.isTemplateExpression(node)) return node.head.text + node.templateSpans.map((s) => flatten(s.expression, standIn) + s.literal.text).join('')
   if (isConcat(node)) return flatten(node.left, standIn) + flatten(node.right, standIn)
   if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && QUOTING_HELPERS.has(node.expression.text)) return '"' + standIn + '"'
+  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'fencedCommand' && node.arguments.length === 1) return '`' + flatten(node.arguments[0] as ts.Expression, standIn) + '`'
   return standIn
 }
 

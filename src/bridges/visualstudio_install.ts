@@ -9,6 +9,7 @@ import { buildGuidanceBody } from './guidance_block.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { loadConfig } from '../config.js'
 import { dropEmptyServers, dropLoneEmptyMcpServers, ensureMcpServersKey, hasManagedServer, holdsOnlyManagedServer, isManagedServer, managedServer, managedServerEntry, noteRootKeyCreation, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
+import { fencedCommand } from '../hint_suggestion_guard.js'
 
 const LABEL = 'Visual Studio'
 
@@ -75,8 +76,8 @@ export function visualStudioDuplicateNote(projectRoot = process.cwd()): string |
   const found = visualStudioManagedRegistrations(projectRoot)
   if (found.length < 2) return null
   const lead = `Note: Visual Studio reads ${found.join(' and ')}, and each registers token-goat, so it will list the token-goat server more than once for this solution.`
-  if (!found.includes(visualStudioSolutionVscodeMcpPath(projectRoot))) return `${lead} Keep one: run "token-goat uninstall --visualstudio" or "token-goat uninstall --visualstudio -p".`
-  return `${lead} Keep one: if you do not use VS Code in this folder, run "token-goat uninstall --vscode -p"; otherwise run "token-goat uninstall --visualstudio${found.includes(visualStudioUserMcpPath()) ? '' : ' -p'}".`
+  if (!found.includes(visualStudioSolutionVscodeMcpPath(projectRoot))) return `${lead} Keep one: run ${fencedCommand('token-goat uninstall --visualstudio')} or ${fencedCommand('token-goat uninstall --visualstudio -p')}.`
+  return `${lead} Keep one: if you do not use VS Code in this folder, run ${fencedCommand('token-goat uninstall --vscode -p')}; otherwise run ${fencedCommand('token-goat uninstall --visualstudio' + (found.includes(visualStudioUserMcpPath()) ? '' : ' -p'))}.`
 }
 
 /** Backs `mcp-status --visualstudio`: whether the user `.mcp.json` (and, with a projectRoot, the solution one) registers token-goat. */

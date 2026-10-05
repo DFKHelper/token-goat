@@ -26,6 +26,7 @@ import { previewLines } from './read_meta.js'
 import { resolveProjectConfinement } from './read_spec.js'
 import { ensureWorkerAlive } from './worker_lifecycle.js'
 import { compileGrepMatcher, countNoun, excludeTestsHiddenNote, extractErrorMessage, grepFilteredToEmptyNotice, isTestFile } from './util.js'
+import { fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 
 // Resolves the enclosing symbol for a semantic chunk's line range, keyed off its `startLine`.
 //
@@ -557,9 +558,9 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
       // Ignore DB errors during symbol lookup fallback
     }
     if (symFound) {
-      text += `\n(note: '${trimmedQuery}' is an indexed symbol name; use: token-goat symbol "${trimmedQuery}")`
+      text += `\n(note: '${trimmedQuery}' is an indexed symbol name; use: ${fencedCommand('token-goat symbol ' + quotedArg(trimmedQuery))})`
     } else {
-      text += `\nTry: token-goat symbol "${trimmedQuery}"`
+      text += `\nTry: token-goat symbol ${quotedArg(trimmedQuery)}`
     }
   }
   if (preflight.status !== 'ready') {

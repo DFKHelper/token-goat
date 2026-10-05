@@ -10,6 +10,7 @@ import { BertWordPiece } from './embed_tokenizer.js'
 import { NATIVE_RUNTIME_INSTALL, ORT_WEB_WASM, RUNTIME_UNAVAILABLE_ADVICE, activeRuntime, createInferenceSession, isRuntimeAvailable, runtimeLoadError, runtimeVersion, wasmBinaryPresent, wasmDir, type OrtSession, type RuntimeName } from './embed_runtime.js'
 import { copyFromSharedCache, downloadPinned, publishToSharedCache, sha256Of, type PinnedFile } from './pinned_file.js'
 import { registerReset } from './reset.js'
+import { fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 
 /** BAAI/bge-small-en-v1.5, the smallest BGE checkpoint tuned for retrieval. The 384-dimension output is native to it: changing either of these means every stored vector has to be rebuilt, which is what the embedding_provenance stamp in db.ts detects. */
 export const DEFAULT_MODEL = 'Xenova/bge-small-en-v1.5'
@@ -359,8 +360,8 @@ export async function checkEmbeddingPreflight(options?: {
       available: false,
       message: `Embedding model is available, but 0 of ${coverage.indexedFiles} indexed file(s) in this project have embeddings`,
       suggestion: options?.projectRoot
-        ? `Run 'token-goat index "${options.projectRoot}"' to generate embeddings`
-        : "Run 'token-goat index' to generate embeddings",
+        ? `Run ${fencedCommand('token-goat index ' + quotedArg(options.projectRoot))} to generate embeddings`
+        : 'Run `token-goat index` to generate embeddings',
       coverage,
     })
   }
