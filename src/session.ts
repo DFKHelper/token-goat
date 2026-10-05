@@ -23,6 +23,8 @@ export interface FileEntry {
   readonly fullReadCount?: number
   /** True once Write/Edit fired on this file this session. */
   readonly wasEdited: boolean
+  /** Unix-ms of the most recent Write/Edit, so the compact manifest can tell an edit still in context from one an earlier compaction dropped. Absent on an entry saved before this field existed, which is then treated as edited in the current epoch. */
+  readonly lastEditedAt?: number
   /** File size in bytes captured at the last read (0 if unreadable). */
   readonly sizeBytes: number
   /** True when the session saw this file's content delivered incompletely: a Read result carrying a `[Truncated:` marker, or a tail-style shell dump whose shown lines cannot be placed against the file. */
@@ -31,6 +33,15 @@ export interface FileEntry {
   readonly symbols_read?: string[]
   /** Cheap file identity (size + mtimeMs) captured by statSync at the moment the most recent line range was recorded via {@link recordFileLineRange}. Lets the repeated-range deny in hooks_read.ts tell whether disk has moved since without a snapshot or a hash: if a later statSync of the same file no longer matches, an external edit landed between the two reads and the recorded ranges must not keep denying. */
   readonly rangeFileIdentity?: { readonly size: number; readonly mtimeMs: number }
+  /** The lifetime `readCount`/`fullReadCount` this entry carried when its first read after the compaction stamped at `at` landed, so {@link epochReadCounts} can tell the reads still in context from the ones that compaction dropped. Set by {@link recordFileRead}; absent on an entry first read in the current epoch, whose counts are already epoch counts. */
+  readonly epochBase?: EpochBase
+}
+
+/** See {@link FileEntry.epochBase}. */
+export interface EpochBase {
+  readonly at: number
+  readonly readCount: number
+  readonly fullReadCount: number
 }
 
 // path -> entry. The key is the normalized absolute path so a file referenced via different relative strings collapses to one entry.
@@ -159,12 +170,15 @@ export function recordFileRead(filePath: string, isFullRead: boolean = true): vo
     })
     return
   }
+  // The first read since the last compaction snapshots the counts that compaction dropped from context, so the epoch's own reads can be told apart from them later.
+  const opensEpoch = _compactedAt > 0 && prev.lastReadAt < _compactedAt && (prev.epochBase?.at ?? 0) < _compactedAt
   _files.set(key, {
     ...prev,
     readCount: prev.readCount + 1,
     lastReadAt: now,
     sizeBytes: size,
     ...(isFullRead ? { lastFullReadAt: now, fullReadCount: (prev.fullReadCount ?? 0) + 1 } : {}),
+    ...(opensEpoch ? { epochBase: { at: _compactedAt, readCount: prev.readCount, fullReadCount: prev.fullReadCount ?? 0 } } : {}),
   })
 }
 
@@ -211,17 +225,19 @@ export function recordFileEdit(filePath: string): void {
   _fileLineRangeIdentities.delete(foldPath(normalized))
   // Deliberately NOT `_fileServedOutputs.delete(...)`: that index is matched on the served bytes, never on line position, so an edit needs no invalidation here. A line the edit rewrote stops matching on its own; a line it left alone was still served verbatim this session, and dropping the whole file's history throws that evidence away for the (usually large) untouched remainder -- measured as repeated whole re-reads of one file's opening block across an edit-read-edit loop.
   const prev = _files.get(key)
+  const now = Date.now()
   if (prev === undefined) {
     _files.set(key, {
       path: key,
       readCount: 0,
       lastReadAt: 0,
       wasEdited: true,
+      lastEditedAt: now,
       sizeBytes: fileSize(normalized),
     })
     return
   }
-  _files.set(key, { ...prev, wasEdited: true })
+  _files.set(key, { ...prev, wasEdited: true, lastEditedAt: now })
 }
 
 /** Return all tracked file entries, keyed by normalized absolute path. */
@@ -229,7 +245,7 @@ export function getSessionFiles(): ReadonlyMap<string, FileEntry> {
   return _files
 }
 
-/** True if `filePath` was read at least once this session (`readCount > 0`) AND that read is still in the model's context (its `lastReadAt` is at or after the last compaction epoch). A file that was only edited (never read) returns false, matching the re-read-hint semantics: there is no prior read to dedup against. This means "content is currently in the model's context", not "this session touched this file at some point" -- consumers that want the historical fact (the compact manifest, stats, hot/recent listings, edit tracking) must read `getSessionFiles()`/`readCount` directly instead of calling this. */
+/** True if `filePath` was read at least once this session (`readCount > 0`) AND that read is still in the model's context (its `lastReadAt` is at or after the last compaction epoch). A file that was only edited (never read) returns false, matching the re-read-hint semantics: there is no prior read to dedup against. This means "content is currently in the model's context", not "this session touched this file at some point" -- consumers that want the historical fact (the compact manifest's read rows, stats, hot/recent listings, edit tracking) must read `getSessionFiles()`/`readCount` directly instead of calling this, and those that want how many of its reads are still in context call {@link epochReadCounts}. */
 export function wasFileReadThisSession(filePath: string): boolean {
   const entry = _files.get(resolveFilesKey(normalizePath(filePath)))
   return entry !== undefined && entry.readCount > 0 && entry.lastReadAt >= _compactedAt
@@ -239,6 +255,29 @@ export function wasFileReadThisSession(filePath: string): boolean {
 export function wasFileFullyReadThisSession(filePath: string): boolean {
   const entry = _files.get(resolveFilesKey(normalizePath(filePath)))
   return entry !== undefined && entry.lastFullReadAt !== undefined && entry.lastFullReadAt >= _compactedAt
+}
+
+/** How many of `entry`'s reads, and of its whole-file reads, landed since the compaction stamped at `compactedAt` (default: this session's last one), i.e. are still in the model's context. Subtracts the {@link FileEntry.epochBase} taken at that epoch; an entry with no base for it was first read inside the epoch, so its counts stand. Whole-file reads count only while the latest one is inside the epoch. */
+export function epochReadCounts(entry: FileEntry, compactedAt: number = _compactedAt): { reads: number; fullReads: number } {
+  if (entry.lastReadAt < compactedAt) return { reads: 0, fullReads: 0 }
+  const base = entry.epochBase !== undefined && entry.epochBase.at === compactedAt ? entry.epochBase : undefined
+  const reads = Math.max(0, entry.readCount - (base?.readCount ?? 0))
+  const fullInEpoch = entry.lastFullReadAt !== undefined && entry.lastFullReadAt >= compactedAt
+  const fullReads = fullInEpoch ? Math.max(0, (entry.fullReadCount ?? 0) - (base?.fullReadCount ?? 0)) : 0
+  return { reads, fullReads }
+}
+
+/** Whether `entry` was edited since the compaction stamped at `compactedAt` (default: this session's last one). An entry with no {@link FileEntry.lastEditedAt} predates that field and counts as edited in the epoch. */
+export function wasEditedSinceCompaction(entry: FileEntry, compactedAt: number = _compactedAt): boolean {
+  return entry.wasEdited && (entry.lastEditedAt === undefined || entry.lastEditedAt >= compactedAt)
+}
+
+/** Combine two views' {@link FileEntry.epochBase}: the later epoch wins, and for the same epoch the larger snapshot, since a process only takes one while every read it has seen predates the epoch, so the larger one has seen more of the reads that compaction dropped. */
+export function mergeEpochBase(a: EpochBase | undefined, b: EpochBase | undefined): EpochBase | undefined {
+  if (a === undefined) return b
+  if (b === undefined || a.at > b.at) return a
+  if (b.at > a.at) return b
+  return { at: a.at, readCount: Math.max(a.readCount, b.readCount), fullReadCount: Math.max(a.fullReadCount, b.fullReadCount) }
 }
 
 /** Unix-ms of the last context compaction this session, or 0 if none. See `_compactedAt`. */

@@ -22,7 +22,7 @@ import { preReadHandler } from '../src/hooks_read.js'
 import { postReadHandler } from '../src/hooks_read_post.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { recordFileRead, wasFileReadThisSession, markCompacted, getCompactedAt, exportSessionState, importSessionState, type SerializedSession } from '../src/session.js'
+import { recordFileRead, wasFileReadThisSession, markCompacted, getCompactedAt, epochReadCounts, exportSessionState, importSessionState, type SerializedSession } from '../src/session.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { makeHookEvent } from './helpers/hook-event.js'
@@ -130,6 +130,58 @@ describe('compaction epoch invalidates in-context read state', () => {
     expect(wasFileReadThisSession(normalizePath(p))).toBe(true)
     const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('deny')
+  })
+
+  /** A small source file under the OS temp directory, so the count-based source deny (two whole reads) is the only deny it can reach. */
+  function tmpSource(): string {
+    const p = path.join(os.tmpdir(), `tg-epoch-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+    fs.writeFileSync(p, 'export const a = 1\n')
+    tmpFiles.push(p)
+    return p
+  }
+
+  /** Record a whole-file read of `p` with Date.now() pinned to `ms`. */
+  function readAt(p: string, ms: number): void {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(ms)
+    try {
+      recordFileRead(normalizePath(p))
+    } finally {
+      now.mockRestore()
+    }
+  }
+
+  // HAND-DERIVED: two whole reads before a compaction were dropped from context with it, so one read after it is the only copy the model holds; the third Read is its first re-read, not its third.
+  it('does not count reads from before the last compaction toward the source re-read deny', () => {
+    const p = tmpSource()
+    const t = Date.now()
+    readAt(p, t - 5000)
+    readAt(p, t - 4000)
+    markCompacted(t - 3000)
+    readAt(p, t - 2000)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).not.toBe('deny')
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('(1 read)')
+      expect(result.context).not.toContain('(3 reads)')
+    }
+  })
+
+  // HAND-DERIVED: two whole reads after the compaction are both in context, so the deny still fires and quotes those two.
+  it('still denies a source file read whole twice since the last compaction, quoting only those reads', () => {
+    const p = tmpSource()
+    const t = Date.now()
+    readAt(p, t - 5000)
+    markCompacted(t - 3000)
+    readAt(p, t - 2000)
+    readAt(p, t - 1000)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Tried to read this file 2 times already.')
+    }
   })
 
   it('preserves wasEdited across the epoch (an edit is durable knowledge about the repo, not about context)', () => {
@@ -262,6 +314,43 @@ describe('compaction epoch persistence and merge', () => {
     expect(merged.files[0]?.readCount).toBeGreaterThan(0)
     expect(merged.files[0]?.wasEdited).toBe(true)
     expect(wasFileReadThisSession('/x.ts')).toBe(false)
+  })
+
+  // HAND-DERIVED: an entry read twice (both whole) before a compaction at 5000 snapshots those two reads when it is read again, and the snapshot must survive the process boundary every hook crosses, or the next process counts all three as in context.
+  it('round-trips the epoch snapshot through disk so the next process counts only the reads since the compaction', () => {
+    const p = normalizePath(path.join(tmpHome, 'snap.ts'))
+    importSessionState({ ...empty(), files: [{ path: p, readCount: 2, fullReadCount: 2, lastReadAt: 1000, lastFullReadAt: 1000, wasEdited: false, sizeBytes: 10 }], compactedAt: 5000 })
+    const now = vi.spyOn(Date, 'now').mockReturnValue(6000)
+    try {
+      recordFileRead(p)
+    } finally {
+      now.mockRestore()
+    }
+    saveSessionState('epoch-base-rt')
+    importSessionState(empty())
+    loadSessionState('epoch-base-rt')
+    const entry = exportSessionState().files.find((f) => f.path === p)
+    expect(entry?.epochBase).toEqual({ at: 5000, readCount: 2, fullReadCount: 2 })
+    expect(entry !== undefined && epochReadCounts(entry, 5000)).toEqual({ reads: 1, fullReads: 1 })
+  })
+
+  // HAND-DERIVED: a process only snapshots while every read it has seen predates the epoch, so for one epoch the larger snapshot has seen more of the dropped reads; a later epoch replaces an earlier one outright.
+  it('merges the epoch snapshot: the later epoch wins, and the larger snapshot within one epoch', () => {
+    const base = { path: '/snap.ts', readCount: 4, fullReadCount: 4, lastReadAt: 9500, lastFullReadAt: 9500, wasEdited: false, sizeBytes: 10 }
+    const sameEpoch = saveThenMerge('epoch-base-same', { ...empty(), compactedAt: 9000, files: [{ ...base, epochBase: { at: 9000, readCount: 3, fullReadCount: 3 } }] }, { ...empty(), compactedAt: 9000, files: [{ ...base, epochBase: { at: 9000, readCount: 2, fullReadCount: 1 } }] })
+    expect(sameEpoch.files[0]?.epochBase).toEqual({ at: 9000, readCount: 3, fullReadCount: 3 })
+    const laterEpoch = saveThenMerge('epoch-base-later', { ...empty(), compactedAt: 9000, files: [{ ...base, epochBase: { at: 9000, readCount: 1, fullReadCount: 1 } }] }, { ...empty(), compactedAt: 9000, files: [{ ...base, epochBase: { at: 4000, readCount: 3, fullReadCount: 3 } }] })
+    expect(laterEpoch.files[0]?.epochBase).toEqual({ at: 9000, readCount: 1, fullReadCount: 1 })
+  })
+
+  // HAND-DERIVED: the edit stamp is what lets the manifest tell an edit still in context from one a compaction dropped, so it must survive the save -> load round-trip.
+  it('round-trips the last edit time through disk', () => {
+    const p = normalizePath(path.join(tmpHome, 'edited.ts'))
+    importSessionState({ ...empty(), files: [{ path: p, readCount: 1, lastReadAt: 1000, wasEdited: true, lastEditedAt: 2000, sizeBytes: 10 }] })
+    saveSessionState('edit-at-rt')
+    importSessionState(empty())
+    loadSessionState('edit-at-rt')
+    expect(exportSessionState().files.find((f) => f.path === p)?.lastEditedAt).toBe(2000)
   })
 })
 

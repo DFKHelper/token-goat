@@ -16,7 +16,7 @@ import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, displaySafeText, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import { foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { loadConfig } from './config.js'
-import { recordFileRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, getSessionFileEntry, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges } from './session.js'
+import { recordFileRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges } from './session.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
@@ -1032,11 +1032,12 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   // Grep's cost/relevance depends on its pattern, not just the directory/file it's scoped to — re-scoping several Greps at the same path with different patterns is a legitimate workflow, so Grep is exempt from the count-based re-read dedup below (unlike a repeated whole-file Read).
   if (event.toolName !== 'Grep' && !isImagePath(normalized) && wasFileReadThisSession(normalized)) {
     const entry = getSessionFileEntry(normalized)
-    const reads = entry?.readCount ?? 1
+    // Both counts are epoch-scoped: a read from before the last compaction no longer describes what the model currently holds, so it neither counts toward a deny nor shows in the "N reads" a deny quotes. `fullReads` is whole-file re-reads only -- a file touched by nothing but a few narrow offset/limit/view-range slices has never actually been read in full, so the count-based denies below (which assume every prior touch handed over the whole file) must gate on it, not on `reads`, which a slice bumps too.
+    const counts = entry !== undefined ? epochReadCounts(entry) : { reads: 1, fullReads: 0 }
+    const reads = Math.max(1, counts.reads)
     const plural = reads === 1 ? 'read' : 'reads'
     const isSourceExt = isSourceExtension(basename)
-    // Whole-file re-reads only -- a file touched by nothing but a few narrow offset/limit/view-range slices has never actually been read in full, so the count-based denies below (which assume every prior touch handed over the whole file) must gate on this, not on `reads`, which a slice bumps too. Epoch-scoped like wasFileFullyReadThisSession: a fullReadCount from before the last compaction no longer describes what the model currently holds, so it must not count here either.
-    const fullReads = (entry?.lastFullReadAt !== undefined && entry.lastFullReadAt >= getCompactedAt()) ? (entry.fullReadCount ?? 0) : 0
+    const fullReads = counts.fullReads
 
     // Rank must be computed against session state as of the *last* read, before the read below bumps this file's own lastReadAt -- otherwise every re-read would trivially rank itself as the most recent and the protection window would be meaningless.
     const protectedRead = isProtectedRecentRead(normalized, loadConfig().hints.protect_recent_reads)

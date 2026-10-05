@@ -8,7 +8,7 @@ import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, saniti
 import { normalizePath } from './paths.js'
 import { SESSIONS_SUBDIR, sessionsDir } from './sessions_dir.js'
 import { redactSerializedJson } from './secret_redact.js'
-import { MAX_SEEN_IMAGE_HASHES, MAX_BASH_START_CWDS, bashStartCwdsAtLoad, consumedBashStartCwdKeys, consumedCurlDownloadKeys, consumedFileLineRangeKeys, consumedFileServedOutputKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, markCompacted, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
+import { MAX_SEEN_IMAGE_HASHES, MAX_BASH_START_CWDS, bashStartCwdsAtLoad, consumedBashStartCwdKeys, consumedCurlDownloadKeys, consumedFileLineRangeKeys, consumedFileServedOutputKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, markCompacted, mergeEpochBase, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
@@ -99,6 +99,7 @@ function asFileEntry(raw: unknown): FileEntry | null {
   // Preserve the whole-file-read markers so a re-read's "unchanged since last read" denies survive a save -> load round-trip; without this a process boundary (every hook is a fresh process) silently drops them and a ranged-only read looks indistinguishable from a full one on the very next process, or vice versa.
   if (typeof o['lastFullReadAt'] === 'number') entry = { ...entry, lastFullReadAt: o['lastFullReadAt'] }
   if (typeof o['fullReadCount'] === 'number') entry = { ...entry, fullReadCount: o['fullReadCount'] }
+  if (typeof o['lastEditedAt'] === 'number') entry = { ...entry, lastEditedAt: o['lastEditedAt'] }
   // Preserve the surgical-read tokens so compact.ts's symbolsBonus survives a save -> load round-trip; without this the field is silently dropped and the bonus is always zero.
   if (Array.isArray(o['symbols_read'])) {
     const symbols = (o['symbols_read'] as unknown[]).filter((s): s is string => typeof s === 'string')
@@ -112,6 +113,14 @@ function asFileEntry(raw: unknown): FileEntry | null {
     typeof (rangeIdentity as Record<string, unknown>)['mtimeMs'] === 'number'
   ) {
     entry = { ...entry, rangeFileIdentity: { size: (rangeIdentity as Record<string, unknown>)['size'] as number, mtimeMs: (rangeIdentity as Record<string, unknown>)['mtimeMs'] as number } }
+  }
+  // Preserve the epoch snapshot so the manifest and the re-read denies still count only the reads since the last compaction after a save -> load round-trip; dropped, every later process would fall back to lifetime counts.
+  const epochBase = o['epochBase']
+  if (epochBase !== null && typeof epochBase === 'object') {
+    const b = epochBase as Record<string, unknown>
+    if (typeof b['at'] === 'number' && typeof b['readCount'] === 'number' && typeof b['fullReadCount'] === 'number') {
+      entry = { ...entry, epochBase: { at: b['at'], readCount: b['readCount'], fullReadCount: b['fullReadCount'] } }
+    }
   }
   return entry
 }
@@ -287,6 +296,10 @@ function mergeFileEntry(a: FileEntry, b: FileEntry): FileEntry {
   const newFullReadsThisProcess = Math.max(0, (b.fullReadCount ?? 0) - fullReadBaseline)
   const fullReadCount = (a.fullReadCount ?? 0) + newFullReadsThisProcess
   if (fullReadCount > 0) merged = { ...merged, fullReadCount }
+  const lastEditedAt = Math.max(a.lastEditedAt ?? 0, b.lastEditedAt ?? 0)
+  if (lastEditedAt > 0) merged = { ...merged, lastEditedAt }
+  const epochBase = mergeEpochBase(a.epochBase, b.epochBase)
+  if (epochBase !== undefined) merged = { ...merged, epochBase }
   // Union the surgical-read tokens from both views so a concurrent process's symbol reads are not clobbered by whichever save lands last.
   const symbols = Array.from(new Set([...(a.symbols_read ?? []), ...(b.symbols_read ?? [])]))
   if (symbols.length > 0) merged = { ...merged, symbols_read: symbols }

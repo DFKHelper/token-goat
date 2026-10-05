@@ -20,7 +20,7 @@ import type { HookEvent } from '../src/hook_registry.js'
 import { preCompactHandler } from '../src/hooks_compact.js'
 import { buildManifest } from '../src/manifest.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { recordFileEdit, recordFileRead, recordSymbolRead, recordWebFetch, recordBashOutput, recordBashRerun, exportSessionState, importSessionState } from '../src/session.js'
+import { recordFileEdit, recordFileRead, recordSymbolRead, recordWebFetch, recordBashOutput, recordBashRerun, exportSessionState, importSessionState, markCompacted } from '../src/session.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
 import { normalizePath } from '../src/paths.js'
 import { storeBashOutput } from '../src/bash_output_cache.js'
@@ -392,6 +392,79 @@ describe('SAFE_TO_DISCARD section', () => {
     const manifest = buildManifest()
     expect(manifest).not.toContain('Superseded file reads')
     expect(manifest).not.toContain('edited after being read')
+  })
+
+  /** Run `fn` with Date.now() pinned to `ms`, so a read or edit lands on a known side of a compaction stamp. */
+  function at(ms: number, fn: () => void): void {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(ms)
+    try {
+      fn()
+    } finally {
+      now.mockRestore()
+    }
+  }
+
+  // HAND-DERIVED: a compaction drops every read before it from context, so a file read whole once before it and once after has one copy in context, and that copy replaces nothing.
+  it('does not list a file read once before the last compaction and once after it as superseded', () => {
+    const p = makeTmpFile('hello')
+    const t = Date.now()
+    at(t - 5000, () => recordFileRead(p))
+    markCompacted(t - 3000)
+    at(t - 2000, () => recordFileRead(p))
+    expect(buildManifest()).not.toContain('Superseded file reads')
+  })
+
+  // HAND-DERIVED: one read before the compaction and two whole reads after it leave two copies in context, so the row counts two re-reads, not the three of the whole session.
+  it('counts only the reads since the last compaction in a superseded row', () => {
+    const p = makeTmpFile('hello')
+    const t = Date.now()
+    at(t - 5000, () => recordFileRead(p))
+    markCompacted(t - 3000)
+    at(t - 2000, () => recordFileRead(p))
+    at(t - 1000, () => recordFileRead(p))
+    const manifest = buildManifest()
+    expect(manifest).toContain('Superseded file reads (1):')
+    expect(manifest).toContain('re-read 2x')
+    expect(manifest).not.toContain('re-read 3x')
+  })
+
+  // HAND-DERIVED: the whole-file read the edit would supersede was dropped by the compaction, and the only read since is a slice.
+  it('does not list a file read whole before the last compaction and edited after it as superseded', () => {
+    const p = makeTmpFile('hello')
+    const t = Date.now()
+    at(t - 5000, () => recordFileRead(p))
+    markCompacted(t - 3000)
+    at(t - 2000, () => recordFileRead(p, false))
+    at(t - 1000, () => recordFileEdit(p))
+    const manifest = buildManifest()
+    expect(manifest).not.toContain('Superseded file reads')
+    expect(manifest).not.toContain('edited after being read')
+  })
+
+  // HAND-DERIVED: the edit was dropped by the compaction, so the one whole read after it is the only copy in context and nothing supersedes it.
+  it('does not list a file edited before the last compaction and read once after it as superseded', () => {
+    const p = makeTmpFile('hello')
+    const t = Date.now()
+    at(t - 5000, () => recordFileRead(p))
+    at(t - 4000, () => recordFileEdit(p))
+    markCompacted(t - 3000)
+    at(t - 2000, () => recordFileRead(p))
+    const manifest = buildManifest()
+    expect(manifest).not.toContain('Superseded file reads')
+    expect(manifest).not.toContain('edited after being read')
+  })
+
+  // HAND-DERIVED: a whole read after the compaction followed by an edit is the read-then-edit case of the current epoch, which still supersedes.
+  it('still lists a file read after the last compaction and then edited as superseded', () => {
+    const p = makeTmpFile('hello')
+    const t = Date.now()
+    at(t - 5000, () => recordFileRead(p))
+    markCompacted(t - 3000)
+    at(t - 2000, () => recordFileRead(p))
+    at(t - 1000, () => recordFileEdit(p))
+    const manifest = buildManifest()
+    expect(manifest).toContain('Superseded file reads (1):')
+    expect(manifest).toContain('edited after being read')
   })
 
   it('collapses an embedded newline in a rerun command so the row stays on one line', async () => {
