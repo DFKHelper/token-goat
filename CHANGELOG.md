@@ -6,6 +6,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **`config set` no longer repeats a project path's token-goat marker as if token-goat said it.** When a project's `.token-goat.toml` overrides the key just saved, the warning names that file, and it printed the path and the validation reason raw. A project directory named to start with `[tg]` then put a line in token-goat's own voice into the warning, which reaches the model whenever the command runs as a tool. The path and reason now pass through the same escaping as the rest of the report. The check that looks for unescaped output now also watches the shared stderr writer, which is how this one was found; every other error it covers was already escaped.
+
 - **`waste` and `audit` print a missing-transcript error as an error.** `waste --copilot --transcript` with a file that does not exist, `waste --copilot` with no Copilot session, and `waste` or `audit` with no session found for the project all wrote their message to standard output under a report heading such as `# token-goat waste (Copilot CLI)`, then exited 1, so the failure looked like the start of a report. Each now prints one `token-goat:` error line on standard error and no heading. With `--json` the error is still a JSON document on standard output, and `waste --transcript` with a missing file now gives that JSON document too instead of plain text.
 
 - **`uninstall --purge` now exits with an error when nothing was purged.** When it refused because the background worker was running, or a data directory would not delete, it printed the error and still exited 0, so a script checking the exit code believed the data was gone. Both cases now exit 1.

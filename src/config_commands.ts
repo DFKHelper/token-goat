@@ -356,11 +356,11 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     if (shadowed && setState.layer === 'env') {
       emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.envVar} is currently set and overrides it at runtime — unset ${setState.envVar} for this change to take effect`)
     } else if (shadowed && setState.layer === 'env-invalid') {
-      emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.envVar} is currently set to ${displaySafeJson(setState.rawValue, 0)}${setState.reason !== null ? ` (${setState.reason})` : ''} and still overrides it at runtime, taking effect as ${displaySafeJson(setState.effectiveValue, 0)} — unset ${setState.envVar} for this change to take effect`)
+      emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.envVar} is currently set to ${displaySafeJson(setState.rawValue, 0)}${setState.reason !== null ? ` (${displaySafeText(setState.reason)})` : ''} and still overrides it at runtime, taking effect as ${displaySafeJson(setState.effectiveValue, 0)} — unset ${setState.envVar} for this change to take effect`)
     } else if (setState.layer === 'project') {
-      emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.path} also sets it and overrides it in this project — remove it there for this change to take effect here`)
+      emitErr(`config set: warning: ${key} was saved to config.toml, but ${displaySafeText(setState.path)} also sets it and overrides it in this project — remove it there for this change to take effect here`)
     } else if (setState.layer === 'project-invalid') {
-      emitErr(`config set: warning: ${key} was saved to config.toml, but ${setState.path} sets it to ${displaySafeJson(setState.rawValue, 0)}${setState.reason !== null ? ` (${setState.reason})` : ''} and still overrides it in this project, taking effect as ${displaySafeJson(setState.effectiveValue, 0)} — remove it there for this change to take effect here`)
+      emitErr(`config set: warning: ${key} was saved to config.toml, but ${displaySafeText(setState.path)} sets it to ${displaySafeJson(setState.rawValue, 0)}${setState.reason !== null ? ` (${displaySafeText(setState.reason)})` : ''} and still overrides it in this project, taking effect as ${displaySafeJson(setState.effectiveValue, 0)} — remove it there for this change to take effect here`)
     }
     if (opts.json === true) {
       emit(displaySafeJson({ key, value: coerced }))

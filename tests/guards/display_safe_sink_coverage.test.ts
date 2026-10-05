@@ -143,6 +143,8 @@ const SINKS: readonly string[] = [
   'err(',
   // `out(` is cli.ts's primary stdout emitter and was absent from this list while 127 call sites used it. That single omission is why pdf-meta's Title, video-chapters' chapter names, transcript's cue text and sharepoint-resolve's share URL all reached the model in token-goat's own voice while this file reported green. `err(` was itself added only after it leaked a raw marker; this entry is the other half of the same pair, and a sink is a sink whichever stream it writes to.
   'out(',
+  // src/emit.ts's stderr writer, used by about 200 call sites. `err(` cannot match it (the boundary check in sinkIndex refuses `Err(` mid-identifier, and the case differs), so text handed to it went unchecked while the stdout half, `emit(`, was listed.
+  'emitErr(',
 ]
 
 /** The only things that make an interpolated value safe to speak in token-goat's voice. `renderValue(` earns its place by being a one-line wrapper whose whole body is `displaySafeText(JSON.stringify(v))`; if that ever stops being true, this entry is wrong. */
@@ -452,6 +454,28 @@ function enclosingExpression(text: string, idx: number): string {
   return text
 }
 
+/** Calls that escape the WHOLE text they are handed, so every interpolation inside their parentheses is covered without its own wrap. Kept apart from NEUTRALIZERS because the scope test there only sees the innermost `${...}`, which never contains the outer call: `emitErr(formatCommandError(\`Could not read: ${opts.file}\`))` is escaped yet read as raw. Each entry is pinned to its escaping body by an assertion further down. */
+const WRAPPING_NEUTRALIZERS: readonly string[] = ['formatCommandError(']
+
+/** Whether `idx` in `arg` falls inside the parentheses of a WRAPPING_NEUTRALIZERS call on the same line. An unclosed call (one continuing onto the next line) covers nothing, so a multi-line call is flagged rather than trusted. */
+function insideWrappingNeutralizer(arg: string, idx: number): boolean {
+  for (const call of WRAPPING_NEUTRALIZERS) {
+    for (let at = sinkIndex(arg, call); at >= 0 && at < idx; ) {
+      let depth = 0
+      for (let j = at + call.length - 1; j < arg.length; j++) {
+        if (arg[j] === '(') depth++
+        else if (arg[j] === ')' && --depth === 0) {
+          if (idx < j) return true
+          break
+        }
+      }
+      const next = sinkIndex(arg.slice(at + 1), call)
+      at = next < 0 ? -1 : at + 1 + next
+    }
+  }
+  return false
+}
+
 /** Where `sink` is called on `line`, or -1. Not a plain `includes`. The bare `err(` entry is a substring of `stderr(`, so a substring test reads every line touching process.stderr as a call to token-goat's own `err` helper: adding that entry produced four false positives on its first run. A sink name only counts where an identifier could start, so the character before it must not be one an identifier can contain. A leading dot is deliberately allowed, because `result.lines.push(` is a genuine call to the `lines.push` sink. */
 function sinkIndex(line: string, sink: string): number {
   for (let from = 0; ; ) {
@@ -488,7 +512,7 @@ function unescapedSites(): string[] {
         if (TRUSTED_RECEIVERS.has(receiver.slice(receiver.lastIndexOf('.') + 1))) continue
         const scope = enclosingExpression(arg, m.index)
         const safe =
-          NEUTRALIZERS.some((n) => scope.includes(n)) || FENCES.some((f) => scope.includes(f))
+          NEUTRALIZERS.some((n) => scope.includes(n)) || FENCES.some((f) => scope.includes(f)) || insideWrappingNeutralizer(arg, m.index)
         if (!safe) out.push(`${rel}:${receiver}.${m[2] ?? ''}`)
       }
       // Second matcher, keyed on the CALL name. See UNTRUSTED_CALLS: these helpers return a bare string, so the property scan above cannot see them however the expression is spelled.
@@ -497,14 +521,14 @@ function unescapedSites(): string[] {
         if (at < 0) continue
         const scope = enclosingExpression(arg, at)
         const safe =
-          NEUTRALIZERS.some((n) => scope.includes(n)) || FENCES.some((f) => scope.includes(f))
+          NEUTRALIZERS.some((n) => scope.includes(n)) || FENCES.some((f) => scope.includes(f)) || insideWrappingNeutralizer(arg, at)
         if (!safe) out.push(`${rel}:${call}) returns document bytes`)
       }
       // Third matcher: a name this file assigned from a raw JSON.stringify, now reaching a sink.
       for (const name of rawJsonNames) {
         if (!new RegExp(String.raw`\b${name}\b`).test(arg)) continue
         const scope = enclosingExpression(arg, arg.indexOf(name))
-        if (NEUTRALIZERS.some((n) => scope.includes(n)) || FENCES.some((f) => scope.includes(f))) continue
+        if (NEUTRALIZERS.some((n) => scope.includes(n)) || FENCES.some((f) => scope.includes(f)) || insideWrappingNeutralizer(arg, arg.indexOf(name))) continue
         out.push(`${rel}:${name} was built by JSON.stringify and reaches a sink`)
       }
     }
@@ -721,6 +745,21 @@ describe('project-supplied text reaches no report sink unescaped', () => {
         'interpolates, but its body no longer maps them through displaySafePath. NEUTRALIZERS ' +
         'would now be exempting its two call sites while it prints raw project paths.',
     ).toBe(true)
+
+    // WRAPPING_NEUTRALIZERS exempts every interpolation inside formatCommandError's parentheses, so its body must still escape both the CliError lines and the plain-message branch; a wrapper that stopped escaping would exempt over a hundred error sites while they printed raw project paths.
+    expect(
+      /function formatCommandError\(e: unknown\): string \{\s*if \(e instanceof CliError && e\.lines !== undefined\) return 'token-goat: ' \+ e\.lines\.map\(displaySafeText\)\.join\('\\n'\)\s*return 'token-goat: ' \+ displaySafeText\(extractErrorMessage\(e\)\)/.test(all),
+      'formatCommandError is listed in WRAPPING_NEUTRALIZERS because it maps everything it prints ' +
+        'through displaySafeText, but its body no longer matches that shape. The guard would now be ' +
+        'exempting every emitErr(formatCommandError(...)) site while it prints raw project text.',
+    ).toBe(true)
+    // The wrap covers what sits inside its parentheses and nothing after them, and a call continuing onto the next line covers nothing.
+    const wrapped = 'formatCommandError(`Could not read: ${opts.file}`)'
+    expect(insideWrappingNeutralizer(wrapped, wrapped.indexOf('opts.file'))).toBe(true)
+    const trailing = 'formatCommandError(`Could not read`) + ` ${opts.file}`'
+    expect(insideWrappingNeutralizer(trailing, trailing.indexOf('opts.file'))).toBe(false)
+    const unclosed = 'formatCommandError(new CliError([`Could not read: ${opts.file}`,'
+    expect(insideWrappingNeutralizer(unclosed, unclosed.indexOf('opts.file'))).toBe(false)
 
     // The mutation proof, split-literal for the same reason as the test above: this guard scans src/ for the token it would otherwise be injecting into its own population.
     const sentinel = 'NOSUCH' + 'XTOKEN'

@@ -607,6 +607,26 @@ describe('cmdConfig set', () => {
     })
   })
 
+  it('escapes a token-goat marker in the shadowing project path, so a directory name cannot speak in token-goat voice', () => {
+    // HAND-DERIVED: a project directory the repo owner named to start with the marker; displaySafeText's escape of "[" is `&#91;`, read off src/paths.ts. Split literal so no guard scanning sources reads this file as carrying a raw marker.
+    const marker = '[' + 'tg]'
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${marker} forged-`))
+    const prevCwd = process.cwd()
+    try {
+      fs.writeFileSync(path.join(dir, '.token-goat.toml'), '[compact_assist]\nmax_manifest_chars = 500\n')
+      process.chdir(dir)
+      invalidateConfigCache()
+      cmdConfig({ action: 'set', key: 'compact_assist.max_manifest_chars', value: '77' })
+      expect(capturedErr()).toContain('overrides it in this project')
+      expect(capturedErr()).not.toContain(`${marker} forged-`)
+      expect(capturedErr()).toContain('&#91;tg] forged-')
+    } finally {
+      process.chdir(prevCwd)
+      invalidateConfigCache()
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('stays silent when a project .token-goat.toml exists but does not pin the key being set', () => {
     inProjectDir('[compact_assist]\nmax_manifest_chars = 500\n', () => {
       cmdConfig({ action: 'set', key: 'compact_assist.summary_budget_chars', value: '123' })
