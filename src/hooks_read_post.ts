@@ -9,7 +9,7 @@ import { displaySafePath, hostPathOfIndexKey, normalizePath, toDisplayPath } fro
 import { indexServedBody, planServedElisions, type ServedBody, servedRunNotice } from './served_lines.js'
 import { IDENTICAL_READ_MIN_BODY_BYTES, statSize } from './util.js'
 import { loadConfig } from './config.js'
-import { exportSessionState, getFileServedOutputs, markFileTruncated, recordFileServedOutput, resetFileLineRanges } from './session.js'
+import { exportSessionState, getCompactedAt, getFileServedOutputs, markFileTruncated, markHintShown, recordFileServedOutput, resetFileLineRanges, wasHintShown } from './session.js'
 import { getBashOutput, storeBashOutputSync } from './bash_output_cache.js'
 import { writeSessionManifest } from './compact.js'
 import { store as snapshotStore } from './snapshots.js'
@@ -118,15 +118,20 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
       if (sz !== null && sz <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
         const lineCount = countTextLines(fs.readFileSync(onDisk, 'utf8'))
         const minLines = loadConfig().post_read_code_compress.min_lines
-        if (lineCount >= minLines && !suppressStructuralHint) {
+        // Once per file per compaction epoch, like the edit hook's section hint: the text names the same commands on every read of the same file, so a second copy adds nothing while the first is still in context.
+        const repeatKey = `read_structural_nav:${normalized}:${getCompactedAt()}`
+        if (lineCount >= minLines && !suppressStructuralHint && !wasHintShown(repeatKey)) {
           if (!meetsSavingsFloor(sz)) {
             // Split out of the single condition this used to be so that only the floor's own refusals are recorded: a file under min_lines had no hint to compose, and a suppressed one was already replaced upstream by a better rewrite, and booking either as a decline would credit this gate with refusing work it never had.
             logSuppressedDetection('read_structural_nav', event.sessionId, normalized)
           } else {
             // Advisory only -- the read is not blocked, so nothing was saved here either.
             recordStat('session_hint', 0, 0)
+            markHintShown(repeatKey)
+            // A ranged read was not a full read, so there is nothing to "re-read"; it is paging that the structural commands replace.
+            const instead = readRequestedSliceWindow(event).isExplicitSlice ? 'instead of paging through it' : 'instead of a future full re-read'
             return quietContextOutput(
-              shown + ' is ' + lineCount + ' lines. Use `token-goat skeleton "' + shown + '"` or `token-goat outline "' + shown + '"` for structural navigation instead of a future full re-read.',
+              shown + ' is ' + lineCount + ' lines. Use `token-goat skeleton "' + shown + '"` or `token-goat outline "' + shown + '"` for structural navigation ' + instead + '.',
             )
           }
         }

@@ -3263,6 +3263,36 @@ content here` },
     expect(result.hookType).toBe('pass')
   })
 
+  // Regression: the hint came back verbatim on every read of the same file in a session (ranged reads included), so a file paged through in five slices carried five identical copies.
+  it('postReadHandler shows the skeleton/outline hint once per file per compaction epoch, not on every read', () => {
+    // HAND-DERIVED: 200 one-line declarations, exactly the default min_lines threshold.
+    const content = makeLineCountedSource(200)
+    const p = tmpFileExt(content, '.ts')
+    const lines = content.split('\n')
+    // Disjoint windows, each response carrying only its own lines, so no earlier delivery holds them and nothing but the hint can answer.
+    const page = (offset: number, limit: number): HookEvent => ({ eventName: 'post_tool_use', toolName: 'Read', toolInput: { file_path: p, offset, limit }, sessionId: 'test', agentId: undefined, raw: { tool_response: lines.slice(offset - 1, offset - 1 + limit).join('\n') + '\n' } })
+
+    expect(postReadHandler(page(1, 50)).hookType).toBe('context')
+    expect(postReadHandler(page(51, 50)).hookType).toBe('pass')
+    expect(postReadHandler(page(101, 50)).hookType).toBe('pass')
+
+    // A compaction takes the first copy out of context, so the next read may carry it again.
+    markCompacted()
+    expect(postReadHandler(page(151, 50)).hookType).toBe('context')
+  })
+
+  it('postReadHandler does not call a ranged read a full re-read in the skeleton/outline hint', () => {
+    // HAND-DERIVED: a 200-line source file read as a 30-line window.
+    const content = makeLineCountedSource(200)
+    const p = tmpFileExt(content, '.ts')
+    const result = postReadHandler({ eventName: 'post_tool_use', toolName: 'Read', toolInput: { file_path: p, offset: 20, limit: 30 }, sessionId: 'test', agentId: undefined, raw: { tool_response: content } })
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat skeleton')
+      expect(result.context).not.toContain('full re-read')
+    }
+  })
+
 })
 
 describe('preReadHandler — session artifact re-read dedup', () => {
