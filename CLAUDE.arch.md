@@ -513,6 +513,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/pending_context.ts`](src/pending_context.ts) | Deferred hint delivery, for harnesses that run a prompt-submit hook but discard its response. |
 | [`src/pinned_fetch.ts`](src/pinned_fetch.ts) | Hashing, copying and downloading files pinned by digest and length. |
 | [`src/pinned_file.ts`](src/pinned_file.ts) | Files held to a SHA-256 and byte length recorded in this repository. |
+| [`src/powershell_compat.ts`](src/powershell_compat.ts) | Adapts bash-style heredocs and inline Python scripts with complex quotes for reliable execution under PowerShell (both pwsh 7+ and Windows PowerShell 5.1). |
 | [`src/pptx_extract.ts`](src/pptx_extract.ts) | PowerPoint (.pptx) narrow-slice reader. |
 | [`src/pr_slice.ts`](src/pr_slice.ts) | Surgical GitHub PR reads via the `gh` CLI. |
 | [`src/probe_marker.ts`](src/probe_marker.ts) | The hook half of `token-goat doctor --probe`. |

@@ -710,6 +710,7 @@ async function cmdCompress(
     quietSuccess?: boolean
     native?: boolean
     shell?: string
+    stdin?: boolean
   } = {},
 ): Promise<void> {
   const usedBase64 = opts.cmdB64 !== undefined
@@ -769,6 +770,7 @@ async function cmdCompress(
       ...(opts.quietSuccess === true ? { quietSuccess: true } : {}),
       ...(opts.native === true ? { nativeShell: true } : {}),
       ...(opts.shell !== undefined ? { shellType: opts.shell } : {}),
+      ...(opts.stdin === true ? { rawStdin: true } : {}),
     })
   } catch (e) {
     const code = (e as { code?: string }).code
@@ -1403,6 +1405,7 @@ export function buildProgram(): Command {
     .option('--cap-hint-b64 <payload>', 'base64 text printed after the output when --max-tokens cut it (the Bash hook sets it to the narrower read command)')
     .option('-q, --quiet-success', 'on exit code 0, emit only [tg: ok] summary and store full output for recall via bash-output')
     .option('--native', 'use native platform shell (e.g. cmd.exe on Windows) instead of bash, preserving Windows path backslashes')
+    .option('--stdin', 'pipe standard input to the wrapped command')
     .action(cmdCompress)
 
   program

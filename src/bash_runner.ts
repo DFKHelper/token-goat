@@ -11,6 +11,7 @@ import { storeBashOutputSync } from './bash_output_cache.js'
 import { loadConfig } from './config.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
 import { displaySafeText } from './paths.js'
+import { adaptPowerShellCommand } from './powershell_compat.js'
 import { wrappedShell, resolvePowerShell } from './shell.js'
 import { recordStat } from './stats.js'
 import { PassthroughFilter } from './tool_filters/generic.js'
@@ -55,6 +56,8 @@ export interface RunOptions {
   nativeShell?: boolean | undefined
   shellType?: 'bash' | 'pwsh' | 'powershell' | 'native' | string | undefined
   heartbeatIntervalMs?: number
+  stdin?: string | Buffer | undefined
+  rawStdin?: boolean | undefined
 }
 
 /** Accumulates chunks up to `cap` total bytes, then silently drops the rest and flags `overflowed` so the caller can kill the child and append a truncation marker -- the async-spawn equivalent of `spawnSync`'s `maxBuffer` + `ENOBUFS`. */
@@ -155,7 +158,7 @@ export function spawnTarget(
         '$TgC = $env:TG_CMD; Remove-Item Env:TG_CMD -ErrorAction SilentlyContinue; $global:TgOk = $true; $TgN = [Environment]::NewLine; $TgK = \'if ($global:TgOk = $?) { }\'; $TgT = $null; $TgE = $null; $TgA = [System.Management.Automation.Language.Parser]::ParseInput($TgC, [ref]$TgT, [ref]$TgE); $TgX = [System.Collections.Generic.List[object]]::new(); $TgL = [System.Collections.Generic.List[string]]::new(); $TgTop = { param($n) $p = $n.Parent; while ($p -isnot [System.Management.Automation.Language.ScriptBlockAst]) { $p = $p.Parent }; [object]::ReferenceEquals($p, $TgA) }; if ($TgE.Count -eq 0) { if ($TgA.EndBlock.Unnamed) { $TgX.Add([pscustomobject]@{ P = $TgC.Length; O = 0; L = 0; T = ($TgN + $TgK) }) }; foreach ($TgB in @($TgA.BeginBlock, $TgA.ProcessBlock, $TgA.EndBlock, $TgA.CleanBlock)) { if ($TgB -and -not $TgB.Unnamed) { $TgX.Add([pscustomobject]@{ P = ($TgB.Extent.EndOffset - 1); O = 0; L = 0; T = ($TgN + $TgK + $TgN) }) } }; foreach ($TgR in $TgA.FindAll({ param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst] -and (& $TgTop $n) }, $true)) { if ($TgR.Pipeline -and $TgR.Pipeline.GetPureExpression()) { $TgX.Add([pscustomobject]@{ P = $TgR.Extent.StartOffset; O = 1; L = 6; T = \'$TgW = (\' }); $TgX.Add([pscustomobject]@{ P = $TgR.Extent.EndOffset; O = 1; L = 0; T = \'), $?; $global:TgOk = $TgW[1]; return $TgW[0]\' }) } else { $TgX.Add([pscustomobject]@{ P = $TgR.Extent.StartOffset; O = 1; L = 6; T = \'return $(\' }); $TgX.Add([pscustomobject]@{ P = $TgR.Extent.EndOffset; O = 1; L = 0; T = $(if ($TgR.Pipeline) { \'; \' + $TgK + \')\' } else { $TgK + \')\' }) }) } }; $TgD = @($TgA.FindAll({ param($n) $n -is [System.Management.Automation.Language.LabeledStatementAst] -and $n.Label }, $true) | ForEach-Object { $_.Label } | Select-Object -Unique); foreach ($TgR in $TgA.FindAll({ param($n) ($n -is [System.Management.Automation.Language.BreakStatementAst] -or $n -is [System.Management.Automation.Language.ContinueStatementAst]) -and (& $TgTop $n) }, $true)) { $TgX.Add([pscustomobject]@{ P = $TgR.Extent.StartOffset; O = 0; L = 0; T = ($TgK + \'; \') }); if ($TgR.Label -is [System.Management.Automation.Language.StringConstantExpressionAst]) { if ($TgR.Label.Value -eq \'\') { } elseif ($TgD -contains $TgR.Label.Value) { $TgL.Add($TgR.Label.Value) } else { $TgX.Add([pscustomobject]@{ P = $TgR.Label.Extent.StartOffset; O = 1; L = $TgR.Label.Extent.Text.Length; T = \'TgEsc\' }); $TgL.Add(\'TgEsc\') } } elseif ($TgR.Label) { $TgX.Add([pscustomobject]@{ P = $TgR.Label.Extent.StartOffset; O = 1; L = $TgR.Label.Extent.Text.Length; T = (\'$(if ((-not [string]($TgV = (\' + $TgR.Label.Extent.Text + \'))) -or (@(\' + (($TgD | ForEach-Object { "\'" + $_ + "\'" }) -join \',\') + \') -contains $TgV)) { $TgV } else { \'\'TgEsc\'\' }; if (-not $global:TgOk) { Microsoft.PowerShell.Utility\\Write-Error TgRestore -ErrorAction Ignore })\') }); foreach ($TgI in $TgD) { $TgL.Add($TgI) }; $TgL.Add(\'TgEsc\') } }; foreach ($TgR in $TgA.FindAll({ param($n) $n -is [System.Management.Automation.Language.TryStatementAst] -and $n.Finally -and $n.Finally.Statements.Count -gt 0 -and (& $TgTop $n) }, $true)) { $TgX.Add([pscustomobject]@{ P = ($TgR.Finally.Extent.EndOffset - 1); O = 0; L = 0; T = ($TgN + $TgK + $TgN) }) } } else { throw [System.Management.Automation.ParseException]::new($TgE) }; $TgS = $TgC; foreach ($TgI in ($TgX | Sort-Object -Property @{ Expression = \'P\'; Descending = $true }, @{ Expression = \'O\'; Descending = $false })) { $TgS = $TgS.Substring(0, $TgI.P) + $TgI.T + $TgS.Substring($TgI.P + $TgI.L) }; $TgO = $(if ($PSVersionTable.PSVersion.Major -lt 6) { \'do { @() | & ([scriptblock]::Create($TgS)) } while ($false)\' } else { \'do { & ([scriptblock]::Create($TgS)) } while ($false)\' }); foreach ($TgI in ($TgL | Select-Object -Unique)) { $TgO = \':\' + $TgI + \' do { \' + $TgO + \' } while ($false)\' }; . ([scriptblock]::Create($TgO)); if ($global:TgOk) { exit 0 } else { exit 1 }',
       ],
       shell: false,
-      cmdEnv: { TG_CMD: command },
+      cmdEnv: { TG_CMD: adaptPowerShellCommand(command) },
     }
   }
   const shell = nativeShell || shellType === 'native' ? true : wrappedShell()
@@ -288,7 +291,19 @@ async function wrapAndCompress(
   let overflowed = false
 
   // Async spawn (not spawnSync) is required for the heartbeat below: a blocking spawnSync call never lets the event loop tick, so no timer could ever fire while the child is still running -- this is the actual root cause of `token-goat compress` looking hung on a long, quiet command, not just a missing print statement.
-  const child = spawn(file, args, { cwd: opts.cwd, shell, env: mergeSpawnEnv(opts.env, cmdEnv), stdio: ['ignore', 'pipe', 'pipe'] })
+  const hasStdinData = opts.stdin !== undefined
+  const shouldPipeStdin = opts.rawStdin === true || hasStdinData
+  const stdioIn = shouldPipeStdin ? 'pipe' : 'ignore'
+  const child = spawn(file, args, { cwd: opts.cwd, shell, env: mergeSpawnEnv(opts.env, cmdEnv), stdio: [stdioIn, 'pipe', 'pipe'] })
+  if (child.stdin) {
+    child.stdin.on('error', () => {})
+    if (hasStdinData) {
+      child.stdin.end(opts.stdin)
+    } else if (opts.rawStdin) {
+      process.stdin.on('error', () => {})
+      process.stdin.pipe(child.stdin)
+    }
+  }
   const heartbeat = scheduleHeartbeat(startTime, opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS, (elapsed) => {
     writeStderr(`[token-goat compress] still running, ${elapsed}s elapsed\n`)
   })
