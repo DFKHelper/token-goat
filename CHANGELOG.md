@@ -6,6 +6,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **A file name holding a curly double quote can no longer slip a second command into a suggestion for PowerShell users.** PowerShell ends a double-quoted string at “, ” and „ as well as at a plain `"`, so a repository file named to close the quote, run a command and reopen it got through the check that strips broken suggestions from hints, which only looked at plain quotes. Those suggestions are now replaced with "command omitted" like any other broken one. Curly apostrophes and en dashes in a file name stay literal inside the quotes, so those files keep their suggestions.
+
 - **Shrunk image copies no longer pile up in the system temp folder.** The smaller copy written for Claude Code, VS Code and Copilot CLI to read was only cleaned up when a later image was shrunk, so the last copies from each session stayed indefinitely. The background worker now deletes copies older than an hour on its hourly cleanup, and still never touches a copy young enough to be in use.
 
 - **An image read through a shrunk copy now counts as a read of that image.** When token-goat answered a large image's Read with a smaller copy, the session never recorded the original, so the pre-compact manifest and the cross-session read list left it out even though the model had seen it. The session now records the image that was asked for, once, the same way it records a Read token-goat passes through, and never the temporary copy's path.
