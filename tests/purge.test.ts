@@ -71,6 +71,25 @@ describe('purgeRoots', () => {
 
     expect(purgeRoots().length).toBe(1)
   })
+
+  // HAND-DERIVED: a TOKEN_GOAT_HOME set from Git Bash carries forward slashes and maybe a trailing one, while the data directory is built with path.join; both roots must come back in the platform's own spelling so the purge report prints one kind of separator.
+  it('returns each root resolved, so a forward-slash TOKEN_GOAT_HOME prints like the data directory', () => {
+    process.env['TOKEN_GOAT_HOME'] = path.join(root, 'home').split(path.sep).join('/') + '/'
+
+    const roots = purgeRoots()
+
+    expect(roots).toContain(path.join(root, 'home'))
+    for (const r of roots) expect(r).toBe(path.resolve(r))
+  })
+
+  // HAND-DERIVED: the data directory under a second spelling (forward slashes, a trailing slash, upper case where the filesystem folds case) is still one directory, which must be purged once rather than purged and then reported as already gone.
+  it('does not list the data directory twice when TOKEN_GOAT_HOME spells it differently', () => {
+    const data = purgeRoots().find((r) => r !== path.join(root, 'home')) as string
+    const respelled = data.split(path.sep).join('/') + '/'
+    process.env['TOKEN_GOAT_HOME'] = process.platform === 'win32' ? respelled.toUpperCase() : respelled
+
+    expect(purgeRoots()).toEqual([data])
+  })
 })
 
 describe('purgeDataDirectories', () => {

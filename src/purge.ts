@@ -12,6 +12,7 @@ import * as path from 'node:path'
 import { dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { fileIsAbsent } from './fingerprint.js'
+import { foldPath } from './path_containment.js'
 
 export interface PurgeResult {
   /** Roots that were deleted, with the bytes each held. */
@@ -53,8 +54,9 @@ export function directorySize(root: string): number {
  * places on every platform.
  */
 export function purgeRoots(): string[] {
-  const roots = [dataDir(), tokenGoatHome()]
-  return roots.filter((root, index) => roots.indexOf(root) === index)
+  // Resolved, because TOKEN_GOAT_HOME is used as spelled (forward slashes from Git Bash, a trailing separator) while dataDir() is built by path.join: unresolved, the two printed with different separators, and one directory under two spellings was purged and then reported as already gone.
+  const roots = [dataDir(), tokenGoatHome()].map((root) => path.resolve(root))
+  return roots.filter((root, index) => roots.findIndex((other) => foldPath(other) === foldPath(root)) === index)
 }
 
 /** Deletes every root in {@link purgeRoots}. Reports what went, what was already gone, and what would not delete. */
