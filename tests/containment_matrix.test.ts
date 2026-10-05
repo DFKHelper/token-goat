@@ -14,7 +14,6 @@
  * handful of shapes that cannot exist on disk by construction (an ELOOP pair) are tagged
  * HAND-DERIVED via `unmaterializable` and say so in the failure message.
  */
-import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -31,6 +30,7 @@ import {
   scratchPair,
 } from './helpers/containment_matrix.js'
 import { CAN_JUNCTION, CAN_SYMLINK } from './helpers/can-symlink.js'
+import { shortNameOf } from './helpers/short-name.js'
 
 /** A directory link is a junction on Windows (unprivileged) and a directory symlink on POSIX. */
 const CAN_DIR_LINK = IS_WINDOWS ? CAN_JUNCTION : CAN_SYMLINK
@@ -325,19 +325,3 @@ describe('containment matrix', () => {
     })
   })
 })
-
-/** The 8.3 short name of a directory, or null when the volume has 8dot3 name creation disabled. */
-function shortNameOf(dir: string): string | null {
-  try {
-    const out = execFileSync('cmd', ['/c', 'dir', '/x', '/ad', path.dirname(dir)], { encoding: 'utf8' })
-    const base = path.basename(dir)
-    for (const line of out.split(/\r?\n/)) {
-      if (!line.endsWith(base)) continue
-      const m = /\s([A-Z0-9_~]{1,8}(?:\.[A-Z0-9_~]{1,3})?)\s+\S/.exec(line)
-      if (m !== null && m[1] !== undefined && m[1] !== base) return m[1]
-    }
-    return null
-  } catch {
-    return null
-  }
-}

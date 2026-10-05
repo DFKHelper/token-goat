@@ -6,6 +6,8 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { decideRewrite, loadPermissionSnapshot, permissionNeutralRewrite, resetPermissionSourceCache, snapshotFromDocs, type RewriteRequest, type SettingsDoc } from '../src/rewrite_permission.js'
+import { CAN_JUNCTION } from './helpers/can-symlink.js'
+import { shortNameOf } from './helpers/short-name.js'
 
 const CWD = path.join(os.tmpdir(), 'tg-perm-unit-cwd')
 const MODES = ['default', 'plan', 'acceptEdits', 'auto', 'dontAsk', 'bypassPermissions'] as const
@@ -193,6 +195,60 @@ describe('decideRewrite: Agent prompt', () => {
     expect(decideRewrite(snap({ deny: ['Agent(Explore)'] }), agent)).toBe('rewrite')
     expect(decideRewrite(snap({ deny: ['Agent(*)'] }), agent)).toBe('skip')
     expect(decideRewrite(snap({ deny: ['Bash('] }), agent)).toBe('skip')
+  })
+})
+
+// HAND-DERIVED from https://code.claude.com/docs/en/permissions#symlinks: "the permission check covers two paths: the one Claude requested and the file it resolves to", for symbolic links and Windows directory junctions, and a deny rule applies when either matches. The rewrite shows Claude Code neither spelling of the original, so the hook has to check the resolved one itself. A real junction on Windows (Node makes a directory symlink of it on POSIX).
+describe.skipIf(!CAN_JUNCTION)('decideRewrite: a link or short name does not hide the real path from a rule', () => {
+  let root: string
+  let proj: string
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-perm-link-'))
+    proj = path.join(root, 'proj')
+    fs.mkdirSync(path.join(proj, 'secrets'), { recursive: true })
+    fs.mkdirSync(path.join(proj, 'docs'))
+    fs.mkdirSync(path.join(proj, '.git'))
+    fs.writeFileSync(path.join(proj, 'secrets', 'shot.png'), 'x')
+    fs.writeFileSync(path.join(proj, 'secrets', 'key.txt'), 'x')
+    fs.writeFileSync(path.join(proj, 'docs', 'readme.md'), 'x')
+    fs.symlinkSync(path.join(proj, 'secrets'), path.join(proj, 'pics'), 'junction')
+    fs.symlinkSync(path.join(proj, '.git'), path.join(proj, 'cfg'), 'junction')
+  })
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  const imageRead = (original: string): RewriteRequest => ({ kind: 'read', harness: 'claudecode', mode: 'default', cwd: proj, original, rewritten: path.join(os.tmpdir(), 'token-goat-shrink-1-2-x.jpeg'), insideCwd: true })
+  const sh = (command: string): RewriteRequest => ({ kind: 'shell-wrap', harness: 'claudecode', mode: 'default', cwd: proj, original: command, rewritten: wrap(command) })
+
+  it('an image Read through a junction into a denied directory keeps the original Read', () => {
+    expect(decideRewrite(snap({ deny: ['Read(./secrets/**)'] }), imageRead(path.join(proj, 'pics', 'shot.png')))).toBe('skip')
+    expect(decideRewrite(snap({ ask: ['Read(./secrets/**)'] }), imageRead(path.join(proj, 'pics', 'shot.png')))).toBe('skip')
+    expect(decideRewrite(snap({ deny: ['Read(./other/**)'] }), imageRead(path.join(proj, 'pics', 'shot.png')))).toBe('approve')
+  })
+
+  it('a shell file command through a junction into a denied directory is left alone', () => {
+    expect(decideRewrite(snap({ deny: ['Read(./secrets/**)'] }), sh('cat pics/key.txt'))).toBe('skip')
+    expect(decideRewrite(snap({ deny: ['Edit(./secrets/**)'] }), sh('npm test > pics/out.txt'))).toBe('skip')
+    expect(decideRewrite(snap({ deny: ['Read(./secrets/**)'] }), sh('cat docs/readme.md'))).toBe('approve')
+  })
+
+  it('a shell command reaching a protected path through a junction is left alone', () => {
+    expect(decideRewrite(NONE, sh('npm run gen > cfg/hooks/pre-commit'))).toBe('skip')
+    expect(decideRewrite(NONE, sh('npm run gen > docs/out.txt'))).toBe('rewrite')
+  })
+
+  it.runIf(process.platform === 'win32')('an 8.3 short name does not hide the long directory name a rule is written for', (ctx) => {
+    const longDir = path.join(proj, 'verylongsecretsfolder')
+    fs.mkdirSync(longDir)
+    fs.writeFileSync(path.join(longDir, 'shot.png'), 'x')
+    const short = shortNameOf(longDir)
+    if (short === null) ctx.skip('8dot3 name creation is disabled on this volume, so there is no short name to resolve')
+    const viaShort = path.join(proj, short as string, 'shot.png')
+    expect(decideRewrite(snap({ deny: ['Read(./verylongsecretsfolder/**)'] }), imageRead(viaShort))).toBe('skip')
+    expect(decideRewrite(snap({ deny: ['Read(./verylongsecretsfolder/**)'] }), sh(`cat ${short as string}/shot.png`))).toBe('skip')
   })
 })
 

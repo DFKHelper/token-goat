@@ -1,4 +1,4 @@
-/** Decides whether a PreToolUse input rewrite may ship, and whether it may carry Claude Code's `permissionDecision: "allow"`, so that rewriting a tool call never changes the permission outcome the user's own rules give the ORIGINAL call. Claude Code evaluates its permission rules against a hook's `updatedInput`, not the input the model wrote (claude.exe 2.1.289: the PreToolUse result's `updatedInput` replaces the input before `canUseTool` runs, and an `allow` logs "Hook approved tool use ..., bypassing permission prompt"), so a `token-goat compress -c '<cmd>'` wrapper or a shrunk image's temp path is what a `Bash(curl *)` or `Read(./private/**)` rule gets matched against. Answering every rewrite with `allow`, as serializeOutput once did, therefore skipped the user's prompt for any wrapped command and let deny and ask rules miss. Every rewriteInput producer routes through {@link permissionNeutralRewrite}: it returns null (do not rewrite) whenever a deny or ask rule could match the original call, or the settings cannot be read; `approve` only when the original call is provably auto-allowed anyway and no auto-mode classifier would have reviewed it (a trusted allow rule matching a simple command, Claude Code's built-in read-only commands, a Read inside the working directory); otherwise a rewrite with no decision, which Claude Code runs through its normal permission flow. Losing a compression is fine; bypassing a user's rule is not, so every doubt resolves to null. Settings sources and precedence are from https://code.claude.com/docs/en/settings, https://code.claude.com/docs/en/managed-settings and https://code.claude.com/docs/en/permissions. Node built-ins plus the config-dir accessor, util.ts's runGit and types only, all already on every hook's path, so every hook can import it without dragging a subsystem onto the hook's eager path. */
+/** Decides whether a PreToolUse input rewrite may ship, and whether it may carry Claude Code's `permissionDecision: "allow"`, so that rewriting a tool call never changes the permission outcome the user's own rules give the ORIGINAL call. Claude Code evaluates its permission rules against a hook's `updatedInput`, not the input the model wrote (claude.exe 2.1.289: the PreToolUse result's `updatedInput` replaces the input before `canUseTool` runs, and an `allow` logs "Hook approved tool use ..., bypassing permission prompt"), so a `token-goat compress -c '<cmd>'` wrapper or a shrunk image's temp path is what a `Bash(curl *)` or `Read(./private/**)` rule gets matched against. Answering every rewrite with `allow`, as serializeOutput once did, therefore skipped the user's prompt for any wrapped command and let deny and ask rules miss. Every rewriteInput producer routes through {@link permissionNeutralRewrite}: it returns null (do not rewrite) whenever a deny or ask rule could match the original call, or the settings cannot be read; `approve` only when the original call is provably auto-allowed anyway and no auto-mode classifier would have reviewed it (a trusted allow rule matching a simple command, Claude Code's built-in read-only commands, a Read inside the working directory); otherwise a rewrite with no decision, which Claude Code runs through its normal permission flow. Losing a compression is fine; bypassing a user's rule is not, so every doubt resolves to null. Settings sources and precedence are from https://code.claude.com/docs/en/settings, https://code.claude.com/docs/en/managed-settings and https://code.claude.com/docs/en/permissions. Node built-ins plus the config-dir accessor, paths.ts's share check, util.ts's runGit and types only, all already on every hook's path, so every hook can import it without dragging a subsystem onto the hook's eager path. */
 
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -7,6 +7,7 @@ import * as path from 'node:path'
 
 import type { HarnessName } from './bridges/types.js'
 import { claudeConfigDir } from './claude_config_dir.js'
+import { isUncOrDevicePath } from './paths.js'
 import type { HookOutput } from './types.js'
 import { runGit } from './util.js'
 
@@ -121,6 +122,32 @@ function ruleToolIs(rule: PermissionRule, names: readonly string[]): boolean {
 function haystacks(parts: readonly string[]): string[] {
   const base = parts.join('\n').toLowerCase().replace(/["']/g, '')
   return [base.split('\\').join('/'), base.split('\\').join('')]
+}
+
+/** The spelling Claude Code also checks a path rule against: the path resolved against `cwd` through every symlink, Windows junction and 8.3 short name (https://code.claude.com/docs/en/permissions#symlinks: a deny rule applies when either the requested path or the file it resolves to matches). A path that does not exist yet is spelled through its nearest existing ancestor's real path; empty when the real spelling is the one already written. */
+function realSpellings(p: string, cwd: string): string[] {
+  const abs = path.resolve(cwd, p)
+  // Never touch a network share or device path: resolving one connects to the host, and Windows hands it the user's credentials.
+  if (isUncOrDevicePath(p) || isUncOrDevicePath(abs)) return []
+  let existing = abs
+  for (let depth = 0; depth < 64; depth++) {
+    try {
+      const real = path.join(fs.realpathSync.native(existing), path.relative(existing, abs))
+      const same = process.platform === 'win32' ? real.toLowerCase() === abs.toLowerCase() : real === abs
+      return same ? [] : [real]
+    } catch {
+      // Not there yet (a redirection target, a directory a command will create): spell it through its parent.
+    }
+    const parent = path.dirname(existing)
+    if (parent === existing) break
+    existing = parent
+  }
+  return []
+}
+
+/** The words of a shell command that could name a file, for {@link realSpellings}: split at whitespace, quotes and shell operators, flags dropped, capped so a long command costs a bounded number of filesystem calls. */
+function shellPathWords(command: string): string[] {
+  return command.split(/[\s;&|<>()=,'"`]+/).filter((w) => w !== '' && !w.startsWith('-')).slice(0, 64)
 }
 
 function isWordChar(ch: string | undefined): boolean {
@@ -238,7 +265,11 @@ function decideShell(snapshot: PermissionSnapshot, req: RewriteRequest, mode: st
   const lowered = original.toLowerCase()
   if (RM_WORD.test(lowered)) return 'skip'
   if (PROTECTED_PATH_FRAGMENTS.some((p) => lowered.includes(p))) return 'skip'
+  // A symlink, junction or short name in a path the command names hides the real spelling a rule or the protected-path check is written for: Claude Code checks both spellings, the wrapper shows it neither.
+  const linked = shellPathWords(original).flatMap((w) => realSpellings(w, req.cwd).map((real) => ({ real, lexical: path.resolve(req.cwd, w) })))
+  if (linked.some(({ real, lexical }) => PROTECTED_PATH_FRAGMENTS.some((p) => haystacks([real])[0]?.includes(p) === true && haystacks([lexical])[0]?.includes(p) !== true))) return 'skip'
   const hays = haystacks([req.cwd, original, req.rewritten])
+  const realHays = haystacks(linked.map(({ real }) => real))
   const expands = /[$`\\]/.test(original)
   const pathExpands = /[$`~*?[]/.test(original)
   for (const rule of [...snapshot.deny, ...snapshot.ask]) {
@@ -247,7 +278,7 @@ function decideShell(snapshot: PermissionSnapshot, req: RewriteRequest, mode: st
       if (expands || bashRuleMayMatch(rule, hays)) return 'skip'
     } else if (ruleToolIs(rule, FILE_RULE_TOOLS)) {
       // Read and Edit rules also apply to file commands in Bash (`cat`, `sed`, `tee`, redirections), which the wrapper would hide.
-      if (pathExpands || pathRuleMayMatch(rule, hays)) return 'skip'
+      if (pathExpands || pathRuleMayMatch(rule, hays) || (linked.length > 0 && pathRuleMayMatch(rule, realHays))) return 'skip'
     }
   }
   // bypassPermissions runs the original with no prompt either way, so the wrapper needs no allow there, and the hook does not vouch for a call it cannot see every rule for (--disallowedTools, --settings, SDK options).
@@ -270,7 +301,8 @@ function decideShell(snapshot: PermissionSnapshot, req: RewriteRequest, mode: st
 
 function decideRead(snapshot: PermissionSnapshot, req: RewriteRequest): RewriteVerdict {
   if (snapshot.blockReadsOutside) return 'skip'
-  const hays = haystacks([req.original, req.rewritten])
+  // The real spellings too: a junction or short name in the original would otherwise hide the directory a rule names, while the copy's temp path carries none of it.
+  const hays = haystacks([req.original, req.rewritten, ...realSpellings(req.original, req.cwd), ...realSpellings(req.rewritten, req.cwd)])
   for (const rule of [...snapshot.deny, ...snapshot.ask]) {
     if (rule.tool === undefined) return 'skip'
     if (ruleToolIs(rule, ['read']) && pathRuleMayMatch(rule, hays)) return 'skip'
