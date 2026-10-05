@@ -133,10 +133,13 @@ interface Run {
   heldOpen: boolean
 }
 
-function runNative(args: readonly string[], input: Buffer | string, env: Env = {}, opts: { cwd?: string; onSpawn?: (child: ChildProcess) => void } = {}): Promise<Run> {
+/** `powershell` runs the client the way Copilot CLI runs a hook command on Windows: as `& '<client>' <args>` in `powershell -Command` (FORMAT-DERIVED from the `powershell` key `install --copilot` writes to its hooks file). */
+function runNative(args: readonly string[], input: Buffer | string, env: Env = {}, opts: { cwd?: string; onSpawn?: (child: ChildProcess) => void; powershell?: boolean } = {}): Promise<Run> {
   return new Promise((resolve, reject) => {
     const started = performance.now()
-    const child = spawn(bin, args, { cwd: opts.cwd ?? sb.proj, env: { ...sb.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] })
+    const quote = (s: string): string => `'${s.split("'").join("''")}'`
+    const [file, argv] = opts.powershell === true ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `& ${[bin, ...args].map(quote).join(' ')}; exit $LASTEXITCODE`]] : [bin, args]
+    const child = spawn(file, argv, { cwd: opts.cwd ?? sb.proj, env: { ...sb.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] })
     const out: Buffer[] = []
     let stderr = ''
     let firstChunkMs: number | undefined
@@ -450,6 +453,28 @@ describe('against a real hook server', () => {
     await waitIdle(endpoint)
     expect((await slotStatus(endpoint, sb.key))?.served).toBe(before + 1)
   }, 60_000)
+
+  it.runIf(WIN)('run through PowerShell, the server the wrapped command starts does not hold the harness pipe PowerShell handed on', async () => {
+    cli(['hook-server', 'stop'])
+    const stopBy = Date.now() + 10_000
+    while ((await slotStatus(endpoint, sb.key)) !== undefined) {
+      if (Date.now() > stopBy) throw new Error('the server did not stop')
+      await sleep(100)
+    }
+    // The first case's autostart left this marker, which holds off another start for 30 s.
+    fs.rmSync(markerPath('spawn-0', sb.dataDir), { force: true })
+    const wired = [process.execPath, shim, 'pre_tool_use', entry]
+    const res = await runNative(hookArgs(wired, { entry }), redirectPayload('absent-ps'), {}, { powershell: true })
+    expect(res.exit, res.stderr).toBe(0)
+    expect(res.stdout.toString('utf8')).toMatch(/^\{"decision":"block","reason":"\[tg\] /)
+    const startBy = Date.now() + 30_000
+    while ((await slotStatus(endpoint, sb.key)) === undefined) {
+      if (Date.now() > startBy) throw new Error('the wrapped command did not start a server')
+      await sleep(100)
+    }
+    // PowerShell gives its child its own stdout as an extra inheritable handle besides the three standard ones, so the client must stop every handle it holds, not only those three, from reaching the Node command and the server it starts.
+    expect(res.heldOpen).toBe(false)
+  }, 120_000)
 })
 
 // ---------- fake servers: served ----------

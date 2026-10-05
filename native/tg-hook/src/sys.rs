@@ -3,15 +3,39 @@
 use std::process::{Child, Command};
 use std::time::Instant;
 
-/// Clears the inherit flag on this process's own standard handles, as Node does for itself at startup (`uv_disable_stdio_inheritance`). std gives a Windows child its standard handles as fresh inheritable duplicates, but creates it inheriting every inheritable handle of this process too, so without this the child would also hold the originals under handle values it does not know are its stdio. Node cannot clear those, and hands them on to the hook server the shim starts in the background, which then holds the harness's stdout open until it exits: a harness waiting for end of output would wait for the server, not the hook. POSIX needs nothing: a child gets descriptors 0 to 2 and std opens everything else close-on-exec.
-pub fn stop_stdio_inheritance() {
+/// The highest handle value [`stop_handle_inheritance`] probes, should the process's handle count never be reached: values are multiples of 4, so this bounds the scan at 262,144 calls that each fail fast on an unused value.
+#[cfg(windows)]
+const MAX_PROBED_HANDLE: usize = 1 << 20;
+
+/// Clears the inherit flag on every handle this process holds, its standard handles first, as Node does for those three at startup (`uv_disable_stdio_inheritance`). std gives a Windows child its standard handles as fresh inheritable duplicates, but creates it inheriting every inheritable handle of this process too, so without this the child would also hold the originals under handle values it does not know are its stdio, and any other inheritable handle this process was itself given: PowerShell, which is how Copilot CLI runs a hook command, hands its child its own stdout that way beside the three standard handles. Node cannot clear those, and hands them on to the hook server the shim starts in the background, which then holds the harness's stdout open until it exits: a harness waiting for end of output would wait for the server, not the hook. Windows has no documented call that lists a process's handles, so the values are probed in order until as many as the process holds have been found. POSIX needs nothing: a child gets descriptors 0 to 2 and std opens everything else close-on-exec.
+pub fn stop_handle_inheritance() {
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+        use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT, SetHandleInformation};
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
         for handle in [std::io::stdin().as_raw_handle(), std::io::stdout().as_raw_handle(), std::io::stderr().as_raw_handle()] {
             // SAFETY: changes only the inherit flag of a handle this process owns; a null or invalid one makes the call fail, which changes nothing.
             unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
+        }
+        let mut count = 0u32;
+        // SAFETY: the pseudo-handle for this process needs no closing; writes one u32.
+        if unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) } == 0 {
+            count = u32::MAX;
+        }
+        let (mut found, mut value) = (0u32, 4usize);
+        while found < count && value <= MAX_PROBED_HANDLE {
+            let handle = std::ptr::without_provenance_mut(value);
+            let mut flags = 0u32;
+            // SAFETY: reads the flags of a handle value this process may hold; an unused value makes the call fail and writes nothing.
+            if unsafe { GetHandleInformation(handle, &mut flags) } != 0 {
+                found += 1;
+                if flags & HANDLE_FLAG_INHERIT != 0 {
+                    // SAFETY: changes only the inherit flag of a handle this process holds.
+                    unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
+                }
+            }
+            value += 4;
         }
     }
 }

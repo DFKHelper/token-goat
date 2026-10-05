@@ -25,7 +25,7 @@ pub fn run(argv: &[OsString], input: Input, reason: &str) -> i32 {
     cmd.args(args).env(REASON_ENV, reason).stdout(Stdio::inherit()).stderr(Stdio::inherit());
     cmd.stdin(if matches!(input, Input::Untouched) { Stdio::inherit() } else { Stdio::piped() });
     crate::sys::guard_child(&mut cmd);
-    crate::sys::stop_stdio_inheritance();
+    crate::sys::stop_handle_inheritance();
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
