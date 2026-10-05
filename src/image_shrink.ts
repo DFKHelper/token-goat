@@ -47,6 +47,7 @@ import { detectHarness } from './bridges/registry.js'
 import { permissionNeutralRewrite } from './rewrite_permission.js'
 import type { HarnessName } from './bridges/types.js'
 import { displaySafePath } from './paths.js'
+import { recordFileRead } from './session.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import type { HookOutput } from './types.js'
 
@@ -609,10 +610,14 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string, even
       return passOutput()
     }
     if (deliveryReplacesRead(harness, rewrite)) recordSavedShrink(result, basename)
+    // The session records the image asked for, not the copy: the post-read hook only sees the copy's temp path, and preReadHandler, which records every other Read, never runs once this handler answers.
+    recordFileRead(filePath)
     return rewrite
   }
   // A host (or generic, an opencode or OpenClaw host that pinned no harness) writes the copy in its own process after this one has answered and falls back to the original image if that write fails, so this process never sees the delivery and books nothing. No OCR text either: the host finds no data URL in it and sends the original image, so the text would only add to what the model receives.
   const { summary, dataUrl } = formatShrinkSummary(result, basename)
+  // Recorded for the same reason as the rewrite above: the host delivers the copy or falls back to the original, and either way the model has read this image.
+  recordFileRead(filePath)
   return contextOutput(`${summary}\n${dataUrl}`)
 }
 

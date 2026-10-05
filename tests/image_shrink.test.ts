@@ -35,6 +35,9 @@ import type { HookOutput } from '../src/types.js'
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
 import { invalidateConfigCache } from '../src/config.js'
+import { clearPerRequestCaches } from '../src/reset.js'
+import { getSessionFileEntry, wasFileReadThisSession } from '../src/session.js'
+import { normalizePath } from '../src/paths.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 function makeEvent(filePath: string | undefined): HookEvent {
@@ -902,5 +905,51 @@ describe('composed pre_tool_use dispatch (real runHook)', () => {
     })
     const result = await runHook(event)
     expect(result.hookType).toBe('deny')
+  })
+})
+
+// HAND-DERIVED: a Read the shrink answers is still a read of the original image, so the session must hold that path exactly as it does when the image handler passes and preReadHandler records the Read; the post-read hook cannot fill the gap, since on Claude Code it only sees the copy's temp path.
+describe('a delivered shrink is recorded as a read of the original image (real runHook)', () => {
+  let prevHome: string | undefined
+  let tmpHome: string
+
+  beforeEach(() => {
+    prevHome = process.env['TOKEN_GOAT_HOME']
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shrink-read-home-'))
+    process.env['TOKEN_GOAT_HOME'] = tmpHome
+    clearPerRequestCaches()
+  })
+
+  afterEach(() => {
+    clearPerRequestCaches()
+    if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
+    else process.env['TOKEN_GOAT_HOME'] = prevHome
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  function readOf(filePath: string, sessionId: string): HookEvent {
+    return buildEvent('pre_tool_use', { tool_name: 'Read', tool_input: { file_path: filePath }, session_id: sessionId, cwd: path.dirname(filePath), permission_mode: 'default' })
+  }
+
+  it('records the original once when Claude Code reads the shrunk copy through a rewritten path', async () => {
+    deliverOnClaudeCode()
+    const out = await runHook(readOf(largePngPath, 'shrink-read-cc'))
+    expect(out.hookType).toBe('rewriteInput')
+    expect(getSessionFileEntry(largePngPath)).toMatchObject({ readCount: 1, fullReadCount: 1 })
+    const copy = normalizePath(String((out as { updatedInput: Record<string, unknown> }).updatedInput['file_path']))
+    expect(wasFileReadThisSession(copy)).toBe(false)
+  })
+
+  it('records the original once when the shrink goes to a host as context', async () => {
+    const out = await runHook(readOf(largePngPath, 'shrink-read-generic'))
+    expect(out.hookType).toBe('context')
+    expect(getSessionFileEntry(largePngPath)).toMatchObject({ readCount: 1, fullReadCount: 1 })
+  })
+
+  it('matches the record a Read the shrink passes on already gets', async () => {
+    process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'codex'
+    const out = await runHook(readOf(largePngPath, 'shrink-read-codex'))
+    expect(out.hookType).toBe('pass')
+    expect(getSessionFileEntry(largePngPath)).toMatchObject({ readCount: 1, fullReadCount: 1 })
   })
 })
