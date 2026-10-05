@@ -1,12 +1,4 @@
-/**
- * Regression: previewing the top of a sheet must cost what the preview is, not what the sheet is.
- *
- * `headSheetFromWorksheet` walked every row of the sheet into an array and then kept `slice(1, 1 + rows)` of it. The rest was built and thrown away, so the cost tracked the sheet's size and not the request. Measured against the built binary on a 550,000-row sheet, `xlsx-head --rows 5` took 5.1 s and `--rows 20` took 4.6 s -- the same work either way, for 11 lines of output. After the fix both take about 1.6 s, which is the XML parse alone (`xlsx-sheets` on the same file takes 2.0 s and does no scan at all).
- *
- * The full walk existed to learn the sheet's widest column, which pads the header and every data row so a row wider than the header still lines up. That number was already recorded while the sheet was parsed, as `ws.columnCount` (see parseSheetXml in xlsx_reader.ts), and verified equal to a full scan on a sheet whose widest row is its last -- so the walk was recomputing something already in hand. The count of elided rows likewise comes from `ws.rowCount` rather than from how far the scan happened to get.
- *
- * Nothing about the OUTPUT changed, which is what makes this worth a dedicated test: before and after produce byte-identical text on both fixtures below, so no assertion on the returned string can tell the two apart. The discriminating fact is how many cells were read, so that is what is asserted, through the real `headSheet` entry point with the workbook reader stubbed to count.
- */
+/** Regression: previewing the top of a sheet must cost what the preview is, not what the sheet is. `headSheetFromWorksheet` walked every row of the sheet into an array and then kept `slice(1, 1 + rows)` of it. The rest was built and thrown away, so the cost tracked the sheet's size and not the request. Measured against the built binary on a 550,000-row sheet, `xlsx-head --rows 5` took 5.1 s and `--rows 20` took 4.6 s -- the same work either way, for 11 lines of output. After the fix both take about 1.6 s, which is the XML parse alone (`xlsx-sheets` on the same file takes 2.0 s and does no scan at all). The full walk existed to learn the sheet's widest column, which pads the header and every data row so a row wider than the header still lines up. That number was already recorded while the sheet was parsed, as `ws.columnCount` (see parseSheetXml in xlsx_reader.ts), and verified equal to a full scan on a sheet whose widest row is its last -- so the walk was recomputing something already in hand. The count of elided rows likewise comes from `ws.rowCount` rather than from how far the scan happened to get. Nothing about the OUTPUT changed, which is what makes this worth a dedicated test: before and after produce byte-identical text on both fixtures below, so no assertion on the returned string can tell the two apart. The discriminating fact is how many cells were read, so that is what is asserted, through the real `headSheet` entry point with the workbook reader stubbed to count. */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ExcelCell, ExcelRow, ExcelWorkbook, ExcelWorksheet } from '../src/xlsx_reader.js'
@@ -18,11 +10,7 @@ vi.mock('../src/xlsx_reader.js', () => ({
 const { readXlsxWorkbook } = await import('../src/xlsx_reader.js')
 const { headSheet } = await import('../src/xlsx_extract.js')
 
-/**
- * A worksheet of `rows` x `cols` filled with `r{row}c{col}`, counting every cell read.
- *
- * HAND-DERIVED: the cell values are computed from their coordinates, so every assertion below can be worked out from the fixture's shape without consulting the extractor. `rowCount`/`columnCount` are set to the real extent, which is what a parsed sheet reports.
- */
+/** A worksheet of `rows` x `cols` filled with `r{row}c{col}`, counting every cell read. HAND-DERIVED: the cell values are computed from their coordinates, so every assertion below can be worked out from the fixture's shape without consulting the extractor. `rowCount`/`columnCount` are set to the real extent, which is what a parsed sheet reports. */
 function countingSheet(rows: number, cols: number): { ws: ExcelWorksheet; reads: () => number } {
   let reads = 0
   const cellAt = (r: number, c: number): ExcelCell => {

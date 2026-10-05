@@ -24,10 +24,7 @@ afterEach(() => {
 describe('storeWebOutput', () => {
   it('returns a non-empty cache id', () => {
     const id = storeWebOutput('https://example.com', '<html>hi</html>')
-    // The id is a deterministic function of the URL (shortFingerprint = first 16 hex chars of
-    // its SHA-256), not the content -- pin the exact value so a change to the id derivation
-    // (e.g. hashing content instead of URL, or a different slice length) is caught here rather
-    // than passing this loose a length-only check.
+    // The id is a deterministic function of the URL (shortFingerprint = first 16 hex chars of its SHA-256), not the content -- pin the exact value so a change to the id derivation (e.g. hashing content instead of URL, or a different slice length) is caught here rather than passing this loose a length-only check.
     expect(id).toBe('100680ad546ce6a5')
   })
 
@@ -37,11 +34,7 @@ describe('storeWebOutput', () => {
     expect(a).toBe(b)
   })
 
-  // Regression (secret-redaction bypass): storeWebOutput indexed the raw, pre-redaction
-  // content into both the in-memory _byId cache and the cache_recall table even though
-  // storeBlob() redacted the same text before writing it to disk -- a same-process
-  // getWebOutput() read, or `token-goat recall`/FTS search, could surface a secret the
-  // blob-store redaction was specifically built to strip.
+  // Regression (secret-redaction bypass): storeWebOutput indexed the raw, pre-redaction content into both the in-memory _byId cache and the cache_recall table even though storeBlob() redacted the same text before writing it to disk -- a same-process getWebOutput() read, or `token-goat recall`/FTS search, could surface a secret the blob-store redaction was specifically built to strip.
   it('never surfaces a raw secret via in-memory getWebOutput or the recall table', () => {
     const secret = 'AKIAIOSFODNN7EXAMPLE'
     const id = storeWebOutput('https://example.com/secret-leak', `before ${secret} after`)
@@ -50,9 +43,7 @@ describe('storeWebOutput', () => {
     expect(hits).toHaveLength(0)
   })
 
-  // Regression: the url itself can carry a secret too (a signed URL's token query param), not
-  // just the fetched body. The recall index's label/content were built from the raw url,
-  // bypassing redaction entirely -- only the content half of this fix was ever applied.
+  // Regression: the url itself can carry a secret too (a signed URL's token query param), not just the fetched body. The recall index's label/content were built from the raw url, bypassing redaction entirely -- only the content half of this fix was ever applied.
   it('never surfaces a raw secret embedded in the url via the recall table', () => {
     const secret = 'AKIAIOSFODNN7EXAMPLE'
     storeWebOutput(`https://example.com/download?token=${secret}`, 'ok')
@@ -87,10 +78,7 @@ describe('retrieval', () => {
   })
 })
 
-// Regression: postFetchHandler stored only the cleaned (extractCleanText) body when
-// webfetch.compress_bodies compressed a fetch, so the original fetched body was permanently
-// unrecoverable -- a lossy store with no recovery path (this repo's "lossy store" defect class),
-// not the merely-lossy-reader-over-a-lossless-store shape every other cache in this codebase uses.
+// Regression: postFetchHandler stored only the cleaned (extractCleanText) body when webfetch.compress_bodies compressed a fetch, so the original fetched body was permanently unrecoverable -- a lossy store with no recovery path (this repo's "lossy store" defect class), not the merely-lossy-reader-over-a-lossless-store shape every other cache in this codebase uses.
 describe('getWebOutputRaw', () => {
   it('returns the separately-stored raw body when a raw copy was passed at store time, leaving getWebOutput (the default read path) unchanged', () => {
     const id = storeWebOutput('https://example.com/raw', 'cleaned text', undefined, '<html><body>cleaned text<script>evil()</script></body></html>')

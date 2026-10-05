@@ -1,12 +1,4 @@
-/**
- * Regression: the table filters in `sqlite-tables` and `sqlite-schema` must hide SQLite's own internals, not user tables that merely resemble them.
- *
- * Both queries excluded objects with `name NOT LIKE 'sqlite_%'` and friends, and `_` is LIKE's single-character wildcard. Nothing made it literal, so each `_` matched any character and the filters were far wider than they read. Measured against the built binary on a database of four user tables, `sqlite-tables` listed ONE of them: `sqlitedata` was eaten by `sqlite_%` (the `_` matched `d`) and `my_ftsx_cache` by `%_fts_%` (the `_` after `fts` matched `x`). `sqlite-schema` hid `sqlitedata` the same way.
- *
- * This is a discovery command, which is what makes it worth a test: a table missing from the inventory does not read as a filter being too broad, it reads as the table not existing, and the caller's next query is written as though it does not.
- *
- * The fix adds `ESCAPE '\'` to each pattern. Both directions are driven here, because widening the filter is the obvious wrong fix: the real FTS5 shadow tables must still be absent, or an inventory meant to fit in ~50 tokens grows five rows of machinery per indexed table.
- */
+/** Regression: the table filters in `sqlite-tables` and `sqlite-schema` must hide SQLite's own internals, not user tables that merely resemble them. Both queries excluded objects with `name NOT LIKE 'sqlite_%'` and friends, and `_` is LIKE's single-character wildcard. Nothing made it literal, so each `_` matched any character and the filters were far wider than they read. Measured against the built binary on a database of four user tables, `sqlite-tables` listed ONE of them: `sqlitedata` was eaten by `sqlite_%` (the `_` matched `d`) and `my_ftsx_cache` by `%_fts_%` (the `_` after `fts` matched `x`). `sqlite-schema` hid `sqlitedata` the same way. This is a discovery command, which is what makes it worth a test: a table missing from the inventory does not read as a filter being too broad, it reads as the table not existing, and the caller's next query is written as though it does not. The fix adds `ESCAPE '\'` to each pattern. Both directions are driven here, because widening the filter is the obvious wrong fix: the real FTS5 shadow tables must still be absent, or an inventory meant to fit in ~50 tokens grows five rows of machinery per indexed table. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

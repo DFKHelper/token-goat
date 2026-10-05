@@ -1,14 +1,4 @@
-/**
- * Narrow schema summary + read-only query extraction for `token-goat sqlite-schema` / `sqlite-query`, so a project's `.db`/`.sqlite`/`.sqlite3` fixture never needs a raw-byte `Read` (useless) or a shelled-out `sqlite3` CLI (may not be installed, unstructured output) just to answer "what tables does this have" or "what's in table X where Y = Z". Matches the project's "no premature abstraction" bar (see csv_query.ts / json_query.ts for the same philosophy applied to CSV/JSON).
- *
- * Security posture (sqlite-query only executes text an agent -- or a prompt-injection payload embedded in file content the agent is processing -- hands it, so this is a trust boundary):
- *
- *  1. The connection itself is opened `{ readonly: true }` (a real, supported libsqlite3 option -- SQLite's core refuses any write at the OS/VFS level under `SQLITE_OPEN_READONLY`, independent of anything the SQL text says).
- *  2. `validateReadOnlySelect` rejects the SQL text itself before it ever reaches `db.prepare()`: single-statement only (no `;`-separated multi-statement injection), must start with `SELECT` or `WITH` (CTE prefix), and must not contain any data-modification/DDL/transaction/attach/pragma keyword anywhere outside a string literal or comment.
- *  3. `stmt.reader` (SQLite's own "does this statement return rows" classification) is checked after `prepare()` as a third, independent layer -- catches any statement shape our keyword scan didn't anticipate.
- *
- * Row/execution cap: the SQLite driver is synchronous and exposes no query-cancellation or progress-handler hook (verified against the installed 11.10.0 -- no `interrupt`/`progress` on `Database`/`Statement`), so there is no real wall-clock timeout available. The mitigation is a hard cap on rows pulled from the result iterator (`stmt.iterate()`, not `stmt.all()`, so we stop asking SQLite to produce more rows the moment the cap is hit rather than buffering an unbounded array first). This bounds "give me every row of a huge join" -- the common runaway case -- but does NOT bound a single-row aggregate over a pathological cartesian product (e.g. `SELECT COUNT(*) FROM a, b, c`): SQLite must still fully evaluate the join to produce that one row, and no cap on rows *returned* changes that. That residual risk is the same for a `LIMIT`-wrapping approach (an outer `LIMIT` doesn't stop the inner scan either), so it isn't a reason to prefer one mitigation over the other; documented here rather than silently assumed away.
- */
+/** Narrow schema summary + read-only query extraction for `token-goat sqlite-schema` / `sqlite-query`, so a project's `.db`/`.sqlite`/`.sqlite3` fixture never needs a raw-byte `Read` (useless) or a shelled-out `sqlite3` CLI (may not be installed, unstructured output) just to answer "what tables does this have" or "what's in table X where Y = Z". Matches the project's "no premature abstraction" bar (see csv_query.ts / json_query.ts for the same philosophy applied to CSV/JSON). Security posture (sqlite-query only executes text an agent -- or a prompt-injection payload embedded in file content the agent is processing -- hands it, so this is a trust boundary): 1. The connection itself is opened `{ readonly: true }` (a real, supported libsqlite3 option -- SQLite's core refuses any write at the OS/VFS level under `SQLITE_OPEN_READONLY`, independent of anything the SQL text says). 2. `validateReadOnlySelect` rejects the SQL text itself before it ever reaches `db.prepare()`: single-statement only (no `;`-separated multi-statement injection), must start with `SELECT` or `WITH` (CTE prefix), and must not contain any data-modification/DDL/transaction/attach/pragma keyword anywhere outside a string literal or comment. 3. `stmt.reader` (SQLite's own "does this statement return rows" classification) is checked after `prepare()` as a third, independent layer -- catches any statement shape our keyword scan didn't anticipate. Row/execution cap: the SQLite driver is synchronous and exposes no query-cancellation or progress-handler hook (verified against the installed 11.10.0 -- no `interrupt`/`progress` on `Database`/`Statement`), so there is no real wall-clock timeout available. The mitigation is a hard cap on rows pulled from the result iterator (`stmt.iterate()`, not `stmt.all()`, so we stop asking SQLite to produce more rows the moment the cap is hit rather than buffering an unbounded array first). This bounds "give me every row of a huge join" -- the common runaway case -- but does NOT bound a single-row aggregate over a pathological cartesian product (e.g. `SELECT COUNT(*) FROM a, b, c`): SQLite must still fully evaluate the join to produce that one row, and no cap on rows *returned* changes that. That residual risk is the same for a `LIMIT`-wrapping approach (an outer `LIMIT` doesn't stop the inner scan either), so it isn't a reason to prefer one mitigation over the other; documented here rather than silently assumed away. */
 
 import * as fs from 'node:fs'
 import { displaySafeText } from './paths.js'
@@ -134,9 +124,7 @@ interface ForeignKeyRow {
   to: string
 }
 
-/**
- * Structural summary of a SQLite database: every table/view with its column list (name, declared type, nullable/PK flags from `PRAGMA table_info`), indexes (`PRAGMA index_list` + `PRAGMA index_info`), foreign keys (`PRAGMA foreign_key_list`), and a row count. Mirrors what `outlineJson` does for JSON structure -- concise structural facts, not a dump.
- */
+/** Structural summary of a SQLite database: every table/view with its column list (name, declared type, nullable/PK flags from `PRAGMA table_info`), indexes (`PRAGMA index_list` + `PRAGMA index_info`), foreign keys (`PRAGMA foreign_key_list`), and a row count. Mirrors what `outlineJson` does for JSON structure -- concise structural facts, not a dump. */
 export function getSqliteSchema(filePath: string): SqliteSchemaResult {
   const db = openReadonlySqlite(filePath)
   try {
@@ -237,9 +225,7 @@ export interface SqliteTableSummary {
   columnCount: number
 }
 
-/**
- * Ultra-compact table inventory for a SQLite database: lists each table/view with its row count and column count in one line per table, consuming ~90% fewer tokens than a full schema dump when an agent only needs to know what tables exist and how large they are.
- */
+/** Ultra-compact table inventory for a SQLite database: lists each table/view with its row count and column count in one line per table, consuming ~90% fewer tokens than a full schema dump when an agent only needs to know what tables exist and how large they are. */
 export function getSqliteTables(filePath: string): SqliteTableSummary[] {
   const db = openReadonlySqlite(filePath)
   try {
@@ -319,9 +305,7 @@ const FORBIDDEN_KEYWORDS = [
   'REVOKE',
 ]
 
-/**
- * Replaces the contents of string/quoted-identifier literals and comments with spaces (preserving overall shape, not positions) so keyword/semicolon scanning below never matches text that's actually inert data or commentary rather than SQL syntax.
- */
+/** Replaces the contents of string/quoted-identifier literals and comments with spaces (preserving overall shape, not positions) so keyword/semicolon scanning below never matches text that's actually inert data or commentary rather than SQL syntax. */
 function stripSqlLiteralsAndComments(sql: string): string {
   let out = ''
   let i = 0
@@ -368,9 +352,7 @@ function stripSqlLiteralsAndComments(sql: string): string {
   return out
 }
 
-/**
- * Rejects anything that isn't a single, read-only `SELECT` (optionally CTE-prefixed via `WITH`/`WITH RECURSIVE`) statement. Throws with a specific reason on failure; returns nothing on success. This is the SQL-text half of sqlite-query's defense-in-depth -- the connection is also opened read-only (openReadonlySqlite), and `stmt.reader` is re-checked after prepare().
- */
+/** Rejects anything that isn't a single, read-only `SELECT` (optionally CTE-prefixed via `WITH`/`WITH RECURSIVE`) statement. Throws with a specific reason on failure; returns nothing on success. This is the SQL-text half of sqlite-query's defense-in-depth -- the connection is also opened read-only (openReadonlySqlite), and `stmt.reader` is re-checked after prepare(). */
 export function validateReadOnlySelect(sql: string): void {
   const stripped = stripSqlLiteralsAndComments(sql)
   const trimmed = stripped.trim()
@@ -413,9 +395,7 @@ export interface SqliteQueryResult {
   rowCapped: boolean
 }
 
-/**
- * Runs a validated, read-only `SELECT` against `filePath` and returns up to `rowCap` rows. Iterates (`stmt.iterate()`) rather than buffering the whole result (`stmt.all()`) so a runaway "return everything" query stops pulling rows from SQLite the moment the cap is hit, instead of materializing an unbounded array first. See the module doc for why this does not bound a single-row pathological aggregate.
- */
+/** Runs a validated, read-only `SELECT` against `filePath` and returns up to `rowCap` rows. Iterates (`stmt.iterate()`) rather than buffering the whole result (`stmt.all()`) so a runaway "return everything" query stops pulling rows from SQLite the moment the cap is hit, instead of materializing an unbounded array first. See the module doc for why this does not bound a single-row pathological aggregate. */
 /** Converts one raw SQLite result value (read with `safeIntegers(true)`, so every SQLite INTEGER column arrives as a `bigint`) into a {@link SqliteScalar}: a `bigint` that still fits a safe JS number converts to a plain `number` (identical to the pre-existing non-safe-integer behavior for the overwhelmingly common case), while one that doesn't converts to its exact decimal string instead of silently rounding -- see the {@link SqliteScalar} module doc. */
 function normalizeSqliteScalar(value: unknown): SqliteScalar {
   if (typeof value === 'bigint') {

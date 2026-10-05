@@ -1,10 +1,4 @@
-/**
- * The README tells an evaluator, in plain terms, that the index stores their source code and names
- * the columns that hold it. That disclosure is only worth anything while it matches the schema.
- * The failure that matters is not a rename: it is a new content-bearing table or column landing
- * quietly, leaving the document describing a smaller database than the one on disk. So the table
- * list is frozen here, and adding to it forces a decision about what the README now has to say.
- */
+/** The README tells an evaluator, in plain terms, that the index stores their source code and names the columns that hold it. That disclosure is only worth anything while it matches the schema. The failure that matters is not a rename: it is a new content-bearing table or column landing quietly, leaving the document describing a smaller database than the one on disk. So the table list is frozen here, and adding to it forces a decision about what the README now has to say. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,17 +27,13 @@ function columnsOf(table: string): string[] {
     .filter(Boolean)
 }
 
-// Frozen deliberately. A new entry here is a prompt, not an obstacle: decide whether it stores file
-// content, update the "What the index actually holds" paragraph if it does, then add the name.
+// Frozen deliberately. A new entry here is a prompt, not an obstacle: decide whether it stores file content, update the "What the index actually holds" paragraph if it does, then add the name.
 const DISCLOSED_TABLES = [
   'cache_recall',
   'cache_recall_fts',
   'chunk_vectors',
   'chunks',
-  // Holds one string naming the model, revision and backend that produced the stored vectors --
-  // no file content, nothing derived from the user's code -- so the README's "What the index
-  // actually holds" paragraph is still accurate without it. Recorded here because that judgement
-  // is the whole point of this list; the next table to arrive has to make the same one.
+  // Holds one string naming the model, revision and backend that produced the stored vectors -- no file content, nothing derived from the user's code -- so the README's "What the index actually holds" paragraph is still accurate without it. Recorded here because that judgement is the whole point of this list; the next table to arrive has to make the same one.
   'embedding_provenance',
   'files',
   'hint_emissions',
@@ -55,8 +45,7 @@ const DISCLOSED_TABLES = [
   'indexed_roots',
   'known_roots',
   'notes',
-  // Holds a file path (the resume point for a budget-truncated reconcile sweep) and a timestamp --
-  // no file content -- same judgement as known_roots just above, which is the same shape of table.
+  // Holds a file path (the resume point for a budget-truncated reconcile sweep) and a timestamp -- no file content -- same judgement as known_roots just above, which is the same shape of table.
   'reconcile_cursor',
   'refs',
   'skill_version_snapshots',

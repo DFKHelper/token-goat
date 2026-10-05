@@ -1,23 +1,4 @@
-/**
- * The one part of the embedding stack that touches the network, and the checks that make that safe.
- *
- * `ensureModelFiles` fetches 34 MB of ONNX weights and hands them to a native execution runtime, so
- * "it downloaded and the file is there" is not the bar. The bar is that nothing other than the
- * exact pinned bytes ever reaches disk under the cache's name. These tests drive the real function
- * with `fetch` substituted, because the failure modes that matter -- a wrong body, a body that
- * keeps coming, a mutable ref -- cannot be produced by asking huggingface.co nicely.
- *
- * The `tokenizer.json` used here is not a stand-in: it is the same fixture the tokenizer oracle
- * runs against, and its sha256 is the one pinned in embed_model.ts, so the happy path is verified
- * against genuine model bytes. It is also the *first* entry in MODEL_FILES, which is what lets
- * these tests exercise every per-file branch without ever needing the 34 MB second file: a run that
- * gets as far as asking for `model_quantized.onnx` has already accepted the tokenizer.
- *
- * This supersedes tests/embeddings_model_revision_pin.test.ts, which asserted the same pin one
- * layer up by watching the options object `embedTexts` passed to `@xenova/transformers`. There is
- * no such object now -- the revision is a constant in the URL -- so the assertion moved down to the
- * URL itself, which is the thing that was ever actually at risk.
- */
+/** The one part of the embedding stack that touches the network, and the checks that make that safe. `ensureModelFiles` fetches 34 MB of ONNX weights and hands them to a native execution runtime, so "it downloaded and the file is there" is not the bar. The bar is that nothing other than the exact pinned bytes ever reaches disk under the cache's name. These tests drive the real function with `fetch` substituted, because the failure modes that matter -- a wrong body, a body that keeps coming, a mutable ref -- cannot be produced by asking huggingface.co nicely. The `tokenizer.json` used here is not a stand-in: it is the same fixture the tokenizer oracle runs against, and its sha256 is the one pinned in embed_model.ts, so the happy path is verified against genuine model bytes. It is also the *first* entry in MODEL_FILES, which is what lets these tests exercise every per-file branch without ever needing the 34 MB second file: a run that gets as far as asking for `model_quantized.onnx` has already accepted the tokenizer. This supersedes tests/embeddings_model_revision_pin.test.ts, which asserted the same pin one layer up by watching the options object `embedTexts` passed to `@xenova/transformers`. There is no such object now -- the revision is a constant in the URL -- so the assertion moved down to the URL itself, which is the thing that was ever actually at risk. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -37,11 +18,7 @@ const REAL_TOKENIZER: Buffer = zlib.gunzipSync(
   fs.readFileSync(path.join(HERE, 'fixtures', 'wordpiece', 'tokenizer.json.gz')),
 )
 
-// TOKEN_GOAT_MODEL_CACHE_DIR is cleared rather than merely restored: every assertion below is
-// about which URLs get requested, and a shared cache inherited from the surrounding environment
-// answers some of those requests from disk instead. CI exports it, so leaving it in place made
-// this whole file fail there while passing on a developer machine that had never set it. Tests
-// for the shared cache itself set it explicitly and live in embed_model_shared_cache.test.ts.
+// TOKEN_GOAT_MODEL_CACHE_DIR is cleared rather than merely restored: every assertion below is about which URLs get requested, and a shared cache inherited from the surrounding environment answers some of those requests from disk instead. CI exports it, so leaving it in place made this whole file fail there while passing on a developer machine that had never set it. Tests for the shared cache itself set it explicitly and live in embed_model_shared_cache.test.ts.
 const ENV_KEYS = ['LOCALAPPDATA', 'XDG_DATA_HOME', 'TOKEN_GOAT_OFFLINE', 'TOKEN_GOAT_MODEL_CACHE_DIR'] as const
 
 let tmp: string
@@ -75,10 +52,7 @@ function bodyResponse(bytes: Uint8Array): Response {
   return new Response(bytes as unknown as BodyInit, { status: 200 })
 }
 
-/**
- * Substitute `fetch`, recording every URL asked for. The handler returns the body for a URL, or
- * throws to stand in for "this file was never supposed to be requested".
- */
+/** Substitute `fetch`, recording every URL asked for. The handler returns the body for a URL, or throws to stand in for "this file was never supposed to be requested". */
 function stubFetch(handler: (url: string) => Response | Promise<Response>): { urls: string[] } {
   const urls: string[] = []
   vi.stubGlobal('fetch', async (input: unknown) => {
@@ -121,8 +95,7 @@ describe('ensureModelFiles: what it will fetch', () => {
   it('asks only for the pinned model at the pinned immutable revision', async () => {
     const { urls } = stubFetch(() => bodyResponse(REAL_TOKENIZER))
 
-    // The onnx file is not stubbed with correct bytes, so this rejects -- the URL list is the
-    // assertion. A mutable ref like `main` here is the trust-on-first-use bug this pins shut.
+    // The onnx file is not stubbed with correct bytes, so this rejects -- the URL list is the assertion. A mutable ref like `main` here is the trust-on-first-use bug this pins shut.
     await expect(ensureModelFiles()).rejects.toThrow()
 
     expect(urls[0]).toBe(
@@ -179,15 +152,10 @@ describe('ensureModelFiles: what it refuses to keep', () => {
 })
 
 describe('ensureModelFiles: a sink that fails mid-download', () => {
-  // A write stream reports failure by emitting 'error', asynchronously and to its listeners. With
-  // none attached, Node re-raises it as an uncaught exception, which in a CLI is not a rejected
-  // download but a dead process -- and the caller never learns the download failed at all. Both
-  // halves are asserted here because either one alone still looks like a pass.
+  // A write stream reports failure by emitting 'error', asynchronously and to its listeners. With none attached, Node re-raises it as an uncaught exception, which in a CLI is not a rejected download but a dead process -- and the caller never learns the download failed at all. Both halves are asserted here because either one alone still looks like a pass.
   it('rejects with the write failure rather than raising it where nobody is listening', async () => {
     stubFetch(() => bodyResponse(REAL_TOKENIZER))
-    // A directory sitting where the scratch file goes -- a leftover, or another process -- makes
-    // the open fail, asynchronously and after `download` has already returned its promise. Nothing
-    // here is mocked: the real code opens the real path and really fails.
+    // A directory sitting where the scratch file goes -- a leftover, or another process -- makes the open fail, asynchronously and after `download` has already returned its promise. Nothing here is mocked: the real code opens the real path and really fails.
     const partial = `${cachedPath('tokenizer.json')}.${process.pid}.partial`
     fs.mkdirSync(partial, { recursive: true })
 
@@ -246,15 +214,12 @@ describe('ensureModelFiles: offline mode', () => {
   })
 
   it('still serves a cache that is already complete and correct', async () => {
-    // Offline is about not connecting, not about refusing to work: a verified file on disk needs
-    // no network, and treating offline as "always fail" would break an air-gapped install that was
-    // seeded deliberately.
+    // Offline is about not connecting, not about refusing to work: a verified file on disk needs no network, and treating offline as "always fail" would break an air-gapped install that was seeded deliberately.
     seedRealTokenizer()
     process.env['TOKEN_GOAT_OFFLINE'] = '1'
     const { urls } = stubFetch(() => bodyResponse(REAL_TOKENIZER))
 
-    // The onnx file is genuinely absent, so this still refuses -- but on the onnx file, not the
-    // tokenizer, and without a request.
+    // The onnx file is genuinely absent, so this still refuses -- but on the onnx file, not the tokenizer, and without a request.
     await expect(ensureModelFiles()).rejects.toThrow(/model_quantized\.onnx/)
     expect(urls).toEqual([])
   })

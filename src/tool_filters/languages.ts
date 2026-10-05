@@ -21,9 +21,7 @@ import {
   squeezeBlankLines,
 } from './helpers.js'
 
-// ===========================================================================
-// NodeFilter
-// ===========================================================================
+// =========================================================================== NodeFilter ===========================================================================
 
 const NODE_INTERNAL_FRAME_RE = /^\s{4}at\s+(?:node:|.+\s+\(node:)/
 const NODE_MODULES_FRAME_RE = /^\s{4}at\s+.*[/\\]node_modules[/\\]/
@@ -66,9 +64,7 @@ export class NodeFilter extends ToolFilter {
 
 export const nodeFilter = new NodeFilter()
 
-// ===========================================================================
-// PythonFilter
-// ===========================================================================
+// =========================================================================== PythonFilter ===========================================================================
 
 const PYTHON_FRAME_RE = /^\s+File\s+"[^"]+",\s+line\s+\d+/
 const PYTHON_WARNING_RE = /^\s*.*Warning:\s/
@@ -100,11 +96,7 @@ export class PythonFilter extends ToolFilter {
   private _compressTraceback(lines: string[]): string[] {
     const out: string[] = []
     let inTraceback = false
-    // Each element is one whole frame: a `File "...", line N, in func` header
-    // line plus every trailing context line (source line, and — on Python
-    // 3.11+ — a PEP 657 caret-annotation block) up to the next header. Grouping
-    // by frame (not raw line) lets us truncate without tearing a frame's
-    // header away from its context, or vice versa.
+    // Each element is one whole frame: a `File "...", line N, in func` header line plus every trailing context line (source line, and — on Python 3.11+ — a PEP 657 caret-annotation block) up to the next header. Grouping by frame (not raw line) lets us truncate without tearing a frame's header away from its context, or vice versa.
     let frameGroups: string[][] = []
     let headerLine = ''
 
@@ -203,9 +195,7 @@ export class PythonFilter extends ToolFilter {
 
 export const pythonFilter = new PythonFilter()
 
-// ===========================================================================
-// RubyFilter
-// ===========================================================================
+// =========================================================================== RubyFilter ===========================================================================
 
 const RSPEC_PROGRESS_RE = /^[.FE*]+$/
 const RSPEC_SUMMARY_RE = /^\d+ examples?,\s+\d+ failures?/
@@ -258,9 +248,7 @@ export class RubyFilter extends ToolFilter {
 
 export const rubyFilter = new RubyFilter()
 
-// ===========================================================================
-// BunFilter
-// ===========================================================================
+// =========================================================================== BunFilter ===========================================================================
 
 const BUN_DOWNLOAD_RE = /^\s+(?:↕|↑|↓)\s+\S+@\S+|\s+(?:\[downloading\]|\[installed\]|\[cached\])/i
 const BUN_INSTALL_SUMMARY_RE =
@@ -351,9 +339,7 @@ export class BunFilter extends ToolFilter {
 
 export const bunFilter = new BunFilter()
 
-// ===========================================================================
-// DenoFilter
-// ===========================================================================
+// =========================================================================== DenoFilter ===========================================================================
 
 const DENO_TEST_PASS_RE = /^\s*(?:ok\s+\||\bpassed\b|✓)\s+/i
 const DENO_TEST_FAIL_RE = /^\s*(?:FAILED|not\s+ok\s+\||✗|failed)\s*/i
@@ -444,9 +430,7 @@ export class DenoFilter extends ToolFilter {
 
 export const denoFilter = new DenoFilter()
 
-// ===========================================================================
-// FlutterFilter
-// ===========================================================================
+// =========================================================================== FlutterFilter ===========================================================================
 
 const FLUTTER_COMPILING_RE = /^Compiling\s+lib\//
 const FLUTTER_BUILT_RE = /^[✓✔]\s+Built\s+\S/
@@ -526,9 +510,7 @@ export class FlutterFilter extends ToolFilter {
 
 export const flutterFilter = new FlutterFilter()
 
-// ===========================================================================
-// DartFilter
-// ===========================================================================
+// =========================================================================== DartFilter ===========================================================================
 
 const DART_ANALYZING_RE = /^Analyzing\s/
 const DART_ANALYZE_RESULT_RE = /^(?:No issues found!|\d+ issue[s]? found\.|warning -|error -|info -|hint -)/
@@ -619,9 +601,7 @@ export class DartFilter extends ToolFilter {
 
 export const dartFilter = new DartFilter()
 
-// ===========================================================================
-// SwiftFilter
-// ===========================================================================
+// =========================================================================== SwiftFilter ===========================================================================
 
 const SWIFT_COMPILE_RE =
   /^\s*(?:CompileSwift|CompileSwiftSources|MergeSwiftModule|PhaseScriptExecution|CpResource|CpHeader|ProcessInfoPlistFile|Ld\s|CodeSign\s|Touch\s|note:\s+compile\s+Swift\s+module)\s/
@@ -695,9 +675,7 @@ export class SwiftFilter extends ToolFilter {
 export const swiftFilter = new SwiftFilter()
 
 
-// ===========================================================================
-// XcodeFilter
-// ===========================================================================
+// =========================================================================== XcodeFilter ===========================================================================
 
 const XCODE_SECTION_RE = /^=== .+ ===$/
 const XCODE_COMPILE_RE =
@@ -743,9 +721,7 @@ export class XcodeFilter extends ToolFilter {
 
 export const xcodeFilter = new XcodeFilter()
 
-// ===========================================================================
-// MixFilter  (Elixir)
-// ===========================================================================
+// =========================================================================== MixFilter  (Elixir) ===========================================================================
 
 const MIX_GETTING_DEP_RE = /^\* Getting (\S+)\s/
 const MIX_COMPILING_RE = /^Compiling \d+ file/
@@ -845,8 +821,7 @@ export class MixFilter extends ToolFilter {
     return this.finalize(kept)
   }
 
-  // Deliberate passthrough: mix ecto.* output is already terse (no per-line noise pattern
-  // to collapse), so nothing is filtered here.
+  // Deliberate passthrough: mix ecto.* output is already terse (no per-line noise pattern to collapse), so nothing is filtered here.
   private _compressEcto(lines: string[]): string {
     return this.finalize(lines)
   }
@@ -854,9 +829,7 @@ export class MixFilter extends ToolFilter {
 
 export const mixFilter = new MixFilter()
 
-// ===========================================================================
-// ZigFilter
-// ===========================================================================
+// =========================================================================== ZigFilter ===========================================================================
 
 const ZIG_BUILD_STEP_RE = /^\s*\[\d+\/\d+\]\s+/
 const ZIG_BUILD_SUMMARY_RE = /^\s*Build\s+Summary:|\s*\d+\s+step[s]?\s+(?:succeeded|failed)/i
@@ -927,9 +900,7 @@ export class ZigFilter extends ToolFilter {
 
 export const zigFilter = new ZigFilter()
 
-// ===========================================================================
-// RCmdFilter  (R CMD check / Rscript)
-// ===========================================================================
+// =========================================================================== RCmdFilter  (R CMD check / Rscript) ===========================================================================
 
 const R_CHECKING_RE = /^\s*\*\s+checking\s+\S/i
 // Only OK. A SKIPPED check is a different outcome: it says the check did not run, which is the one thing a caller reading an `R CMD check` report needs to know about it. Counting it here both deleted that line and made the `collapsed N R CMD check-OK line(s)` note a false claim, reporting a skipped check as a passing one.
@@ -993,13 +964,9 @@ export class RCmdFilter extends ToolFilter {
 
 export const rCmdFilter = new RCmdFilter()
 
-// ===========================================================================
-// Factory-built filters (makeLanguageFilter)
-// ===========================================================================
+// =========================================================================== Factory-built filters (makeLanguageFilter) ===========================================================================
 
-// ---------------------------------------------------------------------------
-// ErlangFilter  (rebar3 / rebar)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ErlangFilter  (rebar3 / rebar) ---------------------------------------------------------------------------
 
 const REBAR3_COMPILING_RE = /^===>\s+\S+\s+\(compile\)|^Compiling\s+\S+\.erl\b/i
 const REBAR3_FETCH_RE =
@@ -1050,9 +1017,7 @@ export const erlangFilter = makeLanguageFilter({
   ] as AiCliCountedRule[],
 })
 
-// ---------------------------------------------------------------------------
-// CrystalFilter  (crystal / shards)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CrystalFilter  (crystal / shards) ---------------------------------------------------------------------------
 
 const CRYSTAL_COMPILING_RE =
   /^\s*(?:Compiling\s+\S+|Linking\s+crystal\s+spec|crystal\s+spec\s+\S+\.cr\b)/i
@@ -1103,9 +1068,7 @@ export const crystalFilter = makeLanguageFilter({
   ] as AiCliCountedRule[],
 })
 
-// ---------------------------------------------------------------------------
-// HaskellFilter  (cabal / stack / ghc)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- HaskellFilter  (cabal / stack / ghc) ---------------------------------------------------------------------------
 
 const HASKELL_RESOLVING_RE =
   /^\s*(?:Resolving\s+dependencies|Downloading\s+\S+\s+from\s+Hackage|Downloading\s+\S+\s+\.\.\.|Fetching\s+package|Configuring\s+\S+\.\.\.|Preprocessing\s+\S+\s+for|Starting\s+to\s+install)/i
@@ -1162,9 +1125,7 @@ export const haskellFilter = makeLanguageFilter({
   ],
 })
 
-// ---------------------------------------------------------------------------
-// ElmFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ElmFilter ---------------------------------------------------------------------------
 
 const ELM_DOWNLOADING_RE =
   /^\s*(?:Starting downloads\.\.\.|Downloading\s+\S+\s+\(\d+\.\d+\.\d+\))/i
@@ -1211,9 +1172,7 @@ export const elmFilter = makeLanguageFilter({
   droppedNoiseNote: (n) => `dropped ${n} dependency-progress line(s)`,
 })
 
-// ---------------------------------------------------------------------------
-// JuliaFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- JuliaFilter ---------------------------------------------------------------------------
 
 const JULIA_PKG_RESOLVING_RE =
   // eslint-disable-next-line no-control-regex
@@ -1265,9 +1224,7 @@ export const juliaFilter = makeLanguageFilter({
   ] as AiCliCountedRule[],
 })
 
-// ---------------------------------------------------------------------------
-// PowerShellFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PowerShellFilter ---------------------------------------------------------------------------
 
 const PWSH_VERBOSE_RE = /^VERBOSE:\s/i
 const PWSH_DEBUG_RE = /^DEBUG:\s/i
@@ -1276,15 +1233,7 @@ const PWSH_INSTALL_MODULE_RE = /^(?:Install-Module:|PackageManagement\\|Installi
 const PWSH_PROGRESS_RECORD_RE =
   /^(?:Processing record\s+\d+\s+of\s+\d+|PROGRESS:\s+\d+%)/i
 
-// A CommandNotFoundException ErrorRecord is PowerShell's well-documented,
-// version-stable error-record shape for "command not found" -- most commonly
-// hit here when Git-Bash pre-expands an unescaped `$_` (bash's own "last arg
-// of previous command") before pwsh/powershell ever sees the -Command string,
-// mangling it into a bogus binary name. The ErrorRecord itself is what is
-// noisy (a multi-KB stack trace for a one-line diagnosis), so detection keys
-// on the two stable markers -- `+ CategoryInfo ... ObjectNotFound:` and
-// `+ FullyQualifiedErrorId : CommandNotFoundException` -- rather than the $_
-// cause specifically; the shape is noise regardless of what produced it.
+// A CommandNotFoundException ErrorRecord is PowerShell's well-documented, version-stable error-record shape for "command not found" -- most commonly hit here when Git-Bash pre-expands an unescaped `$_` (bash's own "last arg of previous command") before pwsh/powershell ever sees the -Command string, mangling it into a bogus binary name. The ErrorRecord itself is what is noisy (a multi-KB stack trace for a one-line diagnosis), so detection keys on the two stable markers -- `+ CategoryInfo ... ObjectNotFound:` and `+ FullyQualifiedErrorId : CommandNotFoundException` -- rather than the $_ cause specifically; the shape is noise regardless of what produced it.
 const PS_CNF_ERROR_RE =
   /^(\S.*?) : (?:The term '.*?' is|.*? is) not recognized as the name of a cmdlet, function, script file, or operable program\.\r?\n(?:.*\r?\n)*?[ \t]*\+ CategoryInfo\s*:\s*ObjectNotFound:\s*\(([^:]*):String\)\s*\[\],\s*CommandNotFoundException\r?\n[ \t]*\+ FullyQualifiedErrorId\s*:\s*CommandNotFoundException\r?\n?/gm
 
@@ -1312,8 +1261,7 @@ export class PowerShellErrorFilter extends ToolFilter {
         continue
       }
       if (PWSH_WARNING_RE.test(line)) {
-        // Do not truncate the key: a fixed-length cap makes two DISTINCT warnings that share a
-        // long leading substring collide, silently dropping one as a false "repeat".
+        // Do not truncate the key: a fixed-length cap makes two DISTINCT warnings that share a long leading substring collide, silently dropping one as a false "repeat".
         const key = line
 
         const n = (warnSeen.get(key) ?? 0) + 1
@@ -1348,18 +1296,9 @@ export class PowerShellErrorFilter extends ToolFilter {
 
 export const powerShellFilter: ToolFilter = new PowerShellErrorFilter()
 
-// ===========================================================================
-// Registry
-// ===========================================================================
+// =========================================================================== Registry ===========================================================================
 
-/**
- * All language-runtime filters in dispatch order.
- *
- * NodeFilter is first because it has a narrow custom matches() (eval-only)
- * and must not be shadowed.  SwiftLintFilter, XcodeFilter, and the rest use
- * unique enough binaries that ordering within this slice is safe as long as
- * the slice is appended AFTER SHELL_FILE_FILTERS in dispatch.ts.
- */
+/** All language-runtime filters in dispatch order. NodeFilter is first because it has a narrow custom matches() (eval-only) and must not be shadowed.  SwiftLintFilter, XcodeFilter, and the rest use unique enough binaries that ordering within this slice is safe as long as the slice is appended AFTER SHELL_FILE_FILTERS in dispatch.ts. */
 export const LANGUAGE_FILTERS: readonly ToolFilter[] = [
   nodeFilter,
   xcodeFilter,

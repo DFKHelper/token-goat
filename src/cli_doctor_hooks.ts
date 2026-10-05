@@ -1,12 +1,4 @@
-/**
- * Harness hook repairs for `token-goat doctor --repair` and `token-goat install`.
- *
- * Inspects all coding agent harnesses supported by token-goat (Claude Code, Copilot CLI,
- * Codex, Grok, Kimi, Gemini, Qwen, Opencode, OpenClaw, Pi, Antigravity). For any harness
- * that is already installed on the current machine or in the current project, checks if its
- * hook shim script, config, or command entries are stale or outdated compared to the
- * running build, and rewrites them in-place.
- */
+/** Harness hook repairs for `token-goat doctor --repair` and `token-goat install`. Inspects all coding agent harnesses supported by token-goat (Claude Code, Copilot CLI, Codex, Grok, Kimi, Gemini, Qwen, Opencode, OpenClaw, Pi, Antigravity). For any harness that is already installed on the current machine or in the current project, checks if its hook shim script, config, or command entries are stale or outdated compared to the running build, and rewrites them in-place. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -70,10 +62,7 @@ export interface HarnessRepairResult {
   errors: string[]
 }
 
-/**
- * Auto-repairs stale hook shims, missing hook events, or outdated hook invocations
- * across all coding agent harnesses currently installed on this machine or in this project.
- */
+/** Auto-repairs stale hook shims, missing hook events, or outdated hook invocations across all coding agent harnesses currently installed on this machine or in this project. */
 export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepairResult {
   const repairs: string[] = []
   const errors: string[] = []

@@ -1,25 +1,4 @@
-/**
- * End-to-end regression for the `symbols.body` storage cap.
- *
- * Background: extractJsonSymbols used to store each top-level key's *whole source line* as its
- * body. On minified JSON — one line for the entire document — that meant every key stored a copy
- * of the whole file, so stored bytes grew as (keys × file size). One real 1.5 MB, 1142-key file
- * inflated global.db by 1.6 GB on its own, which stretched that file's reindex transaction long
- * enough to hold SQLite's writer lock past db.ts's 15s busy_timeout — reaching users as
- * "database is locked" and as long stalls during `token-goat index`.
- *
- * Two defenses were added, and this file pins the one that is easy to get subtly wrong:
- * writeParseResult bounds every stored body at MAX_SYMBOL_BODY_CHARS. The *shape* of that bound
- * is the load-bearing detail. An over-cap body is stored EMPTY, not truncated, because
- * read_commands.ts's resolveBody re-slices an empty body from the source file over the symbol's
- * line range. Storing a truncated body instead would still bound the DB but would make `read`,
- * `symbol`, and `brief` return partial source while presenting it as the complete symbol, with
- * line_end still advertising the full range — a silent correctness regression in the tool's
- * central contract, traded for disk space.
- *
- * These tests drive the real, unmocked pipeline: a real oversized source file, a real
- * indexFileSync write, the real DB, and the real runRead/runSymbol readers.
- */
+/** End-to-end regression for the `symbols.body` storage cap. Background: extractJsonSymbols used to store each top-level key's *whole source line* as its body. On minified JSON — one line for the entire document — that meant every key stored a copy of the whole file, so stored bytes grew as (keys × file size). One real 1.5 MB, 1142-key file inflated global.db by 1.6 GB on its own, which stretched that file's reindex transaction long enough to hold SQLite's writer lock past db.ts's 15s busy_timeout — reaching users as "database is locked" and as long stalls during `token-goat index`. Two defenses were added, and this file pins the one that is easy to get subtly wrong: writeParseResult bounds every stored body at MAX_SYMBOL_BODY_CHARS. The *shape* of that bound is the load-bearing detail. An over-cap body is stored EMPTY, not truncated, because read_commands.ts's resolveBody re-slices an empty body from the source file over the symbol's line range. Storing a truncated body instead would still bound the DB but would make `read`, `symbol`, and `brief` return partial source while presenting it as the complete symbol, with line_end still advertising the full range — a silent correctness regression in the tool's central contract, traded for disk space. These tests drive the real, unmocked pipeline: a real oversized source file, a real indexFileSync write, the real DB, and the real runRead/runSymbol readers. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -67,22 +46,16 @@ describe('symbols.body storage cap (real pipeline)', () => {
       const sym = stored[0]!
       // The DB row is bounded...
       expect(sym.body).toBe('')
-      // ...while still describing the symbol's true extent, which is what lets the reader
-      // reconstruct it. A row that elided the body but also lost the range would be unreadable.
+      // ...while still describing the symbol's true extent, which is what lets the reader reconstruct it. A row that elided the body but also lost the range would be unreadable.
       expect(sym.lineEnd - sym.lineStart).toBeGreaterThan(5000)
 
-      // ...and the read path still returns the whole thing, including its very last line.
-      // ...and the read path still serves the symbol from source. The output goes through the
-      // normal overflow guard, which is the point: the reader reports honestly how much of the
-      // symbol it is showing ("showing N of 6004 lines") instead of silently handing back a
-      // truncated body as if it were whole, which is what storing a truncated body would cause.
+      // ...and the read path still returns the whole thing, including its very last line. ...and the read path still serves the symbol from source. The output goes through the normal overflow guard, which is the point: the reader reports honestly how much of the symbol it is showing ("showing N of 6004 lines") instead of silently handing back a truncated body as if it were whole, which is what storing a truncated body would cause.
       const { text, code } = runRead({ spec: `${file}::hugeFn` })
       expect(code).toBe(0)
       expect(text).toContain('localVariableNumber0 =')
       expect(text).toMatch(/of 6004 lines/)
 
-      // --json is the documented escape hatch from that cap; the full body must be there,
-      // proving nothing was lost at write time.
+      // --json is the documented escape hatch from that cap; the full body must be there, proving nothing was lost at write time.
       const full = runRead({ spec: `${file}::hugeFn`, json: true })
       expect(full.code).toBe(0)
       expect(full.text).toContain('localVariableNumber5999 =')
@@ -93,24 +66,14 @@ describe('symbols.body storage cap (real pipeline)', () => {
   })
 
   it('re-slices an over-cap notebook body from the virtual source, not the JSON on disk', () => {
-    // A `.ipynb` is indexed through parser.ts's ipynb branch, which flattens its code cells into a
-    // virtual Python document and parses THAT -- so every stored line_start/line_end addresses the
-    // virtual document, never the JSON file on disk. The empty-body fallback above therefore has to
-    // re-slice the same virtual document; slicing the raw JSON returns notebook markup under the
-    // symbol's name, which is both wrong and larger than the file the read was meant to avoid.
-    // Notebook fixture shape: FORMAT-DERIVED from the nbformat v4 schema
-    // (https://nbformat.readthedocs.io/en/latest/format_description.html) -- `cells[].cell_type`,
-    // `cells[].source` as a list of newline-terminated lines, and `metadata.kernelspec.language`.
-    // Expected output: HAND-DERIVED -- the Python text below is written by this test, so what a
-    // correct read must return is known without consulting the extractor.
+    // A `.ipynb` is indexed through parser.ts's ipynb branch, which flattens its code cells into a virtual Python document and parses THAT -- so every stored line_start/line_end addresses the virtual document, never the JSON file on disk. The empty-body fallback above therefore has to re-slice the same virtual document; slicing the raw JSON returns notebook markup under the symbol's name, which is both wrong and larger than the file the read was meant to avoid. Notebook fixture shape: FORMAT-DERIVED from the nbformat v4 schema (https://nbformat.readthedocs.io/en/latest/format_description.html) -- `cells[].cell_type`, `cells[].source` as a list of newline-terminated lines, and `metadata.kernelspec.language`. Expected output: HAND-DERIVED -- the Python text below is written by this test, so what a correct read must return is known without consulting the extractor.
     const root = mkdtempSync(join(tmpdir(), 'tg-bodycap-nb-'))
     try {
       const file = join(root, 'huge.ipynb')
       const cell = ['def hugeNotebookFn():\n']
       for (let i = 0; i < 6000; i++) cell.push(`    notebookLocalNumber${i} = ${i} + 1\n`)
       cell.push('    return 0\n')
-      // Indent 1, matching what nbformat itself writes to disk, so the JSON has many lines for the
-      // stale line range to slice into -- a minified notebook hides the same defect as an empty body.
+      // Indent 1, matching what nbformat itself writes to disk, so the JSON has many lines for the stale line range to slice into -- a minified notebook hides the same defect as an empty body.
       writeFileSync(
         file,
         JSON.stringify(
@@ -166,19 +129,14 @@ describe('symbols.docstring storage cap', () => {
   })
 
   it('never returns more than the cap it advertises', () => {
-    // The marker has to be budgeted *inside* the cap. Appending it to a full-length slice would
-    // make the stored value longer than MAX_SYMBOL_DOCSTRING_CHARS, which turns a constant that
-    // reads as a hard storage bound into an approximate one -- exactly the kind of quiet drift
-    // that let the body column reach 1.9 GB in the first place.
+    // The marker has to be budgeted *inside* the cap. Appending it to a full-length slice would make the stored value longer than MAX_SYMBOL_DOCSTRING_CHARS, which turns a constant that reads as a hard storage bound into an approximate one -- exactly the kind of quiet drift that let the body column reach 1.9 GB in the first place.
     const doc = 'a'.repeat(MAX_SYMBOL_DOCSTRING_CHARS * 3)
     const bounded = boundSymbolDocstring(doc)
     expect(bounded.length).toBeLessThanOrEqual(MAX_SYMBOL_DOCSTRING_CHARS)
   })
 
   it('truncates with a visible marker rather than eliding', () => {
-    // The deliberate inverse of the body contract: no line range is recorded for a docstring, so
-    // there is nothing to re-slice it from. Eliding would destroy it and flip `outline` to
-    // "undocumented" for the most heavily documented symbols.
+    // The deliberate inverse of the body contract: no line range is recorded for a docstring, so there is nothing to re-slice it from. Eliding would destroy it and flip `outline` to "undocumented" for the most heavily documented symbols.
     const bounded = boundSymbolDocstring('a'.repeat(MAX_SYMBOL_DOCSTRING_CHARS * 2))
     expect(bounded).not.toBe('')
     expect(bounded).toContain('truncated')
@@ -186,9 +144,7 @@ describe('symbols.docstring storage cap', () => {
   })
 
   it('does not split a surrogate pair at the cut point', () => {
-    // Build a docstring whose over-cap region lands the cut exactly between the two halves of an
-    // astral character. Slicing there stores a lone surrogate -- not valid text, and liable to
-    // surface downstream as a replacement character.
+    // Build a docstring whose over-cap region lands the cut exactly between the two halves of an astral character. Slicing there stores a lone surrogate -- not valid text, and liable to surface downstream as a replacement character.
     const cut = MAX_SYMBOL_DOCSTRING_CHARS - '\n[... docstring truncated by token-goat ...]'.length
     const doc = 'a'.repeat(cut - 1) + '\u{1F600}'.repeat(2000)
     const bounded = boundSymbolDocstring(doc)
@@ -202,8 +158,7 @@ describe('symbols.docstring storage cap', () => {
       const file = join(root, 'many.ts')
       const names = Array.from({ length: 900 }, (_, i) => 'v' + i)
       const source = 'const [' + names.join(',') + '] = source\n'
-      // Each name on its own is far under the cap. What passes it is the declarator's
-      // text stored once per bound name: 900 x ~4.4 KB.
+      // Each name on its own is far under the cap. What passes it is the declarator's text stored once per bound name: 900 x ~4.4 KB.
       expect(source.length).toBeLessThan(MAX_SYMBOL_BODY_CHARS)
       expect(source.length * names.length).toBeGreaterThan(MAX_SYMBOL_BODY_CHARS)
       writeFileSync(file, source)

@@ -3,38 +3,13 @@ import { pinnedPopulation } from './population.js'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-/**
- * `dataDir()` resolves the storage root from a DIFFERENT environment variable per platform
- * (see src/constants.ts): `LOCALAPPDATA` on win32, `XDG_DATA_HOME` on macOS and Linux. A test
- * that redirects only one of them is therefore isolated on exactly one platform and silently
- * leaks on the others -- `recordStat` writes to the worker-wide data dir while the assertion
- * reads the per-test one, so every stat count comes back zero.
- *
- * That is not hypothetical. `tests/content_store.test.ts` pinned `LOCALAPPDATA` alone, passed
- * on every Windows developer machine, and failed `expected 0 to be greater than 0` on the
- * `test` (ubuntu) and `test-macos` CI jobs -- a red main that no local run reproduced.
- *
- * This guard is a filesystem read over the test tree, so it costs nothing and runs everywhere.
- */
+/** `dataDir()` resolves the storage root from a DIFFERENT environment variable per platform (see src/constants.ts): `LOCALAPPDATA` on win32, `XDG_DATA_HOME` on macOS and Linux. A test that redirects only one of them is therefore isolated on exactly one platform and silently leaks on the others -- `recordStat` writes to the worker-wide data dir while the assertion reads the per-test one, so every stat count comes back zero. That is not hypothetical. `tests/content_store.test.ts` pinned `LOCALAPPDATA` alone, passed on every Windows developer machine, and failed `expected 0 to be greater than 0` on the `test` (ubuntu) and `test-macos` CI jobs -- a red main that no local run reproduced. This guard is a filesystem read over the test tree, so it costs nothing and runs everywhere. */
 
 const TESTS_DIR = path.resolve(__dirname, '..')
 const ASSIGN_LOCALAPPDATA = /process\.env\[['"]LOCALAPPDATA['"]\]\s*=/
 const ASSIGN_XDG = /process\.env\[['"]XDG_DATA_HOME['"]\]\s*=/
 
-/**
- * A per-line assignment to `varName`, excluding the restore half of the save/restore idiom every
- * pinning test uses: a saved-value variable captured up front, then written back in an `else`
- * branch once the real pin is no longer needed. That restore write matches the bare ASSIGN_*
- * regex just as well as the real pinning write does, so removing only the real pin from a test
- * file while leaving its own untouched cleanup block still read, to the bare regex, as "this file
- * pins both variables" -- confirmed by mutating bash_runner.test.ts's real pin away and watching
- * this guard stay green on the strength of its own restore line alone. Excluded here: any line
- * whose trimmed text starts with `else ` (the idiom's restore branch), and any assignment whose
- * right-hand side is itself a saved-value identifier (the same idiom without the keyword on its
- * own line, e.g. a one-line ternary restore). Deliberately worded above without spelling out the
- * literal assignment shape on one line, since this file is itself part of the scanned population
- * and a docstring quoting that shape verbatim would satisfy the very regex it documents.
- */
+/** A per-line assignment to `varName`, excluding the restore half of the save/restore idiom every pinning test uses: a saved-value variable captured up front, then written back in an `else` branch once the real pin is no longer needed. That restore write matches the bare ASSIGN_* regex just as well as the real pinning write does, so removing only the real pin from a test file while leaving its own untouched cleanup block still read, to the bare regex, as "this file pins both variables" -- confirmed by mutating bash_runner.test.ts's real pin away and watching this guard stay green on the strength of its own restore line alone. Excluded here: any line whose trimmed text starts with `else ` (the idiom's restore branch), and any assignment whose right-hand side is itself a saved-value identifier (the same idiom without the keyword on its own line, e.g. a one-line ternary restore). Deliberately worded above without spelling out the literal assignment shape on one line, since this file is itself part of the scanned population and a docstring quoting that shape verbatim would satisfy the very regex it documents. */
 function realAssignments(source: string, varName: string): string[] {
   const re = new RegExp(`process\\.env\\[['"]${varName}['"]\\]\\s*=\\s*([^;\\n]+)`, 'g')
   const out: string[] = []
@@ -49,10 +24,7 @@ function realAssignments(source: string, varName: string): string[] {
   return out
 }
 
-/**
- * Files that legitimately pin one variable alone because the behavior under test is that
- * variable itself, not the data directory it feeds. Keep this list short and justified.
- */
+/** Files that legitimately pin one variable alone because the behavior under test is that variable itself, not the data directory it feeds. Keep this list short and justified. */
 const SINGLE_VAR_EXEMPT = new Map<string, string>([
   ['screenshot.test.ts', 'exercises the Playwright-cache-under-LOCALAPPDATA discovery path, which is win32-specific by definition and never reaches dataDir()'],
 ])
@@ -78,8 +50,7 @@ function collectTestFiles(dir: string): string[] {
 }
 
 describe('data-dir environment pinning is platform-complete', () => {
-  // Pinned: a walk that returns nothing would report every test file as correctly pinning its
-  // data dir, which is exactly what it would report if every test file stopped pinning it.
+  // Pinned: a walk that returns nothing would report every test file as correctly pinning its data dir, which is exactly what it would report if every test file stopped pinning it.
   const files = pinnedPopulation({
     what: 'tests/**/*.ts files checked for data-dir env pinning',
     items: collectTestFiles(TESTS_DIR),
@@ -91,11 +62,7 @@ describe('data-dir environment pinning is platform-complete', () => {
     expect(files.length).toBeGreaterThan(50)
   })
 
-  // The check above pins discovery, not either scan below, and the gap between the two is wide:
-  // it passes on several hundred files while the scans read a couple of dozen. Both scans select
-  // by an assignment regex, and if either stopped matching -- the env key renamed, or tests moving
-  // to a helper that assigns it out of line -- that scan would read nothing, report no offenders,
-  // and leave this file-count check green the whole time. So pin what each scan actually reads.
+  // The check above pins discovery, not either scan below, and the gap between the two is wide: it passes on several hundred files while the scans read a couple of dozen. Both scans select by an assignment regex, and if either stopped matching -- the env key renamed, or tests moving to a helper that assigns it out of line -- that scan would read nothing, report no offenders, and leave this file-count check green the whole time. So pin what each scan actually reads.
   it('both assignment regexes still select a live population, not just a live file list', () => {
     const sources = files.map((file) => fs.readFileSync(file, "utf8"))
     const pinsLocal = sources.filter((source) => ASSIGN_LOCALAPPDATA.test(source)).length

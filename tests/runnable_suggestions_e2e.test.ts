@@ -1,19 +1,4 @@
-/**
- * Built-bundle e2e for three shipping-path behaviours whose whole value is that the emitted
- * output is *usable*, and which unit tests with an injected fixture would happily pass while the
- * real binary emitted something broken:
- *
- *  1. `context-for` / `ask` emit `token-goat read ...` commands as their ENTIRE output. Before
- *     the `@LINE` anchor was appended, any symbol name with two definitions in one file produced
- *     two byte-identical suggestions, and running either failed with "Ambiguous symbol". This
- *     suite asserts that ambiguity precondition FIRST -- so the fixture cannot silently degrade
- *     into a single-definition one and make the whole test vacuous -- then EXECUTES every emitted
- *     suggestion and requires exit 0 with a non-empty body.
- *  2. `outline`/`skeleton`/`exports`/`imports` accept the family's comma-separated multi-file
- *     spec, and no longer drop extra space-separated file arguments in silence.
- *  3. `refs`/`callers` `-C <n>` show real call-site source text, and omitting it leaves output
- *     byte-identical.
- */
+/** Built-bundle e2e for three shipping-path behaviours whose whole value is that the emitted output is *usable*, and which unit tests with an injected fixture would happily pass while the real binary emitted something broken: 1. `context-for` / `ask` emit `token-goat read ...` commands as their ENTIRE output. Before the `@LINE` anchor was appended, any symbol name with two definitions in one file produced two byte-identical suggestions, and running either failed with "Ambiguous symbol". This suite asserts that ambiguity precondition FIRST -- so the fixture cannot silently degrade into a single-definition one and make the whole test vacuous -- then EXECUTES every emitted suggestion and requires exit 0 with a non-empty body. 2. `outline`/`skeleton`/`exports`/`imports` accept the family's comma-separated multi-file spec, and no longer drop extra space-separated file arguments in silence. 3. `refs`/`callers` `-C <n>` show real call-site source text, and omitting it leaves output byte-identical. */
 
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -55,9 +40,7 @@ beforeAll(async () => {
   dataBase = mkIsolated('tg-runnable-data-')
   repo = mkIsolated('tg-runnable-repo-')
 
-  // Item 1 fixture: `dupBudgetCalc` is defined TWICE in one file (a class method and a top-level
-  // function), at different lines. This is the exact shape that made unanchored suggestions
-  // unrunnable.
+  // Item 1 fixture: `dupBudgetCalc` is defined TWICE in one file (a class method and a top-level function), at different lines. This is the exact shape that made unanchored suggestions unrunnable.
   fs.writeFileSync(
     path.join(repo, 'dupsym.ts'),
     'export class DupBudgetHolder {\n' +
@@ -82,9 +65,7 @@ beforeAll(async () => {
       'export function betaOnlyFn(): number {\n  return sharedNothingB\n}\n',
   )
 
-  // Item 3 fixture: `ctxTarget` is called on a line carrying a token that appears NOWHERE else --
-  // not in the symbol name, not in the enclosing-symbol name -- so a `-C` assertion on it can only
-  // pass if real source text was rendered.
+  // Item 3 fixture: `ctxTarget` is called on a line carrying a token that appears NOWHERE else -- not in the symbol name, not in the enclosing-symbol name -- so a `-C` assertion on it can only pass if real source text was rendered.
   fs.writeFileSync(
     path.join(repo, 'ctxdef.ts'),
     'export function ctxTarget(n: number): number {\n  return n + 1\n}\n',
@@ -121,9 +102,7 @@ afterAll(() => {
 
 describe('context-for / ask emit runnable read commands', () => {
   it('PRECONDITION: the unanchored spec really is ambiguous in this fixture', async () => {
-    // Guards the whole suite against going vacuous. If the fixture ever degrades to a single
-    // definition, `read "dupsym.ts::dupBudgetCalc"` starts succeeding, this fails, and nobody is
-    // fooled into thinking the anchored suggestions below proved anything.
+    // Guards the whole suite against going vacuous. If the fixture ever degrades to a single definition, `read "dupsym.ts::dupBudgetCalc"` starts succeeding, this fails, and nobody is fooled into thinking the anchored suggestions below proved anything.
     const r = await run(['read', 'dupsym.ts::dupBudgetCalc'])
     expect(r.status).not.toBe(0)
     expect(`${r.stdout}${r.stderr}`).toContain('Ambiguous symbol')
@@ -133,16 +112,13 @@ describe('context-for / ask emit runnable read commands', () => {
     const r = await run(['context-for', 'dupBudgetCalc'])
     expect(r.status, r.stderr).toBe(0)
     const lines = r.stdout.trim().split('\n').filter((l) => l.trim().length > 0)
-    // The load-bearing assertion comes FIRST and is behavioural, not cosmetic: every emitted
-    // suggestion, verbatim, must actually run. A change to how the suggestion is *formatted*
-    // cannot make this pass or fail; only an unrunnable suggestion can.
+    // The load-bearing assertion comes FIRST and is behavioural, not cosmetic: every emitted suggestion, verbatim, must actually run. A change to how the suggestion is *formatted* cannot make this pass or fail; only an unrunnable suggestion can.
     for (const line of lines) {
       const exec = await run(['read', specOf(line)])
       expect(exec.status, `suggestion failed: ${line}\n${exec.stderr}`).toBe(0)
       expect(exec.stdout.trim().length).toBeGreaterThan(0)
     }
-    // Exact count pinned: both `dupBudgetCalc` definitions plus the enclosing class the FTS
-    // query also matches. Not "some entries exist".
+    // Exact count pinned: both `dupBudgetCalc` definitions plus the enclosing class the FTS query also matches. Not "some entries exist".
     expect(lines.length).toBe(3)
     expect(lines.filter((l) => l.includes('::dupBudgetCalc@')).length).toBe(2)
     // Suggestions must be distinguishable from each other.

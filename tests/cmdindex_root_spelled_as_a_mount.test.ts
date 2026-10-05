@@ -1,21 +1,4 @@
-/**
- * Regression: `token-goat index <root>` indexed nothing, and said so as a success, when the root
- * did not open on this host.
- *
- * cmdIndex handed its root argument to getTrackedFiles and collectWalkIndexFiles as typed. On
- * Windows, a root spelled at its WSL mount (`/mnt/c/x`) or its Git Bash mount (`/c/x`) reaches
- * the CLI unconverted when it is typed in PowerShell or cmd, or passed from a script run with
- * MSYS_NO_PATHCONV=1, and node resolves it against the current drive as `C:\mnt\c\x`, a folder
- * that does not exist. CAPTURE (Windows 11, built bundle 2.9.29, isolated home, a folder holding
- * one `y.ts`, MSYS_NO_PATHCONV=1): `index /mnt/c/Projects/tg-idx-probe --walk` and
- * `index /c/Projects/tg-idx-probe --walk` each printed `Indexed 0 files into the symbol index.`
- * and exited 0, while `index C:\Projects\tg-idx-probe --walk` found the file. A root that does
- * not exist at all behaved the same way under --walk (`Indexed 0 files`, exit 0), and without
- * --walk it was reported as a folder that is not a git repo.
- *
- * Every per-file key in the loop already went through resolveIndexPath, which folds a mount to
- * the drive-letter key on Windows; only the root that finds the files did not.
- */
+/** Regression: `token-goat index <root>` indexed nothing, and said so as a success, when the root did not open on this host. cmdIndex handed its root argument to getTrackedFiles and collectWalkIndexFiles as typed. On Windows, a root spelled at its WSL mount (`/mnt/c/x`) or its Git Bash mount (`/c/x`) reaches the CLI unconverted when it is typed in PowerShell or cmd, or passed from a script run with MSYS_NO_PATHCONV=1, and node resolves it against the current drive as `C:\mnt\c\x`, a folder that does not exist. CAPTURE (Windows 11, built bundle 2.9.29, isolated home, a folder holding one `y.ts`, MSYS_NO_PATHCONV=1): `index /mnt/c/Projects/tg-idx-probe --walk` and `index /c/Projects/tg-idx-probe --walk` each printed `Indexed 0 files into the symbol index.` and exited 0, while `index C:\Projects\tg-idx-probe --walk` found the file. A root that does not exist at all behaved the same way under --walk (`Indexed 0 files`, exit 0), and without --walk it was reported as a folder that is not a git repo. Every per-file key in the loop already went through resolveIndexPath, which folds a mount to the drive-letter key on Windows; only the root that finds the files did not. */
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

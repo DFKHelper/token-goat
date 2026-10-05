@@ -109,8 +109,7 @@ describe('parseFile', () => {
     const result = await parseFile(file)
     expect(result.language).toBe('typescript')
     const names = result.symbols.map((s) => s.name)
-    // Under the plain `typescript` grammar this JSX produces ERROR nodes and both
-    // functions are dropped entirely; only the tsx grammar recovers them.
+    // Under the plain `typescript` grammar this JSX produces ERROR nodes and both functions are dropped entirely; only the tsx grammar recovers them.
     expect(names).toContain('ItemListProps')
     expect(names).toContain('ItemList')
     expect(names).toContain('formatLabel')
@@ -137,8 +136,7 @@ describe('parseFile', () => {
     const result = await parseFile(tsFile)
     expect(result.language).toBe('typescript')
     const names = result.symbols.filter((s) => s.kind === 'function').map((s) => s.name)
-    // Under the poisoned (tsx) grammar, `<Foo>someValue` is parsed as an unclosed
-    // JSX element, producing ERROR nodes that drop `bar` entirely.
+    // Under the poisoned (tsx) grammar, `<Foo>someValue` is parsed as an unclosed JSX element, producing ERROR nodes that drop `bar` entirely.
     expect(names).toContain('foo')
     expect(names).toContain('bar')
   })
@@ -315,10 +313,7 @@ describe('parseFile', () => {
     const result = await parseFile(file)
     expect(result.language).toBe('python')
     const foo = result.symbols.find((s) => s.name === 'foo')
-    // Regression: decorated_definition has no PY_KIND_BY_TYPE entry, so the symbol was built
-    // from the inner function_definition node alone — whose tree-sitter position starts at
-    // `def`, not the `@decorator` line above it. `read "file::foo"` then returned a body
-    // missing the decorator entirely.
+    // Regression: decorated_definition has no PY_KIND_BY_TYPE entry, so the symbol was built from the inner function_definition node alone — whose tree-sitter position starts at `def`, not the `@decorator` line above it. `read "file::foo"` then returned a body missing the decorator entirely.
     expect(foo?.kind).toBe('function')
     expect(foo?.lineStart).toBe(1)
     expect(foo?.lineEnd).toBe(3)
@@ -333,11 +328,7 @@ describe('parseFile', () => {
     const result = await parseFile(file)
     expect(result.language).toBe('typescript')
     const method = result.symbols.find((s) => s.name === 'method')
-    // Regression: tree-sitter-typescript parses a method's `@decorator` as a standalone
-    // `decorator` sibling inside `class_body`, not a field wrapping `method_definition` (unlike a
-    // decorated class field, where the decorator IS a field on the node) — so the symbol built
-    // from the bare method_definition node started at `method()`, silently dropping both
-    // `@decorator` lines above it from `read`/`skeleton` output.
+    // Regression: tree-sitter-typescript parses a method's `@decorator` as a standalone `decorator` sibling inside `class_body`, not a field wrapping `method_definition` (unlike a decorated class field, where the decorator IS a field on the node) — so the symbol built from the bare method_definition node started at `method()`, silently dropping both `@decorator` lines above it from `read`/`skeleton` output.
     expect(method?.kind).toBe('method')
     expect(method?.lineStart).toBe(2)
     expect(method?.lineEnd).toBe(6)
@@ -352,9 +343,7 @@ describe('parseFile', () => {
     const result = await parseFile(file)
     const one = result.symbols.find((s) => s.name === 'one')
     const two = result.symbols.find((s) => s.name === 'two')
-    // Regression: a decorator walk-back that fails to stop at the first non-`decorator` sibling
-    // would consume the previous method (`one`, including its own decorator and body) into
-    // `two`'s range instead of stopping at `two`'s own `@B()`.
+    // Regression: a decorator walk-back that fails to stop at the first non-`decorator` sibling would consume the previous method (`one`, including its own decorator and body) into `two`'s range instead of stopping at `two`'s own `@B()`.
     expect(one?.lineStart).toBe(2)
     expect(one?.lineEnd).toBe(5)
     expect(two?.lineStart).toBe(7)
@@ -385,9 +374,7 @@ describe('parseFile', () => {
     )
     const result = await parseFile(file)
     expect(result.language).toBe('python')
-    // Regression: type_alias_statement had no PY_KIND_BY_TYPE entry, and its name lives under a
-    // `left` field wrapping a `type` node (not the `name` field nodeName() reads everywhere
-    // else), so every PEP 695 `type X = ...` statement was silently invisible to the index.
+    // Regression: type_alias_statement had no PY_KIND_BY_TYPE entry, and its name lives under a `left` field wrapping a `type` node (not the `name` field nodeName() reads everywhere else), so every PEP 695 `type X = ...` statement was silently invisible to the index.
     const simple = result.symbols.find((s) => s.name === 'IntList')
     expect(simple?.kind).toBe('type')
     const generic = result.symbols.find((s) => s.name === 'ListOrSet')
@@ -443,8 +430,7 @@ describe('parseFile', () => {
   })
 
   it('indexes C and C++ typedef aliases including the anonymous struct/enum/union form (kind type)', async () => {
-    // The dominant real-world typedef idiom uses an anonymous tag, so the alias name lives only on
-    // the type_definition's declarator chain — every one of these was invisible pre-fix.
+    // The dominant real-world typedef idiom uses an anonymous tag, so the alias name lives only on the type_definition's declarator chain — every one of these was invisible pre-fix.
     const cFile = write(
       'td.c',
       [
@@ -472,11 +458,7 @@ describe('parseFile', () => {
   })
 
   it('indexes C++11 alias declarations (using X = Y;) as kind type, including inside a namespace', async () => {
-    // `using Alias = Type;` parses as alias_declaration, a distinct node type from
-    // type_definition (the `typedef` form above) -- CPP_KIND_BY_TYPE had no entry for it, so
-    // every C++11-style type alias was silently invisible to symbol/outline/skeleton/types,
-    // even though its `name` field resolves fine via the default nodeName() lookup (no special
-    // declarator-chain descent needed, unlike typedef's cTypedefAliasName).
+    // `using Alias = Type;` parses as alias_declaration, a distinct node type from type_definition (the `typedef` form above) -- CPP_KIND_BY_TYPE had no entry for it, so every C++11-style type alias was silently invisible to symbol/outline/skeleton/types, even though its `name` field resolves fine via the default nodeName() lookup (no special declarator-chain descent needed, unlike typedef's cTypedefAliasName).
     const cppFile = write(
       'alias.cpp',
       ['using MyAlias = int;', 'namespace Foo {', '  using Bar = double;', '}', ''].join('\n'),
@@ -484,16 +466,12 @@ describe('parseFile', () => {
     const cppResult = await parseFile(cppFile)
     expect(cppResult.language).toBe('cpp')
     expect(cppResult.symbols.some((s) => s.name === 'MyAlias' && s.kind === 'type')).toBe(true)
-    // Nested inside a namespace -- extractSimpleSymbols always recurses into children regardless
-    // of the parent's kind-map membership, so this must resolve as its own symbol too.
+    // Nested inside a namespace -- extractSimpleSymbols always recurses into children regardless of the parent's kind-map membership, so this must resolve as its own symbol too.
     expect(cppResult.symbols.some((s) => s.name === 'Bar' && s.kind === 'type')).toBe(true)
   })
 
   it('indexes C++ namespace definitions (kind namespace), including nested `A::B` form', async () => {
-    // `namespace Foo { ... }` parses as namespace_definition, which had no CPP_KIND_BY_TYPE entry —
-    // the namespace itself was invisible to symbol/outline/skeleton even though its nested
-    // functions/classes still indexed (extractSimpleSymbols always recurses into children
-    // regardless of the parent's kind-map membership).
+    // `namespace Foo { ... }` parses as namespace_definition, which had no CPP_KIND_BY_TYPE entry — the namespace itself was invisible to symbol/outline/skeleton even though its nested functions/classes still indexed (extractSimpleSymbols always recurses into children regardless of the parent's kind-map membership).
     const cppFile = write(
       'ns.cpp',
       ['namespace Foo {', '  void bar() {}', '  struct Baz {};', '}', 'namespace A::B {', '  int x;', '}', ''].join(
@@ -510,8 +488,7 @@ describe('parseFile', () => {
     expect(cppResult.symbols.some((s) => s.name === 'bar' && s.kind === 'function')).toBe(true)
     expect(cppResult.symbols.some((s) => s.name === 'Baz' && s.kind === 'struct')).toBe(true)
 
-    // An anonymous `namespace { ... }` has no name field — must not crash and must not emit a
-    // symbol with an empty/null name.
+    // An anonymous `namespace { ... }` has no name field — must not crash and must not emit a symbol with an empty/null name.
     const anonFile = write('ns_anon.cpp', 'namespace {\n  int hidden;\n}\n')
     const anonResult = await parseFile(anonFile)
     expect(anonResult.symbols.some((s) => s.kind === 'namespace' && !s.name)).toBe(false)
@@ -550,14 +527,12 @@ describe('parseFile', () => {
     const hFile = write('plain.h', 'int add(int a, int b);\n#define MAX 100\n')
     const result = await parseFile(hFile)
     expect(result.language).toBe('c')
-    // The prototype itself indexes as a function (see the dedicated prototype test below);
-    // #define is preprocessor text, not a tree-sitter declaration, and stays unindexed.
+    // The prototype itself indexes as a function (see the dedicated prototype test below); #define is preprocessor text, not a tree-sitter declaration, and stays unindexed.
     expect(result.symbols.map((s) => s.name)).toEqual(['add'])
   })
 
   it('indexes bodiless C/C++ function prototypes (kind function) without false-positiving on variables or function-pointer variables', async () => {
-    // Header files are almost entirely prototypes -- a `declaration` node, not `function_definition`
-    // (which requires a body). Every one of these was silently dropped pre-fix.
+    // Header files are almost entirely prototypes -- a `declaration` node, not `function_definition` (which requires a body). Every one of these was silently dropped pre-fix.
     const cFile = write(
       'proto.h',
       [
@@ -631,9 +606,7 @@ describe('parseFile', () => {
     const result = await parseFile(goFile)
     const names = result.symbols.map((s) => s.name)
     expect(names).toContain('Reader')
-    // Interface method signatures parse as `method_elem`, a distinct node type from
-    // `method_declaration` (a concrete method with a receiver and body) -- without its own
-    // kind-map entry, every declared method of an interface was invisible to the index.
+    // Interface method signatures parse as `method_elem`, a distinct node type from `method_declaration` (a concrete method with a receiver and body) -- without its own kind-map entry, every declared method of an interface was invisible to the index.
     expect(names).toContain('Read')
     expect(names).toContain('Close')
   })
@@ -664,11 +637,7 @@ describe('parseFile', () => {
     // Abstract class method signature (abstract_method_signature) -- dropped pre-fix.
     expect(names).toContain('run')
   })
-  // Why didn't a test catch this: the test above asserts only the positive direction -- that an
-  // interface's members reach the index -- and its fixture contains no inline type literal at all,
-  // so the same kind-map entry over-firing on every anonymous object type had nothing to show up
-  // in. tree-sitter uses property_signature/method_signature for both, and 1438 phantom symbols in
-  // src/ were the result. This asserts the negative direction on the shapes that produce one.
+  // Why didn't a test catch this: the test above asserts only the positive direction -- that an interface's members reach the index -- and its fixture contains no inline type literal at all, so the same kind-map entry over-firing on every anonymous object type had nothing to show up in. tree-sitter uses property_signature/method_signature for both, and 1438 phantom symbols in src/ were the result. This asserts the negative direction on the shapes that produce one.
   it('does not index members of an anonymous type literal (return/parameter/cast/variable annotations use the same property_signature node as an interface body, so the kind-map entry swept them in as top-level vars that no declaration backs)', async () => {
     const file = write(
       'anon.ts',
@@ -709,16 +678,11 @@ describe('parseFile', () => {
     expect(names).not.toContain('inner')
     expect(names).toContain('outer')
 
-    // The phantoms also inherited the enclosing function's doc comment, because the docstring
-    // lookup walks up from the member's own line -- so `symbol alpha` printed pair's documentation.
-    // Nothing but pair itself may carry it now.
+    // The phantoms also inherited the enclosing function's doc comment, because the docstring lookup walks up from the member's own line -- so `symbol alpha` printed pair's documentation. Nothing but pair itself may carry it now.
     const withPairDoc = result.symbols.filter((sym) => (sym.docstring ?? '').includes('Doc for pair'))
     expect(withPairDoc.map((sym) => sym.name)).toEqual(['pair'])
   })
-  // A first cut of the rule above matched only `interface_body` and an `object_type` sitting
-  // directly under a `type_alias_declaration`. That dropped three shapes that are declarations:
-  // an overload/ambient class method signature (parent `class_body`), and any alias whose literal
-  // sits behind a type wrapper -- parentheses, a union, an array. The rule now climbs wrappers.
+  // A first cut of the rule above matched only `interface_body` and an `object_type` sitting directly under a `type_alias_declaration`. That dropped three shapes that are declarations: an overload/ambient class method signature (parent `class_body`), and any alias whose literal sits behind a type wrapper -- parentheses, a union, an array. The rule now climbs wrappers.
   it('keeps type members that a wrapper or a class body separates from their declaration (parenthesized, union, intersection, array and generic aliases, plus class overload and ambient method signatures)', async () => {
     const file = write(
       'wrapped.ts',
@@ -770,12 +734,9 @@ describe('parseFile', () => {
     const names = result.symbols.map((s) => s.name)
     // `namespace Utils { ... }` parses as internal_module -- dropped pre-fix.
     expect(names).toContain('Utils')
-    // Members nested inside the namespace already indexed fine (recursion doesn't depend on
-    // the parent's kind-map membership) -- confirms the fix doesn't disturb them.
+    // Members nested inside the namespace already indexed fine (recursion doesn't depend on the parent's kind-map membership) -- confirms the fix doesn't disturb them.
     expect(names).toContain('helper')
-    // `declare module "my-module" { ... }` parses as module -- dropped pre-fix. Its name field is
-    // a `string` node, so the quotes are part of `.text` (matches how a plain identifier name is
-    // captured verbatim elsewhere in this extractor -- no special-casing to strip them).
+    // `declare module "my-module" { ... }` parses as module -- dropped pre-fix. Its name field is a `string` node, so the quotes are part of `.text` (matches how a plain identifier name is captured verbatim elsewhere in this extractor -- no special-casing to strip them).
     expect(names).toContain('"my-module"')
   })
 
@@ -818,8 +779,7 @@ describe('parseFile', () => {
     expect(names).not.toContain('localConst')
     expect(names).not.toContain('localType')
     expect(names).not.toContain('closureVar')
-    // A function-local interface's methods must not leak into the index either, matching the
-    // exclusion of the interface type itself.
+    // A function-local interface's methods must not leak into the index either, matching the exclusion of the interface type itself.
     expect(names).not.toContain('localIface')
     expect(names).not.toContain('LocalMethod')
   })
@@ -998,8 +958,7 @@ describe('parseFile', () => {
     const extern = result.symbols.find((s) => s.kind === 'extern')
     expect(extern).toBeDefined()
     expect(extern!.name).toBe('extern "C"')
-    // Starts at the #[link(...)] attribute line (matches the leadingRustAttributes convention
-    // already used for every other Rust item kind), not just the `extern "C"` keyword line.
+    // Starts at the #[link(...)] attribute line (matches the leadingRustAttributes convention already used for every other Rust item kind), not just the `extern "C"` keyword line.
     expect(extern!.lineStart).toBe(1)
     expect(extern!.body).toContain('#[link(name = "c")]')
     expect(extern!.body).toContain('extern "C"')
@@ -1150,11 +1109,7 @@ describe('parseFile', () => {
   })
 
   it('indexes Java annotation type elements (the members of an @interface)', async () => {
-    // An annotation type's members (`String value() default "";`) parse as a distinct
-    // `annotation_type_element_declaration` node -- NOT `method_declaration`, even though it
-    // is a signature-shaped declaration like an interface method. Absent from
-    // JAVA_KIND_BY_TYPE, every annotation member was silently invisible to the index even
-    // though the annotation type itself (`annotation_type_declaration`) indexed fine.
+    // An annotation type's members (`String value() default "";`) parse as a distinct `annotation_type_element_declaration` node -- NOT `method_declaration`, even though it is a signature-shaped declaration like an interface method. Absent from JAVA_KIND_BY_TYPE, every annotation member was silently invisible to the index even though the annotation type itself (`annotation_type_declaration`) indexed fine.
     const javaFile = write(
       'MyAnno.java',
       [
@@ -1275,16 +1230,7 @@ describe('parseFile', () => {
 })
 
 describe('parseFile reference extraction', () => {
-  // S3 regression: esbuild injects a `__name(fn, "name")` wrapper call around every named
-  // function/class in its output when a target needs runtime name-preservation (e.g. a CJS
-  // target, or `keepNames`) -- a real, non-hand-written artifact confirmed present in an indexed
-  // aws-cdk checkout's `*.snapshot/asset.*.bundle/index.js` files. Indexing it as a ref pollutes
-  // `callers`/`refs` queries for the name `__name` with thousands of unrelated bundle call-sites
-  // that name no in-project symbol. writeParseResult (the single universal DB-write funnel for
-  // all parsed refs, confirmed via the "single choke point" comment on its symbols-insert loop)
-  // now drops any ref named `__name` via COMPILER_ARTIFACT_REF_NAMES. This must not become a
-  // general stoplist for legitimate identifiers -- so alongside the exclusion, assert a normal
-  // real call-site ref (a positive control) still survives the same indexing pass.
+  // S3 regression: esbuild injects a `__name(fn, "name")` wrapper call around every named function/class in its output when a target needs runtime name-preservation (e.g. a CJS target, or `keepNames`) -- a real, non-hand-written artifact confirmed present in an indexed aws-cdk checkout's `*.snapshot/asset.*.bundle/index.js` files. Indexing it as a ref pollutes `callers`/`refs` queries for the name `__name` with thousands of unrelated bundle call-sites that name no in-project symbol. writeParseResult (the single universal DB-write funnel for all parsed refs, confirmed via the "single choke point" comment on its symbols-insert loop) now drops any ref named `__name` via COMPILER_ARTIFACT_REF_NAMES. This must not become a general stoplist for legitimate identifiers -- so alongside the exclusion, assert a normal real call-site ref (a positive control) still survives the same indexing pass.
   it('excludes esbuild-injected __name() wrapper calls from the refs table while a real call-site ref still resolves (drives the REAL indexFileSync -> refs table path)', () => {
     const dbPath = path.join(TMP, 'index.db')
     const file = write(
@@ -1317,9 +1263,7 @@ describe('parseFile reference extraction', () => {
         '}\n',
     )
     const result = await parseFile(file)
-    // The defect: refs was hard-coded to []. With extraction wired in, the call to `helper` inside `driver` must be captured, attributed to `driver`.
-    // 1, not 2: extractRefs's dedup key is (name, line) without column, so both `helper()`
-    // calls on line 5 collapse into a single recorded ref rather than one per call-site.
+    // The defect: refs was hard-coded to []. With extraction wired in, the call to `helper` inside `driver` must be captured, attributed to `driver`. 1, not 2: extractRefs's dedup key is (name, line) without column, so both `helper()` calls on line 5 collapse into a single recorded ref rather than one per call-site.
     expect(result.refs.length).toBe(1)
     const helperRef = result.refs.find((r) => r.name === 'helper')
     expect(helperRef).toBeDefined()
@@ -1454,11 +1398,7 @@ describe('parseFile reference extraction', () => {
     expect(refNames).not.toContain('Foo<int>')
   })
 
-  // Regression: REF_NOISE_BY_LANG only defined a builtin-noise filter for typescript/python, so
-  // go/rust/c/cpp/ruby's bare-identifier stdlib/language builtins (fmt-adjacent bare calls like
-  // Go's len/println, Rust's println!/vec! macros, C's printf/malloc) were never filtered out of
-  // refs, unlike TS's bare parseInt/setTimeout or Python's bare print/len -- an asymmetric gap in
-  // an already-documented mechanism, not a difference in design intent.
+  // Regression: REF_NOISE_BY_LANG only defined a builtin-noise filter for typescript/python, so go/rust/c/cpp/ruby's bare-identifier stdlib/language builtins (fmt-adjacent bare calls like Go's len/println, Rust's println!/vec! macros, C's printf/malloc) were never filtered out of refs, unlike TS's bare parseInt/setTimeout or Python's bare print/len -- an asymmetric gap in an already-documented mechanism, not a difference in design intent.
   it('filters bare Go builtins (len, println) out of refs but keeps a real helper call', async () => {
     const file = write(
       'noise.go',
@@ -1513,11 +1453,7 @@ describe('parseFile reference extraction', () => {
     expect(refNames).toContain('helper')
   })
 
-  // Regression: extractRefs only walked call-site node types (call_expression/new_expression),
-  // so a symbol used only in a "value position" -- passed as a callback, assigned to a variable,
-  // stored as an object-literal value -- was invisible to the refs table. That made `dead`
-  // report a false positive (the symbol looked unreferenced despite real usage) and made
-  // `refs`/`callers` under-report genuine usages.
+  // Regression: extractRefs only walked call-site node types (call_expression/new_expression), so a symbol used only in a "value position" -- passed as a callback, assigned to a variable, stored as an object-literal value -- was invisible to the refs table. That made `dead` report a false positive (the symbol looked unreferenced despite real usage) and made `refs`/`callers` under-report genuine usages.
   it('captures a function passed as a bare callback argument (value position, not a call site)', async () => {
     const file = write(
       'callback-ref.ts',
@@ -1567,11 +1503,7 @@ describe('parseFile reference extraction', () => {
     expect(ref?.context).toBe('driver')
   })
 
-  // Regression: a required_parameter/optional_parameter node's `value` field (the default
-  // value expression) was never walked by valueRefIdentifiers, so a symbol used only as a
-  // default parameter value -- e.g. `requeue: (a: string) => void = requeueDirtyPath` in
-  // worker.ts -- was invisible to the refs table and `dead` reported a false positive despite
-  // real usage.
+  // Regression: a required_parameter/optional_parameter node's `value` field (the default value expression) was never walked by valueRefIdentifiers, so a symbol used only as a default parameter value -- e.g. `requeue: (a: string) => void = requeueDirtyPath` in worker.ts -- was invisible to the refs table and `dead` reported a false positive despite real usage.
   it('captures a function used as a default parameter value (value position, not a call site)', async () => {
     const file = write(
       'default-param-ref.ts',
@@ -1589,11 +1521,7 @@ describe('parseFile reference extraction', () => {
     expect(ref?.line).toBe(4)
   })
 
-  // Regression: argument_list's namedChildren case only matched a bare `identifier` child, so
-  // a Python keyword argument's nested value (foo(on_page=myHelperFunction)) -- a
-  // keyword_argument node with its own `value` field -- was never walked, making `dead` report
-  // a real callback-by-keyword-argument usage (e.g. convert_patent_pdf.py's `add_page_number`
-  // passed as `onFirstPage=add_page_number`) as a false-positive dead symbol.
+  // Regression: argument_list's namedChildren case only matched a bare `identifier` child, so a Python keyword argument's nested value (foo(on_page=myHelperFunction)) -- a keyword_argument node with its own `value` field -- was never walked, making `dead` report a real callback-by-keyword-argument usage (e.g. convert_patent_pdf.py's `add_page_number` passed as `onFirstPage=add_page_number`) as a false-positive dead symbol.
   it('captures a function passed as a Python keyword argument value (value position, not a bare argument)', async () => {
     const file = write(
       'keyword-arg-ref.py',
@@ -1610,12 +1538,7 @@ describe('parseFile reference extraction', () => {
     expect(ref?.line).toBe(5)
   })
 
-  // Regression: a call whose callee is a parenthesized `??`/`||`/`&&` fallback expression, e.g.
-  // `(override ?? myHelperFunction)(x)`, has no calleeName() match (the callee isn't a bare
-  // identifier/member_expression) and no valueRefIdentifiers case walked binary_expression's
-  // operands either -- so a symbol used only as the fallback side of such an expression was
-  // invisible to refs (found live: src/parser.ts's own `extractWithRegex`, used as
-  // `(NO_TREE_SITTER_EXTRACTORS[language] ?? extractWithRegex)(content, filePath)`).
+  // Regression: a call whose callee is a parenthesized `??`/`||`/`&&` fallback expression, e.g. `(override ?? myHelperFunction)(x)`, has no calleeName() match (the callee isn't a bare identifier/member_expression) and no valueRefIdentifiers case walked binary_expression's operands either -- so a symbol used only as the fallback side of such an expression was invisible to refs (found live: src/parser.ts's own `extractWithRegex`, used as `(NO_TREE_SITTER_EXTRACTORS[language] ?? extractWithRegex)(content, filePath)`).
   it('captures a function used as the fallback side of a ?? expression, including when the expression itself is called', async () => {
     const file = write(
       'nullish-fallback-ref.ts',
@@ -1633,8 +1556,7 @@ describe('parseFile reference extraction', () => {
     expect(ref?.line).toBe(5)
   })
 
-  // Regression: array-literal elements had no valueRefIdentifiers case, so a symbol used only as
-  // an entry in an array literal (const handlers = [myHelperFunction]) was invisible to refs.
+  // Regression: array-literal elements had no valueRefIdentifiers case, so a symbol used only as an entry in an array literal (const handlers = [myHelperFunction]) was invisible to refs.
   it('captures a function used as an array-literal element (value position, not a call site)', async () => {
     const file = write(
       'array-literal-ref.ts',
@@ -1669,9 +1591,7 @@ describe('parseFile reference extraction', () => {
     expect(ref?.line).toBe(5)
   })
 
-  // Regression: ternary consequence/alternative branches had no valueRefIdentifiers case, so a
-  // symbol used only as one branch of a ternary (const fn = cond ? myHelperFunction : other) was
-  // invisible to refs.
+  // Regression: ternary consequence/alternative branches had no valueRefIdentifiers case, so a symbol used only as one branch of a ternary (const fn = cond ? myHelperFunction : other) was invisible to refs.
   it('captures a function used as a ternary branch (value position, not a call site)', async () => {
     const file = write(
       'ternary-ref.ts',
@@ -1712,9 +1632,7 @@ describe('parseFile reference extraction', () => {
     expect(ref?.line).toBe(8)
   })
 
-  // Regression: a class field initializer (public_field_definition's value field) had no
-  // valueRefIdentifiers case, so a symbol used only as a class field's initial value
-  // (class C { handler = myHelperFunction }) was invisible to refs.
+  // Regression: a class field initializer (public_field_definition's value field) had no valueRefIdentifiers case, so a symbol used only as a class field's initial value (class C { handler = myHelperFunction }) was invisible to refs.
   it('captures a function used as a class field initializer (value position, not a call site)', async () => {
     const file = write(
       'class-field-ref.ts',
@@ -1732,8 +1650,7 @@ describe('parseFile reference extraction', () => {
     expect(ref?.line).toBe(5)
   })
 
-  // Regression: a bare-identifier return statement (return myHelperFunction) had no
-  // valueRefIdentifiers case, since neither grammar names the returned expression a field.
+  // Regression: a bare-identifier return statement (return myHelperFunction) had no valueRefIdentifiers case, since neither grammar names the returned expression a field.
   it('captures a function used as a bare-identifier return value (value position, not a call site)', async () => {
     const file = write(
       'bare-return-ref.ts',
@@ -1768,9 +1685,7 @@ describe('parseFile reference extraction', () => {
     expect(ref?.line).toBe(5)
   })
 
-  // Regression: a destructuring default (object_assignment_pattern's `right` field) had no
-  // valueRefIdentifiers case, so a symbol used only as a destructured default
-  // (const { cb = myHelperFunction } = opts) was invisible to refs.
+  // Regression: a destructuring default (object_assignment_pattern's `right` field) had no valueRefIdentifiers case, so a symbol used only as a destructured default (const { cb = myHelperFunction } = opts) was invisible to refs.
   it('captures a function used as an object-destructuring default (value position, not a call site)', async () => {
     const file = write(
       'destructure-default-ref.ts',
@@ -1808,9 +1723,7 @@ describe('parseFile reference extraction', () => {
     expect(ref?.line).toBe(5)
   })
 
-  // Regression: a template-literal interpolation (template_substitution's sole namedChild) had no
-  // valueRefIdentifiers case, so a symbol used only as a template interpolation
-  // (`value: ${myHelperFunction}`) was invisible to refs.
+  // Regression: a template-literal interpolation (template_substitution's sole namedChild) had no valueRefIdentifiers case, so a symbol used only as a template interpolation (`value: ${myHelperFunction}`) was invisible to refs.
   it('captures a function used inside a template-literal interpolation (value position, not a call site)', async () => {
     const file = write(
       'template-literal-ref.ts',
@@ -1860,14 +1773,7 @@ describe('parseFile reference extraction', () => {
     expect(ref?.line).toBe(2)
   })
 
-  // Regression: the two class-shaped value positions were matched by their TypeScript node names
-  // only, and JavaScript is a separate grammar module that spells both differently -- a class field
-  // is `field_definition` rather than `public_field_definition`, and a base class sits directly
-  // under `class_heritage` with no `extends_clause` wrapper at all. So both branches were dead on
-  // every .js file, and a base class or field-initialized helper used only from JavaScript looked
-  // completely unreferenced: `refs` returned nothing and `dead` called it a false positive. Every
-  // value-position test above uses a .ts fixture, which is exactly how this survived them all, so
-  // these two assert the .js and .ts spellings side by side rather than .js alone.
+  // Regression: the two class-shaped value positions were matched by their TypeScript node names only, and JavaScript is a separate grammar module that spells both differently -- a class field is `field_definition` rather than `public_field_definition`, and a base class sits directly under `class_heritage` with no `extends_clause` wrapper at all. So both branches were dead on every .js file, and a base class or field-initialized helper used only from JavaScript looked completely unreferenced: `refs` returned nothing and `dead` called it a false positive. Every value-position test above uses a .ts fixture, which is exactly how this survived them all, so these two assert the .js and .ts spellings side by side rather than .js alone.
   it.each([
     ['js', 'extends-heritage-ref.js'],
     ['ts', 'extends-heritage-ref.ts'],
@@ -1898,9 +1804,7 @@ describe('parseFile reference extraction', () => {
     expect(ref?.line).toBe(3)
   })
 
-  // The member-expression base has the same two spellings, and the JS one reaches the object
-  // through class_heritage rather than extends_clause, so it is worth its own pair: a fix that
-  // handled only the bare-identifier base would still drop `ns` on every .js file.
+  // The member-expression base has the same two spellings, and the JS one reaches the object through class_heritage rather than extends_clause, so it is worth its own pair: a fix that handled only the bare-identifier base would still drop `ns` on every .js file.
   it.each([
     ['js', 'extends-member-heritage-ref.js'],
     ['ts', 'extends-member-heritage-ref.ts'],
@@ -1916,13 +1820,7 @@ describe('parseFile reference extraction', () => {
     expect(ref?.line).toBe(2)
   })
 
-  // Regression: value-position extraction matched a bare `identifier` child and nothing else, so a
-  // type-only or grouping wrapper between the position and the name dropped the reference entirely,
-  // and several ordinary value positions had no branch at all. Each row below was confirmed missing
-  // against the built binary before the fix: `refs` answered "No references found" for a symbol
-  // that is plainly used on the line above. Every node type and field name here was checked against
-  // the real grammar first, since a branch naming a node type that grammar never emits is silently
-  // dead rather than wrong, which is the failure the .js/.ts pairs above already had to catch once.
+  // Regression: value-position extraction matched a bare `identifier` child and nothing else, so a type-only or grouping wrapper between the position and the name dropped the reference entirely, and several ordinary value positions had no branch at all. Each row below was confirmed missing against the built binary before the fix: `refs` answered "No references found" for a symbol that is plainly used on the line above. Every node type and field name here was checked against the real grammar first, since a branch naming a node type that grammar never emits is silently dead rather than wrong, which is the failure the .js/.ts pairs above already had to catch once.
   it.each([
     ['object shorthand', 'shorthand-ref.js', 'export function myHelperFunction() {}\nexport const o = { myHelperFunction }\n'],
     ['decorator (TS)', 'decorator-ref.ts', 'export function myHelperFunction(x: unknown): unknown {\n  return x\n}\n@myHelperFunction\nexport class Decorated {}\n'],
@@ -1968,10 +1866,7 @@ describe('parseFile reference extraction', () => {
     expect(result.refs.map((r) => r.name)).toContain('my_helper_function')
   })
 
-  // The exclusion is deliberate and load-bearing, so it is pinned rather than left to drift: were an
-  // export counted as a reference, every exported symbol would look used by its own export line and
-  // `dead` would stop reporting anything at all. This is the one case above where "no ref recorded"
-  // is the correct answer rather than the bug.
+  // The exclusion is deliberate and load-bearing, so it is pinned rather than left to drift: were an export counted as a reference, every exported symbol would look used by its own export line and `dead` would stop reporting anything at all. This is the one case above where "no ref recorded" is the correct answer rather than the bug.
   it('does not count a symbol\'s own export as a reference to it', async () => {
     const file = write('export-not-a-ref.js', 'function myHelperFunction() {}\nexport default myHelperFunction\n')
     const result = await parseFile(file)
@@ -2008,8 +1903,7 @@ describe('parseFile reference extraction', () => {
   })
 
   it('does not record a false value-position ref for an identifier used in a nested expression', async () => {
-    // Guard against over-matching: `a.b`, `a + b`, and a call result passed as an argument must
-    // never be captured as if the bare name itself were passed/assigned directly.
+    // Guard against over-matching: `a.b`, `a + b`, and a call result passed as an argument must never be captured as if the bare name itself were passed/assigned directly.
     const file = write(
       'no-overmatch.ts',
       'function notAValuePositionRef(): number { return 1 }\n' +
@@ -2019,9 +1913,7 @@ describe('parseFile reference extraction', () => {
         '}\n',
     )
     const result = await parseFile(file)
-    // notAValuePositionRef IS captured as a call-site ref (it's invoked with parens), but must
-    // appear exactly once -- not double-counted by an over-broad value-position match on the
-    // same identifier inside the binary expression it's nested in.
+    // notAValuePositionRef IS captured as a call-site ref (it's invoked with parens), but must appear exactly once -- not double-counted by an over-broad value-position match on the same identifier inside the binary expression it's nested in.
     const refs = result.refs.filter((r) => r.name === 'notAValuePositionRef')
     expect(refs).toHaveLength(1)
   })
@@ -2033,9 +1925,7 @@ describe('parseFile reference extraction', () => {
   })
 
   it('indexes .mdx headings as markdown symbols instead of skipping the file as unknown', async () => {
-    // Regression: .mdx had no EXTENSION_LANGUAGE entry, so parseFile/detectLanguage classified
-    // it as 'unknown' and cmdIndex skipped it entirely -- no headings ever made it into the
-    // symbol index for MDX docs.
+    // Regression: .mdx had no EXTENSION_LANGUAGE entry, so parseFile/detectLanguage classified it as 'unknown' and cmdIndex skipped it entirely -- no headings ever made it into the symbol index for MDX docs.
     const file = write('guide.mdx', '# Title\n\n## Setup\n\nsome content\n')
     const result = await parseFile(file)
     expect(result.language).toBe('markdown')
@@ -2078,8 +1968,7 @@ describe('stripPythonStringQuotes', () => {
 describe('isUnderSkipDir', () => {
   it('matches a path segment that is a containing directory, not the file itself (mutation-testing gap: the last segment -- the filename -- must be excluded from the skip-dir check, or a file whose own basename happens to equal a skip_dirs entry gets wrongly treated as living under a skipped directory)', () => {
     expect(isUnderSkipDir('/repo/node_modules/pkg/index.js', ['node_modules'])).toBe(true)
-    // The file itself is literally named "dist" (no extension) -- this must NOT match, since
-    // skip_dirs describes containing directories, not filenames.
+    // The file itself is literally named "dist" (no extension) -- this must NOT match, since skip_dirs describes containing directories, not filenames.
     expect(isUnderSkipDir('/repo/src/dist', ['dist'])).toBe(false)
     expect(isUnderSkipDir('/repo/src/dist/bundle.js', ['dist'])).toBe(true)
   })
@@ -2129,11 +2018,7 @@ describe('isParseSkipEligible', () => {
 })
 
 describe("a stored body says the same thing as the span it is stored with", () => {
-  // `read "file::symbol"` prints a header derived from the span and text taken from the
-  // body. If those two disagree the command serves text the file does not contain at the
-  // lines it claims. Measured on a real index before the fix: 4,394 of 11,391 symbols
-  // dropped real source from the span's first line -- 1,811 of them losing `export`, so a
-  // reader was told an exported symbol was module-private.
+  // `read "file::symbol"` prints a header derived from the span and text taken from the body. If those two disagree the command serves text the file does not contain at the lines it claims. Measured on a real index before the fix: 4,394 of 11,391 symbols dropped real source from the span's first line -- 1,811 of them losing `export`, so a reader was told an exported symbol was module-private.
   const cases: Array<[string, string, string, string]> = [
     ['exported const', 'a.ts', 'export const alpha = 1\n', 'alpha'],
     ['plain const', 'b.ts', 'const beta = 2\n', 'beta'],
@@ -2159,9 +2044,7 @@ describe("a stored body says the same thing as the span it is stored with", () =
     })
   }
 
-  // Non-discriminating on its own: a decorated_definition node already starts at the
-  // decorator, so this case passed before the fix too. It is kept as an invariant guard --
-  // it fails if a future change narrows the span or widens the node out of step.
+  // Non-discriminating on its own: a decorated_definition node already starts at the decorator, so this case passed before the fix too. It is kept as an invariant guard -- it fails if a future change narrows the span or widens the node out of step.
   it('keeps a python decorator inside the body it spans', async () => {
     const source = '@decorator\ndef handler():\n    return 1\n'
     const file = write('g.py', source)
@@ -2173,9 +2056,7 @@ describe("a stored body says the same thing as the span it is stored with", () =
     expect(sym?.body).toContain('@decorator')
   })
   it('does not give every declarator the whole declaration when one line holds many', async () => {
-    // The widening is deliberately skipped here. A minified bundle puts hundreds of
-    // declarators on one line, and handing each of them the whole declaration is the
-    // quadratic storage blow-up tests/index_amplification_guard.test.ts exists to catch.
+    // The widening is deliberately skipped here. A minified bundle puts hundreds of declarators on one line, and handing each of them the whole declaration is the quadratic storage blow-up tests/index_amplification_guard.test.ts exists to catch.
     const source = 'const one = 1, two = 2, three = 3\n'
     const file = write('h.ts', source)
     const syms = (await parseFile(file)).symbols
@@ -2193,8 +2074,7 @@ describe("a stored body says the same thing as the span it is stored with", () =
     expect(a?.lineStart).toBe(1)
     expect(a?.lineEnd).toBe(2)
 
-    // Glueing the decorator and the node together used to put a newline here that the
-    // file does not contain, and lose the `export` sitting between them.
+    // Glueing the decorator and the node together used to put a newline here that the file does not contain, and lose the `export` sitting between them.
     const same = write('l.ts', '@dec export class Same {}\n')
     const b = (await parseFile(same)).symbols.find((x) => x.name === 'Same')
     expect(b?.body).toBe('@dec export class Same {}')
@@ -2217,8 +2097,7 @@ describe("a stored body says the same thing as the span it is stored with", () =
     expect(syms.find((x) => x.name === 'gy')?.body).toBe('const gy = 2')
     expect(syms.find((x) => x.name === 'GT')?.body).toBe('type GT struct{}')
 
-    // A grouped `var ( ... )` holds several specs, so widening each of them to the whole
-    // group is the same fan-out the multi-declarator case avoids.
+    // A grouped `var ( ... )` holds several specs, so widening each of them to the whole group is the same fan-out the multi-declarator case avoids.
     const grouped = write('o.go', 'package main\n\nvar (\n\tp = 1\n\tq = 2\n)\n')
     const g = (await parseFile(grouped)).symbols
     expect(g.find((x) => x.name === 'p')?.body).toBe('p = 1')

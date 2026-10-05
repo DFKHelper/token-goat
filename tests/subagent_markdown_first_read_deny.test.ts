@@ -5,9 +5,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.mock is hoisted -- redirects configPath() to a per-test-file temp file so the
-// hints.subagent_markdown_first_read_deny flag can be flipped deterministically without
-// touching a real config. Mirrors tests/hooks_read.test.ts's own constants mock.
+// vi.mock is hoisted -- redirects configPath() to a per-test-file temp file so the hints.subagent_markdown_first_read_deny flag can be flipped deterministically without touching a real config. Mirrors tests/hooks_read.test.ts's own constants mock.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return {
@@ -26,16 +24,7 @@ import { recordFileRead } from '../src/session.js'
 import { defaultConfig, invalidateConfigCache, saveConfig, loadConfig } from '../src/config.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
-/**
- * Fixture provenance: HAND-DERIVED.
- *
- * The markdown body below is written by hand for this test -- five headings at three levels plus
- * a filler tail sized past the 30KB gate. Nothing in it is copied from the matcher under test:
- * the heading syntax is CommonMark's ATX form (https://spec.commonmark.org/0.31.2/#atx-headings),
- * and the size is chosen from the stated threshold, not read back off the implementation. It
- * exercises logic (does this gate fire), never a wire format, which is what HAND-DERIVED is
- * appropriate for.
- */
+/** Fixture provenance: HAND-DERIVED. The markdown body below is written by hand for this test -- five headings at three levels plus a filler tail sized past the 30KB gate. Nothing in it is copied from the matcher under test: the heading syntax is CommonMark's ATX form (https://spec.commonmark.org/0.31.2/#atx-headings), and the size is chosen from the stated threshold, not read back off the implementation. It exercises logic (does this gate fire), never a wire format, which is what HAND-DERIVED is appropriate for. */
 const MD_HEADINGS = `# Architecture Guide
 Introductory prose that sets up the document.
 
@@ -92,8 +81,7 @@ function mainSessionRead(filePath: string): HookEvent {
 function writeFlag(enabled: boolean): void {
   const cfg = defaultConfig()
   cfg.hints.subagent_markdown_first_read_deny = enabled
-  // protect_recent_reads would exempt the re-read case in a one-file test session, which would
-  // make the re-read assertion below pass for the wrong reason.
+  // protect_recent_reads would exempt the re-read case in a one-file test session, which would make the re-read assertion below pass for the wrong reason.
   cfg.hints.protect_recent_reads = 0
   saveConfig(cfg)
   invalidateConfigCache()

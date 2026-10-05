@@ -15,9 +15,7 @@ import {
   stripTimestamps,
 } from './helpers.js'
 
-// ---------------------------------------------------------------------------
-// GhFilter regexes
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhFilter regexes ---------------------------------------------------------------------------
 
 // Pass step (✓ or √ at start of line)
 const _GH_RUN_PASS_STEP_RE = /^\s*[✓√]\s/
@@ -29,8 +27,7 @@ const _GH_RUN_FAIL_STEP_RE = /^\s*[X✗❌]\s|^\s*FAIL(:|ED|URE)\b|^\s*Error:\s/
 const _GH_API_URL_SUFFIX = '_url'
 const _GH_API_URL_KEEP = new Set(['html_url', 'avatar_url', 'clone_url', 'ssh_url'])
 
-// gh global flags that consume a separate next-token value (e.g. `gh -R owner/repo pr list`) --
-// without this, positionalArgs() lets the value token survive and shifts subcommand routing.
+// gh global flags that consume a separate next-token value (e.g. `gh -R owner/repo pr list`) -- without this, positionalArgs() lets the value token survive and shifts subcommand routing.
 const GH_GLOBAL_VALUE_FLAGS = new Set(['-R', '--repo', '--hostname'])
 const _GH_API_NOISE_KEYS = new Set(['gravatar_id', 'site_admin'])
 
@@ -38,9 +35,7 @@ const _GH_API_NOISE_KEYS = new Set(['gravatar_id', 'site_admin'])
 const _GH_CONTENT_B64_RE = /^[A-Za-z0-9+/=\n]+$/
 const _GH_BASE64_MIN_LEN = 200
 
-// ---------------------------------------------------------------------------
-// GhRunLogFilter regexes
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhRunLogFilter regexes ---------------------------------------------------------------------------
 
 // ##[group]Step name
 const _GH_LOG_GROUP_RE = /^##\[group\](.*)/
@@ -49,11 +44,7 @@ const _GH_LOG_ENDGROUP_RE = /^##\[endgroup\]/
 // ##[command]… — command-echo noise
 const _GH_LOG_COMMAND_RE = /^##\[command\]/
 
-// gh run view --log format: job-name TAB step-name TAB timestamp. Both
-// tab-delimited fields must be stripped — leaving just the step-name field
-// behind lets it collide with downstream ^-anchored regexes (e.g. a step
-// literally named "Run actions/checkout@v3" would falsely match
-// _GH_LOG_SETUP_ACTION_RE and sweep genuine content into that bucket).
+// gh run view --log format: job-name TAB step-name TAB timestamp. Both tab-delimited fields must be stripped — leaving just the step-name field behind lets it collide with downstream ^-anchored regexes (e.g. a step literally named "Run actions/checkout@v3" would falsely match _GH_LOG_SETUP_ACTION_RE and sweep genuine content into that bucket).
 const _GH_LOG_STEP_PREFIX_RE = /^[^\t]+\t[^\t]+\t/
 
 // Run actions/checkout@v3 setup lines
@@ -70,9 +61,7 @@ const _GH_LOG_BOILERPLATE_RE =
 const _GH_LOG_FAILURE_RE =
   /error:|Error:|ERROR|FAILED|failed|##\[error\]|##\[warning\]|Process completed with exit code [^0]/i
 
-// ---------------------------------------------------------------------------
-// ActFilter regexes
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ActFilter regexes ---------------------------------------------------------------------------
 
 // [job-name/step-name]   | output here
 const _ACT_JOB_PREFIX_RE = /^\[(?<job>[^\]]+)\]\s+\|\s*(?<body>.*)/
@@ -83,9 +72,7 @@ const _ACT_DOCKER_PULL_RE = /^\[(?:[^\]]+)\]\s+\|\s*(?:Pulling |Waiting\s*$|Veri
 // [...]  Matrix: {"os": ...}
 const _ACT_MATRIX_EXPAND_RE = /^\[.*\]\s+Matrix:/
 
-// ---------------------------------------------------------------------------
-// GenericCIFilter regexes
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GenericCIFilter regexes ---------------------------------------------------------------------------
 
 // ANSI escape sequences
 // eslint-disable-next-line no-control-regex
@@ -97,9 +84,7 @@ const _CI_DEBUG_RE = /^\s*(?:DEBUG|TRACE|VERBOSE)\b[\s:]/i
 // Keywords triggering GenericCIFilter
 const _CI_COMMAND_KEYWORDS = new Set(['--log', 'logs', 'pipeline', 'workflow'])
 
-// ---------------------------------------------------------------------------
-// PreCommitFilter regexes
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PreCommitFilter regexes ---------------------------------------------------------------------------
 
 // hook_name...(no files to check)Passed   or just hook_name...Passed
 const _PRECOMMIT_RESULT_RE =
@@ -107,9 +92,7 @@ const _PRECOMMIT_RESULT_RE =
 // [INFO] Initializing environment...
 const _PRECOMMIT_INFO_RE = /^\[INFO\]\s+(Initializing|Installing|Restored|Cloning)/
 
-// ---------------------------------------------------------------------------
-// BanditFilter regexes
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- BanditFilter regexes ---------------------------------------------------------------------------
 
 const _BANDIT_RUN_STARTED_RE = /^Run started:/
 const _BANDIT_TEST_RESULTS_RE = /^Test results:/
@@ -121,9 +104,7 @@ const _BANDIT_TESTING_RE = /^testing\s/
 // The dashed rule bandit prints between findings. It belongs to the block it closes, so when a LOW block is collapsed the rule that follows it is left orphaned next to the previous block's own rule, and the report shows two dashed rules in a row with nothing between them.
 const _BANDIT_SEPARATOR_RE = /^-{10,}\s*$/
 
-// ---------------------------------------------------------------------------
-// TrivyFilter regexes
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- TrivyFilter regexes ---------------------------------------------------------------------------
 
 // Timestamped INFO/WARN/DEBUG log lines
 const _TRIVY_LOG_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^\s]*\s+(?:INFO|WARN|DEBUG|ERROR)\s/
@@ -139,9 +120,7 @@ const _TRIVY_NO_VULN_RE = /no\s+vulnerabilit/i
 const _TRIVY_TARGET_RE =
   /^(?:[-=]+\s+)?(?:Python|Ruby|Node\.js|Go|Java|PHP|Rust|OS Packages|Alpine|Debian|Ubuntu|RHEL|CentOS|npm|pip|gem|cargo|pom\.xml|Gemfile\.lock|requirements|package-lock|yarn\.lock|composer\.lock|go\.sum|Cargo\.lock|\S+\s+\()/i
 
-// ---------------------------------------------------------------------------
-// SnykFilter regexes
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- SnykFilter regexes ---------------------------------------------------------------------------
 
 const _SNYK_TESTING_RE = /^Testing\s/i
 // Dependency tree box-drawing characters. A bare indent is deliberately NOT a tree line: snyk indents vulnerability details ("Description:", "Fixed in:") and the "Issues to fix by upgrading:" remediation lines by two spaces, and counting those against the tree budget silently discarded the actionable half of the report.
@@ -155,9 +134,7 @@ const _SNYK_SUMMARY_RE = /(?:✔|✗|Tested\s+\d+|unique vulnerabilities|no vuln
 // License issue lines
 const _SNYK_LICENSE_RE = /license/i
 
-// ---------------------------------------------------------------------------
-// SemgrepFilter regexes
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- SemgrepFilter regexes ---------------------------------------------------------------------------
 
 const _SEMGREP_SCANNING_RE = /^(?:Scanning\s+\d+|Running\s+\d+)/i
 const _SEMGREP_RULE_HEADER_RE = /^\s*(ERROR|WARNING|INFO|HIGH|MEDIUM|LOW|CRITICAL)\s+\S|^[^\s/][^/\s]*\.[a-zA-Z0-9_-]+\s*$/i
@@ -165,12 +142,9 @@ const _SEMGREP_DETAILS_RE = /^\s*Details:\s*https?:\/\//i
 const _SEMGREP_SUMMARY_RE = /^(?:Ran\s+\d+|Findings?:|✔|✘|\d+\s+finding)/i
 const _SEMGREP_ANNOTATION_RE = /^\s*(?:run|fix|autofix|rule):\s*https?:\/\//i
 
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Shared helpers ---------------------------------------------------------------------------
 
-/** Recursively strip boilerplate *_url and noise fields from a GitHub API JSON object.
- * Returns [cleaned, removedCount]. Preserves html_url, avatar_url, clone_url, ssh_url. */
+/** Recursively strip boilerplate *_url and noise fields from a GitHub API JSON object. Returns [cleaned, removedCount]. Preserves html_url, avatar_url, clone_url, ssh_url. */
 function stripGhApiUrlFields(obj: unknown): [unknown, number] {
   if (obj !== null && typeof obj === 'object' && !Array.isArray(obj)) {
     const record = obj as Record<string, unknown>
@@ -256,10 +230,7 @@ function compressGhRunView(text: string): string {
 /** Truncate `gh pr/run/issue list` output to first 30 rows + count. */
 function compressGhList(text: string, subcommand: string): string {
   const lines = text.split('\n')
-  // `gh pr/run/issue list` emits no header row when piped/non-TTY (exactly how the bash hook
-  // captures it -- verified against gh 2.81.0) -- every non-empty line is a data row. Treating
-  // the first non-empty line as a header (skipping it when counting/slicing data) silently
-  // dropped the true first row from the count and undercounted the reported total by 1.
+  // `gh pr/run/issue list` emits no header row when piped/non-TTY (exactly how the bash hook captures it -- verified against gh 2.81.0) -- every non-empty line is a data row. Treating the first non-empty line as a header (skipping it when counting/slicing data) silently dropped the true first row from the count and undercounted the reported total by 1.
   let dataStart = 0
   for (let i = 0; i < lines.length; i++) {
     if (lines[i]!.trim()) {
@@ -341,9 +312,7 @@ function redactGhBase64Content(stdout: string): string {
   return JSON.stringify(data, null, pretty ? 2 : undefined)
 }
 
-// ---------------------------------------------------------------------------
-// GhRunLogFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhRunLogFilter ---------------------------------------------------------------------------
 
 export class GhRunLogFilter extends ToolFilter {
   readonly name = 'gh-run-log'
@@ -360,11 +329,7 @@ export class GhRunLogFilter extends ToolFilter {
       positionals.length >= 2 &&
       positionals[0] === 'run' &&
       positionals[1] === 'view' &&
-      // `--log-failed` is the CI-triage spelling and emits the identical
-      // job/step/timestamp column format, so it needs this filter too. A plain
-      // `argv.includes('--log')` is a whole-token test and never matches it,
-      // which sent it to GhFilter -- whose pass-step regex anchors at line
-      // start and so matches nothing while the column prefix is still present.
+      // `--log-failed` is the CI-triage spelling and emits the identical job/step/timestamp column format, so it needs this filter too. A plain `argv.includes('--log')` is a whole-token test and never matches it, which sent it to GhFilter -- whose pass-step regex anchors at line start and so matches nothing while the column prefix is still present.
       (argv.includes('--log') || argv.includes('--log-failed'))
     )
   }
@@ -468,9 +433,7 @@ export class GhRunLogFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// GhFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhFilter ---------------------------------------------------------------------------
 
 export class GhFilter extends ToolFilter {
   readonly name = 'gh'
@@ -502,9 +465,7 @@ export class GhFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// ActFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ActFilter ---------------------------------------------------------------------------
 
 export class ActFilter extends ToolFilter {
   readonly name = 'act'
@@ -547,9 +508,7 @@ export class ActFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// GenericCIFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GenericCIFilter ---------------------------------------------------------------------------
 
 export class GenericCIFilter extends ToolFilter {
   readonly name = 'generic-ci'
@@ -600,9 +559,7 @@ export class GenericCIFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// PreCommitFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PreCommitFilter ---------------------------------------------------------------------------
 
 export class PreCommitFilter extends ToolFilter {
   readonly name = 'pre-commit'
@@ -665,13 +622,9 @@ export class PreCommitFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// makeSecurityScannerFilter — shared factory for bandit/trivy/snyk/semgrep (Not used here since their bodies differ significantly; bespoke classes below)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- makeSecurityScannerFilter — shared factory for bandit/trivy/snyk/semgrep (Not used here since their bodies differ significantly; bespoke classes below) ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// BanditFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- BanditFilter ---------------------------------------------------------------------------
 
 export class BanditFilter extends ToolFilter {
   readonly name = 'bandit'
@@ -748,15 +701,11 @@ export class BanditFilter extends ToolFilter {
         continue
       }
 
-      // Inside an issue block — buffer every line unconditionally (including
-      // numbered source-context lines) until the closing separator/blank
-      // line decides keep-vs-drop.
+      // Inside an issue block — buffer every line unconditionally (including numbered source-context lines) until the closing separator/blank line decides keep-vs-drop.
       if (inIssue) {
         issueBuf.push(line)
         if (line.trim() === '' || line.trim().startsWith('--')) {
-          // flushIssue() already emits this closing line via issueBuf (for HIGH/MEDIUM);
-          // pushing it again here would duplicate it, and for LOW severity (fully dropped)
-          // it would leak the separator despite the whole issue being collapsed.
+          // flushIssue() already emits this closing line via issueBuf (for HIGH/MEDIUM); pushing it again here would duplicate it, and for LOW severity (fully dropped) it would leak the separator despite the whole issue being collapsed.
           flushIssue()
           inIssue = false
           issueBuf = []
@@ -786,9 +735,7 @@ export class BanditFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// TrivyFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- TrivyFilter ---------------------------------------------------------------------------
 
 export class TrivyFilter extends ToolFilter {
   readonly name = 'trivy'
@@ -910,9 +857,7 @@ export class TrivyFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// SnykFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- SnykFilter ---------------------------------------------------------------------------
 
 export class SnykFilter extends ToolFilter {
   readonly name = 'snyk'
@@ -1024,9 +969,7 @@ export class SnykFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// SemgrepFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- SemgrepFilter ---------------------------------------------------------------------------
 
 export class SemgrepFilter extends ToolFilter {
   readonly name = 'semgrep'
@@ -1139,9 +1082,7 @@ export class SemgrepFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Singleton instances
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Singleton instances ---------------------------------------------------------------------------
 
 export const ghRunLogFilter = new GhRunLogFilter()
 export const ghFilter = new GhFilter()
@@ -1153,9 +1094,7 @@ export const trivyFilter = new TrivyFilter()
 export const snykFilter = new SnykFilter()
 export const semgrepFilter = new SemgrepFilter()
 
-// ---------------------------------------------------------------------------
-// CI_FILTERS — ordered: GhRunLogFilter before GhFilter (both match `gh`). GenericCIFilter is last since it only fires on keyword match, not binary.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CI_FILTERS — ordered: GhRunLogFilter before GhFilter (both match `gh`). GenericCIFilter is last since it only fires on keyword match, not binary. ---------------------------------------------------------------------------
 
 export const CI_FILTERS: ToolFilter[] = [
   // gh run view --log — specific handler must precede generic GhFilter

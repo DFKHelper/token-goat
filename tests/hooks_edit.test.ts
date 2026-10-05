@@ -160,9 +160,7 @@ describe('postEditHandler', () => {
   })
 
   it('does not crash when appendDirtyPath throws (e.g. disk full) — still records the edit', () => {
-    // Simulate a transient fs failure (disk full / permission / Windows file lock) by
-    // replacing the queue directory itself with a plain file, so the appendFileSync
-    // inside appendDirtyPath hits a real ENOTDIR error instead of a mocked one.
+    // Simulate a transient fs failure (disk full / permission / Windows file lock) by replacing the queue directory itself with a plain file, so the appendFileSync inside appendDirtyPath hits a real ENOTDIR error instead of a mocked one.
     const queueDir = path.dirname(dirtyQueuePath())
     fs.rmSync(queueDir, { recursive: true, force: true })
     fs.writeFileSync(queueDir, 'blocked')
@@ -199,9 +197,7 @@ describe('postEditHandler', () => {
     const result = postEditHandler(editEvent(rawPath))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      // Quotes inside the path must be escaped the same way backticks already are,
-      // so the emitted `token-goat section "..."` command stays well-formed instead
-      // of the raw quote breaking out of the surrounding quoted argument.
+      // Quotes inside the path must be escaped the same way backticks already are, so the emitted `token-goat section "..."` command stays well-formed instead of the raw quote breaking out of the surrounding quoted argument.
       expect(result.context).toContain('say \\"hi\\"')
       expect(result.context).not.toContain('say "hi"')
     }

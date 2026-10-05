@@ -13,18 +13,9 @@ import { extractProto } from '../src/languages/proto_idx.js'
 import { extractSql } from '../src/languages/sql_idx.js'
 import { extractTerraform } from '../src/languages/terraform_idx.js'
 
-// ---------------------------------------------------------------------------
-// stripBlockCommentSpan (and the private isInsideStringLiteral it delegates
-// to) - shared by php.ts and csharp.ts to decide whether a `/*` on a line is
-// a real block-comment opener or just two characters that happen to appear
-// inside a string literal (e.g. `glob('src/*.php')`).
+// --------------------------------------------------------------------------- stripBlockCommentSpan (and the private isInsideStringLiteral it delegates to) - shared by php.ts and csharp.ts to decide whether a `/*` on a line is a real block-comment opener or just two characters that happen to appear inside a string literal (e.g. `glob('src/*.php')`).
 //
-// isInsideStringLiteral must track "is a string open right now, and with
-// which quote character" as a single state machine - not two independent
-// odd/even parity counters for `"` and `'`. A real line of code can only be
-// inside one kind of string at a time, since a `'` can't open a nested
-// string while a `"`-delimited string is already open.
-// ---------------------------------------------------------------------------
+// isInsideStringLiteral must track "is a string open right now, and with which quote character" as a single state machine - not two independent odd/even parity counters for `"` and `'`. A real line of code can only be inside one kind of string at a time, since a `'` can't open a nested string while a `"`-delimited string is already open. ---------------------------------------------------------------------------
 
 describe('stripBlockCommentSpan', () => {
   it('treats /* as a real comment opener after a closed double-quoted string containing an apostrophe (fail-on-buggy: independent single/double-quote parity counters misread the apostrophe in "don\'t" as an open single-quoted string)', () => {
@@ -103,9 +94,7 @@ describe('stripBlockCommentSpan', () => {
 
   // Gap found by mutation while extracting nextBlockCommentOpen: deleting the "a /* at or after a
   // // is not an opener" clause from the scan left the entire suite green. Without it, a `/*` in a
-  // trailing line comment opens a span that never closes, so every following line of the file is
-  // blanked and its declarations vanish from the index -- the same swallow the string-literal
-  // clause beside it guards against, which was already covered.
+  // trailing line comment opens a span that never closes, so every following line of the file is blanked and its declarations vanish from the index -- the same swallow the string-literal clause beside it guards against, which was already covered.
   it('does not treat a /* inside a // line comment as a block-comment opener', () => {
     const line = 'int x = 1; // see /* the note above'
     const result = stripBlockCommentSpan(line, false)
@@ -115,9 +104,7 @@ describe('stripBlockCommentSpan', () => {
 })
 
 describe('stripNestedBlockCommentSpan', () => {
-  // Same opener scan as stripBlockCommentSpan (they share nextBlockCommentOpen), asserted here
-  // too: this variant is otherwise only reached through the Swift adapter, so a break in the
-  // shared scan would surface as a confusing symbol-extraction failure rather than as this.
+  // Same opener scan as stripBlockCommentSpan (they share nextBlockCommentOpen), asserted here too: this variant is otherwise only reached through the Swift adapter, so a break in the shared scan would surface as a confusing symbol-extraction failure rather than as this.
   it('does not treat a /* inside a // line comment as a block-comment opener', () => {
     const line = 'let x = 1 // see /* the note above'
     const result = stripNestedBlockCommentSpan(line, 0)
@@ -142,13 +129,7 @@ describe('stripCstyleComments', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// stripSqlLineComments - SQL line comment stripper that must be quote-aware
-// to avoid blanking SQL code when a `--` marker appears inside a string
-// literal (e.g., COMMENT ON COLUMN followed by a description string, or a
-// CHECK constraint, or a DEFAULT value). Must match the quote-awareness of
-// stripHashComments and stripLineComment above.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- stripSqlLineComments - SQL line comment stripper that must be quote-aware to avoid blanking SQL code when a `--` marker appears inside a string literal (e.g., COMMENT ON COLUMN followed by a description string, or a CHECK constraint, or a DEFAULT value). Must match the quote-awareness of stripHashComments and stripLineComment above. ---------------------------------------------------------------------------
 
 describe('stripSqlLineComments', () => {
   it('strips a real SQL line comment (-- comment text)', () => {
@@ -207,13 +188,7 @@ SELECT * FROM orders -- comment line 2`
 })
 
 
-// ---------------------------------------------------------------------------
-// findMatchingBraceEndLine's line-comment awareness is opt-in. Its long-standing
-// callers (proto_idx, terraform_idx) hand it content whose comments are already
-// stripped, so switching the walk on for everyone would make it pay for a second
-// pass and, worse, would apply one language's comment marker to another's code.
-// r.ts walks the raw file and does pass a marker.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- findMatchingBraceEndLine's line-comment awareness is opt-in. Its long-standing callers (proto_idx, terraform_idx) hand it content whose comments are already stripped, so switching the walk on for everyone would make it pay for a second pass and, worse, would apply one language's comment marker to another's code. r.ts walks the raw file and does pass a marker. ---------------------------------------------------------------------------
 
 describe('findMatchingBraceEndLine line comments', () => {
   const src = ['f <- function(x) {', '  # a closing } in prose', '  x', '}', ''].join('\n')
@@ -256,25 +231,11 @@ describe('findMatchingBraceEndLine block comments (opt-in)', () => {
 })
 
 
-// ---------------------------------------------------------------------------
-// countContentLines and the flat-section span ceiling.
+// --------------------------------------------------------------------------- countContentLines and the flat-section span ceiling.
 //
-// Every adapter that lays sections out flat (no brace nesting to close a span)
-// hands assignFlatEndLines a `totalLines` figure, and the last section in the
-// file inherits it verbatim as its end line. Eight adapters computed that
-// figure as `content.split('\n').length`, which counts a phantom final element
-// for any file that ends in a newline - i.e. essentially every real file. The
-// result was a last symbol whose span ran exactly one line past EOF, and a
-// `skeleton` line count reported one line too high.
+// Every adapter that lays sections out flat (no brace nesting to close a span) hands assignFlatEndLines a `totalLines` figure, and the last section in the file inherits it verbatim as its end line. Eight adapters computed that figure as `content.split('\n').length`, which counts a phantom final element for any file that ends in a newline - i.e. essentially every real file. The result was a last symbol whose span ran exactly one line past EOF, and a `skeleton` line count reported one line too high.
 //
-// Why no test caught it: the adapter suites all asserted on the symbols a
-// fixture produced - names, kinds, start lines - and their fixtures were
-// written as inline template literals that mostly did not end in a newline, so
-// the off-by-one never fired. Nothing asserted the invariant that binds every
-// adapter at once: no symbol may end past the last line that actually exists.
-// These cases assert that invariant directly, on newline-terminated input, for
-// all eight adapters.
-// ---------------------------------------------------------------------------
+// Why no test caught it: the adapter suites all asserted on the symbols a fixture produced - names, kinds, start lines - and their fixtures were written as inline template literals that mostly did not end in a newline, so the off-by-one never fired. Nothing asserted the invariant that binds every adapter at once: no symbol may end past the last line that actually exists. These cases assert that invariant directly, on newline-terminated input, for all eight adapters. ---------------------------------------------------------------------------
 
 describe('countContentLines', () => {
   it('does not count the phantom element a trailing newline leaves behind', () => {
@@ -303,12 +264,7 @@ describe('countContentLines', () => {
 })
 
 describe('flat-section adapters never end a symbol past EOF', () => {
-  /**
-   * The highest end line anything the adapter extracted claims, or 0 when it
-   * found nothing. Adapters surface flat spans either as symbols or as a
-   * separate sections array, and both inherit `totalLines` on the last entry,
-   * so both count.
-   */
+  /** The highest end line anything the adapter extracted claims, or 0 when it found nothing. Adapters surface flat spans either as symbols or as a separate sections array, and both inherit `totalLines` on the last entry, so both count. */
   function maxEnd(spans: ReadonlyArray<{ lineEnd?: number; lineStart?: number; endLine?: number; line?: number }>): number {
     let hi = 0
     for (const span of spans) {
@@ -345,17 +301,13 @@ describe('flat-section adapters never end a symbol past EOF', () => {
       extract: (c) => extractIni(c, 'd.ini'),
     },
     {
-      // A trailing statement with no closing brace or semicolon leaves the span
-      // to `totalLines`, which is what makes this case discriminating.
+      // A trailing statement with no closing brace or semicolon leaves the span to `totalLines`, which is what makes this case discriminating.
       lang: 'sql',
       content: 'CREATE TABLE a (id INT);\n\nCREATE VIEW v AS SELECT 1\n',
       extract: (c) => extractSql(c, 'e.sql'),
     },
     {
-      // Terraform and proto close their last symbol at a brace, so `totalLines`
-      // never reaches a span here and these two stay green on both sides of the
-      // fix. They are kept as invariant guards: a future adapter change that
-      // starts leaning on `totalLines` would be caught without new test work.
+      // Terraform and proto close their last symbol at a brace, so `totalLines` never reaches a span here and these two stay green on both sides of the fix. They are kept as invariant guards: a future adapter change that starts leaning on `totalLines` would be caught without new test work.
       lang: 'terraform',
       content: 'resource "aws_s3_bucket" "one" {\n  bucket = "x"\n}\n\nvariable "two" {\n  type = string\n}\n',
       extract: (c) => extractTerraform(c, 'f.tf'),
@@ -376,9 +328,7 @@ describe('flat-section adapters never end a symbol past EOF', () => {
     })
   }
 
-  // Vue, Svelte, Astro and LWC emit a symbol for the whole component, spanning
-  // line 1 to the end of the file, so the phantom line landed on every single
-  // file those adapters saw rather than only on the last section of some.
+  // Vue, Svelte, Astro and LWC emit a symbol for the whole component, spanning line 1 to the end of the file, so the phantom line landed on every single file those adapters saw rather than only on the last section of some.
   const wholeFileCases: Array<{ lang: string; file: string; content: string; extract: (c: string, f: string) => ReadonlyArray<{ lineEnd?: number; lineStart?: number }> }> = [
     {
       lang: 'vue',

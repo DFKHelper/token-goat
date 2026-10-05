@@ -9,9 +9,7 @@ import {
   compressGWorkspaceMcpResult,
   compressMcpResultWithPacks,
 } from '../src/mcp_compress_packs.js'
-// Importing relay registers every hook module (including hooks_mcp) for its side
-// effects, so runHook dispatches through the real production registry, same
-// pattern as tests/hooks_mcp.test.ts.
+// Importing relay registers every hook module (including hooks_mcp) for its side effects, so runHook dispatches through the real production registry, same pattern as tests/hooks_mcp.test.ts.
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
@@ -193,14 +191,7 @@ function driveFileContent() {
   }
 }
 
-/**
- * A realistic accessibility-tree snapshot text blob in the documented
- * `{2*depth spaces}uid={id} {role} "{name}" attr1="value1" ...` shape
- * (chrome-devtools-mcp `take_snapshot` / claude-in-chrome `read_page`).
- * Mixes short interactive-element lines (must survive untouched), one
- * long-text `StaticText` line (must be truncated), and one malformed line
- * with an unexpected shape (must pass through unchanged).
- */
+/** A realistic accessibility-tree snapshot text blob in the documented `{2*depth spaces}uid={id} {role} "{name}" attr1="value1" ...` shape (chrome-devtools-mcp `take_snapshot` / claude-in-chrome `read_page`). Mixes short interactive-element lines (must survive untouched), one long-text `StaticText` line (must be truncated), and one malformed line with an unexpected shape (must pass through unchanged). */
 function a11ySnapshotText() {
   const longParagraph = (
     'This paragraph describes the quarterly results in extensive detail, covering revenue trends, ' +
@@ -274,17 +265,14 @@ describe('compressGithubMcpResult', () => {
   })
 
   it('falls through to null when stripping is a no-op and the row count is too low for the generic pass to help either', () => {
-    // No boilerplate fields to strip at all -- stripping is a no-op -- and below
-    // the generic pass's MIN_ROWS, so neither stage of the pack can pay off.
+    // No boilerplate fields to strip at all -- stripping is a no-op -- and below the generic pass's MIN_ROWS, so neither stage of the pack can pay off.
     const rows = Array.from({ length: 2 }, (_, i) => ({ number: i, title: `pr ${i}`, state: 'open' }))
     const text = JSON.stringify(rows)
     expect(compressGithubMcpResult('mcp__plugin_github_github__list_pull_requests', text)).toBeNull()
   })
 
   it('respects the savings-ratio threshold: a tiny boilerplate field next to large unique per-row content does not clear the bar', () => {
-    // node_id is stripped, but it is a small fraction of each row next to a large,
-    // fully-unique `body` field the generic table pass cannot fold into a constant
-    // column -- neither the strip nor the resulting table clears the 15% bar.
+    // node_id is stripped, but it is a small fraction of each row next to a large, fully-unique `body` field the generic table pass cannot fold into a constant column -- neither the strip nor the resulting table clears the 15% bar.
     const rows = Array.from({ length: 5 }, (_, i) => ({
       number: i,
       node_id: `n${i}`,
@@ -378,9 +366,7 @@ describe('compressBrowserMcpResult', () => {
       expect(outLines[5]).toBe(origLines[5]) // button "Submit" disabled
       expect(outLines[6]).toBe(origLines[6]) // link "Email address" href=...
 
-      // The long StaticText line is truncated with the repo's existing
-      // capLongLines-style "N chars elided" marker, and trailing attributes
-      // (none here, but the shape) plus indentation/uid/role survive.
+      // The long StaticText line is truncated with the repo's existing capLongLines-style "N chars elided" marker, and trailing attributes (none here, but the shape) plus indentation/uid/role survive.
       const longOut = outLines[4] ?? ''
       expect(longOut).not.toBe(origLines[4])
       expect(longOut).toContain('uid=5 StaticText "')
@@ -436,8 +422,7 @@ describe('compressGWorkspaceMcpResult', () => {
     const doc = driveFileContent()
     const text = JSON.stringify(doc)
     const compressed = compressGWorkspaceMcpResult('mcp__claude_ai_Google_Drive__read_file_content', text)
-    // No boilerplate to strip in this fixture and body-trimming does not apply to `content`,
-    // so the pack correctly declines rather than risk destroying real document text.
+    // No boilerplate to strip in this fixture and body-trimming does not apply to `content`, so the pack correctly declines rather than risk destroying real document text.
     expect(compressed).toBeNull()
     // Direct proof the content itself was never mutated by trimGmailBodies's quote-marker regex.
     const parsed = JSON.parse(text) as { content: string }
@@ -454,8 +439,7 @@ describe('compressGWorkspaceMcpResult', () => {
       'Status Report\n\nFrom: Team A\nTo: Team B\nRe: project X\n\nEverything is on track and no action is needed at this time, all systems green.'
     const text = JSON.stringify({ messages: [{ id: '1', body }] })
     const parsed = JSON.parse(text) as { messages: { id: string; body: string }[] }
-    // compressGWorkspaceMcpResult may decline (return null) when there's nothing worth stripping;
-    // either way the body content itself must never be silently truncated.
+    // compressGWorkspaceMcpResult may decline (return null) when there's nothing worth stripping; either way the body content itself must never be silently truncated.
     const compressed = compressGWorkspaceMcpResult('mcp__claude_ai_Gmail__get_thread', text)
     const resultBody = compressed === null ? parsed.messages[0].body : (JSON.parse(compressed) as typeof parsed).messages[0].body
     expect(resultBody).toContain('Everything is on track and no action is needed at this time, all systems green.')
@@ -569,8 +553,7 @@ describe('compressMcpResultWithPacks', () => {
     const compressed = compressMcpResultWithPacks('mcp__some-other-server__take_screenshot', text)
     expect(compressed).not.toBeNull()
     if (compressed === null) return
-    // A replacement *string* containing "$&"/"$1"/"$$" would have corrupted
-    // this untouched literal text if used as the second arg to replace().
+    // A replacement *string* containing "$&"/"$1"/"$$" would have corrupted this untouched literal text if used as the second arg to replace().
     expect(compressed).toContain('$1 costs $$ and this is $& weird')
   })
 
@@ -645,8 +628,7 @@ describe('MCP compression packs wired into postMcpHandler (real runHook dispatch
       const m = /mcp-output (mcp_[0-9a-f]{16})/.exec(result.updatedOutput)
       expect(m).not.toBeNull()
       const entry = getBashOutput(m![1] as string)
-      // The full, uncompressed original (boilerplate fields included) is still
-      // recoverable via the labeled recall id, exactly as with the generic pass.
+      // The full, uncompressed original (boilerplate fields included) is still recoverable via the labeled recall id, exactly as with the generic pass.
       expect(entry?.output).toBe(rawText)
       expect(entry?.output).toContain('node_id')
     }
@@ -739,8 +721,7 @@ describe('MCP compression packs wired into postMcpHandler (real runHook dispatch
         tool_response: rawText,
       }),
     )
-    // Compression is off, so the result ships uncompressed -- but still fenced, because the fence
-    // follows provenance and never inherits a compression opt-out.
+    // Compression is off, so the result ships uncompressed -- but still fenced, because the fence follows provenance and never inherits a compression opt-out.
     expect(result.hookType).toBe('rewriteOutput')
     if (result.hookType !== 'rewriteOutput') throw new Error('unreachable')
     expect(unfence(result.updatedOutput)).toBe(rawText)

@@ -1,25 +1,4 @@
-/**
- * `token-goat bench` -- the compression benchmark's own correctness.
- *
- * The command exists to be an optimisation target, which makes its failure modes unusual: a
- * benchmark that silently over-reports is worse than no benchmark, because a loop pointed at it
- * will happily optimise the reporting error. Three properties therefore carry real weight here and
- * each has a test that fails when it breaks:
- *
- *   1. It measures the SHIPPING path. `runCase` must agree byte for byte with `deliverCompressed`,
- *      the function `bash_runner` uses to decide what the model receives. A benchmark with its own
- *      copy of the net-benefit gate would keep reporting the old number after delivery changed.
- *   2. The fidelity guard can actually fail. A must-keep list that nothing can violate is not a
- *      guard, and since deleting content RAISES the ratio, an inert guard would let the primary
- *      metric be maximised by destroying output.
- *   3. A refused rewrite is credited nothing. Below the net-benefit floor the raw output ships, so
- *      reporting the filter's would-be savings there would credit compression the model never got.
- *
- * Fixture provenance: the repository corpus under tests/fixtures/bench is CAPTURE (each case's
- * .json names the exact command and date; the .txt is that run's redirected output, unedited). The
- * corpora built inside this file are HAND-DERIVED -- they encode loader and arithmetic logic, and
- * are deliberately not used to assert anything about what a real filter emits.
- */
+/** `token-goat bench` -- the compression benchmark's own correctness. The command exists to be an optimisation target, which makes its failure modes unusual: a benchmark that silently over-reports is worse than no benchmark, because a loop pointed at it will happily optimise the reporting error. Three properties therefore carry real weight here and each has a test that fails when it breaks: 1. It measures the SHIPPING path. `runCase` must agree byte for byte with `deliverCompressed`, the function `bash_runner` uses to decide what the model receives. A benchmark with its own copy of the net-benefit gate would keep reporting the old number after delivery changed. 2. The fidelity guard can actually fail. A must-keep list that nothing can violate is not a guard, and since deleting content RAISES the ratio, an inert guard would let the primary metric be maximised by destroying output. 3. A refused rewrite is credited nothing. Below the net-benefit floor the raw output ships, so reporting the filter's would-be savings there would credit compression the model never got. Fixture provenance: the repository corpus under tests/fixtures/bench is CAPTURE (each case's .json names the exact command and date; the .txt is that run's redirected output, unedited). The corpora built inside this file are HAND-DERIVED -- they encode loader and arithmetic logic, and are deliberately not used to assert anything about what a real filter emits. */
 
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -84,19 +63,14 @@ describe('bench corpus loading', () => {
     expect(() => loadCorpus(corpus({}))).toThrow(/empty/)
   })
 
-  // `--corpus` reads every file matching the layout in a directory the operator names, whole, into
-  // memory, before anything validates it. The refusal is checked against a real oversized file on
-  // disk rather than a stubbed stat: a mocked size would pass whether or not the code ever asks the
-  // filesystem, which is exactly the thing under test.
+  // `--corpus` reads every file matching the layout in a directory the operator names, whole, into memory, before anything validates it. The refusal is checked against a real oversized file on disk rather than a stubbed stat: a mocked size would pass whether or not the code ever asks the filesystem, which is exactly the thing under test.
   it('refuses an output file too large to be a captured case, instead of loading it whole', () => {
     const dir = corpus({ a: { meta: { provenance: 'HAND-DERIVED', command: 'git log', mustKeep: [] }, output: 'x\n' } })
     fs.writeFileSync(path.join(dir, 'a.txt'), Buffer.alloc(5 * 1024 * 1024 + 1, 0x61))
     expect(() => loadCorpus(dir)).toThrow(/output is \d+ bytes, over the \d+-byte limit/)
   })
 
-  // The metadata file needs its own case: it is read inside a try that reports a parse failure, so
-  // a size refusal raised in the wrong place would surface as "not valid JSON" and send whoever hit
-  // it looking for a syntax error in a file that is merely too big.
+  // The metadata file needs its own case: it is read inside a try that reports a parse failure, so a size refusal raised in the wrong place would surface as "not valid JSON" and send whoever hit it looking for a syntax error in a file that is merely too big.
   it('refuses an oversized metadata file as oversized, not as malformed JSON', () => {
     const dir = corpus({ a: { meta: { provenance: 'HAND-DERIVED', command: 'git log', mustKeep: [] }, output: 'x\n' } })
     fs.writeFileSync(path.join(dir, 'a.json'), Buffer.alloc(5 * 1024 * 1024 + 1, 0x61))
@@ -106,9 +80,7 @@ describe('bench corpus loading', () => {
 })
 
 describe('bench measures the shipping path', () => {
-  // The load-bearing test. If `runCase` ever stops routing through `deliverCompressed`, delivery
-  // and the benchmark can disagree -- and the benchmark is the thing that would keep saying the
-  // old number.
+  // The load-bearing test. If `runCase` ever stops routing through `deliverCompressed`, delivery and the benchmark can disagree -- and the benchmark is the thing that would keep saying the old number.
   it('reports exactly the bytes deliverCompressed would hand to the model', () => {
     for (const c of loadCorpus(REPO_CORPUS)) {
       const detected = detectFromCommand(c.command)
@@ -146,8 +118,7 @@ describe('the fidelity guard discriminates', () => {
     const identity = runCorpus(cases, 'identity')
     expect(identity.appliedCases).toBe(0)
     expect(identity.fidelityIntact).toBe(true)
-    // Without this half, `appliedCases` hardcoded to 0 would satisfy the assertion above and the
-    // floor check in --validate at the same time -- a constant is not a measurement.
+    // Without this half, `appliedCases` hardcoded to 0 would satisfy the assertion above and the floor check in --validate at the same time -- a constant is not a measurement.
     expect(runCorpus(cases).appliedCases).toBeGreaterThan(0)
   })
 
@@ -218,9 +189,7 @@ describe('bench command', () => {
     expect(report.cases.length).toBeGreaterThan(0)
   })
 
-  // Found by running the installed binary rather than by a test: the ordinary use is edit, bench,
-  // edit, bench, so a whole run of TSV rows names the same HEAD. Undecorated, a history recording
-  // several different attempts is indistinguishable from one recording the same code repeatedly.
+  // Found by running the installed binary rather than by a test: the ordinary use is edit, bench, edit, bench, so a whole run of TSV rows names the same HEAD. Undecorated, a history recording several different attempts is indistinguishable from one recording the same code repeatedly.
   it('marks a run measured against a modified tree, so two attempts at one commit are distinguishable', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-bench-git-'))
     tempDirs.add(dir)

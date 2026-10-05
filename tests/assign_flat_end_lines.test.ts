@@ -112,9 +112,7 @@ describe('language adapters never emit inverted symbol ranges', () => {
     const fn = symbols.find((s) => s.kind === 'sql_function' && s.name === 'foo')
     expect(table).toBeDefined()
     expect(fn).toBeDefined()
-    // The table statement is entirely on line 1; the function body runs through
-    // line 5, which is the last line the fixture actually has. The `6` this
-    // asserted before was the phantom line a trailing newline used to add.
+    // The table statement is entirely on line 1; the function body runs through line 5, which is the last line the fixture actually has. The `6` this asserted before was the phantom line a trailing newline used to add.
     expect(table?.lineEnd).toBe(1)
     expect(fn?.lineEnd).toBe(5)
   })

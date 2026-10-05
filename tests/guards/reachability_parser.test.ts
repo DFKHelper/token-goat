@@ -1,24 +1,4 @@
-/**
- * The shared guard parser must see every shape a top-level function is written in.
- *
- * Eleven structural guards resolve their populations through
- * `tests/guards/reachability.ts::parseTopLevelFunctions`. It matched only `function name(` and so
- * was blind to module-scope arrow consts: an audit injected both shapes into
- * `src/vscode_duplicate.ts` and got `function probeFn` back but not
- * `const probeArrow = (q) => fs.existsSync(q)`. Nothing turned red, because the population simply
- * did not contain the function -- the same silent-shrink failure `pinnedPopulation` exists to
- * catch, one level lower down where a floor cannot see it. An ungated pre-approval `fs` touch
- * written as an arrow const would have shipped green.
- *
- * The parser is a pure function of source TEXT, so the injection here is done in memory against
- * the real file's bytes rather than by writing to `src/`. That is the same evidence as an on-disk
- * mutation for a pure function, and it cannot leave a poisoned tree behind if the run is killed.
- *
- * PROVENANCE: CAPTURE for the real-file half (the subject is `src/vscode_duplicate.ts` as it
- * actually is on disk, read at run time, not a transcription of it). HAND-DERIVED for the shape
- * table: each case is a declaration written to exercise one syntactic form, with the expected
- * body computed by reading the form, never by running the parser and pinning what it said.
- */
+/** The shared guard parser must see every shape a top-level function is written in. Eleven structural guards resolve their populations through `tests/guards/reachability.ts::parseTopLevelFunctions`. It matched only `function name(` and so was blind to module-scope arrow consts: an audit injected both shapes into `src/vscode_duplicate.ts` and got `function probeFn` back but not `const probeArrow = (q) => fs.existsSync(q)`. Nothing turned red, because the population simply did not contain the function -- the same silent-shrink failure `pinnedPopulation` exists to catch, one level lower down where a floor cannot see it. An ungated pre-approval `fs` touch written as an arrow const would have shipped green. The parser is a pure function of source TEXT, so the injection here is done in memory against the real file's bytes rather than by writing to `src/`. That is the same evidence as an on-disk mutation for a pure function, and it cannot leave a poisoned tree behind if the run is killed. PROVENANCE: CAPTURE for the real-file half (the subject is `src/vscode_duplicate.ts` as it actually is on disk, read at run time, not a transcription of it). HAND-DERIVED for the shape table: each case is a declaration written to exercise one syntactic form, with the expected body computed by reading the form, never by running the parser and pinning what it said. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -58,15 +38,12 @@ describe('parseTopLevelFunctions sees every top-level function shape', () => {
   }
 
   it('reports nothing for a const that is not a function', () => {
-    // The other direction: widening the parser must not turn every module constant into a
-    // "function", which would pad every population built on it with members no guard can act on.
+    // The other direction: widening the parser must not turn every module constant into a "function", which would pad every population built on it with members no guard can act on.
     const src = 'const a = new Map<string, string>()\nconst b = 1\nconst c: string[] = []\nconst d = { e: (q) => q }\n'
     expect(parseTopLevelFunctions(src).map((f) => f.name)).toEqual([])
   })
 
-  // The negative case above is the variant that passes for free: with no later arrow in the file,
-  // an unbounded `indexOf('=>')` finds nothing and the phantom never appears. The real shape has a
-  // later arrow to scavenge, and that one was reported for three rounds.
+  // The negative case above is the variant that passes for free: with no later arrow in the file, an unbounded `indexOf('=>')` finds nothing and the phantom never appears. The real shape has a later arrow to scavenge, and that one was reported for three rounds.
   it('does not attach a later arrow to a parenthesized initializer that is not a function', () => {
     const src = 'const total = (aaa + bbb) * 2\nconst later = (q) => { unsafeCall(q) }\n'
 
@@ -77,10 +54,7 @@ describe('parseTopLevelFunctions sees every top-level function shape', () => {
   })
 
   it('does not let a phantom overwrite a real function of the same name', () => {
-    // Why the phantom matters at all: `functionMap` keys by name and the last write wins, so a
-    // phantom sharing a name with a real function replaces that function's body in a guard's view
-    // -- the guard then reports green about code it can no longer see. `var` because it is the one
-    // binding form that may legally redeclare a function declaration in the same scope.
+    // Why the phantom matters at all: `functionMap` keys by name and the last write wins, so a phantom sharing a name with a real function replaces that function's body in a guard's view -- the guard then reports green about code it can no longer see. `var` because it is the one binding form that may legally redeclare a function declaration in the same scope.
     const src = 'function check(q) { return realGate(q) }\nvar check = (aaa + bbb) * 2\nconst later = (q) => { unsafeCall(q) }\n'
 
     const byName = functionMap(parseTopLevelFunctions(src))
@@ -90,8 +64,7 @@ describe('parseTopLevelFunctions sees every top-level function shape', () => {
   })
 
   it('reports no function for a non-function const in a real source file that has arrows after it', () => {
-    // CAPTURE: `src/webfetch.ts` as it is on disk. ALLOW_UNRESOLVED is a boolean; the unbounded
-    // scan reported it as a function whose body (`void,`) was scavenged from a later annotation.
+    // CAPTURE: `src/webfetch.ts` as it is on disk. ALLOW_UNRESOLVED is a boolean; the unbounded scan reported it as a function whose body (`void,`) was scavenged from a later annotation.
     const real = fs.readFileSync(path.join(SRC_DIR, 'webfetch.ts'), 'utf8')
     expect(real).toContain('ALLOW_UNRESOLVED') // calibration: a rename must fail loudly, not pass silently
 
@@ -120,8 +93,7 @@ describe('parseTopLevelFunctions sees every top-level function shape', () => {
     const after = parseTopLevelFunctions(injected)
 
     expect(after.map((f) => f.name)).toEqual([...before, `probeFn${PROBE}`, `probeArrow${PROBE}`])
-    // Bodies too, not just names: a member whose body came back empty is invisible to every
-    // predicate the guards run, which is the same hole wearing a different hat.
+    // Bodies too, not just names: a member whose body came back empty is invisible to every predicate the guards run, which is the same hole wearing a different hat.
     expect(after.find((f) => f.name === `probeArrow${PROBE}`)?.body).toContain('fs.existsSync(q)')
   })
 })

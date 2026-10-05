@@ -1,17 +1,4 @@
-/**
- * The session-state file is written directly rather than through storeBlob, which is where every
- * other cache gets its defense-in-depth redaction pass. Two of its fields are urls: the curl `-o`
- * download map and the WebFetch map. A download or fetch url routinely carries a credential -- an
- * `api_key=` query parameter, a signed link's `X-Amz-Signature` -- and both were serialized
- * verbatim, so a live key landed in plain text on disk. web_cache.ts already redacts a url before
- * indexing it for exactly this reason; these two paths did not.
- *
- * The two are keyed differently on purpose, and these tests pin both halves. The curl map's only
- * consumer is an exact-match lookup that DENIES a repeat download, so it is keyed by digest: a
- * redaction would make two urls differing only inside the redacted span collide and block a
- * legitimate fetch of a different resource. The WebFetch map's keys are displayed in the
- * compaction manifest, so they stay readable and are redacted instead.
- */
+/** The session-state file is written directly rather than through storeBlob, which is where every other cache gets its defense-in-depth redaction pass. Two of its fields are urls: the curl `-o` download map and the WebFetch map. A download or fetch url routinely carries a credential -- an `api_key=` query parameter, a signed link's `X-Amz-Signature` -- and both were serialized verbatim, so a live key landed in plain text on disk. web_cache.ts already redacts a url before indexing it for exactly this reason; these two paths did not. The two are keyed differently on purpose, and these tests pin both halves. The curl map's only consumer is an exact-match lookup that DENIES a repeat download, so it is keyed by digest: a redaction would make two urls differing only inside the redacted span collide and block a legitimate fetch of a different resource. The WebFetch map's keys are displayed in the compaction manifest, so they stay readable and are redacted instead. */
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import {

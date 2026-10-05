@@ -1,20 +1,4 @@
-/**
- * Security regression: allow/deny patterns were matched against the URL string exactly as
- * written, so several rewrites of the same request slipped past a deny pattern by naming the
- * denied resource in a way the literal text does not.
- *
- * All of these were permitted against `deny = ['https://example.com/private/*']` while reaching
- * exactly the resource it was written to block: a trailing dot on the host (which DNS resolves
- * identically), `/a/../private/x` and `/./private/x` (dot segments the parser collapses before
- * the request goes out), the scheme's default port written out, and `%70rivate` (which origins
- * serve as `/private`). The failure landed on precisely the careful, narrow patterns: a loose
- * `*example.com*` still matched, so the more specific the policy, the easier it was to step
- * around.
- *
- * Separately, the parser drops a default port from `URL.host`, so a pattern whose authority
- * spelled that port out matched no host at all: an allow list written that way refused every URL
- * and a deny list written that way silently stopped widening to the host.
- */
+/** Security regression: allow/deny patterns were matched against the URL string exactly as written, so several rewrites of the same request slipped past a deny pattern by naming the denied resource in a way the literal text does not. All of these were permitted against `deny = ['https://example.com/private/*']` while reaching exactly the resource it was written to block: a trailing dot on the host (which DNS resolves identically), `/a/../private/x` and `/./private/x` (dot segments the parser collapses before the request goes out), the scheme's default port written out, and `%70rivate` (which origins serve as `/private`). The failure landed on precisely the careful, narrow patterns: a loose `*example.com*` still matched, so the more specific the policy, the easier it was to step around. Separately, the parser drops a default port from `URL.host`, so a pattern whose authority spelled that port out matched no host at all: an allow list written that way refused every URL and a deny list written that way silently stopped widening to the host. */
 import { describe, expect, it } from 'vitest'
 
 import { matchesAllowPattern, matchesDenyPattern, urlPolicyDenialReason } from '../src/url_policy.js'
@@ -35,8 +19,7 @@ describe('deny matching is not defeated by an equivalent URL spelling', () => {
     expect(urlPolicyDenialReason(url, { allow: [], deny: PRIVATE_DENY })).toMatch(/webfetch\.deny/)
   })
 
-  // The point of the pattern being path-scoped: widening it to the whole host would block URLs
-  // the operator deliberately left out, so normalisation must not turn it into a host block.
+  // The point of the pattern being path-scoped: widening it to the whole host would block URLs the operator deliberately left out, so normalisation must not turn it into a host block.
   it.each([
     ['a sibling path', 'https://example.com/public/x'],
     ['a different host', 'https://other.example/private/x'],
@@ -44,9 +27,7 @@ describe('deny matching is not defeated by an equivalent URL spelling', () => {
     expect(matchesDenyPattern(url, [...PRIVATE_DENY])).toBe(false)
   })
 
-  // A URL whose text names the denied path but which resolves past it is still denied: the raw
-  // spelling stays in the match set, and for a deny list over-blocking is the safe error. Pinned
-  // so the asymmetry is a decision on record rather than an accident of the matching order.
+  // A URL whose text names the denied path but which resolves past it is still denied: the raw spelling stays in the match set, and for a deny list over-blocking is the safe error. Pinned so the asymmetry is a decision on record rather than an accident of the matching order.
   it('denies a URL that names the denied path and then escapes it', () => {
     expect(matchesDenyPattern('https://example.com/private/../public/x', [...PRIVATE_DENY])).toBe(true)
   })
@@ -74,8 +55,7 @@ describe('a default port is interchangeable with omitting it', () => {
 })
 
 describe('normalisation does not weaken the allow list', () => {
-  // The exfiltration case the authority check exists for: the allowed host appears in the URL
-  // text but the request goes elsewhere. Adding spellings must not reopen it.
+  // The exfiltration case the authority check exists for: the allowed host appears in the URL text but the request goes elsewhere. Adding spellings must not reopen it.
   it.each([
     ['the allowed host sits in the query string', 'https://evil.com/steal?u=https://example.com/'],
     ['the allowed host sits in the query with a default port', 'https://evil.com/steal?u=https://example.com:443/'],
@@ -104,16 +84,7 @@ describe('malformed input', () => {
 })
 
 
-/**
- * The parser stores an internationalised host punycode-encoded, because that is what DNS is asked
- * for. Nothing turned it back, so an allow pattern written in the spelling an operator actually
- * types matched no host at all and the policy refused every URL to that host, silently. Same shape
- * as the default-port case above, and the same fix: make the two spellings interchangeable.
- *
- * The widening decodes that exact hostname, so it can only ever add the same host under its other
- * name. The negative cases below are what prove it: a look-alike built from a different codepoint
- * is a different host and stays refused.
- */
+/** The parser stores an internationalised host punycode-encoded, because that is what DNS is asked for. Nothing turned it back, so an allow pattern written in the spelling an operator actually types matched no host at all and the policy refused every URL to that host, silently. Same shape as the default-port case above, and the same fix: make the two spellings interchangeable. The widening decodes that exact hostname, so it can only ever add the same host under its other name. The negative cases below are what prove it: a look-alike built from a different codepoint is a different host and stays refused. */
 describe('an internationalised host is interchangeable with its punycode form', () => {
   const UNICODE_PATTERN = 'https://exämple.com/*'
   const PUNYCODE_PATTERN = 'https://xn--exmple-cua.com/*'

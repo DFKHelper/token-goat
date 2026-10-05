@@ -1,18 +1,4 @@
-/**
- * Automatic pruning and analysis of Claude Code's native auto-memory store.
- *
- * The auto-memory store lives at `~/.claude/projects/<slug>/memory/`.
- * It uses a lazy-index pattern: `MEMORY.md` is a short one-line-per-entry index;
- * each fact lives in a sibling `*.md` file (YAML frontmatter + body).
- *
- * **What this module does automatically (safe, structural-only):**
- * - Remove index lines whose target `.md` file is absent (dead links).
- * - Remove duplicate index lines pointing to the same target file (keep first).
- *
- * **What it reports but never auto-edits:**
- * - Near-duplicate sibling bodies (via embedding cosine similarity or Jaccard).
- * - Exact-duplicate lines / sections inside `CLAUDE.md` files.
- */
+/** Automatic pruning and analysis of Claude Code's native auto-memory store. The auto-memory store lives at `~/.claude/projects/<slug>/memory/`. It uses a lazy-index pattern: `MEMORY.md` is a short one-line-per-entry index; each fact lives in a sibling `*.md` file (YAML frontmatter + body). **What this module does automatically (safe, structural-only):** - Remove index lines whose target `.md` file is absent (dead links). - Remove duplicate index lines pointing to the same target file (keep first). **What it reports but never auto-edits:** - Near-duplicate sibling bodies (via embedding cosine similarity or Jaccard). - Exact-duplicate lines / sections inside `CLAUDE.md` files. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -28,9 +14,7 @@ const ENTRY_RE = /^\s*-\s*\[(?<title>[^\]]+)\]\((?<target>[^)]+?\.md)\)/
 // A target with a `scheme://` URL prefix (https://, etc.) is never a local sibling file -- it can't be "dead" in the local-filesystem sense, so it must always be treated as valid rather than fs.existsSync-checked. Requires `://`, so a scheme without it (e.g. mailto:) wouldn't match here, but ENTRY_RE above only ever captures targets ending in `.md`, so a non-`//` scheme link is never captured as an entry in the first place.
 const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i
 
-/**
- * One parsed line from MEMORY.md.
- */
+/** One parsed line from MEMORY.md. */
 export interface IndexEntry {
   raw: string
   title: string
@@ -38,13 +22,7 @@ export interface IndexEntry {
   lineno: number
 }
 
-/**
- * Parse MEMORY.md text into passthrough lines and entries.
- *
- * Returns `[passthrough, entries]` where passthrough is a list of
- * `[lineno, raw_line]` tuples for lines that are NOT index entries
- * (headers, blank lines, freeform notes). These are preserved verbatim.
- */
+/** Parse MEMORY.md text into passthrough lines and entries. Returns `[passthrough, entries]` where passthrough is a list of `[lineno, raw_line]` tuples for lines that are NOT index entries (headers, blank lines, freeform notes). These are preserved verbatim. */
 export function parseIndex(text: string): [Array<[number, string]>, IndexEntry[]] {
   const passthrough: Array<[number, string]> = []
   const entries: IndexEntry[] = []
@@ -85,9 +63,7 @@ export function parseIndex(text: string): [Array<[number, string]>, IndexEntry[]
   return [passthrough, entries]
 }
 
-/**
- * Result of a `pruneIndex()` call.
- */
+/** Result of a `pruneIndex()` call. */
 export interface PruneResult {
   removedDead: IndexEntry[]
   removedDup: IndexEntry[]
@@ -98,16 +74,7 @@ export interface PruneResult {
   after?: string
 }
 
-/**
- * Read MEMORY.md, drop dead-link and exact-dup-target entries, rewrite atomically.
- *
- * `memoryDir` is the directory containing MEMORY.md and its siblings.
- * When `dryRun` is true the file is never written; the returned result still
- * reflects what *would* have been removed.
- *
- * Returns `PruneResult(changed=false)` when the file is absent, unreadable,
- * or already clean. Never throws — caller decides on logging.
- */
+/** Read MEMORY.md, drop dead-link and exact-dup-target entries, rewrite atomically. `memoryDir` is the directory containing MEMORY.md and its siblings. When `dryRun` is true the file is never written; the returned result still reflects what *would* have been removed. Returns `PruneResult(changed=false)` when the file is absent, unreadable, or already clean. Never throws — caller decides on logging. */
 export function pruneIndex(memoryDir: string, opts?: { dryRun?: boolean }): PruneResult {
   const result: PruneResult = {
     removedDead: [],
@@ -134,12 +101,7 @@ export function pruneIndex(memoryDir: string, opts?: { dryRun?: boolean }): Prun
   const dups: IndexEntry[] = []
 
   for (const entry of entries) {
-    // A URL target (https://..., mailto:..., etc.) or an absolute filesystem
-    // path is never resolvable by joining onto memoryDir -- path.join mangles
-    // both into a bogus path that always reports as missing, which used to
-    // get every such entry silently flagged as dead and deleted. Resolve each
-    // case on its own terms: URLs are always valid (nothing local to check),
-    // absolute paths are checked directly.
+    // A URL target (https://..., mailto:..., etc.) or an absolute filesystem path is never resolvable by joining onto memoryDir -- path.join mangles both into a bogus path that always reports as missing, which used to get every such entry silently flagged as dead and deleted. Resolve each case on its own terms: URLs are always valid (nothing local to check), absolute paths are checked directly.
     const isUrl = URL_SCHEME_RE.test(entry.target)
     const targetExists = isUrl
       ? true
@@ -202,9 +164,7 @@ export function pruneIndex(memoryDir: string, opts?: { dryRun?: boolean }): Prun
   return result
 }
 
-/**
- * Jaccard similarity between two strings (token-set, whitespace-tokenised, lowercased).
- */
+/** Jaccard similarity between two strings (token-set, whitespace-tokenised, lowercased). */
 function jaccard(a: string, b: string): number {
   const ta = new Set(a.toLowerCase().split(/\s+/))
   const tb = new Set(b.toLowerCase().split(/\s+/))
@@ -218,9 +178,7 @@ function jaccard(a: string, b: string): number {
   return intersection.size / union.size
 }
 
-/**
- * Return description + first ~500 body chars for similarity comparison.
- */
+/** Return description + first ~500 body chars for similarity comparison. */
 function siblingSnippet(filePath: string): string {
   let text: string
   try {
@@ -256,9 +214,7 @@ function siblingSnippet(filePath: string): string {
   return text.slice(0, 500)
 }
 
-/**
- * A group of memory files with highly similar content.
- */
+/** A group of memory files with highly similar content. */
 export interface DupCluster {
   members: string[]
   similarity: number
@@ -279,13 +235,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dot / (Math.sqrt(na) * Math.sqrt(nb))
 }
 
-/**
- * Greedy pairwise clustering shared by the embedding and Jaccard paths: seed a group with
- * the next unused item, absorb later unused items that `matches` accepts, then emit a
- * DupCluster once a group has more than one member. `matches` encodes each path's own
- * grouping criterion (embedding compares only against the seed; Jaccard against any
- * existing group member), so behavior is unchanged from the pre-extraction duplicated loops.
- */
+/** Greedy pairwise clustering shared by the embedding and Jaccard paths: seed a group with the next unused item, absorb later unused items that `matches` accepts, then emit a DupCluster once a group has more than one member. `matches` encodes each path's own grouping criterion (embedding compares only against the seed; Jaccard against any existing group member), so behavior is unchanged from the pre-extraction duplicated loops. */
 function greedyCluster(
   siblings: string[],
   snippets: string[],
@@ -331,11 +281,7 @@ function greedyCluster(
   return clusters
 }
 
-/**
- * Attempt embedding-based clustering. Returns null (never []) when embeddings are disabled,
- * unavailable, or fail, so the caller falls through to the Jaccard path -- an empty embedding
- * result (no clusters found) is a legitimate `[]`, distinct from "couldn't try".
- */
+/** Attempt embedding-based clustering. Returns null (never []) when embeddings are disabled, unavailable, or fail, so the caller falls through to the Jaccard path -- an empty embedding result (no clusters found) is a legitimate `[]`, distinct from "couldn't try". */
 async function tryEmbeddingClusters(
   siblings: string[],
   snippets: string[],
@@ -361,19 +307,12 @@ async function tryEmbeddingClusters(
   )
 }
 
-/**
- * Return clusters of sibling memory files with similar content.
- *
- * Uses embedding cosine similarity when available; falls back to
- * Jaccard >= 0.60 (cruder, flag-only). Pure: never mutates any file.
- */
+/** Return clusters of sibling memory files with similar content. Uses embedding cosine similarity when available; falls back to Jaccard >= 0.60 (cruder, flag-only). Pure: never mutates any file. */
 export async function findContentDuplicates(
   memoryDir: string,
   _opts?: { threshold?: number },
 ): Promise<DupCluster[]> {
-  // threshold only governs the embedding/cosine path below -- the Jaccard fallback always
-  // uses its own fixed JACCARD_THRESHOLD, matching the pre-port Python behavior where a
-  // caller-supplied threshold never affected the no-embeddings case.
+  // threshold only governs the embedding/cosine path below -- the Jaccard fallback always uses its own fixed JACCARD_THRESHOLD, matching the pre-port Python behavior where a caller-supplied threshold never affected the no-embeddings case.
   const threshold = _opts?.threshold ?? 0.92
 
   const siblings = fs
@@ -405,9 +344,7 @@ export async function findContentDuplicates(
   )
 }
 
-/**
- * Audit findings for a single CLAUDE.md file.
- */
+/** Audit findings for a single CLAUDE.md file. */
 export interface ClaudeMdReport {
   path: string
   tokens: number
@@ -416,11 +353,7 @@ export interface ClaudeMdReport {
   crossFileOverlaps: string[]
 }
 
-/**
- * Return duplicate-line and duplicate-section findings across CLAUDE.md files.
- *
- * Report-only: never edits any file.
- */
+/** Return duplicate-line and duplicate-section findings across CLAUDE.md files. Report-only: never edits any file. */
 export function auditClaudeMd(files: string[]): ClaudeMdReport[] {
   const reports: ClaudeMdReport[] = []
   const allLines: Array<[string, number, string]> = []

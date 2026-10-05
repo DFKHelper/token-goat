@@ -1,34 +1,8 @@
-/**
- * Schema-aware compression packs for two specific MCP servers, layered on top
- * of {@link mcp_compress.ts}'s generic structural pass.
- *
- * The generic pass in `mcp_compress.ts` is deliberately blind: it table-ifies
- * any homogeneous JSON array without knowing anything about what produced it.
- * That is the right default for an unbounded set of MCP servers, but real
- * GitHub API JSON and real browser-automation payloads both carry large,
- * well-known sets of boilerplate fields (`_links`, `node_id`, `avatar_url`,
- * `requestHeaders`, `stackTrace`, ...) that are almost never useful to a model
- * driving an MCP tool, and stripping them first exposes far more
- * constant-across-rows columns for the generic pass's header-hoisting to
- * catch. These packs strip that known boilerplate, then hand the smaller,
- * schema-cleaned JSON back to {@link compressMcpResult} for the actual
- * table-ification -- reusing its logic rather than re-implementing it.
- *
- * Fails closed per pack: a tool name that does not match a pack's server
- * prefix, or a body that is not JSON / does not match the pack's expected
- * shape, returns `null` immediately so {@link hooks_mcp.ts}'s `postMcpHandler`
- * falls through to the plain generic pass exactly as it does today for every
- * other MCP server.
- */
+/** Schema-aware compression packs for two specific MCP servers, layered on top of {@link mcp_compress.ts}'s generic structural pass. The generic pass in `mcp_compress.ts` is deliberately blind: it table-ifies any homogeneous JSON array without knowing anything about what produced it. That is the right default for an unbounded set of MCP servers, but real GitHub API JSON and real browser-automation payloads both carry large, well-known sets of boilerplate fields (`_links`, `node_id`, `avatar_url`, `requestHeaders`, `stackTrace`, ...) that are almost never useful to a model driving an MCP tool, and stripping them first exposes far more constant-across-rows columns for the generic pass's header-hoisting to catch. These packs strip that known boilerplate, then hand the smaller, schema-cleaned JSON back to {@link compressMcpResult} for the actual table-ification -- reusing its logic rather than re-implementing it. Fails closed per pack: a tool name that does not match a pack's server prefix, or a body that is not JSON / does not match the pack's expected shape, returns `null` immediately so {@link hooks_mcp.ts}'s `postMcpHandler` falls through to the plain generic pass exactly as it does today for every other MCP server. */
 
 import { compressMcpResult } from './mcp_compress.js'
 
-/**
- * Mirrors `mcp_compress.ts`'s private `MIN_SAVINGS_RATIO` (0.15). Kept as a
- * separate constant rather than importing it: that file is shipped and
- * intentionally left untouched by this feature, and the two thresholds are
- * meant to move together only by convention, not by a shared binding.
- */
+/** Mirrors `mcp_compress.ts`'s private `MIN_SAVINGS_RATIO` (0.15). Kept as a separate constant rather than importing it: that file is shipped and intentionally left untouched by this feature, and the two thresholds are meant to move together only by convention, not by a shared binding. */
 const PACK_MIN_SAVINGS_RATIO = 0.15
 
 /** Recursively strip keys matched by `shouldStrip` from every object in `value`, leaving arrays and primitives otherwise intact. */
@@ -43,13 +17,7 @@ function deepStrip(value: unknown, shouldStrip: (key: string) => boolean): unkno
   return out
 }
 
-/**
- * Runs a stripped JSON value back through the generic table-ifying pass, and
- * falls back to the stripped-but-untabled JSON when the pass declines (e.g.
- * the top-level shape is a single object, not a homogeneous array) but the
- * stripping alone still clears the savings bar. Returns `null` when neither
- * step saves enough to be worth showing.
- */
+/** Runs a stripped JSON value back through the generic table-ifying pass, and falls back to the stripped-but-untabled JSON when the pass declines (e.g. the top-level shape is a single object, not a homogeneous array) but the stripping alone still clears the savings bar. Returns `null` when neither step saves enough to be worth showing. */
 function finishWithGenericPass(originalText: string, stripped: unknown): string | null {
   const strippedText = JSON.stringify(stripped)
   const tabled = compressMcpResult(strippedText)
@@ -60,38 +28,13 @@ function finishWithGenericPass(originalText: string, stripped: unknown): string 
 
 // --- GitHub pack -----------------------------------------------------------
 
-/**
- * Matches `mcp__plugin_github_github__*` (the GitHub MCP server's tool naming
- * convention used throughout this codebase's own tests, e.g.
- * `mcp__plugin_github_github__search_issues`) as well as any other MCP
- * bridge whose server segment contains "github", so a differently-prefixed
- * install of the same server (e.g. a raw `mcp__github__*`) is still covered.
- */
+/** Matches `mcp__plugin_github_github__*` (the GitHub MCP server's tool naming convention used throughout this codebase's own tests, e.g. `mcp__plugin_github_github__search_issues`) as well as any other MCP bridge whose server segment contains "github", so a differently-prefixed install of the same server (e.g. a raw `mcp__github__*`) is still covered. */
 const GITHUB_TOOL_RE = /^mcp__[a-z0-9_-]*github[a-z0-9_-]*__/i
 
-/**
- * Exact-match boilerplate keys found throughout GitHub REST/GraphQL JSON
- * that carry no information a model would act on: `_links` (a whole subtree
- * of self/git/html hyperlink objects), `node_id` (GraphQL global ID, never
- * referenced by the REST-shaped MCP tools), `gravatar_id` (long-deprecated,
- * always empty in practice), and `site_admin` (GitHub-staff flag on user
- * objects, irrelevant outside GitHub's own admin tooling).
- */
+/** Exact-match boilerplate keys found throughout GitHub REST/GraphQL JSON that carry no information a model would act on: `_links` (a whole subtree of self/git/html hyperlink objects), `node_id` (GraphQL global ID, never referenced by the REST-shaped MCP tools), `gravatar_id` (long-deprecated, always empty in practice), and `site_admin` (GitHub-staff flag on user objects, irrelevant outside GitHub's own admin tooling). */
 const GITHUB_STRIP_EXACT_KEYS = new Set(['_links', 'node_id', 'gravatar_id', 'site_admin'])
 
-/**
- * GitHub's API attaches a `*_url` field for nearly every relation a resource
- * has (`followers_url`, `events_url`, `gists_url`, `avatar_url`, `html_url`,
- * `comments_url`, `commits_url`, `statuses_url`, `issue_url`, `labels_url`,
- * ...) -- dozens of predictable hyperlink fields per user/repo/issue/PR
- * object, none of which an MCP-calling model can act on (it cannot browse to
- * `html_url`; it calls another tool instead). Stripping by suffix, rather
- * than enumerating every one of GitHub's known `*_url` fields by hand,
- * generalizes to fields GitHub adds later. `download_url`, `git_url`,
- * `clone_url`, and `ssh_url` are exempted: those are the actual resource
- * pointers a coding agent needs (raw file content location, clone
- * endpoints), not decorative hyperlinks.
- */
+/** GitHub's API attaches a `*_url` field for nearly every relation a resource has (`followers_url`, `events_url`, `gists_url`, `avatar_url`, `html_url`, `comments_url`, `commits_url`, `statuses_url`, `issue_url`, `labels_url`, ...) -- dozens of predictable hyperlink fields per user/repo/issue/PR object, none of which an MCP-calling model can act on (it cannot browse to `html_url`; it calls another tool instead). Stripping by suffix, rather than enumerating every one of GitHub's known `*_url` fields by hand, generalizes to fields GitHub adds later. `download_url`, `git_url`, `clone_url`, and `ssh_url` are exempted: those are the actual resource pointers a coding agent needs (raw file content location, clone endpoints), not decorative hyperlinks. */
 const GITHUB_URL_SUFFIX_EXCEPTIONS = new Set(['download_url', 'git_url', 'clone_url', 'ssh_url'])
 
 function githubShouldStrip(key: string): boolean {
@@ -99,12 +42,7 @@ function githubShouldStrip(key: string): boolean {
   return key.endsWith('_url') && !GITHUB_URL_SUFFIX_EXCEPTIONS.has(key)
 }
 
-/**
- * Compress a GitHub MCP tool result. Returns `null` when *toolName* is not a
- * GitHub-server tool, *resultText* is not JSON, or the stripped result still
- * does not clear the savings bar -- in every such case the caller falls
- * through to the generic pass unchanged.
- */
+/** Compress a GitHub MCP tool result. Returns `null` when *toolName* is not a GitHub-server tool, *resultText* is not JSON, or the stripped result still does not clear the savings bar -- in every such case the caller falls through to the generic pass unchanged. */
 export function compressGithubMcpResult(toolName: string, resultText: string): string | null {
   if (!GITHUB_TOOL_RE.test(toolName)) return null
   let parsed: unknown
@@ -119,26 +57,10 @@ export function compressGithubMcpResult(toolName: string, resultText: string): s
 
 // --- Atlassian (Jira / Confluence) pack ---------------------------------------
 
-/**
- * Matches Atlassian tool names: Jira and Confluence tools.
- * Covers both mcp__ prefix and un-prefixed names like:
- * - mcp__atlassian_mcp_jira_search, mcp__atlassian_mcp_confluence_get_page_children
- * - mcp__jira__search, mcp__confluence__get_page, etc.
- */
+/** Matches Atlassian tool names: Jira and Confluence tools. Covers both mcp__ prefix and un-prefixed names like: - mcp__atlassian_mcp_jira_search, mcp__atlassian_mcp_confluence_get_page_children - mcp__jira__search, mcp__confluence__get_page, etc. */
 const ATLASSIAN_TOOL_RE = /(?:jira|confluence|atlassian)/i
 
-/**
- * Redundant boilerplate keys in Jira and Confluence JSON responses that add
- * massive byte overhead without providing actionable context to the model:
- * - avatarUrls: 4 avatar resolutions (16x16, 24x24, 32x32, 48x48) per user, status, priority, and issue type
- * - iconUrl / iconUrls / avatarUrl: redundant icon links
- * - self: REST API endpoint URLs repeated on every entity, user, project, status, transition, version
- * - expand: schema expansion flag strings
- * - schema / operations / editmeta: Jira form metadata and UI actions
- * - names: dictionary mapping field IDs to human names embedded in search responses
- * - _links / _expandable / extensions: Confluence HAL hypermedia boilerplate
- * - timeZone: repeated user metadata
- */
+/** Redundant boilerplate keys in Jira and Confluence JSON responses that add massive byte overhead without providing actionable context to the model: - avatarUrls: 4 avatar resolutions (16x16, 24x24, 32x32, 48x48) per user, status, priority, and issue type - iconUrl / iconUrls / avatarUrl: redundant icon links - self: REST API endpoint URLs repeated on every entity, user, project, status, transition, version - expand: schema expansion flag strings - schema / operations / editmeta: Jira form metadata and UI actions - names: dictionary mapping field IDs to human names embedded in search responses - _links / _expandable / extensions: Confluence HAL hypermedia boilerplate - timeZone: repeated user metadata */
 const ATLASSIAN_STRIP_EXACT_KEYS: ReadonlySet<string> = new Set([
   'avatarUrls',
   'avatarUrl',
@@ -160,12 +82,7 @@ function atlassianShouldStrip(key: string): boolean {
   return ATLASSIAN_STRIP_EXACT_KEYS.has(key)
 }
 
-/**
- * Compress an Atlassian (Jira / Confluence) MCP tool result. Returns `null` when
- * toolName is not an Atlassian-server tool, resultText is not JSON, or the
- * stripped result does not clear the savings bar -- in every such case the caller
- * falls through to the generic pass unchanged.
- */
+/** Compress an Atlassian (Jira / Confluence) MCP tool result. Returns `null` when toolName is not an Atlassian-server tool, resultText is not JSON, or the stripped result does not clear the savings bar -- in every such case the caller falls through to the generic pass unchanged. */
 export function compressAtlassianMcpResult(toolName: string, resultText: string): string | null {
   if (!ATLASSIAN_TOOL_RE.test(toolName)) return null
   let parsed: unknown
@@ -180,16 +97,7 @@ export function compressAtlassianMcpResult(toolName: string, resultText: string)
 
 // --- Browser automation pack -------------------------------------------------
 
-/**
- * Matches the browser-automation MCP server naming conventions actually
- * referenced elsewhere in this codebase (`src/hooks_screenshot.ts`,
- * `src/mcp_cache.ts`, and this repo's own test fixtures): Anthropic's
- * `claude-in-chrome` extension (`mcp__claude-in-chrome__*`), Google's
- * `chrome-devtools-mcp` (`mcp__chrome-devtools-mcp_chrome-devtools__*` /
- * `mcp__plugin_chrome-devtools-mcp_chrome-devtools__*`), and Microsoft's
- * `@playwright/mcp` (`mcp__plugin_playwright_playwright__*`). Exported so
- * `hooks_browser_image.ts` reuses this exact pattern instead of a second copy.
- */
+/** Matches the browser-automation MCP server naming conventions actually referenced elsewhere in this codebase (`src/hooks_screenshot.ts`, `src/mcp_cache.ts`, and this repo's own test fixtures): Anthropic's `claude-in-chrome` extension (`mcp__claude-in-chrome__*`), Google's `chrome-devtools-mcp` (`mcp__chrome-devtools-mcp_chrome-devtools__*` / `mcp__plugin_chrome-devtools-mcp_chrome-devtools__*`), and Microsoft's `@playwright/mcp` (`mcp__plugin_playwright_playwright__*`). Exported so `hooks_browser_image.ts` reuses this exact pattern instead of a second copy. */
 export const BROWSER_TOOL_RE = /^mcp__.*(?:chrome-devtools|claude-in-chrome|playwright).*__/i
 
 /** Matches the method segment for both servers' console-message list tools: `read_console_messages` (claude-in-chrome) and `list_console_messages` (chrome-devtools-mcp). */
@@ -198,30 +106,10 @@ const BROWSER_CONSOLE_METHOD_RE = /(?:^|_)(?:read|list)_console_messages$/i
 /** Matches the method segment for both servers' network-request list tools: `read_network_requests` (claude-in-chrome) and `list_network_requests` (chrome-devtools-mcp). */
 const BROWSER_NETWORK_METHOD_RE = /(?:^|_)(?:read|list)_network_requests$/i
 
-/**
- * Console-message entries (Chrome DevTools Protocol `Runtime.consoleAPICalled`
- * / `Log.entryAdded` shape, which both servers surface close to verbatim)
- * carry a `stackTrace` -- an array of call frames each with its own
- * `functionName`/`scriptId`/`url`/`lineNumber`/`columnNumber` -- that exists
- * for source-mapping a browser DevTools UI, not for an agent reading a
- * one-line log message. Everything else (`type`/`level`, `text`, `url`,
- * `lineNumber`, `timestamp`, `source`, `args`) is the actual message content
- * and is kept.
- */
+/** Console-message entries (Chrome DevTools Protocol `Runtime.consoleAPICalled` / `Log.entryAdded` shape, which both servers surface close to verbatim) carry a `stackTrace` -- an array of call frames each with its own `functionName`/`scriptId`/`url`/`lineNumber`/`columnNumber` -- that exists for source-mapping a browser DevTools UI, not for an agent reading a one-line log message. Everything else (`type`/`level`, `text`, `url`, `lineNumber`, `timestamp`, `source`, `args`) is the actual message content and is kept. */
 const BROWSER_CONSOLE_STRIP_KEYS = new Set(['stackTrace'])
 
-/**
- * Network-request entries carry several large, high-entropy-but-low-signal
- * blocks: `requestHeaders`/`responseHeaders`/`headers` (dozens of standard
- * HTTP headers per request, rarely inspected), `timing` (a dozen+ numeric
- * sub-phase timestamps), `initiator` (a full JS call-stack for what fired
- * the request), and `securityDetails`/`securityState`/`remoteAddress`/
- * `serverIPAddress`/`connectionId` (TLS/connection plumbing). `url`,
- * `method`, `status`, `statusText`, `resourceType`/`type`, `mimeType`,
- * `size`/`encodedDataLength`, `failed`, `fromCache`, and the request's own id
- * (`reqid`/`requestId`, needed for a follow-up `get_network_request` call)
- * are the fields an agent actually reasons about and are kept.
- */
+/** Network-request entries carry several large, high-entropy-but-low-signal blocks: `requestHeaders`/`responseHeaders`/`headers` (dozens of standard HTTP headers per request, rarely inspected), `timing` (a dozen+ numeric sub-phase timestamps), `initiator` (a full JS call-stack for what fired the request), and `securityDetails`/`securityState`/`remoteAddress`/ `serverIPAddress`/`connectionId` (TLS/connection plumbing). `url`, `method`, `status`, `statusText`, `resourceType`/`type`, `mimeType`, `size`/`encodedDataLength`, `failed`, `fromCache`, and the request's own id (`reqid`/`requestId`, needed for a follow-up `get_network_request` call) are the fields an agent actually reasons about and are kept. */
 const BROWSER_NETWORK_STRIP_KEYS = new Set([
   'requestHeaders',
   'responseHeaders',
@@ -241,40 +129,13 @@ const BROWSER_NETWORK_STRIP_KEYS = new Set([
 /** Matches the method segment for both servers' accessibility-tree snapshot tools: `take_snapshot` (chrome-devtools-mcp), `read_page` (claude-in-chrome), and `snapshot`/`page_snapshot` (playwright and other naming variants). */
 const BROWSER_SNAPSHOT_METHOD_RE = /(?:^|_)(?:take_snapshot|read_page|page_snapshot|snapshot)$/i
 
-/**
- * Maximum length of a snapshot node's accessible-name text before it gets
- * truncated. Half of {@link file://./tool_filters/helpers.ts}'s
- * `FALLBACK_MAX_LINE_CHARS` (400) -- that constant caps a whole raw output
- * *line*, while this caps a single quoted *field* embedded within one such
- * line, so it should clear well under the full-line budget on its own.
- * Interactive-element names (buttons, links, form labels -- e.g. "Submit",
- * "Email address") are almost always far under this, so truncation only
- * fires on genuinely prose-heavy `StaticText`/`paragraph`-role nodes, never
- * on the identifiers a caller needs to click/fill/hover an element.
- */
+/** Maximum length of a snapshot node's accessible-name text before it gets truncated. Half of {@link file://./tool_filters/helpers.ts}'s `FALLBACK_MAX_LINE_CHARS` (400) -- that constant caps a whole raw output *line*, while this caps a single quoted *field* embedded within one such line, so it should clear well under the full-line budget on its own. Interactive-element names (buttons, links, form labels -- e.g. "Submit", "Email address") are almost always far under this, so truncation only fires on genuinely prose-heavy `StaticText`/`paragraph`-role nodes, never on the identifiers a caller needs to click/fill/hover an element. */
 const SNAPSHOT_NAME_MAX_CHARS = 200
 
-/**
- * Matches one accessibility-tree node line from a `take_snapshot`/`read_page`
- * result, per the reference chrome-devtools-mcp `SnapshotFormatter`:
- * `{2*depth spaces}uid={id} {role} "{name}" attr1="value1" attr2 ...`.
- * Captures: (1) leading indentation, (2) the `uid=` token including its id,
- * (3) the role token, (4) the quoted name's inner text, (5) everything after
- * the closing quote (further attributes), verbatim. A line that doesn't
- * match this shape (unexpected tool version, verbose-mode extra fields, a
- * blank/header line) is left completely untouched by the caller -- this
- * regex only identifies lines safe to touch, it never itself decides to drop
- * or alter content.
- */
+/** Matches one accessibility-tree node line from a `take_snapshot`/`read_page` result, per the reference chrome-devtools-mcp `SnapshotFormatter`: `{2*depth spaces}uid={id} {role} "{name}" attr1="value1" attr2 ...`. Captures: (1) leading indentation, (2) the `uid=` token including its id, (3) the role token, (4) the quoted name's inner text, (5) everything after the closing quote (further attributes), verbatim. A line that doesn't match this shape (unexpected tool version, verbose-mode extra fields, a blank/header line) is left completely untouched by the caller -- this regex only identifies lines safe to touch, it never itself decides to drop or alter content. */
 const SNAPSHOT_NODE_LINE_RE = /^( *)(uid=\S+) (\S+) "((?:[^"\\]|\\.)*)"(.*)$/
 
-/**
- * Truncate one snapshot node line's accessible-name field when it exceeds
- * {@link SNAPSHOT_NAME_MAX_CHARS}, leaving indentation, `uid=`, role, and any
- * trailing attributes byte-identical. Lines that don't match the expected
- * shape pass through unchanged -- fail-open per line, matching this file's
- * fail-closed-per-pack convention at the whole-result level.
- */
+/** Truncate one snapshot node line's accessible-name field when it exceeds {@link SNAPSHOT_NAME_MAX_CHARS}, leaving indentation, `uid=`, role, and any trailing attributes byte-identical. Lines that don't match the expected shape pass through unchanged -- fail-open per line, matching this file's fail-closed-per-pack convention at the whole-result level. */
 function truncateSnapshotLine(line: string): string {
   const m = SNAPSHOT_NODE_LINE_RE.exec(line)
   if (!m) return line
@@ -285,14 +146,7 @@ function truncateSnapshotLine(line: string): string {
   return `${indent}${uid} ${role} "${name.slice(0, SNAPSHOT_NAME_MAX_CHARS)}  … [${elided} chars elided]"${rest}`
 }
 
-/**
- * Compress an accessibility-tree snapshot result by truncating only the
- * long prose text carried in each line's quoted accessible-name field.
- * Operates on the raw text directly (not via JSON.parse/deepStrip like the
- * other packs here) because the snapshot payload's outer JSON usually wraps
- * a single large indentation-formatted text blob, not a homogeneous array
- * `finishWithGenericPass`'s table-ifying pass can do anything useful with.
- */
+/** Compress an accessibility-tree snapshot result by truncating only the long prose text carried in each line's quoted accessible-name field. Operates on the raw text directly (not via JSON.parse/deepStrip like the other packs here) because the snapshot payload's outer JSON usually wraps a single large indentation-formatted text blob, not a homogeneous array `finishWithGenericPass`'s table-ifying pass can do anything useful with. */
 function compressSnapshotText(resultText: string): string | null {
   const compressed = resultText.split('\n').map(truncateSnapshotLine).join('\n')
   if (compressed.length >= resultText.length) return null
@@ -300,14 +154,7 @@ function compressSnapshotText(resultText: string): string | null {
   return compressed
 }
 
-/**
- * Compress a browser-automation MCP tool result (console-message list,
- * network-request list, or accessibility-tree snapshot). Returns `null` when
- * *toolName* is not a recognized browser-automation server tool, its method
- * matches none of the known shapes, *resultText* is not JSON (for the
- * console/network shapes) or does not clear the savings bar -- in every such
- * case the caller falls through to the generic pass unchanged.
- */
+/** Compress a browser-automation MCP tool result (console-message list, network-request list, or accessibility-tree snapshot). Returns `null` when *toolName* is not a recognized browser-automation server tool, its method matches none of the known shapes, *resultText* is not JSON (for the console/network shapes) or does not clear the savings bar -- in every such case the caller falls through to the generic pass unchanged. */
 export function compressBrowserMcpResult(toolName: string, resultText: string): string | null {
   if (!BROWSER_TOOL_RE.test(toolName)) return null
   const method = toolName.split('__').pop() || ''
@@ -340,14 +187,7 @@ export function compressBrowserMcpResult(toolName: string, resultText: string): 
 /** Matches Gmail and Google Drive MCP tools, e.g. `mcp__claude_ai_Gmail__get_thread`, `mcp__claude_ai_Google_Drive__read_file_content`. */
 const GWORKSPACE_TOOL_RE = /^mcp__.*(?:gmail|drive).*__/i
 
-/**
- * Exact-match keys carrying a redundant HTML/raw-MIME rendering of content
- * that also has a plaintext sibling field (Gmail message bodies), or a raw
- * MIME payload never useful once the plaintext body is present. Both
- * camelCase and snake_case variants are listed since this MCP server's exact
- * wire-format casing for these fields is unconfirmed -- an unmatched variant
- * is simply never stripped (fails closed per key, not per pack).
- */
+/** Exact-match keys carrying a redundant HTML/raw-MIME rendering of content that also has a plaintext sibling field (Gmail message bodies), or a raw MIME payload never useful once the plaintext body is present. Both camelCase and snake_case variants are listed since this MCP server's exact wire-format casing for these fields is unconfirmed -- an unmatched variant is simply never stripped (fails closed per key, not per pack). */
 const GWORKSPACE_STRIP_EXACT_KEYS = new Set(['htmlBody', 'html_body', 'raw', 'payload'])
 
 /** Body-text-bearing keys eligible for quoted-reply-chain trimming (Gmail messages only, never Drive `content`). */
@@ -356,12 +196,7 @@ const GWORKSPACE_BODY_KEYS = new Set(['plaintextBody', 'plaintext_body', 'body']
 /** Attachment fields worth keeping once an entry's binary payload is summarized away. */
 const GWORKSPACE_ATTACHMENT_KEEP_KEYS = new Set(['id', 'filename', 'name', 'mimeType', 'mime_type', 'size', 'inline'])
 
-/** Matches a line opening a quoted-reply chain: a `>`-quoted line (any line starting with `>`,
- * not just a bare `>` on its own -- real quoted lines almost always carry quoted text after the
- * marker, e.g. `> Thanks, sounds good.`), a standard "On ... wrote:" header, or an Outlook-style
- * "-----Original Message-----" separator. Only the latter two require a full-line match ($) --
- * the `>` branch intentionally has no trailing anchor so it still matches when quoted content
- * follows on the same line. */
+/** Matches a line opening a quoted-reply chain: a `>`-quoted line (any line starting with `>`, not just a bare `>` on its own -- real quoted lines almost always carry quoted text after the marker, e.g. `> Thanks, sounds good.`), a standard "On ... wrote:" header, or an Outlook-style "-----Original Message-----" separator. Only the latter two require a full-line match ($) -- the `>` branch intentionally has no trailing anchor so it still matches when quoted content follows on the same line. */
 const QUOTED_REPLY_LINE_RE = /^(?:>|On .{0,120} wrote:$|-{2,}\s*Original Message\s*-{2,}$)/i
 
 /** Matches a bare `From:` header line, the opener of an embedded forwarded-message header block. Not sufficient on its own -- an ordinary sentence can start with "From:", and a single coincidental sibling like a stray "To:" line is still not conclusive -- so this only counts when followed within a few lines by at least {@link FORWARD_HEADER_CLUSTER_MIN_MATCHES} sibling headers (see {@link FORWARD_HEADER_CLUSTER_RE}). */
@@ -382,16 +217,7 @@ function findQuotedReplyOffset(text: string): number {
   let offset = 0
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? ''
-    // A CRLF-formatted body (routine for real email, and untouched by this pack anywhere else)
-    // leaves a trailing '\r' on every line after split('\n'). JS regex '$' without the 'm' flag
-    // matches only the true end of the string -- it has no special exception for a trailing
-    // character the way some other regex engines treat a trailing '\n' -- so the "On ... wrote:"
-    // and "-----Original Message-----" branches of QUOTED_REPLY_LINE_RE, and every '$'-anchored
-    // sibling-header line in FORWARD_HEADER_CLUSTER_RE, silently never matched a CRLF body: the
-    // whole quoted-reply/forwarded-history trim this function exists for was a no-op for any
-    // thread using CRLF line endings. Stripping the trailing '\r' before each regex test (offset
-    // math below still uses the untouched `line`, so reconstructed offsets stay correct) fixes
-    // this without weakening the '>' branch, which has no '$' anchor and was never affected.
+    // A CRLF-formatted body (routine for real email, and untouched by this pack anywhere else) leaves a trailing '\r' on every line after split('\n'). JS regex '$' without the 'm' flag matches only the true end of the string -- it has no special exception for a trailing character the way some other regex engines treat a trailing '\n' -- so the "On ... wrote:" and "-----Original Message-----" branches of QUOTED_REPLY_LINE_RE, and every '$'-anchored sibling-header line in FORWARD_HEADER_CLUSTER_RE, silently never matched a CRLF body: the whole quoted-reply/forwarded-history trim this function exists for was a no-op for any thread using CRLF line endings. Stripping the trailing '\r' before each regex test (offset math below still uses the untouched `line`, so reconstructed offsets stay correct) fixes this without weakening the '>' branch, which has no '$' anchor and was never affected.
     const lineForMatch = line.endsWith('\r') ? line.slice(0, -1) : line
     if (QUOTED_REPLY_LINE_RE.test(lineForMatch)) return offset
     if (FORWARD_HEADER_FROM_RE.test(lineForMatch)) {
@@ -448,11 +274,7 @@ function summarizeAttachments(value: unknown): unknown {
   return out
 }
 
-/**
- * Compress a Gmail or Google Drive MCP tool result. Returns `null` when
- * *toolName* is not a Gmail/Drive-server tool, *resultText* is not JSON, or
- * the transformed result still does not clear the savings bar.
- */
+/** Compress a Gmail or Google Drive MCP tool result. Returns `null` when *toolName* is not a Gmail/Drive-server tool, *resultText* is not JSON, or the transformed result still does not clear the savings bar. */
 export function compressGWorkspaceMcpResult(toolName: string, resultText: string): string | null {
   if (!GWORKSPACE_TOOL_RE.test(toolName)) return null
   let parsed: unknown
@@ -469,32 +291,13 @@ export function compressGWorkspaceMcpResult(toolName: string, resultText: string
 
 // --- Inline base64 data-URL stripping -----------------------------------------
 
-/**
- * Matches `data:<mime>/<subtype>;base64,<payload>` blobs. Not server-specific:
- * any MCP server can embed a screenshot or other binary asset this way
- * (browser-automation accessibility snapshots are the common case, but the
- * shape isn't unique to them), so this runs ahead of the per-server packs
- * below rather than being folded into one of them.
- */
+/** Matches `data:<mime>/<subtype>;base64,<payload>` blobs. Not server-specific: any MCP server can embed a screenshot or other binary asset this way (browser-automation accessibility snapshots are the common case, but the shape isn't unique to them), so this runs ahead of the per-server packs below rather than being folded into one of them. */
 const DATA_URL_BASE64_RE = /data:([a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)/g
 
 /** Payloads shorter than this are left alone; not worth the placeholder overhead. */
 const MIN_BASE64_PAYLOAD_LEN = 100
 
-/**
- * Replace base64 data-URL payloads above {@link MIN_BASE64_PAYLOAD_LEN} with a
- * short placeholder that preserves the mime type and original byte count, so
- * the model can still see an image was present without paying to have its
- * unreadable bytes billed as text.
- *
- * Uses a replacer *function*, not a replacement string: `String.replace`
- * interprets `$&`/`$1`/`$$` in a replacement *string* even for a plain-text
- * search, and base64 payloads / surrounding attribute text can legitimately
- * contain `$`. A function's return value is inserted verbatim.
- *
- * Returns `null` (not the unmodified text) when nothing qualified, matching
- * the fails-closed-per-pack contract the other functions in this file use.
- */
+/** Replace base64 data-URL payloads above {@link MIN_BASE64_PAYLOAD_LEN} with a short placeholder that preserves the mime type and original byte count, so the model can still see an image was present without paying to have its unreadable bytes billed as text. Uses a replacer *function*, not a replacement string: `String.replace` interprets `$&`/`$1`/`$$` in a replacement *string* even for a plain-text search, and base64 payloads / surrounding attribute text can legitimately contain `$`. A function's return value is inserted verbatim. Returns `null` (not the unmodified text) when nothing qualified, matching the fails-closed-per-pack contract the other functions in this file use. */
 function stripBase64DataUrls(resultText: string): string | null {
   let changed = false
   const out = resultText.replace(DATA_URL_BASE64_RE, (match, mime: string, payload: string) => {
@@ -507,17 +310,7 @@ function stripBase64DataUrls(resultText: string): string | null {
 
 // --- Dispatch ----------------------------------------------------------------
 
-/**
- * Try each per-server pack in turn, returning the first non-null result.
- * {@link hooks_mcp.ts}'s `postMcpHandler` calls this before the generic
- * pass; a `null` here means neither pack matched or paid off, and the caller
- * should fall through to {@link compressMcpResult} on the untransformed text.
- *
- * Base64 data-URL stripping runs first and unconditionally (see
- * {@link stripBase64DataUrls}), on the raw text, before any pack tries to
- * `JSON.parse` it -- so a stripped payload is what every downstream pack
- * (and the generic pass, if no pack matches) actually sees.
- */
+/** Try each per-server pack in turn, returning the first non-null result. {@link hooks_mcp.ts}'s `postMcpHandler` calls this before the generic pass; a `null` here means neither pack matched or paid off, and the caller should fall through to {@link compressMcpResult} on the untransformed text. Base64 data-URL stripping runs first and unconditionally (see {@link stripBase64DataUrls}), on the raw text, before any pack tries to `JSON.parse` it -- so a stripped payload is what every downstream pack (and the generic pass, if no pack matches) actually sees. */
 export function compressMcpResultWithPacks(toolName: string, resultText: string): string | null {
   const base64Stripped = stripBase64DataUrls(resultText)
   const text = base64Stripped ?? resultText

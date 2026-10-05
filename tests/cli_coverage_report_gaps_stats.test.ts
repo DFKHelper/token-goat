@@ -1,15 +1,4 @@
-/**
- * Regression: `token-goat coverage-report-gaps` (runCoverageReportGaps in read_commands.ts)
- * never called recordStat -- it reads a full LCOV/Istanbul coverage report from disk and emits
- * only the narrower uncovered-lines slice, the same "read replacement" shape as csv-query (see
- * cli_csv_query_stats.test.ts), but has no stats wiring at all, so the coverage_report_gaps
- * bucket in `token-goat stats --full` stayed permanently zero regardless of real usage (same
- * class of gap fixed for csv_query/map_lookup/changed_lookup, see
- * project_runchanged_missing_stat memory). Drives the real, unmocked `run()` CLI entrypoint
- * against a real scratch LCOV file and asserts a real stats row appears via summarize() against
- * the real (test-isolated) global stats DB -- a synthetic recordStat/DB insert would not catch
- * the original absence.
- */
+/** Regression: `token-goat coverage-report-gaps` (runCoverageReportGaps in read_commands.ts) never called recordStat -- it reads a full LCOV/Istanbul coverage report from disk and emits only the narrower uncovered-lines slice, the same "read replacement" shape as csv-query (see cli_csv_query_stats.test.ts), but has no stats wiring at all, so the coverage_report_gaps bucket in `token-goat stats --full` stayed permanently zero regardless of real usage (same class of gap fixed for csv_query/map_lookup/changed_lookup, see project_runchanged_missing_stat memory). Drives the real, unmocked `run()` CLI entrypoint against a real scratch LCOV file and asserts a real stats row appears via summarize() against the real (test-isolated) global stats DB -- a synthetic recordStat/DB insert would not catch the original absence. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

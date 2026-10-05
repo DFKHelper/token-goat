@@ -1,12 +1,4 @@
-/**
- * Guards the shared hook-shim fragments in src/bridges/shim_common.ts.
- *
- * The `require` preamble, the hook-event allowlist, `tryInProcess()` and the
- * `spawnSync` fallback ladder were byte-identical copies in four bridge shims,
- * so a fix to any of them had to land four times or silently diverge. These
- * tests fail if a shim re-inlines its own copy instead of interpolating the
- * shared fragment, and if a fragment stops being valid standalone JavaScript.
- */
+/** Guards the shared hook-shim fragments in src/bridges/shim_common.ts. The `require` preamble, the hook-event allowlist, `tryInProcess()` and the `spawnSync` fallback ladder were byte-identical copies in four bridge shims, so a fix to any of them had to land four times or silently diverge. These tests fail if a shim re-inlines its own copy instead of interpolating the shared fragment, and if a fragment stops being valid standalone JavaScript. */
 import { readFileSync } from 'node:fs'
 
 import { describe, expect, it } from 'vitest'
@@ -24,14 +16,10 @@ const SHIMS: ReadonlyArray<readonly [string, string]> = [
   ['kimi', KIMI_HOOK_SCRIPT],
 ]
 
-// grok is absent here on purpose: it genuinely has no `session_start` event, so it keeps its own
-// seven-entry allowlist rather than being forced through the shared eight-entry one.
+// grok is absent here on purpose: it genuinely has no `session_start` event, so it keeps its own seven-entry allowlist rather than being forced through the shared eight-entry one.
 const EVENT_ALLOWLIST_SHIMS = SHIMS.filter(([name]) => name !== 'grok')
 
-// The assertions that actually guard the DRY fix read the bridge SOURCE, not the generated shim: a
-// re-inlined copy is byte-identical in the output, so checking the output alone would pass happily
-// while the duplication came back. The source must carry the `${SHIM_...}` interpolation and must
-// not carry the fragment text itself.
+// The assertions that actually guard the DRY fix read the bridge SOURCE, not the generated shim: a re-inlined copy is byte-identical in the output, so checking the output alone would pass happily while the duplication came back. The source must carry the `${SHIM_...}` interpolation and must not carry the fragment text itself.
 const SOURCES: ReadonlyArray<readonly [string, string]> = SHIMS.map(([name]) => [
   name,
   readFileSync(new URL(`../src/bridges/${name}.ts`, import.meta.url), 'utf8'),

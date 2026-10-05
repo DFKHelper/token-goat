@@ -1,15 +1,4 @@
-/**
- * A rewrite of an MCP result now emits an array: one text block holding the redacted, fenced words,
- * followed by the blocks a string cannot carry. Those trailing blocks are copied VERBATIM out of the
- * remote server's payload, which makes them a second route to the model running alongside the fenced
- * one. Any of them that carries words would hand back an unredacted, unfenced copy of exactly the
- * text the fence beside it was built to mark -- the credential the first block proves was stripped,
- * legible in the second.
- *
- * So: nothing textual is ever preserved. Written against the live hook over a matrix of block shapes
- * rather than against the filter predicate, because the predicate agreeing with itself is not the
- * property at risk -- a sixth block type added to the MCP union later is.
- */
+/** A rewrite of an MCP result now emits an array: one text block holding the redacted, fenced words, followed by the blocks a string cannot carry. Those trailing blocks are copied VERBATIM out of the remote server's payload, which makes them a second route to the model running alongside the fenced one. Any of them that carries words would hand back an unredacted, unfenced copy of exactly the text the fence beside it was built to mark -- the credential the first block proves was stripped, legible in the second. So: nothing textual is ever preserved. Written against the live hook over a matrix of block shapes rather than against the filter predicate, because the predicate agreeing with itself is not the property at risk -- a sixth block type added to the MCP union later is. */
 import { describe, expect, it } from 'vitest'
 
 import { buildEvent } from '../../src/relay.js'

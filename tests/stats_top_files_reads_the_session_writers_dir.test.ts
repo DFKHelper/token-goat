@@ -1,10 +1,4 @@
-/**
- * Regression: `token-goat stats` rendered its top-files section from `dataDir()/sessions`, a directory nothing has ever written to, while every session blob is written under `tokenGoatHome()/sessions`. The read found an empty directory, returned `''`, and the section was silently absent from every shipped build. Reader and writer now share `sessionsDir()`.
- *
- * Both cases drive the SHIPPING path. `renderTopSessionFilesFromDisk` is called with no `overrideSessionsDir` -- the injected seam every previous test supplied, which is why the shipping default argument was never once exercised -- and the end-to-end case spawns the built bundle and asserts on the rendered `stats` output rather than re-deriving the ranking the function under test performs.
- *
- * Fixture provenance: CAPTURE. The session JSON is written by the real writer (`recordFileRead` from src/session.ts, persisted by `saveSessionState` from src/session_store.ts), not hand-authored, so it pins the reader to the writer's own on-disk location and record shape rather than to a schema this test invented.
- */
+/** Regression: `token-goat stats` rendered its top-files section from `dataDir()/sessions`, a directory nothing has ever written to, while every session blob is written under `tokenGoatHome()/sessions`. The read found an empty directory, returned `''`, and the section was silently absent from every shipped build. Reader and writer now share `sessionsDir()`. Both cases drive the SHIPPING path. `renderTopSessionFilesFromDisk` is called with no `overrideSessionsDir` -- the injected seam every previous test supplied, which is why the shipping default argument was never once exercised -- and the end-to-end case spawns the built bundle and asserts on the rendered `stats` output rather than re-deriving the ranking the function under test performs. Fixture provenance: CAPTURE. The session JSON is written by the real writer (`recordFileRead` from src/session.ts, persisted by `saveSessionState` from src/session_store.ts), not hand-authored, so it pins the reader to the writer's own on-disk location and record shape rather than to a schema this test invented. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

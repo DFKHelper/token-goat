@@ -3,29 +3,9 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { mkdtempSync, rmSync } from 'node:fs'
 
-// bm25() ranking is computed from corpus-wide statistics (avgdl, total row count), not just the
-// rows a query's MATCH filter returns -- a nonce-prefixed id is enough to keep two test files'
-// rows from ever matching the same query, but NOT enough to keep another file's row *count*
-// from shifting a ranking-order assertion's relative scores. Files sharing this worker's process
-// can run interleaved (see tests/setup/reset-hint-stats.ts's doc comment for the same class of
-// bug in hint_stats), so a nonce alone isn't reliable for the ranking test below. This mock is
-// hoisted, so it must be self-contained (no top-level variables referenced before their own
-// declaration) -- mirrors the same pattern in tests/hooks_bash.test.ts's configPath() mock.
+// bm25() ranking is computed from corpus-wide statistics (avgdl, total row count), not just the rows a query's MATCH filter returns -- a nonce-prefixed id is enough to keep two test files' rows from ever matching the same query, but NOT enough to keep another file's row *count* from shifting a ranking-order assertion's relative scores. Files sharing this worker's process can run interleaved (see tests/setup/reset-hint-stats.ts's doc comment for the same class of bug in hint_stats), so a nonce alone isn't reliable for the ranking test below. This mock is hoisted, so it must be self-contained (no top-level variables referenced before their own declaration) -- mirrors the same pattern in tests/hooks_bash.test.ts's configPath() mock.
 //
-// mkdtempSync (not a bare pid-keyed filename): a pid-only path leaves an orphaned .db file in
-// the OS temp dir forever (nothing ever deletes it), and Windows recycles pids quickly enough
-// across separate test invocations in one dev session that a later run can reopen an earlier
-// run's leftover, already-populated file -- reproduced directly: 14 stale
-// tg-recall-index-test-<pid>.db files were found accumulated in %TEMP% after repeated `vitest
-// run` invocations, and the ranking test below flaked specifically when a run's pid collided
-// with one of them. mkdtempSync's random suffix guarantees a fresh path every process, and the
-// exit hook removes it the same way tests/setup/isolate-home.ts cleans up its own temp dirs.
-// A `mock`-prefixed name is required here: Vitest hoists `vi.mock()` calls (and any
-// `mock`-prefixed const the factory closes over) above the rest of the file's top-level code,
-// including regular `const` declarations -- referencing a non-`mock`-prefixed local from inside
-// the factory throws "There was an error when mocking a module... make sure there are no top
-// level variables inside" at import time, since that variable would still be in its temporal
-// dead zone when the hoisted factory first runs.
+// mkdtempSync (not a bare pid-keyed filename): a pid-only path leaves an orphaned .db file in the OS temp dir forever (nothing ever deletes it), and Windows recycles pids quickly enough across separate test invocations in one dev session that a later run can reopen an earlier run's leftover, already-populated file -- reproduced directly: 14 stale tg-recall-index-test-<pid>.db files were found accumulated in %TEMP% after repeated `vitest run` invocations, and the ranking test below flaked specifically when a run's pid collided with one of them. mkdtempSync's random suffix guarantees a fresh path every process, and the exit hook removes it the same way tests/setup/isolate-home.ts cleans up its own temp dirs. A `mock`-prefixed name is required here: Vitest hoists `vi.mock()` calls (and any `mock`-prefixed const the factory closes over) above the rest of the file's top-level code, including regular `const` declarations -- referencing a non-`mock`-prefixed local from inside the factory throws "There was an error when mocking a module... make sure there are no top level variables inside" at import time, since that variable would still be in its temporal dead zone when the hoisted factory first runs.
 const mockRecallTestDir = mkdtempSync(join(tmpdir(), 'tg-recall-index-test-'))
 process.on('exit', () => {
   try {
@@ -57,9 +37,7 @@ import { clearModuleCaches } from '../src/reset.js'
 import { getDb } from '../src/db.js'
 import { globalDbPath } from '../src/constants.js'
 
-// Every seeded entry still uses a randomized nonce prefix, on top of the private db above, so
-// assertions search for that nonce rather than "the whole index" and stay robust to any
-// leftover rows from an earlier test in this same file.
+// Every seeded entry still uses a randomized nonce prefix, on top of the private db above, so assertions search for that nonce rather than "the whole index" and stay robust to any leftover rows from an earlier test in this same file.
 function nonce(): string {
   return `rk${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
 }
@@ -179,26 +157,13 @@ describe('searchRecall — --limit capping', () => {
 describe('searchRecall — ranking', () => {
   it('ranks an entry with the query term in both label and content above one with a single, incidental mention', () => {
     const n = nonce()
-    // BM25's IDF term goes negative (inverting the usual "more mentions ranks higher" intuition)
-    // when the query term appears in more than half of the documents in the searched corpus --
-    // a real property of BM25, not specific to this index. With only the two documents under
-    // test both containing the term, df/N == 1 and that inversion would trigger; a handful of
-    // decoy documents that do NOT contain the term keep df/N comfortably below 0.5 so this test
-    // exercises the intended, realistic "more relevant occurrences ranks higher" case.
+    // BM25's IDF term goes negative (inverting the usual "more mentions ranks higher" intuition) when the query term appears in more than half of the documents in the searched corpus -- a real property of BM25, not specific to this index. With only the two documents under test both containing the term, df/N == 1 and that inversion would trigger; a handful of decoy documents that do NOT contain the term keep df/N comfortably below 0.5 so this test exercises the intended, realistic "more relevant occurrences ranks higher" case.
     for (let i = 0; i < 4; i++) {
       indexRecallEntry('bash', `decoy-${n}-${i}`, `decoy label ${i}`, `completely unrelated filler content number ${i} with no query term at all`, Date.now())
     }
-    // Strong match, stored EARLIER: the query term is the whole label and repeated in the
-    // content. Regression (recall_index.ts's ftsSearch used to alias cache_recall_fts as `f`
-    // and write `WHERE f MATCH ?` -- aliasing an FTS5 virtual table on the left side of MATCH
-    // throws `no such column: f` in this project's SQLite build, so ftsSearch threw on every
-    // call and searchRecall's catch silently degraded to likeSearch): storing the strong match
-    // earlier than the weak one means the LIKE fallback's `ORDER BY stored_at DESC` would rank
-    // weak first, disagreeing with a correct bm25-ranked result -- so this test fails loudly on
-    // a fallback regression instead of only flaking on insertion-order timing.
+    // Strong match, stored EARLIER: the query term is the whole label and repeated in the content. Regression (recall_index.ts's ftsSearch used to alias cache_recall_fts as `f` and write `WHERE f MATCH ?` -- aliasing an FTS5 virtual table on the left side of MATCH throws `no such column: f` in this project's SQLite build, so ftsSearch threw on every call and searchRecall's catch silently degraded to likeSearch): storing the strong match earlier than the weak one means the LIKE fallback's `ORDER BY stored_at DESC` would rank weak first, disagreeing with a correct bm25-ranked result -- so this test fails loudly on a fallback regression instead of only flaking on insertion-order timing.
     indexRecallEntry('bash', `strong-${n}`, `rankterm-${n}`, `rankterm-${n} rankterm-${n} rankterm-${n} exact focus`, Date.now() - 60_000)
-    // Weak match, stored more recently: the query term appears once, buried in a longer,
-    // unrelated body.
+    // Weak match, stored more recently: the query term appears once, buried in a longer, unrelated body.
     indexRecallEntry(
       'bash',
       `weak-${n}`,
@@ -213,10 +178,7 @@ describe('searchRecall — ranking', () => {
   })
 })
 
-// S1 regression: cache_recall rows had no expiry at all, so a row could (and on the live index
-// routinely did) outlive its blob by weeks -- 145.8 MB of dead text pointing at nothing. Row
-// expiry must derive from the same DEFAULT_MAX_AGE_MS disk_cache.ts prunes blobs with, so the two
-// lifetimes cannot silently drift apart again.
+// S1 regression: cache_recall rows had no expiry at all, so a row could (and on the live index routinely did) outlive its blob by weeks -- 145.8 MB of dead text pointing at nothing. Row expiry must derive from the same DEFAULT_MAX_AGE_MS disk_cache.ts prunes blobs with, so the two lifetimes cannot silently drift apart again.
 describe('pruneCacheRecallRows — row expiry shares the blob TTL constant', () => {
   it('removes a row older than DEFAULT_MAX_AGE_MS but keeps one inside the window', () => {
     const n = nonce()

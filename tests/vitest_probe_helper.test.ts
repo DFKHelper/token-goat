@@ -1,8 +1,4 @@
-/**
- * Cleanup of the .vitest-probe directory, several test files write generated tests into for a nested vitest run. CAPTURE, 2026-09-29: a full `npm test` failed tests/guards/test_process_inherits_no_token_goat_setting.test.ts with "No test files found, exiting with code 1" for its own probe, because retry_visibility_reporter.test.ts, running in another worker, removed the whole directory in afterAll between the probe's write and the nested run reading it.
- *
- * Provenance: HAND-DERIVED. The two-probe case follows from the contract alone (removing one probe leaves the other and the directory); the source scan reads the test tree live on every run.
- */
+/** Cleanup of the .vitest-probe directory, several test files write generated tests into for a nested vitest run. CAPTURE, 2026-09-29: a full `npm test` failed tests/guards/test_process_inherits_no_token_goat_setting.test.ts with "No test files found, exiting with code 1" for its own probe, because retry_visibility_reporter.test.ts, running in another worker, removed the whole directory in afterAll between the probe's write and the nested run reading it. Provenance: HAND-DERIVED. The two-probe case follows from the contract alone (removing one probe leaves the other and the directory); the source scan reads the test tree live on every run. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

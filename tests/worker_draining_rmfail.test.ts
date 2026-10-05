@@ -40,9 +40,7 @@ describe('drainOnce crash-recovery removal failure', () => {
 
   afterEach(() => {
     mockState.throwRmSyncOnce = false
-    // drainOnce's retry-count DB helpers (bumpRetryCount/clearRetryCount in worker.ts) open a
-    // connection to DIR's global.db as a side effect of processing any dirty path. Close it
-    // before removing DIR, or the still-open WAL handle makes rmSync fail with EPERM on Windows.
+    // drainOnce's retry-count DB helpers (bumpRetryCount/clearRetryCount in worker.ts) open a connection to DIR's global.db as a side effect of processing any dirty path. Close it before removing DIR, or the still-open WAL handle makes rmSync fail with EPERM on Windows.
     closeDb(path.join(DIR, 'global.db'))
     fs.rmSync(DIR, { recursive: true, force: true })
   })
@@ -83,12 +81,7 @@ describe('drainOnce crash-recovery removal+quarantine both fail (stale .draining
     fs.rmSync(DIR, { recursive: true, force: true })
   })
 
-  // Regression (M1): when BOTH the rmSync removal AND the renameSync-to-quarantine fallback fail
-  // (e.g. a persistent Windows sharing violation, not a one-shot transient failure), the .draining
-  // file survives on disk under its original name. The next drain cycle re-reads that same file and
-  // reprocesses its paths a second time. This drives the real drainOnce entry point across two
-  // consecutive cycles — the only way to observe the duplicate-processing symptom — rather than
-  // asserting on cleanup-fallback internals directly.
+  // Regression (M1): when BOTH the rmSync removal AND the renameSync-to-quarantine fallback fail (e.g. a persistent Windows sharing violation, not a one-shot transient failure), the .draining file survives on disk under its original name. The next drain cycle re-reads that same file and reprocesses its paths a second time. This drives the real drainOnce entry point across two consecutive cycles — the only way to observe the duplicate-processing symptom — rather than asserting on cleanup-fallback internals directly.
   it('does not reprocess an abandoned .draining file once both rmSync and the quarantine renameSync fail', () => {
     const c = path.join(DIR, 'c.ts')
     fs.writeFileSync(c, 'export const c = 3\n')
@@ -96,8 +89,7 @@ describe('drainOnce crash-recovery removal+quarantine both fail (stale .draining
     fs.mkdirSync(path.dirname(drainingPath), { recursive: true })
     fs.writeFileSync(drainingPath, `${c}\n`)
 
-    // Arm both guards so stage (a)'s rmSync AND its renameSync-to-quarantine fallback both throw
-    // once, simulating a lock that survives the entire first drain cycle.
+    // Arm both guards so stage (a)'s rmSync AND its renameSync-to-quarantine fallback both throw once, simulating a lock that survives the entire first drain cycle.
     mockState.throwRmSyncOnce = true
     mockState.throwRenameSyncOnce = true
     const indexed: string[] = []
@@ -106,14 +98,10 @@ describe('drainOnce crash-recovery removal+quarantine both fail (stale .draining
     // The already-read content is still processed this cycle...
     expect(count1).toBe(1)
     expect(indexed).toEqual([c])
-    // ...but since both cleanup attempts failed, the .draining file is still on disk under its
-    // original name (not quarantined, not removed).
+    // ...but since both cleanup attempts failed, the .draining file is still on disk under its original name (not quarantined, not removed).
     expect(fs.existsSync(drainingPath)).toBe(true)
 
-    // Second drain cycle: the lock has cleared (guards are no longer armed), so cleanup would now
-    // succeed. Pre-fix, the unchanged .draining content is re-read and reprocessed, duplicating `c`
-    // in the batch. Post-fix, drainOnce recognizes the unchanged snapshot it already queued last
-    // cycle and skips it, while still completing cleanup now that the lock is gone.
+    // Second drain cycle: the lock has cleared (guards are no longer armed), so cleanup would now succeed. Pre-fix, the unchanged .draining content is re-read and reprocessed, duplicating `c` in the batch. Post-fix, drainOnce recognizes the unchanged snapshot it already queued last cycle and skips it, while still completing cleanup now that the lock is gone.
     const count2 = drainOnce(DIR, (p) => indexed.push(p))
     expect(count2).toBe(0)
     expect(indexed).toEqual([c])
@@ -136,12 +124,7 @@ describe('drainOnce stage (b) removal failure (double-processing regression)', (
     fs.rmSync(DIR, { recursive: true, force: true })
   })
 
-  // Regression: stage (a) tracks an rmSync cleanup failure in unclearedDrainingSnapshots so a
-  // later cycle can recognize an already-processed leftover .draining file instead of
-  // reprocessing it. Stage (b)'s rmSync failure path had no such tracking -- it was swallowed in
-  // a bare catch -- so a leftover .draining file from a failed stage-(b) cleanup was silently
-  // re-read and reprocessed a second time by the next cycle's stage (a) crash recovery,
-  // double-counting and double-processing its paths.
+  // Regression: stage (a) tracks an rmSync cleanup failure in unclearedDrainingSnapshots so a later cycle can recognize an already-processed leftover .draining file instead of reprocessing it. Stage (b)'s rmSync failure path had no such tracking -- it was swallowed in a bare catch -- so a leftover .draining file from a failed stage-(b) cleanup was silently re-read and reprocessed a second time by the next cycle's stage (a) crash recovery, double-counting and double-processing its paths.
   it("does not reprocess a claimed queue once stage (b)'s rmSync and quarantine rename both fail", () => {
     const c = path.join(DIR, 'c.ts')
     fs.writeFileSync(c, 'export const c = 3\n')
@@ -150,11 +133,7 @@ describe('drainOnce stage (b) removal failure (double-processing regression)', (
     fs.mkdirSync(path.dirname(queuePath), { recursive: true })
     fs.writeFileSync(queuePath, `${c}\n`)
 
-    // Arm the rmSync guard up front (its first call is stage (b)'s cleanup, since the claim
-    // rename itself uses renameSync, not rmSync, and there is no pre-existing .draining file for
-    // stage (a) to touch). Arm the renameSync guard from inside the callback, after the claim
-    // rename has already succeeded, so it fires on stage (b)'s quarantine attempt instead of the
-    // claim itself.
+    // Arm the rmSync guard up front (its first call is stage (b)'s cleanup, since the claim rename itself uses renameSync, not rmSync, and there is no pre-existing .draining file for stage (a) to touch). Arm the renameSync guard from inside the callback, after the claim rename has already succeeded, so it fires on stage (b)'s quarantine attempt instead of the claim itself.
     mockState.throwRmSyncOnce = true
     const indexed: string[] = []
     const count1 = drainOnce(DIR, (p) => {
@@ -165,15 +144,10 @@ describe('drainOnce stage (b) removal failure (double-processing regression)', (
     // The claimed content is still processed this cycle...
     expect(count1).toBe(1)
     expect(indexed).toEqual([c])
-    // ...but since both cleanup attempts failed, the .draining file is still on disk under its
-    // original name (not quarantined, not removed).
+    // ...but since both cleanup attempts failed, the .draining file is still on disk under its original name (not quarantined, not removed).
     expect(fs.existsSync(drainingPath)).toBe(true)
 
-    // Second drain cycle: the lock has cleared, so cleanup would now succeed. Pre-fix, stage (a)
-    // finds the leftover .draining file with no record of it in unclearedDrainingSnapshots (since
-    // stage (b) never recorded its own failure) and reprocesses it, duplicating `c` in the batch.
-    // Post-fix, stage (a) recognizes the unchanged snapshot stage (b) already queued last cycle
-    // and skips it, while still completing cleanup now that the lock is gone.
+    // Second drain cycle: the lock has cleared, so cleanup would now succeed. Pre-fix, stage (a) finds the leftover .draining file with no record of it in unclearedDrainingSnapshots (since stage (b) never recorded its own failure) and reprocesses it, duplicating `c` in the batch. Post-fix, stage (a) recognizes the unchanged snapshot stage (b) already queued last cycle and skips it, while still completing cleanup now that the lock is gone.
     const count2 = drainOnce(DIR, (p) => indexed.push(p))
     expect(count2).toBe(0)
     expect(indexed).toEqual([c])

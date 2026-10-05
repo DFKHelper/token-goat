@@ -1,20 +1,4 @@
-/**
- * Copilot CLI names an MCP tool call `<serverName>-<toolName>`, never
- * `mcp__<server>__<tool>`, so every MCP-aware handler in token-goat -- MCP
- * output dedup and compression (src/hooks_mcp.ts), repeat-screenshot shrink
- * (src/hooks_browser_image.ts, src/hooks_screenshot.ts), all gated on the
- * `mcp__` prefix -- was dead code on Copilot.
- *
- * The translation is exact-match-only against Copilot's own on-disk tool
- * cache, because `preMcpHandler` *denies* a call: a shape heuristic that
- * guessed wrong would block a legitimate built-in tool call. These tests pin
- * both directions of that: a cached name canonicalises, and everything else --
- * a near miss, a built-in, an absent cache, a tool that a reconfigured server
- * no longer publishes -- does not.
- *
- * The fixture is supplied the way Copilot supplies it, through
- * `COPILOT_CACHE_HOME`, so the real cache-root resolution runs.
- */
+/** Copilot CLI names an MCP tool call `<serverName>-<toolName>`, never `mcp__<server>__<tool>`, so every MCP-aware handler in token-goat -- MCP output dedup and compression (src/hooks_mcp.ts), repeat-screenshot shrink (src/hooks_browser_image.ts, src/hooks_screenshot.ts), all gated on the `mcp__` prefix -- was dead code on Copilot. The translation is exact-match-only against Copilot's own on-disk tool cache, because `preMcpHandler` *denies* a call: a shape heuristic that guessed wrong would block a legitimate built-in tool call. These tests pin both directions of that: a cached name canonicalises, and everything else -- a near miss, a built-in, an absent cache, a tool that a reconfigured server no longer publishes -- does not. The fixture is supplied the way Copilot supplies it, through `COPILOT_CACHE_HOME`, so the real cache-root resolution runs. */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -65,8 +49,7 @@ afterEach(() => {
 
 describe('Copilot MCP tool-name canonicalization', () => {
   it('canonicalizes a name that exactly matches a cached server/tool pair', () => {
-    // The server name itself contains hyphens, which is exactly why splitting
-    // the wire name on a hyphen cannot work and the cache lookup is required.
+    // The server name itself contains hyphens, which is exactly why splitting the wire name on a hyphen cannot work and the cache lookup is required.
     writeCache('a.json', 'github-mcp-server', '2026-01-01T00:00:00Z', ['search_code'])
     expect(nameAfterNormalize('github-mcp-server-search_code')).toBe('mcp__github-mcp-server__search_code')
   })
@@ -95,8 +78,7 @@ describe('Copilot MCP tool-name canonicalization', () => {
   })
 
   it('does not resurrect a tool a reconfigured server dropped, from its stale sibling cache file', () => {
-    // Copilot's cache filename hashes the server name AND its config, so
-    // reconfiguring a server writes a new file and leaves the old one behind.
+    // Copilot's cache filename hashes the server name AND its config, so reconfiguring a server writes a new file and leaves the old one behind.
     writeCache('old.json', 'github-mcp-server', '2026-01-01T00:00:00Z', ['search_code', 'delete_repo'])
     writeCache('new.json', 'github-mcp-server', '2026-06-01T00:00:00Z', ['search_code'])
     expect(nameAfterNormalize('github-mcp-server-search_code')).toBe('mcp__github-mcp-server__search_code')
@@ -109,15 +91,7 @@ describe('Copilot MCP tool-name canonicalization', () => {
   })
 })
 
-/**
- * The branch above is only reachable in production if `harnessForNormalization()`
- * (src/relay.ts) actually resolves a Copilot session to 'copilot_cli'. Driving
- * `normalizePayload` directly proves the translation but not the wiring, so this
- * block goes through `relayInProcess` -- the single seam both the shim's
- * in-process call and `token-goat hook <event>` on stdin funnel through -- with
- * only the env var a real Copilot shim sets, and asserts the MCP dedup handler
- * (which no Copilot session could reach before) actually fires.
- */
+/** The branch above is only reachable in production if `harnessForNormalization()` (src/relay.ts) actually resolves a Copilot session to 'copilot_cli'. Driving `normalizePayload` directly proves the translation but not the wiring, so this block goes through `relayInProcess` -- the single seam both the shim's in-process call and `token-goat hook <event>` on stdin funnel through -- with only the env var a real Copilot shim sets, and asserts the MCP dedup handler (which no Copilot session could reach before) actually fires. */
 describe('Copilot MCP canonicalization reaches the real MCP handlers', () => {
   let tmpHome: string
   let prevHome: string | undefined
@@ -150,8 +124,7 @@ describe('Copilot MCP canonicalization reaches the real MCP handlers', () => {
     }
     await relayInProcess('post_tool_use', { ...payload, tool_response: 'the file body' })
     const pre = await relayInProcess('pre_tool_use', payload)
-    // The exact recall wording is hooks_mcp.ts's business; what this pins is that the
-    // dedup handler ran at all for a Copilot-spelled name, which it could not do before.
+    // The exact recall wording is hooks_mcp.ts's business; what this pins is that the dedup handler ran at all for a Copilot-spelled name, which it could not do before.
     expect(pre).toContain('"decision":"block"')
   })
 })

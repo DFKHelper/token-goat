@@ -1,8 +1,4 @@
-/**
- * Minimal structural typings for the node-tree-sitter API surface we touch.
- * The packages ship no first-class .d.ts under this resolution, so we model only
- * the members used here rather than pulling `any` through the module.
- */
+/** Minimal structural typings for the node-tree-sitter API surface we touch. The packages ship no first-class .d.ts under this resolution, so we model only the members used here rather than pulling `any` through the module. */
 
 export interface TsPoint {
   readonly row: number

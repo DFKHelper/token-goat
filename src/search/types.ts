@@ -1,6 +1,4 @@
-/**
- * Types and interfaces for token-goat parallel multi-angle search.
- */
+/** Types and interfaces for token-goat parallel multi-angle search. */
 
 export type SearchChannel = 'symbol' | 'heading' | 'text' | 'semantic';
 export const ALL_CHANNELS: ReadonlyArray<SearchChannel> = ['symbol', 'heading', 'text', 'semantic'];

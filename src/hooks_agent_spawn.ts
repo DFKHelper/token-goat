@@ -1,14 +1,4 @@
-/**
- * Subagent briefing pack hook.
- *
- * pre_tool_use: When an Agent tool (subagent spawn) fires, append a compact
- * project-context briefing to the subagent's prompt field. The briefing includes
- * a one-line project map, a few cached output IDs to hint at re-use opportunities,
- * and an imperative gate directing the subagent to check for a token-goat command before its first read.
- *
- * Fails open: if building the briefing fails for any reason, the input is passed
- * through unchanged, never blocking a subagent spawn.
- */
+/** Subagent briefing pack hook. pre_tool_use: When an Agent tool (subagent spawn) fires, append a compact project-context briefing to the subagent's prompt field. The briefing includes a one-line project map, a few cached output IDs to hint at re-use opportunities, and an imperative gate directing the subagent to check for a token-goat command before its first read. Fails open: if building the briefing fails for any reason, the input is passed through unchanged, never blocking a subagent spawn. */
 
 import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
@@ -32,32 +22,10 @@ import { getHarnessName } from './bridges/registry.js'
 import { isInsideRoot } from './project.js'
 import { loadingHiddenRuleCheck, permissionNeutralRewrite } from './rewrite_permission.js'
 
-/**
- * Target token budget for the entire briefing (project map + cached ids + reminder + report
- * contract). Measured against this repo's own compact map (46 tokens) plus a realistic mid-size
- * project's compact map (~140 tokens, e.g. "Files: 640" + 10 top symbols) combined with the
- * imperative surgical-read reminder (136 tokens, grown from a one-liner in c574b1f6), the report
- * contract added below (~95 tokens), and a 1-3 entry cache-ids block (26-50 tokens): worst-case
- * realistic total lands around 400-470 tokens. 450 left too little headroom once the contract was
- * added, so 550 leaves a real margin above that; revisit this number again if either tail block
- * grows further.
- */
+/** Target token budget for the entire briefing (project map + cached ids + reminder + report contract). Measured against this repo's own compact map (46 tokens) plus a realistic mid-size project's compact map (~140 tokens, e.g. "Files: 640" + 10 top symbols) combined with the imperative surgical-read reminder (136 tokens, grown from a one-liner in c574b1f6), the report contract added below (~95 tokens), and a 1-3 entry cache-ids block (26-50 tokens): worst-case realistic total lands around 400-470 tokens. 450 left too little headroom once the contract was added, so 550 leaves a real margin above that; revisit this number again if either tail block grows further. */
 const BRIEFING_TARGET_TOKENS = 550
 
-/**
- * Build a compact subagent briefing block.
- *
- * Returns a brief formatted string with:
- * 1. One-line project-map summary (top-level structure only)
- * 2. 2-3 recent cached output IDs as re-use hints
- * 3. One-line surgical-read reminder
- *
- * Returns empty string if the briefing cannot be built (project unavailable, etc.).
- * Estimated length is kept under BRIEFING_TARGET_TOKENS for efficient context usage.
- *
- * `projectRoot` is the directory the map summary walks, and null skips the map. See
- * {@link briefingRoot} for why that is not always process.cwd().
- */
+/** Build a compact subagent briefing block. Returns a brief formatted string with: 1. One-line project-map summary (top-level structure only) 2. 2-3 recent cached output IDs as re-use hints 3. One-line surgical-read reminder Returns empty string if the briefing cannot be built (project unavailable, etc.). Estimated length is kept under BRIEFING_TARGET_TOKENS for efficient context usage. `projectRoot` is the directory the map summary walks, and null skips the map. See {@link briefingRoot} for why that is not always process.cwd(). */
 function buildSubagentBriefing(projectRoot: string | null): string {
   try {
     const head: string[] = []
@@ -120,14 +88,7 @@ function buildSubagentBriefing(projectRoot: string | null): string {
   }
 }
 
-/**
- * Word-set Jaccard similarity threshold above which two Agent-spawn prompts are treated as
- * near-duplicates. Chosen high (0.75, within the recommended 0.7-0.8 range) to bias hard against
- * false positives: two genuinely different subagent tasks that merely share some vocabulary
- * (both mention "fix", "the file", "tests", ...) must never trip this. A missed true duplicate
- * only costs a nice-to-have warning; a false "duplicate!" on two real, different tasks is
- * actively annoying and erodes trust in the hint.
- */
+/** Word-set Jaccard similarity threshold above which two Agent-spawn prompts are treated as near-duplicates. Chosen high (0.75, within the recommended 0.7-0.8 range) to bias hard against false positives: two genuinely different subagent tasks that merely share some vocabulary (both mention "fix", "the file", "tests", ...) must never trip this. A missed true duplicate only costs a nice-to-have warning; a false "duplicate!" on two real, different tasks is actively annoying and erodes trust in the hint. */
 const DUPLICATE_PROMPT_JACCARD_THRESHOLD = 0.75
 
 /** Normalize `text` into its lowercase, punctuation-stripped word set for Jaccard comparison. */
@@ -151,10 +112,7 @@ function jaccardSimilarity(a: ReadonlySet<string>, b: ReadonlySet<string>): numb
   return union === 0 ? 0 : intersection / union
 }
 
-/**
- * Find an already-outstanding Agent-spawn prompt this session that is a near-duplicate of
- * `prompt` (Jaccard similarity >= {@link DUPLICATE_PROMPT_JACCARD_THRESHOLD}), or null if none.
- */
+/** Find an already-outstanding Agent-spawn prompt this session that is a near-duplicate of `prompt` (Jaccard similarity >= {@link DUPLICATE_PROMPT_JACCARD_THRESHOLD}), or null if none. */
 function findDuplicateOutstandingPrompt(prompt: string): string | null {
   const words = promptWordSet(prompt)
   for (const entry of getOutstandingAgentSpawns()) {
@@ -249,8 +207,7 @@ function preAgentHandler(event: HookEvent): HookOutput {
 
 // Thresholds live in config (agent_report.*, see config.ts) rather than as literals here so an operator can retune or disable envelope compaction without a rebuild, matching how every other compaction subsystem in this codebase is tuned. A subagent's report is already-distilled PROSE with no safe way to shrink it losslessly, so prose is never touched by this handler -- caveats, limitations, and "I did not verify X" admissions live there, and those are precisely the sentences that catch a subagent shipping something it did not check (three consecutive self-improvement cycles caught a real defect exactly that way). What IS safely reducible is what agents paste INTO fenced blocks: gate transcripts, `git diff --stat` tables, dogfood output. Those are mechanically reproducible from the repo, and the full text stays one `mcp-output <id> --full` away, so eliding their middle costs the parent nothing it cannot recover on demand.
 
-// A fence line per CommonMark: up to 3 leading spaces, then a run of 3+ backticks or 3+ tildes, then an optional info string. Capturing the run (not just "starts with ```") is what makes nesting safe -- see collapseFencedBlocks.
-// The info-string tail is `[^\n]*`, not `.*`, for the same reason markdown_lines.ts's eachUnfencedLine uses it: a JS regex `.` excludes `\r`, so a CRLF-terminated fence line (a report that pasted Windows command output into a block) matched nothing and every fenced block went uncollapsed.
+// A fence line per CommonMark: up to 3 leading spaces, then a run of 3+ backticks or 3+ tildes, then an optional info string. Capturing the run (not just "starts with ```") is what makes nesting safe -- see collapseFencedBlocks. The info-string tail is `[^\n]*`, not `.*`, for the same reason markdown_lines.ts's eachUnfencedLine uses it: a JS regex `.` excludes `\r`, so a CRLF-terminated fence line (a report that pasted Windows command output into a block) matched nothing and every fenced block went uncollapsed.
 const FENCE_LINE_RE = /^ {0,3}(`{3,}|~{3,})([^\n]*)$/
 
 interface FencedBlockLines {
@@ -393,18 +350,7 @@ const ROSTER_WALK_MAX_FILES = 400
 /** The shape an agent name has to have before it is allowed into a model-facing advisory: the identifier charset real rosters use, colons included for plugin-scoped names, capped so a single definition cannot fill the notice. */
 const AGENT_NAME_RE = /^[A-Za-z0-9._:-]{1,64}$/
 
-/**
- * Parse a Claude Code agent-definition markdown file's YAML frontmatter, answering the one question
- * the unrestricted-spawn advisory needs: does this definition carry a `tools:` allowlist? Corpus
- * measurement (loop 48, 5,988 lanes) showed the allowlist is the causal lever on spawn-prefix cost:
- * an agent WITHOUT one inherits every tool and MCP schema into its lane's system prompt, and typing
- * alone changes nothing. Returns null when the file has no parseable frontmatter at all.
- *
- * `restricted` means: a `tools:` key exists and its value is neither empty nor the inherit-everything
- * `*`. Both the inline comma-list form and the indented block-list form count; a `tools:` line with
- * no value and no block items is treated as absent (unrestricted), the conservative direction for a
- * gate whose false positive would recommend an agent that saves nothing.
- */
+/** Parse a Claude Code agent-definition markdown file's YAML frontmatter, answering the one question the unrestricted-spawn advisory needs: does this definition carry a `tools:` allowlist? Corpus measurement (loop 48, 5,988 lanes) showed the allowlist is the causal lever on spawn-prefix cost: an agent WITHOUT one inherits every tool and MCP schema into its lane's system prompt, and typing alone changes nothing. Returns null when the file has no parseable frontmatter at all. `restricted` means: a `tools:` key exists and its value is neither empty nor the inherit-everything `*`. Both the inline comma-list form and the indented block-list form count; a `tools:` line with no value and no block items is treated as absent (unrestricted), the conservative direction for a gate whose false positive would recommend an agent that saves nothing. */
 export function parseAgentDefinition(text: string, fallbackName: string): { name: string; restricted: boolean } | null {
   const fmMatch = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)
   if (!fmMatch) return null
@@ -430,17 +376,7 @@ export function parseAgentDefinition(text: string, fallbackName: string): { name
   return { name, restricted: false }
 }
 
-/**
- * Scan the machine-level agent roster (~/.claude/agents, recursively, following symlinked collection
- * directories with a realpath cycle guard) and return the sorted names of every definition that
- * carries a `tools:` allowlist. This is the advisory's existence gate: with no restricted definition
- * on the machine there is nothing actionable to recommend, and an unclearable warning trains the
- * user to ignore every warning the tool emits. Both the home roster and the project's own
- * <cwd>/.claude/agents are scanned: the project roster holds exactly the definitions a spawn in that
- * repo should be reaching for, and scanning it is what makes every name here potentially
- * repository-authored rather than user-authored, which is why parseAgentDefinition constrains the
- * name's shape before it can reach a model-facing advisory.
- */
+/** Scan the machine-level agent roster (~/.claude/agents, recursively, following symlinked collection directories with a realpath cycle guard) and return the sorted names of every definition that carries a `tools:` allowlist. This is the advisory's existence gate: with no restricted definition on the machine there is nothing actionable to recommend, and an unclearable warning trains the user to ignore every warning the tool emits. Both the home roster and the project's own <cwd>/.claude/agents are scanned: the project roster holds exactly the definitions a spawn in that repo should be reaching for, and scanning it is what makes every name here potentially repository-authored rather than user-authored, which is why parseAgentDefinition constrains the name's shape before it can reach a model-facing advisory. */
 export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
   // The project roster is scanned alongside the home one because a repo's own .claude/agents holds exactly the definitions a spawn in that repo should be reaching for, and a home-only default made them invisible to the advisory: this repo carries three such definitions and the advisory named none of them. Duplicate roots are harmless, since the visited set below folds them.
   const projectAgentsRoot = path.join(process.cwd(), '.claude', 'agents')
@@ -448,15 +384,7 @@ export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
   const names = new Set<string>()
   const visited = new Set<string>()
   let filesSeen = 0
-  // confineTo bounds a walk to a resolved directory: null for the home roster (the user controls
-  // it directly and may legitimately symlink it, or an entry inside it, to a personal collection
-  // elsewhere on their own machine -- the whole point of following symlinked collection
-  // directories below), non-null for the project roster, whose content is repository-authored.
-  // Without this, a checked-in `.claude/agents/x -> /` (or any other absolute target) let a
-  // cloned repository's own roster walk follow the link and read arbitrary `.md` files anywhere
-  // else reachable on the machine, surfacing their frontmatter `name:` in a model-facing advisory
-  // -- the same escape-via-nested-symlink shape cli_bootstrap_audit.ts's scanMetadataRoot already
-  // refuses for its own roster walk.
+  // confineTo bounds a walk to a resolved directory: null for the home roster (the user controls it directly and may legitimately symlink it, or an entry inside it, to a personal collection elsewhere on their own machine -- the whole point of following symlinked collection directories below), non-null for the project roster, whose content is repository-authored. Without this, a checked-in `.claude/agents/x -> /` (or any other absolute target) let a cloned repository's own roster walk follow the link and read arbitrary `.md` files anywhere else reachable on the machine, surfacing their frontmatter `name:` in a model-facing advisory -- the same escape-via-nested-symlink shape cli_bootstrap_audit.ts's scanMetadataRoot already refuses for its own roster walk.
   const walk = (dir: string, depth: number, confineTo: string | null): void => {
     if (depth > ROSTER_WALK_MAX_DEPTH || filesSeen >= ROSTER_WALK_MAX_FILES) return
     let real: string
@@ -507,8 +435,7 @@ export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
       walk(root, 0, null)
       continue
     }
-    // The root itself may not be a symlink either: a repo replacing its own `.claude/agents`
-    // entry with a link is the same escape with one fewer step than a nested link.
+    // The root itself may not be a symlink either: a repo replacing its own `.claude/agents` entry with a link is the same escape with one fewer step than a nested link.
     let rootIsLink: boolean
     try {
       rootIsLink = fs.lstatSync(root).isSymbolicLink()
@@ -527,21 +454,7 @@ export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
   return Array.from(names).sort()
 }
 
-/**
- * Build the once-per-session unrestricted-spawn advisory, or '' when it does not apply.
- *
- * Trigger: the finished spawn ran as general-purpose, either because `subagent_type` was absent
- * (620 of 3,167 corpus spawn blocks) or because it named general-purpose explicitly; both are
- * definitionally unrestricted with no definition file to resolve, which is the only restriction
- * status observable at the hook without reading a roster file for the spawned type. Gate: at least
- * one tools-restricted agent definition exists in ~/.claude/agents, so the advice is actionable and
- * the hint clearable. Dedupe: once per session via the persisted hints-shown set.
- *
- * Accounting: recorded as a zero-credit `session_hint`. The advisory fires AFTER the spawn it
- * observed and cannot save that spawn: the counterfactual it might improve (the user's next spawn,
- * or their roster) is not a branch this code blocks, so crediting anything would repeat the
- * advisory-credited-the-full-file defect class. The text says so explicitly for the same reason.
- */
+/** Build the once-per-session unrestricted-spawn advisory, or '' when it does not apply. Trigger: the finished spawn ran as general-purpose, either because `subagent_type` was absent (620 of 3,167 corpus spawn blocks) or because it named general-purpose explicitly; both are definitionally unrestricted with no definition file to resolve, which is the only restriction status observable at the hook without reading a roster file for the spawned type. Gate: at least one tools-restricted agent definition exists in ~/.claude/agents, so the advice is actionable and the hint clearable. Dedupe: once per session via the persisted hints-shown set. Accounting: recorded as a zero-credit `session_hint`. The advisory fires AFTER the spawn it observed and cannot save that spawn: the counterfactual it might improve (the user's next spawn, or their roster) is not a branch this code blocks, so crediting anything would repeat the advisory-credited-the-full-file defect class. The text says so explicitly for the same reason. */
 export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown>): string {
   try {
     // Gated off entirely on Copilot CLI because the advisory's content is Claude Code's Task schema (subagent_type, ~/.claude/agents rosters). Copilot's own task tool carries agent_type, not subagent_type (captured toolArgs {description, prompt, agent_type, name}, tg-captures C4a), so the absent-field trigger would misclassify every Copilot task spawn as an untyped general-purpose spawn. The channel is not the reason: post_tool_use additionalContext does reach the model on Copilot 1.0.88 (tg-captures C1a). Other bridges are not gated here: their task-tool wire shapes are unverified (loop-ledger BE-06) and their bridges forward additionalContext, so suppressing them would rest on inference. VS Code is gated for the same schema reason, read off its own bundle: runSubagent takes {prompt, description, agentName, model} (RunSubagentTool.getToolData in VS Code 1.137.0's workbench.desktop.main.js), where agentName names a VS Code chat agent, so advice to pass a ~/.claude/agents name as subagent_type names a key the tool does not have.
@@ -567,16 +480,7 @@ export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown
 /** Session-hint dedupe key for the opt-in scoped-spawn deny: it refuses at most one spawn per session, so re-issuing the same call is always a way through. */
 const SCOPED_SPAWN_DENY_KEY = 'agent-scoped-spawn-deny'
 
-/**
- * The pre-tool counterpart of {@link buildUnrestrictedSpawnAdvisory}, behind
- * `hints.agent_scoped_spawn_deny` (off by default). The advisory can only describe a spawn that has
- * already paid for its unrestricted prefix; this refuses the first untyped spawn of a session before it
- * runs and names the restricted definitions, so the retry can pick one. Narrower than the advisory on
- * purpose: only an OMITTED subagent_type triggers it, since an explicit `general-purpose` is a choice the
- * caller made, and a refusal that overrode a choice would just be re-issued. Once per session, so the
- * promise the message makes -- re-issue unchanged and it runs -- is kept by construction. Harness-gated
- * exactly as the advisory is, for the same schema reason. Returns null when it does not fire.
- */
+/** The pre-tool counterpart of {@link buildUnrestrictedSpawnAdvisory}, behind `hints.agent_scoped_spawn_deny` (off by default). The advisory can only describe a spawn that has already paid for its unrestricted prefix; this refuses the first untyped spawn of a session before it runs and names the restricted definitions, so the retry can pick one. Narrower than the advisory on purpose: only an OMITTED subagent_type triggers it, since an explicit `general-purpose` is a choice the caller made, and a refusal that overrode a choice would just be re-issued. Once per session, so the promise the message makes -- re-issue unchanged and it runs -- is kept by construction. Harness-gated exactly as the advisory is, for the same schema reason. Returns null when it does not fire. */
 function buildScopedSpawnDeny(toolInput: Record<string, unknown>): HookOutput | null {
   if (!loadConfig().hints.agent_scoped_spawn_deny) return null
   const harness = getHarnessName()

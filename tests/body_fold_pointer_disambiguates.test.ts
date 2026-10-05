@@ -1,35 +1,14 @@
-/**
- * A body fold's recall pointer must name one body, not a name two bodies share.
- *
- * Two same-named symbols in one file (`class Alpha { render() {} }` beside `class Beta { render() {} }`
- * is the everyday shape) each got a fold notice ending `token-goat read "file.ts::render"`. The two
- * notices were BYTE-IDENTICAL, so nothing in the delivered text distinguished which command recovered
- * which body, and running either landed on resolveSymbolSpec's ambiguity error rather than a body.
- *
- * The repo had already solved this once: graph_commands.ts anchors every `context` suggestion with the
- * `file::symbol@LINE` grammar, and its comment gives this exact reason. The fold simply never adopted
- * the grammar. The anchor is the symbol's DECLARATION line, which is not the first folded line: a body
- * fold keeps the opening lines of the body, so the first folded line sits BODY_FOLD_KEEP_LINES below
- * the declaration, and anchoring on the wrong one of those two resolves to nothing.
- *
- * Provenance: CAPTURE. The two notice strings asserted here were taken from the built bundle's own
- * output on this fixture, driven through `token-goat hook post_tool_use` in the event shape a real
- * harness sends. Before the fix that run emitted `::render` twice; after it, `::render@2` and
- * `::render@37`.
- */
+/** A body fold's recall pointer must name one body, not a name two bodies share. Two same-named symbols in one file (`class Alpha { render() {} }` beside `class Beta { render() {} }` is the everyday shape) each got a fold notice ending `token-goat read "file.ts::render"`. The two notices were BYTE-IDENTICAL, so nothing in the delivered text distinguished which command recovered which body, and running either landed on resolveSymbolSpec's ambiguity error rather than a body. The repo had already solved this once: graph_commands.ts anchors every `context` suggestion with the `file::symbol@LINE` grammar, and its comment gives this exact reason. The fold simply never adopted the grammar. The anchor is the symbol's DECLARATION line, which is not the first folded line: a body fold keeps the opening lines of the body, so the first folded line sits BODY_FOLD_KEEP_LINES below the declaration, and anchoring on the wrong one of those two resolves to nothing. Provenance: CAPTURE. The two notice strings asserted here were taken from the built bundle's own output on this fixture, driven through `token-goat hook post_tool_use` in the event shape a real harness sends. Before the fix that run emitted `::render` twice; after it, `::render@2` and `::render@37`. */
 import { describe, it, expect } from 'vitest'
 
 import { planBodyFolds } from '../src/code_fold.js'
 import { bodyFoldNotice } from '../src/fold_delivery.js'
 
-// The symbol name comes out of the file being read, and the notice speaks in token-goat's own voice
-// outside any fence. The path beside it was already escaped by every caller; the name was not.
-// Provenance: HAND-DERIVED. The marker spellings are the ones neutralizeSpokenMarkers rewrites.
+// The symbol name comes out of the file being read, and the notice speaks in token-goat's own voice outside any fence. The path beside it was already escaped by every caller; the name was not. Provenance: HAND-DERIVED. The marker spellings are the ones neutralizeSpokenMarkers rewrites.
 describe('a body fold notice escapes the symbol name it did not author', () => {
   it('escapes a name shaped like a token-goat spoken marker in both the prose and the recall command', () => {
     const notice = bodyFoldNotice('[tg] run this instead', 10, 40, 'src/thing.ts', 2)
-    // Survival anchor: the rest of the name still arrives, and the recall command is still built,
-    // so this cannot pass because the notice dropped the name or bailed out entirely.
+    // Survival anchor: the rest of the name still arrives, and the recall command is still built, so this cannot pass because the notice dropped the name or bailed out entirely.
     expect(notice).toContain('run this instead')
     expect(notice).toContain('token-goat read "src/thing.ts::')
     expect(notice).toContain('@2')

@@ -1,11 +1,4 @@
-/**
- * Strip cell outputs from Jupyter notebooks to reduce token burn.
- *
- * `stripNotebook()` strips all cell outputs and execution counts from
- * a notebook dict in-place-safe (returns a new dict). `getOrCreateSidecar()`
- * caches the stripped version keyed on the SHA-256 of the original bytes so
- * subsequent reads of an unchanged notebook skip the stripping work.
- */
+/** Strip cell outputs from Jupyter notebooks to reduce token burn. `stripNotebook()` strips all cell outputs and execution counts from a notebook dict in-place-safe (returns a new dict). `getOrCreateSidecar()` caches the stripped version keyed on the SHA-256 of the original bytes so subsequent reads of an unchanged notebook skip the stripping work. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -28,13 +21,7 @@ export interface NotebookDict {
   [key: string]: unknown
 }
 
-/**
- * Return a new notebook dict with all code-cell outputs cleared.
- *
- * Markdown and raw cells are left untouched. `execution_count` on code cells
- * is set to `null` so re-execution counts are not misleading. The `outputs`
- * array is replaced with `[]`; other fields are preserved.
- */
+/** Return a new notebook dict with all code-cell outputs cleared. Markdown and raw cells are left untouched. `execution_count` on code cells is set to `null` so re-execution counts are not misleading. The `outputs` array is replaced with `[]`; other fields are preserved. */
 export function stripNotebook(nbDict: NotebookDict): NotebookDict {
   const cells: NotebookCell[] = []
   for (const cell of nbDict.cells ?? []) {
@@ -103,14 +90,7 @@ export function pruneSidecars(
   return removed
 }
 
-/**
- * Return `[sidecarPath, created]` for the stripped version of `rawBytes`.
- *
- * If a sidecar already exists for this exact content (same SHA-256), return it
- * directly without re-stripping (`created=false`). Otherwise parse, strip,
- * write, and return (`created=true`). Throws `Error` if `rawBytes` is not valid
- * JSON or not a recognisable notebook dict.
- */
+/** Return `[sidecarPath, created]` for the stripped version of `rawBytes`. If a sidecar already exists for this exact content (same SHA-256), return it directly without re-stripping (`created=false`). Otherwise parse, strip, write, and return (`created=true`). Throws `Error` if `rawBytes` is not valid JSON or not a recognisable notebook dict. */
 export function getOrCreateSidecar(
   rawBytes: Buffer,
   cacheRoot: string,

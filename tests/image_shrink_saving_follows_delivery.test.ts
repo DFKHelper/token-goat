@@ -1,10 +1,4 @@
-/**
- * The image_shrink saving is booked only when the shrunk copy actually reaches the model.
- *
- * On VS Code the shrunk image reaches the model only as a rewritten view_image path to a temp file. The saving used to be booked by preReadImageHandler before the serializer tried to write that file, so a failed write left a ledger row for bytes the model never saw. The temp write is forced to fail for real by pointing TEMP/TMP/TMPDIR below a regular file, so os.tmpdir() names a directory that cannot exist.
- *
- * PROVENANCE: FORMAT-DERIVED. The VS Code payload envelope (hook_event_name, tool_name "view_image", tool_input.filePath) is the one ChatHookService.executePreToolUseHook builds in VS Code 1.136.0's resources/app/extensions/copilot/dist/extension.js, as cited in tests/vscode_hooks.test.ts; TOKEN_GOAT_HARNESS_OVERRIDE=vscode is what the shared Copilot shim sets when it runs the hook for a VS Code payload (src/bridges/copilot_cli.ts). The image is random noise generated here (HAND-DERIVED), large enough to qualify for a shrink.
- */
+/** The image_shrink saving is booked only when the shrunk copy actually reaches the model. On VS Code the shrunk image reaches the model only as a rewritten view_image path to a temp file. The saving used to be booked by preReadImageHandler before the serializer tried to write that file, so a failed write left a ledger row for bytes the model never saw. The temp write is forced to fail for real by pointing TEMP/TMP/TMPDIR below a regular file, so os.tmpdir() names a directory that cannot exist. PROVENANCE: FORMAT-DERIVED. The VS Code payload envelope (hook_event_name, tool_name "view_image", tool_input.filePath) is the one ChatHookService.executePreToolUseHook builds in VS Code 1.136.0's resources/app/extensions/copilot/dist/extension.js, as cited in tests/vscode_hooks.test.ts; TOKEN_GOAT_HARNESS_OVERRIDE=vscode is what the shared Copilot shim sets when it runs the hook for a VS Code payload (src/bridges/copilot_cli.ts). The image is random noise generated here (HAND-DERIVED), large enough to qualify for a shrink. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

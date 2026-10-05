@@ -233,10 +233,7 @@ describe('extractSection — CRLF line endings', () => {
 
 describe('extractSection — key-value fallback does not mistake a bare URL for a heading', () => {
   it('does not treat a bare URL line as a false "https"/"http" key-value heading', () => {
-    // Regression: KEYVALUE_HEADER_RE matched any "identifier followed by = or :" at column
-    // zero, so a line that's just a URL (e.g. a link on its own line in a plain-text/log file
-    // with no markdown/table headings) was mistaken for a key-value heading named "https" --
-    // the URL's scheme-separating ":" looks identical to a key/value ":" split.
+    // Regression: KEYVALUE_HEADER_RE matched any "identifier followed by = or :" at column zero, so a line that's just a URL (e.g. a link on its own line in a plain-text/log file with no markdown/table headings) was mistaken for a key-value heading named "https" -- the URL's scheme-separating ":" looks identical to a key/value ":" split.
     const text = ['See docs at:', 'https://example.com/path', '', 'more text below'].join('\n')
 
     expect(extractSection(text, 'https')).toBeNull()
@@ -699,9 +696,7 @@ describe('readSection', () => {
     expect(listSections(file)).toEqual(['FOO', 'TOKEN', 'PLAIN'])
     const foo = readSection(file, 'FOO')
     expect(foo?.heading).toBe('FOO')
-    // The key is what this test is about: an `export `-prefixed line must still be found and
-    // named. Its value is no longer printed, because a dotenv value is secret by the file's nature
-    // and is redacted at every read seam -- see src/dotenv_redact.ts and the guard test beside it.
+    // The key is what this test is about: an `export `-prefixed line must still be found and named. Its value is no longer printed, because a dotenv value is secret by the file's nature and is redacted at every read seam -- see src/dotenv_redact.ts and the guard test beside it.
     expect(foo?.content).toBe('export FOO=[REDACTED:dotenv_value]')
   })
 
@@ -775,9 +770,7 @@ describe('readSection', () => {
   })
 
   it('finds an <h2> heading in an HTML file', () => {
-    // Regression: html/liquid fell through findHeaders' unknown-language sniff, which never
-    // recognizes <hN> tags, so every html/liquid file routed to the key-value finder and
-    // `token-goat section` could never resolve a real heading.
+    // Regression: html/liquid fell through findHeaders' unknown-language sniff, which never recognizes <hN> tags, so every html/liquid file routed to the key-value finder and `token-goat section` could never resolve a real heading.
     const html = ['<h1>Title</h1>', '<p>intro</p>', '<h2>Install</h2>', '<p>run the installer</p>'].join('\n')
     const file = tmpFile('page.html', html)
     const result = readSection(file, 'Install')
@@ -787,10 +780,7 @@ describe('readSection', () => {
   })
 
   it('finds a heading whose text spans multiple lines (matching the indexer\'s dotall, whole-text scan)', () => {
-    // Regression: findHtmlHeaders used a non-dotall regex and scanned line-by-line, so a
-    // heading formatted across multiple lines (as extractHtml/extractLiquid already handled
-    // via a `gis`-flagged whole-text scan) was indexed as a symbol but unreachable via the
-    // live `section` command -- the two implementations had drifted out of sync.
+    // Regression: findHtmlHeaders used a non-dotall regex and scanned line-by-line, so a heading formatted across multiple lines (as extractHtml/extractLiquid already handled via a `gis`-flagged whole-text scan) was indexed as a symbol but unreachable via the live `section` command -- the two implementations had drifted out of sync.
     const html = ['<h1>', '  Multi-line Title', '</h1>', '<p>body text</p>'].join('\n')
     const file = tmpFile('multiline.html', html)
     const result = readSection(file, 'Multi-line Title')
@@ -800,9 +790,7 @@ describe('readSection', () => {
   })
 
   it('does not find a heading commented out with <!-- --> (matching the indexer, which masks HTML comments before scanning)', () => {
-    // Regression: findHtmlHeaders never called maskHtmlNoise, so a commented-out heading was
-    // reachable via the live `section` command even though the indexer correctly excludes it
-    // from symbols/sections -- the reverse of the multi-line-heading drift above.
+    // Regression: findHtmlHeaders never called maskHtmlNoise, so a commented-out heading was reachable via the live `section` command even though the indexer correctly excludes it from symbols/sections -- the reverse of the multi-line-heading drift above.
     const html = ['<!-- <h1>Old Title</h1> -->', '<h2>Real Title</h2>', '<p>real body</p>'].join('\n')
     const file = tmpFile('commented.html', html)
     expect(readSection(file, 'Old Title')).toBeNull()
@@ -816,10 +804,7 @@ describe('listSections regression: nested headings visibility', () => {
   it('lists all heading levels when section --list is called on a nested document', () => {
     const content = ['# Main Title', '## Section A', '### Subsection A1', '## Section B', '### Subsection B1'].join('\n')
     const file = tmpFile('nested.md', content)
-    // This test verifies that when using section --list on a document with nested headings,
-    // the user sees the complete hierarchy, not just the top-level headings.
-    // Before the fix, listSections would only return ['Main Title'] (the shallowest level).
-    // After the fix (to findHeaders' underlying nesting-level logic), it returns all levels.
+    // This test verifies that when using section --list on a document with nested headings, the user sees the complete hierarchy, not just the top-level headings. Before the fix, listSections would only return ['Main Title'] (the shallowest level). After the fix (to findHeaders' underlying nesting-level logic), it returns all levels.
     const sections = listSections(file)
     expect(sections).toContain('Section A')
     expect(sections).toContain('Subsection A1')
@@ -888,8 +873,7 @@ describe('findContainingSection', () => {
   it('returns the innermost heading when sections nest', () => {
     const md = ['# Outer', 'outer body', '', '## Inner', 'inner body line'].join('\n')
     const file = tmpFile('nested-containing.md', md)
-    // "inner body line" is line 5, inside both "# Outer" (1-5) and "## Inner" (4-5) -- the
-    // innermost (deepest/last) enclosing heading, "Inner", must win.
+    // "inner body line" is line 5, inside both "# Outer" (1-5) and "## Inner" (4-5) -- the innermost (deepest/last) enclosing heading, "Inner", must win.
     const result = findContainingSection(file, 5, 5)
     expect(result).not.toBeNull()
     expect(result?.heading).toBe('Inner')

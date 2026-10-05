@@ -7,14 +7,9 @@ import { ToolFilter } from './base.js'
 import { makePackageManagerFilter } from './families.js'
 import { ERROR_SIGNAL_RE, capTokens, maybeNote, pathStem, positionalArgs, squeezeBlankLines } from './helpers.js'
 
-// ---------------------------------------------------------------------------
-// Internal helpers (package-manager-local; not exported to index)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Internal helpers (package-manager-local; not exported to index) ---------------------------------------------------------------------------
 
-/**
- * Deduplicate lines, keeping at most `maxPerKey` occurrences per unique key.
- * Returns [keptLines, droppedCount].
- */
+/** Deduplicate lines, keeping at most `maxPerKey` occurrences per unique key. Returns [keptLines, droppedCount]. */
 function dedupLines(
   lines: string[],
   maxPerKey = 1,
@@ -33,9 +28,7 @@ function dedupLines(
   return [out, dropped]
 }
 
-// ---------------------------------------------------------------------------
-// Shared regexes
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Shared regexes ---------------------------------------------------------------------------
 
 // npm install noise
 const NPM_DEPRECATED_RE = /^npm warn deprecated\b/i
@@ -82,8 +75,7 @@ const UV_DIFF_LINE_RE = /^\s+[+-]\s+\S/
 const UV_FREEZE_THRESHOLD = 50
 const UV_FREEZE_SHOW = 20
 
-// Shared by PipFilter and UvFilter: both cap `pip/uv pip list`/`freeze` output identically
-// (one package per line, no install noise to strip -- just cap the count).
+// Shared by PipFilter and UvFilter: both cap `pip/uv pip list`/`freeze` output identically (one package per line, no install noise to strip -- just cap the count).
 function compressFreezeList(text: string): string {
   const lines = text.split('\n').filter((l) => l.trim())
   const errorLines = lines.filter((l) => ERROR_SIGNAL_RE.test(l))
@@ -167,15 +159,9 @@ const DEP_LIST_THRESHOLD = 30
 // Subcommands whose output belongs to DepListFilter's 30-line cap, not to the generic install/run compression paths below. NodePackageFilter, PnpmFilter, and YarnFilter each match their binary unconditionally (no subcommand gate), so without this exclusion they intercept `npm list`/`pnpm list`/`yarn list` before DepListFilter (registered last in PACKAGE_MANAGER_FILTERS) ever sees them.
 const DEP_LIST_OWNED_SUBCOMMANDS = new Set(['list', 'ls'])
 
-// ---------------------------------------------------------------------------
-// NpmInstallFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- NpmInstallFilter ---------------------------------------------------------------------------
 
-/**
- * Compress `npm install` / `yarn install` / `pnpm install` output.
- * Handles all three package managers with per-tool compression paths.
- * Faithful port of Python NpmInstallFilter.
- */
+/** Compress `npm install` / `yarn install` / `pnpm install` output. Handles all three package managers with per-tool compression paths. Faithful port of Python NpmInstallFilter. */
 class NpmInstallFilter extends ToolFilter {
   readonly name = 'npm_install'
   override readonly binaries = new Set(['npm', 'yarn', 'pnpm'])
@@ -288,14 +274,9 @@ class NpmInstallFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// PnpmFilter (dedicated pnpm filter with richer install + run label)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PnpmFilter (dedicated pnpm filter with richer install + run label) ---------------------------------------------------------------------------
 
-/**
- * Compress `pnpm install` / `pnpm add` / `pnpm run` output.
- * Faithful port of Python PnpmFilter.
- */
+/** Compress `pnpm install` / `pnpm add` / `pnpm run` output. Faithful port of Python PnpmFilter. */
 class PnpmFilter extends ToolFilter {
   readonly name = 'pnpm'
   override readonly binaries = new Set(['pnpm'])
@@ -349,14 +330,9 @@ class PnpmFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// YarnFilter (yarn classic v1 and berry v2+)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- YarnFilter (yarn classic v1 and berry v2+) ---------------------------------------------------------------------------
 
-/**
- * Compress `yarn install` output for yarn classic (v1) and berry (v2+).
- * Faithful port of Python YarnFilter.
- */
+/** Compress `yarn install` output for yarn classic (v1) and berry (v2+). Faithful port of Python YarnFilter. */
 class YarnFilter extends ToolFilter {
   readonly name = 'yarn'
   override readonly binaries = new Set(['yarn'])
@@ -401,9 +377,7 @@ class YarnFilter extends ToolFilter {
     }
     let dupWarnings = 0
     if (warningLines.length) {
-      // Do not truncate the key: a fixed-length cap makes two DISTINCT warnings that share a
-      // long leading substring (e.g. the same package name in two different peer-dependency
-      // warnings) collide, silently dropping one as a false "repeat".
+      // Do not truncate the key: a fixed-length cap makes two DISTINCT warnings that share a long leading substring (e.g. the same package name in two different peer-dependency warnings) collide, silently dropping one as a false "repeat".
       const [deduped, dropped] = dedupLines(warningLines, 1)
 
       dupWarnings = dropped
@@ -433,14 +407,9 @@ class YarnFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// PipFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PipFilter ---------------------------------------------------------------------------
 
-/**
- * Compress `pip install` / `pip3 install` / `pipx install` output.
- * Faithful port of Python PipFilter.
- */
+/** Compress `pip install` / `pip3 install` / `pipx install` output. Faithful port of Python PipFilter. */
 class PipFilter extends ToolFilter {
   readonly name = 'pip'
   override readonly binaries = new Set(['pip', 'pip3', 'pipx'])
@@ -505,22 +474,15 @@ class PipFilter extends ToolFilter {
     return this.finalize(kept)
   }
 
-  // `pip list`/`pip freeze` output has no install noise to strip (just one
-  // package per line) but can still run to hundreds of lines; cap it the same
-  // way UvFilter._compressFreezeList caps `uv pip list`/`uv pip freeze`.
+  // `pip list`/`pip freeze` output has no install noise to strip (just one package per line) but can still run to hundreds of lines; cap it the same way UvFilter._compressFreezeList caps `uv pip list`/`uv pip freeze`.
   private _compressFreezeList(text: string): string {
     return compressFreezeList(text)
   }
 }
 
-// ---------------------------------------------------------------------------
-// UvFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- UvFilter ---------------------------------------------------------------------------
 
-/**
- * Compress `uv sync` / `uv add` / `uv pip` / `uv tool` output.
- * Faithful port of Python UvFilter.
- */
+/** Compress `uv sync` / `uv add` / `uv pip` / `uv tool` output. Faithful port of Python UvFilter. */
 class UvFilter extends ToolFilter {
   readonly name = 'uv'
   override readonly binaries = new Set(['uv'])
@@ -570,14 +532,9 @@ class UvFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// CondaFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CondaFilter ---------------------------------------------------------------------------
 
-/**
- * Compress `conda install` / `conda create` / `conda list` / `conda env export` output.
- * Faithful port of Python CondaFilter.
- */
+/** Compress `conda install` / `conda create` / `conda list` / `conda env export` output. Faithful port of Python CondaFilter. */
 class CondaFilter extends ToolFilter {
   readonly name = 'conda'
   override readonly binaries = new Set(['conda', 'mamba', 'micromamba'])
@@ -681,14 +638,9 @@ class CondaFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// GemFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GemFilter ---------------------------------------------------------------------------
 
-/**
- * Compress `gem install` / `gem update` output.
- * Faithful port of Python GemFilter.
- */
+/** Compress `gem install` / `gem update` output. Faithful port of Python GemFilter. */
 class GemFilter extends ToolFilter {
   readonly name = 'gem'
   override readonly binaries = new Set(['gem'])
@@ -740,16 +692,9 @@ class GemFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// BundlerFilter — built via makePackageManagerFilter (line-drop family)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- BundlerFilter — built via makePackageManagerFilter (line-drop family) ---------------------------------------------------------------------------
 
-/**
- * Compress `bundle install` / `bundle update` / `bundler` output.
- * Faithful port of Python BundlerFilter. Uses the `makePackageManagerFilter`
- * line-drop factory: two noise regexes, everything else (completion banners,
- * Gemfile.lock summaries) passes through.
- */
+/** Compress `bundle install` / `bundle update` / `bundler` output. Faithful port of Python BundlerFilter. Uses the `makePackageManagerFilter` line-drop factory: two noise regexes, everything else (completion banners, Gemfile.lock summaries) passes through. */
 const bundlerFilter = makePackageManagerFilter({
   name: 'bundler',
   binaries: ['bundle', 'bundler'],
@@ -765,14 +710,9 @@ const bundlerFilter = makePackageManagerFilter({
   ],
 })
 
-// ---------------------------------------------------------------------------
-// ComposerFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ComposerFilter ---------------------------------------------------------------------------
 
-/**
- * Compress `composer install` / `composer update` / `composer require` output.
- * Faithful port of Python ComposerFilter.
- */
+/** Compress `composer install` / `composer update` / `composer require` output. Faithful port of Python ComposerFilter. */
 class ComposerFilter extends ToolFilter {
   readonly name = 'composer'
   override readonly binaries = new Set(['composer', 'composer.phar'])
@@ -813,14 +753,9 @@ class ComposerFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// NuGetFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- NuGetFilter ---------------------------------------------------------------------------
 
-/**
- * Compress `nuget` / `nuget.exe` / `nuget restore` output.
- * Faithful port of Python NuGetFilter.
- */
+/** Compress `nuget` / `nuget.exe` / `nuget restore` output. Faithful port of Python NuGetFilter. */
 class NuGetFilter extends ToolFilter {
   readonly name = 'nuget'
   override readonly binaries = new Set(['nuget', 'nuget.exe'])
@@ -865,16 +800,9 @@ class NuGetFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// PubFilter (Dart/Flutter pub) — built via makePackageManagerFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PubFilter (Dart/Flutter pub) — built via makePackageManagerFilter ---------------------------------------------------------------------------
 
-/**
- * Compress `pub get` / `pub upgrade` / `pub publish` output.
- * Faithful port of Python PubFilter. Uses the `makePackageManagerFilter`
- * line-drop factory with a keepRe (PUB_KEEP_RE) so status/summary lines are
- * preserved before the drop rules run.
- */
+/** Compress `pub get` / `pub upgrade` / `pub publish` output. Faithful port of Python PubFilter. Uses the `makePackageManagerFilter` line-drop factory with a keepRe (PUB_KEEP_RE) so status/summary lines are preserved before the drop rules run. */
 const pubFilter = makePackageManagerFilter({
   name: 'pub',
   binaries: ['pub'],
@@ -892,14 +820,9 @@ const pubFilter = makePackageManagerFilter({
   ],
 })
 
-// ---------------------------------------------------------------------------
-// ConanFilter (C/C++ conan package manager)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ConanFilter (C/C++ conan package manager) ---------------------------------------------------------------------------
 
-/**
- * Compress `conan install` / `conan create` / `conan build` output.
- * Faithful port of Python ConanFilter.
- */
+/** Compress `conan install` / `conan create` / `conan build` output. Faithful port of Python ConanFilter. */
 class ConanFilter extends ToolFilter {
   readonly name = 'conan'
   override readonly binaries = new Set(['conan', 'conan2'])
@@ -937,14 +860,9 @@ class ConanFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// VcpkgFilter (C++ vcpkg package manager)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- VcpkgFilter (C++ vcpkg package manager) ---------------------------------------------------------------------------
 
-/**
- * Compress `vcpkg install` / `vcpkg upgrade` output.
- * Faithful port of Python VcpkgFilter.
- */
+/** Compress `vcpkg install` / `vcpkg upgrade` output. Faithful port of Python VcpkgFilter. */
 class VcpkgFilter extends ToolFilter {
   readonly name = 'vcpkg'
   override readonly binaries = new Set(['vcpkg'])
@@ -985,24 +903,16 @@ class VcpkgFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// NodePackageFilter (general npm/pnpm/yarn audit + progress compression)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- NodePackageFilter (general npm/pnpm/yarn audit + progress compression) ---------------------------------------------------------------------------
 
-/**
- * Compress general `npm` / `pnpm` / `yarn` / `bun` package-manager output
- * including `npm audit`. Faithful port of Python NodePackageFilter.
- * Note: `npm install` / `pnpm install` / `yarn install` are intercepted by
- * NpmInstallFilter / PnpmFilter / YarnFilter which appear earlier in dispatch.
- */
+/** Compress general `npm` / `pnpm` / `yarn` / `bun` package-manager output including `npm audit`. Faithful port of Python NodePackageFilter. Note: `npm install` / `pnpm install` / `yarn install` are intercepted by NpmInstallFilter / PnpmFilter / YarnFilter which appear earlier in dispatch. */
 class NodePackageFilter extends ToolFilter {
   readonly name = 'npm'
   override readonly binaries = new Set(['npm', 'pnpm', 'yarn', 'bun'])
 
   override matches(argv: string[]): boolean {
     if (!super.matches(argv)) return false
-    // `npm list`/`npm ls` (and the pnpm/yarn equivalents that fall through to
-    // this generic catch-all) belong to DepListFilter's 30-line cap, not here.
+    // `npm list`/`npm ls` (and the pnpm/yarn equivalents that fall through to this generic catch-all) belong to DepListFilter's 30-line cap, not here.
     const subcmd = positionalArgs(argv.slice(1))[0] ?? ''
     return !DEP_LIST_OWNED_SUBCOMMANDS.has(subcmd)
   }
@@ -1089,12 +999,7 @@ function compressNpmAuditJson(text: string): string {
   return JSON.stringify(result, null, 2)
 }
 
-// Modern `npm audit` (npm 7+, the only versions in real-world use) prints each advisory as "<pkg>  <range>\nSeverity: <level>\n...\n" with no leading "<level>  <pkg>" header line and no "found N vulnerabilit…" summary prefix -- both of which the old block detector below required. Real npm 11 output looks like:
-//   @hono/node-server  <2.0.5
-//   Severity: moderate
-//   ...
-//   16 vulnerabilities (6 moderate, 8 high, 2 critical)
-// Detecting blocks by a "<severity>  <pkg>" header line (npm 6's format) or a "found N vulnerabilit…" summary line never matches this, so the whole 10-block cap silently never engaged on any output a currently-shipped npm actually produces.
+// Modern `npm audit` (npm 7+, the only versions in real-world use) prints each advisory as "<pkg>  <range>\nSeverity: <level>\n...\n" with no leading "<level>  <pkg>" header line and no "found N vulnerabilit…" summary prefix -- both of which the old block detector below required. Real npm 11 output looks like: @hono/node-server  <2.0.5 Severity: moderate ... 16 vulnerabilities (6 moderate, 8 high, 2 critical) Detecting blocks by a "<severity>  <pkg>" header line (npm 6's format) or a "found N vulnerabilit…" summary line never matches this, so the whole 10-block cap silently never engaged on any output a currently-shipped npm actually produces.
 const _NPM_AUDIT_SEVERITY_LINE_RE = /^Severity:\s*(critical|high|moderate|low)/i
 const _NPM_AUDIT_LEGACY_HDR_RE = /^(critical|high|moderate|low)\s+\S/i
 
@@ -1139,23 +1044,9 @@ function compressNpmAuditHuman(text: string): string {
   return squeezeBlankLines(kept.join('\n'))
 }
 
-// ---------------------------------------------------------------------------
-// DepListFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- DepListFilter ---------------------------------------------------------------------------
 
-/**
- * Truncate verbose `pip list` / `pip freeze` / `npm list` / `cargo tree` / etc.
- * output at 30 lines. Faithful port of Python DepListFilter.
- * Note: binaries npm/pnpm/yarn/cargo are NOT in the ToolFilter.binaries set
- * (would conflict with their dedicated filters); they are handled via a custom
- * matches() override that only fires on list/freeze/show/ls/tree subcommands.
- * `cargo` needs no further help (CargoFilter, in build.ts, owns all of its
- * own subcommands directly); `npm`/`pnpm`/`yarn` only reach this override
- * because NodePackageFilter/PnpmFilter/YarnFilter (registered earlier below)
- * explicitly decline `list`/`ls` via DEP_LIST_OWNED_SUBCOMMANDS -- without
- * that carve-out those unconditional-match filters intercept `npm list` /
- * `pnpm list` / `yarn list` first and this override never runs for them.
- */
+/** Truncate verbose `pip list` / `pip freeze` / `npm list` / `cargo tree` / etc. output at 30 lines. Faithful port of Python DepListFilter. Note: binaries npm/pnpm/yarn/cargo are NOT in the ToolFilter.binaries set (would conflict with their dedicated filters); they are handled via a custom matches() override that only fires on list/freeze/show/ls/tree subcommands. `cargo` needs no further help (CargoFilter, in build.ts, owns all of its own subcommands directly); `npm`/`pnpm`/`yarn` only reach this override because NodePackageFilter/PnpmFilter/YarnFilter (registered earlier below) explicitly decline `list`/`ls` via DEP_LIST_OWNED_SUBCOMMANDS -- without that carve-out those unconditional-match filters intercept `npm list` / `pnpm list` / `yarn list` first and this override never runs for them. */
 class DepListFilter extends ToolFilter {
   readonly name = 'dep-list'
   override readonly binaries = new Set(['pip', 'pip3', 'uv', 'poetry'])
@@ -1195,22 +1086,9 @@ class DepListFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Exports
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Exports ---------------------------------------------------------------------------
 
-/**
- * Batch B — package-manager filters in dispatch order. The more specific
- * install filters (NpmInstallFilter, PnpmFilter, YarnFilter) come before the
- * general NodePackageFilter that handles `npm audit` and other subcommands.
- * DepListFilter comes last within the batch because it matches a subset of
- * binaries that other filters already claim — it only fires on listing
- * subcommands (list/freeze/tree/show/ls). For that to actually happen,
- * NodePackageFilter/PnpmFilter/YarnFilter each explicitly decline the
- * `list`/`ls` subcommand (DEP_LIST_OWNED_SUBCOMMANDS) so `npm list` /
- * `pnpm list` / `yarn list` fall through instead of being caught by one of
- * these three, which otherwise match their binary unconditionally.
- */
+/** Batch B — package-manager filters in dispatch order. The more specific install filters (NpmInstallFilter, PnpmFilter, YarnFilter) come before the general NodePackageFilter that handles `npm audit` and other subcommands. DepListFilter comes last within the batch because it matches a subset of binaries that other filters already claim — it only fires on listing subcommands (list/freeze/tree/show/ls). For that to actually happen, NodePackageFilter/PnpmFilter/YarnFilter each explicitly decline the `list`/`ls` subcommand (DEP_LIST_OWNED_SUBCOMMANDS) so `npm list` / `pnpm list` / `yarn list` fall through instead of being caught by one of these three, which otherwise match their binary unconditionally. */
 export const PACKAGE_MANAGER_FILTERS: readonly ToolFilter[] = [
   new NpmInstallFilter(),
   new PnpmFilter(),

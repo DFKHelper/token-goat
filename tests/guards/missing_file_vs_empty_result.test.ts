@@ -1,17 +1,4 @@
-/**
- * Guard: a path that does not exist must be reported as unreadable, never as a real file that
- * happens to hold nothing.
- *
- * "No indexed symbols found in 'src/nope.ts'" reads as a definitive statement about a file that
- * exists, so a caller who typo'd a path or guessed one from a stale memory concludes there is
- * nothing there and moves on, instead of fixing the path. `exports`, `imports`, `deps`, and
- * `test-for` already close this gap with the wording asserted below; `outline`, `skeleton`, and
- * `types` were the missed siblings.
- *
- * Both halves matter and are asserted per command: a missing file says "Could not read", and a file
- * that exists but has no indexed symbols keeps its original message. A fix that reported everything
- * as unreadable would satisfy the first half alone.
- */
+/** Guard: a path that does not exist must be reported as unreadable, never as a real file that happens to hold nothing. "No indexed symbols found in 'src/nope.ts'" reads as a definitive statement about a file that exists, so a caller who typo'd a path or guessed one from a stale memory concludes there is nothing there and moves on, instead of fixing the path. `exports`, `imports`, `deps`, and `test-for` already close this gap with the wording asserted below; `outline`, `skeleton`, and `types` were the missed siblings. Both halves matter and are asserted per command: a missing file says "Could not read", and a file that exists but has no indexed symbols keeps its original message. A fix that reported everything as unreadable would satisfy the first half alone. */
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -44,8 +31,7 @@ beforeAll(() => {
   projectDir = mkdtempSync(join(tmpdir(), 'tg-missing-file-'))
   homeDir = mkdtempSync(join(tmpdir(), 'tg-missing-home-'))
   writeFileSync(join(projectDir, 'a.ts'), 'export function alpha(x: number): number { return x + 1 }\n')
-  // A real file whose language has an extractor but which declares nothing: this is the
-  // "exists but empty" control, and it must NOT be reported as unreadable.
+  // A real file whose language has an extractor but which declares nothing: this is the "exists but empty" control, and it must NOT be reported as unreadable.
   writeFileSync(join(projectDir, 'blank.ts'), '\n')
   // A real file with no markdown headings: the "exists but no sections" control for `section --list`.
   writeFileSync(join(projectDir, 'blank.md'), 'plain text, no headings\n')
@@ -66,8 +52,7 @@ describe('missing path vs empty result', () => {
     })
   }
 
-  // The control. `outline`/`skeleton` and `types` phrase their empty result differently, so each is
-  // asserted against its own wording rather than a shared substring.
+  // The control. `outline`/`skeleton` and `types` phrase their empty result differently, so each is asserted against its own wording rather than a shared substring.
   it('outline keeps its empty-result wording for a file that exists', () => {
     const r = run(['outline', 'blank.ts'])
     expect(r.out).toContain('No indexed symbols found')

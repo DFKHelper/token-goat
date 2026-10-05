@@ -1,8 +1,4 @@
-/**
- * The suite must run on token-goat's defaults, not on the settings of the shell it was launched from. CAPTURE, 2026-09-29: with `TOKEN_GOAT_BASH_COMPRESS=0` exported in the developer's shell, `npm test` failed three guards that pass in CI (tests/guards/fold_pointer_notices_round_trip.test.ts twice and tests/guards/rewritten_output_never_carries_a_secret.test.ts), because the product read the inherited setting and turned output compression off under them. The same shell also exported `TOKEN_GOAT_ASK_MODEL`.
- *
- * Provenance: the scrub cases are HAND-DERIVED from the variable names alone. The list of variables CI and the git hooks set is read live from those files on every run (FORMAT-DERIVED from the files themselves), so it cannot go stale. The end-to-end case spawns the real vitest with the real vitest.config.ts, so it proves the setup file actually runs the scrub, not that the helper works when called.
- */
+/** The suite must run on token-goat's defaults, not on the settings of the shell it was launched from. CAPTURE, 2026-09-29: with `TOKEN_GOAT_BASH_COMPRESS=0` exported in the developer's shell, `npm test` failed three guards that pass in CI (tests/guards/fold_pointer_notices_round_trip.test.ts twice and tests/guards/rewritten_output_never_carries_a_secret.test.ts), because the product read the inherited setting and turned output compression off under them. The same shell also exported `TOKEN_GOAT_ASK_MODEL`. Provenance: the scrub cases are HAND-DERIVED from the variable names alone. The list of variables CI and the git hooks set is read live from those files on every run (FORMAT-DERIVED from the files themselves), so it cannot go stale. The end-to-end case spawns the real vitest with the real vitest.config.ts, so it proves the setup file actually runs the scrub, not that the helper works when called. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'

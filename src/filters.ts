@@ -1,30 +1,6 @@
-/**
- * Line-level output filters applied during bash output compression.
- *
- * The full Python token-goat ships per-tool filter classes (pytest, jest,
- * cargo, webpack, …) that understand each tool's output structure. This TS
- * layer ports the universal, line-by-line noise filters that apply regardless
- * of which tool produced the output: progress chatter, download spinners,
- * package-manager bookkeeping, and similar lines a human would skim past.
- *
- * Each {@link Filter} inspects one line and either returns a replacement
- * string, returns the line unchanged, or returns `null` to drop it entirely.
- * `compressOutput` (bash_compress.ts) runs every filter in order over each
- * line; the first filter whose `pattern` matches gets to transform the line.
- *
- * Pure module: no I/O, no state. Regexes are anchored to whole-line semantics
- * where it matters so they never match a substring of legitimate output.
- */
+/** Line-level output filters applied during bash output compression. The full Python token-goat ships per-tool filter classes (pytest, jest, cargo, webpack, …) that understand each tool's output structure. This TS layer ports the universal, line-by-line noise filters that apply regardless of which tool produced the output: progress chatter, download spinners, package-manager bookkeeping, and similar lines a human would skim past. Each {@link Filter} inspects one line and either returns a replacement string, returns the line unchanged, or returns `null` to drop it entirely. `compressOutput` (bash_compress.ts) runs every filter in order over each line; the first filter whose `pattern` matches gets to transform the line. Pure module: no I/O, no state. Regexes are anchored to whole-line semantics where it matters so they never match a substring of legitimate output. */
 
-/**
- * A single output filter.
- *
- * `pattern` is the trigger: when non-null and it matches a line, `replacer`
- * decides the outcome. A `null` pattern means the filter is unconditional and
- * `replacer` is consulted for every line (used for transforms that inspect the
- * line themselves). `replacer` returns the (possibly rewritten) line, or `null`
- * to remove the line from the output entirely.
- */
+/** A single output filter. `pattern` is the trigger: when non-null and it matches a line, `replacer` decides the outcome. A `null` pattern means the filter is unconditional and `replacer` is consulted for every line (used for transforms that inspect the line themselves). `replacer` returns the (possibly rewritten) line, or `null` to remove the line from the output entirely. */
 export interface Filter {
   readonly name: string
   readonly pattern: RegExp | null
@@ -34,14 +10,7 @@ export interface Filter {
 /** Drop the line outright. */
 const DROP = (): null => null
 
-/**
- * The ordered filter chain.
- *
- * Order matters: more specific patterns precede general ones so a git-progress
- * line is claimed by `git-progress` rather than a broader percentage filter.
- * Every filter only fires when its `pattern` matches, so non-matching normal
- * output flows through untouched.
- */
+/** The ordered filter chain. Order matters: more specific patterns precede general ones so a git-progress line is claimed by `git-progress` rather than a broader percentage filter. Every filter only fires when its `pattern` matches, so non-matching normal output flows through untouched. */
 export const FILTERS: readonly Filter[] = [
   {
     // git fetch/clone progress: "remote: Counting objects: 73% (8/11)", "Receiving objects: 100% (11/11), done.", "Resolving deltas: ...".

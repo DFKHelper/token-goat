@@ -7,49 +7,7 @@ import { extractDart } from '../src/languages/dart.js'
 import { extractPhp } from '../src/languages/php.js'
 import { extractApex } from '../src/languages/apex.js'
 
-/**
- * Per-keyword guard over every declaration-modifier alternation in the hand-written
- * language adapters.
- *
- * Fixture provenance: HAND-DERIVED. Every keyword list below is written from the
- * language's own specification, NOT read off the matcher it exercises, and every
- * fixture line is a legal declaration in that language composed independently of
- * the regex. Sources, all consulted as language references rather than as this
- * repo's source:
- *   - C#: ECMA-334 class_modifier / struct_modifier, plus the `file`, `ref` and
- *     `partial` type modifiers from the C# language reference.
- *   - Kotlin: the Kotlin grammar's `classModifier`, `inheritanceModifier`,
- *     `visibilityModifier`, `platformModifier` and `functionModifier` productions.
- *   - Scala: the Scala 3 reference chapter "Modifiers", including the qualified
- *     access forms `private[X]` / `protected[X]` and the soft modifiers `open`,
- *     `inline`, `transparent` and `infix`.
- *   - Swift: "Declaration Modifiers" in The Swift Programming Language, plus
- *     `nonisolated` on a type declaration (Swift 6 actor-isolation opt-out).
- *   - Dart: the Dart 3 class-modifiers feature specification.
- *   - PHP: the PHP manual's class, method, property and constant modifier lists,
- *     plus the versioned declaration forms those lists sit alongside -- typed class
- *     constants (PHP 8.3), asymmetric visibility and property hooks (PHP 8.4), and
- *     return-by-reference functions.
- *   - Apex: the Salesforce Apex Developer Guide's "Access Modifiers", "Defining
- *     Apex Classes", "Using the final Keyword", "Using the with sharing, without
- *     sharing, and inherited sharing Keywords" and "Trigger Syntax" sections.
- *
- * A second axis runs through the same instrument: CASE. Apex and PHP both ignore
- * keyword case (Apex Developer Guide, "Writing Apex" > "Language Constructs"; PHP
- * manual, "Classes and Objects" > "The Basics" and "Functions" > "User-defined
- * functions"), so a case variant of a legal declaration is still that same legal
- * declaration and must index identically. Cases labelled "(mixed case)" or
- * "(upper case)" below carry that axis. They also pin the other half of it: the
- * NAME is not a keyword, so it must come back with the exact case the source wrote
- * -- `Public class fooBar` indexes `fooBar`, never `FooBar` or `foobar`.
- *
- * The point of the shape is the PER-KEYWORD assertion. A union assertion -- "some
- * modifier form produces some symbol" -- is what let a missing alternative hide
- * behind its siblings in the first place, twice: kotlin's CLASS_HEADER_RE was
- * missing `external`, `final` and `inline`, and csharp's was missing `new`, while
- * every one of their neighbours kept matching. Each case below names the exact
- * symbol that must survive, so a count cannot be satisfied by the wrong symbol.
- */
+/** Per-keyword guard over every declaration-modifier alternation in the hand-written language adapters. Fixture provenance: HAND-DERIVED. Every keyword list below is written from the language's own specification, NOT read off the matcher it exercises, and every fixture line is a legal declaration in that language composed independently of the regex. Sources, all consulted as language references rather than as this repo's source: - C#: ECMA-334 class_modifier / struct_modifier, plus the `file`, `ref` and `partial` type modifiers from the C# language reference. - Kotlin: the Kotlin grammar's `classModifier`, `inheritanceModifier`, `visibilityModifier`, `platformModifier` and `functionModifier` productions. - Scala: the Scala 3 reference chapter "Modifiers", including the qualified access forms `private[X]` / `protected[X]` and the soft modifiers `open`, `inline`, `transparent` and `infix`. - Swift: "Declaration Modifiers" in The Swift Programming Language, plus `nonisolated` on a type declaration (Swift 6 actor-isolation opt-out). - Dart: the Dart 3 class-modifiers feature specification. - PHP: the PHP manual's class, method, property and constant modifier lists, plus the versioned declaration forms those lists sit alongside -- typed class constants (PHP 8.3), asymmetric visibility and property hooks (PHP 8.4), and return-by-reference functions. - Apex: the Salesforce Apex Developer Guide's "Access Modifiers", "Defining Apex Classes", "Using the final Keyword", "Using the with sharing, without sharing, and inherited sharing Keywords" and "Trigger Syntax" sections. A second axis runs through the same instrument: CASE. Apex and PHP both ignore keyword case (Apex Developer Guide, "Writing Apex" > "Language Constructs"; PHP manual, "Classes and Objects" > "The Basics" and "Functions" > "User-defined functions"), so a case variant of a legal declaration is still that same legal declaration and must index identically. Cases labelled "(mixed case)" or "(upper case)" below carry that axis. They also pin the other half of it: the NAME is not a keyword, so it must come back with the exact case the source wrote -- `Public class fooBar` indexes `fooBar`, never `FooBar` or `foobar`. The point of the shape is the PER-KEYWORD assertion. A union assertion -- "some modifier form produces some symbol" -- is what let a missing alternative hide behind its siblings in the first place, twice: kotlin's CLASS_HEADER_RE was missing `external`, `final` and `inline`, and csharp's was missing `new`, while every one of their neighbours kept matching. Each case below names the exact symbol that must survive, so a count cannot be satisfied by the wrong symbol. */
 
 type Extractor = (content: string, filePath: string) => { symbols: Array<{ name: string }> }
 
@@ -60,15 +18,7 @@ interface ModifierCase {
   source: string
   /** The symbol name that must appear in the extractor's output for this fixture. */
   expect: string
-  /**
-   * Names that must NOT appear in the extractor's output for this fixture. A dropped symbol
-   * fails the `expect` assertion above, but a FABRICATED one passes it whenever the real name
-   * also survives, and passes every count- or truthiness-based check outright, because the
-   * extractor did emit something: it emitted the wrong thing. Any fixture whose declaration
-   * puts an extra token (a type, a set-scope declarator, a by-ref `&`) between the keyword and
-   * the name names that token here, so a matcher that captures the token instead of the name
-   * fails loudly rather than quietly inventing a symbol.
-   */
+  /** Names that must NOT appear in the extractor's output for this fixture. A dropped symbol fails the `expect` assertion above, but a FABRICATED one passes it whenever the real name also survives, and passes every count- or truthiness-based check outright, because the extractor did emit something: it emitted the wrong thing. Any fixture whose declaration puts an extra token (a type, a set-scope declarator, a by-ref `&`) between the keyword and the name names that token here, so a matcher that captures the token instead of the name fails loudly rather than quietly inventing a symbol. */
   reject?: string[]
 }
 
@@ -290,8 +240,7 @@ describe('language adapters: every declaration modifier keeps its declaration in
       expect(adapter.cases.length, `${adapter.label} has no cases`).toBeGreaterThan(5)
     }
     expect(ADAPTERS.reduce((n, a) => n + a.cases.length, 0)).toBeGreaterThanOrEqual(161)
-    // At least one case must carry a `reject` list, otherwise the fabrication half of the guard
-    // is silently switched off and every case degrades to a presence-only check.
+    // At least one case must carry a `reject` list, otherwise the fabrication half of the guard is silently switched off and every case degrades to a presence-only check.
     expect(ADAPTERS.reduce((n, a) => n + a.cases.filter((c) => (c.reject?.length ?? 0) > 0).length, 0)).toBeGreaterThanOrEqual(16)
   })
 
@@ -349,8 +298,7 @@ describe('language adapters: a soft modifier used as an identifier still resolve
     expect(names).toContain('alpha')
     expect(names).toContain('beta')
     expect(names).toContain('gamma')
-    // The real nested type after the `class func` line must still be scoped correctly: the bogus
-    // frame the old match pushed was what mis-scoped everything following it.
+    // The real nested type after the `class func` line must still be scoped correctly: the bogus frame the old match pushed was what mis-scoped everything following it.
     expect(names).toContain('delta')
   })
 
@@ -367,11 +315,7 @@ describe('language adapters: a soft modifier used as an identifier still resolve
     expect(names).toEqual(['Outer', 'Run'])
   })
 
-  /**
-   * Fixture provenance: HAND-DERIVED. Each line is a legal declaration composed from the PHP
-   * language's own versioned feature set -- typed class constants (PHP 8.3), asymmetric
-   * visibility and property hooks (PHP 8.4) -- not read off this repo's matchers.
-   */
+  /** Fixture provenance: HAND-DERIVED. Each line is a legal declaration composed from the PHP language's own versioned feature set -- typed class constants (PHP 8.3), asymmetric visibility and property hooks (PHP 8.4) -- not read off this repo's matchers. */
   it('php type slots and set-scope declarators never fabricate a symbol named after the token', () => {
     const source = [
       '<?php',
@@ -389,18 +333,7 @@ describe('language adapters: a soft modifier used as an identifier still resolve
     expect(names).toEqual(['Repo', 'LIMIT', 'TAG', 'KEY', 'name', 'items', 'run'])
   })
 
-  /**
-   * Fixture provenance: HAND-DERIVED. A legal Apex compilation unit composed from the Apex
-   * Developer Guide's own constructs -- comments, single-quoted string literals, `if`/`for`/
-   * `while` statements, `return`, and the `new` object-creation expression -- each written in a
-   * case the language accepts but the matchers previously did not. Nothing here was read off the
-   * matchers.
-   *
-   * Case-insensitive keyword matching is only correct if it stays keyword matching. A language
-   * that ignores case for keywords does not ignore case for the rest of the file: an identifier,
-   * a string's contents, a file path and a comment's prose are all still literal text, and none of
-   * them may become a symbol just because a keyword now matches in any case.
-   */
+  /** Fixture provenance: HAND-DERIVED. A legal Apex compilation unit composed from the Apex Developer Guide's own constructs -- comments, single-quoted string literals, `if`/`for`/ `while` statements, `return`, and the `new` object-creation expression -- each written in a case the language accepts but the matchers previously did not. Nothing here was read off the matchers. Case-insensitive keyword matching is only correct if it stays keyword matching. A language that ignores case for keywords does not ignore case for the rest of the file: an identifier, a string's contents, a file path and a comment's prose are all still literal text, and none of them may become a symbol just because a keyword now matches in any case. */
   it('apex case-insensitive keywords never promote a comment, string, path or control statement to a symbol', () => {
     const source = [
       '// Public class GhostComment { }',
@@ -427,11 +360,7 @@ describe('language adapters: a soft modifier used as an identifier still resolve
     expect(names).toEqual(['Gate', 'Run', 'compute'])
   })
 
-  /**
-   * Fixture provenance: HAND-DERIVED. Legal Apex declarations composed from the Apex Developer
-   * Guide's "Defining Apex Classes", "Interfaces", "Enums", "Constructors" and "Trigger Syntax"
-   * sections, written in mixed case because the language permits it.
-   */
+  /** Fixture provenance: HAND-DERIVED. Legal Apex declarations composed from the Apex Developer Guide's "Defining Apex Classes", "Interfaces", "Enums", "Constructors" and "Trigger Syntax" sections, written in mixed case because the language permits it. */
   it('apex mixed-case declarations keep their real kind and their source casing', () => {
     const source = [
       'Public Interface iThing { }',
@@ -443,9 +372,7 @@ describe('language adapters: a soft modifier used as an identifier still resolve
       '',
     ].join('\n')
     const got = extractApex(source, 'fooBar.cls').symbols.map((s) => `${s.name}:${s.kind}`)
-    // The keyword capture feeds the kind string, so an unfolded `Interface`/`Enum` would be filed
-    // under the invented kinds `apex_Interface`/`apex_Enum` that nothing queries for, while every
-    // presence-only check still passed. The name is the opposite case: it must NOT be folded.
+    // The keyword capture feeds the kind string, so an unfolded `Interface`/`Enum` would be filed under the invented kinds `apex_Interface`/`apex_Enum` that nothing queries for, while every presence-only check still passed. The name is the opposite case: it must NOT be folded.
     expect(got).toEqual([
       'iThing:apex_interface',
       'Season:apex_enum',
@@ -455,11 +382,7 @@ describe('language adapters: a soft modifier used as an identifier still resolve
     ])
   })
 
-  /**
-   * Fixture provenance: HAND-DERIVED. A legal PHP file composed from the PHP manual's comment
-   * syntaxes (`//`, `#`, `/* *\/`), single- and double-quoted string literals, and the mixed-case
-   * keyword spellings the language accepts.
-   */
+  /** Fixture provenance: HAND-DERIVED. A legal PHP file composed from the PHP manual's comment syntaxes (`//`, `#`, `/* *\/`), single- and double-quoted string literals, and the mixed-case keyword spellings the language accepts. */
   it('php case-insensitive keywords never promote a comment or string body to a symbol', () => {
     const source = [
       '<?php',

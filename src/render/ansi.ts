@@ -1,30 +1,12 @@
-/**
- * ANSI 24-bit colour primitives and text-alignment helpers for terminal rendering.
- *
- * Exports:
- * - ``fg``: Set 24-bit foreground colour escape sequences.
- * - ``vlen``: Visible (non-ANSI) length of a string.
- * - ``pad_r`` / ``pad_l``: Pad ANSI-coded strings to a fixed visible width.
- * - ``lerp_rgb``: Linear interpolation between two RGB colours.
- * - ``C``: Shared colour palette (GitHub dark-inspired, green accent).
- * - ``colorStdout``: whether stdout supports 24-bit colour and ``NO_COLOR``
- *   is not set. Callers should check this before building ANSI sequences.
- */
+/** ANSI 24-bit colour primitives and text-alignment helpers for terminal rendering. Exports: - ``fg``: Set 24-bit foreground colour escape sequences. - ``vlen``: Visible (non-ANSI) length of a string. - ``pad_r`` / ``pad_l``: Pad ANSI-coded strings to a fixed visible width. - ``lerp_rgb``: Linear interpolation between two RGB colours. - ``C``: Shared colour palette (GitHub dark-inspired, green accent). - ``colorStdout``: whether stdout supports 24-bit colour and ``NO_COLOR`` is not set. Callers should check this before building ANSI sequences. */
 
-/**
- * Return True when *stream* is a TTY and the ``NO_COLOR`` env-var is unset.
- * Follows the no-color.org convention.
- */
+/** Return True when *stream* is a TTY and the ``NO_COLOR`` env-var is unset. Follows the no-color.org convention. */
 function _colorStream(isatty: boolean): boolean {
   if (process.env['NO_COLOR']) return false
   return isatty
 }
 
-/**
- * Return True when stdout supports ANSI colour.
- * Checks both process.stdout.isTTY and the ``NO_COLOR`` env-var per the
- * no-color.org convention. Use for output written to stdout (stats panels, etc.).
- */
+/** Return True when stdout supports ANSI colour. Checks both process.stdout.isTTY and the ``NO_COLOR`` env-var per the no-color.org convention. Use for output written to stdout (stats panels, etc.). */
 export function colorStdout(): boolean {
   return _colorStream(process.stdout.isTTY === true)
 }
@@ -34,45 +16,14 @@ export type RGB = [number, number, number]
 const _E = '\x1b'
 export const RESET = `${_E}[0m`
 
-/**
- * Full VT/ANSI escape sequence pattern — covers CSI (colour, cursor, erase),
- * OSC (title/hyperlink sequences used by pip/docker/cargo progress UIs),
- * DCS/SOS/PM/APC strings, and bare 2-byte ESC sequences.
- *
- * The OSC alternative also accepts end-of-string as a terminator (alongside
- * BEL/ST): a truncated hyperlink/title sequence with no closing BEL/ST —
- * output cut off mid-write, a stream chopped mid-hyperlink — would otherwise
- * never match, leaking the raw, unprintable ESC byte (and the rest of the
- * dangling sequence) straight into the stripped text. DCS/SOS/PM/APC strings
- * intentionally do NOT get the same end-of-string fallback: unlike OSC they
- * can legitimately appear mid-stream with real text still to follow, and
- * treating "no terminator found yet" as "consume to end of string" there
- * would risk swallowing real trailing content; the bare 2-byte fallback
- * below still guarantees no raw ESC byte leaks even when they're truncated,
- * it just leaves any dangling payload text behind as plain text rather than
- * removing it. That bare fallback covers the full Fe escape range (`@`-`_`,
- * 0x40-0x5F) rather than a hand-picked subset that dropped `[`, `]`, and
- * `^`, so any single-character escape not claimed by CSI/OSC/DCS above still
- * gets removed instead of leaking.
- */
+/** Full VT/ANSI escape sequence pattern — covers CSI (colour, cursor, erase), OSC (title/hyperlink sequences used by pip/docker/cargo progress UIs), DCS/SOS/PM/APC strings, and bare 2-byte ESC sequences. The OSC alternative also accepts end-of-string as a terminator (alongside BEL/ST): a truncated hyperlink/title sequence with no closing BEL/ST — output cut off mid-write, a stream chopped mid-hyperlink — would otherwise never match, leaking the raw, unprintable ESC byte (and the rest of the dangling sequence) straight into the stripped text. DCS/SOS/PM/APC strings intentionally do NOT get the same end-of-string fallback: unlike OSC they can legitimately appear mid-stream with real text still to follow, and treating "no terminator found yet" as "consume to end of string" there would risk swallowing real trailing content; the bare 2-byte fallback below still guarantees no raw ESC byte leaks even when they're truncated, it just leaves any dangling payload text behind as plain text rather than removing it. That bare fallback covers the full Fe escape range (`@`-`_`, 0x40-0x5F) rather than a hand-picked subset that dropped `[`, `]`, and `^`, so any single-character escape not claimed by CSI/OSC/DCS above still gets removed instead of leaking. */
 // eslint-disable-next-line no-control-regex
 const _ANSI_ESCAPE_RE = /\x1B\[[0-?]*[ -/]*[@-~]|\x1B\].*?(?:\x07|\x1B\\|$)|\x1B[PX^_].*?\x1B\\|\x1B[@-_]/gs
 
-/**
- * Unicode Private Use Area regex: strips U+E000–U+F8FF (BMP) and U+F0000–U+FFFFD (supplementary).
- */
+/** Unicode Private Use Area regex: strips U+E000–U+F8FF (BMP) and U+F0000–U+FFFFD (supplementary). */
 const _PUA_RE = /[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFD}]/gu
 
-/**
- * Remove ANSI/VT escape sequences only (CSI/OSC/DCS/SOS/PM/APC/bare-Fe), with no PUA stripping.
- * The single source of truth for {@link _ANSI_ESCAPE_RE}, and every caller's entry point: output
- * cleaning for model-facing text has no reason to touch PUA glyphs, so it wants exactly this.
- * `bash_compress.ts` used to hand-maintain a second copy of the pattern, the two drifted (a missing
- * `[` in the bracket range fixed here but not there until a later pass caught it), and the fix was
- * to make that copy a one-line alias -- which then survived as a pass-through wrapper long after
- * the module around it was dead. Both are gone; callers name this function directly. Optimized
- * with a fast path for plain text (no ESC byte).
- */
+/** Remove ANSI/VT escape sequences only (CSI/OSC/DCS/SOS/PM/APC/bare-Fe), with no PUA stripping. The single source of truth for {@link _ANSI_ESCAPE_RE}, and every caller's entry point: output cleaning for model-facing text has no reason to touch PUA glyphs, so it wants exactly this. `bash_compress.ts` used to hand-maintain a second copy of the pattern, the two drifted (a missing `[` in the bracket range fixed here but not there until a later pass caught it), and the fix was to make that copy a one-line alias -- which then survived as a pass-through wrapper long after the module around it was dead. Both are gone; callers name this function directly. Optimized with a fast path for plain text (no ESC byte). */
 export function stripAnsiEscapes(s: string): string {
   if (!s.includes('\x1b')) {
     return s
@@ -80,10 +31,7 @@ export function stripAnsiEscapes(s: string): string {
   return s.replace(_ANSI_ESCAPE_RE, '')
 }
 
-/**
- * Format a byte count as a plain-text human-readable string (B/KB/MB/GB/TB/PB).
- * No ANSI codes — safe for use in Rich table cells and fallback renderers.
- */
+/** Format a byte count as a plain-text human-readable string (B/KB/MB/GB/TB/PB). No ANSI codes — safe for use in Rich table cells and fallback renderers. */
 export function fmtBytes(n: number): string {
   let value = n
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -96,44 +44,27 @@ export function fmtBytes(n: number): string {
   return `${value.toFixed(1)}PB`
 }
 
-/**
- * Set 24-bit foreground colour.
- */
+/** Set 24-bit foreground colour. */
 export function fg(r: number, g: number, b: number): string {
   return `${_E}[38;2;${r};${g};${b}m`
 }
 
-/**
- * Visible length of a string: ANSI escape sequences and Unicode Private Use Area characters both
- * removed before counting. PUA glyphs (Nerd Font icons and the like) report inconsistent terminal
- * cell widths, so counting them at all skews the padding maths in {@link padR}/{@link padL}. This
- * is the only place that concern belongs. It used to live in an exported `stripAnsi` that thirteen
- * callers used as their output cleaner, and it carried a fast path returning early when the input
- * held no ESC byte -- so PUA was stripped from file content and test-runner output that happened to
- * contain an escape, and left in width measurements that happened not to. Both halves were wrong in
- * opposite directions. Content cleaning now calls {@link stripAnsiEscapes}, which never touches PUA.
- */
+/** Visible length of a string: ANSI escape sequences and Unicode Private Use Area characters both removed before counting. PUA glyphs (Nerd Font icons and the like) report inconsistent terminal cell widths, so counting them at all skews the padding maths in {@link padR}/{@link padL}. This is the only place that concern belongs. It used to live in an exported `stripAnsi` that thirteen callers used as their output cleaner, and it carried a fast path returning early when the input held no ESC byte -- so PUA was stripped from file content and test-runner output that happened to contain an escape, and left in width measurements that happened not to. Both halves were wrong in opposite directions. Content cleaning now calls {@link stripAnsiEscapes}, which never touches PUA. */
 export function vlen(s: string): number {
   return stripAnsiEscapes(s).replace(_PUA_RE, '').length
 }
 
-/**
- * Right-pad a (possibly ANSI-coded) string to `w` visible characters.
- */
+/** Right-pad a (possibly ANSI-coded) string to `w` visible characters. */
 export function padR(s: string, w: number): string {
   return s + ' '.repeat(Math.max(0, w - vlen(s)))
 }
 
-/**
- * Left-pad a (possibly ANSI-coded) string to `w` visible characters.
- */
+/** Left-pad a (possibly ANSI-coded) string to `w` visible characters. */
 export function padL(s: string, w: number): string {
   return ' '.repeat(Math.max(0, w - vlen(s))) + s
 }
 
-/**
- * Linearly interpolate two RGB colours.
- */
+/** Linearly interpolate two RGB colours. */
 export function lerpRgb(a: RGB, b: RGB, t: number): RGB {
   return [
     Math.round(a[0] + (b[0] - a[0]) * t),
@@ -142,9 +73,7 @@ export function lerpRgb(a: RGB, b: RGB, t: number): RGB {
   ]
 }
 
-/**
- * Shared colour palette (GitHub dark-inspired green accent scheme).
- */
+/** Shared colour palette (GitHub dark-inspired green accent scheme). */
 export const C = {
   TEXT_PRIMARY: [201, 209, 217] as RGB,
   TEXT_BRIGHT: [240, 246, 252] as RGB,

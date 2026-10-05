@@ -1,6 +1,4 @@
-/**
- * Built-bundle check for the COBOL and Natural adapters: the shipped dist/token-goat.mjs, not source, indexes uppercase `.CBL` and `.NSP` files and answers `outline`, `symbol` and `read "file::Name"` from them. This is the only test that proves both adapters survived bundling and are reached from the real CLI path.
- */
+/** Built-bundle check for the COBOL and Natural adapters: the shipped dist/token-goat.mjs, not source, indexes uppercase `.CBL` and `.NSP` files and answers `outline`, `symbol` and `read "file::Name"` from them. This is the only test that proves both adapters survived bundling and are reached from the real CLI path. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

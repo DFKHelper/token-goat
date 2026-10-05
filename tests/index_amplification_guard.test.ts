@@ -1,27 +1,4 @@
-/**
- * Behavioral guard: stored index bytes must stay proportional to source bytes.
- *
- * This is the invariant whose violation produced a 2.9 GB `global.db`, "database is locked"
- * errors, and multi-minute machine stalls during `token-goat index`. The defect was in the JSON
- * extractor -- each top-level key stored its whole source line as its body, and minified JSON
- * puts every key on line 1, so a 1.5 MB file with 1142 keys stored 1.6 GB. But the *class* is
- * language-agnostic: any extractor that derives a body from a line, a region, or a parent node
- * can quietly become quadratic on input whose lines are the whole file.
- *
- * So this test does not assert anything about JSON. It asserts the property that actually
- * matters, measured through the real unmocked pipeline (real file -> indexFileSync -> real DB):
- *
- *     total stored symbol bytes for a file <= AMPLIFICATION_LIMIT x that file's size
- *
- * A quadratic extractor fails this by orders of magnitude, so the limit does not need to be
- * tight to be effective -- it needs to be far below (symbols x file size) and comfortably above
- * legitimate overlap. Nested symbols legitimately double-count (a class body contains its
- * methods' bodies), which is why the limit is not 1x.
- *
- * The structural counterpart -- that the single INSERT bounding every body still exists and
- * still elides rather than truncates -- is tests/guards/symbol_body_bound.test.ts, which runs in
- * the fast pre-commit tier.
- */
+/** Behavioral guard: stored index bytes must stay proportional to source bytes. This is the invariant whose violation produced a 2.9 GB `global.db`, "database is locked" errors, and multi-minute machine stalls during `token-goat index`. The defect was in the JSON extractor -- each top-level key stored its whole source line as its body, and minified JSON puts every key on line 1, so a 1.5 MB file with 1142 keys stored 1.6 GB. But the *class* is language-agnostic: any extractor that derives a body from a line, a region, or a parent node can quietly become quadratic on input whose lines are the whole file. So this test does not assert anything about JSON. It asserts the property that actually matters, measured through the real unmocked pipeline (real file -> indexFileSync -> real DB): total stored symbol bytes for a file <= AMPLIFICATION_LIMIT x that file's size A quadratic extractor fails this by orders of magnitude, so the limit does not need to be tight to be effective -- it needs to be far below (symbols x file size) and comfortably above legitimate overlap. Nested symbols legitimately double-count (a class body contains its methods' bodies), which is why the limit is not 1x. The structural counterpart -- that the single INSERT bounding every body still exists and still elides rather than truncates -- is tests/guards/symbol_body_bound.test.ts, which runs in the fast pre-commit tier. */
 import { mkdtempSync, writeFileSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -33,12 +10,7 @@ import { globalDbPath } from '../src/constants.js'
 import { indexFileSync, MAX_SYMBOL_BODY_CHARS } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 
-/**
- * Nesting means a symbol's body can be counted more than once (a class body contains each of its
- * methods). Deeply nested real code stays well under 4x; a quadratic extractor on these fixtures
- * lands in the hundreds. Anything between is a regression worth investigating, not a threshold to
- * relax.
- */
+/** Nesting means a symbol's body can be counted more than once (a class body contains each of its methods). Deeply nested real code stays well under 4x; a quadratic extractor on these fixtures lands in the hundreds. Anything between is a regression worth investigating, not a threshold to relax. */
 const AMPLIFICATION_LIMIT = 4
 
 interface Fixture {
@@ -133,18 +105,7 @@ const FIXTURES: readonly Fixture[] = [
   },
 ]
 
-/**
- * Total stored bytes attributable to one indexed file, across every text column that holds
- * file-derived content -- not just `body`.
- *
- * Measuring the whole row rather than the one column that broke matters. `body` went quadratic
- * because it was derived from a *line*, which many symbols share. Any column derived from a
- * shared region can do the same: `docstring` is the live candidate (no extractor populates it
- * today, but a file-level doc comment attributed to every symbol in the file is exactly the
- * shared-region shape). `name` and `context` are linear by construction -- each stores a
- * substring that occurs once in the source -- but asserting on the whole row means a future
- * column does not need someone to remember to add it here.
- */
+/** Total stored bytes attributable to one indexed file, across every text column that holds file-derived content -- not just `body`. Measuring the whole row rather than the one column that broke matters. `body` went quadratic because it was derived from a *line*, which many symbols share. Any column derived from a shared region can do the same: `docstring` is the live candidate (no extractor populates it today, but a file-level doc comment attributed to every symbol in the file is exactly the shared-region shape). `name` and `context` are linear by construction -- each stores a substring that occurs once in the source -- but asserting on the whole row means a future column does not need someone to remember to add it here. */
 function storedBodyBytes(filePath: string): { total: number; max: number; rows: number } {
   const db = getDb(globalDbPath())
   const sym = db.prepare(
@@ -174,8 +135,7 @@ describe('index storage amplification (real pipeline)', () => {
         indexFileSync(key)
         const { total, max, rows } = storedBodyBytes(key)
 
-        // A fixture that indexes nothing would pass the bound trivially and silently stop
-        // guarding anything, which is how this class of test rots. Require real symbols.
+        // A fixture that indexes nothing would pass the bound trivially and silently stop guarding anything, which is how this class of test rots. Require real symbols.
         expect(rows, `${fixture.name} indexed no symbols -- ${fixture.why}`).toBeGreaterThan(10)
 
         expect(
@@ -194,10 +154,7 @@ describe('index storage amplification (real pipeline)', () => {
   )
 
   it('bounds a file whose every symbol would carry the whole document', () => {
-    // The worst case stated directly: one line, maximal key count, each key's *source line* is
-    // the entire file. Pre-fix this stored ~keys x fileBytes. The assertion is deliberately
-    // written against the multiple, not an absolute byte count, so it stays meaningful if the
-    // fixture size changes.
+    // The worst case stated directly: one line, maximal key count, each key's *source line* is the entire file. Pre-fix this stored ~keys x fileBytes. The assertion is deliberately written against the multiple, not an absolute byte count, so it stays meaningful if the fixture size changes.
     const root = mkdtempSync(join(tmpdir(), 'tg-amp-worst-'))
     try {
       const file = join(root, 'worst.json')

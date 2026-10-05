@@ -1,31 +1,4 @@
-/**
- * A storage root that failed to harden once must be retried, not remembered as done.
- *
- * `ensureDataDirPrivate` set `dataDirHardened = true` BEFORE its try block, and
- * `ensureHomeDirPrivate` did `hardenedHomes.add(home)` before its own -- with an empty catch below.
- * So a single transient failure (EACCES while a backup tool held the directory, EBUSY, ENOSPC, an
- * NFS hiccup, a parent that is momentarily a file) marked the root hardened for the REST OF THE
- * PROCESS. In the CLI that is one command; in the long-lived worker it is the whole session, and
- * every write after it lands in a directory left at the umask default with nothing ever retrying.
- * The catch is deliberately empty -- an unwritable home must not break every command -- which is
- * exactly why the memo has to be inside it: there is no other signal that the work did not happen.
- *
- * The fix is one line moved in each function, and this file is the test that distinguishes the two
- * placements. Nothing else could: with the memo set early, every existing assertion in
- * `tests/data_dir_permissions.test.ts` still passes, because each of them calls into a fresh state
- * where the FIRST call succeeds.
- *
- * Also covers `tokenGoatHome()` routing `TOKEN_GOAT_HOME` through `safeEnvDir` (SA-4): its siblings
- * `LOCALAPPDATA`/`XDG_DATA_HOME` already went through that validator in `defaultDataDir()`, while
- * this one had a bare empty-string check and returned a RELATIVE value verbatim. Since
- * `ensureDirSync` dispatches hardening on `isUnderRoot(dir, tokenGoatHome())`, a relative root
- * quietly turned the 0700 hardening off for a storage tree resolved against the cwd -- and a VS
- * Code hook's cwd is the workspace folder, so session snapshots of every file the model read would
- * have landed inside an untrusted clone at the umask default.
- *
- * PROVENANCE: CAPTURE. Every assertion reads the real filesystem after a real call; the transient
- * failure is a real one (a regular file where a directory has to go), not a mocked throw.
- */
+/** A storage root that failed to harden once must be retried, not remembered as done. `ensureDataDirPrivate` set `dataDirHardened = true` BEFORE its try block, and `ensureHomeDirPrivate` did `hardenedHomes.add(home)` before its own -- with an empty catch below. So a single transient failure (EACCES while a backup tool held the directory, EBUSY, ENOSPC, an NFS hiccup, a parent that is momentarily a file) marked the root hardened for the REST OF THE PROCESS. In the CLI that is one command; in the long-lived worker it is the whole session, and every write after it lands in a directory left at the umask default with nothing ever retrying. The catch is deliberately empty -- an unwritable home must not break every command -- which is exactly why the memo has to be inside it: there is no other signal that the work did not happen. The fix is one line moved in each function, and this file is the test that distinguishes the two placements. Nothing else could: with the memo set early, every existing assertion in `tests/data_dir_permissions.test.ts` still passes, because each of them calls into a fresh state where the FIRST call succeeds. Also covers `tokenGoatHome()` routing `TOKEN_GOAT_HOME` through `safeEnvDir` (SA-4): its siblings `LOCALAPPDATA`/`XDG_DATA_HOME` already went through that validator in `defaultDataDir()`, while this one had a bare empty-string check and returned a RELATIVE value verbatim. Since `ensureDirSync` dispatches hardening on `isUnderRoot(dir, tokenGoatHome())`, a relative root quietly turned the 0700 hardening off for a storage tree resolved against the cwd -- and a VS Code hook's cwd is the workspace folder, so session snapshots of every file the model read would have landed inside an untrusted clone at the umask default. PROVENANCE: CAPTURE. Every assertion reads the real filesystem after a real call; the transient failure is a real one (a regular file where a directory has to go), not a mocked throw. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -62,8 +35,7 @@ afterEach(() => {
 
 describe('a failed hardening attempt is retried on the next call', () => {
   it('creates the data root on the second call after the first one could not', () => {
-    // A regular file where the parent directory has to go: mkdirSync throws ENOTDIR/EEXIST, the
-    // empty catch swallows it, and the question is whether the memo was set anyway.
+    // A regular file where the parent directory has to go: mkdirSync throws ENOTDIR/EEXIST, the empty catch swallows it, and the question is whether the memo was set anyway.
     const blocker = path.join(base, 'blocker')
     fs.writeFileSync(blocker, 'a file, not a directory\n')
     process.env['XDG_DATA_HOME'] = path.join(blocker, 'share')
@@ -75,8 +47,7 @@ describe('a failed hardening attempt is retried on the next call', () => {
     expect(() => ensureDataDirPrivate()).not.toThrow()
     expect(fs.existsSync(root), 'the first attempt was supposed to fail; if it did not, this test proves nothing').toBe(false)
 
-    // The transient condition clears. NO cache reset here, deliberately: resetting would clear the
-    // memo and hide the whole defect. This is the same process, later.
+    // The transient condition clears. NO cache reset here, deliberately: resetting would clear the memo and hide the whole defect. This is the same process, later.
     fs.rmSync(blocker)
 
     ensureDataDirPrivate()
@@ -136,9 +107,7 @@ describe('TOKEN_GOAT_HOME goes through the same validator as its siblings', () =
   })
 
   it('still honours an ABSOLUTE value, so the validator has not simply disabled the override', () => {
-    // The in-band control. Without it the two refusals above would also pass against a
-    // `tokenGoatHome()` that ignored the variable entirely -- and the whole test suite relies on
-    // this override to stay out of the real `~/.token-goat`.
+    // The in-band control. Without it the two refusals above would also pass against a `tokenGoatHome()` that ignored the variable entirely -- and the whole test suite relies on this override to stay out of the real `~/.token-goat`.
     const custom = path.join(base, 'custom-home')
     process.env['TOKEN_GOAT_HOME'] = custom
     _resetDataDirCacheForTesting()

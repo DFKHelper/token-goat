@@ -1,26 +1,4 @@
-/**
- * Uninstall removes the `.bak.<stamp>` files token-goat wrote, and never one the user wrote.
- *
- * Install backs a config up every time it rewrites one, and nothing ever removed those backups. A
- * machine that had installed and uninstalled a few times kept a copy of every config token-goat
- * had ever touched, each holding whatever was in that file at the time, in a directory the user
- * had been told the product was gone from.
- *
- * The identification rule is the one `ada73c5e` established for created config files, reused
- * rather than reinvented: a backup is removed only if token-goat recorded creating it, in the
- * ledger at `<dataDir>/created-configs.json`. It is deliberately not a name pattern.
- * `<config>.bak.<anything>` is a name a user can choose just as easily, so a glob over it would
- * eventually delete someone's own copy of their own config, and that file is not recoverable.
- * Recording happens at the instant of creation, in `backupFile`, which is the only place
- * token-goat writes one. Every failure is read as "not ours": an unreadable, missing or purged
- * ledger removes nothing and leaves litter, which is the recoverable direction.
- *
- * Fixture provenance:
- * - The removed backups are CAPTURE -- written by calling the real `backupFile`, so their names
- *   are whatever the shipping code produces rather than a shape restated from reading it.
- * - The surviving decoys are HAND-DERIVED -- names a user could plausibly pick for a copy of
- *   their own config, written straight to disk so that nothing records them.
- */
+/** Uninstall removes the `.bak.<stamp>` files token-goat wrote, and never one the user wrote. Install backs a config up every time it rewrites one, and nothing ever removed those backups. A machine that had installed and uninstalled a few times kept a copy of every config token-goat had ever touched, each holding whatever was in that file at the time, in a directory the user had been told the product was gone from. The identification rule is the one `ada73c5e` established for created config files, reused rather than reinvented: a backup is removed only if token-goat recorded creating it, in the ledger at `<dataDir>/created-configs.json`. It is deliberately not a name pattern. `<config>.bak.<anything>` is a name a user can choose just as easily, so a glob over it would eventually delete someone's own copy of their own config, and that file is not recoverable. Recording happens at the instant of creation, in `backupFile`, which is the only place token-goat writes one. Every failure is read as "not ours": an unreadable, missing or purged ledger removes nothing and leaves litter, which is the recoverable direction. Fixture provenance: - The removed backups are CAPTURE -- written by calling the real `backupFile`, so their names are whatever the shipping code produces rather than a shape restated from reading it. - The surviving decoys are HAND-DERIVED -- names a user could plausibly pick for a copy of their own config, written straight to disk so that nothing records them. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -66,14 +44,7 @@ describe('removeCreatedBackups', () => {
   })
 
   it('names the backup with the case it was actually written in', () => {
-    // The ledger folded case for matching AND stored the folded form, so the path handed to
-    // `rmSync`/`unlinkSync` was `settings.json.bak.2026-09-12t00-00-00-000z` while the file on disk
-    // is `...T00-00-00-000Z` -- `backupFile` stamps with `toISOString()`. Windows and a default
-    // macOS volume resolve those to the same file, so the removal test above passes here and would
-    // pass on the macOS CI leg too; on Linux nothing is removed and every backup is orphaned. The
-    // assertion is therefore on the NAME rather than on the removal count: a case-insensitive
-    // filesystem cannot tell the two apart, so a test that only counted deletions could never be
-    // red on the machine this was written on.
+    // The ledger folded case for matching AND stored the folded form, so the path handed to `rmSync`/`unlinkSync` was `settings.json.bak.2026-09-12t00-00-00-000z` while the file on disk is `...T00-00-00-000Z` -- `backupFile` stamps with `toISOString()`. Windows and a default macOS volume resolve those to the same file, so the removal test above passes here and would pass on the macOS CI leg too; on Linux nothing is removed and every backup is orphaned. The assertion is therefore on the NAME rather than on the removal count: a case-insensitive filesystem cannot tell the two apart, so a test that only counted deletions could never be red on the machine this was written on.
     const p = configAt('settings.json')
     backupFile(p)
     const onDisk = backupsOf(p)[0] as string
@@ -123,9 +94,7 @@ describe('removeCreatedBackups', () => {
 
   it('drops a pruned backup from the ledger instead of leaving an entry pointing at nothing', () => {
     const p = configAt('settings.json')
-    // backupFile keeps the 5 newest and prunes the rest, lowest stamp first. Six real calls would
-    // race the millisecond clock and could land on one name twice, so the first five are written
-    // and recorded by hand and only the sixth is a real one.
+    // backupFile keeps the 5 newest and prunes the rest, lowest stamp first. Six real calls would race the millisecond clock and could land on one name twice, so the first five are written and recorded by hand and only the sixth is a real one.
     const stamps = [
       '2020-01-01T00-00-01-000Z',
       '2020-01-01T00-00-02-000Z',
@@ -149,9 +118,7 @@ describe('removeCreatedBackups', () => {
   })
 
   it('never deletes a user backup that only matches the filename prefix, even when it sorts oldest', () => {
-    // Negative control for the prune that runs inside backupFile: a decoy the user wrote by hand,
-    // never recorded in the ledger, with a stamp that sorts before every real one so a name-based
-    // prune would pick it first.
+    // Negative control for the prune that runs inside backupFile: a decoy the user wrote by hand, never recorded in the ledger, with a stamp that sorts before every real one so a name-based prune would pick it first.
     const p = configAt('settings.json')
     const decoy = `${p}.bak.1999-01-01T00-00-00-000Z`
     fs.writeFileSync(decoy, 'user copy')

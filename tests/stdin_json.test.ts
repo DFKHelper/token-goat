@@ -1,14 +1,4 @@
-/**
- * `readStdinJson`'s timeout is an IDLE timeout, not a deadline on the whole read.
- *
- * It used to be armed once in the promise constructor and never rescheduled, so it was an
- * absolute deadline: a payload that streamed steadily for longer than the timeout was thrown
- * away mid-delivery even though stdin was never idle. That capped the accepted payload at
- * whatever fits through the pipe in five seconds rather than at MAX_STDIN_BYTES, the 64 MB the
- * module deliberately allows -- and `relay` turns the rejection into an empty payload, so the
- * hook exited 0 with valid `{}` on stdout and read-dedup, image shrinking and the dirty-queue
- * enqueue all silently stopped for that call.
- */
+/** `readStdinJson`'s timeout is an IDLE timeout, not a deadline on the whole read. It used to be armed once in the promise constructor and never rescheduled, so it was an absolute deadline: a payload that streamed steadily for longer than the timeout was thrown away mid-delivery even though stdin was never idle. That capped the accepted payload at whatever fits through the pipe in five seconds rather than at MAX_STDIN_BYTES, the 64 MB the module deliberately allows -- and `relay` turns the rejection into an empty payload, so the hook exited 0 with valid `{}` on stdout and read-dedup, image shrinking and the dirty-queue enqueue all silently stopped for that call. */
 import { PassThrough } from 'node:stream'
 
 import { afterEach, describe, expect, it } from 'vitest'
@@ -38,8 +28,7 @@ describe('readStdinJson on a stream that is slow but never idle', () => {
     const IDLE_MS = 200
     const CHUNKS = 6
     const GAP_MS = 80
-    // 6 chunks 80 ms apart is 480 ms of streaming against a 200 ms timeout: comfortably past an
-    // absolute deadline, and comfortably inside an idle one at every individual gap.
+    // 6 chunks 80 ms apart is 480 ms of streaming against a 200 ms timeout: comfortably past an absolute deadline, and comfortably inside an idle one at every individual gap.
     const fake = useFakeStdin()
     const pending = readStdinJson(IDLE_MS)
 
@@ -56,8 +45,7 @@ describe('readStdinJson on a stream that is slow but never idle', () => {
   })
 
   it('still rejects a stream that goes quiet for longer than the timeout', async () => {
-    // The fix must not become "no timeout at all" -- a sender that stalls mid-payload has to
-    // still be given up on, or a hung upstream stalls the tool call indefinitely.
+    // The fix must not become "no timeout at all" -- a sender that stalls mid-payload has to still be given up on, or a hung upstream stalls the tool call indefinitely.
     const fake = useFakeStdin()
     const pending = readStdinJson(150)
 

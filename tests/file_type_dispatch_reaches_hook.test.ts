@@ -1,20 +1,4 @@
-/**
- * `dispatchFileTypeHandler` routes `.svg` and `.xml` to handlers with their own thresholds
- * (8 KB and 20 KB), but the read hook only calls that dispatcher when the extension is in
- * `TEXT_FILE_TYPE_EXTS` or the file is already past the 100 KB generic gate. An extension the
- * dispatcher knows and that list does not is a handler whose threshold can never be reached:
- * the advisory is dead below 100 KB, and at 100 KB the generic gate would have fired anyway.
- *
- * Every other test for these handlers calls `handleSvg` or `dispatchFileTypeHandler` directly,
- * which is precisely why this shipped green. The direct call supplies the routing the real path
- * omits, so the suite proves the handler works and says nothing about whether anything invokes
- * it. These tests go through `preReadHandler` for that reason and must not be rewritten to call
- * the dispatcher: the dispatcher is not the part that was broken.
- *
- * Sizes here sit deliberately between each handler's own threshold and the 100 KB generic gate,
- * so a regression that drops the extension from the list fails here rather than passing on the
- * generic catch-all.
- */
+/** `dispatchFileTypeHandler` routes `.svg` and `.xml` to handlers with their own thresholds (8 KB and 20 KB), but the read hook only calls that dispatcher when the extension is in `TEXT_FILE_TYPE_EXTS` or the file is already past the 100 KB generic gate. An extension the dispatcher knows and that list does not is a handler whose threshold can never be reached: the advisory is dead below 100 KB, and at 100 KB the generic gate would have fired anyway. Every other test for these handlers calls `handleSvg` or `dispatchFileTypeHandler` directly, which is precisely why this shipped green. The direct call supplies the routing the real path omits, so the suite proves the handler works and says nothing about whether anything invokes it. These tests go through `preReadHandler` for that reason and must not be rewritten to call the dispatcher: the dispatcher is not the part that was broken. Sizes here sit deliberately between each handler's own threshold and the 100 KB generic gate, so a regression that drops the extension from the list fails here rather than passing on the generic catch-all. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -28,12 +12,7 @@ import { makeHookEvent } from './helpers/hook-event.js'
 
 let base = ''
 
-// PROVENANCE: HAND-DERIVED. The bodies are built here from each format's own syntax and padded
-// to a size chosen from FILE_TYPE_THRESHOLDS, independently of any matcher in the code under
-// test. The strings asserted below are read off the handlers' own message text in
-// src/hints/file_type_handler.ts (FORMAT-DERIVED), which is sound for this test because the
-// claim being pinned is reachability, not wording: the handler is known to produce them, and
-// what was broken is whether anything ever calls it.
+// PROVENANCE: HAND-DERIVED. The bodies are built here from each format's own syntax and padded to a size chosen from FILE_TYPE_THRESHOLDS, independently of any matcher in the code under test. The strings asserted below are read off the handlers' own message text in src/hints/file_type_handler.ts (FORMAT-DERIVED), which is sound for this test because the claim being pinned is reachability, not wording: the handler is known to produce them, and what was broken is whether anything ever calls it.
 function writeSvg(name: string, bytes: number): string {
   const head = '<svg xmlns="http://www.w3.org/2000/svg">\n<title>Architecture</title>\n<g id="layer1"><path d="M 0 0 L 10 10"/></g>\n'
   const tail = '\n</svg>\n'
@@ -64,8 +43,7 @@ describe('the read hook reaches every extension the file-type dispatcher routes'
   it('intercepts an SVG above the SVG threshold and well below the generic gate', () => {
     const file = writeSvg('diagram.svg', FILE_TYPE_THRESHOLDS.svg * 2)
     const size = fs.statSync(file).size
-    // The window this test exists to cover: past the handler's own bar, nowhere near the
-    // catch-all that would mask a missing route.
+    // The window this test exists to cover: past the handler's own bar, nowhere near the catch-all that would mask a missing route.
     expect(size).toBeGreaterThan(FILE_TYPE_THRESHOLDS.svg)
     expect(size).toBeLessThan(FILE_TYPE_THRESHOLDS.generic)
 

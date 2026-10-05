@@ -1,6 +1,4 @@
-/**
- * Unit tests for the COBOL and Natural regex adapters: fixed and free COBOL reference format, nested programs, Area A paragraphs, data items, copybooks, and Natural objects, inline subroutines, DEFINE DATA fields, line-numbered sources, and the refs and imports each emits. Strings and comments must produce nothing.
- */
+/** Unit tests for the COBOL and Natural regex adapters: fixed and free COBOL reference format, nested programs, Area A paragraphs, data items, copybooks, and Natural objects, inline subroutines, DEFINE DATA fields, line-numbered sources, and the refs and imports each emits. Strings and comments must produce nothing. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 

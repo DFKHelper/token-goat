@@ -1,25 +1,4 @@
-/**
- * CLI handler for `token-goat memory --analyze` / `--fix`.
- *
- * `--analyze` (default, read-only): finds the CLAUDE.md files Claude Code
- * loads for the current project (via {@link findClaudeMdFiles}), runs
- * {@link auditClaudeMd} over them for exact-duplicate lines / duplicate
- * headings / cross-file overlaps, and runs {@link findContentDuplicates} over
- * the sibling auto-memory `*.md` files (if a `MEMORY.md` exists for this
- * project) for near-duplicate content clusters. Prints a report; never
- * writes.
- *
- * `--fix` (confirm-gated): builds on `--analyze`. The only mechanical,
- * auto-applicable change is removing exact-duplicate lines within a single
- * CLAUDE.md file (keep the first occurrence, drop the rest) -- that's a pure
- * structural dedup with no judgment call. Duplicate-heading and cross-file
- * overlap findings are advisory only: they often indicate content that
- * *should* move into a path-scoped `.claude/rules/` file or a subdirectory
- * CLAUDE.md, but choosing where is a judgment call this command does not
- * make, so those findings are reported and never auto-applied, with no diff
- * proposed for them. Each exact-dup-line fix is shown as a diff and gated by
- * {@link confirmAndApply} before anything is written.
- */
+/** CLI handler for `token-goat memory --analyze` / `--fix`. `--analyze` (default, read-only): finds the CLAUDE.md files Claude Code loads for the current project (via {@link findClaudeMdFiles}), runs {@link auditClaudeMd} over them for exact-duplicate lines / duplicate headings / cross-file overlaps, and runs {@link findContentDuplicates} over the sibling auto-memory `*.md` files (if a `MEMORY.md` exists for this project) for near-duplicate content clusters. Prints a report; never writes. `--fix` (confirm-gated): builds on `--analyze`. The only mechanical, auto-applicable change is removing exact-duplicate lines within a single CLAUDE.md file (keep the first occurrence, drop the rest) -- that's a pure structural dedup with no judgment call. Duplicate-heading and cross-file overlap findings are advisory only: they often indicate content that *should* move into a path-scoped `.claude/rules/` file or a subdirectory CLAUDE.md, but choosing where is a judgment call this command does not make, so those findings are reported and never auto-applied, with no diff proposed for them. Each exact-dup-line fix is shown as a diff and gated by {@link confirmAndApply} before anything is written. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'

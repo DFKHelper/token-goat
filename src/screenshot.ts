@@ -1,11 +1,4 @@
-/**
- * Local screenshot capture for `token-goat screenshot`, so a page render can
- * reach the model as a small shrunk image instead of round-tripping through
- * a separate browser-automation MCP tool. Uses `puppeteer-core` (drives an
- * existing browser via CDP, never bundles/downloads Chromium) and reuses
- * `shrinkImage()` -- the same function `preReadImageHandler` already applies
- * to local file reads -- so the output goes through one shrink pipeline.
- */
+/** Local screenshot capture for `token-goat screenshot`, so a page render can reach the model as a small shrunk image instead of round-tripping through a separate browser-automation MCP tool. Uses `puppeteer-core` (drives an existing browser via CDP, never bundles/downloads Chromium) and reuses `shrinkImage()` -- the same function `preReadImageHandler` already applies to local file reads -- so the output goes through one shrink pipeline. */
 
 import dns from 'node:dns/promises'
 import fs from 'node:fs'
@@ -21,10 +14,7 @@ export interface ScreenshotOptions {
   width?: number
   height?: number
   fullPage?: boolean
-  /** Extra Chromium command-line flags. Not exposed on the CLI: this exists so the SSRF
-   * regression tests can point a hostname at a local server via `--host-resolver-rules`. Any MAP
-   * rule here is also read as the authoritative resolution for that host, because it IS what
-   * Chromium will dial -- the policy must judge the address actually connected to. */
+  /** Extra Chromium command-line flags. Not exposed on the CLI: this exists so the SSRF regression tests can point a hostname at a local server via `--host-resolver-rules`. Any MAP rule here is also read as the authoritative resolution for that host, because it IS what Chromium will dial -- the policy must judge the address actually connected to. */
   extraLaunchArgs?: string[]
 }
 
@@ -63,8 +53,7 @@ const loadPuppeteer = createLazyModuleLoader(
   'screenshot disabled (puppeteer-core unavailable)',
 )
 
-/** Playwright's own Chrome-for-Testing cache directory name changed across versions
- * (`chrome-win` on older installs, `chrome-win64` on current ones) -- probe both. */
+/** Playwright's own Chrome-for-Testing cache directory name changed across versions (`chrome-win` on older installs, `chrome-win64` on current ones) -- probe both. */
 const PLAYWRIGHT_CHROME_SUBDIRS = ['chrome-win64', 'chrome-win']
 
 function findPlaywrightChromium(msPlaywrightDir: string): string[] {
@@ -114,8 +103,7 @@ function platformCandidatePaths(): string[] {
   return candidates
 }
 
-/** Resolves a browser executable: explicit param > config `screenshot.chrome_path` >
- * `TOKEN_GOAT_CHROME_PATH` env > common per-platform install/Playwright-cache locations. */
+/** Resolves a browser executable: explicit param > config `screenshot.chrome_path` > `TOKEN_GOAT_CHROME_PATH` env > common per-platform install/Playwright-cache locations. */
 export function resolveBrowserExecutablePath(explicit?: string): string | null {
   if (explicit && fs.existsSync(explicit)) return explicit
 
@@ -131,14 +119,7 @@ export function resolveBrowserExecutablePath(explicit?: string): string | null {
   return null
 }
 
-/** Classifies one IP *address* (never a name). Split out of isBlockedLiteralIp so that addresses
- * coming back from a DNS answer -- which are always literals -- run through the exact same
- * ranges as a literal typed into the URL, instead of a second list that would drift. Delegates the
- * actual range table to url_policy.ts's isPrivateIpv4Octets/isPrivateIpv6Groups, the same functions
- * webfetch.ts's DNS-pinned fetch policy uses, so the headless-browser channel and the fetch channel
- * can't silently diverge on what counts as internal. Decimal/octal/hex integer spellings of an IPv4
- * address (e.g. http://2130706433/) don't need handling here: `new URL` normalizes those to
- * dotted-quad before `hostname` is read. */
+/** Classifies one IP *address* (never a name). Split out of isBlockedLiteralIp so that addresses coming back from a DNS answer -- which are always literals -- run through the exact same ranges as a literal typed into the URL, instead of a second list that would drift. Delegates the actual range table to url_policy.ts's isPrivateIpv4Octets/isPrivateIpv6Groups, the same functions webfetch.ts's DNS-pinned fetch policy uses, so the headless-browser channel and the fetch channel can't silently diverge on what counts as internal. Decimal/octal/hex integer spellings of an IPv4 address (e.g. http://2130706433/) don't need handling here: `new URL` normalizes those to dotted-quad before `hostname` is read. */
 export function isBlockedIpAddress(addr: string): boolean {
   const bare = addr.replace(/^\[/, '').replace(/\]$/, '')
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(bare)
@@ -147,9 +128,7 @@ export function isBlockedIpAddress(addr: string): boolean {
   return groups !== null && isPrivateIpv6Groups(groups)
 }
 
-/** Returns the first blocked address in a resolution answer, or null when every address is
- * allowed. ANY blocked address rejects the whole host: an attacker owns their own record set, so
- * a host answering both a public A record and a private one must not be reachable at all. */
+/** Returns the first blocked address in a resolution answer, or null when every address is allowed. ANY blocked address rejects the whole host: an attacker owns their own record set, so a host answering both a public A record and a private one must not be reachable at all. */
 export function blockedAddressAmong(addresses: readonly string[]): string | null {
   return addresses.find((addr) => isBlockedIpAddress(addr)) ?? null
 }
@@ -160,15 +139,7 @@ function isBlockedLiteralIp(host: string): boolean {
   return isBlockedIpAddress(host)
 }
 
-/**
- * Returns why a screenshot navigation target is refused, or null if it's allowed. Rejects any
- * scheme other than http:/https:, and (unless opted out via screenshot.block_private_targets=false)
- * literal loopback/link-local/RFC1918 hosts -- so injected content can't aim the headless browser
- * at cloud metadata (169.254.169.254) or a localhost-only service, whose rendered output would
- * otherwise be fed back into the model's context via OCR. Returning the reason rather than
- * throwing lets the per-request interception hook in takeScreenshot reuse the exact same policy
- * for every redirect hop and sub-resource, where an exception can't cross the callback boundary.
- */
+/** Returns why a screenshot navigation target is refused, or null if it's allowed. Rejects any scheme other than http:/https:, and (unless opted out via screenshot.block_private_targets=false) literal loopback/link-local/RFC1918 hosts -- so injected content can't aim the headless browser at cloud metadata (169.254.169.254) or a localhost-only service, whose rendered output would otherwise be fed back into the model's context via OCR. Returning the reason rather than throwing lets the per-request interception hook in takeScreenshot reuse the exact same policy for every redirect hop and sub-resource, where an exception can't cross the callback boundary. */
 export function screenshotUrlRefusal(url: string): string | null {
   let parsed: URL
   try {
@@ -181,12 +152,7 @@ export function screenshotUrlRefusal(url: string): string | null {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     return `Rejected screenshot URL scheme "${parsed.protocol}" (only http:/https: are allowed): ${safeUrl}`
   }
-  // The headless browser is the third way bytes leave this machine, after the WebFetch hook and
-  // performHttpFetch, and it was the one channel webfetch.allow/webfetch.deny never reached: an
-  // install configured to deny everything still rendered whatever URL it was handed. Checking here
-  // rather than at the command entry point is deliberate -- this function is re-applied by the
-  // request-interception hook to every redirect hop and every sub-resource the page loads, so an
-  // allowed page cannot pull an image, script, or iframe from a denied host either.
+  // The headless browser is the third way bytes leave this machine, after the WebFetch hook and performHttpFetch, and it was the one channel webfetch.allow/webfetch.deny never reached: an install configured to deny everything still rendered whatever URL it was handed. Checking here rather than at the command entry point is deliberate -- this function is re-applied by the request-interception hook to every redirect hop and every sub-resource the page loads, so an allowed page cannot pull an image, script, or iframe from a denied host either.
   const policyDenial = urlPolicyDenialReason(url, loadConfig().webfetch)
   if (policyDenial !== null) {
     return `Rejected screenshot target: ${policyDenial}: ${safeUrl}`
@@ -207,15 +173,10 @@ export function validateScreenshotUrl(url: string): void {
 }
 
 const HOST_RESOLVER_FLAG = '--host-resolver-rules='
-/** How many cross-host navigation hops (redirects) are re-launched with a fresh pin before the
- * capture is abandoned. Real redirect chains are short; this only bounds a hostile loop. */
+/** How many cross-host navigation hops (redirects) are re-launched with a fresh pin before the capture is abandoned. Real redirect chains are short; this only bounds a hostile loop. */
 const MAX_PIN_HOPS = 5
 
-/** Reads the `MAP <pattern> <target>` clauses out of any caller-supplied --host-resolver-rules.
- * These rules ARE Chromium's resolver, so they are the truth about what it will dial; honouring
- * them here keeps the address this module validates identical to the address that gets
- * connected to, which is the whole point of the exercise. First rule for a pattern wins, matching
- * Chromium's own first-match-wins ordering. */
+/** Reads the `MAP <pattern> <target>` clauses out of any caller-supplied --host-resolver-rules. These rules ARE Chromium's resolver, so they are the truth about what it will dial; honouring them here keeps the address this module validates identical to the address that gets connected to, which is the whole point of the exercise. First rule for a pattern wins, matching Chromium's own first-match-wins ordering. */
 export function parseHostResolverMap(args: readonly string[]): Map<string, string> {
   const rules = new Map<string, string>()
   for (const arg of args) {
@@ -230,8 +191,7 @@ export function parseHostResolverMap(args: readonly string[]): Map<string, strin
   return rules
 }
 
-/** Strips the optional `:port` off a resolver-rule target, handling `[v6]:port` bracket form. A
- * bare IPv6 literal keeps all its colons, so only a single trailing colon is treated as a port. */
+/** Strips the optional `:port` off a resolver-rule target, handling `[v6]:port` bracket form. A bare IPv6 literal keeps all its colons, so only a single trailing colon is treated as a port. */
 function mapTargetHost(target: string): string {
   const bracketed = /^\[([^\]]+)\]/.exec(target)
   if (bracketed) return bracketed[1] as string
@@ -244,11 +204,7 @@ function isIpLiteral(host: string): boolean {
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || parseIpv6Groups(host) !== null
 }
 
-/** Resolves a hostname to every address it answers with, so the policy can be applied to the
- * addresses rather than to the name. Literals resolve to themselves; resolver-rule targets take
- * precedence over real DNS because Chromium will obey them; everything else goes to dns.lookup
- * with all:true so both A and AAAA answers are classified, not just the first one. Rejects
- * rather than returning empty on failure -- callers fail closed. */
+/** Resolves a hostname to every address it answers with, so the policy can be applied to the addresses rather than to the name. Literals resolve to themselves; resolver-rule targets take precedence over real DNS because Chromium will obey them; everything else goes to dns.lookup with all:true so both A and AAAA answers are classified, not just the first one. Rejects rather than returning empty on failure -- callers fail closed. */
 async function resolveHostAddresses(host: string, mapRules: Map<string, string>): Promise<string[]> {
   const bare = host.replace(/^\[/, '').replace(/\]$/, '').toLowerCase()
   if (isIpLiteral(bare)) return [bare]
@@ -264,9 +220,7 @@ async function resolveHostAddresses(host: string, mapRules: Map<string, string>)
   return answers.map((a) => a.address)
 }
 
-/** The async half of the screenshot target policy: resolve the host, then apply the identical
- * address ranges the synchronous literal check uses. Returns the resolved addresses alongside the
- * verdict so an allowed host can be *pinned* to exactly what was validated. */
+/** The async half of the screenshot target policy: resolve the host, then apply the identical address ranges the synchronous literal check uses. Returns the resolved addresses alongside the verdict so an allowed host can be *pinned* to exactly what was validated. */
 export async function resolveTargetForPolicy(
   rawUrl: string,
   mapRules: Map<string, string>,
@@ -301,10 +255,7 @@ export async function resolveTargetForPolicy(
   return { reason: null, host, addresses }
 }
 
-/** Rewrites the launch args so every validated host carries a `MAP host <validated address>`
- * pin. Without this, Chromium performs its OWN lookup after our check and the answer can differ
- * -- that gap between the two resolutions IS the DNS-rebinding attack. Caller-supplied rules are
- * kept first so their patterns keep winning, and are never duplicated. */
+/** Rewrites the launch args so every validated host carries a `MAP host <validated address>` pin. Without this, Chromium performs its OWN lookup after our check and the answer can differ -- that gap between the two resolutions IS the DNS-rebinding attack. Caller-supplied rules are kept first so their patterns keep winning, and are never duplicated. */
 function withPins(callerArgs: readonly string[], pins: ReadonlyMap<string, string>): string[] {
   if (pins.size === 0) return [...callerArgs]
   const clauses: string[] = []
@@ -326,8 +277,7 @@ function hostKey(rawUrl: string): string {
   }
 }
 
-/** True when Chromium's resolver is already fixed for this host, so no second lookup can differ
- * from the one that was validated: a literal address, one of our pins, or a caller rule. */
+/** True when Chromium's resolver is already fixed for this host, so no second lookup can differ from the one that was validated: a literal address, one of our pins, or a caller rule. */
 function isPinned(host: string, pins: ReadonlyMap<string, string>, mapRules: ReadonlyMap<string, string>): boolean {
   return isIpLiteral(host) || pins.has(host) || mapRules.has(host) || mapRules.has('*')
 }
@@ -342,9 +292,7 @@ interface CaptureContext {
   opts: ScreenshotOptions | undefined
 }
 
-/** One browser launch + navigation. Resolves to the captured bytes, or -- when the main frame
- * tries to navigate to a host that is not yet pinned (a cross-host redirect) -- to that hop's
- * URL, so the caller can validate and pin it and try again. */
+/** One browser launch + navigation. Resolves to the captured bytes, or -- when the main frame tries to navigate to a host that is not yet pinned (a cross-host redirect) -- to that hop's URL, so the caller can validate and pin it and try again. */
 async function captureOnce(url: string, ctx: CaptureContext): Promise<{ buffer: Buffer } | { redirectTo: string }> {
   const browser = await ctx.puppeteer.launch({ headless: true, executablePath: ctx.executablePath, args: ctx.launchArgs })
   try {

@@ -1,16 +1,4 @@
-/**
- * End-to-end regression for `token-goat trace --bodies` (feature-queue #314): resolving each
- * traceback frame's file:line to its enclosing symbol and inlining the body.
- *
- * Drives the REAL registered command function (`cmdTrace`, exported from text_commands.ts and
- * the exact function cli.ts's `trace` command wires up via `guard(() => cmdTrace(src, opts))`)
- * against a real, unmocked index built with `indexFileSync` (parser.ts) -- the same pipeline
- * `read_commands_stale_self_heal_e2e.test.ts` uses for its real-DB, no-injected-callback
- * coverage. This is deliberately NOT a test of resolveFrameSymbol/formatFrameBody in isolation:
- * calling cmdTrace itself is what proves the CLI's actual default path (querySymbols +
- * enclosingSymbol from graph_commands.ts, resolveBody from read_commands.ts) resolves and
- * formats bodies correctly, matching this codebase's "test the real registered path" discipline.
- */
+/** End-to-end regression for `token-goat trace --bodies` (feature-queue #314): resolving each traceback frame's file:line to its enclosing symbol and inlining the body. Drives the REAL registered command function (`cmdTrace`, exported from text_commands.ts and the exact function cli.ts's `trace` command wires up via `guard(() => cmdTrace(src, opts))`) against a real, unmocked index built with `indexFileSync` (parser.ts) -- the same pipeline `read_commands_stale_self_heal_e2e.test.ts` uses for its real-DB, no-injected-callback coverage. This is deliberately NOT a test of resolveFrameSymbol/formatFrameBody in isolation: calling cmdTrace itself is what proves the CLI's actual default path (querySymbols + enclosingSymbol from graph_commands.ts, resolveBody from read_commands.ts) resolves and formats bodies correctly, matching this codebase's "test the real registered path" discipline. */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -101,9 +89,7 @@ describe('trace --bodies', () => {
 
     const out = captureStdout(() => cmdTrace(tb, { bodies: true }))
 
-    // The unresolvable frame must not crash the command and must degrade to a clear miss note,
-    // mirroring `token-goat scope`'s own "No symbols enclosing line N in 'file'" miss wording
-    // (graph_commands.ts's runScope).
+    // The unresolvable frame must not crash the command and must degrade to a clear miss note, mirroring `token-goat scope`'s own "No symbols enclosing line N in 'file'" miss wording (graph_commands.ts's runScope).
     expect(out).toContain(`No symbols enclosing line 5 in '${ghostFile}'`)
     expect(out).not.toContain('def ghost_call')
 
@@ -177,8 +163,7 @@ describe('trace --bodies', () => {
     expect(frames.length).toBe(2)
     expect(frames[0]?.bodySymbol?.name).toBe('helperF9k')
     expect(frames[0]?.body).toContain('def helperF9k():')
-    // Must point back at the exact first-occurrence symbol (file::name), not just be present --
-    // a wrong/garbled reference would silently break any consumer trying to resolve it.
+    // Must point back at the exact first-occurrence symbol (file::name), not just be present -- a wrong/garbled reference would silently break any consumer trying to resolve it.
     expect(frames[1]?.bodyDuplicateOf).toBe(`${normalizePath(modA)}::helperF9k`)
     expect(frames[1]?.body).toBeUndefined()
   })

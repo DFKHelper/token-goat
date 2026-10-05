@@ -1,26 +1,4 @@
-/**
- * Guard: R's two non-plain definition spellings must be indexed, and only those.
- *
- * The R adapter matched a definition name with `[A-Za-z_][A-Za-z0-9_.]*`, which excludes both of
- * the spellings real R code leans on hardest. A backtick-quoted name is how every infix operator
- * is defined (`` `%+%` <- function(a, b) ``, the exact form magrittr's own `%>%` uses) and how
- * every S3 method on an operator or extractor generic is defined (`` `[.myclass` <- ``,
- * `` `+.difftime` <- ``, `` `myattr<-` <- ``). A leading dot is a legal R name start and is what
- * a package's own load hooks are called (`.onLoad`, `.onAttach`). Neither produced a symbol, so
- * `symbol`, `read`, `skeleton` and `outline` all answered "not found" for functions that are
- * plainly there in the file -- silent loss, with no error to show for it.
- *
- * Why didn't a test catch this: every existing R case names its fixture functions in the plain
- * `snake_case` spelling the regex already accepted, so the two excluded spellings were never once
- * fed to the extractor. tests/guards/r_function_span.test.ts does exercise backticks, but only
- * inside a parameter list and inside a body -- never as the defined name itself.
- *
- * The negative cases keep the fix honest in the other direction: widening the name group to
- * something permissive (`(.+?)`) would start matching assignments into a container --
- * `obj$handler <- function(x) x`, `lst[["k"]] <- function(x) x` -- which are not named top-level
- * definitions and must stay unindexed, and would invent a symbol out of an operator merely being
- * called.
- */
+/** Guard: R's two non-plain definition spellings must be indexed, and only those. The R adapter matched a definition name with `[A-Za-z_][A-Za-z0-9_.]*`, which excludes both of the spellings real R code leans on hardest. A backtick-quoted name is how every infix operator is defined (`` `%+%` <- function(a, b) ``, the exact form magrittr's own `%>%` uses) and how every S3 method on an operator or extractor generic is defined (`` `[.myclass` <- ``, `` `+.difftime` <- ``, `` `myattr<-` <- ``). A leading dot is a legal R name start and is what a package's own load hooks are called (`.onLoad`, `.onAttach`). Neither produced a symbol, so `symbol`, `read`, `skeleton` and `outline` all answered "not found" for functions that are plainly there in the file -- silent loss, with no error to show for it. Why didn't a test catch this: every existing R case names its fixture functions in the plain `snake_case` spelling the regex already accepted, so the two excluded spellings were never once fed to the extractor. tests/guards/r_function_span.test.ts does exercise backticks, but only inside a parameter list and inside a body -- never as the defined name itself. The negative cases keep the fix honest in the other direction: widening the name group to something permissive (`(.+?)`) would start matching assignments into a container -- `obj$handler <- function(x) x`, `lst[["k"]] <- function(x) x` -- which are not named top-level definitions and must stay unindexed, and would invent a symbol out of an operator merely being called. */
 import { describe, expect, it } from 'vitest'
 
 import { extractR } from '../../src/languages/r.js'

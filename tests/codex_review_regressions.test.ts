@@ -17,9 +17,7 @@ import {
 } from '../src/session.js'
 import { shortFingerprint } from '../src/fingerprint.js'
 
-// Codex peer-review findings on the index-snooping, prompt-injection, and secrets-exfiltration
-// commits. Each `it` below is the regression test for one finding; none of the nine had any
-// coverage when it was reported, which is why a peer review rather than the suite found them.
+// Codex peer-review findings on the index-snooping, prompt-injection, and secrets-exfiltration commits. Each `it` below is the regression test for one finding; none of the nine had any coverage when it was reported, which is why a peer review rather than the suite found them.
 
 describe('isInsideRoot containment', () => {
   let tmp: string
@@ -70,39 +68,27 @@ describe('isInsideRoot containment', () => {
     fs.mkdirSync(root)
 
     expect(isInsideRoot(path.join(root, 'not-created-yet.ts'), root)).toBe(true)
-    // Several missing levels, not just a missing leaf: an installer creating `.github/hooks/x.json`
-    // asks about all three at once.
+    // Several missing levels, not just a missing leaf: an installer creating `.github/hooks/x.json` asks about all three at once.
     expect(isInsideRoot(path.join(root, 'a', 'b', 'c.json'), root)).toBe(true)
   })
 
   it.skipIf(!CAN_SYMLINK)('rejects a path that leaves the root through a link and then climbs back with ..', () => {
-    // `canonicalize` collapses `..` with path.resolve BEFORE any link is followed, so
-    // `<root>/link/../sneak.txt` erased the link lexically and answered about `<root>/sneak.txt` --
-    // a file inside the root -- while the path actually names `<outside>/../sneak.txt`. Resolving
-    // per segment, so that `..` applies to an already-resolved base, is the only order that means
-    // anything. Pre-existing and unrelated to the dangling-link fix: confirmed identical before it.
+    // `canonicalize` collapses `..` with path.resolve BEFORE any link is followed, so `<root>/link/../sneak.txt` erased the link lexically and answered about `<root>/sneak.txt` -- a file inside the root -- while the path actually names `<outside>/../sneak.txt`. Resolving per segment, so that `..` applies to an already-resolved base, is the only order that means anything. Pre-existing and unrelated to the dangling-link fix: confirmed identical before it.
     const root = path.join(tmp, 'project')
     const outside = path.join(tmp, 'other-project', 'inner')
     fs.mkdirSync(root)
     fs.mkdirSync(outside, { recursive: true })
     fs.symlinkSync(outside, path.join(root, 'link'), 'dir')
 
-    // Spelled by string, not path.join: join collapses `..` itself, so a test built with it would
-    // hand isInsideRoot a path with no `..` left in it and pass against the broken version too.
-    // A model-supplied or config-supplied path arrives as raw text, which is the real shape.
-    // `<outside>/../sneak.txt` is `<tmp>/other-project/sneak.txt`, which is not in the root.
+    // Spelled by string, not path.join: join collapses `..` itself, so a test built with it would hand isInsideRoot a path with no `..` left in it and pass against the broken version too. A model-supplied or config-supplied path arrives as raw text, which is the real shape. `<outside>/../sneak.txt` is `<tmp>/other-project/sneak.txt`, which is not in the root.
     expect(isInsideRoot(`${root.replace(/\\/g, '/')}/link/../sneak.txt`, root)).toBe(false)
-    // ...and the same shape that genuinely stays inside still resolves as inside, so this is not
-    // "reject anything containing ..".
+    // ...and the same shape that genuinely stays inside still resolves as inside, so this is not "reject anything containing ..".
     fs.mkdirSync(path.join(root, 'sub'))
     expect(isInsideRoot(`${root.replace(/\\/g, '/')}/sub/../a.ts`, root)).toBe(true)
   })
 
   it.skipIf(!CAN_SYMLINK)('rejects a nonexistent leaf behind a directory symlink that leaves the root', () => {
-    // The ENOENT half. realpathSync throws on the whole path the moment ANY component is missing,
-    // and the old code answered from the merely-lexical form when it did -- so a link out of the
-    // root read as contained for precisely the paths an installer is about to create. Resolving
-    // the nearest EXISTING ancestor and re-appending the missing tail is what closes it.
+    // The ENOENT half. realpathSync throws on the whole path the moment ANY component is missing, and the old code answered from the merely-lexical form when it did -- so a link out of the root read as contained for precisely the paths an installer is about to create. Resolving the nearest EXISTING ancestor and re-appending the missing tail is what closes it.
     const root = path.join(tmp, 'project')
     const outside = path.join(tmp, 'other-project')
     fs.mkdirSync(root)
@@ -135,12 +121,7 @@ describe('fence marker neutralization', () => {
     expect(result.split('<untrusted-web-content>').length - 1).toBe(1)
   })
 
-  // Same family as finding 6, one step further: a `/` right after the tag name followed by
-  // attribute junk (`</tag/foo>`, `</tag/ foo>`, `<tag/x>`) is still a tag an HTML tokenizer reads
-  // as this fence tag, because the `/` enters the self-closing-start-tag state and the following
-  // non-`>` char is reconsumed as an attribute rather than ending the tag. The old pattern only
-  // allowed attributes introduced by whitespace, or a lone `/` right before `>`, so these three
-  // spellings closed the fence and passed through unescaped.
+  // Same family as finding 6, one step further: a `/` right after the tag name followed by attribute junk (`</tag/foo>`, `</tag/ foo>`, `<tag/x>`) is still a tag an HTML tokenizer reads as this fence tag, because the `/` enters the self-closing-start-tag state and the following non-`>` char is reconsumed as an attribute rather than ending the tag. The old pattern only allowed attributes introduced by whitespace, or a lone `/` right before `>`, so these three spellings closed the fence and passed through unescaped.
   it.each([
     ['end tag, slash then attribute, no space', 'a </untrusted-web-content/foo> b', '&lt;/untrusted-web-content/foo&gt;'],
     ['end tag, slash then space then attribute', 'a </untrusted-web-content/ foo> b', '&lt;/untrusted-web-content/ foo&gt;'],
@@ -159,8 +140,7 @@ describe('fence marker neutralization', () => {
     expect(result.split('</untrusted-web-content>').length - 1).toBe(1)
   })
 
-  // The terminator lookahead must not over-reach: a genuinely different, longer tag name that only
-  // shares a prefix with the fence tag is not the fence tag and must be left alone.
+  // The terminator lookahead must not over-reach: a genuinely different, longer tag name that only shares a prefix with the fence tag is not the fence tag and must be left alone.
   it('leaves a longer tag that merely shares the fence tag prefix untouched', () => {
     const result = fenceUntrustedContent('a <untrusted-web-contentX>keep</untrusted-web-contentX> b', ['you-are-now'])
 

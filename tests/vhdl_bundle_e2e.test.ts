@@ -1,8 +1,4 @@
-/**
- * Built-bundle check for the VHDL adapter: the shipped dist/token-goat.mjs, not source, indexes a
- * small VHDL project and answers `symbol`, `read` and `outline` from it. This is the only test
- * that proves the adapter survived bundling and is reached from the real CLI path.
- */
+/** Built-bundle check for the VHDL adapter: the shipped dist/token-goat.mjs, not source, indexes a small VHDL project and answers `symbol`, `read` and `outline` from it. This is the only test that proves the adapter survived bundling and is reached from the real CLI path. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -37,8 +33,7 @@ beforeAll(() => {
     APPDATA: path.join(home, 'AppData', 'Roaming'),
     TOKEN_GOAT_EMBEDDINGS_ENABLED: '0',
   }
-  // FORMAT-DERIVED: IEEE Std 1076-2008 clauses 3.2 (entity_declaration), 3.3 (architecture_body).
-  // The `/* ... */` comment is a VHDL-2008 delimited comment (clause 15.9), which does NOT nest.
+  // FORMAT-DERIVED: IEEE Std 1076-2008 clauses 3.2 (entity_declaration), 3.3 (architecture_body). The `/* ... */` comment is a VHDL-2008 delimited comment (clause 15.9), which does NOT nest.
   fs.writeFileSync(
     path.join(project, 'counter.vhd'),
     [

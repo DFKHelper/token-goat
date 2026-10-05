@@ -12,11 +12,7 @@ const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-idx-'))
 
 vi.mock('../src/constants.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ConstantsModule>()
-  // globalDbPath()/configPath() close over dataDir() as a same-module self-reference, which
-  // this factory's dataDir override can never redirect (a vi.mock export-spread only affects
-  // what OTHER modules see when they import this one, not calls constants.ts makes to its own
-  // exports internally). Every other test file isolating global.db/config.toml overrides these
-  // two paths directly for the same reason -- see e.g. hooks_edit.test.ts, recall_index.test.ts.
+  // globalDbPath()/configPath() close over dataDir() as a same-module self-reference, which this factory's dataDir override can never redirect (a vi.mock export-spread only affects what OTHER modules see when they import this one, not calls constants.ts makes to its own exports internally). Every other test file isolating global.db/config.toml overrides these two paths directly for the same reason -- see e.g. hooks_edit.test.ts, recall_index.test.ts.
   return {
     ...actual,
     dataDir: () => DATA_DIR,
@@ -99,10 +95,7 @@ describe('dirty queue', () => {
     expect(() => clearDirtyQueue()).not.toThrow()
   })
 
-  // Regression: if a previous process crashed mid-append, the queue file's last line can lack a
-  // trailing newline. Appending directly after that torn fragment (no newline guard) merges it
-  // with the new path into one garbage combined line, silently losing both until some other edit
-  // touches either file.
+  // Regression: if a previous process crashed mid-append, the queue file's last line can lack a trailing newline. Appending directly after that torn fragment (no newline guard) merges it with the new path into one garbage combined line, silently losing both until some other edit touches either file.
   it('does not merge a torn last line into the next appended path (crash-recovery regression)', () => {
     fs.mkdirSync(path.dirname(dirtyQueuePath()), { recursive: true })
     fs.writeFileSync(dirtyQueuePath(), '/a/one.t') // torn: no trailing newline
@@ -110,13 +103,7 @@ describe('dirty queue', () => {
     expect(getDirtyPaths()).toEqual(['/a/one.t', '/a/two.ts'])
   })
 
-  // Regression: appendDirtyPath used to unconditionally reset the retry counter, which
-  // opens a full DB connection (WAL pragma, schema exec, FTS triggers, sqlite-vec extension
-  // load attempt) via getDb() -- paying that cost on every single edit hook invocation just to
-  // run a no-op retry-counter reset, and even creating global.db from scratch if it did not
-  // already exist. processDirtyBatch (worker.ts) already resets the retry counter on every
-  // successful read during a drain, so the append-time reset was redundant on the hot path.
-  // This asserts the DB is never touched/created by a plain dirty-path append.
+  // Regression: appendDirtyPath used to unconditionally reset the retry counter, which opens a full DB connection (WAL pragma, schema exec, FTS triggers, sqlite-vec extension load attempt) via getDb() -- paying that cost on every single edit hook invocation just to run a no-op retry-counter reset, and even creating global.db from scratch if it did not already exist. processDirtyBatch (worker.ts) already resets the retry counter on every successful read during a drain, so the append-time reset was redundant on the hot path. This asserts the DB is never touched/created by a plain dirty-path append.
   it('does not open or create the global index DB on a plain append (no per-edit DB touch)', () => {
     const dbPath = globalDbPath()
     fs.rmSync(dbPath, { force: true })
@@ -143,9 +130,7 @@ describe('preCompactIndexHandler', () => {
     })
 
     expect(result.hookType).toBe('pass')
-    // Regression (M48): the live dirty queue must survive pre-compact. Clearing it here
-    // dropped any entry appended around the same moment, since the snapshot sidecar is
-    // never read back by anything (worker.ts only drains queue/dirty.txt).
+    // Regression (M48): the live dirty queue must survive pre-compact. Clearing it here dropped any entry appended around the same moment, since the snapshot sidecar is never read back by anything (worker.ts only drains queue/dirty.txt).
     expect(getDirtyPaths()).toEqual(['/a/one.ts', '/a/two.ts'])
     const sidecar = path.join(DATA_DIR, 'queue', 'pending.txt')
     expect(fs.readFileSync(sidecar, 'utf8')).toContain('/a/one.ts')
@@ -195,8 +180,7 @@ describe('preCompactIndexHandler', () => {
       await vi.importActual<typeof UtilModule>('../src/util.js')
     const { atomicWriteBytes } = await import('../src/util.js')
     vi.mocked(atomicWriteBytes).mockImplementation((...args) => {
-      // Simulate appendDirtyPath racing in right as the snapshot is being written — this
-      // must land in the live queue and survive the handler returning.
+      // Simulate appendDirtyPath racing in right as the snapshot is being written — this must land in the live queue and survive the handler returning.
       appendDirtyPath('/a/concurrent.ts')
       return actualAtomicWriteBytes(...args)
     })

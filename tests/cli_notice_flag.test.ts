@@ -1,12 +1,4 @@
-/**
- * Batch Q2 — the global `--notice <text>` option lets a rewritten command print a disclosure
- * line itself, as the first line of its own single invocation, instead of a caller composing
- * `echo '...' && <command>` through a shell (see src/bash_structural_index.ts's
- * detectStructuralIndexRewrite, the reason this option exists: Windows PowerShell 5.1 has no
- * `&&` at all, so a two-command chain is not a shape every shell can run). Same `preAction` hook
- * `--cwd` uses (src/cli.ts), so it fires ahead of every command's action handler, guard-wrapped
- * or not -- see tests/cli_cwd_dispatch.test.ts for that same-hook precedent.
- */
+/** Batch Q2 — the global `--notice <text>` option lets a rewritten command print a disclosure line itself, as the first line of its own single invocation, instead of a caller composing `echo '...' && <command>` through a shell (see src/bash_structural_index.ts's detectStructuralIndexRewrite, the reason this option exists: Windows PowerShell 5.1 has no `&&` at all, so a two-command chain is not a shape every shell can run). Same `preAction` hook `--cwd` uses (src/cli.ts), so it fires ahead of every command's action handler, guard-wrapped or not -- see tests/cli_cwd_dispatch.test.ts for that same-hook precedent. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

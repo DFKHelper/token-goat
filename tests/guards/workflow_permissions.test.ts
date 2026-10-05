@@ -1,11 +1,4 @@
-/**
- * A workflow with no top-level `permissions:` block inherits whatever the repository default is,
- * which on many repositories is a writable `GITHUB_TOKEN`. CI and the publish workflow both had no
- * top-level block, so every job in them ran on an inherited token nobody had chosen. The publish
- * job already declared its own least-privilege set; CI never did. An IaC scan flags this as
- * CKV2_GHA_1, and the fix is the one worth having anyway: a read-only default that any job needing
- * more has to override in the open. The sibling guard covers action pinning, not token scope.
- */
+/** A workflow with no top-level `permissions:` block inherits whatever the repository default is, which on many repositories is a writable `GITHUB_TOKEN`. CI and the publish workflow both had no top-level block, so every job in them ran on an inherited token nobody had chosen. The publish job already declared its own least-privilege set; CI never did. An IaC scan flags this as CKV2_GHA_1, and the fix is the one worth having anyway: a read-only default that any job needing more has to override in the open. The sibling guard covers action pinning, not token scope. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,8 +9,7 @@ import { pinnedPopulation } from './population.js'
 const workflowDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '.github', 'workflows')
 
 function workflowFiles(): string[] {
-  // Pinned: a rename of the workflow directory, or a move to a third extension, would empty this
-  // list and let every permissions assertion below pass against no workflows at all.
+  // Pinned: a rename of the workflow directory, or a move to a third extension, would empty this list and let every permissions assertion below pass against no workflows at all.
   return [
     ...pinnedPopulation({
       what: '.github/workflows/*.yml files',
@@ -63,8 +55,7 @@ describe('workflow token scope', () => {
     expect(block).not.toMatch(/^\s+\S+:\s*write-all/m)
   })
 
-  // The default is only meaningful if it is actually restrictive. `contents: read` is the floor
-  // every one of these workflows can live with, since the job that needs more says so itself.
+  // The default is only meaningful if it is actually restrictive. `contents: read` is the floor every one of these workflows can live with, since the job that needs more says so itself.
   it.each(files.map((f) => [f]))('%s keeps contents read-only at the top level', (file) => {
     expect(topLevelPermissionsBlock(read(file))).toMatch(/^\s+contents:\s*read\s*$/m)
   })

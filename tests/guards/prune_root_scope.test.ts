@@ -1,11 +1,4 @@
-/**
- * Guards for the three ways index pruning can act on the wrong rows.
- *
- * Pruning deletes index rows for files that are gone from disk. Every one of these guards covers a
- * case where the code's own stated intent and its behaviour disagree, and where the disagreement is
- * silent: rows either vanish that should have stayed, or stay forever with nothing able to clear
- * them. None of them produces an error, so only an assertion on the surviving rows can see it.
- */
+/** Guards for the three ways index pruning can act on the wrong rows. Pruning deletes index rows for files that are gone from disk. Every one of these guards covers a case where the code's own stated intent and its behaviour disagree, and where the disagreement is silent: rows either vanish that should have stayed, or stay forever with nothing able to clear them. None of them produces an error, so only an assertion on the surviving rows can see it. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -17,8 +10,7 @@ import { normalizePath } from '../../src/paths.js'
 import { pruneDeletedFiles, sweepKnownRoots } from '../../src/index_prune.js'
 import { isTooShallowToPrune, recordKnownRoot } from '../../src/known_roots.js'
 
-// Built rather than written as a literal so no layer between here and the file on disk can
-// quietly drop the backslash that is the entire point of the case.
+// Built rather than written as a literal so no layer between here and the file on disk can quietly drop the backslash that is the entire point of the case.
 const BACKSLASH_DRIVE_ROOT = 'C:' + String.fromCharCode(92)
 
 let dir: string
@@ -59,12 +51,7 @@ function rowsFor(p: string): number {
 }
 
 describe('a root spelling that normalizes to a whole volume is refused', () => {
-  // The guard splits the root into segments and refuses one that has none left after dropping a
-  // drive letter. It read the RAW spelling, while the scan it guards normalizes first -- so `c:/`
-  // and `C:` were refused and the backslash spelling was not, even though all three name the same drive. The row
-  // seeded here is on that drive and its file does not exist, so a prune that accepts the root
-  // deletes it. Seeded as a literal path string rather than a real file so the case means the same
-  // thing on Linux and macOS, where no such path exists to create.
+  // The guard splits the root into segments and refuses one that has none left after dropping a drive letter. It read the RAW spelling, while the scan it guards normalizes first -- so `c:/` and `C:` were refused and the backslash spelling was not, even though all three name the same drive. The row seeded here is on that drive and its file does not exist, so a prune that accepts the root deletes it. Seeded as a literal path string rather than a real file so the case means the same thing on Linux and macOS, where no such path exists to create.
   it('refuses a backslash-spelled drive root', () => {
     seedRow('c:/some-other-project/file.ts')
     const pruned = pruneDeletedFiles(BACKSLASH_DRIVE_ROOT, dbPath)
@@ -72,11 +59,9 @@ describe('a root spelling that normalizes to a whole volume is refused', () => {
     expect(rowsFor('c:/some-other-project/file.ts')).toBe(1)
   })
 
-  // Asserted on the predicate rather than on a prune outcome. A UNC path cannot be exercised
-  // through pruneDeletedFiles on Windows without reaching the network: statSync on
+  // Asserted on the predicate rather than on a prune outcome. A UNC path cannot be exercised through pruneDeletedFiles on Windows without reaching the network: statSync on
   // //server/share/... stalls for seconds and then throws something that is not ENOENT, so the
-  // prune declines to delete for that reason alone and the case stays green whether the guard
-  // works or not. Calling the predicate is the only way to make this decide anything.
+  // prune declines to delete for that reason alone and the case stays green whether the guard works or not. Calling the predicate is the only way to make this decide anything.
   it('refuses the root of a UNC network share', () => {
     expect(isTooShallowToPrune('//server/share'), 'a whole network share was accepted as a prune root').toBe(true)
     expect(isTooShallowToPrune('//server'), 'a bare UNC host was accepted as a prune root').toBe(true)
@@ -86,9 +71,7 @@ describe('a root spelling that normalizes to a whole volume is refused', () => {
     expect(isTooShallowToPrune('//server/share/project'), 'a project on a share stopped being prunable').toBe(false)
   })
 
-  // The UNC rule keys on two segments, and an ordinary POSIX path can have two segments as well.
-  // Without this, rejecting every two-segment path would read as a passing guard while quietly
-  // disabling pruning for a large class of perfectly normal roots.
+  // The UNC rule keys on two segments, and an ordinary POSIX path can have two segments as well. Without this, rejecting every two-segment path would read as a passing guard while quietly disabling pruning for a large class of perfectly normal roots.
   it('does not mistake an ordinary two-segment POSIX path for a share root', () => {
     expect(isTooShallowToPrune('/home/dev'), 'an ordinary directory was refused as too shallow').toBe(false)
   })
@@ -128,15 +111,12 @@ describe('a project root replaced by a regular file is gone, not reachable', () 
   it('prunes it after the grace period instead of flagging it forever', () => {
     const root = path.join(dir, 'proj')
     fs.mkdirSync(root)
-    // A project marker, so recordKnownRoot below resolves this directory as the root rather than
-    // walking past it.
+    // A project marker, so recordKnownRoot below resolves this directory as the root rather than walking past it.
     fs.mkdirSync(path.join(root, '.git'))
     const seedFile = path.join(root, 'f0.ts')
     fs.writeFileSync(seedFile, 'export const a = 1')
     const rootKey = normalizePath(root)
-    // Above the anomaly guard's minimum count, and every one of them missing once the directory
-    // goes, so the ratio is 100%: exactly the shape the guard refuses to prune while it believes
-    // the root is live.
+    // Above the anomaly guard's minimum count, and every one of them missing once the directory goes, so the ratio is 100%: exactly the shape the guard refuses to prune while it believes the root is live.
     for (let i = 0; i < 25; i++) seedRow(`${rootKey}/f${i}.ts`)
     recordKnownRoot(normalizePath(seedFile), dbPath)
 

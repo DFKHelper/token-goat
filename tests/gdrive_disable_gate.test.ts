@@ -1,12 +1,4 @@
-/**
- * `gdrive.enabled = false` must remove the Google Drive integration from both surfaces it has:
- * the command itself, and every place the installed agent guidance names it.
- *
- * Both halves matter independently. A gate on the command alone leaves an agent reading
- * `gdrive-sections <file-id>` in its own instructions file and reaching for a command this
- * install refuses; removing it from the guidance alone leaves the command reachable by anyone
- * who types it. An organisation that does not use Google Drive asked for neither to be present.
- */
+/** `gdrive.enabled = false` must remove the Google Drive integration from both surfaces it has: the command itself, and every place the installed agent guidance names it. Both halves matter independently. A gate on the command alone leaves an agent reading `gdrive-sections <file-id>` in its own instructions file and reaching for a command this install refuses; removing it from the guidance alone leaves the command reachable by anyone who types it. An organisation that does not use Google Drive asked for neither to be present. */
 
 import { spawnSync } from 'node:child_process'
 
@@ -36,8 +28,7 @@ describe('gdrive.enabled guidance gate', () => {
     expect(body).not.toContain('gdrive')
   })
 
-  // The whole line, not just the command: dropping a list item must not eat a neighbour or leave
-  // a doubled separator, which a `toContain('gdrive')` check alone would not notice.
+  // The whole line, not just the command: dropping a list item must not eat a neighbour or leave a doubled separator, which a `toContain('gdrive')` check alone would not notice.
   it('leaves the rest of the Commands line intact when disabled', () => {
     const off = commandsLine(buildGuidanceBody(CLAUSE, { gdrive: false }))
     const on = commandsLine(buildGuidanceBody(CLAUSE, { gdrive: true }))
@@ -47,8 +38,7 @@ describe('gdrive.enabled guidance gate', () => {
     expect(off).not.toContain(', ,')
   })
 
-  // buildGuidanceBlock is the wrapper three of the four surfaces go through; the flag has to
-  // survive the hop rather than being silently dropped between the two functions.
+  // buildGuidanceBlock is the wrapper three of the four surfaces go through; the flag has to survive the hop rather than being silently dropped between the two functions.
   it('passes the flag through buildGuidanceBlock', () => {
     const block = buildGuidanceBlock({
       beginMarker: '<!-- b -->',
@@ -77,8 +67,7 @@ describe('gdrive.enabled command gate (built bundle)', () => {
     return { status: res.status, out: `${res.stdout ?? ''}${res.stderr ?? ''}` }
   }
 
-  // No network assertion is needed to make this meaningful: the refusal happens before fetchDoc,
-  // so a run that reached Google would take seconds and report an HTTP status instead.
+  // No network assertion is needed to make this meaningful: the refusal happens before fetchDoc, so a run that reached Google would take seconds and report an HTTP status instead.
   it('refuses the command when disabled, naming the setting', () => {
     const { status, out } = run('false')
 

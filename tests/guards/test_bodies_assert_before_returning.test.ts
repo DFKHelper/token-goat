@@ -1,34 +1,4 @@
-/**
- * Guard: a test body must not be able to run to completion having asserted nothing.
- *
- * A test that does not run reports the same thing as a test that passed. `it.skip` at least moves
- * the skip counter, so a permanently-skipped case is visible in every run's summary. A bare
- * `return` inside the body is not: the case executes, asserts nothing, and reports PASSED. Nothing
- * in a green run distinguishes it from a case that did its job, which is how a subject can quietly
- * lose all of its coverage and how a live defect can sit behind a test named for catching it.
- *
- * What this scans for: a `return` with no value, at statement position inside an `it`/`test`
- * callback (not inside a nested function the body defines), that sits ahead of every `expect(...)`
- * / `assert(...)` call in that same body. That is precisely the "can finish having asserted
- * nothing" shape. A bare `return` that follows an assertion is not flagged: those are almost
- * always TypeScript narrowing after `expect(x.kind).toBe(...)`, where the return is unreachable.
- *
- * What it deliberately cannot catch, so that nobody reads a green run here as more than it is:
- *   - a body whose assertions all live in a shared helper (`expectFencedPost(...)`): the scan
- *     counts literal `expect`/`assert` callees only, so helper-only bodies are treated as having
- *     assertions and are never flagged either way;
- *   - a conditional assertion with no early return (`if (res.hookType === 'deny') expect(...)`),
- *     which is the normal shape of a negative test and is far too common to adjudicate here;
- *   - a loop that asserts per item over a collection that happens to be empty at runtime, which no
- *     source scan can see (that one needs a population floor written into the test itself);
- *   - an unawaited promise assertion.
- *
- * Exemptions below are the sites where a bare return is the honest answer: an unavailable optional
- * native dependency, or a privilege the machine does not grant. Each is keyed by file and by the
- * test's own title, so renaming the test or deleting it forces the entry to be revisited rather
- * than silently rotting. The guard also fails on a stale entry that no longer matches a live site,
- * which is what keeps this list from drifting into decoration.
- */
+/** Guard: a test body must not be able to run to completion having asserted nothing. A test that does not run reports the same thing as a test that passed. `it.skip` at least moves the skip counter, so a permanently-skipped case is visible in every run's summary. A bare `return` inside the body is not: the case executes, asserts nothing, and reports PASSED. Nothing in a green run distinguishes it from a case that did its job, which is how a subject can quietly lose all of its coverage and how a live defect can sit behind a test named for catching it. What this scans for: a `return` with no value, at statement position inside an `it`/`test` callback (not inside a nested function the body defines), that sits ahead of every `expect(...)` / `assert(...)` call in that same body. That is precisely the "can finish having asserted nothing" shape. A bare `return` that follows an assertion is not flagged: those are almost always TypeScript narrowing after `expect(x.kind).toBe(...)`, where the return is unreachable. What it deliberately cannot catch, so that nobody reads a green run here as more than it is: - a body whose assertions all live in a shared helper (`expectFencedPost(...)`): the scan counts literal `expect`/`assert` callees only, so helper-only bodies are treated as having assertions and are never flagged either way; - a conditional assertion with no early return (`if (res.hookType === 'deny') expect(...)`), which is the normal shape of a negative test and is far too common to adjudicate here; - a loop that asserts per item over a collection that happens to be empty at runtime, which no source scan can see (that one needs a population floor written into the test itself); - an unawaited promise assertion. Exemptions below are the sites where a bare return is the honest answer: an unavailable optional native dependency, or a privilege the machine does not grant. Each is keyed by file and by the test's own title, so renaming the test or deleting it forces the entry to be revisited rather than silently rotting. The guard also fails on a stale entry that no longer matches a live site, which is what keeps this list from drifting into decoration. */
 import { readdirSync, readFileSync, type Dirent } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -47,10 +17,7 @@ const SELF = 'tests/guards/test_bodies_assert_before_returning.test.ts'
 
 type Exemption = { file: string; title: string; sites: number; reason: string }
 
-/**
- * Every test that may finish without asserting, and why. `sites` is how many bare returns in that
- * body precede all of its assertions: a new one appearing in an already-listed test still fails.
- */
+/** Every test that may finish without asserting, and why. `sites` is how many bare returns in that body precede all of its assertions: a new one appearing in an already-listed test still fails. */
 const EXEMPT: readonly Exemption[] = [
   {
     file: 'tests/cli.test.ts',
@@ -255,19 +222,7 @@ describe('a test body cannot finish having asserted nothing', () => {
   })
 })
 
-/**
- * Companion sweep 1: a `beforeEach`/`beforeAll` body that bails.
- *
- * The damage here is per-file rather than per-case. A test body that returns early silences one
- * case; a setup hook that returns early leaves every test in its scope running against state
- * nobody established, and all of them still report PASSED. `afterEach`/`afterAll` are scanned too,
- * because a teardown that bails leaks state into the next case rather than into its own.
- *
- * Not scanned: a `try { unlink } catch {}` around an optional cleanup step. That swallows a
- * failure, but it is scoped to one statement whose failure genuinely carries no information (the
- * file was already absent), and 26 of them exist in this suite with a reason comment on each. A
- * bare `return` is different in kind: it abandons everything after it in the hook.
- */
+/** Companion sweep 1: a `beforeEach`/`beforeAll` body that bails. The damage here is per-file rather than per-case. A test body that returns early silences one case; a setup hook that returns early leaves every test in its scope running against state nobody established, and all of them still report PASSED. `afterEach`/`afterAll` are scanned too, because a teardown that bails leaks state into the next case rather than into its own. Not scanned: a `try { unlink } catch {}` around an optional cleanup step. That swallows a failure, but it is scoped to one statement whose failure genuinely carries no information (the file was already absent), and 26 of them exist in this suite with a reason comment on each. A bare `return` is different in kind: it abandons everything after it in the hook. */
 function scanHookSource(source: string, rel: string): { hookBodies: number; hookSites: Site[] } {
   const sf = ts.createSourceFile(rel, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
   const hookSites: Site[] = []

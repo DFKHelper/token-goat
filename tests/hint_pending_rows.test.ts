@@ -1,15 +1,4 @@
-/**
- * A hint emission waiting on its verdict has not been scored yet, in either direction. It must stay out of the efficacy rate and out of the suppression gate until its window closes, and a session that dies with rows still pending must not leave them counting against the category for good.
- *
- * FIXTURE PROVENANCE
- *
- * `LIVE_*` are CAPTURE: a read-only query against the author's real global ledger on 2026-09-29,
- *   SELECT category, harness, SUM(displayed = 1 AND observable = 1), SUM(CASE WHEN displayed = 1 AND observable = 1 THEN acted_on ELSE 0 END), SUM(displayed = 1 AND observable = 1 AND resolved = 0)
- *   FROM hint_emissions GROUP BY 1, 2
- * returned bash_redirect / claudecode at 11 scored-or-pending rows, 1 acted on, 5 pending. The five pending rows (ids 23399 to 23407) were all emitted between 16:41:28 and 16:41:43 on 2026-09-28 with 6 calls of window left, by a session that ended without another tool call reaching the hook. Read as 1 in 11 that is 9.1%, under the 15% bar, so the category was muted; read as 1 in the 6 that were actually scored it is 16.7%, over it. They are asserted only to keep the reason for this change checkable against the data that motivated it, never as a spec for behavior.
- *
- * Everything else is HAND-DERIVED: each test's counts follow from the emissions it makes itself, independently of how the implementation aggregates them.
- */
+/** A hint emission waiting on its verdict has not been scored yet, in either direction. It must stay out of the efficacy rate and out of the suppression gate until its window closes, and a session that dies with rows still pending must not leave them counting against the category for good. FIXTURE PROVENANCE `LIVE_*` are CAPTURE: a read-only query against the author's real global ledger on 2026-09-29, SELECT category, harness, SUM(displayed = 1 AND observable = 1), SUM(CASE WHEN displayed = 1 AND observable = 1 THEN acted_on ELSE 0 END), SUM(displayed = 1 AND observable = 1 AND resolved = 0) FROM hint_emissions GROUP BY 1, 2 returned bash_redirect / claudecode at 11 scored-or-pending rows, 1 acted on, 5 pending. The five pending rows (ids 23399 to 23407) were all emitted between 16:41:28 and 16:41:43 on 2026-09-28 with 6 calls of window left, by a session that ended without another tool call reaching the hook. Read as 1 in 11 that is 9.1%, under the 15% bar, so the category was muted; read as 1 in the 6 that were actually scored it is 16.7%, over it. They are asserted only to keep the reason for this change checkable against the data that motivated it, never as a spec for behavior. Everything else is HAND-DERIVED: each test's counts follow from the emissions it makes itself, independently of how the implementation aggregates them. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'

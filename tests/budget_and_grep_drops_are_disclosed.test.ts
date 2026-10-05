@@ -1,20 +1,4 @@
-/**
- * Two drops that the row-truncation guard cannot see, because neither is a row cap.
- *
- * 1. `context-for --budget` rejects individual symbols for being too large. That is a filter, not
- *    a cap, so it has no `--limit` for the guard's registry scan to find -- and it can reject
- *    EVERY candidate, which rendered as zero lines of output and exit 0: byte-identical to a
- *    search that matched nothing, so the reader concludes there is no relevant code rather than
- *    that their budget was too small.
- *
- * 2. `types --grep` used to run against the already-capped set, because `--limit` was pushed into
- *    each kind's SQL query. A name ranked below the cap could not be found by searching for it,
- *    and the search reported honestly on a set the caller never asked for. Fixing the total (the
- *    guard's concern) required moving the cap out of SQL, which is what makes this checkable.
- *
- * Provenance: CAPTURE. Expectations are read from real runs of the built bundle against the
- * fixture below.
- */
+/** Two drops that the row-truncation guard cannot see, because neither is a row cap. 1. `context-for --budget` rejects individual symbols for being too large. That is a filter, not a cap, so it has no `--limit` for the guard's registry scan to find -- and it can reject EVERY candidate, which rendered as zero lines of output and exit 0: byte-identical to a search that matched nothing, so the reader concludes there is no relevant code rather than that their budget was too small. 2. `types --grep` used to run against the already-capped set, because `--limit` was pushed into each kind's SQL query. A name ranked below the cap could not be found by searching for it, and the search reported honestly on a set the caller never asked for. Fixing the total (the guard's concern) required moving the cap out of SQL, which is what makes this checkable. Provenance: CAPTURE. Expectations are read from real runs of the built bundle against the fixture below. */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -69,9 +53,7 @@ describe('context-for --budget says what the budget rejected', () => {
   })
 
   it('names the count when the budget rejects some but not all', () => {
-    // Sized between "everything fits" and "nothing fits". Found by bisecting real runs, not
-    // computed from the estimator, so a change to token estimation fails this loudly rather than
-    // silently agreeing with itself.
+    // Sized between "everything fits" and "nothing fits". Found by bisecting real runs, not computed from the estimator, so a change to token estimation fails this loudly rather than silently agreeing with itself.
     const r = run(['context-for', 'widget', '--budget', '900'])
 
     const m = /Showing (\d+) of (\d+) matching symbols?; (\d+) did not fit/.exec(r.err)
@@ -92,8 +74,7 @@ describe('context-for --budget says what the budget rejected', () => {
 
 describe('types --grep searches the whole set, not just the page --limit would show', () => {
   it('finds a declaration that ranks below the cap', () => {
-    // Calibration: ZebraShape must genuinely fall outside the first row, or the cap is not being
-    // tested at all. `types` sorts by file path, so zz.ts sorts last among the fixture files.
+    // Calibration: ZebraShape must genuinely fall outside the first row, or the cap is not being tested at all. `types` sorts by file path, so zz.ts sorts last among the fixture files.
     const all = JSON.parse(run(['types', '--json']).out) as { items: { name: string }[] }
     const names = all.items.map((i) => i.name)
     expect(names.length, 'fixture produced too few declarations to rank one below a cap').toBeGreaterThan(1)
@@ -108,8 +89,7 @@ describe('types --grep searches the whole set, not just the page --limit would s
   })
 
   it('says in text mode too that the per-kind cap held rows back', () => {
-    // The JSON half is driven by the row-truncation guard. Text mode is where most readers
-    // see this, and it is a separate renderer -- an envelope fix does not reach it.
+    // The JSON half is driven by the row-truncation guard. Text mode is where most readers see this, and it is a separate renderer -- an envelope fix does not reach it.
     const all = JSON.parse(run(['types', '--json']).out) as { items: unknown[] }
     const truth = all.items.length
     expect(truth, 'fixture declares too few types for a cap to drop anything').toBeGreaterThan(1)
@@ -128,8 +108,7 @@ describe('types --grep searches the whole set, not just the page --limit would s
   })
 
   it('still reports the matched total against the filtered set, not the whole store', () => {
-    // The filter and the cap both narrow, and the reported total has to describe the set the
-    // caller asked for -- otherwise the fix above just moves the wrong number somewhere else.
+    // The filter and the cap both narrow, and the reported total has to describe the set the caller asked for -- otherwise the fix above just moves the wrong number somewhere else.
     const r = JSON.parse(run(['types', '--grep', 'Shape', '--json']).out) as { items: unknown[]; totalCount: number; truncated: boolean }
 
     expect(r.totalCount, 'totalCount does not match the rows returned for an uncapped filtered query').toBe(r.items.length)

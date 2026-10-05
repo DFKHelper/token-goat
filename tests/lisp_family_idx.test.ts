@@ -1,17 +1,4 @@
-/**
- * Source-level test for the five Lisp-family adapters added in commit 8c16530e
- * (common_lisp.ts, scheme.ts, racket.ts, clojure.ts, emacs_lisp.ts). They shipped with only two
- * enumeration guards (a NESTS classification and a >=1-symbol smoke check) -- neither exercises
- * any dialect-specific masking rule. This file pins the rules that can silently flip while the
- * >=1-symbol guard stays green: nested block comments, datum elision (`#;`/`#_`), the absence of
- * block comments in Clojure/Emacs Lisp, character-literal false-string opens, Racket here-strings
- * and byte strings, the `define` function-vs-variable kind split, and fake definitions embedded
- * in strings/comments.
- *
- * Fixtures below are HAND-DERIVED directly from each dialect's own spec (cited inline), not from
- * the adapters' own regexes/maskers -- see common_lisp.ts/scheme.ts/racket.ts/clojure.ts's module
- * docs for the CLHS/R7RS/Racket-Reference/clojure.org citations this file's fixtures follow.
- */
+/** Source-level test for the five Lisp-family adapters added in commit 8c16530e (common_lisp.ts, scheme.ts, racket.ts, clojure.ts, emacs_lisp.ts). They shipped with only two enumeration guards (a NESTS classification and a >=1-symbol smoke check) -- neither exercises any dialect-specific masking rule. This file pins the rules that can silently flip while the >=1-symbol guard stays green: nested block comments, datum elision (`#;`/`#_`), the absence of block comments in Clojure/Emacs Lisp, character-literal false-string opens, Racket here-strings and byte strings, the `define` function-vs-variable kind split, and fake definitions embedded in strings/comments. Fixtures below are HAND-DERIVED directly from each dialect's own spec (cited inline), not from the adapters' own regexes/maskers -- see common_lisp.ts/scheme.ts/racket.ts/clojure.ts's module docs for the CLHS/R7RS/Racket-Reference/clojure.org citations this file's fixtures follow. */
 import { describe, expect, it } from 'vitest'
 
 import { extractCommonLisp } from '../src/languages/common_lisp.js'
@@ -25,13 +12,7 @@ function names(result: { symbols: readonly { name: string }[] }): string[] {
 }
 
 describe('nested #| |# block comments (CLHS 2.4.8.19 / R7RS 2.2 / Racket Reference "Reading Text")', () => {
-  // Each fixture below places the "leaked" definition between the INNER comment's close and the
-  // OUTER comment's close. Under correct nesting (depth counter), that span is still inside the
-  // outer comment, so the def is absent. Under a non-nesting (first-`|#`-closes) implementation,
-  // that inner `|#` would end the whole comment early, leaking the def as live code -- the
-  // specific way to get nesting backwards that the "between vs. after" phrasing in the task
-  // targets. A fixture where the def sits BEFORE any inner close does not discriminate the two
-  // implementations (it is masked either way), so it would not catch this regression.
+  // Each fixture below places the "leaked" definition between the INNER comment's close and the OUTER comment's close. Under correct nesting (depth counter), that span is still inside the outer comment, so the def is absent. Under a non-nesting (first-`|#`-closes) implementation, that inner `|#` would end the whole comment early, leaking the def as live code -- the specific way to get nesting backwards that the "between vs. after" phrasing in the task targets. A fixture where the def sits BEFORE any inner close does not discriminate the two implementations (it is masked either way), so it would not catch this regression.
   it('Common Lisp: a def after the outer close is found; a def leaked by a non-nesting reader is not', () => {
     const src = [
       '#| outer',
@@ -74,11 +55,7 @@ describe('nested #| |# block comments (CLHS 2.4.8.19 / R7RS 2.2 / Racket Referen
 
 describe('Clojure and Emacs Lisp have no block comment syntax: #| must be inert', () => {
   it('Clojure: a stray #| in live code does not swallow the rest of the file', () => {
-    // #| has no meaning to the Clojure reader at all (clojure.org/reference/reader): it is just
-    // two ordinary tokens, `#` (reader-macro dispatch) followed by `|` (a legal symbol char). This
-    // fixture keeps it OUTSIDE any comment/string, unlike a `;; #|` fixture, which would pass even
-    // if the adapter wrongly treated #| as a block-comment opener (the `;` masker would already
-    // have consumed it first, never reaching the #| handling this test means to pin).
+    // #| has no meaning to the Clojure reader at all (clojure.org/reference/reader): it is just two ordinary tokens, `#` (reader-macro dispatch) followed by `|` (a legal symbol char). This fixture keeps it OUTSIDE any comment/string, unlike a `;; #|` fixture, which would pass even if the adapter wrongly treated #| as a block-comment opener (the `;` masker would already have consumed it first, never reaching the #| handling this test means to pin).
     const src = '(def x #| 1)\n(defn after-hash-pipe [] 1)\n'
     const result = extractClojure(src, 'test.clj')
     expect(names(result)).toContain('after-hash-pipe')
@@ -136,11 +113,7 @@ describe('datum elision: #; (Scheme/Racket) and #_ (Clojure) drop exactly the el
 })
 
 describe('character literals must not open a false string', () => {
-  // The def after the char literal is kept on the SAME line as the literal, not a later line: the
-  // string masker in every one of these adapters already bails out at a bare newline (protection
-  // against an unrelated unterminated string swallowing the whole file), so a def placed on the
-  // next line would still be found even if the char-literal branch were disabled entirely -- that
-  // fixture shape would not discriminate the bug this test means to catch.
+  // The def after the char literal is kept on the SAME line as the literal, not a later line: the string masker in every one of these adapters already bails out at a bare newline (protection against an unrelated unterminated string swallowing the whole file), so a def placed on the next line would still be found even if the char-literal branch were disabled entirely -- that fixture shape would not discriminate the bug this test means to catch.
   it('Common Lisp: #\\" before a real defun on the same line does not swallow it as an unterminated string', () => {
     const src = '(setf x #\\") (defun after-char-lit () 1)\n'
     const result = extractCommonLisp(src, 'test.lisp')

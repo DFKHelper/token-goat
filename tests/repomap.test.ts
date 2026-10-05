@@ -1,6 +1,4 @@
-/**
- * Tests for repomap module.
- */
+/** Tests for repomap module. */
 
 import { describe, it, expect, vi } from 'vitest'
 import * as fs from 'fs'

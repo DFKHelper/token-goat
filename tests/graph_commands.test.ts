@@ -1,8 +1,4 @@
-/**
- * Unit tests for the pure exported helpers in src/graph_commands.ts and
- * light integration tests against the real repo index (global.db must be
- * populated before this suite runs — the fixture is the token-goat repo itself).
- */
+/** Unit tests for the pure exported helpers in src/graph_commands.ts and light integration tests against the real repo index (global.db must be populated before this suite runs — the fixture is the token-goat repo itself). */
 
 import { mkdtempSync, writeFileSync, rmSync, chmodSync, mkdirSync } from 'node:fs'
 import { join, resolve, delimiter, relative } from 'node:path'
@@ -48,10 +44,7 @@ import {
 import type { SymbolEntry } from '../src/parser_types.js'
 import { indexSrcTree, WHOLE_SRC_INDEX_TIMEOUT_MS } from './helpers/index-src-tree.js'
 
-/** Run `fn` with `process.stderr.write` captured, returning whatever it wrote. Restores the
- * original write function afterward regardless of whether `fn` throws. Shared helper for the
- * `--top <= 0` rejection tests below (mirrors the inline pattern already used throughout this
- * file, e.g. the `runTypes limit validation` suite). */
+/** Run `fn` with `process.stderr.write` captured, returning whatever it wrote. Restores the original write function afterward regardless of whether `fn` throws. Shared helper for the `--top <= 0` rejection tests below (mirrors the inline pattern already used throughout this file, e.g. the `runTypes limit validation` suite). */
 function captureStderr(fn: () => void): string {
   let errCaptured = ''
   const origStderr = process.stderr.write.bind(process.stderr)
@@ -64,15 +57,7 @@ function captureStderr(fn: () => void): string {
   return errCaptured
 }
 
-// Wrap querySymbols in a spy-able vi.fn() while still delegating to the real implementation.
-// vi.mock is hoisted above these imports by vitest, so every call site (this test file's own
-// `querySymbols` import and graph_commands.ts's internal import) resolves to the same mocked
-// module instance and can be counted via vi.mocked(querySymbols).mock.calls -- used below to
-// regression-test that buildFileSymCache() is hoisted once outside the BFS loop in
-// runCallChain/runImpact rather than rebuilt (and its memoization reset) on every node visited.
-// queryRefs is wrapped the same way (real implementation by default, overridable per-test via
-// mockReturnValueOnce) so the `--json` path-spelling negative-control tests below can hand
-// callers/testFor a synthetic out-of-project row without indexing a real file there.
+// Wrap querySymbols in a spy-able vi.fn() while still delegating to the real implementation. vi.mock is hoisted above these imports by vitest, so every call site (this test file's own `querySymbols` import and graph_commands.ts's internal import) resolves to the same mocked module instance and can be counted via vi.mocked(querySymbols).mock.calls -- used below to regression-test that buildFileSymCache() is hoisted once outside the BFS loop in runCallChain/runImpact rather than rebuilt (and its memoization reset) on every node visited. queryRefs is wrapped the same way (real implementation by default, overridable per-test via mockReturnValueOnce) so the `--json` path-spelling negative-control tests below can hand callers/testFor a synthetic out-of-project row without indexing a real file there.
 vi.mock('../src/index_reader.js', async (importOriginal) => {
   const actual = await importOriginal<typeof IndexReaderModule>()
   return { ...actual, querySymbols: vi.fn(actual.querySymbols), searchSymbolsFts: vi.fn(actual.searchSymbolsFts), queryRefs: vi.fn(actual.queryRefs), distinctSymbolKinds: vi.fn(actual.distinctSymbolKinds) }
@@ -84,13 +69,7 @@ function makeSymbol(name: string, lineStart: number, lineEnd: number, kind = 'fu
   return { name, kind, lineStart, lineEnd, filePath: 'file.ts', body: '', docstring: '', parent: '' }
 }
 
-/**
- * Unwrap the shared `{items, truncated, totalCount}` `--json` envelope that `types`/`callers`/
- * `dead`/`test-for` emit (the same shape `symbol`/`refs`/`skeleton`/`outline` already used).
- * Still pins a shape — the current one — rather than dropping the shape assertion: a payload
- * that regressed to a bare array, or grew the wrapper while losing `truncated`/`totalCount`,
- * fails here before any caller's own row-level assertions run.
- */
+/** Unwrap the shared `{items, truncated, totalCount}` `--json` envelope that `types`/`callers`/ `dead`/`test-for` emit (the same shape `symbol`/`refs`/`skeleton`/`outline` already used). Still pins a shape — the current one — rather than dropping the shape assertion: a payload that regressed to a bare array, or grew the wrapper while losing `truncated`/`totalCount`, fails here before any caller's own row-level assertions run. */
 function envelopeItems<T>(captured: string): T[] {
   const parsed: unknown = JSON.parse(captured)
   expect(Array.isArray(parsed)).toBe(false)
@@ -101,16 +80,7 @@ function envelopeItems<T>(captured: string): T[] {
   return payload.items
 }
 
-/**
- * Run `fn` with the overflow guard off. Needed only by the handful of cases below that scan the
- * WHOLE repo with `--json` and then assert a specific row is present (or a specific relative
- * order holds): now that these commands route their `--json` rows through `guardJsonRows` like
- * `symbol`/`refs`/`skeleton`/`outline` already did, a full-project `types --json` legitimately
- * caps at the token budget and drops trailing rows. Those cases pin CONTENT and ORDERING, not
- * the absence of truncation, so the guard is disabled rather than the assertions weakened.
- * `loadConfig`'s cache key includes an env fingerprint, so toggling this is picked up on the
- * next call without any cache reset.
- */
+/** Run `fn` with the overflow guard off. Needed only by the handful of cases below that scan the WHOLE repo with `--json` and then assert a specific row is present (or a specific relative order holds): now that these commands route their `--json` rows through `guardJsonRows` like `symbol`/`refs`/`skeleton`/`outline` already did, a full-project `types --json` legitimately caps at the token budget and drops trailing rows. Those cases pin CONTENT and ORDERING, not the absence of truncation, so the guard is disabled rather than the assertions weakened. `loadConfig`'s cache key includes an env fingerprint, so toggling this is picked up on the next call without any cache reset. */
 function withoutOverflowGuard<T>(fn: () => T): T {
   const orig = process.env['TOKEN_GOAT_OVERFLOW_GUARD']
   process.env['TOKEN_GOAT_OVERFLOW_GUARD'] = '0'
@@ -224,10 +194,7 @@ describe('isDeadSymbol', () => {
     }
   })
 
-  // Regression: a JS/TS class constructor is invoked via `new X()`, which creates a ref named
-  // `X` (the class), never a ref literally named `constructor` -- so every class constructor in
-  // the codebase was a guaranteed false-positive dead-symbol report before `constructor` joined
-  // ENTRY_NAMES, mirroring the already-present `__init__` (Python's equivalent) exclusion.
+  // Regression: a JS/TS class constructor is invoked via `new X()`, which creates a ref named `X` (the class), never a ref literally named `constructor` -- so every class constructor in the codebase was a guaranteed false-positive dead-symbol report before `constructor` joined ENTRY_NAMES, mirroring the already-present `__init__` (Python's equivalent) exclusion.
   it('returns false for constructor specifically, mirroring the existing __init__ exclusion', () => {
     expect(isDeadSymbol('constructor', 0)).toBe(false)
   })
@@ -288,9 +255,7 @@ describe('bfsCallChains', () => {
   })
 
   it('marks a chain cut short by maxDepth with a (depth-limit) sentinel instead of rendering it like a completed chain', () => {
-    // leaf <- h1 <- h2 <- h3: an unbounded walk reaches h3, a --depth 2 walk stops at h2. Without a
-    // sentinel both render as `... -> h2` / `... -> h3` and a truncated answer is indistinguishable
-    // from one that genuinely reached an entry point.
+    // leaf <- h1 <- h2 <- h3: an unbounded walk reaches h3, a --depth 2 walk stops at h2. Without a sentinel both render as `... -> h2` / `... -> h3` and a truncated answer is indistinguishable from one that genuinely reached an entry point.
     const graph: Record<string, string[]> = { leaf: ['h1'], h1: ['h2'], h2: ['h3'] }
     const callersOf = (n: string): string[] => graph[n] ?? []
     const truncated = bfsCallChains('leaf', callersOf, 2).map((c) => c.join('->'))
@@ -326,16 +291,7 @@ describe('bfsCallChains', () => {
 
 describe('runScope integration', () => {
   it('exits 0 and finds at least one enclosing symbol for a known source line', () => {
-    // Resolve a line guaranteed to be inside a real function body at test-run time, rather than a
-    // hardcoded line number -- a fixed magic number (this test used to hardcode src/cli.ts:640
-    // under a stale "reliably inside buildProgram" comment) drifts as the file grows, and the
-    // old assertion (`typeof result === 'number'`) accepted either exit code, so it kept passing
-    // even after the comment's premise went stale and the line landed in a different, unrelated
-    // function -- silently no longer proving what the test's own title claims. Assert the actual
-    // claimed behavior: exit code 0.
-    // A symbol whose lineStart equals its lineEnd (a one-line class/const declaration) leaves no
-    // interior line to target, so require at least 2 lines of span before trusting lineStart+1
-    // to land inside it.
+    // Resolve a line guaranteed to be inside a real function body at test-run time, rather than a hardcoded line number -- a fixed magic number (this test used to hardcode src/cli.ts:640 under a stale "reliably inside buildProgram" comment) drifts as the file grows, and the old assertion (`typeof result === 'number'`) accepted either exit code, so it kept passing even after the comment's premise went stale and the line landed in a different, unrelated function -- silently no longer proving what the test's own title claims. Assert the actual claimed behavior: exit code 0. A symbol whose lineStart equals its lineEnd (a one-line class/const declaration) leaves no interior line to target, so require at least 2 lines of span before trusting lineStart+1 to land inside it.
     const symbols = querySymbols({ filePath: normalizePath(resolve('src/cli.ts')), limit: 50 })
     const spanningSymbol = symbols.find((s) => s.lineEnd > s.lineStart)
     expect(spanningSymbol).toBeDefined()
@@ -344,26 +300,14 @@ describe('runScope integration', () => {
     expect(result).toBe(0)
   })
 
-  // Regression: `scope` documents exactly one ordering guarantee, "innermost first", and broke it
-  // on every line where two symbols share a start. The comparator sorted on descending lineStart
-  // alone, which returns 0 for a tie and left those rows in `querySymbols`'s order -- its SQL
-  // sorts by line_start with no tiebreak, so the widest span came back first, printing a
-  // container above the member nested inside it.
+  // Regression: `scope` documents exactly one ordering guarantee, "innermost first", and broke it on every line where two symbols share a start. The comparator sorted on descending lineStart alone, which returns 0 for a tie and left those rows in `querySymbols`'s order -- its SQL sorts by line_start with no tiebreak, so the widest span came back first, printing a container above the member nested inside it.
   //
-  // Provenance: CAPTURE. The fixture is real source parsed by the real indexer, and the shared
-  // start line is the indexer's own output rather than an asserted constant: an earlier draft used
-  // a function whose return type declared the members, guessed that indexed them at the signature
-  // line, and indexed only the function -- proving nothing. The expectation, that a strictly
-  // narrower span at the same start is the more deeply nested one, is stated without reference to
-  // the comparator under test.
+  // Provenance: CAPTURE. The fixture is real source parsed by the real indexer, and the shared start line is the indexer's own output rather than an asserted constant: an earlier draft used a function whose return type declared the members, guessed that indexed them at the signature line, and indexed only the function -- proving nothing. The expectation, that a strictly narrower span at the same start is the more deeply nested one, is stated without reference to the comparator under test.
   it('lists a narrower span before a wider one that starts on the same line', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-scope-tie-'))
     try {
       const file = join(dir, 'ObjLit.ts')
-      // The container is named to sort BEFORE its member, so a comparator falling back to the name
-      // alone puts the outermost first and fails here. An earlier draft named them the other way
-      // round, where alphabetical order happened to agree with span order, and a mutation deleting
-      // the span tiebreak entirely still passed.
+      // The container is named to sort BEFORE its member, so a comparator falling back to the name alone puts the outermost first and fails here. An earlier draft named them the other way round, where alphabetical order happened to agree with span order, and a mutation deleting the span tiebreak entirely still passed.
       writeFileSync(file, ['export const alpha = { zeta() {', '  return 1', '}, mid() {', '  return 2', '} }', ''].join('\n'))
       indexFileSync(normalizePath(file))
 
@@ -385,10 +329,7 @@ describe('runScope integration', () => {
     }
   })
 
-  // The same comparator decides the order of symbols sharing BOTH bounds, where no nesting order
-  // exists to get right. Those came back in the database's unspecified row order, so the same
-  // query could print a different order after a reindex. A CLI whose output gets diffed or
-  // scripted cannot do that. A one-line class and its one-line method is the real shape.
+  // The same comparator decides the order of symbols sharing BOTH bounds, where no nesting order exists to get right. Those came back in the database's unspecified row order, so the same query could print a different order after a reindex. A CLI whose output gets diffed or scripted cannot do that. A one-line class and its one-line method is the real shape.
   it('orders symbols that share both bounds deterministically rather than by database row order', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-scope-bothbounds-'))
     try {
@@ -403,10 +344,7 @@ describe('runScope integration', () => {
         expect(runScope({ spec: `${file}:1` })).toBe(0)
       })
       const names = printed.trim().split('\n').map((l) => l.split('\t')[0])
-      // Sorted by name, which is the only stable key left once both bounds match. Asserting the
-      // literal order rather than "is sorted" keeps the expectation from restating the comparator.
-      // en collation orders by base letter before case, so 'run' precedes 'Tiny'. Asserted as the
-      // literal expected output rather than as "is sorted", which would restate the comparator.
+      // Sorted by name, which is the only stable key left once both bounds match. Asserting the literal order rather than "is sorted" keeps the expectation from restating the comparator. en collation orders by base letter before case, so 'run' precedes 'Tiny'. Asserted as the literal expected output rather than as "is sorted", which would restate the comparator.
       expect(names).toEqual(['run', 'Tiny'])
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -423,10 +361,7 @@ describe('runScope integration', () => {
     expect(result).toBe(1)
   })
 
-  // Regression: a file that exists on disk but has no indexed symbols used to fall through to the
-  // same "No symbols enclosing line" path a real-but-uncovered line hits -- indistinguishable from
-  // a genuine miss. It must say the file itself is unindexed, and must NOT reuse the "Could not
-  // read" wording reserved for a path that isn't there at all.
+  // Regression: a file that exists on disk but has no indexed symbols used to fall through to the same "No symbols enclosing line" path a real-but-uncovered line hits -- indistinguishable from a genuine miss. It must say the file itself is unindexed, and must NOT reuse the "Could not read" wording reserved for a path that isn't there at all.
   it('distinguishes an existing-but-unindexed file from both a missing file and a real miss', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-scope-unindexed-'))
     try {
@@ -456,8 +391,7 @@ describe('runScope integration', () => {
   })
 
   it('returns JSON array for --json flag', () => {
-    // Resolve a line guaranteed to be inside a real symbol at test-run time, rather than a hardcoded number -- this file grows over time and a fixed line eventually drifts outside every range, making runScope legitimately find nothing and never print, which is a test bug rather than a runScope bug.
-    // Taking the FIRST indexed symbol was the previous attempt at that and carried the same defect one level up: the first row is frequently a one-line `const`, whose lineStart + 1 is already past its end, so the test only passed while the next line happened to belong to another symbol. Require a symbol spanning at least two lines, which makes lineStart + 1 inside it by construction rather than by luck.
+    // Resolve a line guaranteed to be inside a real symbol at test-run time, rather than a hardcoded number -- this file grows over time and a fixed line eventually drifts outside every range, making runScope legitimately find nothing and never print, which is a test bug rather than a runScope bug. Taking the FIRST indexed symbol was the previous attempt at that and carried the same defect one level up: the first row is frequently a one-line `const`, whose lineStart + 1 is already past its end, so the test only passed while the next line happened to belong to another symbol. Require a symbol spanning at least two lines, which makes lineStart + 1 inside it by construction rather than by luck.
     const spanning = querySymbols({ filePath: normalizePath(resolve('src/read_commands.ts')), limit: 200 }).find((sym) => sym.lineEnd > sym.lineStart)
     expect(spanning).toBeDefined()
     const line = (spanning?.lineStart ?? 1) + 1
@@ -474,8 +408,7 @@ describe('runScope integration', () => {
     expect(result).toBe(1)
   })
 
-  // #232 regression: Number.parseInt('12abc', 10) silently parsed as 12 instead of rejecting the
-  // trailing garbage, so `scope file:12abc` resolved the line number as if it had been `file:12`.
+  // #232 regression: Number.parseInt('12abc', 10) silently parsed as 12 instead of rejecting the trailing garbage, so `scope file:12abc` resolved the line number as if it had been `file:12`.
   it('exits 1 for a line number with trailing garbage instead of silently truncating it', () => {
     const result = runScope({ spec: 'src/cli.ts:12abc' })
     expect(result).toBe(1)
@@ -486,10 +419,7 @@ describe('runScope integration', () => {
     expect(result).toBe(1)
   })
 
-  // Regression-coverage gap: the existing "--json flag" test above only ever asserted
-  // `Array.isArray(parsed)`, never that the returned symbols are the right ones, in the right
-  // (innermost-first) order the CLI help text and doc comment both promise. A file with a class
-  // containing a method makes the ordering directly observable.
+  // Regression-coverage gap: the existing "--json flag" test above only ever asserted `Array.isArray(parsed)`, never that the returned symbols are the right ones, in the right (innermost-first) order the CLI help text and doc comment both promise. A file with a class containing a method makes the ordering directly observable.
   it('orders enclosing symbols innermost first for a nested class method', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-scope-nest-'))
     try {
@@ -517,17 +447,7 @@ describe('runScope integration', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
-  // Regression: the enclosing-symbol predicate ran in JS *after* querySymbols had already applied
-  // ORDER BY file_path, line_start LIMIT <the per-file symbol cap>, so in a file with more indexed
-  // symbols than the cap, every symbol past the cap was dropped before the filter ever saw it. A
-  // line wrapped only by one of those printed "No symbols enclosing line N" -- byte-identical to
-  // the honest answer for a line nothing wraps, with no truncation notice on either channel.
-  // ALL_SYMBOLS_IN_FILE_LIMIT is now the unbounded sentinel (-1, not a real cap size) after a
-  // sibling fix removed the finite cap from the other "every symbol in this file" call sites
-  // (buildFileSymCache, runTestFor) that had no query-side predicate to protect them the way this
-  // command's enclosingLine WHERE clause already does. This fixture size is a fixed historical
-  // value (the former cap) kept literal so it stays a real regression check on that WHERE-clause
-  // fix regardless of what any cap constant is set to.
+  // Regression: the enclosing-symbol predicate ran in JS *after* querySymbols had already applied ORDER BY file_path, line_start LIMIT <the per-file symbol cap>, so in a file with more indexed symbols than the cap, every symbol past the cap was dropped before the filter ever saw it. A line wrapped only by one of those printed "No symbols enclosing line N" -- byte-identical to the honest answer for a line nothing wraps, with no truncation notice on either channel. ALL_SYMBOLS_IN_FILE_LIMIT is now the unbounded sentinel (-1, not a real cap size) after a sibling fix removed the finite cap from the other "every symbol in this file" call sites (buildFileSymCache, runTestFor) that had no query-side predicate to protect them the way this command's enclosingLine WHERE clause already does. This fixture size is a fixed historical value (the former cap) kept literal so it stays a real regression check on that WHERE-clause fix regardless of what any cap constant is set to.
   const FORMER_PER_FILE_SYMBOL_CAP = 10000
   it('finds an enclosing symbol that sorts past the per-file symbol cap', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-scope-cap-'))
@@ -540,8 +460,7 @@ describe('runScope integration', () => {
         'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring, parent) ' +
           'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       )
-      // One filler symbol per line for the whole former cap, then the target one line past it. Ordered by
-      // line_start the target is the very last row, so a cap applied before the filter loses it.
+      // One filler symbol per line for the whole former cap, then the target one line past it. Ordered by line_start the target is the very last row, so a cap applied before the filter loses it.
       const overCap = FORMER_PER_FILE_SYMBOL_CAP + 1
       db.transaction(() => {
         for (let i = 1; i <= FORMER_PER_FILE_SYMBOL_CAP; i++) {
@@ -564,13 +483,7 @@ describe('runScope integration', () => {
     }
   })
 
-  // Regression: buildFileSymCache (graph_commands.ts) fetched a file's symbols with
-  // `querySymbols({ filePath, limit: ALL_SYMBOLS_IN_FILE_LIMIT })`, and until this fix that limit
-  // was the finite 10000 with no other predicate protecting it (unlike runScope's enclosingLine
-  // query above, which narrows in SQL). runCallers then looked up the enclosing symbol of each
-  // caller by scanning that capped list: a caller whose own definition sorted past the cap was
-  // invisible to the lookup, so it was reported as `(module scope)` instead of its real name,
-  // silently misattributing a real caller rather than erroring or noting the truncation.
+  // Regression: buildFileSymCache (graph_commands.ts) fetched a file's symbols with `querySymbols({ filePath, limit: ALL_SYMBOLS_IN_FILE_LIMIT })`, and until this fix that limit was the finite 10000 with no other predicate protecting it (unlike runScope's enclosingLine query above, which narrows in SQL). runCallers then looked up the enclosing symbol of each caller by scanning that capped list: a caller whose own definition sorted past the cap was invisible to the lookup, so it was reported as `(module scope)` instead of its real name, silently misattributing a real caller rather than erroring or noting the truncation.
   it('attributes a caller whose own definition sorts past the per-file symbol cap, not "(module scope)"', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-callers-cap-'))
     try {
@@ -579,8 +492,7 @@ describe('runScope integration', () => {
       for (let i = 0; i < FORMER_PER_FILE_SYMBOL_CAP + 4; i++) {
         lines.push(`export function fn${i}() { return ${i} }`)
       }
-      // The caller is the LAST function, so its own definition line sorts past the former cap --
-      // exactly the row a `LIMIT FORMER_PER_FILE_SYMBOL_CAP` ordered by line_start would drop.
+      // The caller is the LAST function, so its own definition line sorts past the former cap -- exactly the row a `LIMIT FORMER_PER_FILE_SYMBOL_CAP` ordered by line_start would drop.
       lines.push('export function fnCallsFn0() { fn0(); return 0 }')
       writeFileSync(file, lines.join('\n') + '\n')
       indexFileSync(normalizePath(file))
@@ -602,10 +514,7 @@ describe('runScope integration', () => {
     }
   })
 
-  // Regression: the text branch routed every path through toDisplayPath while the --json branch
-  // emitted the stored row verbatim, so the same query printed a relative path in one mode and the
-  // machine's absolute path in the other. The only assertion on this payload was Array.isArray,
-  // which never looks at a field, so the divergence was invisible.
+  // Regression: the text branch routed every path through toDisplayPath while the --json branch emitted the stored row verbatim, so the same query printed a relative path in one mode and the machine's absolute path in the other. The only assertion on this payload was Array.isArray, which never looks at a field, so the divergence was invisible.
   it('emits a repo-relative filePath in --json, matching what the text output prints', () => {
     const spanning = querySymbols({ filePath: normalizePath(resolve('src/read_commands.ts')), limit: 200 }).find(
       (sym) => sym.lineEnd > sym.lineStart,
@@ -625,10 +534,7 @@ describe('runScope integration', () => {
     }
   })
 
-  // Regression: /^\d+$/ accepts a run of digits too large for Number.parseInt to represent, so the
-  // value was silently rounded and then echoed back as a *different* number than the one typed --
-  // "line 100000000000000000000" for an input of 99999999999999999999. The two validation errors
-  // above both echo the literal input; this path reported a parse artifact instead.
+  // Regression: /^\d+$/ accepts a run of digits too large for Number.parseInt to represent, so the value was silently rounded and then echoed back as a *different* number than the one typed -- "line 100000000000000000000" for an input of 99999999999999999999. The two validation errors above both echo the literal input; this path reported a parse artifact instead.
   it('rejects a line number too large to represent exactly instead of echoing a rounded one', () => {
     const typed = '99999999999999999999'
     let code = 0
@@ -668,13 +574,9 @@ describe('runTypes integration', () => {
       const code = runTypes({ json: true })
       expect(code).toBe(0)
     }))
-    // Shape pin updated from "bare array" to the shared envelope (envelopeItems asserts
-    // items/truncated/totalCount); the content pin below is untouched.
+    // Shape pin updated from "bare array" to the shared envelope (envelopeItems asserts items/truncated/totalCount); the content pin below is untouched.
     const parsed = envelopeItems<SymbolEntry>(captured)
-    // Length-only would still pass if --json returned unrelated rows (e.g. a broken kind filter
-    // that fell through to every symbol in the project) -- assert a known real project type
-    // interface is actually present by name, matching the plain-text sibling test above's own
-    // toMatch(/SymbolEntry|RefEntry|Language/) content pin.
+    // Length-only would still pass if --json returned unrelated rows (e.g. a broken kind filter that fell through to every symbol in the project) -- assert a known real project type interface is actually present by name, matching the plain-text sibling test above's own toMatch(/SymbolEntry|RefEntry|Language/) content pin.
     expect(parsed.some((r) => r.name === 'SymbolEntry')).toBe(true)
   })
 
@@ -683,9 +585,7 @@ describe('runTypes integration', () => {
     expect(code).toBe(1)
   })
 
-  // --json path-spelling: `filePath` used to echo querySymbols' raw absolute row verbatim, while
-  // the plain-text sibling test above already renders `toDisplayPath(rootDir, ...)` -- same
-  // command, same repo, two spellings decided only by --json. Matches outline/skeleton/refs.
+  // --json path-spelling: `filePath` used to echo querySymbols' raw absolute row verbatim, while the plain-text sibling test above already renders `toDisplayPath(rootDir, ...)` -- same command, same repo, two spellings decided only by --json. Matches outline/skeleton/refs.
   it('renders --json filePath root-relative for an in-project symbol (matching plain-text output)', () => {
     const captured = captureStdout(() => {
       const code = runTypes({ file: 'src/parser_types.ts', json: true })
@@ -699,17 +599,13 @@ describe('runTypes integration', () => {
     }
   })
 
-  // Negative control: a row outside the resolved project root must stay absolute, unmangled --
-  // proves the fix renders through toDisplayPath's own root-membership check rather than
-  // blindly stripping a prefix from every row.
+  // Negative control: a row outside the resolved project root must stay absolute, unmangled -- proves the fix renders through toDisplayPath's own root-membership check rather than blindly stripping a prefix from every row.
   it('leaves an out-of-project --json filePath absolute (negative control)', () => {
     const outOfProjectAbs = normalizePath(join(tmpdir(), 'tg-types-outside-project-fixture', 'far.ts'))
     const sym: SymbolEntry = { name: 'OutOfProjectTypesFixture', kind: 'interface', filePath: outOfProjectAbs, lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }
     vi.mocked(querySymbols).mockReturnValueOnce([sym])
     const captured = withoutOverflowGuard(() => captureStdout(() => {
-      // limit: the per-kind display cap is applied after sorting on the stored absolute path,
-      // and this fixture's out-of-project path sorts behind every real row in the index. Raised
-      // so the cap cannot decide a test about path rendering.
+      // limit: the per-kind display cap is applied after sorting on the stored absolute path, and this fixture's out-of-project path sorts behind every real row in the index. Raised so the cap cannot decide a test about path rendering.
       const code = runTypes({ json: true, limit: 100000 })
       expect(code).toBe(0)
     }))
@@ -719,9 +615,7 @@ describe('runTypes integration', () => {
   })
 
   it('sorts a realistic mixed-case file-path set in the expected en-locale order (regression: comparator must not silently drop its locale pin)', () => {
-    // Must live under process.cwd() (the repo root, matched against runTypes()'s own
-    // process.cwd()-scoped rootDir since #43's cross-project fix), not the bare OS temp dir --
-    // otherwise this fixture is now correctly excluded as belonging to a different project.
+    // Must live under process.cwd() (the repo root, matched against runTypes()'s own process.cwd()-scoped rootDir since #43's cross-project fix), not the bare OS temp dir -- otherwise this fixture is now correctly excluded as belonging to a different project.
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-locale-'))
     try {
       const fileA = join(dir, 'Banana.ts')
@@ -740,25 +634,14 @@ describe('runTypes integration', () => {
       const idxBanana = parsed.findIndex((r) => r.name === 'BananaLocaleFixture')
       expect(idxApple).toBeGreaterThanOrEqual(0)
       expect(idxBanana).toBeGreaterThanOrEqual(0)
-      // Under 'en'-locale comparison, "apple.ts" sorts before "Banana.ts"
-      // despite the case difference -- pins the exact expected order so a
-      // future regression in the comparator (wrong operand order, dropped
-      // locale argument, etc.) is still caught even though the locale
-      // -instability the fix addresses isn't independently observable from
-      // a single-environment/single-ICU-build test run.
+      // Under 'en'-locale comparison, "apple.ts" sorts before "Banana.ts" despite the case difference -- pins the exact expected order so a future regression in the comparator (wrong operand order, dropped locale argument, etc.) is still caught even though the locale -instability the fix addresses isn't independently observable from a single-environment/single-ICU-build test run.
       expect(idxApple).toBeLessThan(idxBanana)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  // Regression-coverage gap: `class` is not in TYPE_KINDS (line ~608), so the only path
-  // by which a class can ever appear in runTypes' output is the looksLikeTypeClass(cls.body)
-  // filter loop below the TYPE_KINDS scan. looksLikeTypeClass itself has thorough standalone
-  // unit tests (pydantic BaseModel, TypedDict, Protocol, @dataclass), but nothing exercised
-  // that filter loop through runTypes end-to-end -- a regression there (e.g. the loop being
-  // deleted, or its condition inverted) would pass every existing runTypes integration test
-  // while silently dropping every Python data-model class from `types` output.
+  // Regression-coverage gap: `class` is not in TYPE_KINDS (line ~608), so the only path by which a class can ever appear in runTypes' output is the looksLikeTypeClass(cls.body) filter loop below the TYPE_KINDS scan. looksLikeTypeClass itself has thorough standalone unit tests (pydantic BaseModel, TypedDict, Protocol, @dataclass), but nothing exercised that filter loop through runTypes end-to-end -- a regression there (e.g. the loop being deleted, or its condition inverted) would pass every existing runTypes integration test while silently dropping every Python data-model class from `types` output.
   it('surfaces a Python pydantic-style class via the looksLikeTypeClass filter, not just TYPE_KINDS symbols', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-pyclass-'))
     try {
@@ -781,10 +664,7 @@ describe('runTypes integration', () => {
     }
   })
 
-  // Regression: TYPE_KINDS (line ~612) omitted 'union', so a Rust `union` -- a type
-  // declaration exactly like `struct`/`enum`/`trait`, all of which ARE in TYPE_KINDS -- was
-  // indexed (parser.ts's RUST_KIND_BY_TYPE maps union_item -> 'union') but never surfaced by
-  // `token-goat types`. Caught by Codex review of the commit that added Rust union indexing.
+  // Regression: TYPE_KINDS (line ~612) omitted 'union', so a Rust `union` -- a type declaration exactly like `struct`/`enum`/`trait`, all of which ARE in TYPE_KINDS -- was indexed (parser.ts's RUST_KIND_BY_TYPE maps union_item -> 'union') but never surfaced by `token-goat types`. Caught by Codex review of the commit that added Rust union indexing.
   it('surfaces a Rust union via TYPE_KINDS, matching struct/enum/trait', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-rustunion-'))
     try {
@@ -807,11 +687,7 @@ describe('runTypes integration', () => {
     }
   })
 
-  // Regression: TYPE_KINDS (line ~626) never included 'protocol' -- Swift's extractor
-  // (languages/swift.ts) emits kind 'protocol' for `protocol Foo { ... }` declarations, a type
-  // declaration exactly analogous to `interface` (which IS in TYPE_KINDS) in every other
-  // extractor's vocabulary. Every Swift protocol was indexed but silently excluded from
-  // `token-goat types`, the same class of gap already fixed once for Rust `union`.
+  // Regression: TYPE_KINDS (line ~626) never included 'protocol' -- Swift's extractor (languages/swift.ts) emits kind 'protocol' for `protocol Foo { ... }` declarations, a type declaration exactly analogous to `interface` (which IS in TYPE_KINDS) in every other extractor's vocabulary. Every Swift protocol was indexed but silently excluded from `token-goat types`, the same class of gap already fixed once for Rust `union`.
   it('surfaces a Swift protocol via TYPE_KINDS, matching interface', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-swiftprotocol-'))
     try {
@@ -834,12 +710,7 @@ describe('runTypes integration', () => {
     }
   })
 
-  // Regression: TYPE_KINDS (line ~629) never included 'opaque' -- Zig's extractor
-  // (languages/zig.ts's CONTAINER_RE) emits kind 'opaque' for `const X = opaque { ... }`
-  // declarations, a type declaration exactly analogous to `struct`/`enum`/`union` (all of which
-  // ARE in TYPE_KINDS, and are matched by the very same regex/code path in zig.ts). Every Zig
-  // opaque type was indexed but silently excluded from `token-goat types`, the same class of gap
-  // already fixed twice (Rust 'union', Swift 'protocol').
+  // Regression: TYPE_KINDS (line ~629) never included 'opaque' -- Zig's extractor (languages/zig.ts's CONTAINER_RE) emits kind 'opaque' for `const X = opaque { ... }` declarations, a type declaration exactly analogous to `struct`/`enum`/`union` (all of which ARE in TYPE_KINDS, and are matched by the very same regex/code path in zig.ts). Every Zig opaque type was indexed but silently excluded from `token-goat types`, the same class of gap already fixed twice (Rust 'union', Swift 'protocol').
   it('surfaces a Zig opaque type via TYPE_KINDS, matching struct/enum/union', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-zigopaque-'))
     try {
@@ -859,11 +730,7 @@ describe('runTypes integration', () => {
     }
   })
 
-  // Regression: TYPE_KINDS (line ~632) never included 'mixin' -- Dart's extractor
-  // (languages/dart.ts's MIXIN_RE) emits kind 'mixin' for `mixin Foo { ... }` declarations, a
-  // type declaration exactly analogous to `class`/`enum` (both indexed the same way), yet every
-  // Dart mixin was silently excluded from `token-goat types`, the same class of gap already
-  // fixed three times (Rust 'union', Swift 'protocol', Zig 'opaque').
+  // Regression: TYPE_KINDS (line ~632) never included 'mixin' -- Dart's extractor (languages/dart.ts's MIXIN_RE) emits kind 'mixin' for `mixin Foo { ... }` declarations, a type declaration exactly analogous to `class`/`enum` (both indexed the same way), yet every Dart mixin was silently excluded from `token-goat types`, the same class of gap already fixed three times (Rust 'union', Swift 'protocol', Zig 'opaque').
   it('surfaces a Dart mixin via TYPE_KINDS, matching class/enum', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-dartmixin-'))
     try {
@@ -883,11 +750,7 @@ describe('runTypes integration', () => {
     }
   })
 
-  // Regression: TYPE_KINDS (line ~632) never included 'extension' -- Dart's extractor
-  // (languages/dart.ts's EXTENSION_RE) and Swift's (languages/swift.ts's TYPE_HEADER_RE) both
-  // emit kind 'extension' for an `extension Foo on Bar { ... }` declaration, yet every extension
-  // was silently excluded from `token-goat types` despite being indexed identically to the
-  // struct/enum/protocol kinds that already are in TYPE_KINDS.
+  // Regression: TYPE_KINDS (line ~632) never included 'extension' -- Dart's extractor (languages/dart.ts's EXTENSION_RE) and Swift's (languages/swift.ts's TYPE_HEADER_RE) both emit kind 'extension' for an `extension Foo on Bar { ... }` declaration, yet every extension was silently excluded from `token-goat types` despite being indexed identically to the struct/enum/protocol kinds that already are in TYPE_KINDS.
   it('surfaces a Dart extension via TYPE_KINDS, matching class/mixin', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-dartextension-'))
     try {
@@ -907,10 +770,7 @@ describe('runTypes integration', () => {
     }
   })
 
-  // Regression: TYPE_KINDS (line ~632) never included 'actor' -- Swift's extractor
-  // (languages/swift.ts's TYPE_HEADER_RE) emits kind 'actor' for `actor Foo { ... }`
-  // declarations (Swift concurrency's reference type, declared the same way as class/struct),
-  // yet every Swift actor was silently excluded from `token-goat types`.
+  // Regression: TYPE_KINDS (line ~632) never included 'actor' -- Swift's extractor (languages/swift.ts's TYPE_HEADER_RE) emits kind 'actor' for `actor Foo { ... }` declarations (Swift concurrency's reference type, declared the same way as class/struct), yet every Swift actor was silently excluded from `token-goat types`.
   it('surfaces a Swift actor via TYPE_KINDS, matching class/struct', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-swiftactor-'))
     try {
@@ -930,14 +790,7 @@ describe('runTypes integration', () => {
     }
   })
 
-  // Regression: TYPE_KINDS never included 'apex_class'/'apex_interface'/'apex_enum' -- the
-  // Apex extractor (languages/apex.ts) emits those kinds (not the generic 'class'/'interface'/
-  // 'enum' TYPE_KINDS already recognizes) for `class`/`interface`/`enum` declarations, and
-  // runTypes' separate looksLikeTypeClass(cls.body) fallback only ever queries kind === 'class'
-  // literally, so it never picks up 'apex_class' either. Every Apex class/interface/enum was
-  // indexed but silently excluded from `token-goat types` in its entirety, the same class of
-  // gap already fixed for Rust union, Swift protocol/actor, Zig opaque, Dart mixin/extension,
-  // and proto message/enum/service.
+  // Regression: TYPE_KINDS never included 'apex_class'/'apex_interface'/'apex_enum' -- the Apex extractor (languages/apex.ts) emits those kinds (not the generic 'class'/'interface'/ 'enum' TYPE_KINDS already recognizes) for `class`/`interface`/`enum` declarations, and runTypes' separate looksLikeTypeClass(cls.body) fallback only ever queries kind === 'class' literally, so it never picks up 'apex_class' either. Every Apex class/interface/enum was indexed but silently excluded from `token-goat types` in its entirety, the same class of gap already fixed for Rust union, Swift protocol/actor, Zig opaque, Dart mixin/extension, and proto message/enum/service.
   it('surfaces Apex class/interface/enum via TYPE_KINDS, matching struct/enum/interface', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-apex-'))
     try {
@@ -969,13 +822,7 @@ describe('runTypes integration', () => {
     }
   })
 
-  // Regression: TYPE_KINDS never included 'proto_message'/'proto_enum'/'proto_service' --
-  // the .proto extractor (languages/proto_idx.ts's KIND_MAP) emits those kinds for `message`,
-  // `enum`, and `service` declarations, the exact type/interface-shaped constructs TYPE_KINDS
-  // exists to surface (a proto message is analogous to struct, a proto enum to enum, a proto
-  // service's RPC method set to interface), yet every one was silently excluded from
-  // `token-goat types` -- the same class of gap already fixed for Rust union, Swift
-  // protocol/actor, Zig opaque, and Dart mixin/extension.
+  // Regression: TYPE_KINDS never included 'proto_message'/'proto_enum'/'proto_service' -- the .proto extractor (languages/proto_idx.ts's KIND_MAP) emits those kinds for `message`, `enum`, and `service` declarations, the exact type/interface-shaped constructs TYPE_KINDS exists to surface (a proto message is analogous to struct, a proto enum to enum, a proto service's RPC method set to interface), yet every one was silently excluded from `token-goat types` -- the same class of gap already fixed for Rust union, Swift protocol/actor, Zig opaque, and Dart mixin/extension.
   it('surfaces proto message/enum/service via TYPE_KINDS, matching struct/enum/interface', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-proto-'))
     try {
@@ -1014,14 +861,7 @@ describe('runTypes integration', () => {
     }
   })
 
-  // Regression: TYPE_KINDS never included 'graphql_type'/'graphql_interface'/'graphql_input'/
-  // 'graphql_enum'/'graphql_union' -- the GraphQL extractor (languages/graphql_idx.ts's
-  // KIND_MAP) emits those prefixed kinds (not the generic 'type'/'interface'/'enum'/'union'
-  // TYPE_KINDS already recognizes) for `type`/`interface`/`input`/`enum`/`union` declarations,
-  // so every GraphQL type/interface/input/enum/union was indexed but silently excluded from
-  // `token-goat types` in its entirety -- the same class of gap already fixed for Rust union,
-  // Swift protocol/actor, Zig opaque, Dart mixin/extension, proto message/enum/service, and
-  // Apex class/interface/enum.
+  // Regression: TYPE_KINDS never included 'graphql_type'/'graphql_interface'/'graphql_input'/ 'graphql_enum'/'graphql_union' -- the GraphQL extractor (languages/graphql_idx.ts's KIND_MAP) emits those prefixed kinds (not the generic 'type'/'interface'/'enum'/'union' TYPE_KINDS already recognizes) for `type`/`interface`/`input`/`enum`/`union` declarations, so every GraphQL type/interface/input/enum/union was indexed but silently excluded from `token-goat types` in its entirety -- the same class of gap already fixed for Rust union, Swift protocol/actor, Zig opaque, Dart mixin/extension, proto message/enum/service, and Apex class/interface/enum.
   it('surfaces GraphQL type/interface/input/enum/union via TYPE_KINDS, matching struct/enum/interface', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-graphql-'))
     try {
@@ -1068,15 +908,7 @@ describe('runTypes integration', () => {
     }
   })
 
-  // Regression: TYPE_KINDS never included 'object' -- languages/kotlin.ts and languages/scala.ts
-  // both deliberately emit kind 'object' (not folded into 'class') for a top-level `object Foo {
-  // ... }` singleton declaration or a Kotlin companion object, per each file's own comment. Unlike
-  // a plain class/interface/enum, `runTypes`' fallback loop only ever re-queries kind === 'class'
-  // through looksLikeTypeClass -- it never considers 'object' rows at all, so every Kotlin/Scala
-  // object/companion-object declaration was indexed but silently and totally excluded from
-  // `token-goat types`, the same class of gap already fixed for Rust union, Swift
-  // protocol/actor, Zig opaque, Dart mixin/extension, proto message/enum/service, Apex
-  // class/interface/enum, and GraphQL type/interface/input/enum/union.
+  // Regression: TYPE_KINDS never included 'object' -- languages/kotlin.ts and languages/scala.ts both deliberately emit kind 'object' (not folded into 'class') for a top-level `object Foo { ... }` singleton declaration or a Kotlin companion object, per each file's own comment. Unlike a plain class/interface/enum, `runTypes`' fallback loop only ever re-queries kind === 'class' through looksLikeTypeClass -- it never considers 'object' rows at all, so every Kotlin/Scala object/companion-object declaration was indexed but silently and totally excluded from `token-goat types`, the same class of gap already fixed for Rust union, Swift protocol/actor, Zig opaque, Dart mixin/extension, proto message/enum/service, Apex class/interface/enum, and GraphQL type/interface/input/enum/union.
   it("surfaces Kotlin/Scala 'object' declarations via TYPE_KINDS, matching class/interface", () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-object-'))
     try {
@@ -1103,16 +935,7 @@ describe('runTypes integration', () => {
     }
   })
 
-  // Regression: TYPE_KINDS never included 'graphql_scalar'. languages/graphql_idx.ts's own
-  // KIND_MAP (the same map that already supplies 'graphql_type'/'graphql_interface'/
-  // 'graphql_input'/'graphql_enum'/'graphql_union', all already fixed and present in TYPE_KINDS)
-  // also maps the `scalar` keyword to 'graphql_scalar' -- a GraphQL custom scalar declaration
-  // (`scalar DateTime`) is a first-class SDL type declaration exactly like `enum`/`union`, but
-  // its kind was the one KIND_MAP entry never added to TYPE_KINDS, so every `scalar` declaration
-  // was indexed but silently excluded from `token-goat types` in its entirety -- the same class
-  // of gap already fixed for the other five GraphQL kinds, Rust union, Swift protocol/actor, Zig
-  // opaque, Dart mixin/extension, proto message/enum/service, Apex class/interface/enum, and
-  // Kotlin/Scala 'object'.
+  // Regression: TYPE_KINDS never included 'graphql_scalar'. languages/graphql_idx.ts's own KIND_MAP (the same map that already supplies 'graphql_type'/'graphql_interface'/ 'graphql_input'/'graphql_enum'/'graphql_union', all already fixed and present in TYPE_KINDS) also maps the `scalar` keyword to 'graphql_scalar' -- a GraphQL custom scalar declaration (`scalar DateTime`) is a first-class SDL type declaration exactly like `enum`/`union`, but its kind was the one KIND_MAP entry never added to TYPE_KINDS, so every `scalar` declaration was indexed but silently excluded from `token-goat types` in its entirety -- the same class of gap already fixed for the other five GraphQL kinds, Rust union, Swift protocol/actor, Zig opaque, Dart mixin/extension, proto message/enum/service, Apex class/interface/enum, and Kotlin/Scala 'object'.
   it("surfaces GraphQL 'scalar' declarations via TYPE_KINDS, matching the other GraphQL kinds", () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-graphql-scalar-'))
     try {
@@ -1132,15 +955,7 @@ describe('runTypes integration', () => {
     }
   })
 
-  // Regression: TYPE_KINDS never included 'graphql_extend'. languages/graphql_idx.ts's TYPE_RE
-  // handler maps EVERY `extend type|interface|input|enum|union|scalar Foo { ... }` declaration
-  // (GraphQL's mechanism for adding fields to a type from another file/module, ubiquitous in
-  // federation and schema-stitching) to this one shared kind regardless of which keyword follows
-  // `extend` -- but unlike the six non-extend KIND_MAP entries above (all already fixed), this
-  // kind was never added to TYPE_KINDS, so every `extend` declaration was indexed but silently
-  // excluded from `token-goat types` in its entirety -- the same class of gap already fixed for
-  // the other six GraphQL kinds, Rust union, Swift protocol/actor, Zig opaque, Dart mixin/
-  // extension, proto message/enum/service, Apex class/interface/enum, and Kotlin/Scala 'object'.
+  // Regression: TYPE_KINDS never included 'graphql_extend'. languages/graphql_idx.ts's TYPE_RE handler maps EVERY `extend type|interface|input|enum|union|scalar Foo { ... }` declaration (GraphQL's mechanism for adding fields to a type from another file/module, ubiquitous in federation and schema-stitching) to this one shared kind regardless of which keyword follows `extend` -- but unlike the six non-extend KIND_MAP entries above (all already fixed), this kind was never added to TYPE_KINDS, so every `extend` declaration was indexed but silently excluded from `token-goat types` in its entirety -- the same class of gap already fixed for the other six GraphQL kinds, Rust union, Swift protocol/actor, Zig opaque, Dart mixin/ extension, proto message/enum/service, Apex class/interface/enum, and Kotlin/Scala 'object'.
   it("surfaces GraphQL 'extend' declarations via TYPE_KINDS, matching the other GraphQL kinds", () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-graphql-extend-'))
     try {
@@ -1163,21 +978,12 @@ describe('runTypes integration', () => {
     }
   })
 
-  // Regression: TYPE_KINDS never included 'sfc_script_class'. languages/sfc_idx.ts (Vue/Svelte/
-  // Astro single-file components) emits this distinct kind for a top-level `class Foo { ... }`
-  // declaration in a component's script block rather than the generic 'class', so unlike a plain
-  // class it never reaches runTypes' looksLikeTypeClass fallback either (that loop only ever
-  // re-queries kind === 'class' literally). Every SFC top-level class was indexed but silently
-  // excluded from `token-goat types` in its entirety -- the same class of gap already fixed for
-  // Rust union, Swift protocol/actor, Zig opaque, Dart mixin/extension, proto message/enum/
-  // service, Apex class/interface/enum, GraphQL type/interface/input/enum/union/scalar, and
-  // Kotlin/Scala 'object'.
+  // Regression: TYPE_KINDS never included 'sfc_script_class'. languages/sfc_idx.ts (Vue/Svelte/ Astro single-file components) emits this distinct kind for a top-level `class Foo { ... }` declaration in a component's script block rather than the generic 'class', so unlike a plain class it never reaches runTypes' looksLikeTypeClass fallback either (that loop only ever re-queries kind === 'class' literally). Every SFC top-level class was indexed but silently excluded from `token-goat types` in its entirety -- the same class of gap already fixed for Rust union, Swift protocol/actor, Zig opaque, Dart mixin/extension, proto message/enum/ service, Apex class/interface/enum, GraphQL type/interface/input/enum/union/scalar, and Kotlin/Scala 'object'.
   it("surfaces a Vue SFC top-level class via TYPE_KINDS, matching class/interface", () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-sfc-class-'))
     try {
       const file = join(dir, 'Fixture.vue')
-      // The script tag is fixture text for the Vue parser, written to a temp path and read back by
-      // the indexer. Nothing renders it, so there is no markup sink here.
+      // The script tag is fixture text for the Vue parser, written to a temp path and read back by the indexer. Nothing renders it, so there is no markup sink here.
       writeFileSync(
         file, // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag
         ['<script>', 'export class TypesSfcClassFixture {', '  constructor() {}', '}', '</script>', ''].join('\n'),
@@ -1199,10 +1005,7 @@ describe('runTypes integration', () => {
 
 // ---- integration: runCallers against the real repo index -------------------
 
-// `LIMIT 0` in SQL always returns zero rows on every kind-scan, so a project with type
-// declarations that genuinely exist would otherwise be reported as "no type declarations
-// found" -- a wrong answer, not just a permissive input. limit: 0 (or negative) must be
-// rejected up front.
+// `LIMIT 0` in SQL always returns zero rows on every kind-scan, so a project with type declarations that genuinely exist would otherwise be reported as "no type declarations found" -- a wrong answer, not just a permissive input. limit: 0 (or negative) must be rejected up front.
 describe('runTypes limit validation', () => {
   it('rejects limit: 0 as an explicit invalid-argument error instead of returning a false "no type declarations found"', () => {
     let errCaptured = ''
@@ -1253,8 +1056,7 @@ describe('runTypes --grep', () => {
     }
   })
 
-  // Negative control: proves the pattern actually narrows the set rather than the plumbing
-  // being a no-op that happens to match by coincidence.
+  // Negative control: proves the pattern actually narrows the set rather than the plumbing being a no-op that happens to match by coincidence.
   it('negative control: an unfiltered call still returns both declarations', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-types-grep-neg-'))
     try {
@@ -1301,10 +1103,7 @@ describe('runTypes --grep', () => {
       writeFileSync(file, 'interface TypesGrepInvalidFixture { x: number }\n')
       indexFileSync(normalizePath(file))
 
-      // '[unclosed' is not valid regex; compileGrepMatcher falls back to a literal substring
-      // match, which this name does not contain -- assert only that the call succeeds and
-      // filters (rather than throwing), matching the invalid-regex contract for the sibling
-      // outline/skeleton --grep flags.
+      // '[unclosed' is not valid regex; compileGrepMatcher falls back to a literal substring match, which this name does not contain -- assert only that the call succeeds and filters (rather than throwing), matching the invalid-regex contract for the sibling outline/skeleton --grep flags.
       const captured = captureStdout(() => {
         const code = runTypes({ file: normalizePath(file), json: true, grep: '[unclosed' })
         expect(code).toBe(0)
@@ -1323,9 +1122,7 @@ describe('runCallers integration', () => {
       const code = runCallers({ symbol: 'querySymbols' })
       expect(code).toBe(0)
     })
-    // Length-only would still pass on any non-empty (even malformed) output. Pin the actual
-    // documented plain-text shape (`{caller}\t{file}:{line}`, see runCallers' emit loop) so a
-    // regression that dropped the tab separator or the file:line suffix is caught here.
+    // Length-only would still pass on any non-empty (even malformed) output. Pin the actual documented plain-text shape (`{caller}\t{file}:{line}`, see runCallers' emit loop) so a regression that dropped the tab separator or the file:line suffix is caught here.
     expect(captured).toMatch(/^\S+\t.+:\d+$/m)
   })
 
@@ -1338,15 +1135,12 @@ describe('runCallers integration', () => {
     const captured = captureStdout(() => {
       runCallers({ symbol: 'querySymbols', json: true })
     })
-    // Shape pin updated from "bare array" to the shared envelope; every row-level assertion
-    // below (caller/line types, root-relative `file` spelling) is unchanged.
+    // Shape pin updated from "bare array" to the shared envelope; every row-level assertion below (caller/line types, root-relative `file` spelling) is unchanged.
     const arr = envelopeItems<{ caller: string; kind: string; file: string; filePath: string; line: number }>(captured)
     expect(arr.length).toBeGreaterThan(0)
     expect(typeof arr[0]?.caller).toBe('string')
     expect(typeof arr[0]?.line).toBe('number')
-    // --json path-spelling: `file` used to echo queryRefs' raw absolute row verbatim, while the
-    // plain-text sibling test above already renders `toDisplayPath(rootDir, ...)`. Every row here
-    // is a real caller inside this repo, so every `file` must be root-relative.
+    // --json path-spelling: `file` used to echo queryRefs' raw absolute row verbatim, while the plain-text sibling test above already renders `toDisplayPath(rootDir, ...)`. Every row here is a real caller inside this repo, so every `file` must be root-relative.
     for (const e of arr) {
       expect(e.file).not.toMatch(/^[a-zA-Z]:[/\\]|^\//)
       expect(e.filePath).not.toMatch(/^[a-zA-Z]:[/\\]|^\//)
@@ -1355,9 +1149,7 @@ describe('runCallers integration', () => {
     expect(arr[0]?.filePath).toBe(arr[0]?.file)
   })
 
-  // Transitional dual-key release (Council Release 2): `file` and `filePath` must carry the
-  // identical value on every row -- this is the assertion that actually catches a divergence
-  // bug between the two keys, which a mere "the key exists" check would not.
+  // Transitional dual-key release (Council Release 2): `file` and `filePath` must carry the identical value on every row -- this is the assertion that actually catches a divergence bug between the two keys, which a mere "the key exists" check would not.
   it('emits filePath equal to file on every row (transitional dual-key release)', () => {
     const captured = captureStdout(() => {
       runCallers({ symbol: 'querySymbols', json: true })
@@ -1367,9 +1159,7 @@ describe('runCallers integration', () => {
     for (const row of arr) expect(row.filePath).toBe(row.file)
   })
 
-  // Negative control: a row outside the resolved project root must stay absolute, unmangled --
-  // proves the fix renders through toDisplayPath's own root-membership check rather than
-  // blindly stripping a prefix from every row.
+  // Negative control: a row outside the resolved project root must stay absolute, unmangled -- proves the fix renders through toDisplayPath's own root-membership check rather than blindly stripping a prefix from every row.
   it('leaves an out-of-project --json file absolute (negative control)', () => {
     const outOfProjectAbs = normalizePath(join(tmpdir(), 'tg-callers-outside-project-fixture', 'far.ts'))
     vi.mocked(queryRefs).mockReturnValueOnce([{ name: 'querySymbols', filePath: outOfProjectAbs, line: 5, col: 0, context: '' }])
@@ -1394,9 +1184,7 @@ describe('runCallers integration', () => {
     expect(resolveCallers('__xyzzy_no_such_symbol_9f3k__')).toEqual([])
   })
 
-  // `LIMIT 0` in SQL always returns zero rows, so a symbol that genuinely has callers would
-  // otherwise be reported as "no references found" -- a wrong answer, not just a permissive
-  // input. limit: 0 (or negative) must be rejected up front instead of reaching queryRefs.
+  // `LIMIT 0` in SQL always returns zero rows, so a symbol that genuinely has callers would otherwise be reported as "no references found" -- a wrong answer, not just a permissive input. limit: 0 (or negative) must be rejected up front instead of reaching queryRefs.
   it('rejects limit: 0 as an explicit invalid-argument error instead of returning a false "no references found"', () => {
     let errCaptured = ''
     const origStderr = process.stderr.write.bind(process.stderr)
@@ -1509,10 +1297,7 @@ describe('runCallers file::symbol spec', () => {
     }
   })
 
-  // MOST IMPORTANT: anti-regression for the 0ec04da8 bug class -- a caller living in a file OTHER
-  // than the one that defines the symbol must still surface when a file::symbol spec is used,
-  // because the file half of the spec only disambiguates WHICH definition is meant, it must never
-  // scope queryRefs itself to call sites inside that same file.
+  // MOST IMPORTANT: anti-regression for the 0ec04da8 bug class -- a caller living in a file OTHER than the one that defines the symbol must still surface when a file::symbol spec is used, because the file half of the spec only disambiguates WHICH definition is meant, it must never scope queryRefs itself to call sites inside that same file.
   it('still surfaces a caller from a DIFFERENT file when file::symbol names the defining file', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-callers-otherfile-'))
     try {
@@ -1583,9 +1368,7 @@ describe('runCallers file::symbol spec', () => {
     }
   })
 
-  // Assertion-strength requirement: pin which query ran FIRST and with exactly what args before
-  // trusting any property on it -- a property-only assertion over mock.calls would pass
-  // vacuously even if the wrong number/order of querySymbols calls happened.
+  // Assertion-strength requirement: pin which query ran FIRST and with exactly what args before trusting any property on it -- a property-only assertion over mock.calls would pass vacuously even if the wrong number/order of querySymbols calls happened.
   it('pins the disambiguating querySymbols call as the first call, with the exact name/filePath/limit it must use', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-callers-pin-'))
     try {
@@ -1646,9 +1429,7 @@ describe('runCallers --exclude-tests', () => {
     }
   })
 
-  // Same fully-suppressed scenario as the test above, but under --json: previously this fell
-  // through to emitErr's plain prose even with --json set, so a --json consumer got unparseable
-  // text on stdout instead of a JSON body -- the same gap --grep's own sibling branch never had.
+  // Same fully-suppressed scenario as the test above, but under --json: previously this fell through to emitErr's plain prose even with --json set, so a --json consumer got unparseable text on stdout instead of a JSON body -- the same gap --grep's own sibling branch never had.
   it('emits parseable JSON with hiddenByExcludeTests, not plain prose, when --json + --exclude-tests hides every caller', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-callers-exclude-empty-json-'))
     try {
@@ -1843,12 +1624,7 @@ describe('runCallers --grep', () => {
     }
   })
 
-  // Caller NAMEs are valid JS identifiers, except the one synthetic value resolveCallers emits
-  // for a module-scope call site: the literal string '(module scope)'. That's the only caller
-  // string containing regex-metacharacter bytes, so it doubles as the vehicle for proving the
-  // invalid-regex fallback does a literal substring match rather than throwing: '(' alone is an
-  // unterminated group and fails to compile, but is a literal substring of '(module scope)' and
-  // of no named-function caller.
+  // Caller NAMEs are valid JS identifiers, except the one synthetic value resolveCallers emits for a module-scope call site: the literal string '(module scope)'. That's the only caller string containing regex-metacharacter bytes, so it doubles as the vehicle for proving the invalid-regex fallback does a literal substring match rather than throwing: '(' alone is an unterminated group and fails to compile, but is a literal substring of '(module scope)' and of no named-function caller.
   it('falls back to a literal substring match for an invalid regex, never throwing', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-callers-grep-literal-'))
     try {
@@ -1876,10 +1652,7 @@ describe('runCallers --grep', () => {
 // ---- resolveCallers/runCallers cross-project scoping (regression) -----------
 
 describe('resolveCallers cross-project scoping', () => {
-  // Regression: global.db is a single machine-wide index shared across every project ever
-  // indexed (constants.ts). resolveCallers used to run queryRefs with no project scope, so a
-  // caller of a same-named symbol living in a completely unrelated project on the same machine
-  // would leak into this project's caller list.
+  // Regression: global.db is a single machine-wide index shared across every project ever indexed (constants.ts). resolveCallers used to run queryRefs with no project scope, so a caller of a same-named symbol living in a completely unrelated project on the same machine would leak into this project's caller list.
   it('does not report a caller from a different project for a same-named symbol', () => {
     const rootA = mkdtempSync(join(tmpdir(), 'tg-callers-rootA-'))
     const rootB = mkdtempSync(join(tmpdir(), 'tg-callers-rootB-'))
@@ -1909,23 +1682,14 @@ describe('resolveCallers cross-project scoping', () => {
 
 describe('runDead integration', () => {
   it('exits 0 even when no dead symbols are found', () => {
-    // 'function' is a real, recognized kind (this suite's own beforeAll indexes the whole src
-    // tree, so it always has functions to pass the kind-validation check), but querySymbols is
-    // stubbed to return none for this one call so the case exercises the "no dead symbols found"
-    // message path deterministically rather than depending on this repo's own dead-symbol count
-    // staying at zero over time.
+    // 'function' is a real, recognized kind (this suite's own beforeAll indexes the whole src tree, so it always has functions to pass the kind-validation check), but querySymbols is stubbed to return none for this one call so the case exercises the "no dead symbols found" message path deterministically rather than depending on this repo's own dead-symbol count staying at zero over time.
     vi.mocked(querySymbols).mockReturnValueOnce([])
     const code = runDead({ kind: 'function' })
     expect(code).toBe(0)
   })
 
   it('does not scan the index for known kinds when the static list already covers them', () => {
-    // The scoped distinct-kind query cannot use an index (project scope is a LIKE over a
-    // lowercased column), so it scans the whole shared index: measured at 167ms of a 785ms
-    // `dead` on this machine. Every kind in CORE_SYMBOL_KINDS is answerable without it, and the
-    // default kind is 'function'. Nothing about skipping it is visible in the output, so this
-    // call-count assertion is the only thing that fails if the query moves back ahead of the
-    // static check.
+    // The scoped distinct-kind query cannot use an index (project scope is a LIKE over a lowercased column), so it scans the whole shared index: measured at 167ms of a 785ms `dead` on this machine. Every kind in CORE_SYMBOL_KINDS is answerable without it, and the default kind is 'function'. Nothing about skipping it is visible in the output, so this call-count assertion is the only thing that fails if the query moves back ahead of the static check.
     vi.mocked(distinctSymbolKinds).mockClear()
     vi.mocked(querySymbols).mockReturnValueOnce([])
     expect(runDead({ kind: 'function' })).toBe(0)
@@ -1933,16 +1697,9 @@ describe('runDead integration', () => {
   })
 
   it('still consults the index for a real kind the static list does not name', () => {
-    // The union exists for kinds a language adapter emits that CORE_SYMBOL_KINDS never listed --
-    // this uses a made-up kind name specifically because it must NOT be one of CORE_SYMBOL_KINDS's
-    // own entries (real adapter kinds like 'heading' are now in that static list -- see the
-    // documentation/markup-kinds fix below -- so using one here would exercise the static-list
-    // path instead of the fallback this test targets). Rejecting a real-but-unlisted kind would be
-    // a false "unrecognized kind" error, so the fallback must fire exactly when the static check
-    // comes up short.
+    // The union exists for kinds a language adapter emits that CORE_SYMBOL_KINDS never listed -- this uses a made-up kind name specifically because it must NOT be one of CORE_SYMBOL_KINDS's own entries (real adapter kinds like 'heading' are now in that static list -- see the documentation/markup-kinds fix below -- so using one here would exercise the static-list path instead of the fallback this test targets). Rejecting a real-but-unlisted kind would be a false "unrecognized kind" error, so the fallback must fire exactly when the static check comes up short.
     vi.mocked(distinctSymbolKinds).mockClear()
-    // Stubbed rather than relying on this suite's index: the point here is the wiring, that a kind
-    // the static list misses is looked up and then accepted, not which kinds this fixture holds.
+    // Stubbed rather than relying on this suite's index: the point here is the wiring, that a kind the static list misses is looked up and then accepted, not which kinds this fixture holds.
     vi.mocked(distinctSymbolKinds).mockReturnValueOnce(['newly_added_kind_not_yet_static'])
     vi.mocked(querySymbols).mockReturnValueOnce([])
     const errCaptured = captureStderr(() => {
@@ -1953,25 +1710,13 @@ describe('runDead integration', () => {
   })
 
   it('CORE_SYMBOL_KINDS is a superset of TYPE_KINDS (invariant, not a mirror of either list)', () => {
-    // The bug this test closes: CORE_SYMBOL_KINDS was an independent hand-maintained literal that
-    // silently drifted 22 entries behind TYPE_KINDS in the same file, rejecting real adapter kinds
-    // (e.g. 'var') as typos. Deriving this test's expectation from the two constants themselves
-    // (rather than hardcoding either list's contents here) is what makes it fail automatically on
-    // future drift instead of mirroring whatever the implementation currently says.
+    // The bug this test closes: CORE_SYMBOL_KINDS was an independent hand-maintained literal that silently drifted 22 entries behind TYPE_KINDS in the same file, rejecting real adapter kinds (e.g. 'var') as typos. Deriving this test's expectation from the two constants themselves (rather than hardcoding either list's contents here) is what makes it fail automatically on future drift instead of mirroring whatever the implementation currently says.
     const missing = TYPE_KINDS_FOR_TEST.filter((k) => !CORE_SYMBOL_KINDS_FOR_TEST.includes(k))
     expect(missing).toEqual([])
   })
 
   it('recognizes a representative sample of real adapter kinds as known, not typos, in a project with none of them', () => {
-    // Regression for the reported bug: `dead --kind var` in a real Python-only project (which has
-    // zero 'var' symbols) was rejected as "Unrecognized kind: 'var' Did you mean: - variable" --
-    // a misleading suggestion, since 'var' and 'variable' are different kinds. distinctSymbolKinds
-    // is stubbed to return none of these (this project truly has none), so any kind that passes
-    // must be recognized via the static CORE_SYMBOL_KINDS list, not the index fallback.
-    // Both stubs are persistent (not ...Once) because a statically-recognized kind never reaches
-    // distinctSymbolKinds at all, so a one-shot value would be left unconsumed and would leak into
-    // whichever later test called it first. mockReset in the finally puts both back to the real
-    // implementation vi.fn(actual.x) was constructed with, keeping the leak inside this test.
+    // Regression for the reported bug: `dead --kind var` in a real Python-only project (which has zero 'var' symbols) was rejected as "Unrecognized kind: 'var' Did you mean: - variable" -- a misleading suggestion, since 'var' and 'variable' are different kinds. distinctSymbolKinds is stubbed to return none of these (this project truly has none), so any kind that passes must be recognized via the static CORE_SYMBOL_KINDS list, not the index fallback. Both stubs are persistent (not ...Once) because a statically-recognized kind never reaches distinctSymbolKinds at all, so a one-shot value would be left unconsumed and would leak into whichever later test called it first. mockReset in the finally puts both back to the real implementation vi.fn(actual.x) was constructed with, keeping the leak inside this test.
     vi.mocked(distinctSymbolKinds).mockReturnValue([])
     vi.mocked(querySymbols).mockReturnValue([])
     try {
@@ -1999,8 +1744,7 @@ describe('runDead integration', () => {
   })
 
   it('negative control: a genuinely nonexistent kind is still rejected as unrecognized', () => {
-    // Without this, widening CORE_SYMBOL_KINDS to accept everything would pass the two tests
-    // above too -- this is what proves the fix widens the list rather than disabling the check.
+    // Without this, widening CORE_SYMBOL_KINDS to accept everything would pass the two tests above too -- this is what proves the fix widens the list rather than disabling the check.
     vi.mocked(distinctSymbolKinds).mockReturnValueOnce([])
     const errCaptured = captureStderr(() => {
       expect(runDead({ kind: 'bogusnonsense' })).toBe(1)
@@ -2036,9 +1780,7 @@ describe('runDead integration', () => {
     expect(errCaptured.toLowerCase()).toContain('top')
   })
 
-  // Transitional dual-key release (Council Release 2): `file` and `filePath` must carry the
-  // identical value on every row -- this is the assertion that actually catches a divergence
-  // bug between the two keys, which a mere "the key exists" check would not.
+  // Transitional dual-key release (Council Release 2): `file` and `filePath` must carry the identical value on every row -- this is the assertion that actually catches a divergence bug between the two keys, which a mere "the key exists" check would not.
   it('emits filePath equal to file on every row (transitional dual-key release)', () => {
     const captured = captureStdout(() => {
       runDead({ json: true, top: 5 })
@@ -2052,11 +1794,9 @@ describe('runDead integration', () => {
     const captured = captureStdout(() => {
       runDead({ json: true, top: 5 })
     })
-    // Shape pin updated from "bare array" to the shared envelope; the path-spelling assertion
-    // below is unchanged.
+    // Shape pin updated from "bare array" to the shared envelope; the path-spelling assertion below is unchanged.
     const parsed = envelopeItems<{ file: string; filePath: string }>(captured)
-    // --json path-spelling: `file` used to echo querySymbols' raw absolute row verbatim. Every
-    // row here comes from this repo's own scan, so every `file` must be root-relative.
+    // --json path-spelling: `file` used to echo querySymbols' raw absolute row verbatim. Every row here comes from this repo's own scan, so every `file` must be root-relative.
     for (const r of parsed) {
       expect(r.file).not.toMatch(/^[a-zA-Z]:[/\\]|^\//)
       expect(r.filePath).not.toMatch(/^[a-zA-Z]:[/\\]|^\//)
@@ -2065,9 +1805,7 @@ describe('runDead integration', () => {
     if (parsed[0] !== undefined) expect(parsed[0].filePath).toBe(parsed[0].file)
   })
 
-  // Negative control: a row outside the resolved project root must stay absolute, unmangled --
-  // proves the fix renders through toDisplayPath's own root-membership check rather than
-  // blindly stripping a prefix from every row.
+  // Negative control: a row outside the resolved project root must stay absolute, unmangled -- proves the fix renders through toDisplayPath's own root-membership check rather than blindly stripping a prefix from every row.
   it('leaves an out-of-project --json file absolute (negative control)', () => {
     const outOfProjectAbs = normalizePath(join(tmpdir(), 'tg-dead-outside-project-fixture', 'far.ts'))
     const sym: SymbolEntry = { name: 'outOfProjectDeadFixture9x2', kind: 'function', filePath: outOfProjectAbs, lineStart: 1, lineEnd: 2, body: '', docstring: '', parent: '' }
@@ -2086,9 +1824,7 @@ describe('runDead integration', () => {
 // ---- runDead --kind comma-separated union -----------------------------------
 
 describe('runDead --kind comma-separated union', () => {
-  // The regression that matters: `--kind function,method` must return exactly the SET UNION of
-  // running `--kind function` and `--kind method` separately, not merely "more than zero rows"
-  // (which a buggy implementation that only honored one of the two kinds would also satisfy).
+  // The regression that matters: `--kind function,method` must return exactly the SET UNION of running `--kind function` and `--kind method` separately, not merely "more than zero rows" (which a buggy implementation that only honored one of the two kinds would also satisfy).
   it('returns the union of two single-kind result sets', () => {
     const captureNames = (kind: string): Set<string> => {
       const captured = captureStdout(() => { runDead({ json: true, top: 500, kind }) })
@@ -2101,9 +1837,7 @@ describe('runDead --kind comma-separated union', () => {
 
     const expectedUnion = new Set([...fnOnly, ...methodOnly])
     expect(combined).toEqual(expectedUnion)
-    // Negative control: passes on both the buggy (single-kind) and fixed implementation only if
-    // it is trivially satisfied by an empty set -- guard against that by requiring both source
-    // sets be non-empty in this repo's own real index, so the union assertion above is load-bearing.
+    // Negative control: passes on both the buggy (single-kind) and fixed implementation only if it is trivially satisfied by an empty set -- guard against that by requiring both source sets be non-empty in this repo's own real index, so the union assertion above is load-bearing.
     expect(fnOnly.size).toBeGreaterThan(0)
     expect(methodOnly.size).toBeGreaterThan(0)
   })
@@ -2131,10 +1865,7 @@ describe('runDead --kind comma-separated union', () => {
 // ---- runDead cross-project scoping (regression) -----------------------------
 
 describe('runDead cross-project scoping', () => {
-  // Regression: global.db is a single machine-wide index shared across every project ever
-  // indexed (constants.ts). runDead used to run querySymbols/queryRefs with no project scope, so
-  // a function truly dead in one project could be scored ALIVE by a reference to a same-named
-  // symbol living in a completely unrelated project on the same machine.
+  // Regression: global.db is a single machine-wide index shared across every project ever indexed (constants.ts). runDead used to run querySymbols/queryRefs with no project scope, so a function truly dead in one project could be scored ALIVE by a reference to a same-named symbol living in a completely unrelated project on the same machine.
   it('reports a function as dead even when a same-named symbol is referenced in a different project', () => {
     const rootA = mkdtempSync(join(tmpdir(), 'tg-dead-rootA-'))
     const rootB = mkdtempSync(join(tmpdir(), 'tg-dead-rootB-'))
@@ -2167,10 +1898,7 @@ describe('runDead cross-project scoping', () => {
 // ---- resolveCallers / runDead same-project name-collision scoping (regression) ---------------
 
 describe('resolveCallers same-project name-collision scoping', () => {
-  // Regression: resolveCallers matched refs by bare name only, scoped to the project but not to
-  // which file actually defines the symbol being asked about. When two files in the same project
-  // each define a function with the identical name, a call resolving to file B's local copy was
-  // attributed as a "caller" of file A's unrelated same-named symbol too.
+  // Regression: resolveCallers matched refs by bare name only, scoped to the project but not to which file actually defines the symbol being asked about. When two files in the same project each define a function with the identical name, a call resolving to file B's local copy was attributed as a "caller" of file A's unrelated same-named symbol too.
   it('does not attribute another same-named symbol\'s local caller when a defining filePath is given', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-callers-collision-'))
     try {
@@ -2201,9 +1929,7 @@ describe('resolveCallers same-project name-collision scoping', () => {
 })
 
 describe('runDead same-project name-collision scoping', () => {
-  // Regression: runDead computed a symbol's ref count via a bare-name queryRefs scoped only to
-  // the project root, so a genuinely unused function in file A was scored ALIVE by a call that
-  // actually resolved to a different, same-named function locally defined and called in file B.
+  // Regression: runDead computed a symbol's ref count via a bare-name queryRefs scoped only to the project root, so a genuinely unused function in file A was scored ALIVE by a call that actually resolved to a different, same-named function locally defined and called in file B.
   it('reports a truly-unused function as dead even when a different file defines and calls a same-named function', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-dead-collision-'))
     try {
@@ -2240,11 +1966,7 @@ describe('runDead same-project name-collision scoping', () => {
 // ---- runDead virtual-dispatch ancestor-self-dispatch rescue (regression) ---
 
 describe('runDead virtual-dispatch rescue', () => {
-  // Regression: filterRefsForSymbol's cross-file heuristic misattributes a base class's own
-  // `this.<method>(...)` self-dispatch ref entirely to the base's own same-named definition
-  // (since the dispatch call's file DOES define a same-named symbol), starving every subclass
-  // override elsewhere of credit -- every compressBody override in tool_filters/*.ts false
-  // positived as dead until this rescue check was added.
+  // Regression: filterRefsForSymbol's cross-file heuristic misattributes a base class's own `this.<method>(...)` self-dispatch ref entirely to the base's own same-named definition (since the dispatch call's file DOES define a same-named symbol), starving every subclass override elsewhere of credit -- every compressBody override in tool_filters/*.ts false positived as dead until this rescue check was added.
   it('does not flag a named-class polymorphic override as dead, but still flags a genuinely unused sibling method', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-dead-vdispatch-named-'))
     try {
@@ -2281,12 +2003,7 @@ describe('runDead virtual-dispatch rescue', () => {
     }
   })
 
-  // Regression: an anonymous class expression (`new (class extends Base { ... })()`, the shape
-  // used by makeAiCliFilter/makeLanguageFilter in tool_filters/families.ts) has no name of its
-  // own, so the extends-clause ref's `context` falls back to the nearest enclosing NAMED scope --
-  // the factory function -- rather than a (nonexistent) class name. enclosingClass (kind ===
-  // 'class' only) returned null for these, silently skipping the rescue check entirely; fixed by
-  // enclosingNamedScope also matching kind === 'function'.
+  // Regression: an anonymous class expression (`new (class extends Base { ... })()`, the shape used by makeAiCliFilter/makeLanguageFilter in tool_filters/families.ts) has no name of its own, so the extends-clause ref's `context` falls back to the nearest enclosing NAMED scope -- the factory function -- rather than a (nonexistent) class name. enclosingClass (kind === 'class' only) returned null for these, silently skipping the rescue check entirely; fixed by enclosingNamedScope also matching kind === 'function'.
   it('does not flag an override inside an anonymous class expression as dead, but still flags a genuinely unused sibling method', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-dead-vdispatch-anon-'))
     try {
@@ -2340,17 +2057,7 @@ describe('runDead virtual-dispatch rescue', () => {
 // ---- hasAncestorDispatchRef ref-query cap (defect 4 in the batch this file was added for) ----
 
 describe('runDead virtual-dispatch rescue survives more same-name refs in the base file than the query cap', () => {
-  // Regression: hasAncestorDispatchRef's own queryRefs call ordered by (file_path, line) and
-  // capped at DEFAULT_REF_QUERY_LIMIT (500) with the line-range containment check applied in
-  // TypeScript AFTER that cap -- an absence claim over a truncated scan, the same shape runDead's
-  // OWN scoped-refs check one function over already rescues (see that call site's comment).
-  // The fixture crosses the cap the same way 'runDead ref-query cap' above does: 600 filler refs
-  // to `compressBody` ahead of the base class's real `this.compressBody(...)` self-dispatch call,
-  // so the first 500 refs queryRefs returns are all fillers and the genuine dispatch ref sorts
-  // past the cap, inside the base class's own file. HAND-DERIVED: the 600-filler count and the
-  // ordering it relies on (queryRefs sorts by file_path, line ascending) are computed from
-  // DEFAULT_REF_QUERY_LIMIT's own value and queryRefs' own documented ORDER BY, not from running
-  // this fix and pasting its output back.
+  // Regression: hasAncestorDispatchRef's own queryRefs call ordered by (file_path, line) and capped at DEFAULT_REF_QUERY_LIMIT (500) with the line-range containment check applied in TypeScript AFTER that cap -- an absence claim over a truncated scan, the same shape runDead's OWN scoped-refs check one function over already rescues (see that call site's comment). The fixture crosses the cap the same way 'runDead ref-query cap' above does: 600 filler refs to `compressBody` ahead of the base class's real `this.compressBody(...)` self-dispatch call, so the first 500 refs queryRefs returns are all fillers and the genuine dispatch ref sorts past the cap, inside the base class's own file. HAND-DERIVED: the 600-filler count and the ordering it relies on (queryRefs sorts by file_path, line ascending) are computed from DEFAULT_REF_QUERY_LIMIT's own value and queryRefs' own documented ORDER BY, not from running this fix and pasting its output back.
   it('does not report a polymorphic override dead when the base class self-dispatch ref sits past the 500-ref cap', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-dead-vdispatch-refcap-'))
     try {
@@ -2368,9 +2075,7 @@ describe('runDead virtual-dispatch rescue survives more same-name refs in the ba
       indexFileSync(baseFile)
       indexFileSync(implFile)
 
-      // Proves the fixture actually crosses the bound the fix is about: without more than
-      // DEFAULT_REF_QUERY_LIMIT refs to this name in base.ts, the rescue branch is never
-      // selected and the assertions below would hold identically with and without the fix.
+      // Proves the fixture actually crosses the bound the fix is about: without more than DEFAULT_REF_QUERY_LIMIT refs to this name in base.ts, the rescue branch is never selected and the assertions below would hold identically with and without the fix.
       const selected = queryRefs({ name: 'compressBody', filePath: baseFile, limit: -1, rootDir: normalizePath(root) }).length
       expect(selected).toBeGreaterThan(500)
 
@@ -2380,8 +2085,7 @@ describe('runDead virtual-dispatch rescue survives more same-name refs in the ba
           runDead({ json: true, top: 500, kind: 'method' })
         })
         const parsed = envelopeItems<{ name: string; file: string; filePath: string }>(captured)
-        // The override is reachable only via Base's self-dispatch, which sits past the cap --
-        // must not be flagged dead.
+        // The override is reachable only via Base's self-dispatch, which sits past the cap -- must not be flagged dead.
         expect(parsed.some((r) => r.name === 'compressBody' && r.file === toRel(root, implFile))).toBe(false)
         expect(parsed.some((r) => r.name === 'compressBody' && r.filePath === toRel(root, implFile))).toBe(false)
         // A genuinely unused sibling method on the same class must still be flagged.
@@ -2416,8 +2120,7 @@ describe('runDead --exclude-tests', () => {
         const prodPresentWithout = withoutFlag.some((r) => r.name === 'exclDeadProdFn8q4')
         const testPresentWithout = withoutFlag.some((r) => r.name === 'exclDeadTestFn8q4')
         expect(prodPresentWithout).toBe(true)
-        // Byte-identical-to-today guarantee: the test-defined dead symbol is present when the
-        // flag is absent, exactly like it is today.
+        // Byte-identical-to-today guarantee: the test-defined dead symbol is present when the flag is absent, exactly like it is today.
         expect(testPresentWithout).toBe(true)
 
         const withFlag = envelopeItems<{ name: string }>(
@@ -2479,8 +2182,7 @@ describe('runDead --grep', () => {
         )
         expect(filtered.map((r) => r.name)).toEqual(['deadGrepAlphaFn2k9'])
 
-        // Negative control: proves --grep actually narrows rather than the plumbing being a
-        // no-op that happens to pass the positive assertion above.
+        // Negative control: proves --grep actually narrows rather than the plumbing being a no-op that happens to pass the positive assertion above.
         const unfiltered = envelopeItems<{ name: string }>(
           captureStdout(() => { expect(runDead({ json: true, top: 500 })).toBe(0) })
         )
@@ -2534,12 +2236,7 @@ describe('runDead --grep', () => {
 })
 
 describe('runDead ref-query cap', () => {
-  // Regression: queryRefs orders by (file_path, line) and runDead capped it at
-  // DEFAULT_REF_QUERY_LIMIT (500), while filterRefsForSymbol then discards every ref living in a
-  // file that defines its own same-named symbol. For a name used heavily inside such a file, all
-  // 500 rows inside the cap were discarded and the genuine caller sat just past it, so a live
-  // symbol was reported dead. The fixture crosses the cap on purpose: 600 refs from 'aaa.ts',
-  // which also defines both names, ahead of the real caller in 'mmm.ts'.
+  // Regression: queryRefs orders by (file_path, line) and runDead capped it at DEFAULT_REF_QUERY_LIMIT (500), while filterRefsForSymbol then discards every ref living in a file that defines its own same-named symbol. For a name used heavily inside such a file, all 500 rows inside the cap were discarded and the genuine caller sat just past it, so a live symbol was reported dead. The fixture crosses the cap on purpose: 600 refs from 'aaa.ts', which also defines both names, ahead of the real caller in 'mmm.ts'.
   it('does not report a symbol dead when its only genuine ref sits past the 500-ref query cap', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-dead-refcap-'))
     try {
@@ -2555,9 +2252,7 @@ describe('runDead ref-query cap', () => {
       indexFileSync(normalizePath(mmmFile))
       indexFileSync(normalizePath(zzzFile))
 
-      // Proves the fixture actually crosses the bound the fix is about: without more than
-      // DEFAULT_REF_QUERY_LIMIT rows for this name the rescue branch is never selected and the
-      // assertions below would hold identically with and without the fix.
+      // Proves the fixture actually crosses the bound the fix is about: without more than DEFAULT_REF_QUERY_LIMIT rows for this name the rescue branch is never selected and the assertions below would hold identically with and without the fix.
       const selected = queryRefs({ name: 'deadCapFn8q4', limit: -1, rootDir: normalizePath(root) }).length
       expect(selected).toBeGreaterThan(500)
 
@@ -2566,11 +2261,7 @@ describe('runDead ref-query cap', () => {
         const items = envelopeItems<{ name: string; file: string }>(
           captureStdout(() => { expect(runDead({ json: true, top: 500, grep: 'deadCap(Fn|Dud|User)8q4' })).toBe(0) })
         )
-        // Exact ordered set. 'deadCapUser8q4' is genuinely dead (nothing calls it) and
-        // 'deadCapDud8q4' in zzz.ts is genuinely dead too (its 600 refs all live in the file that
-        // defines its own copy) -- that second entry is the over-fix control: treating a
-        // cap-reached query as "alive" would drop it. 'deadCapFn8q4' must NOT appear: mmm.ts
-        // calls it.
+        // Exact ordered set. 'deadCapUser8q4' is genuinely dead (nothing calls it) and 'deadCapDud8q4' in zzz.ts is genuinely dead too (its 600 refs all live in the file that defines its own copy) -- that second entry is the over-fix control: treating a cap-reached query as "alive" would drop it. 'deadCapFn8q4' must NOT appear: mmm.ts calls it.
         expect(items.map((r) => `${r.name} ${r.file}`)).toEqual(['deadCapUser8q4 mmm.ts', 'deadCapDud8q4 zzz.ts'])
       } finally {
         cwdSpy.mockRestore()
@@ -2616,17 +2307,13 @@ describe('runDeps integration', () => {
     })
     const parsed = JSON.parse(jsonCaptured) as { file: string; internal: string[]; external: string[] }
     expect(parsed.internal.length).toBeGreaterThan(0)
-    // Exact equality against the root-relative spelling, not a substring check -- a leftover
-    // absolute path would still contain "baseline.ts" and pass a toContain assertion.
+    // Exact equality against the root-relative spelling, not a substring check -- a leftover absolute path would still contain "baseline.ts" and pass a toContain assertion.
     expect(parsed.internal).toEqual(expect.arrayContaining(['src/baseline.ts', 'src/index_reader.ts', 'src/paths.ts']))
     for (const entry of parsed.internal) {
-      // Negative assertion: no drive-letter/absolute prefix, no backslash. On POSIX this
-      // pair is vacuous (no drive letters ever appear there), which is exactly why the
-      // exact-equality check above -- not this one -- is what actually carries on Linux/macOS.
+      // Negative assertion: no drive-letter/absolute prefix, no backslash. On POSIX this pair is vacuous (no drive letters ever appear there), which is exactly why the exact-equality check above -- not this one -- is what actually carries on Linux/macOS.
       expect(entry).not.toMatch(/^[A-Za-z]:/)
       expect(entry).not.toContain('\\')
-      // JSON self-consistency: every internal entry must be spelled the same way (root-relative)
-      // as the payload's own `file` field, so the two can never drift apart again.
+      // JSON self-consistency: every internal entry must be spelled the same way (root-relative) as the payload's own `file` field, so the two can never drift apart again.
       expect(entry.startsWith(rootDir) || entry.includes(':\\')).toBe(false)
     }
     expect(parsed.file).toBe('src/read_commands.ts')
@@ -2682,12 +2369,7 @@ describe('runDeps integration', () => {
   })
 
   it('resolves a NodeNext-style "./foo.js" specifier to its .ts source file, not a literal "foo.js.ts" candidate', () => {
-    // This codebase's own source (and any TS project using NodeNext/ESM module resolution)
-    // writes relative imports with an explicit .js extension even though the source file on
-    // disk is .ts -- e.g. "import { x } from './foo.js'" resolving to foo.ts. Appending a
-    // source extension onto a base that already ends in one (foo.js + '.ts' -> 'foo.js.ts')
-    // never matches anything on disk, so the import stayed unresolved (just the literal
-    // specifier) instead of pointing at the real file.
+    // This codebase's own source (and any TS project using NodeNext/ESM module resolution) writes relative imports with an explicit .js extension even though the source file on disk is .ts -- e.g. "import { x } from './foo.js'" resolving to foo.ts. Appending a source extension onto a base that already ends in one (foo.js + '.ts' -> 'foo.js.ts') never matches anything on disk, so the import stayed unresolved (just the literal specifier) instead of pointing at the real file.
     const dir = mkdtempSync(join(tmpdir(), 'tg-deps-nodenext-'))
     try {
       const depFile = join(dir, 'helper.ts')
@@ -2745,12 +2427,7 @@ describe('runDeps integration', () => {
     }
   })
 
-  // Regression (command-entry-point coverage gap): read_commands.test.ts unit-proves
-  // extractImports(text, '.mk') and importsExtensionFor() in isolation, but nothing exercised
-  // them wired together through the real `runDeps` command handler against a file literally
-  // named "Makefile" -- the injected-seam failure mode this project's own CLAUDE.md warns
-  // about (helper-level proof without command-entry-point proof). Found via an independent
-  // Codex pre-push review of this batch's diff.
+  // Regression (command-entry-point coverage gap): read_commands.test.ts unit-proves extractImports(text, '.mk') and importsExtensionFor() in isolation, but nothing exercised them wired together through the real `runDeps` command handler against a file literally named "Makefile" -- the injected-seam failure mode this project's own CLAUDE.md warns about (helper-level proof without command-entry-point proof). Found via an independent Codex pre-push review of this batch's diff.
   it('reports include directives as external deps for a file literally named "Makefile"', () => {
     const dir = mkdtempSync(join(tmpdir(), 'tg-deps-makefile-'))
     try {
@@ -2768,10 +2445,7 @@ describe('runDeps integration', () => {
   })
 
   it('prefers the earlier SOURCE_EXTENSIONS candidate when a barrel directory has multiple index.* files', () => {
-    // Regression/mutation-verification target: the extension-probe loop must `break` on the
-    // first match. Without the break, a later-iterated extension (e.g. index.js, tried after
-    // index.ts in SOURCE_EXTENSIONS) silently overwrites the earlier, correct match instead of
-    // being ignored.
+    // Regression/mutation-verification target: the extension-probe loop must `break` on the first match. Without the break, a later-iterated extension (e.g. index.js, tried after index.ts in SOURCE_EXTENSIONS) silently overwrites the earlier, correct match instead of being ignored.
     const dir = mkdtempSync(join(tmpdir(), 'tg-deps-barrel-precedence-'))
     try {
       const utilsDir = join(dir, 'utils')
@@ -2873,9 +2547,7 @@ describe('runDeps --grep', () => {
     expect(parsed.external).toEqual([])
   })
 
-  // Negative control: proves the --grep plumbing actually narrows the set rather than being a
-  // no-op that happens to pass the positive test above by coincidence (e.g. a filter wired to
-  // the wrong field, or never applied at all).
+  // Negative control: proves the --grep plumbing actually narrows the set rather than being a no-op that happens to pass the positive test above by coincidence (e.g. a filter wired to the wrong field, or never applied at all).
   it('negative control: an unfiltered call still returns more than one dependency', () => {
     const captured = captureStdout(() => {
       const code = runDeps({ file: 'src/read_commands.ts', json: true })
@@ -2932,9 +2604,7 @@ describe('runCallChain integration', () => {
 // ---- runCallChain nonexistent-symbol / dead-branch / depth<=0 (regression) ---
 
 describe('runCallChain error handling and no-callers branch', () => {
-  // Regression: runCallChain never checked the symbol was indexed before running BFS, so a
-  // nonexistent symbol fell straight through to bfsCallChains and came back as `[[symbol]]` --
-  // a fabricated "root entry point" result indistinguishable from a real caller-less symbol.
+  // Regression: runCallChain never checked the symbol was indexed before running BFS, so a nonexistent symbol fell straight through to bfsCallChains and came back as `[[symbol]]` -- a fabricated "root entry point" result indistinguishable from a real caller-less symbol.
   it('rejects a nonexistent symbol with exit 1 and no chain output', () => {
     let code = -1
     const captured = captureStdout(() => {
@@ -2948,9 +2618,7 @@ describe('runCallChain error handling and no-callers branch', () => {
     expect(errCaptured).toContain('Symbol not found: zzqxNopeDoesNotExist')
   })
 
-  // This task: the pre-existing "Symbol not found" message (asserted above) now carries a
-  // Did you mean suggestion when a near-name candidate is indexed, appended rather than
-  // replacing the existing wording.
+  // This task: the pre-existing "Symbol not found" message (asserted above) now carries a Did you mean suggestion when a near-name candidate is indexed, appended rather than replacing the existing wording.
   it('appends a Did you mean suggestion to "Symbol not found" for a typo of a real, indexed symbol', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-chain-unknown-'))
     try {
@@ -2975,8 +2643,7 @@ describe('runCallChain error handling and no-callers branch', () => {
     }
   })
 
-  // Same nonexistent-symbol check must run before the --json branch, so a machine-consuming
-  // caller never sees a fabricated `{ chains: [...] }` payload for a symbol that isn't indexed.
+  // Same nonexistent-symbol check must run before the --json branch, so a machine-consuming caller never sees a fabricated `{ chains: [...] }` payload for a symbol that isn't indexed.
   it('rejects a nonexistent symbol under --json with exit 1 and no chains payload', () => {
     let code = -1
     const captured = captureStdout(() => {
@@ -2986,10 +2653,7 @@ describe('runCallChain error handling and no-callers branch', () => {
     expect(captured).not.toContain('chains')
   })
 
-  // Regression: bfsCallChains can never return an empty array (a caller-less tip still pushes
-  // its one-node chain via `complete.push(chain)`), so the old `chains.length === 0` guard for
-  // the "(no callers)" message was unreachable dead code. This proves the message now actually
-  // prints for a genuinely caller-less indexed symbol.
+  // Regression: bfsCallChains can never return an empty array (a caller-less tip still pushes its one-node chain via `complete.push(chain)`), so the old `chains.length === 0` guard for the "(no callers)" message was unreachable dead code. This proves the message now actually prints for a genuinely caller-less indexed symbol.
   it('prints "(no callers)" for an indexed symbol with zero callers', () => {
     const dir = mkdtempSync(join(tmpdir(), 'tg-chain-nocallers-'))
     try {
@@ -3012,8 +2676,7 @@ describe('runCallChain error handling and no-callers branch', () => {
     }
   })
 
-  // A symbol that DOES have callers must still produce its normal chain output, unchanged by
-  // either the existence check or the corrected no-callers condition.
+  // A symbol that DOES have callers must still produce its normal chain output, unchanged by either the existence check or the corrected no-callers condition.
   it('still produces normal chain output for a symbol with callers', () => {
     const dir = mkdtempSync(join(tmpdir(), 'tg-chain-haswoncallers-'))
     try {
@@ -3074,9 +2737,7 @@ describe('runCallChain file::symbol spec', () => {
     }
   })
 
-  // MOST IMPORTANT: anti-regression for the 0ec04da8 bug class -- a caller living in a file OTHER
-  // than the one that defines the symbol must still surface in the chain when file::symbol names
-  // the defining file, since the file half only disambiguates WHICH definition the root is.
+  // MOST IMPORTANT: anti-regression for the 0ec04da8 bug class -- a caller living in a file OTHER than the one that defines the symbol must still surface in the chain when file::symbol names the defining file, since the file half only disambiguates WHICH definition the root is.
   it('still surfaces a caller from a DIFFERENT file when file::symbol names the defining file', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-chain-otherfile-'))
     try {
@@ -3147,9 +2808,7 @@ describe('runCallChain file::symbol spec', () => {
     }
   })
 
-  // Assertion-strength requirement: pin which query ran FIRST and with exactly what args before
-  // trusting any property on it -- a property-only assertion over mock.calls would pass
-  // vacuously even if the wrong number/order of querySymbols calls happened.
+  // Assertion-strength requirement: pin which query ran FIRST and with exactly what args before trusting any property on it -- a property-only assertion over mock.calls would pass vacuously even if the wrong number/order of querySymbols calls happened.
   it('pins the disambiguating querySymbols existence-check call as the first call, with the exact name/filePath/limit it must use', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-chain-pin-'))
     try {
@@ -3174,10 +2833,7 @@ describe('runCallChain file::symbol spec', () => {
 })
 
 describe('runCallChain error handling and no-callers branch, part 2', () => {
-  // Edge case: bfsCallChains also returns `[[start]]` when maxDepth <= 0 (its own first-line
-  // short-circuit), for a symbol that may well have real callers. Rejecting non-positive --depth
-  // up front (matching runCallers'/runSimilar's own --limit/--top <= 0 convention) means this
-  // never has a chance to be misread as "(no callers)".
+  // Edge case: bfsCallChains also returns `[[start]]` when maxDepth <= 0 (its own first-line short-circuit), for a symbol that may well have real callers. Rejecting non-positive --depth up front (matching runCallers'/runSimilar's own --limit/--top <= 0 convention) means this never has a chance to be misread as "(no callers)".
   it('rejects --depth 0 with exit 1', () => {
     const errCaptured = captureStderr(() => {
       const code = runCallChain({ symbol: 'runRead', depth: 0 })
@@ -3198,10 +2854,7 @@ describe('runCallChain error handling and no-callers branch, part 2', () => {
 // ---- runCallChain cross-project scoping (regression) -------------------------
 
 describe('runCallChain cross-project scoping', () => {
-  // Regression: global.db is a single machine-wide index shared across every project ever
-  // indexed (constants.ts). runCallChain's callersOf closure used to run queryRefs with no
-  // project scope, so a caller of a same-named symbol living in a completely unrelated project
-  // on the same machine would leak into this project's call chains.
+  // Regression: global.db is a single machine-wide index shared across every project ever indexed (constants.ts). runCallChain's callersOf closure used to run queryRefs with no project scope, so a caller of a same-named symbol living in a completely unrelated project on the same machine would leak into this project's call chains.
   it('does not follow a caller edge from a different project for a same-named symbol', () => {
     const rootA = mkdtempSync(join(tmpdir(), 'tg-chain-rootA-'))
     const rootB = mkdtempSync(join(tmpdir(), 'tg-chain-rootB-'))
@@ -3218,11 +2871,7 @@ describe('runCallChain cross-project scoping', () => {
         const captured = captureStdout(() => {
           runCallChain({ symbol: 'chainScopedFn9k2' })
         })
-        // rootB's caller() must not appear in rootA-scoped output -- the only chain found is the
-        // single-node chain (the symbol itself has no callers within rootA), which now renders
-        // via the "(no callers)" branch instead of a bare name (defect 2 fix). The "(no callers)"
-        // message itself contains the word "caller", so assert on the exact rendered line instead
-        // of a substring-absence check.
+        // rootB's caller() must not appear in rootA-scoped output -- the only chain found is the single-node chain (the symbol itself has no callers within rootA), which now renders via the "(no callers)" branch instead of a bare name (defect 2 fix). The "(no callers)" message itself contains the word "caller", so assert on the exact rendered line instead of a substring-absence check.
         expect(captured.trim()).toBe('chainScopedFn9k2  (no callers)')
       } finally {
         cwdSpy.mockRestore()
@@ -3237,9 +2886,7 @@ describe('runCallChain cross-project scoping', () => {
 // ---- runCallChain file-symbol cache hoisting (regression) --------------------
 
 describe('runCallChain file-symbol cache hoisting', () => {
-  // Regression: runCallChain used to call buildFileSymCache() from inside the callersOf closure
-  // that runs once per BFS node, discarding the memoized Map and forcing a fresh querySymbols()
-  // call for the same file on every hop instead of reusing one cache across the whole BFS.
+  // Regression: runCallChain used to call buildFileSymCache() from inside the callersOf closure that runs once per BFS node, discarding the memoized Map and forcing a fresh querySymbols() call for the same file on every hop instead of reusing one cache across the whole BFS.
   it('calls querySymbols at most once per unique file across the whole BFS, not once per hop', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-chain-cache-'))
     try {
@@ -3260,9 +2907,7 @@ describe('runCallChain file-symbol cache hoisting', () => {
       const callsForFile = vi.mocked(querySymbols).mock.calls.filter(
         (call) => (call[0] as { filePath?: string }).filePath === normalizePath(file),
       )
-      // All four BFS hops (cacheLevel0 -> cacheLevel1 -> cacheLevel2 -> cacheLevel3) resolve
-      // references inside the same file. With the cache correctly hoisted once outside the BFS
-      // loop, that file's symbols are fetched exactly once and reused for every hop.
+      // All four BFS hops (cacheLevel0 -> cacheLevel1 -> cacheLevel2 -> cacheLevel3) resolve references inside the same file. With the cache correctly hoisted once outside the BFS loop, that file's symbols are fetched exactly once and reused for every hop.
       expect(callsForFile.length).toBe(1)
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -3273,9 +2918,7 @@ describe('runCallChain file-symbol cache hoisting', () => {
 // ---- runCallChain depth truncation (regression) ------------------------------
 
 describe('runCallChain depth-limit sentinel', () => {
-  // Regression: a chain the BFS abandoned because it hit --depth rendered exactly like a chain
-  // that terminated at a real entry point. Cycles and cross-branch revisits both got a sentinel,
-  // a depth cut got none, so a truncated answer reported itself as complete.
+  // Regression: a chain the BFS abandoned because it hit --depth rendered exactly like a chain that terminated at a real entry point. Cycles and cross-branch revisits both got a sentinel, a depth cut got none, so a truncated answer reported itself as complete.
   it('names the depth cut in text output and leaves an unbounded walk unmarked', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-chain-depth-'))
     try {
@@ -3311,10 +2954,7 @@ describe('runCallChain depth-limit sentinel', () => {
 // ---- runCallChain --exclude-tests --------------------------------------------
 
 describe('runCallChain --exclude-tests', () => {
-  // MOST IMPORTANT: proves PRUNING, not output-only filtering. If the flag only filtered the
-  // final chain array (rather than skipping the test-file caller before it's admitted into the
-  // BFS), the grandparent (a real, production-file caller reached only THROUGH the test-file
-  // caller) would still leak into the result. It must not.
+  // MOST IMPORTANT: proves PRUNING, not output-only filtering. If the flag only filtered the final chain array (rather than skipping the test-file caller before it's admitted into the BFS), the grandparent (a real, production-file caller reached only THROUGH the test-file caller) would still leak into the result. It must not.
   it('prunes a test-file caller before the BFS admits it, so a grandparent reachable only through it never leaks in', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-chain-excl-prune-'))
     try {
@@ -3336,8 +2976,7 @@ describe('runCallChain --exclude-tests', () => {
         })
         expect(withoutFlag).toContain('chainExclTargetFn3q7 -> chainExclTestCaller3q7 -> chainExclGrandparent3q7')
 
-        // Flag present: the test caller is pruned, so its own (production) caller can never be
-        // reached -- not merely hidden after the fact.
+        // Flag present: the test caller is pruned, so its own (production) caller can never be reached -- not merely hidden after the fact.
         const withFlag = captureStdout(() => {
           expect(runCallChain({ symbol: 'chainExclTargetFn3q7', excludeTests: true })).toBe(0)
         })
@@ -3412,9 +3051,7 @@ describe('runCallChain --exclude-tests', () => {
 // ---- runCallChain --grep -----------------------------------------------------
 
 describe('runCallChain --grep', () => {
-  // MOST IMPORTANT: proves --grep narrows which COMPLETED chains are reported, not which nodes
-  // the BFS visits -- a chain that passes THROUGH a matching symbol on its way to an unrelated
-  // root must still surface, and a chain containing no matching symbol at all must be dropped.
+  // MOST IMPORTANT: proves --grep narrows which COMPLETED chains are reported, not which nodes the BFS visits -- a chain that passes THROUGH a matching symbol on its way to an unrelated root must still surface, and a chain containing no matching symbol at all must be dropped.
   it('keeps only chains containing a symbol matching the pattern, without pruning the BFS walk itself', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-chain-grep-'))
     try {
@@ -3532,9 +3169,7 @@ describe('runImpact integration', () => {
       const code = runImpact({ symbol: 'querySymbols', top: 5 })
       expect(code).toBe(0)
     })
-    // Length-only would still pass on any non-empty (even malformed) output. Pin the actual
-    // documented plain-text shape (`{symbol}\t(hops: {n})`, see runImpact's emit loop) so a
-    // regression that dropped the tab separator or the "hops:" suffix is caught here.
+    // Length-only would still pass on any non-empty (even malformed) output. Pin the actual documented plain-text shape (`{symbol}\t(hops: {n})`, see runImpact's emit loop) so a regression that dropped the tab separator or the "hops:" suffix is caught here.
     expect(captured).toMatch(/^\S+\t\(hops: \d+\)$/m)
   })
 
@@ -3626,9 +3261,7 @@ describe('runImpact file::symbol spec', () => {
     }
   })
 
-  // MOST IMPORTANT: anti-regression for the 0ec04da8 bug class -- a caller living in a file OTHER
-  // than the one that defines the symbol must still surface in the impact walk when file::symbol
-  // names the defining file, since the file half only disambiguates WHICH definition the root is.
+  // MOST IMPORTANT: anti-regression for the 0ec04da8 bug class -- a caller living in a file OTHER than the one that defines the symbol must still surface in the impact walk when file::symbol names the defining file, since the file half only disambiguates WHICH definition the root is.
   it('still surfaces a caller from a DIFFERENT file when file::symbol names the defining file', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-impact-otherfile-'))
     try {
@@ -3698,9 +3331,7 @@ describe('runImpact file::symbol spec', () => {
     }
   })
 
-  // Assertion-strength requirement: pin which query ran FIRST and with exactly what args before
-  // trusting any property on it -- a property-only assertion over mock.calls would pass
-  // vacuously even if the wrong number/order of querySymbols calls happened.
+  // Assertion-strength requirement: pin which query ran FIRST and with exactly what args before trusting any property on it -- a property-only assertion over mock.calls would pass vacuously even if the wrong number/order of querySymbols calls happened.
   it('pins the disambiguating querySymbols existence-check call as the first call, with the exact name/filePath/limit it must use', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-impact-pin-'))
     try {
@@ -3727,10 +3358,7 @@ describe('runImpact file::symbol spec', () => {
 // ---- runImpact cross-project scoping (regression) ----------------------------
 
 describe('runImpact cross-project scoping', () => {
-  // Regression: global.db is a single machine-wide index shared across every project ever
-  // indexed (constants.ts). runImpact's BFS used to run queryRefs with no project scope, so a
-  // caller of a same-named symbol living in a completely unrelated project on the same machine
-  // would leak into this project's impact analysis.
+  // Regression: global.db is a single machine-wide index shared across every project ever indexed (constants.ts). runImpact's BFS used to run queryRefs with no project scope, so a caller of a same-named symbol living in a completely unrelated project on the same machine would leak into this project's impact analysis.
   it('does not follow a caller edge from a different project for a same-named symbol', () => {
     const rootA = mkdtempSync(join(tmpdir(), 'tg-impact-rootA-'))
     const rootB = mkdtempSync(join(tmpdir(), 'tg-impact-rootB-'))
@@ -3744,8 +3372,7 @@ describe('runImpact cross-project scoping', () => {
 
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(rootA)
       try {
-        // rootB's impactCaller9k2() must not leak into rootA-scoped output, so rootA has no
-        // callers at all for this symbol and runImpact exits 1.
+        // rootB's impactCaller9k2() must not leak into rootA-scoped output, so rootA has no callers at all for this symbol and runImpact exits 1.
         const code = runImpact({ symbol: 'impactScopedFn9k2' })
         expect(code).toBe(1)
       } finally {
@@ -3761,9 +3388,7 @@ describe('runImpact cross-project scoping', () => {
 // ---- runImpact file-symbol cache hoisting (regression) ------------------------
 
 describe('runImpact file-symbol cache hoisting', () => {
-  // Regression: runImpact used to call buildFileSymCache() from inside the BFS while-loop body
-  // (once per dequeued node), discarding the memoized Map and forcing a fresh querySymbols() call
-  // for the same file on every hop instead of reusing one cache across the whole BFS.
+  // Regression: runImpact used to call buildFileSymCache() from inside the BFS while-loop body (once per dequeued node), discarding the memoized Map and forcing a fresh querySymbols() call for the same file on every hop instead of reusing one cache across the whole BFS.
   it('calls querySymbols at most once per unique file across the whole BFS, not once per hop', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-impact-cache-'))
     try {
@@ -3784,9 +3409,7 @@ describe('runImpact file-symbol cache hoisting', () => {
       const callsForFile = vi.mocked(querySymbols).mock.calls.filter(
         (call) => (call[0] as { filePath?: string }).filePath === normalizePath(file),
       )
-      // All four BFS hops resolve references inside the same file. With the cache correctly
-      // hoisted once outside the BFS loop, that file's symbols are fetched exactly once and
-      // reused for every hop.
+      // All four BFS hops resolve references inside the same file. With the cache correctly hoisted once outside the BFS loop, that file's symbols are fetched exactly once and reused for every hop.
       expect(callsForFile.length).toBe(1)
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -3797,10 +3420,7 @@ describe('runImpact file-symbol cache hoisting', () => {
 // ---- runImpact module-scope refs surfaced as file-level entries (regression) --
 
 describe('runImpact module-scope refs', () => {
-  // Regression: runImpact used to `continue` past any ref whose enclosing symbol could not be
-  // resolved (i.e. a module-scope reference -- top-level code, not inside a function/class),
-  // silently dropping it. resolveCallers already surfaces this same situation as a file-level
-  // entry (caller: '(module scope)'); runImpact must do the same instead of discarding it.
+  // Regression: runImpact used to `continue` past any ref whose enclosing symbol could not be resolved (i.e. a module-scope reference -- top-level code, not inside a function/class), silently dropping it. resolveCallers already surfaces this same situation as a file-level entry (caller: '(module scope)'); runImpact must do the same instead of discarding it.
   it('surfaces a module-scope reference as a file-level entry instead of dropping it', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-impact-modscope-'))
     try {
@@ -3830,10 +3450,7 @@ describe('runImpact module-scope refs', () => {
 // ---- runImpact --exclude-tests ------------------------------------------------
 
 describe('runImpact --exclude-tests', () => {
-  // MOST IMPORTANT: proves PRUNING, not output-only filtering. If the flag only filtered the
-  // final hop map (rather than skipping the test-file caller before it's enqueued for further
-  // BFS), the grandparent (a real, production-file caller reachable only THROUGH the test-file
-  // caller) would still leak into the impacted set. It must not.
+  // MOST IMPORTANT: proves PRUNING, not output-only filtering. If the flag only filtered the final hop map (rather than skipping the test-file caller before it's enqueued for further BFS), the grandparent (a real, production-file caller reachable only THROUGH the test-file caller) would still leak into the impacted set. It must not.
   it('prunes a test-file caller before it is enqueued, so a grandparent reachable only through it never leaks in', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-impact-excl-prune-'))
     try {
@@ -3856,8 +3473,7 @@ describe('runImpact --exclude-tests', () => {
         const parsedWithout = JSON.parse(withoutFlag) as Array<{ symbol: string; hops: number }>
         expect(parsedWithout.map((e) => e.symbol)).toEqual(expect.arrayContaining(['impactExclTestCaller4n8', 'impactExclGrandparent4n8']))
 
-        // Flag present: the test caller is pruned before enqueue, so its own (production) caller
-        // can never be reached -- not merely hidden from the output afterward.
+        // Flag present: the test caller is pruned before enqueue, so its own (production) caller can never be reached -- not merely hidden from the output afterward.
         const errCaptured = captureStderr(() => {
           expect(runImpact({ symbol: 'impactExclTargetFn4n8', excludeTests: true })).toBe(1)
         })
@@ -3987,14 +3603,7 @@ describe('runImpact --grep', () => {
     }
   })
 
-  // The --json counterpart of the text case above. `impact --json` is a deliberate bare array
-  // (NON_ENVELOPE_JSON_COMMANDS in json_envelope_shape.test.ts), so unlike its six grep-capable
-  // siblings it has no payload key to carry `hiddenByGrep` -- which meant the filtered-to-empty
-  // count was simply dropped under --json, leaving `[]` byte-identical to a genuinely impact-free
-  // symbol. That is the exact "filtered store renders as populated" trap the siblings were fixed
-  // for. The count now goes to stderr, so stdout keeps the shape a --json consumer parses while
-  // the distinction survives on the other stream. Asserts BOTH: stderr names the count, and
-  // stdout is still exactly `[]` -- pinning the fix without letting it change the payload.
+  // The --json counterpart of the text case above. `impact --json` is a deliberate bare array (NON_ENVELOPE_JSON_COMMANDS in json_envelope_shape.test.ts), so unlike its six grep-capable siblings it has no payload key to carry `hiddenByGrep` -- which meant the filtered-to-empty count was simply dropped under --json, leaving `[]` byte-identical to a genuinely impact-free symbol. That is the exact "filtered store renders as populated" trap the siblings were fixed for. The count now goes to stderr, so stdout keeps the shape a --json consumer parses while the distinction survives on the other stream. Asserts BOTH: stderr names the count, and stdout is still exactly `[]` -- pinning the fix without letting it change the payload.
   it('names the filtered count on stderr under --json, keeping stdout a bare empty array', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-impact-grep-json-empty-'))
     try {
@@ -4027,14 +3636,7 @@ describe('runImpact --grep', () => {
 
 // ---- compareHopEntries (runImpact tiebreak) ---------------------------------
 //
-// Regression coverage for a locale-dependent-output bug: runImpact() used to
-// tiebreak same-hop-distance entries with a no-explicit-locale
-// localeCompare(), which resolves to the host's default ICU collation. Because
-// the sort ran BEFORE slicing to top-N, a tie at the boundary meant the
-// returned top-N SET (not just its order) could differ across machines with
-// different regional settings. compareHopEntries() replaces that with a
-// plain ordinal (UTF-16 code-unit) comparison so the same input always yields
-// the same top-N set everywhere.
+// Regression coverage for a locale-dependent-output bug: runImpact() used to tiebreak same-hop-distance entries with a no-explicit-locale localeCompare(), which resolves to the host's default ICU collation. Because the sort ran BEFORE slicing to top-N, a tie at the boundary meant the returned top-N SET (not just its order) could differ across machines with different regional settings. compareHopEntries() replaces that with a plain ordinal (UTF-16 code-unit) comparison so the same input always yields the same top-N set everywhere.
 
 describe('compareHopEntries (runImpact tiebreak)', () => {
   it('demonstrates the root cause: localeCompare() collates the same pair of names in opposite order across locales', () => {
@@ -4067,9 +3669,7 @@ describe('compareHopEntries (runImpact tiebreak)', () => {
   })
 
   it('regression: a boundary tie no longer changes the returned top-N SET across host locales', () => {
-    // Reproduces runImpact's post-BFS reduction step: hop-tied entries get
-    // sorted, then sliced to top-N. Four names tie at hop=1; top=3 means
-    // exactly one of them gets dropped, and which one depends on the tiebreak.
+    // Reproduces runImpact's post-BFS reduction step: hop-tied entries get sorted, then sliced to top-N. Four names tie at hop=1; top=3 means exactly one of them gets dropped, and which one depends on the tiebreak.
     const hops = new Map<string, number>([
       ['apple_util', 1],
       ['öffnen', 1],
@@ -4078,11 +3678,7 @@ describe('compareHopEntries (runImpact tiebreak)', () => {
     ])
     const top = 3
 
-    // Pre-fix behavior, reconstructed here only to document the bug (not
-    // exercised by the fix itself): an en-US/de-DE host's default localeCompare()
-    // tiebreak drops 'zebra_util' and keeps 'öffnen'; an sv-SE host's drops
-    // 'öffnen' and keeps 'zebra_util' instead. That is a different SET, not
-    // merely a different order, which is exactly the bug this test guards.
+    // Pre-fix behavior, reconstructed here only to document the bug (not exercised by the fix itself): an en-US/de-DE host's default localeCompare() tiebreak drops 'zebra_util' and keeps 'öffnen'; an sv-SE host's drops 'öffnen' and keeps 'zebra_util' instead. That is a different SET, not merely a different order, which is exactly the bug this test guards.
     const preFixEn = [...hops.entries()]
       .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0], 'en'))
       .slice(0, top)
@@ -4143,9 +3739,7 @@ describe('findCycles', () => {
   it('finds a simple two-node cycle', () => {
     const g = new Map([['a', ['b']], ['b', ['a']]])
     const cycles = findCycles(g)
-    // Length + flat-contains would still pass if findCycles found the same two nodes via a
-    // duplicated or malformed cycle path -- pin the exact single-cycle array (the node order the
-    // SCC walk actually produces) so a regression that emits duplicate/extra cycles is caught.
+    // Length + flat-contains would still pass if findCycles found the same two nodes via a duplicated or malformed cycle path -- pin the exact single-cycle array (the node order the SCC walk actually produces) so a regression that emits duplicate/extra cycles is caught.
     expect(cycles).toEqual([['b', 'a', 'b']])
   })
 
@@ -4167,10 +3761,7 @@ describe('findCycles', () => {
   })
 
   it('finds two distinct cycles that share a node instead of dropping the second', () => {
-    // Regression: the old DFS pruned with a global `visited` set, so once C was marked visited
-    // while exploring A->B->C->A, the A->D->C->A branch returned as soon as it reached the
-    // already-visited C, without ever exploring C's edge back to A - silently dropping a
-    // genuinely distinct cycle that happens to share a node with an already-found one.
+    // Regression: the old DFS pruned with a global `visited` set, so once C was marked visited while exploring A->B->C->A, the A->D->C->A branch returned as soon as it reached the already-visited C, without ever exploring C's edge back to A - silently dropping a genuinely distinct cycle that happens to share a node with an already-found one.
     const g = new Map([
       ['A', ['B', 'D']],
       ['B', ['C']],
@@ -4197,13 +3788,7 @@ describe('findCycles', () => {
   })
 
   it('still finds a cycle when one of its nodes also points at an already-finished unrelated component', () => {
-    // Regression/mutation-verification target: tarjanSCCs's back-edge branch must gate on
-    // `onStack.has(w)` -- a neighbor that has already been indexed but is NOT on the current
-    // Tarjan stack (i.e. it finished as its own earlier, unrelated component) must NOT feed its
-    // index into the current node's lowlink. Dropping that guard lets a's lowlink get dragged
-    // down to x's (already-closed, lower) index via the a->x edge, so a's real lowlink==index
-    // check at the end of its DFS frame never fires -- the entire a<->b cycle silently vanishes
-    // from the result instead of being reported.
+    // Regression/mutation-verification target: tarjanSCCs's back-edge branch must gate on `onStack.has(w)` -- a neighbor that has already been indexed but is NOT on the current Tarjan stack (i.e. it finished as its own earlier, unrelated component) must NOT feed its index into the current node's lowlink. Dropping that guard lets a's lowlink get dragged down to x's (already-closed, lower) index via the a->x edge, so a's real lowlink==index check at the end of its DFS frame never fires -- the entire a<->b cycle silently vanishes from the result instead of being reported.
     const g = new Map([
       ['x', []],
       ['a', ['b', 'x']],
@@ -4216,11 +3801,7 @@ describe('findCycles', () => {
   })
 
   it('does not crash with a stack overflow on a deep linear import chain (large real-world repo)', () => {
-    // Regression: tarjanSCCs used to be a plain recursive `strongconnect`, whose recursion depth
-    // equals the longest DFS path in the graph. runArch builds this graph from every tracked file
-    // in the whole project, so a long acyclic import chain in a large monorepo (verified: a plain
-    // linear chain of ~5000 nodes reliably overflows Node's default stack) crashed `token-goat
-    // arch` outright with "Maximum call stack size exceeded" instead of reporting zero cycles.
+    // Regression: tarjanSCCs used to be a plain recursive `strongconnect`, whose recursion depth equals the longest DFS path in the graph. runArch builds this graph from every tracked file in the whole project, so a long acyclic import chain in a large monorepo (verified: a plain linear chain of ~5000 nodes reliably overflows Node's default stack) crashed `token-goat arch` outright with "Maximum call stack size exceeded" instead of reporting zero cycles.
     const g = new Map<string, string[]>()
     const n = 20000
     for (let i = 0; i < n; i++) g.set(`n${i}`, i + 1 < n ? [`n${i + 1}`] : [])
@@ -4408,8 +3989,7 @@ describe('runTestFor', () => {
   })
 
   it('still reports from the index when the file is indexed but has since been deleted from disk (no error)', () => {
-    // The path is never written to disk in this test -- fs.existsSync() naturally returns false
-    // for it, so this exercises the "indexed but absent from disk" side of the conjunction.
+    // The path is never written to disk in this test -- fs.existsSync() naturally returns false for it, so this exercises the "indexed but absent from disk" side of the conjunction.
     const gonePath = normalizePath(resolve('src/__gone_but_indexed_testfor__.ts'))
     const syms: SymbolEntry[] = [
       {
@@ -4426,15 +4006,10 @@ describe('runTestFor', () => {
   })
 
   it('narrows testFunctions to only the test symbols that actually reference the target file (not every test-prefixed symbol in the test file)', () => {
-    // Regression test for the unpopulated testFileMap Set: previously every test-prefixed
-    // symbol in a candidate test file was listed regardless of whether it referenced the
-    // target file's symbols at all.
+    // Regression test for the unpopulated testFileMap Set: previously every test-prefixed symbol in a candidate test file was listed regardless of whether it referenced the target file's symbols at all.
     const dir = mkdtempSync(join(tmpdir(), 'tg-testfor-'))
     try {
-      // package.json marks `dir` as its own project root for resolveProjectRoot's findProject()
-      // fallback (this tmpdir is not inside a git repo); runTestFor scopes its ref lookup to the
-      // current project root (see "runTestFor cross-project scoping" below), so cwd must be
-      // mocked to `dir` for these fixture files to be in scope.
+      // package.json marks `dir` as its own project root for resolveProjectRoot's findProject() fallback (this tmpdir is not inside a git repo); runTestFor scopes its ref lookup to the current project root (see "runTestFor cross-project scoping" below), so cwd must be mocked to `dir` for these fixture files to be in scope.
       writeFileSync(join(dir, 'package.json'), '{"name":"tg-testfor-fixture"}\n')
 
       const srcFile = normalizePath(join(dir, 'testForTarget.ts'))
@@ -4473,9 +4048,7 @@ describe('runTestFor', () => {
       }
       expect(code).toBe(0)
 
-      // `--json`'s `testFile` now renders root-relative (toDisplayPath(rootDir, ...), same
-      // spelling as the plain-text sibling test above), not the raw absolute path this used to
-      // compare against.
+      // `--json`'s `testFile` now renders root-relative (toDisplayPath(rootDir, ...), same spelling as the plain-text sibling test above), not the raw absolute path this used to compare against.
       const results = envelopeItems<{ testFile: string; testFunctions: string[] }>(captured)
       const entry = results.find((r) => r.testFile === 'testForTarget.test.ts')
       expect(entry).toBeDefined()
@@ -4589,9 +4162,7 @@ describe('runTestFor', () => {
     }
   })
 
-  // Negative control: a row outside the resolved project root must stay absolute, unmangled --
-  // proves the fix renders through toDisplayPath's own root-membership check rather than
-  // blindly stripping a prefix from every row.
+  // Negative control: a row outside the resolved project root must stay absolute, unmangled -- proves the fix renders through toDisplayPath's own root-membership check rather than blindly stripping a prefix from every row.
   it('leaves an out-of-project --json testFile absolute (negative control)', () => {
     const gonePath = normalizePath(resolve('src/__testfor_negctl_target__.ts'))
     const syms: SymbolEntry[] = [
@@ -4612,17 +4183,12 @@ describe('runTestFor', () => {
 // ---- runTestFor cross-project scoping (regression) --------------------------
 
 describe('runTestFor cross-project scoping', () => {
-  // Regression: global.db is a single machine-wide index shared across every project ever
-  // indexed (constants.ts). runTestFor used to run queryRefs({ name: sym.name, limit: 500 })
-  // with no rootDir, unlike every sibling command (runCallers, runCallChain, runImpact, runDead,
-  // runCoverageGaps, runSimilar, runContextFor, runAsk). A test file in a completely unrelated
-  // project referencing a same-named symbol would leak into this project's test-for results.
+  // Regression: global.db is a single machine-wide index shared across every project ever indexed (constants.ts). runTestFor used to run queryRefs({ name: sym.name, limit: 500 }) with no rootDir, unlike every sibling command (runCallers, runCallChain, runImpact, runDead, runCoverageGaps, runSimilar, runContextFor, runAsk). A test file in a completely unrelated project referencing a same-named symbol would leak into this project's test-for results.
   it('does not report a test file from a different project for a same-named symbol', () => {
     const rootA = mkdtempSync(join(tmpdir(), 'tg-testfor-rootA-'))
     const rootB = mkdtempSync(join(tmpdir(), 'tg-testfor-rootB-'))
     try {
-      // package.json marks each root as its own project root for resolveProjectRoot's
-      // findProject() fallback (these tmpdirs are not inside a git repo).
+      // package.json marks each root as its own project root for resolveProjectRoot's findProject() fallback (these tmpdirs are not inside a git repo).
       writeFileSync(join(rootA, 'package.json'), '{"name":"tg-testfor-fixtureA"}\n')
       writeFileSync(join(rootB, 'package.json'), '{"name":"tg-testfor-fixtureB"}\n')
 
@@ -4688,11 +4254,7 @@ describe('runCoverageGaps', () => {
       process.stdout.write = origWrite
     }
     expect(code).toBe(0)
-    // Length-only would still pass on the "No coverage gaps found." fallback line (also
-    // non-empty, also exit 0) -- so a regression that made every real gap silently disappear
-    // (e.g. a broken filter) would slip through undetected. Pin the actual documented row shape
-    // (`{name}\t{kind}\t{file}:{line}`, see runCoverageGaps' emit loop) to prove real gap rows
-    // were printed, not the empty-result fallback.
+    // Length-only would still pass on the "No coverage gaps found." fallback line (also non-empty, also exit 0) -- so a regression that made every real gap silently disappear (e.g. a broken filter) would slip through undetected. Pin the actual documented row shape (`{name}\t{kind}\t{file}:{line}`, see runCoverageGaps' emit loop) to prove real gap rows were printed, not the empty-result fallback.
     expect(captured).toMatch(/^\S+\t\S+\t.+:\d+$/m)
   })
 
@@ -4716,17 +4278,11 @@ describe('runCoverageGaps', () => {
 // ---- runCoverageGaps subdirectory scoping (regression) ----------------------
 
 describe('runCoverageGaps subdirectory scoping', () => {
-  // Regression: runCoverageGaps used to scope its querySymbols/queryRefs calls to a raw
-  // `rootDir = process.cwd()` instead of resolving the actual project root. Invoking the command
-  // from a subdirectory of a project (e.g. `cd src && token-goat coverage-gaps`) silently shrank
-  // the scope to that subtree, via a `LIKE '<subdir>/%'` clause, so a genuinely untested function
-  // living in a SIBLING directory of the same project (e.g. a `lib/` next to that `src/`) was
-  // never even scanned, let alone flagged as a gap.
+  // Regression: runCoverageGaps used to scope its querySymbols/queryRefs calls to a raw `rootDir = process.cwd()` instead of resolving the actual project root. Invoking the command from a subdirectory of a project (e.g. `cd src && token-goat coverage-gaps`) silently shrank the scope to that subtree, via a `LIKE '<subdir>/%'` clause, so a genuinely untested function living in a SIBLING directory of the same project (e.g. a `lib/` next to that `src/`) was never even scanned, let alone flagged as a gap.
   it('reports a gap from a sibling directory of the project when invoked from a subdirectory (not shrunk to that subtree)', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-covgaps-root-'))
     try {
-      // package.json marks `root` as the project root for resolveProjectRoot's findProject()
-      // fallback (these tmpdirs are not inside a git repo).
+      // package.json marks `root` as the project root for resolveProjectRoot's findProject() fallback (these tmpdirs are not inside a git repo).
       writeFileSync(join(root, 'package.json'), '{"name":"tg-covgaps-fixture"}\n')
       const subdir = join(root, 'sub')
       mkdirSync(subdir)
@@ -4746,9 +4302,7 @@ describe('runCoverageGaps subdirectory scoping', () => {
           runCoverageGaps({ json: true, top: 5000 })
         })
         const parsed = JSON.parse(captured) as Array<{ name: string }>
-        // Pre-fix: rootDir === subdir, so `lib/outside.ts` (a sibling of subdir, not a
-        // descendant) falls outside the `<subdir>/%` LIKE scope and is silently excluded from
-        // the whole-project scan -- coverageGapSiblingFn9k2 would never appear here at all.
+        // Pre-fix: rootDir === subdir, so `lib/outside.ts` (a sibling of subdir, not a descendant) falls outside the `<subdir>/%` LIKE scope and is silently excluded from the whole-project scan -- coverageGapSiblingFn9k2 would never appear here at all.
         expect(parsed.some((r) => r.name === 'coverageGapSiblingFn9k2')).toBe(true)
       } finally {
         cwdSpy.mockRestore()
@@ -4759,17 +4313,13 @@ describe('runCoverageGaps subdirectory scoping', () => {
   })
 })
 
-// ---- runCoverageGaps on a never-indexed project (regression) ---------------
-// "No coverage gaps found." on a project with zero indexed symbols used to render identically to
-// a genuinely fully-tested project -- the same empty-vs-never-indexed trap already closed for
-// runDead/runTypes/runCallChain via isIndexEmptyForProject's emptyIndexMessage guard.
+// ---- runCoverageGaps on a never-indexed project (regression) --------------- "No coverage gaps found." on a project with zero indexed symbols used to render identically to a genuinely fully-tested project -- the same empty-vs-never-indexed trap already closed for runDead/runTypes/runCallChain via isIndexEmptyForProject's emptyIndexMessage guard.
 describe('runCoverageGaps on a never-indexed project', () => {
   it('appends the empty-index hint when the project root has no indexed symbols at all', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-covgaps-empty-'))
     try {
       writeFileSync(join(root, 'package.json'), '{"name":"tg-covgaps-empty-fixture"}\n')
-      // Deliberately never indexFileSync anything under `root` -- this rootDir has zero rows in
-      // both `files` and `symbols` for isIndexEmptyForProject to find.
+      // Deliberately never indexFileSync anything under `root` -- this rootDir has zero rows in both `files` and `symbols` for isIndexEmptyForProject to find.
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
       try {
         const captured = captureStdout(() => {
@@ -4790,12 +4340,7 @@ describe('runCoverageGaps on a never-indexed project', () => {
 // ---- runTestFor / runCoverageGaps do not truncate away test refs at 500+ refs (regression) --
 
 describe('runTestFor / runCoverageGaps with 500+ refs to one symbol', () => {
-  // Regression: queryRefs's DEFAULT_REF_QUERY_LIMIT (500) orders by file_path, line with no
-  // preference for test-file paths. runTestFor/runCoverageGaps used to pass that same capped
-  // limit, so a symbol referenced 500+ times from files that sort alphabetically BEFORE its test
-  // file's path would have every one of its real test refs silently dropped by the cutoff --
-  // runCoverageGaps then falsely reports the symbol as an untested "coverage gap", and
-  // runTestFor silently omits the test file that actually exercises it.
+  // Regression: queryRefs's DEFAULT_REF_QUERY_LIMIT (500) orders by file_path, line with no preference for test-file paths. runTestFor/runCoverageGaps used to pass that same capped limit, so a symbol referenced 500+ times from files that sort alphabetically BEFORE its test file's path would have every one of its real test refs silently dropped by the cutoff -- runCoverageGaps then falsely reports the symbol as an untested "coverage gap", and runTestFor silently omits the test file that actually exercises it.
   const REF_FILE_COUNT = 6
   const REFS_PER_FILE = 100 // 600 total, comfortably over the old 500-row cap
 
@@ -4807,8 +4352,7 @@ describe('runTestFor / runCoverageGaps with 500+ refs to one symbol', () => {
     writeFileSync(targetFile, `export function ${symbolName}() {\n  return 1\n}\n`, 'utf-8')
     indexFileSync(targetFile)
 
-    // File names sort alphabetically BEFORE the test file below ('a...' < 'z...'), so these
-    // refs occupy the entire 0-499 window of a file_path-ordered, 500-row-capped query.
+    // File names sort alphabetically BEFORE the test file below ('a...' < 'z...'), so these refs occupy the entire 0-499 window of a file_path-ordered, 500-row-capped query.
     for (let i = 0; i < REF_FILE_COUNT; i++) {
       const refFile = normalizePath(join(root, `a_ref_file_${String(i).padStart(2, '0')}.ts`))
       const lines = [`import { ${symbolName} } from './target'`]
@@ -4882,20 +4426,14 @@ describe('runTestFor / runCoverageGaps with 500+ refs to one symbol', () => {
 // ---- runSimilar/runContextFor/runAsk cross-project FTS scoping (regression) -
 
 describe('searchSymbolsFts callers (similar/context-for/ask) do not leak across projects', () => {
-  // Regression: searchSymbolsFts (index_reader.ts) used to take no rootDir parameter at all, so
-  // every caller queried the FTS index across every project ever indexed into global.db, not
-  // just the current one. This is the default (non-edge-case) path on installs without
-  // sqlite-vec/onnxruntime-node, since `semantic` always falls through to this same FTS search there.
+  // Regression: searchSymbolsFts (index_reader.ts) used to take no rootDir parameter at all, so every caller queried the FTS index across every project ever indexed into global.db, not just the current one. This is the default (non-edge-case) path on installs without sqlite-vec/onnxruntime-node, since `semantic` always falls through to this same FTS search there.
   it('runContextFor does not surface a symbol from a different project sharing a search term', () => {
     const rootA = mkdtempSync(join(tmpdir(), 'tg-fts-rootA-'))
     const rootB = mkdtempSync(join(tmpdir(), 'tg-fts-rootB-'))
     try {
       const fileA = join(rootA, 'a.ts')
       const fileB = join(rootB, 'b.ts')
-      // The shared search term lives inside the function BODY (not a leading /** */ comment --
-      // this parser does not attach that as a docstring for a bare `export function`), since
-      // searchSymbolsFts's FTS mirror indexes name/body/docstring and body is what's reliably
-      // populated here.
+      // The shared search term lives inside the function BODY (not a leading /** */ comment -- this parser does not attach that as a docstring for a bare `export function`), since searchSymbolsFts's FTS mirror indexes name/body/docstring and body is what's reliably populated here.
       writeFileSync(fileA, 'export function ftsScopeFnA9k2() { /* ftsScopeSharedTerm9k2 */ return 1 }\n')
       writeFileSync(fileB, 'export function ftsScopeFnB9k2() { /* ftsScopeSharedTerm9k2 */ return 2 }\n')
       indexFileSync(normalizePath(fileA))
@@ -4908,8 +4446,7 @@ describe('searchSymbolsFts callers (similar/context-for/ask) do not leak across 
         })
         const parsed = JSON.parse(captured) as Array<{ symbol: string }>
         expect(parsed.some((r) => r.symbol === 'ftsScopeFnA9k2')).toBe(true)
-        // rootB's symbol shares the same searchable docstring term but must not leak into
-        // rootA-scoped context.
+        // rootB's symbol shares the same searchable docstring term but must not leak into rootA-scoped context.
         expect(parsed.some((r) => r.symbol === 'ftsScopeFnB9k2')).toBe(false)
       } finally {
         cwdSpy.mockRestore()
@@ -4957,10 +4494,7 @@ describe('searchSymbolsFts callers (similar/context-for/ask) do not leak across 
     try {
       const fileA = join(rootA, 'a.ts')
       const fileB = join(rootB, 'b.ts')
-      // runSimilar's search query is built from the anchor's own name (docstring is empty here,
-      // since this parser doesn't attach a leading /** */ comment as a docstring for a bare
-      // `export function`) -- so rootB's body must literally mention the anchor's name for a
-      // pre-fix (unscoped) search to wrongly surface it.
+      // runSimilar's search query is built from the anchor's own name (docstring is empty here, since this parser doesn't attach a leading /** */ comment as a docstring for a bare `export function`) -- so rootB's body must literally mention the anchor's name for a pre-fix (unscoped) search to wrongly surface it.
       writeFileSync(fileA, 'export function ftsSimilarAnchor9k2() { return 1 }\n')
       writeFileSync(fileB, 'export function ftsSimilarOther9k2() { /* mentions ftsSimilarAnchor9k2 */ return 2 }\n')
       indexFileSync(normalizePath(fileA))
@@ -4983,19 +4517,14 @@ describe('searchSymbolsFts callers (similar/context-for/ask) do not leak across 
   })
 })
 
-// ---- runContextFor / runAsk (#248 regression) --------------------------------
-// Regression coverage for task #248: natural-language queries silently returning zero
-// results, runContextFor's empty-result silence, runAsk's zero-hits hallucination risk, and
-// runContextFor's --budget loop dropping the whole result set behind one oversized top hit.
+// ---- runContextFor / runAsk (#248 regression) -------------------------------- Regression coverage for task #248: natural-language queries silently returning zero results, runContextFor's empty-result silence, runAsk's zero-hits hallucination risk, and runContextFor's --budget loop dropping the whole result set behind one oversized top hit.
 describe('runContextFor / runAsk (#248 regression)', () => {
   it('runContextFor finds a match for a multi-word natural-language query where no single symbol contains every word (widen-on-empty)', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-ctxfor-widen-'))
     try {
       const fileA = join(root, 'a.ts')
       const fileB = join(root, 'b.ts')
-      // Neither symbol's indexed text (name/body/docstring) contains BOTH terms -- an AND-joined
-      // FTS query (requiring every term to co-occur in one symbol) matches nothing. Each term
-      // individually matches exactly one symbol, so an OR-joined widen-on-empty retry must find it.
+      // Neither symbol's indexed text (name/body/docstring) contains BOTH terms -- an AND-joined FTS query (requiring every term to co-occur in one symbol) matches nothing. Each term individually matches exactly one symbol, so an OR-joined widen-on-empty retry must find it.
       writeFileSync(fileA, 'export function ctxWidenAlpha9k2() { /* zzznarwhalterm9k2 */ return 1 }\n')
       writeFileSync(fileB, 'export function ctxWidenBeta9k2() { /* zzzwombatterm9k2 */ return 2 }\n')
       indexFileSync(normalizePath(fileA))
@@ -5053,9 +4582,7 @@ describe('runContextFor / runAsk (#248 regression)', () => {
     try {
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
       const origBackendEnv = process.env.TOKEN_GOAT_ASK_BACKEND
-      // "node" is guaranteed resolvable on PATH in this test environment -- proves the zero-hits
-      // guard fires BEFORE (and regardless of) backend resolution, not merely because the backend
-      // itself couldn't be found (a separate, already-tested degrade path).
+      // "node" is guaranteed resolvable on PATH in this test environment -- proves the zero-hits guard fires BEFORE (and regardless of) backend resolution, not merely because the backend itself couldn't be found (a separate, already-tested degrade path).
       process.env.TOKEN_GOAT_ASK_BACKEND = 'node'
       try {
         let captured = ''
@@ -5100,8 +4627,7 @@ describe('runContextFor / runAsk (#248 regression)', () => {
       docstring: '',
       parent: '',
     }
-    // Ranked with the oversized hit FIRST -- a `break` on the first hit exceeding budget would
-    // stop the loop immediately and never even consider the smaller hit ranked below it.
+    // Ranked with the oversized hit FIRST -- a `break` on the first hit exceeding budget would stop the loop immediately and never even consider the smaller hit ranked below it.
     vi.mocked(searchSymbolsFts).mockReturnValueOnce([oversized, fits])
 
     let captured = ''
@@ -5137,13 +4663,7 @@ describe('runArch', () => {
     expect(captured).toMatch(/hubs/)
   })
 
-  // Regression-coverage gap: every existing runArch test only ever asserted on `hubs` --
-  // `entryPoints` and `cycles`, the other two fields runArch's JSON payload actually returns,
-  // had no test exercising their content at all. Builds a small real repo with an unambiguous
-  // shape for both: `main.ts` imports `leaf.ts` and nothing imports `main.ts` (the entry point),
-  // and `a.ts`/`b.ts` import each other (a 2-node cycle) while also both being imported by
-  // `main.ts` so they're excluded from entryPoints.
-  // A repo with zero tracked files produced the three section headers with nothing under any of them -- byte-identical to a real repo that genuinely has no hubs, no entry points and no cycles, so "nothing to analyse" was indistinguishable from "clean architecture."
+  // Regression-coverage gap: every existing runArch test only ever asserted on `hubs` -- `entryPoints` and `cycles`, the other two fields runArch's JSON payload actually returns, had no test exercising their content at all. Builds a small real repo with an unambiguous shape for both: `main.ts` imports `leaf.ts` and nothing imports `main.ts` (the entry point), and `a.ts`/`b.ts` import each other (a 2-node cycle) while also both being imported by `main.ts` so they're excluded from entryPoints. A repo with zero tracked files produced the three section headers with nothing under any of them -- byte-identical to a real repo that genuinely has no hubs, no entry points and no cycles, so "nothing to analyse" was indistinguishable from "clean architecture."
   it('says there was nothing to analyse instead of printing empty section headers', () => {
     const repo = mkdtempSync(join(tmpdir(), 'tg-arch-empty-'))
     try {
@@ -5289,8 +4809,7 @@ describe('runArch', () => {
       expect(parsed.entryPoints.map((e) => e.file.replace(/\\/g, '/'))).toEqual(
         expect.arrayContaining([expect.stringContaining('main.ts')]),
       )
-      // leaf.ts is imported by a.ts but imports nothing itself -- not an entry point by this
-      // function's definition (entryPoints requires the file to also import something).
+      // leaf.ts is imported by a.ts but imports nothing itself -- not an entry point by this function's definition (entryPoints requires the file to also import something).
       expect(parsed.entryPoints.some((e) => e.file.includes('leaf.ts'))).toBe(false)
       // a.ts/b.ts are each imported (by main.ts and each other) -- not entry points either.
       expect(parsed.entryPoints.some((e) => e.file.includes('a.ts'))).toBe(false)
@@ -5482,10 +5001,7 @@ describe('runBlame', () => {
   })
 
   it('parses a boundary commit line (leading ^) into structured fields instead of dropping it to {raw}', () => {
-    // Every line of the very first commit in a repo is a blame "boundary" and git prefixes its
-    // SHA with `^`. The JSON parser regex had no optional `^`, so each such line failed to match
-    // and fell through to `{ raw: <line> }`, silently discarding commit/author/date/line/content
-    // for exactly the common case of a brand-new file. The fix captures the marker and flags it.
+    // Every line of the very first commit in a repo is a blame "boundary" and git prefixes its SHA with `^`. The JSON parser regex had no optional `^`, so each such line failed to match and fell through to `{ raw: <line> }`, silently discarding commit/author/date/line/content for exactly the common case of a brand-new file. The fix captures the marker and flags it.
     const repo = mkdtempSync(join(tmpdir(), 'tg-blame-boundary-'))
     try {
       writeFileSync(join(repo, 'package.json'), '{"name":"tg-blame-boundary-fixture"}\n')
@@ -5666,10 +5182,7 @@ describe('runAsk', () => {
     })
   })
 
-  // Regression: on Windows, `where.exe <label>` for an npm-installed CLI resolves to a .cmd
-  // shim (there is no separate .exe). spawnSync cannot exec a .cmd directly without
-  // `shell: true` and used to throw EINVAL, which the catch block swallowed into a silent
-  // degrade -- TOKEN_GOAT_ASK_BACKEND=claude looked like it worked but never ran anything.
+  // Regression: on Windows, `where.exe <label>` for an npm-installed CLI resolves to a .cmd shim (there is no separate .exe). spawnSync cannot exec a .cmd directly without `shell: true` and used to throw EINVAL, which the catch block swallowed into a silent degrade -- TOKEN_GOAT_ASK_BACKEND=claude looked like it worked but never ran anything.
   it.skipIf(process.platform !== 'win32')('actually runs a resolved .cmd backend shim on Windows instead of silently degrading', () => {
     const shimDir = mkdtempSync(join(tmpdir(), 'tg-ask-shim-'))
     const shimName = 'tg_test_ask_backend'
@@ -5699,13 +5212,7 @@ describe('runAsk', () => {
     expect(captured).toContain('shim-answer-12345')
   })
 
-  // Regression for the CRITICAL bug: askArgs used to be hardcoded to
-  // ['--print', '--bare', '--no-session-persistence'] for every backend, including codex --
-  // those are Claude-Code-CLI-specific top-level flags that codex rejects outright. The shim
-  // below stands in for real codex: it exits non-zero (like real codex does on '--print') unless
-  // invoked as `exec --ephemeral --output-last-message <path>`, in which case it writes a known
-  // answer to that file and, to prove the fix reads the file and not stdout, also emits noisy
-  // stdout of the kind real codex produces (reasoning summaries, hook logs).
+  // Regression for the CRITICAL bug: askArgs used to be hardcoded to ['--print', '--bare', '--no-session-persistence'] for every backend, including codex -- those are Claude-Code-CLI-specific top-level flags that codex rejects outright. The shim below stands in for real codex: it exits non-zero (like real codex does on '--print') unless invoked as `exec --ephemeral --output-last-message <path>`, in which case it writes a known answer to that file and, to prove the fix reads the file and not stdout, also emits noisy stdout of the kind real codex produces (reasoning summaries, hook logs).
   it('uses the codex-shaped invocation (exec --ephemeral --output-last-message) and reads the answer from the output file, not stdout', () => {
     const shimDir = mkdtempSync(join(tmpdir(), 'tg-ask-codex-shim-'))
     const isWin = process.platform === 'win32'
@@ -5778,13 +5285,7 @@ describe('runAsk', () => {
   })
 })
 
-// ---- --top <= 0 rejection (regression) --------------------------------------
-// Every --top consumer in this file used to slice its results list with `opts.top` unchecked,
-// so `--top 0` (or negative) silently produced an empty result -- reported as "No callers
-// found", "No dead symbols found.", "No coverage gaps found.", etc -- indistinguishable from a
-// genuinely clean project, exactly the failure mode runRefs' own --top validation (see
-// read_commands.test.ts) already guards against. Each command below must reject a non-positive
-// --top explicitly instead.
+// ---- --top <= 0 rejection (regression) -------------------------------------- Every --top consumer in this file used to slice its results list with `opts.top` unchecked, so `--top 0` (or negative) silently produced an empty result -- reported as "No callers found", "No dead symbols found.", "No coverage gaps found.", etc -- indistinguishable from a genuinely clean project, exactly the failure mode runRefs' own --top validation (see read_commands.test.ts) already guards against. Each command below must reject a non-positive --top explicitly instead.
 describe('--top <= 0 rejection across graph_commands.ts', () => {
   it('runImpact rejects --top 0', () => {
     const errCaptured = captureStderr(() => {
@@ -5977,12 +5478,7 @@ describe('runCallers file::symbol attribution vs --limit', () => {
 // ---- graph bounds: caps that silently changed the answer (regression) --------
 
 describe('runImpact / runCallChain ref-query cap', () => {
-  // Regression: both walks queried refs at DEFAULT_REF_QUERY_LIMIT (500). queryRefs orders by
-  // (file_path, line), so a symbol referenced 600 times from 'a_noise.ts' filled the whole
-  // 0-499 window and the real caller in 'z_caller.ts' fell past the cutoff -- impact pruned it
-  // (and everything reachable only through it) from the impacted set, and call-chain never
-  // reported the chain that runs through it. Both are reachability claims, so a dropped ref is
-  // not a shorter answer, it is a wrong one.
+  // Regression: both walks queried refs at DEFAULT_REF_QUERY_LIMIT (500). queryRefs orders by (file_path, line), so a symbol referenced 600 times from 'a_noise.ts' filled the whole 0-499 window and the real caller in 'z_caller.ts' fell past the cutoff -- impact pruned it (and everything reachable only through it) from the impacted set, and call-chain never reported the chain that runs through it. Both are reachability claims, so a dropped ref is not a shorter answer, it is a wrong one.
   const TARGET = 'refCapWalkTarget5m2'
   const NOISE = 'refCapWalkNoise5m2'
   const USER = 'refCapWalkUser5m2'
@@ -6006,8 +5502,7 @@ describe('runImpact / runCallChain ref-query cap', () => {
     indexFileSync(targetFile)
     indexFileSync(noiseFile)
     indexFileSync(callerFile)
-    // Proves the fixture actually crosses the bound under test: with 500 or fewer refs the
-    // assertions below would hold identically with and without the fix.
+    // Proves the fixture actually crosses the bound under test: with 500 or fewer refs the assertions below would hold identically with and without the fix.
     expect(queryRefs({ name: TARGET, limit: -1, rootDir: normalizePath(root) }).length).toBeGreaterThan(500)
     return root
   }
@@ -6019,9 +5514,7 @@ describe('runImpact / runCallChain ref-query cap', () => {
       try {
         const out = captureStdout(() => { expect(runImpact({ symbol: TARGET, json: true, top: 50 })).toBe(0) })
         const parsed = JSON.parse(out) as Array<{ symbol: string; hops: number }>
-        // Exact ordered impacted set. Pre-fix this was the noise caller alone: the 600 refs from
-        // 'a_noise.ts' consumed the cap, so z_caller.ts's ref never came back and OUTER (only
-        // reachable through USER) was pruned with it.
+        // Exact ordered impacted set. Pre-fix this was the noise caller alone: the 600 refs from 'a_noise.ts' consumed the cap, so z_caller.ts's ref never came back and OUTER (only reachable through USER) was pruned with it.
         expect(parsed).toEqual([
           { symbol: NOISE, hops: 1 },
           { symbol: USER, hops: 1 },
@@ -6057,11 +5550,7 @@ describe('runImpact / runCallChain ref-query cap', () => {
 })
 
 describe('runImpact truncation notices', () => {
-  // Regression: runImpact stopped expanding the BFS at DEPTH_CAP (8) and sliced to --top, and
-  // said neither. A depth-truncated or top-clipped impact set was byte-identical to a complete
-  // one, so "these 20 symbols are impacted" read as the whole blast radius. call-chain already
-  // marks its own depth cutoff with a '(depth-limit)' sentinel; impact --json is a bare array
-  // with nowhere to put a flag, so the notices go to stderr.
+  // Regression: runImpact stopped expanding the BFS at DEPTH_CAP (8) and sliced to --top, and said neither. A depth-truncated or top-clipped impact set was byte-identical to a complete one, so "these 20 symbols are impacted" read as the whole blast radius. call-chain already marks its own depth cutoff with a '(depth-limit)' sentinel; impact --json is a bare array with nowhere to put a flag, so the notices go to stderr.
   function buildChainFixture(depth: number): string {
     const root = mkdtempSync(join(tmpdir(), 'tg-impactdepth-'))
     const lines = ['export function depthCapFn0() { return 1 }']
@@ -6088,8 +5577,7 @@ describe('runImpact truncation notices', () => {
           'depthCapFn5@5', 'depthCapFn6@6', 'depthCapFn7@7', 'depthCapFn8@8',
         ])
         expect(err).toContain('Impact truncated at the 8-hop depth limit')
-        // Control: the same command on a symbol whose whole chain fits must not print it, or the
-        // notice is decoration rather than a truncation signal.
+        // Control: the same command on a symbol whose whole chain fits must not print it, or the notice is decoration rather than a truncation signal.
         const errShort = captureStderr(() => {
           captureStdout(() => { expect(runImpact({ symbol: 'depthCapFn7', json: true, top: 50 })).toBe(0) })
         })
@@ -6125,10 +5613,7 @@ describe('runImpact truncation notices', () => {
 })
 
 describe('runDead / runCoverageGaps whole-project kind scan', () => {
-  // Regression: the kind scans were capped (5000 per kind for dead, 2000 for coverage-gaps) and
-  // querySymbols orders by (file_path, line), so every symbol past the cutoff was never examined
-  // -- silently, with dead's `totalCount` describing the scanned set as if it were the project.
-  // This repo's own index already holds 3444 functions, so the 2000 cap was exceeded in practice.
+  // Regression: the kind scans were capped (5000 per kind for dead, 2000 for coverage-gaps) and querySymbols orders by (file_path, line), so every symbol past the cutoff was never examined -- silently, with dead's `totalCount` describing the scanned set as if it were the project. This repo's own index already holds 3444 functions, so the 2000 cap was exceeded in practice.
   const FN_COUNT = 5001
 
   function buildManyFixture(): string {

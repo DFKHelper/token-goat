@@ -31,18 +31,14 @@ describe('unzipBounded', () => {
   })
 
   it('rejects an entry whose declared size alone already exceeds the limit, via the fast declared-size check, without decompressing it', () => {
-    // A real, honestly-labeled bomb: 40MB of zeros, declared size matches reality. Small enough
-    // to build fast, but big enough that if the fast path did not fire and the entry were fully
-    // decompressed, it would take measurably longer than the assertion below allows.
+    // A real, honestly-labeled bomb: 40MB of zeros, declared size matches reality. Small enough to build fast, but big enough that if the fast path did not fire and the entry were fully decompressed, it would take measurably longer than the assertion below allows.
     const zip = zipSync({ 'bomb.bin': zeroPayload(40) }, { level: 1 })
 
     const t0 = Date.now()
     expect(() => unzipBounded(fflateModule, zip, { limitBytes: 1024 * 1024, shouldExtract: () => true })).toThrow(ZipOutputTooLargeError)
     const elapsedMs = Date.now() - t0
 
-    // The fast declared-size check rejects before any streaming decompression begins, so this
-    // should complete near-instantly (walking the central directory only). A generous bound
-    // catches a regression to "decompress first, check after" without being flaky under load.
+    // The fast declared-size check rejects before any streaming decompression begins, so this should complete near-instantly (walking the central directory only). A generous bound catches a regression to "decompress first, check after" without being flaky under load.
     expect(elapsedMs).toBeLessThan(200)
   })
 
@@ -59,11 +55,7 @@ describe('unzipBounded', () => {
   })
 
   it('rejects an entry that LIES about its declared size, via the real-time running-total check, catching it long before the real payload is fully decompressed', () => {
-    // The declared size (100 bytes) is comfortably under the limit, so the fast declared-size
-    // check alone would wave this straight through -- exactly the "theatre" failure mode. The
-    // real decompressed content is 60MB of zeros. If unzipBounded only checked the declared
-    // field, this would fully decompress (or attempt to allocate) 60MB; it must instead be
-    // caught by the running total as the real bytes stream out.
+    // The declared size (100 bytes) is comfortably under the limit, so the fast declared-size check alone would wave this straight through -- exactly the "theatre" failure mode. The real decompressed content is 60MB of zeros. If unzipBounded only checked the declared field, this would fully decompress (or attempt to allocate) 60MB; it must instead be caught by the running total as the real bytes stream out.
     const realPayload = zeroPayload(60)
     const zip = buildLyingSizeZip('lying.bin', realPayload, 100)
 
@@ -75,10 +67,7 @@ describe('unzipBounded', () => {
     }
 
     expect(caught).toBeInstanceOf(ZipOutputTooLargeError)
-    // Proves early abort, not full materialization: the running total at the moment of the throw
-    // is a small multiple of the 1MB limit (bounded by one stream chunk's worst-case expansion),
-    // nowhere close to the real 60MB payload. A bound gated only on the declared 100-byte field
-    // would never have thrown at all.
+    // Proves early abort, not full materialization: the running total at the moment of the throw is a small multiple of the 1MB limit (bounded by one stream chunk's worst-case expansion), nowhere close to the real 60MB payload. A bound gated only on the declared 100-byte field would never have thrown at all.
     const match = /over (\d+)MB decompressed so far/.exec((caught as Error).message)
     expect(match).not.toBeNull()
     const decompressedSoFarMB = Number(match?.[1])

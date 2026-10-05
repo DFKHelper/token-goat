@@ -83,16 +83,12 @@ describe('runWasteCommand', () => {
     expect(out).toContain('Read once, never touched again')
     expect(out).toContain('Repeated Bash commands not hitting the token-goat cache')
     expect(out).toContain('Harness-injected context')
-    // Every list-shaped section should fall through to the "none" placeholder line. The
-    // injected-context section is the fifth; its task-list and skill-body subsections render only
-    // when there is something to report, and the compaction line always prints a count rather than
-    // a placeholder, so neither adds one here.
+    // Every list-shaped section should fall through to the "none" placeholder line. The injected-context section is the fifth; its task-list and skill-body subsections render only when there is something to report, and the compaction line always prints a count rather than a placeholder, so neither adds one here.
     expect((out.match(/ {2}none\n/g) ?? []).length).toBe(5)
     expect(out).toContain('0 compactions this session')
     expect(process.exitCode).toBeUndefined()
 
-    // Zero-turn assistant-output section must render sensibly -- no NaN, no divide-by-zero,
-    // and the singular/plural noun must not print "0 turns" as "0 turn" (or vice versa).
+    // Zero-turn assistant-output section must render sensibly -- no NaN, no divide-by-zero, and the singular/plural noun must not print "0 turns" as "0 turn" (or vice versa).
     expect(out).toContain('0 turns, 0 tok generated')
     expect(out).not.toMatch(/NaN/)
     expect(out).toContain('Re-send upper bound: 0 tok')
@@ -187,8 +183,7 @@ describe('runWasteCommand', () => {
   })
 
   it('prints a stderr "no transcript found" error and sets exitCode 1 when none is discoverable and none is passed', async () => {
-    // No --transcript given, and tempDir's slugged ~/.claude/projects/<slug> dir
-    // won't exist, so findLatestTranscript resolves to null.
+    // No --transcript given, and tempDir's slugged ~/.claude/projects/<slug> dir won't exist, so findLatestTranscript resolves to null.
     const err = captureStderr()
     const cap = captureStdout()
     try {
@@ -198,8 +193,7 @@ describe('runWasteCommand', () => {
       err.restore()
     }
 
-    // resolveProjectRoot canonicalizes (lowercased drive letter, forward slashes on
-    // Windows), so compare the basename rather than the raw tempDir string.
+    // resolveProjectRoot canonicalizes (lowercased drive letter, forward slashes on Windows), so compare the basename rather than the raw tempDir string.
     expect(err.text()).toMatch(/^token-goat: no session transcript found for /)
     expect(err.text()).toContain(path.basename(tempDir))
     expect(err.text()).toContain('Pass --transcript <path>')

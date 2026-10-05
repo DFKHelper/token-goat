@@ -15,8 +15,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   return { ...actual, dataDir: () => DATA_DIR, configPath: () => TEST_CONFIG_PATH }
 })
 
-// vi.mock is hoisted -- spy on recordStat while still calling through, mirroring
-// tests/hooks_glob.test.ts's pattern.
+// vi.mock is hoisted -- spy on recordStat while still calling through, mirroring tests/hooks_glob.test.ts's pattern.
 vi.mock('../src/stats.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   const real = original['recordStat'] as (...args: unknown[]) => void
@@ -40,8 +39,7 @@ function writeEvent(filePath: string | undefined, content: unknown): HookEvent {
   })
 }
 
-/** Build a synthetic N-line file body, one distinct line per index so line-level identity is
- *  unambiguous for the LCS comparison. */
+/** Build a synthetic N-line file body, one distinct line per index so line-level identity is unambiguous for the LCS comparison. */
 function makeLines(n: number, prefix = 'line'): string {
   const lines: string[] = []
   for (let i = 0; i < n; i++) lines.push(`${prefix} ${i}`)
@@ -78,8 +76,7 @@ describe('preWriteRewriteHandler', () => {
   it('passes through when the file exists but is small (below write_rewrite_min_lines)', () => {
     const target = path.join(FILES_DIR, 'small.ts')
     fs.writeFileSync(target, makeLines(10))
-    // New content keeps only 1 of the 10 old lines -- would clearly fire on a large file, but
-    // this file is trivially small (default floor is 40 lines), so it must pass regardless.
+    // New content keeps only 1 of the 10 old lines -- would clearly fire on a large file, but this file is trivially small (default floor is 40 lines), so it must pass regardless.
     const newContent = 'line 0\n' + makeLines(9, 'brand-new-line').replace(/\n$/, '')
     const result = preWriteRewriteHandler(writeEvent(target, newContent))
     expect(result.hookType).toBe('pass')
@@ -141,9 +138,7 @@ describe('preWriteRewriteHandler', () => {
   })
 
   it('fails open when the file cannot be read (permission-style error simulated via ENOENT after stat)', () => {
-    // A path that statSync itself cannot resolve (nonexistent parent dir with trailing slash
-    // weirdness is fragile across platforms) -- instead assert the already-covered brand-new-file
-    // path and a bogus null-byte path both degrade to pass rather than throwing.
+    // A path that statSync itself cannot resolve (nonexistent parent dir with trailing slash weirdness is fragile across platforms) -- instead assert the already-covered brand-new-file path and a bogus null-byte path both degrade to pass rather than throwing.
     const bogus = path.join(FILES_DIR, 'does\x00not-exist.ts')
     expect(() => preWriteRewriteHandler(writeEvent(bogus, makeLines(100)))).not.toThrow()
     expect(preWriteRewriteHandler(writeEvent(bogus, makeLines(100))).hookType).toBe('pass')
@@ -151,10 +146,7 @@ describe('preWriteRewriteHandler', () => {
 
   it('fails open without reading the old file when it exceeds the byte-size cap, even though its line count is well under MAX_LINES_FOR_DIFF', () => {
     const target = path.join(FILES_DIR, 'huge-few-lines.ts')
-    // 200 lines of 30KB each (~6MB total) -- far over the 4MB byte cap, but only 200 lines, well
-    // under MAX_LINES_FOR_DIFF (4000). Pre-fix, the only gate was the line-count check performed
-    // AFTER the full file was already read and split, so this shape sailed straight through: full
-    // readFileSync of ~6MB, followed by a hint firing since 200 < 4000 and most lines are unchanged.
+    // 200 lines of 30KB each (~6MB total) -- far over the 4MB byte cap, but only 200 lines, well under MAX_LINES_FOR_DIFF (4000). Pre-fix, the only gate was the line-count check performed AFTER the full file was already read and split, so this shape sailed straight through: full readFileSync of ~6MB, followed by a hint firing since 200 < 4000 and most lines are unchanged.
     const oldLines: string[] = []
     for (let i = 0; i < 200; i++) oldLines.push(`line ${i} ` + 'x'.repeat(30_000))
     fs.writeFileSync(target, oldLines.join('\n') + '\n')
@@ -167,8 +159,7 @@ describe('preWriteRewriteHandler', () => {
     expect(vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'write_rewrite_hint')).toBeUndefined()
   })
 
-  // Mutation guard: a lowered write_rewrite_min_lines / write_rewrite_unchanged_pct must actually
-  // change behavior, proving the fields drive this gate rather than a hardcoded literal.
+  // Mutation guard: a lowered write_rewrite_min_lines / write_rewrite_unchanged_pct must actually change behavior, proving the fields drive this gate rather than a hardcoded literal.
   it('write_rewrite_min_lines wiring: a file too small at the default floor fires once the floor is lowered', () => {
     const target = path.join(FILES_DIR, 'wiring-min-lines.ts')
     const oldLines: string[] = []

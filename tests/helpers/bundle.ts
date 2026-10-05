@@ -6,23 +6,12 @@ import { fileURLToPath } from 'node:url'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 export const ROOT = path.join(HERE, '..', '..')
 export const BUNDLE = path.join(ROOT, 'dist', 'token-goat.mjs')
-// The code itself. BUNDLE is only a launcher that enables the V8 compile cache before importing
-// this file (see esbuild.config.mjs), so any assertion about what survived bundling -- a symbol
-// being present, a stub being absent -- must read CORE_BUNDLE. Reading BUNDLE for that would pass
-// or fail on a few hundred bytes of launcher that contain none of the product code.
+// The code itself. BUNDLE is only a launcher that enables the V8 compile cache before importing this file (see esbuild.config.mjs), so any assertion about what survived bundling -- a symbol being present, a stub being absent -- must read CORE_BUNDLE. Reading BUNDLE for that would pass or fail on a few hundred bytes of launcher that contain none of the product code.
 export const CORE_BUNDLE = path.join(ROOT, 'dist', 'token-goat.core.mjs')
-// Prefix of the build's hashed code chunks -- must match esbuild.config.mjs's CHUNK_PREFIX. One
-// build emits both entries, so the CLI and the hook library share this single set of chunks.
+// Prefix of the build's hashed code chunks -- must match esbuild.config.mjs's CHUNK_PREFIX. One build emits both entries, so the CLI and the hook library share this single set of chunks.
 const CORE_CHUNK_PREFIX = 'token-goat-chunk-'
 
-/**
- * All of the emitted code the core entry can reach, as one string: the entry plus every chunk.
- *
- * The build uses `splitting: true`, so CORE_BUNDLE itself is a few hundred bytes that import
- * the chunks holding the product code. An assertion about what survived bundling -- a symbol being
- * present, a stub being absent -- must therefore read the whole emitted set, not the entry alone,
- * or it fails on every symbol whichever way the code is arranged.
- */
+/** All of the emitted code the core entry can reach, as one string: the entry plus every chunk. The build uses `splitting: true`, so CORE_BUNDLE itself is a few hundred bytes that import the chunks holding the product code. An assertion about what survived bundling -- a symbol being present, a stub being absent -- must therefore read the whole emitted set, not the entry alone, or it fails on every symbol whichever way the code is arranged. */
 export function readCoreBundleText(): string {
   const dist = path.join(ROOT, 'dist')
   const parts = [fs.readFileSync(CORE_BUNDLE, 'utf8')]
@@ -31,9 +20,7 @@ export function readCoreBundleText(): string {
   }
   return parts.join('\n')
 }
-// The in-process hook library bundle (src/hook_lib.ts) -- a sibling of BUNDLE with zero
-// load-time side effects, exporting relayInProcess() for bridges to import() directly
-// instead of spawnSync-ing a second `token-goat hook <event>` process. See esbuild.config.mjs.
+// The in-process hook library bundle (src/hook_lib.ts) -- a sibling of BUNDLE with zero load-time side effects, exporting relayInProcess() for bridges to import() directly instead of spawnSync-ing a second `token-goat hook <event>` process. See esbuild.config.mjs.
 export const HOOK_BUNDLE = path.join(ROOT, 'dist', 'token-goat-hook.mjs')
 
 export interface RunResult {

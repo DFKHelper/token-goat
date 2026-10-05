@@ -1,27 +1,4 @@
-/**
- * Guard: every conditional skip that stamps `files.embed_sha` encodes the condition it skipped on.
- *
- * `embed_sha` is a freshness key. A skip that stamps the BARE content sha writes the same value a
- * genuinely successful embed writes, so the two become indistinguishable and the decision can never
- * re-open: change the input the skip hinged on and the file still reads as fresh, forever. That has
- * shipped here three times now, each caught separately -- `disabled:` for the config-off skip,
- * `unavailable:` for the missing-deps skip, and `oversize:<kb>:` for the size-threshold skip, which
- * left `semantic` permanently blind to content that `symbol` and `read` kept serving normally.
- *
- * So the rule is a decision per site rather than a blanket ban. A stamp site either carries a
- * condition-encoding marker, or it is listed below with a reason saying why its skip is terminal --
- * where terminal means no reachable input change could make that file embeddable later. The reason
- * is checked against a marker that must still be present in `src/parser.ts`, so a reason that stops
- * being true fails rather than reading as a settled decision. A site the scanner finds but this
- * table does not name fails outright, which is what makes adding a new skip a decision.
- *
- * Terminal by nature versus terminal by today's code is recorded per entry, because the second kind
- * is only terminal until someone makes its hardcoded value configurable -- at which point the stamp
- * has to start encoding it, exactly as the size threshold did.
- *
- * The scanner matches on the call's own syntax and the count floors below are non-zero, so a rename
- * that empties the population fails instead of passing vacuously.
- */
+/** Guard: every conditional skip that stamps `files.embed_sha` encodes the condition it skipped on. `embed_sha` is a freshness key. A skip that stamps the BARE content sha writes the same value a genuinely successful embed writes, so the two become indistinguishable and the decision can never re-open: change the input the skip hinged on and the file still reads as fresh, forever. That has shipped here three times now, each caught separately -- `disabled:` for the config-off skip, `unavailable:` for the missing-deps skip, and `oversize:<kb>:` for the size-threshold skip, which left `semantic` permanently blind to content that `symbol` and `read` kept serving normally. So the rule is a decision per site rather than a blanket ban. A stamp site either carries a condition-encoding marker, or it is listed below with a reason saying why its skip is terminal -- where terminal means no reachable input change could make that file embeddable later. The reason is checked against a marker that must still be present in `src/parser.ts`, so a reason that stops being true fails rather than reading as a settled decision. A site the scanner finds but this table does not name fails outright, which is what makes adding a new skip a decision. Terminal by nature versus terminal by today's code is recorded per entry, because the second kind is only terminal until someone makes its hardcoded value configurable -- at which point the stamp has to start encoding it, exactly as the size threshold did. The scanner matches on the call's own syntax and the count floors below are non-zero, so a rename that empties the population fails instead of passing vacuously. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -41,13 +18,7 @@ interface Site {
   readonly context: string
 }
 
-/**
- * Every `stampEmbedSha(` call in `src/parser.ts`, with the source that precedes it.
- *
- * Balanced-paren scanning rather than a regex: the transform argument contains its own call
- * parentheses (`(s) => oversizeEmbedSha(s, ixCfg.large_file_symbol_only_kb)`), which a
- * non-greedy `\(...\)` match would cut in half and silently misclassify as bare.
- */
+/** Every `stampEmbedSha(` call in `src/parser.ts`, with the source that precedes it. Balanced-paren scanning rather than a regex: the transform argument contains its own call parentheses (`(s) => oversizeEmbedSha(s, ixCfg.large_file_symbol_only_kb)`), which a non-greedy `\(...\)` match would cut in half and silently misclassify as bare. */
 function collectStampSites(source: string): Site[] {
   const sites: Site[] = []
   const needle = 'stampEmbedSha('
@@ -85,13 +56,7 @@ interface Exemption {
   readonly reason: string
 }
 
-/**
- * The bare-sha stamps, each with why its skip can never re-open.
- *
- * "By nature" means the content itself offers nothing to embed, so no setting anywhere could change
- * the outcome. "By today's code" means the condition is a literal in this function: terminal only
- * while it stays one, and the day it becomes configurable the stamp must start encoding it.
- */
+/** The bare-sha stamps, each with why its skip can never re-open. "By nature" means the content itself offers nothing to embed, so no setting anywhere could change the outcome. "By today's code" means the condition is a literal in this function: terminal only while it stays one, and the day it becomes configurable the stamp must start encoding it. */
 const EXEMPT: readonly Exemption[] = [
   {
     anchor: "filePath.toLowerCase().endsWith('.profile-meta.xml')",
@@ -124,13 +89,11 @@ const sites = collectStampSites(source)
 
 describe('every conditional embed_sha stamp encodes the condition it skipped on', () => {
   it('finds the stamp sites at all, so a rename cannot empty this guard silently', () => {
-    // Floors, not exact counts: adding a skip must not require touching this line, but losing the
-    // whole population to a rename must fail here rather than pass vacuously.
+    // Floors, not exact counts: adding a skip must not require touching this line, but losing the whole population to a rename must fail here rather than pass vacuously.
     expect(sites.length).toBeGreaterThanOrEqual(8)
     const encoding = sites.filter((s) => CONDITION_ENCODING.some((p) => s.call.includes(p)))
     expect(encoding.length).toBeGreaterThanOrEqual(3)
-    // Each marker helper must really be in use: a union floor alone would let one of the three
-    // disappear behind its siblings.
+    // Each marker helper must really be in use: a union floor alone would let one of the three disappear behind its siblings.
     for (const prefix of CONDITION_ENCODING) {
       expect(sites.filter((s) => s.call.includes(prefix)).length).toBeGreaterThanOrEqual(1)
     }
@@ -147,24 +110,18 @@ describe('every conditional embed_sha stamp encodes the condition it skipped on'
   })
 
   it('every stated reason still matches the code it describes', () => {
-    // An anchor that no longer appears is a reason that has quietly stopped being about anything:
-    // the branch moved, was renamed, or was deleted, and the exemption would otherwise keep reading
-    // as a settled decision for a site that is not there.
+    // An anchor that no longer appears is a reason that has quietly stopped being about anything: the branch moved, was renamed, or was deleted, and the exemption would otherwise keep reading as a settled decision for a site that is not there.
     for (const entry of EXEMPT) {
       expect(source.includes(entry.anchor), `EXEMPT anchor no longer in src/parser.ts: ${entry.anchor}`).toBe(true)
       expect(entry.reason.length).toBeGreaterThan(40)
     }
-    // Both kinds of terminality are represented, so the distinction stays a live one rather than a
-    // label everything happens to share.
+    // Both kinds of terminality are represented, so the distinction stays a live one rather than a label everything happens to share.
     expect(new Set(EXEMPT.map((e) => e.terminality)).size).toBe(2)
   })
 })
 
 describe('the embedding stack identity re-opens the embed decision on both index paths', () => {
-  // ensureEmbeddingProvenance is what re-opens every embed_sha at once when the model or inference
-  // runtime changes, an input embed_sha itself does not encode. It used to be reachable only from
-  // upsertChunks and searchSemantic, both downstream of the per-file freshness gate, so a whole
-  // index run after a runtime upgrade skipped every file and kept the previous stack's vectors.
+  // ensureEmbeddingProvenance is what re-opens every embed_sha at once when the model or inference runtime changes, an input embed_sha itself does not encode. It used to be reachable only from upsertChunks and searchSemantic, both downstream of the per-file freshness gate, so a whole index run after a runtime upgrade skipped every file and kept the previous stack's vectors.
   const ENTRY_POINTS = ['src/cli.ts', 'src/worker.ts'] as const
 
   it('is called from both entry points, before either reads a file row', () => {
@@ -173,8 +130,7 @@ describe('the embedding stack identity re-opens the embed decision on both index
       const text = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8')
       const callAt = text.indexOf('ensureEmbeddingProvenance(')
       expect(callAt, `${rel} no longer calls ensureEmbeddingProvenance`).toBeGreaterThan(-1)
-      // Ordering is the whole point: the reset clears each affected file's embed_sha, so a check
-      // that runs after the row has been read into `entry` cannot be seen by the gate that uses it.
+      // Ordering is the whole point: the reset clears each affected file's embed_sha, so a check that runs after the row has been read into `entry` cannot be seen by the gate that uses it.
       const rowReadAt = text.indexOf('getFileEntry(')
       expect(rowReadAt, `${rel} no longer reads a file row`).toBeGreaterThan(-1)
       expect(callAt, `${rel} checks the embedding stack only after reading a file row`).toBeLessThan(rowReadAt)

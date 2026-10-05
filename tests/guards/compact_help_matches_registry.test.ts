@@ -3,13 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { buildProgram } from '../../src/cli.js'
 import { generateCompactHelp } from '../../src/cli_help.js'
 
-/**
- * The compact help is a hand-written list of command names, and it is the CLI's main discovery surface. Nothing compared it to the commands that actually exist.
- *
- * It had drifted in both directions at once. Four names it advertised were not registered at all -- `snapshot-snapshot`, `opencode-*`, `start` and `stop` -- so the one surface that tells a caller which commands exist was naming four that do not, and running one answers `unknown command`. Two names were printed twice in one group, and three commands that do exist -- `audit`, `history` and `locate` -- appeared nowhere, so the only way to find one was to already know it was there.
- *
- * Both sides here come from the producers themselves, `generateCompactHelp()` and `buildProgram()`. Transcribing either list into this file would make the test agree with whichever copy it was written from, which is the shape that let the drift sit unnoticed in the first place.
- */
+/** The compact help is a hand-written list of command names, and it is the CLI's main discovery surface. Nothing compared it to the commands that actually exist. It had drifted in both directions at once. Four names it advertised were not registered at all -- `snapshot-snapshot`, `opencode-*`, `start` and `stop` -- so the one surface that tells a caller which commands exist was naming four that do not, and running one answers `unknown command`. Two names were printed twice in one group, and three commands that do exist -- `audit`, `history` and `locate` -- appeared nowhere, so the only way to find one was to already know it was there. Both sides here come from the producers themselves, `generateCompactHelp()` and `buildProgram()`. Transcribing either list into this file would make the test agree with whichever copy it was written from, which is the shape that let the drift sit unnoticed in the first place. */
 
 /** Command names the compact help advertises, in order, including any repeats. */
 function advertisedNames(): string[] {

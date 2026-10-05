@@ -1,12 +1,4 @@
-/**
- * The parser fingerprint is per-language, not one global digest.
- *
- * A single global digest meant a fix to one language's adapter invalidated every indexed file in every project: measured on this machine, 26 of the last 90 days' 79 fingerprint regenerations touched only one or two adapters, and the languages those 26 touched account for 161 of 17,855 indexed files -- 0.9%. Each of those releases reparsed all 17,855 to correct at most a few dozen.
- *
- * The direction of safety is asymmetric and it is what these tests are really pinning. Over-invalidating costs a reparse; under-invalidating leaves wrong symbols in the index indefinitely with nothing to signal it, which is the exact failure `files.parser_sha` was added to close. So the shared-change direction -- every language's stamp moves -- matters more than the narrowing, and is tested first.
- *
- * Fixture provenance, CAPTURE: every digest here is produced by running the real scripts/parser-fingerprint.mjs over a real copy of this repository's own extraction sources. Nothing is a restatement of the expected value. The "an adapter changed" condition is produced by actually appending a line to the adapter inside that copy, never by asserting a digest the test itself made up.
- */
+/** The parser fingerprint is per-language, not one global digest. A single global digest meant a fix to one language's adapter invalidated every indexed file in every project: measured on this machine, 26 of the last 90 days' 79 fingerprint regenerations touched only one or two adapters, and the languages those 26 touched account for 161 of 17,855 indexed files -- 0.9%. Each of those releases reparsed all 17,855 to correct at most a few dozen. The direction of safety is asymmetric and it is what these tests are really pinning. Over-invalidating costs a reparse; under-invalidating leaves wrong symbols in the index indefinitely with nothing to signal it, which is the exact failure `files.parser_sha` was added to close. So the shared-change direction -- every language's stamp moves -- matters more than the narrowing, and is tested first. Fixture provenance, CAPTURE: every digest here is produced by running the real scripts/parser-fingerprint.mjs over a real copy of this repository's own extraction sources. Nothing is a restatement of the expected value. The "an adapter changed" condition is produced by actually appending a line to the adapter inside that copy, never by asserting a digest the test itself made up. */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'

@@ -1,85 +1,22 @@
-/**
- * Which harnesses discard which hook event's response.
- *
- * One table, because the question is the same shape at every event -- "does what this hook returns
- * reach the model on this harness" -- and the answer decides between returning the text and queuing
- * it for a later channel. Two copies of that decision, one per event, is how one of them goes stale
- * without anything failing: a hook keeps returning text, the harness keeps throwing it away, and
- * every surface reports a hint emitted.
- *
- * Membership is evidence-backed in both directions and neither direction is safe by default. Adding
- * a harness silently reroutes its output through {@link module:pending_context}; removing one
- * silently discards it. Neither move rests on documentation alone -- see BRIDGES_STATUS in
- * src/bridges_status.ts for the harness-level record of what each event can actually carry.
- */
+/** Which harnesses discard which hook event's response. One table, because the question is the same shape at every event -- "does what this hook returns reach the model on this harness" -- and the answer decides between returning the text and queuing it for a later channel. Two copies of that decision, one per event, is how one of them goes stale without anything failing: a hook keeps returning text, the harness keeps throwing it away, and every surface reports a hint emitted. Membership is evidence-backed in both directions and neither direction is safe by default. Adding a harness silently reroutes its output through {@link module:pending_context}; removing one silently discards it. Neither move rests on documentation alone -- see BRIDGES_STATUS in src/bridges_status.ts for the harness-level record of what each event can actually carry. */
 
 import { getHarnessName } from './bridges/registry.js'
 
-/**
- * Harnesses that run the prompt-submit hook but drop whatever it returns.
- *
- * Empty today, and that is a finding rather than an oversight. Copilot CLI was the only member,
- * on the strength of its own hooks reference saying command-hook output "is dropped"
- * (https://docs.github.com/en/copilot/reference/hooks-reference). That documentation is wrong for
- * `additionalContext`: on Copilot CLI 1.0.88, five of five runs of a user-scope command hook that
- * returned `{"additionalContext":"<marker>"}` put the marker in the model request once, after the
- * prompt inside a `<system_reminder>` block (tg-captures C3, wire `C3/wire/*-req-01.json`). The doc's claim about `modifiedPrompt` was not retested and is
- * assumed to still hold; token-goat does not want that field regardless.
- *
- * The set and the reroute below are kept rather than deleted because they are the fallback if a
- * future Copilot release makes the documentation true again. A hint queued by this reroute drains
- * through `post_tool_use`, whose `additionalContext` Copilot 1.0.88 appends to the tool output
- * (tg-captures C1a). Membership stays evidence-backed in both directions --
- * adding a harness silently reroutes its hints and removing one silently discards them, so
- * neither move should ever rest on documentation alone. See BRIDGES_STATUS for the harness-level
- * record of what each event can actually carry.
- */
+/** Harnesses that run the prompt-submit hook but drop whatever it returns. Empty today, and that is a finding rather than an oversight. Copilot CLI was the only member, on the strength of its own hooks reference saying command-hook output "is dropped" (https://docs.github.com/en/copilot/reference/hooks-reference). That documentation is wrong for `additionalContext`: on Copilot CLI 1.0.88, five of five runs of a user-scope command hook that returned `{"additionalContext":"<marker>"}` put the marker in the model request once, after the prompt inside a `<system_reminder>` block (tg-captures C3, wire `C3/wire/*-req-01.json`). The doc's claim about `modifiedPrompt` was not retested and is assumed to still hold; token-goat does not want that field regardless. The set and the reroute below are kept rather than deleted because they are the fallback if a future Copilot release makes the documentation true again. A hint queued by this reroute drains through `post_tool_use`, whose `additionalContext` Copilot 1.0.88 appends to the tool output (tg-captures C1a). Membership stays evidence-backed in both directions -- adding a harness silently reroutes its hints and removing one silently discards them, so neither move should ever rest on documentation alone. See BRIDGES_STATUS for the harness-level record of what each event can actually carry. */
 export const PROMPT_SUBMIT_CONTEXT_DROPPED = new Set<string>([])
 
 export function dropsPromptSubmitContext(): boolean {
   return PROMPT_SUBMIT_CONTEXT_DROPPED.has(getHarnessName())
 }
 
-/**
- * Harnesses that fire the pre-compact hook but discard whatever it returns.
- *
- * Copilot CLI is the member, and unlike the prompt-submit set above this one is not a documentation
- * claim. Its own `schemas/api.schema.json` (1.0.79 and 1.0.80) declares `preCompact` in the
- * `HookType` enum and has no `postCompact` member at all, and both `preCompact` call sites in app.js
- * are a bare `await this.nativeHookProcessor?.event("preCompact", ...)` whose return value is never
- * assigned to anything. The event fires; the response goes nowhere.
- *
- * That makes it a usable trigger and an unusable channel, which is exactly the shape
- * {@link module:pending_context} exists for: build the manifest when the harness tells us a
- * compaction is starting, queue it, and let the next tool call carry it on a channel that is read.
- * The manifest lands after the compaction rather than before it, so it functions as recovery rather
- * than as instructions to the summarizer -- a strictly weaker delivery than Claude Code's, and the
- * best this harness allows.
- *
- * Codex CLI is the second member, measured rather than read. Codex 0.155.0 does fire PreCompact --
- * a forced auto-compaction (`-c model_auto_compact_token_limit=6000`) produced six of them, each
- * carrying `trigger: "auto"` -- so the event is real and the response is not. The probe was
- * calibrated rather than left as a bare null, because an absent marker proves nothing on its own:
- * one shim returned the same literal marker from both `pre_compact` and `post_tool_use` in a single
- * run, and the session rollout that recorded two real compactions contained the post-tool marker
- * twice and the pre-compact marker zero times. Same process, same string, same transcript, opposite
- * results.
- *
- * Claude Code is deliberately absent: its PreCompact runner joins every succeeded hook's raw stdout
- * into `newCustomInstructions` and hands that to the summarizing model, which is the strongest
- * channel any harness offers here. See EVENTS_WITH_RAW_STDOUT_CONTEXT in src/hook_registry.ts.
- */
+/** Harnesses that fire the pre-compact hook but discard whatever it returns. Copilot CLI is the member, and unlike the prompt-submit set above this one is not a documentation claim. Its own `schemas/api.schema.json` (1.0.79 and 1.0.80) declares `preCompact` in the `HookType` enum and has no `postCompact` member at all, and both `preCompact` call sites in app.js are a bare `await this.nativeHookProcessor?.event("preCompact", ...)` whose return value is never assigned to anything. The event fires; the response goes nowhere. That makes it a usable trigger and an unusable channel, which is exactly the shape {@link module:pending_context} exists for: build the manifest when the harness tells us a compaction is starting, queue it, and let the next tool call carry it on a channel that is read. The manifest lands after the compaction rather than before it, so it functions as recovery rather than as instructions to the summarizer -- a strictly weaker delivery than Claude Code's, and the best this harness allows. Codex CLI is the second member, measured rather than read. Codex 0.155.0 does fire PreCompact -- a forced auto-compaction (`-c model_auto_compact_token_limit=6000`) produced six of them, each carrying `trigger: "auto"` -- so the event is real and the response is not. The probe was calibrated rather than left as a bare null, because an absent marker proves nothing on its own: one shim returned the same literal marker from both `pre_compact` and `post_tool_use` in a single run, and the session rollout that recorded two real compactions contained the post-tool marker twice and the pre-compact marker zero times. Same process, same string, same transcript, opposite results. Claude Code is deliberately absent: its PreCompact runner joins every succeeded hook's raw stdout into `newCustomInstructions` and hands that to the summarizing model, which is the strongest channel any harness offers here. See EVENTS_WITH_RAW_STDOUT_CONTEXT in src/hook_registry.ts. */
 export const PRE_COMPACT_CONTEXT_DROPPED = new Set<string>(['copilot_cli', 'codex'])
 
 export function dropsPreCompactContext(): boolean {
   return PRE_COMPACT_CONTEXT_DROPPED.has(getHarnessName())
 }
 
-/**
- * Harnesses in {@link PRE_COMPACT_CONTEXT_DROPPED} whose prompt-submit context was shown to reach the model, so the manifest queued at compaction can be delivered on the next prompt instead of waiting for a tool call. A prompt answered without tools makes no tool call, and on those harnesses the manifest used to sit queued until one came.
- *
- * Copilot CLI 1.0.88 is the one measured: tg-captures C3 returned a marker as userPromptSubmitted additionalContext and found it in all 5 runs, inside the user message as a `<system_reminder>` block Copilot adds itself, and tg-captures C7 found a preCompact marker zero times after a manual /compact. Codex is left out: its prompt-submit context has not been captured reaching the model, and a manifest delivered there on faith would be cleared from the queue as delivered while it reached nothing.
- */
+/** Harnesses in {@link PRE_COMPACT_CONTEXT_DROPPED} whose prompt-submit context was shown to reach the model, so the manifest queued at compaction can be delivered on the next prompt instead of waiting for a tool call. A prompt answered without tools makes no tool call, and on those harnesses the manifest used to sit queued until one came. Copilot CLI 1.0.88 is the one measured: tg-captures C3 returned a marker as userPromptSubmitted additionalContext and found it in all 5 runs, inside the user message as a `<system_reminder>` block Copilot adds itself, and tg-captures C7 found a preCompact marker zero times after a manual /compact. Codex is left out: its prompt-submit context has not been captured reaching the model, and a manifest delivered there on faith would be cleared from the queue as delivered while it reached nothing. */
 export const PRE_COMPACT_RESUMES_ON_PROMPT = new Set<string>(['copilot_cli'])
 
 export function resumesCompactionOnPrompt(): boolean {

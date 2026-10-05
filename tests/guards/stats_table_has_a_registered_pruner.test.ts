@@ -2,31 +2,11 @@ import { readFileSync } from 'node:fs'
 
 import { describe, expect, it } from 'vitest'
 
-/**
- * S2 (gap_analysis_pass3.md section 4, finding 7): the `stats` table was never pruned (411,208
- * rows, ~54MB with indexes, measured growing forever on one real machine). The fix is
- * aggregation-before-deletion: `rollupAndPruneStats` rolls surviving rows into
- * `stats_daily_rollup` (day + kind + harness + tg_version, the same dimensions `summarize()`
- * already reports by) before deleting them, so `token-goat stats`'s historical totals survive the
- * prune instead of silently truncating to whatever raw rows happen to remain.
- *
- * This is static-analysis only (source text of stats.ts, no DB, no real timers) so it stays on
- * the fast pre-commit tier (tests/guards). It would not catch a rollup that aggregates the wrong
- * numbers -- that needs the real DB-backed regression tests in tests/stats.test.ts -- but it does
- * catch the three ways this specific defect (or its shape) could silently come back: an
- * unbounded-growth table gaining no pruner at all, a pruner that stops being wired into the
- * write path, or a rollup that deletes history `summarize()` never learns to read back.
- */
+/** S2 (gap_analysis_pass3.md section 4, finding 7): the `stats` table was never pruned (411,208 rows, ~54MB with indexes, measured growing forever on one real machine). The fix is aggregation-before-deletion: `rollupAndPruneStats` rolls surviving rows into `stats_daily_rollup` (day + kind + harness + tg_version, the same dimensions `summarize()` already reports by) before deleting them, so `token-goat stats`'s historical totals survive the prune instead of silently truncating to whatever raw rows happen to remain. This is static-analysis only (source text of stats.ts, no DB, no real timers) so it stays on the fast pre-commit tier (tests/guards). It would not catch a rollup that aggregates the wrong numbers -- that needs the real DB-backed regression tests in tests/stats.test.ts -- but it does catch the three ways this specific defect (or its shape) could silently come back: an unbounded-growth table gaining no pruner at all, a pruner that stops being wired into the write path, or a rollup that deletes history `summarize()` never learns to read back. */
 
 const STATS_SRC = readFileSync(new URL('../../src/stats.ts', import.meta.url), 'utf-8')
 
-/**
- * Slice out just one top-level function's body, from `marker` (its declaration text, e.g.
- * `'function summarize'`) up to (but not including) the next top-level function declaration.
- * An unbounded `src.slice(start)` would let a match anywhere LATER in the file -- including
- * inside a completely unrelated function -- satisfy an assertion meant to be about this one
- * function's own body.
- */
+/** Slice out just one top-level function's body, from `marker` (its declaration text, e.g. `'function summarize'`) up to (but not including) the next top-level function declaration. An unbounded `src.slice(start)` would let a match anywhere LATER in the file -- including inside a completely unrelated function -- satisfy an assertion meant to be about this one function's own body. */
 function functionBody(src: string, marker: string): string {
   const start = src.indexOf(marker)
   if (start === -1) throw new Error(`marker not found: ${marker}`)

@@ -1,18 +1,4 @@
-/**
- * Guard against the "handler forwards the caller's projectRoot instead of the validated root" class.
- *
- * Every MCP tool handler in `src/mcp_server.ts` resolves the caller-supplied `projectRoot` through
- * `resolveToolRoot` into a local `root`, then confines the requested targets against that `root`.
- * The confinement verdict is only meaningful if the command it guards is then run against the SAME
- * root. The `section` handler forwarded the raw, possibly-undefined caller value instead
- * (`...(projectRoot !== undefined ? { projectRoot } : {})`), so a relative spec was resolved against
- * a root the gate never validated -- content outside the confined root could be returned even though
- * `confineTargets` had approved a different path. Eleven sibling handlers passed `projectRoot: root`
- * correctly; `section` was the lone outlier, which is exactly the shape that survives review.
- *
- * A one-line fix closes the instance. This guard closes the class: it fails if ANY handler in the
- * file reintroduces the raw-forward form, so the next handler added cannot quietly repeat it.
- */
+/** Guard against the "handler forwards the caller's projectRoot instead of the validated root" class. Every MCP tool handler in `src/mcp_server.ts` resolves the caller-supplied `projectRoot` through `resolveToolRoot` into a local `root`, then confines the requested targets against that `root`. The confinement verdict is only meaningful if the command it guards is then run against the SAME root. The `section` handler forwarded the raw, possibly-undefined caller value instead (`...(projectRoot !== undefined ? { projectRoot } : {})`), so a relative spec was resolved against a root the gate never validated -- content outside the confined root could be returned even though `confineTargets` had approved a different path. Eleven sibling handlers passed `projectRoot: root` correctly; `section` was the lone outlier, which is exactly the shape that survives review. A one-line fix closes the instance. This guard closes the class: it fails if ANY handler in the file reintroduces the raw-forward form, so the next handler added cannot quietly repeat it. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'

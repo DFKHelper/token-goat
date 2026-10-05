@@ -19,22 +19,12 @@ import {
 } from './helpers.js'
 import { stripAnsiEscapes } from '../render/ansi.js'
 
-// ---------------------------------------------------------------------------
-// Grep / rg constants
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Grep / rg constants ---------------------------------------------------------------------------
 
 const _GREP_COMPRESS_THRESHOLD = 30
 const _GREP_MAX_FILE_LINES = 20
 
-/**
- * True when a grep/rg command asks for one of the two output shapes whose lines are not matches.
- *
- * `-l`/`--files-with-matches` emits a bare path per line and `-c`/`--count` emits `path:count`. Neither is a `path:lineno:text` match line, and GrepFilter's summarizer reads every line as one match on the text before its first colon. So `-l` attributed all 385 paths of an `rg -l export src/` to `src/` -- the search root, which is not a file -- and reported "385 matches across 1 file(s)", destroying the only thing the caller asked for. `-c` was worse in kind: each `path:6` became one match for `path`, so every real count printed as 1, the header's total was the file count, and the top-20 cap then ranked on a number the filter had fabricated.
- *
- * Short flags are matched inside a cluster, not just alone: `grep -rl` and `grep -rc` are the ordinary spellings and an exact-token test misses both. Case is load-bearing -- `-c` is count, `-C` is context.
- *
- * A cluster is only flags up to the first one that takes a value, because that flag consumes the rest of the token: `rg -tcss` is `--type=css`, not `-t -c -s -s`, and reading a `c` out of `css` claimed a match-listing search was a count-only one and shipped every match line uncompressed. Which letters eat the rest is a property of the tool, so the caller passes its own set: {@link _GREP_GLUED_VALUE_SHORT_FLAGS} or {@link _RG_GLUED_VALUE_SHORT_FLAGS}.
- */
+/** True when a grep/rg command asks for one of the two output shapes whose lines are not matches. `-l`/`--files-with-matches` emits a bare path per line and `-c`/`--count` emits `path:count`. Neither is a `path:lineno:text` match line, and GrepFilter's summarizer reads every line as one match on the text before its first colon. So `-l` attributed all 385 paths of an `rg -l export src/` to `src/` -- the search root, which is not a file -- and reported "385 matches across 1 file(s)", destroying the only thing the caller asked for. `-c` was worse in kind: each `path:6` became one match for `path`, so every real count printed as 1, the header's total was the file count, and the top-20 cap then ranked on a number the filter had fabricated. Short flags are matched inside a cluster, not just alone: `grep -rl` and `grep -rc` are the ordinary spellings and an exact-token test misses both. Case is load-bearing -- `-c` is count, `-C` is context. A cluster is only flags up to the first one that takes a value, because that flag consumes the rest of the token: `rg -tcss` is `--type=css`, not `-t -c -s -s`, and reading a `c` out of `css` claimed a match-listing search was a count-only one and shipped every match line uncompressed. Which letters eat the rest is a property of the tool, so the caller passes its own set: {@link _GREP_GLUED_VALUE_SHORT_FLAGS} or {@link _RG_GLUED_VALUE_SHORT_FLAGS}. */
 function grepFlagInCluster(argv: string[], short: string, long: string): boolean {
   const glued = gluedValueShortFlags(argv)
   for (const a of argv) {
@@ -49,25 +39,13 @@ function grepFlagInCluster(argv: string[], short: string, long: string): boolean
   return false
 }
 
-/**
- * Short flags whose value may be glued to the letter, so everything after one in a cluster is that value rather than more flags. The two tools disagree, and one shared set could only ever be wrong for one of them, so each gets its own.
- *
- * grep's are `-A`/`-B`/`-C` (NUM), `-D`/`-d` (ACTION), `-e` (PATTERN), `-f` (FILE), `-m` (NUM) -- the eight entries `grep --help` prints with a value placeholder. `-T` is *not* among them: it is `--initial-tab`, a boolean, so `grep -Tc` is a real count-only search and `grep -Tl` a real files-only one. Treating `T` as value-taking here broke the scan before the `c`/`l` that followed it and handed a count list to the summarizer, which reprinted every file's count as 1.
- *
- * `-g` is the ninth entry and is here for `ack`/`ag`, which read it as a pattern. grep defines no `-g` at all, so carrying it costs grep nothing and keeps those two reading a glued `-gPATTERN` the way they did under the single shared set.
- */
+/** Short flags whose value may be glued to the letter, so everything after one in a cluster is that value rather than more flags. The two tools disagree, and one shared set could only ever be wrong for one of them, so each gets its own. grep's are `-A`/`-B`/`-C` (NUM), `-D`/`-d` (ACTION), `-e` (PATTERN), `-f` (FILE), `-m` (NUM) -- the eight entries `grep --help` prints with a value placeholder. `-T` is *not* among them: it is `--initial-tab`, a boolean, so `grep -Tc` is a real count-only search and `grep -Tl` a real files-only one. Treating `T` as value-taking here broke the scan before the `c`/`l` that followed it and handed a count list to the summarizer, which reprinted every file's count as 1. `-g` is the ninth entry and is here for `ack`/`ag`, which read it as a pattern. grep defines no `-g` at all, so carrying it costs grep nothing and keeps those two reading a glued `-gPATTERN` the way they did under the single shared set. */
 const _GREP_GLUED_VALUE_SHORT_FLAGS = 'ABCDdefgm'
 
-/**
- * rg's own set, from the synopsis: `-A`/`-B`/`-C`/`-d`/`-j`/`-m`/`-M` (NUM), `-E` (ENCODING), `-e` (PATTERN), `-f` (PATTERNFILE), `-g` (GLOB), `-r` (REPLACEMENT_TEXT), `-t`/`-T` (TYPE).
- *
- * `-r` belongs here and could not be in the shared set it replaces: rg reads it as `--replace`, but grep reads it as `--recursive`, a boolean, and `grep -rl` is the single most common spelling this scan exists to match. Splitting the sets per tool is what lets both be right, so `rg -rlfoo` now reads `lfoo` as replacement text instead of finding a `--files-with-matches` inside it.
- */
+/** rg's own set, from the synopsis: `-A`/`-B`/`-C`/`-d`/`-j`/`-m`/`-M` (NUM), `-E` (ENCODING), `-e` (PATTERN), `-f` (PATTERNFILE), `-g` (GLOB), `-r` (REPLACEMENT_TEXT), `-t`/`-T` (TYPE). `-r` belongs here and could not be in the shared set it replaces: rg reads it as `--replace`, but grep reads it as `--recursive`, a boolean, and `grep -rl` is the single most common spelling this scan exists to match. Splitting the sets per tool is what lets both be right, so `rg -rlfoo` now reads `lfoo` as replacement text instead of finding a `--files-with-matches` inside it. */
 const _RG_GLUED_VALUE_SHORT_FLAGS = 'ABCEMTdefgjmrt'
 
-/**
- * Which set applies is a property of the command, read off `argv[0]` -- not of the filter class that happens to be handling it. GrepFilter's binaries include `rg` and RgFilter's include `grep`, so either class can be handed either tool and "which filter am I" answers the wrong question.
- */
+/** Which set applies is a property of the command, read off `argv[0]` -- not of the filter class that happens to be handling it. GrepFilter's binaries include `rg` and RgFilter's include `grep`, so either class can be handed either tool and "which filter am I" answers the wrong question. */
 function gluedValueShortFlags(argv: string[]): string {
   return isRgCommand(argv) ? _RG_GLUED_VALUE_SHORT_FLAGS : _GREP_GLUED_VALUE_SHORT_FLAGS
 }
@@ -77,13 +55,7 @@ function isRgCommand(argv: string[]): boolean {
   return pathStem(argv[0] ?? '').toLowerCase() === 'rg'
 }
 
-/**
- * Every line is a bare path, never a match. Three spellings produce that shape.
- *
- * `-l`/`--files-with-matches` is the original. Its two siblings were missed when it was fixed and failed the same way at scale: `rg --files-without-match` over `src` reported `394 matches across 1 file(s)` with all 394 paths attributed to the search root, and `rg --files` reported `394 matches across 0 file(s)` with `(unattributed lines: 394)` underneath. Both destroyed the listing the caller asked for; the second is the filter stating outright that it had parsed nothing and shipping a summary regardless.
- *
- * `-L` is grep's short spelling of the inverse listing, but rg reads `-L` as `--follow`, so matching it for both tools would pass an ordinary symlink-following search through whole and suppress real compression. The short form is grep's alone and the long form is shared. `--files` is rg's bare listing and grep has no equivalent, so an exact token test covers it.
- */
+/** Every line is a bare path, never a match. Three spellings produce that shape. `-l`/`--files-with-matches` is the original. Its two siblings were missed when it was fixed and failed the same way at scale: `rg --files-without-match` over `src` reported `394 matches across 1 file(s)` with all 394 paths attributed to the search root, and `rg --files` reported `394 matches across 0 file(s)` with `(unattributed lines: 394)` underneath. Both destroyed the listing the caller asked for; the second is the filter stating outright that it had parsed nothing and shipping a summary regardless. `-L` is grep's short spelling of the inverse listing, but rg reads `-L` as `--follow`, so matching it for both tools would pass an ordinary symlink-following search through whole and suppress real compression. The short form is grep's alone and the long form is shared. `--files` is rg's bare listing and grep has no equivalent, so an exact token test covers it. */
 function isFilesOnlySearch(argv: string[]): boolean {
   if (grepFlagInCluster(argv, 'l', '--files-with-matches')) return true
   if (argv.includes('--files')) return true
@@ -91,31 +63,17 @@ function isFilesOnlySearch(argv: string[]): boolean {
   return grepFlagInCluster(argv, 'L', '--files-without-match')
 }
 
-/**
- * Every line is `path:count`, and the count is the answer.
- *
- * `--count-matches` is rg's per-file total of matches rather than matching lines. It shares `-c`'s shape exactly but is spelled independently, so the cluster walk's `--count` test does not see it, and it fell through to the summarizer: `rg --count-matches function src` reported `372 matches across 372 file(s)` with every file printed as `1 match(es)`, because each `path:N` line was read as a single match on `path`. The true total was 4466. grep has no such flag, so the token test needs no tool check.
- */
+/** Every line is `path:count`, and the count is the answer. `--count-matches` is rg's per-file total of matches rather than matching lines. It shares `-c`'s shape exactly but is spelled independently, so the cluster walk's `--count` test does not see it, and it fell through to the summarizer: `rg --count-matches function src` reported `372 matches across 372 file(s)` with every file printed as `1 match(es)`, because each `path:N` line was read as a single match on `path`. The true total was 4466. grep has no such flag, so the token test needs no tool check. */
 function isCountOnlySearch(argv: string[]): boolean {
   return grepFlagInCluster(argv, 'c', '--count') || argv.includes('--count-matches')
 }
 
-/**
- * True when the command asks for machine-readable output rather than match lines.
- *
- * `rg --json` emits one JSON object per line -- `begin`, `match`, `end`, `summary` events -- and none of them is a `path:lineno:text` match line. The summarizer below reads every line as one match on the text before its first colon, and a JSON line's first colon sits inside `{"type"`, which holds no `.`, `/` or `\`, so every line fell through to the unattributed bucket: a 403-line search reported `grep: 403 matches across 0 file(s)` with `(unattributed lines: 403)` underneath and every byte of the JSON gone. The count was invented, the file count was wrong for a single-file search, and the caller had asked for this shape precisely because it wanted to parse it.
- *
- * There is no short spelling and no value form -- `--json` is a bare long flag in rg, and grep has no equivalent -- so an exact token test is the whole rule here, unlike {@link grepFlagInCluster}'s cluster walk.
- *
- * Only `--json` qualifies. `--vimgrep` (`path:line:col:text`) and `-o` were checked against this filter and both attribute correctly, so neither is listed: a name added here on suspicion would be a name nobody can later tell is load-bearing.
- */
+/** True when the command asks for machine-readable output rather than match lines. `rg --json` emits one JSON object per line -- `begin`, `match`, `end`, `summary` events -- and none of them is a `path:lineno:text` match line. The summarizer below reads every line as one match on the text before its first colon, and a JSON line's first colon sits inside `{"type"`, which holds no `.`, `/` or `\`, so every line fell through to the unattributed bucket: a 403-line search reported `grep: 403 matches across 0 file(s)` with `(unattributed lines: 403)` underneath and every byte of the JSON gone. The count was invented, the file count was wrong for a single-file search, and the caller had asked for this shape precisely because it wanted to parse it. There is no short spelling and no value form -- `--json` is a bare long flag in rg, and grep has no equivalent -- so an exact token test is the whole rule here, unlike {@link grepFlagInCluster}'s cluster walk. Only `--json` qualifies. `--vimgrep` (`path:line:col:text`) and `-o` were checked against this filter and both attribute correctly, so neither is listed: a name added here on suspicion would be a name nobody can later tell is load-bearing. */
 function isStructuredOutputSearch(argv: string[]): boolean {
   return argv.includes('--json')
 }
 
-// ---------------------------------------------------------------------------
-// GrepFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GrepFilter ---------------------------------------------------------------------------
 
 export class GrepFilter extends ToolFilter {
   readonly name = 'grep'
@@ -144,11 +102,7 @@ export class GrepFilter extends ToolFilter {
 
     const fileCounts = new Map<string, number>()
     let unattributed = 0
-    // grep only prefixes a filename when the search covers more than one file, so a
-    // single-file search (e.g. `grep -n alpha b1.txt`) emits bare `12:text` or `12-text`
-    // lines with nothing to attribute -- every such line used to fall into the
-    // unattributed bucket even though the target file is right there in argv. When the
-    // command names exactly one file, attribute those bare lines to it instead.
+    // grep only prefixes a filename when the search covers more than one file, so a single-file search (e.g. `grep -n alpha b1.txt`) emits bare `12:text` or `12-text` lines with nothing to attribute -- every such line used to fall into the unattributed bucket even though the target file is right there in argv. When the command names exactly one file, attribute those bare lines to it instead.
     const searchFiles = positionalArgs(argv.slice(1)).slice(1)
     const singleFile = searchFiles.length === 1 ? searchFiles[0] : undefined
     for (const line of nonEmpty) {
@@ -157,11 +111,7 @@ export class GrepFilter extends ToolFilter {
         fileCounts.set(fname, (fileCounts.get(fname) ?? 0) + 1)
         continue
       }
-      // A Windows absolute path (C:\foo\bar.py:12:text) has its own colon right after the
-      // single-letter drive, which line.indexOf(':') would otherwise pick up as the field
-      // separator -- leaving candidate as just "C" (no '.', '/', or '\\') and silently
-      // dumping every match on such a path into the unattributed bucket. Skip past a
-      // leading drive-letter colon before looking for the real path/lineno separator.
+      // A Windows absolute path (C:\foo\bar.py:12:text) has its own colon right after the single-letter drive, which line.indexOf(':') would otherwise pick up as the field separator -- leaving candidate as just "C" (no '.', '/', or '\\') and silently dumping every match on such a path into the unattributed bucket. Skip past a leading drive-letter colon before looking for the real path/lineno separator.
       const driveColonMatch = /^[A-Za-z]:[\\/]/.exec(line)
       const searchFrom = driveColonMatch ? 2 : 0
       const colonIdx = line.indexOf(':', searchFrom)
@@ -193,11 +143,7 @@ export class GrepFilter extends ToolFilter {
     }
     if (sorted.length > _GREP_MAX_FILE_LINES) {
       const remaining = sorted.length - _GREP_MAX_FILE_LINES
-      // `-C`/`--context` prints more surrounding lines per match -- it has nothing to do with
-      // narrowing which FILES a search touches, so telling the user to reach for it here (the
-      // too-many-distinct-files case) never actually helped. A more specific pattern or a
-      // path/glob restriction (--include, or a narrower search root) is what actually reduces
-      // the file count this elision message is reporting.
+      // `-C`/`--context` prints more surrounding lines per match -- it has nothing to do with narrowing which FILES a search touches, so telling the user to reach for it here (the too-many-distinct-files case) never actually helped. A more specific pattern or a path/glob restriction (--include, or a narrower search root) is what actually reduces the file count this elision message is reporting.
       outLines.push(
         `  [token-goat: +${remaining} more file(s) elided; use a more specific pattern or --include=<glob> to narrow]`,
       )
@@ -214,9 +160,7 @@ export class GrepFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// RgFilter — context-line suppressor for rg/grep -C/-A/-B output
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- RgFilter — context-line suppressor for rg/grep -C/-A/-B output ---------------------------------------------------------------------------
 
 const _RG_CONTEXT_THRESHOLD = 30
 const _RG_TOP_GROUPS = 5
@@ -242,10 +186,7 @@ export class RgFilter extends ToolFilter {
     return false
   }
 
-  // RgFilter only handles context-block output (-A/-B/-C/--context); a plain
-  // grep/rg with no context flags falls through to GrepFilter's per-file
-  // match-count summarizer, which produces dramatically smaller output.
-  // Both line regexes hard-code ripgrep's default field separators (`:` after a match's line number, `-` after a context line's). `--field-match-separator=-` makes a real match read `12-text`, which is exactly the shape this filter drops, so a search that overrides either separator is released to the generic path rather than compressed against an assumption it broke.
+  // RgFilter only handles context-block output (-A/-B/-C/--context); a plain grep/rg with no context flags falls through to GrepFilter's per-file match-count summarizer, which produces dramatically smaller output. Both line regexes hard-code ripgrep's default field separators (`:` after a match's line number, `-` after a context line's). `--field-match-separator=-` makes a real match read `12-text`, which is exactly the shape this filter drops, so a search that overrides either separator is released to the generic path rather than compressed against an assumption it broke.
   private static _hasCustomFieldSeparator(argv: string[]): boolean {
     const flags = ['--field-match-separator', '--field-context-separator']
     return argv.some((a) => flags.some((f) => a === f || a.startsWith(f + '=')))
@@ -313,9 +254,7 @@ export class RgFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// LsFilter — basic line-count truncation for ls/dir listings
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- LsFilter — basic line-count truncation for ls/dir listings ---------------------------------------------------------------------------
 
 const _LS_PASSTHROUGH = 25
 const _LS_MAX_ENTRIES = 10
@@ -357,10 +296,7 @@ function _lsExtSummary(entries: string[], topN = 4): string {
   return parts.join(' ')
 }
 
-// Windows `dir` banner lines ("Volume in drive C is ...", " Directory of C:\...")
-// and the trailing "N File(s)/Dir(s) ... bytes free" summary don't look like
-// Unix `ls` entries at all; recognize them so they aren't folded into the
-// entry list or dropped by truncation.
+// Windows `dir` banner lines ("Volume in drive C is ...", " Directory of C:\...") and the trailing "N File(s)/Dir(s) ... bytes free" summary don't look like Unix `ls` entries at all; recognize them so they aren't folded into the entry list or dropped by truncation.
 const _DIR_EXE_BANNER_RE = /^\s*(?:Volume in drive \S+ (?:is|has no label)|Volume Serial Number is|Directory of)/i
 const _DIR_EXE_SUMMARY_RE = /^\s*\d[\d,]*\s+(?:File|Dir)\(s\)/i
 const _DIR_EXE_DIR_ENTRY_RE = /<DIR>/
@@ -485,9 +421,7 @@ export class LsFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// EzaFilter — tree / flat-listing compression for eza/exa/ls
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- EzaFilter — tree / flat-listing compression for eza/exa/ls ---------------------------------------------------------------------------
 
 const _EZA_PASSTHROUGH = 30
 const _HEADER_KEYWORDS = new Set(['permission', 'size', 'date', 'user', 'name'])
@@ -497,21 +431,12 @@ export class EzaFilter extends ToolFilter {
   readonly name = 'eza'
   override readonly binaries = new Set(['eza', 'exa', 'ls'])
 
-  // Flags eza/exa support that plain GNU/BSD `ls` does not -- used to disambiguate the shared
-  // 'ls' binary claim below (a common `alias ls=eza` setup means the literal command text is
-  // "ls ...", but token-goat only ever sees that raw text, never the shell's alias resolution).
+  // Flags eza/exa support that plain GNU/BSD `ls` does not -- used to disambiguate the shared 'ls' binary claim below (a common `alias ls=eza` setup means the literal command text is "ls ...", but token-goat only ever sees that raw text, never the shell's alias resolution).
   private static readonly _EZA_ONLY_FLAGS = new Set([
     '--tree', '-T', '--icons', '--no-icons', '--git', '--git-repos', '--git-repos-no-status', '--level',
   ])
 
-  // LsFilter (registered before EzaFilter in SHELL_FILE_FILTERS) always wins a plain `ls`
-  // invocation since binary-name matching alone can't tell a real GNU/BSD `ls` from an
-  // `alias ls=eza` shell alias -- the literal command text is "ls ..." either way. Without this
-  // gate, EzaFilter's own 'ls' binary claim was permanently unreachable dead code: LsFilter's
-  // generic ls-format compressor (no awareness of eza's tree/column output) silently ran on
-  // every aliased `ls --tree`/`ls --icons`/etc. invocation instead. Mirrors RgFilter's own
-  // `_hasContextFlags` gate, which resolves the same kind of shared-binary ambiguity between
-  // itself and GrepFilter.
+  // LsFilter (registered before EzaFilter in SHELL_FILE_FILTERS) always wins a plain `ls` invocation since binary-name matching alone can't tell a real GNU/BSD `ls` from an `alias ls=eza` shell alias -- the literal command text is "ls ..." either way. Without this gate, EzaFilter's own 'ls' binary claim was permanently unreachable dead code: LsFilter's generic ls-format compressor (no awareness of eza's tree/column output) silently ran on every aliased `ls --tree`/`ls --icons`/etc. invocation instead. Mirrors RgFilter's own `_hasContextFlags` gate, which resolves the same kind of shared-binary ambiguity between itself and GrepFilter.
   override matches(argv: string[]): boolean {
     if (!super.matches(argv)) return false
     const first = argv[0]!
@@ -573,9 +498,7 @@ export class EzaFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// TreeFilter — directory-tree depth collapsing
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- TreeFilter — directory-tree depth collapsing ---------------------------------------------------------------------------
 
 const _TREE_PASSTHROUGH = 30
 
@@ -646,9 +569,7 @@ export class TreeFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// FdFilter — file-search output (fd/fdfind/find)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- FdFilter — file-search output (fd/fdfind/find) ---------------------------------------------------------------------------
 
 const _FD_COMPRESS_THRESHOLD = 40
 
@@ -671,9 +592,7 @@ export class FdFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// WcFilter — normalise wc output (lstrip alignment whitespace)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- WcFilter — normalise wc output (lstrip alignment whitespace) ---------------------------------------------------------------------------
 
 export class WcFilter extends ToolFilter {
   readonly name = 'wc'
@@ -692,9 +611,7 @@ export class WcFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// BatFilter — strip bat borders/decorations, head/tail compress
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- BatFilter — strip bat borders/decorations, head/tail compress ---------------------------------------------------------------------------
 
 const _BAT_BORDER_CHARS = new Set('─━─┬┴┌┐└┘│├┤┼═╔╗╚╝║╠╡╢╣╤╥╦╧╨╩')
 
@@ -731,9 +648,7 @@ export class BatFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// DeltaFilter — strip delta separators, head/tail compress
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- DeltaFilter — strip delta separators, head/tail compress ---------------------------------------------------------------------------
 
 const _DELTA_SEP_CHARS = new Set('─━')
 
@@ -763,9 +678,7 @@ export class DeltaFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// FzfFilter — fuzzy finder output (head/tail compress)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- FzfFilter — fuzzy finder output (head/tail compress) ---------------------------------------------------------------------------
 
 export class FzfFilter extends ToolFilter {
   readonly name = 'fzf'
@@ -786,9 +699,7 @@ export class FzfFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// LazyGitFilter — TUI detection / pass-through
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- LazyGitFilter — TUI detection / pass-through ---------------------------------------------------------------------------
 
 export class LazyGitFilter extends ToolFilter {
   readonly name = 'lazygit'
@@ -810,9 +721,7 @@ export class LazyGitFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// JqFilter — JSON processor output (head/tail compress)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- JqFilter — JSON processor output (head/tail compress) ---------------------------------------------------------------------------
 
 export class JqFilter extends ToolFilter {
   readonly name = 'jq'
@@ -833,9 +742,7 @@ export class JqFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// YqFilter — YAML processor output (head/tail compress)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- YqFilter — YAML processor output (head/tail compress) ---------------------------------------------------------------------------
 
 export class YqFilter extends ToolFilter {
   readonly name = 'yq'
@@ -856,9 +763,7 @@ export class YqFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// CurlFilter — curl/wget HTTP client output
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CurlFilter — curl/wget HTTP client output ---------------------------------------------------------------------------
 
 const _CURL_VERBOSE_META_RE = /^[*>](\s|$)/
 const _CURL_STATUS_RE = /^<\s+HTTP\/[\d.]+\s+(\d{3})/
@@ -866,11 +771,7 @@ const _CURL_USEFUL_HEADER_RE =
   /^<\s+(content-type|location|content-length|www-authenticate|x-ratelimit):/i
 /** The two header lines curl prints once before its transfer meter. Nothing but curl produces them, so they are what licenses the row pattern below to run at all. */
 const _CURL_METER_HEADER_RE = /^\s+%\s+Total|^\s+Dload\s+Upload\s/
-/**
- * One meter frame: four or five whitespace-separated numbers, optionally led by the carriage return curl uses to overwrite the previous frame in place.
- *
- * This shape is also every row of a whitespace-separated numeric table, which is why it is gated on the header above having already been seen. Ungated, `curl -s <numeric data>` had its entire body deleted and replaced with `[token-goat: dropped N progress lines]` -- total loss, under a note that was wrong about what it had dropped as well as that it had dropped anything. Captured curl output shows why the obvious tighter anchor does not work: the Time Total/Spent/Left columns are blank rather than `--:--:--`, so requiring a time triple would stop matching a real meter. Over-keeping when the header is missing is the correct direction here, since a leaked meter frame costs a few characters and a deleted body costs the answer.
- */
+/** One meter frame: four or five whitespace-separated numbers, optionally led by the carriage return curl uses to overwrite the previous frame in place. This shape is also every row of a whitespace-separated numeric table, which is why it is gated on the header above having already been seen. Ungated, `curl -s <numeric data>` had its entire body deleted and replaced with `[token-goat: dropped N progress lines]` -- total loss, under a note that was wrong about what it had dropped as well as that it had dropped anything. Captured curl output shows why the obvious tighter anchor does not work: the Time Total/Spent/Left columns are blank rather than `--:--:--`, so requiring a time triple would stop matching a real meter. Over-keeping when the header is missing is the correct direction here, since a leaked meter frame costs a few characters and a deleted body costs the answer. */
 const _CURL_METER_ROW_RE = /^\d{1,3}\s+\d+\s+\d+\s+\d+\s|^\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+/
 const _WGET_NOISE_RE =
   /^--\d{4}-\d{2}-\d{2}|^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} URL:|^(Resolving|Connecting to|Reusing|Sending|Saving to|HTTP request sent|Length:|Location:)/
@@ -952,9 +853,7 @@ export class CurlFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// RsyncFilter — file-synchronisation output
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- RsyncFilter — file-synchronisation output ---------------------------------------------------------------------------
 
 const _RSYNC_FILE_PROGRESS_RE = /^\s+[\d,]+\s+\d+%\s/
 const _RSYNC_SUMMARY_RE =
@@ -1002,9 +901,7 @@ export class RsyncFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// DiffFilter — unified / normal diff output
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- DiffFilter — unified / normal diff output ---------------------------------------------------------------------------
 
 const _DIFF_FILE_HEADER_RE = /^(?:diff\s|---\s)/
 const _DIFF_HUNK_RE = /^@@ /
@@ -1019,12 +916,7 @@ function _isDiffBodyLine(line: string): boolean {
   return c === ' ' || c === '+' || c === '-' || c === '@' || c === '\\'
 }
 
-// `diff -r`/`-ru` prints a `diff -ru <old> <new>` command-echo line immediately
-// before each file's `--- `/`+++ ` header pair. Both lines match
-// _DIFF_FILE_HEADER_RE, so a naive splitBlocks() call turns one real file into
-// two blocks (the lone echo line, then the actual `---`/`+++`/hunks content).
-// Merge a lone echo-only block into the block that follows it so each real
-// file is counted — and rendered — exactly once.
+// `diff -r`/`-ru` prints a `diff -ru <old> <new>` command-echo line immediately before each file's `--- `/`+++ ` header pair. Both lines match _DIFF_FILE_HEADER_RE, so a naive splitBlocks() call turns one real file into two blocks (the lone echo line, then the actual `---`/`+++`/hunks content). Merge a lone echo-only block into the block that follows it so each real file is counted — and rendered — exactly once.
 function _mergeDiffEchoBlocks(rawBlocks: string[]): string[] {
   const merged: string[] = []
   let pendingEcho: string | null = null
@@ -1046,14 +938,7 @@ function _mergeDiffEchoBlocks(rawBlocks: string[]): string[] {
   return merged
 }
 
-// A bare `--- ` line is only a real unified-diff file-header boundary when it
-// is immediately followed by a `+++ ` line (the old-file/new-file header
-// pair). Without that lookahead, a removed line whose original content
-// happens to start with `-- ` (SQL/Lua/Haskell comments, a markdown `---`
-// rule, etc.) renders as a line matching `_DIFF_FILE_HEADER_RE` in isolation
-// and would be misdetected as a new file boundary, splitting one file's diff
-// into spurious blocks. `diff `-prefixed lines (git's extended header) are
-// unambiguous and always start a new block.
+// A bare `--- ` line is only a real unified-diff file-header boundary when it is immediately followed by a `+++ ` line (the old-file/new-file header pair). Without that lookahead, a removed line whose original content happens to start with `-- ` (SQL/Lua/Haskell comments, a markdown `---` rule, etc.) renders as a line matching `_DIFF_FILE_HEADER_RE` in isolation and would be misdetected as a new file boundary, splitting one file's diff into spurious blocks. `diff `-prefixed lines (git's extended header) are unambiguous and always start a new block.
 function _isDiffFileHeaderLine(line: string, nextLine: string | undefined): boolean {
   if (/^diff\s/.test(line)) return true
   if (/^---\s/.test(line) && nextLine !== undefined && /^\+\+\+\s/.test(nextLine)) return true
@@ -1146,9 +1031,7 @@ export class DiffFilter extends ToolFilter {
 
     const hasUnified = lines.slice(0, 20).some(l => _DIFF_HUNK_RE.test(l))
     if (hasUnified) return this._compressUnified(lines, ctx.maxLines)
-    // truncateMiddle (called inside compressTestOutput) returns maxLines + 1 lines (head + marker + tail), so
-    // passing the raw shipping cap here would still overrun it by one and get re-truncated by base.ts step 8,
-    // silently dropping this branch's own elision marker along with the count it discloses. Pass cap minus one.
+    // truncateMiddle (called inside compressTestOutput) returns maxLines + 1 lines (head + marker + tail), so passing the raw shipping cap here would still overrun it by one and get re-truncated by base.ts step 8, silently dropping this branch's own elision marker along with the count it discloses. Pass cap minus one.
     return compressTestOutput(lines, ctx.maxLines === undefined ? 300 : Math.min(300, ctx.maxLines) - 1)
   }
 
@@ -1201,28 +1084,18 @@ export class DiffFilter extends ToolFilter {
         outParts.push(blockStr)
         continue
       }
-      // Apply density cap from [bash_diff] max_hunks_per_file (default 10);
-      // falls back to disabled (0) on config load failure.
+      // Apply density cap from [bash_diff] max_hunks_per_file (default 10); falls back to disabled (0) on config load failure.
       let maxHunksPerFile = 0
       try {
         maxHunksPerFile = loadConfig().bash_diff.max_hunks_per_file
       } catch {
         // use fallback above
       }
-      // The config-driven density cap (_scoreAndCapHunks, honoring
-      // [bash_diff] max_hunks_per_file) is the SINGLE source of truth for the
-      // per-file hunk cap, matching git.ts. A former second stage re-capped to
-      // a hardcoded 3 here, shadowing any configured value above 3 (including
-      // the default of 10); removed.
+      // The config-driven density cap (_scoreAndCapHunks, honoring [bash_diff] max_hunks_per_file) is the SINGLE source of truth for the per-file hunk cap, matching git.ts. A former second stage re-capped to a hardcoded 3 here, shadowing any configured value above 3 (including the default of 10); removed.
       const capped = _scoreAndCapHunks(blockLines, maxHunksPerFile)
       outParts.push(capped.join('\n'))
     }
-    // outParts still has one entry per file, sized by the per-file hunk cap above; if the combined output
-    // still overruns the shipping line cap, base.ts step 8 would otherwise hand it whole to
-    // truncateMiddleSmart, which picks survivors by error-keyword content rather than file identity and
-    // drops whole file headers without disclosure. Collapse file blocks (not the non-file passthrough
-    // entries) to header-plus-summary, budgeted so every file identity survives even when its hunk body
-    // does not, mirroring git.ts's _collapseDiffBlocksToCap for the same shipping-cap gap.
+    // outParts still has one entry per file, sized by the per-file hunk cap above; if the combined output still overruns the shipping line cap, base.ts step 8 would otherwise hand it whole to truncateMiddleSmart, which picks survivors by error-keyword content rather than file identity and drops whole file headers without disclosure. Collapse file blocks (not the non-file passthrough entries) to header-plus-summary, budgeted so every file identity survives even when its hunk body does not, mirroring git.ts's _collapseDiffBlocksToCap for the same shipping-cap gap.
     if (maxLines !== undefined && outParts.join('\n').split('\n').length > maxLines) {
       return _collapsePlainDiffBlocksToCap(outParts, maxLines).join('\n')
     }
@@ -1238,9 +1111,7 @@ function _collapsePlainDiffBlocksToCap(outBlocks: string[], maxLines: number): s
   })
 }
 
-// ---------------------------------------------------------------------------
-// FfmpegFilter — ffmpeg/ffprobe/ffplay output
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- FfmpegFilter — ffmpeg/ffprobe/ffplay output ---------------------------------------------------------------------------
 
 const _FFMPEG_VERSION_RE = /^ff(?:mpeg|probe|play)\s+version\s/i
 const _FFMPEG_BUILD_NOISE_RE = /^\s+(?:built with\b|configuration:|lib(?:av|sw|post)\w+\s+\d)/
@@ -1363,9 +1234,7 @@ export class FfmpegFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// BinaryInspectFilter — xxd/hexdump/od/hd output
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- BinaryInspectFilter — xxd/hexdump/od/hd output ---------------------------------------------------------------------------
 
 const _BIN_INSPECT_PASSTHROUGH = 4
 
@@ -1418,9 +1287,7 @@ export class BinaryInspectFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// FileTypeFilter — `file` command pass-through with batch truncation
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- FileTypeFilter — `file` command pass-through with batch truncation ---------------------------------------------------------------------------
 
 const _FILE_BATCH_LIMIT = 20
 
@@ -1443,9 +1310,7 @@ export class FileTypeFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// PsFilter — ps/top/tasklist process listing
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PsFilter — ps/top/tasklist process listing ---------------------------------------------------------------------------
 
 const _PS_MIN_LINES = 20
 const _PS_HEADER_KEYWORDS = new Set(['PID', 'COMMAND', 'CMD', 'IMAGE NAME', '%CPU', 'UID'])
@@ -1570,9 +1435,7 @@ export class PsFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Singletons
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Singletons ---------------------------------------------------------------------------
 
 export const grepFilter = new GrepFilter()
 export const rgFilter = new RgFilter()
@@ -1595,9 +1458,7 @@ export const binaryInspectFilter = new BinaryInspectFilter()
 export const fileTypeFilter = new FileTypeFilter()
 export const psFilter = new PsFilter()
 
-// ---------------------------------------------------------------------------
-// SHELL_FILE_FILTERS — ordered to match Python FILTERS registry: RgFilter before GrepFilter (both claim rg/grep; RgFilter handles context-line stripping), LsFilter before EzaFilter (both claim ls/eza; LsFilter applies simpler truncation), DiffFilter before LsFilter (per Python ordering).
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- SHELL_FILE_FILTERS — ordered to match Python FILTERS registry: RgFilter before GrepFilter (both claim rg/grep; RgFilter handles context-line stripping), LsFilter before EzaFilter (both claim ls/eza; LsFilter applies simpler truncation), DiffFilter before LsFilter (per Python ordering). ---------------------------------------------------------------------------
 
 export const SHELL_FILE_FILTERS: ToolFilter[] = [
   // Grep family — RgFilter (context stripper) before GrepFilter (file-count summariser)
@@ -1610,9 +1471,7 @@ export const SHELL_FILE_FILTERS: ToolFilter[] = [
   ffmpegFilter,
   // Diff tool (plain POSIX diff; git diff is handled by GitFilter)
   diffFilter,
-  // Directory listings — EzaFilter before LsFilter: EzaFilter's matches() gate falls through to
-  // LsFilter for a plain `ls` with no eza-only flag, but must run FIRST so it can actually claim
-  // an aliased `ls --tree`/`ls --icons`/etc. invocation (see EzaFilter.matches doc comment).
+  // Directory listings — EzaFilter before LsFilter: EzaFilter's matches() gate falls through to LsFilter for a plain `ls` with no eza-only flag, but must run FIRST so it can actually claim an aliased `ls --tree`/`ls --icons`/etc. invocation (see EzaFilter.matches doc comment).
   ezaFilter,
   lsFilter,
   fdFilter,

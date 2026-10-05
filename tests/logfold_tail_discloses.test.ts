@@ -1,23 +1,4 @@
-/**
- * `logfold --tail N` disclosure guard.
- *
- * Named by the `logfold` exemption in tests/guards/truncation_invariant_holds.test.ts: that guard
- * drives every row-limited command through one oracle -- "the disclosed total equals the pre-cap
- * count of the emitted rows" -- and logfold is the one command where that quantity does not exist.
- * Its cap is on INPUT LINES while its payload is FOLDED ROWS, and folding is lossy by design
- * (fourteen lines identical after number-normalization collapse to a single `(x14)` row), so the
- * two counts are in different units. Reporting one as the other's total would state a ratio that
- * is untrue of either -- the shape of accounting bug this whole guard family exists to catch.
- *
- * So logfold discloses in its own units, and this file is where that is checked.
- *
- * Provenance: CAPTURE. Every expectation below was read off the built bundle
- * (`node dist/token-goat.mjs logfold app.log --tail 2 --json`) run against the fixture this file
- * writes, not off cmdLogfold's source. The `inputLines: 14` expectation in particular caught a
- * real off-by-one: splitLines leaves a trailing empty element for a file ending in a newline, and
- * the first version of this code reported 15 for a 14-line file -- a total the reader can never
- * reach with any --tail value, which is exactly what trimToBudget's own comment warns about.
- */
+/** `logfold --tail N` disclosure guard. Named by the `logfold` exemption in tests/guards/truncation_invariant_holds.test.ts: that guard drives every row-limited command through one oracle -- "the disclosed total equals the pre-cap count of the emitted rows" -- and logfold is the one command where that quantity does not exist. Its cap is on INPUT LINES while its payload is FOLDED ROWS, and folding is lossy by design (fourteen lines identical after number-normalization collapse to a single `(x14)` row), so the two counts are in different units. Reporting one as the other's total would state a ratio that is untrue of either -- the shape of accounting bug this whole guard family exists to catch. So logfold discloses in its own units, and this file is where that is checked. Provenance: CAPTURE. Every expectation below was read off the built bundle (`node dist/token-goat.mjs logfold app.log --tail 2 --json`) run against the fixture this file writes, not off cmdLogfold's source. The `inputLines: 14` expectation in particular caught a real off-by-one: splitLines leaves a trailing empty element for a file ending in a newline, and the first version of this code reported 15 for a 14-line file -- a total the reader can never reach with any --tail value, which is exactly what trimToBudget's own comment warns about. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -69,8 +50,7 @@ describe('logfold --tail discloses the lines it dropped', () => {
   it('counts input lines, not the folded rows they collapse into', () => {
     const d = json({ tail: '2' })
 
-    // The distinction this file exists for. If these two were ever equal the units would have
-    // been conflated, and the assertion below would stop meaning anything.
+    // The distinction this file exists for. If these two were ever equal the units would have been conflated, and the assertion below would stop meaning anything.
     expect((d.lines as unknown[]).length, 'the fixture must fold, or the two units are not distinguishable here').toBeLessThan(
       LINE_COUNT,
     )
@@ -92,8 +72,7 @@ describe('logfold --tail discloses the lines it dropped', () => {
   })
 
   it('says nothing when the tail keeps every line', () => {
-    // The negative half. A notice printed unconditionally, or a hard-coded `truncated: true`,
-    // passes the case above on its own.
+    // The negative half. A notice printed unconditionally, or a hard-coded `truncated: true`, passes the case above on its own.
     for (const tail of [String(LINE_COUNT), '999']) {
       const d = json({ tail })
       expect(d.truncated, `--tail ${tail} keeps all ${LINE_COUNT} lines and must not report a cut`).toBe(false)

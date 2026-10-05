@@ -1,22 +1,4 @@
-/**
- * Regression for recordStat's silent catch when the failure is the storage itself, not a stubbed
- * seam above it: `src/stats.ts::recordStat` ends in a bare `catch { }`, so a write that fails
- * because `global.db` is genuinely locked is recorded nowhere -- no stat (it is the write to the
- * stats table that failed), no log, nothing. On current main, holding `BEGIN EXCLUSIVE` on a real
- * `global.db` from a second connection and calling `recordStat` from the first reproduces this:
- * the call returns normally (never blocking the hook path, which is correct and must not change),
- * but the row never lands and nothing anywhere says so.
- *
- * The lock here is a real held write lock via a second `Database` connection (mirrors
- * tests/index_reclaim.test.ts's own `BEGIN EXCLUSIVE` regression, the only other place in this
- * suite that reproduces a genuinely locked database rather than an injected throw), not a mocked
- * `db.prepare` that throws -- an injected throw proves the catch runs, never that a record of the
- * failure survives a database that cannot accept writes at all, which is what shipped without a test.
- *
- * Provenance: HAND-DERIVED. The lock, the throttle window, and the expected log line are computed
- * from recordStat/recordStatWriteFailure's real behavior against a real sqlite lock, not read off
- * stats.ts's own source.
- */
+/** Regression for recordStat's silent catch when the failure is the storage itself, not a stubbed seam above it: `src/stats.ts::recordStat` ends in a bare `catch { }`, so a write that fails because `global.db` is genuinely locked is recorded nowhere -- no stat (it is the write to the stats table that failed), no log, nothing. On current main, holding `BEGIN EXCLUSIVE` on a real `global.db` from a second connection and calling `recordStat` from the first reproduces this: the call returns normally (never blocking the hook path, which is correct and must not change), but the row never lands and nothing anywhere says so. The lock here is a real held write lock via a second `Database` connection (mirrors tests/index_reclaim.test.ts's own `BEGIN EXCLUSIVE` regression, the only other place in this suite that reproduces a genuinely locked database rather than an injected throw), not a mocked `db.prepare` that throws -- an injected throw proves the catch runs, never that a record of the failure survives a database that cannot accept writes at all, which is what shipped without a test. Provenance: HAND-DERIVED. The lock, the throttle window, and the expected log line are computed from recordStat/recordStatWriteFailure's real behavior against a real sqlite lock, not read off stats.ts's own source. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -69,8 +51,7 @@ afterEach(() => {
 describe('recordStat when the write to global.db itself fails', () => {
   it('returns normally and appends the kind and error to an out-of-band log, not the failing database', () => {
     const dbPath = path.join(_testDataDir, 'global.db')
-    // Applies the stats schema and creates the file before the lock lands, so the lock below is
-    // the only thing standing between recordStat and a table that already exists.
+    // Applies the stats schema and creates the file before the lock lands, so the lock below is the only thing standing between recordStat and a table that already exists.
     getGlobalDb()
     // No busy_timeout override needed here: recordStat now writes through its own short-budget connection rather than this cached one (see stats.ts's STATS_WRITE_BUSY_TIMEOUT_MS), so this observes the real shipped behavior directly. tests/stats_write_fails_fast_under_contention.test.ts additionally asserts the elapsed time this test does not.
 
@@ -115,8 +96,7 @@ describe('recordStat when the write to global.db itself fails', () => {
       recordStat('known_root_record_failed', 0, 0, undefined, 'second, same window')
       expect(readLogLines(_testDataDir), 'a second failure inside the window must not append').toHaveLength(1)
 
-      // Backdate the throttle marker past the window -- the same technique tests/config.test.ts
-      // and tests/bash_output_cache.test.ts use to simulate elapsed time without a real sleep.
+      // Backdate the throttle marker past the window -- the same technique tests/config.test.ts and tests/bash_output_cache.test.ts use to simulate elapsed time without a real sleep.
       const past = new Date(Date.now() - STATS_WRITE_FAILURE_LOG_MIN_INTERVAL_MS - 1000)
       fs.utimesSync(statsMarkerPath(_testDataDir), past, past)
 

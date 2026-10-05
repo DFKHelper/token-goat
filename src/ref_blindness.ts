@@ -1,23 +1,4 @@
-/**
- * Honest answers for questions the reference index cannot answer.
- *
- * `refs`, `callers`, `dead` and their siblings all read the same `refs` table, and that table is
- * not populated uniformly. Two independent blind spots exist, and in both of them an empty result
- * set is indistinguishable from a genuine "this symbol has no callers":
- *
- *  1. Language. `src/parser.ts`'s `REF_LANGUAGES` records call-site references for nine
- *     tree-sitter languages only. Every other language token-goat indexes -- C#, PHP, Kotlin,
- *     Swift, Scala, Dart, Elixir, Lua, R, Zig, PowerShell, Apex, SQL, GraphQL, proto, Terraform,
- *     Vue/Svelte/Astro, and the config/markup families -- yields symbols but never a single ref
- *     row, so every symbol in those files reads as unreferenced.
- *  2. Kind. Even inside a ref-indexed language, only value-position usages are recorded (call,
- *     `new`, macro invocation, and a few bare-identifier shapes). A name used only as a type
- *     annotation is never recorded, so a type declaration reads as unreferenced no matter how
- *     widely it is used. See {@link REF_BLIND_KIND_REASON}.
- *
- * This repo's disclosure contract says a zero means "none found", never "none exists". These
- * helpers are how the affected commands say so.
- */
+/** Honest answers for questions the reference index cannot answer. `refs`, `callers`, `dead` and their siblings all read the same `refs` table, and that table is not populated uniformly. Two independent blind spots exist, and in both of them an empty result set is indistinguishable from a genuine "this symbol has no callers": 1. Language. `src/parser.ts`'s `REF_LANGUAGES` records call-site references for nine tree-sitter languages only. Every other language token-goat indexes -- C#, PHP, Kotlin, Swift, Scala, Dart, Elixir, Lua, R, Zig, PowerShell, Apex, SQL, GraphQL, proto, Terraform, Vue/Svelte/Astro, and the config/markup families -- yields symbols but never a single ref row, so every symbol in those files reads as unreferenced. 2. Kind. Even inside a ref-indexed language, only value-position usages are recorded (call, `new`, macro invocation, and a few bare-identifier shapes). A name used only as a type annotation is never recorded, so a type declaration reads as unreferenced no matter how widely it is used. See {@link REF_BLIND_KIND_REASON}. This repo's disclosure contract says a zero means "none found", never "none exists". These helpers are how the affected commands say so. */
 import { detectLanguage } from './parser_types.js'
 import type { Language } from './parser_types.js'
 import { languageLabel, partialRefsReason } from './language_specs.js'

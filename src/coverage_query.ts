@@ -1,19 +1,4 @@
-/**
- * Narrow "gaps only" extraction for `token-goat coverage-report-gaps`, so a code-coverage report
- * (which can run to tens of thousands of lines for a real project) never needs a full `Read` just
- * to answer "what isn't tested". Mirrors openapi_query.ts's split: pure parsing/detection/
- * extraction/formatting here, CLI I/O (readFileText, emit/emitErr, overflow guard) in
- * read_commands.ts.
- *
- * Two source formats are supported:
- *  - LCOV `.info` text (hand-rolled line-oriented parser -- the format is simple enough that a
- *    dependency isn't proportionate; see the project convention set by csv_query.ts).
- *  - Istanbul/nyc JSON, in either of its two shapes: `coverage-final.json` (per-file
- *    statementMap/fnMap/branchMap + hit-count maps, giving line/function/branch-level detail) or
- *    `coverage-summary.json` (aggregate-only counts per file, no per-line detail -- reported as
- *    file-level summary stats with an explicit `summaryOnly` flag rather than crashing while
- *    looking for detail that isn't there).
- */
+/** Narrow "gaps only" extraction for `token-goat coverage-report-gaps`, so a code-coverage report (which can run to tens of thousands of lines for a real project) never needs a full `Read` just to answer "what isn't tested". Mirrors openapi_query.ts's split: pure parsing/detection/ extraction/formatting here, CLI I/O (readFileText, emit/emitErr, overflow guard) in read_commands.ts. Two source formats are supported: - LCOV `.info` text (hand-rolled line-oriented parser -- the format is simple enough that a dependency isn't proportionate; see the project convention set by csv_query.ts). - Istanbul/nyc JSON, in either of its two shapes: `coverage-final.json` (per-file statementMap/fnMap/branchMap + hit-count maps, giving line/function/branch-level detail) or `coverage-summary.json` (aggregate-only counts per file, no per-line detail -- reported as file-level summary stats with an explicit `summaryOnly` flag rather than crashing while looking for detail that isn't there). */
 
 import { displaySafeText, normalizePath } from './paths.js'
 import { foldPath, stripBom } from './util.js'
@@ -42,16 +27,13 @@ export interface FileCoverageGaps {
   functionsHit: number
   branchesTotal: number
   branchesHit: number
-  /** Contiguous uncovered line numbers collapsed into ranges (see collapseLineRanges). Empty
-   * for a `summaryOnly` file -- coverage-summary.json carries no per-line detail. */
+  /** Contiguous uncovered line numbers collapsed into ranges (see collapseLineRanges). Empty for a `summaryOnly` file -- coverage-summary.json carries no per-line detail. */
   uncoveredLineRanges: LineRange[]
-  /** Total count of individual uncovered lines (linesTotal - linesHit), used for the
-   * worst-offenders-first sort regardless of source format. */
+  /** Total count of individual uncovered lines (linesTotal - linesHit), used for the worst-offenders-first sort regardless of source format. */
   uncoveredLineCount: number
   uncoveredFunctions: FunctionGap[]
   uncoveredBranches: BranchGap[]
-  /** True for coverage-summary.json entries: aggregate counts only, no per-line/function/branch
-   * detail to report. */
+  /** True for coverage-summary.json entries: aggregate counts only, no per-line/function/branch detail to report. */
   summaryOnly: boolean
 }
 
@@ -59,9 +41,7 @@ export type CoverageReportFormat = 'lcov' | 'istanbul-final' | 'istanbul-summary
 
 export interface CoverageGapsReport {
   format: CoverageReportFormat
-  /** Files with at least one gap, sorted by uncovered-line-count descending (ties broken by
-   * path, alphabetically). A file with zero gaps in every category is omitted entirely --
-   * there's nothing to show for it. */
+  /** Files with at least one gap, sorted by uncovered-line-count descending (ties broken by path, alphabetically). A file with zero gaps in every category is omitted entirely -- there's nothing to show for it. */
   files: FileCoverageGaps[]
 }
 
@@ -69,9 +49,7 @@ function num(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : 0
 }
 
-/** Merges consecutive integers in a sorted, deduplicated line-number list into inclusive
- * ranges, e.g. [42,43,44,47] -> [{start:42,end:44},{start:47,end:47}]. Assumes `sortedLines` is
- * already ascending and has no duplicates (every call site builds it that way). */
+/** Merges consecutive integers in a sorted, deduplicated line-number list into inclusive ranges, e.g. [42,43,44,47] -> [{start:42,end:44},{start:47,end:47}]. Assumes `sortedLines` is already ascending and has no duplicates (every call site builds it that way). */
 function collapseLineRanges(sortedLines: readonly number[]): LineRange[] {
   const ranges: LineRange[] = []
   for (const n of sortedLines) {
@@ -85,10 +63,7 @@ function collapseLineRanges(sortedLines: readonly number[]): LineRange[] {
   return ranges
 }
 
-/** True when a file has at least one reportable gap. For a detailed (LCOV / coverage-final)
- * file this is just the per-item lists; for a summaryOnly (coverage-summary.json) file those
- * lists are always empty (no per-item detail exists), so functions/branches hit-vs-total is
- * checked directly instead. */
+/** True when a file has at least one reportable gap. For a detailed (LCOV / coverage-final) file this is just the per-item lists; for a summaryOnly (coverage-summary.json) file those lists are always empty (no per-item detail exists), so functions/branches hit-vs-total is checked directly instead. */
 function hasGap(f: FileCoverageGaps): boolean {
   return (
     f.uncoveredLineCount > 0 ||
@@ -99,16 +74,7 @@ function hasGap(f: FileCoverageGaps): boolean {
   )
 }
 
-/** Drops fully-covered files and sorts the rest worst-offenders-first: uncovered-line-count
- * descending (the most actionable signal -- biggest test-writing opportunity first), ties
- * broken by path ascending for determinism. The tiebreak uses a plain ordinal (UTF-16
- * code-unit) comparison, never localeCompare() -- with no explicit locale it resolves to the
- * host's default ICU collation (Windows regional setting, or LANG/LC_ALL on Linux/CI), which
- * genuinely differs across locales for non-ASCII paths, defeating the "determinism" this
- * tiebreak exists for. formatCoverageGaps's output can also be truncated by emitGuarded's byte
- * budget, so a locale-dependent tie order can silently change which files survive truncation
- * on a different machine. Same class of bug already fixed in hooks_read.ts's
- * isProtectedRecentRead and graph_commands.ts's compareHopEntries. */
+/** Drops fully-covered files and sorts the rest worst-offenders-first: uncovered-line-count descending (the most actionable signal -- biggest test-writing opportunity first), ties broken by path ascending for determinism. The tiebreak uses a plain ordinal (UTF-16 code-unit) comparison, never localeCompare() -- with no explicit locale it resolves to the host's default ICU collation (Windows regional setting, or LANG/LC_ALL on Linux/CI), which genuinely differs across locales for non-ASCII paths, defeating the "determinism" this tiebreak exists for. formatCoverageGaps's output can also be truncated by emitGuarded's byte budget, so a locale-dependent tie order can silently change which files survive truncation on a different machine. Same class of bug already fixed in hooks_read.ts's isProtectedRecentRead and graph_commands.ts's compareHopEntries. */
 function rankAndFilter(files: readonly FileCoverageGaps[]): FileCoverageGaps[] {
   const withGaps = files.filter(hasGap)
   withGaps.sort((a, b) => {
@@ -121,17 +87,7 @@ function rankAndFilter(files: readonly FileCoverageGaps[]): FileCoverageGaps[] {
 
 // ---- format detection -----------------------------------------------------------
 
-/**
- * Detects which of the three supported shapes `text` is. JSON is tried first (a clear parse
- * success beats guessing from content); the parsed root is then inspected structurally --
- * per-file entries carrying `statementMap`/`s` are coverage-final, entries carrying
- * `lines`/`statements`/`functions`/`branches` aggregate objects are coverage-summary -- rather
- * than trusting the filename extension, since a report can be piped through renamed. Only when
- * JSON parsing fails does this fall back to LCOV's own content signature (`TN:`/`SF:` as the
- * first non-blank line), mirroring parseOpenApiSpec's "valid JSON is also valid YAML, try the
- * stricter parser first" ordering. Throws a plain Error (no stack trace surfaced to the CLI) when
- * neither shape matches.
- */
+/** Detects which of the three supported shapes `text` is. JSON is tried first (a clear parse success beats guessing from content); the parsed root is then inspected structurally -- per-file entries carrying `statementMap`/`s` are coverage-final, entries carrying `lines`/`statements`/`functions`/`branches` aggregate objects are coverage-summary -- rather than trusting the filename extension, since a report can be piped through renamed. Only when JSON parsing fails does this fall back to LCOV's own content signature (`TN:`/`SF:` as the first non-blank line), mirroring parseOpenApiSpec's "valid JSON is also valid YAML, try the stricter parser first" ordering. Throws a plain Error (no stack trace surfaced to the CLI) when neither shape matches. */
 export function detectCoverageFormat(text: string): CoverageReportFormat {
   let parsed: unknown
   let isJson = true
@@ -163,10 +119,7 @@ export function detectCoverageFormat(text: string): CoverageReportFormat {
     )
     if (looksSummary) return 'istanbul-summary'
 
-    // No per-file entries left. A `total` key carrying the four aggregate metrics identifies a
-    // coverage-summary.json for a project with nothing instrumented: that shape is only ever
-    // written by the summary reporter, and coverage-final.json has no `total` key at all, so it is
-    // not ambiguous even though no file entry survives to match on above.
+    // No per-file entries left. A `total` key carrying the four aggregate metrics identifies a coverage-summary.json for a project with nothing instrumented: that shape is only ever written by the summary reporter, and coverage-final.json has no `total` key at all, so it is not ambiguous even though no file entry survives to match on above.
     const total = (parsed as Record<string, unknown>)['total']
     if (
       entries.length === 0 &&
@@ -180,8 +133,7 @@ export function detectCoverageFormat(text: string): CoverageReportFormat {
       return 'istanbul-summary'
     }
 
-    // A genuinely empty object ({}) is valid but ambiguous -- treat it as an empty coverage-final
-    // report ("0 files, 0 gaps") rather than erroring on a technically-valid-but-contentless input.
+    // A genuinely empty object ({}) is valid but ambiguous -- treat it as an empty coverage-final report ("0 files, 0 gaps") rather than erroring on a technically-valid-but-contentless input.
     if (entries.length === 0) return 'istanbul-final'
 
     throw new Error('not a recognized coverage report (JSON does not match Istanbul coverage-final or coverage-summary shape)')
@@ -198,15 +150,9 @@ export function detectCoverageFormat(text: string): CoverageReportFormat {
 interface LcovFileAccumulator {
   filePath: string
   daLines: Map<number, number>
-  /** One entry per distinct `FN:` record, keyed `name\nline`. Two functions in one file may share
-   * a name (methods of two classes, a nested function shadowing an outer one), and keying by name
-   * alone dropped all but the last: the file's function total was undercounted and every earlier
-   * same-named function silently stopped being reportable as a gap. Keyed by name *and* line, so a
-   * genuinely repeated record still collapses to one. */
+  /** One entry per distinct `FN:` record, keyed `name\nline`. Two functions in one file may share a name (methods of two classes, a nested function shadowing an outer one), and keying by name alone dropped all but the last: the file's function total was undercounted and every earlier same-named function silently stopped being reportable as a gap. Keyed by name *and* line, so a genuinely repeated record still collapses to one. */
   fnRecords: Map<string, { name: string; line: number }>
-  /** Total `FNDA:` hits per function name. LCOV v1 keys hits by name only, so when a name is
-   * shared it cannot say which of them ran; summing treats the name as covered if any run of it
-   * was, which is the reading that does not invent a gap the report does not support. */
+  /** Total `FNDA:` hits per function name. LCOV v1 keys hits by name only, so when a name is shared it cannot say which of them ran; summing treats the name as covered if any run of it was, which is the reading that does not invent a gap the report does not support. */
   fnHits: Map<string, number>
   brda: Array<{ line: number; hits: number | null }>
 }
@@ -247,20 +193,7 @@ function buildLcovFileGaps(acc: LcovFileAccumulator): FileCoverageGaps {
   }
 }
 
-/**
- * Hand-rolled line-oriented LCOV `.info` parser. Record types handled: `SF:` (start a file
- * section), `DA:<line>,<hits>` (line hit data), `FN:<line>,<name>` / `FNDA:<hits>,<name>`
- * (function declaration + hit count, joined by name), `BRDA:<line>,<block>,<branch>,<hits|->`
- * (branch hit data; `-` means never executed, treated the same as a `0` hit count), and
- * `end_of_record` (close the current file section). `TN:` and the `LH:`/`LF:`/`FNH:`/`FNF:`/
- * `BRH:`/`BRF:` summary lines are ignored -- every stat here is computed from the underlying
- * DA/FN/FNDA/BRDA records instead, so a report that omits the optional summary lines (or has
- * them go stale relative to the detail records) still produces correct output. Unrecognized or
- * malformed individual lines are skipped rather than aborting the whole parse -- LCOV producers
- * vary, and a report that's mostly well-formed should still yield whatever gaps it can. A file
- * section left open at end-of-input (a missing trailing `end_of_record`) is still closed and
- * counted, since real-world LCOV output sometimes omits it on the last record.
- */
+/** Hand-rolled line-oriented LCOV `.info` parser. Record types handled: `SF:` (start a file section), `DA:<line>,<hits>` (line hit data), `FN:<line>,<name>` / `FNDA:<hits>,<name>` (function declaration + hit count, joined by name), `BRDA:<line>,<block>,<branch>,<hits|->` (branch hit data; `-` means never executed, treated the same as a `0` hit count), and `end_of_record` (close the current file section). `TN:` and the `LH:`/`LF:`/`FNH:`/`FNF:`/ `BRH:`/`BRF:` summary lines are ignored -- every stat here is computed from the underlying DA/FN/FNDA/BRDA records instead, so a report that omits the optional summary lines (or has them go stale relative to the detail records) still produces correct output. Unrecognized or malformed individual lines are skipped rather than aborting the whole parse -- LCOV producers vary, and a report that's mostly well-formed should still yield whatever gaps it can. A file section left open at end-of-input (a missing trailing `end_of_record`) is still closed and counted, since real-world LCOV output sometimes omits it on the last record. */
 export function parseLcov(text: string): CoverageGapsReport {
   const files: FileCoverageGaps[] = []
   let cur: LcovFileAccumulator | null = null
@@ -300,11 +233,7 @@ export function parseLcov(text: string): CoverageGapsReport {
       if (comma !== -1) {
         const lineNo = Number.parseInt(rest.slice(0, comma), 10)
         let name = rest.slice(comma + 1)
-        // LCOV v2 (geninfo >= 2.0) optionally inserts an end-line field: FN:<start>[,<end>],<name>.
-        // FNDA records key by the bare name, so a v2 end-line field left glued onto the name
-        // ("10,foo") would orphan every function into a phantom uncovered entry. A real function
-        // name cannot begin with digits-then-comma, so a purely-numeric leading field is
-        // unambiguously the optional end line.
+        // LCOV v2 (geninfo >= 2.0) optionally inserts an end-line field: FN:<start>[,<end>],<name>. FNDA records key by the bare name, so a v2 end-line field left glued onto the name ("10,foo") would orphan every function into a phantom uncovered entry. A real function name cannot begin with digits-then-comma, so a purely-numeric leading field is unambiguously the optional end line.
         const comma2 = name.indexOf(',')
         if (comma2 !== -1 && /^\d+$/.test(name.slice(0, comma2))) {
           name = name.slice(comma2 + 1)
@@ -355,19 +284,7 @@ interface IstanbulRange {
   end?: IstanbulLoc
 }
 
-/**
- * Extracts gaps from Istanbul/nyc `coverage-final.json`: uncovered statements (`s[id] === 0`,
- * mapped via `statementMap[id]` back to a line), uncovered functions (`f[id] === 0`, mapped via
- * `fnMap[id]` to a name + declaration line), and uncovered branches (any element of `b[id]`
- * that's `0`, mapped via `branchMap[id]` to a line, preferring the specific alternative's own
- * `locations[i]` over the branch's overall `loc`).
- *
- * Per-file line stats are derived from `statementMap`/`s` by bucketing each statement under its
- * *starting* line (rather than expanding every statement's full start-end span into individual
- * line entries) -- Istanbul statements only rarely span multiple physical lines, and bucketing by
- * start line avoids ambiguity when a covered and an uncovered statement share a line. A line is
- * "hit" if any statement starting on it has a nonzero count.
- */
+/** Extracts gaps from Istanbul/nyc `coverage-final.json`: uncovered statements (`s[id] === 0`, mapped via `statementMap[id]` back to a line), uncovered functions (`f[id] === 0`, mapped via `fnMap[id]` to a name + declaration line), and uncovered branches (any element of `b[id]` that's `0`, mapped via `branchMap[id]` to a line, preferring the specific alternative's own `locations[i]` over the branch's overall `loc`). Per-file line stats are derived from `statementMap`/`s` by bucketing each statement under its *starting* line (rather than expanding every statement's full start-end span into individual line entries) -- Istanbul statements only rarely span multiple physical lines, and bucketing by start line avoids ambiguity when a covered and an uncovered statement share a line. A line is "hit" if any statement starting on it has a nonzero count. */
 export function parseIstanbulFinal(data: Record<string, unknown>): CoverageGapsReport {
   const files: FileCoverageGaps[] = []
 
@@ -400,13 +317,7 @@ export function parseIstanbulFinal(data: Record<string, unknown>): CoverageGapsR
     for (const [id, fnInfo] of Object.entries(fnMap)) {
       functionsTotal++
       if (num(f[id]) === 0) {
-        // `decl` first, then `loc`: Istanbul's `decl` is the declaration itself (the name and
-        // signature) while `loc` spans the whole function including its body, and for a function
-        // whose body opens on a later line than its name the two differ. This reports the
-        // declaration line, which is both what the docstring above promises and the line worth
-        // jumping to. `?.` only guards the hop immediately before it, so `loc?.start` protects
-        // against a missing `loc` but not against `loc` present with no `start` key, which real
-        // coverage-final.json output does contain; hence the explicit undefined checks.
+        // `decl` first, then `loc`: Istanbul's `decl` is the declaration itself (the name and signature) while `loc` spans the whole function including its body, and for a function whose body opens on a later line than its name the two differ. This reports the declaration line, which is both what the docstring above promises and the line worth jumping to. `?.` only guards the hop immediately before it, so `loc?.start` protects against a missing `loc` but not against `loc` present with no `start` key, which real coverage-final.json output does contain; hence the explicit undefined checks.
         const line = (fnInfo.decl?.start !== undefined ? fnInfo.decl.start.line : undefined) ?? (fnInfo.loc?.start !== undefined ? fnInfo.loc.start.line : undefined) ?? 0
         uncoveredFunctions.push({ name: fnInfo.name !== undefined && fnInfo.name !== '' ? fnInfo.name : '(anonymous)', line })
       }
@@ -459,13 +370,7 @@ interface SummaryMetric {
   pct?: number
 }
 
-/**
- * Extracts file-level gap counts from Istanbul/nyc `coverage-summary.json`. This format carries
- * no per-line/function/branch detail (no statementMap/fnMap/branchMap, just aggregate
- * total/covered counts per category), so every returned file has `summaryOnly: true`, empty
- * `uncoveredLineRanges`/`uncoveredFunctions`/`uncoveredBranches`, and only the hit/total counts
- * to report -- there is nothing finer-grained in the source data to extract.
- */
+/** Extracts file-level gap counts from Istanbul/nyc `coverage-summary.json`. This format carries no per-line/function/branch detail (no statementMap/fnMap/branchMap, just aggregate total/covered counts per category), so every returned file has `summaryOnly: true`, empty `uncoveredLineRanges`/`uncoveredFunctions`/`uncoveredBranches`, and only the hit/total counts to report -- there is nothing finer-grained in the source data to extract. */
 export function parseIstanbulSummary(data: Record<string, unknown>): CoverageGapsReport {
   const files: FileCoverageGaps[] = []
 
@@ -505,9 +410,7 @@ export function parseIstanbulSummary(data: Record<string, unknown>): CoverageGap
 
 // ---- combined parse entry point ------------------------------------------------
 
-/** Detects the format of `text` and parses it into a {@link CoverageGapsReport}. Throws a plain
- * Error (caught and clean-formatted by the CLI layer) when the input is neither valid LCOV nor
- * valid Istanbul JSON. */
+/** Detects the format of `text` and parses it into a {@link CoverageGapsReport}. Throws a plain Error (caught and clean-formatted by the CLI layer) when the input is neither valid LCOV nor valid Istanbul JSON. */
 export function parseCoverageReport(text: string): CoverageGapsReport {
   text = stripBom(text)
   const format = detectCoverageFormat(text)
@@ -518,30 +421,16 @@ export function parseCoverageReport(text: string): CoverageGapsReport {
 
 // ---- --file filtering -----------------------------------------------------------
 
-// Local copy of read_commands.ts's endsWithPathBoundary rule (suffix match only at a `/`
-// segment boundary, so a requested `utils.ts` doesn't false-match an indexed `myutils.ts`) --
-// mirrors sqlite_query.ts's quoteCsvCellLocal precedent of a small local copy instead of a
-// cross-module dependency for one helper. Operates on already-normalizePath'd (forward-slash)
-// strings, so only `/` needs checking here.
+// Local copy of read_commands.ts's endsWithPathBoundary rule (suffix match only at a `/` segment boundary, so a requested `utils.ts` doesn't false-match an indexed `myutils.ts`) -- mirrors sqlite_query.ts's quoteCsvCellLocal precedent of a small local copy instead of a cross-module dependency for one helper. Operates on already-normalizePath'd (forward-slash) strings, so only `/` needs checking here.
 function endsWithPathBoundaryLocal(full: string, suffix: string): boolean {
   if (!full.endsWith(suffix)) return false
   if (full.length === suffix.length) return true
   return full[full.length - suffix.length - 1] === '/'
 }
 
-/**
- * Filters a report down to the one file matching `filePathQuery`. Both sides are run through
- * `normalizePath` (backslash/forward-slash + drive-letter-case normalization) before comparing,
- * then matched exactly or as a path-boundary suffix in either direction -- a relative query
- * (`src/foo.ts`) matches an absolute report path (`/home/x/project/src/foo.ts`), and vice versa
- * for a report that happens to store relative paths against an absolute `--file` argument.
- */
+/** Filters a report down to the one file matching `filePathQuery`. Both sides are run through `normalizePath` (backslash/forward-slash + drive-letter-case normalization) before comparing, then matched exactly or as a path-boundary suffix in either direction -- a relative query (`src/foo.ts`) matches an absolute report path (`/home/x/project/src/foo.ts`), and vice versa for a report that happens to store relative paths against an absolute `--file` argument. */
 export function filterCoverageGapsByFile(report: CoverageGapsReport, filePathQuery: string): CoverageGapsReport {
-  // normalizePath only lowercases the drive letter, not the rest of the path, so a case-insensitive
-  // filesystem (Windows/macOS) match like `C:/Repo/src/Foo.ts` vs `c:/repo/src/foo.ts` needs an
-  // explicit fold on top -- reuse util.ts's foldPath, the codebase's established platform-gated
-  // case-fold helper (see read_commands.ts's identical foldPath(file)/foldPath(s.filePath) pattern),
-  // rather than mutating normalizePath itself, which would change behavior for every other caller.
+  // normalizePath only lowercases the drive letter, not the rest of the path, so a case-insensitive filesystem (Windows/macOS) match like `C:/Repo/src/Foo.ts` vs `c:/repo/src/foo.ts` needs an explicit fold on top -- reuse util.ts's foldPath, the codebase's established platform-gated case-fold helper (see read_commands.ts's identical foldPath(file)/foldPath(s.filePath) pattern), rather than mutating normalizePath itself, which would change behavior for every other caller.
   const query = foldPath(normalizePath(filePathQuery))
   const files = report.files.filter((f) => {
     const candidate = foldPath(normalizePath(f.filePath))
@@ -580,9 +469,7 @@ function formatFileGaps(f: FileCoverageGaps): string {
   return lines.join('\n')
 }
 
-/** Renders a report as one block per file (worst offenders first, per rankAndFilter), or a
- * single clear "no gaps" message when every file is fully covered (or the filtered result is
- * empty). */
+/** Renders a report as one block per file (worst offenders first, per rankAndFilter), or a single clear "no gaps" message when every file is fully covered (or the filtered result is empty). */
 export function formatCoverageGaps(report: CoverageGapsReport): string {
   if (report.files.length === 0) return 'No coverage gaps found -- 100% coverage.'
   return report.files.map(formatFileGaps).join('\n\n')

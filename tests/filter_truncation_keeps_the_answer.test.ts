@@ -2,21 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { truncateTableRows } from '../src/tool_filters/helpers.js'
 import { filterByName } from '../src/tool_filters/index.js'
 
-/**
- * Four caps that chose what to keep by position, on outputs where position says nothing about
- * where the answer is. Companion to `filter_input_cap_keeps_ends.test.ts`, which covers the
- * pipeline-wide caps; these are the per-family ones.
- *
- * Fixture provenance: FORMAT-DERIVED for the table rows, whose columns and status vocabulary are
- * read off the kubectl and AWS CLI output formats those two call sites parse (`kubectl get pods`
- * wide output: NAME READY STATUS RESTARTS AGE; CloudFormation stack states such as
- * `ROLLBACK_COMPLETE`). HAND-DERIVED for the diff and match-group cases, whose shapes are computed
- * from the input independently of the code under test.
- *
- * No case asserts a ratio or a saved-byte floor. Every one of these truncations gets a *better*
- * ratio by dropping more, so a ratio assertion would pass hardest on the failure. Each case names
- * the content that must survive instead.
- */
+/** Four caps that chose what to keep by position, on outputs where position says nothing about where the answer is. Companion to `filter_input_cap_keeps_ends.test.ts`, which covers the pipeline-wide caps; these are the per-family ones. Fixture provenance: FORMAT-DERIVED for the table rows, whose columns and status vocabulary are read off the kubectl and AWS CLI output formats those two call sites parse (`kubectl get pods` wide output: NAME READY STATUS RESTARTS AGE; CloudFormation stack states such as `ROLLBACK_COMPLETE`). HAND-DERIVED for the diff and match-group cases, whose shapes are computed from the input independently of the code under test. No case asserts a ratio or a saved-byte floor. Every one of these truncations gets a *better* ratio by dropping more, so a ratio assertion would pass hardest on the failure. Each case names the content that must survive instead. */
 describe('per-family truncation keeps the part that carries the answer', () => {
   it('keeps a not-ready table row that sorts past the row budget', () => {
     // A resource table is ordered by whatever the API returned, so the unhealthy row lands wherever it lands. Here it is row 40 of 60 against a 10-row budget, which a head trim drops every time.

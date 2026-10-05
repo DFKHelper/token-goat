@@ -144,8 +144,7 @@ describe('cli_context_stats', () => {
     })
 
     it('finds MEMORY.md via an alternate root when the caller already canonicalized the spelling away', () => {
-      // Deliberately no homedir mock: this case passes homeDir explicitly, and a queued mockReturnValueOnce that nothing consumes is dequeued by the NEXT test instead, handing it a stale tempDir from a previous beforeEach.
-      // The reverse of the junction case above, and the one CI actually hit on macOS and Windows: resolveProjectRoot canonicalizes (/var -> /private/var, RUNNER~1 -> runneradmin) BEFORE findMemoryMd sees the path, so the pre-canonical spelling Claude Code named the dir after is unrecoverable from the argument alone. It has to be passed through. Uses a synthetic pair so the assertion holds on every platform rather than only where that transform exists.
+      // Deliberately no homedir mock: this case passes homeDir explicitly, and a queued mockReturnValueOnce that nothing consumes is dequeued by the NEXT test instead, handing it a stale tempDir from a previous beforeEach. The reverse of the junction case above, and the one CI actually hit on macOS and Windows: resolveProjectRoot canonicalizes (/var -> /private/var, RUNNER~1 -> runneradmin) BEFORE findMemoryMd sees the path, so the pre-canonical spelling Claude Code named the dir after is unrecoverable from the argument alone. It has to be passed through. Uses a synthetic pair so the assertion holds on every platform rather than only where that transform exists.
       const asSeenRoot = path.join(tempDir, 'var', 'my-project')
       const canonicalRoot = path.join(tempDir, 'private', 'var', 'my-project')
 
@@ -163,9 +162,7 @@ describe('cli_context_stats', () => {
       const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
       homedirMock.mockReturnValueOnce(tempDir)
 
-      // A UNC-style root resolves to a path starting with two backslashes on Windows, which
-      // become two leading dashes once slugified -- exactly the case the old leading/trailing
-      // dash trim silently mangled.
+      // A UNC-style root resolves to a path starting with two backslashes on Windows, which become two leading dashes once slugified -- exactly the case the old leading/trailing dash trim silently mangled.
       const projectRoot = '\\\\server\\share\\myproject'
       const resolvedRoot = path.resolve(projectRoot)
       const slug = resolvedRoot.replace(/[^A-Za-z0-9]/g, '-')
@@ -214,11 +211,7 @@ describe('cli_context_stats', () => {
       fs.mkdirSync(project)
       fs.writeFileSync(path.join(project, 'CLAUDE.md'), 'x'.repeat(400))
 
-      // Pin homedir to the isolated tempDir (no .claude/CLAUDE.md there) so
-      // claude_md_total is a pure function of this fixture. Without this, findClaudeMdFiles
-      // also folds in the *real* developer's ~/.claude/CLAUDE.md (see src/cli_context_stats.ts),
-      // which is machine-specific and absent entirely on a fresh CI runner -- an exact pin against
-      // the unmocked value would be right on one machine and wrong everywhere else, including CI.
+      // Pin homedir to the isolated tempDir (no .claude/CLAUDE.md there) so claude_md_total is a pure function of this fixture. Without this, findClaudeMdFiles also folds in the *real* developer's ~/.claude/CLAUDE.md (see src/cli_context_stats.ts), which is machine-specific and absent entirely on a fresh CI runner -- an exact pin against the unmocked value would be right on one machine and wrong everywhere else, including CI.
       const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
       homedirMock.mockReturnValue(tempDir)
 
@@ -246,11 +239,7 @@ describe('cli_context_stats', () => {
       const projectRoot = path.join(tempDir, 'fix-project')
       fs.mkdirSync(projectRoot)
 
-      // runContextStats routes projectRoot through resolveProjectRoot() (src/project.ts),
-      // which canonicalizes it -- including 8.3 short-name expansion on a Windows machine
-      // whose %TEMP% is pinned to short form (e.g. CI's RUNNER~1) -- before findMemoryMd
-      // ever sees it. The expected slug here must be derived the same way, not via a raw
-      // path.resolve() of the un-canonicalized projectRoot.
+      // runContextStats routes projectRoot through resolveProjectRoot() (src/project.ts), which canonicalizes it -- including 8.3 short-name expansion on a Windows machine whose %TEMP% is pinned to short form (e.g. CI's RUNNER~1) -- before findMemoryMd ever sees it. The expected slug here must be derived the same way, not via a raw path.resolve() of the un-canonicalized projectRoot.
       const slug = path.resolve(canonicalize(projectRoot)).replace(/[^A-Za-z0-9]/g, '-')
       const memDir = path.join(tempDir, '.claude', 'projects', slug, 'memory')
       fs.mkdirSync(memDir, { recursive: true })
@@ -269,8 +258,7 @@ describe('cli_context_stats', () => {
         ;(process.stdout as any).write = orig
       }
 
-      // The bug: --fix used to print a hardcoded "not yet implemented" message and never
-      // touched MEMORY.md. Assert it actually delegated to memory_prune and rewrote the file.
+      // The bug: --fix used to print a hardcoded "not yet implemented" message and never touched MEMORY.md. Assert it actually delegated to memory_prune and rewrote the file.
       expect(output).not.toContain('not yet implemented')
       expect(output).toContain('[--fix] Pruned MEMORY.md')
       expect(output).toContain('removed 1 dead-link entry')

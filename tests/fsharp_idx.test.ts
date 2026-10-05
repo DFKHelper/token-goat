@@ -1,13 +1,4 @@
-/**
- * Source-level test for the F# adapter (src/languages/fsharp.ts), following the shape and
- * mutation-testing discipline `tests/ocaml_idx.test.ts` established: one assertion per rule that
- * can silently regress while a >=1-symbol smoke check stays green.
- *
- * Every fixture below is HAND-DERIVED from the F# Language Specification's lexical rules for
- * comments and string literals (see fsharp.ts's module doc for section citations and the
- * no-internet-access caveat), independently of fsharp.ts's own regexes and masking loop -- not
- * from this repo's extractor.
- */
+/** Source-level test for the F# adapter (src/languages/fsharp.ts), following the shape and mutation-testing discipline `tests/ocaml_idx.test.ts` established: one assertion per rule that can silently regress while a >=1-symbol smoke check stays green. Every fixture below is HAND-DERIVED from the F# Language Specification's lexical rules for comments and string literals (see fsharp.ts's module doc for section citations and the no-internet-access caveat), independently of fsharp.ts's own regexes and masking loop -- not from this repo's extractor. */
 import { describe, expect, it } from 'vitest'
 
 import { extractFSharp } from '../src/languages/fsharp.js'
@@ -85,14 +76,7 @@ describe('// line comments', () => {
 })
 
 describe('@"..." verbatim strings: "" is the only escape, a backslash is always literal (F# Language Specification, "String, Character, and Byte Array Literals")', () => {
-  // NOT independently mutation-discriminating: a doubled `""` sits at two immediately-adjacent
-  // positions, so a masker that (wrongly) closes the string at the first of the pair has its very
-  // next character be the second of the pair, which the outer masking loop then reopens as a new
-  // plain string that scans forward to the same real closer -- the two wrong spans compose back to
-  // the same net masked range for a fixture with nothing else between the pair and the real
-  // closer. Kept as a correctness/regression pin (same shape ocaml_idx.test.ts documents for its
-  // own char-literal-with-equals tests); the trailing-backslash-before-the-closer test below is
-  // this rule's actual mutation-discriminating case.
+  // NOT independently mutation-discriminating: a doubled `""` sits at two immediately-adjacent positions, so a masker that (wrongly) closes the string at the first of the pair has its very next character be the second of the pair, which the outer masking loop then reopens as a new plain string that scans forward to the same real closer -- the two wrong spans compose back to the same net masked range for a fixture with nothing else between the pair and the real closer. Kept as a correctness/regression pin (same shape ocaml_idx.test.ts documents for its own char-literal-with-equals tests); the trailing-backslash-before-the-closer test below is this rule's actual mutation-discriminating case.
   it('a doubled "" inside a verbatim string does not end the string early: a definition leaked by reading the first quote as a closer is not found', () => {
     const src = [
       String.raw`let quoted = @"a ""quoted"" string"`,
@@ -104,11 +88,7 @@ describe('@"..." verbatim strings: "" is the only escape, a backslash is always 
   })
 
   it('mutation-discriminating: a naive backslash-aware masker treats the backslash right before the closing quote as an escape and reads past the real closer; the correct implementation must not', () => {
-    // `@"C:\"` -- the trailing backslash is a literal character, not an escape: the string's real
-    // content is `C:\` and it closes at that final `"`. A naive masker that treats `\` as an escape
-    // character here would see that `"` as escaped (not a closer), so it keeps scanning for the
-    // next quote and finds none on the rest of the file -- swallowing `trapDef`'s own line, and
-    // every line after it, into the "string".
+    // `@"C:\"` -- the trailing backslash is a literal character, not an escape: the string's real content is `C:\` and it closes at that final `"`. A naive masker that treats `\` as an escape character here would see that `"` as escaped (not a closer), so it keeps scanning for the next quote and finds none on the rest of the file -- swallowing `trapDef`'s own line, and every line after it, into the "string".
     const src = [
       String.raw`let winPath = @"C:\"`,
       'let trapDef = 1',

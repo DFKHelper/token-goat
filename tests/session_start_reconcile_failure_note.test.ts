@@ -1,18 +1,4 @@
-/**
- * Regression for reconcileNote's silent catch: on current main, a thrown reconcileProject sweep
- * inside session_start returns null and records nothing anywhere -- no stat, no log -- so a real
- * failure (SQLite `database is locked` is the observed one; see worker-errors.log) reads exactly
- * like a clean index on every future session start.
- *
- * reconcileProject is mocked to throw here rather than locked at the sqlite level: the fix's own
- * recordStat call writes to the same db reconcileProject reads, so holding an exclusive lock on it
- * would also block the write this test exists to observe, hiding the fix behind the very failure
- * it is supposed to make visible. Everything downstream of the throw -- recordStat, the real
- * sqlite write, sessionStartHandler's return value -- runs unmocked.
- *
- * Provenance: HAND-DERIVED. The thrown message and the expected stat row are asserted against
- * real recordStat/sqlite behavior, not read off hooks_session_start.ts's own source.
- */
+/** Regression for reconcileNote's silent catch: on current main, a thrown reconcileProject sweep inside session_start returns null and records nothing anywhere -- no stat, no log -- so a real failure (SQLite `database is locked` is the observed one; see worker-errors.log) reads exactly like a clean index on every future session start. reconcileProject is mocked to throw here rather than locked at the sqlite level: the fix's own recordStat call writes to the same db reconcileProject reads, so holding an exclusive lock on it would also block the write this test exists to observe, hiding the fix behind the very failure it is supposed to make visible. Everything downstream of the throw -- recordStat, the real sqlite write, sessionStartHandler's return value -- runs unmocked. Provenance: HAND-DERIVED. The thrown message and the expected stat row are asserted against real recordStat/sqlite behavior, not read off hooks_session_start.ts's own source. */
 import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -22,8 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const RECONCILE_ERROR_MESSAGE = 'simulated: database is locked'
 
-// Mirrors tests/hooks_session_start.test.ts's own constants mock, with this file's own temp
-// targets so the two files' databases never collide.
+// Mirrors tests/hooks_session_start.test.ts's own constants mock, with this file's own temp targets so the two files' databases never collide.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return {
@@ -34,8 +19,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   }
 })
 
-// The one seam this file mocks: reconcileProject throwing is the failure under test, and it must
-// not touch the real sweep logic to be believable as "the sweep threw", not "the mock threw".
+// The one seam this file mocks: reconcileProject throwing is the failure under test, and it must not touch the real sweep logic to be believable as "the sweep threw", not "the mock threw".
 vi.mock('../src/reconcile.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return {
@@ -48,10 +32,7 @@ vi.mock('../src/reconcile.js', async (importOriginal) => {
 
 const _testConfigPath = tempConfigPath('tg-session-start-reconcile-fail-config.toml')
 const _testDataDir = tempConfigPath('tg-session-start-reconcile-fail-data')
-// getGlobalDb() (what recordStat writes through) joins dataDir() with 'global.db' itself rather
-// than calling globalDbPath() -- the two must resolve to the same file here, or the symbols row
-// this test inserts via globalDbPath() and the stats row recordStat writes via dataDir() land in
-// two different sqlite files and neither query below ever sees the other's write.
+// getGlobalDb() (what recordStat writes through) joins dataDir() with 'global.db' itself rather than calling globalDbPath() -- the two must resolve to the same file here, or the symbols row this test inserts via globalDbPath() and the stats row recordStat writes via dataDir() land in two different sqlite files and neither query below ever sees the other's write.
 const _testDbPath = path.join(_testDataDir, 'global.db')
 
 import type { HookEvent } from '../src/hook_registry.js'
@@ -102,10 +83,7 @@ describe('sessionStartHandler when reconcileProject throws', () => {
     try {
       const forwardSlashDir = normalizePath(projectDir)
       const db = getDb(_testDbPath)
-      // Applies the stats schema up front: getGlobalDb() (what recordStat writes through) creates
-      // the `stats` table lazily on its own first call, which otherwise would not happen until
-      // the throw inside sessionStartHandler below, leaving the calibration query below with no
-      // table to select from.
+      // Applies the stats schema up front: getGlobalDb() (what recordStat writes through) creates the `stats` table lazily on its own first call, which otherwise would not happen until the throw inside sessionStartHandler below, leaving the calibration query below with no table to select from.
       getGlobalDb()
       db.prepare(
         'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',

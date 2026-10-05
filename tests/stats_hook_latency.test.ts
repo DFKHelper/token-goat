@@ -15,12 +15,7 @@ import {
 } from '../src/stats.js'
 import { hookLatencyBreakdown } from '../src/hook_latency.js'
 
-/**
- * The `stats` table exactly as it existed before this change added `duration_ms` -- same
- * FORMAT-DERIVED provenance as `stats_harness_column.test.ts`'s `PRE_HARNESS_SCHEMA_SQL`: read
- * off `GLOBAL_SCHEMA_SQL` as it stood immediately before this commit, so an install created by
- * any earlier release is exercised without waiting for one to actually exist.
- */
+/** The `stats` table exactly as it existed before this change added `duration_ms` -- same FORMAT-DERIVED provenance as `stats_harness_column.test.ts`'s `PRE_HARNESS_SCHEMA_SQL`: read off `GLOBAL_SCHEMA_SQL` as it stood immediately before this commit, so an install created by any earlier release is exercised without waiting for one to actually exist. */
 const PRE_DURATION_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS stats (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

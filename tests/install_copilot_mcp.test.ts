@@ -1,8 +1,4 @@
-/**
- * `token-goat install --copilot` registers token-goat's MCP server in Copilot CLI's user MCP config, `<COPILOT_HOME>/mcp-config.json`, and `uninstall --copilot` takes it out again. Before this, the README told Copilot users to write that entry by hand, in a shape Copilot does not write itself.
- *
- * PROVENANCE: CAPTURE. tests/fixtures/copilot_cli_1_0_88_mcp/ holds what GitHub Copilot CLI 1.0.88 itself wrote on Windows, recorded on 2026-09-28 in an isolated COPILOT_HOME, with the console output in transcript.txt beside it: `copilot mcp add other -- echo hi`, then `copilot mcp add token-goat -- "C:/Program Files/nodejs/node.exe" C:/x/dist/token-goat.mjs mcp-serve` (mcp-config-after-add.json), then `copilot mcp remove token-goat` (mcp-config-after-remove.json). The entry token-goat writes must have the key set Copilot gives its own `token-goat` entry, and uninstalling from Copilot's after-add file must leave what Copilot's own remove left.
- */
+/** `token-goat install --copilot` registers token-goat's MCP server in Copilot CLI's user MCP config, `<COPILOT_HOME>/mcp-config.json`, and `uninstall --copilot` takes it out again. Before this, the README told Copilot users to write that entry by hand, in a shape Copilot does not write itself. PROVENANCE: CAPTURE. tests/fixtures/copilot_cli_1_0_88_mcp/ holds what GitHub Copilot CLI 1.0.88 itself wrote on Windows, recorded on 2026-09-28 in an isolated COPILOT_HOME, with the console output in transcript.txt beside it: `copilot mcp add other -- echo hi`, then `copilot mcp add token-goat -- "C:/Program Files/nodejs/node.exe" C:/x/dist/token-goat.mjs mcp-serve` (mcp-config-after-add.json), then `copilot mcp remove token-goat` (mcp-config-after-remove.json). The entry token-goat writes must have the key set Copilot gives its own `token-goat` entry, and uninstalling from Copilot's after-add file must leave what Copilot's own remove left. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 

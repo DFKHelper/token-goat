@@ -1,18 +1,4 @@
-/**
- * End-to-end regression for the dotted-spec container lookup losing the requested class to the
- * query's LIMIT (defect 2 in the batch this file was added for).
- *
- * `token-goat read "file.ts::ClassB.method"` narrows an ambiguous same-file, same-named-method
- * candidate list by finding a symbol named `ClassB` whose line range contains the candidate.
- * That containers lookup was `querySymbols({ name: symBase, limit: 50 })` with no file filter, so
- * for a container name shared by 50+ classes across the project the requested file's `ClassB` row
- * sorted (by `ORDER BY file_path, line_start`) past the LIMIT before the per-candidate filePath
- * containment check ever saw it, and a correct, unambiguous resolution degraded to `ambiguous`
- * (both same-named methods survive since neither can be attributed to its class).
- *
- * Drives the real, unmocked pipeline: real files on disk under a temp dir (never inside the
- * repo), real indexFileSync, real (test-isolated) global.db, real resolveSymbolSpec via runRead.
- */
+/** End-to-end regression for the dotted-spec container lookup losing the requested class to the query's LIMIT (defect 2 in the batch this file was added for). `token-goat read "file.ts::ClassB.method"` narrows an ambiguous same-file, same-named-method candidate list by finding a symbol named `ClassB` whose line range contains the candidate. That containers lookup was `querySymbols({ name: symBase, limit: 50 })` with no file filter, so for a container name shared by 50+ classes across the project the requested file's `ClassB` row sorted (by `ORDER BY file_path, line_start`) past the LIMIT before the per-candidate filePath containment check ever saw it, and a correct, unambiguous resolution degraded to `ambiguous` (both same-named methods survive since neither can be attributed to its class). Drives the real, unmocked pipeline: real files on disk under a temp dir (never inside the repo), real indexFileSync, real (test-isolated) global.db, real resolveSymbolSpec via runRead. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -32,18 +18,14 @@ let root = ''
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'tg-container-limit-'))
-  // 60 files each declaring a class named exactly like the requested container, sorting ahead of
-  // the target file alphabetically (`a01.ts .. a60.ts` < `zzz_target.ts`) so the LIMIT 50
-  // container query drops the target file's row before the per-candidate filePath check runs.
+  // 60 files each declaring a class named exactly like the requested container, sorting ahead of the target file alphabetically (`a01.ts .. a60.ts` < `zzz_target.ts`) so the LIMIT 50 container query drops the target file's row before the per-candidate filePath check runs.
   for (let i = 1; i <= DUMMY_COUNT; i++) {
     const name = `a${String(i).padStart(2, '0')}.ts`
     const file = join(root, name)
     writeFileSync(file, `class ${CONTAINER} {\n  placeholder() {\n    return ${i}\n  }\n}\n`)
     indexFileSync(file)
   }
-  // The target file: two classes sharing one method name, so the bare-method lookup is
-  // genuinely ambiguous and the container-name disambiguation is the only thing that can
-  // resolve it -- exactly the case comment near the container query describes.
+  // The target file: two classes sharing one method name, so the bare-method lookup is genuinely ambiguous and the container-name disambiguation is the only thing that can resolve it -- exactly the case comment near the container query describes.
   const targetFile = join(root, 'zzz_target.ts')
   writeFileSync(
     targetFile,

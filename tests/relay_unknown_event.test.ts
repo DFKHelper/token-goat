@@ -1,15 +1,4 @@
-/**
- * Regression: `token-goat hook <event>` with an event name the relay does not know wrote `{}` to
- * stdout, exited 0, and said nothing anywhere. That is a wiring mistake rather than a runtime
- * hazard -- a settings.json left behind by an older build, a hand-edited entry, or a bridge shim
- * passing its own spelling -- and the silence made it invisible: image shrinking, read dedup and
- * the dirty-queue enqueue all stopped while the index went stale, with nothing to show why. It
- * also gives a false green to anyone verifying a hook change by hand.
- *
- * The `{}` on stdout has to stay (a hook must never wedge the tool call), so the diagnostic goes to
- * stderr, where hooks_cli already reports a bad payload and where the harness will not read it as
- * the response.
- */
+/** Regression: `token-goat hook <event>` with an event name the relay does not know wrote `{}` to stdout, exited 0, and said nothing anywhere. That is a wiring mistake rather than a runtime hazard -- a settings.json left behind by an older build, a hand-edited entry, or a bridge shim passing its own spelling -- and the silence made it invisible: image shrinking, read dedup and the dirty-queue enqueue all stopped while the index went stale, with nothing to show why. It also gives a false green to anyone verifying a hook change by hand. The `{}` on stdout has to stay (a hook must never wedge the tool call), so the diagnostic goes to stderr, where hooks_cli already reports a bad payload and where the harness will not read it as the response. */
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import * as path from 'node:path'

@@ -1,23 +1,4 @@
-/**
- * Guard: every injectable seam on the indexer/worker critical path has a recorded decision.
- *
- * CLAUDE.md calls out one failure mode for this area by name -- "a test always supplies the
- * dependency the shipping path omits" -- and records the release it shipped: `drainOnce`'s default
- * index callback was a stub that never wrote to the `symbols` table, and the suite stayed green
- * because every worker test injected its own callback. A seam whose production default nothing
- * drives is unobserved code, whatever the suite says.
- *
- * This guard does not try to prove coverage by itself. It makes the population explicit and forces
- * a decision per member: a seam is either COVERED (a named test file drives its production default,
- * proven by a marker string that must exist in that file) or EXEMPT (a stated reason, plus a marker
- * in the file the reason cites, so a reason that stops being true fails rather than reading as a
- * settled decision). A seam the scanner finds but the table does not name fails the guard, which is
- * what makes adding a new one a decision rather than an omission.
- *
- * The scanner (tests/guards/critical_path_seam_coverage.ts) matches on syntax, not on any call
- * name, so a rename cannot silently empty its population -- and the count floor below catches the
- * case where it does empty for some other reason.
- */
+/** Guard: every injectable seam on the indexer/worker critical path has a recorded decision. CLAUDE.md calls out one failure mode for this area by name -- "a test always supplies the dependency the shipping path omits" -- and records the release it shipped: `drainOnce`'s default index callback was a stub that never wrote to the `symbols` table, and the suite stayed green because every worker test injected its own callback. A seam whose production default nothing drives is unobserved code, whatever the suite says. This guard does not try to prove coverage by itself. It makes the population explicit and forces a decision per member: a seam is either COVERED (a named test file drives its production default, proven by a marker string that must exist in that file) or EXEMPT (a stated reason, plus a marker in the file the reason cites, so a reason that stops being true fails rather than reading as a settled decision). A seam the scanner finds but the table does not name fails the guard, which is what makes adding a new one a decision rather than an omission. The scanner (tests/guards/critical_path_seam_coverage.ts) matches on syntax, not on any call name, so a rename cannot silently empty its population -- and the count floor below catches the case where it does empty for some other reason. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -35,11 +16,7 @@ interface Decision {
   readonly exempt?: { readonly reason: string; readonly file: string; readonly marker: string }
 }
 
-/**
- * Every seam, with its decision. The three `processDirtyBatch` callbacks are exempt together: its
- * only production caller passes all three explicitly, so their defaults exist for direct-call tests
- * and are not a shipping path at all -- but `drainOnce`'s own defaults ARE, and they are covered.
- */
+/** Every seam, with its decision. The three `processDirtyBatch` callbacks are exempt together: its only production caller passes all three explicitly, so their defaults exist for direct-call tests and are not a shipping path at all -- but `drainOnce`'s own defaults ARE, and they are covered. */
 const DECISIONS: Record<string, Decision> = {
   'src/worker.ts::processDirtyBatch::index': {
     exempt: {
@@ -102,11 +79,7 @@ const DECISIONS: Record<string, Decision> = {
   },
 }
 
-/**
- * Floor on the scanned population. A syntax scanner that silently matches nothing -- after a
- * refactor, a formatter change, or a bad edit to the scanner itself -- would otherwise report a
- * clean sweep over an empty set.
- */
+/** Floor on the scanned population. A syntax scanner that silently matches nothing -- after a refactor, a formatter change, or a bad edit to the scanner itself -- would otherwise report a clean sweep over an empty set. */
 const MIN_SEAMS = 10
 
 describe('critical-path injectable seams', () => {

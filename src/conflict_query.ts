@@ -1,33 +1,14 @@
-/**
- * Unresolved git merge-conflict marker extraction (`token-goat conflicts`).
- *
- * Parses two-way (`<<<<<<< / ======= / >>>>>>>`) and diff3 three-way
- * (`<<<<<<< / ||||||| / ======= / >>>>>>>`) conflict markers out of a file's
- * text, plus the labels git writes on the marker lines themselves (branch
- * names, `merged common ancestors`, etc). Mirrors coverage_query.ts /
- * openapi_query.ts's shape: pure parse/extract/format functions, no file IO
- * -- callers (read_commands.ts's runConflicts) own reading files off disk and
- * walking directories.
- */
+/** Unresolved git merge-conflict marker extraction (`token-goat conflicts`). Parses two-way (`<<<<<<< / ======= / >>>>>>>`) and diff3 three-way (`<<<<<<< / ||||||| / ======= / >>>>>>>`) conflict markers out of a file's text, plus the labels git writes on the marker lines themselves (branch names, `merged common ancestors`, etc). Mirrors coverage_query.ts / openapi_query.ts's shape: pure parse/extract/format functions, no file IO -- callers (read_commands.ts's runConflicts) own reading files off disk and walking directories. */
 
 import { displaySafeText } from './paths.js'
 
 const OURS_RE = /^<{7}(?:\s+(.*))?$/
 const BASE_RE = /^\|{7}(?:\s+(.*))?$/
-// Trailing whitespace is tolerated, as it already is on the other three markers: their
-// `(?:\s+(.*))?` tail matches a run of spaces with an empty label. Only the separator demanded an
-// exact match, so `=======` with one trailing space -- easily left by an editor or a merge tool --
-// took the whole region down with it: the conflict was not reported at all, and the file was
-// flagged "reached end of file without a matching '>>>>>>>'" even though the `>>>>>>>` was right
-// there. Deliberately `\s*` and not a label capture like the others: a content line reading
-// `======= notes` inside the ours section would then be taken for the separator, which is a worse
-// failure than the one being fixed. More than seven `=` (a markdown heading rule) still does not
-// match, which is the point of the exact `{7}`.
+// Trailing whitespace is tolerated, as it already is on the other three markers: their `(?:\s+(.*))?` tail matches a run of spaces with an empty label. Only the separator demanded an exact match, so `=======` with one trailing space -- easily left by an editor or a merge tool -- took the whole region down with it: the conflict was not reported at all, and the file was flagged "reached end of file without a matching '>>>>>>>'" even though the `>>>>>>>` was right there. Deliberately `\s*` and not a label capture like the others: a content line reading `======= notes` inside the ours section would then be taken for the separator, which is a worse failure than the one being fixed. More than seven `=` (a markdown heading rule) still does not match, which is the point of the exact `{7}`.
 const SEP_RE = /^={7}\s*$/
 const THEIRS_RE = /^>{7}(?:\s+(.*))?$/
 
-/** One side of a conflict region: the label git wrote on its marker line (often a ref/branch
- * name, or empty), and the literal lines between that marker and the next one. */
+/** One side of a conflict region: the label git wrote on its marker line (often a ref/branch name, or empty), and the literal lines between that marker and the next one. */
 export interface ConflictSide {
   label: string
   content: string
@@ -38,8 +19,7 @@ export interface ConflictContextLine {
   text: string
 }
 
-/** One `<<<<<<< ... >>>>>>>` conflict region. `base` is present only for diff3-style conflicts
- * (a `|||||||` section was seen); `null` for a plain two-way conflict. */
+/** One `<<<<<<< ... >>>>>>>` conflict region. `base` is present only for diff3-style conflicts (a `|||||||` section was seen); `null` for a plain two-way conflict. */
 export interface ConflictRegion {
   filePath: string
   /** 1-indexed, inclusive: the `<<<<<<<` line through the `>>>>>>>` line. */
@@ -52,10 +32,7 @@ export interface ConflictRegion {
   afterContext?: ConflictContextLine[]
 }
 
-/** A malformed/unbalanced marker sequence -- e.g. a `<<<<<<<` with no matching `=======`/
- * `>>>>>>>` before EOF or before the next `<<<<<<<` -- surfaced as data instead of a thrown
- * error, so one bad file doesn't abort a multi-file scan and a partial parse never gets
- * silently reported as "no conflicts". */
+/** A malformed/unbalanced marker sequence -- e.g. a `<<<<<<<` with no matching `=======`/ `>>>>>>>` before EOF or before the next `<<<<<<<` -- surfaced as data instead of a thrown error, so one bad file doesn't abort a multi-file scan and a partial parse never gets silently reported as "no conflicts". */
 export interface ConflictWarning {
   filePath: string
   /** Line where the unterminated region started (the offending `<<<<<<<`). */
@@ -203,8 +180,7 @@ export interface FileConflictsSummary {
   warnings: ConflictWarning[]
 }
 
-/** Drop the full ours/base/theirs content, keeping only file, conflict count, line ranges, and
- * labels -- the `--summary` counterpart to {@link parseConflicts}' full result. */
+/** Drop the full ours/base/theirs content, keeping only file, conflict count, line ranges, and labels -- the `--summary` counterpart to {@link parseConflicts}' full result. */
 export function summarizeFileConflicts(result: FileConflicts): FileConflictsSummary {
   return {
     filePath: result.filePath,
@@ -265,9 +241,7 @@ function formatSingleFileConflicts(result: FileConflicts): string {
   return lines.join('\n')
 }
 
-/** Format the full (non-summary) view for one or more files. Files with zero regions and zero
- * warnings are dropped -- there's nothing to show for a clean file. Zero conflicts across every
- * file given prints one clear message instead of empty/confusing output. */
+/** Format the full (non-summary) view for one or more files. Files with zero regions and zero warnings are dropped -- there's nothing to show for a clean file. Zero conflicts across every file given prints one clear message instead of empty/confusing output. */
 export function formatConflicts(results: FileConflicts[]): string {
   const withData = results.filter((r) => r.regions.length > 0 || r.warnings.length > 0)
   if (withData.length === 0) return 'No conflicts found.'
@@ -293,8 +267,7 @@ function formatSingleFileSummary(summary: FileConflictsSummary): string {
   return lines.join('\n')
 }
 
-/** Format the `--summary` view (line ranges + labels only) for one or more files. Same
- * clean-file-omission and zero-conflicts behavior as {@link formatConflicts}. */
+/** Format the `--summary` view (line ranges + labels only) for one or more files. Same clean-file-omission and zero-conflicts behavior as {@link formatConflicts}. */
 export function formatConflictSummaries(summaries: FileConflictsSummary[]): string {
   const withData = summaries.filter((s) => s.conflictCount > 0 || s.warnings.length > 0)
   if (withData.length === 0) return 'No conflicts found.'

@@ -1,19 +1,4 @@
-/**
- * A parser change invalidates already-indexed files whose content never moved.
- *
- * `files.sha` was the only parse-freshness key, and it answers exactly one question: has this
- * file's content changed since we parsed it. It cannot answer the other one: has what we extract
- * from that content changed. So an extraction-logic change left every unedited file pinned to the
- * symbol set an older parser gave it, indefinitely, and `token-goat index` reported those files as
- * skipped rather than reparsed. Measured against a clean index built by the same binary, 37 of 237
- * source files in this repo disagreed, 180 surplus rows in all. `files.parser_sha` closes it, the
- * same way `files.embed_sha` already gates embedding freshness independently of parse freshness.
- *
- * Provenance: HAND-DERIVED. The stale fingerprints are written by this file, and the expectation
- * (rows are rebuilt vs. left alone) is computed from what a reparse means, not read back out of any
- * matcher in `src/`. The generated-constant case is CAPTURE: it spawns the real script and asserts
- * its exit code, so it fails on the actual drift a developer would ship.
- */
+/** A parser change invalidates already-indexed files whose content never moved. `files.sha` was the only parse-freshness key, and it answers exactly one question: has this file's content changed since we parsed it. It cannot answer the other one: has what we extract from that content changed. So an extraction-logic change left every unedited file pinned to the symbol set an older parser gave it, indefinitely, and `token-goat index` reported those files as skipped rather than reparsed. Measured against a clean index built by the same binary, 37 of 237 source files in this repo disagreed, 180 surplus rows in all. `files.parser_sha` closes it, the same way `files.embed_sha` already gates embedding freshness independently of parse freshness. Provenance: HAND-DERIVED. The stale fingerprints are written by this file, and the expectation (rows are rebuilt vs. left alone) is computed from what a reparse means, not read back out of any matcher in `src/`. The generated-constant case is CAPTURE: it spawns the real script and asserts its exit code, so it fails on the actual drift a developer would ship. */
 import { describe, it, expect, beforeEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -75,8 +60,7 @@ describe('parser fingerprint freshness gate', () => {
     const dbPath = path.join(dir, 'idx.db')
 
     seedIndexedFileWithNoSymbols(dbPath, file)
-    // v12 -> v13 adds the column without a backfill, so every pre-existing row reads NULL. That is
-    // the truthful value (nobody recorded which parser wrote them) and it must read as stale.
+    // v12 -> v13 adds the column without a backfill, so every pre-existing row reads NULL. That is the truthful value (nobody recorded which parser wrote them) and it must read as stale.
     getDb(dbPath).prepare('UPDATE files SET parser_sha = NULL').run()
 
     const sha = fingerprintFile(file)
@@ -92,9 +76,7 @@ describe('parser fingerprint freshness gate', () => {
     const dbPath = path.join(dir, 'idx.db')
 
     seedIndexedFileWithNoSymbols(dbPath, file)
-    // Control. indexFileSync already stamped the current fingerprint, so nothing here is stale and
-    // the skip must hold. Without this case the two tests above would also pass on a gate that
-    // reparsed unconditionally, which would be a different defect rather than the fix.
+    // Control. indexFileSync already stamped the current fingerprint, so nothing here is stale and the skip must hold. Without this case the two tests above would also pass on a gate that reparsed unconditionally, which would be a different defect rather than the fix.
     const stamped = (getDb(dbPath).prepare('SELECT parser_sha AS p FROM files').get() as { p: string }).p
     expect(stamped, 'indexFileSync must stamp the fingerprint it parsed with').toBe(PARSER_FINGERPRINT)
 
@@ -108,8 +90,7 @@ describe('parser fingerprint freshness gate', () => {
     const dir = tmpDir('tg-pfp-mig-')
     const dbPath = path.join(dir, 'idx.db')
 
-    // A files table shaped exactly like v12's SCHEMA_SQL, built against the raw file so the
-    // "before" state does not depend on today's SCHEMA_SQL to construct itself.
+    // A files table shaped exactly like v12's SCHEMA_SQL, built against the raw file so the "before" state does not depend on today's SCHEMA_SQL to construct itself.
     const raw = new Database(dbPath)
     raw.exec(
       'CREATE TABLE files (path TEXT PRIMARY KEY, sha TEXT, mtime REAL, language TEXT, indexed_at REAL, embed_sha TEXT, retry_count INTEGER NOT NULL DEFAULT 0);',
@@ -144,10 +125,7 @@ describe('parser fingerprint freshness gate', () => {
   })
 
   it('has a checked-in fingerprint that still matches the extraction sources', () => {
-    // The forcing function. Editing src/parser.ts or any language adapter changes what a parse
-    // extracts, so it must change the stamped fingerprint too, or the gate above silently stops
-    // invalidating anything. Exit code, not stdout text. The value-level recompute, including the
-    // per-language map, lives in tests/parser_fingerprint_per_language.test.ts.
+    // The forcing function. Editing src/parser.ts or any language adapter changes what a parse extracts, so it must change the stamped fingerprint too, or the gate above silently stops invalidating anything. Exit code, not stdout text. The value-level recompute, including the per-language map, lives in tests/parser_fingerprint_per_language.test.ts.
     const run = spawnSync(process.execPath, ['scripts/parser-fingerprint.mjs', '--check'], {
       cwd: process.cwd(),
       encoding: 'utf8',

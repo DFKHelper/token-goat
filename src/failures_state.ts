@@ -1,20 +1,4 @@
-/**
- * Cross-invocation state for `token-goat failures --delta` -- persists the
- * failure-signature set (test names / summary lines, see
- * `failures.ts::failureSignatures`) from the last `failures` invocation for
- * a given (project, key) pair, so a later invocation can diff against it and
- * report only what changed.
- *
- * `failures` is a standalone CLI command run directly by a human/agent, not
- * a harness-fired hook, so there's no natural (sessionId, bash_id) identity
- * to key snapshots by the way hooks_bashoutput.ts does for BashOutput polls.
- * Instead this mirrors project_memory.ts's per-project persistent state:
- * keyed by project hash (from project.ts::findProject) plus an explicit
- * `key` string the caller supplies via `--key` (defaulting to 'default'), so
- * multiple independent suites in the same project (e.g. a pytest run and a
- * Jest run) can be tracked separately by passing distinct --key values
- * without clobbering each other's baseline.
- */
+/** Cross-invocation state for `token-goat failures --delta` -- persists the failure-signature set (test names / summary lines, see `failures.ts::failureSignatures`) from the last `failures` invocation for a given (project, key) pair, so a later invocation can diff against it and report only what changed. `failures` is a standalone CLI command run directly by a human/agent, not a harness-fired hook, so there's no natural (sessionId, bash_id) identity to key snapshots by the way hooks_bashoutput.ts does for BashOutput polls. Instead this mirrors project_memory.ts's per-project persistent state: keyed by project hash (from project.ts::findProject) plus an explicit `key` string the caller supplies via `--key` (defaulting to 'default'), so multiple independent suites in the same project (e.g. a pytest run and a Jest run) can be tracked separately by passing distinct --key values without clobbering each other's baseline. */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -42,23 +26,13 @@ function validateKey(key: string): void {
   }
 }
 
-/**
- * Path to the persisted failure-snapshot state file for (projectHash, key).
- * Throws if `key` fails validation (same charset as project_memory.ts's
- * memory keys) -- a raw, unvalidated key would otherwise let `--key` write
- * outside the intended `projects/` directory via path separators.
- */
+/** Path to the persisted failure-snapshot state file for (projectHash, key). Throws if `key` fails validation (same charset as project_memory.ts's memory keys) -- a raw, unvalidated key would otherwise let `--key` write outside the intended `projects/` directory via path separators. */
 export function failuresStatePath(projectHash: string, key: string): string {
   validateKey(key);
   return path.join(dataDir(), 'projects', `${projectHash}_failures_${key}.json`);
 }
 
-/**
- * Read the persisted snapshot for (projectHash, key).
- * Returns null on a missing file, a read/parse error, or content that
- * doesn't match the expected shape (fail-soft: a wiped or corrupted state
- * file degrades to "no baseline yet" rather than crashing the command).
- */
+/** Read the persisted snapshot for (projectHash, key). Returns null on a missing file, a read/parse error, or content that doesn't match the expected shape (fail-soft: a wiped or corrupted state file degrades to "no baseline yet" rather than crashing the command). */
 export function loadFailureSnapshot(projectHash: string, key: string): FailureSnapshot | null {
   const p = failuresStatePath(projectHash, key);
   try {
@@ -84,9 +58,7 @@ export function saveFailureSnapshot(projectHash: string, key: string, snapshot: 
   ensureDirSync(dir);
   const content = JSON.stringify(snapshot);
 
-  // Lock the write like project_memory.ts's setEntry: two concurrent `failures --delta`
-  // invocations for the same (project, key) could otherwise race on the save. Low-frequency CLI
-  // path, so fall back to an unprotected write on a failed lock acquire rather than blocking.
+  // Lock the write like project_memory.ts's setEntry: two concurrent `failures --delta` invocations for the same (project, key) could otherwise race on the save. Low-frequency CLI path, so fall back to an unprotected write on a failed lock acquire rather than blocking.
   const doSave = (): true => {
     atomicWriteText(p, content);
     return true;

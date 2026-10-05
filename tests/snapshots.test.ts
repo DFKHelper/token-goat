@@ -44,11 +44,7 @@ describe('pathKey case folding (case-insensitive FS)', () => {
     else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
   })
 
-  // Regression: pathKey() hashed the raw filePath string. normalizePath only lowercases the
-  // drive letter (project convention), so a file read under two different literal casings in
-  // one session (e.g. "Worker.ts" vs "worker.ts") on a case-insensitive filesystem resolved to
-  // two DIFFERENT snapshot files on disk -- defeating change-detection (load()
-  // would silently fail to find the prior snapshot under the new casing).
+  // Regression: pathKey() hashed the raw filePath string. normalizePath only lowercases the drive letter (project convention), so a file read under two different literal casings in one session (e.g. "Worker.ts" vs "worker.ts") on a case-insensitive filesystem resolved to two DIFFERENT snapshot files on disk -- defeating change-detection (load() would silently fail to find the prior snapshot under the new casing).
   it('produces the same snapshot path for two case variants of the same file', () => {
     process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
     const p1 = snapshot_path('sess', 'src/Worker.ts')
@@ -136,13 +132,7 @@ describe('cleanup_session', () => {
   })
 })
 
-// Regression: sessionDir()/cleanup_stale() used to hardcode
-// path.join(os.homedir(), '.token-goat', 'session_snapshots'), ignoring the TOKEN_GOAT_HOME
-// override that every sibling module (session_store.ts, disk_cache.ts) already respects. That
-// broke both a user's ability to relocate token-goat's data dir AND this very test file's
-// isolation (tests/setup/isolate-home.ts sets TOKEN_GOAT_HOME specifically so tests never touch
-// the developer's real home directory). This asserts store() actually resolves under the
-// TOKEN_GOAT_HOME override, not the old hardcoded os.homedir() base.
+// Regression: sessionDir()/cleanup_stale() used to hardcode path.join(os.homedir(), '.token-goat', 'session_snapshots'), ignoring the TOKEN_GOAT_HOME override that every sibling module (session_store.ts, disk_cache.ts) already respects. That broke both a user's ability to relocate token-goat's data dir AND this very test file's isolation (tests/setup/isolate-home.ts sets TOKEN_GOAT_HOME specifically so tests never touch the developer's real home directory). This asserts store() actually resolves under the TOKEN_GOAT_HOME override, not the old hardcoded os.homedir() base.
 describe('sessionDir / store honor TOKEN_GOAT_HOME override', () => {
   it('writes the snapshot under TOKEN_GOAT_HOME, not the old hardcoded os.homedir() base', () => {
     const prevHome = process.env.TOKEN_GOAT_HOME
@@ -237,13 +227,11 @@ describe('concurrent writes (regression: fixed .tmp filename collision)', () => 
       const sessionId = 'concurrent-test'
       const filePath = 'concurrent.ts'
 
-      // Simulate concurrent writes by spawning multiple store() calls in rapid succession
-      // The old fixed-temp-filename bug would cause collisions on p + '.tmp'
+      // Simulate concurrent writes by spawning multiple store() calls in rapid succession The old fixed-temp-filename bug would cause collisions on p + '.tmp'
       const promises = []
       for (let i = 0; i < 10; i++) {
         const content = Buffer.from(`concurrent write attempt ${i}`)
-        // Use synchronous store in a way that simulates concurrency pressure
-        // (in real concurrent scenario, these would interleave via async/await or threads)
+        // Use synchronous store in a way that simulates concurrency pressure (in real concurrent scenario, these would interleave via async/await or threads)
         const result = store(sessionId, filePath, content)
         promises.push(result)
       }

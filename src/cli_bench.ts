@@ -1,28 +1,14 @@
-// `token-goat bench` -- replay a fixed corpus of captured command output through the tool-output
-// compressors and report what the model would actually receive.
+// `token-goat bench` -- replay a fixed corpus of captured command output through the tool-output compressors and report what the model would actually receive.
 //
-// This exists because the two numbers token-goat already produces answer different questions.
-// `token-goat stats` is a live ledger of real sessions: non-stationary (it measures whatever you
-// happened to run this week, so two readings are not comparable) and historically prone to
-// over-crediting. `tests/token_savings_benchmark.test.ts` is a floor guard over the surgical-read
-// commands: it catches a catastrophic regression but treats every value above the floor as an
-// identical pass, so it cannot say whether a change helped. Neither is a stable optimisation target.
+// This exists because the two numbers token-goat already produces answer different questions. `token-goat stats` is a live ledger of real sessions: non-stationary (it measures whatever you happened to run this week, so two readings are not comparable) and historically prone to over-crediting. `tests/token_savings_benchmark.test.ts` is a floor guard over the surgical-read commands: it catches a catastrophic regression but treats every value above the floor as an identical pass, so it cannot say whether a change helped. Neither is a stable optimisation target.
 //
 // Two numbers are reported, deliberately not blended into one:
 //
-//   ratio     PRIMARY, must improve. Byte-weighted `1 - delivered/original` over the whole corpus.
-//   fidelity  GUARD, must not regress. Must-keep substrings still present in the delivered body.
+// ratio     PRIMARY, must improve. Byte-weighted `1 - delivered/original` over the whole corpus. fidelity  GUARD, must not regress. Must-keep substrings still present in the delivered body.
 //
-// A single metric can express "make this number go up" but not "and don't break that", and the
-// cheapest route to a higher ratio is always to delete more. Folding fidelity into a weighted
-// composite would let a strong ratio buy back a collapsed fidelity, so the two stay separate: the
-// ratio is byte-weighted (compensatory across cases, which is what makes it a smooth target) while
-// fidelity is non-compensatory -- a single missing line fails the run and exits non-zero, which is
-// what makes `revert-on-failure` mechanical.
+// A single metric can express "make this number go up" but not "and don't break that", and the cheapest route to a higher ratio is always to delete more. Folding fidelity into a weighted composite would let a strong ratio buy back a collapsed fidelity, so the two stay separate: the ratio is byte-weighted (compensatory across cases, which is what makes it a smooth target) while fidelity is non-compensatory -- a single missing line fails the run and exits non-zero, which is what makes `revert-on-failure` mechanical.
 //
-// `coverage` is reported alongside them because a metric that cannot observe a change is worse than
-// a noisy one: if a corpus exercises no case for the filter you just improved, the ratio moves zero
-// and that reads exactly like "the change did nothing".
+// `coverage` is reported alongside them because a metric that cannot observe a change is worse than a noisy one: if a corpus exercises no case for the filter you just improved, the ratio moves zero and that reads exactly like "the change did nothing".
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -35,21 +21,13 @@ import { runGit } from './util.js'
 export interface BenchCase {
   /** Stable case id, taken from the metadata filename. */
   readonly id: string
-  /**
-   * Where this output came from. `CAPTURE` (real output from a real run) is the only tag that
-   * proves a shipped build emits this shape; `HAND-DERIVED` is honest for logic but proves nothing
-   * about a wire format. A case without provenance is not evidence and is refused at load.
-   */
+  /** Where this output came from. `CAPTURE` (real output from a real run) is the only tag that proves a shipped build emits this shape; `HAND-DERIVED` is honest for logic but proves nothing about a wire format. A case without provenance is not evidence and is refused at load. */
   readonly provenance: string
   /** The command whose output this is; routed through the real filter-selection path. */
   readonly command: string
   /** Exit code the command reported. Filters treat a failure differently from a success. */
   readonly exitCode: number
-  /**
-   * Literal substrings that must survive compression. Written from what a developer needs out of
-   * this output, never from what the filter happens to keep -- a must-keep list read off the
-   * filter's own behaviour agrees with it by construction and guards nothing.
-   */
+  /** Literal substrings that must survive compression. Written from what a developer needs out of this output, never from what the filter happens to keep -- a must-keep list read off the filter's own behaviour agrees with it by construction and guards nothing. */
   readonly mustKeep: readonly string[]
   /** The captured output itself. */
   readonly output: string
@@ -96,11 +74,7 @@ export interface BenchReport {
 /** Replaces a case's filter during `--validate`, to check the guard can actually fail. */
 type ControlKind = 'none' | 'identity' | 'destroy'
 
-/**
- * A stand-in filter used only by `--validate`. `identity` returns the output unchanged (so the
- * net-benefit gate refuses it and the raw output ships: the metric's floor); `destroy` returns
- * nothing at all (maximum ratio, zero content: the reward-hacking case the guard exists to catch).
- */
+/** A stand-in filter used only by `--validate`. `identity` returns the output unchanged (so the net-benefit gate refuses it and the raw output ships: the metric's floor); `destroy` returns nothing at all (maximum ratio, zero content: the reward-hacking case the guard exists to catch). */
 class ControlFilter extends ToolFilter {
   constructor(
     readonly name: string,
@@ -121,14 +95,7 @@ const CONTROL_FILTERS: Readonly<Record<Exclude<ControlKind, 'none'>, ToolFilter>
   destroy: new ControlFilter('control:destroy', () => ''),
 }
 
-/**
- * Ceiling on a single corpus file. A case is captured command output, so a legitimate one runs to
- * kilobytes; the whole shipped corpus is smaller than this cap. It exists because `--corpus` points
- * the loader at a directory the operator names, and every file matching the layout is read whole
- * into memory before anything validates it. Without a ceiling, one oversized or wrong-directory
- * file is an out-of-memory kill rather than an error message, and a crash reports nothing about
- * which file caused it.
- */
+/** Ceiling on a single corpus file. A case is captured command output, so a legitimate one runs to kilobytes; the whole shipped corpus is smaller than this cap. It exists because `--corpus` points the loader at a directory the operator names, and every file matching the layout is read whole into memory before anything validates it. Without a ceiling, one oversized or wrong-directory file is an out-of-memory kill rather than an error message, and a crash reports nothing about which file caused it. */
 const MAX_BENCH_FILE_BYTES = 5 * 1024 * 1024
 
 /** Read a corpus file, refusing one too large to be a plausible case rather than loading it. */
@@ -143,8 +110,7 @@ function readCaseFile(id: string, filePath: string, what: string): string {
 }
 
 function parseCase(id: string, metaPath: string, outputPath: string): BenchCase {
-  // Read outside the try: the size refusal below must reach the operator as itself, not be caught
-  // here and reported as malformed JSON.
+  // Read outside the try: the size refusal below must reach the operator as itself, not be caught here and reported as malformed JSON.
   const metaText = readCaseFile(id, metaPath, 'metadata')
   let raw: unknown
   try {
@@ -175,11 +141,7 @@ function parseCase(id: string, metaPath: string, outputPath: string): BenchCase 
   }
 }
 
-/**
- * Load every case in `dir`. A case is a `<id>.json` metadata file beside an `<id>.txt` holding the
- * raw captured output -- the split keeps the output byte-exact, with no escaping between what the
- * command printed and what the compressors see.
- */
+/** Load every case in `dir`. A case is a `<id>.json` metadata file beside an `<id>.txt` holding the raw captured output -- the split keeps the output byte-exact, with no escaping between what the command printed and what the compressors see. */
 export function loadCorpus(dir: string): BenchCase[] {
   let entries: string[]
   try {
@@ -199,13 +161,7 @@ export function loadCorpus(dir: string): BenchCase[] {
   return cases
 }
 
-/**
- * Score one case through the real delivery path.
- *
- * Routing and the net-benefit gate both come from the shipping code (`detectFromCommand` +
- * `deliverCompressed`), never from a local re-derivation: a benchmark that re-implements the gate
- * measures a copy, and a change to what ships would move delivery without moving the benchmark.
- */
+/** Score one case through the real delivery path. Routing and the net-benefit gate both come from the shipping code (`detectFromCommand` + `deliverCompressed`), never from a local re-derivation: a benchmark that re-implements the gate measures a copy, and a change to what ships would move delivery without moving the benchmark. */
 export function runCase(c: BenchCase, control: ControlKind = 'none'): BenchCaseResult {
   const detected = detectFromCommand(c.command)
   const filter = control === 'none' ? detected?.filter : CONTROL_FILTERS[control]
@@ -262,9 +218,7 @@ function renderTable(report: BenchReport, floorPercent: number): string {
   const header = `${'case'.padEnd(idWidth)}  ${'filter'.padEnd(filterWidth)}  ${'in'.padStart(9)}  ${'out'.padStart(9)}  ${'saved'.padStart(7)}  fidelity`
   lines.push(header, '-'.repeat(header.length))
   for (const r of rows) {
-    // An unapplied case saved nothing -- the raw output shipped -- so it prints a dash rather than a
-    // percentage. Printing the filter's would-be savings there would credit compression that the
-    // net-benefit gate refused and the model never received.
+    // An unapplied case saved nothing -- the raw output shipped -- so it prints a dash rather than a percentage. Printing the filter's would-be savings there would credit compression that the net-benefit gate refused and the model never received.
     const saved = r.applied ? pct(r.savedPercent) : '-'
     const fidelity = `${r.kept}/${r.mustKeepTotal}${r.missing.length ? ' FAIL' : ''}`
     lines.push(
@@ -276,9 +230,7 @@ function renderTable(report: BenchReport, floorPercent: number): string {
     `${'TOTAL'.padEnd(idWidth)}  ${''.padEnd(filterWidth)}  ${String(report.originalBytes).padStart(9)}  ${String(report.deliveredBytes).padStart(9)}  ${pct(report.ratioPercent).padStart(7)}  ${report.kept}/${report.mustKeepTotal}`,
   )
   lines.push('')
-  // The floor is measured, not assumed: a score reported without it silently claims its own floor
-  // is zero, and every delta then carries that unstated offset. Headroom is stated for the same
-  // reason -- a small delta against a small remaining range is not the same as a small change.
+  // The floor is measured, not assumed: a score reported without it silently claims its own floor is zero, and every delta then carries that unstated offset. Headroom is stated for the same reason -- a small delta against a small remaining range is not the same as a small change.
   lines.push(`ratio    ${pct(report.ratioPercent)} saved  (PRIMARY -- must improve; measured floor ${pct(floorPercent)}, headroom ${pct(100 - report.ratioPercent)})`)
   lines.push(`fidelity ${report.kept}/${report.mustKeepTotal} kept   (GUARD -- must not regress; any miss exits 1)`)
   lines.push(`coverage ${report.coveredFilters}/${report.registeredFilters} filters exercised, ${report.appliedCases}/${report.cases.length} cases compressed`)
@@ -288,23 +240,13 @@ function renderTable(report: BenchReport, floorPercent: number): string {
   return lines.join('\n')
 }
 
-/**
- * Negative controls for the metric itself, per the rule that a judge you have not tried to fool is
- * not a judge. `identity` establishes the floor: a filter that changes nothing is refused by the
- * net-benefit gate, the raw output ships, and the ratio must read 0%. `destroy` is the
- * reward-hacking case: deleting everything maximises the ratio, so the guard must fail it. If
- * `destroy` ever passes fidelity, the must-keep lists are not guarding anything and no ratio
- * measured against this corpus means what it appears to mean.
- */
+/** Negative controls for the metric itself, per the rule that a judge you have not tried to fool is not a judge. `identity` establishes the floor: a filter that changes nothing is refused by the net-benefit gate, the raw output ships, and the ratio must read 0%. `destroy` is the reward-hacking case: deleting everything maximises the ratio, so the guard must fail it. If `destroy` ever passes fidelity, the must-keep lists are not guarding anything and no ratio measured against this corpus means what it appears to mean. */
 function renderValidation(cases: readonly BenchCase[]): { text: string; code: number } {
   const identity = runCorpus(cases, 'identity')
   const destroy = runCorpus(cases, 'destroy')
   const checks: { label: string; ok: boolean; detail: string }[] = [
     {
-      // Not "scores exactly 0%": the unapplied path delivers the streams recombined, which can
-      // differ from the captured bytes by a trailing newline. That is a real property of delivery,
-      // so the floor is measured and reported rather than assumed -- what must hold is that the
-      // net-benefit gate REFUSED every no-op rewrite, which is what makes the floor a floor.
+      // Not "scores exactly 0%": the unapplied path delivers the streams recombined, which can differ from the captured bytes by a trailing newline. That is a real property of delivery, so the floor is measured and reported rather than assumed -- what must hold is that the net-benefit gate REFUSED every no-op rewrite, which is what makes the floor a floor.
       label: 'floor: the net-benefit gate refuses a no-op filter on every case',
       ok: identity.appliedCases === 0,
       detail: `identity control applied to ${identity.appliedCases}/${identity.cases.length} cases, measured floor ${pct(identity.ratioPercent)}`,
@@ -333,10 +275,7 @@ function renderValidation(cases: readonly BenchCase[]): { text: string; code: nu
 
 const TSV_HEADER = 'timestamp\tcommit\tcases\toriginal_bytes\tdelivered_bytes\tratio_percent\tfidelity_kept\tfidelity_total\tcovered_filters\n'
 
-/**
- * Append one row keyed by the commit it measured, so a series of runs is a readable history rather
- * than a number that only exists on whichever tree is currently checked out.
- */
+/** Append one row keyed by the commit it measured, so a series of runs is a readable history rather than a number that only exists on whichever tree is currently checked out. */
 function appendTsv(file: string, report: BenchReport, commit: string): void {
   const row = [
     new Date().toISOString(),
@@ -356,12 +295,7 @@ function appendTsv(file: string, report: BenchReport, commit: string): void {
 }
 
 /** The commit a row is measured against, or `'unknown'` outside a repository. */
-/**
- * The commit a run is attributed to, suffixed `-dirty` when the tree carries uncommitted changes.
- * The suffix is load-bearing rather than cosmetic: the ordinary use is edit, bench, edit, bench,
- * which produces a run of rows all naming the same HEAD. Without it a history recording several
- * different attempts is indistinguishable from one recording the same code measured repeatedly.
- */
+/** The commit a run is attributed to, suffixed `-dirty` when the tree carries uncommitted changes. The suffix is load-bearing rather than cosmetic: the ordinary use is edit, bench, edit, bench, which produces a run of rows all naming the same HEAD. Without it a history recording several different attempts is indistinguishable from one recording the same code measured repeatedly. */
 export function currentCommit(cwd?: string): string {
   const opts = cwd === undefined ? {} : { cwd }
   try {
@@ -382,18 +316,14 @@ export interface BenchCommandOptions {
   readonly validate?: boolean
 }
 
-/**
- * Run `token-goat bench`. Exit 1 on a dropped must-keep line, so an iteration loop can revert on
- * the exit code alone without parsing anything.
- */
+/** Run `token-goat bench`. Exit 1 on a dropped must-keep line, so an iteration loop can revert on the exit code alone without parsing anything. */
 export function runBenchCommand(opts: BenchCommandOptions): { text: string; code: number } {
   const cases = loadCorpus(opts.corpus)
   if (opts.validate === true) return renderValidation(cases)
   const report = runCorpus(cases)
   if (opts.tsv !== undefined) appendTsv(opts.tsv, report, currentCommit())
   const code = report.fidelityIntact ? 0 : 1
-  // Scoring the corpus with a no-op filter costs one extra in-memory pass and turns the floor from
-  // an assumption into a measurement.
+  // Scoring the corpus with a no-op filter costs one extra in-memory pass and turns the floor from an assumption into a measurement.
   const floorPercent = runCorpus(cases, 'identity').ratioPercent
   if (opts.json === true) return { text: displaySafeJson({ ...report, floorPercent }), code }
   return { text: renderTable(report, floorPercent), code }

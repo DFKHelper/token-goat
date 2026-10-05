@@ -68,11 +68,7 @@ export default class OrderList extends LightningElement {
   })
 
   it('does not treat a `/*`-looking sequence inside a backtick template literal as a real block comment', () => {
-    // Regression: the previous comment stripper's quote-awareness only recognized `"`/`'`, not
-    // the backtick, and reset per line. A template literal spanning multiple lines - legal in JS,
-    // unlike `"`/`'` strings - containing a `/*` sequence was misread as opening a real block
-    // comment. With no matching `*/` anywhere later in the file, the "comment" never closed and
-    // everything after it, including this real @api declaration, was silently dropped.
+    // Regression: the previous comment stripper's quote-awareness only recognized `"`/`'`, not the backtick, and reset per line. A template literal spanning multiple lines - legal in JS, unlike `"`/`'` strings - containing a `/*` sequence was misread as opening a real block comment. With no matching `*/` anywhere later in the file, the "comment" never closed and everything after it, including this real @api declaration, was silently dropped.
     const source = `import { LightningElement, api } from 'lwc';
 
 const tpl = \`template with /* looks like a comment
@@ -140,10 +136,7 @@ export default class Foo extends LightningElement {
     ])
   })
 
-  // Regression: lwc:ref, id, and c-* component refs used to run against the raw content while
-  // event-handler bindings alone ran against markupNoComments (stripXmlComments'd), so a
-  // commented-out lwc:ref/id/component (e.g. dead markup left during development) was indexed
-  // as a live symbol/ref, letting a symbol lookup point a developer at non-functional markup.
+  // Regression: lwc:ref, id, and c-* component refs used to run against the raw content while event-handler bindings alone ran against markupNoComments (stripXmlComments'd), so a commented-out lwc:ref/id/component (e.g. dead markup left during development) was indexed as a live symbol/ref, letting a symbol lookup point a developer at non-functional markup.
   it('ignores lwc:ref, id, and c-* component refs inside HTML comments', () => {
     const source = `<template>
   <!-- <div lwc:ref="deadRef"></div> -->
@@ -171,11 +164,7 @@ export default class Foo extends LightningElement {
     expect(result.refs.map(({ name }) => name)).toContain('select')
   })
 
-  // Regression: aura:attribute/aura:handler/aura:registerEvent/design:attribute symbols, the
-  // controller/extensions refs, and the bare c:TagName ref loop all used to scan raw content
-  // while only the {!c.action} binding loop used markupNoComments (stripXmlComments'd) -- the
-  // same inconsistent-masking shape already fixed in this file's own extractLwcTemplate above.
-  // Commented-out attributes/handlers/controllers/extensions/component refs got indexed as live.
+  // Regression: aura:attribute/aura:handler/aura:registerEvent/design:attribute symbols, the controller/extensions refs, and the bare c:TagName ref loop all used to scan raw content while only the {!c.action} binding loop used markupNoComments (stripXmlComments'd) -- the same inconsistent-masking shape already fixed in this file's own extractLwcTemplate above. Commented-out attributes/handlers/controllers/extensions/component refs got indexed as live.
   it('ignores attribute/handler/controller/extension/component refs inside HTML comments', () => {
     const source = `<aura:component>
   <!-- <aura:attribute name="oldSecretAttr" type="String"/> -->

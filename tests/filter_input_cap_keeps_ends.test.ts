@@ -2,19 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { capBytes, capTokens, clampKeepingEnds, truncateMiddleSmart } from '../src/tool_filters/helpers.js'
 import { filterByName } from '../src/tool_filters/index.js'
 
-/**
- * The pre-filter input cap has to keep the end of the output, not just the beginning.
- *
- * Fixture provenance: CAPTURE for the summary block, HAND-DERIVED for the logic cases. The four
- * summary lines below are the literal tail of a real `npm test` run of this repository on
- * 2026-09-06, captured to a file and read back: 2,406,737 bytes whose last 200 hold
- * `Test Files 577 passed (577)` and `Tests 12100 passed | 17 skipped (12117)`. Under the head-only
- * cut this replaces, that run reached the model as 5.5KB containing none of them. The padding
- * around them is synthetic, because only its size matters.
- *
- * There is no ratio assertion here on purpose: a cap's ratio improves by dropping more, which is
- * the failure under test. Every case names text that must survive.
- */
+/** The pre-filter input cap has to keep the end of the output, not just the beginning. Fixture provenance: CAPTURE for the summary block, HAND-DERIVED for the logic cases. The four summary lines below are the literal tail of a real `npm test` run of this repository on 2026-09-06, captured to a file and read back: 2,406,737 bytes whose last 200 hold `Test Files 577 passed (577)` and `Tests 12100 passed | 17 skipped (12117)`. Under the head-only cut this replaces, that run reached the model as 5.5KB containing none of them. The padding around them is synthetic, because only its size matters. There is no ratio assertion here on purpose: a cap's ratio improves by dropping more, which is the failure under test. Every case names text that must survive. */
 describe('filter input cap keeps both ends', () => {
   const SUMMARY = [
     ' Test Files  577 passed (577)',

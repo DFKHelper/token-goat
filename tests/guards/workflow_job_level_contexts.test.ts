@@ -1,25 +1,4 @@
-/**
- * `runner`, `steps` and `job` do not exist outside a step. Name one of them anywhere else in a job
- * and GitHub rejects the entire workflow file: not the job, the file. Run 34409126289 set
- * `TOKEN_GOAT_MODEL_CACHE_DIR: ${{ runner.temp }}/tg-model-cache` in a job-level `env:` block and
- * created zero jobs, so nothing lint, typecheck, the full suite or the pre-push hook had already
- * said counted for anything. The same expression one level down, in a step's `with:`, is correct,
- * which is what makes this easy to write and impossible to see: the file parses as YAML, the
- * expression is well-formed, and the only complaint arrives after a push.
- *
- * This is what the two sibling workflow guards do not cover. `workflow_actions_pinned` reads
- * `uses:` and `workflow_permissions` reads `permissions:`; both are content checks on a file they
- * assume GitHub will accept.
- *
- * PROVENANCE: FORMAT-DERIVED, from the context availability table in GitHub's contexts reference
- * (https://docs.github.com/en/actions/reference/contexts-reference), which allows `github`,
- * `needs`, `strategy`, `matrix`, `vars`, `inputs` and `secrets` in `jobs.<job_id>.env` and only
- * `github`, `needs`, `vars` and `inputs` in `jobs.<job_id>.if`. It is FORMAT-DERIVED and not
- * CAPTURE because it is read off the documentation rather than off a rejection message, so it
- * proves agreement with the documented table; the rejection it was written from is cited above.
- * The table is also why this checks two keys and not every job-level key: see the note on
- * `environment.url` at the function below.
- */
+/** `runner`, `steps` and `job` do not exist outside a step. Name one of them anywhere else in a job and GitHub rejects the entire workflow file: not the job, the file. Run 34409126289 set `TOKEN_GOAT_MODEL_CACHE_DIR: ${{ runner.temp }}/tg-model-cache` in a job-level `env:` block and created zero jobs, so nothing lint, typecheck, the full suite or the pre-push hook had already said counted for anything. The same expression one level down, in a step's `with:`, is correct, which is what makes this easy to write and impossible to see: the file parses as YAML, the expression is well-formed, and the only complaint arrives after a push. This is what the two sibling workflow guards do not cover. `workflow_actions_pinned` reads `uses:` and `workflow_permissions` reads `permissions:`; both are content checks on a file they assume GitHub will accept. PROVENANCE: FORMAT-DERIVED, from the context availability table in GitHub's contexts reference (https://docs.github.com/en/actions/reference/contexts-reference), which allows `github`, `needs`, `strategy`, `matrix`, `vars`, `inputs` and `secrets` in `jobs.<job_id>.env` and only `github`, `needs`, `vars` and `inputs` in `jobs.<job_id>.if`. It is FORMAT-DERIVED and not CAPTURE because it is read off the documentation rather than off a rejection message, so it proves agreement with the documented table; the rejection it was written from is cited above. The table is also why this checks two keys and not every job-level key: see the note on `environment.url` at the function below. */
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,14 +54,7 @@ function expressionsUnder(
   return [];
 }
 
-/**
- * Job-level offenders, checked only in `env` and `if`.
- *
- * A first draft swept every job-level key and flagged `pages.yml`, whose `deploy.environment.url`
- * is `${{ steps.deployment.outputs.page_url }}`: the canonical Pages pattern, which runs. The
- * availability table gives `jobs.<job_id>.environment.url` its own row allowing `steps`, `runner`
- * and `job`, so a sweep of everything-but-steps is not the rule. These two positions are.
- */
+/** Job-level offenders, checked only in `env` and `if`. A first draft swept every job-level key and flagged `pages.yml`, whose `deploy.environment.url` is `${{ steps.deployment.outputs.page_url }}`: the canonical Pages pattern, which runs. The availability table gives `jobs.<job_id>.environment.url` its own row allowing `steps`, `runner` and `job`, so a sweep of everything-but-steps is not the rule. These two positions are. */
 function stepOnlyContextsOutsideSteps(source: string, label: string): string[] {
   const doc = loadYaml(source) as {
     jobs?: Record<string, Record<string, unknown>>;
@@ -134,13 +106,9 @@ describe("workflow files only name step-scoped contexts inside steps", () => {
     },
   );
 
-  // The positive control, run through the same function the real files go through. Without it a walker that never
-  // descends, or a pattern that never matches, reads exactly like a clean sweep: which is the failure mode this
-  // guard exists to catch one level up.
+  // The positive control, run through the same function the real files go through. Without it a walker that never descends, or a pattern that never matches, reads exactly like a clean sweep: which is the failure mode this guard exists to catch one level up.
   //
-  // PROVENANCE: HAND-DERIVED. The offending document is the shape run 34409126289 was rejected for, reduced to the
-  // three positions that matter, and the expected verdict is computed from the availability table, not from this
-  // function's own output.
+  // PROVENANCE: HAND-DERIVED. The offending document is the shape run 34409126289 was rejected for, reduced to the three positions that matter, and the expected verdict is computed from the availability table, not from this function's own output.
   it("reports a job-level runner reference, and does not report the same expression inside a step", () => {
     const rejected = [
       "jobs:",

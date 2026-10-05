@@ -1,28 +1,4 @@
-/**
- * compact_assist.summary_budget_chars: the length target PreCompact hands the summariser, and the
- * post-compact counters that say whether it landed.
- *
- * Why this file exists rather than more cases in tests/hooks_compact.test.ts: the load-bearing
- * property here spans two handlers. preCompactHandler asks for an escalation marker and
- * postCompactHandler counts it, so a test that only checks one side proves nothing about the pair
- * -- the emitter could drift to a different literal and every escalation would silently reclassify
- * as an ordinary overrun. The round-trip case below is the guard, and it is why
- * BUDGET_ESCALATION_MARKER is one constant instead of two literals.
- *
- * Fixture provenance:
- *   - The directive text and the marker are FORMAT-DERIVED from src/hooks_compact.ts's own
- *     summaryBudgetDirective, which is honest here because the directive is a literal token-goat
- *     authors and emits; there is no external wire format to disagree with. The assertions
- *     deliberately reference the exported BUDGET_ESCALATION_MARKER rather than re-typing
- *     'TG-BUDGET-ESCALATION:', so a rename moves both sides together instead of going green
- *     against a stale copy.
- *   - Summary bodies are HAND-DERIVED: 'x'.repeat(n) around a chosen budget, so the over/under
- *     boundary is computed from the input rather than read off the implementation.
- *   - The budget default of 24000 is CAPTURE-adjacent: it was chosen from a census of 847 real
- *     compaction summaries (24.56 MB, p50 26,240 chars) recorded in summaryBudgetDirective's own
- *     doc comment. This file does not assert that number -- pinning a tuned default would make
- *     every future retune a test failure rather than a decision.
- */
+/** compact_assist.summary_budget_chars: the length target PreCompact hands the summariser, and the post-compact counters that say whether it landed. Why this file exists rather than more cases in tests/hooks_compact.test.ts: the load-bearing property here spans two handlers. preCompactHandler asks for an escalation marker and postCompactHandler counts it, so a test that only checks one side proves nothing about the pair -- the emitter could drift to a different literal and every escalation would silently reclassify as an ordinary overrun. The round-trip case below is the guard, and it is why BUDGET_ESCALATION_MARKER is one constant instead of two literals. Fixture provenance: - The directive text and the marker are FORMAT-DERIVED from src/hooks_compact.ts's own summaryBudgetDirective, which is honest here because the directive is a literal token-goat authors and emits; there is no external wire format to disagree with. The assertions deliberately reference the exported BUDGET_ESCALATION_MARKER rather than re-typing 'TG-BUDGET-ESCALATION:', so a rename moves both sides together instead of going green against a stale copy. - Summary bodies are HAND-DERIVED: 'x'.repeat(n) around a chosen budget, so the over/under boundary is computed from the input rather than read off the implementation. - The budget default of 24000 is CAPTURE-adjacent: it was chosen from a census of 847 real compaction summaries (24.56 MB, p50 26,240 chars) recorded in summaryBudgetDirective's own doc comment. This file does not assert that number -- pinning a tuned default would make every future retune a test failure rather than a decision. */
 import { tmpdir } from 'node:os'
 import { join, parse, sep } from 'node:path'
 

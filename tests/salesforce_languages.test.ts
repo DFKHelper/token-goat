@@ -158,12 +158,7 @@ public class MyTestClass {
 
     const { symbols } = extractApex(content, 'MyIntf.cls')
     expect(symbols.find((s) => s.name === 'MyIntf')?.kind).toBe('apex_interface')
-    // Regression: annotationStartLine's multi-line-annotation-opener branch used to fire even
-    // when depth was already 0 on entry (not resuming a prior fold), so a fully self-contained,
-    // balanced-paren same-line annotation on the interface's OWN header (with unrelated trailing
-    // declaration content, e.g. `@SuppressWarnings('PMD') public interface MyIntf {`) was
-    // misread as opening a multi-line annotation and folded into doThing's span, pulling
-    // doThing's lineStart back to line 1 instead of its real declaration line 2.
+    // Regression: annotationStartLine's multi-line-annotation-opener branch used to fire even when depth was already 0 on entry (not resuming a prior fold), so a fully self-contained, balanced-paren same-line annotation on the interface's OWN header (with unrelated trailing declaration content, e.g. `@SuppressWarnings('PMD') public interface MyIntf {`) was misread as opening a multi-line annotation and folded into doThing's span, pulling doThing's lineStart back to line 1 instead of its real declaration line 2.
     const doThing = symbols.find((s) => s.name === 'doThing' && s.kind === 'apex_method')
     expect(doThing).toBeDefined()
     expect(doThing?.lineStart).toBe(2)
@@ -214,8 +209,7 @@ public class MyTestClass {
 
     const { symbols } = extractApex(content, 'ExampleTrigger.trigger')
     expect(symbols).toHaveLength(1)
-    // The target object is a container/context label, not a doc comment -- it now lives in
-    // `parent` (see db.ts's SCHEMA_SQL comment for why `docstring` no longer overloads this).
+    // The target object is a container/context label, not a doc comment -- it now lives in `parent` (see db.ts's SCHEMA_SQL comment for why `docstring` no longer overloads this).
     expect(symbols[0]).toMatchObject({
       name: 'ExampleTrigger',
       kind: 'apex_trigger',
@@ -227,11 +221,7 @@ public class MyTestClass {
   })
 
   it('does not let a "//" inside a string literal (e.g. a URL) eat the rest of the line, including a method-closing brace', () => {
-    // Before the fix, stripCstyleComments's `//` stripper ran BEFORE stripStringLiterals, so the
-    // `//` inside 'https://example.com' was treated as a real line-comment opener and blanked
-    // everything through end-of-line - including the `}` that closes getName. That made
-    // findBlockEndLine keep scanning for a match past getOther's own braces, swallowing getOther's
-    // declaration line inside getName's span and causing overlapsExisting to skip getOther entirely.
+    // Before the fix, stripCstyleComments's `//` stripper ran BEFORE stripStringLiterals, so the `//` inside 'https://example.com' was treated as a real line-comment opener and blanked everything through end-of-line - including the `}` that closes getName. That made findBlockEndLine keep scanning for a match past getOther's own braces, swallowing getOther's declaration line inside getName's span and causing overlapsExisting to skip getOther entirely.
     const content = `public class UrlHolder {
   public String getName() {
     String url = 'https://example.com'; return 'name'; }
@@ -251,13 +241,7 @@ public class MyTestClass {
   })
 
   it('does not let an apostrophe inside a "//" comment open a phantom string that swallows the rest of the file', () => {
-    // Regression: extractApex runs stripStringLiterals(content) over the ENTIRE file content
-    // (deliberately before comment-stripping, so a "//" inside a URL string literal survives
-    // it), but stripStringLiterals used to blank every character - including newlines - until it
-    // found the next matching quote once a string was considered "open". A stray apostrophe
-    // inside a "//" line comment (e.g. "Don't") was misread as opening a real string, which then
-    // swallowed every subsequent line's content: both methods below, and the class's true line
-    // range, were lost.
+    // Regression: extractApex runs stripStringLiterals(content) over the ENTIRE file content (deliberately before comment-stripping, so a "//" inside a URL string literal survives it), but stripStringLiterals used to blank every character - including newlines - until it found the next matching quote once a string was considered "open". A stray apostrophe inside a "//" line comment (e.g. "Don't") was misread as opening a real string, which then swallowed every subsequent line's content: both methods below, and the class's true line range, were lost.
     const content = `public class AccountService {
     // Don't call this directly
     public void MethodOne() {
@@ -280,13 +264,7 @@ public class MyTestClass {
   })
 
   it('does not let a semicolon-terminated abstract method swallow the next method body', () => {
-    // Regression: METHOD_RE matches a declaration ending in either `{` or `;` (to capture
-    // abstract/interface-style signatures), but spanForMatch always called findBlockEndLine,
-    // which searches forward from the declaration for the next `{` in the file with no bound.
-    // A brace-less declaration has none of its own, so the search found the FOLLOWING method's
-    // opening brace instead, over-extending the abstract method's span to cover that method's
-    // entire body - which then made overlapsExisting treat the following method as already
-    // covered and drop it from the index outright.
+    // Regression: METHOD_RE matches a declaration ending in either `{` or `;` (to capture abstract/interface-style signatures), but spanForMatch always called findBlockEndLine, which searches forward from the declaration for the next `{` in the file with no bound. A brace-less declaration has none of its own, so the search found the FOLLOWING method's opening brace instead, over-extending the abstract method's span to cover that method's entire body - which then made overlapsExisting treat the following method as already covered and drop it from the index outright.
     const content = `public abstract class Base {
     public abstract void doWork();
     public void helper() {
@@ -305,11 +283,7 @@ public class MyTestClass {
   })
 
   it('does not drop interface method signatures because the interface\'s own span overlaps them', () => {
-    // Regression: overlapsExisting only excluded the container kind 'apex_class' from its
-    // overlap check, so a class's own whole-body span never suppressed its methods - but an
-    // interface (or enum) type declaration is also a container span emitted by TYPE_DECL_RE, and
-    // was missing from that exclusion. Every brace-less method signature inside an interface fell
-    // within the interface's own [startLine, endLine] span and was silently dropped from the index.
+    // Regression: overlapsExisting only excluded the container kind 'apex_class' from its overlap check, so a class's own whole-body span never suppressed its methods - but an interface (or enum) type declaration is also a container span emitted by TYPE_DECL_RE, and was missing from that exclusion. Every brace-less method signature inside an interface fell within the interface's own [startLine, endLine] span and was silently dropped from the index.
     const content = `public interface MyIntf {
     public void methodA();
     public String methodB(Integer x);
@@ -362,8 +336,7 @@ public class MyTestClass {
     expect(result.symbols.map((s) => s.name)).toEqual(expect.arrayContaining(['ExampleService', 'run']))
   })
 
-  // Why no test caught this: every existing apex case is a short, well-formed declaration, so
-  // METHOD_RE's cost was never observable. These three assert the cost itself, not just the result.
+  // Why no test caught this: every existing apex case is a short, well-formed declaration, so METHOD_RE's cost was never observable. These three assert the cost itself, not just the result.
   it('rejects a long modifier run with no parameter list in bounded time (regression: METHOD_RE had no literal keyword after the modifier group -- unlike TYPE_DECL_RE, which anchors on class|interface|enum -- so RETURN_TYPE, whose character class contains a space and is followed by [ \\t]+, made every modifier boundary a candidate split point and the engine retried all of them, costing O(n^2): 84ms at N=2000, 335ms at N=4000, 1346ms at N=8000. With indexing.large_file_skip_kb defaulting to 2048 a 2MB .cls was accepted, wedging the synchronously-draining worker for roughly half an hour on one file)', () => {
     const content = `${'static '.repeat(24000)}x\n`
     const started = Date.now()
@@ -462,8 +435,7 @@ describe('salesforce metadata adapter', () => {
 </ValidationRule>
 `
 
-    // The owning object is a container/context label, not a doc comment -- it now lives in
-    // `parent` (see db.ts's SCHEMA_SQL comment for why `docstring` no longer overloads this).
+    // The owning object is a container/context label, not a doc comment -- it now lives in `parent` (see db.ts's SCHEMA_SQL comment for why `docstring` no longer overloads this).
     const symbols = extractSalesforceMetadata(content, file).symbols
     expect(symbols.map((s) => [s.name, s.kind, s.parent])).toEqual([
       ['Example_Rule', 'sf_validation_rule', 'Example_Object__c'],
@@ -496,8 +468,7 @@ describe('salesforce metadata adapter', () => {
       ['Set_Value', 'sf_flow_assignment'],
       ['Check_Value', 'sf_flow_decision'],
     ])
-    // The owning flow is a container/context label, not a doc comment -- it now lives in
-    // `parent` (see db.ts's SCHEMA_SQL comment for why `docstring` no longer overloads this).
+    // The owning flow is a container/context label, not a doc comment -- it now lives in `parent` (see db.ts's SCHEMA_SQL comment for why `docstring` no longer overloads this).
     expect(symbols.find((s) => s.name === 'Do_Action')?.parent).toBe('Example_Flow')
   })
 
@@ -522,8 +493,7 @@ describe('salesforce metadata adapter', () => {
     const refs = extractSalesforceMetadata(content, file).refs
     const statusRefs = refs.filter((r) => r.name === 'Account.Status')
     expect(statusRefs).toHaveLength(2)
-    // Distinct source locations -- the whole point of the running cursor: two same-named
-    // field refs must not collapse onto the same line/col (which emitRef would then dedupe).
+    // Distinct source locations -- the whole point of the running cursor: two same-named field refs must not collapse onto the same line/col (which emitRef would then dedupe).
     expect(statusRefs[0]?.line).not.toBe(statusRefs[1]?.line)
     expect(refs.map((r) => r.name)).toContain('Account')
   })
@@ -564,8 +534,7 @@ describe('salesforce metadata adapter', () => {
 </RecordType>
 `
 
-    // The owning object is a container/context label, not a doc comment -- it now lives in
-    // `parent` (see db.ts's SCHEMA_SQL comment for why `docstring` no longer overloads this).
+    // The owning object is a container/context label, not a doc comment -- it now lives in `parent` (see db.ts's SCHEMA_SQL comment for why `docstring` no longer overloads this).
     const symbols = extractSalesforceMetadata(content, file).symbols
     expect(symbols.map((s) => [s.name, s.kind, s.parent])).toEqual([
       ['Example_Object__c.Example_Type', 'sf_record_type', 'Example_Object__c'],

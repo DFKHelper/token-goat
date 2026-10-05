@@ -1,22 +1,4 @@
-/**
- * `writeParseResult` must not throw away a file's `embed_sha` on a reparse whose content did not
- * change.
- *
- * The `files` row write inside `writeParseResult` used to (re-)INSERT `path, sha, mtime, language,
- * indexed_at, parser_sha` with no `embed_sha` column at all, which SQLite defaults to NULL on
- * INSERT OR REPLACE. Any reparse of an already-embedded file -- a parser-fingerprint bump (see
- * reconcile_parser_stale.test.ts), a touched mtime with unchanged bytes, or a manual `--force-
- * refresh` -- silently reset `embed_sha` to NULL even though the file's content, and therefore its
- * embedding, never changed. `isEmbedFresh`/the embedding pipeline then see a file with no recorded
- * embed_sha and redo the (expensive) embedding work for content that was already correctly
- * embedded. The fix carries the prior row's `embed_sha` forward whenever the new sha matches the
- * old one, and resets it (to null, so the embedding step recomputes) only when content actually
- * changed.
- *
- * Provenance: HAND-DERIVED. `fingerprintFile` is called directly to compute the expected sha
- * independently of `writeParseResult`'s own hashing, so this does not merely restate the
- * implementation.
- */
+/** `writeParseResult` must not throw away a file's `embed_sha` on a reparse whose content did not change. The `files` row write inside `writeParseResult` used to (re-)INSERT `path, sha, mtime, language, indexed_at, parser_sha` with no `embed_sha` column at all, which SQLite defaults to NULL on INSERT OR REPLACE. Any reparse of an already-embedded file -- a parser-fingerprint bump (see reconcile_parser_stale.test.ts), a touched mtime with unchanged bytes, or a manual `--force- refresh` -- silently reset `embed_sha` to NULL even though the file's content, and therefore its embedding, never changed. `isEmbedFresh`/the embedding pipeline then see a file with no recorded embed_sha and redo the (expensive) embedding work for content that was already correctly embedded. The fix carries the prior row's `embed_sha` forward whenever the new sha matches the old one, and resets it (to null, so the embedding step recomputes) only when content actually changed. Provenance: HAND-DERIVED. `fingerprintFile` is called directly to compute the expected sha independently of `writeParseResult`'s own hashing, so this does not merely restate the implementation. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -66,8 +48,7 @@ describe('writeParseResult preserves embed_sha across a content-unchanged repars
     const sha = fingerprintFile(filePath)
     expect(sha, 'fingerprintFile could not hash the fixture').not.toBeNull()
 
-    // Seed the embed_sha a prior, successful embedding pass would have stamped -- the fixture's
-    // real sha, not a placeholder, since the fix's condition is `priorRow.sha === sha`.
+    // Seed the embed_sha a prior, successful embedding pass would have stamped -- the fixture's real sha, not a placeholder, since the fix's condition is `priorRow.sha === sha`.
     const db = getDb(dbPath)
     db.prepare(`UPDATE files SET embed_sha = ? WHERE ${pathEqClause('path')}`).run(sha, foldPath(normalizePath(filePath))) // Same canonicalization as readEmbedSha: the UPDATE must target the row's actual key, or it silently affects zero rows.
     expect(readEmbedSha()).toBe(sha)

@@ -1,21 +1,4 @@
-/**
- * Regression: `--cwd` was only applied inside the `guard` action wrapper
- * (`process.chdir` at src/cli.ts, formerly inside `guard`'s closure), but the
- * surgical-read commands (`symbol`, `read`, `scope`, ...) call
- * `runExit`/`runExitText` directly and never go through `guard` -- so `--cwd`
- * silently no-oped for every one of them. Reproduced live: `token-goat --cwd
- * <root> scope "src/paths.ts:90"` returned "No symbols enclosing line 90" from
- * outside the project, identical to omitting `--cwd` entirely, while running
- * from inside the project resolved correctly.
- *
- * The fix moves the chdir into a Commander `preAction` hook on the root
- * program, which fires before every command's action handler regardless of
- * whether that handler is wrapped in `guard`.
- *
- * These tests drive `scope` (a non-`guard`-wrapped command) specifically --
- * a test that only covers a `guard`-wrapped command (e.g. `install`)
- * reproduces the exact blind spot that let this ship.
- */
+/** Regression: `--cwd` was only applied inside the `guard` action wrapper (`process.chdir` at src/cli.ts, formerly inside `guard`'s closure), but the surgical-read commands (`symbol`, `read`, `scope`, ...) call `runExit`/`runExitText` directly and never go through `guard` -- so `--cwd` silently no-oped for every one of them. Reproduced live: `token-goat --cwd <root> scope "src/paths.ts:90"` returned "No symbols enclosing line 90" from outside the project, identical to omitting `--cwd` entirely, while running from inside the project resolved correctly. The fix moves the chdir into a Commander `preAction` hook on the root program, which fires before every command's action handler regardless of whether that handler is wrapped in `guard`. These tests drive `scope` (a non-`guard`-wrapped command) specifically -- a test that only covers a `guard`-wrapped command (e.g. `install`) reproduces the exact blind spot that let this ship. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -71,8 +54,7 @@ describe('--cwd applies before dispatch for every command, not only guard-wrappe
   it('changes process.cwd() before a directly-dispatched (non-guard) command runs', async () => {
     process.chdir(elsewhere)
     const code = await runCli(['--cwd', target, 'scope', 'foo.ts:1'])
-    // foo.ts does not exist under `target`, so scope legitimately fails --
-    // the point of this assertion is that the chdir itself took effect.
+    // foo.ts does not exist under `target`, so scope legitimately fails -- the point of this assertion is that the chdir itself took effect.
     expect(code).toBe(1)
     expect(fs.realpathSync(process.cwd())).toBe(target)
   })

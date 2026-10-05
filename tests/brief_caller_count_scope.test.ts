@@ -1,13 +1,4 @@
-/**
- * Regression: `token-goat brief` took its "Callers (N)" total from queryRefCounts, which counts
- * references by symbol NAME across the whole project, while the caller rows it actually printed
- * came from resolveCallers, which additionally scopes to THIS definition site (filterRefsForSymbol
- * drops refs living in a file that defines its own same-named symbol). For a name defined in two
- * files, the header therefore counted the OTHER definition's callers and the "...(N more elided)"
- * tail promised rows that could never be listed. Driven through the real, unmocked `run()` CLI
- * entrypoint against a real index -- the mocked unit tests in read_commands.test.ts stub both
- * resolveCallers and queryRefCounts, so they can never observe the two disagreeing.
- */
+/** Regression: `token-goat brief` took its "Callers (N)" total from queryRefCounts, which counts references by symbol NAME across the whole project, while the caller rows it actually printed came from resolveCallers, which additionally scopes to THIS definition site (filterRefsForSymbol drops refs living in a file that defines its own same-named symbol). For a name defined in two files, the header therefore counted the OTHER definition's callers and the "...(N more elided)" tail promised rows that could never be listed. Driven through the real, unmocked `run()` CLI entrypoint against a real index -- the mocked unit tests in read_commands.test.ts stub both resolveCallers and queryRefCounts, so they can never observe the two disagreeing. */
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -63,9 +54,7 @@ async function briefWidget(json: boolean): Promise<string> {
 
 describe('brief caller count is scoped to the resolved definition', () => {
   it('counts only the callers of THIS widget, not the same-named widget in another file', async () => {
-    // src/a.ts::widget has exactly one caller (useC in src/c.ts). src/b.ts::widget has three
-    // (useB1/useB2/useB3), and those three must not be counted here. Expectation derived from the
-    // fixture by hand, not from any code path under test.
+    // src/a.ts::widget has exactly one caller (useC in src/c.ts). src/b.ts::widget has three (useB1/useB2/useB3), and those three must not be counted here. Expectation derived from the fixture by hand, not from any code path under test.
     const out = await briefWidget(false)
     expect(out).toContain('Callers (1):')
     expect(out).toContain('useC')

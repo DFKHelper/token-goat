@@ -1,13 +1,4 @@
-/**
- * Regression: `token-goat map` (cmdMap in cli.ts) never called recordStat, even though
- * src/stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry has carried a live `map_lookup` entry
- * since the Python->TS port -- the `map`/`baseline` dashboard bucket in `token-goat stats --full`
- * was permanently zero regardless of real `map` usage (same class of gap fixed for
- * `changed_lookup`, see project_runchanged_missing_stat memory). Drives the real, unmocked `run()`
- * CLI entrypoint against a real scratch project directory and asserts a real stats row appears via
- * summarize() against the real (test-isolated) global stats DB -- a synthetic recordStat/DB
- * insert would not catch the original absence.
- */
+/** Regression: `token-goat map` (cmdMap in cli.ts) never called recordStat, even though src/stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry has carried a live `map_lookup` entry since the Python->TS port -- the `map`/`baseline` dashboard bucket in `token-goat stats --full` was permanently zero regardless of real `map` usage (same class of gap fixed for `changed_lookup`, see project_runchanged_missing_stat memory). Drives the real, unmocked `run()` CLI entrypoint against a real scratch project directory and asserts a real stats row appears via summarize() against the real (test-isolated) global stats DB -- a synthetic recordStat/DB insert would not catch the original absence. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

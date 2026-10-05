@@ -1,14 +1,4 @@
-/**
- * filter_counts.ts has no importers exercising its arithmetic directly — the
- * only existing consumer (tests/guards/filter_count_readme_sync.test.ts)
- * checks TOTAL_FILTER_COUNT as a floor (`<=` the README's advertised number),
- * so it only catches the count going DOWN, never a computation bug that
- * inflates a constant (e.g. a duplicated term, or a static count bumped past
- * what its source module actually has). These tests pin the arithmetic
- * itself: each dynamic constant against the real source array length it
- * claims to mirror, and the two composite sums (PATH_PATTERN_COUNT,
- * TOTAL_FILTER_COUNT) against their own listed addends.
- */
+/** filter_counts.ts has no importers exercising its arithmetic directly — the only existing consumer (tests/guards/filter_count_readme_sync.test.ts) checks TOTAL_FILTER_COUNT as a floor (`<=` the README's advertised number), so it only catches the count going DOWN, never a computation bug that inflates a constant (e.g. a duplicated term, or a static count bumped past what its source module actually has). These tests pin the arithmetic itself: each dynamic constant against the real source array length it claims to mirror, and the two composite sums (PATH_PATTERN_COUNT, TOTAL_FILTER_COUNT) against their own listed addends. */
 
 import { describe, expect, it } from 'vitest'
 

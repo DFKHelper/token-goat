@@ -1,16 +1,4 @@
-/**
- * Pull the rewritten body out of a `hookSpecificOutput.updatedToolOutput` on the Claude Code wire.
- *
- * Claude Code requires that field to match the tool's own result shape, so for a built-in tool it
- * is an OBJECT: the original `tool_response` with one text-bearing field replaced. A bare string is
- * only correct when the tool's result is itself a string (MCP). This helper asserts that shape and
- * returns the replaced text, so a test can keep asserting on the body without re-deriving the
- * envelope in four places.
- *
- * Provenance: the envelope rule is CAPTURE — recorded Claude Code sessions reject a string with
- * "PostToolUse hook returned updatedToolOutput that does not match <Tool>'s output shape; using
- * original output" (337 Bash, 52 WebFetch, 32 WebSearch, 10 Grep occurrences).
- */
+/** Pull the rewritten body out of a `hookSpecificOutput.updatedToolOutput` on the Claude Code wire. Claude Code requires that field to match the tool's own result shape, so for a built-in tool it is an OBJECT: the original `tool_response` with one text-bearing field replaced. A bare string is only correct when the tool's result is itself a string (MCP). This helper asserts that shape and returns the replaced text, so a test can keep asserting on the body without re-deriving the envelope in four places. Provenance: the envelope rule is CAPTURE — recorded Claude Code sessions reject a string with "PostToolUse hook returned updatedToolOutput that does not match <Tool>'s output shape; using original output" (337 Bash, 52 WebFetch, 32 WebSearch, 10 Grep occurrences). */
 export function rewrittenBody(updated: unknown): string {
   if (updated === null || updated === undefined) {
     throw new Error('updatedToolOutput is absent; expected an object carrying the rewritten body')

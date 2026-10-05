@@ -1,10 +1,4 @@
-/**
- * Narrow structural summary + single-operation extraction for `token-goat openapi-outline` /
- * `openapi-op`, so a multi-thousand-line OpenAPI 3.x / Swagger 2.0 spec (JSON or YAML) never
- * needs a full `Read` just to answer "what operations exist" or "what does operation X take
- * and return". Mirrors json_query.ts's split: pure parsing/extraction/formatting here, CLI I/O
- * (readFileText, emit/emitErr, overflow guard) in read_commands.ts.
- */
+/** Narrow structural summary + single-operation extraction for `token-goat openapi-outline` / `openapi-op`, so a multi-thousand-line OpenAPI 3.x / Swagger 2.0 spec (JSON or YAML) never needs a full `Read` just to answer "what operations exist" or "what does operation X take and return". Mirrors json_query.ts's split: pure parsing/extraction/formatting here, CLI I/O (readFileText, emit/emitErr, overflow guard) in read_commands.ts. */
 
 import * as path from 'node:path'
 import { load as loadYaml } from 'js-yaml'
@@ -12,18 +6,10 @@ import { load as loadYaml } from 'js-yaml'
 import { displaySafeText } from './paths.js'
 import { stripBom } from './util.js'
 
-/** The HTTP-method keys OpenAPI/Swagger recognize as operations under a path item. Any other
- * key on a path item (`parameters`, `summary`, `$ref`, `servers`, ...) is not an operation. */
+/** The HTTP-method keys OpenAPI/Swagger recognize as operations under a path item. Any other key on a path item (`parameters`, `summary`, `$ref`, `servers`, ...) is not an operation. */
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'] as const
 
-/**
- * Parses spec text as JSON or YAML. `.json` forces the JSON parser (a clear parse error beats a
- * YAML parser silently accepting malformed JSON as a bare scalar/string). `.yaml`/`.yml` forces
- * the YAML parser. Any other extension tries JSON first (stricter, so a JSON file with an
- * unusual extension still gets a useful native-parser error) and falls back to YAML -- valid
- * JSON is also valid YAML, but the reverse isn't true, so this ordering never masks a real JSON
- * syntax error behind a YAML fallback that happens to succeed on a truncated document.
- */
+/** Parses spec text as JSON or YAML. `.json` forces the JSON parser (a clear parse error beats a YAML parser silently accepting malformed JSON as a bare scalar/string). `.yaml`/`.yml` forces the YAML parser. Any other extension tries JSON first (stricter, so a JSON file with an unusual extension still gets a useful native-parser error) and falls back to YAML -- valid JSON is also valid YAML, but the reverse isn't true, so this ordering never masks a real JSON syntax error behind a YAML fallback that happens to succeed on a truncated document. */
 export function parseOpenApiSpec(text: string, filePath: string): unknown {
   text = stripBom(text)
   const ext = path.extname(filePath).toLowerCase()
@@ -48,16 +34,7 @@ export interface OpenApiOperation {
   responses: Record<string, unknown>
 }
 
-/**
- * Merges path-level `parameters` (shared across every method on a path item, per the OpenAPI
- * spec) ahead of an operation's own `parameters`. Per the spec, "a unique parameter is defined
- * by a combination of a name and location" and an operation-level parameter with the same
- * name+location as a path-level one overrides it rather than adding a second entry -- so this
- * dedupes on (name, in), keeping the operation-level definition when both are present. A
- * parameter missing a string `name` or `in` can't be deduped against anything and is always
- * kept as-is (mirrors the shape of a malformed-but-present parameter object elsewhere in this
- * module, which degrades gracefully rather than throwing).
- */
+/** Merges path-level `parameters` (shared across every method on a path item, per the OpenAPI spec) ahead of an operation's own `parameters`. Per the spec, "a unique parameter is defined by a combination of a name and location" and an operation-level parameter with the same name+location as a path-level one overrides it rather than adding a second entry -- so this dedupes on (name, in), keeping the operation-level definition when both are present. A parameter missing a string `name` or `in` can't be deduped against anything and is always kept as-is (mirrors the shape of a malformed-but-present parameter object elsewhere in this module, which degrades gracefully rather than throwing). */
 function mergeParameters(pathLevelParams: unknown[], ownParams: unknown[]): unknown[] {
   const keyOf = (p: unknown): string | null => {
     if (typeof p !== 'object' || p === null) return null
@@ -72,16 +49,7 @@ function mergeParameters(pathLevelParams: unknown[], ownParams: unknown[]): unkn
   return [...inheritedParams, ...ownParams]
 }
 
-/**
- * Flattens `spec.paths` into one entry per (path, method) operation, sorted by path then method
- * so the outline reads the same regardless of the spec author's own key order. Path-level
- * `parameters` (shared across every method on that path item, per the OpenAPI spec) are merged
- * ahead of each operation's own `parameters` (see {@link mergeParameters}) so a caller sees the
- * full applicable parameter set without re-deriving the merge themselves. Malformed input (no
- * object, no `paths`, a non-object path item) degrades to an empty list rather than throwing --
- * "0 operations found" is a more useful signal than a crash for a spec that parsed but isn't
- * shaped like OpenAPI.
- */
+/** Flattens `spec.paths` into one entry per (path, method) operation, sorted by path then method so the outline reads the same regardless of the spec author's own key order. Path-level `parameters` (shared across every method on that path item, per the OpenAPI spec) are merged ahead of each operation's own `parameters` (see {@link mergeParameters}) so a caller sees the full applicable parameter set without re-deriving the merge themselves. Malformed input (no object, no `paths`, a non-object path item) degrades to an empty list rather than throwing -- "0 operations found" is a more useful signal than a crash for a spec that parsed but isn't shaped like OpenAPI. */
 /** Resolve one `#/a/b/c` JSON pointer against the root document; null if any segment is missing. */
 function resolveJsonPointer(root: unknown, ref: string): unknown {
   const parts = ref
@@ -97,13 +65,7 @@ function resolveJsonPointer(root: unknown, ref: string): unknown {
   return cur
 }
 
-/**
- * Replace internal `$ref` pointers with the schema they point at, so `openapi-op` shows the actual
- * request/response shape instead of a bare `{"$ref": "#/components/schemas/Pet"}` the caller then
- * has to chase by hand. Only local (`#/…`) refs are followed — an external or URL ref is left
- * untouched, since fetching it would be an unbounded, network-touching operation. A ref already on
- * the current resolution path is left as-is to break recursive-schema cycles.
- */
+/** Replace internal `$ref` pointers with the schema they point at, so `openapi-op` shows the actual request/response shape instead of a bare `{"$ref": "#/components/schemas/Pet"}` the caller then has to chase by hand. Only local (`#/…`) refs are followed — an external or URL ref is left untouched, since fetching it would be an unbounded, network-touching operation. A ref already on the current resolution path is left as-is to break recursive-schema cycles. */
 function dereferenceLocalRefs(node: unknown, root: unknown, seen: ReadonlySet<string>): unknown {
   if (Array.isArray(node)) return node.map((item) => dereferenceLocalRefs(item, root, seen))
   if (typeof node !== 'object' || node === null) return node
@@ -177,13 +139,7 @@ export function formatOpenApiOutline(operations: readonly OpenApiOperation[]): s
     .join('\n')
 }
 
-/**
- * Resolves an `openapi-op` lookup key to exactly one operation. Tries an exact `operationId`
- * match first (the more specific, unambiguous identifier when present), then falls back to a
- * `METHOD /path` match (method matched case-insensitively, path matched exactly) -- mirroring
- * `read`/`symbol`'s exact-then-fallback resolution shape elsewhere in this codebase. Returns
- * `undefined` on no match; the caller is responsible for a "not found" + did-you-mean message.
- */
+/** Resolves an `openapi-op` lookup key to exactly one operation. Tries an exact `operationId` match first (the more specific, unambiguous identifier when present), then falls back to a `METHOD /path` match (method matched case-insensitively, path matched exactly) -- mirroring `read`/`symbol`'s exact-then-fallback resolution shape elsewhere in this codebase. Returns `undefined` on no match; the caller is responsible for a "not found" + did-you-mean message. */
 export function findOperation(operations: readonly OpenApiOperation[], key: string): OpenApiOperation | undefined {
   const trimmed = key.trim()
   const byId = operations.find((op) => op.operationId === trimmed)
@@ -196,9 +152,7 @@ export function findOperation(operations: readonly OpenApiOperation[], key: stri
   return operations.find((op) => op.method === method && op.path === opPath)
 }
 
-/** Display label for a not-found "did you mean" suggestion list: prefers `operationId` (with
- * the method+path alongside for context) and falls back to `METHOD path` when no operationId
- * exists. */
+/** Display label for a not-found "did you mean" suggestion list: prefers `operationId` (with the method+path alongside for context) and falls back to `METHOD path` when no operationId exists. */
 export function operationLabel(op: OpenApiOperation): string {
   // Operation ids and paths are written by whoever authored the spec being read.
   return op.operationId !== undefined
@@ -213,9 +167,7 @@ function indentedJson(value: unknown, indent: string): string {
     .join('\n')
 }
 
-/** Full detail for one operation: summary/description/tags, every parameter (name, location,
- * required, description, schema), the request body schema, and the response schema per status
- * code -- everything `openapi-op` promises instead of the compact `openapi-outline` listing. */
+/** Full detail for one operation: summary/description/tags, every parameter (name, location, required, description, schema), the request body schema, and the response schema per status code -- everything `openapi-op` promises instead of the compact `openapi-outline` listing. */
 export function formatOperationDetail(op: OpenApiOperation): string {
   const lines: string[] = [`${displaySafeText(op.method)} ${displaySafeText(op.path)}`]
   if (op.operationId !== undefined) lines.push(`operationId: ${displaySafeText(op.operationId)}`)

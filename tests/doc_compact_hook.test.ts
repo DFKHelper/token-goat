@@ -1,12 +1,4 @@
-/**
- * Integration tests for the stable-doc compact sidecar wired into the real
- * pre_read hook (`preReadHandler` in `hooks_read.ts`).
- *
- * Deliberately kept out of `tests/hooks_read.test.ts` (a large, Tier-1
- * critical-path suite) so this feature's own config-path/data-dir mocking
- * can't perturb that file's existing coverage. `tests/hooks_read.test.ts`
- * is run unmodified and in full as the regression check for this change.
- */
+/** Integration tests for the stable-doc compact sidecar wired into the real pre_read hook (`preReadHandler` in `hooks_read.ts`). Deliberately kept out of `tests/hooks_read.test.ts` (a large, Tier-1 critical-path suite) so this feature's own config-path/data-dir mocking can't perturb that file's existing coverage. `tests/hooks_read.test.ts` is run unmodified and in full as the regression check for this change. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -99,8 +91,7 @@ describe('preReadHandler — stable-doc compact serving', () => {
     if (result.hookType === 'deny') {
       expect(result.message).toContain('# Title')
       expect(result.message).toContain('Line 1')
-      // Default sentences-per-section is 2, so lines beyond that are dropped —
-      // proves the compact (not the raw full file) is what got served.
+      // Default sentences-per-section is 2, so lines beyond that are dropped — proves the compact (not the raw full file) is what got served.
       expect(result.message).not.toContain('Line 4')
       expect(result.message).toContain('compact-doc')
     }

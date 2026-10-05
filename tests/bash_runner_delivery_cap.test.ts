@@ -1,14 +1,6 @@
-// The `token-goat compress` wrapper path (src/bash_runner.ts) must credit a Bash saving against the
-// harness delivery cap, not against the full command output. This is the path that produced the bulk
-// of the over-credited rows in the real ledger: every `bash_compress:<filtername>` stat comes from
-// here, and the largest single row credited a multi-megabyte output the model never received.
+// The `token-goat compress` wrapper path (src/bash_runner.ts) must credit a Bash saving against the harness delivery cap, not against the full command output. This is the path that produced the bulk of the over-credited rows in the real ledger: every `bash_compress:<filtername>` stat comes from here, and the largest single row credited a multi-megabyte output the model never received.
 //
-// FIXTURE PROVENANCE
-// - The 20,000-byte cap is CAPTURE from the recorded Claude Code session corpus (smallest persisted
-//   Bash tool result 20,013 bytes; largest non-persisted 19,990; a 23-byte gap with nothing between).
-//   No transcript content appears here, only that boundary number.
-// - Expected byte/token figures are HAND-DERIVED from the cap and the emitted body's own length,
-//   never read back from the producer's savings formula.
+// FIXTURE PROVENANCE - The 20,000-byte cap is CAPTURE from the recorded Claude Code session corpus (smallest persisted Bash tool result 20,013 bytes; largest non-persisted 19,990; a 23-byte gap with nothing between). No transcript content appears here, only that boundary number. - Expected byte/token figures are HAND-DERIVED from the cap and the emitted body's own length, never read back from the producer's savings formula.
 //
 // recordStat is mocked WITHOUT passthrough, so this file writes to no database at all.
 
@@ -70,8 +62,7 @@ describe('the compress wrapper credits against the delivered size', () => {
     else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = savedOverride
   })
 
-  // A far-above-cap output. The recorded saving must be cap-minus-compressed, so it can never exceed
-  // the cap -- the property the 478 Mt of over-credited rows in the real ledger violated.
+  // A far-above-cap output. The recorded saving must be cap-minus-compressed, so it can never exceed the cap -- the property the 478 Mt of over-credited rows in the real ledger violated.
   it('never credits more than the cap for an above-cap output', async () => {
     const line = 'repeated noisy build progress line that dedupes away\n'
     const count = 4000
@@ -91,9 +82,7 @@ describe('the compress wrapper credits against the delivered size', () => {
     expect(rows[0]![1]).toBeGreaterThan(0)
   })
 
-  // Uncapped harness control: the same above-cap output on a harness with no measured limit must
-  // still be credited in full. A blanket cap would under-credit here, the same error pointing the
-  // other way.
+  // Uncapped harness control: the same above-cap output on a harness with no measured limit must still be credited in full. A blanket cap would under-credit here, the same error pointing the other way.
   it('does not cap the credit on a harness with no measured limit', async () => {
     process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'opencode'
     const line = 'repeated noisy build progress line that dedupes away\n'
@@ -104,9 +93,7 @@ describe('the compress wrapper credits against the delivered size', () => {
     expect(rows[0]![1]).toBeGreaterThan(CAP)
   })
 
-  // NON-FIRING GUARD: below-cap traffic keeps its full, uncapped credit. Non-emptiness is asserted
-  // before the loop and the loop body must actually run, so a clamp-everything regression fails here
-  // rather than passing by producing no rows.
+  // NON-FIRING GUARD: below-cap traffic keeps its full, uncapped credit. Non-emptiness is asserted before the loop and the loop body must actually run, so a clamp-everything regression fails here rather than passing by producing no rows.
   it('non-firing: a below-cap output keeps its full uncapped credit', async () => {
     const cases: Array<{ line: string; count: number }> = [
       { line: 'modest repeated line\n', count: 150 },
@@ -122,8 +109,7 @@ describe('the compress wrapper credits against the delivered size', () => {
       let out = ''
       await run(repeatCmd(line, count), { filterName: 'generic', writeStdout: (x) => (out += x) })
       for (const [, bytes, tokens] of bashCompressRows()) {
-        // Below the cap the delivered size IS the original, so the credit must be the full
-        // original-minus-compressed reduction. A blanket clamp would make this smaller.
+        // Below the cap the delivered size IS the original, so the credit must be the full original-minus-compressed reduction. A blanket clamp would make this smaller.
         expect(bytes).toBeGreaterThan(0)
         expect(bytes).toBeLessThan(originalBytes)
         expect(tokens).toBe(expectedTokens(bytes))

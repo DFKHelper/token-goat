@@ -1,25 +1,4 @@
-/**
- * Structural guard for the block-comment-nesting defect class this repo just hit with VHDL: IEEE
- * Std 1076-2008 clause 15.9 says a VHDL-2008 delimited comment (`/* ... *\/`) does NOT nest, while
- * several other languages this repo indexes (Kotlin, Swift, Scala, ABL's `/* ... *\/`) genuinely
- * do nest their block comments. A masking function that gets this wrong in either direction is
- * invisible to output-shape tests: nesting one comment inside another is rare enough in real
- * source that a missing or wrong test fixture would not exercise the bug, and the function still
- * returns *something* either way, so nothing crashes and nothing looks obviously broken.
- *
- * So this guard is keyed on the SHAPE (a function whose job is to mask/strip a C-style `/* *\/`
- * block comment) rather than on any one language's name, per this repo's own established pattern
- * (see truncators_are_classified.test.ts's identical rationale for truncators). It enumerates
- * every such function found in `src/languages/**\/*.ts` by name, and requires each to carry an
- * explicit NESTS / DOES_NOT_NEST classification in the registry below. An unclassified function is
- * red on arrival -- the only way a static scan protects against a shape it has not audited yet.
- *
- * WHY A NAME-HEURISTIC SCAN, NOT A DATAFLOW OR BEHAVIORAL ANALYSIS. Whether a given masker's loop
- * actually nests is a runtime property of its control flow, not something grep can prove; the
- * fallback this repo uses elsewhere for exactly this problem (see truncators_are_classified.test.ts)
- * is an explicit registry a human populates once per function, kept honest by the population-floor
- * and must-include checks below plus this file's own mutation test.
- */
+/** Structural guard for the block-comment-nesting defect class this repo just hit with VHDL: IEEE Std 1076-2008 clause 15.9 says a VHDL-2008 delimited comment (`/* ... *\/`) does NOT nest, while several other languages this repo indexes (Kotlin, Swift, Scala, ABL's `/* ... *\/`) genuinely do nest their block comments. A masking function that gets this wrong in either direction is invisible to output-shape tests: nesting one comment inside another is rare enough in real source that a missing or wrong test fixture would not exercise the bug, and the function still returns *something* either way, so nothing crashes and nothing looks obviously broken. So this guard is keyed on the SHAPE (a function whose job is to mask/strip a C-style `/* *\/` block comment) rather than on any one language's name, per this repo's own established pattern (see truncators_are_classified.test.ts's identical rationale for truncators). It enumerates every such function found in `src/languages/**\/*.ts` by name, and requires each to carry an explicit NESTS / DOES_NOT_NEST classification in the registry below. An unclassified function is red on arrival -- the only way a static scan protects against a shape it has not audited yet. WHY A NAME-HEURISTIC SCAN, NOT A DATAFLOW OR BEHAVIORAL ANALYSIS. Whether a given masker's loop actually nests is a runtime property of its control flow, not something grep can prove; the fallback this repo uses elsewhere for exactly this problem (see truncators_are_classified.test.ts) is an explicit registry a human populates once per function, kept honest by the population-floor and must-include checks below plus this file's own mutation test. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -40,21 +19,10 @@ interface MaskerSite {
   readonly name: string
 }
 
-// A named C-style block-comment masker: `BlockComment` (or `CstyleComments`, which delegates to
-// one) in the function name -- this repo's own naming convention for the shape, not a guess.
-// Narrower than a body-content scan (which false-positives on any function that merely mentions
-// `/*`/`*\/` in a doc comment or an unrelated string mask) and, per this repo's own precedent for
-// this exact problem (truncators_are_classified.test.ts), a name-family scan cannot silently miss
-// a function that keeps a name in the family -- it can only miss one an author names outside it,
-// which VHDL_NAMED_SITES below closes for functions that scan their own comments inline rather
-// than delegating to a common.ts helper (this repo currently has one: vhdl.ts::maskVhdl; abl.ts's
-// equivalent inline `/* *\/` scan has no function of its own to name, so it is out of this scan's
-// reach the same way an anonymous truncator would be out of the other guard's).
+// A named C-style block-comment masker: `BlockComment` (or `CstyleComments`, which delegates to one) in the function name -- this repo's own naming convention for the shape, not a guess. Narrower than a body-content scan (which false-positives on any function that merely mentions `/*`/`*\/` in a doc comment or an unrelated string mask) and, per this repo's own precedent for this exact problem (truncators_are_classified.test.ts), a name-family scan cannot silently miss a function that keeps a name in the family -- it can only miss one an author names outside it, which VHDL_NAMED_SITES below closes for functions that scan their own comments inline rather than delegating to a common.ts helper (this repo currently has one: vhdl.ts::maskVhdl; abl.ts's equivalent inline `/* *\/` scan has no function of its own to name, so it is out of this scan's reach the same way an anonymous truncator would be out of the other guard's).
 const NAME_RE = /^(?:export\s+)?function\s+((?:mask|strip|skip|blank)\w*(?:BlockComment|CstyleComments)\w*)\s*\(/gm
 
-// Functions that scan their own `/* *\/` span inline rather than through a named common.ts helper,
-// so a name-family regex over their signature line cannot discover them the way it discovers the
-// BlockComment-named family above.
+// Functions that scan their own `/* *\/` span inline rather than through a named common.ts helper, so a name-family regex over their signature line cannot discover them the way it discovers the BlockComment-named family above.
 const NAMED_INLINE_SITES: readonly MaskerSite[] = [{ file: 'src/languages/vhdl.ts', name: 'maskVhdl' }]
 
 function findMaskerSites(): MaskerSite[] {
@@ -70,75 +38,33 @@ function findMaskerSites(): MaskerSite[] {
   return sites
 }
 
-/**
- * Every block-comment masker this repo ships, classified against its language's own comment
- * grammar (cited inline). `NESTS`: an opener seen while already inside a comment increments a
- * depth counter, and only the matching close decrements it back to zero. `DOES_NOT_NEST`: the
- * first closer seen ends the comment outright, however many openers appeared inside.
- */
+/** Every block-comment masker this repo ships, classified against its language's own comment grammar (cited inline). `NESTS`: an opener seen while already inside a comment increments a depth counter, and only the matching close decrements it back to zero. `DOES_NOT_NEST`: the first closer seen ends the comment outright, however many openers appeared inside. */
 const CLASSIFICATION: Readonly<Record<string, 'NESTS' | 'DOES_NOT_NEST' | 'CALLER_PARAMETERIZED'>> = {
-  // common.ts::stripBlockCommentSpan -- the shared C-style single-line-scoped span used by
-  // stripCstyleComments and by assignBraceBlockSpans's default (nestedBlockComments unset). C,
-  // C++, C#, Java, JS/TS, PHP, Go and Rust `/* */` comments do not nest per each language's own
-  // grammar; this function's own doc says "the first `*\/` ends the comment".
+  // common.ts::stripBlockCommentSpan -- the shared C-style single-line-scoped span used by stripCstyleComments and by assignBraceBlockSpans's default (nestedBlockComments unset). C, C++, C#, Java, JS/TS, PHP, Go and Rust `/* */` comments do not nest per each language's own grammar; this function's own doc says "the first `*\/` ends the comment".
   stripBlockCommentSpan: 'DOES_NOT_NEST',
-  // common.ts::stripNestedBlockCommentSpan -- used via assignBraceBlockSpans's
-  // `nestedBlockComments: true` option for Kotlin, Swift, Scala, and ABL's own inline `/* */`
-  // scan in abl.ts tracks its own `comment` depth counter the same way (see abl.ts's header
-  // comment: "which nest").
+  // common.ts::stripNestedBlockCommentSpan -- used via assignBraceBlockSpans's `nestedBlockComments: true` option for Kotlin, Swift, Scala, and ABL's own inline `/* */` scan in abl.ts tracks its own `comment` depth counter the same way (see abl.ts's header comment: "which nest").
   stripNestedBlockCommentSpan: 'NESTS',
-  // common.ts::stripCstyleComments -- delegates every line to stripBlockCommentSpan above, so it
-  // inherits that non-nesting behavior; classified separately since it is its own named function.
+  // common.ts::stripCstyleComments -- delegates every line to stripBlockCommentSpan above, so it inherits that non-nesting behavior; classified separately since it is its own named function.
   stripCstyleComments: 'DOES_NOT_NEST',
-  // vhdl.ts::maskVhdl -- IEEE Std 1076-2008 clause 15.9: a VHDL-2008 delimited comment does NOT
-  // nest. The first `*\/` closes it however many `/*` appeared inside.
+  // vhdl.ts::maskVhdl -- IEEE Std 1076-2008 clause 15.9: a VHDL-2008 delimited comment does NOT nest. The first `*\/` closes it however many `/*` appeared inside.
   maskVhdl: 'DOES_NOT_NEST',
-  // common.ts::skipBlockComment -- its `nested` parameter is caller-supplied per language, not a
-  // fixed behavior of this function; this guard only confirms that split is deliberate, not which
-  // value each caller passes.
+  // common.ts::skipBlockComment -- its `nested` parameter is caller-supplied per language, not a fixed behavior of this function; this guard only confirms that split is deliberate, not which value each caller passes.
   skipBlockComment: 'CALLER_PARAMETERIZED',
-  // powershell_idx.ts::blankCompletedBlockComments -- PowerShell's `<# ... #>` comment: the loop
-  // ends the span at the first `#>`, so a `<#` seen after the first opener never widens it.
-  // PowerShell's own grammar does not define nested block comments.
+  // powershell_idx.ts::blankCompletedBlockComments -- PowerShell's `<# ... #>` comment: the loop ends the span at the first `#>`, so a `<#` seen after the first opener never widens it. PowerShell's own grammar does not define nested block comments.
   blankCompletedBlockComments: 'DOES_NOT_NEST',
-  // common_lisp.ts::maskCommonLispBlockComment -- CLHS 2.4.8.19 "Sharpsign Vertical-Bar": a `#|`
-  // seen while already inside a `#| |#` comment increments depth; only the matching `|#`
-  // decrements it back to zero.
+  // common_lisp.ts::maskCommonLispBlockComment -- CLHS 2.4.8.19 "Sharpsign Vertical-Bar": a `#|` seen while already inside a `#| |#` comment increments depth; only the matching `|#` decrements it back to zero.
   maskCommonLispBlockComment: 'NESTS',
-  // scheme.ts::maskSchemeBlockComment -- R7RS section 2.2 "Whitespace and comments": block
-  // comments (`#| |#`) can be nested. Written independently of maskCommonLispBlockComment (own
-  // dialect, own citation) per this batch's settled no-shared-masker decision.
+  // scheme.ts::maskSchemeBlockComment -- R7RS section 2.2 "Whitespace and comments": block comments (`#| |#`) can be nested. Written independently of maskCommonLispBlockComment (own dialect, own citation) per this batch's settled no-shared-masker decision.
   maskSchemeBlockComment: 'NESTS',
-  // racket.ts::maskRacketBlockComment -- Racket Reference, "Reading Text": "Nested #|...|#
-  // comments are supported." Written independently of the Common Lisp/Scheme versions for the
-  // same reason.
+  // racket.ts::maskRacketBlockComment -- Racket Reference, "Reading Text": "Nested #|...|# comments are supported." Written independently of the Common Lisp/Scheme versions for the same reason.
   maskRacketBlockComment: 'NESTS',
-  // Clojure (clojure.ts) and Emacs Lisp (emacs_lisp.ts) have NO block comment at all -- neither
-  // dialect defines a `/* */`-shaped delimited comment -- so neither file has a function this
-  // scan could find, and neither appears in this registry.
-  // haskell.ts::maskHaskellBlockComment -- Haskell 2010 Report section 2.3 ("Comments"): "A
-  // nested comment begins with "{-" and ends with "-}"." A `{-` seen while already inside
-  // increments depth; only the matching `-}` decrements it back to zero.
+  // Clojure (clojure.ts) and Emacs Lisp (emacs_lisp.ts) have NO block comment at all -- neither dialect defines a `/* */`-shaped delimited comment -- so neither file has a function this scan could find, and neither appears in this registry. haskell.ts::maskHaskellBlockComment -- Haskell 2010 Report section 2.3 ("Comments"): "A nested comment begins with "{-" and ends with "-}"." A `{-` seen while already inside increments depth; only the matching `-}` decrements it back to zero.
   maskHaskellBlockComment: 'NESTS',
-  // ocaml.ts::maskOcamlBlockComment -- The OCaml Manual, "Comments"
-  // (https://v2.ocaml.org/manual/lex.html#sss:lex:comments): "Comments are introduced by the two
-  // characters (*, ... and terminated by the characters *) ... Nested comments are handled
-  // correctly." A `(*` seen while already inside increments depth; only the matching `*)`
-  // decrements it back to zero -- except while scanning inside a `"..."` string the comment
-  // opened (per the same section: comments do not occur inside string literals), see the module
-  // doc for that string-aware detail this classification does not capture.
+  // ocaml.ts::maskOcamlBlockComment -- The OCaml Manual, "Comments" (https://v2.ocaml.org/manual/lex.html#sss:lex:comments): "Comments are introduced by the two characters (*, ... and terminated by the characters *) ... Nested comments are handled correctly." A `(*` seen while already inside increments depth; only the matching `*)` decrements it back to zero -- except while scanning inside a `"..."` string the comment opened (per the same section: comments do not occur inside string literals), see the module doc for that string-aware detail this classification does not capture.
   maskOcamlBlockComment: 'NESTS',
-  // fsharp.ts::maskFSharpBlockComment -- The F# Language Specification (F# 4.1), section 3.2
-  // "Comments": `(* *)` block comments nest, and (per the well-documented F#-lexer-descends-from-
-  // OCaml-lexer comment-scanning behavior -- see fsharp.ts's module doc) a `"` seen while scanning
-  // a comment switches into string-lexing mode first, so a `*)` inside that string cannot close
-  // the comment. A `(*` seen while already inside increments depth; only the matching `*)`
-  // decrements it back to zero.
+  // fsharp.ts::maskFSharpBlockComment -- The F# Language Specification (F# 4.1), section 3.2 "Comments": `(* *)` block comments nest, and (per the well-documented F#-lexer-descends-from- OCaml-lexer comment-scanning behavior -- see fsharp.ts's module doc) a `"` seen while scanning a comment switches into string-lexing mode first, so a `*)` inside that string cannot close the comment. A `(*` seen while already inside increments depth; only the matching `*)` decrements it back to zero.
   maskFSharpBlockComment: 'NESTS',
-  // nix.ts::maskNixBlockComment -- Nix Reference Manual, "Syntax"
-  // (https://nix.dev/manual/nix/latest/language/syntax): Nix's `/* */` block comment is documented
-  // as a plain, non-nesting comment form (unlike Haskell/OCaml/F#'s). The first `*\/` closes it
-  // however many `/*` appeared inside.
+  // nix.ts::maskNixBlockComment -- Nix Reference Manual, "Syntax" (https://nix.dev/manual/nix/latest/language/syntax): Nix's `/* */` block comment is documented as a plain, non-nesting comment form (unlike Haskell/OCaml/F#'s). The first `*\/` closes it however many `/*` appeared inside.
   maskNixBlockComment: 'DOES_NOT_NEST',
 }
 

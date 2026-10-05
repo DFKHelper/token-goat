@@ -1,14 +1,4 @@
-/**
- * Built-bundle command matrix, shard 1 of 4 (pre-push / CI tier — slow).
- *
- * Builds the real shipping artifact (dist/token-goat.mjs), indexes one shared git fixture (see
- * tests/helpers/matrix_cases.ts), then runs an interleaved quarter of every registered command
- * against the bundle and asserts real output. This shard also owns the coverage gate: the case
- * table is driven off the same registry the fast registration guard uses
- * (tests/registry.ts::allCommandNames), so a newly registered command with no matrix case fails
- * automatically, and a separate guard asserts the 4 shards' key slices union back to the full
- * case table exactly, so a shard can't silently drop a case.
- */
+/** Built-bundle command matrix, shard 1 of 4 (pre-push / CI tier — slow). Builds the real shipping artifact (dist/token-goat.mjs), indexes one shared git fixture (see tests/helpers/matrix_cases.ts), then runs an interleaved quarter of every registered command against the bundle and asserts real output. This shard also owns the coverage gate: the case table is driven off the same registry the fast registration guard uses (tests/registry.ts::allCommandNames), so a newly registered command with no matrix case fails automatically, and a separate guard asserts the 4 shards' key slices union back to the full case table exactly, so a shard can't silently drop a case. */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 

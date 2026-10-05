@@ -1,26 +1,4 @@
-/**
- * getDb()/closeDb() cache the open SQLite handle by resolved db path so two
- * callers naming the same file share one connection (see the `_connections` doc comment
- * in db.ts). On a case-insensitive filesystem (Windows/macOS default), two callers naming
- * the same physical file with different casing must still share that one handle — two
- * separate Database objects open on the same file risks WAL/locking issues
- * and defeats the whole point of the cache.
- *
- * Uses the TOKEN_GOAT_CASE_INSENSITIVE_FS env override (the same real seam isCaseInsensitiveFs()
- * reads, per session.test.ts's "case-insensitive filesystem path matching" pattern) so the fold
- * branch is exercised deterministically on every platform, including case-sensitive Linux CI.
- *
- * Only the filename component is case-varied, never the directory portion: getDb() does a real
- * `fs.mkdirSync(dirname(dbPath), { recursive: true })` before opening the file, so an uppercased
- * FULL path (directory included) tries to create a sibling all-caps temp directory under the OS
- * root (e.g. `/TMP/...` next to `/tmp/...`) -- on a genuinely case-sensitive filesystem (real
- * Linux CI, not just the env-simulated branch under test) that's a distinct, non-existent, and
- * typically unwritable path, so mkdirSync throws EACCES/EPERM before getDb ever reaches the
- * case-folding logic this file exists to test. Keeping the directory identical and only case-
- * varying `index.db` -> `INDEX.DB` stays within the same always-real, already-created TMP dir on
- * every platform, so the test exercises getDb's cache-key folding without depending on the real
- * FS's own case-sensitivity for a directory that was never created in that casing.
- */
+/** getDb()/closeDb() cache the open SQLite handle by resolved db path so two callers naming the same file share one connection (see the `_connections` doc comment in db.ts). On a case-insensitive filesystem (Windows/macOS default), two callers naming the same physical file with different casing must still share that one handle — two separate Database objects open on the same file risks WAL/locking issues and defeats the whole point of the cache. Uses the TOKEN_GOAT_CASE_INSENSITIVE_FS env override (the same real seam isCaseInsensitiveFs() reads, per session.test.ts's "case-insensitive filesystem path matching" pattern) so the fold branch is exercised deterministically on every platform, including case-sensitive Linux CI. Only the filename component is case-varied, never the directory portion: getDb() does a real `fs.mkdirSync(dirname(dbPath), { recursive: true })` before opening the file, so an uppercased FULL path (directory included) tries to create a sibling all-caps temp directory under the OS root (e.g. `/TMP/...` next to `/tmp/...`) -- on a genuinely case-sensitive filesystem (real Linux CI, not just the env-simulated branch under test) that's a distinct, non-existent, and typically unwritable path, so mkdirSync throws EACCES/EPERM before getDb ever reaches the case-folding logic this file exists to test. Keeping the directory identical and only case- varying `index.db` -> `INDEX.DB` stays within the same always-real, already-created TMP dir on every platform, so the test exercises getDb's cache-key folding without depending on the real FS's own case-sensitivity for a directory that was never created in that casing. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'

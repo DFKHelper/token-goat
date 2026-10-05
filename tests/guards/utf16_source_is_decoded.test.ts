@@ -1,23 +1,4 @@
-/**
- * Guard: a UTF-16 file must be read as text, not as UTF-8 bytes.
- *
- * PowerShell 5.1 writes UTF-16LE for `>` redirection and `Out-File`, so on the platform token-goat
- * is written for, a generated script, log or document is routinely UTF-16 with a byte-order mark.
- * Every read path decoded with `toString('utf8')`, which turns that file into its text interleaved
- * with NULs: the parser found no symbols in it, so it was recorded as indexed with nothing in it and
- * `symbol Get-Thing` answered "No matches"; `section --list` reported "No sections found" for a
- * document full of headings; and `read` emitted the doubled, NUL-laced mojibake straight into the
- * model's context, at twice the byte cost of the real content.
- *
- * Why didn't a test catch this: every fixture in the suite is written by `writeFileSync` with a
- * JavaScript string, which Node encodes as UTF-8, so no test ever handed the indexer a file in any
- * other encoding. The gap was in the input domain, not in the logic, and no amount of exercising the
- * existing paths would have reached it. These cases write the bytes directly.
- *
- * The controls matter as much as the positive cases: a plain UTF-8 file must decode exactly as
- * before, and a BOM-less UTF-16 file must stay a miss rather than be guessed at, since a wrong
- * encoding guess on binary is worse than an honest empty result.
- */
+/** Guard: a UTF-16 file must be read as text, not as UTF-8 bytes. PowerShell 5.1 writes UTF-16LE for `>` redirection and `Out-File`, so on the platform token-goat is written for, a generated script, log or document is routinely UTF-16 with a byte-order mark. Every read path decoded with `toString('utf8')`, which turns that file into its text interleaved with NULs: the parser found no symbols in it, so it was recorded as indexed with nothing in it and `symbol Get-Thing` answered "No matches"; `section --list` reported "No sections found" for a document full of headings; and `read` emitted the doubled, NUL-laced mojibake straight into the model's context, at twice the byte cost of the real content. Why didn't a test catch this: every fixture in the suite is written by `writeFileSync` with a JavaScript string, which Node encodes as UTF-8, so no test ever handed the indexer a file in any other encoding. The gap was in the input domain, not in the logic, and no amount of exercising the existing paths would have reached it. These cases write the bytes directly. The controls matter as much as the positive cases: a plain UTF-8 file must decode exactly as before, and a BOM-less UTF-16 file must stay a miss rather than be guessed at, since a wrong encoding guess on binary is worse than an honest empty result. */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -61,8 +42,7 @@ beforeAll(() => {
   writeFileSync(join(projectDir, 'be.ts'), utf16be(TS_SOURCE.replace('marker', 'beMarker')))
   writeFileSync(join(projectDir, 'bom8.ts'), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(TS_SOURCE.replace('marker', 'bom8Marker'), 'utf8')]))
   writeFileSync(join(projectDir, 'plain.ts'), TS_SOURCE.replace('marker', 'plainMarker'))
-  // No BOM: deliberately still a miss. Guessing an encoding from byte distribution misfires on
-  // binary, and this asserts the fix did not start guessing.
+  // No BOM: deliberately still a miss. Guessing an encoding from byte distribution misfires on binary, and this asserts the fix did not start guessing.
   writeFileSync(join(projectDir, 'nobom.ts'), Buffer.from(TS_SOURCE.replace('marker', 'nobomMarker'), 'utf16le'))
   writeFileSync(join(projectDir, 'doc.md'), utf16le(MD_SOURCE))
   run(['index', '.', '--walk'])
@@ -95,8 +75,7 @@ describe('decodeSource', () => {
     expect(decodeSource(Buffer.alloc(0))).toBe('')
   })
 
-  // UTF-32LE begins FF FE 00 00, whose first two bytes are exactly the UTF-16LE mark, so a
-  // shorter-mark-first check decodes it as UTF-16 and hands back NUL-interleaved text.
+  // UTF-32LE begins FF FE 00 00, whose first two bytes are exactly the UTF-16LE mark, so a shorter-mark-first check decodes it as UTF-16 and hands back NUL-interleaved text.
   it('does not mistake UTF-32LE for UTF-16LE', () => {
     const bytes = encodeSource('hi', 'utf32le')
     expect(detectSourceEncoding(bytes)).toBe('utf32le')
@@ -159,9 +138,7 @@ describe('reading a UTF-16 file', () => {
 })
 
 describe('insert-section on a UTF-16 file', () => {
-  // Resolving the heading is now BOM-aware, so this command reaches a file it used to fail on. If
-  // the write path stayed UTF-8 the insert would rewrite the whole file converted, turning an edit
-  // of one section into a silent re-encoding of everything around it.
+  // Resolving the heading is now BOM-aware, so this command reaches a file it used to fail on. If the write path stayed UTF-8 the insert would rewrite the whole file converted, turning an edit of one section into a silent re-encoding of everything around it.
   it('writes the file back in the encoding it was found in', () => {
     const target = join(projectDir, 'editable.md')
     writeFileSync(target, utf16le(MD_SOURCE))

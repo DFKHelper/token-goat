@@ -83,9 +83,7 @@ export function canRunWrappedShell(): boolean {
   return process.platform !== 'win32' || resolveWindowsBash() !== null
 }
 
-// Resolve the PowerShell executable to run wrapped PowerShell commands under.
-// Windows: checks TOKEN_GOAT_POWERSHELL/PWSH override, then PATH for pwsh.exe, then System32 WindowsPowerShell, falling back to powershell.exe.
-// POSIX: checks TOKEN_GOAT_POWERSHELL/PWSH override, then PATH for pwsh, then standard install locations.
+// Resolve the PowerShell executable to run wrapped PowerShell commands under. Windows: checks TOKEN_GOAT_POWERSHELL/PWSH override, then PATH for pwsh.exe, then System32 WindowsPowerShell, falling back to powershell.exe. POSIX: checks TOKEN_GOAT_POWERSHELL/PWSH override, then PATH for pwsh, then standard install locations.
 export function resolvePowerShell(
   env: NodeJS.ProcessEnv = process.env,
   isExe: (p: string) => boolean = isExecutable,

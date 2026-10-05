@@ -1,26 +1,4 @@
-/**
- * The Claude Code hook shim must enable V8's compile cache before it import()s the hook bundle.
- *
- * A hook fires on every tool call, and the bundle it loads is ~3.4 MB. Without the cache, V8
- * recompiles that from source every time: profiled at roughly 40 ms of the ~148 ms a hook takes,
- * and worth about 23 ms per invocation end to end, measured twice on the installed shim by
- * interleaving both variants (148 ms against 125 ms, and 186 ms against 163 ms on a busier
- * machine, so the floor moves with load but the saving does not). The call has to live in the shim
- * rather than in the bundle, because a module is compiled before any of its own code runs, so a
- * bundle cannot enable the cache for itself.
- *
- * Two mutations have to fail here, and both do, on measured evidence rather than assumption:
- * removing the call, and relocating it below the `import()` where the bundle has already been
- * compiled. Each drops the cache to zero bytes. `enableCompileCache()` with no argument writes
- * under the temp directory, so pointing the child's temp at a scratch dir makes that directly
- * observable, and the control case pins that this is about the shim rather than the environment.
- *
- * The ordering case is kept anyway, even though the behavioral one already covers it. It states
- * the actual invariant in one line and says why in its failure message, so a future reader who
- * breaks the order is told what they broke rather than being handed a byte count. It reads the
- * emitted script with comments stripped, so prose mentioning either name cannot satisfy or break
- * it.
- */
+/** The Claude Code hook shim must enable V8's compile cache before it import()s the hook bundle. A hook fires on every tool call, and the bundle it loads is ~3.4 MB. Without the cache, V8 recompiles that from source every time: profiled at roughly 40 ms of the ~148 ms a hook takes, and worth about 23 ms per invocation end to end, measured twice on the installed shim by interleaving both variants (148 ms against 125 ms, and 186 ms against 163 ms on a busier machine, so the floor moves with load but the saving does not). The call has to live in the shim rather than in the bundle, because a module is compiled before any of its own code runs, so a bundle cannot enable the cache for itself. Two mutations have to fail here, and both do, on measured evidence rather than assumption: removing the call, and relocating it below the `import()` where the bundle has already been compiled. Each drops the cache to zero bytes. `enableCompileCache()` with no argument writes under the temp directory, so pointing the child's temp at a scratch dir makes that directly observable, and the control case pins that this is about the shim rather than the environment. The ordering case is kept anyway, even though the behavioral one already covers it. It states the actual invariant in one line and says why in its failure message, so a future reader who breaks the order is told what they broke rather than being handed a byte count. It reads the emitted script with comments stripped, so prose mentioning either name cannot satisfy or break it. */
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -48,18 +26,13 @@ function compileCacheBytes(script: string): number {
   const scriptPath = join(dir, 'shim.js')
   writeFileSync(scriptPath, script, 'utf8')
 
-  // The real built entry, so the shim takes its in-process path and imports the real sibling
-  // dist/token-goat-hook.mjs -- the 3.4 MB module this whole change is about. A synthetic entry
-  // would load nothing large and the cache would be empty no matter what the shim did.
+  // The real built entry, so the shim takes its in-process path and imports the real sibling dist/token-goat-hook.mjs -- the 3.4 MB module this whole change is about. A synthetic entry would load nothing large and the cache would be empty no matter what the shim did.
   const res = spawnSync(process.execPath, [scriptPath, 'pre_tool_use', BUNDLE], {
     cwd: dirname(BUNDLE),
     input: '{"tool_name":"Read","tool_input":{"file_path":"x.ts"},"session_id":"shim-cc"}',
     encoding: 'utf8',
     timeout: 60000,
-    // NODE_COMPILE_CACHE must be cleared, not just overridden: the suite sets it globally in
-    // globalSetup so spawned bundles share one cache, and if the child inherits it the child
-    // caches there instead of here. Both cases then read zero from this directory and the control
-    // agrees with the real one for entirely the wrong reason.
+    // NODE_COMPILE_CACHE must be cleared, not just overridden: the suite sets it globally in globalSetup so spawned bundles share one cache, and if the child inherits it the child caches there instead of here. Both cases then read zero from this directory and the control agrees with the real one for entirely the wrong reason.
     env: { ...process.env, NODE_COMPILE_CACHE: undefined, TMPDIR: temp, TEMP: temp, TMP: temp },
   })
   expect(res.status, `shim exited ${String(res.status)}: ${res.stderr}`).toBe(0)
@@ -73,12 +46,7 @@ function compileCacheBytes(script: string): number {
 }
 
 describe('Claude Code hook shim compile cache', () => {
-  // 500 KB: the discriminator here is bundle-scale versus shim-scale, and the shim is well under
-  // 1 KB, so any figure in the hundreds of KB can only be the bundle. It was 1 MB when the entry
-  // measured ~1.3 MB; splitting cli_doctor.ts and text_commands.ts off the hook path (see
-  // symbol_body_probe.ts) took the eagerly compiled set down to ~988 KB, which is the change
-  // working as intended rather than the invariant breaking, so the constant moves with it. Kept
-  // far enough below the current figure that further eager-set trimming does not fail this again.
+  // 500 KB: the discriminator here is bundle-scale versus shim-scale, and the shim is well under 1 KB, so any figure in the hundreds of KB can only be the bundle. It was 1 MB when the entry measured ~1.3 MB; splitting cli_doctor.ts and text_commands.ts off the hook path (see symbol_body_probe.ts) took the eagerly compiled set down to ~988 KB, which is the change working as intended rather than the invariant breaking, so the constant moves with it. Kept far enough below the current figure that further eager-set trimming does not fail this again.
   const BUNDLE_SCALE_BYTES = 500_000
 
   it('caches the hook bundle, so it is not recompiled on every tool call', () => {

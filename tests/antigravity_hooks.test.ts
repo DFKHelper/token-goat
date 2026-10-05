@@ -1,24 +1,4 @@
-/**
- * Antigravity CLI (agy 1.2.11) payload normalization and response shaping: normalizePayload's
- * antigravity branch (src/hooks_cli.ts) and serializeOutput's antigravity branch
- * (src/bridges/antigravity_hooks.ts).
- *
- * PROVENANCE:
- * - Payload envelope and response fields: FORMAT-DERIVED from agy's own hooks guide,
- *   ~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/hooks.md (agy 1.2.11):
- *   PreToolUse sends {toolCall: {name, args}, stepIdx, conversationId, workspacePaths,
- *   transcriptPath, artifactDirectoryPath, modelName}; PostToolUse adds result and error; PreToolUse
- *   reads decision/reason/overwrite; PostToolUse expects {}. `overwriteResult` is read off the
- *   PostToolHookResult message in agy.exe 1.2.11's embedded proto descriptor.
- * - Tool names and argument keys (view_file {AbsolutePath, StartLine, EndLine}, run_command
- *   {CommandLine, Cwd, WaitMsBeforeAsync}, grep_search {Query, SearchPath, ...}, replace_file_content
- *   {TargetFile, TargetContent, ReplacementContent, ...}, write_to_file {TargetFile, CodeContent,
- *   Overwrite}): CAPTURE, read out of the transcript of a real agy run on 2026-09-29.
- * - The flat {tool_name, tool_input} shape: FORMAT-DERIVED from rtk-ai/rtk PR #2093's agy integration.
- * - "An empty reply leaves the call on its normal permission path": CAPTURE, a hook answering {} in a
- *   real agy run on 2026-09-29.
- * - Paths, ids and command strings are HAND-DERIVED placeholders.
- */
+/** Antigravity CLI (agy 1.2.11) payload normalization and response shaping: normalizePayload's antigravity branch (src/hooks_cli.ts) and serializeOutput's antigravity branch (src/bridges/antigravity_hooks.ts). PROVENANCE: - Payload envelope and response fields: FORMAT-DERIVED from agy's own hooks guide, ~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/hooks.md (agy 1.2.11): PreToolUse sends {toolCall: {name, args}, stepIdx, conversationId, workspacePaths, transcriptPath, artifactDirectoryPath, modelName}; PostToolUse adds result and error; PreToolUse reads decision/reason/overwrite; PostToolUse expects {}. `overwriteResult` is read off the PostToolHookResult message in agy.exe 1.2.11's embedded proto descriptor. - Tool names and argument keys (view_file {AbsolutePath, StartLine, EndLine}, run_command {CommandLine, Cwd, WaitMsBeforeAsync}, grep_search {Query, SearchPath, ...}, replace_file_content {TargetFile, TargetContent, ReplacementContent, ...}, write_to_file {TargetFile, CodeContent, Overwrite}): CAPTURE, read out of the transcript of a real agy run on 2026-09-29. - The flat {tool_name, tool_input} shape: FORMAT-DERIVED from rtk-ai/rtk PR #2093's agy integration. - "An empty reply leaves the call on its normal permission path": CAPTURE, a hook answering {} in a real agy run on 2026-09-29. - Paths, ids and command strings are HAND-DERIVED placeholders. */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../src/stats.js', async (importOriginal) => {

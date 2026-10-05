@@ -1,16 +1,4 @@
-/**
- * Regression: json-query, json-outline, yaml-query, yaml-outline, openapi-op, openapi-outline,
- * zip-list, zip-read, sqlite-query, sqlite-schema, and conflicts (all in read_commands.ts) never
- * called recordStat -- each reads a file and emits a narrower slice, the same "read replacement"
- * shape as csv-query/coverage-report-gaps (see cli_csv_query_stats.test.ts,
- * cli_coverage_report_gaps_stats.test.ts), but had no stats wiring at all, so their buckets in
- * `token-goat stats --full` stayed permanently zero regardless of real usage (same class of gap
- * fixed for csv_query/coverage_report_gaps/map_lookup/changed_lookup, see
- * project_runchanged_missing_stat memory). Drives the real, unmocked `run()` CLI entrypoint
- * against real scratch fixtures and asserts a real stats row appears via summarize() against the
- * real (test-isolated) global stats DB -- a synthetic recordStat/DB insert would not catch the
- * original absence.
- */
+/** Regression: json-query, json-outline, yaml-query, yaml-outline, openapi-op, openapi-outline, zip-list, zip-read, sqlite-query, sqlite-schema, and conflicts (all in read_commands.ts) never called recordStat -- each reads a file and emits a narrower slice, the same "read replacement" shape as csv-query/coverage-report-gaps (see cli_csv_query_stats.test.ts, cli_coverage_report_gaps_stats.test.ts), but had no stats wiring at all, so their buckets in `token-goat stats --full` stayed permanently zero regardless of real usage (same class of gap fixed for csv_query/coverage_report_gaps/map_lookup/changed_lookup, see project_runchanged_missing_stat memory). Drives the real, unmocked `run()` CLI entrypoint against real scratch fixtures and asserts a real stats row appears via summarize() against the real (test-isolated) global stats DB -- a synthetic recordStat/DB insert would not catch the original absence. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

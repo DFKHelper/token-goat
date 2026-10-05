@@ -4,11 +4,7 @@ import * as path from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-// Regression: worker-errors.log and .draining.corrupt-* quarantine files (see drainOnce's
-// cleanup-failure fallback) had no rotation or cleanup mechanism at all -- both could grow
-// unbounded over a project's index lifetime. cleanupWorkerStateFiles mirrors the size/age-cutoff
-// pattern already used elsewhere in this codebase for other accumulating state (disk_cache.ts's
-// pruneBlobs, snapshots.ts's cleanup_stale).
+// Regression: worker-errors.log and .draining.corrupt-* quarantine files (see drainOnce's cleanup-failure fallback) had no rotation or cleanup mechanism at all -- both could grow unbounded over a project's index lifetime. cleanupWorkerStateFiles mirrors the size/age-cutoff pattern already used elsewhere in this codebase for other accumulating state (disk_cache.ts's pruneBlobs, snapshots.ts's cleanup_stale).
 import { cleanupWorkerStateFiles } from '../src/worker.js'
 
 describe('cleanupWorkerStateFiles', () => {

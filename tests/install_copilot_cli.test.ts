@@ -394,8 +394,7 @@ describe('isCopilotCliInstalled / uninstallCopilotCli', () => {
     expect(fs.existsSync(localResult.configPath)).toBe(false)
   })
 
-  // Regression: uninstall stripped the routing block and removed the hook files but left the 0-byte copilot-instructions.md and the empty hooks directory that install had created to hold them.
-  // HAND-DERIVED: a fresh isolated home and project with no Copilot directory, so every file and directory below is one this install created.
+  // Regression: uninstall stripped the routing block and removed the hook files but left the 0-byte copilot-instructions.md and the empty hooks directory that install had created to hold them. HAND-DERIVED: a fresh isolated home and project with no Copilot directory, so every file and directory below is one this install created.
   it('uninstallCopilotCli removes the instructions file and the directories its install created, once they are empty (user scope)', () => {
     const copilotHome = path.join(TMP, 'home', '.copilot')
     expect(fs.existsSync(copilotHome)).toBe(false)

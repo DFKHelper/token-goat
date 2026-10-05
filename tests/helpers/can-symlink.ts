@@ -1,18 +1,8 @@
-// Shared, once-per-module-load probe for whether this machine lets an unprivileged process create
-// a symbolic link.
+// Shared, once-per-module-load probe for whether this machine lets an unprivileged process create a symbolic link.
 //
-// Windows refuses `symlinkSync` to a process that is neither elevated nor running with Developer
-// Mode on, so every symlink fixture in this suite has to cope with the link simply not being
-// creatable. Before this helper, each site coped the same way and invisibly: `try { symlinkSync(...) }
-// catch { return }` inside the test body, which reports PASSED on a machine that never built the
-// fixture, never ran the assertion, and never said so. `it.skipIf(!CAN_SYMLINK)` reports SKIPPED
-// instead, which is the honest answer and is visible in the run summary.
+// Windows refuses `symlinkSync` to a process that is neither elevated nor running with Developer Mode on, so every symlink fixture in this suite has to cope with the link simply not being creatable. Before this helper, each site coped the same way and invisibly: `try { symlinkSync(...) } catch { return }` inside the test body, which reports PASSED on a machine that never built the fixture, never ran the assertion, and never said so. `it.skipIf(!CAN_SYMLINK)` reports SKIPPED instead, which is the honest answer and is visible in the run summary.
 //
-// Evaluated once at import, not per call: the probe itself creates and removes a link, and doing
-// that once per test would be both slower and more likely to race. It creates its scratch directory
-// under the OS temp root with `mkdtempSync` and removes the whole directory in a `finally`, so a
-// failure at any point still leaves nothing behind -- including on the Windows path where the
-// symlink call throws before the link exists.
+// Evaluated once at import, not per call: the probe itself creates and removes a link, and doing that once per test would be both slower and more likely to race. It creates its scratch directory under the OS temp root with `mkdtempSync` and removes the whole directory in a `finally`, so a failure at any point still leaves nothing behind -- including on the Windows path where the symlink call throws before the link exists.
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'

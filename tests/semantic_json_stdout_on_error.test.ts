@@ -1,9 +1,4 @@
-// Regression: cmdSemantic (src/cli.ts) routed output via `(code === 0 ? out : err)(text)`, so any
-// non-zero-code --json return (a no-match miss, `--limit 0`, an invalid --project-root) went to
-// stderr instead of stdout, breaking `token-goat semantic ... --json | jq .` on exactly the cases
-// a machine caller most needs to detect programmatically. --json output must always land on
-// stdout; only the exit code communicates success/failure. Non-JSON text mode must stay
-// byte-identical (still routes non-zero codes to stderr).
+// Regression: cmdSemantic (src/cli.ts) routed output via `(code === 0 ? out : err)(text)`, so any non-zero-code --json return (a no-match miss, `--limit 0`, an invalid --project-root) went to stderr instead of stdout, breaking `token-goat semantic ... --json | jq .` on exactly the cases a machine caller most needs to detect programmatically. --json output must always land on stdout; only the exit code communicates success/failure. Non-JSON text mode must stay byte-identical (still routes non-zero codes to stderr).
 import { describe, expect, it, vi } from 'vitest'
 
 const { run } = await import('../src/cli.js')

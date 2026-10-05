@@ -1,20 +1,4 @@
-/**
- * An emission that carried no correlator names nothing a later command could match, so no verdict
- * about it is ever observed. It must not be scored, in either direction.
- *
- * FIXTURE PROVENANCE
- *
- * `LIVE_*` are CAPTURE: a read-only query against the author's real global ledger on 2026-09-21 --
- *   SELECT category, COUNT(*), SUM(CASE WHEN correlator IS NULL THEN 1 ELSE 0 END), SUM(acted_on)
- *   FROM hint_emissions GROUP BY 1
- * returned bash_redirect 698 rows / 174 with a NULL correlator / 6 acted on, and
- * edit_reread_suggest 5113 / 5 / 5095. The 174 were booked as failures and the 5 as successes,
- * which is the asymmetry these tests pin. They are asserted only to keep the *reason* for this
- * change checkable against the data that motivated it, never as a spec for behavior.
- *
- * Everything else here is HAND-DERIVED: the counts are computed from the emissions each test
- * makes itself, independently of how the implementation aggregates them.
- */
+/** An emission that carried no correlator names nothing a later command could match, so no verdict about it is ever observed. It must not be scored, in either direction. FIXTURE PROVENANCE `LIVE_*` are CAPTURE: a read-only query against the author's real global ledger on 2026-09-21 -- SELECT category, COUNT(*), SUM(CASE WHEN correlator IS NULL THEN 1 ELSE 0 END), SUM(acted_on) FROM hint_emissions GROUP BY 1 returned bash_redirect 698 rows / 174 with a NULL correlator / 6 acted on, and edit_reread_suggest 5113 / 5 / 5095. The 174 were booked as failures and the 5 as successes, which is the asymmetry these tests pin. They are asserted only to keep the *reason* for this change checkable against the data that motivated it, never as a spec for behavior. Everything else here is HAND-DERIVED: the counts are computed from the emissions each test makes itself, independently of how the implementation aggregates them. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -73,8 +57,7 @@ afterEach(() => {
 describe('an emission with no correlator is unobservable, not a verdict', () => {
   it('the live ledger figures this change was made against are internally consistent', () => {
     expect(LIVE_REDIRECT_NULL_CORRELATOR).toBeLessThan(LIVE_REDIRECT_ROWS)
-    // The whole point: a quarter of the category could never have been credited, and it was being
-    // divided into a numerator of 6 that came entirely from the other three quarters.
+    // The whole point: a quarter of the category could never have been credited, and it was being divided into a numerator of 6 that came entirely from the other three quarters.
     expect(LIVE_REDIRECT_NULL_CORRELATOR / LIVE_REDIRECT_ROWS).toBeGreaterThan(0.2)
     expect(LIVE_REDIRECT_ACTED_ON).toBeGreaterThan(0)
     expect(LIVE_SUPPRESSION_NULL_CORRELATOR).toBeGreaterThan(0)
@@ -129,8 +112,7 @@ describe('an emission with no correlator is unobservable, not a verdict', () => 
     logHintEmission(REDIRECT, session, 'src/paths.ts', false, 100)
     logHintEmission(REDIRECT, session, null, false, 400)
 
-    // An unobservable hint reached the agent and cost it those bytes; excluding it from the spend
-    // figure would hide exactly the waste this whole change exists to expose.
+    // An unobservable hint reached the agent and cost it those bytes; excluding it from the spend figure would hide exactly the waste this whole change exists to expose.
     expect(summaryFor(REDIRECT).bytesEmitted).toBe(500)
   })
 
@@ -153,9 +135,7 @@ describe('an emission with no correlator is unobservable, not a verdict', () => 
 
   it('a row that goes unobservable at resolve time is marked there too, not only at insert', () => {
     const session = nonce()
-    // Insert a row that looks observable, then blank its correlator behind the resolver's back --
-    // the shape a row written by an older binary has after this migration. The resolver's own
-    // branch, not logHintEmission's, is what must mark it.
+    // Insert a row that looks observable, then blank its correlator behind the resolver's back -- the shape a row written by an older binary has after this migration. The resolver's own branch, not logHintEmission's, is what must mark it.
     logHintEmission(REDIRECT, session, 'src/paths.ts', false, 100)
     getDb(globalDbPath())
       .prepare(`UPDATE hint_emissions SET correlator = NULL, observable = 1, resolved = 0 WHERE session_id = ?`)

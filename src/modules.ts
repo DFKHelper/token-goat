@@ -1,53 +1,13 @@
-/**
- * Module detection over the project's internal import graph.
- *
- * `arch` already answers three local questions -- which files are imported most, which are
- * imported by nobody, which import each other in a cycle. None of them says what the project is
- * made *of*: which files form a cohesive group that mostly talks to itself, and where one group
- * reaches across into another. That is the question worth asking before a refactor, and it is a
- * property of the whole graph rather than of any one file, so no per-file metric produces it.
- *
- * The grouping is computed by greedy modularity optimisation (the Louvain method): every file
- * starts alone, each is repeatedly moved into whichever neighbouring group most increases the
- * partition's modularity, then each group is collapsed into a single node and the pass repeats on
- * the smaller graph until no move helps. It reads only the graph `buildImportGraph` already
- * builds, costs no model tokens, and touches no index.
- *
- * Two properties this file spends real effort on, because without them the output is worse than
- * nothing:
- *
- *   - It is deterministic. The algorithm's result depends on the order nodes are visited and on
- *     how ties are broken, and the natural implementation inherits both from hash-map iteration
- *     order. Two runs on one unchanged repo would then disagree about what the project is made
- *     of, which is not a finding a reader can act on. So node order is fixed by codepoint-sorted
- *     path (never `localeCompare`, whose collation varies by machine), candidate groups are
- *     always visited in ascending numeric order, and a tie in modularity gain keeps the incumbent.
- *
- *   - It reports how strong the split is. Greedy modularity optimisation always returns a
- *     partition -- run it on a random graph and it hands back groups that look exactly like real
- *     ones. Modularity is the number that separates the two cases, so it is reported alongside
- *     every result rather than kept internal, and a weak split is named as weak instead of being
- *     presented as structure.
- */
+/** Module detection over the project's internal import graph. `arch` already answers three local questions -- which files are imported most, which are imported by nobody, which import each other in a cycle. None of them says what the project is made *of*: which files form a cohesive group that mostly talks to itself, and where one group reaches across into another. That is the question worth asking before a refactor, and it is a property of the whole graph rather than of any one file, so no per-file metric produces it. The grouping is computed by greedy modularity optimisation (the Louvain method): every file starts alone, each is repeatedly moved into whichever neighbouring group most increases the partition's modularity, then each group is collapsed into a single node and the pass repeats on the smaller graph until no move helps. It reads only the graph `buildImportGraph` already builds, costs no model tokens, and touches no index. Two properties this file spends real effort on, because without them the output is worse than nothing: - It is deterministic. The algorithm's result depends on the order nodes are visited and on how ties are broken, and the natural implementation inherits both from hash-map iteration order. Two runs on one unchanged repo would then disagree about what the project is made of, which is not a finding a reader can act on. So node order is fixed by codepoint-sorted path (never `localeCompare`, whose collation varies by machine), candidate groups are always visited in ascending numeric order, and a tie in modularity gain keeps the incumbent. - It reports how strong the split is. Greedy modularity optimisation always returns a partition -- run it on a random graph and it hands back groups that look exactly like real ones. Modularity is the number that separates the two cases, so it is reported alongside every result rather than kept internal, and a weak split is named as weak instead of being presented as structure. */
 import type { ImportGraph } from './import_graph.js'
 import { toDisplayPath } from './paths.js'
 import { getDisplayRoot } from './project.js'
 import { countNoun } from './util.js'
 
-/**
- * Below this, the grouping is reported as weak.
- *
- * Modularity measures how much more edge weight falls inside groups than a degree-preserving
- * random graph would put there: 0 means the split explains nothing the degree sequence did not
- * already, and the maximum approaches 1. This threshold is the conventional dividing line in the
- * community-detection literature for "there is probably real structure here" -- it is a rule of
- * thumb, not a proof, which is why the number itself is always printed next to the verdict rather
- * than replaced by it.
- */
+/** Below this, the grouping is reported as weak. Modularity measures how much more edge weight falls inside groups than a degree-preserving random graph would put there: 0 means the split explains nothing the degree sequence did not already, and the maximum approaches 1. This threshold is the conventional dividing line in the community-detection literature for "there is probably real structure here" -- it is a rule of thumb, not a proof, which is why the number itself is always printed next to the verdict rather than replaced by it. */
 export const WEAK_MODULARITY = 0.3
 
-/** Guarantees termination if a pathological graph keeps producing improving moves. Real graphs
- * converge in a handful of passes; this is a backstop, not a tuning knob. */
+/** Guarantees termination if a pathological graph keeps producing improving moves. Real graphs converge in a handful of passes; this is a backstop, not a tuning knob. */
 const MAX_PASSES = 32
 
 /** Float noise must not decide a move, or the same repo groups differently on two machines. */
@@ -56,25 +16,14 @@ const GAIN_EPSILON = 1e-12
 export interface DetectedModule {
   /** 1-based rank by size, used to name this module in the cross-import list. */
   index: number
-  /**
-   * The module's most-connected member: the file the rest of the group is built around, and the
-   * name the module goes by everywhere it is referenced.
-   *
-   * Not a shared directory prefix, which was tried first and does not work: a module normally
-   * holds both a source file and the test that imports it, those sit in different trees, and the
-   * longest common prefix of `src/` and `tests/` is the repository root. Measured on this project,
-   * every one of the fifteen modules came back labelled `.` -- fifteen rows naming nothing, over a
-   * cross-import list reading `. -> .`.
-   */
+  /** The module's most-connected member: the file the rest of the group is built around, and the name the module goes by everywhere it is referenced. Not a shared directory prefix, which was tried first and does not work: a module normally holds both a source file and the test that imports it, those sit in different trees, and the longest common prefix of `src/` and `tests/` is the repository root. Measured on this project, every one of the fifteen modules came back labelled `.` -- fifteen rows naming nothing, over a cross-import list reading `. -> .`. */
   core: string
-  /** Directory every member shares, or null when they span more than one. Present when the module
-   * genuinely is a directory; absent is the more interesting case. */
+  /** Directory every member shares, or null when they span more than one. Present when the module genuinely is a directory; absent is the more interesting case. */
   commonDir: string | null
   /** Member files, root-relative, sorted. */
   files: string[]
   size: number
-  /** How many distinct directories the members sit in. More than one means the module does not
-   * line up with the directory layout, which is itself the finding. */
+  /** How many distinct directories the members sit in. More than one means the module does not line up with the directory layout, which is itself the finding. */
   directories: number
 }
 
@@ -91,17 +40,13 @@ export interface ModuleResult {
   modules: DetectedModule[]
   /** Before `--top` sliced. */
   modulesTotal: number
-  /** Newman-Girvan modularity of the full partition, or null when the graph has no edges at all
-   * and modularity is undefined rather than zero. */
+  /** Newman-Girvan modularity of the full partition, or null when the graph has no edges at all and modularity is undefined rather than zero. */
   modularity: number | null
-  /** Files with no internal imports in either direction. They are in no module because they are
-   * connected to nothing, which is not the same as a module of one. */
+  /** Files with no internal imports in either direction. They are in no module because they are connected to nothing, which is not the same as a module of one. */
   isolatedCount: number
   crossImports: CrossModuleImport[]
   crossImportsTotal: number
-  /** True when the graph has files but no internal import edges, so nothing could be grouped.
-   * Distinguished from a real zero because "0 modules" over an edgeless graph reads as a finding
-   * about the architecture when it is a statement about the input. */
+  /** True when the graph has files but no internal import edges, so nothing could be grouped. Distinguished from a real zero because "0 modules" over an edgeless graph reads as a finding about the architecture when it is a statement about the input. */
   noEdges: boolean
 }
 
@@ -133,13 +78,7 @@ function addEdge(g: WeightedGraph, a: number, b: number, w: number): void {
   g.m += w
 }
 
-/**
- * One Louvain local-moving pass: move nodes between communities while modularity improves.
- *
- * Returns the per-node community assignment and whether any node ever moved. Nodes are visited in
- * ascending id order and candidate communities in ascending id order, with a strictly-greater
- * comparison, so the incumbent wins every tie and the whole pass is reproducible.
- */
+/** One Louvain local-moving pass: move nodes between communities while modularity improves. Returns the per-node community assignment and whether any node ever moved. Nodes are visited in ascending id order and candidate communities in ascending id order, with a strictly-greater comparison, so the incumbent wins every tie and the whole pass is reproducible. */
 function localMoving(g: WeightedGraph): { community: number[]; moved: boolean } {
   const community = Array.from({ length: g.n }, (_, i) => i)
   // Total degree of each community, and the running assignment's bookkeeping.
@@ -154,9 +93,7 @@ function localMoving(g: WeightedGraph): { community: number[]; moved: boolean } 
       const ki = g.degree[i]!
       const ci = community[i]!
 
-      // Edge weight from i into each neighbouring community, self-loop excluded: a self-loop is
-      // internal to i wherever i goes, so it shifts every candidate's gain by the same amount and
-      // cannot change which one wins.
+      // Edge weight from i into each neighbouring community, self-loop excluded: a self-loop is internal to i wherever i goes, so it shifts every candidate's gain by the same amount and cannot change which one wins.
       const links = new Map<number, number>()
       for (const [j, w] of g.adj[i]!) {
         if (j === i) continue
@@ -164,14 +101,12 @@ function localMoving(g: WeightedGraph): { community: number[]; moved: boolean } 
         links.set(cj, (links.get(cj) ?? 0) + w)
       }
 
-      // Remove i from its community before scoring, so the incumbent is judged on the same terms
-      // as every challenger rather than against a total that still includes i's own degree.
+      // Remove i from its community before scoring, so the incumbent is judged on the same terms as every challenger rather than against a total that still includes i's own degree.
       tot[ci] = tot[ci]! - ki
       let bestC = ci
       let bestGain = (links.get(ci) ?? 0) - (tot[ci]! * ki) / twoM
 
-      // Sorted, so accumulation order and therefore the floating-point comparison sequence is the
-      // same on every run and every machine.
+      // Sorted, so accumulation order and therefore the floating-point comparison sequence is the same on every run and every machine.
       for (const c of [...links.keys()].sort((a, b) => a - b)) {
         if (c === ci) continue
         const gain = links.get(c)! - (tot[c]! * ki) / twoM
@@ -194,10 +129,7 @@ function localMoving(g: WeightedGraph): { community: number[]; moved: boolean } 
   return { community, moved: movedEver }
 }
 
-/**
- * Renumber an assignment to a dense 0..k-1 range, ordered by each community's smallest member, so
- * the aggregate graph built from it has stable ids across runs.
- */
+/** Renumber an assignment to a dense 0..k-1 range, ordered by each community's smallest member, so the aggregate graph built from it has stable ids across runs. */
 function densify(community: readonly number[]): { dense: number[]; count: number } {
   const firstMember = new Map<number, number>()
   for (let i = 0; i < community.length; i++) {
@@ -210,8 +142,7 @@ function densify(community: readonly number[]): { dense: number[]; count: number
   return { dense: community.map((c) => remap.get(c)!), count: ordered.length }
 }
 
-/** Newman-Girvan modularity of `partition` on `g`. Null when the graph carries no edge weight,
- * where the quantity is undefined rather than zero. */
+/** Newman-Girvan modularity of `partition` on `g`. Null when the graph carries no edge weight, where the quantity is undefined rather than zero. */
 function modularityOf(g: WeightedGraph, partition: readonly number[]): number | null {
   const twoM = 2 * g.m
   if (twoM === 0) return null
@@ -221,8 +152,7 @@ function modularityOf(g: WeightedGraph, partition: readonly number[]): number | 
     const ci = partition[i]!
     tot.set(ci, (tot.get(ci) ?? 0) + g.degree[i]!)
     for (const [j, w] of g.adj[i]!) {
-      // Each undirected edge appears in both endpoints' maps, so counting only j >= i visits it
-      // once; a self-loop (j === i) is visited once by the same rule.
+      // Each undirected edge appears in both endpoints' maps, so counting only j >= i visits it once; a self-loop (j === i) is visited once by the same rule.
       if (j < i) continue
       if (partition[j]! === ci) internal.set(ci, (internal.get(ci) ?? 0) + w)
     }
@@ -250,8 +180,7 @@ function louvain(g: WeightedGraph): number[] {
     for (let i = 0; i < current.n; i++) {
       for (const [j, w] of current.adj[i]!) {
         if (j < i) continue
-        // A within-community edge becomes a self-loop on the collapsed node, which is what keeps
-        // the collapsed graph's modularity equal to the original's under the same partition.
+        // A within-community edge becomes a self-loop on the collapsed node, which is what keeps the collapsed graph's modularity equal to the original's under the same partition.
         addEdge(next, dense[i]!, dense[j]!, w)
       }
     }
@@ -260,19 +189,10 @@ function louvain(g: WeightedGraph): number[] {
   return mapping
 }
 
-/**
- * Directory shared by every file, or null when they span more than one tree.
- *
- * Two cases produce an empty common *prefix* and mean opposite things: every member sitting in the
- * repository root (they do share a directory -- that one), and members split across `src/` and
- * `tests/` (they share nothing tighter than the whole project). Checking the distinct-directory
- * set first separates them; a bare prefix check reports the first case as "no shared directory".
- */
+/** Directory shared by every file, or null when they span more than one tree. Two cases produce an empty common *prefix* and mean opposite things: every member sitting in the repository root (they do share a directory -- that one), and members split across `src/` and `tests/` (they share nothing tighter than the whole project). Checking the distinct-directory set first separates them; a bare prefix check reports the first case as "no shared directory". */
 function commonDirLabel(files: readonly string[]): string | null {
   const dirs = new Set(files.map(dirOf))
-  // Trailing slash on a real directory, so the single-directory case and the shared-prefix case
-  // below render identically rather than as `pkg` beside `src/`. The root keeps its bare `.`,
-  // which the caller renders as words.
+  // Trailing slash on a real directory, so the single-directory case and the shared-prefix case below render identically rather than as `pkg` beside `src/`. The root keeps its bare `.`, which the caller renders as words.
   if (dirs.size === 1) {
     const only = [...dirs][0]!
     return only === '.' ? '.' : `${only}/`
@@ -298,21 +218,13 @@ function dirOf(file: string): string {
   return idx === -1 ? '.' : file.slice(0, idx)
 }
 
-/**
- * Group the import graph into modules.
- *
- * `top` caps how many modules and cross-import pairs are returned; the untruncated totals come
- * back alongside so a caller can say the cap bit.
- */
+/** Group the import graph into modules. `top` caps how many modules and cross-import pairs are returned; the untruncated totals come back alongside so a caller can say the cap bit. */
 export function detectModules(imports: ImportGraph, cwd: string, top: number): ModuleResult {
-  // `importedBy` is deliberately unused: iterating `graph`'s forward edges already visits every
-  // edge once and bumps both of its endpoints, so reading the reverse map too would double-count.
+  // `importedBy` is deliberately unused: iterating `graph`'s forward edges already visits every edge once and bumps both of its endpoints, so reading the reverse map too would double-count.
   const { files, graph } = imports
   const root = getDisplayRoot(cwd)
 
-  // Undirected projection. Direction is what `hubs` and `entry points` already report; cohesion is
-  // direction-free, so an import in either direction is one unit of coupling and a mutual import
-  // is two.
+  // Undirected projection. Direction is what `hubs` and `entry points` already report; cohesion is direction-free, so an import in either direction is one unit of coupling and a mutual import is two.
   const degreeOf = new Map<string, number>()
   const bump = (f: string): void => {
     degreeOf.set(f, (degreeOf.get(f) ?? 0) + 1)
@@ -325,10 +237,7 @@ export function detectModules(imports: ImportGraph, cwd: string, top: number): M
     }
   }
 
-  // Isolated files are dropped before grouping rather than becoming singleton communities. On a
-  // real project they are the majority -- every file that neither imports nor is imported -- and
-  // left in they would swamp the module count and drag modularity toward a number that describes
-  // the isolates rather than the structure. Their count is reported instead.
+  // Isolated files are dropped before grouping rather than becoming singleton communities. On a real project they are the majority -- every file that neither imports nor is imported -- and left in they would swamp the module count and drag modularity toward a number that describes the isolates rather than the structure. Their count is reported instead.
   const connected = files.filter((f) => (degreeOf.get(f) ?? 0) > 0)
   const isolatedCount = files.length - connected.length
 
@@ -336,15 +245,13 @@ export function detectModules(imports: ImportGraph, cwd: string, top: number): M
     return { modules: [], modulesTotal: 0, modularity: null, isolatedCount, crossImports: [], crossImportsTotal: 0, noEdges: true }
   }
 
-  // Codepoint order, not `localeCompare`: collation differs between machines and would make the
-  // visit order -- and therefore the grouping -- machine-dependent.
+  // Codepoint order, not `localeCompare`: collation differs between machines and would make the visit order -- and therefore the grouping -- machine-dependent.
   const ordered = [...connected].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
   const idOf = new Map<string, number>()
   ordered.forEach((f, i) => idOf.set(f, i))
 
   const g = emptyGraph(ordered.length)
-  // Accumulate into a pair map first so a mutual import lands as one weight-2 edge rather than two
-  // separate additions whose order could vary.
+  // Accumulate into a pair map first so a mutual import lands as one weight-2 edge rather than two separate additions whose order could vary.
   const pairWeight = new Map<string, number>()
   for (const [from, targets] of graph) {
     const a = idOf.get(from)
@@ -372,10 +279,7 @@ export function detectModules(imports: ImportGraph, cwd: string, top: number): M
     else list.push(ordered[i]!)
   }
 
-  // The core is the member with the most edges to other members of its own module -- deliberately
-  // in-module degree rather than project-wide degree, because a file that half the project imports
-  // would otherwise name whichever module it happened to land in while telling you nothing about
-  // that module's own shape.
+  // The core is the member with the most edges to other members of its own module -- deliberately in-module degree rather than project-wide degree, because a file that half the project imports would otherwise name whichever module it happened to land in while telling you nothing about that module's own shape.
   const inModuleDegree = new Map<string, number>()
   for (const [from, targets] of graph) {
     const a = idOf.get(from)
@@ -392,8 +296,7 @@ export function detectModules(imports: ImportGraph, cwd: string, top: number): M
   const built = [...membersOf.entries()]
     .map(([c, absFiles]) => {
       const display = absFiles.map((f) => toDisplayPath(root, f)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-      // Ties broken by path, so a module whose members are all equally connected still gets one
-      // stable name rather than a different one each run.
+      // Ties broken by path, so a module whose members are all equally connected still gets one stable name rather than a different one each run.
       const coreAbs = [...absFiles].sort((a, b) => (inModuleDegree.get(b) ?? 0) - (inModuleDegree.get(a) ?? 0) || (a < b ? -1 : a > b ? 1 : 0))[0]!
       return { community: c, core: toDisplayPath(root, coreAbs), commonDir: commonDirLabel(display), files: display, directories: new Set(display.map(dirOf)).size }
     })
@@ -404,8 +307,7 @@ export function detectModules(imports: ImportGraph, cwd: string, top: number): M
   const coreOfIndex = new Map<number, string>()
   built.forEach((m, i) => coreOfIndex.set(i + 1, m.core))
 
-  // Cross-module coupling is read off the *directed* graph: "which module reaches into which" is a
-  // direction-carrying question even though the grouping that produced the modules is not.
+  // Cross-module coupling is read off the *directed* graph: "which module reaches into which" is a direction-carrying question even though the grouping that produced the modules is not.
   const crossCount = new Map<string, number>()
   for (const [from, targets] of graph) {
     const a = idOf.get(from)
@@ -441,14 +343,7 @@ export function detectModules(imports: ImportGraph, cwd: string, top: number): M
   }
 }
 
-/**
- * Text rendering of a {@link ModuleResult}, as the lines `arch` appends under its own sections.
- *
- * Every way this can show less than it found says so on its own line: the module cap, the
- * cross-import cap, the files left out of every module, and -- the one that matters most -- a
- * modularity too low for the grouping to mean anything, which is the case where the output looks
- * most like a real finding and is least likely to be one.
- */
+/** Text rendering of a {@link ModuleResult}, as the lines `arch` appends under its own sections. Every way this can show less than it found says so on its own line: the module cap, the cross-import cap, the files left out of every module, and -- the one that matters most -- a modularity too low for the grouping to mean anything, which is the case where the output looks most like a real finding and is least likely to be one. */
 export function renderModules(result: ModuleResult, top: number): string[] {
   const lines: string[] = []
   if (result.noEdges) {
@@ -460,8 +355,7 @@ export function renderModules(result: ModuleResult, top: number): string[] {
   const strength = q === null ? '' : q < WEAK_MODULARITY ? `, modularity ${q.toFixed(2)} -- weak, so treat this grouping as a hint rather than a finding` : `, modularity ${q.toFixed(2)}`
   lines.push(result.modules.length < result.modulesTotal ? `modules (top ${result.modules.length} of ${result.modulesTotal}${strength}):` : `modules (${result.modulesTotal} found${strength}):`)
   for (const m of result.modules) {
-    // The directory span is the second half of the finding: a module that is exactly one directory
-    // is the layout you already have, and one spread across several is the part worth looking at.
+    // The directory span is the second half of the finding: a module that is exactly one directory is the layout you already have, and one spread across several is the part worth looking at.
     const where = m.commonDir === null ? `across ${m.directories} directories` : m.commonDir === '.' ? 'all in the repository root' : `all in ${m.commonDir}`
     lines.push(`  #${m.index} ${m.size} files\t${m.core}\t(${where})`)
   }
@@ -481,9 +375,7 @@ export function renderModules(result: ModuleResult, top: number): string[] {
       lines.push(`  ${c.imports} imports\t#${c.fromIndex} ${c.fromCore} -> #${c.toIndex} ${c.toCore}`)
     }
   }
-  // A cross-import pair naming a module the --top cut leaves a dangling `#12` with no entry above
-  // it. Say which modules are addressable rather than letting the reader hunt for a row that was
-  // never printed.
+  // A cross-import pair naming a module the --top cut leaves a dangling `#12` with no entry above it. Say which modules are addressable rather than letting the reader hunt for a row that was never printed.
   if (result.modules.length < result.modulesTotal && result.crossImports.some((c) => c.fromIndex > top || c.toIndex > top)) {
     lines.push(`  (a #N above ${top} refers to a module the --top cap left out; raise --top to see it.)`)
   }

@@ -1,17 +1,4 @@
-/**
- * The `prepare` script must satisfy two requirements that pull in opposite directions:
- *
- * 1. A dev checkout gets its git hooks wired up. Before lefthook was added as a devDependency
- *    with a `prepare` script, `.git/hooks` was empty and every guard in lefthook.yml was
- *    decorative -- so a `prepare` that quietly does nothing is a real regression, not a nit.
- * 2. `npm install -g .` still succeeds. npm runs `prepare` in a context without this project's
- *    node_modules/.bin on PATH, where a bare `lefthook install` fails with "'lefthook' is not
- *    recognized" -- which broke the global install CLAUDE.md prescribes as the dogfood step for
- *    every CLI/hook change.
- *
- * Both are asserted against the real script, spawned as npm spawns it, with a fake lefthook shim
- * standing in for the real binary so the assertion is about *invocation*, not about lefthook.
- */
+/** The `prepare` script must satisfy two requirements that pull in opposite directions: 1. A dev checkout gets its git hooks wired up. Before lefthook was added as a devDependency with a `prepare` script, `.git/hooks` was empty and every guard in lefthook.yml was decorative -- so a `prepare` that quietly does nothing is a real regression, not a nit. 2. `npm install -g .` still succeeds. npm runs `prepare` in a context without this project's node_modules/.bin on PATH, where a bare `lefthook install` fails with "'lefthook' is not recognized" -- which broke the global install CLAUDE.md prescribes as the dogfood step for every CLI/hook change. Both are asserted against the real script, spawned as npm spawns it, with a fake lefthook shim standing in for the real binary so the assertion is about *invocation*, not about lefthook. */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
@@ -33,10 +20,7 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true })
 })
 
-/**
- * Write a fake lefthook shim into node_modules/.bin that records its argv to a marker file.
- * On Windows npm creates a `.cmd` shim, elsewhere an extensionless shell script.
- */
+/** Write a fake lefthook shim into node_modules/.bin that records its argv to a marker file. On Windows npm creates a `.cmd` shim, elsewhere an extensionless shell script. */
 function writeFakeLefthook(markerPath: string): void {
   const binDir = path.join(root, 'node_modules', '.bin')
   fs.mkdirSync(binDir, { recursive: true })
@@ -79,8 +63,7 @@ describe('prepare / install-git-hooks.mjs', () => {
   })
 
   it('propagates a failure when lefthook is present but fails', () => {
-    // Absence is the only thing that may be skipped; a broken lefthook must still fail loudly,
-    // otherwise the hooks silently go back to being decorative.
+    // Absence is the only thing that may be skipped; a broken lefthook must still fail loudly, otherwise the hooks silently go back to being decorative.
     const binDir = path.join(root, 'node_modules', '.bin')
     fs.mkdirSync(binDir, { recursive: true })
     if (process.platform === 'win32') {

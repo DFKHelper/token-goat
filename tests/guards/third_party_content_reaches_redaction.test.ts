@@ -1,23 +1,4 @@
-/**
- * Structural guard on redaction/fencing parity for the third-party content channel.
- *
- * `third_party_content_reaches_fence.test.ts` pins the population of functions that reach a
- * third-party content source (a GitHub PR fetch, a Google Doc fetch, a cross-cache recall read)
- * and asserts each one also reaches the injection fence. Fencing and secret redaction are two
- * independent protections, and nothing before this guard asked whether the SAME population also
- * reaches `redactSecrets`. That gap was real: `pr-slice`'s diff/comments/description text was
- * fenced against prompt injection but never redacted, so a leaked credential pasted into a PR
- * comment, or committed then reverted in a diff, reached the model unredacted -- the exact class
- * already fixed for WebSearch/WebFetch/MCP results (see CLAUDE.arch.md's Security Boundaries
- * section, "Every path that persists bytes goes through redactSecrets").
- *
- * This guard reuses the SAME population and source-module exclusion the fence guard already
- * maintains (imported, not copied) rather than growing a second, divergence-prone list. It differs
- * from the fence guard in one respect: some sources on that list carry no free text a credential
- * could hide in (a bare filename), or are already redacted at a lower layer this guard names and a
- * comment on the source explains -- those get a per-site EXEMPT reason instead of REDACT_TERMINALS,
- * and the reason must be checkable, not just plausible.
- */
+/** Structural guard on redaction/fencing parity for the third-party content channel. `third_party_content_reaches_fence.test.ts` pins the population of functions that reach a third-party content source (a GitHub PR fetch, a Google Doc fetch, a cross-cache recall read) and asserts each one also reaches the injection fence. Fencing and secret redaction are two independent protections, and nothing before this guard asked whether the SAME population also reaches `redactSecrets`. That gap was real: `pr-slice`'s diff/comments/description text was fenced against prompt injection but never redacted, so a leaked credential pasted into a PR comment, or committed then reverted in a diff, reached the model unredacted -- the exact class already fixed for WebSearch/WebFetch/MCP results (see CLAUDE.arch.md's Security Boundaries section, "Every path that persists bytes goes through redactSecrets"). This guard reuses the SAME population and source-module exclusion the fence guard already maintains (imported, not copied) rather than growing a second, divergence-prone list. It differs from the fence guard in one respect: some sources on that list carry no free text a credential could hide in (a bare filename), or are already redacted at a lower layer this guard names and a comment on the source explains -- those get a per-site EXEMPT reason instead of REDACT_TERMINALS, and the reason must be checkable, not just plausible. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -42,12 +23,7 @@ function callsRedact(body: string): boolean {
   return REDACT_TERMINALS.some((terminal) => body.includes(terminal))
 }
 
-/**
- * Per-site adjudication for a function that reaches a THIRD_PARTY_SOURCE_CALLS entry but not
- * `redactSecrets` directly. Each reason names a checkable mechanism, not a plausible-sounding
- * exemption -- the class of gap CLAUDE.md's own testing conventions call out as the most-repeated
- * defect generator in this repo.
- */
+/** Per-site adjudication for a function that reaches a THIRD_PARTY_SOURCE_CALLS entry but not `redactSecrets` directly. Each reason names a checkable mechanism, not a plausible-sounding exemption -- the class of gap CLAUDE.md's own testing conventions call out as the most-repeated defect generator in this repo. */
 const EXEMPT: ReadonlyMap<string, string> = new Map([
   [
     'cli.ts::cmdGdriveSections',

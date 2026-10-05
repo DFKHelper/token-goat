@@ -5,13 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as EmbeddingsModule from '../src/embeddings.js'
 
-// Regression: unlike a parse failure (logged via appendWorkerErrorLog/INDEX_FAILED --
-// see logIndexFailure in worker.ts), an embedding failure inside indexFileEmbeddings had no log
-// path at all. Compounded by the background daemon running with stdio: 'ignore'
-// (startDetachedWorker), a thrown embedding error produced literally zero observable trace
-// anywhere. Force the real embeddings.ts::indexFile choke point to throw and drive the real
-// makeIndexer -> embedFileSerialized -> indexFileEmbeddings wiring, asserting the failure is now
-// recorded in worker-errors.log the same way a parse failure already was.
+// Regression: unlike a parse failure (logged via appendWorkerErrorLog/INDEX_FAILED -- see logIndexFailure in worker.ts), an embedding failure inside indexFileEmbeddings had no log path at all. Compounded by the background daemon running with stdio: 'ignore' (startDetachedWorker), a thrown embedding error produced literally zero observable trace anywhere. Force the real embeddings.ts::indexFile choke point to throw and drive the real makeIndexer -> embedFileSerialized -> indexFileEmbeddings wiring, asserting the failure is now recorded in worker-errors.log the same way a parse failure already was.
 vi.mock('../src/embeddings.js', async (importOriginal) => {
   const actual = await importOriginal<typeof EmbeddingsModule>()
   return {
@@ -35,9 +29,7 @@ describe('makeIndexer embedding-failure logging (regression)', () => {
   beforeEach(() => {
     DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-worker-embed-errlog-'))
     prevEmbeddingsEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
-    // tests/setup/isolate-home.ts defaults this to 'false' for the whole suite -- this test
-    // needs the real embeddings pipeline actually invoked (and throwing) to exercise the
-    // failure-logging path, so it must opt back in explicitly.
+    // tests/setup/isolate-home.ts defaults this to 'false' for the whole suite -- this test needs the real embeddings pipeline actually invoked (and throwing) to exercise the failure-logging path, so it must opt back in explicitly.
     process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
   })
 
@@ -59,9 +51,7 @@ describe('makeIndexer embedding-failure logging (regression)', () => {
 
     const dbPath = path.join(DIR, 'global.db')
     const indexer = makeIndexer(dbPath)
-    // makeIndexer's default callback fires the embed off without the caller normally awaiting it
-    // -- but it does return the promise so a caller (this test) that wants to observe its
-    // settled state can await it explicitly instead of racing it.
+    // makeIndexer's default callback fires the embed off without the caller normally awaiting it -- but it does return the promise so a caller (this test) that wants to observe its settled state can await it explicitly instead of racing it.
     await indexer(f, sha as string)
 
     const logPath = path.join(DIR, 'worker-errors.log')

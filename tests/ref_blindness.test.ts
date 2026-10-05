@@ -1,32 +1,4 @@
-/**
- * The reference index has two blind spots, and in both of them an empty result set is
- * indistinguishable from a genuine "this symbol has no callers":
- *
- *   Kind. Only value-position usages are recorded (call, `new`, macro invocation, a few bare
- *   identifier shapes), never a type annotation. So `token-goat dead --kind interface` reported
- *   616 of this repo's 717 interfaces as dead; every one of them is used, as a type. The command
- *   was answering a question the index cannot answer. The same blindness reached the four
- *   single-symbol commands one release later: `refs src/types.ts::HookOutput` printed "No
- *   references found" for an interface named in 27 files, in TypeScript, where the language gate
- *   below correctly stays silent.
- *
- *   Language. `REF_LANGUAGES` in src/parser.ts gates ref extraction to nine tree-sitter
- *   languages. For a C#/PHP/Kotlin/Swift/Lua/... file, `refs` returned "No references found",
- *   which reads as "this symbol is unused" and invites deleting live code.
- *
- * Provenance:
- *   CAPTURE for every behavioural test below. Each one spawns the real built bundle
- *   (dist/token-goat.mjs) against a real on-disk project it indexes first, and asserts the literal
- *   bytes that process wrote to stdout/stderr plus its exit code. Nothing is stubbed.
- *   FORMAT-DERIVED for the REF_LANGUAGES mirror guard: the expected set is parsed out of
- *   src/parser.ts itself, the producer that gates extraction, so the two cannot drift apart. It is
- *   cited as a source rather than trusted as evidence of behaviour, which is what the CAPTURE
- *   tests above supply.
- *
- * Every assertion pairs the honest form being PRESENT with the misleading form being ABSENT: a
- * test that only checks for the new message passes even when the old wrong output is still emitted
- * alongside it, which is exactly how this class of defect survives a green suite.
- */
+/** The reference index has two blind spots, and in both of them an empty result set is indistinguishable from a genuine "this symbol has no callers": Kind. Only value-position usages are recorded (call, `new`, macro invocation, a few bare identifier shapes), never a type annotation. So `token-goat dead --kind interface` reported 616 of this repo's 717 interfaces as dead; every one of them is used, as a type. The command was answering a question the index cannot answer. The same blindness reached the four single-symbol commands one release later: `refs src/types.ts::HookOutput` printed "No references found" for an interface named in 27 files, in TypeScript, where the language gate below correctly stays silent. Language. `REF_LANGUAGES` in src/parser.ts gates ref extraction to nine tree-sitter languages. For a C#/PHP/Kotlin/Swift/Lua/... file, `refs` returned "No references found", which reads as "this symbol is unused" and invites deleting live code. Provenance: CAPTURE for every behavioural test below. Each one spawns the real built bundle (dist/token-goat.mjs) against a real on-disk project it indexes first, and asserts the literal bytes that process wrote to stdout/stderr plus its exit code. Nothing is stubbed. FORMAT-DERIVED for the REF_LANGUAGES mirror guard: the expected set is parsed out of src/parser.ts itself, the producer that gates extraction, so the two cannot drift apart. It is cited as a source rather than trusted as evidence of behaviour, which is what the CAPTURE tests above supply. Every assertion pairs the honest form being PRESENT with the misleading form being ABSENT: a test that only checks for the new message passes even when the old wrong output is still emitted alongside it, which is exactly how this class of defect survives a green suite. */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'

@@ -1,19 +1,4 @@
-/**
- * The `secret_redacted` stat must count what a handler EMITS, not what its redaction found.
- *
- * These two numbers differ on most branches and the gap is not a rounding detail. A poll-diff
- * handler emits a suffix delta; the approved-plan handler emits a truncated prefix; several
- * branches replace the output with a short notice outright. In every one of those, a secret outside
- * the emitted region was removed by slicing, truncation, or replacement -- not by redaction -- so
- * reporting the redaction's own input count would credit this subsystem for a protection some other
- * mechanism already provided. That is the accounting-honesty half of the redaction work; the
- * security half (redact where the value ARRIVES, so a later branch inherits it) is guarded
- * separately by `guards/rewritten_output_never_carries_a_secret.test.ts`.
- *
- * Measured before this was written: a BashOutput poll pair carrying one credential rewrote 22KB
- * with the secret redacted and recorded nothing at all, because both poll-diff handlers discarded
- * `.count` at the call site and had no `recordStat` anywhere in the file.
- */
+/** The `secret_redacted` stat must count what a handler EMITS, not what its redaction found. These two numbers differ on most branches and the gap is not a rounding detail. A poll-diff handler emits a suffix delta; the approved-plan handler emits a truncated prefix; several branches replace the output with a short notice outright. In every one of those, a secret outside the emitted region was removed by slicing, truncation, or replacement -- not by redaction -- so reporting the redaction's own input count would credit this subsystem for a protection some other mechanism already provided. That is the accounting-honesty half of the redaction work; the security half (redact where the value ARRIVES, so a later branch inherits it) is guarded separately by `guards/rewritten_output_never_carries_a_secret.test.ts`. Measured before this was written: a BashOutput poll pair carrying one credential rewrote 22KB with the secret redacted and recorded nothing at all, because both poll-diff handlers discarded `.count` at the call site and had no `recordStat` anywhere in the file. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

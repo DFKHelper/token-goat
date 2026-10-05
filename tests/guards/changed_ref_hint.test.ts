@@ -1,19 +1,4 @@
-/**
- * Guard against two regressions in `token-goat changed`:
- *
- * (a) `.command('changed')` was registered with no positional argument spec, so Commander
- * silently dropped a `changed <ref>` invocation (the exact form README documents) — the run
- * always fell through to the `HEAD~5` default with no error and no signal the argument was
- * ignored.
- *
- * (b) the `HEAD~5` default fails on any repo with fewer than 6 commits (a fresh checkout, a
- * shallow CI clone, a new project) with raw git stderr that names no working alternative, even
- * though `--since` exists and would fix it.
- *
- * These run the real built bundle against real git fixtures so a severed positional-argument
- * wire, or a hardcoded/non-resolving hint, cannot pass by accident (a mocked `runGit` call
- * sequence could satisfy either without exercising the actual CLI argument plumbing).
- */
+/** Guard against two regressions in `token-goat changed`: (a) `.command('changed')` was registered with no positional argument spec, so Commander silently dropped a `changed <ref>` invocation (the exact form README documents) — the run always fell through to the `HEAD~5` default with no error and no signal the argument was ignored. (b) the `HEAD~5` default fails on any repo with fewer than 6 commits (a fresh checkout, a shallow CI clone, a new project) with raw git stderr that names no working alternative, even though `--since` exists and would fix it. These run the real built bundle against real git fixtures so a severed positional-argument wire, or a hardcoded/non-resolving hint, cannot pass by accident (a mocked `runGit` call sequence could satisfy either without exercising the actual CLI argument plumbing). */
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -64,9 +49,7 @@ function spawnInRepo(cwd: string, args: string[]): { status: number | null; stdo
 }
 
 describe('changed [ref] positional wiring (exact-count)', () => {
-  // This repo is shared across every test in this describe block, so it must not be swept
-  // by the module-level afterEach (which clears tempDirs after each individual test) — it
-  // gets its own tracking array cleaned up once, after the whole block finishes.
+  // This repo is shared across every test in this describe block, so it must not be swept by the module-level afterEach (which clears tempDirs after each individual test) — it gets its own tracking array cleaned up once, after the whole block finishes.
   const repo3Dirs: string[] = []
   let repo3: string
 

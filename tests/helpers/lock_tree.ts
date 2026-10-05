@@ -1,46 +1,4 @@
-/**
- * Resolves, out of `package-lock.json` alone, the set of packages an ordinary consumer install
- * would land on disk -- with no network and no `npm install`.
- *
- * SECURITY.md states how large an install of token-goat is, in two configurations. Numbers like
- * that go stale silently, and the guard that watched them used to watch the wrong thing: it
- * asserted that the literal text `clean, 106 packages` appeared in the document, which is a fact
- * about the sentence rather than about the tree, and stayed green while the count drifted. This
- * exists so the guard can compare the document against a measurement instead.
- *
- * The walk is npm's own resolution, run over the lock's `packages` map. Its keys are installed
- * paths, so a dependency is resolved the way node resolves it -- look for
- * `<path>/node_modules/<name>`, then walk up the path chain -- and the set of paths reached is the
- * set of directories that would exist. Counting paths rather than distinct names is deliberate: two
- * copies of one package at different versions are two directories, and that is the unit SECURITY.md
- * counts in (a distinct-name count of the same tree gives 58 and 2 where counting directories gives
- * 62 and 2, both including token-goat itself -- an earlier version of this note quoted the two on
- * different bases, leaving the root out of the distinct-name pair and in the directory pair, which
- * made the gap between the units look four larger than it is).
- *
- * Two things this deliberately is not.
- *
- * It is not platform-agnostic. The lock lists a prebuilt binary for every platform
- * `@napi-rs/canvas` and `sqlite-vec` support, and an install takes only the matching one; the rest
- * are skipped, which is most of the difference between a naive lock count and a real install. So
- * `os`/`cpu` filtering is applied exactly as npm applies it, and the answer for the
- * optional-inclusive tree is a per-platform answer (measured 2026-09-11: 61 on win32/x64, 62 on
- * linux/x64, 61 on darwin/arm64). The tree without optional packages contains no platform-gated
- * entry at all and is the same 2 everywhere.
- *
- * Those figures go stale, and they have. This note read 102, 106, 103 and 40 for a long time, and
- * every one of them was right when it was written: run the walk against the lock file as it stood
- * at `d1538278` and exactly those numbers come back. What moved them was the tree rather than the
- * counting -- `better-sqlite3` gave way to `node:sqlite`, several packages became development
- * dependencies, and `sharp` left the consumer tree altogether, taking every `@img/*` libvips
- * binary with it. So a figure here that no longer reproduces is a prompt to re-measure against
- * today's lock file, not evidence that the walk is counting the wrong unit.
- *
- * It is not an upper bound. The lock pins versions that were current when it was last built; a
- * fresh install resolves the same ranges to whatever is newest that day, and other people's trees
- * grow. So a real install is this number or larger, never smaller, and the guard compares in that
- * direction rather than pretending this is the whole answer.
- */
+/** Resolves, out of `package-lock.json` alone, the set of packages an ordinary consumer install would land on disk -- with no network and no `npm install`. SECURITY.md states how large an install of token-goat is, in two configurations. Numbers like that go stale silently, and the guard that watched them used to watch the wrong thing: it asserted that the literal text `clean, 106 packages` appeared in the document, which is a fact about the sentence rather than about the tree, and stayed green while the count drifted. This exists so the guard can compare the document against a measurement instead. The walk is npm's own resolution, run over the lock's `packages` map. Its keys are installed paths, so a dependency is resolved the way node resolves it -- look for `<path>/node_modules/<name>`, then walk up the path chain -- and the set of paths reached is the set of directories that would exist. Counting paths rather than distinct names is deliberate: two copies of one package at different versions are two directories, and that is the unit SECURITY.md counts in (a distinct-name count of the same tree gives 58 and 2 where counting directories gives 62 and 2, both including token-goat itself -- an earlier version of this note quoted the two on different bases, leaving the root out of the distinct-name pair and in the directory pair, which made the gap between the units look four larger than it is). Two things this deliberately is not. It is not platform-agnostic. The lock lists a prebuilt binary for every platform `@napi-rs/canvas` and `sqlite-vec` support, and an install takes only the matching one; the rest are skipped, which is most of the difference between a naive lock count and a real install. So `os`/`cpu` filtering is applied exactly as npm applies it, and the answer for the optional-inclusive tree is a per-platform answer (measured 2026-09-11: 61 on win32/x64, 62 on linux/x64, 61 on darwin/arm64). The tree without optional packages contains no platform-gated entry at all and is the same 2 everywhere. Those figures go stale, and they have. This note read 102, 106, 103 and 40 for a long time, and every one of them was right when it was written: run the walk against the lock file as it stood at `d1538278` and exactly those numbers come back. What moved them was the tree rather than the counting -- `better-sqlite3` gave way to `node:sqlite`, several packages became development dependencies, and `sharp` left the consumer tree altogether, taking every `@img/*` libvips binary with it. So a figure here that no longer reproduces is a prompt to re-measure against today's lock file, not evidence that the walk is counting the wrong unit. It is not an upper bound. The lock pins versions that were current when it was last built; a fresh install resolves the same ranges to whatever is newest that day, and other people's trees grow. So a real install is this number or larger, never smaller, and the guard compares in that direction rather than pretending this is the whole answer. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -72,11 +30,7 @@ function platformMatches(declared: string[] | undefined, actual: string): boolea
   return declared.some((value) => (value.startsWith('!') ? value.slice(1) !== actual : value === actual))
 }
 
-/**
- * The paths a consumer install would create, as lock keys (`node_modules/x`, `node_modules/x/node_modules/y`).
- * The root project is not among them; callers that want the count as SECURITY.md states it add one
- * for token-goat itself.
- */
+/** The paths a consumer install would create, as lock keys (`node_modules/x`, `node_modules/x/node_modules/y`). The root project is not among them; callers that want the count as SECURITY.md states it add one for token-goat itself. */
 export function consumerTree(options: ConsumerTreeOptions): Set<string> {
   const os = options.os ?? process.platform
   const cpu = options.cpu ?? process.arch

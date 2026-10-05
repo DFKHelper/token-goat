@@ -1,13 +1,6 @@
-// Regression: MCP tool error/ambiguity responses used to carry CLI-only text verbatim -- e.g.
-// an ambiguous `read` call returned a literal shell retry command
-// (`token-goat read "file::Class.method"`), and overflow markers said things like "use --json"
-// or "pass --limit". An MCP client has no shell and no CLI flags, only this tool's own JSON
-// params, so a model driving an MCP client would either try to shell out (which fails) or get
-// stuck instead of correctly re-calling the tool with adjusted params.
+// Regression: MCP tool error/ambiguity responses used to carry CLI-only text verbatim -- e.g. an ambiguous `read` call returned a literal shell retry command (`token-goat read "file::Class.method"`), and overflow markers said things like "use --json" or "pass --limit". An MCP client has no shell and no CLI flags, only this tool's own JSON params, so a model driving an MCP client would either try to shell out (which fails) or get stuck instead of correctly re-calling the tool with adjusted params.
 //
-// This drives the real `read`/`symbol` tools through the actual MCP protocol layer (same
-// pattern as mcp_server.test.ts) and asserts the CLI-only phrasing is gone from the tool's
-// response, replaced with MCP-appropriate guidance.
+// This drives the real `read`/`symbol` tools through the actual MCP protocol layer (same pattern as mcp_server.test.ts) and asserts the CLI-only phrasing is gone from the tool's response, replaced with MCP-appropriate guidance.
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
@@ -28,8 +21,7 @@ vi.mock('../src/index_reader.js', async (importOriginal) => {
 const { createMcpServer } = await import('../src/mcp_server.js')
 
 function candidate(filePath: string, lineStart: number, lineEnd: number): SymbolEntry {
-  // docstring (not parent) deliberately holds 'Session' here -- exercises findParentName's
-  // backward-compat fallback for a pre-`parent`-column row (parent: '').
+  // docstring (not parent) deliberately holds 'Session' here -- exercises findParentName's backward-compat fallback for a pre-`parent`-column row (parent: '').
   return {
     filePath,
     name: 'refresh',
@@ -62,9 +54,7 @@ describe('mcp tool responses rewrite CLI-only affordances into tool-call guidanc
   })
 
   it('an ambiguous read result does not leak a literal shell retry command', async () => {
-    // Two distinct definitions of the same method name in the same file -> genuine same-file
-    // ambiguity (formatAmbiguity's non-multiFile branch), which is what emits the CLI retry
-    // command this test targets.
+    // Two distinct definitions of the same method name in the same file -> genuine same-file ambiguity (formatAmbiguity's non-multiFile branch), which is what emits the CLI retry command this test targets.
     querySymbolsMock.mockReturnValue([candidate('a.ts', 10, 12), candidate('a.ts', 30, 32)])
 
     const { client, close } = await connectedClient()
@@ -88,10 +78,7 @@ describe('mcp tool responses rewrite CLI-only affordances into tool-call guidanc
       expect(result.isError).toBe(true)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const block = (result.content as any[])[0]
-      // Schema validation rejects limit: 0 before it ever reaches runSymbol's own
-      // "--limit must be a positive number" text, so this exercises the MCP SDK's own
-      // validation-error message rather than the read_commands.ts string -- assert only that
-      // no CLI flag spelling leaks through either path.
+      // Schema validation rejects limit: 0 before it ever reaches runSymbol's own "--limit must be a positive number" text, so this exercises the MCP SDK's own validation-error message rather than the read_commands.ts string -- assert only that no CLI flag spelling leaks through either path.
       expect(block.text).not.toContain('--limit')
     } finally {
       await close()

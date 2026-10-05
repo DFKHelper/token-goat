@@ -4,9 +4,7 @@ import * as fs from 'node:fs'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Redirect configPath()/globalDbPath() to per-test-file temp locations, mirroring
-// tests/hooks_session_start.test.ts's config mock, so the session_start_reminder gate
-// and countSymbols() lookups this suite exercises are deterministic.
+// Redirect configPath()/globalDbPath() to per-test-file temp locations, mirroring tests/hooks_session_start.test.ts's config mock, so the session_start_reminder gate and countSymbols() lookups this suite exercises are deterministic.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return {
@@ -54,11 +52,7 @@ let io: ReturnType<typeof withFakeIo>
 
 beforeEach(() => {
   io = withFakeIo()
-  // Deliberately NOT clearModuleCaches() here: it resets the hook registry (see
-  // hook_registry.ts's registerReset(clearHooks)), and sessionStartHandler is only
-  // ever registered once, as a side effect of importing hooks_session_start.js above
-  // -- clearing the registry per-test would permanently unregister it for every test
-  // in this file with no re-registration path.
+  // Deliberately NOT clearModuleCaches() here: it resets the hook registry (see hook_registry.ts's registerReset(clearHooks)), and sessionStartHandler is only ever registered once, as a side effect of importing hooks_session_start.js above -- clearing the registry per-test would permanently unregister it for every test in this file with no re-registration path.
   invalidateConfigCache()
   for (const p of [_testConfigPath, _testDbPath]) {
     try {
@@ -82,10 +76,7 @@ afterEach(() => {
 
 describe('relay(session_start) with a malformed stdin payload (regression: relay() previously collapsed any JSON.parse failure — e.g. a cwd value with a raw, un-escaped backslash — straight to a bare {} pass-through, silently skipping every handler, including sessionStartHandler\'s own designed-in GENERIC_REMINDER degrade path for a missing/unusable cwd)', () => {
   it('still emits the generic reminder instead of a silent {} when stdin is not valid JSON', async () => {
-    // A raw backslash before a non-escape character (`\U`) is invalid JSON and makes
-    // JSON.parse throw -- exactly what a naive, non-JSON-aware caller produces when it
-    // string-interpolates a native Windows path (e.g. "C:\Users\...\proj") into the hook
-    // payload without escaping it.
+    // A raw backslash before a non-escape character (`\U`) is invalid JSON and makes JSON.parse throw -- exactly what a naive, non-JSON-aware caller produces when it string-interpolates a native Windows path (e.g. "C:\Users\...\proj") into the hook payload without escaping it.
     io.emit('{"hook_event_name":"SessionStart","cwd":"C:\\Users\\bad"}')
 
     await relay('session_start')

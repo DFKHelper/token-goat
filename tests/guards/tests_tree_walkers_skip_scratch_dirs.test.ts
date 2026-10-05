@@ -1,7 +1,4 @@
-/**
- * Every guard that walks the tests/ tree skips dot-prefixed entries. Two tests make their scratch directories under tests/ on purpose (tests/.tg-embed-backlog-*, tests/.tg-worker-project-config-*: the worker's idle sweep ignores anything under the OS temp dir, so those have to live elsewhere), and they remove them when they finish. A guard walking tests/ in another vitest worker at the same moment lists the directory, then reads a file that has since gone, and fails with ENOENT on a file nobody committed.
- * PROVENANCE: CAPTURE. A full `npm test` run on win32 failed three data_dir_env_pinning tests with `ENOENT: no such file or directory, open '...\tests\.tg-worker-project-config-...\...'`; each passed alone, and the directory named was one tests/worker_project_config.test.ts creates and deletes.
- */
+/** Every guard that walks the tests/ tree skips dot-prefixed entries. Two tests make their scratch directories under tests/ on purpose (tests/.tg-embed-backlog-*, tests/.tg-worker-project-config-*: the worker's idle sweep ignores anything under the OS temp dir, so those have to live elsewhere), and they remove them when they finish. A guard walking tests/ in another vitest worker at the same moment lists the directory, then reads a file that has since gone, and fails with ENOENT on a file nobody committed. PROVENANCE: CAPTURE. A full `npm test` run on win32 failed three data_dir_env_pinning tests with `ENOENT: no such file or directory, open '...\tests\.tg-worker-project-config-...\...'`; each passed alone, and the directory named was one tests/worker_project_config.test.ts creates and deletes. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'

@@ -1,30 +1,4 @@
-/**
- * Truncation invariant, session-cache half.
- *
- * The sibling guard (truncation_invariant_holds.test.ts) covers commands whose rows come from a
- * project index, and exempted every command whose rows come from a session cache or transcript on
- * the stated grounds that "a fixture cannot create one". That reason was false. `storeWebOutput`,
- * `storeBashOutput` and `storeMcpOutput` each seed their cache in one call, `recordFileRead` seeds
- * session read data, and tests/cli_output_section_notfound.test.ts already drives the real CLI
- * against a seeded cache. Thirteen commands sat behind that wrong reason, and four of the first
- * five checked turned out to drop rows with no disclosure of any kind.
- *
- * That is the more dangerous half of the failure, not the lesser one: an exemption with a true
- * reason is a known gap, while an exemption with a false reason reads as coverage and stops anyone
- * looking again. Same shape as the guard-gate defect in this repo's own history where a population
- * emptied silently and every assertion inside the loop kept passing.
- *
- * Provenance: CAPTURE. Every expectation here is read off a real run of the built bundle against a
- * seeded cache, never off the producing function's source.
- *
- * Seeding is in-process while the assertions spawn the built bundle, so both must agree on where
- * the cache lives. They do because this file deliberately does NOT mint its own home directory: it
- * inherits the one tests/setup/isolate-home.ts already set, which redirects TOKEN_GOAT_HOME *and*
- * LOCALAPPDATA/XDG_DATA_HOME -- both storage roots, which matters because the recall index writes
- * through dataDir() rather than tokenGoatHome(). Minting a private home here would leave the
- * in-process seed and the spawned reader looking at different directories, and every case below
- * would pass on an empty result.
- */
+/** Truncation invariant, session-cache half. The sibling guard (truncation_invariant_holds.test.ts) covers commands whose rows come from a project index, and exempted every command whose rows come from a session cache or transcript on the stated grounds that "a fixture cannot create one". That reason was false. `storeWebOutput`, `storeBashOutput` and `storeMcpOutput` each seed their cache in one call, `recordFileRead` seeds session read data, and tests/cli_output_section_notfound.test.ts already drives the real CLI against a seeded cache. Thirteen commands sat behind that wrong reason, and four of the first five checked turned out to drop rows with no disclosure of any kind. That is the more dangerous half of the failure, not the lesser one: an exemption with a true reason is a known gap, while an exemption with a false reason reads as coverage and stops anyone looking again. Same shape as the guard-gate defect in this repo's own history where a population emptied silently and every assertion inside the loop kept passing. Provenance: CAPTURE. Every expectation here is read off a real run of the built bundle against a seeded cache, never off the producing function's source. Seeding is in-process while the assertions spawn the built bundle, so both must agree on where the cache lives. They do because this file deliberately does NOT mint its own home directory: it inherits the one tests/setup/isolate-home.ts already set, which redirects TOKEN_GOAT_HOME *and* LOCALAPPDATA/XDG_DATA_HOME -- both storage roots, which matters because the recall index writes through dataDir() rather than tokenGoatHome(). Minting a private home here would leave the in-process seed and the spawned reader looking at different directories, and every case below would pass on an empty result. */
 
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
@@ -53,8 +27,7 @@ function run(args: string[]): { status: number; out: string; err: string } {
   const res = spawnSync(process.execPath, [BUNDLE, ...args], {
     cwd: projectDir,
     encoding: 'utf-8',
-    // Inherited on purpose -- see the header. Overriding the home here would decouple the seed
-    // from the reader and make every assertion below vacuous.
+    // Inherited on purpose -- see the header. Overriding the home here would decouple the seed from the reader and make every assertion below vacuous.
     env: { ...process.env },
   })
   return { status: res.status ?? 1, out: res.stdout ?? '', err: res.stderr ?? '' }
@@ -76,20 +49,7 @@ function rowsOf(out: string): unknown[] | undefined {
   return undefined
 }
 
-/**
- * How a command is expected to tell the reader it dropped rows.
- *
- * `envelope` is only correct where the JSON payload is already an object -- adding a wrapper to a
- * command that emits a bare array would break every `cmd --json | jq '.[]'` pipeline in existence,
- * so those disclose on stderr instead. The residual risk is real and worth naming: a pipeline that
- * discards stderr still cannot see the notice. What is refused is disclosure on *neither* channel.
- *
- * `stderr-more` exists because a total is not always a quantity the command has. `recall` pushes
- * its limit into SQL, so the rows beyond it are never fetched and never counted; demanding an exact
- * total there would mean either a second COUNT query on every call or inventing a number. An
- * existence signal is the honest maximum, and it is still the difference between a reader who knows
- * to raise --limit and one who believes they have seen everything.
- */
+/** How a command is expected to tell the reader it dropped rows. `envelope` is only correct where the JSON payload is already an object -- adding a wrapper to a command that emits a bare array would break every `cmd --json | jq '.[]'` pipeline in existence, so those disclose on stderr instead. The residual risk is real and worth naming: a pipeline that discards stderr still cannot see the notice. What is refused is disclosure on *neither* channel. `stderr-more` exists because a total is not always a quantity the command has. `recall` pushes its limit into SQL, so the rows beyond it are never fetched and never counted; demanding an exact total there would mean either a second COUNT query on every call or inventing a number. An existence signal is the honest maximum, and it is still the difference between a reader who knows to raise --limit and one who believes they have seen everything. */
 type Disclosure =
   | { readonly kind: 'envelope'; readonly totalField: string }
   | { readonly kind: 'stderr-count' }
@@ -121,17 +81,13 @@ beforeAll(async () => {
     writeFileSync(f, `export const v${i} = ${i}\n`)
     recordFileRead(f)
   }
-  // `hot` aggregates tokenGoatHome()/sessions/*.json, not in-memory state, so the reads above are
-  // invisible to a separate process until they are flushed. Without this the hot case reported
-  // "0 of 0" -- its calibration assertion caught it, which is the whole reason that assertion is
-  // not optional.
+  // `hot` aggregates tokenGoatHome()/sessions/*.json, not in-memory state, so the reads above are invisible to a separate process until they are flushed. Without this the hot case reported "0 of 0" -- its calibration assertion caught it, which is the whole reason that assertion is not optional.
   saveSessionState(getSessionId())
 })
 
 describe('the session half covers exactly the commands the sibling guard defers to it', () => {
   it('drives every command on the shared list, and no command the sibling still checks', () => {
-    // Without this, deleting a case here would silently shrink coverage: the sibling guard reads
-    // the shared list, not this file, so it would go on treating the name as covered.
+    // Without this, deleting a case here would silently shrink coverage: the sibling guard reads the shared list, not this file, so it would go on treating the name as covered.
     expect([...CASES.map((c) => c.command)].sort()).toEqual([...SESSION_TRUNCATION_COMMANDS].sort())
   })
 })
@@ -141,10 +97,7 @@ describe.each(CASES)('$command discloses when $flag drops rows', ({ command, arg
   const uncappedRows = (): number => jsonRows([flag, '999'])?.length ?? 0
 
   it('applies the cap at all, so the rest of this case is not asserting on an uncapped result', () => {
-    // Calibration, and it has already earned its place once: an earlier attempt to seed these
-    // caches through the post_tool_use hook exited 0 and stored nothing, because that path gates
-    // the cache write behind a compression-worthwhile check. Without this assertion the whole file
-    // would have gone green against empty caches while proving nothing at all.
+    // Calibration, and it has already earned its place once: an earlier attempt to seed these caches through the post_tool_use hook exited 0 and stored nothing, because that path gates the cache write behind a compression-worthwhile check. Without this assertion the whole file would have gone green against empty caches while proving nothing at all.
     const capped = jsonRows([flag, String(LIMIT)])
     const uncapped = jsonRows([flag, '999'])
 
@@ -205,8 +158,7 @@ describe.each(CASES)('$command discloses when $flag drops rows', ({ command, arg
   })
 
   it('stays quiet when nothing is dropped', () => {
-    // The other half of the invariant, and the half a disclosure bolted on unconditionally would
-    // fail: a complete answer must not claim rows were omitted.
+    // The other half of the invariant, and the half a disclosure bolted on unconditionally would fail: a complete answer must not claim rows were omitted.
     const r = run([...args, flag, '999', '--json'])
     expect(/Showing \d+ of \d+|more available|raise --limit/i.test(r.err), `${command} claimed truncation on a complete result`).toBe(false)
     if (disclosure.kind === 'envelope') {

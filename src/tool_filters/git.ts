@@ -20,12 +20,7 @@ import {
   squeezeBlankLines,
 } from './helpers.js'
 
-// git flags that take a value in the following token. When scanning argv for
-// subcommand-identifying positional tokens (matches()/compress() subcommand detection), the
-// value token of one of these must be skipped entirely, not scanned for a word that happens to
-// match another filter's subcommand keyword -- e.g. `git commit -m "please push and rebase"`
-// must never be mistaken for a `push`/`rebase` command just because that word appears inside
-// the message text.
+// git flags that take a value in the following token. When scanning argv for subcommand-identifying positional tokens (matches()/compress() subcommand detection), the value token of one of these must be skipped entirely, not scanned for a word that happens to match another filter's subcommand keyword -- e.g. `git commit -m "please push and rebase"` must never be mistaken for a `push`/`rebase` command just because that word appears inside the message text.
 const _GIT_VALUE_FLAGS = new Set([
   '-m',
   '--message',
@@ -41,9 +36,7 @@ const _GIT_VALUE_FLAGS = new Set([
   '--work-tree',
 ])
 
-/** Positional (non-flag) args for git argv, skipping the value token of known value-taking git
- * flags (`-m <msg>`, `--message <msg>`, ...) so a word inside a flag's value can never be
- * mistaken for a subcommand keyword by the `<=3`-token subcommand scan in `matches()`. */
+/** Positional (non-flag) args for git argv, skipping the value token of known value-taking git flags (`-m <msg>`, `--message <msg>`, ...) so a word inside a flag's value can never be mistaken for a subcommand keyword by the `<=3`-token subcommand scan in `matches()`. */
 function gitPositionalArgs(args: string[]): string[] {
   const out: string[] = []
   for (let i = 0; i < args.length; i++) {
@@ -58,9 +51,7 @@ function gitPositionalArgs(args: string[]): string[] {
   return out
 }
 
-// ---------------------------------------------------------------------------
-// CRLF warning stripping (git.postNormalise)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CRLF warning stripping (git.postNormalise) ---------------------------------------------------------------------------
 
 // Modern git 2.37+: self-contained single-line warning
 const _GIT_CRLF_MODERN_RE =
@@ -112,17 +103,12 @@ function _stripGitCrlfWarnings(text: string): string {
   return out.join('\n')
 }
 
-// ---------------------------------------------------------------------------
-// Shared base: postNormalise strips CRLF warnings on every stream
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Shared base: postNormalise strips CRLF warnings on every stream ---------------------------------------------------------------------------
 
 abstract class GitBaseFilter extends ToolFilter {
   override readonly binaries = new Set(['git'])
 
-  // Overrides ToolFilter.matches() to scan gitPositionalArgs() instead of the generic
-  // positionalArgs() -- git's subcommand-identifying tokens must skip the value of -m/--message
-  // and other value-taking flags, or a word inside a commit message could be mistaken for
-  // another filter's subcommand keyword.
+  // Overrides ToolFilter.matches() to scan gitPositionalArgs() instead of the generic positionalArgs() -- git's subcommand-identifying tokens must skip the value of -m/--message and other value-taking flags, or a word inside a commit message could be mistaken for another filter's subcommand keyword.
   override matches(argv: string[]): boolean {
     if (argv.length === 0) return false
     const first = argv[0]!
@@ -140,28 +126,18 @@ abstract class GitBaseFilter extends ToolFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Shared git regexes used across multiple filters
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Shared git regexes used across multiple filters ---------------------------------------------------------------------------
 
 const _GIT_LOG_COMMIT_RE = /^commit [0-9a-f]{7,}/
-// `diff --git ` for normal diffs; `diff --cc ` for combined diffs (merge-commit
-// conflict resolutions, e.g. `git diff --cc <merge-sha>` / `git show --cc <merge-sha>`).
+// `diff --git ` for normal diffs; `diff --cc ` for combined diffs (merge-commit conflict resolutions, e.g. `git diff --cc <merge-sha>` / `git show --cc <merge-sha>`).
 const _GIT_DIFF_FILE_RE = /^diff --(?:git|cc) /
-// `@@ -a,b +c,d @@` for normal diffs; combined diffs (`diff --cc`) use one extra `@` per
-// parent being merged, e.g. `@@@ -a,b -c,d +e,f @@@` for a 2-parent merge. Without this,
-// large-hunk truncation never engages on a combined diff's hunks -- they're indistinguishable
-// from plain content and the whole (potentially huge) hunk passes through untouched.
+// `@@ -a,b +c,d @@` for normal diffs; combined diffs (`diff --cc`) use one extra `@` per parent being merged, e.g. `@@@ -a,b -c,d +e,f @@@` for a 2-parent merge. Without this, large-hunk truncation never engages on a combined diff's hunks -- they're indistinguishable from plain content and the whole (potentially huge) hunk passes through untouched.
 const _GIT_DIFF_HUNK_RE = /^@{2,}\s/
 
-// ---------------------------------------------------------------------------
-// GitLogFilter — "git log"
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitLogFilter — "git log" ---------------------------------------------------------------------------
 
 const _GIT_LOG_ONELINE_RE = /^[0-9a-f]{7,}\s/
-// Same as _GIT_LOG_ONELINE_RE but tolerant of a leading `--graph` ASCII-art prefix
-// (e.g. `| * `, `|/  `, `*   `), so connector-only lines (no commit hash) aren't
-// mistaken for commit lines when counting/capping oneline commits.
+// Same as _GIT_LOG_ONELINE_RE but tolerant of a leading `--graph` ASCII-art prefix (e.g. `| * `, `|/  `, `*   `), so connector-only lines (no commit hash) aren't mistaken for commit lines when counting/capping oneline commits.
 const _GIT_LOG_ONELINE_GRAPH_RE = /^[|\\/* ]*[0-9a-f]{7,}\s/
 const _GIT_LOG_MERGE_RE = /^Merge:/
 const _GIT_LOG_AUTHOR_RE = /^Author:\s+(.+)/
@@ -212,10 +188,7 @@ function _compressGitLogFull(stdout: string, stderr: string): string {
 }
 
 /** Compress -p/--patch log: truncate large diff sections per commit. */
-// Caps the diff/patch portion of a single commit block (header lines kept in full, diff lines
-// truncated past `maxLines`). Factored out of _compressGitLogPatch so the oneline+patch combo in
-// _compressGitLogEnhanced can apply the identical per-commit truncation to blocks split on the
-// oneline commit-header boundary instead of the verbose "commit <hash>" boundary.
+// Caps the diff/patch portion of a single commit block (header lines kept in full, diff lines truncated past `maxLines`). Factored out of _compressGitLogPatch so the oneline+patch combo in _compressGitLogEnhanced can apply the identical per-commit truncation to blocks split on the oneline commit-header boundary instead of the verbose "commit <hash>" boundary.
 function _capPatchLinesInBlock(block: string, maxLines: number): string {
   const lines = block.split('\n')
   const diffStart = lines.findIndex((ln) => _GIT_DIFF_FILE_RE.test(ln))
@@ -236,9 +209,7 @@ function _capPatchLinesInBlock(block: string, maxLines: number): string {
   return [...headerLines, ...diffLines].join('\n')
 }
 
-/** Shared by _compressGitLogPatch/_compressGitLogStat: split into commit blocks, cap each
- *  block via `capBlock`, and rejoin with prelude/stderr -- identical shape, only the per-block
- *  truncation differs (patch-line cap vs. stat-file cap). */
+/** Shared by _compressGitLogPatch/_compressGitLogStat: split into commit blocks, cap each block via `capBlock`, and rejoin with prelude/stderr -- identical shape, only the per-block truncation differs (patch-line cap vs. stat-file cap). */
 // Git indents a commit message body by exactly four spaces; stat lines start with one space, name-only lines at column 0, numstat/name-status lines with a digit or status letter -- so a four-space-indent test is enough to tell a message-body line from every stat/patch shape this function handles, without needing to know which of those shapes it is looking at.
 const _GIT_LOG_MESSAGE_LINE_RE = /^ {4}/
 
@@ -252,8 +223,7 @@ function _collapseCommitBody(block: string): string {
   return [...header, ...rest].join('\n')
 }
 
-/**
- *  truncation differs (patch-line cap vs. stat-file cap). */
+/** truncation differs (patch-line cap vs. stat-file cap). */
 function _compressGitLogCapped(
   stdout: string,
   stderr: string,
@@ -284,10 +254,7 @@ function _compressGitLogPatch(stdout: string, stderr: string, maxLines?: number)
 }
 
 /** Compress --stat log: limit file list per commit block. */
-// Caps the stat-line portion of a single commit block (all other lines kept in full, stat lines
-// past `maxFiles` truncated). Factored out of _compressGitLogStat so the oneline+stat combo in
-// _compressGitLogEnhanced can apply the identical per-commit truncation to blocks split on the
-// oneline commit-header boundary instead of the verbose "commit <hash>" boundary.
+// Caps the stat-line portion of a single commit block (all other lines kept in full, stat lines past `maxFiles` truncated). Factored out of _compressGitLogStat so the oneline+stat combo in _compressGitLogEnhanced can apply the identical per-commit truncation to blocks split on the oneline commit-header boundary instead of the verbose "commit <hash>" boundary.
 function _capStatLinesInBlock(block: string, maxFiles: number): string {
   const lines = block.split('\n')
   const statLines = lines.filter((ln) => ln.includes(' | ') && (ln.includes('+') || ln.includes('-')))
@@ -354,24 +321,14 @@ function _compressGitLogEnhanced(
     const ONELINE_CAP = 50
     let blocks: string[]
     if (isPatch || isStat) {
-      // `--oneline` combined with `--stat`/`-p` interleaves each commit's one-line header with
-      // its own stat/patch body. This branch used to run before isStat/isPatch were ever
-      // consulted and capped by raw non-empty LINE count -- so a multi-line stat/patch body
-      // inflated the apparent commit count, tearing a kept commit's body off mid-way and making
-      // the "+N more commits" figure count stat/patch lines instead of commits. Cap by commit
-      // BLOCK (header + full body) instead, and apply the same per-commit stat/patch truncation
-      // the non-oneline isStat/isPatch paths already use below.
+      // `--oneline` combined with `--stat`/`-p` interleaves each commit's one-line header with its own stat/patch body. This branch used to run before isStat/isPatch were ever consulted and capped by raw non-empty LINE count -- so a multi-line stat/patch body inflated the apparent commit count, tearing a kept commit's body off mid-way and making the "+N more commits" figure count stat/patch lines instead of commits. Cap by commit BLOCK (header + full body) instead, and apply the same per-commit stat/patch truncation the non-oneline isStat/isPatch paths already use below.
       const MAX_STAT_FILES = 20
       const MAX_PATCH_LINES = 30
       blocks = splitBlocks(stdout, _GIT_LOG_ONELINE_RE)
         .filter((b) => b.trim())
         .map((b) => (isPatch ? _capPatchLinesInBlock(b, MAX_PATCH_LINES) : _capStatLinesInBlock(b, MAX_STAT_FILES)))
     } else {
-      // `--graph` prefixes each commit's oneline entry with ASCII-art connector characters
-      // (e.g. `| * `, `*   `) and also emits connector-only lines (`|\  `, `|/  `) with no
-      // commit hash at all. Counting every non-empty line as a commit overcounts the
-      // elided-commit tally by however many connector-only lines exist, so only count/cap
-      // lines that actually carry a commit hash (with or without a graph prefix).
+      // `--graph` prefixes each commit's oneline entry with ASCII-art connector characters (e.g. `| * `, `*   `) and also emits connector-only lines (`|\  `, `|/  `) with no commit hash at all. Counting every non-empty line as a commit overcounts the elided-commit tally by however many connector-only lines exist, so only count/cap lines that actually carry a commit hash (with or without a graph prefix).
       blocks = stdout.split('\n').filter((ln) => ln.trim() && _GIT_LOG_ONELINE_GRAPH_RE.test(ln))
     }
 
@@ -406,32 +363,18 @@ export class GitLogFilter extends GitBaseFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// GitDiffFilter — "git diff", "git show"
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitDiffFilter — "git diff", "git show" ---------------------------------------------------------------------------
 
-// Matches both the plain two-filename binary message ("Binary files a/x and b/x differ") and
-// the combined-diff (`git diff --cc` / `git show --cc`) form, which omits filenames entirely
-// ("Binary files differ") -- the filename segment is optional so both shapes match.
+// Matches both the plain two-filename binary message ("Binary files a/x and b/x differ") and the combined-diff (`git diff --cc` / `git show --cc`) form, which omits filenames entirely ("Binary files differ") -- the filename segment is optional so both shapes match.
 const _GIT_DIFF_BINARY_RE = /^Binary files?(?: .+)? differ$/
 // A binary file's row carries `Bin 3 -> 5 bytes` (or a bare `Bin` when the size did not change) where a text row carries a change count, so requiring a digit after the bar classified every binary row as "not a stat line". Those rows then went to otherLines, which is excluded from the rollup threshold AND spliced ahead of the rollup: 60 changed binary files read as one stat line and shipped uncompressed, and a mixed diff hoisted its binary rows above the directory summary they belonged in. Matched here so they count toward the threshold and roll up with everything else -- _diffStatLineCounts finds no +/- in `Bin ...`, which is correct, since a binary change has no line counts to attribute.
 const _GIT_DIFF_STAT_FILE_RE = /^\s+\S.*\|\s+(?:\d+|Bin\b)/
 const _GIT_DIFF_STAT_SUMMARY_RE = /^\s*\d+ files? changed/
 const _DIFF_STAT_DIR_ROLLUP_THRESHOLD = 20
-// Matches the numeric total-changes column that follows " | " in a stat line, e.g. "1000" in
-// " src/big.ts | 1000 +++++++++++++++++++++++++++++++++++++++++++-----". The bar-graph glyphs
-// after this number are WIDTH-SCALED by git once a file's true change count exceeds
-// --stat-width, so counting '+'/'-' characters silently undercounts large diffs by an order of
-// magnitude or more. The ratio between '+' and '-' glyphs is preserved under scaling, so the true
-// insert/delete split is reconstructed by applying that ratio to the real total from this column.
+// Matches the numeric total-changes column that follows " | " in a stat line, e.g. "1000" in " src/big.ts | 1000 +++++++++++++++++++++++++++++++++++++++++++-----". The bar-graph glyphs after this number are WIDTH-SCALED by git once a file's true change count exceeds --stat-width, so counting '+'/'-' characters silently undercounts large diffs by an order of magnitude or more. The ratio between '+' and '-' glyphs is preserved under scaling, so the true insert/delete split is reconstructed by applying that ratio to the real total from this column.
 const _GIT_DIFF_STAT_TOTAL_RE = /^(\d+)\s*([+-]*)/
 
-/**
- * Parses a stat line's "<total> <bar>" column (the text after " | ") into a real +/- split.
- * The bar's glyph ratio is preserved by git's width scaling even though the absolute glyph
- * count is not, so this recovers accurate adds/dels from the true total rather than from
- * counting scaled-down bar characters directly.
- */
+/** Parses a stat line's "<total> <bar>" column (the text after " | ") into a real +/- split. The bar's glyph ratio is preserved by git's width scaling even though the absolute glyph count is not, so this recovers accurate adds/dels from the true total rather than from counting scaled-down bar characters directly. */
 function _diffStatLineCounts(statPart: string): { adds: number; dels: number } {
   const m = _GIT_DIFF_STAT_TOTAL_RE.exec(statPart.trim())
   if (!m) return { adds: 0, dels: 0 }
@@ -446,21 +389,9 @@ function _diffStatLineCounts(statPart: string): { adds: number; dels: number } {
 }
 
 /** Roll up per-file stat lines into per-directory summaries. */
-// Resolves git's diff --stat rename notation for a single path column (the text before " | ")
-// to the path's NEW (post-rename) location, so the directory rollup below groups it under where
-// the file actually ended up.
+// Resolves git's diff --stat rename notation for a single path column (the text before " | ") to the path's NEW (post-rename) location, so the directory rollup below groups it under where the file actually ended up.
 //
-// Git emits renames in two forms:
-//   - Full two-path form when old and new share no useful common prefix/suffix:
-//     "old/full/path.ts => new/full/path.ts"
-//   - Brace-compressed form otherwise, with only the varying segment wrapped in "{old => new}"
-//     and any common prefix/suffix left outside the braces:
-//     "src/{old => new}/file.ts", "{old-dir => new-dir}/file.ts", "dir/{a.ts => b.ts}"
-// The previous implementation only stripped a leading "{" / trailing "}" from the *entire*
-// pathPart, which only happens to work when the braces span the whole string (no prefix or
-// suffix outside them). The much more common case -- a prefix or suffix outside the braces --
-// left a stray "}" or "{" stuck to the resolved segment, corrupting the rollup's directory key
-// (e.g. "src/{old => new}/file.ts" resolved to "new}/file.ts", not "src/new/file.ts").
+// Git emits renames in two forms: - Full two-path form when old and new share no useful common prefix/suffix: "old/full/path.ts => new/full/path.ts" - Brace-compressed form otherwise, with only the varying segment wrapped in "{old => new}" and any common prefix/suffix left outside the braces: "src/{old => new}/file.ts", "{old-dir => new-dir}/file.ts", "dir/{a.ts => b.ts}" The previous implementation only stripped a leading "{" / trailing "}" from the *entire* pathPart, which only happens to work when the braces span the whole string (no prefix or suffix outside them). The much more common case -- a prefix or suffix outside the braces -- left a stray "}" or "{" stuck to the resolved segment, corrupting the rollup's directory key (e.g. "src/{old => new}/file.ts" resolved to "new}/file.ts", not "src/new/file.ts").
 function _resolveRenameNewPath(pathPart: string): string {
   const braceStart = pathPart.indexOf('{')
   const braceEnd = braceStart === -1 ? -1 : pathPart.indexOf('}', braceStart + 1)
@@ -543,11 +474,7 @@ function _compressGitDiffStat(stdout: string, stderr: string, argv: string[]): s
   return out
 }
 
-/**
- * Detect whether a hunk is dominated by repetitive JSON dict lines.
- * True when ≥75% of added lines are valid JSON dicts with ≤5 distinct key-sets
- * and there are at least 8 valid lines.
- */
+/** Detect whether a hunk is dominated by repetitive JSON dict lines. True when ≥75% of added lines are valid JSON dicts with ≤5 distinct key-sets and there are at least 8 valid lines. */
 function _isRepetitiveJsonHunk(hunkLines: string[]): boolean {
   const added = hunkLines.filter(isDiffAdd).map((ln) => ln.slice(1))
   if (added.length < 8) return false
@@ -570,10 +497,7 @@ function _isRepetitiveJsonHunk(hunkLines: string[]): boolean {
   return valid / added.length >= 0.75 && keySets.size <= 5
 }
 
-/**
- * Trim trailing context lines from a hunk, keeping at most maxTrail after
- * the last changed line. Returns [trimmedLines, nTrimmed].
- */
+/** Trim trailing context lines from a hunk, keeping at most maxTrail after the last changed line. Returns [trimmedLines, nTrimmed]. */
 function _trimHunkTrailingContext(hunkLines: string[], maxTrail = 2): [string[], number] {
   let lastChanged = -1
   for (let i = 0; i < hunkLines.length; i++) {
@@ -628,8 +552,7 @@ function _hunkWhitespaceEolOnlyPairCount(hunkLines: string[]): number | null {
 }
 
 /** Compress diff body: binary detection, large-hunk truncation, JSONL summarisation. */
-// Density (changed-line fraction) of one hunk, keyed the same way as shell_file.ts's
-// DiffFilter._scoreAndCapHunks -- `content` skips the hunk's own `@@ ... @@` header line.
+// Density (changed-line fraction) of one hunk, keyed the same way as shell_file.ts's DiffFilter._scoreAndCapHunks -- `content` skips the hunk's own `@@ ... @@` header line.
 function _hunkDensity(hunkText: string): number {
   const content = hunkText.split('\n').slice(1)
   if (content.length === 0) return 0
@@ -637,14 +560,7 @@ function _hunkDensity(hunkText: string): number {
   return changed / content.length
 }
 
-// Caps the number of real hunks (everything after `hunks[0]`, the pre-`@@` file-header
-// preamble) to `maxHunksPerFile`, keeping the highest-density hunks (most likely to be real
-// signal, not whitespace/formatting noise) and dropping the rest with a summary note -- the
-// same density-based selection [bash_diff].max_hunks_per_file drives for the raw `diff`
-// command via shell_file.ts's DiffFilter/_scoreAndCapHunks. Without this, `git diff`/`git
-// show` (routed here via GitDiffFilter, the actually-reached filter for those subcommands)
-// silently ignored the config knob entirely: only the never-dispatched GitFilter fallback and
-// the raw-`diff` filter honored it.
+// Caps the number of real hunks (everything after `hunks[0]`, the pre-`@@` file-header preamble) to `maxHunksPerFile`, keeping the highest-density hunks (most likely to be real signal, not whitespace/formatting noise) and dropping the rest with a summary note -- the same density-based selection [bash_diff].max_hunks_per_file drives for the raw `diff` command via shell_file.ts's DiffFilter/_scoreAndCapHunks. Without this, `git diff`/`git show` (routed here via GitDiffFilter, the actually-reached filter for those subcommands) silently ignored the config knob entirely: only the never-dispatched GitFilter fallback and the raw-`diff` filter honored it.
 function _capHunksByDensity(hunks: string[], maxHunksPerFile: number): { hunks: string[]; note: string | null } {
   const real = hunks.slice(1)
   if (maxHunksPerFile <= 0 || real.length <= maxHunksPerFile) return { hunks, note: null }
@@ -774,8 +690,7 @@ function _compressGitDiffEnhanced(stdout: string, stderr: string, argv: string[]
   const flags = new Set(argv)
   const isStat = flags.has('--stat') || flags.has('--shortstat') || flags.has('--name-only')
   if (isStat) return _compressGitDiffStat(stdout, stderr, argv)
-  // [bash_diff] max_hunks_per_file (default 10); falls back to _compressGitDiffBody's own
-  // built-in default (10) on config load failure.
+  // [bash_diff] max_hunks_per_file (default 10); falls back to _compressGitDiffBody's own built-in default (10) on config load failure.
   let maxHunksPerFile: number | undefined
   try {
     maxHunksPerFile = loadConfig().bash_diff.max_hunks_per_file
@@ -796,9 +711,7 @@ export class GitDiffFilter extends GitBaseFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// GitStatusVerboseFilter — "git status"
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitStatusVerboseFilter — "git status" ---------------------------------------------------------------------------
 
 const _SHORT_STATUS_RE = /^[MADRCU?! ][MADRCU?! ] /
 const _GIT_STATUS_SECTION_RE =
@@ -902,9 +815,7 @@ export class GitStatusVerboseFilter extends GitBaseFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// GitBlameFilter — "git blame"
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitBlameFilter — "git blame" ---------------------------------------------------------------------------
 
 const _GIT_BLAME_AUTHOR_RE = /^\^?([0-9a-f]{7,40})\s+(?:\S+\s+)?\(([^)]+?)\s+\d{4}-\d\d-\d\d/
 const _GIT_BLAME_PORCELAIN_RE = /^[0-9a-f]{40} \d+ \d+/
@@ -1048,9 +959,7 @@ export class GitBlameFilter extends GitBaseFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// GitCommitFilter — "git commit"
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitCommitFilter — "git commit" ---------------------------------------------------------------------------
 
 const _LEFTHOOK_BANNER_RE = /lefthook/i
 const _LEFTHOOK_PASS_RE = /[✔✓](?:️)?\s+(\S+)/
@@ -1125,9 +1034,7 @@ export class GitCommitFilter extends GitBaseFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// GitPushFilter — "git push"
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitPushFilter — "git push" ---------------------------------------------------------------------------
 
 const _GIT_PUSH_REF_RE = /^\s*(?:To\s|->|\+|\*|!|\s+[0-9a-f]+\.\.[0-9a-f]+)/
 const _GIT_PUSH_TRACK_RE = /^Branch\s+'[^']+'\s+set\s+up\s+to\s+track/
@@ -1373,9 +1280,7 @@ export class GitPushFilter extends GitBaseFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// GitFilter — generic catch-all for all other git subcommands
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitFilter — generic catch-all for all other git subcommands ---------------------------------------------------------------------------
 
 /** Truncate a listing (ls-files, ls-tree) to first N lines. */
 function _truncateListing(stdout: string, stderr: string, head = 100): string {
@@ -1416,9 +1321,7 @@ function _compressGitRemote(stdout: string, stderr: string): string {
 
 export class GitFilter extends GitBaseFilter {
   readonly name = 'git'
-  // No subcommands set — matches any git command as catch-all, except `git
-  // grep`, which is excluded here so dispatch falls through to GrepFilter
-  // (registered after GIT_FILTERS) and its per-file match-count summarizer.
+  // No subcommands set — matches any git command as catch-all, except `git grep`, which is excluded here so dispatch falls through to GrepFilter (registered after GIT_FILTERS) and its per-file match-count summarizer.
   override matches(argv: string[]): boolean {
     if (!super.matches(argv)) return false
     return gitPositionalArgs(argv.slice(1))[0] !== 'grep'
@@ -1445,14 +1348,9 @@ export class GitFilter extends GitBaseFilter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Export
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Export ---------------------------------------------------------------------------
 
-/**
- * Ordered filter array for git: specific subcommand filters first, generic
- * GitFilter last as catch-all.  Spread into TOOL_FILTERS after linters.
- */
+/** Ordered filter array for git: specific subcommand filters first, generic GitFilter last as catch-all.  Spread into TOOL_FILTERS after linters. */
 export const GIT_FILTERS: ToolFilter[] = [
   new GitLogFilter(),
   new GitDiffFilter(),

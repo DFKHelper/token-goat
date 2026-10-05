@@ -1,12 +1,4 @@
-/**
- * Guard against architecture documentation drift.
- *
- * Enforces that CLAUDE.arch.md's Component Map is always 100% synchronized with
- * the actual source tree under src/.
- *
- * If this guard fails:
- *   Run `npm run docs:arch` to update CLAUDE.arch.md in place before committing.
- */
+/** Guard against architecture documentation drift. Enforces that CLAUDE.arch.md's Component Map is always 100% synchronized with the actual source tree under src/. If this guard fails: Run `npm run docs:arch` to update CLAUDE.arch.md in place before committing. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'

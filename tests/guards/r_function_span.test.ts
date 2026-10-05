@@ -1,23 +1,4 @@
-/**
- * Guard: an R function must be indexed with the extent of its body, not just its first line.
- *
- * Every R function was recorded as a single-line symbol, so `read "analysis.R::compute_mean"`
- * answered with `compute_mean <- function(xs) {` and nothing else. That is the one thing a surgical
- * read exists to do, and it failed silently: the output is well-formed, names the right symbol, and
- * simply omits the body, so nothing downstream can tell a one-line function from a hundred-line one
- * whose body was dropped. `skeleton` and `outline` reported the same truncated extent.
- *
- * Why didn't a test catch this: the R adapter's cases assert on the symbols it emits -- name, kind
- * and start line -- and never on the end line, so a span that stops where it starts satisfies them
- * exactly as a correct one does. Nothing read a real R function back out through the read command
- * either. These cases assert the end line and then read the body through the built binary.
- *
- * The negative cases are what keep the fix honest. R functions do not have to be braced at all
- * (`square <- function(x) x * x` is one expression and genuinely one line), a brace can sit inside a
- * string or a default argument without opening a body, and `setClass` has no body to span. A fix
- * that simply scanned ahead for the next `}` would pass the positive cases and swallow unrelated
- * code in all three of these.
- */
+/** Guard: an R function must be indexed with the extent of its body, not just its first line. Every R function was recorded as a single-line symbol, so `read "analysis.R::compute_mean"` answered with `compute_mean <- function(xs) {` and nothing else. That is the one thing a surgical read exists to do, and it failed silently: the output is well-formed, names the right symbol, and simply omits the body, so nothing downstream can tell a one-line function from a hundred-line one whose body was dropped. `skeleton` and `outline` reported the same truncated extent. Why didn't a test catch this: the R adapter's cases assert on the symbols it emits -- name, kind and start line -- and never on the end line, so a span that stops where it starts satisfies them exactly as a correct one does. Nothing read a real R function back out through the read command either. These cases assert the end line and then read the body through the built binary. The negative cases are what keep the fix honest. R functions do not have to be braced at all (`square <- function(x) x * x` is one expression and genuinely one line), a brace can sit inside a string or a default argument without opening a body, and `setClass` has no body to span. A fix that simply scanned ahead for the next `}` would pass the positive cases and swallow unrelated code in all three of these. */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -166,9 +147,7 @@ describe('extractR spans', () => {
     })
   })
 
-  // The brace walk is quote-aware already; the parenthesis walk that finds the end of the parameter
-  // list has to be too, or a bracket inside a default value ends the list early and the body brace
-  // is looked for in the middle of the signature.
+  // The brace walk is quote-aware already; the parenthesis walk that finds the end of the parameter list has to be too, or a bracket inside a default value ends the list early and the body brace is looked for in the middle of the signature.
   it('is not fooled by a parenthesis inside a default argument string', () => {
     expect(symbolNamed(SOURCE, 'with_paren_default'), 'a quoted parenthesis closed the parameter list early').toEqual({
       lineStart: 34,
@@ -176,8 +155,7 @@ describe('extractR spans', () => {
     })
   })
 
-  // Codex review of the span walk surfaced these four: each one made the walk read the wrong text,
-  // and none of them is visible from a tidy fixture.
+  // Codex review of the span walk surfaced these four: each one made the walk read the wrong text, and none of them is visible from a tidy fixture.
   it('treats a comment between the signature and the body as whitespace', () => {
     expect(symbolNamed(SOURCE, 'commented_body'), 'a comment made the function look brace-less').toEqual({
       lineStart: 38,
@@ -204,8 +182,7 @@ describe('extractR spans', () => {
     expect(names, 'a quoted mention of setClass produced a symbol for a class that does not exist').not.toContain('Bogus')
   })
 
-  // Backticks quote a name rather than a value in R, so a parameter can legally be called `a)b`
-  // and the parenthesis walk has to treat the bracket inside it as text.
+  // Backticks quote a name rather than a value in R, so a parameter can legally be called `a)b` and the parenthesis walk has to treat the bracket inside it as text.
   it('does not end the parameter list at a parenthesis inside a backtick-quoted name', () => {
     expect(symbolNamed(SOURCE, 'backtick_arg'), 'a bracket in a quoted parameter name closed the list early').toEqual({
       lineStart: 57,
@@ -213,9 +190,7 @@ describe('extractR spans', () => {
     })
   })
 
-  // A backtick quotes a name in a function BODY too, and such a name may contain a brace. The body
-  // walk has to treat the whole backtick span as text, exactly as the parameter walk already does --
-  // otherwise a `}` inside it ends the span early and a `{` inside it makes it run on too far.
+  // A backtick quotes a name in a function BODY too, and such a name may contain a brace. The body walk has to treat the whole backtick span as text, exactly as the parameter walk already does -- otherwise a `}` inside it ends the span early and a `{` inside it makes it run on too far.
   it('does not end the body at a closing brace inside a backtick-quoted name', () => {
     const src = 'backtick_close <- function() {\n  `a}b` <- 1\n  return(2)\n}\n'
     expect(symbolNamed(src, 'backtick_close'), 'a brace in a quoted body name closed the body early').toEqual({
@@ -225,9 +200,7 @@ describe('extractR spans', () => {
   })
 
   it('does not run the body on past its close when a backtick-quoted name holds an open brace', () => {
-    // A trailing symbol after the function is what makes this discriminate: without the fix the open
-    // brace inside the backtick inflates the depth so the closing `}` never reaches zero and the span
-    // runs to end of file (line 5), not the correct close on line 4.
+    // A trailing symbol after the function is what makes this discriminate: without the fix the open brace inside the backtick inflates the depth so the closing `}` never reaches zero and the span runs to end of file (line 5), not the correct close on line 4.
     const src = 'backtick_open <- function() {\n  `x{y` <- 1\n  return(2)\n}\nafter <- 5\n'
     expect(symbolNamed(src, 'backtick_open'), 'an open brace in a quoted body name pushed the span past its close').toEqual({
       lineStart: 1,

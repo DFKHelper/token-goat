@@ -1,17 +1,4 @@
-/**
- * Guard: post-merge and post-rewrite git hooks must be wired and executable.
- *
- * When developers or agents update token-goat via `git pull` or `git merge`,
- * the post-merge hook automatically runs `scripts/post-merge.mjs` to rebuild
- * the bundle, restart resident daemons (hook-server, worker), refresh harness
- * shims (Claude Code and Copilot CLI), and update the index.
- *
- * This test guarantees:
- * 1. `lefthook.yml` declares `post-merge` and `post-rewrite`.
- * 2. Both point to `node scripts/post-merge.mjs`.
- * 3. `scripts/post-merge.mjs` exists on disk.
- * 4. `package.json` declares a `"sync"` script pointing to `scripts/post-merge.mjs`.
- */
+/** Guard: post-merge and post-rewrite git hooks must be wired and executable. When developers or agents update token-goat via `git pull` or `git merge`, the post-merge hook automatically runs `scripts/post-merge.mjs` to rebuild the bundle, restart resident daemons (hook-server, worker), refresh harness shims (Claude Code and Copilot CLI), and update the index. This test guarantees: 1. `lefthook.yml` declares `post-merge` and `post-rewrite`. 2. Both point to `node scripts/post-merge.mjs`. 3. `scripts/post-merge.mjs` exists on disk. 4. `package.json` declares a `"sync"` script pointing to `scripts/post-merge.mjs`. */
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'

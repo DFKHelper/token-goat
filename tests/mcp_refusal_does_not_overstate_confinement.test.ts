@@ -1,18 +1,4 @@
-/**
- * The out-of-root refusal must not describe a boundary the deployment does not have.
- *
- * It used to end "The MCP tools are confined to the workspace." There is no workspace in that
- * sense unless an operator has set `mcp.allowed_roots`, which defaults to empty: the client sends a
- * `projectRoot` on every call and the server confines that call to whatever root it was handed. So
- * the refusal is evidence that the target did not sit inside the root THAT call named -- not that
- * the tools cannot reach outside some fixed directory. An operator reading the old sentence in a
- * log would have taken the stronger reading, and the whole reason the refusal text was split by
- * reason in this release is that a message which says the wrong thing sends someone to the wrong
- * fix.
- *
- * PROVENANCE: CAPTURE. The strings asserted are read out of a live MCP `read` call over the
- * in-memory transport, not off the source of `refusalText`.
- */
+/** The out-of-root refusal must not describe a boundary the deployment does not have. It used to end "The MCP tools are confined to the workspace." There is no workspace in that sense unless an operator has set `mcp.allowed_roots`, which defaults to empty: the client sends a `projectRoot` on every call and the server confines that call to whatever root it was handed. So the refusal is evidence that the target did not sit inside the root THAT call named -- not that the tools cannot reach outside some fixed directory. An operator reading the old sentence in a log would have taken the stronger reading, and the whole reason the refusal text was split by reason in this release is that a message which says the wrong thing sends someone to the wrong fix. PROVENANCE: CAPTURE. The strings asserted are read out of a live MCP `read` call over the in-memory transport, not off the source of `refusalText`. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -86,10 +72,7 @@ async function refuse(): Promise<string> {
 describe('the out-of-root refusal', () => {
   it('names the root it measured against rather than an unnamed workspace', async () => {
     const text = await refuse()
-    // normalizePath rather than a hand-rolled flip: the message carries the RESOLVED root
-    // (`c:/...`), and tests/guards/windows_path_fixture_normalization.test.ts exists because every
-    // hand-rolled version of this in a fixture has eventually diverged from the real one. It is not
-    // a self-referential fixture -- normalizePath is not the function under test here, refusalText is.
+    // normalizePath rather than a hand-rolled flip: the message carries the RESOLVED root (`c:/...`), and tests/guards/windows_path_fixture_normalization.test.ts exists because every hand-rolled version of this in a fixture has eventually diverged from the real one. It is not a self-referential fixture -- normalizePath is not the function under test here, refusalText is.
     expect(text).toContain(`is outside the project root "${normalizePath(projectRoot)}"`)
     expect(text, 'the message still claims a workspace-wide boundary').not.toContain('confined to the workspace')
   })

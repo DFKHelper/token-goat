@@ -1,24 +1,4 @@
-/**
- * A project-scope VS Code install must not read, copy, or write through a symlink a repository
- * checked in.
- *
- * `install --vscode` defaults to project scope, so the installer now opens files that came out of a
- * clone the developer did not write. Three of those paths are attacker-choosable: a repository can
- * commit `.github/copilot-instructions.md` as a symlink to `~/.ssh/id_ed25519`, `.vscode/mcp.json`
- * as a symlink to a JSON credential file such as `~/.docker/config.json` (which parses cleanly, so
- * every shape check the MCP reader applies still passes), or `.github` itself as a directory link
- * whose leaf is then an ordinary file resolving outside the clone. The installer read through the
- * link, and `backupFile` copied the secret's bytes into `<repo>/<name>.bak.<ISO>` -- untracked,
- * matched by no `.gitignore`, swept up by `git add -A`.
- *
- * The assertion is therefore on BYTES IN THE WORKING TREE, not just on the throw: a refusal that
- * still managed to copy the file first would satisfy an `expect(...).toThrow()` and leak anyway.
- *
- * PROVENANCE: HAND-DERIVED. The secret payloads are arbitrary strings written by this test; the
- * attack path names are the ones `vscodeInstructionsPath`, `vscodeMcpPath` and `vscodeHooksDir`
- * compute in src/bridges/vscode_install.ts for project scope, and are pinned as such by
- * tests/install_vscode_project_default_e2e.test.ts's PROJECT_FILES list.
- */
+/** A project-scope VS Code install must not read, copy, or write through a symlink a repository checked in. `install --vscode` defaults to project scope, so the installer now opens files that came out of a clone the developer did not write. Three of those paths are attacker-choosable: a repository can commit `.github/copilot-instructions.md` as a symlink to `~/.ssh/id_ed25519`, `.vscode/mcp.json` as a symlink to a JSON credential file such as `~/.docker/config.json` (which parses cleanly, so every shape check the MCP reader applies still passes), or `.github` itself as a directory link whose leaf is then an ordinary file resolving outside the clone. The installer read through the link, and `backupFile` copied the secret's bytes into `<repo>/<name>.bak.<ISO>` -- untracked, matched by no `.gitignore`, swept up by `git add -A`. The assertion is therefore on BYTES IN THE WORKING TREE, not just on the throw: a refusal that still managed to copy the file first would satisfy an `expect(...).toThrow()` and leak anyway. PROVENANCE: HAND-DERIVED. The secret payloads are arbitrary strings written by this test; the attack path names are the ones `vscodeInstructionsPath`, `vscodeMcpPath` and `vscodeHooksDir` compute in src/bridges/vscode_install.ts for project scope, and are pinned as such by tests/install_vscode_project_default_e2e.test.ts's PROJECT_FILES list. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -101,13 +81,7 @@ function leakedInto(dir: string, needle: string): string[] {
   })
 }
 
-/**
- * Run `fn`, returning the error it threw or undefined.
- *
- * The throw is asserted LAST at every call site below, after the byte assertions. Asserting it
- * first would make the throw the only discriminating check under mutation, and a refusal that
- * copied the file before giving up would then read as a pass.
- */
+/** Run `fn`, returning the error it threw or undefined. The throw is asserted LAST at every call site below, after the byte assertions. Asserting it first would make the throw the only discriminating check under mutation, and a refusal that copied the file before giving up would then read as a pass. */
 function thrownBy(fn: () => unknown): unknown {
   try {
     fn()
@@ -134,8 +108,7 @@ describe('a repository-planted symlink at a project-scope install target', () =>
     const err = thrownBy(() => installVscode({ project: true, projectRoot: project }))
 
     expect(leakedInto(project, 'tg-test-secret')).toEqual([])
-    // The link's target is untouched too: an "install" that rewrote the user's private key would be
-    // a second, worse defect than the disclosure.
+    // The link's target is untouched too: an "install" that rewrote the user's private key would be a second, worse defect than the disclosure.
     expect(fs.readFileSync(secret, 'utf8')).toBe(SECRET)
     expect(String(err)).toMatch(/resolves outside the project/)
   })
@@ -159,8 +132,7 @@ describe('a repository-planted symlink at a project-scope install target', () =>
   })
 
   it.skipIf(!CAN_JUNCTION)('is refused when .github itself is the link and the leaf is an ordinary file', () => {
-    // The leaf is a REAL file here: an lstat of the leaf alone reports "not a symlink" and would
-    // wave this through. Only resolving the whole path catches it.
+    // The leaf is a REAL file here: an lstat of the leaf alone reports "not a symlink" and would wave this through. Only resolving the whole path catches it.
     const stash = path.join(outside, 'stash')
     fs.mkdirSync(stash, { recursive: true })
     fs.writeFileSync(path.join(stash, 'copilot-instructions.md'), SECRET)
@@ -173,26 +145,20 @@ describe('a repository-planted symlink at a project-scope install target', () =>
   })
 
   it.skipIf(!CAN_JUNCTION)('is refused when .github is the link and the leaf does not exist yet', () => {
-    // The other half of the directory-link case, and the half that shipped broken: with NO leaf
-    // file behind the link, realpathSync throws ENOENT on the full path, and isInsideRoot used to
-    // answer from the lexical form -- which says `<project>/.github/...` is inside `<project>`.
-    // The install then exited 0 and created four files in `outside/stash`. The absence of a leaf
-    // is the installer's NORMAL case, so this was the reachable shape, not the exotic one.
+    // The other half of the directory-link case, and the half that shipped broken: with NO leaf file behind the link, realpathSync throws ENOENT on the full path, and isInsideRoot used to answer from the lexical form -- which says `<project>/.github/...` is inside `<project>`. The install then exited 0 and created four files in `outside/stash`. The absence of a leaf is the installer's NORMAL case, so this was the reachable shape, not the exotic one.
     const stash = path.join(outside, 'stash')
     fs.mkdirSync(stash, { recursive: true })
     fs.symlinkSync(stash, path.join(project, '.github'), 'junction')
 
     const err = thrownBy(() => installVscode({ project: true, projectRoot: project }))
 
-    // The observable an attacker cares about: nothing token-goat writes may land outside the
-    // project root. Asserted before the throw, so a refusal that wrote first still fails.
+    // The observable an attacker cares about: nothing token-goat writes may land outside the project root. Asserted before the throw, so a refusal that wrote first still fails.
     expect(filesUnder(outside)).toEqual([])
     expect(String(err)).toMatch(/resolves outside the project/)
   })
 
   it.skipIf(!CAN_SYMLINK)('is refused when the file link itself dangles, so the leaf cannot be realpath\'d', () => {
-    // Same ENOENT trigger through the other door: the leaf IS a symlink but its target does not
-    // exist, so realpathSync throws on the full path exactly as it does for a missing leaf.
+    // Same ENOENT trigger through the other door: the leaf IS a symlink but its target does not exist, so realpathSync throws on the full path exactly as it does for a missing leaf.
     const absent = path.join(outside, 'not-created-yet.md')
     const link = path.join(project, '.github', 'copilot-instructions.md')
     fs.mkdirSync(path.dirname(link), { recursive: true })
@@ -230,9 +196,7 @@ describe('the population this guard runs against is not empty', () => {
   })
 
   it.skipIf(!CAN_SYMLINK)('leaves a user-scope symlinked target alone: a dotfiles link is the user\'s own', () => {
-    // ~/.copilot/instructions/token-goat.instructions.md pointing into a dotfiles checkout is a
-    // legitimate, common setup. The guard is scoped to project targets precisely so this keeps
-    // working; refusing here would break it for no gain, since the user owns both ends.
+    // ~/.copilot/instructions/token-goat.instructions.md pointing into a dotfiles checkout is a legitimate, common setup. The guard is scoped to project targets precisely so this keeps working; refusing here would break it for no gain, since the user owns both ends.
     const dotfiles = path.join(outside, 'dotfiles')
     fs.mkdirSync(dotfiles, { recursive: true })
     const real = path.join(dotfiles, 'token-goat.instructions.md')
@@ -253,9 +217,7 @@ describe('the population this guard runs against is not empty', () => {
 
 describe('backupFile does not write through a destination symlink', () => {
   it.skipIf(!CAN_SYMLINK)('never copies into a link planted at the .bak path, and steps past it', () => {
-    // The backup name is `<p>.bak.<ISO-with-dashes>`, so with the clock frozen the attacker's link
-    // can be planted at exactly the path backupFile is about to create. This is the destination
-    // half of the same read/write-through-a-link class; COPYFILE_EXCL is what closes it.
+    // The backup name is `<p>.bak.<ISO-with-dashes>`, so with the clock frozen the attacker's link can be planted at exactly the path backupFile is about to create. This is the destination half of the same read/write-through-a-link class; COPYFILE_EXCL is what closes it.
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-09-12T00:00:00.000Z'))
     const target = path.join(project, 'settings.json')
@@ -266,10 +228,7 @@ describe('backupFile does not write through a destination symlink', () => {
 
     backupFile(target)
 
-    // The load-bearing assertion: the link's target is untouched. COPYFILE_EXCL is what does that,
-    // and it is set on every attempt. The backup itself lands beside the planted link under a
-    // disambiguated name rather than aborting the install -- see the same-millisecond test below
-    // for why a bare throw here was the wrong shape.
+    // The load-bearing assertion: the link's target is untouched. COPYFILE_EXCL is what does that, and it is set on every attempt. The backup itself lands beside the planted link under a disambiguated name rather than aborting the install -- see the same-millisecond test below for why a bare throw here was the wrong shape.
     expect(fs.readFileSync(victim, 'utf8')).toBe('do not overwrite me\n')
     expect(fs.lstatSync(`${target}.bak.2026-09-12T00-00-00-000Z`).isSymbolicLink()).toBe(true)
     const written = fs.readdirSync(project).filter((f) => f.startsWith('settings.json.bak.') && !fs.lstatSync(path.join(project, f)).isSymbolicLink())
@@ -278,10 +237,7 @@ describe('backupFile does not write through a destination symlink', () => {
   })
 
   it('gives a second backup in the same millisecond its own name instead of aborting', () => {
-    // Not raced: the clock is pinned, so both calls compute the identical `.bak.<ISO>` stamp with
-    // certainty. Racing would only bound the failure rate (20 fresh installs measured a 4-6 ms gap
-    // between installVscode's two backups of this same file -- 0/20 collisions, which bounds the
-    // rate at ~15% and proves nothing), and the second call must succeed on every box, not most.
+    // Not raced: the clock is pinned, so both calls compute the identical `.bak.<ISO>` stamp with certainty. Racing would only bound the failure rate (20 fresh installs measured a 4-6 ms gap between installVscode's two backups of this same file -- 0/20 collisions, which bounds the rate at ~15% and proves nothing), and the second call must succeed on every box, not most.
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-09-12T00:00:00.000Z'))
     const target = path.join(project, 'copilot-instructions.md')
@@ -296,8 +252,7 @@ describe('backupFile does not write through a destination symlink', () => {
       'copilot-instructions.md.bak.2026-09-12T00-00-00-000Z',
       'copilot-instructions.md.bak.2026-09-12T00-00-00-000Z-1',
     ])
-    // Distinct names are only half of it: the second backup must hold the second content, not be a
-    // duplicate of the first under a new name.
+    // Distinct names are only half of it: the second backup must hold the second content, not be a duplicate of the first under a new name.
     expect(fs.readFileSync(path.join(project, backups[0] as string), 'utf8')).toBe('first\n')
     expect(fs.readFileSync(path.join(project, backups[1] as string), 'utf8')).toBe('second\n')
   })

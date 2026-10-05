@@ -9,10 +9,7 @@ function nonce(): string {
   return `cr${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
 }
 
-// The pointer line is only printed when the blob it names is actually still on disk (see
-// recall_index.ts's blobStillExists) -- indexRecallEntry alone only writes the DB row, mirroring
-// production's actual write order (storeBlob, then indexRecallEntry), so a test asserting the
-// pointer text must also write the blob the way bash_output_cache.ts / web_cache.ts do.
+// The pointer line is only printed when the blob it names is actually still on disk (see recall_index.ts's blobStillExists) -- indexRecallEntry alone only writes the DB row, mirroring production's actual write order (storeBlob, then indexRecallEntry), so a test asserting the pointer text must also write the blob the way bash_output_cache.ts / web_cache.ts do.
 function storeRealBlob(subdir: 'bash_outputs' | 'web_outputs', id: string): void {
   storeBlob(subdir, id, { stored: true })
 }
@@ -31,8 +28,7 @@ function captureStdout(fn: () => void): string {
   const spy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
   try {
     fn()
-    // Read the captured calls before mockRestore(), which also resets mock state
-    // (clears mock.calls) as part of restoring the original implementation.
+    // Read the captured calls before mockRestore(), which also resets mock state (clears mock.calls) as part of restoring the original implementation.
     return spy.mock.calls.map((c) => String(c[0])).join('')
   } finally {
     spy.mockRestore()
@@ -57,8 +53,7 @@ describe('runRecallCommand', () => {
     expect(output).toContain('[web')
   })
 
-  // S1 regression: a row whose blob already pruned (age, or storeBlob's own count/bytes eviction)
-  // must never point the caller at a command that will 404 -- see recall_index.ts's blobStillExists.
+  // S1 regression: a row whose blob already pruned (age, or storeBlob's own count/bytes eviction) must never point the caller at a command that will 404 -- see recall_index.ts's blobStillExists.
   it('omits the recall-command pointer when the blob it would name is already gone', () => {
     const n = nonce()
     // No storeRealBlob call: the row exists, the blob never did.
@@ -105,15 +100,10 @@ describe('runRecallCommand', () => {
   })
 })
 
-// The browse form. `recall` exists so an agent that doesn't know which cache type holds a result
-// can ask once instead of running bash-history, web-history, and mcp-history in turn -- but that
-// only worked once you already had a search term. With no query the command used to be a hard
-// commander error ("missing required argument"), so the one case where you most need the index --
-// you have no term because the ids scrolled out of context -- was the case it refused to serve.
+// The browse form. `recall` exists so an agent that doesn't know which cache type holds a result can ask once instead of running bash-history, web-history, and mcp-history in turn -- but that only worked once you already had a search term. With no query the command used to be a hard commander error ("missing required argument"), so the one case where you most need the index -- you have no term because the ids scrolled out of context -- was the case it refused to serve.
 describe('runRecallCommand with no query (browse)', () => {
   it('lists entries newest-first across all three cache types', () => {
-    // The suite shares one db, so these must out-rank every entry other tests already stored: stamp
-    // them in the future rather than at a fixed epoch, and take exactly the top three.
+    // The suite shares one db, so these must out-rank every entry other tests already stored: stamp them in the future rather than at a fixed epoch, and take exactly the top three.
     const n = nonce()
     const base = Date.now() + 1_000_000
     indexRecallEntry('bash', `b-${n}`, `bash label ${n}`, 'bash body', base + 1)
@@ -134,11 +124,7 @@ describe('runRecallCommand with no query (browse)', () => {
     expect(output).toContain(`token-goat web-output w-${n}`)
   })
 
-  // A search that matches nothing and a browse of an empty cache are different answers: the first
-  // means "refine your query", the second means "there is nothing here to find". Collapsing them
-  // sends the caller off to refine a query against a store that holds nothing.
-  // limit 0 is how this forces the zero-row branch: the suite shares one db, so every cache type
-  // already holds entries from other tests and a genuinely empty index cannot be arranged here.
+  // A search that matches nothing and a browse of an empty cache are different answers: the first means "refine your query", the second means "there is nothing here to find". Collapsing them sends the caller off to refine a query against a store that holds nothing. limit 0 is how this forces the zero-row branch: the suite shares one db, so every cache type already holds entries from other tests and a genuinely empty index cannot be arranged here.
   it('reports a zero-result browse as an empty cache, not as a failed match', () => {
     const output = captureStdout(() => runRecallCommand(undefined, { type: 'bash', limit: 0 }))
     expect(output).toContain('No cache entries yet.')
@@ -156,9 +142,7 @@ describe('runRecallCommand with no query (browse)', () => {
 
   it('honours --type when browsing', () => {
     const n = nonce()
-    // Real, recent timestamps -- pruneCacheRecallRows (S1's write-time row-expiry prune, wired
-    // into every indexRecallEntry call) deletes anything older than DEFAULT_MAX_AGE_MS on the very
-    // next write, so a stale fixed epoch like 1000/2000 no longer survives past the second insert.
+    // Real, recent timestamps -- pruneCacheRecallRows (S1's write-time row-expiry prune, wired into every indexRecallEntry call) deletes anything older than DEFAULT_MAX_AGE_MS on the very next write, so a stale fixed epoch like 1000/2000 no longer survives past the second insert.
     indexRecallEntry('bash', `b-${n}`, `bash label ${n}`, 'bash body', Date.now() - 2000)
     indexRecallEntry('web', `w-${n}`, `web label ${n}`, 'web body', Date.now() - 1000)
 
@@ -167,11 +151,9 @@ describe('runRecallCommand with no query (browse)', () => {
     expect(parsed.some((p) => p.id === `b-${n}`)).toBe(true)
   })
 
-  // Guard: browse must not become a synonym for search. A caller who passes a real term still gets
-  // filtered results, so a regression that routed everything through the listing path would fail here.
+  // Guard: browse must not become a synonym for search. A caller who passes a real term still gets filtered results, so a regression that routed everything through the listing path would fail here.
   it('does not turn a real query into a listing', () => {
-    // The search term has to live in label/content -- entry_id is not part of the indexed text --
-    // so give only the bash entry a discriminating token.
+    // The search term has to live in label/content -- entry_id is not part of the indexed text -- so give only the bash entry a discriminating token.
     const n = nonce()
     indexRecallEntry('bash', `b-${n}`, `bash label ${n}`, `onlybash${n} body`, Date.now())
     indexRecallEntry('web', `w-${n}`, `web label ${n}`, 'web body', Date.now())

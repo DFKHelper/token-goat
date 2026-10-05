@@ -1,11 +1,4 @@
-/**
- * Tests for the shell/file-tool filter family (Batch J).
- *
- * Covers: GrepFilter, RgFilter, LsFilter, EzaFilter, TreeFilter, FdFilter,
- * WcFilter, BatFilter, DeltaFilter, FzfFilter, LazyGitFilter, JqFilter,
- * YqFilter, CurlFilter, RsyncFilter, DiffFilter, FfmpegFilter,
- * BinaryInspectFilter, FileTypeFilter, PsFilter.
- */
+/** Tests for the shell/file-tool filter family (Batch J). Covers: GrepFilter, RgFilter, LsFilter, EzaFilter, TreeFilter, FdFilter, WcFilter, BatFilter, DeltaFilter, FzfFilter, LazyGitFilter, JqFilter, YqFilter, CurlFilter, RsyncFilter, DiffFilter, FfmpegFilter, BinaryInspectFilter, FileTypeFilter, PsFilter. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -40,9 +33,7 @@ import { selectFilter, compressOutput } from '../src/tool_filters/dispatch.js'
 import { combineStreams } from '../src/tool_filters/helpers.js'
 import { CAPTURE_DIFF_RU_9_FILES, CAPTURE_DIFF_R_NORMAL } from './fixtures/diff_ru_real_captures.js'
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helpers ---------------------------------------------------------------------------
 
 function compress(
   filter: { compress: (a: string, b: string, c: number, d: string[]) => string },
@@ -55,9 +46,7 @@ function compress(
 
 // Note: combineOutput in the base class always strips trailing whitespace (`.replace(/\s+$/, '')`), so filter output never ends with `\n`. All passthrough expectations use `.trimEnd()` on the input to match.
 
-// ---------------------------------------------------------------------------
-// GrepFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GrepFilter ---------------------------------------------------------------------------
 
 describe('GrepFilter dispatch', () => {
   const f = new GrepFilter()
@@ -190,10 +179,7 @@ describe('GrepFilter compression', () => {
   })
 
   it('elides the tail of a many-file result with a narrowing hint that actually applies to file count, not context flags', () => {
-    // Regression: this hint used to read "use --context or -C flags to narrow" -- -C/--context
-    // controls how many surrounding lines are printed per match, which has nothing to do with
-    // the number of distinct files listed here, so the advice never actually helped a user
-    // facing this exact elision.
+    // Regression: this hint used to read "use --context or -C flags to narrow" -- -C/--context controls how many surrounding lines are printed per match, which has nothing to do with the number of distinct files listed here, so the advice never actually helped a user facing this exact elision.
     const lines = Array.from({ length: 50 }, (_, i) => `src/file_${i}.ts:1: match`)
     const out = compress(f, lines.join('\n'), argv)
     expect(out).toContain('more file(s) elided; use a more specific pattern or --include=<glob> to narrow')
@@ -221,13 +207,7 @@ describe('GrepFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Over-long line clipping on the grep/rg pass-through branch. Under
-// _GREP_COMPRESS_THRESHOLD the filter returned the raw output verbatim with no
-// per-line cap of any kind, and apply()'s line/byte caps only look at
-// whole-output size -- so a twelve-line result carrying one 5,000-char hit
-// inside a minified bundle shipped that line whole.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Over-long line clipping on the grep/rg pass-through branch. Under _GREP_COMPRESS_THRESHOLD the filter returned the raw output verbatim with no per-line cap of any kind, and apply()'s line/byte caps only look at whole-output size -- so a twelve-line result carrying one 5,000-char hit inside a minified bundle shipped that line whole. ---------------------------------------------------------------------------
 
 // CAPTURE: `grep -rn "written against invented output shipped broken" src/tool_filters/` run with GNU grep 3.0 in this repo on 2026-09-01. One 1,254-char line; the matched text starts at offset 1,206, i.e. past any 1,000-char head window.
 const GREP_LONG_CAPTURE = fs.readFileSync(
@@ -273,15 +253,7 @@ describe('GrepFilter over-long line clipping', () => {
     expect(out).toBe(GREP_LONG_CAPTURE.trimEnd())
   })
 
-  // The two refusals above are decided in grepLiteralPattern, which returns null and short-circuits
-  // before clipLongMatchLine ever runs. This one is decided a layer lower: argv carries a perfectly
-  // good literal pattern, so clipping is attempted, and only the per-line indexOf miss stops it.
-  // That is the shape of every context line grep prints under -A/-B/-C (separated by '-', not ':',
-  // and by definition not containing the match), so it is the common case, not a corner. Without
-  // the miss guard the line is head-clipped blind at offset 0 and whatever mattered on it is gone.
-  // HAND-DERIVED: the pattern is chosen to be a valid literal (no metachars, over the 3-char floor)
-  // that is absent from the CAPTURE fixture's line; the fixture itself is the real grep 3.0 output
-  // cited above.
+  // The two refusals above are decided in grepLiteralPattern, which returns null and short-circuits before clipLongMatchLine ever runs. This one is decided a layer lower: argv carries a perfectly good literal pattern, so clipping is attempted, and only the per-line indexOf miss stops it. That is the shape of every context line grep prints under -A/-B/-C (separated by '-', not ':', and by definition not containing the match), so it is the common case, not a corner. Without the miss guard the line is head-clipped blind at offset 0 and whatever mattered on it is gone. HAND-DERIVED: the pattern is chosen to be a valid literal (no metachars, over the 3-char floor) that is absent from the CAPTURE fixture's line; the fixture itself is the real grep 3.0 output cited above.
   it('leaves a long line whole when a valid literal pattern is simply absent from it', () => {
     const absentButValid = 'pattern_not_present_on_this_line'
     expect(GREP_LONG_CAPTURE).not.toContain(absentButValid)
@@ -334,9 +306,7 @@ describe('RgFilter over-long line clipping', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// RgFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- RgFilter ---------------------------------------------------------------------------
 
 describe('RgFilter dispatch', () => {
   const f = new RgFilter()
@@ -402,9 +372,7 @@ describe('RgFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// LsFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- LsFilter ---------------------------------------------------------------------------
 
 describe('LsFilter dispatch', () => {
   const f = new LsFilter()
@@ -482,14 +450,11 @@ describe('LsFilter extension-summary escaping (regression: $/$&/$$)', () => {
   const argv = ['ls', '-la']
 
   it('preserves literal $& in file extensions when building hidden-entry marker (String.replace special sequence)', () => {
-    // Regression test for: _LS_HIDDEN_MARKER_EXT.replace('{ext_summary}', extPart)
-    // where extPart contains `$&` (which JS String.replace treats as a special sequence).
+    // Regression test for: _LS_HIDDEN_MARKER_EXT.replace('{ext_summary}', extPart) where extPart contains `$&` (which JS String.replace treats as a special sequence).
     //
-    // The filter must compress large directory listings and emit a marker like:
-    // "[token-goat: 5 more entries — by type: .ts×8 .js×4 .c$&d×1 other×0]"
+    // The filter must compress large directory listings and emit a marker like: "[token-goat: 5 more entries — by type: .ts×8 .js×4 .c$&d×1 other×0]"
     //
-    // If the bug exists, JavaScript's String.replace will interpret `$&` in the
-    // replacement string as "re-insert the matched text", corrupting the output.
+    // If the bug exists, JavaScript's String.replace will interpret `$&` in the replacement string as "re-insert the matched text", corrupting the output.
     //
     // Use a large enough listing to force compression (> _LS_MAX_ENTRIES = 10).
     const lines = [
@@ -508,9 +473,7 @@ describe('LsFilter extension-summary escaping (regression: $/$&/$$)', () => {
     expect(out).toContain('[token-goat:')
     expect(out).toContain('by type:')
 
-    // CRITICAL: the marker must preserve the literal `.c$&d` in the extension summary.
-    // If the bug exists (unfixed .replace), $& is re-interpreted as the matched placeholder,
-    // corrupting the text. We assert the literal string is present.
+    // CRITICAL: the marker must preserve the literal `.c$&d` in the extension summary. If the bug exists (unfixed .replace), $& is re-interpreted as the matched placeholder, corrupting the text. We assert the literal string is present.
     expect(out).toContain('.c$&d×1')
   })
 
@@ -530,10 +493,7 @@ describe('LsFilter extension-summary escaping (regression: $/$&/$$)', () => {
   })
 
   it('the "by type" extension breakdown only counts elided entries, not the ones already shown (LSEXT-DOUBLECOUNT regression)', () => {
-    // 80 .ts + 50 .js = 130 entries; _LS_MAX_ENTRIES (10) are shown verbatim, so exactly
-    // 120 are elided. The by-type breakdown must describe only those 120 elided entries
-    // -- its per-extension counts must sum to 120, not to the full 130-entry listing
-    // (which would double-count the 10 already-visible entries in the marker text).
+    // 80 .ts + 50 .js = 130 entries; _LS_MAX_ENTRIES (10) are shown verbatim, so exactly 120 are elided. The by-type breakdown must describe only those 120 elided entries -- its per-extension counts must sum to 120, not to the full 130-entry listing (which would double-count the 10 already-visible entries in the marker text).
     const lines = [
       'total 1024',
       ...Array.from({ length: 80 }, (_, i) => `-rw-r--r-- 1 u g 100 Jan 1 file${i}.ts`),
@@ -551,9 +511,7 @@ describe('LsFilter extension-summary escaping (regression: $/$&/$$)', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// EzaFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- EzaFilter ---------------------------------------------------------------------------
 
 describe('EzaFilter dispatch', () => {
   const f = new EzaFilter()
@@ -561,12 +519,10 @@ describe('EzaFilter dispatch', () => {
   it('matches eza', () => expect(f.matches(['eza'])).toBe(true))
   it('matches exa (legacy)', () => expect(f.matches(['exa'])).toBe(true))
   it('matches eza --tree', () => expect(f.matches(['eza', '--tree'])).toBe(true))
-  // A bare `ls` with no eza-only flag is a real GNU/BSD ls invocation, not an aliased eza -- must
-  // fall through to LsFilter, not be claimed here.
+  // A bare `ls` with no eza-only flag is a real GNU/BSD ls invocation, not an aliased eza -- must fall through to LsFilter, not be claimed here.
   it('does not match a plain ls with no eza-only flag', () => expect(f.matches(['ls'])).toBe(false))
   it('does not match ls -la', () => expect(f.matches(['ls', '-la'])).toBe(false))
-  // `alias ls=eza` means token-goat only ever sees the literal "ls ..." command text; an
-  // eza-only flag on the 'ls' binary is the only signal available to tell the two apart.
+  // `alias ls=eza` means token-goat only ever sees the literal "ls ..." command text; an eza-only flag on the 'ls' binary is the only signal available to tell the two apart.
   it('matches ls --tree (aliased eza)', () => expect(f.matches(['ls', '--tree'])).toBe(true))
   it('matches ls --icons (aliased eza)', () => expect(f.matches(['ls', '--icons'])).toBe(true))
   it('matches ls --git (aliased eza)', () => expect(f.matches(['ls', '--git'])).toBe(true))
@@ -588,9 +544,7 @@ describe('EzaFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// TreeFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- TreeFilter ---------------------------------------------------------------------------
 
 describe('TreeFilter dispatch', () => {
   const f = new TreeFilter()
@@ -625,9 +579,7 @@ describe('TreeFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// FdFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- FdFilter ---------------------------------------------------------------------------
 
 describe('FdFilter dispatch', () => {
   const f = new FdFilter()
@@ -655,9 +607,7 @@ describe('FdFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// WcFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- WcFilter ---------------------------------------------------------------------------
 
 describe('WcFilter dispatch', () => {
   const f = new WcFilter()
@@ -693,9 +643,7 @@ describe('WcFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// BatFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- BatFilter ---------------------------------------------------------------------------
 
 describe('BatFilter dispatch', () => {
   const f = new BatFilter()
@@ -733,9 +681,7 @@ describe('BatFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// DeltaFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- DeltaFilter ---------------------------------------------------------------------------
 
 describe('DeltaFilter dispatch', () => {
   const f = new DeltaFilter()
@@ -763,9 +709,7 @@ describe('DeltaFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// FzfFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- FzfFilter ---------------------------------------------------------------------------
 
 describe('FzfFilter dispatch', () => {
   const f = new FzfFilter()
@@ -790,9 +734,7 @@ describe('FzfFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// LazyGitFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- LazyGitFilter ---------------------------------------------------------------------------
 
 describe('LazyGitFilter dispatch', () => {
   const f = new LazyGitFilter()
@@ -817,9 +759,7 @@ describe('LazyGitFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// JqFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- JqFilter ---------------------------------------------------------------------------
 
 describe('JqFilter dispatch', () => {
   const f = new JqFilter()
@@ -845,9 +785,7 @@ describe('JqFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// YqFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- YqFilter ---------------------------------------------------------------------------
 
 describe('YqFilter dispatch', () => {
   const f = new YqFilter()
@@ -873,9 +811,7 @@ describe('YqFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// CurlFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CurlFilter ---------------------------------------------------------------------------
 
 describe('CurlFilter dispatch', () => {
   const f = new CurlFilter()
@@ -945,11 +881,7 @@ describe('CurlFilter compression', () => {
   })
 
   it('keeps the HTTP status line and useful response headers through the real apply() pipeline when curl emits \\r\\r\\n per verbose line (observed on Windows), not just the direct compress() call', () => {
-    // Real curl -v on Windows terminates each `> `/`< ` verbose line with its
-    // own \r\n on top of the stream's own line ending, producing a literal
-    // \r\r\n. apply() runs normalise() (CRLF collapse + stripProgress) before
-    // compressBody ever sees the text -- this is the production path, unlike
-    // the bare compress() calls above which bypass normalise() entirely.
+    // Real curl -v on Windows terminates each `> `/`< ` verbose line with its own \r\n on top of the stream's own line ending, producing a literal \r\r\n. apply() runs normalise() (CRLF collapse + stripProgress) before compressBody ever sees the text -- this is the production path, unlike the bare compress() calls above which bypass normalise() entirely.
     const stderr = [
       '*   Trying 93.184.216.34:443...\r',
       '> GET /data HTTP/1.1\r\r',
@@ -967,9 +899,7 @@ describe('CurlFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// RsyncFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- RsyncFilter ---------------------------------------------------------------------------
 
 describe('RsyncFilter dispatch', () => {
   const f = new RsyncFilter()
@@ -1006,9 +936,7 @@ describe('RsyncFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// DiffFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- DiffFilter ---------------------------------------------------------------------------
 
 describe('DiffFilter dispatch', () => {
   const f = new DiffFilter()
@@ -1062,9 +990,7 @@ describe('DiffFilter compression', () => {
   })
 
   it('does not treat a removed line starting with "-- " as a spurious file boundary', () => {
-    // A removed SQL/Lua/Haskell comment (or markdown horizontal rule) renders
-    // as a bare `--- `-prefixed line with no following `+++ ` line — it must
-    // not be misdetected as a second file's header.
+    // A removed SQL/Lua/Haskell comment (or markdown horizontal rule) renders as a bare `--- `-prefixed line with no following `+++ ` line — it must not be misdetected as a second file's header.
     const lines: string[] = ['--- a/file.sql', '+++ b/file.sql', '@@ -1,6 +1,6 @@']
     for (let j = 0; j < 4; j++) lines.push(' context line')
     lines.push('-- removed comment line')
@@ -1072,8 +998,7 @@ describe('DiffFilter compression', () => {
     // Pad past the 50-line passthrough threshold so compression actually runs.
     for (let j = 0; j < 50; j++) lines.push(' more context line')
     const out = compress(f, lines.join('\n'), argv)
-    // A spurious split would report 2 files in the stat-only/large-diff path,
-    // or otherwise duplicate/mislabel the `file.sql` header.
+    // A spurious split would report 2 files in the stat-only/large-diff path, or otherwise duplicate/mislabel the `file.sql` header.
     expect(out).not.toContain('large diff')
     expect(out.match(/--- a\/file\.sql/g)?.length ?? 0).toBe(1)
     expect(out).toContain('-- removed comment line')
@@ -1125,8 +1050,7 @@ describe('DiffFilter stat-only view keeps the non-diff lines', () => {
 })
 
 describe('DiffFilter honors [bash_diff].max_hunks_per_file for the density cap (not hardcoded-disabled 0)', () => {
-  // saveConfig does not create configPath()'s parent directory itself; make
-  // sure it exists before writing (same pattern as bash_runner.test.ts).
+  // saveConfig does not create configPath()'s parent directory itself; make sure it exists before writing (same pattern as bash_runner.test.ts).
   fs.mkdirSync(path.dirname(configPath()), { recursive: true })
 
   afterEach(() => {
@@ -1154,18 +1078,14 @@ describe('DiffFilter honors [bash_diff].max_hunks_per_file for the density cap (
       lines.push(`-old dense line ${h}b`)
       lines.push(`+new dense line ${h}b`)
     }
-    // ... and three low-density hunks (mostly unchanged context lines).
-    // Padded well past the 50-non-empty-line passthrough threshold so
-    // compression (and the density cap under test) actually runs.
+    // ... and three low-density hunks (mostly unchanged context lines). Padded well past the 50-non-empty-line passthrough threshold so compression (and the density cap under test) actually runs.
     for (let h = 2; h < 5; h++) {
       lines.push(`@@ -${h * 20 + 1},20 +${h * 20 + 1},20 @@`)
       for (let j = 0; j < 19; j++) lines.push(' context line')
       lines.push(`-old sparse line ${h}`)
     }
     const out = compress(f, lines.join('\n'), argv)
-    // With max_hunks_per_file=2 the density cap keeps only the 2 dense hunks
-    // and reports the 3 dropped low-density ones by this exact message —
-    // impossible to see at all when the cap is hardcoded to 0 (disabled).
+    // With max_hunks_per_file=2 the density cap keeps only the 2 dense hunks and reports the 3 dropped low-density ones by this exact message — impossible to see at all when the cap is hardcoded to 0 (disabled).
     expect(out).toMatch(/\[\.\.\. 3 more hunks, avg density [\d.]+ — likely whitespace\/formatting\]/)
     expect(out).toContain('new dense line 0')
     expect(out).toContain('new dense line 1')
@@ -1179,10 +1099,7 @@ describe('DiffFilter honors [bash_diff].max_hunks_per_file for the density cap (
     const f = new DiffFilter()
     const argv = ['diff', '-u', 'a.txt', 'b.txt']
     const lines: string[] = ['--- a/file.ts', '+++ b/file.ts']
-    // Six dense hunks (all changed lines) — none should be dropped by the
-    // density cap (6 <= 10). Before the fix, stage 2 re-capped to 3.
-    // Padded past the 50-non-empty-line passthrough threshold so compression
-    // (and the cap under test) actually runs.
+    // Six dense hunks (all changed lines) — none should be dropped by the density cap (6 <= 10). Before the fix, stage 2 re-capped to 3. Padded past the 50-non-empty-line passthrough threshold so compression (and the cap under test) actually runs.
     for (let h = 0; h < 6; h++) {
       lines.push(`@@ -${h * 20 + 1},10 +${h * 20 + 1},10 @@`)
       for (let j = 0; j < 5; j++) {
@@ -1200,9 +1117,7 @@ describe('DiffFilter honors [bash_diff].max_hunks_per_file for the density cap (
   })
 })
 
-// ---------------------------------------------------------------------------
-// FfmpegFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- FfmpegFilter ---------------------------------------------------------------------------
 
 describe('FfmpegFilter dispatch', () => {
   const f = new FfmpegFilter()
@@ -1244,9 +1159,7 @@ describe('FfmpegFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// BinaryInspectFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- BinaryInspectFilter ---------------------------------------------------------------------------
 
 describe('BinaryInspectFilter dispatch', () => {
   const f = new BinaryInspectFilter()
@@ -1283,9 +1196,7 @@ describe('BinaryInspectFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// FileTypeFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- FileTypeFilter ---------------------------------------------------------------------------
 
 describe('FileTypeFilter dispatch', () => {
   const f = new FileTypeFilter()
@@ -1311,9 +1222,7 @@ describe('FileTypeFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// PsFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PsFilter ---------------------------------------------------------------------------
 
 describe('PsFilter dispatch', () => {
   const f = new PsFilter()
@@ -1356,9 +1265,7 @@ describe('PsFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// PsFilter.detect — TUI detection
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PsFilter.detect — TUI detection ---------------------------------------------------------------------------
 
 describe('PsFilter.detect', () => {
   it('detects ps output with PID header', () => {
@@ -1376,9 +1283,7 @@ describe('PsFilter.detect', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Registry — SHELL_FILE_FILTERS ordering and registration
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Registry — SHELL_FILE_FILTERS ordering and registration ---------------------------------------------------------------------------
 
 describe('SHELL_FILE_FILTERS registry', () => {
   it('RgFilter precedes GrepFilter in SHELL_FILE_FILTERS', () => {
@@ -1395,9 +1300,7 @@ describe('SHELL_FILE_FILTERS registry', () => {
     expect(lsIdx).toBeGreaterThan(diffIdx)
   })
 
-  // EzaFilter must precede LsFilter: its matches() gate falls through to a plain `ls` (see
-  // EzaFilter.matches doc comment), so it needs first crack at claiming an aliased
-  // `ls --tree`/`ls --icons`/etc. invocation.
+  // EzaFilter must precede LsFilter: its matches() gate falls through to a plain `ls` (see EzaFilter.matches doc comment), so it needs first crack at claiming an aliased `ls --tree`/`ls --icons`/etc. invocation.
   it('EzaFilter precedes LsFilter in SHELL_FILE_FILTERS', () => {
     const ezaIdx = SHELL_FILE_FILTERS.findIndex((f) => f instanceof EzaFilter)
     const lsIdx = SHELL_FILE_FILTERS.findIndex((f) => f instanceof LsFilter)
@@ -1418,9 +1321,7 @@ describe('SHELL_FILE_FILTERS registry', () => {
     expect(SHELL_FILE_FILTERS).toHaveLength(20)
   })
 
-  // RgFilter is registered before GrepFilter and also claims 'grep'/'rg', but its matches()
-  // now gates on context flags (-A/-B/-C/--context), so a plain grep/rg with no context
-  // flags falls through to GrepFilter's per-file match-count summarizer.
+  // RgFilter is registered before GrepFilter and also claims 'grep'/'rg', but its matches() now gates on context flags (-A/-B/-C/--context), so a plain grep/rg with no context flags falls through to GrepFilter's per-file match-count summarizer.
   it('selectFilter dispatches plain grep (no context flags) to GrepFilter', () => {
     expect(selectFilter(['grep', '-r', 'TODO', '.'])).toBeInstanceOf(GrepFilter)
   })
@@ -1441,10 +1342,7 @@ describe('SHELL_FILE_FILTERS registry', () => {
     expect(selectFilter(['ls', '-la'])).toBeInstanceOf(LsFilter)
   })
 
-  // Regression: EzaFilter's own 'ls' binary claim was unreachable dead code when LsFilter was
-  // registered first -- an `alias ls=eza` shell setup running `ls --tree` (token-goat only ever
-  // sees the literal "ls --tree" text, never the shell's alias resolution) was always routed to
-  // LsFilter's generic ls-format compressor instead of EzaFilter's tree-aware one.
+  // Regression: EzaFilter's own 'ls' binary claim was unreachable dead code when LsFilter was registered first -- an `alias ls=eza` shell setup running `ls --tree` (token-goat only ever sees the literal "ls --tree" text, never the shell's alias resolution) was always routed to LsFilter's generic ls-format compressor instead of EzaFilter's tree-aware one.
   it('selectFilter dispatches ls --tree (aliased eza) to EzaFilter, not LsFilter', () => {
     expect(selectFilter(['ls', '--tree'])).toBeInstanceOf(EzaFilter)
   })
@@ -1527,33 +1425,15 @@ describe('SHELL_FILE_FILTERS registry', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// DiffFilter multi-file diffs under the shipping line cap
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- DiffFilter multi-file diffs under the shipping line cap ---------------------------------------------------------------------------
 
-// The unified branch (_compressUnified) caps hunks per file but never measured its combined output against the
-// line cap it ships into, and compressBody did not even accept the ctx argument the shipping path (base.ts::apply)
-// passes -- so a diff whose per-file-capped form still exceeded 200 lines (the balanced profile's cap) was handed
-// whole to the generic tail-truncation truncator, which keeps head/tail lines plus context around error-signal
-// keyword matches. In a diff, survivors were chosen by which hunks happened to contain words like `error`/`failed`
-// in ordinary source text, not by file identity, so the file list -- the one thing a diff reader needs first -- was
-// what got dropped: a real 9-file, 319-line capture shipped as 57 lines carrying 1 of 9 `diff -ru` headers. The
-// separate normal-format branch (non-unified `3c3`/`<`/`>` diffs) passed a fixed cap of 300 to compressTestOutput,
-// above the 200-line shipping cap, so its own elision marker -- the thing that discloses how many lines were
-// dropped -- was itself among the lines the outer truncation then cut, disclosing a smaller drop than the real one.
-// The existing large-unified-diff test below (`compresses large unified diff across many files`) asserts only that
-// the output got shorter than the input, which an over-collapsed or content-picked survivor set also satisfies, so
-// it stays green under every mutation exercised here and never caught either defect. Every test above drives
-// `filter.compress()` directly, which never passes a cap at all; these tests drive `compressOutput` (the dispatch.ts
-// wrapper the CLI shipping path actually calls) so the cap under test is the one that ships.
+// The unified branch (_compressUnified) caps hunks per file but never measured its combined output against the line cap it ships into, and compressBody did not even accept the ctx argument the shipping path (base.ts::apply) passes -- so a diff whose per-file-capped form still exceeded 200 lines (the balanced profile's cap) was handed whole to the generic tail-truncation truncator, which keeps head/tail lines plus context around error-signal keyword matches. In a diff, survivors were chosen by which hunks happened to contain words like `error`/`failed` in ordinary source text, not by file identity, so the file list -- the one thing a diff reader needs first -- was what got dropped: a real 9-file, 319-line capture shipped as 57 lines carrying 1 of 9 `diff -ru` headers. The separate normal-format branch (non-unified `3c3`/`<`/`>` diffs) passed a fixed cap of 300 to compressTestOutput, above the 200-line shipping cap, so its own elision marker -- the thing that discloses how many lines were dropped -- was itself among the lines the outer truncation then cut, disclosing a smaller drop than the real one. The existing large-unified-diff test below (`compresses large unified diff across many files`) asserts only that the output got shorter than the input, which an over-collapsed or content-picked survivor set also satisfies, so it stays green under every mutation exercised here and never caught either defect. Every test above drives `filter.compress()` directly, which never passes a cap at all; these tests drive `compressOutput` (the dispatch.ts wrapper the CLI shipping path actually calls) so the cap under test is the one that ships.
 describe('DiffFilter multi-file diffs under the shipping line cap', () => {
   const argvUnified = ['diff', '-ru', 'a', 'b']
   const argvNormal = ['diff', '-r', 'a', 'b']
 
   it('the capture is required: per-file hunk compression alone still exceeds the 200-line cap', () => {
-    // Precondition, not the bug itself: without a maxLines in ctx the new cap-aware collapse never runs, so this is
-    // what the filter's own per-file compression alone produces. If a later hunk-cap change shrinks this below 200
-    // lines, this goes red before the assertions below could go vacuous.
+    // Precondition, not the bug itself: without a maxLines in ctx the new cap-aware collapse never runs, so this is what the filter's own per-file compression alone produces. If a later hunk-cap change shrinks this below 200 lines, this goes red before the assertions below could go vacuous.
     const direct = new DiffFilter().compress(CAPTURE_DIFF_RU_9_FILES, '', 0, argvUnified)
     expect(direct.split('\n').length).toBeGreaterThan(200)
     for (const file of ['base', 'dispatch', 'git', 'go_test', 'helpers', 'linters', 'package_managers', 'pytest', 'shell_file']) {
@@ -1569,8 +1449,7 @@ describe('DiffFilter multi-file diffs under the shipping line cap', () => {
     expect(lines.length).toBeLessThanOrEqual(200)
     expect(result).not.toContain('lines omitted ---')
     expect(result).toContain('collapsed to fit the line cap')
-    // Must-not-drop list: file identity must survive the cap, unlike the old
-    // behavior where survivors were chosen by error-keyword content instead.
+    // Must-not-drop list: file identity must survive the cap, unlike the old behavior where survivors were chosen by error-keyword content instead.
     for (const file of ['base', 'dispatch', 'git', 'go_test', 'helpers', 'linters', 'package_managers', 'pytest', 'shell_file']) {
       expect(result).toContain(`diff -ru a/${file}.ts b/${file}.ts`)
     }
@@ -1599,8 +1478,7 @@ describe('DiffFilter multi-file diffs under the shipping line cap', () => {
   it('normal-format (non-unified) diffs cap below the 200-line shipping limit and disclose the real drop', () => {
     const f = new DiffFilter()
     const direct = f.compress(CAPTURE_DIFF_R_NORMAL, '', 0, argvNormal)
-    // Precondition: the capture reaches both compressTestOutput's own 300-ish
-    // ceiling and the 200-line shipping cap, so both branches under test fire.
+    // Precondition: the capture reaches both compressTestOutput's own 300-ish ceiling and the 200-line shipping cap, so both branches under test fire.
     expect(direct.split('\n').length).toBeGreaterThan(300)
 
     const result = compressOutput(f, CAPTURE_DIFF_R_NORMAL, '', 0, argvNormal, {
@@ -1615,10 +1493,7 @@ describe('DiffFilter multi-file diffs under the shipping line cap', () => {
     const match = markers[0]!.match(/\.\.\. \[(\d+) lines elided by token-goat\]/)
     expect(match).not.toBeNull()
     const disclosed = Number(match![1])
-    // Pin the disclosed count against the real drop: the combined (stdout+stderr, trailing-whitespace-stripped)
-    // input line count minus every line actually shown (all lines except the marker itself). Before the fix this
-    // under-reported by more than half (274 of 839 disclosed) because the elision marker from the first-stage
-    // truncateMiddle call was itself among the lines the outer 200-line cut then dropped.
+    // Pin the disclosed count against the real drop: the combined (stdout+stderr, trailing-whitespace-stripped) input line count minus every line actually shown (all lines except the marker itself). Before the fix this under-reported by more than half (274 of 839 disclosed) because the elision marker from the first-stage truncateMiddle call was itself among the lines the outer 200-line cut then dropped.
     const combinedInputLines = combineStreams(CAPTURE_DIFF_R_NORMAL, '').split('\n').length
     const shownLines = lines.length - 1
     expect(disclosed).toBe(combinedInputLines - shownLines)

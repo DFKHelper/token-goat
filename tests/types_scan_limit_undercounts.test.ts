@@ -1,14 +1,4 @@
-/**
- * `types` scans each kind with `TYPES_SCAN_LIMIT` (graph_commands.ts), a per-kind cap on the SQL
- * query feeding the whole command, not on the `--limit` DISPLAY window applied afterward in JS.
- * The function's own comment describes this scan as meant to be uncapped ("Every declaration that
- * survives --exclude-tests, uncapped"), and the file's own history names the exact failure this
- * kind of cap produces: `totalCount` can only report the count of what survived the SQL cutoff,
- * not what genuinely exists, and `--grep` can only ever match inside the capped window, so a
- * declaration ranked below the cap is unfindable by name no matter how high `--limit` is raised.
- * HAND-DERIVED fixture: 5,001 same-kind ('interface') symbol rows inserted directly (not parsed
- * from real files), since only the row count and file-path ordering matter here, not real syntax.
- */
+/** `types` scans each kind with `TYPES_SCAN_LIMIT` (graph_commands.ts), a per-kind cap on the SQL query feeding the whole command, not on the `--limit` DISPLAY window applied afterward in JS. The function's own comment describes this scan as meant to be uncapped ("Every declaration that survives --exclude-tests, uncapped"), and the file's own history names the exact failure this kind of cap produces: `totalCount` can only report the count of what survived the SQL cutoff, not what genuinely exists, and `--grep` can only ever match inside the capped window, so a declaration ranked below the cap is unfindable by name no matter how high `--limit` is raised. HAND-DERIVED fixture: 5,001 same-kind ('interface') symbol rows inserted directly (not parsed from real files), since only the row count and file-path ordering matter here, not real syntax. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

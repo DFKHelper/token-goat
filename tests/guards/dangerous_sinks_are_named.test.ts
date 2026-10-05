@@ -1,31 +1,4 @@
-/**
- * The in-suite static pass: an inventory of every construct in `src/` that hands a string to an
- * interpreter, forced to be either absent or named with a reason.
- *
- * This repo already has eighty-odd structural guards, and every one of them encodes a defect
- * somebody already found. That is the gap this file exists to cover: it is not keyed on a bug, it
- * is keyed on a *shape*, so a sink introduced next year fails here whether or not anyone has
- * thought about it. It is the cheap half of a security scan -- the half that answers "where are the
- * sinks" exhaustively. The expensive half, "does untrusted data reach one", needs interprocedural
- * dataflow and runs in CI (see the CodeQL job in `.github/workflows/codeql.yml`), because it cannot
- * be made fast, offline and cross-platform enough to sit in `npm test`.
- *
- * On why this is hand-rolled rather than `eslint-plugin-security`, which is the obvious candidate:
- * it was measured on this codebase on 2026-09-04 and produces 1,691 findings across 177 of 255
- * source files. Three rules account for 96% of them and none is usable here. `detect-unsafe-regex`
- * (260) is the star-height heuristic, strictly weaker than the automaton analysis
- * `eslint-plugin-regexp`'s `no-super-linear-backtracking` already runs in `npm run lint`.
- * `detect-non-literal-fs-filename` (511) flags reading a file whose name came from a variable,
- * which is what token-goat *is*. `detect-object-injection` (848) flags every computed index,
- * including `arr[i]`. The remaining `detect-possible-timing-attacks` hits (4) are name matches --
- * a lock-file token compare and a variable called `auth` that holds a hostname -- against a product
- * with no secret-comparison surface at all. A gate nobody can turn on is not a gate, and a
- * suppression file with 1,691 entries is worse than no rule, because it reads like a decision.
- *
- * What survives that filter is the part `detect-object-injection` was gesturing at and could not
- * express: a computed lookup is only interesting when it reaches a sink. So the sinks are the
- * population, and the list below is the contract.
- */
+/** The in-suite static pass: an inventory of every construct in `src/` that hands a string to an interpreter, forced to be either absent or named with a reason. This repo already has eighty-odd structural guards, and every one of them encodes a defect somebody already found. That is the gap this file exists to cover: it is not keyed on a bug, it is keyed on a *shape*, so a sink introduced next year fails here whether or not anyone has thought about it. It is the cheap half of a security scan -- the half that answers "where are the sinks" exhaustively. The expensive half, "does untrusted data reach one", needs interprocedural dataflow and runs in CI (see the CodeQL job in `.github/workflows/codeql.yml`), because it cannot be made fast, offline and cross-platform enough to sit in `npm test`. On why this is hand-rolled rather than `eslint-plugin-security`, which is the obvious candidate: it was measured on this codebase on 2026-09-04 and produces 1,691 findings across 177 of 255 source files. Three rules account for 96% of them and none is usable here. `detect-unsafe-regex` (260) is the star-height heuristic, strictly weaker than the automaton analysis `eslint-plugin-regexp`'s `no-super-linear-backtracking` already runs in `npm run lint`. `detect-non-literal-fs-filename` (511) flags reading a file whose name came from a variable, which is what token-goat *is*. `detect-object-injection` (848) flags every computed index, including `arr[i]`. The remaining `detect-possible-timing-attacks` hits (4) are name matches -- a lock-file token compare and a variable called `auth` that holds a hostname -- against a product with no secret-comparison surface at all. A gate nobody can turn on is not a gate, and a suppression file with 1,691 entries is worse than no rule, because it reads like a decision. What survives that filter is the part `detect-object-injection` was gesturing at and could not express: a computed lookup is only interesting when it reaches a sink. So the sinks are the population, and the list below is the contract. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -78,19 +51,7 @@ function sites(re: RegExp): string[] {
   return out
 }
 
-/**
- * Sinks this product has no use for, asserted absent rather than allowlisted.
- *
- * All four are at zero today, and nothing says so anywhere -- which means the first one to be added
- * would arrive in an ordinary review with nothing objecting. `eval` and `new Function` compile a
- * string; `vm` does the same behind a nicer name and its "sandbox" is not a security boundary on
- * the Node platform. `child_process.exec` takes a command *string* rather than an argv array, which
- * is the difference between passing an argument and writing a shell script, so it is excluded by
- * shape even where the string is currently constant.
- *
- * Deliberately not exemptible. A genuine need for one of these is a design conversation, not a line
- * in a map, and it should have to delete an assertion that says so.
- */
+/** Sinks this product has no use for, asserted absent rather than allowlisted. All four are at zero today, and nothing says so anywhere -- which means the first one to be added would arrive in an ordinary review with nothing objecting. `eval` and `new Function` compile a string; `vm` does the same behind a nicer name and its "sandbox" is not a security boundary on the Node platform. `child_process.exec` takes a command *string* rather than an argv array, which is the difference between passing an argument and writing a shell script, so it is excluded by shape even where the string is currently constant. Deliberately not exemptible. A genuine need for one of these is a design conversation, not a line in a map, and it should have to delete an assertion that says so. */
 const FORBIDDEN: ReadonlyMap<string, RegExp> = new Map([
   ['eval()', /(^|[^.\w$])eval\s*\(/],
   ['new Function()', /\bnew\s+Function\s*\(/],
@@ -98,16 +59,7 @@ const FORBIDDEN: ReadonlyMap<string, RegExp> = new Map([
   ['child_process.exec() (string command, not argv)', /(^|[^.\w$])exec\s*\(\s*[`'"]/],
 ])
 
-/**
- * `shell: true` sites, each with the reason it cannot be an argv array.
- *
- * `shell: true` means the string is parsed by cmd.exe or /bin/sh before anything runs, so every one
- * of these is a place where the *value* has to carry the safety -- there is no argv boundary left
- * to do it. The seven bridge entries are where the value check lives, enforced separately by
- * `shell_concat_is_constrained.test.ts`; this map exists so the inventory itself cannot grow
- * silently, which is the failure the bridges guard cannot see (it only looks at what is already
- * there).
- */
+/** `shell: true` sites, each with the reason it cannot be an argv array. `shell: true` means the string is parsed by cmd.exe or /bin/sh before anything runs, so every one of these is a place where the *value* has to carry the safety -- there is no argv boundary left to do it. The seven bridge entries are where the value check lives, enforced separately by `shell_concat_is_constrained.test.ts`; this map exists so the inventory itself cannot grow silently, which is the failure the bridges guard cannot see (it only looks at what is already there). */
 const SHELL_TRUE_BY_DESIGN: ReadonlyMap<string, string> = new Map([
   [
     'bridges/claudecode.ts',
@@ -137,18 +89,14 @@ const SHELL_TRUE_BY_DESIGN: ReadonlyMap<string, string> = new Map([
   ],
 ])
 
-/**
- * `execSync` sites. Separate from the map above because `execSync` is a shell by definition -- there
- * is no options flag to turn it off -- so the reason has to be about the command string itself.
- */
+/** `execSync` sites. Separate from the map above because `execSync` is a shell by definition -- there is no options flag to turn it off -- so the reason has to be about the command string itself. */
 const EXEC_SYNC_BY_DESIGN: ReadonlyMap<string, string> = new Map<string, string>([])
 
 describe('every interpreter sink in src is absent or named', () => {
   it('scans a real population, so an empty scan cannot pass', () => {
     const files = srcFiles()
     expect(files.length).toBeGreaterThanOrEqual(150)
-    // A sink the scan is known to find. If this stops matching, the regexes below are reporting
-    // "nothing found" about a scan that is no longer looking, and every assertion here goes vacuous.
+    // A sink the scan is known to find. If this stops matching, the regexes below are reporting "nothing found" about a scan that is no longer looking, and every assertion here goes vacuous.
     expect(
       sites(/\bshell:\s*true/),
       'The scan found no "shell: true" anywhere in src. There are eight, so the scan broke rather ' +

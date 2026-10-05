@@ -1,22 +1,10 @@
-/**
- * Git-tracked file listing, used by `token-goat arch`'s import-graph scan
- * (see `runArch` in graph_commands.ts).
- */
+/** Git-tracked file listing, used by `token-goat arch`'s import-graph scan (see `runArch` in graph_commands.ts). */
 
 import * as fs from 'fs'
 import * as path from 'path'
 import { runGit } from './util.js'
 
-/**
- * Get all git-tracked files under cwd, unfiltered -- callers apply their own
- * source/language filtering (see `cli.ts`'s `cmdIndex` and `graph_commands.ts`'s
- * `runArch`). Returns `path.join(cwd, rel)` for each tracked file -- absolute or
- * relative depending on whether `cwd` itself is absolute, not on platform.
- *
- * A single file path is accepted as well, and resolves to just that file when it
- * is tracked: git cannot chdir into a file, so passing one as `cwd` would spawn
- * with a non-zero exit and report a tracked file as untracked.
- */
+/** Get all git-tracked files under cwd, unfiltered -- callers apply their own source/language filtering (see `cli.ts`'s `cmdIndex` and `graph_commands.ts`'s `runArch`). Returns `path.join(cwd, rel)` for each tracked file -- absolute or relative depending on whether `cwd` itself is absolute, not on platform. A single file path is accepted as well, and resolves to just that file when it is tracked: git cannot chdir into a file, so passing one as `cwd` would spawn with a non-zero exit and report a tracked file as untracked. */
 export function getTrackedFiles(cwd: string = process.cwd()): string[] {
   try {
     let dir = cwd

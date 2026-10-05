@@ -1,18 +1,4 @@
-/**
- * Guard: reading an indexed file that has since been deleted must say so.
- *
- * `staleWarning` compared the on-disk SHA against the indexed one and returned '' whenever
- * `fingerprintFile` gave back null. null means two different things -- "the file is gone" and "the
- * file is there but momentarily unreadable" -- and only the second one is harmless. So a read of a
- * deleted file returned its indexed body, byte-identical to a live read, exit 0, with nothing to
- * suggest the file no longer existed. A caller would go on to edit or quote code that is not there.
- *
- * Why didn't a test catch this: the existing missing-file guard covers paths that were never
- * indexed, which do say "Could not read". Nothing covered the indexed-then-deleted case, where the
- * body is still in the database and the read succeeds. The two halves are asserted separately
- * below, because a fix that shouted about every unreadable file would satisfy the first alone: a
- * deleted file warns, and a present, unchanged file stays silent.
- */
+/** Guard: reading an indexed file that has since been deleted must say so. `staleWarning` compared the on-disk SHA against the indexed one and returned '' whenever `fingerprintFile` gave back null. null means two different things -- "the file is gone" and "the file is there but momentarily unreadable" -- and only the second one is harmless. So a read of a deleted file returned its indexed body, byte-identical to a live read, exit 0, with nothing to suggest the file no longer existed. A caller would go on to edit or quote code that is not there. Why didn't a test catch this: the existing missing-file guard covers paths that were never indexed, which do say "Could not read". Nothing covered the indexed-then-deleted case, where the body is still in the database and the read succeeds. The two halves are asserted separately below, because a fix that shouted about every unreadable file would satisfy the first alone: a deleted file warns, and a present, unchanged file stays silent. */
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

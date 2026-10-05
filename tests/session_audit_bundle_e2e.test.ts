@@ -1,13 +1,4 @@
-/**
- * Built-bundle end-to-end test for session-audit --json deny-outcome census.
- *
- * Tests that the deny-outcome census in src/session_audit.ts produces correct output when run
- * from the actual built bundle (dist/token-goat.mjs), not just from source. This catches regressions
- * like tree-shaking of the census logic or worker/parser failures in the bundled artifact.
- *
- * Fixture transcripts are FORMAT-DERIVED from the deny message templates in src/hooks_read.ts
- * (same as tests/deny_outcomes.test.ts) and HAND-DERIVED outcome sequences.
- */
+/** Built-bundle end-to-end test for session-audit --json deny-outcome census. Tests that the deny-outcome census in src/session_audit.ts produces correct output when run from the actual built bundle (dist/token-goat.mjs), not just from source. This catches regressions like tree-shaking of the census logic or worker/parser failures in the bundled artifact. Fixture transcripts are FORMAT-DERIVED from the deny message templates in src/hooks_read.ts (same as tests/deny_outcomes.test.ts) and HAND-DERIVED outcome sequences. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -24,10 +15,7 @@ const result = (id: string, content: string): string =>
 // FORMAT-DERIVED: hooks_read.ts, denyOutput, large-file deny branch (toKB, util.ts) + describeSliceAdvice() + editAnywayHint()
 const LARGE_FILE_DENY_TEXT = 'big.ts is very large (523KB). Use token-goat read/section/symbol to re-read surgically. Use Read with offset/limit to sample specific sections. To edit it anyway, use `token-goat replace "big.ts" --old-b64 <base64> --new-b64 <base64>`.'
 
-/**
- * Construct a minimal session transcript that will be analyzed by session-audit.
- * Each project dir represents one session with a session.jsonl file.
- */
+/** Construct a minimal session transcript that will be analyzed by session-audit. Each project dir represents one session with a session.jsonl file. */
 function writeProject(corpusDir: string, name: string, lines: string[]): void {
   const projectDir = path.join(corpusDir, name)
   fs.mkdirSync(projectDir, { recursive: true })
@@ -46,9 +34,7 @@ afterAll(() => {
 
 describe('session-audit --json deny-outcome census (built bundle)', () => {
   it('produces non-empty denyOutcomes array with partition invariant and non-abandoned outcomes', () => {
-    // Create a small fixture corpus with two deny outcomes:
-    // 1. "retried": a deny followed by a retry of the same Read (non-abandoned outcome)
-    // 2. "unresolved": a deny with only 2 tool calls following it (fewer than 3, so unresolved)
+    // Create a small fixture corpus with two deny outcomes: 1. "retried": a deny followed by a retry of the same Read (non-abandoned outcome) 2. "unresolved": a deny with only 2 tool calls following it (fewer than 3, so unresolved)
     writeProject(testDir, 'retried-outcome', [
       use('d1', 'Read', { file_path: 'big.ts' }),
       result('d1', LARGE_FILE_DENY_TEXT),
@@ -94,15 +80,13 @@ describe('session-audit --json deny-outcome census (built bundle)', () => {
       expect(sum, `kind '${row.kind}': outcome rates should sum to 1.0, got ${sum}`).toBeCloseTo(1.0, 5)
     }
 
-    // Assert 3: at least one row has a non-abandoned outcome
-    // (retried-outcome should produce one row with a retried rate, unresolved-outcome should produce one with unresolved rate)
+    // Assert 3: at least one row has a non-abandoned outcome (retried-outcome should produce one row with a retried rate, unresolved-outcome should produce one with unresolved rate)
     const nonAbandonedOutcomes = summary.denyOutcomes.filter(
       (r) => r.retriedRate > 0 || r.substitutedRate > 0 || r.shellReadRate > 0 || r.unresolvedRate > 0 || r.compactedRate > 0,
     )
     expect(nonAbandonedOutcomes.length).toBeGreaterThan(0)
 
-    // Assert 4: specifically check that we have both a retried outcome and an unresolved outcome
-    // The large_file_deny kind should have at least some non-abandoned outcomes
+    // Assert 4: specifically check that we have both a retried outcome and an unresolved outcome The large_file_deny kind should have at least some non-abandoned outcomes
     const largeFileDeny = summary.denyOutcomes.find((r) => r.kind === 'large_file_deny')
     expect(largeFileDeny).toBeDefined()
     expect(largeFileDeny!.retriedRate + largeFileDeny!.unresolvedRate).toBeGreaterThan(0)

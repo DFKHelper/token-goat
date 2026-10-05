@@ -1,13 +1,4 @@
-/**
- * Regression: `token-goat csv-profile` (runCsvProfile in read_commands.ts) never called
- * recordStat -- the csv_profile bucket in `token-goat stats --full` was permanently zero
- * regardless of real `csv-profile` usage, the same class of registry/producer desync
- * previously fixed for csv-query (see cli_csv_query_stats.test.ts) and for
- * map_lookup/changed_lookup (project_runchanged_missing_stat memory). Drives the real,
- * unmocked `run()` CLI entrypoint against a real scratch CSV file and asserts a real stats
- * row appears via summarize() against the real (test-isolated) global stats DB -- a
- * synthetic recordStat/DB insert would not catch the original absence.
- */
+/** Regression: `token-goat csv-profile` (runCsvProfile in read_commands.ts) never called recordStat -- the csv_profile bucket in `token-goat stats --full` was permanently zero regardless of real `csv-profile` usage, the same class of registry/producer desync previously fixed for csv-query (see cli_csv_query_stats.test.ts) and for map_lookup/changed_lookup (project_runchanged_missing_stat memory). Drives the real, unmocked `run()` CLI entrypoint against a real scratch CSV file and asserts a real stats row appears via summarize() against the real (test-isolated) global stats DB -- a synthetic recordStat/DB insert would not catch the original absence. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

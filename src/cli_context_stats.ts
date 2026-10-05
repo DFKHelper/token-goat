@@ -1,11 +1,4 @@
-/**
- * CLI handler for ``token-goat context-stats``.
- *
- * Inspects the CLAUDE.md and MEMORY.md files that Claude Code loads for the
- * current project and reports estimated token usage.  The ``--fix`` flag
- * delegates to memory_prune to drop stale entries; ``--json`` emits machine-
- * readable output.
- */
+/** CLI handler for ``token-goat context-stats``. Inspects the CLAUDE.md and MEMORY.md files that Claude Code loads for the current project and reports estimated token usage.  The ``--fix`` flag delegates to memory_prune to drop stale entries; ``--json`` emits machine- readable output. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -30,12 +23,7 @@ export function tok(filePath: string): number {
   }
 }
 
-/**
- * Return CLAUDE.md files that Claude Code will load for the given project root.
- *
- * Claude Code loads the global ~/.claude/CLAUDE.md plus every CLAUDE.md found
- * walking up the directory tree from the project root.
- */
+/** Return CLAUDE.md files that Claude Code will load for the given project root. Claude Code loads the global ~/.claude/CLAUDE.md plus every CLAUDE.md found walking up the directory tree from the project root. */
 export function findClaudeMdFiles(projectRoot: string, homeDir = os.homedir()): string[] {
   const found: string[] = []
   const seen = new Set<string>()
@@ -60,10 +48,7 @@ export function findClaudeMdFiles(projectRoot: string, homeDir = os.homedir()): 
   return found
 }
 
-/**
- * Return the MEMORY.md path for the given project root by scanning
- * ~/.claude/projects/, or null if none is found.
- */
+/** Return the MEMORY.md path for the given project root by scanning ~/.claude/projects/, or null if none is found. */
 export function findMemoryMd(
   projectRoot: string,
   homeDir = os.homedir(),

@@ -245,21 +245,14 @@ describe('doc_compact', () => {
     })
 
     it('does not discard the whole document when the front-matter fence is never closed', () => {
-      // A leading '---' with no matching closing '---' anywhere in the document (malformed/
-      // truncated front matter, or a bare '---' divider used as a horizontal rule) must not
-      // cause the entire document to be skipped -- it should be treated as having no real
-      // front matter, and all of the real content below must survive.
+      // A leading '---' with no matching closing '---' anywhere in the document (malformed/ truncated front matter, or a bare '---' divider used as a horizontal rule) must not cause the entire document to be skipped -- it should be treated as having no real front matter, and all of the real content below must survive.
       const md = '---\n# Heading\nText that must survive'
       const result = buildExtractiveCompact(md)
       expect(result).toContain('# Heading')
       expect(result).toContain('Text that must survive')
     })
 
-    // Regression: the naive `stripped.startsWith('```') || stripped.startsWith('~~~')` toggle
-    // treated ANY fence-looking line as a closer, contradicting eachUnfencedLine's real
-    // CommonMark rule (a fence only closes on the SAME character). A ~~~ line inside a ```
-    // block incorrectly closed it early, corrupting the rest of the section's fence tracking
-    // and silently dropping later content (here, "After text" never made it into the output).
+    // Regression: the naive `stripped.startsWith('```') || stripped.startsWith('~~~')` toggle treated ANY fence-looking line as a closer, contradicting eachUnfencedLine's real CommonMark rule (a fence only closes on the SAME character). A ~~~ line inside a ``` block incorrectly closed it early, corrupting the rest of the section's fence tracking and silently dropping later content (here, "After text" never made it into the output).
     it('does not let a mismatched ~~~ close an open ``` fence', () => {
       const md = '# Title\n```\nline1\n~~~\nline2\n```\nAfter text'
       const result = buildExtractiveCompact(md)
@@ -267,9 +260,7 @@ describe('doc_compact', () => {
       expect(result).toContain('```\nline1\n~~~\nline2\n```')
     })
 
-    // Regression: same naive-toggle bug, other half of the CommonMark rule -- a fence only
-    // closes on a run of the same character with length >= the opener's. A shorter ``` (3
-    // backticks) nested inside an outer ```` (4-backtick) fence must not close it.
+    // Regression: same naive-toggle bug, other half of the CommonMark rule -- a fence only closes on a run of the same character with length >= the opener's. A shorter ``` (3 backticks) nested inside an outer ```` (4-backtick) fence must not close it.
     it('does not let a shorter same-char fence run close a longer opener', () => {
       const md = '# Title\n````\nouter code\n```\nstill inside\n````\nAfter text'
       const result = buildExtractiveCompact(md)
@@ -277,11 +268,7 @@ describe('doc_compact', () => {
       expect(result).toContain('````\nouter code\n```\nstill inside\n````')
     })
 
-    // Regression: the closing branch checked only `ch === fence.ch && run.length >= fence.len`,
-    // omitting eachUnfencedLine's third condition that the remainder after the backtick/tilde
-    // run must be empty. A same-char in-fence line carrying an info string (e.g. "```json"
-    // inside an already-open ``` block) was wrongly read as the closer, reopening a phantom
-    // fence on the block's real closing ``` and silently dropping every heading/line after it.
+    // Regression: the closing branch checked only `ch === fence.ch && run.length >= fence.len`, omitting eachUnfencedLine's third condition that the remainder after the backtick/tilde run must be empty. A same-char in-fence line carrying an info string (e.g. "```json" inside an already-open ``` block) was wrongly read as the closer, reopening a phantom fence on the block's real closing ``` and silently dropping every heading/line after it.
     it('does not let a same-char fence-looking line with a trailing info string close an open fence', () => {
       const md = '## A\nText A.\n```\nexample markdown:\n```json\n{"x":1}\n```\n## B\nText B under a real heading.'
       const result = buildExtractiveCompact(md)
@@ -345,9 +332,7 @@ describe('doc_compact', () => {
     })
 
     it('matches a closed-ATX heading (trailing hash run) against a plain heading target', () => {
-      // Regression: the greedy `(.*)` capture swallowed the closing `##`, so the captured text
-      // for `## Setup ##` was "Setup ##" instead of "Setup", failing exact-equality against the
-      // target and returning '' (silent not-found) for any doc using closed-ATX style.
+      // Regression: the greedy `(.*)` capture swallowed the closing `##`, so the captured text for `## Setup ##` was "Setup ##" instead of "Setup", failing exact-equality against the target and returning '' (silent not-found) for any doc using closed-ATX style.
       const body = 'Intro\n## Setup ##\nCompact content'
       const compact = extractDocCompact(body, 'Setup')
       expect(compact).toContain('Compact content')
@@ -359,10 +344,7 @@ describe('doc_compact', () => {
       expect(compact).toBe('')
     })
 
-    // Regression: the heading-mode end-boundary walker matched `/^(#+)\s/` line-by-line with
-    // zero fence tracking, so a `#`-looking example line inside a fenced code block (e.g. a
-    // doc demonstrating markdown syntax) was mistaken for a real section boundary and
-    // truncated the section early, dropping everything after the fenced example.
+    // Regression: the heading-mode end-boundary walker matched `/^(#+)\s/` line-by-line with zero fence tracking, so a `#`-looking example line inside a fenced code block (e.g. a doc demonstrating markdown syntax) was mistaken for a real section boundary and truncated the section early, dropping everything after the fenced example.
     it('does not treat a heading-looking line inside a fenced code block as a section boundary', () => {
       const body =
         '## Setup\nHere is how it works.\n```\nExample doc:\n## usage\nSome fenced example\n```\n' +
@@ -374,9 +356,7 @@ describe('doc_compact', () => {
       expect(compact).not.toContain('Next section content')
     })
 
-    // Same root bug on the other half of the function -- the heading FINDER must also skip
-    // fenced lines, so a `## usage`-looking example line inside a fence is never mistaken for
-    // the real heading being searched for.
+    // Same root bug on the other half of the function -- the heading FINDER must also skip fenced lines, so a `## usage`-looking example line inside a fence is never mistaken for the real heading being searched for.
     it('does not match a heading-looking line inside a fenced code block as the target heading', () => {
       const body = '## Real\nIntro\n```\n## usage\nfenced content\n```\nend'
       const compact = extractDocCompact(body, 'usage')
@@ -437,10 +417,7 @@ describe('doc_compact', () => {
       expect(compactPath.endsWith('.md')).toBe(true)
     })
 
-    // Regression (#49): _compactSlug hashed the absolute source path with an unconditional
-    // .toLowerCase(), not gated to case-insensitive filesystems. On a case-sensitive FS (Linux,
-    // most CI runners), two genuinely distinct files whose directory names differ only in case
-    // hashed to the same sidecar, so one file's compactDoc silently served the other's summary.
+    // Regression (#49): _compactSlug hashed the absolute source path with an unconditional .toLowerCase(), not gated to case-insensitive filesystems. On a case-sensitive FS (Linux, most CI runners), two genuinely distinct files whose directory names differ only in case hashed to the same sidecar, so one file's compactDoc silently served the other's summary.
     it('does not collide for paths differing only in case on a case-sensitive filesystem', () => {
       const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
       process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '0'

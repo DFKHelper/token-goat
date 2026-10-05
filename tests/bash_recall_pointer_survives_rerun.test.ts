@@ -1,10 +1,4 @@
-/**
- * A recall pointer must keep resolving to the body it described.
- *
- * The Bash surface hands the model ids it can come back to later (`token-goat bash-output <id> --full`). Those ids used to be `commandHashSync(command, cwd)` alone, so every run of one command in one cwd wrote to the same blob: run 1 emitted a notice naming id X holding body A, an edit landed, run 2 overwrote X with body B, and run 1's notice -- still sitting in the transcript -- silently started resolving to text it never described. `storeBashOutputSync` now addresses the blob by `bashOutputIdSync`, which folds the output into that hash, and leaves a redirect at the command hash so the command-only lookups (cross-run delta folding in hooks_bash, `token-goat waste`) still reach the newest entry.
- *
- * Driven through the built bundle (`dist/token-goat.mjs hook post_tool_use`, then `dist/token-goat.mjs bash-output`) in separate processes rather than by calling the handler in-process: the store, the recall, and the cross-process blob resolution are the three things under test here, and only the shipping path exercises all three at once.
- */
+/** A recall pointer must keep resolving to the body it described. The Bash surface hands the model ids it can come back to later (`token-goat bash-output <id> --full`). Those ids used to be `commandHashSync(command, cwd)` alone, so every run of one command in one cwd wrote to the same blob: run 1 emitted a notice naming id X holding body A, an edit landed, run 2 overwrote X with body B, and run 1's notice -- still sitting in the transcript -- silently started resolving to text it never described. `storeBashOutputSync` now addresses the blob by `bashOutputIdSync`, which folds the output into that hash, and leaves a redirect at the command hash so the command-only lookups (cross-run delta folding in hooks_bash, `token-goat waste`) still reach the newest entry. Driven through the built bundle (`dist/token-goat.mjs hook post_tool_use`, then `dist/token-goat.mjs bash-output`) in separate processes rather than by calling the handler in-process: the store, the recall, and the cross-process blob resolution are the three things under test here, and only the shipping path exercises all three at once. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

@@ -1,18 +1,4 @@
-/**
- * Behavioral counterpart to `tests/guards/scoped_install_never_writes_claude_code_base.test.ts`.
- * The static guard catches the *declaration* drifting (a forbidden call creeping back into a
- * scoped branch); this test catches the *shipping path* actually writing, by running the real
- * built bundle (`dist/token-goat.mjs`, not source) against a disposable `HOME`/`USERPROFILE` and
- * inspecting the literal file list afterward -- the same class of gap CLAUDE.md documents
- * elsewhere: a feature can be 100% dead (or, here, 100% overreaching) in the shipping path while
- * every test that calls the handler directly supplies routing the real CLI never does.
- *
- * Real incident this guards: `token-goat install --vscode` run against a real machine also
- * silently rewrote `~/.claude/settings.json`, appended to the user's own `~/.claude/CLAUDE.md`,
- * and created `~/.claude/skills/token-goat/SKILL.md` -- none of which VS Code's own integration
- * needs (confirmed by reading `installVscode` in `src/bridges/vscode_install.ts`: it writes only
- * its own `mcp.json`, an instructions file, and the shared `~/.copilot/hooks` file).
- */
+/** Behavioral counterpart to `tests/guards/scoped_install_never_writes_claude_code_base.test.ts`. The static guard catches the *declaration* drifting (a forbidden call creeping back into a scoped branch); this test catches the *shipping path* actually writing, by running the real built bundle (`dist/token-goat.mjs`, not source) against a disposable `HOME`/`USERPROFILE` and inspecting the literal file list afterward -- the same class of gap CLAUDE.md documents elsewhere: a feature can be 100% dead (or, here, 100% overreaching) in the shipping path while every test that calls the handler directly supplies routing the real CLI never does. Real incident this guards: `token-goat install --vscode` run against a real machine also silently rewrote `~/.claude/settings.json`, appended to the user's own `~/.claude/CLAUDE.md`, and created `~/.claude/skills/token-goat/SKILL.md` -- none of which VS Code's own integration needs (confirmed by reading `installVscode` in `src/bridges/vscode_install.ts`: it writes only its own `mcp.json`, an instructions file, and the shared `~/.copilot/hooks` file). */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -73,8 +59,7 @@ describe('install --vscode against a disposable HOME never touches the Claude Co
     const r = run(['install', '--project', '--vscode'], env, project)
     expect(r.status, r.stderr).toBe(0)
 
-    // Positive control: the run really did write VS Code's own files, so the "still absent" claims
-    // below are a scoping result, not a project-root or env-wiring failure that wrote nothing at all.
+    // Positive control: the run really did write VS Code's own files, so the "still absent" claims below are a scoping result, not a project-root or env-wiring failure that wrote nothing at all.
     expect(fs.existsSync(path.join(project, '.vscode', 'mcp.json')), r.stdout).toBe(true)
 
     // The actual assertion: the three Claude-Code-owned files a --vscode-only install must not touch.

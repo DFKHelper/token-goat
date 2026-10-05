@@ -1,14 +1,4 @@
-/**
- * Integration tests for Jupyter notebook output stripping wired into the real
- * pre_read hook (`preReadHandler` in `hooks_read.ts`).
- *
- * Deliberately kept out of `tests/hooks_read.test.ts` (a large, Tier-1
- * critical-path suite) so this feature's own data-dir mocking can't perturb
- * that file's existing coverage. `tests/hooks_read.test.ts` is run unmodified
- * and in full as the regression check for this change. Unit coverage for
- * `stripNotebook`/`getOrCreateSidecar`/`pruneSidecars` themselves lives in
- * `tests/notebook_compact.test.ts` — this file only covers the hook wiring.
- */
+/** Integration tests for Jupyter notebook output stripping wired into the real pre_read hook (`preReadHandler` in `hooks_read.ts`). Deliberately kept out of `tests/hooks_read.test.ts` (a large, Tier-1 critical-path suite) so this feature's own data-dir mocking can't perturb that file's existing coverage. `tests/hooks_read.test.ts` is run unmodified and in full as the regression check for this change. Unit coverage for `stripNotebook`/`getOrCreateSidecar`/`pruneSidecars` themselves lives in `tests/notebook_compact.test.ts` — this file only covers the hook wiring. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -22,11 +12,7 @@ const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-nbcompacthook-'))
 
 vi.mock('../src/constants.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ConstantsModule>()
-  // configPath() closes over dataDir() as a same-module self-reference, which this factory's
-  // dataDir override can never redirect (a vi.mock export-spread only affects what OTHER
-  // modules see when they import this one, not calls constants.ts makes to its own exports
-  // internally). preReadHandler reads loadConfig() -> configPath(), so without this override
-  // it silently falls through to the real shared worker config.toml instead of DATA_DIR.
+  // configPath() closes over dataDir() as a same-module self-reference, which this factory's dataDir override can never redirect (a vi.mock export-spread only affects what OTHER modules see when they import this one, not calls constants.ts makes to its own exports internally). preReadHandler reads loadConfig() -> configPath(), so without this override it silently falls through to the real shared worker config.toml instead of DATA_DIR.
   return {
     ...actual,
     dataDir: () => DATA_DIR,

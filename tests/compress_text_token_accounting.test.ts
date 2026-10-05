@@ -1,18 +1,4 @@
-/**
- * Regression: `compress-text` billed its saving in bytes but the product bills in tokens.
- *
- * `compressText` deflates the text and base64url-encodes it, then credited `originalBytes - compactBytes`
- * tokens at a flat 4 bytes per token. Measured with tiktoken (cl100k_base and o200k_base) over 120 real
- * repo files, source text runs 3.83-4.22 bytes per token while the base64url payload runs 1.41-1.49: deflate
- * roughly halves the bytes and nearly triples tokens-per-byte, so 118 of those 120 files were token LOSSES.
- * README.md alone was reported as +20893 tokens saved while actually costing ~14093, and the CLI then dumped
- * the 73888-byte payload into context on top of that.
- *
- * These tests pin the two halves of the fix: the token figure is ratio-aware and may be negative, and a losing
- * payload is not inlined by default (with `--payload` preserving the self-contained-blob use case). A genuinely
- * high-compressibility input must still win and still inline -- that case is the guard against over-correcting
- * into "never inline".
- */
+/** Regression: `compress-text` billed its saving in bytes but the product bills in tokens. `compressText` deflates the text and base64url-encodes it, then credited `originalBytes - compactBytes` tokens at a flat 4 bytes per token. Measured with tiktoken (cl100k_base and o200k_base) over 120 real repo files, source text runs 3.83-4.22 bytes per token while the base64url payload runs 1.41-1.49: deflate roughly halves the bytes and nearly triples tokens-per-byte, so 118 of those 120 files were token LOSSES. README.md alone was reported as +20893 tokens saved while actually costing ~14093, and the CLI then dumped the 73888-byte payload into context on top of that. These tests pin the two halves of the fix: the token figure is ratio-aware and may be negative, and a losing payload is not inlined by default (with `--payload` preserving the self-contained-blob use case). A genuinely high-compressibility input must still win and still inline -- that case is the guard against over-correcting into "never inline". */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

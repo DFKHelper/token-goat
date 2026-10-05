@@ -135,9 +135,7 @@ describe('hooks_common', () => {
   })
 
   describe('estimateResultCount', () => {
-    // Real Claude Code Grep `files_with_matches` wire format (confirmed against real transcript
-    // logs), which prefixes the file list with a "Found N file(s)" summary line that is not
-    // itself a match -- countNonEmptyLines would overcount these by exactly one.
+    // Real Claude Code Grep `files_with_matches` wire format (confirmed against real transcript logs), which prefixes the file list with a "Found N file(s)" summary line that is not itself a match -- countNonEmptyLines would overcount these by exactly one.
     it('reads the count from a "Found N files" summary line rather than counting it as a match', () => {
       expect(estimateResultCount('Found 4 files\na.ts\nb.ts\nc.ts\nd.ts')).toBe(4)
     })

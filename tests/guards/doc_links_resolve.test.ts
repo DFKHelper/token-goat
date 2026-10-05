@@ -1,31 +1,4 @@
-/**
- * Guard against a documented file path outliving the file.
- *
- * `CLAUDE.arch.md` carries the component map, and `CLAUDE.md` tells an agent to read it on demand
- * to find where a thing lives. Four of its rows pointed at files that do not exist: two named a
- * module whose contents had moved (`src/git_history.ts` into `src/read_commands.ts`, `src/ask.ts`
- * into `src/cli.ts`), one named a file that never survived the TypeScript port under that name
- * (`src/worker_daemon.ts`), and one named a file deliberately retired in 6ee387df on 2026-07-05
- * (`src/code_compress.ts`), whose row outlived it by two months. An agent following the map was
- * sent to a path that is not there, and a reader on the published docs site got a 404.
- *
- * Nothing objected, because a stale link fails silently: the doc still renders, the table still
- * looks complete, and the only symptom is a reader arriving nowhere.
- *
- * `git ls-files` is the oracle rather than the filesystem. The filesystem here is
- * case-insensitive and would happily resolve `security.md` against `SECURITY.md`, while the
- * published site and a Linux CI checkout would not.
- *
- * A document can also name a repository file by its full GitHub URL rather than by a relative
- * path, and `docs/architecture-qa.html` names most of its evidence that way. Three of those links
- * pointed at `docs/legal.md`, which has never existed in this repository. The markdown check above
- * is blind to both halves of that: it reads `.md` files only, and it skips anything starting
- * `https:`. A second pass below covers absolute `blob/` URLs across `.md` and `.html` alike.
- *
- * What neither pass can judge is a line range. `#L663-L667` on a 715-line README resolves to five
- * real lines whatever has since moved into them, so a citation going stale is a content question
- * and not a link question, and no guard here claims to catch it.
- */
+/** Guard against a documented file path outliving the file. `CLAUDE.arch.md` carries the component map, and `CLAUDE.md` tells an agent to read it on demand to find where a thing lives. Four of its rows pointed at files that do not exist: two named a module whose contents had moved (`src/git_history.ts` into `src/read_commands.ts`, `src/ask.ts` into `src/cli.ts`), one named a file that never survived the TypeScript port under that name (`src/worker_daemon.ts`), and one named a file deliberately retired in 6ee387df on 2026-07-05 (`src/code_compress.ts`), whose row outlived it by two months. An agent following the map was sent to a path that is not there, and a reader on the published docs site got a 404. Nothing objected, because a stale link fails silently: the doc still renders, the table still looks complete, and the only symptom is a reader arriving nowhere. `git ls-files` is the oracle rather than the filesystem. The filesystem here is case-insensitive and would happily resolve `security.md` against `SECURITY.md`, while the published site and a Linux CI checkout would not. A document can also name a repository file by its full GitHub URL rather than by a relative path, and `docs/architecture-qa.html` names most of its evidence that way. Three of those links pointed at `docs/legal.md`, which has never existed in this repository. The markdown check above is blind to both halves of that: it reads `.md` files only, and it skips anything starting `https:`. A second pass below covers absolute `blob/` URLs across `.md` and `.html` alike. What neither pass can judge is a line range. `#L663-L667` on a 715-line README resolves to five real lines whatever has since moved into them, so a citation going stale is a content question and not a link question, and no guard here claims to catch it. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -37,12 +10,7 @@ import { trackedFiles } from '../helpers/tracked-files.js'
 
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
-/**
- * Changelogs are a historical record: an entry describing a release correctly names the file that
- * release touched, even after the file is later renamed or retired. Rewriting those links would
- * falsify the history the file exists to keep, so they are out of scope here rather than exempt
- * for convenience. Every other tracked document is covered.
- */
+/** Changelogs are a historical record: an entry describing a release correctly names the file that release touched, even after the file is later renamed or retired. Rewriting those links would falsify the history the file exists to keep, so they are out of scope here rather than exempt for convenience. Every other tracked document is covered. */
 const HISTORICAL = new Set(['CHANGELOG.md', 'CHANGELOG-ARCHIVE.md'])
 
 const LINK = /\[[^\]]*\]\(([^)\s]+)\)/g
@@ -87,8 +55,7 @@ function findBrokenLinks(): { broken: Broken[], checked: number, docs: number } 
         const fromDoc = normalize(docDir === '' ? rel : `${docDir}/${rel}`)
         const fromRoot = normalize(rel)
 
-        // Only judge links that look like they name a file in this repository. A bare word with no
-        // extension is a heading anchor or an external shorthand, not a path this guard can rule on.
+        // Only judge links that look like they name a file in this repository. A bare word with no extension is a heading anchor or an external shorthand, not a path this guard can rule on.
         const looksLikeRepoPath =
           /^(src|tests|docs|scripts|\.github|assets)\//.test(fromRoot) ||
           /\.(ts|tsx|js|mjs|cjs|json|md|yml|yaml|toml|py|sh|ps1)$/.test(fromRoot)
@@ -108,11 +75,7 @@ function findBrokenLinks(): { broken: Broken[], checked: number, docs: number } 
   return { broken, checked, docs: docs.length }
 }
 
-/**
- * `https://github.com/DFKHelper/token-goat/blob/<ref>/<path>`, with an optional `#L12-L34` or
- * query. Scoped to this repository on purpose: a link into someone else's tree names a path this
- * checkout has no opinion about, and the captured Dependabot fixtures are full of them.
- */
+/** `https://github.com/DFKHelper/token-goat/blob/<ref>/<path>`, with an optional `#L12-L34` or query. Scoped to this repository on purpose: a link into someone else's tree names a path this checkout has no opinion about, and the captured Dependabot fixtures are full of them. */
 const BLOB = /https:\/\/github\.com\/DFKHelper\/token-goat\/blob\/[^/\s"'<>]+\/([^\s"'<>)]+)/g
 
 function findBrokenBlobLinks(): { broken: Broken[], checked: number, docs: number } {
@@ -131,8 +94,7 @@ function findBrokenBlobLinks(): { broken: Broken[], checked: number, docs: numbe
       BLOB.lastIndex = 0
       let m: RegExpExecArray | null
       while ((m = BLOB.exec(line)) !== null) {
-        // A blob URL is always repo-root-relative, so there is no per-document base to resolve
-        // against and no heuristic needed about whether it names a file: it does.
+        // A blob URL is always repo-root-relative, so there is no per-document base to resolve against and no heuristic needed about whether it names a file: it does.
         const target = normalize((m[1] ?? '').split('#')[0]?.split('?')[0] ?? '')
         if (target === '') continue
 
@@ -153,8 +115,7 @@ describe('documented file paths resolve', () => {
   it('every repo-relative link in a living document names a tracked file', () => {
     const { broken, checked, docs } = findBrokenLinks()
 
-    // A guard whose population emptied silently proves nothing. If a refactor moves the docs or
-    // changes the link syntax, this fails first and says so, rather than passing on zero links.
+    // A guard whose population emptied silently proves nothing. If a refactor moves the docs or changes the link syntax, this fails first and says so, rather than passing on zero links.
     expect(
       docs,
       'No living documents were found to check. Either every .md file is now in HISTORICAL or the ' +

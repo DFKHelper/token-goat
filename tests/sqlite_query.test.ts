@@ -126,9 +126,7 @@ describe('sqlite_query', () => {
     it('reports an empty database with no tables cleanly', () => {
       const emptyPath = path.join(tempDir, 'empty.db')
       const empty = new Database(emptyPath)
-      // A freshly created SQLite file has no on-disk header at all until the first
-      // write transaction -- create and drop a throwaway table so the file gets a real
-      // SQLite header (isSqliteFile's magic-byte check) while still ending with zero tables.
+      // A freshly created SQLite file has no on-disk header at all until the first write transaction -- create and drop a throwaway table so the file gets a real SQLite header (isSqliteFile's magic-byte check) while still ending with zero tables.
       empty.exec('CREATE TABLE t (x)')
       empty.exec('DROP TABLE t')
       empty.close()
@@ -192,9 +190,7 @@ describe('sqlite_query', () => {
       expect(() => validateReadOnlySelect('   ')).toThrow(/empty query/)
     })
 
-    // These statement forms don't start with SELECT/WITH, so they're rejected by the
-    // "only SELECT statements are allowed" prefix check before the keyword scan ever runs --
-    // still rejected, just via the first (and cheaper) of the two independent checks.
+    // These statement forms don't start with SELECT/WITH, so they're rejected by the "only SELECT statements are allowed" prefix check before the keyword scan ever runs -- still rejected, just via the first (and cheaper) of the two independent checks.
     it('rejects INSERT', () => {
       expect(() => validateReadOnlySelect("INSERT INTO users (name) VALUES ('Eve')")).toThrow(/only SELECT statements are allowed/)
     })
@@ -253,8 +249,7 @@ describe('sqlite_query', () => {
       expect(() => validateReadOnlySelect("REPLACE INTO users (id, name) VALUES (1, 'Eve')")).toThrow(/only SELECT statements are allowed/)
     })
 
-    // The keyword-denylist scan is a second, independent layer: it also catches a forbidden
-    // statement smuggled in AFTER a leading WITH clause, which passes the prefix check.
+    // The keyword-denylist scan is a second, independent layer: it also catches a forbidden statement smuggled in AFTER a leading WITH clause, which passes the prefix check.
     it('rejects INSERT smuggled in after a leading WITH (CTE) clause', () => {
       expect(() => validateReadOnlySelect("WITH cte AS (SELECT 1) INSERT INTO users (name) SELECT 'Eve' FROM cte")).toThrow(
         /forbidden keyword 'INSERT'/,
@@ -324,8 +319,7 @@ describe('sqlite_query', () => {
 
     it('rejects a DROP TABLE attempt against the real query engine, leaving the table intact', () => {
       expect(() => runReadOnlySqliteQuery(dbPath, 'DROP TABLE users')).toThrow(/only SELECT statements are allowed/)
-      // The table must still exist and still have its rows -- the rejection has to happen
-      // before execution, not just report an error after a partial write.
+      // The table must still exist and still have its rows -- the rejection has to happen before execution, not just report an error after a partial write.
       const schema = getSqliteSchema(dbPath)
       expect(schema.tables.some((t) => t.name === 'users')).toBe(true)
       const result = runReadOnlySqliteQuery(dbPath, 'SELECT COUNT(*) AS c FROM users')

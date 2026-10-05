@@ -6,8 +6,7 @@ import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { vi } from 'vitest'
 
-// Regression test verifying that image-meta operates completely independently
-// of native sharp using the built-in pure-JS image engine.
+// Regression test verifying that image-meta operates completely independently of native sharp using the built-in pure-JS image engine.
 vi.mock('sharp', () => {
   throw new Error('Cannot find module \'sharp\'')
 })

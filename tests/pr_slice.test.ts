@@ -1,9 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { extractFileDiff } from '../src/pr_slice.js'
 
-// The gh CLI subprocess (pr_slice.ts) and the git subprocess (util.ts::runGit, used for
-// `origin` remote resolution) are mocked independently so no real network/gh-auth/git access
-// is required. Never invoke a real `gh` or `git` process in this file.
+// The gh CLI subprocess (pr_slice.ts) and the git subprocess (util.ts::runGit, used for `origin` remote resolution) are mocked independently so no real network/gh-auth/git access is required. Never invoke a real `gh` or `git` process in this file.
 const spawnSyncMock = vi.fn()
 vi.mock('node:child_process', () => ({
   spawnSync: (...args: unknown[]) => spawnSyncMock(...args),

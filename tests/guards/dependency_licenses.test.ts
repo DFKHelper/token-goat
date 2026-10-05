@@ -1,25 +1,4 @@
-/**
- * A license scan of this package is not the same question as `npm audit`, and it had never been
- * asked here. Asking it turned up three packages in the production tree carrying no license grant
- * at all -- `buffers@0.1.1` and `chainsaw@0.1.0` with neither a field nor a file, `traverse@0.3.9`
- * with the file but not the field. No grant is worse for a review than a copyleft grant, because
- * there is nothing to apply a policy to. All three arrived through one old `unzipper`, which an
- * override removes.
- *
- * What is left cannot be removed, so it has to be disclosed instead: six packages whose declaration
- * no scanner can resolve, and none carrying a copyleft term. (The copyleft half used to be fourteen
- * `@img/*` packages, the LGPL libvips builds behind `sharp`. They left in one go when `sharp` became
- * a development dependency -- nothing under `src/` imports it -- so an install downloads no libvips
- * at all. `jszip` used to make it fifteen; it arrived through `exceljs`, which is no longer a
- * dependency a consumer installs. `flatbuffers` used to make the first group seven, and left when
- * `@xenova/transformers` stopped being one -- which is why the row for it came out of the document
- * at the same time as this entry came out of FAMILIES, and why the two `@img/*` rows and entries
- * came out together here: a family nobody matches any more reads as coverage the document no longer
- * has.) This
- * test is the thing that keeps that disclosure true. It reads `package-lock.json` rather than `node_modules`, because
- * the lockfile lists every platform's packages while an install only holds one platform's -- a
- * `node_modules` sweep on Windows never sees the ten Linux and macOS libvips builds.
- */
+/** A license scan of this package is not the same question as `npm audit`, and it had never been asked here. Asking it turned up three packages in the production tree carrying no license grant at all -- `buffers@0.1.1` and `chainsaw@0.1.0` with neither a field nor a file, `traverse@0.3.9` with the file but not the field. No grant is worse for a review than a copyleft grant, because there is nothing to apply a policy to. All three arrived through one old `unzipper`, which an override removes. What is left cannot be removed, so it has to be disclosed instead: six packages whose declaration no scanner can resolve, and none carrying a copyleft term. (The copyleft half used to be fourteen `@img/*` packages, the LGPL libvips builds behind `sharp`. They left in one go when `sharp` became a development dependency -- nothing under `src/` imports it -- so an install downloads no libvips at all. `jszip` used to make it fifteen; it arrived through `exceljs`, which is no longer a dependency a consumer installs. `flatbuffers` used to make the first group seven, and left when `@xenova/transformers` stopped being one -- which is why the row for it came out of the document at the same time as this entry came out of FAMILIES, and why the two `@img/*` rows and entries came out together here: a family nobody matches any more reads as coverage the document no longer has.) This test is the thing that keeps that disclosure true. It reads `package-lock.json` rather than `node_modules`, because the lockfile lists every platform's packages while an install only holds one platform's -- a `node_modules` sweep on Windows never sees the ten Linux and macOS libvips builds. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -54,16 +33,9 @@ function isCopyleft(license: string | undefined): boolean {
   return typeof license === 'string' && /GPL|MPL|SSPL|EPL|CDDL/i.test(license)
 }
 
-/**
- * SECURITY.md names the platform families rather than all twenty-two packages, so a match is by
- * family. A flagged package outside every family is the case this test exists to catch: it means
- * something new needs an answer in the document.
- */
+/** SECURITY.md names the platform families rather than all twenty-two packages, so a match is by family. A flagged package outside every family is the case this test exists to catch: it means something new needs an answer in the document. */
 const FAMILIES: { match: RegExp; documentedAs: string }[] = [
-  // The two `@img/sharp-*` families were here until `sharp` became a development dependency. Their
-  // platform binaries are no longer in a consumer's tree for a scan to find, so the entries are
-  // deleted rather than kept against a future return: the last test below fails a family that
-  // matches nothing, on purpose.
+  // The two `@img/sharp-*` families were here until `sharp` became a development dependency. Their platform binaries are no longer in a consumer's tree for a scan to find, so the entries are deleted rather than kept against a future return: the last test below fails a family that matches nothing, on purpose.
   { match: /^sqlite-vec/, documentedAs: '`sqlite-vec`' },
 ]
 
@@ -71,28 +43,15 @@ describe('dependency licenses', () => {
   const packages = productionPackages()
   const flagged = packages.filter((p) => isUnresolvable(p.license) || isCopyleft(p.license))
 
-  // Both floors guard against the same thing: a sweep that reads nothing and reports nothing wrong.
-  // They are deliberately far below the real figures rather than pinned to them, because the tree
-  // shrinks whenever a dependency is removed and a floor set just under today's count turns every
-  // such removal into a failure that says nothing useful. It has already happened twice. First this
-  // read 200 while the production tree was around 240, and dropping `@modelcontextprotocol/sdk`
-  // took the tree to 153 and broke it (the SDK carried no flagged license, so the second floor did
-  // not move). Then the first floor was reset to 100 against a tree of about 105 -- just under,
-  // which is the very shape this comment warns against -- and moving `sharp` to a devDependency
-  // took the tree to 73 and broke it again. That move also took every `@img/*` platform binary out
-  // of the production tree, which is the whole of the copyleft half, so the second floor moved too:
-  // 20 flagged packages became 6, all of them sqlite-vec.
+  // Both floors guard against the same thing: a sweep that reads nothing and reports nothing wrong. They are deliberately far below the real figures rather than pinned to them, because the tree shrinks whenever a dependency is removed and a floor set just under today's count turns every such removal into a failure that says nothing useful. It has already happened twice. First this read 200 while the production tree was around 240, and dropping `@modelcontextprotocol/sdk` took the tree to 153 and broke it (the SDK carried no flagged license, so the second floor did not move). Then the first floor was reset to 100 against a tree of about 105 -- just under, which is the very shape this comment warns against -- and moving `sharp` to a devDependency took the tree to 73 and broke it again. That move also took every `@img/*` platform binary out of the production tree, which is the whole of the copyleft half, so the second floor moved too: 20 flagged packages became 6, all of them sqlite-vec.
   //
-  // Measured 2026-09-11: 73 production packages, 6 flagged. The floors sit well under both so that
-  // removing a dependency stays a green event. Raising one to hug today's number re-creates the bug
-  // this comment records; if a floor fails, re-measure and ask what left the tree before touching it.
+  // Measured 2026-09-11: 73 production packages, 6 flagged. The floors sit well under both so that removing a dependency stays a green event. Raising one to hug today's number re-creates the bug this comment records; if a floor fails, re-measure and ask what left the tree before touching it.
   it('reads a real lockfile, so an empty sweep cannot pass as a clean one', () => {
     expect(packages.length).toBeGreaterThan(40)
     expect(flagged.length).toBeGreaterThan(3)
   })
 
-  // The packages with no license grant at all. Named individually because these are the ones that
-  // stop a review, and because the override that removes them is easy to drop by accident.
+  // The packages with no license grant at all. Named individually because these are the ones that stop a review, and because the override that removes them is easy to drop by accident.
   it.each([['buffers'], ['chainsaw'], ['traverse'], ['binary'], ['fstream']])(
     '%s is not in the production tree',
     (name) => {
@@ -119,8 +78,7 @@ describe('dependency licenses', () => {
     expect(undocumented, 'SECURITY.md has to name this before a scan asks about it').toEqual([])
   })
 
-  // Checked against the table rows, not the whole document. Every one of these names also appears
-  // in the surrounding prose, so a plain `toContain` stayed green when a disclosure row was deleted.
+  // Checked against the table rows, not the whole document. Every one of these names also appears in the surrounding prose, so a plain `toContain` stayed green when a disclosure row was deleted.
   it.each(FAMILIES.map((f) => [f.documentedAs]))('SECURITY.md discloses %s in a table row', (documentedAs) => {
     const rows = readText('SECURITY.md')
       .split('\n')

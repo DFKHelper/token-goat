@@ -16,18 +16,7 @@ export interface DiffBlockShape {
   isHunkHeader: (line: string) => boolean
 }
 
-/**
- * Collapse per-file diff blocks in order to fit `maxLines` when per-hunk compression still leaves the
- * whole body over the cap. A block that is not a file block (the prelude before the first file header,
- * e.g. a `git show` commit header) is always kept whole; a file block is kept whole if it fits within
- * the remaining budget once the collapsed cost of every later file block is reserved, otherwise it is
- * replaced by its header lines plus a one-line summary of how much was collapsed.
- *
- * Earlier files stay intact -- diff output is ordered by path -- so a reader scanning top-down sees full
- * hunks first and headers-only for the files that did not fit. Without it, base.ts step 8 hands the whole
- * body to truncateMiddleSmart, which picks survivors by error-keyword content rather than file identity
- * and drops whole file headers with no disclosure.
- */
+/** Collapse per-file diff blocks in order to fit `maxLines` when per-hunk compression still leaves the whole body over the cap. A block that is not a file block (the prelude before the first file header, e.g. a `git show` commit header) is always kept whole; a file block is kept whole if it fits within the remaining budget once the collapsed cost of every later file block is reserved, otherwise it is replaced by its header lines plus a one-line summary of how much was collapsed. Earlier files stay intact -- diff output is ordered by path -- so a reader scanning top-down sees full hunks first and headers-only for the files that did not fit. Without it, base.ts step 8 hands the whole body to truncateMiddleSmart, which picks survivors by error-keyword content rather than file identity and drops whole file headers with no disclosure. */
 export function collapseDiffBlocksToCap(outBlocks: string[], maxLines: number, shape: DiffBlockShape): string[] {
   const isFileBlock = outBlocks.map((block) => shape.isFileBlock(block))
   const collapsedFormOf = (block: string): { headerLines: string[]; summary: string; size: number } => {

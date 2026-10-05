@@ -1,10 +1,4 @@
-/**
- * Built-bundle check for the Haskell adapter (src/languages/haskell.ts): the shipped
- * dist/token-goat.mjs, not source, indexes a small project with one Haskell file and answers
- * `outline`, `symbol` and `read` from it. Modeled directly on tests/lisp_family_bundle_e2e.test.ts,
- * which is this repo's own established shape for proving a new masker-then-scan adapter survived
- * bundling and is reached from the real CLI path rather than only from a source-level unit test.
- */
+/** Built-bundle check for the Haskell adapter (src/languages/haskell.ts): the shipped dist/token-goat.mjs, not source, indexes a small project with one Haskell file and answers `outline`, `symbol` and `read` from it. Modeled directly on tests/lisp_family_bundle_e2e.test.ts, which is this repo's own established shape for proving a new masker-then-scan adapter survived bundling and is reached from the real CLI path rather than only from a source-level unit test. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -39,8 +33,7 @@ beforeAll(() => {
     APPDATA: path.join(home, 'AppData', 'Roaming'),
     TOKEN_GOAT_EMBEDDINGS_ENABLED: '0',
   }
-  // HAND-DERIVED: minimal Haskell per the Haskell 2010 Report section 4.4.3 (type signatures) and
-  // 4.4.3.1 (function bindings).
+  // HAND-DERIVED: minimal Haskell per the Haskell 2010 Report section 4.4.3 (type signatures) and 4.4.3.1 (function bindings).
   fs.writeFileSync(
     project + '/sample.hs',
     'hsGreet :: String -> String\nhsGreet name = "hello, " ++ name\n',

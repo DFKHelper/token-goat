@@ -10,11 +10,7 @@ import { WEB_FETCH_KEY_SEP, exportSessionState, recordWebFetch } from '../src/se
 import { clearModuleCaches } from '../src/reset.js'
 import { storeWebOutput } from '../src/web_cache.js'
 
-// Only runGit (used for the "## Uncommitted changes (git diff --stat)" section) is mocked --
-// resolveProjectRoot resolves the real project root normally, but every git subprocess call
-// resume.ts makes goes through this mock so no test depends on the real repo's working-tree
-// state. Default: no diff output, matching the pre-existing tests' expectations (that section
-// absent) unless a test overrides the mock.
+// Only runGit (used for the "## Uncommitted changes (git diff --stat)" section) is mocked -- resolveProjectRoot resolves the real project root normally, but every git subprocess call resume.ts makes goes through this mock so no test depends on the real repo's working-tree state. Default: no diff output, matching the pre-existing tests' expectations (that section absent) unless a test overrides the mock.
 const runGitMock = vi.fn((..._args: unknown[]) => ({ exitCode: 1, stdout: '', stderr: '' }))
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>
@@ -157,9 +153,7 @@ describe('buildResumePacket', () => {
   })
 
   it('omits the git diff --stat section when runGit exits non-zero, even with non-empty stdout', async () => {
-    // stdout is deliberately non-empty here so this isolates the exitCode check from the
-    // separate empty-stdout check below -- a mutation that dropped the exitCode gate entirely
-    // (leaving only the stdout-length check) would otherwise slip past undetected.
+    // stdout is deliberately non-empty here so this isolates the exitCode check from the separate empty-stdout check below -- a mutation that dropped the exitCode gate entirely (leaving only the stdout-length check) would otherwise slip past undetected.
     runGitMock.mockReturnValue({ exitCode: 128, stdout: 'fatal: not a git repository', stderr: 'not a git repo' })
     const sessionId = 'sid-git-diff-error'
     expect(storeBlob(SESSIONS_SUBDIR, sessionId, { files: [], bashOutputs: [] })).toBe(true)
@@ -193,9 +187,7 @@ describe('buildResumePacket', () => {
 
   it('truncates to MAX_RESUME_CHARS and appends a truncation marker when the packet is oversized', async () => {
     const sessionId = 'sid-truncation'
-    // Only the first 10 edited paths and 8 top-read paths ever make it into the packet, so
-    // truncation has to come from the git-diff --stat section instead -- that's the one part
-    // of the packet with no length cap of its own.
+    // Only the first 10 edited paths and 8 top-read paths ever make it into the packet, so truncation has to come from the git-diff --stat section instead -- that's the one part of the packet with no length cap of its own.
     runGitMock.mockReturnValue({ exitCode: 0, stdout: 'a'.repeat(9000), stderr: '' })
     expect(storeBlob(SESSIONS_SUBDIR, sessionId, { files: [], bashOutputs: [] })).toBe(true)
 
@@ -208,10 +200,7 @@ describe('buildResumePacket', () => {
   })
 })
 
-// Regression: buildResumePacket dropped the Python predecessor's entire "## Skills" section --
-// a session that loaded a skill this session had zero trace of it in the resume packet, even
-// though the underlying primitives (listSkills, getSkillFilePath, extractChecklistSection) were
-// already fully implemented and tested, just never wired to this call site.
+// Regression: buildResumePacket dropped the Python predecessor's entire "## Skills" section -- a session that loaded a skill this session had zero trace of it in the resume packet, even though the underlying primitives (listSkills, getSkillFilePath, extractChecklistSection) were already fully implemented and tested, just never wired to this call site.
 describe('buildResumePacket — Skills section', () => {
   const __dirname = path.dirname(fileURLToPath(import.meta.url))
   const tempDir = path.resolve(__dirname, '.temp-resume-skills-test')

@@ -1,9 +1,4 @@
-/**
- * Google Docs section extraction via public export API.
- *
- * Fetches plain-text exports of Google Docs (no auth required for public docs),
- * parses heading structure, and extracts individual sections by heading name.
- */
+/** Google Docs section extraction via public export API. Fetches plain-text exports of Google Docs (no auth required for public docs), parses heading structure, and extracts individual sections by heading name. */
 
 import { storeWebOutput, getWebOutputByUrlFromDisk } from './web_cache.js'
 import { estimateTokens } from './compact.js'
@@ -43,13 +38,7 @@ const GDRIVE_FETCH_TIMEOUT_SEC = 30
 const GDRIVE_MAX_REDIRECTS = 5
 const GDRIVE_MAX_SIZE_BYTES = 50 * 1024 * 1024
 
-/**
- * A raw `globalThis.fetch` has no SSRF pinning, redirect cap, or timeout -- a redirect from
- * docs.google.com (or a future export-URL change) could otherwise be followed indefinitely,
- * to an internal address, or hang forever. Route through webfetch.ts's own hardened HTTP
- * primitive instead (the same one config_commands.ts's `fetch-image` already uses) rather than
- * duplicating its SSRF/size/timeout handling here.
- */
+/** A raw `globalThis.fetch` has no SSRF pinning, redirect cap, or timeout -- a redirect from docs.google.com (or a future export-URL change) could otherwise be followed indefinitely, to an internal address, or hang forever. Route through webfetch.ts's own hardened HTTP primitive instead (the same one config_commands.ts's `fetch-image` already uses) rather than duplicating its SSRF/size/timeout handling here. */
 async function fetchDocFromApi(url: string): Promise<string> {
   const result = await performHttpFetch(url, {
     deadlineAt: Date.now() + GDRIVE_FETCH_TIMEOUT_SEC * 1000,
@@ -72,8 +61,7 @@ async function fetchDocFromApi(url: string): Promise<string> {
 }
 
 export interface FetchDocOptions {
-  /** Skip the on-disk cache read and force a live fetch. The fresh result is still written
-   *  back to cache afterward, same as a normal cache-miss path. */
+  /** Skip the on-disk cache read and force a live fetch. The fresh result is still written back to cache afterward, same as a normal cache-miss path. */
   fresh?: boolean
 }
 

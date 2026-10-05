@@ -1,11 +1,4 @@
-// Regression: `token-goat pr-slice` (runPrSlice in read_commands.ts) fences its diff/comments/
-// description output for injection (see tests/cli_pr_slice_injection_fence.test.ts) but never
-// redacted it. A PR diff, review comment, or description is authorable by anyone who opens a PR
-// or leaves a review, exactly the same class of externally-sourced text WebSearch/WebFetch/MCP
-// results already redact before display (see CLAUDE.arch.md's Security Boundaries section). Fixing
-// this closes that the same way, without disturbing the existing fencing coverage.
-// Mocks the `gh`/`git` subprocess boundary (no live network/gh-auth access), mirroring
-// tests/pr_slice.test.ts and tests/cli_pr_slice_injection_fence.test.ts.
+// Regression: `token-goat pr-slice` (runPrSlice in read_commands.ts) fences its diff/comments/ description output for injection (see tests/cli_pr_slice_injection_fence.test.ts) but never redacted it. A PR diff, review comment, or description is authorable by anyone who opens a PR or leaves a review, exactly the same class of externally-sourced text WebSearch/WebFetch/MCP results already redact before display (see CLAUDE.arch.md's Security Boundaries section). Fixing this closes that the same way, without disturbing the existing fencing coverage. Mocks the `gh`/`git` subprocess boundary (no live network/gh-auth access), mirroring tests/pr_slice.test.ts and tests/cli_pr_slice_injection_fence.test.ts.
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 const spawnSyncMock = vi.fn()
@@ -43,9 +36,7 @@ function capture(fn: () => void): { stdout: string; stderr: string } {
 }
 
 const GH_OK = { status: 0 }
-// FORMAT-DERIVED: AKIA + 16 alphanumeric chars is exactly the shape src/secret_redact.ts's
-// aws_access_key pattern matches (/AKIA[0-9A-Z]{16}/g). The literal value is AWS's own public
-// documentation example key (used throughout AWS SDK docs as a placeholder), not a real credential.
+// FORMAT-DERIVED: AKIA + 16 alphanumeric chars is exactly the shape src/secret_redact.ts's aws_access_key pattern matches (/AKIA[0-9A-Z]{16}/g). The literal value is AWS's own public documentation example key (used throughout AWS SDK docs as a placeholder), not a real credential.
 const SECRET = 'AKIAIOSFODNN7EXAMPLE'
 
 describe('pr-slice secret redaction', () => {

@@ -4,24 +4,9 @@ import * as path from 'node:path'
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
-// Fixture provenance: HAND-DERIVED. The rows are synthetic files written to satisfy the documented
-// thresholds (a block of at least COMMENT_FOLD_MIN_BLOCK comment lines; a paragraph past the prose
-// planner's character floor whose opening sentence ends early enough to keep). That is the right
-// strength here because what is under test is a gating decision plus an arithmetic property of row
-// positions, not a wire format. The comment fold's recall RANGE is not hand-written: it is parsed
-// out of the notice the planner itself emitted, so the second window is exactly what a reader
-// following that notice would ask for rather than a range this test believes the notice contains.
-// The prose fold's recall is not a range at all -- it names a `token-goat section` heading, resolved
-// via readSection against the real fixture file written to disk for that purpose.
+// Fixture provenance: HAND-DERIVED. The rows are synthetic files written to satisfy the documented thresholds (a block of at least COMMENT_FOLD_MIN_BLOCK comment lines; a paragraph past the prose planner's character floor whose opening sentence ends early enough to keep). That is the right strength here because what is under test is a gating decision plus an arithmetic property of row positions, not a wire format. The comment fold's recall RANGE is not hand-written: it is parsed out of the notice the planner itself emitted, so the second window is exactly what a reader following that notice would ask for rather than a range this test believes the notice contains. The prose fold's recall is not a range at all -- it names a `token-goat section` heading, resolved via readSection against the real fixture file written to disk for that purpose.
 //
-// Which fold carries the fixed point was established by measurement, not by reading the old comment.
-// `foldDelivery` used to decline every window on the stated grounds that both notices point at a
-// ranged Read of their own span, so a recall would re-fold and hand back less than the notice
-// promised. That is true of the PROSE fold, whose pointer is `limit=1` on the very row it folded.
-// It is false of the COMMENT fold: the recall range begins after the kept `/**` and summary line, and
-// `planCommentFolds` needs an opening marker to enter a block, so the recalled rows are not a
-// comment run at all and fold to nothing. The first version of this test asserted the fixed point on
-// the comment fold and its positive control failed, which is how the difference surfaced.
+// Which fold carries the fixed point was established by measurement, not by reading the old comment. `foldDelivery` used to decline every window on the stated grounds that both notices point at a ranged Read of their own span, so a recall would re-fold and hand back less than the notice promised. That is true of the PROSE fold, whose pointer is `limit=1` on the very row it folded. It is false of the COMMENT fold: the recall range begins after the kept `/**` and summary line, and `planCommentFolds` needs an opening marker to enter a block, so the recalled rows are not a comment run at all and fold to nothing. The first version of this test asserted the fixed point on the comment fold and its positive control failed, which is how the difference surfaced.
 
 const enqueueDirtyPathSafe = vi.fn()
 const getFileEntry = vi.fn()

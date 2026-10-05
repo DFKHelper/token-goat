@@ -1,30 +1,4 @@
-/**
- * Windsurf's Cascade agent has no local hook-file surface: `cascadeHooksJson` is a tenant/team-settings
- * field pushed from Windsurf's own server, declared as a protobuf field on `GetCliTeamSettingsResponse`
- * (seat-management), never read from or written to a file on disk. Confirmed by tracing every occurrence
- * of `cascadeHooksJson` across the shipped Windsurf 1.110.1 install on this machine (`extensions/windsurf/
- * dist/extension.js`, `out/vs/workbench/workbench.desktop.main.js`, and the Go language server binary
- * `extensions/windsurf/bin/language_server_windows_x64.exe`): every hit is either a protobuf field
- * declaration or a class-constructor default (`this.cascadeHooksJson=""`) alongside other confirmed
- * tenant-policy fields (`cliPermissionsDeny`, `defaultModelUid`, `mcpRegistryUrls`, `enforceMcpRegistry`).
- * The same bundles' Copilot-CLI/Claude-plugin importers DO have real local hook-file readers
- * (`hookConfigPaths=["hooks.json"]`, `hookConfigPaths=["hooks/hooks.json"]`) -- a positive control proving
- * this method finds local hook wiring where it exists, so Cascade's absence of one is not a blind grep
- * returning nothing everywhere.
- *
- * The risk this guards against is not "Windsurf support is incomplete" -- it is that a future change
- * *invents* a local Cascade hook file that Windsurf silently ignores, shipping a user a config that looks
- * installed and does nothing. So this guard is a structural absence check, re-run every time this repo's
- * own source changes, independent of whether Windsurf ever grows a real local hook surface (if it does,
- * this guard's population lives in the fix commit's diff, not a place a reviewer has to remember to look).
- *
- * `windsurf` is deliberately NOT a member of `HarnessName` / `KNOWN_HARNESS_NAMES`: those identities are
- * this codebase's own convention for "a harness a bridge installer wires hooks for" (see
- * `src/bridges/registry.ts` and `src/bridges/types.ts`). Windsurf gets a passive Bash-output compression
- * filter only (`windsurfFilter` in `src/tool_filters/ai_clis.ts`), which is asserted present below as the
- * guard's own positive control: the file-scanning half of this test is proven to see real content, not an
- * empty file it never opened.
- */
+/** Windsurf's Cascade agent has no local hook-file surface: `cascadeHooksJson` is a tenant/team-settings field pushed from Windsurf's own server, declared as a protobuf field on `GetCliTeamSettingsResponse` (seat-management), never read from or written to a file on disk. Confirmed by tracing every occurrence of `cascadeHooksJson` across the shipped Windsurf 1.110.1 install on this machine (`extensions/windsurf/ dist/extension.js`, `out/vs/workbench/workbench.desktop.main.js`, and the Go language server binary `extensions/windsurf/bin/language_server_windows_x64.exe`): every hit is either a protobuf field declaration or a class-constructor default (`this.cascadeHooksJson=""`) alongside other confirmed tenant-policy fields (`cliPermissionsDeny`, `defaultModelUid`, `mcpRegistryUrls`, `enforceMcpRegistry`). The same bundles' Copilot-CLI/Claude-plugin importers DO have real local hook-file readers (`hookConfigPaths=["hooks.json"]`, `hookConfigPaths=["hooks/hooks.json"]`) -- a positive control proving this method finds local hook wiring where it exists, so Cascade's absence of one is not a blind grep returning nothing everywhere. The risk this guards against is not "Windsurf support is incomplete" -- it is that a future change *invents* a local Cascade hook file that Windsurf silently ignores, shipping a user a config that looks installed and does nothing. So this guard is a structural absence check, re-run every time this repo's own source changes, independent of whether Windsurf ever grows a real local hook surface (if it does, this guard's population lives in the fix commit's diff, not a place a reviewer has to remember to look). `windsurf` is deliberately NOT a member of `HarnessName` / `KNOWN_HARNESS_NAMES`: those identities are this codebase's own convention for "a harness a bridge installer wires hooks for" (see `src/bridges/registry.ts` and `src/bridges/types.ts`). Windsurf gets a passive Bash-output compression filter only (`windsurfFilter` in `src/tool_filters/ai_clis.ts`), which is asserted present below as the guard's own positive control: the file-scanning half of this test is proven to see real content, not an empty file it never opened. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'

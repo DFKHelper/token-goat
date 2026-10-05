@@ -13,17 +13,12 @@ import { postSkillHandler } from '../src/hooks_skill.js'
 import { setSkillOutputsDirForTesting, setSkillsSourceDirForTesting } from '../src/skill_cache.js'
 import type { HookEvent } from '../src/hook_registry.js'
 
-/** Same "flat command names" shape skill_version_drift.ts derives internally, built from the
- * same public building blocks -- so a "no new commands" fixture is genuinely exhaustive
- * against whatever the CLI registers today, without depending on the module under test's own
- * private helper. */
+/** Same "flat command names" shape skill_version_drift.ts derives internally, built from the same public building blocks -- so a "no new commands" fixture is genuinely exhaustive against whatever the CLI registers today, without depending on the module under test's own private helper. */
 function currentCommandNamesForTest(): string[] {
   return flattenCommandNames(buildCommandManifest(buildProgram()))
 }
 
-// Unique per test, so parallel/sequential runs never collide on the skill_version_snapshots
-// primary key (session_id) or on any other test file's fixed literal session id (e.g.
-// tests/hooks_session.test.ts's 'test-session').
+// Unique per test, so parallel/sequential runs never collide on the skill_version_snapshots primary key (session_id) or on any other test file's fixed literal session id (e.g. tests/hooks_session.test.ts's 'test-session').
 function nonce(): string {
   return `svd${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
 }
@@ -39,8 +34,7 @@ function skillPostEvent(skill: string, sessionId: string, body = 'irrelevant bod
   }
 }
 
-/** Seeds a row as if `token-goat` were loaded at an older version with a smaller command set,
- * so checkSkillVersionDrift has genuine drift to detect. */
+/** Seeds a row as if `token-goat` were loaded at an older version with a smaller command set, so checkSkillVersionDrift has genuine drift to detect. */
 function seedOldSnapshot(sessionId: string, loadedVersion: string, loadedCommands: string[]): void {
   const db = getDb(globalDbPath())
   db.prepare(
@@ -51,9 +45,7 @@ function seedOldSnapshot(sessionId: string, loadedVersion: string, loadedCommand
   ).run({ sessionId, skillName: 'token-goat', version: loadedVersion, commands: JSON.stringify(loadedCommands) })
 }
 
-// postSkillHandler also caches the skill body via skill_cache.ts, which defaults to real
-// on-disk skill cache/source directories -- sandbox both to a temp dir (same pattern as
-// tests/hooks_skill.test.ts) so this file never touches real skill cache data.
+// postSkillHandler also caches the skill body via skill_cache.ts, which defaults to real on-disk skill cache/source directories -- sandbox both to a temp dir (same pattern as tests/hooks_skill.test.ts) so this file never touches real skill cache data.
 const cacheDir = path.join(os.tmpdir(), `tg-skill-version-drift-cache-${process.pid}`)
 const sourceDir = path.join(os.tmpdir(), `tg-skill-version-drift-source-${process.pid}`)
 
@@ -105,9 +97,7 @@ describe('skill_version_drift', () => {
   describe('checkSkillVersionDrift — real drift', () => {
     it('reports specific new commands and fires only once per (re)load', async () => {
       const sessionId = nonce()
-      // An empty "loaded commands" set plus an older version string means every currently
-      // registered command counts as new -- deliberately the maximal-drift case, so the
-      // message is guaranteed non-trivial regardless of which commands exist today.
+      // An empty "loaded commands" set plus an older version string means every currently registered command counts as new -- deliberately the maximal-drift case, so the message is guaranteed non-trivial regardless of which commands exist today.
       seedOldSnapshot(sessionId, '0.0.0-test-old', [])
 
       const first = await checkSkillVersionDrift(sessionId)
@@ -116,17 +106,14 @@ describe('skill_version_drift', () => {
       expect(first).toContain('new command(s) available')
       expect(first).toContain('token-goat commands')
 
-      // One-shot: the session was already notified, so a second check (same turn or a later
-      // one) must not repeat it.
+      // One-shot: the session was already notified, so a second check (same turn or a later one) must not repeat it.
       const second = await checkSkillVersionDrift(sessionId)
       expect(second).toBeNull()
     })
 
     it('still nudges (generically) when the version differs but no new commands were added', async () => {
       const sessionId = nonce()
-      // Seed with the *current* full command set but an older version string, so the diff is
-      // empty even though the version itself has changed (e.g. a patch release with no new
-      // commands, only fixes).
+      // Seed with the *current* full command set but an older version string, so the diff is empty even though the version itself has changed (e.g. a patch release with no new commands, only fixes).
       seedOldSnapshot(sessionId, '0.0.0-test-old', currentCommandNamesForTest())
 
       const message = await checkSkillVersionDrift(sessionId)

@@ -1,22 +1,4 @@
-/**
- * Guard: a text-mode result set that was cut short must say so.
- *
- * `--json` has always carried an honest `totalCount`, so `symbol dup --json` reported 20 items with
- * `totalCount: 40`. Text mode printed exactly the limit's worth of blocks and stopped, with nothing
- * on stdout or stderr to distinguish "these are the matches" from "these are the first 20 of 40".
- * `refs` did the same at its own default of 100. `find` was worse: its file list was cut by
- * `--limit` in both modes while `truncated` stayed false, so even a JSON consumer was told the
- * answer was complete.
- *
- * Why didn't a test catch this: every existing symbol/refs/find test uses a fixture small enough to
- * fit inside the limit, so no assertion ever saw a truncated page, and the JSON tests that do
- * exercise truncation assert on `totalCount` -- a field the text renderer does not use. The gap was
- * a rendering one, invisible to both. These cases build a result set larger than the limit and read
- * the literal output.
- *
- * Each command is asserted both ways: the footer appears when rows were dropped, and is absent when
- * they were not. A fix that appended the line unconditionally would pass the first half alone.
- */
+/** Guard: a text-mode result set that was cut short must say so. `--json` has always carried an honest `totalCount`, so `symbol dup --json` reported 20 items with `totalCount: 40`. Text mode printed exactly the limit's worth of blocks and stopped, with nothing on stdout or stderr to distinguish "these are the matches" from "these are the first 20 of 40". `refs` did the same at its own default of 100. `find` was worse: its file list was cut by `--limit` in both modes while `truncated` stayed false, so even a JSON consumer was told the answer was complete. Why didn't a test catch this: every existing symbol/refs/find test uses a fixture small enough to fit inside the limit, so no assertion ever saw a truncated page, and the JSON tests that do exercise truncation assert on `totalCount` -- a field the text renderer does not use. The gap was a rendering one, invisible to both. These cases build a result set larger than the limit and read the literal output. Each command is asserted both ways: the footer appears when rows were dropped, and is absent when they were not. A fix that appended the line unconditionally would pass the first half alone. */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -30,8 +12,7 @@ let projectDir: string
 let homeDir: string
 
 function run(args: string[]): { status: number; out: string } {
-  // stderr captured on the success path too: `find` emits its elision note there, and a helper that
-  // only reads stdout would report the notice as missing when it was printed.
+  // stderr captured on the success path too: `find` emits its elision note there, and a helper that only reads stdout would report the notice as missing when it was printed.
   const res = spawnSync(process.execPath, [BUNDLE, ...args], {
     cwd: projectDir,
     encoding: 'utf-8',
@@ -40,8 +21,7 @@ function run(args: string[]): { status: number; out: string } {
   return { status: res.status ?? 1, out: (res.stdout ?? '') + (res.stderr ?? '') }
 }
 
-/** Same spawn, streams kept apart: the truth count below is read from a JSON payload on
- * stdout, which the merged helper above would corrupt with any notice printed beside it. */
+/** Same spawn, streams kept apart: the truth count below is read from a JSON payload on stdout, which the merged helper above would corrupt with any notice printed beside it. */
 function runSplit(args: string[]): { out: string; err: string } {
   const res = spawnSync(process.execPath, [BUNDLE, ...args], {
     cwd: projectDir,
@@ -95,9 +75,7 @@ describe('refs text mode', () => {
   })
 
   it('names the total per symbol in the multi-symbol form', () => {
-    // The multi-spec and cross-file forms render their own line list rather than going through the
-    // single-symbol path, so each needs its own footer: fixing only the single form would leave
-    // `refs a,b` silently capped.
+    // The multi-spec and cross-file forms render their own line list rather than going through the single-symbol path, so each needs its own footer: fixing only the single form would leave `refs a,b` silently capped.
     const r = run(['refs', 'target.ts::hotSymbol,hotTwo', '--limit', '2'])
     expect(r.status).toBe(0)
     expect(r.out.match(/showing 2 of \d+ references/g) ?? [], 'each symbol needs its own total').toHaveLength(2)
@@ -111,13 +89,9 @@ describe('refs text mode', () => {
 })
 
 describe('semantic text mode', () => {
-  // The JSON half of this is driven by the row-truncation guard
-  // (tests/guards/truncation_invariant_holds.test.ts), which only ever asks for --json. Each
-  // half was covered and the pair was not: a fix that filled the envelope in and left the
-  // renderer silent would pass that guard completely.
+  // The JSON half of this is driven by the row-truncation guard (tests/guards/truncation_invariant_holds.test.ts), which only ever asks for --json. Each half was covered and the pair was not: a fix that filled the envelope in and left the renderer silent would pass that guard completely.
   it('names the true match total when --limit cut the set', () => {
-    // Independent oracle: the same query with the cap lifted. A total copied from the shown
-    // count cannot satisfy this, and neither can any wrong larger number.
+    // Independent oracle: the same query with the cap lifted. A total copied from the shown count cannot satisfy this, and neither can any wrong larger number.
     const full = JSON.parse(runSplit(['semantic', 'dup', '--limit', '999', '--json']).out) as { items: unknown[] }
     const truth = full.items.length
     expect(truth, 'semantic matched too little for a cap to drop anything').toBeGreaterThan(2)
@@ -128,11 +102,7 @@ describe('semantic text mode', () => {
   })
 
   it('marks a clipped candidate count as a floor, and never overstates it', () => {
-    // The candidate over-fetch is proportional to --limit, so at a very small limit the
-    // pre-cap count is itself incomplete and the notice reads 'at least N'. That hedge is the
-    // honest answer, and it is also the one shape that could hide a wrong number behind a
-    // qualifier -- so the floor is checked against the same uncapped oracle. A floor above the
-    // real total is a lie whatever word precedes it.
+    // The candidate over-fetch is proportional to --limit, so at a very small limit the pre-cap count is itself incomplete and the notice reads 'at least N'. That hedge is the honest answer, and it is also the one shape that could hide a wrong number behind a qualifier -- so the floor is checked against the same uncapped oracle. A floor above the real total is a lie whatever word precedes it.
     const full = JSON.parse(runSplit(['semantic', 'dup', '--limit', '999', '--json']).out) as { items: unknown[] }
     const truth = full.items.length
 

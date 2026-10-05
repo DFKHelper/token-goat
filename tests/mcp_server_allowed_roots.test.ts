@@ -1,18 +1,8 @@
-// `confine_reads_to_project_root` stops a caller traversing OUT of the root it is given. It does
-// not constrain WHICH root the caller supplies: every MCP tool takes an optional `projectRoot`,
-// and MCP tool arguments are model-generated -- the same untrusted channel confinement exists to
-// defend against. So a caller that names its own root is confined to a boundary it chose, which
-// is no boundary at all for a deployment where MCP is the only path to the filesystem.
+// `confine_reads_to_project_root` stops a caller traversing OUT of the root it is given. It does not constrain WHICH root the caller supplies: every MCP tool takes an optional `projectRoot`, and MCP tool arguments are model-generated -- the same untrusted channel confinement exists to defend against. So a caller that names its own root is confined to a boundary it chose, which is no boundary at all for a deployment where MCP is the only path to the filesystem.
 //
-// `mcp.allowed_roots` pins that choice. It is EMPTY by default, so the shipped behaviour is
-// unchanged and the documented multi-root contract (`projectRoot` exists precisely because the
-// server's cwd is often not the workspace root) still holds. Non-empty, it refuses any resolved
-// root outside every listed entry.
+// `mcp.allowed_roots` pins that choice. It is EMPTY by default, so the shipped behaviour is unchanged and the documented multi-root contract (`projectRoot` exists precisely because the server's cwd is often not the workspace root) still holds. Non-empty, it refuses any resolved root outside every listed entry.
 //
-// The allowlist is read from the SERVER's config, not the request's resolved root -- the inverse
-// of what mcp_server_confine_reads_config_scoping.test.ts pins for confine_reads_to_project_root,
-// and deliberately so: a workspace may decide its own confinement, but it must not be able to
-// ship a project config that authorises itself past the operator's allowlist.
+// The allowlist is read from the SERVER's config, not the request's resolved root -- the inverse of what mcp_server_confine_reads_config_scoping.test.ts pins for confine_reads_to_project_root, and deliberately so: a workspace may decide its own confinement, but it must not be able to ship a project config that authorises itself past the operator's allowlist.
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -68,9 +58,7 @@ describe('mcp allowed_roots', () => {
     for (const d of [allowedRoot, otherRoot]) fs.rmSync(d, { recursive: true, force: true })
   })
 
-  // The load-bearing non-breaking assertion: with no allowlist configured, an arbitrary caller-
-  // supplied root is still honoured exactly as before. If this ever goes red the default stopped
-  // being a no-op and the multi-root contract broke.
+  // The load-bearing non-breaking assertion: with no allowlist configured, an arbitrary caller- supplied root is still honoured exactly as before. If this ever goes red the default stopped being a no-op and the multi-root contract broke.
   it('empty allowlist (the default) leaves an arbitrary caller-supplied projectRoot working', async () => {
     delete process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS']
     invalidateConfigCache()
@@ -104,8 +92,7 @@ describe('mcp allowed_roots', () => {
     expect(textOf(result)).toContain('NESTED-CONTENT')
   })
 
-  // Multi-entry parsing on this platform's own delimiter: a single-entry test would pass even if
-  // the value were consumed whole without ever being split.
+  // Multi-entry parsing on this platform's own delimiter: a single-entry test would pass even if the value were consumed whole without ever being split.
   it('parses a multi-entry env value on this platform delimiter, admitting a root listed second', async () => {
     process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS'] = [otherRoot, allowedRoot].join(path.delimiter)
     invalidateConfigCache()
@@ -116,13 +103,7 @@ describe('mcp allowed_roots', () => {
     expect(textOf(result)).toContain('INSIDE-CONTENT')
   })
 
-  // Regression: the allowlist check lived inside confineTargets, which only these tools reach --
-  // the ones that validate an individual file path. `semantic`, `index_status`, `map` and
-  // `changed` resolve a caller-supplied root and read no path of their own, so they never called
-  // it and were never checked: naming any directory on the machine returned that directory's
-  // inventory, symbols, indexed chunks or diff hunks straight past the operator's allowlist. The
-  // check now sits on the one function that resolves a caller's root, so a tool is covered by
-  // construction rather than by remembering to ask.
+  // Regression: the allowlist check lived inside confineTargets, which only these tools reach -- the ones that validate an individual file path. `semantic`, `index_status`, `map` and `changed` resolve a caller-supplied root and read no path of their own, so they never called it and were never checked: naming any directory on the machine returned that directory's inventory, symbols, indexed chunks or diff hunks straight past the operator's allowlist. The check now sits on the one function that resolves a caller's root, so a tool is covered by construction rather than by remembering to ask.
   it.each(['semantic', 'index_status', 'map', 'changed'])(
     'refuses a projectRoot outside the allowlist for the path-less tool %s',
     async (tool) => {
@@ -154,8 +135,7 @@ describe('mcp allowed_roots', () => {
     },
   )
 
-  // The allowlist and the traversal guard are separate operator policies. They shared a function,
-  // so turning the traversal guard off returned early and voided the allowlist for every tool.
+  // The allowlist and the traversal guard are separate operator policies. They shared a function, so turning the traversal guard off returned early and voided the allowlist for every tool.
   it('still refuses an out-of-allowlist root when confine_reads_to_project_root is off', async () => {
     process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS'] = allowedRoot
     process.env['TOKEN_GOAT_MCP_CONFINE_READS'] = '0'

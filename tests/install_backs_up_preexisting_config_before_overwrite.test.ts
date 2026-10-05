@@ -1,16 +1,4 @@
-/**
- * Behavioral counterpart to `tests/guards/installer_writes_are_always_backed_up.test.ts`. The
- * static guard catches a write site losing its `backupFile` call in source; this test catches the
- * same class of gap in the shipping path, by running the real built bundle
- * (`dist/token-goat.mjs`, not source) against a disposable `HOME`/`APPDATA` with a real,
- * pre-existing config file already sitting where the installer writes, and checking the literal
- * bytes left on disk afterward.
- *
- * Real incident this guards: `token-goat install --vscode` silently rewrote a user's file with no
- * recovery copy. `mcp.json`/`settings.json` are not token-goat-exclusive files -- VS Code, Visual
- * Studio, and Zed all read them for their own settings too, so a bad merge with no backup is not a
- * one-line loss, it can be a whole config file's worth of unrelated content gone with it.
- */
+/** Behavioral counterpart to `tests/guards/installer_writes_are_always_backed_up.test.ts`. The static guard catches a write site losing its `backupFile` call in source; this test catches the same class of gap in the shipping path, by running the real built bundle (`dist/token-goat.mjs`, not source) against a disposable `HOME`/`APPDATA` with a real, pre-existing config file already sitting where the installer writes, and checking the literal bytes left on disk afterward. Real incident this guards: `token-goat install --vscode` silently rewrote a user's file with no recovery copy. `mcp.json`/`settings.json` are not token-goat-exclusive files -- VS Code, Visual Studio, and Zed all read them for their own settings too, so a bad merge with no backup is not a one-line loss, it can be a whole config file's worth of unrelated content gone with it. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -94,10 +82,7 @@ describe('install backs up a real pre-existing config before overwriting it, wit
     const project = mkIsolated('tg-behav-backup-zed-proj-')
     const env = envFor(home, dataDir)
 
-    // Zed's config lives at `%APPDATA%\Zed` on Windows and `$XDG_CONFIG_HOME/zed` elsewhere, and
-    // `envFor` isolates both. Hardcoding the Windows spelling meant the fixture was written where
-    // the installer never looks on Linux and macOS: install succeeded, touched a different file, and
-    // the "did it rewrite the original" control read as a failure to rewrite.
+    // Zed's config lives at `%APPDATA%\Zed` on Windows and `$XDG_CONFIG_HOME/zed` elsewhere, and `envFor` isolates both. Hardcoding the Windows spelling meant the fixture was written where the installer never looks on Linux and macOS: install succeeded, touched a different file, and the "did it rewrite the original" control read as a failure to rewrite.
     const settingsPath =
       process.platform === 'win32' ? path.join(home, 'AppData', 'Roaming', 'Zed', 'settings.json') : path.join(home, '.config', 'zed', 'settings.json')
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true })

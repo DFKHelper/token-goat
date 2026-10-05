@@ -1,10 +1,4 @@
-/**
- * Built-bundle check for the F# adapter (src/languages/fsharp.ts): the shipped
- * dist/token-goat.mjs, not source, indexes a small project with one F# file and answers
- * `outline`, `symbol` and `read` from it. Modeled directly on tests/ocaml_bundle_e2e.test.ts,
- * this repo's own established shape for proving a new masker-then-scan adapter survived bundling
- * and is reached from the real CLI path rather than only from a source-level unit test.
- */
+/** Built-bundle check for the F# adapter (src/languages/fsharp.ts): the shipped dist/token-goat.mjs, not source, indexes a small project with one F# file and answers `outline`, `symbol` and `read` from it. Modeled directly on tests/ocaml_bundle_e2e.test.ts, this repo's own established shape for proving a new masker-then-scan adapter survived bundling and is reached from the real CLI path rather than only from a source-level unit test. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -39,9 +33,7 @@ beforeAll(() => {
     APPDATA: path.join(home, 'AppData', 'Roaming'),
     TOKEN_GOAT_EMBEDDINGS_ENABLED: '0',
   }
-  // HAND-DERIVED: minimal F# per the F# Language Specification's "String, Character, and Byte
-  // Array Literals" section (see fsharp.ts's module doc for the section-citation caveat), using
-  // `+` for string concatenation.
+  // HAND-DERIVED: minimal F# per the F# Language Specification's "String, Character, and Byte Array Literals" section (see fsharp.ts's module doc for the section-citation caveat), using `+` for string concatenation.
   fs.writeFileSync(
     project + '/sample.fs',
     'let fsGreet name = "hello, " + name\n',

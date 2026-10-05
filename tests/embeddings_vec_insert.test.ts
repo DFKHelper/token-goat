@@ -93,21 +93,11 @@ describe('insertChunkVector + KNN round-trip on the real vec0 table', () => {
   )
 })
 
-// Both tests below require a real, loaded vec0 table AND a real, available embed
-// model - the exact combination absent from every other upsertChunks/indexFile
-// test in this suite (embeddings_novec_upsert_search.test.ts stops at the
-// !chunkVectorsTableExists() early return; embeddings_reindex.test.ts's own
-// comment notes upsertChunks no-ops when the model is unavailable). Without this
-// combination, upsertChunks's real insert code - the line that actually binds a
-// rowid into chunk_vectors - never runs, and the bug hides behind the seam.
+// Both tests below require a real, loaded vec0 table AND a real, available embed model - the exact combination absent from every other upsertChunks/indexFile test in this suite (embeddings_novec_upsert_search.test.ts stops at the !chunkVectorsTableExists() early return; embeddings_reindex.test.ts's own comment notes upsertChunks no-ops when the model is unavailable). Without this combination, upsertChunks's real insert code - the line that actually binds a rowid into chunk_vectors - never runs, and the bug hides behind the seam.
 const canExerciseRealUpsert = vec0State === 'working' && isAvailable() && modelFilesPresent()
 
 describe('upsertChunks (real function, not insertChunkVector in isolation) against a real vec0 table', () => {
-  // Regression: upsertChunks bypassed insertChunkVector and bound chunkResult.lastInsertRowid
-  // (a plain JS number) into chunk_vectors itself, so the very first real insert threw "Only
-  // integers are allowed for primary key values" against a genuine vec0 table. Calling
-  // insertChunkVector directly (as embeddings_vec_insert.test.ts above does) never exercises
-  // this because upsertChunks duplicates the insert instead of delegating to it.
+  // Regression: upsertChunks bypassed insertChunkVector and bound chunkResult.lastInsertRowid (a plain JS number) into chunk_vectors itself, so the very first real insert threw "Only integers are allowed for primary key values" against a genuine vec0 table. Calling insertChunkVector directly (as embeddings_vec_insert.test.ts above does) never exercises this because upsertChunks duplicates the insert instead of delegating to it.
   it.skipIf(!canExerciseRealUpsert)(
     'stores a chunk + vector without throwing, and the row is queryable afterward',
     async () => {
@@ -137,25 +127,13 @@ describe('upsertChunks (real function, not insertChunkVector in isolation) again
 })
 
 describe('a failed reindex does not delete a file\'s prior embeddings without replacing them', () => {
-  // Regression: indexFile calls deleteFileEmbeddings(filePath) and then upsertChunks(chunks)
-  // as two separate statements. deleteFileEmbeddings auto-commits immediately; if upsertChunks
-  // then throws partway through its own insert loop, the delete has already stuck - the file's
-  // prior embeddings are gone and no new ones replaced them, silently breaking semantic search
-  // for that file until the next successful reindex. Prove the fix (delete + insert wrapped in
-  // one transaction) independently of the BigInt-coercion fix above: seed a real prior chunk +
-  // vector via raw SQL, then poison the exact chunk_vectors rowid the next AUTOINCREMENT chunk
-  // insert will receive, forcing upsertChunks's insert loop to fail on a genuine primary-key
-  // collision even once the BigInt bug itself is fixed. If delete+insert are atomic, the
-  // rollback restores the prior row; if not, it stays deleted.
+  // Regression: indexFile calls deleteFileEmbeddings(filePath) and then upsertChunks(chunks) as two separate statements. deleteFileEmbeddings auto-commits immediately; if upsertChunks then throws partway through its own insert loop, the delete has already stuck - the file's prior embeddings are gone and no new ones replaced them, silently breaking semantic search for that file until the next successful reindex. Prove the fix (delete + insert wrapped in one transaction) independently of the BigInt-coercion fix above: seed a real prior chunk + vector via raw SQL, then poison the exact chunk_vectors rowid the next AUTOINCREMENT chunk insert will receive, forcing upsertChunks's insert loop to fail on a genuine primary-key collision even once the BigInt bug itself is fixed. If delete+insert are atomic, the rollback restores the prior row; if not, it stays deleted.
   it.skipIf(!canExerciseRealUpsert)(
     'rolls back the delete when the subsequent insert fails',
     async () => {
       const dbPath = path.join(TMP, 'index.db')
       const db = getDb(dbPath)
-      // Claim the empty database for the running stack before hand-seeding a prior vector into it.
-      // upsertChunks discards stored vectors whose provenance it cannot account for, and a
-      // hand-inserted row has none -- which would delete the "prior" state this test is about.
-      // Real indexing stamps on its first write; this is the same thing, one call earlier.
+      // Claim the empty database for the running stack before hand-seeding a prior vector into it. upsertChunks discards stored vectors whose provenance it cannot account for, and a hand-inserted row has none -- which would delete the "prior" state this test is about. Real indexing stamps on its first write; this is the same thing, one call earlier.
       ensureEmbeddingProvenance(db)
       const file = 'c:/proj/atomic-reindex.ts'
 
@@ -166,9 +144,7 @@ describe('a failed reindex does not delete a file\'s prior embeddings without re
       const priorId = Number(priorInfo.lastInsertRowid)
       db.prepare('INSERT INTO chunk_vectors (rowid, embedding) VALUES (?, ?)').run(BigInt(priorId), packVec(priorEmbedding))
 
-      // chunks.id is INTEGER PRIMARY KEY AUTOINCREMENT: it never reuses ids, even across
-      // deletes, so the next chunk indexFile inserts for this fresh per-test DB is
-      // guaranteed to land at priorId + 1. Occupy that rowid in chunk_vectors up front.
+      // chunks.id is INTEGER PRIMARY KEY AUTOINCREMENT: it never reuses ids, even across deletes, so the next chunk indexFile inserts for this fresh per-test DB is guaranteed to land at priorId + 1. Occupy that rowid in chunk_vectors up front.
       const poisonedId = priorId + 1
       db.prepare('INSERT INTO chunk_vectors (rowid, embedding) VALUES (?, ?)').run(BigInt(poisonedId), packVec(priorEmbedding))
 

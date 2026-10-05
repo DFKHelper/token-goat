@@ -1,13 +1,4 @@
-/**
- * Regression coverage for SKILLCACHE-NO-EVICTION: the 'skills' cache subdir was
- * missing from CACHE_SUBDIRS in cache_session_commands.ts, so prune-cache and
- * clean-cache never evicted skill-output files, unlike every other cache subdir.
- *
- * Kept in its own file (rather than tests/cache_session_commands.test.ts) because
- * that file has unrelated in-progress edits from a concurrent agent this session;
- * this file only touches skill_cache.ts's directory override plus the two CLI
- * command entry points, so it stays isolated from that work.
- */
+/** Regression coverage for SKILLCACHE-NO-EVICTION: the 'skills' cache subdir was missing from CACHE_SUBDIRS in cache_session_commands.ts, so prune-cache and clean-cache never evicted skill-output files, unlike every other cache subdir. Kept in its own file (rather than tests/cache_session_commands.test.ts) because that file has unrelated in-progress edits from a concurrent agent this session; this file only touches skill_cache.ts's directory override plus the two CLI command entry points, so it stays isolated from that work. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'

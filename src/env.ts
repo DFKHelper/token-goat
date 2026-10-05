@@ -1,10 +1,4 @@
-/**
- * Environment-variable parsers with safe fallbacks.
- *
- * Ports the env_float / env_int contract from `util.py`: read a variable,
- * strip whitespace, parse, and return the supplied default on anything that is
- * absent, empty, or malformed. No imports from other local modules.
- */
+/** Environment-variable parsers with safe fallbacks. Ports the env_float / env_int contract from `util.py`: read a variable, strip whitespace, parse, and return the supplied default on anything that is absent, empty, or malformed. No imports from other local modules. */
 
 /** Canonical falsy env-var values (matches util.py FALSY_ENV_VALUES). */
 export const FALSY_ENV_VALUES: ReadonlySet<string> = new Set(['0', 'false', 'no', 'off'])
@@ -12,9 +6,7 @@ export const FALSY_ENV_VALUES: ReadonlySet<string> = new Set(['0', 'false', 'no'
 /** Canonical truthy env-var values (matches util.py TRUTHY_ENV_VALUES). */
 export const TRUTHY_ENV_VALUES: ReadonlySet<string> = new Set(['1', 'true', 'yes', 'on'])
 
-/**
- * Read a string env var, returning `defaultVal` when unset or empty (after trim).
- */
+/** Read a string env var, returning `defaultVal` when unset or empty (after trim). */
 export function envStr(key: string, defaultVal: string): string {
   const raw = process.env[key]
   if (raw === undefined) return defaultVal
@@ -22,12 +14,7 @@ export function envStr(key: string, defaultVal: string): string {
   return trimmed === '' ? defaultVal : trimmed
 }
 
-/**
- * Read a boolean env var.
- *
- * Recognizes the canonical truthy/falsy spellings case-insensitively. Any
- * value outside those sets (including unset/empty) yields `defaultVal`.
- */
+/** Read a boolean env var. Recognizes the canonical truthy/falsy spellings case-insensitively. Any value outside those sets (including unset/empty) yields `defaultVal`. */
 export function envBool(key: string, defaultVal: boolean): boolean {
   const raw = process.env[key]
   if (raw === undefined) return defaultVal
@@ -38,17 +25,7 @@ export function envBool(key: string, defaultVal: boolean): boolean {
   return defaultVal
 }
 
-/**
- * Read an integer env var, falling back to `defaultVal` on any parse failure.
- *
- * Uses a strict `^[+-]?\d+$` regex so floats (`1.5`) and scientific notation
- * (`1e3`) are rejected rather than silently truncated by `parseInt`.
- *
- * When `min`/`max` are supplied, the parsed value is clamped into that range —
- * matching `validatedInt`'s file-value clamp — so an out-of-range env var
- * (e.g. `TOKEN_GOAT_MCP_DEDUP_TTL_SECS=99999999`) can't bypass the bounds the
- * file value is already validated against.
- */
+/** Read an integer env var, falling back to `defaultVal` on any parse failure. Uses a strict `^[+-]?\d+$` regex so floats (`1.5`) and scientific notation (`1e3`) are rejected rather than silently truncated by `parseInt`. When `min`/`max` are supplied, the parsed value is clamped into that range — matching `validatedInt`'s file-value clamp — so an out-of-range env var (e.g. `TOKEN_GOAT_MCP_DEDUP_TTL_SECS=99999999`) can't bypass the bounds the file value is already validated against. */
 export function envInt(key: string, defaultVal: number, min?: number, max?: number): number {
   const raw = process.env[key]
   if (raw === undefined) return defaultVal
@@ -63,14 +40,7 @@ export function envInt(key: string, defaultVal: number, min?: number, max?: numb
   return clamped
 }
 
-/**
- * Read a delimiter-separated list env var (e.g. `TOKEN_GOAT_MCP_ALLOWED_ROOTS`), falling back to
- * `defaultVal` when unset. `delimiter` is caller-supplied (not hardcoded here) so a config-layer
- * caller can pass `path.delimiter` for a PATH-shaped list without this file importing `node:path`
- * -- matching `src/shell.ts`'s own `PATH`-splitting convention (`;` on Windows, `:` on POSIX).
- * Entries are trimmed and empty entries dropped, so a trailing delimiter or accidental double
- * delimiter doesn't produce a spurious empty-string entry.
- */
+/** Read a delimiter-separated list env var (e.g. `TOKEN_GOAT_MCP_ALLOWED_ROOTS`), falling back to `defaultVal` when unset. `delimiter` is caller-supplied (not hardcoded here) so a config-layer caller can pass `path.delimiter` for a PATH-shaped list without this file importing `node:path` -- matching `src/shell.ts`'s own `PATH`-splitting convention (`;` on Windows, `:` on POSIX). Entries are trimmed and empty entries dropped, so a trailing delimiter or accidental double delimiter doesn't produce a spurious empty-string entry. */
 export function envStrList(key: string, defaultVal: string[], delimiter: string): string[] {
   const raw = process.env[key]
   if (raw === undefined) return defaultVal

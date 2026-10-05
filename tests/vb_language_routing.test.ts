@@ -1,6 +1,4 @@
-/**
- * The `.cls` extension is shared by Apex classes and VB6 class modules, and detectLanguage is path-only, so the indexer refines the language from content after reading the file. These tests drive the two real entry points (parseFile and indexFileSync) rather than the extractor, since a sniff that exists but is never called from the shipping path would pass every extractor-level test.
- */
+/** The `.cls` extension is shared by Apex classes and VB6 class modules, and detectLanguage is path-only, so the indexer refines the language from content after reading the file. These tests drive the two real entry points (parseFile and indexFileSync) rather than the extractor, since a sniff that exists but is never called from the shipping path would pass every extractor-level test. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

@@ -1,16 +1,4 @@
-/**
- * The repository slug and PR number that `pr-slice` interpolates into an authenticated `gh` call.
- *
- * `fetchPrComments` builds `repos/${repo}/pulls/${pr}/comments` and runs it through a `gh` that is
- * already holding the user's token, and `repo` can come from the git remote of the repository being
- * examined -- which that repository sets. `parseGithubRepoFromRemoteUrl` matched `[^/]+/[^/]+`, and
- * `..` contains no slash.
- *
- * Fixture provenance: HAND-DERIVED. The traversal payloads are constructed from GitHub's own REST
- * path shape (`repos/{owner}/{repo}/pulls/{number}/comments`, docs.github.com/en/rest/pulls) and the
- * argv position `--repo <value>` occupies, not from the validator's regex -- a fixture read off the
- * matcher would only prove the matcher matches itself.
- */
+/** The repository slug and PR number that `pr-slice` interpolates into an authenticated `gh` call. `fetchPrComments` builds `repos/${repo}/pulls/${pr}/comments` and runs it through a `gh` that is already holding the user's token, and `repo` can come from the git remote of the repository being examined -- which that repository sets. `parseGithubRepoFromRemoteUrl` matched `[^/]+/[^/]+`, and `..` contains no slash. Fixture provenance: HAND-DERIVED. The traversal payloads are constructed from GitHub's own REST path shape (`repos/{owner}/{repo}/pulls/{number}/comments`, docs.github.com/en/rest/pulls) and the argv position `--repo <value>` occupies, not from the validator's regex -- a fixture read off the matcher would only prove the matcher matches itself. */
 
 import { describe, expect, it } from 'vitest'
 
@@ -24,8 +12,7 @@ describe('isSafeRepoSlug', () => {
   })
 
   it('refuses a segment that walks the API path', () => {
-    // `repos/../../user/repos` reaches a different authenticated endpoint than the one the
-    // command claims to be calling.
+    // `repos/../../user/repos` reaches a different authenticated endpoint than the one the command claims to be calling.
     for (const bad of ['../..', 'owner/..', '../repo', './x', 'a/./b']) {
       expect(isSafeRepoSlug(bad), bad).toBe(false)
     }
@@ -49,8 +36,7 @@ describe('isSafeRepoSlug', () => {
   })
 
   it('is the check the remote parser needs, because the parser itself admits traversal', () => {
-    // Not a hypothetical about the validator: this is what the resolver returns today for a
-    // remote URL a repository is free to set on itself.
+    // Not a hypothetical about the validator: this is what the resolver returns today for a remote URL a repository is free to set on itself.
     const resolved = parseGithubRepoFromRemoteUrl('https://github.com/../..')
     expect(resolved).toBe('../..')
     expect(isSafeRepoSlug(resolved!)).toBe(false)

@@ -1,10 +1,4 @@
-/**
- * `token-goat project exclude <path>` stopped future indexing and left everything already indexed
- * exactly where it was, so a directory excluded after a first index stayed fully readable through
- * `symbol`. Existence-based pruning could never fix it: the files are still on disk, which is the
- * point. Confirmed live before the fix -- exclude, reindex with --force, and the excluded body
- * came straight back.
- */
+/** `token-goat project exclude <path>` stopped future indexing and left everything already indexed exactly where it was, so a directory excluded after a first index stayed fully readable through `symbol`. Existence-based pruning could never fix it: the files are still on disk, which is the point. Confirmed live before the fix -- exclude, reindex with --force, and the excluded body came straight back. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -73,10 +67,7 @@ describe('pruneBlockedRoot', () => {
     expect(bodies().join('')).not.toContain('sk-live-42')
   })
 
-  // The embedding half of a stored file is a separate table and a separate delete. indexFileSync
-  // alone writes no chunks (embedding is a later pass), so the row is seeded here rather than
-  // pretending the parser produced it -- without this, dropping the embedding delete entirely
-  // leaves every other assertion in this file green.
+  // The embedding half of a stored file is a separate table and a separate delete. indexFileSync alone writes no chunks (embedding is a later pass), so the row is seeded here rather than pretending the parser produced it -- without this, dropping the embedding delete entirely leaves every other assertion in this file green.
   it('takes the embedding chunks with it too, not just the parsed rows', () => {
     const secret = seed(path.join('secretdir', 'creds.ts'), 'export function tokenValue() { return "sk" }\n')
     // Keyed on `canonicalizeIndexPath` rather than the raw `secret` spelling: the files row this chunk belongs to was written under the canonical key by `indexFileSync`, and `pruneBlockedRoot` deletes chunks by matching that same key, so a native-spelling insert here would never be found and the assertion below would pass for the wrong reason (nothing to delete).

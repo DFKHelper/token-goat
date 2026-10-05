@@ -1,22 +1,4 @@
-/**
- * Guard: the ONNX inference session must never be created without an explicit thread count.
- *
- * ONNX Runtime sizes its intra-op thread pool to the host when the session is created bare, and
- * that pool is what every embedding call fans out across. Measured on a 26-logical-core machine
- * (CAPTURE, a real run against the cached `model_quantized.onnx`, not read off documentation):
- *
- *   threads in the process, baseline                        13
- *   after require('onnxruntime-node')                       13
- *   after InferenceSession.create(model)                    30   <- 17 threads, no options passed
- *   after InferenceSession.create(model, {intraOp: 1, ...})  30   <- the pinned session added none
- *
- * So a bare `create` is the difference between a background indexer taking a couple of cores and
- * one taking most of the machine for as long as the walk lasts. It shipped that way, and nothing
- * caught it, because there is no failure: indexing works perfectly, it just takes the whole box.
- * That is invisible to every functional test, which is why this is a structural check.
- *
- * If this fails, pass session options at the named call site rather than relaxing the check.
- */
+/** Guard: the ONNX inference session must never be created without an explicit thread count. ONNX Runtime sizes its intra-op thread pool to the host when the session is created bare, and that pool is what every embedding call fans out across. Measured on a 26-logical-core machine (CAPTURE, a real run against the cached `model_quantized.onnx`, not read off documentation): threads in the process, baseline                        13 after require('onnxruntime-node')                       13 after InferenceSession.create(model)                    30   <- 17 threads, no options passed after InferenceSession.create(model, {intraOp: 1, ...})  30   <- the pinned session added none So a bare `create` is the difference between a background indexer taking a couple of cores and one taking most of the machine for as long as the walk lasts. It shipped that way, and nothing caught it, because there is no failure: indexing works perfectly, it just takes the whole box. That is invisible to every functional test, which is why this is a structural check. If this fails, pass session options at the named call site rather than relaxing the check. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -44,19 +26,10 @@ function walkSrc(dir: string): string[] {
   return out
 }
 
-/**
- * Extract the argument text of each `InferenceSession.create(...)` call in `src/`.
- *
- * Balanced-paren scan rather than a regex: the options object contains its own braces and the
- * model path contains its own parens (`path.join(...)`), and a non-greedy regex to the first `)`
- * would cut the call in half -- reporting "no second argument" for a call that has one, or the
- * reverse. Getting that wrong in the permissive direction is the failure this guard exists to
- * prevent, so the scan is worth the fifteen lines.
- */
+/** Extract the argument text of each `InferenceSession.create(...)` call in `src/`. Balanced-paren scan rather than a regex: the options object contains its own braces and the model path contains its own parens (`path.join(...)`), and a non-greedy regex to the first `)` would cut the call in half -- reporting "no second argument" for a call that has one, or the reverse. Getting that wrong in the permissive direction is the failure this guard exists to prevent, so the scan is worth the fifteen lines. */
 function createCalls(): CreateCall[] {
   const found: CreateCall[] = []
-  // Pinned: this scan looks for thread-cap call sites, and finding none is indistinguishable from
-  // walking nothing. The anchor names the module that actually creates the embedding sessions.
+  // Pinned: this scan looks for thread-cap call sites, and finding none is indistinguishable from walking nothing. The anchor names the module that actually creates the embedding sessions.
   const scanned = pinnedPopulation({
     what: 'src/**/*.ts files scanned for embedding session creation',
     items: walkSrc(SRC_DIR),
@@ -87,10 +60,7 @@ function createCalls(): CreateCall[] {
 }
 
 describe('ONNX session creation', () => {
-  // The population pin. Every assertion below is "no call is bare", which an empty list satisfies
-  // -- and the list empties silently if the call is renamed, moved behind a wrapper, or the
-  // runtime is swapped. Then this file goes green forever while checking nothing. Assert the
-  // subjects exist before asserting anything about them.
+  // The population pin. Every assertion below is "no call is bare", which an empty list satisfies -- and the list empties silently if the call is renamed, moved behind a wrapper, or the runtime is swapped. Then this file goes green forever while checking nothing. Assert the subjects exist before asserting anything about them.
   it('finds the session-creation call it is supposed to be checking', () => {
     const calls = createCalls()
     expect(
@@ -110,8 +80,7 @@ describe('ONNX session creation', () => {
     ).toEqual([])
   })
 
-  // A hardcoded count would work today and be wrong on the next machine, and would silently ignore
-  // the config key and env override that exist to tune exactly this.
+  // A hardcoded count would work today and be wrong on the next machine, and would silently ignore the config key and env override that exist to tune exactly this.
   it('takes the thread count from configuration rather than a literal', () => {
     const literal = createCalls().filter((call) => /intraOpNumThreads\s*:\s*\d/.test(call.args))
     expect(

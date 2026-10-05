@@ -5,11 +5,7 @@ import * as path from 'node:path'
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-// vi.mock is hoisted — redirect configPath() to an isolated temp file, same
-// convention as config.test.ts/config_commands.test.ts: saveConfig() writes
-// straight to configPath() with no mkdir of its parent, and the real DATA_DIR
-// (isolated per-worker by tests/setup/isolate-home.ts) only has its top-level
-// dir pre-created, not the nested dfk-helper/token-goat subdirectory.
+// vi.mock is hoisted — redirect configPath() to an isolated temp file, same convention as config.test.ts/config_commands.test.ts: saveConfig() writes straight to configPath() with no mkdir of its parent, and the real DATA_DIR (isolated per-worker by tests/setup/isolate-home.ts) only has its top-level dir pre-created, not the nested dfk-helper/token-goat subdirectory.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return {
@@ -20,10 +16,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 
 const _testConfigPath = tempConfigPath('tg-hooks-screenshot-config.toml')
 
-// Importing relay registers EVERY hook module (including hooks_screenshot) for
-// its side-effects, so runHook dispatches through the real production
-// registry — not a test-only handler reference. buildEvent maps a Claude Code
-// payload onto a HookEvent exactly as relay() does on stdin.
+// Importing relay registers EVERY hook module (including hooks_screenshot) for its side-effects, so runHook dispatches through the real production registry — not a test-only handler reference. buildEvent maps a Claude Code payload onto a HookEvent exactly as relay() does on stdin.
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
@@ -87,9 +80,7 @@ describe('pre_screenshot (real runHook dispatch)', () => {
     const result = await runHook(buildEvent('pre_tool_use', prePayload(PLAYWRIGHT_TOOL, { raw: false })))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      // Playwright's actual browser_take_screenshot tool takes `filename`, not
-      // `filePath` — the deny message must point at the parameter this
-      // specific tool actually accepts, not chrome-devtools-mcp's.
+      // Playwright's actual browser_take_screenshot tool takes `filename`, not `filePath` — the deny message must point at the parameter this specific tool actually accepts, not chrome-devtools-mcp's.
       expect(result.message).toContain('filename')
       expect(result.message).not.toContain('`filePath`')
     }
@@ -137,16 +128,13 @@ describe('pre_screenshot (real runHook dispatch)', () => {
   })
 
   it('denies any MCP tool ending in "screenshot" (not just "take_screenshot") when called with no destination', async () => {
-    // Regression test: SCREENSHOT_TOOL_RE must match tools ending in "screenshot",
-    // not just "take_screenshot". A hypothetical puppeteer_screenshot tool should
-    // trigger the same deny-with-hint behavior.
+    // Regression test: SCREENSHOT_TOOL_RE must match tools ending in "screenshot", not just "take_screenshot". A hypothetical puppeteer_screenshot tool should trigger the same deny-with-hint behavior.
     const PUPPETEER_TOOL = 'mcp__some-mcp-server_puppeteer__puppeteer_screenshot'
     const result = await runHook(buildEvent('pre_tool_use', prePayload(PUPPETEER_TOOL, { fullPage: true })))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain(PUPPETEER_TOOL)
-      // Since this tool doesn't match PLAYWRIGHT_SCREENSHOT_RE, it should suggest
-      // filePath as the fallback parameter name
+      // Since this tool doesn't match PLAYWRIGHT_SCREENSHOT_RE, it should suggest filePath as the fallback parameter name
       expect(result.message).toContain('filePath')
     }
   })

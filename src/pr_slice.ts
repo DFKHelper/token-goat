@@ -1,16 +1,4 @@
-/**
- * Surgical GitHub PR reads via the `gh` CLI.
- *
- * `gh pr view`/`gh pr diff`/`gh api .../pulls/N/comments` each return a payload that can be
- * huge (a large diff, dozens of review comments, a long description) when an agent only needs
- * one slice of it. This module fetches and formats exactly one slice -- changed files, one
- * file's diff, review comments, or description/metadata -- mirroring json_query.ts's and
- * openapi_query.ts's "extract one thing instead of the whole document" shape, except the
- * source document here is `gh` subprocess output instead of a local file.
- *
- * `gh` availability/auth are cached per-process the same way video_chapters.ts caches
- * ffprobe's availability -- a single spawnSync probe, reused for the life of the process.
- */
+/** Surgical GitHub PR reads via the `gh` CLI. `gh pr view`/`gh pr diff`/`gh api .../pulls/N/comments` each return a payload that can be huge (a large diff, dozens of review comments, a long description) when an agent only needs one slice of it. This module fetches and formats exactly one slice -- changed files, one file's diff, review comments, or description/metadata -- mirroring json_query.ts's and openapi_query.ts's "extract one thing instead of the whole document" shape, except the source document here is `gh` subprocess output instead of a local file. `gh` availability/auth are cached per-process the same way video_chapters.ts caches ffprobe's availability -- a single spawnSync probe, reused for the life of the process. */
 
 import { spawnSync } from 'node:child_process'
 
@@ -42,9 +30,7 @@ export function isGhAuthenticated(): boolean {
   return _ghAuthenticated
 }
 
-/** Extracts `owner/repo` out of a git remote URL (SSH `git@github.com:owner/repo.git` or
- * HTTPS `https://github.com/owner/repo(.git)?`), or null when the URL isn't a recognizable
- * GitHub remote. */
+/** Extracts `owner/repo` out of a git remote URL (SSH `git@github.com:owner/repo.git` or HTTPS `https://github.com/owner/repo(.git)?`), or null when the URL isn't a recognizable GitHub remote. */
 export function parseGithubRepoFromRemoteUrl(url: string): string | null {
   const trimmed = url.trim()
   const ssh = /^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(trimmed)
@@ -54,17 +40,7 @@ export function parseGithubRepoFromRemoteUrl(url: string): string | null {
   return null
 }
 
-/**
- * True when `repo` is a plain `owner/name` slug safe to interpolate into a `gh api` path.
- *
- * `fetchPrComments` builds `repos/${repo}/pulls/${pr}/comments` and hands it to an already
- * authenticated `gh`, so the slug is a path fragment in a request carrying the user's own token.
- * `parseGithubRepoFromRemoteUrl` accepts `[^/]+/[^/]+`, which admits `..` in either segment, so a
- * remote of `https://github.com/../..` resolved to a slug that walks the API path up to a
- * different endpoint entirely. A leading `-` is refused for the separate reason that the same
- * value is passed to `gh pr view --repo <repo>`, where a value starting with a dash is read as a
- * flag rather than as the argument it was meant to be.
- */
+/** True when `repo` is a plain `owner/name` slug safe to interpolate into a `gh api` path. `fetchPrComments` builds `repos/${repo}/pulls/${pr}/comments` and hands it to an already authenticated `gh`, so the slug is a path fragment in a request carrying the user's own token. `parseGithubRepoFromRemoteUrl` accepts `[^/]+/[^/]+`, which admits `..` in either segment, so a remote of `https://github.com/../..` resolved to a slug that walks the API path up to a different endpoint entirely. A leading `-` is refused for the separate reason that the same value is passed to `gh pr view --repo <repo>`, where a value starting with a dash is read as a flag rather than as the argument it was meant to be. */
 export function isSafeRepoSlug(repo: string): boolean {
   const parts = repo.split('/')
   if (parts.length !== 2) return false
@@ -83,8 +59,7 @@ export type PrSliceSpec =
   | { kind: 'comments' }
   | { kind: 'description' }
 
-/** Parses the raw `<slice>` CLI argument into a {@link PrSliceSpec}, or null when it doesn't
- * match any recognized slice (an empty `diff:` path counts as unrecognized). */
+/** Parses the raw `<slice>` CLI argument into a {@link PrSliceSpec}, or null when it doesn't match any recognized slice (an empty `diff:` path counts as unrecognized). */
 export function parsePrSliceArg(raw: string): PrSliceSpec | null {
   if (raw === 'files') return { kind: 'files' }
   if (raw === 'comments') return { kind: 'comments' }
@@ -102,8 +77,7 @@ function ghErrorMessage(res: { stderr?: string; stdout?: string }): string {
   return (res.stdout ?? '').trim()
 }
 
-/** Runs `gh pr view <pr> --repo <repo> --json <fields>` and returns the parsed JSON payload.
- * Throws a clear error (gh's own stderr, or a parse-failure message) on any failure. */
+/** Runs `gh pr view <pr> --repo <repo> --json <fields>` and returns the parsed JSON payload. Throws a clear error (gh's own stderr, or a parse-failure message) on any failure. */
 function ghPrViewJson(pr: string, repo: string, fields: string): unknown {
   const res = spawnSync('gh', ['pr', 'view', pr, '--repo', repo, '--json', fields], {
     encoding: 'utf8',
@@ -145,8 +119,7 @@ export interface PrDescription {
   updatedAt: string
 }
 
-/** Fetches title/body/author/state/refs/URL/timestamps for a PR -- metadata only, no files or
- * comments. */
+/** Fetches title/body/author/state/refs/URL/timestamps for a PR -- metadata only, no files or comments. */
 export function fetchPrDescription(pr: string, repo: string): PrDescription {
   const data = ghPrViewJson(
     pr,
@@ -194,17 +167,7 @@ export function fetchPrDiff(pr: string, repo: string): string {
 
 const DIFF_GIT_HEADER_RE = /^diff --git a\/(.+) b\/(.+)$/
 
-/** Extracts just the diff block for one file (`diff --git a/<path> b/<path>` through the next
- * such header, or end of text) out of a full unified diff produced by `gh pr diff`. Returns
- * null when no block matches the given path.
- *
- * `git`'s diff headers always use forward slashes, even for a Windows repo (git's internal path
- * representation is POSIX-style regardless of platform), but `filePath` here is a raw CLI
- * argument that a Windows user may naturally type with backslashes (e.g. pasted from Explorer,
- * or copied from another token-goat command's backslash-normalized output). Without converting
- * backslashes to forward slashes before comparing, that never-matches the header and every
- * `diff:src\foo.ts`-style invocation silently reports "No diff found" even though the file is
- * genuinely in the diff. */
+/** Extracts just the diff block for one file (`diff --git a/<path> b/<path>` through the next such header, or end of text) out of a full unified diff produced by `gh pr diff`. Returns null when no block matches the given path. `git`'s diff headers always use forward slashes, even for a Windows repo (git's internal path representation is POSIX-style regardless of platform), but `filePath` here is a raw CLI argument that a Windows user may naturally type with backslashes (e.g. pasted from Explorer, or copied from another token-goat command's backslash-normalized output). Without converting backslashes to forward slashes before comparing, that never-matches the header and every `diff:src\foo.ts`-style invocation silently reports "No diff found" even though the file is genuinely in the diff. */
 export function extractFileDiff(diffText: string, filePath: string): string | null {
   const wantPath = filePath.replace(/\\/g, '/')
   const lines = diffText.split(/\r?\n/)
@@ -238,8 +201,7 @@ export interface PrReviewComment {
   diffHunk?: string
 }
 
-/** Fetches review comments via `gh api repos/<repo>/pulls/<pr>/comments`. Returns gh's default
- * first page (not paginated) -- a surgical slice, not a full comment-history dump. */
+/** Fetches review comments via `gh api repos/<repo>/pulls/<pr>/comments`. Returns gh's default first page (not paginated) -- a surgical slice, not a full comment-history dump. */
 export function fetchPrComments(pr: string, repo: string): PrReviewComment[] {
   const res = spawnSync('gh', ['api', `repos/${repo}/pulls/${pr}/comments`], {
     encoding: 'utf8',

@@ -7,19 +7,7 @@ import { planProseFolds, foldDetail } from '../src/code_fold.js'
 import { proseFoldNotice } from '../src/fold_delivery.js'
 import { normalizePath } from '../src/paths.js'
 
-/**
- * Folding a long prose paragraph down to its opening sentence.
- *
- * Fixture provenance: HAND-DERIVED for the logic cases, CAPTURE for the shape. The paragraphs below
- * are written for this test and every expected cut is computed from the input by reading it, not by
- * running the planner and recording what it said. The document *shape* they imitate -- one heading
- * line, then list items whose whole body is a single physical line of several hundred characters --
- * is this repository's own changelog, which is what real reads of it deliver.
- *
- * There is no ratio assertion here on purpose. A fold ratio improves when more is removed, so a
- * floor on it is satisfied by exactly the failure this planner has to avoid. Every test below names
- * text that must survive instead.
- */
+/** Folding a long prose paragraph down to its opening sentence. Fixture provenance: HAND-DERIVED for the logic cases, CAPTURE for the shape. The paragraphs below are written for this test and every expected cut is computed from the input by reading it, not by running the planner and recording what it said. The document *shape* they imitate -- one heading line, then list items whose whole body is a single physical line of several hundred characters -- is this repository's own changelog, which is what real reads of it deliver. There is no ratio assertion here on purpose. A fold ratio improves when more is removed, so a floor on it is satisfied by exactly the failure this planner has to avoid. Every test below names text that must survive instead. */
 describe('prose fold', () => {
   /** Builds rows the way both hook surfaces do: 1-based line numbers, one entry per physical line. */
   function rows(...lines: readonly string[]): Array<{ no: number; text: string }> {
@@ -106,19 +94,14 @@ describe('prose fold', () => {
     expect(notice).toBeNull()
   })
 
-  // Both halves of this notice are document text: the kept sentence is the paragraph's own opening,
-  // and the heading is resolved out of the same file. The notice speaks in token-goat's own voice and
-  // is not inside a fence, so either one shaped like a spoken marker reads as token-goat speaking.
-  // Provenance: HAND-DERIVED. The marker spellings are the ones neutralizeSpokenMarkers rewrites;
-  // the document is written for this test.
+  // Both halves of this notice are document text: the kept sentence is the paragraph's own opening, and the heading is resolved out of the same file. The notice speaks in token-goat's own voice and is not inside a fence, so either one shaped like a spoken marker reads as token-goat speaking. Provenance: HAND-DERIVED. The marker spellings are the ones neutralizeSpokenMarkers rewrites; the document is written for this test.
   it('escapes both the kept sentence and the resolved heading, neither of which it authored', () => {
     const file = path.join(os.tmpdir(), `tg-prose-escape-${process.pid}-${Math.random().toString(36).slice(2)}.md`)
     fs.writeFileSync(file, ['## [tg] hostile heading', '', 'The paragraph body sits here.', ''].join('\n'))
     try {
       const notice = proseFoldNotice('[token-goat: keep sentence', 3, 'doc.md', normalizePath(file))
       expect(notice, 'the heading did not resolve, so this test is not exercising the escaping at all').not.toBeNull()
-      // Survival anchors, paired with the must-not-contain assertions below: both pieces of text
-      // still arrive, so this cannot pass by the notice dropping them or bailing out to null.
+      // Survival anchors, paired with the must-not-contain assertions below: both pieces of text still arrive, so this cannot pass by the notice dropping them or bailing out to null.
       expect(notice).toContain('keep sentence')
       expect(notice).toContain('hostile heading')
       expect(notice).toContain('&#91;token-goat:')

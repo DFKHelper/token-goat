@@ -1,23 +1,4 @@
-/**
- * Guard: the SSRF-relevant IP-range tables screenshot.ts and webfetch.ts each rely on stay merged
- * into url_policy.ts's isPrivateIpv4Octets/isPrivateIpv6Groups rather than drifting back into two
- * copies. Before this guard existed, screenshot.ts's headless-browser navigation policy carried its
- * own narrower table that omitted carrier-grade NAT (100.64.0.0/10, RFC 6598), IETF protocol
- * assignments (192.0.0.0/24, RFC 6890), benchmarking (198.18.0.0/15, RFC 2544), multicast
- * (224.0.0.0/4) and reserved space (240.0.0.0/4), all of which webfetch.ts's DNS-pinned fetch
- * policy already refused -- so a page render aimed at an internal service on one of those ranges
- * reached the browser and had its output OCR'd back into the model's context, a class of target the
- * fetch channel already blocked. Fixed by making both channels call the same two functions.
- *
- * Two halves:
- *  - Behavioural: a pinned population of representative addresses, one per range plus public
- *    controls, each with an explicit expected verdict (not merely "both agree", since two
- *    classifiers that agree on the wrong answer would still pass an equality-only check).
- *  - Structural: both screenshot.ts and webfetch.ts must import the shared range functions from
- *    url_policy.ts. Without this, someone could reintroduce a local octet-range literal in either
- *    file that happens to agree with the fixtures above today and still drift on a range this file
- *    does not enumerate.
- */
+/** Guard: the SSRF-relevant IP-range tables screenshot.ts and webfetch.ts each rely on stay merged into url_policy.ts's isPrivateIpv4Octets/isPrivateIpv6Groups rather than drifting back into two copies. Before this guard existed, screenshot.ts's headless-browser navigation policy carried its own narrower table that omitted carrier-grade NAT (100.64.0.0/10, RFC 6598), IETF protocol assignments (192.0.0.0/24, RFC 6890), benchmarking (198.18.0.0/15, RFC 2544), multicast (224.0.0.0/4) and reserved space (240.0.0.0/4), all of which webfetch.ts's DNS-pinned fetch policy already refused -- so a page render aimed at an internal service on one of those ranges reached the browser and had its output OCR'd back into the model's context, a class of target the fetch channel already blocked. Fixed by making both channels call the same two functions. Two halves: - Behavioural: a pinned population of representative addresses, one per range plus public controls, each with an explicit expected verdict (not merely "both agree", since two classifiers that agree on the wrong answer would still pass an equality-only check). - Structural: both screenshot.ts and webfetch.ts must import the shared range functions from url_policy.ts. Without this, someone could reintroduce a local octet-range literal in either file that happens to agree with the fixtures above today and still drift on a range this file does not enumerate. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -31,12 +12,7 @@ import { pinnedPopulation } from './population.js'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
 
-/**
- * One fixture per range, tagged for provenance per this repo's testing convention.
- * HAND-DERIVED: every address is a representative literal drawn directly from the cited RFC's
- * defined range, computed independently of either classifier under test -- not read off our own
- * source. `blocked` is the outcome an SSRF policy protecting this threat model must produce.
- */
+/** One fixture per range, tagged for provenance per this repo's testing convention. HAND-DERIVED: every address is a representative literal drawn directly from the cited RFC's defined range, computed independently of either classifier under test -- not read off our own source. `blocked` is the outcome an SSRF policy protecting this threat model must produce. */
 const FIXTURES: ReadonlyArray<{ label: string; address: string; blocked: boolean }> = [
   { label: 'v4 this-network 0.0.0.0/8', address: '0.0.0.1', blocked: true },
   { label: 'v4 loopback 127.0.0.0/8', address: '127.0.0.1', blocked: true },

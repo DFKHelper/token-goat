@@ -3,20 +3,7 @@ import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { pinnedPopulation } from './population.js'
 
-/**
- * A test may delete a path it built from `os.homedir()` only through tests/helpers/sandbox-rm.ts. A raw
- * `rmSync(path.join(os.homedir(), '.claude'), { recursive: true })` is safe only while
- * tests/setup/isolate-home.ts has redirected HOME/USERPROFILE, and nothing at the call site says so: the
- * same line run without that setup deletes the developer's real Claude Code home. On 2026-09-28 the
- * maintainer's real `~/.claude` (hooks, credentials, transcripts) disappeared during a full-suite run; the
- * cause was never reproduced, and four test files held exactly this shape. The helper refuses any target
- * outside the run root, so the delete fails loudly instead.
- *
- * Static scan: an identifier assigned from an expression mentioning `homedir()` is tracked, transitively
- * through further assignments that mention a tracked identifier, and any delete call whose argument
- * mentions `homedir()` or a tracked identifier is a violation. Per file, textual -- it can miss a path that
- * crosses a function boundary, which is why the helper also asserts at run time.
- */
+/** A test may delete a path it built from `os.homedir()` only through tests/helpers/sandbox-rm.ts. A raw `rmSync(path.join(os.homedir(), '.claude'), { recursive: true })` is safe only while tests/setup/isolate-home.ts has redirected HOME/USERPROFILE, and nothing at the call site says so: the same line run without that setup deletes the developer's real Claude Code home. On 2026-09-28 the maintainer's real `~/.claude` (hooks, credentials, transcripts) disappeared during a full-suite run; the cause was never reproduced, and four test files held exactly this shape. The helper refuses any target outside the run root, so the delete fails loudly instead. Static scan: an identifier assigned from an expression mentioning `homedir()` is tracked, transitively through further assignments that mention a tracked identifier, and any delete call whose argument mentions `homedir()` or a tracked identifier is a violation. Per file, textual -- it can miss a path that crosses a function boundary, which is why the helper also asserts at run time. */
 
 const TESTS_DIR = path.resolve(__dirname, '..')
 const HELPER = path.join(TESTS_DIR, 'helpers', 'sandbox-rm.ts')

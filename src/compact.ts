@@ -1,8 +1,4 @@
-/**
- * Session manifest generator for compaction assist.
- *
- * Ports key functions from Python's `token_goat.compact` for TypeScript.
- */
+/** Session manifest generator for compaction assist. Ports key functions from Python's `token_goat.compact` for TypeScript. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -16,9 +12,7 @@ import { readSessionStateFile, sessionFileStem, AGENT_SALT_MARKER } from './sess
 import type { FileEntry } from './session.js'
 import { readTranscriptTail } from './resident_context.js'
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Constants ---------------------------------------------------------------------------
 
 export const CONTEXT_AUTOCOMPACT_TOKENS = 660_000
 export const CATALOG_TOKENS = 10_800
@@ -70,11 +64,7 @@ const NOISE_SEGMENTS = [
   '/__snapshots__/',
 ]
 
-// Per-harness auto-trigger multiplier defaults for getAutoTriggerMultiplier().
-// 'openclaw', 'pi', and 'hermes' have no dedicated tuning yet, so they match
-// 'generic' until there's a clear reason to diverge (see
-// bridges/registry.ts::detectHarness for the canonical harness-detection
-// implementation this keys off of).
+// Per-harness auto-trigger multiplier defaults for getAutoTriggerMultiplier(). 'openclaw', 'pi', and 'hermes' have no dedicated tuning yet, so they match 'generic' until there's a clear reason to diverge (see bridges/registry.ts::detectHarness for the canonical harness-detection implementation this keys off of).
 const HARNESS_MULTIPLIER_DEFAULTS: Record<string, number> = {
   claudecode: 2.0,
   codex: 1.5,
@@ -86,9 +76,7 @@ const HARNESS_MULTIPLIER_DEFAULTS: Record<string, number> = {
   generic: 1.0,
 }
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Types ---------------------------------------------------------------------------
 
 export interface ContextPressure {
   fillFraction: number
@@ -97,49 +85,26 @@ export interface ContextPressure {
 
 export interface SessionCacheObject {
   loadedSkillTotalTokens?: number
-  /**
-   * Matches the real on-disk shape session_store.ts::SerializedSession
-   * actually produces — an array of `[key, id]` pairs (see session.ts's
-   * `_webFetches`/`_bashOutputs` maps and their `recordWebFetch`/
-   * `recordBashOutput` writers), not a `bashHistory`/`webHistory` dict shape
-   * no writer ever populated.
-   */
+  /** Matches the real on-disk shape session_store.ts::SerializedSession actually produces — an array of `[key, id]` pairs (see session.ts's `_webFetches`/`_bashOutputs` maps and their `recordWebFetch`/ `recordBashOutput` writers), not a `bashHistory`/`webHistory` dict shape no writer ever populated. */
   webFetches?: Array<[string, string]>
   bashOutputs?: Array<[string, string]>
-  /**
-   * Matches the real on-disk shape session_store.ts::saveSessionState writes
-   * (`SerializedSession.files: FileEntry[]`) — a flat array, not a path-keyed
-   * dict. Each entry's `wasEdited` flag distinguishes edited from read-only
-   * files; there is no separate `editedFiles` collection on disk.
-   */
+  /** Matches the real on-disk shape session_store.ts::saveSessionState writes (`SerializedSession.files: FileEntry[]`) — a flat array, not a path-keyed dict. Each entry's `wasEdited` flag distinguishes edited from read-only files; there is no separate `editedFiles` collection on disk. */
   files?: FileEntry[]
   symbolAccessCounts?: Record<string, number>
   skillHistory?: Record<string, unknown>
-  /**
-   * Unix time in *seconds* the on-disk session cache was first created (written
-   * once by session_store.ts::saveSessionState). buildManifestAdaptive derives
-   * the session-age budget multiplier from it; undefined for a cache written
-   * before this field existed (age then treated as 0).
-   */
+  /** Unix time in *seconds* the on-disk session cache was first created (written once by session_store.ts::saveSessionState). buildManifestAdaptive derives the session-age budget multiplier from it; undefined for a cache written before this field existed (age then treated as 0). */
   created_ts?: number
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helpers ---------------------------------------------------------------------------
 
 
-// ---------------------------------------------------------------------------
-// Core functions
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Core functions ---------------------------------------------------------------------------
 
-// estimateTokens is re-exported from overflow_guard.ts (single canonical implementation) so
-// existing `import { estimateTokens } from './compact.js'` call sites keep working.
+// estimateTokens is re-exported from overflow_guard.ts (single canonical implementation) so existing `import { estimateTokens } from './compact.js'` call sites keep working.
 export { estimateTokens }
 
-/**
- * Map a context-fill fraction to its qualitative pressure tier.
- */
+/** Map a context-fill fraction to its qualitative pressure tier. */
 export function tierForFraction(fill: number): 'cool' | 'warm' | 'hot' | 'critical' {
   if (fill >= CONTEXT_TIER_CRITICAL) return 'critical'
   if (fill >= CONTEXT_TIER_HOT) return 'hot'
@@ -216,13 +181,8 @@ export function measurePromptTokens(transcriptPath: string): number | null {
   }
 }
 
-/**
- * Return the estimated context fill fraction and pressure tier.
- */
-// Effective auto-compact window, scaled by the harness-tuned (or user-overridden)
-// multiplier: different harnesses reach their own real auto-compact point at very
-// different token counts, so CONTEXT_AUTOCOMPACT_TOKENS (Claude Code's own figure)
-// needs scaling before it means anything for other harnesses.
+/** Return the estimated context fill fraction and pressure tier. */
+// Effective auto-compact window, scaled by the harness-tuned (or user-overridden) multiplier: different harnesses reach their own real auto-compact point at very different token counts, so CONTEXT_AUTOCOMPACT_TOKENS (Claude Code's own figure) needs scaling before it means anything for other harnesses.
 function getEffectiveAutoTriggerWindow(): number {
   const ca = loadConfig().compact_assist
   const isConfigDefault = !isAutoTriggerMultiplierExplicit()
@@ -259,9 +219,7 @@ export function getContextPressure(cache?: SessionCacheObject, transcriptPath?: 
   }
 }
 
-/**
- * Get the effective auto_trigger_multiplier for the detected harness.
- */
+/** Get the effective auto_trigger_multiplier for the detected harness. */
 export function getAutoTriggerMultiplier(opts?: {
   configExplicitMultiplier?: number
   harness?: string
@@ -282,9 +240,7 @@ export function getAutoTriggerMultiplier(opts?: {
 }
 
 
-/**
- * Return True when path should be excluded from the manifest as low-value noise.
- */
+/** Return True when path should be excluded from the manifest as low-value noise. */
 export function isNoisePath(inputPath: string): boolean {
   if (!inputPath) {
     return false
@@ -328,16 +284,7 @@ export function isNoisePath(inputPath: string): boolean {
   return false
 }
 
-/**
- * Return the session_id of the most-recently-modified session file.
- *
- * Excludes agent-salted blobs (filenames containing {@link AGENT_SALT_MARKER},
- * the sanitized form of relay.ts's `sessionStateKey` `:agent:` separator): a
- * subagent's blob is frequently the newest file on disk (subagents run after
- * the parent's own last tool call), so without this filter, "latest session"
- * for a caller that gave no explicit session id could resolve to a narrow
- * subagent-scoped ledger instead of the genuine parent/top-level session.
- */
+/** Return the session_id of the most-recently-modified session file. Excludes agent-salted blobs (filenames containing {@link AGENT_SALT_MARKER}, the sanitized form of relay.ts's `sessionStateKey` `:agent:` separator): a subagent's blob is frequently the newest file on disk (subagents run after the parent's own last tool call), so without this filter, "latest session" for a caller that gave no explicit session id could resolve to a narrow subagent-scoped ledger instead of the genuine parent/top-level session. */
 export function findLatestSessionId(): string | null {
   try {
     const sessionsDir = path.join(tokenGoatHome(), 'sessions')
@@ -373,9 +320,7 @@ export function findLatestSessionId(): string | null {
   }
 }
 
-/**
- * Count tracked events (reads + greps + edits + bash runs + web fetches) for a session.
- */
+/** Count tracked events (reads + greps + edits + bash runs + web fetches) for a session. */
 export function eventCount(cache: SessionCacheObject): number {
   const files = cache.files ?? []
   const editedCount = files.filter((f) => f.wasEdited).length
@@ -392,10 +337,7 @@ export function eventCount(cache: SessionCacheObject): number {
   )
 }
 
-/**
- * Strip the trailing "# as-of: ..." line so two manifests built at different
- * wall-clock times from identical session content compare as byte-equal.
- */
+/** Strip the trailing "# as-of: ..." line so two manifests built at different wall-clock times from identical session content compare as byte-equal. */
 export function normalizeForCache(manifestText: string): string {
   const lines = manifestText.trim().split('\n')
   if (lines.length > 0) {
@@ -407,9 +349,7 @@ export function normalizeForCache(manifestText: string): string {
   return manifestText
 }
 
-/**
- * Write per-session manifest JSON for cross-session deduplication.
- */
+/** Write per-session manifest JSON for cross-session deduplication. */
 export function writeSessionManifest(
   projectHash: string,
   sessionId: string,
@@ -426,9 +366,7 @@ export function writeSessionManifest(
   atomicWriteText(dest, JSON.stringify(manifestJson))
 }
 
-/**
- * Read all session manifest JSON files for projectHash, skipping stale and corrupt entries.
- */
+/** Read all session manifest JSON files for projectHash, skipping stale and corrupt entries. */
 export function readAllSessionManifests(
   projectHash: string,
   maxAgeSecs: number = 3600
@@ -451,10 +389,7 @@ export function readAllSessionManifests(
         const fullPath = path.join(sessionsDir, file)
         const stat = fs.statSync(fullPath)
         if (now - stat.mtimeMs / 1000 > maxAgeSecs) {
-          // Opportunistic cleanup: an expired manifest is never coming back into the
-          // TTL window, so delete it here instead of leaving it to accumulate forever.
-          // Best-effort -- a delete failure (concurrent access, permissions) must never
-          // break the read path itself.
+          // Opportunistic cleanup: an expired manifest is never coming back into the TTL window, so delete it here instead of leaving it to accumulate forever. Best-effort -- a delete failure (concurrent access, permissions) must never break the read path itself.
           try {
             fs.unlinkSync(fullPath)
           } catch {
@@ -478,9 +413,7 @@ export function readAllSessionManifests(
   return results
 }
 
-// ---------------------------------------------------------------------------
-// Helpers for computing adaptive budget
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helpers for computing adaptive budget ---------------------------------------------------------------------------
 
 function _editedFileCount(cache: SessionCacheObject): number {
   return (cache.files ?? []).filter((f) => f.wasEdited).length
@@ -518,16 +451,10 @@ function _computeActivityMultiplier(ageSecs: number, editedCount: number): numbe
   return factor
 }
 
-// ---------------------------------------------------------------------------
-// Load session cache from disk
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Load session cache from disk ---------------------------------------------------------------------------
 
 export function loadSessionCache(sessionId: string): SessionCacheObject | null {
-  // Reuse session_store.ts's own read/coercion (readSessionStateFile) instead
-  // of re-parsing the JSON here: it already normalizes both the current
-  // FileEntry[] array format and the legacy Python path-keyed dict format,
-  // and reads from the same tokenGoatHome()-based path saveSessionState
-  // writes to.
+  // Reuse session_store.ts's own read/coercion (readSessionStateFile) instead of re-parsing the JSON here: it already normalizes both the current FileEntry[] array format and the legacy Python path-keyed dict format, and reads from the same tokenGoatHome()-based path saveSessionState writes to.
   const disk = readSessionStateFile(sessionId)
   if (!disk) {
     return null
@@ -541,15 +468,9 @@ export function loadSessionCache(sessionId: string): SessionCacheObject | null {
 }
 
 
-// ---------------------------------------------------------------------------
-// Core functions
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Core functions ---------------------------------------------------------------------------
 
-/**
- * Compute adaptive token budget for manifest based on session complexity.
- *
- * Returns value in range [200, 800], capped by context pressure tier.
- */
+/** Compute adaptive token budget for manifest based on session complexity. Returns value in range [200, 800], capped by context pressure tier. */
 export function computeAdaptiveBudget(
   cache: SessionCacheObject,
   ageSecs: number = 0.0,

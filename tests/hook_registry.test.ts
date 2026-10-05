@@ -111,15 +111,7 @@ describe('hook registry', () => {
   })
 
   describe('advisory handlers', () => {
-    // Regression coverage for the pre_compact ordering hazard: hooks_index.ts registers
-    // an always-pass, side-effect-only handler for pre_compact ahead of hooks_compact.ts's
-    // manifest handler, purely because of import order in relay.ts. If that handler ever
-    // started returning non-pass, the old first-non-pass-wins loop would short-circuit
-    // and the real compaction manifest would never run. Marking it `advisory: true`
-    // removes that dependency on import order entirely -- these tests simulate exactly
-    // that "handler starts returning non-pass" future regression, in both possible
-    // registration orders, and assert the authoritative handler's result still comes
-    // through every time.
+    // Regression coverage for the pre_compact ordering hazard: hooks_index.ts registers an always-pass, side-effect-only handler for pre_compact ahead of hooks_compact.ts's manifest handler, purely because of import order in relay.ts. If that handler ever started returning non-pass, the old first-non-pass-wins loop would short-circuit and the real compaction manifest would never run. Marking it `advisory: true` removes that dependency on import order entirely -- these tests simulate exactly that "handler starts returning non-pass" future regression, in both possible registration orders, and assert the authoritative handler's result still comes through every time.
     it('an advisory handler turning non-pass does not suppress a later authoritative handler', async () => {
       const advisory = vi.fn((): HookOutput => ({ hookType: 'context', context: 'snapshot-side-effect' }))
       const authoritative = vi.fn((): HookOutput => ({ hookType: 'context', context: 'manifest' }))
@@ -134,11 +126,7 @@ describe('hook registry', () => {
     it('order-independence: an authoritative handler registered before an advisory one still wins', async () => {
       const authoritative = vi.fn((): HookOutput => ({ hookType: 'context', context: 'manifest' }))
       const advisory = vi.fn((): HookOutput => ({ hookType: 'context', context: 'snapshot-side-effect' }))
-      // Deliberately reversed from the real hooks_index/hooks_compact import order. A
-      // non-advisory handler still short-circuits normally, so the advisory handler
-      // registered after it correctly never runs here -- the point is that the
-      // authoritative result is what comes through regardless of which order the two
-      // were registered in, not that every handler always fires.
+      // Deliberately reversed from the real hooks_index/hooks_compact import order. A non-advisory handler still short-circuits normally, so the advisory handler registered after it correctly never runs here -- the point is that the authoritative result is what comes through regardless of which order the two were registered in, not that every handler always fires.
       registerHook('pre_compact', authoritative)
       registerHook('pre_compact', advisory, { advisory: true })
       const result = await runHook(makeEvent({ eventName: 'pre_compact' }))
@@ -216,15 +204,7 @@ describe('hook registry', () => {
       }
     })
 
-    // Full matrix over every HookEventName, cross-checked against
-    // https://code.claude.com/docs/en/hooks (verified 2026-07-02): PreCompact and
-    // Notification do not accept `additionalContext` inside `hookSpecificOutput` and
-    // must use the top-level `systemMessage` field instead; every other event does
-    // accept it there. This exists so a new event added to HOOK_EVENTS without an
-    // entry in EVENTS_WITHOUT_ADDITIONAL_CONTEXT can't silently default to the wrong
-    // shape the way pre_compact did (2026-07-02) -- every event is asserted, not just
-    // the two or three a hand-picked example test happens to cover.
-    // Runs on 'codex' rather than 'claudecode' so pre_compact still emits JSON here: the raw-stdout carve-out is Claude Code's alone and is pinned by its own pair of tests above. Every other event is harness-independent, so this matrix's coverage is unchanged.
+    // Full matrix over every HookEventName, cross-checked against https://code.claude.com/docs/en/hooks (verified 2026-07-02): PreCompact and Notification do not accept `additionalContext` inside `hookSpecificOutput` and must use the top-level `systemMessage` field instead; every other event does accept it there. This exists so a new event added to HOOK_EVENTS without an entry in EVENTS_WITHOUT_ADDITIONAL_CONTEXT can't silently default to the wrong shape the way pre_compact did (2026-07-02) -- every event is asserted, not just the two or three a hand-picked example test happens to cover. Runs on 'codex' rather than 'claudecode' so pre_compact still emits JSON here: the raw-stdout carve-out is Claude Code's alone and is pinned by its own pair of tests above. Every other event is harness-independent, so this matrix's coverage is unchanged.
     it.each(HOOK_EVENTS)('serializes context for %s to the schema-correct shape', (eventName) => {
       const result = JSON.parse(serializeOutput({ hookType: 'context', context: 'hint' }, eventName, 'codex')) as Record<string, unknown>
       if (eventName === 'pre_compact' || eventName === 'notification') {
@@ -239,12 +219,7 @@ describe('hook registry', () => {
       expect(serializeOutput({ hookType: 'pass' }, 'pre_tool_use', 'claudecode')).toBe('{}')
     })
 
-    // Confirmed against https://code.claude.com/docs/en/hooks (verified 2026-07-12):
-    // PostToolUse hooks rewrite a tool's result via hookSpecificOutput.updatedToolOutput
-    // -- the same field name whether the tool is MCP or built-in (support for built-in
-    // tools shipped in v2.1.121; MCP support predates it). This is a real, valid partial
-    // verification that token-goat's serializer PRODUCES the documented wire shape; it
-    // does not by itself confirm a live Claude Code session honors it on receipt.
+    // Confirmed against https://code.claude.com/docs/en/hooks (verified 2026-07-12): PostToolUse hooks rewrite a tool's result via hookSpecificOutput.updatedToolOutput -- the same field name whether the tool is MCP or built-in (support for built-in tools shipped in v2.1.121; MCP support predates it). This is a real, valid partial verification that token-goat's serializer PRODUCES the documented wire shape; it does not by itself confirm a live Claude Code session honors it on receipt.
     it('serializes rewriteOutput to the documented hookSpecificOutput.updatedToolOutput shape', () => {
       expect(
         serializeOutput({ hookType: 'rewriteOutput', updatedOutput: 'rewritten body' }, 'post_tool_use', 'claudecode'),

@@ -1,15 +1,4 @@
-/**
- * Security regression: `webfetch.allow`/`webfetch.deny` is the operator's egress policy, and the
- * headless browser was the one outbound channel it never reached. The policy was enforced in the
- * WebFetch pre-hook and (since the previous fix) in performHttpFetch, but `token-goat screenshot`
- * launches Chromium and navigates on its own, so an install configured to deny everything still
- * rendered any URL it was handed and wrote the result to disk.
- *
- * The check lives in screenshotUrlRefusal rather than at the command entry point because the
- * request-interception hook in takeScreenshot re-applies that same function to every redirect hop
- * and every sub-resource, so an allowed page cannot pull an image, script, or iframe from a denied
- * host either. The sub-resource tests below assert that reuse directly.
- */
+/** Security regression: `webfetch.allow`/`webfetch.deny` is the operator's egress policy, and the headless browser was the one outbound channel it never reached. The policy was enforced in the WebFetch pre-hook and (since the previous fix) in performHttpFetch, but `token-goat screenshot` launches Chromium and navigates on its own, so an install configured to deny everything still rendered any URL it was handed and wrote the result to disk. The check lives in screenshotUrlRefusal rather than at the command entry point because the request-interception hook in takeScreenshot re-applies that same function to every redirect hop and every sub-resource, so an allowed page cannot pull an image, script, or iframe from a denied host either. The sub-resource tests below assert that reuse directly. */
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { screenshotUrlRefusal, validateScreenshotUrl } from '../src/screenshot.js'
@@ -52,8 +41,7 @@ describe('screenshot honours the webfetch egress policy', () => {
     expect(screenshotUrlRefusal('https://example.com/page')).toMatch(/webfetch\.deny/)
   })
 
-  // The interception hook calls this same function for every sub-resource, so a denied host is
-  // unreachable as an <img>/<script>/<iframe> source too, not just as the navigation target.
+  // The interception hook calls this same function for every sub-resource, so a denied host is unreachable as an <img>/<script>/<iframe> source too, not just as the navigation target.
   it('refuses a denied sub-resource host while permitting the allowed page', () => {
     withPolicy({ TOKEN_GOAT_WEBFETCH_DENY: '*tracker.example*' })
 
@@ -61,8 +49,7 @@ describe('screenshot honours the webfetch egress policy', () => {
     expect(screenshotUrlRefusal('https://tracker.example/pixel.gif')).toMatch(/webfetch\.deny/)
   })
 
-  // The refusal text is fed back into the model's context, so a signed screenshot URL must not
-  // leak its token there -- the same reason the scheme and private-IP refusals show origin+path.
+  // The refusal text is fed back into the model's context, so a signed screenshot URL must not leak its token there -- the same reason the scheme and private-IP refusals show origin+path.
   it('does not echo the query string of a denied URL', () => {
     withPolicy({ TOKEN_GOAT_WEBFETCH_DENY: '*' })
 
@@ -72,8 +59,7 @@ describe('screenshot honours the webfetch egress policy', () => {
     expect(reason).not.toContain('SECRETTOKEN')
   })
 
-  // Ordering: a scheme that was already refused must stay refused for that reason, not be
-  // reclassified as a policy denial (and vice versa a policy denial must not need a valid scheme).
+  // Ordering: a scheme that was already refused must stay refused for that reason, not be reclassified as a policy denial (and vice versa a policy denial must not need a valid scheme).
   it('still refuses a bad scheme first, with the scheme reason', () => {
     withPolicy({ TOKEN_GOAT_WEBFETCH_DENY: '*' })
 

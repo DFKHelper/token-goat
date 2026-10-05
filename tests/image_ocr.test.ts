@@ -6,10 +6,7 @@ import type * as ChildProcess from 'node:child_process'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Wraps the real `spawn` so call counts are observable without breaking the actual subprocess
-// round trip other tests in this file rely on -- Node's built-in ESM module namespace can't be
-// spied on directly (its exports are non-configurable), so this is the only way to assert "no
-// second spawn happened" as behavior instead of falling back to a wall-clock race.
+// Wraps the real `spawn` so call counts are observable without breaking the actual subprocess round trip other tests in this file rely on -- Node's built-in ESM module namespace can't be spied on directly (its exports are non-configurable), so this is the only way to assert "no second spawn happened" as behavior instead of falling back to a wall-clock race.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof ChildProcess>()
   return { ...actual, spawn: vi.fn(actual.spawn) }
@@ -28,13 +25,7 @@ import {
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ocr-stub-'))
 
-/** Writes a fake `tesseract.js`-shaped module (matching the `{ createWorker }` shape the
- * child script destructures) so `ocrImage`'s spawn/stdin/stdout/JSON-parse plumbing can be
- * exercised end-to-end without the real WASM engine or a network-fetched language model —
- * fast and fully offline, per this repo's convention of not requiring the real heavy
- * dependency to run in every CI test (see image_shrink_sharp_unavailable.test.ts's
- * `vi.mock('sharp', ...)` for the equivalent pattern applied to a real module instead of a
- * spawned subprocess, which cannot be `vi.mock`ed since it runs in a separate process). */
+/** Writes a fake `tesseract.js`-shaped module (matching the `{ createWorker }` shape the child script destructures) so `ocrImage`'s spawn/stdin/stdout/JSON-parse plumbing can be exercised end-to-end without the real WASM engine or a network-fetched language model — fast and fully offline, per this repo's convention of not requiring the real heavy dependency to run in every CI test (see image_shrink_sharp_unavailable.test.ts's `vi.mock('sharp', ...)` for the equivalent pattern applied to a real module instead of a spawned subprocess, which cannot be `vi.mock`ed since it runs in a separate process). */
 function writeStub(name: string, body: string): string {
   const file = path.join(TMP, `${name}-${Date.now()}-${Math.random().toString(36).slice(2)}.cjs`)
   fs.writeFileSync(file, body, 'utf8')
@@ -121,8 +112,7 @@ describe('ocrImage', () => {
     )
     setTesseractEntryForTesting(stub)
     setOcrTimeoutForTesting(300)
-    // Fake timers assert the kill-timeout path actually fires, instead of a wall-clock bound
-    // that measures the test machine's speed under load rather than the module's behaviour.
+    // Fake timers assert the kill-timeout path actually fires, instead of a wall-clock bound that measures the test machine's speed under load rather than the module's behaviour.
     vi.useFakeTimers()
     try {
       const pending = ocrImage(Buffer.from('fake-image-bytes'))
@@ -146,9 +136,7 @@ describe('ocrImage', () => {
     const { spawn } = await import('node:child_process')
     const spawnSpy = vi.mocked(spawn)
     spawnSpy.mockClear()
-    // Fake timers drive the kill-timeout deterministically; the regression this guards against
-    // is the sticky-disable flag not being set, which a wall-clock "second call is fast" bound
-    // cannot distinguish from ordinary machine-speed variance under parallel test load.
+    // Fake timers drive the kill-timeout deterministically; the regression this guards against is the sticky-disable flag not being set, which a wall-clock "second call is fast" bound cannot distinguish from ordinary machine-speed variance under parallel test load.
     vi.useFakeTimers()
     try {
       const firstPending = ocrImage(Buffer.from('a'))
@@ -157,8 +145,7 @@ describe('ocrImage', () => {
       expect(first).toBeNull()
       expect(spawnSpy).toHaveBeenCalledTimes(1)
 
-      // Second call must not spawn a new child at all -- if the sticky-disable flag weren't
-      // set by the timeout above, this would spawn again and hang on the same fake timer.
+      // Second call must not spawn a new child at all -- if the sticky-disable flag weren't set by the timeout above, this would spawn again and hang on the same fake timer.
       const second = await ocrImage(Buffer.from('b'))
       expect(second).toBeNull()
       expect(spawnSpy).toHaveBeenCalledTimes(1)
@@ -178,8 +165,7 @@ describe('ocrImage', () => {
     const first = await ocrImage(Buffer.from('a'))
     expect(first).toBeNull()
 
-    // A follow-up call against a stub that succeeds must still attempt the subprocess --
-    // proves the sticky-disable flag was NOT set by the ordinary exit-code-1 failure above.
+    // A follow-up call against a stub that succeeds must still attempt the subprocess -- proves the sticky-disable flag was NOT set by the ordinary exit-code-1 failure above.
     const okStub = writeStub(
       'ok2',
       `module.exports.createWorker = async function () {

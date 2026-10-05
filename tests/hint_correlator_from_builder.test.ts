@@ -1,21 +1,4 @@
-/**
- * The correlator a hint emission is scored against must come from the hint builder, which knows
- * the file it is pointing at, and never from a regex scrape of the rendered sentence.
- *
- * FIXTURE PROVENANCE
- *
- * `SED_HINT_TEXT` is CAPTURE: the literal `additionalContext` string emitted by the shipped
- * global binary on 2026-09-20, from
- *   echo '{"session_id":"ISOLATION_PROBE_XYZZY","cwd":"C:/Projects/token-goat","tool_name":"Bash",
- *          "tool_input":{"command":"sed -n '10,52p' src/paths.ts"}}' | token-goat hook pre_tool_use
- * run under an isolated LOCALAPPDATA/TOKEN_GOAT_HOME sandbox, JSON-unescaped.
- *
- * `LIVE_LEDGER_CORRELATOR` / `LIVE_LEDGER_ROWS` are CAPTURE: read-only query against the author's
- * real global ledger the same day --
- *   SELECT correlator, COUNT(*) FROM hint_emissions WHERE category='bash_redirect' GROUP BY 1
- * returned `/class` with 245 rows and 0 acted_on, against 697 rows in the category. They are
- * asserted here only to keep the *reason* for this change checkable, not as a spec for behavior.
- */
+/** The correlator a hint emission is scored against must come from the hint builder, which knows the file it is pointing at, and never from a regex scrape of the rendered sentence. FIXTURE PROVENANCE `SED_HINT_TEXT` is CAPTURE: the literal `additionalContext` string emitted by the shipped global binary on 2026-09-20, from echo '{"session_id":"ISOLATION_PROBE_XYZZY","cwd":"C:/Projects/token-goat","tool_name":"Bash", "tool_input":{"command":"sed -n '10,52p' src/paths.ts"}}' | token-goat hook pre_tool_use run under an isolated LOCALAPPDATA/TOKEN_GOAT_HOME sandbox, JSON-unescaped. `LIVE_LEDGER_CORRELATOR` / `LIVE_LEDGER_ROWS` are CAPTURE: read-only query against the author's real global ledger the same day -- SELECT correlator, COUNT(*) FROM hint_emissions WHERE category='bash_redirect' GROUP BY 1 returned `/class` with 245 rows and 0 acted_on, against 697 rows in the category. They are asserted here only to keep the *reason* for this change checkable, not as a spec for behavior. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -50,10 +33,7 @@ function postBashEvent(sessionId: string, command: string): HookEvent {
 
 function rowsFor(sessionId: string): Array<{ category: string; correlator: string | null; acted_on: number }> {
   return getDb(globalDbPath())
-    // displayed = 1 only: the first sed of each pair below is declined by the priced gate, which
-    // now records a zero-byte undisplayed row naming the same file. That row is real and wanted
-    // (see tests/hint_undisplayed_detections.test.ts), but it is not what this file is about --
-    // the question here is which correlator the *shown* hint was scored against.
+    // displayed = 1 only: the first sed of each pair below is declined by the priced gate, which now records a zero-byte undisplayed row naming the same file. That row is real and wanted (see tests/hint_undisplayed_detections.test.ts), but it is not what this file is about -- the question here is which correlator the *shown* hint was scored against.
     .prepare(`SELECT category, correlator, acted_on FROM hint_emissions WHERE session_id = ? AND displayed = 1 ORDER BY id`)
     .all(sessionId) as Array<{ category: string; correlator: string | null; acted_on: number }>
 }
@@ -68,10 +48,7 @@ afterEach(() => {
   clearModuleCaches()
 })
 
-// Every case below drives the sed branch twice on purpose. The priced gate in
-// bash_range_savings.ts silences the surgical advice, so the surviving emission from that branch
-// is the already-served overlap warning -- which is not gated on a cheaper replacement, and which
-// reaches the ledger through the same pathHint call carrying the same correlators.
+// Every case below drives the sed branch twice on purpose. The priced gate in bash_range_savings.ts silences the surgical advice, so the surviving emission from that branch is the already-served overlap warning -- which is not gated on a cheaper replacement, and which reaches the ledger through the same pathHint call carrying the same correlators.
 describe('hint correlators come from the builder, not from the hint text', () => {
   it('positive control: the scrape really does yield the prose fragment the live ledger recorded', () => {
     expect(extractPathCorrelator(SED_HINT_TEXT)).toBe(LIVE_LEDGER_CORRELATOR)

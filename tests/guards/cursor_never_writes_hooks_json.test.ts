@@ -1,23 +1,4 @@
-/**
- * Cursor 3.19.7's `~/.cursor/hooks.json` (and `.cursor/hooks.json` project-scoped) is a real, live
- * local hook file -- not the Zed-style total absence `windsurf_never_writes_cascade_hooks.test.ts`
- * guards. On this machine it is 6257 bytes, already owned and maintained by a third-party tool
- * (Orca), registering 8 events against `C:\Users\zelys\.orca\agent-hooks\cursor-hook.cmd`. token-goat
- * deliberately never writes to it, for two reasons documented in full in
- * `src/bridges/cursor_install.ts`'s header:
- *
- * 1. Cursor imports Claude Code's `~/.claude/settings.json` hooks by default (confirmed against the
- *    installed 3.19.7 `workbench.desktop.main.js`: `isClaudeCodeHooksEnabled` defaults to `true`),
- *    deduping only on an exact, untransformed command-string match. A second, independently written
- *    copy in `hooks.json` is pure double-fire risk the moment the two producers' command text ever
- *    diverges by so much as a flag.
- * 2. The file may be -- and here is -- owned by a third party. A naive merge risks destroying real
- *    user configuration.
- *
- * This guard is a structural absence check, re-run every time this repo's own source changes,
- * independent of whether a future change decides Cursor hooks are worth the risk (if it does, this
- * guard's population lives in the fix commit's diff, not a place a reviewer has to remember to look).
- */
+/** Cursor 3.19.7's `~/.cursor/hooks.json` (and `.cursor/hooks.json` project-scoped) is a real, live local hook file -- not the Zed-style total absence `windsurf_never_writes_cascade_hooks.test.ts` guards. On this machine it is 6257 bytes, already owned and maintained by a third-party tool (Orca), registering 8 events against `C:\Users\zelys\.orca\agent-hooks\cursor-hook.cmd`. token-goat deliberately never writes to it, for two reasons documented in full in `src/bridges/cursor_install.ts`'s header: 1. Cursor imports Claude Code's `~/.claude/settings.json` hooks by default (confirmed against the installed 3.19.7 `workbench.desktop.main.js`: `isClaudeCodeHooksEnabled` defaults to `true`), deduping only on an exact, untransformed command-string match. A second, independently written copy in `hooks.json` is pure double-fire risk the moment the two producers' command text ever diverges by so much as a flag. 2. The file may be -- and here is -- owned by a third party. A naive merge risks destroying real user configuration. This guard is a structural absence check, re-run every time this repo's own source changes, independent of whether a future change decides Cursor hooks are worth the risk (if it does, this guard's population lives in the fix commit's diff, not a place a reviewer has to remember to look). */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -35,14 +16,7 @@ interface SrcFile {
   readonly code: string
 }
 
-/**
- * Strips `/* ... *\/` and `// ...` comments before the marker scan below runs, so this guard's own
- * documentation -- and `cursor_install.ts`'s header, which necessarily *names* the path it refuses to
- * write, to explain why -- does not trip the very check meant to catch a real, executable reference.
- * Comment-stripping is intentionally naive (no string-literal awareness), same tradeoff every other
- * regex-based guard in this directory makes; it is applied only to reduce false positives, never to
- * hide a real hit, since a live `path.join(..., '.cursor', 'hooks.json')` call is code, not a comment.
- */
+/** Strips `/* ... *\/` and `// ...` comments before the marker scan below runs, so this guard's own documentation -- and `cursor_install.ts`'s header, which necessarily *names* the path it refuses to write, to explain why -- does not trip the very check meant to catch a real, executable reference. Comment-stripping is intentionally naive (no string-literal awareness), same tradeoff every other regex-based guard in this directory makes; it is applied only to reduce false positives, never to hide a real hit, since a live `path.join(..., '.cursor', 'hooks.json')` call is code, not a comment. */
 function stripComments(code: string): string {
   return code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
 }

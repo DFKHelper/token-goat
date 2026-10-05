@@ -1,18 +1,4 @@
-/**
- * `token-goat skill-body <name> --compact` prints the pre-marker compact slice of a skill instead
- * of its full body, and recorded nothing for it.
- *
- * That is not a cosmetic omission. stats.ts registers a `skill_body:` prefix in
- * KIND_PREFIX_TO_SOURCE, and its skill_oversized_first_load entry says in so many words that the
- * pointer deny books zero bytes because "the follow-up command does" record the saving. The
- * follow-up command is this one, and it booked nothing, so the entire oversized-skill chain summed
- * to zero however often it fired -- a registered prefix with no producer anywhere, exactly the
- * shape tests/guards/every_registered_stat_kind_has_a_producer.test.ts now catches in general.
- *
- * Driven through the built bundle rather than an imported function, so the credit is proven on the
- * shipping path, and the expected byte count is measured from the fixture and the literal stdout
- * the binary produced rather than recomputed the way the code computes it.
- */
+/** `token-goat skill-body <name> --compact` prints the pre-marker compact slice of a skill instead of its full body, and recorded nothing for it. That is not a cosmetic omission. stats.ts registers a `skill_body:` prefix in KIND_PREFIX_TO_SOURCE, and its skill_oversized_first_load entry says in so many words that the pointer deny books zero bytes because "the follow-up command does" record the saving. The follow-up command is this one, and it booked nothing, so the entire oversized-skill chain summed to zero however often it fired -- a registered prefix with no producer anywhere, exactly the shape tests/guards/every_registered_stat_kind_has_a_producer.test.ts now catches in general. Driven through the built bundle rather than an imported function, so the credit is proven on the shipping path, and the expected byte count is measured from the fixture and the literal stdout the binary produced rather than recomputed the way the code computes it. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

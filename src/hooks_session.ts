@@ -19,20 +19,7 @@ import {
   taskListPruneHint,
 } from './resident_context.js';
 
-/**
- * Deliver anything the prompt-submit hook queued, on the first tool call that follows.
- *
- * Advisory and tool-agnostic: it adds context and never decides a tool's fate. It peeks rather than
- * consumes, and relay.ts clears the queue once the emitted output is confirmed to carry the text --
- * which is what makes this a no-op for every later call in the turn, and what keeps the text queued
- * on the calls where an advisory result loses to another handler's. See pending_context.ts.
- *
- * The gate names every producer that writes to the queue, not just the one this handler was built
- * for. Gating on the prompt-submit set alone was correct while that set was the only writer; once
- * pre_compact began queuing on a harness that discards its own response, an empty prompt-submit set
- * would have stranded every queued manifest on disk -- nothing failing, and the hint still counted
- * as emitted.
- */
+/** Deliver anything the prompt-submit hook queued, on the first tool call that follows. Advisory and tool-agnostic: it adds context and never decides a tool's fate. It peeks rather than consumes, and relay.ts clears the queue once the emitted output is confirmed to carry the text -- which is what makes this a no-op for every later call in the turn, and what keeps the text queued on the calls where an advisory result loses to another handler's. See pending_context.ts. The gate names every producer that writes to the queue, not just the one this handler was built for. Gating on the prompt-submit set alone was correct while that set was the only writer; once pre_compact began queuing on a harness that discards its own response, an empty prompt-submit set would have stranded every queued manifest on disk -- nothing failing, and the hint still counted as emitted. */
 function pendingContextHandler(event: HookEvent): HookOutput {
   try {
     if (!event.sessionId || (!dropsPromptSubmitContext() && !dropsPreCompactContext())) return passOutput();
@@ -52,18 +39,7 @@ function promptFingerprint(prompt: string): string {
   return crypto.createHash('sha256').update(prompt).digest('hex').slice(0, 16);
 }
 
-/**
- * Hints about context the harness injected and no hook ever saw: an oversized task list, and a
- * skill body that slash expansion has sent more than once. See resident_context.ts.
- *
- * Both are one-shot per session, and that is also what bounds the cost: once each hint has fired
- * there is nothing left to look for, so the scan stops running entirely. Until then it reads a
- * capped window from the end of the transcript and, before parsing anything, drops the ~98% of
- * lines that cannot carry either signal.
- *
- * Advisory by construction. A task list may hold items owned by other agents, so the hint names
- * TaskUpdate and stops there; token-goat never edits a task itself.
- */
+/** Hints about context the harness injected and no hook ever saw: an oversized task list, and a skill body that slash expansion has sent more than once. See resident_context.ts. Both are one-shot per session, and that is also what bounds the cost: once each hint has fired there is nothing left to look for, so the scan stops running entirely. Until then it reads a capped window from the end of the transcript and, before parsing anything, drops the ~98% of lines that cannot carry either signal. Advisory by construction. A task list may hold items owned by other agents, so the hint names TaskUpdate and stops there; token-goat never edits a task itself. */
 function residentContextHints(event: HookEvent): string[] {
   const transcriptPath = event.raw['transcript_path'];
   if (typeof transcriptPath !== 'string' || transcriptPath === '') return [];
@@ -137,12 +113,7 @@ async function userPromptSubmitHandler(event: HookEvent): Promise<HookOutput> {
       }
     }
 
-    // The branch-hint git subprocess is only worth its cost for a substantive prompt -- skip it
-    // (and the getCwd/runGit call it implies) for a trivial one like "ok"/"yes"/"continue". This
-    // gate must NOT also skip checkSkillVersionDrift below: that check is cheap (no subprocess)
-    // and its own "on each user turn" contract must hold even on a short turn -- a session whose
-    // next few prompts happen to be short ("continue", "next") previously never learned about a
-    // mid-session upgrade at all, since the drift check sat after this same early return.
+    // The branch-hint git subprocess is only worth its cost for a substantive prompt -- skip it (and the getCwd/runGit call it implies) for a trivial one like "ok"/"yes"/"continue". This gate must NOT also skip checkSkillVersionDrift below: that check is cheap (no subprocess) and its own "on each user turn" contract must hold even on a short turn -- a session whose next few prompts happen to be short ("continue", "next") previously never learned about a mid-session upgrade at all, since the drift check sat after this same early return.
     if (prompt.length >= 8) {
       const cwd = getCwd(event);
       if (cwd) {
@@ -160,13 +131,10 @@ async function userPromptSubmitHandler(event: HookEvent): Promise<HookOutput> {
       }
     }
 
-    // One-shot "token-goat was upgraded since you loaded this skill" nudge -- see
-    // skill_version_drift.ts. Deliberately not folded into `parts`/the bracketed summary above:
-    // it is a standalone, occasional line, not another terse `key: value` fragment.
+    // One-shot "token-goat was upgraded since you loaded this skill" nudge -- see skill_version_drift.ts. Deliberately not folded into `parts`/the bracketed summary above: it is a standalone, occasional line, not another terse `key: value` fragment.
     const driftNudge = await checkSkillVersionDrift(event.sessionId);
 
-    // Standalone sentences, so they join driftNudge on their own lines rather than the bracketed
-    // `key: value` summary.
+    // Standalone sentences, so they join driftNudge on their own lines rather than the bracketed `key: value` summary.
     const residentHints = residentContextHints(event);
 
     // The manifest queued when the harness compacted, on a harness whose preCompact answer reaches nothing but whose prompt answer does (see resumesCompactionOnPrompt). Peeked, not taken: relay.ts clears the queue once the serialized output carries it, which is what makes this one-shot. First, because it says what happened before anything below it applies.
@@ -191,8 +159,7 @@ async function userPromptSubmitHandler(event: HookEvent): Promise<HookOutput> {
     }
     const text = lines.join('\n');
 
-    // On a harness that discards this event's response, returning the text would deliver nothing.
-    // Queue it for the next tool call, where there IS a channel that reaches the model.
+    // On a harness that discards this event's response, returning the text would deliver nothing. Queue it for the next tool call, where there IS a channel that reaches the model.
     if (dropsPromptSubmitContext()) {
       queuePendingContext(sessionStateKey(event), text);
       return passOutput();
@@ -203,20 +170,11 @@ async function userPromptSubmitHandler(event: HookEvent): Promise<HookOutput> {
   }
 }
 
-// Matches common completion-tense verbs a subagent would use in its own
-// final report when it CLAIMS to have made changes (e.g. "Fixed the bug
-// and committed the change") — as opposed to inferring intent from the
-// task it was assigned. Handles common inflections (fix/fixed/fixing).
-// Deliberately excludes commit/push verbs: a clean `git status --porcelain`
-// is also the expected, correct outcome after a successful commit, so
-// those verbs cannot be used as hallucination signals on their own — see
-// CLAIMED_COMMIT_VERBS_RE below.
+// Matches common completion-tense verbs a subagent would use in its own final report when it CLAIMS to have made changes (e.g. "Fixed the bug and committed the change") — as opposed to inferring intent from the task it was assigned. Handles common inflections (fix/fixed/fixing). Deliberately excludes commit/push verbs: a clean `git status --porcelain` is also the expected, correct outcome after a successful commit, so those verbs cannot be used as hallucination signals on their own — see CLAIMED_COMMIT_VERBS_RE below.
 const CLAIMED_CHANGE_VERBS_RE =
   /\b(fix(?:ed|es|ing)?|implement(?:ed|s|ing)?|add(?:ed|s|ing)?|creat(?:e|ed|es|ing)|writ(?:e|ten|es|ing)|refactor(?:ed|s|ing)?|updat(?:e|ed|es|ing)|chang(?:e|ed|es|ing)|edit(?:ed|s|ing)?|modif(?:y|ied|ies|ying)|delet(?:e|ed|es|ing)|remov(?:e|ed|es|ing)|patch(?:ed|es|ing)?|resolv(?:e|ed|es|ing)|replac(?:e|ed|es|ing)|improv(?:e|ed|es|ing)|appl(?:y|ied|ies|ying))\b/i;
 
-// Matches claims that the changes were committed/pushed — a legitimate
-// explanation for an empty `git status --porcelain` output, so its
-// presence must suppress the hallucination warning rather than trigger it.
+// Matches claims that the changes were committed/pushed — a legitimate explanation for an empty `git status --porcelain` output, so its presence must suppress the hallucination warning rather than trigger it.
 const CLAIMED_COMMIT_VERBS_RE = /\b(commit(?:ted|s|ting)?|push(?:ed|es|ing)?)\b/i;
 
 // A bare verb alternation cannot tell "fixed the bug" from "did not fix anything", so a negation cue in the few words immediately preceding the matched verb voids the claim; deliberately not the whole clause, since an unrelated earlier negation ("No tests were skipped, and I updated the config") must still leave the real claim standing.
@@ -252,10 +210,7 @@ function subagentStopHandler(event: HookEvent): HookOutput {
       if (result.exitCode === 0) {
         const gitOutput = result.stdout.trim();
         if (!gitOutput) {
-          // last_assistant_message is the subagent's own final report — the
-          // real signal is whether the agent CLAIMS to have made changes
-          // (fixed/committed/implemented/...) while git shows none, not
-          // whether the assigned task merely asked for changes.
+          // last_assistant_message is the subagent's own final report — the real signal is whether the agent CLAIMS to have made changes (fixed/committed/implemented/...) while git shows none, not whether the assigned task merely asked for changes.
           const lastAssistantMessage = (event.raw['last_assistant_message'] as string) || '';
           const claimsChanges = claimsUnnegatedChange(lastAssistantMessage);
           const claimsCommitted = CLAIMED_COMMIT_VERBS_RE.test(lastAssistantMessage);
@@ -278,11 +233,7 @@ function subagentStopHandler(event: HookEvent): HookOutput {
 
 registerHook('user_prompt_submit', userPromptSubmitHandler);
 registerHook('subagent_stop', subagentStopHandler);
-// followsMatcher: this handler filters no tool, but it must not force the catch-all matcher.
-// On Claude Code it is a no-op anyway, and on Copilot CLI -- the harness it exists for -- the
-// installed matcher plays no part, since that shim receives every postToolUse event regardless.
-// So accepting the event's existing narrowed matcher costs the delivery nothing and keeps every
-// other harness from paying a hook spawn on tool calls no handler wants.
+// followsMatcher: this handler filters no tool, but it must not force the catch-all matcher. On Claude Code it is a no-op anyway, and on Copilot CLI -- the harness it exists for -- the installed matcher plays no part, since that shim receives every postToolUse event regardless. So accepting the event's existing narrowed matcher costs the delivery nothing and keeps every other harness from paying a hook spawn on tool calls no handler wants.
 registerHook('post_tool_use', pendingContextHandler, { advisory: true, followsMatcher: true });
 
 export { pendingContextHandler, subagentStopHandler, userPromptSubmitHandler };

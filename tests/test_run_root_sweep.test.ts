@@ -1,8 +1,4 @@
-/**
- * Tests for the stale-run-root sweep in tests/setup/build-bundle.ts.
- *
- * Test hygiene, not product behaviour: `tg-run-` appears nowhere in the shipped bundle. The globalSetup teardown that removes a run root only fires when the main vitest process exits normally, so every interrupted run (Ctrl-C, a killed agent, a crash) abandons its root; sweepStaleRunRoots() reclaims those on the next run.
- */
+/** Tests for the stale-run-root sweep in tests/setup/build-bundle.ts. Test hygiene, not product behaviour: `tg-run-` appears nowhere in the shipped bundle. The globalSetup teardown that removes a run root only fires when the main vitest process exits normally, so every interrupted run (Ctrl-C, a killed agent, a crash) abandons its root; sweepStaleRunRoots() reclaims those on the next run. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

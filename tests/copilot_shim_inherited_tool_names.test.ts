@@ -1,12 +1,4 @@
-/**
- * The Copilot CLI shim's tool-name maps are plain object literals, so a bare lookup answers for every name on `Object.prototype`.
- *
- * `resolveCanonicalToolName` read `TOOL_TO_TG[name]` and `TOOL_TO_TG[stripped]` directly and treated any non-`undefined` result as a mapping. For a tool called `constructor`, `toString`, `valueOf` or `hasOwnProperty` that result is an inherited *function*, which is truthy, so the resolver returned it as the canonical tool name. `JSON.stringify` omits function-valued properties, so the payload forwarded to token-goat then carried no `tool_name` at all and every hook keyed on one no-opped.
- *
- * The key is not ours to choose: Copilot CLI namespaces MCP tools as `server:tool` and the shim strips to the half after the colon, which is whatever a third-party server named its tool. The shim's event map one function over already guards with `Object.prototype.hasOwnProperty.call` and documents this exact class; the tool-name and argument-key maps beside it did not.
- *
- * Provenance: CAPTURE. The fake token-goat records the shim's real stdin, so the assertions are on the bytes a shipped shim sends rather than on a re-derivation of what it ought to send.
- */
+/** The Copilot CLI shim's tool-name maps are plain object literals, so a bare lookup answers for every name on `Object.prototype`. `resolveCanonicalToolName` read `TOOL_TO_TG[name]` and `TOOL_TO_TG[stripped]` directly and treated any non-`undefined` result as a mapping. For a tool called `constructor`, `toString`, `valueOf` or `hasOwnProperty` that result is an inherited *function*, which is truthy, so the resolver returned it as the canonical tool name. `JSON.stringify` omits function-valued properties, so the payload forwarded to token-goat then carried no `tool_name` at all and every hook keyed on one no-opped. The key is not ours to choose: Copilot CLI namespaces MCP tools as `server:tool` and the shim strips to the half after the colon, which is whatever a third-party server named its tool. The shim's event map one function over already guards with `Object.prototype.hasOwnProperty.call` and documents this exact class; the tool-name and argument-key maps beside it did not. Provenance: CAPTURE. The fake token-goat records the shim's real stdin, so the assertions are on the bytes a shipped shim sends rather than on a re-derivation of what it ought to send. */
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -26,11 +18,7 @@ afterAll(() => {
   }
 })
 
-/**
- * A fake `token-goat` on PATH that records the stdin it was handed and answers with an empty response.
- *
- * The forwarded tool name reaches token-goat on stdin, not in argv, so an argv-recording fake cannot see it. Both platform wrappers delegate to one Node script so the capture is byte-identical either way.
- */
+/** A fake `token-goat` on PATH that records the stdin it was handed and answers with an empty response. The forwarded tool name reaches token-goat on stdin, not in argv, so an argv-recording fake cannot see it. Both platform wrappers delegate to one Node script so the capture is byte-identical either way. */
 function withCapturingTokenGoat(cwd: string): { env: NodeJS.ProcessEnv; captured: () => Record<string, unknown> | undefined } {
   const capturePath = path.join(cwd, 'captured-stdin.json')
   const scriptPath = path.join(cwd, 'capture.cjs')

@@ -1,6 +1,4 @@
-/**
- * Built-bundle check for the Fortran, Pascal, MATLAB and CMake adapters: the shipped dist/token-goat.mjs, not source, indexes one file of each through `index . --walk` and answers `outline`, `symbol`, `read "file::Name"` and `imports` from them. A Mathematica `.m` and a Puppet `.pp` beside them are left alone, and the index count names exactly the files it indexed.
- */
+/** Built-bundle check for the Fortran, Pascal, MATLAB and CMake adapters: the shipped dist/token-goat.mjs, not source, indexes one file of each through `index . --walk` and answers `outline`, `symbol`, `read "file::Name"` and `imports` from them. A Mathematica `.m` and a Puppet `.pp` beside them are left alone, and the index count names exactly the files it indexed. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

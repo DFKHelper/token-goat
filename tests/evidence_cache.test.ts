@@ -108,11 +108,7 @@ describe('workspace evidence cache', () => {
     expect(fs.readFileSync(path.join(testDataDir, 'workspace-evidence.json'), 'utf8')).toContain('"embedding"')
   })
 
-  // HAND-DERIVED: the counts and ordering below are computed directly from recordEvidence's own
-  // documented behaviour (unshift = newest-first, per its top-of-function comment) and the old
-  // MAX_SEMANTIC_CANDIDATES = 100 cap this fix removes -- not from running the fixed code and
-  // pasting its output back. 105 filler entries recorded after the target push it to index 105,
-  // past the old cap, so a pre-score recency slice would drop it before scoring ever saw it.
+  // HAND-DERIVED: the counts and ordering below are computed directly from recordEvidence's own documented behaviour (unshift = newest-first, per its top-of-function comment) and the old MAX_SEMANTIC_CANDIDATES = 100 cap this fix removes -- not from running the fixed code and pasting its output back. 105 filler entries recorded after the target push it to index 105, past the old cap, so a pre-score recency slice would drop it before scoring ever saw it.
   it('finds the best semantic match even when 100+ newer entries were recorded after it', async () => {
     const project = path.join(testDataDir, 'project')
     setPipelineFnForTesting(async () => async (text: string) => {

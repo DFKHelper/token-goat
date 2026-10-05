@@ -39,8 +39,7 @@ describe('Visual Basic language routing', () => {
   })
 
   it('refines a LaTeX .cls (a document class file) to unknown rather than misclaiming it as Apex', () => {
-    // FORMAT-DERIVED: the LaTeX2e kernel requires a .cls to self-identify with \ProvidesClass{name}[...]
-    // near its head; https://www.latex-project.org/help/documentation/clsguide.pdf section 2.
+    // FORMAT-DERIVED: the LaTeX2e kernel requires a .cls to self-identify with \ProvidesClass{name}[...] near its head; https://www.latex-project.org/help/documentation/clsguide.pdf section 2.
     const latexCls = '\\NeedsTeXFormat{LaTeX2e}\n\\ProvidesClass{myclass}[2024/01/01 my custom class]\n\\LoadClass{article}\n'
     expect(isLatexClassFile(latexCls)).toBe(true)
     expect(refineLanguageByContent('styles/myclass.cls', 'apex', latexCls)).toBe('unknown')
@@ -77,11 +76,7 @@ describe('detectLanguage', () => {
   })
 
   it('returns markdown for .md / .markdown / .mdx, but unknown for .rst', () => {
-    // Regression: .mdx had no EXTENSION_LANGUAGE entry, so detectLanguage returned 'unknown' for
-    // it and the indexer (cmdIndex) skipped .mdx files entirely -- no headings ever got into the
-    // symbol index. MDX heading syntax is plain ATX and works with the existing markdown
-    // extractor, unlike .rst, which genuinely needs an underline-style heading parser that isn't
-    // implemented, so 'unknown' remains correct there.
+    // Regression: .mdx had no EXTENSION_LANGUAGE entry, so detectLanguage returned 'unknown' for it and the indexer (cmdIndex) skipped .mdx files entirely -- no headings ever got into the symbol index. MDX heading syntax is plain ATX and works with the existing markdown extractor, unlike .rst, which genuinely needs an underline-style heading parser that isn't implemented, so 'unknown' remains correct there.
     expect(detectLanguage('README.md')).toBe('markdown')
     expect(detectLanguage('README.markdown')).toBe('markdown')
     expect(detectLanguage('docs/Guide.mdx')).toBe('markdown')
@@ -95,9 +90,7 @@ describe('detectLanguage', () => {
   })
 
   it('classifies .mk Makefile fragments as makefile', () => {
-    // Regression: `.mk` had no EXTENSION_LANGUAGE entry, so an included Makefile fragment
-    // (config.mk, rules.mk, common.mk) resolved to 'unknown' and was indexed with zero symbols,
-    // even though a bare `Makefile` (basename) and extractMakefile both handled the same content.
+    // Regression: `.mk` had no EXTENSION_LANGUAGE entry, so an included Makefile fragment (config.mk, rules.mk, common.mk) resolved to 'unknown' and was indexed with zero symbols, even though a bare `Makefile` (basename) and extractMakefile both handled the same content.
     expect(detectLanguage('config.mk')).toBe('makefile')
     expect(detectLanguage('build/rules.mk')).toBe('makefile')
     expect(detectLanguage('COMMON.MK')).toBe('makefile')
@@ -109,12 +102,7 @@ describe('detectLanguage', () => {
   })
 
   it('classifies bare Gemfile/Rakefile as ruby by basename', () => {
-    // Regression: Gemfile and Rakefile are plain Ruby syntax (no extension) -- the dominant,
-    // idiomatic dependency-manifest and task-runner files in virtually every real Ruby project,
-    // same class of has-extractor-but-no-dispatch-entry gap already fixed for bare `Makefile` /
-    // `.mk` fragments. FILENAME_LANGUAGE had no entry for either, so both fell through to
-    // 'unknown' and indexed zero symbols despite the ruby tree-sitter grammar handling their
-    // content fine.
+    // Regression: Gemfile and Rakefile are plain Ruby syntax (no extension) -- the dominant, idiomatic dependency-manifest and task-runner files in virtually every real Ruby project, same class of has-extractor-but-no-dispatch-entry gap already fixed for bare `Makefile` / `.mk` fragments. FILENAME_LANGUAGE had no entry for either, so both fell through to 'unknown' and indexed zero symbols despite the ruby tree-sitter grammar handling their content fine.
     expect(detectLanguage('Gemfile')).toBe('ruby')
     expect(detectLanguage('repo/Gemfile')).toBe('ruby')
     expect(detectLanguage('Rakefile')).toBe('ruby')
@@ -122,10 +110,7 @@ describe('detectLanguage', () => {
   })
 
   it('classifies any ".env.<suffix>" variant as env_file, not just an enumerated list', () => {
-    // FILENAME_LANGUAGE used to enumerate a fixed list of dotenv variants (.env.local,
-    // .env.example, .env.sample, .env.test, .env.production) -- any suffix a project actually
-    // uses that wasn't on that list (.env.development, .env.staging, .env.ci, .env.docker, ...)
-    // silently fell through to 'unknown'.
+    // FILENAME_LANGUAGE used to enumerate a fixed list of dotenv variants (.env.local, .env.example, .env.sample, .env.test, .env.production) -- any suffix a project actually uses that wasn't on that list (.env.development, .env.staging, .env.ci, .env.docker, ...) silently fell through to 'unknown'.
     expect(detectLanguage('.env')).toBe('env_file')
     expect(detectLanguage('.env.local')).toBe('env_file')
     expect(detectLanguage('.env.development')).toBe('env_file')
@@ -176,16 +161,10 @@ describe('detectLanguage', () => {
   })
 })
 
-// unsupportedLanguageName had zero direct coverage: only 2 of its (then 9) mapped extensions
-// (.swift, .dart) were exercised indirectly through read_commands.test.ts's skeleton/outline
-// diagnostics, and that exercised the whole read_commands pipeline, not this function's own
-// boundary (case-insensitivity, the remaining extensions, and the two `undefined` branches).
-// .swift was removed from the map once src/languages/swift.ts shipped a real extractor -- see
-// the 'returns undefined for a language token-goat already has an extractor for' case below.
+// unsupportedLanguageName had zero direct coverage: only 2 of its (then 9) mapped extensions (.swift, .dart) were exercised indirectly through read_commands.test.ts's skeleton/outline diagnostics, and that exercised the whole read_commands pipeline, not this function's own boundary (case-insensitivity, the remaining extensions, and the two `undefined` branches). .swift was removed from the map once src/languages/swift.ts shipped a real extractor -- see the 'returns undefined for a language token-goat already has an extractor for' case below.
 describe('unsupportedLanguageName', () => {
   it('returns undefined for all recognized languages that now have extractors', () => {
-    // Scala, Lua, Elixir, Dart, Zig, and R all now have symbol extractors
-    // (previously were in UNSUPPORTED_LANGUAGE_EXTENSIONS, now removed).
+    // Scala, Lua, Elixir, Dart, Zig, and R all now have symbol extractors (previously were in UNSUPPORTED_LANGUAGE_EXTENSIONS, now removed).
     expect(unsupportedLanguageName('App.scala')).toBeUndefined()
     expect(unsupportedLanguageName('Script.sc')).toBeUndefined()
     expect(unsupportedLanguageName('init.lua')).toBeUndefined()

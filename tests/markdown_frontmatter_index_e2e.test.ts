@@ -1,8 +1,4 @@
-/**
- * End-to-end check against the BUILT bundle that Jekyll front matter is never indexed as a heading. It indexes a temp project through dist/token-goat.mjs (the real default worker/indexer path, no injected callback) and reads the result back through `outline`, `symbol` and `section`.
- *
- * Fixture provenance: CAPTURE. README.md below is lines 1-8 of the repository README at commit 9c9b7688, where the closing `---` underlined `permalink: /` as a setext heading.
- */
+/** End-to-end check against the BUILT bundle that Jekyll front matter is never indexed as a heading. It indexes a temp project through dist/token-goat.mjs (the real default worker/indexer path, no injected callback) and reads the result back through `outline`, `symbol` and `section`. Fixture provenance: CAPTURE. README.md below is lines 1-8 of the repository README at commit 9c9b7688, where the closing `---` underlined `permalink: /` as a setext heading. */
 import { execFileSync, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

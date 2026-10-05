@@ -1,12 +1,4 @@
-/**
- * Declaration forms the regex-based (non-tree-sitter) language adapters used to miss, driven through
- * the real `parseFile` dispatch so the extension routing is exercised along with the extractor.
- *
- * Every fixture is HAND-DERIVED from the language's own reference (cited per case), written
- * independently of the extractor. Each case pairs the new names with a must-not-drop list of names
- * the adapter already extracted, and a must-not-appear list of declaration-shaped text inside a
- * string, heredoc, or comment.
- */
+/** Declaration forms the regex-based (non-tree-sitter) language adapters used to miss, driven through the real `parseFile` dispatch so the extension routing is exercised along with the extractor. Every fixture is HAND-DERIVED from the language's own reference (cited per case), written independently of the extractor. Each case pairs the new names with a must-not-drop list of names the adapter already extracted, and a must-not-appear list of declaration-shaped text inside a string, heredoc, or comment. */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

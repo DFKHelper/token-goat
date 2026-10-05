@@ -1,16 +1,4 @@
-/**
- * Tests for the CI/security-scanner filter family (Batch H).
- *
- * Covers: GhRunLogFilter, GhFilter (including *_url stripping), ActFilter,
- * GenericCIFilter, PreCommitFilter, BanditFilter, TrivyFilter, SnykFilter,
- * SemgrepFilter.
- *
- * Ported from:
- *   tests/test_bash_compress_ci.py
- *   tests/test_bash_compress_security.py
- *   tests/test_bash_compress_gh_enhanced.py
- *   tests/test_bash_compress_pre_commit_enhanced.py
- */
+/** Tests for the CI/security-scanner filter family (Batch H). Covers: GhRunLogFilter, GhFilter (including *_url stripping), ActFilter, GenericCIFilter, PreCommitFilter, BanditFilter, TrivyFilter, SnykFilter, SemgrepFilter. Ported from: tests/test_bash_compress_ci.py tests/test_bash_compress_security.py tests/test_bash_compress_gh_enhanced.py tests/test_bash_compress_pre_commit_enhanced.py */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -30,9 +18,7 @@ import {
 } from '../src/tool_filters/ci.js'
 import { TOOL_FILTERS, compressOutput, detectFromCommand, selectFilter } from '../src/tool_filters/dispatch.js'
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helpers ---------------------------------------------------------------------------
 
 function apply(
   filter: { compress: (a: string, b: string, c: number, d: string[]) => string },
@@ -43,9 +29,7 @@ function apply(
   return filter.compress(stdout, stderr, exitCode, argv)
 }
 
-// ---------------------------------------------------------------------------
-// GhRunLogFilter — dispatch
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhRunLogFilter — dispatch ---------------------------------------------------------------------------
 
 describe('GhRunLogFilter dispatch', () => {
   const f = new GhRunLogFilter()
@@ -66,10 +50,7 @@ describe('GhRunLogFilter dispatch', () => {
     expect(f.matches(['gh', 'pr', 'view', '42'])).toBe(false)
   })
 
-  // `--log-failed` is the spelling CI triage actually reaches for. `argv.includes('--log')`
-  // is a whole-token test, so it never matched, and the command fell through to GhFilter --
-  // which strips no job/step column prefix, leaving its ^-anchored step regexes matching
-  // nothing. The bug was invisible because every existing case spelled the flag `--log`.
+  // `--log-failed` is the spelling CI triage actually reaches for. `argv.includes('--log')` is a whole-token test, so it never matched, and the command fell through to GhFilter -- which strips no job/step column prefix, leaving its ^-anchored step regexes matching nothing. The bug was invisible because every existing case spelled the flag `--log`.
   it('matches gh run view with --log-failed', () => {
     expect(f.matches(['gh', 'run', 'view', '123456789', '--log-failed'])).toBe(true)
   })
@@ -95,9 +76,7 @@ describe('GhRunLogFilter dispatch', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GhRunLogFilter — timestamp stripping
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhRunLogFilter — timestamp stripping ---------------------------------------------------------------------------
 
 describe('GhRunLogFilter timestamp stripping', () => {
   const f = new GhRunLogFilter()
@@ -120,9 +99,7 @@ describe('GhRunLogFilter timestamp stripping', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GhRunLogFilter — setup action collapsing
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhRunLogFilter — setup action collapsing ---------------------------------------------------------------------------
 
 describe('GhRunLogFilter setup action collapsing', () => {
   const f = new GhRunLogFilter()
@@ -140,9 +117,7 @@ describe('GhRunLogFilter setup action collapsing', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GhRunLogFilter — boilerplate dropping
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhRunLogFilter — boilerplate dropping ---------------------------------------------------------------------------
 
 describe('GhRunLogFilter boilerplate dropping', () => {
   const f = new GhRunLogFilter()
@@ -161,9 +136,7 @@ describe('GhRunLogFilter boilerplate dropping', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GhRunLogFilter — cleanup dropping
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhRunLogFilter — cleanup dropping ---------------------------------------------------------------------------
 
 describe('GhRunLogFilter cleanup dropping', () => {
   const f = new GhRunLogFilter()
@@ -183,9 +156,7 @@ describe('GhRunLogFilter cleanup dropping', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GhRunLogFilter — group collapsing
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhRunLogFilter — group collapsing ---------------------------------------------------------------------------
 
 describe('GhRunLogFilter group collapsing', () => {
   const f = new GhRunLogFilter()
@@ -250,9 +221,7 @@ describe('GhRunLogFilter group collapsing', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GhRunLogFilter — failure lines kept
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhRunLogFilter — failure lines kept ---------------------------------------------------------------------------
 
 describe('GhRunLogFilter failure lines', () => {
   const f = new GhRunLogFilter()
@@ -271,9 +240,7 @@ describe('GhRunLogFilter failure lines', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GhRunLogFilter — ##[command] echo dropping
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhRunLogFilter — ##[command] echo dropping ---------------------------------------------------------------------------
 
 describe('GhRunLogFilter command echo dropping', () => {
   const f = new GhRunLogFilter()
@@ -303,9 +270,7 @@ describe('GhRunLogFilter command echo dropping', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GhRunLogFilter — step-name TAB prefix stripping
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhRunLogFilter — step-name TAB prefix stripping ---------------------------------------------------------------------------
 
 describe('GhRunLogFilter step-name TAB prefix stripping', () => {
   const f = new GhRunLogFilter()
@@ -326,11 +291,7 @@ describe('GhRunLogFilter step-name TAB prefix stripping', () => {
   })
 
   it('does not sweep genuine content into the setup-action bucket when the step name itself matches (regression: only the job-name field was stripped, leaving the step-name field to collide with _GH_LOG_SETUP_ACTION_RE)', () => {
-    // Real gh CLI job step names for a `uses: actions/checkout@v3` step are
-    // literally "Run actions/checkout@v3" — if only the job-name field gets
-    // stripped, that step name becomes the leftover line prefix and falsely
-    // matches the "Run <owner>/<repo>@<ref>" setup-action pattern, sweeping
-    // the step's genuine log content away with it.
+    // Real gh CLI job step names for a `uses: actions/checkout@v3` step are literally "Run actions/checkout@v3" — if only the job-name field gets stripped, that step name becomes the leftover line prefix and falsely matches the "Run <owner>/<repo>@<ref>" setup-action pattern, sweeping the step's genuine log content away with it.
     const out = f.compress(
       'build (ubuntu-latest)\tRun actions/checkout@v3\t2024-01-15T12:34:56.1234567Z Syncing repository: myorg/myrepo\n' +
         'build (ubuntu-latest)\tRun actions/checkout@v3\t2024-01-15T12:34:57.0000000Z Checking out ref refs/heads/main\n',
@@ -344,9 +305,7 @@ describe('GhRunLogFilter step-name TAB prefix stripping', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GhFilter — gh api *_url stripping
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhFilter — gh api *_url stripping ---------------------------------------------------------------------------
 
 describe('GhFilter gh api *_url stripping', () => {
   const f = new GhFilter()
@@ -434,9 +393,7 @@ describe('GhFilter gh api *_url stripping', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GhFilter — gh run view pass/fail collapsing
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhFilter — gh run view pass/fail collapsing ---------------------------------------------------------------------------
 
 describe('GhFilter gh run view pass/fail collapsing', () => {
   const f = new GhFilter()
@@ -490,15 +447,12 @@ describe('GhFilter gh run view pass/fail collapsing', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GhFilter — gh list truncation
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhFilter — gh list truncation ---------------------------------------------------------------------------
 
 describe('GhFilter gh list truncation', () => {
   const f = new GhFilter()
 
-  // Real `gh pr/run/issue list` output (verified against gh 2.81.0, non-TTY/piped -- exactly
-  // how the bash hook captures it) has NO header row: every non-empty line is a data row.
+  // Real `gh pr/run/issue list` output (verified against gh 2.81.0, non-TTY/piped -- exactly how the bash hook captures it) has NO header row: every non-empty line is a data row.
   function makeListOutput(nRows: number): string {
     const rows = Array.from({ length: nRows }, (_, i) => `${i + 1}\tPR title #${i + 1}\tfeature/branch-${i + 1}`)
     return rows.join('\n')
@@ -530,19 +484,13 @@ describe('GhFilter gh list truncation', () => {
   })
 
   it('regression: real headerless gh output does not misclassify the first data row as a header, undercounting the total by 1', () => {
-    // Before the fix, compressGhList treated line 0 as a "header" and skipped it when
-    // scanning for data rows, so a 32-row real (headerless) gh list output was miscounted
-    // as 31 data rows and the summary undercounted the true total by one.
+    // Before the fix, compressGhList treated line 0 as a "header" and skipped it when scanning for data rows, so a 32-row real (headerless) gh list output was miscounted as 31 data rows and the summary undercounted the true total by one.
     const out = apply(f, makeListOutput(32), ['gh', 'pr', 'list'])
     expect(out).toContain('showing first 30 of 32 prs')
   })
 
   it('regression: global -R/--repo value flag before the subcommand does not shift positional routing', () => {
-    // Real gh syntax: `gh -R owner/repo pr list` and `gh --repo owner/repo pr list` are valid,
-    // commonly-used invocations (global repo override placed before the subcommand). Before the
-    // fix, positionalArgs() had no knowledge that -R/--repo consumes a separate next-token value,
-    // so that value token ("owner/repo") survived the filter and shifted positionals[0]/[1] from
-    // "pr"/"list" to "owner/repo"/"pr" -- silently missing the dedicated list-truncation path.
+    // Real gh syntax: `gh -R owner/repo pr list` and `gh --repo owner/repo pr list` are valid, commonly-used invocations (global repo override placed before the subcommand). Before the fix, positionalArgs() had no knowledge that -R/--repo consumes a separate next-token value, so that value token ("owner/repo") survived the filter and shifted positionals[0]/[1] from "pr"/"list" to "owner/repo"/"pr" -- silently missing the dedicated list-truncation path.
     const out = apply(f, makeListOutput(31), ['gh', '-R', 'owner/repo', 'pr', 'list'])
     expect(out).toContain('showing first 30 of 31 prs')
   })
@@ -553,9 +501,7 @@ describe('GhFilter gh list truncation', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GhFilter — pr view passthrough
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhFilter — pr view passthrough ---------------------------------------------------------------------------
 
 describe('GhFilter gh pr view passthrough', () => {
   it('passes through pr view without emitting a note', () => {
@@ -567,9 +513,7 @@ describe('GhFilter gh pr view passthrough', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ActFilter — dispatch
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ActFilter — dispatch ---------------------------------------------------------------------------
 
 describe('ActFilter dispatch', () => {
   const f = new ActFilter()
@@ -590,9 +534,7 @@ describe('ActFilter dispatch', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ActFilter — prefix stripping
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ActFilter — prefix stripping ---------------------------------------------------------------------------
 
 describe('ActFilter prefix stripping', () => {
   const f = new ActFilter()
@@ -605,9 +547,7 @@ describe('ActFilter prefix stripping', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ActFilter — status lines preserved
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ActFilter — status lines preserved ---------------------------------------------------------------------------
 
 describe('ActFilter status lines', () => {
   const f = new ActFilter()
@@ -623,9 +563,7 @@ describe('ActFilter status lines', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ActFilter — docker pull collapsing
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ActFilter — docker pull collapsing ---------------------------------------------------------------------------
 
 describe('ActFilter docker pull collapsing', () => {
   const f = new ActFilter()
@@ -645,9 +583,7 @@ describe('ActFilter docker pull collapsing', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ActFilter — matrix expansion collapsing
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ActFilter — matrix expansion collapsing ---------------------------------------------------------------------------
 
 describe('ActFilter matrix expansion collapsing', () => {
   const f = new ActFilter()
@@ -663,9 +599,7 @@ describe('ActFilter matrix expansion collapsing', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ActFilter — body lines stripped of prefix
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ActFilter — body lines stripped of prefix ---------------------------------------------------------------------------
 
 describe('ActFilter body lines stripped of prefix', () => {
   const f = new ActFilter()
@@ -693,9 +627,7 @@ describe('ActFilter body lines stripped of prefix', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GenericCIFilter — dispatch
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GenericCIFilter — dispatch ---------------------------------------------------------------------------
 
 describe('GenericCIFilter dispatch', () => {
   const f = new GenericCIFilter()
@@ -726,8 +658,7 @@ describe('GenericCIFilter dispatch', () => {
   })
 
   it('is registered last in the whole registry, not only last in its own family', () => {
-    // Its matcher is keyword-only rather than binary-gated, so it is a catch-all for every family and not just for Batch H. Spread in Batch H's position it preempted SHELL_FILE_FILTERS, LANGUAGE_FILTERS and MISC_FILTERS for any command that merely mentioned one of its keywords.
-    // "Last" means last among the entries that can claim a command: TailTruncFilter sits behind it and always answers false from matches(), so it can never intercept anything.
+    // Its matcher is keyword-only rather than binary-gated, so it is a catch-all for every family and not just for Batch H. Spread in Batch H's position it preempted SHELL_FILE_FILTERS, LANGUAGE_FILTERS and MISC_FILTERS for any command that merely mentioned one of its keywords. "Last" means last among the entries that can claim a command: TailTruncFilter sits behind it and always answers false from matches(), so it can never intercept anything.
     const claimable = TOOL_FILTERS.filter((x) => x.matches(['some-ci-tool', 'run', '--log-level', 'debug']))
     expect(claimable[claimable.length - 1]).toBeInstanceOf(GenericCIFilter)
     const ciIndex = TOOL_FILTERS.findIndex((x) => x instanceof GenericCIFilter)
@@ -774,9 +705,7 @@ describe('GenericCIFilter dispatch', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GenericCIFilter — timestamp stripping
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GenericCIFilter — timestamp stripping ---------------------------------------------------------------------------
 
 describe('GenericCIFilter timestamp stripping', () => {
   const f = new GenericCIFilter()
@@ -795,9 +724,7 @@ describe('GenericCIFilter timestamp stripping', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GenericCIFilter — ANSI stripping
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GenericCIFilter — ANSI stripping ---------------------------------------------------------------------------
 
 describe('GenericCIFilter ANSI stripping', () => {
   const f = new GenericCIFilter()
@@ -809,9 +736,7 @@ describe('GenericCIFilter ANSI stripping', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GenericCIFilter — DEBUG/TRACE collapsing
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GenericCIFilter — DEBUG/TRACE collapsing ---------------------------------------------------------------------------
 
 describe('GenericCIFilter DEBUG/TRACE collapsing', () => {
   const f = new GenericCIFilter()
@@ -830,9 +755,7 @@ describe('GenericCIFilter DEBUG/TRACE collapsing', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GenericCIFilter — heartbeat collapsing
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GenericCIFilter — heartbeat collapsing ---------------------------------------------------------------------------
 
 describe('GenericCIFilter heartbeat collapsing', () => {
   const f = new GenericCIFilter()
@@ -860,9 +783,7 @@ describe('GenericCIFilter heartbeat collapsing', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// PreCommitFilter — dispatch
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PreCommitFilter — dispatch ---------------------------------------------------------------------------
 
 describe('PreCommitFilter dispatch', () => {
   it('selectFilter returns PreCommitFilter for pre-commit', () => {
@@ -870,9 +791,7 @@ describe('PreCommitFilter dispatch', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// PreCommitFilter — passing hooks collapsed
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PreCommitFilter — passing hooks collapsed ---------------------------------------------------------------------------
 
 const PC_ARGV = ['pre-commit', 'run', '--all-files']
 
@@ -931,9 +850,7 @@ describe('PreCommitFilter passing hooks collapsed', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// PreCommitFilter — INFO line handling
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PreCommitFilter — INFO line handling ---------------------------------------------------------------------------
 
 describe('PreCommitFilter INFO line handling', () => {
   const f = new PreCommitFilter()
@@ -972,9 +889,7 @@ describe('PreCommitFilter INFO line handling', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// BanditFilter — fixtures
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- BanditFilter — fixtures ---------------------------------------------------------------------------
 
 const BANDIT_HIGH =
   '>> Issue: [B301:unsafe_serialize] Unsafe deserialization detected.\n' +
@@ -1014,9 +929,7 @@ function banditOutput(issues: string[], nLow = 0): string {
   return parts.join('\n')
 }
 
-// ---------------------------------------------------------------------------
-// BanditFilter — dispatch and basic coverage
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- BanditFilter — dispatch and basic coverage ---------------------------------------------------------------------------
 
 describe('BanditFilter dispatch', () => {
   it('matches bandit', () => {
@@ -1146,9 +1059,7 @@ describe('BanditFilter output', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// TrivyFilter — fixtures
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- TrivyFilter — fixtures ---------------------------------------------------------------------------
 
 const TRIVY_LOGS =
   '2024-01-15T12:00:00Z INFO Need to update DB\n' +
@@ -1171,9 +1082,7 @@ function trivyOutput(): string {
   return TRIVY_TABLE_HEADER + '\n' + TRIVY_TABLE_ROWS + '\n+---+--+--+\n\n' + TRIVY_TOTAL
 }
 
-// ---------------------------------------------------------------------------
-// TrivyFilter — dispatch and coverage
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- TrivyFilter — dispatch and coverage ---------------------------------------------------------------------------
 
 describe('TrivyFilter dispatch', () => {
   it('matches trivy', () => {
@@ -1232,9 +1141,7 @@ describe('TrivyFilter output', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// SnykFilter — fixtures
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- SnykFilter — fixtures ---------------------------------------------------------------------------
 
 const TC = '├─ '
 const TE = '└─ '
@@ -1274,9 +1181,7 @@ function snykOutput(extras = 0): string {
   )
 }
 
-// ---------------------------------------------------------------------------
-// SnykFilter — dispatch and coverage
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- SnykFilter — dispatch and coverage ---------------------------------------------------------------------------
 
 describe('SnykFilter dispatch', () => {
   it('matches snyk', () => {
@@ -1319,10 +1224,7 @@ describe('SnykFilter output', () => {
     expect(out).not.toContain('More about this vulnerability:')
   })
 
-  // Regression: the license-line branch was checked before the code that closes
-  // out an open "More about" run, so a license line immediately following a
-  // "More about"/URL block skipped the flush entirely, silently dropping the
-  // '[token-goat: collapsed N ...]' marker for that run.
+  // Regression: the license-line branch was checked before the code that closes out an open "More about" run, so a license line immediately following a "More about"/URL block skipped the flush entirely, silently dropping the '[token-goat: collapsed N ...]' marker for that run.
   it('flushes a pending More-about run before a license line, not after', () => {
     const input =
       'Testing /some/project\n' +
@@ -1426,9 +1328,7 @@ describe('SnykFilter output', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// SemgrepFilter — fixtures
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- SemgrepFilter — fixtures ---------------------------------------------------------------------------
 
 const SG_SCANNING = 'Scanning 42 files...'
 const SG_SUMMARY = 'Ran 100 rules on 42 files: 3 findings.'
@@ -1447,9 +1347,7 @@ function sgOutput(n = 1): string {
   return parts.join('\n')
 }
 
-// ---------------------------------------------------------------------------
-// SemgrepFilter — dispatch and coverage
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- SemgrepFilter — dispatch and coverage ---------------------------------------------------------------------------
 
 describe('SemgrepFilter dispatch', () => {
   it('matches semgrep', () => {
@@ -1510,9 +1408,7 @@ describe('SemgrepFilter output', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Registry — CI_FILTERS array ordering and registration
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Registry — CI_FILTERS array ordering and registration ---------------------------------------------------------------------------
 
 describe('CI_FILTERS registry', () => {
   it('GhRunLogFilter precedes GhFilter in CI_FILTERS', () => {
@@ -1569,10 +1465,7 @@ describe('CI_FILTERS registry', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Residue regression: collapsing a LOW block must not leave its dashed rule
-// stranded next to the previous block's own rule.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Residue regression: collapsing a LOW block must not leave its dashed rule stranded next to the previous block's own rule. ---------------------------------------------------------------------------
 
 describe('BanditFilter separator hygiene, driven from the real 1.9.4 capture', () => {
   const raw = readFileSync(

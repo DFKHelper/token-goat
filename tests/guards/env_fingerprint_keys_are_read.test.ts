@@ -1,24 +1,4 @@
-/**
- * Guard: every variable in the hand-maintained env fingerprint list must actually be read.
- *
- * `configEnvFingerprint` unions a hand-maintained `ENV_KEYS` array with the derived
- * `CONFIG_KEY_ENV_OVERRIDES` map. The array's past failures were all the dangerous direction --
- * a variable read by `_buildConfig` but missing from the list, so the config cache never noticed
- * it change -- and the derived half was added to close exactly that. The opposite direction was
- * left unguarded, and one entry sat there: `TOKEN_GOAT_CURATOR`, whose feature was removed,
- * leaving a name that appeared exactly once in the whole repository, in the list itself.
- *
- * A stub like that costs nothing at runtime, which is why it survived: it just contributes a
- * always-undefined value to a hash and gets cleared and restored by `withoutConfigEnv` for no
- * reason. It matters as a signal. The list is meant to be a statement about what this program
- * reads from the environment, and a name in it that nothing reads makes the list unreliable as
- * an answer to that question, for a person and for the drift guards built on top of it.
- *
- * Why didn't a test catch it: every existing test on this list checks that a variable which IS
- * read reaches `loadConfig` and busts its cache. Reading is the precondition of all of them, so
- * an entry nothing reads is invisible to the entire set -- it can never fail a test that starts
- * by setting it and expecting an effect.
- */
+/** Guard: every variable in the hand-maintained env fingerprint list must actually be read. `configEnvFingerprint` unions a hand-maintained `ENV_KEYS` array with the derived `CONFIG_KEY_ENV_OVERRIDES` map. The array's past failures were all the dangerous direction -- a variable read by `_buildConfig` but missing from the list, so the config cache never noticed it change -- and the derived half was added to close exactly that. The opposite direction was left unguarded, and one entry sat there: `TOKEN_GOAT_CURATOR`, whose feature was removed, leaving a name that appeared exactly once in the whole repository, in the list itself. A stub like that costs nothing at runtime, which is why it survived: it just contributes a always-undefined value to a hash and gets cleared and restored by `withoutConfigEnv` for no reason. It matters as a signal. The list is meant to be a statement about what this program reads from the environment, and a name in it that nothing reads makes the list unreliable as an answer to that question, for a person and for the drift guards built on top of it. Why didn't a test catch it: every existing test on this list checks that a variable which IS read reaches `loadConfig` and busts its cache. Reading is the precondition of all of them, so an entry nothing reads is invisible to the entire set -- it can never fail a test that starts by setting it and expecting an effect. */
 import { describe, it, expect } from 'vitest'
 import { pinnedPopulation } from './population.js'
 import fs from 'node:fs'
@@ -51,9 +31,7 @@ describe('env fingerprint list names only variables the program reads', () => {
   const configSrc = fs.readFileSync(CONFIG_SRC, 'utf8')
   const { keys, block } = envKeysBlock(configSrc)
 
-  // The array itself is removed from the corpus, so an entry cannot vouch for its own existence.
-  // Pinned: the fingerprint keys are looked for across the whole source tree, so an empty corpus
-  // reports every key as unread -- or, depending on the assertion direction, every key as fine.
+  // The array itself is removed from the corpus, so an entry cannot vouch for its own existence. Pinned: the fingerprint keys are looked for across the whole source tree, so an empty corpus reports every key as unread -- or, depending on the assertion direction, every key as fine.
   const corpus = pinnedPopulation({
     what: 'src/**/*.ts files searched for env fingerprint keys',
     items: allSrcFiles(SRC),

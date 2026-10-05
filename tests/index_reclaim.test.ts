@@ -1,12 +1,4 @@
-/**
- * Behavioural tests for `token-goat reclaim-index`.
- *
- * The interesting property here is not that a quiet reclaim shrinks the file -- it is what
- * happens when it *cannot*. The `--rebuild` deletes commit before VACUUM runs, so a VACUUM that
- * loses its lock race arrives after the irreversible work is already done. Throwing there would
- * abandon a half-reported recovery behind a stack trace; these tests pin the honest-reporting
- * behaviour instead.
- */
+/** Behavioural tests for `token-goat reclaim-index`. The interesting property here is not that a quiet reclaim shrinks the file -- it is what happens when it *cannot*. The `--rebuild` deletes commit before VACUUM runs, so a VACUUM that loses its lock race arrives after the irreversible work is already done. Throwing there would abandon a half-reported recovery behind a stack trace; these tests pin the honest-reporting behaviour instead. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -69,9 +61,7 @@ describe('reclaimIndex', () => {
   })
 
   it('reports vacuumDeferred instead of throwing when VACUUM cannot get its lock', () => {
-    // The regression this file exists for. A second connection holding an exclusive transaction
-    // is exactly the shape of the real race (worker or a short-lived CLI mid-write), and VACUUM
-    // is the step most likely to lose it because it needs an exclusive lock of its own.
+    // The regression this file exists for. A second connection holding an exclusive transaction is exactly the shape of the real race (worker or a short-lived CLI mid-write), and VACUUM is the step most likely to lose it because it needs an exclusive lock of its own.
     const dbPath = path.join(tempDir, 'global.db')
     seed(dbPath)
 
@@ -79,10 +69,7 @@ describe('reclaimIndex', () => {
     blocker.pragma('busy_timeout = 0')
     blocker.exec('BEGIN EXCLUSIVE')
     try {
-      // reclaimIndex reuses the cached handle for this path, so shortening its busy_timeout here
-      // shortens the very waits it is about to perform. Without this the test sits through the
-      // production 15s patience three times over (checkpoint, VACUUM, final checkpoint) for no
-      // added signal -- the code path exercised is identical either way.
+      // reclaimIndex reuses the cached handle for this path, so shortening its busy_timeout here shortens the very waits it is about to perform. Without this the test sits through the production 15s patience three times over (checkpoint, VACUUM, final checkpoint) for no added signal -- the code path exercised is identical either way.
       getDb(dbPath).pragma('busy_timeout = 100')
 
       const result = reclaimIndex(dbPath)

@@ -1,8 +1,4 @@
-/**
- * The one-time savings receipt: the first Claude Code session start after token-goat has saved anything shows the user, once, how much it has saved so far.
- *
- * It rides on Claude Code's top-level `systemMessage`, which the user sees and the model does not. Provenance for that wire fact: FORMAT-DERIVED from claude.exe 2.1.284's hook runner, which turns a hook result's `systemMessage` into a `hook_system_message` attachment rendered as "<hook> says: ..." and skips that attachment type when it converts the conversation for the API. So the receipt costs no tokens there, and must never be sent to a harness whose handling of the field nobody has read.
- */
+/** The one-time savings receipt: the first Claude Code session start after token-goat has saved anything shows the user, once, how much it has saved so far. It rides on Claude Code's top-level `systemMessage`, which the user sees and the model does not. Provenance for that wire fact: FORMAT-DERIVED from claude.exe 2.1.284's hook runner, which turns a hook result's `systemMessage` into a `hook_system_message` attachment rendered as "<hook> says: ..." and skips that attachment type when it converts the conversation for the API. So the receipt costs no tokens there, and must never be sent to a harness whose handling of the field nobody has read. */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

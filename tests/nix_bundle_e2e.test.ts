@@ -1,10 +1,4 @@
-/**
- * Built-bundle check for the Nix adapter (src/languages/nix.ts): the shipped
- * dist/token-goat.mjs, not source, indexes a small project with one Nix file and answers
- * `outline`, `symbol` and `read` from it. Modeled directly on tests/fsharp_bundle_e2e.test.ts,
- * this repo's own established shape for proving a new masker-then-scan adapter survived bundling
- * and is reached from the real CLI path rather than only from a source-level unit test.
- */
+/** Built-bundle check for the Nix adapter (src/languages/nix.ts): the shipped dist/token-goat.mjs, not source, indexes a small project with one Nix file and answers `outline`, `symbol` and `read` from it. Modeled directly on tests/fsharp_bundle_e2e.test.ts, this repo's own established shape for proving a new masker-then-scan adapter survived bundling and is reached from the real CLI path rather than only from a source-level unit test. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -39,8 +33,7 @@ beforeAll(() => {
     APPDATA: path.join(home, 'AppData', 'Roaming'),
     TOKEN_GOAT_EMBEDDINGS_ENABLED: '0',
   }
-  // HAND-DERIVED: minimal Nix per the Nix Reference Manual's "Syntax" page (see nix.ts's module
-  // doc), a `let`-bound attribute set with one attribute-set key.
+  // HAND-DERIVED: minimal Nix per the Nix Reference Manual's "Syntax" page (see nix.ts's module doc), a `let`-bound attribute set with one attribute-set key.
   fs.writeFileSync(
     project + '/sample.nix',
     ['let', '  nixGreet = "hello, world";', 'in', '{', '  message = nixGreet;', '}', ''].join('\n'),

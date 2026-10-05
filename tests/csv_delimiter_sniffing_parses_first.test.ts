@@ -1,13 +1,4 @@
-/**
- * Regression: the delimiter sniffer must decide by PARSING the sample, never by counting characters in the raw first line.
- *
- * A count on an unparsed line cannot tell a field boundary from the same character sitting inside a quoted field, and the line it counted was the header -- exactly where a compound name lands. Two failures, both on ordinary comma-separated files, both measured against the shipped CLI before the fix:
- *
- * - A header of `"model;year;trim",price` carries two semicolons against one comma, so `;` won and the file did not parse AT ALL: `Invalid Closing Quote: found non trimable byte after quote at line 1`. A perfectly valid CSV was unreadable unless the caller happened to guess `--delimiter ,`.
- * - A header of `a|b|c,description` carries two pipes against one comma, so `|` won and the file quietly became three columns -- `a`, `b`, `c,description` -- with `description` no longer addressable as a column. This is the dangerous one: it returns a table, so nothing looks wrong.
- *
- * The other half of the contract matters just as much and is asserted alongside: sniffing exists so a genuinely tab-, semicolon-, or pipe-separated file is read without `--delimiter`, and a fix that simply always answered `,` would pass every failure case above while breaking the feature. Both directions are driven here.
- */
+/** Regression: the delimiter sniffer must decide by PARSING the sample, never by counting characters in the raw first line. A count on an unparsed line cannot tell a field boundary from the same character sitting inside a quoted field, and the line it counted was the header -- exactly where a compound name lands. Two failures, both on ordinary comma-separated files, both measured against the shipped CLI before the fix: - A header of `"model;year;trim",price` carries two semicolons against one comma, so `;` won and the file did not parse AT ALL: `Invalid Closing Quote: found non trimable byte after quote at line 1`. A perfectly valid CSV was unreadable unless the caller happened to guess `--delimiter ,`. - A header of `a|b|c,description` carries two pipes against one comma, so `|` won and the file quietly became three columns -- `a`, `b`, `c,description` -- with `description` no longer addressable as a column. This is the dangerous one: it returns a table, so nothing looks wrong. The other half of the contract matters just as much and is asserted alongside: sniffing exists so a genuinely tab-, semicolon-, or pipe-separated file is read without `--delimiter`, and a fix that simply always answered `,` would pass every failure case above while breaking the feature. Both directions are driven here. */
 import { describe, expect, it } from 'vitest'
 
 import { detectDelimiter, queryCsv } from '../src/csv_query.js'

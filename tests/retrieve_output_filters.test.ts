@@ -1,15 +1,4 @@
-/**
- * `retrieve` gains the same output filters as bash-output/web-output/mcp-output (--head, --tail,
- * --grep, --max-matches, --section, --full) via the shared `_applyFiltersAndPrint`, so a large
- * stored blob can be recalled a slice at a time instead of taking all of it.
- *
- * The one place `retrieve` must NOT match its siblings: it is the lossless round-trip contract
- * for `compress-text`, and other commands' output literally quotes `recovery: token-goat
- * retrieve <id>` as the way to get the original bytes back. The siblings default to eliding
- * everything past a 30/80 head/tail window when no --head/--tail is given; `retrieve` must not
- * inherit that default, or the recovery contract silently stops being lossless. Any narrowing
- * flag IS an explicit ask, so sibling semantics (elision included) apply once one is given.
- */
+/** `retrieve` gains the same output filters as bash-output/web-output/mcp-output (--head, --tail, --grep, --max-matches, --section, --full) via the shared `_applyFiltersAndPrint`, so a large stored blob can be recalled a slice at a time instead of taking all of it. The one place `retrieve` must NOT match its siblings: it is the lossless round-trip contract for `compress-text`, and other commands' output literally quotes `recovery: token-goat retrieve <id>` as the way to get the original bytes back. The siblings default to eliding everything past a 30/80 head/tail window when no --head/--tail is given; `retrieve` must not inherit that default, or the recovery contract silently stops being lossless. Any narrowing flag IS an explicit ask, so sibling semantics (elision included) apply once one is given. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

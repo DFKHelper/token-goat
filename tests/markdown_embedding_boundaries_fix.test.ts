@@ -1,14 +1,4 @@
-/**
- * Regression test for markdown semantic-embedding boundaries capped at 40 headings.
- *
- * Bug: buildEmbeddingBoundaries was reusing extractMarkdownHeadings, which had a hard
- * cap of MAX_HEADINGS=40 for display hints. For markdown files with >40 headings, only
- * the first 40 boundaries were produced; section #41+ were collapsed into a single chunk
- * boundary with end=Number.MAX_SAFE_INTEGER, diluting semantic-search relevance.
- *
- * Fix: Pass Infinity limit to extractMarkdownHeadings for indexing so all headings
- * become section boundaries, not just the first 40.
- */
+/** Regression test for markdown semantic-embedding boundaries capped at 40 headings. Bug: buildEmbeddingBoundaries was reusing extractMarkdownHeadings, which had a hard cap of MAX_HEADINGS=40 for display hints. For markdown files with >40 headings, only the first 40 boundaries were produced; section #41+ were collapsed into a single chunk boundary with end=Number.MAX_SAFE_INTEGER, diluting semantic-search relevance. Fix: Pass Infinity limit to extractMarkdownHeadings for indexing so all headings become section boundaries, not just the first 40. */
 
 import { describe, expect, it } from 'vitest'
 import { extractMarkdownHeadings } from '../src/hints/markdown_hints.js'
@@ -61,8 +51,7 @@ describe('extractMarkdownHeadings with custom limit for embedding boundaries', (
   })
 
   it('produces distinct section boundaries when extracting >40 headings for embedding', () => {
-    // Create markdown with 45 H2 sections, each with some body content
-    // This simulates a real large API reference or changelog
+    // Create markdown with 45 H2 sections, each with some body content This simulates a real large API reference or changelog
     const sections: string[] = []
     for (let i = 1; i <= 45; i++) {
       sections.push(`## API Method ${i}`)
@@ -96,14 +85,7 @@ describe('extractMarkdownHeadings with custom limit for embedding boundaries', (
   })
 
   it('includes H4-H6 headings when limit is Infinity, not just H1-H3 (embedding boundaries)', () => {
-    // Same bug family as the >40-heading cap above: extractMarkdownHeadings's own doc comment
-    // promises Infinity captures "all headings", but a separate, unconditional `level > 3`
-    // filter silently dropped every H4/H5/H6 heading regardless of the limit passed in. A real
-    // API reference commonly nests method details under H4 (e.g. "#### Parameters", "#### Returns"
-    // beneath a "### methodName" heading) -- those subsections never became their own embedding
-    // chunk boundary and were folded into whatever coarser boundary/gap surrounded them, diluting
-    // semantic-search relevance for exactly the kind of deep-structure doc this file's other tests
-    // already care about.
+    // Same bug family as the >40-heading cap above: extractMarkdownHeadings's own doc comment promises Infinity captures "all headings", but a separate, unconditional `level > 3` filter silently dropped every H4/H5/H6 heading regardless of the limit passed in. A real API reference commonly nests method details under H4 (e.g. "#### Parameters", "#### Returns" beneath a "### methodName" heading) -- those subsections never became their own embedding chunk boundary and were folded into whatever coarser boundary/gap surrounded them, diluting semantic-search relevance for exactly the kind of deep-structure doc this file's other tests already care about.
     const content = `# API Reference
 ## methodName
 ### Overview
@@ -128,8 +110,7 @@ Use methodName2 instead.`
       '6:Deprecated',
     ])
 
-    // The display-hint path (finite/default limit) must keep its existing H1-H3-only behavior --
-    // this fix must not leak H4+ headings into the "large markdown file" navigation hint.
+    // The display-hint path (finite/default limit) must keep its existing H1-H3-only behavior -- this fix must not leak H4+ headings into the "large markdown file" navigation hint.
     const displayHeadings = extractMarkdownHeadings(content)
     expect(displayHeadings.map((h) => h.text)).toEqual(['API Reference', 'methodName', 'Overview'])
   })

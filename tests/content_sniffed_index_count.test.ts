@@ -1,9 +1,4 @@
-/**
- * A file whose language is decided by content (an ABL `.p`, an Objective-C `.m`) must be indexed and counted by every
- * path that feeds the indexer: `index --walk`, the git-tracked `index`, and the worker draining its dirty queue through
- * the real default indexer. `index . --walk` once printed "Indexed 5 files" for 6 files, because the walk read each
- * file's head to admit it while the index loop checked the path alone and dropped the `.p`.
- */
+/** A file whose language is decided by content (an ABL `.p`, an Objective-C `.m`) must be indexed and counted by every path that feeds the indexer: `index --walk`, the git-tracked `index`, and the worker draining its dirty queue through the real default indexer. `index . --walk` once printed "Indexed 5 files" for 6 files, because the walk read each file's head to admit it while the index loop checked the path alone and dropped the `.p`. */
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

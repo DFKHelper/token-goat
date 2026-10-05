@@ -1,13 +1,4 @@
-/**
- * Git-vs-non-git detection for the indexer's walk mode.
- *
- * Lives on its own rather than in text_commands.ts, where it started: index_health.ts needs
- * nothing from that module but this one 13-line fs-only helper, and index_health.ts is on the
- * hook path (relay -> hooks_session_start -> cli_doctor -> index_health). A static import of
- * text_commands.ts from there dragged read_commands.ts, graph_commands.ts, js-yaml and fflate
- * into the hook bundle's eager set -- 0.95 MB that V8 parses on every single hook invocation for
- * a function that only calls fs.existsSync. Same split as stdin_json.ts.
- */
+/** Git-vs-non-git detection for the indexer's walk mode. Lives on its own rather than in text_commands.ts, where it started: index_health.ts needs nothing from that module but this one 13-line fs-only helper, and index_health.ts is on the hook path (relay -> hooks_session_start -> cli_doctor -> index_health). A static import of text_commands.ts from there dragged read_commands.ts, graph_commands.ts, js-yaml and fflate into the hook bundle's eager set -- 0.95 MB that V8 parses on every single hook invocation for a function that only calls fs.existsSync. Same split as stdin_json.ts. */
 import * as fs from 'fs'
 import * as path from 'path'
 

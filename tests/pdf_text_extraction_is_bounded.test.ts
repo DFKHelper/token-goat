@@ -427,8 +427,7 @@ describe('the work that happens once the page has already been read', () => {
   })
 
   it('terminates on a text-item y so large that adding one to its bucket index changes nothing', () => {
-    // The bucket sweep ran `for (let b = home - 1; b <= home + 1; b++)`. Past 2^53 the increment is a no-op -- `home + 1 === home` -- so the loop never advances and never exits, on the very first item, whatever else the page holds. It is synchronous, so no clock can end it: the event loop is blocked, and the deadline check sits outside this loop anyway. A document sets `transform[5]` directly through `Tm`, so the number driving it is one the file chooses.
-    // Out-of-process for the same reason as the fixture test below. A vitest per-test timeout cannot interrupt a synchronous loop, so calling this inline would wedge the worker rather than fail the assertion -- confirmed by doing exactly that once.
+    // The bucket sweep ran `for (let b = home - 1; b <= home + 1; b++)`. Past 2^53 the increment is a no-op -- `home + 1 === home` -- so the loop never advances and never exits, on the very first item, whatever else the page holds. It is synchronous, so no clock can end it: the event loop is blocked, and the deadline check sits outside this loop anyway. A document sets `transform[5]` directly through `Tm`, so the number driving it is one the file chooses. Out-of-process for the same reason as the fixture test below. A vitest per-test timeout cannot interrupt a synchronous loop, so calling this inline would wedge the worker rather than fail the assertion -- confirmed by doing exactly that once.
     const probe = [
       "import { reconstructLayout } from './src/pdf_extract.js'",
       'for (const y of [2e16, -2e16, Infinity, -Infinity, NaN, Number.MAX_VALUE, 700]) {',

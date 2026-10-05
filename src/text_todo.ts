@@ -37,18 +37,7 @@ function isInsideStringLiteral(line: string, markerIndex: number): boolean {
   return dqCount % 2 !== 0
 }
 
-/**
- * Whether an occurrence of a marker word is actually a marker rather than ordinary prose.
- *
- * The match is case-insensitive because `// todo: fix` is as real a marker as `// TODO: fix`, but
- * "NOTE" and "HACK" are also ordinary English words, and matching them in any case turned every
- * sentence containing "a note for this" or "note that" into a reported marker. On this repo that
- * was 681 of 800 hits, nearly all of them changelog prose, which buries the real markers this
- * command exists to surface. Case alone is not enough either (lowercase `note:` in a comment is a
- * genuine annotation) and the colon alone is not enough (`// TODO fix this` carries none), so a
- * marker is one or the other: written in upper case, or carrying the colon that marks it as a
- * label rather than a word in a sentence.
- */
+/** Whether an occurrence of a marker word is actually a marker rather than ordinary prose. The match is case-insensitive because `// todo: fix` is as real a marker as `// TODO: fix`, but "NOTE" and "HACK" are also ordinary English words, and matching them in any case turned every sentence containing "a note for this" or "note that" into a reported marker. On this repo that was 681 of 800 hits, nearly all of them changelog prose, which buries the real markers this command exists to surface. Case alone is not enough either (lowercase `note:` in a comment is a genuine annotation) and the colon alone is not enough (`// TODO fix this` carries none), so a marker is one or the other: written in upper case, or carrying the colon that marks it as a label rather than a word in a sentence. */
 function isMarkerOccurrence(matched: string, hasColon: boolean): boolean {
   return hasColon || matched === matched.toUpperCase()
 }

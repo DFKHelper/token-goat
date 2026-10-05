@@ -1,5 +1,4 @@
-// Regression guard for `web-output`/`bash-output`/`mcp-output --section`, which share _applyFiltersAndPrint(): a heading that occurs twice resolved silently to its first occurrence where `section` refuses with the ambiguity list, and `-n` after `--section` numbered the slice from 1 instead of in the stored output's own coordinates, so a follow-up `--lines N` returned the wrong text.
-// Provenance: HAND-DERIVED. The body below is written line by line here, and every expected line number is counted from that literal, not from the implementation.
+// Regression guard for `web-output`/`bash-output`/`mcp-output --section`, which share _applyFiltersAndPrint(): a heading that occurs twice resolved silently to its first occurrence where `section` refuses with the ambiguity list, and `-n` after `--section` numbered the slice from 1 instead of in the stored output's own coordinates, so a follow-up `--lines N` returned the wrong text. Provenance: HAND-DERIVED. The body below is written line by line here, and every expected line number is counted from that literal, not from the implementation.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { run } from '../src/cli.js'

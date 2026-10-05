@@ -1,12 +1,4 @@
-/**
- * `failures` did not recognize Vitest output: it fell through to the generic keyword extractor,
- * which reported framework `[unknown]`, inflated a single failing test into several (one per line
- * carrying FAILED/ERROR), and never kept the `AssertionError: expected 4 to be 3` detail line.
- *
- * This fixture is the real, verbatim output of a one-assertion Vitest failure (captured from
- * `vitest run`, ANSI already stripped), so the extractor is proven against the exact shape it ships
- * against rather than a hand-idealized one.
- */
+/** `failures` did not recognize Vitest output: it fell through to the generic keyword extractor, which reported framework `[unknown]`, inflated a single failing test into several (one per line carrying FAILED/ERROR), and never kept the `AssertionError: expected 4 to be 3` detail line. This fixture is the real, verbatim output of a one-assertion Vitest failure (captured from `vitest run`, ANSI already stripped), so the extractor is proven against the exact shape it ships against rather than a hand-idealized one. */
 import { describe, it, expect } from 'vitest'
 
 import { extractFailures, getFailureCount } from '../src/failures.js'

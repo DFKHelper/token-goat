@@ -1,9 +1,4 @@
-/**
- * Upgrade command for token-goat.
- *
- * Checks npm registry for updates, runs npm install -g token-goat@latest,
- * and re-syncs hooks and bridge configurations by running the newly installed `token-goat install`.
- */
+/** Upgrade command for token-goat. Checks npm registry for updates, runs npm install -g token-goat@latest, and re-syncs hooks and bridge configurations by running the newly installed `token-goat install`. */
 
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -76,10 +71,7 @@ export function saveCachedUpdateStatus(info: CachedUpdateInfo): void {
   }
 }
 
-/**
- * Resolves the active npm registry URL.
- * Honors NPM_CONFIG_REGISTRY, npm_config_registry, and defaults to npmjs.org.
- */
+/** Resolves the active npm registry URL. Honors NPM_CONFIG_REGISTRY, npm_config_registry, and defaults to npmjs.org. */
 export function getRegistryUrl(): string {
   const envRegistry = process.env['NPM_CONFIG_REGISTRY'] || process.env['npm_config_registry']
   if (envRegistry && typeof envRegistry === 'string') {
@@ -157,11 +149,7 @@ export function updateAdvice(decision: UpgradeDecision): string | null {
   return null
 }
 
-/**
- * Attempt to query latest published version via `npm view token-goat version`.
- * This delegates directly to npm, inheriting Artifactory authentication tokens,
- * corporate TLS certs (cafile), and proxy settings automatically.
- */
+/** Attempt to query latest published version via `npm view token-goat version`. This delegates directly to npm, inheriting Artifactory authentication tokens, corporate TLS certs (cafile), and proxy settings automatically. */
 export function fetchViaNpm(timeoutMs = 2500): string | null {
   const npm = hostNpm()
   if (!npm) return null
@@ -184,10 +172,7 @@ export function fetchViaNpm(timeoutMs = 2500): string | null {
   return null
 }
 
-/**
- * Fetch latest published version via HTTP/HTTPS request to the configured registry.
- * Supports both public npm and corporate Artifactory / Nexus mirrors.
- */
+/** Fetch latest published version via HTTP/HTTPS request to the configured registry. Supports both public npm and corporate Artifactory / Nexus mirrors. */
 export async function fetchViaHttp(registryUrl: string, timeoutMs = 3500): Promise<string | null> {
   return new Promise((resolve) => {
     try {
@@ -247,11 +232,7 @@ export async function fetchViaHttp(registryUrl: string, timeoutMs = 3500): Promi
   })
 }
 
-/**
- * Fetch latest published version of token-goat.
- * 1. Checks `npm view token-goat version` (native Artifactory, proxy & auth support)
- * 2. Falls back to direct HTTP/HTTPS request against the configured registry URL
- */
+/** Fetch latest published version of token-goat. 1. Checks `npm view token-goat version` (native Artifactory, proxy & auth support) 2. Falls back to direct HTTP/HTTPS request against the configured registry URL */
 export async function fetchLatestVersion(timeoutMs = 3500): Promise<string | null> {
   if (loadConfig().network.offline) {
     return null
@@ -264,9 +245,7 @@ export async function fetchLatestVersion(timeoutMs = 3500): Promise<string | nul
   return fetchViaHttp(registryUrl, timeoutMs)
 }
 
-/**
- * Simple semver comparator: returns 1 if a > b, -1 if a < b, 0 if equal.
- */
+/** Simple semver comparator: returns 1 if a > b, -1 if a < b, 0 if equal. */
 export function compareSemver(a: string, b: string): number {
   const pa = a.split('-')[0]!.split('.').map((x) => parseInt(x, 10) || 0)
   const pb = b.split('-')[0]!.split('.').map((x) => parseInt(x, 10) || 0)

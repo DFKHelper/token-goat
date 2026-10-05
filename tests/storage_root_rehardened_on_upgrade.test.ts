@@ -1,46 +1,4 @@
-/**
- * On an UPGRADED install the storage root already exists, and three of the four subsystems that
- * write into it skip their `ensureDirSync` when it does.
- *
- * `tests/guards/storage_dirs_are_hardened.test.ts` decides whether a function is hardened by
- * matching `/\bensureDirSync\s*\(/` anywhere in its body. That regex cannot tell
- *
- *     ensureDirSync(dir)
- *
- * from
- *
- *     if (!fs.existsSync(dir)) ensureDirSync(dir)
- *
- * and four home-root writers are the second form: `snapshots.ts::writeSnapshotKind`,
- * `snapshots.ts::store`, `session_store.ts::saveSessionState`, `disk_cache.ts::storeBlob`. On a
- * fresh install the guarded call runs and the root is created 0700. On an upgraded install --
- * every install that has ever run before, which is the common case -- the directory already exists,
- * the guarded call is skipped, and the hardening reaches the root only because `atomicWriteCore`
- * (`src/util.ts`) calls `ensureDirSync` unconditionally on its way to the write. That is a
- * load-bearing fact about a helper three layers down, and until this file nothing asserted it: the
- * static guard is green either way, because it is reading for a call name it can see rather than
- * for a mode it can measure.
- *
- * So this is the behavioural half, and it is deliberately NOT a better regex. It pre-creates the
- * root world-readable exactly as an install predating the hardening left it, drives ONE real write
- * through each subsystem's public entry point in a FRESH PROCESS, and reads the mode back off the
- * disk. A future refactor that moves `ensureDirSync` out of `atomicWriteCore` -- entirely
- * reasonable-looking, since every caller "already calls it" -- turns this red and leaves the static
- * guard green.
- *
- * A fresh process per subsystem is required, not tidiness: both roots memoize their hardening
- * (`dataDirHardened`, `hardenedHomes` in `src/constants.ts`), so a root some earlier test in the
- * same vitest worker already hardened would make every assertion here pass without the subsystem
- * doing anything.
- *
- * POSIX-only for the mode assertion: Windows ignores these modes and inherits the parent ACL, so
- * `runIf(POSIX)` is the honest reporting rather than a weaker assertion that can pass anywhere. The
- * "the write actually happened" half runs everywhere, which is what keeps the POSIX half from
- * silently degrading into a check on a subsystem that has stopped writing at all.
- *
- * PROVENANCE: CAPTURE. Every expectation is a mode read back from a real directory after a real
- * write by the real subsystem; nothing here is transcribed from the implementation.
- */
+/** On an UPGRADED install the storage root already exists, and three of the four subsystems that write into it skip their `ensureDirSync` when it does. `tests/guards/storage_dirs_are_hardened.test.ts` decides whether a function is hardened by matching `/\bensureDirSync\s*\(/` anywhere in its body. That regex cannot tell ensureDirSync(dir) from if (!fs.existsSync(dir)) ensureDirSync(dir) and four home-root writers are the second form: `snapshots.ts::writeSnapshotKind`, `snapshots.ts::store`, `session_store.ts::saveSessionState`, `disk_cache.ts::storeBlob`. On a fresh install the guarded call runs and the root is created 0700. On an upgraded install -- every install that has ever run before, which is the common case -- the directory already exists, the guarded call is skipped, and the hardening reaches the root only because `atomicWriteCore` (`src/util.ts`) calls `ensureDirSync` unconditionally on its way to the write. That is a load-bearing fact about a helper three layers down, and until this file nothing asserted it: the static guard is green either way, because it is reading for a call name it can see rather than for a mode it can measure. So this is the behavioural half, and it is deliberately NOT a better regex. It pre-creates the root world-readable exactly as an install predating the hardening left it, drives ONE real write through each subsystem's public entry point in a FRESH PROCESS, and reads the mode back off the disk. A future refactor that moves `ensureDirSync` out of `atomicWriteCore` -- entirely reasonable-looking, since every caller "already calls it" -- turns this red and leaves the static guard green. A fresh process per subsystem is required, not tidiness: both roots memoize their hardening (`dataDirHardened`, `hardenedHomes` in `src/constants.ts`), so a root some earlier test in the same vitest worker already hardened would make every assertion here pass without the subsystem doing anything. POSIX-only for the mode assertion: Windows ignores these modes and inherits the parent ACL, so `runIf(POSIX)` is the honest reporting rather than a weaker assertion that can pass anywhere. The "the write actually happened" half runs everywhere, which is what keeps the POSIX half from silently degrading into a check on a subsystem that has stopped writing at all. PROVENANCE: CAPTURE. Every expectation is a mode read back from a real directory after a real write by the real subsystem; nothing here is transcribed from the implementation. */
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -55,12 +13,7 @@ const POSIX = process.platform !== 'win32'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const DRIVER = path.join(HERE, 'fixtures', 'storage_write_driver.ts')
 
-/**
- * The subsystems, each named by the source site whose `ensureDirSync` is behind an `existsSync`
- * guard. Losing one of these silently is the failure this file exists to prevent, so the list is
- * asserted non-empty and each entry runs its own case rather than being folded into a loop with one
- * shared assertion.
- */
+/** The subsystems, each named by the source site whose `ensureDirSync` is behind an `existsSync` guard. Losing one of these silently is the failure this file exists to prevent, so the list is asserted non-empty and each entry runs its own case rather than being folded into a loop with one shared assertion. */
 const SUBSYSTEMS = [
   { arg: 'snapshots', site: 'src/snapshots.ts::store (and writeSnapshotKind, which uses a bare fs.writeFileSync)' },
   { arg: 'session', site: 'src/session_store.ts::saveSessionState' },
@@ -93,8 +46,7 @@ function driveOneWrite(arg: string): DriveResult {
   fs.chmodSync(home, 0o755)
 
   const stdout = execFileSync(process.execPath, tsxProcessArgs(DRIVER, arg), {
-    // The repo root, not the scratch: `--import tsx` resolves `tsx` from the child's cwd, and a
-    // scratch directory under the OS temp root has no node_modules above it.
+    // The repo root, not the scratch: `--import tsx` resolves `tsx` from the child's cwd, and a scratch directory under the OS temp root has no node_modules above it.
     cwd: path.join(HERE, '..'),
     encoding: 'utf8',
     env: {
@@ -122,10 +74,7 @@ describe('an already-existing storage root is re-hardened by a real write', () =
     it(`writes through ${s.site}`, () => {
       const r = driveOneWrite(s.arg)
 
-      // Runs on every platform. Without it the POSIX case below could pass on a subsystem that
-      // silently stopped writing anything at all: a directory nobody touched keeps whatever mode
-      // it had, and 0700 would then be asserted of a fixture rather than of a behaviour -- except
-      // the fixture is 0755, so this pairing is what makes the mode meaningful.
+      // Runs on every platform. Without it the POSIX case below could pass on a subsystem that silently stopped writing anything at all: a directory nobody touched keeps whatever mode it had, and 0700 would then be asserted of a fixture rather than of a behaviour -- except the fixture is 0755, so this pairing is what makes the mode meaningful.
       expect(fs.existsSync(r.written), `${s.arg}: the driver reported ${r.written} but it is not on disk`).toBe(true)
       expect(path.resolve(r.written).startsWith(path.resolve(r.home)), `${s.arg}: wrote outside the storage root`).toBe(true)
     })

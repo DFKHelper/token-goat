@@ -5,21 +5,7 @@ import * as path from 'node:path'
 
 import { defaultConfig, loadConfig, saveConfig, invalidateConfigCache, type Config } from '../../src/config.js'
 
-/**
- * Systematic guard against the saveConfig-omission bug class.
- *
- * This repo has shipped that same bug at least four separate times -- `reread_deny_min_bytes`,
- * `large_read_redirect_bytes`, `cache_min_bytes`, and a trio of `hints` fields -- each time
- * caught only in production and each time closed with its own hand-written, single-key
- * regression test. Those tests are all still valuable, but they only ever cover the key that
- * already broke: a section added tomorrow whose author forgets the `saveConfig` serialize arm
- * reintroduces the identical defect, silently resetting the user's value to the default on the
- * next unrelated `config set`.
- *
- * This walks every scalar leaf in the real Config object instead of naming any of them, so the
- * guard's coverage grows automatically with the schema. A new key wired through the interface,
- * defaults, and loader but NOT through saveConfig fails here on the commit that adds it.
- */
+/** Systematic guard against the saveConfig-omission bug class. This repo has shipped that same bug at least four separate times -- `reread_deny_min_bytes`, `large_read_redirect_bytes`, `cache_min_bytes`, and a trio of `hints` fields -- each time caught only in production and each time closed with its own hand-written, single-key regression test. Those tests are all still valuable, but they only ever cover the key that already broke: a section added tomorrow whose author forgets the `saveConfig` serialize arm reintroduces the identical defect, silently resetting the user's value to the default on the next unrelated `config set`. This walks every scalar leaf in the real Config object instead of naming any of them, so the guard's coverage grows automatically with the schema. A new key wired through the interface, defaults, and loader but NOT through saveConfig fails here on the commit that adds it. */
 describe('config round-trip completeness (every scalar key survives saveConfig -> loadConfig)', () => {
   let tmpHome: string
   let prevHome: string | undefined

@@ -1,10 +1,4 @@
-/**
- * User-scope `install --vscode` writes its routing guidance to a personal instructions file under the home directory and never touches the current directory; `-p` keeps `.github/copilot-instructions.md`.
- *
- * A user-scope install used to write `.github/copilot-instructions.md` into whatever directory it ran from, editing an unrelated project. These run both in-process (install/uninstall semantics) and through the built bundle from inside a scratch project (the real CLI path), with HOME, USERPROFILE, APPDATA and the data dirs all isolated.
- *
- * PROVENANCE: FORMAT-DERIVED. VS Code 1.136.0's workbench.desktop.main.js lists `{path:"~/.copilot/instructions",source:"copilot-personal",storage:"user"}` among its instruction locations (on by default in chat.instructionsFilesLocations), classifies a file as instructions when its name ends in `.instructions.md`, and its instructions matcher treats an applyTo of `**` as matching every file. File contents are HAND-DERIVED.
- */
+/** User-scope `install --vscode` writes its routing guidance to a personal instructions file under the home directory and never touches the current directory; `-p` keeps `.github/copilot-instructions.md`. A user-scope install used to write `.github/copilot-instructions.md` into whatever directory it ran from, editing an unrelated project. These run both in-process (install/uninstall semantics) and through the built bundle from inside a scratch project (the real CLI path), with HOME, USERPROFILE, APPDATA and the data dirs all isolated. PROVENANCE: FORMAT-DERIVED. VS Code 1.136.0's workbench.desktop.main.js lists `{path:"~/.copilot/instructions",source:"copilot-personal",storage:"user"}` among its instruction locations (on by default in chat.instructionsFilesLocations), classifies a file as instructions when its name ends in `.instructions.md`, and its instructions matcher treats an applyTo of `**` as matching every file. File contents are HAND-DERIVED. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

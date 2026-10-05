@@ -32,9 +32,7 @@ describe('eachUnfencedLine', () => {
   })
 
   it('a fence only closes on a run of the same length or longer (mutation-testing gap: a shorter same-char run must not close it)', () => {
-    // Opening run is 4 backticks; a line consisting only of 3 backticks looks like a closing
-    // fence delimiter (matches the same regex branch) but is too short to actually close it,
-    // so everything up to the real (4-backtick) closing line stays swallowed as fenced content.
+    // Opening run is 4 backticks; a line consisting only of 3 backticks looks like a closing fence delimiter (matches the same regex branch) but is too short to actually close it, so everything up to the real (4-backtick) closing line stays swallowed as fenced content.
     const lines = ['````', 'inside', '```', 'still inside', '````', 'after']
     expect(collect(lines)).toEqual([
       [5, 'after'],

@@ -5,9 +5,7 @@ import { extractVue, extractSvelte, extractAstro } from '../src/languages/sfc_id
 
 import { parseFixture } from './helpers/parse-fixture.js'
 
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Fixtures ---------------------------------------------------------------------------
 
 const VUE_CONTENT = `<script setup lang="ts">
 import { ref } from 'vue'
@@ -94,9 +92,7 @@ function greet(name) {
 </style>
 `
 
-// A `---` pair that is NOT the file's very first content -- must not be misdetected as
-// frontmatter. The leading markup and trailing `<Widget />` prove the file is parsed as plain
-// markup throughout, not split at the mid-file `---` lines.
+// A `---` pair that is NOT the file's very first content -- must not be misdetected as frontmatter. The leading markup and trailing `<Widget />` prove the file is parsed as plain markup throughout, not split at the mid-file `---` lines.
 const ASTRO_NOT_FRONTMATTER = `<div>
   text
 </div>
@@ -106,13 +102,7 @@ this is not frontmatter, just markup
 <Widget />
 `
 
-// Frontmatter whose own script contains a multi-line backtick template literal with a
-// `---`-only line inside it (line 3), followed by the REAL closing fence (line 5) and a
-// declaration + markup ref that only survive if the real fence, not the fake one, is found.
-// Regression: detectAstroFrontmatter's naive line-exact `=== '---'` scan had no string/template
-// awareness and would misdetect the template literal's inner `---` line as the closing fence,
-// truncating the frontmatter parse (and the `title` const, greet declaration) before it ever
-// reached the real close.
+// Frontmatter whose own script contains a multi-line backtick template literal with a `---`-only line inside it (line 3), followed by the REAL closing fence (line 5) and a declaration + markup ref that only survive if the real fence, not the fake one, is found. Regression: detectAstroFrontmatter's naive line-exact `=== '---'` scan had no string/template awareness and would misdetect the template literal's inner `---` line as the closing fence, truncating the frontmatter parse (and the `title` const, greet declaration) before it ever reached the real close.
 const ASTRO_TEMPLATE_LITERAL_DASHES = `---
 const sep = \`
 ---
@@ -125,9 +115,7 @@ const title = 'Home'
 </Layout>
 `
 
-// ---------------------------------------------------------------------------
-// detectLanguage / EXTENSION_LANGUAGE wiring
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- detectLanguage / EXTENSION_LANGUAGE wiring ---------------------------------------------------------------------------
 
 describe('detectLanguage for SFC extensions', () => {
   it('recognizes .vue, .svelte, and .astro', () => {
@@ -137,17 +125,14 @@ describe('detectLanguage for SFC extensions', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Vue
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Vue ---------------------------------------------------------------------------
 
 describe('vue adapter', () => {
   it('extracts the component symbol, top-level script declarations, and template component refs', () => {
     const { symbols, refs } = extractVue(VUE_CONTENT, 'MyButtonPanel.vue')
 
     const component = symbols.find((s) => s.kind === 'vue_component')
-    // 31 is the fixture's real length. The 32 this asserted before counted the
-    // empty piece the closing newline leaves behind when the content is split.
+    // 31 is the fixture's real length. The 32 this asserted before counted the empty piece the closing newline leaves behind when the content is split.
     expect(component).toMatchObject({ name: 'MyButtonPanel', lineStart: 1, lineEnd: 31 })
 
     const byName = (name: string) => symbols.find((s) => s.name === name)
@@ -175,16 +160,13 @@ describe('vue adapter', () => {
 
   it('does not leak <style> block content into script or template extraction', () => {
     const { symbols, refs } = extractVue(VUE_CONTENT, 'MyButtonPanel.vue')
-    // `.wrapper` (a CSS class selector, not a JS declaration or a component tag) must not
-    // appear as either a script-declaration symbol or a template ref.
+    // `.wrapper` (a CSS class selector, not a JS declaration or a component tag) must not appear as either a script-declaration symbol or a template ref.
     expect(symbols.some((s) => s.name === 'wrapper')).toBe(false)
     expect(refs.some((r) => r.name === 'wrapper')).toBe(false)
   })
 
   it('still indexes a declaration that follows a literal closing tag inside the script\'s own string content (regression: the lazy [\\s\\S]*? content regex used to stop at the first </script> substring, even one inside a JS string like document.write(\'</script>\'), silently dropping every declaration after it)', () => {
-    // HAND-DERIVED: `document.write('</script>')` is a real, unremarkable pattern in code that
-    // emits raw HTML, and the fixture is written to isolate exactly the failure mode (a literal
-    // tag-close substring inside a same-tag string), independent of the fix's own implementation.
+    // HAND-DERIVED: `document.write('</script>')` is a real, unremarkable pattern in code that emits raw HTML, and the fixture is written to isolate exactly the failure mode (a literal tag-close substring inside a same-tag string), independent of the fix's own implementation.
     const content = [
       '<script setup lang="ts">',
       "document.write('</script>')",
@@ -213,9 +195,7 @@ describe('vue adapter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Svelte
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Svelte ---------------------------------------------------------------------------
 
 describe('svelte adapter', () => {
   it('extracts the component symbol, module + instance script declarations, and template refs', () => {
@@ -257,9 +237,7 @@ describe('svelte adapter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Astro
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Astro ---------------------------------------------------------------------------
 
 describe('astro adapter', () => {
   it('extracts the component symbol, frontmatter declarations, and markup component refs', () => {
@@ -292,8 +270,7 @@ describe('astro adapter', () => {
     // No frontmatter detected -> no script-declaration symbols beyond the component symbol.
     expect(symbols).toHaveLength(1)
     expect(symbols[0]).toMatchObject({ kind: 'astro_component', name: 'NotFm' })
-    // The `<Widget />` tag after the fake "frontmatter" is still reachable as a markup ref,
-    // proving the whole file was scanned as plain markup, not truncated at the `---` lines.
+    // The `<Widget />` tag after the fake "frontmatter" is still reachable as a markup ref, proving the whole file was scanned as plain markup, not truncated at the `---` lines.
     expect(refs.some((r) => r.name === 'Widget')).toBe(true)
   })
 
@@ -308,9 +285,7 @@ describe('astro adapter', () => {
   it('does not misdetect a `---`-only line inside the frontmatter script\'s own template literal as the closing fence (regression: detectAstroFrontmatter\'s naive line-exact scan had no string/template-literal awareness)', () => {
     const { symbols, refs } = extractAstro(ASTRO_TEMPLATE_LITERAL_DASHES, 'Home2.astro')
 
-    // The real closing fence is on line 6, past the template literal's inner `---` on line 3 --
-    // `title` (declared after the template literal, before the real fence) proves the frontmatter
-    // parse ran all the way to the real close.
+    // The real closing fence is on line 6, past the template literal's inner `---` on line 3 -- `title` (declared after the template literal, before the real fence) proves the frontmatter parse ran all the way to the real close.
     const title = symbols.find((s) => s.name === 'title')
     expect(title).toMatchObject({ kind: 'sfc_script_const', lineStart: 5, lineEnd: 5 })
 
@@ -321,11 +296,7 @@ describe('astro adapter', () => {
   })
 })
 
-// An empty file used to still get a whole-file component symbol, and `countContentLines('')` is
-// 0, so that symbol claimed `lineStart: 1, lineEnd: 0`. The backwards span reached the database
-// and printed to the reader as `Empty.vue:1-0`. Every other language emits nothing for empty
-// content. Found by feeding hostile inputs (empty, unterminated, CRLF-only, deeply nested) to
-// every adapter and asserting the span invariants none of them state for themselves.
+// An empty file used to still get a whole-file component symbol, and `countContentLines('')` is 0, so that symbol claimed `lineStart: 1, lineEnd: 0`. The backwards span reached the database and printed to the reader as `Empty.vue:1-0`. Every other language emits nothing for empty content. Found by feeding hostile inputs (empty, unterminated, CRLF-only, deeply nested) to every adapter and asserting the span invariants none of them state for themselves.
 describe('single-file components with no lines', () => {
   it.each([
     ['vue', extractVue],
@@ -361,9 +332,7 @@ describe('single-file components with no lines', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Brace counting across string/template-literal spans
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Brace counting across string/template-literal spans ---------------------------------------------------------------------------
 
 /** Wraps a bare script body in whichever container the given SFC format expects. */
 function wrapScript(ext: string, body: readonly string[]): string {
@@ -425,9 +394,7 @@ describe('top-level declaration brace counting', () => {
     },
   )
 
-  // Control for the over-fix: a whole-file string state machine that opens a span and never
-  // closes it swallows the rest of the file. A lone quote inside a regex character class is the
-  // cheapest way to open one by accident, so the damage must stay bounded to that physical line.
+  // Control for the over-fix: a whole-file string state machine that opens a span and never closes it swallows the rest of the file. A lone quote inside a regex character class is the cheapest way to open one by accident, so the damage must stay bounded to that physical line.
   it.each(SFC_FORMATS)(
     'keeps a stray unclosed quote inside a %s regex literal from swallowing the declarations after it',
     (ext, extract) => {
@@ -449,8 +416,7 @@ describe('top-level declaration brace counting', () => {
     },
   )
 
-  // Control for the other half of the over-fix: blanking string bodies must not stop the counter
-  // from tracking real code braces, or nested declarations would leak out as top-level ones.
+  // Control for the other half of the over-fix: blanking string bodies must not stop the counter from tracking real code braces, or nested declarations would leak out as top-level ones.
   it.each(SFC_FORMATS)('still treats braces in real %s code as depth', (ext, extract) => {
     const content = wrapScript(ext, [
       'function outer() {',
@@ -474,9 +440,7 @@ describe('top-level declaration brace counting', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Multi-line script symbol spans
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Multi-line script symbol spans ---------------------------------------------------------------------------
 
 // PROVENANCE: HAND-DERIVED. Every expected span is counted from the fixture text above or below, line by line, independently of the extractor.
 describe('script symbols span their whole declaration', () => {

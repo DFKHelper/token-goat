@@ -1,10 +1,4 @@
-/**
- * Session store and database schema catalog, discovery, and runtime error diagnostics.
- *
- * Provides a zero-dependency, authoritative reference for Copilot CLI's cross-session
- * DuckDB/SQLite database (`session_store_sql`) and session SQLite database (`sql`),
- * preventing trial-and-error SELECT * fallbacks when querying session history or tasks.
- */
+/** Session store and database schema catalog, discovery, and runtime error diagnostics. Provides a zero-dependency, authoritative reference for Copilot CLI's cross-session DuckDB/SQLite database (`session_store_sql`) and session SQLite database (`sql`), preventing trial-and-error SELECT * fallbacks when querying session history or tasks. */
 
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -35,10 +29,7 @@ export interface SessionStoreTable {
   readonly commonMisnomers?: Readonly<Record<string, string>>
 }
 
-/**
- * Authoritative table and view definitions for Copilot CLI `session_store_sql`
- * and session SQLite `sql` tools.
- */
+/** Authoritative table and view definitions for Copilot CLI `session_store_sql` and session SQLite `sql` tools. */
 export const SESSION_STORE_TABLES: readonly SessionStoreTable[] = [
   {
     name: 'sessions',
@@ -317,17 +308,13 @@ export const SESSION_STORE_TABLES: readonly SessionStoreTable[] = [
   },
 ]
 
-/**
- * Find table definition by name (case-insensitive).
- */
+/** Find table definition by name (case-insensitive). */
 export function getSessionStoreTable(name: string): SessionStoreTable | undefined {
   const norm = name.trim().toLowerCase()
   return SESSION_STORE_TABLES.find((t) => t.name.toLowerCase() === norm)
 }
 
-/**
- * Format overview of all session store tables.
- */
+/** Format overview of all session store tables. */
 export function formatSessionStoreCatalog(opts?: { json?: boolean | undefined }): string {
   if (opts?.json === true) {
     return displaySafeJson(SESSION_STORE_TABLES)
@@ -352,9 +339,7 @@ export function formatSessionStoreCatalog(opts?: { json?: boolean | undefined })
   return lines.join('\n')
 }
 
-/**
- * Format detailed specification for one table.
- */
+/** Format detailed specification for one table. */
 export function formatSessionStoreTable(table: SessionStoreTable, opts?: { json?: boolean | undefined }): string {
   if (opts?.json === true) {
     return displaySafeJson(table)
@@ -394,12 +379,7 @@ export function formatSessionStoreTable(table: SessionStoreTable, opts?: { json?
   return lines.join('\n')
 }
 
-/**
- * Unified describe command:
- * 1. If `target` is a local SQLite database file (e.g. .db, .sqlite), inspects with SQLite schema.
- * 2. If `target` matches a known session store or SQLite table, describes that table.
- * 3. If no target is given or target is 'all'/'session_store_sql', outputs catalog overview.
- */
+/** Unified describe command: 1. If `target` is a local SQLite database file (e.g. .db, .sqlite), inspects with SQLite schema. 2. If `target` matches a known session store or SQLite table, describes that table. 3. If no target is given or target is 'all'/'session_store_sql', outputs catalog overview. */
 export async function describeTarget(
   target?: string | undefined,
   table?: string | undefined,
@@ -463,9 +443,7 @@ export async function describeTarget(
   }
 }
 
-/**
- * Diagnostic helper that inspects SQL tool failures and returns surgical column/table guidance.
- */
+/** Diagnostic helper that inspects SQL tool failures and returns surgical column/table guidance. */
 export function diagnoseSqlFailure(event: HookEvent, errorText: string): string | null {
   const toolName = (getToolName(event) || '').toLowerCase()
   const isSqlTool =

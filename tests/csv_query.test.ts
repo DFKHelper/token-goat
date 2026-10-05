@@ -29,10 +29,7 @@ describe('queryCsv', () => {
     expect(result.rows[0]).toEqual(['Alice', 'active']);
   });
 
-  // Regression: Excel/PowerShell "Save As UTF-8" on Windows (the primary platform for this
-  // tool) prefixes the file with a UTF-8 BOM. Without `bom: true` on csv-parse, the
-  // BOM stays glued to the first header cell (a BOM-prefixed 'id' instead of 'id'), silently breaking
-  // --columns/--where lookups on that column even though the file looks fine in a text editor.
+  // Regression: Excel/PowerShell "Save As UTF-8" on Windows (the primary platform for this tool) prefixes the file with a UTF-8 BOM. Without `bom: true` on csv-parse, the BOM stays glued to the first header cell (a BOM-prefixed 'id' instead of 'id'), silently breaking --columns/--where lookups on that column even though the file looks fine in a text editor.
   it('strips a leading UTF-8 BOM from the first header so --columns/--where match on it', () => {
     const bomCsv = '\uFEFF' + CSV;
     const result = queryCsv(bomCsv, { columns: ['id', 'name'] });
@@ -59,10 +56,7 @@ describe('queryCsv', () => {
     expect(result.rows.map((r) => r[1])).toEqual(['Alice', 'Carol']);
   });
 
-  // Regression: `Number('')` is 0, not NaN, so a blank cell in a numeric column was silently
-  // coerced to the literal value 0 instead of being treated as "no value". That made a blank
-  // cell wrongly match `age<10` (0 < 10) and wrongly match `age>-1` (0 > -1) -- a row with no
-  // age data should never satisfy either filter.
+  // Regression: `Number('')` is 0, not NaN, so a blank cell in a numeric column was silently coerced to the literal value 0 instead of being treated as "no value". That made a blank cell wrongly match `age<10` (0 < 10) and wrongly match `age>-1` (0 > -1) -- a row with no age data should never satisfy either filter.
   it('excludes blank cells from a numeric comparison instead of coercing them to 0', () => {
     const csvWithBlank = `id,name,age\n1,Alice,30\n2,Blank,\n3,Carol,40\n`;
 
@@ -131,15 +125,7 @@ describe('queryCsv', () => {
     expect(result.rows[0]).toEqual(['1', 'Alice']);
   });
 
-  // Regression: csv-parse's `columns: true` mode returns an EMPTY records array for a CSV that
-  // has only a header row and zero data rows -- there is nothing to derive `Object.keys()` from.
-  // queryCsv used to validate --columns/--where purely against that records-derived list, so for
-  // a header-only file ANY --columns/--where naming a real header column threw a misleading
-  // "unknown column: X (available: )", as if the column itself didn't exist, instead of returning
-  // the (correctly empty) result set for a column that genuinely is in the header. (With no
-  // explicit --columns/--where, queryCsv still deliberately reports an empty header for this case
-  // -- that's the signal the CLI layer uses to print "No data rows found" instead of an empty
-  // table; see read_commands.ts's runCsvQuery.)
+  // Regression: csv-parse's `columns: true` mode returns an EMPTY records array for a CSV that has only a header row and zero data rows -- there is nothing to derive `Object.keys()` from. queryCsv used to validate --columns/--where purely against that records-derived list, so for a header-only file ANY --columns/--where naming a real header column threw a misleading "unknown column: X (available: )", as if the column itself didn't exist, instead of returning the (correctly empty) result set for a column that genuinely is in the header. (With no explicit --columns/--where, queryCsv still deliberately reports an empty header for this case -- that's the signal the CLI layer uses to print "No data rows found" instead of an empty table; see read_commands.ts's runCsvQuery.)
   it('recognizes header columns from a header-only CSV with zero data rows (regression)', () => {
     const headerOnly = 'id,name,status\n';
     const result = queryCsv(headerOnly, { columns: ['name', 'status'] });
@@ -156,17 +142,11 @@ describe('queryCsv', () => {
   });
 
   it('resolves a --where spec against the correct column when a header name contains operator characters', () => {
-    // Regression: WHERE_SPEC_RE's column capture excludes = < > ~ ! outright, so it always
-    // splits at the FIRST operator-class character. With headers `a` and `a<b`, the spec
-    // "a<b=x" naively parses as column "a", op "<", value "b=x" -- and since column "a"
-    // genuinely exists, the query used to run silently against the wrong column instead of
-    // targeting the real "a<b" column or erroring.
+    // Regression: WHERE_SPEC_RE's column capture excludes = < > ~ ! outright, so it always splits at the FIRST operator-class character. With headers `a` and `a<b`, the spec "a<b=x" naively parses as column "a", op "<", value "b=x" -- and since column "a" genuinely exists, the query used to run silently against the wrong column instead of targeting the real "a<b" column or erroring.
     const csv = 'a,a<b\nfoo,x\nbar,y\n';
     const wheres = parseWhereSpecs(['a<b=x']);
     const result = queryCsv(csv, { wheres });
-    // Correct behavior: this targets column "a<b" with op "=" and value "x", matching only the
-    // first row. The old behavior (column "a", op "<", value "b=x") would run a string
-    // comparison "a" < "b=x" against both rows' "a" values ("foo" and "bar"), matching neither.
+    // Correct behavior: this targets column "a<b" with op "=" and value "x", matching only the first row. The old behavior (column "a", op "<", value "b=x") would run a string comparison "a" < "b=x" against both rows' "a" values ("foo" and "bar"), matching neither.
     expect(result.rows).toEqual([['foo', 'x']]);
   });
 
@@ -305,8 +285,7 @@ describe('formatCsvTable', () => {
     expect(text).toContain('3 more rows elided');
   });
 
-  // The notice lives in the shared formatter rather than in csv-query's CLI wrapper, so xlsx-query
-  // (the other formatCsvTable caller) gets the same distinction instead of printing a bare header.
+  // The notice lives in the shared formatter rather than in csv-query's CLI wrapper, so xlsx-query (the other formatCsvTable caller) gets the same distinction instead of printing a bare header.
   it('appends a filtered-to-empty notice for any caller whose --where matched nothing', () => {
     const result = queryCsv(CSV, { wheres: parseWhereSpecs(['status=zzznone']) });
     expect(formatCsvTable(result, ['--where status=zzznone']).split('\n')).toEqual([
@@ -343,11 +322,7 @@ Line 2"`;
     expect(reparsed.rows[1][2]).toContain('Line 2');
   });
 
-  // Regression: quoteCsvCell's RFC 4180 guard only checked for '\n', so a cell containing
-  // a bare '\r' (no accompanying '\n' -- old Mac-style line breaks, terminal capture paste)
-  // was emitted unquoted, embedding a raw carriage return in the output that overwrites
-  // the start of the terminal line when printed and is unsafe to round-trip through strict
-  // RFC 4180 parsers (CR alone is a valid line break under the spec).
+  // Regression: quoteCsvCell's RFC 4180 guard only checked for '\n', so a cell containing a bare '\r' (no accompanying '\n' -- old Mac-style line breaks, terminal capture paste) was emitted unquoted, embedding a raw carriage return in the output that overwrites the start of the terminal line when printed and is unsafe to round-trip through strict RFC 4180 parsers (CR alone is a valid line break under the spec).
   it('quotes a cell containing a bare carriage return with no accompanying newline', () => {
     expect(quoteCsvCell('line1\rline2')).toBe('"line1\rline2"');
   });

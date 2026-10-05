@@ -1,17 +1,4 @@
-/**
- * Regression: `formatCompression`'s withheld-payload notice hardcoded `--payload`, but that
- * flag only exists on `compress-text`. `handoff-resolve` shares `formatCompression` and does not
- * have `--payload`, so a losing handoff printed a suggestion that fails when actually run:
- *
- *   $ token-goat handoff-resolve losing            -> "...pass --payload to print it anyway"
- *   $ token-goat handoff-resolve losing --payload   -> error: unknown option '--payload'
- *
- * This is the same executable-suggestion defect class tests/guards/changed_ref_hint.test.ts
- * guards for `changed`'s hint text: a suggested command must actually resolve and run, not just
- * read plausibly. This test parses the flag out of the emitted notice and re-runs the exact
- * command it names, so a third caller of formatCompression regressing the same way fails here
- * too, rather than relying on a hardcoded string match.
- */
+/** Regression: `formatCompression`'s withheld-payload notice hardcoded `--payload`, but that flag only exists on `compress-text`. `handoff-resolve` shares `formatCompression` and does not have `--payload`, so a losing handoff printed a suggestion that fails when actually run: $ token-goat handoff-resolve losing            -> "...pass --payload to print it anyway" $ token-goat handoff-resolve losing --payload   -> error: unknown option '--payload' This is the same executable-suggestion defect class tests/guards/changed_ref_hint.test.ts guards for `changed`'s hint text: a suggested command must actually resolve and run, not just read plausibly. This test parses the flag out of the emitted notice and re-runs the exact command it names, so a third caller of formatCompression regressing the same way fails here too, rather than relying on a hardcoded string match. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

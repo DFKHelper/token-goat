@@ -1,25 +1,4 @@
-/**
- * The shared model cache: the copy of the pinned weights that survives the data directory.
- *
- * `modelDir()` lives under the data root, and a test run repoints that root at a fresh temp
- * directory per worker while several tests build their own roots on top of that. The result was
- * that one CI run fetched the 32 MB weights 57 times into 57 directories, roughly 1.8 GB from
- * huggingface.co per run, which is also what the `Test` step's retry wrapper cites as a known
- * cause of an otherwise-green run failing: a CDN rate limit on exactly this download. A
- * `node_modules/@xenova/transformers/.cache` cache step existed to stop this and never could,
- * because no fixed path can name a directory that is regenerated per worker. `actions/cache`
- * reported `Path Validation Error` on every job for as long as it had been there.
- *
- * So the interesting assertions here are about *avoided network*, not about files appearing:
- * every test drives the real `ensureModelFiles` with `fetch` substituted and checks which URLs
- * were asked for. A file that appears is not evidence, because a download produces one too.
- *
- * PROVENANCE: CAPTURE. `tokenizer.json` is the genuine pinned model file, unzipped from the same
- * fixture the tokenizer oracle reads, and its sha256 is the one pinned in embed_model.ts. It is
- * also the first entry in MODEL_FILES, so a run that gets as far as requesting
- * `onnx/model_quantized.onnx` has already accepted the tokenizer, which is what lets these tests
- * exercise every branch without the 32 MB second file.
- */
+/** The shared model cache: the copy of the pinned weights that survives the data directory. `modelDir()` lives under the data root, and a test run repoints that root at a fresh temp directory per worker while several tests build their own roots on top of that. The result was that one CI run fetched the 32 MB weights 57 times into 57 directories, roughly 1.8 GB from huggingface.co per run, which is also what the `Test` step's retry wrapper cites as a known cause of an otherwise-green run failing: a CDN rate limit on exactly this download. A `node_modules/@xenova/transformers/.cache` cache step existed to stop this and never could, because no fixed path can name a directory that is regenerated per worker. `actions/cache` reported `Path Validation Error` on every job for as long as it had been there. So the interesting assertions here are about *avoided network*, not about files appearing: every test drives the real `ensureModelFiles` with `fetch` substituted and checks which URLs were asked for. A file that appears is not evidence, because a download produces one too. PROVENANCE: CAPTURE. `tokenizer.json` is the genuine pinned model file, unzipped from the same fixture the tokenizer oracle reads, and its sha256 is the one pinned in embed_model.ts. It is also the first entry in MODEL_FILES, so a run that gets as far as requesting `onnx/model_quantized.onnx` has already accepted the tokenizer, which is what lets these tests exercise every branch without the 32 MB second file. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -185,19 +164,7 @@ describe('the shared model cache is verified, not trusted', () => {
   })
 })
 
-/**
- * The shared directory is the one place these functions touch that the operator names and may
- * share, so it is the one place another principal's file can be waiting. A security review of the
- * 2.9.9 code found two ways that mattered, both confirmed by running them rather than by reading:
- * a copy that followed a symlink planted at the temp name and overwrote its target with the model
- * bytes, and a read path with no bound on what it was willing to copy.
- *
- * PROVENANCE: HAND-DERIVED. Both cases are constructed from the documented behaviour of the
- * syscalls, not from what these functions do: `open` with `O_CREAT|O_TRUNC` and no `O_NOFOLLOW`
- * follows a symlink, `O_EXCL` refuses one, and a `stat` size is knowable without running the copy.
- * The symlink case is skipped where the platform will not create one unprivileged, which is
- * ordinary Windows: the code path it guards is the same on every platform.
- */
+/** The shared directory is the one place these functions touch that the operator names and may share, so it is the one place another principal's file can be waiting. A security review of the 2.9.9 code found two ways that mattered, both confirmed by running them rather than by reading: a copy that followed a symlink planted at the temp name and overwrote its target with the model bytes, and a read path with no bound on what it was willing to copy. PROVENANCE: HAND-DERIVED. Both cases are constructed from the documented behaviour of the syscalls, not from what these functions do: `open` with `O_CREAT|O_TRUNC` and no `O_NOFOLLOW` follows a symlink, `O_EXCL` refuses one, and a `stat` size is knowable without running the copy. The symlink case is skipped where the platform will not create one unprivileged, which is ordinary Windows: the code path it guards is the same on every platform. */
 describe('the shared model cache does not trust the directory it writes into', () => {
   it.skipIf(!CAN_SYMLINK)('refuses to publish through a symlink planted at its temp name', async () => {
     enableSharedCache()
@@ -247,11 +214,7 @@ describe('the shared model cache does not trust the directory it writes into', (
     expect(urls[0], 'a wrong-sized entry must send the run to the network').toMatch(/tokenizer\.json$/)
     expect(fs.readFileSync(cachedPath('tokenizer.json')).equals(REAL_TOKENIZER)).toBe(true)
 
-    // The load-bearing half, and the reason the assertion above is not enough on its own: the digest check
-    // already sent a wrong-sized file to the network before any of this existed, so "it refetched" is equally
-    // true of the code without the size bound. What is only true with it is that nothing was read. Reading the
-    // bytes is what leads to the eviction below, so the entry surviving is the visible shape of the copy that
-    // did not happen.
+    // The load-bearing half, and the reason the assertion above is not enough on its own: the digest check already sent a wrong-sized file to the network before any of this existed, so "it refetched" is equally true of the code without the size bound. What is only true with it is that nothing was read. Reading the bytes is what leads to the eviction below, so the entry surviving is the visible shape of the copy that did not happen.
     expect(
       fs.readFileSync(sharedPath('tokenizer.json')).equals(wrongSize),
       'a size mismatch is judged from stat alone, so the entry is neither copied nor evicted',
@@ -290,15 +253,9 @@ describe('the shared model cache is filled by the downloads it will later replac
   })
 
   it('publishes nothing when the cache is switched off, so a second run still has to fetch', async () => {
-    // Asserting only that `cacheRoot` stays absent is a control that cannot fail: nothing in the
-    // source knows that path, so no regression could write there. A default switched on by
-    // mistake writes somewhere else entirely, and checking the working directory for it is
-    // order-dependent once an earlier test in the file has already created it.
+    // Asserting only that `cacheRoot` stays absent is a control that cannot fail: nothing in the source knows that path, so no regression could write there. A default switched on by mistake writes somewhere else entirely, and checking the working directory for it is order-dependent once an earlier test in the file has already created it.
     //
-    // What is not order-dependent is the invariant itself. With the cache off there is nowhere for
-    // the first run to leave anything, so the second run has to go back to the network for the
-    // same file. Under `?.trim() || 'SOMEWHERE'` the first run publishes, the second run hits that
-    // copy, and the fetch count drops, which is the kill.
+    // What is not order-dependent is the invariant itself. With the cache off there is nowhere for the first run to leave anything, so the second run has to go back to the network for the same file. Under `?.trim() || 'SOMEWHERE'` the first run publishes, the second run hits that copy, and the fetch count drops, which is the kill.
     const { urls } = stubFetch((url) =>
       url.endsWith('tokenizer.json') ? bodyResponse(REAL_TOKENIZER) : bodyResponse(Buffer.alloc(0)),
     )

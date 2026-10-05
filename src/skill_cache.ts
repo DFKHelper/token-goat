@@ -1,18 +1,4 @@
-/**
- * Persistent store for loaded-skill bodies.
- *
- * Every skill load records the body to a text file under `data_dir() / "skills"`
- * keyed by session ID, skill name, and content hash. After compaction, the agent
- * can recall the full body via the CLI without re-invoking the skill.
- *
- * Why a separate disk store:
- * - Skill bodies can be tens of KB. Inlining into session JSON bloats round trips.
- * - CLI retrieval can stream the file directly without re-parsing JSON.
- * - Retention is simple to bound by total bytes via LRU eviction.
- * - Cross-session dedup: the same skill body reuses the existing file. A later
- *   session that loads that body writes only a small `<its outputId>.load` record
- *   naming the shared body, so the load still counts as that session's own.
- */
+/** Persistent store for loaded-skill bodies. Every skill load records the body to a text file under `data_dir() / "skills"` keyed by session ID, skill name, and content hash. After compaction, the agent can recall the full body via the CLI without re-invoking the skill. Why a separate disk store: - Skill bodies can be tens of KB. Inlining into session JSON bloats round trips. - CLI retrieval can stream the file directly without re-parsing JSON. - Retention is simple to bound by total bytes via LRU eviction. - Cross-session dedup: the same skill body reuses the existing file. A later session that loads that body writes only a small `<its outputId>.load` record naming the shared body, so the load still counts as that session's own. */
 
 import * as fs from 'fs/promises'
 import { resolve } from 'path'
@@ -28,10 +14,7 @@ import { recordStat } from './stats.js'
 
 const COMPACT_END_MARKER = '<!-- COMPACT_END -->'
 
-// The 'skills' subdir name, exported so prune-cache/clean-cache (cache_session_commands.ts)
-// can include it in their managed-subdirs list. Unlike the other cache subdirs, entries here
-// are plain .txt/.meta/.hits/@compact files rather than disk_cache.ts's JSON blob envelope, so
-// eviction is handled by this module's own pruneSkillOutputs rather than the generic pruneBlobs.
+// The 'skills' subdir name, exported so prune-cache/clean-cache (cache_session_commands.ts) can include it in their managed-subdirs list. Unlike the other cache subdirs, entries here are plain .txt/.meta/.hits/@compact files rather than disk_cache.ts's JSON blob envelope, so eviction is handled by this module's own pruneSkillOutputs rather than the generic pruneBlobs.
 export const SKILLS_OUTPUT_SUBDIR = 'skills'
 
 let _skillOutputsDirOverride: string | null = null
@@ -176,9 +159,7 @@ async function sessionLoads(safeSession: string, name: string): Promise<Array<{ 
   return [...own, ...recorded].map(e => ({ bodyBytes: e.bodyBytes, ts: e.ts }))
 }
 
-// Yields [index, trimmed-line] for every line of `lines` outside a fenced code block (fence
-// lines themselves and everything between a pair of them are skipped). Shared by every
-// heading/marker scanner below so the fence-toggle logic can't drift between them.
+// Yields [index, trimmed-line] for every line of `lines` outside a fenced code block (fence lines themselves and everything between a pair of them are skipped). Shared by every heading/marker scanner below so the fence-toggle logic can't drift between them.
 function* contentLineEntries(lines: string[]): Generator<[index: number, stripped: string]> {
   let inCodeBlock = false
   for (let i = 0; i < lines.length; i++) {
@@ -370,41 +351,20 @@ export async function listOutputs(): Promise<SkillMeta[]> {
   }
 }
 
-/**
- * Return true when a skill body for *skillName* was already cached under
- * *sessionId* earlier this session (a stored outputId carries this session's
- * fragment and name). The pre-skill hook uses this to advise recall over a
- * wasteful full re-load. A body another session stored first counts through this
- * session's load record (see {@link SkillLoadRecord}), so the dedup no longer hides a load.
- */
+/** Return true when a skill body for *skillName* was already cached under *sessionId* earlier this session (a stored outputId carries this session's fragment and name). The pre-skill hook uses this to advise recall over a wasteful full re-load. A body another session stored first counts through this session's load record (see {@link SkillLoadRecord}), so the dedup no longer hides a load. */
 export async function hasSessionOutput(sessionId: string, skillName: string): Promise<boolean> {
   try {
     if (!sessionId) return false
     const name = safeSkillName(skillName)
     if (!name) return false
-    // Exact match on the stored skillName field (not a filename-derived prefix): a raw
-    // outputId.startsWith(prefix) check let a shorter name (e.g. 'ralph-loop') falsely
-    // match a differently-named skill whose outputId happens to start with the same
-    // literal text (e.g. 'ralph-loop-extended'). Comparing the structured field instead
-    // of the flattened filename eliminates that class of collision entirely.
+    // Exact match on the stored skillName field (not a filename-derived prefix): a raw outputId.startsWith(prefix) check let a shorter name (e.g. 'ralph-loop') falsely match a differently-named skill whose outputId happens to start with the same literal text (e.g. 'ralph-loop-extended'). Comparing the structured field instead of the flattened filename eliminates that class of collision entirely.
     return (await sessionLoads(safeSessionFragment(sessionId), name)).length > 0
   } catch {
     return false
   }
 }
 
-/**
- * Byte size of the body that a same-session re-load of *skillName* would have
- * re-injected, or null if no matching cached output exists. Mirrors
- * {@link hasSessionOutput}'s session+name matching exactly (same fields, same
- * `.startsWith` prefix check) so the two never disagree on whether a match
- * exists -- this just also returns the counterfactual byte count instead of a
- * bare boolean. `bodyBytes` on the stored meta is the full pre-truncation size
- * (see storeOutput), i.e. the real re-injection cost, not the on-disk cap.
- * When multiple matches exist (e.g. the skill was reloaded with different
- * content this session), the most recently stored one is used, since that is
- * the body a fresh re-load would actually be recalling.
- */
+/** Byte size of the body that a same-session re-load of *skillName* would have re-injected, or null if no matching cached output exists. Mirrors {@link hasSessionOutput}'s session+name matching exactly (same fields, same `.startsWith` prefix check) so the two never disagree on whether a match exists -- this just also returns the counterfactual byte count instead of a bare boolean. `bodyBytes` on the stored meta is the full pre-truncation size (see storeOutput), i.e. the real re-injection cost, not the on-disk cap. When multiple matches exist (e.g. the skill was reloaded with different content this session), the most recently stored one is used, since that is the body a fresh re-load would actually be recalling. */
 export async function sessionOutputBodyBytes(sessionId: string, skillName: string): Promise<number | null> {
   try {
     if (!sessionId) return null
@@ -485,25 +445,15 @@ export async function storeOutput(
       return existing
     }
 
-    // bodyBytes is deliberately the RAW pre-redaction size, not what actually lands on disk: it
-    // feeds sessionOutputBodyBytes, whose only consumer (preSkillHandler's session_hint deny
-    // credit) prices "the load that didn't happen" -- and a real reload's live path
-    // (postSkillHandler below) hands the model the raw body unredacted, never the cached copy.
-    // Sizing this off the redacted length would understate that counterfactual whenever a
-    // secret was actually stripped.
+    // bodyBytes is deliberately the RAW pre-redaction size, not what actually lands on disk: it feeds sessionOutputBodyBytes, whose only consumer (preSkillHandler's session_hint deny credit) prices "the load that didn't happen" -- and a real reload's live path (postSkillHandler below) hands the model the raw body unredacted, never the cached copy. Sizing this off the redacted length would understate that counterfactual whenever a secret was actually stripped.
     const bodyBytes = Buffer.byteLength(body, 'utf-8')
     const truncated = bodyBytes > 256 * 1024
 
-    // Defense-in-depth funnel, mirroring disk_cache.ts's storeBlob(): redact before this body
-    // ever reaches disk. Fail-safe, not fail-open -- if the redaction pass itself throws, this
-    // propagates to the function's own outer try/catch below, which returns null without having
-    // written anything, exactly like every other failure path here (oversized name, write error).
+    // Defense-in-depth funnel, mirroring disk_cache.ts's storeBlob(): redact before this body ever reaches disk. Fail-safe, not fail-open -- if the redaction pass itself throws, this propagates to the function's own outer try/catch below, which returns null without having written anything, exactly like every other failure path here (oversized name, write error).
     const redactedBody = redactSecrets(body)
     if (redactedBody.count > 0) recordStat('secret_redacted', 0, redactedBody.count, undefined, SKILLS_OUTPUT_SUBDIR)
 
-    // Truncate the redacted text, not the raw body: truncating raw text first and redacting the
-    // slice afterward could cut a secret pattern in half at the boundary and leave the remaining
-    // fragment unmatched.
+    // Truncate the redacted text, not the raw body: truncating raw text first and redacting the slice afterward could cut a secret pattern in half at the boundary and leave the remaining fragment unmatched.
     let storedBody = redactedBody.text
     if (truncated) {
       const buf = Buffer.from(redactedBody.text, 'utf-8')
@@ -577,11 +527,7 @@ export async function storeCompact(
     const fileId = `${safeSession}@${sanitizeSkillId(name)}@compact`
     const dir = skillOutputsDir()
 
-    // Same funnel as storeOutput above: this slice is extracted from the same raw body
-    // (extractCompactFromMarker) and gets inlined straight into a model-visible hook reply by
-    // preSkillHandler's oversized-first-load path, so it needs the same redaction storeOutput's
-    // persisted body gets. Redact before prepending the source_sha marker, so the marker itself
-    // (a content hash, not secret-shaped) is never a redaction target.
+    // Same funnel as storeOutput above: this slice is extracted from the same raw body (extractCompactFromMarker) and gets inlined straight into a model-visible hook reply by preSkillHandler's oversized-first-load path, so it needs the same redaction storeOutput's persisted body gets. Redact before prepending the source_sha marker, so the marker itself (a content hash, not secret-shaped) is never a redaction target.
     const redacted = redactSecrets(compactText)
     if (redacted.count > 0) recordStat('secret_redacted', 0, redacted.count, undefined, SKILLS_OUTPUT_SUBDIR)
 
@@ -617,12 +563,7 @@ export async function getCompact(sessionId: string, skillName: string): Promise<
   }
 }
 
-// Exact '@'-delimited compact-cache suffix for a skill name, or null if the name is invalid.
-// '@' cannot occur in a sanitized name (outside safeSkillName's charset), so matching this exact
-// suffix (not a raw substring) can never match a differently-named skill whose sanitized name
-// merely ends with this one's text (e.g. name 'loop' must not match a stored file for
-// 'ralph-loop'). Shared by getCompactAnySession/getCompactAnySessionSync so the collision-safe
-// matching logic can't drift between the two.
+// Exact '@'-delimited compact-cache suffix for a skill name, or null if the name is invalid. '@' cannot occur in a sanitized name (outside safeSkillName's charset), so matching this exact suffix (not a raw substring) can never match a differently-named skill whose sanitized name merely ends with this one's text (e.g. name 'loop' must not match a stored file for 'ralph-loop'). Shared by getCompactAnySession/getCompactAnySessionSync so the collision-safe matching logic can't drift between the two.
 function compactSessionSuffix(skillName: string): string | null {
   const name = safeSkillName(skillName)
   return name ? `@${sanitizeSkillId(name)}@compact` : null
@@ -713,47 +654,20 @@ export async function readSkillHits(skillName: string): Promise<{ count: number;
   return { count: 0, lastTs: 0 }
 }
 
-// Exclusive lock for incrementSkillHit's read-modify-write, so two concurrent processes/sessions
-// incrementing the same skill's hit count at once can't both read the same pre-increment count
-// and silently drop one hit. Directory creation is atomic on both POSIX and Windows, so an
-// mkdir-based lock doubles as a cross-process mutex: the loser gets EEXIST.
+// Exclusive lock for incrementSkillHit's read-modify-write, so two concurrent processes/sessions incrementing the same skill's hit count at once can't both read the same pre-increment count and silently drop one hit. Directory creation is atomic on both POSIX and Windows, so an mkdir-based lock doubles as a cross-process mutex: the loser gets EEXIST.
 //
-// The retry budget must comfortably outlast a legitimately-held (non-stale) lock, not just a
-// crashed one: under N-way same-process contention, a caller can be queued behind up to N-1
-// other callers' full critical sections before it ever gets a turn. A budget sized only for
-// "wait out a slow disk op" (previously 20 attempts * 5ms = 100ms) can exhaust while the holder
-// is still doing legitimate work, sending the caller down the unlocked fallback path below and
-// reintroducing the exact lost-update race the lock exists to prevent -- reproduced directly via
-// tests/skill_cache.test.ts's 5-way concurrency regression test under load. Sizing the budget to
-// match SKILL_HIT_LOCK_STALE_MS means a caller only gives up once it has waited at least as long
-// as it would take to detect and reclaim a genuinely abandoned lock, so ordinary contention (any
-// number of legitimate concurrent holders finishing in bounded time) is never mistaken for
-// exhaustion.
+// The retry budget must comfortably outlast a legitimately-held (non-stale) lock, not just a crashed one: under N-way same-process contention, a caller can be queued behind up to N-1 other callers' full critical sections before it ever gets a turn. A budget sized only for "wait out a slow disk op" (previously 20 attempts * 5ms = 100ms) can exhaust while the holder is still doing legitimate work, sending the caller down the unlocked fallback path below and reintroducing the exact lost-update race the lock exists to prevent -- reproduced directly via tests/skill_cache.test.ts's 5-way concurrency regression test under load. Sizing the budget to match SKILL_HIT_LOCK_STALE_MS means a caller only gives up once it has waited at least as long as it would take to detect and reclaim a genuinely abandoned lock, so ordinary contention (any number of legitimate concurrent holders finishing in bounded time) is never mistaken for exhaustion.
 const SKILL_HIT_LOCK_RETRY_MS = 5
 const SKILL_HIT_LOCK_STALE_MS = 5000
 const SKILL_HIT_LOCK_MAX_ATTEMPTS = Math.ceil(SKILL_HIT_LOCK_STALE_MS / SKILL_HIT_LOCK_RETRY_MS)
 
-// In-process mutex, keyed by lockPath: serializes concurrent callers within THIS process before
-// any of them touch the filesystem-based lock below. That lock's staleness check (comparing the
-// lock directory's mtime against SKILL_HIT_LOCK_STALE_MS) exists to arbitrate between separate OS
-// processes and recover one that crashed mid-hold -- it is inherently a wall-clock heuristic. Two
-// same-process callers polling that same heuristic against each other is a false positive waiting
-// to happen: under severe CPU contention (many parallel test workers, a loaded CI box) this
-// process can be scheduled off the CPU long enough that a live in-process holder's own critical
-// section looks "stale" to another in-process waiter, letting that waiter steal the lock mid-write
-// and drop the first caller's increment -- reproduced directly by tests/skill_cache.test.ts's
-// 5-way concurrency regression test under full-suite load. Routing same-process callers through
-// this queue first means they never reach that wall-clock check against each other at all: plain
-// JS promise chaining orders them deterministically no matter how delayed the underlying I/O or
-// timers get. Cross-process contention (the case the mkdir lock actually exists for) is untouched
-// -- this only removes the false-positive path this process can hit against itself.
+// In-process mutex, keyed by lockPath: serializes concurrent callers within THIS process before any of them touch the filesystem-based lock below. That lock's staleness check (comparing the lock directory's mtime against SKILL_HIT_LOCK_STALE_MS) exists to arbitrate between separate OS processes and recover one that crashed mid-hold -- it is inherently a wall-clock heuristic. Two same-process callers polling that same heuristic against each other is a false positive waiting to happen: under severe CPU contention (many parallel test workers, a loaded CI box) this process can be scheduled off the CPU long enough that a live in-process holder's own critical section looks "stale" to another in-process waiter, letting that waiter steal the lock mid-write and drop the first caller's increment -- reproduced directly by tests/skill_cache.test.ts's 5-way concurrency regression test under full-suite load. Routing same-process callers through this queue first means they never reach that wall-clock check against each other at all: plain JS promise chaining orders them deterministically no matter how delayed the underlying I/O or timers get. Cross-process contention (the case the mkdir lock actually exists for) is untouched -- this only removes the false-positive path this process can hit against itself.
 const inProcessHitLockQueues = new Map<string, Promise<unknown>>()
 
 function runExclusiveInProcess<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const prior = inProcessHitLockQueues.get(key) ?? Promise.resolve()
   const run = prior.then(fn, fn)
-  // Swallow rejection in the queued tail so a failed caller never wedges the next one behind it;
-  // the real result/rejection still flows to this call's own caller via `run`.
+  // Swallow rejection in the queued tail so a failed caller never wedges the next one behind it; the real result/rejection still flows to this call's own caller via `run`.
   inProcessHitLockQueues.set(
     key,
     run.then(
@@ -764,10 +678,7 @@ function runExclusiveInProcess<T>(key: string, fn: () => Promise<T>): Promise<T>
   return run
 }
 
-// Acquires the lock directory for hitsFile, reclaiming a lock older than SKILL_HIT_LOCK_STALE_MS
-// as abandoned (left behind by a crashed process) instead of wedging future increments forever.
-// Returns false once every retry is exhausted so the caller can fall back to an unlocked
-// increment rather than dropping the hit -- see incrementSkillHit.
+// Acquires the lock directory for hitsFile, reclaiming a lock older than SKILL_HIT_LOCK_STALE_MS as abandoned (left behind by a crashed process) instead of wedging future increments forever. Returns false once every retry is exhausted so the caller can fall back to an unlocked increment rather than dropping the hit -- see incrementSkillHit.
 async function acquireSkillHitLock(lockPath: string): Promise<boolean> {
   for (let attempt = 0; attempt < SKILL_HIT_LOCK_MAX_ATTEMPTS; attempt++) {
     try {
@@ -791,10 +702,7 @@ async function acquireSkillHitLock(lockPath: string): Promise<boolean> {
   return false
 }
 
-// Increment hit count sidecar for a skill. Same safeSkillName routing as readSkillHits. The
-// read-modify-write is guarded by acquireSkillHitLock; if the lock can't be acquired, the
-// increment is skipped rather than falling back to an unprotected read-modify-write -- see
-// acquireSkillHitLock's TOCTOU rationale below.
+// Increment hit count sidecar for a skill. Same safeSkillName routing as readSkillHits. The read-modify-write is guarded by acquireSkillHitLock; if the lock can't be acquired, the increment is skipped rather than falling back to an unprotected read-modify-write -- see acquireSkillHitLock's TOCTOU rationale below.
 export async function incrementSkillHit(skillName: string): Promise<void> {
   try {
     const name = safeSkillName(skillName)
@@ -805,11 +713,7 @@ export async function incrementSkillHit(skillName: string): Promise<void> {
     const lockPath = `${hitsFile}.lock`
     await runExclusiveInProcess(lockPath, async () => {
       const locked = await acquireSkillHitLock(lockPath)
-      // If the lock could not be acquired (another holder never released it, or the mkdir/rmdir
-      // pair raced on a filesystem where directory deletion isn't instantly visible to a
-      // subsequent create -- observed on Windows), skip the increment rather than falling back to
-      // an unprotected read-modify-write: that fallback was the exact TOCTOU race the lock exists
-      // to prevent, just gated behind a rarer trigger.
+      // If the lock could not be acquired (another holder never released it, or the mkdir/rmdir pair raced on a filesystem where directory deletion isn't instantly visible to a subsequent create -- observed on Windows), skip the increment rather than falling back to an unprotected read-modify-write: that fallback was the exact TOCTOU race the lock exists to prevent, just gated behind a rarer trigger.
       if (!locked) return
       try {
         const hits = await readSkillHits(name)
@@ -839,19 +743,13 @@ export function formatAge(ageMs: number): string {
 
 export async function listSkills(sessionId?: string): Promise<CachedSkillInfo[]> {
   try {
-    // Sort newest-first before the dedup pass below: fs.readdir's returned order is
-    // filesystem-dependent (commonly filename order, not chronological), and the outputId's
-    // sha suffix is unrelated to recency. Without this sort, the dedup-by-first-seen loop below
-    // could pick an arbitrary older version of a multiply-cached skill instead of the newest.
+    // Sort newest-first before the dedup pass below: fs.readdir's returned order is filesystem-dependent (commonly filename order, not chronological), and the outputId's sha suffix is unrelated to recency. Without this sort, the dedup-by-first-seen loop below could pick an arbitrary older version of a multiply-cached skill instead of the newest.
     const metas = (await listOutputs()).sort((a, b) => b.ts - a.ts)
     const results: CachedSkillInfo[] = []
     const seen = new Set<string>()
 
     for (const meta of metas) {
-      // Boundary-checked prefix match (the trailing '-' matters): without it, a session id
-      // whose safe fragment is a strict string-prefix of another session's fragment (e.g.
-      // 'sess-a' vs 'sess-ab') would conflate the two -- 'sess-ab-skill-sha'.startsWith('sess-a')
-      // is true even though they're different sessions. Mirrors hasSessionOutput's identical guard.
+      // Boundary-checked prefix match (the trailing '-' matters): without it, a session id whose safe fragment is a strict string-prefix of another session's fragment (e.g. 'sess-a' vs 'sess-ab') would conflate the two -- 'sess-ab-skill-sha'.startsWith('sess-a') is true even though they're different sessions. Mirrors hasSessionOutput's identical guard.
       if (sessionId && !meta.outputId.startsWith(`${safeSessionFragment(sessionId)}-`)) {
         continue
       }
@@ -860,11 +758,7 @@ export async function listSkills(sessionId?: string): Promise<CachedSkillInfo[]>
       seen.add(meta.skillName)
 
       const dir = skillOutputsDir()
-      // Recover the session fragment by stripping the known '-<name>-<sha>' suffix from
-      // the tail of outputId, rather than splitting on the first hyphen: a session id's
-      // safe fragment (up to 16 chars of [a-zA-Z0-9_-]) commonly contains its own hyphens
-      // (e.g. a UUID), so splitting on the first '-' truncated the fragment early and
-      // desynced compactFileId from the path storeCompact actually wrote.
+      // Recover the session fragment by stripping the known '-<name>-<sha>' suffix from the tail of outputId, rather than splitting on the first hyphen: a session id's safe fragment (up to 16 chars of [a-zA-Z0-9_-]) commonly contains its own hyphens (e.g. a UUID), so splitting on the first '-' truncated the fragment early and desynced compactFileId from the path storeCompact actually wrote.
       const sanitizedName = sanitizeSkillId(meta.skillName)
       const outputSuffix = `-${sanitizedName}-${meta.contentSha}`
       const safeSession = meta.outputId.endsWith(outputSuffix)
@@ -988,21 +882,7 @@ export async function installedSkillPath(skillName: string): Promise<string | nu
   }
 }
 
-/**
- * Evict skill-output entries (paired .meta/.txt files, keyed by each entry's
- * stored `ts`) beyond maxCount or older than maxAgeMs. Sync, matching prune-cache /
- * clean-cache's synchronous CLI path (mirrors getCompactAnySessionSync's sync sibling
- * pattern for the same reason).
- *
- * This directory doesn't use disk_cache.ts's generic pruneBlobs: that helper only
- * recognizes single self-contained '<id>.json' blobs, but a skill output is a group
- * of related files (.meta metadata + .txt body) that must be evicted together, so it
- * needs its own eviction pass. Sidecar .hits/@compact files are left in place —
- * they're small and self-heal via storeCompact/incrementSkillHit's own atomic writes
- * on next access.
- *
- * Returns the number of evicted entries (not the number of files removed).
- */
+/** Evict skill-output entries (paired .meta/.txt files, keyed by each entry's stored `ts`) beyond maxCount or older than maxAgeMs. Sync, matching prune-cache / clean-cache's synchronous CLI path (mirrors getCompactAnySessionSync's sync sibling pattern for the same reason). This directory doesn't use disk_cache.ts's generic pruneBlobs: that helper only recognizes single self-contained '<id>.json' blobs, but a skill output is a group of related files (.meta metadata + .txt body) that must be evicted together, so it needs its own eviction pass. Sidecar .hits/@compact files are left in place — they're small and self-heal via storeCompact/incrementSkillHit's own atomic writes on next access. Returns the number of evicted entries (not the number of files removed). */
 export function pruneSkillOutputs(
   maxCount: number = DEFAULT_MAX_COUNT,
   maxAgeMs: number = DEFAULT_MAX_AGE_MS,

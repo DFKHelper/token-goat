@@ -1,21 +1,15 @@
-/**
- * Extract failing test blocks from test runner output.
- */
+/** Extract failing test blocks from test runner output. */
 
 import { stripAnsiEscapes } from './render/ansi.js';
 import { displaySafeJson } from './paths.js';
 
-/**
- * A single failure block with name and body.
- */
+/** A single failure block with name and body. */
 export interface FailureBlock {
   name: string;
   body: string;
 }
 
-/**
- * Result of parsing test failures from output.
- */
+/** Result of parsing test failures from output. */
 export interface FailureResult {
   runner: string;
   blocks: FailureBlock[];
@@ -23,9 +17,7 @@ export interface FailureResult {
   statsLine: string;
 }
 
-/**
- * Get count of failures.
- */
+/** Get count of failures. */
 export function getFailureCount(result: FailureResult): number {
   return result.blocks.length || result.summaryLines.length;
 }
@@ -39,9 +31,7 @@ const GO_FAIL = /^--- FAIL:\s+(\S+)/;
 const CARGO_FAIL = /^test (\S+) \.\.\. FAILED/;
 const CARGO_SECTION = /^---- (\S+) (?:stdout|stderr) ----$/;
 const CARGO_RESULT = /^test result:/;
-// Vitest prints each failure as ` FAIL  <file> > <test name>` under a `⎯ Failed Tests N ⎯` banner,
-// with the assertion detail on the very next line. The leading space distinguishes it from Jest's
-// column-0 `FAIL <file>` summary line.
+// Vitest prints each failure as ` FAIL  <file> > <test name>` under a `⎯ Failed Tests N ⎯` banner, with the assertion detail on the very next line. The leading space distinguishes it from Jest's column-0 `FAIL <file>` summary line.
 const VITEST_FAIL_HEADER = /^\s+FAIL\s+(.+?)\s*$/;
 const VITEST_BANNER = /⎯+\s*Failed Tests\s+\d+\s*⎯+/;
 const VITEST_SEPARATOR = /^⎯+.*⎯+$/;
@@ -56,8 +46,7 @@ function detectRunner(text: string): string {
   if (/\bFAILED\b.+::test_/.test(text) || /short test summary/i.test(text)) {
     return 'pytest';
   }
-  // Checked before jest: both print `FAIL`, but vitest's banner and its `Test Files`/`Tests`
-  // summary pair are unambiguous, and its FAIL lines are indented where jest's sit at column 0.
+  // Checked before jest: both print `FAIL`, but vitest's banner and its `Test Files`/`Tests` summary pair are unambiguous, and its FAIL lines are indented where jest's sit at column 0.
   if (VITEST_BANNER.test(text) || (/^\s*Test Files\s+/m.test(text) && /^\s*Tests\s+\d+\s+(failed|passed)/m.test(text))) {
     return 'vitest';
   }
@@ -211,11 +200,7 @@ function extractJest(lines: string[]): FailureResult {
 }
 
 function extractVitest(lines: string[]): FailureResult {
-  // One block per ` FAIL  file > name` header, body running to the next FAIL, the [i/j] separator,
-  // or the summary. Anchoring on FAIL headers means the count is exactly the number of failing
-  // tests -- not the several keyword-bearing lines (`Failed Tests`, `AssertionError`) the generic
-  // extractor was inflating a single failure into -- and the assertion detail that follows each
-  // header is kept in that block's body instead of being dropped.
+  // One block per ` FAIL  file > name` header, body running to the next FAIL, the [i/j] separator, or the summary. Anchoring on FAIL headers means the count is exactly the number of failing tests -- not the several keyword-bearing lines (`Failed Tests`, `AssertionError`) the generic extractor was inflating a single failure into -- and the assertion detail that follows each header is kept in that block's body instead of being dropped.
   const result: FailureResult = { runner: 'vitest', blocks: [], summaryLines: [], statsLine: '' };
   let inBlock = false;
   let currentName = '';
@@ -284,8 +269,7 @@ function extractGo(lines: string[]): FailureResult {
       continue;
     }
 
-    // A bare FAIL/PASS/ok summary line (unindented) closes the block; the
-    // package-summary form (real content after the token) carries the stats
+    // A bare FAIL/PASS/ok summary line (unindented) closes the block; the package-summary form (real content after the token) carries the stats
     if (/^(FAIL|PASS|ok)(\s|$)/.test(s)) {
       if (/^(?:FAIL|ok)\s+\S/.test(s)) {
         result.statsLine = s;
@@ -319,8 +303,7 @@ function extractCargo(lines: string[]): FailureResult {
     statsLine: '',
   };
 
-  // First pass: collect failing test names (in order) and their one-line
-  // summaries, plus the final stats line.
+  // First pass: collect failing test names (in order) and their one-line summaries, plus the final stats line.
   const failNames: string[] = [];
   const summaryByName = new Map<string, string>();
 
@@ -340,8 +323,7 @@ function extractCargo(lines: string[]): FailureResult {
 
   // Second pass: cargo's detail lives in separate `---- name stdout ----`
   // / `---- name stderr ----` sections, keyed by test name. Accumulate
-  // until the next section header, a `failures:` recap, a `test result:`
-  // line, or end of input closes the section.
+  // until the next section header, a `failures:` recap, a `test result:` line, or end of input closes the section.
   const detailByName = new Map<string, string[]>();
   let currentName = '';
   let currentBody: string[] = [];
@@ -402,9 +384,7 @@ function extractGeneric(lines: string[]): FailureResult {
 
 // ───────────────────────────────────────────────────────────────────────────── Public API ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Parse test runner output and return only the failing blocks.
- */
+/** Parse test runner output and return only the failing blocks. */
 export function extractFailures(text: string, options?: { runner?: string }): FailureResult {
   const cleaned = stripAnsiEscapes(text);
   const lines = cleaned.split('\n');
@@ -428,9 +408,7 @@ export function extractFailures(text: string, options?: { runner?: string }): Fa
   return extractGeneric(lines);
 }
 
-/**
- * Format failures as human-readable text.
- */
+/** Format failures as human-readable text. */
 export function formatFailuresText(result: FailureResult): string {
   if (result.blocks.length === 0 && result.summaryLines.length === 0) {
     return 'No failures found.';
@@ -459,9 +437,7 @@ export function formatFailuresText(result: FailureResult): string {
   return parts.join('\n');
 }
 
-/**
- * Format failures as JSON.
- */
+/** Format failures as JSON. */
 export function formatFailuresJson(result: FailureResult): string {
   return displaySafeJson(
     {
@@ -475,13 +451,7 @@ export function formatFailuresJson(result: FailureResult): string {
 
 // ───────────────────────────────────────────────────────────────────────────── Delta (--delta) ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Result of diffing a failure-signature snapshot from a prior run against
- * the current one. `stillFailing` is intentionally not summarized further
- * here -- callers that want a compact report show its length, not its
- * contents; this type carries the full list so a caller that wants detail
- * still can.
- */
+/** Result of diffing a failure-signature snapshot from a prior run against the current one. `stillFailing` is intentionally not summarized further here -- callers that want a compact report show its length, not its contents; this type carries the full list so a caller that wants detail still can. */
 export interface FailureDelta {
   hasBaseline: boolean;
   newlyFailing: string[];
@@ -489,17 +459,7 @@ export interface FailureDelta {
   stillFailing: string[];
 }
 
-/**
- * Extract a stable per-failure identity list from a parsed result, for
- * diffing across runs. Block names (pytest/jest/go/cargo) are the same test
- * identity the extractors already isolate out of the runner's own failure
- * headers (e.g. pytest's `___ test_foo ___` separator, Go's `--- FAIL:
- * TestFoo`) -- none of them embed a source line number, so line-number
- * drift between two runs of the same test never registers as "a different
- * test". Falls back to summary lines when a runner has no block structure
- * (pytest's FAILED-line fallback path, and the generic/unknown runner).
- * Deduplicated, insertion order preserved.
- */
+/** Extract a stable per-failure identity list from a parsed result, for diffing across runs. Block names (pytest/jest/go/cargo) are the same test identity the extractors already isolate out of the runner's own failure headers (e.g. pytest's `___ test_foo ___` separator, Go's `--- FAIL: TestFoo`) -- none of them embed a source line number, so line-number drift between two runs of the same test never registers as "a different test". Falls back to summary lines when a runner has no block structure (pytest's FAILED-line fallback path, and the generic/unknown runner). Deduplicated, insertion order preserved. */
 export function failureSignatures(result: FailureResult): string[] {
   const raw =
     result.blocks.length > 0
@@ -508,18 +468,7 @@ export function failureSignatures(result: FailureResult): string[] {
   return Array.from(new Set(raw));
 }
 
-/**
- * Diff a previous failure-signature snapshot against the current run's
- * signatures.
- *
- * `prevSignatures === null` means no baseline exists yet for this
- * project/key (the first `--delta` invocation, or a wiped/corrupted state
- * file). Rather than reporting an empty, uninformative delta, everything
- * currently failing is reported as `newlyFailing` -- the first run still
- * surfaces the full failure list (useful on its own), and the caller's
- * output makes clear it's establishing a baseline rather than showing a
- * real regression set.
- */
+/** Diff a previous failure-signature snapshot against the current run's signatures. `prevSignatures === null` means no baseline exists yet for this project/key (the first `--delta` invocation, or a wiped/corrupted state file). Rather than reporting an empty, uninformative delta, everything currently failing is reported as `newlyFailing` -- the first run still surfaces the full failure list (useful on its own), and the caller's output makes clear it's establishing a baseline rather than showing a real regression set. */
 export function computeFailureDelta(prevSignatures: string[] | null, currSignatures: string[]): FailureDelta {
   if (prevSignatures === null) {
     return { hasBaseline: false, newlyFailing: [...currSignatures], newlyFixed: [], stillFailing: [] };
@@ -534,12 +483,7 @@ export function computeFailureDelta(prevSignatures: string[] | null, currSignatu
   };
 }
 
-/**
- * Format a delta result as human-readable text. Still-failing tests are
- * reported as a count, not a full list -- that's the point of `--delta`: an
- * iterate-fix-rerun loop wants "did I fix what I intended, did I break
- * anything new", not a re-dump of everything already known to be failing.
- */
+/** Format a delta result as human-readable text. Still-failing tests are reported as a count, not a full list -- that's the point of `--delta`: an iterate-fix-rerun loop wants "did I fix what I intended, did I break anything new", not a re-dump of everything already known to be failing. */
 export function formatFailureDeltaText(delta: FailureDelta, runner: string): string {
   if (!delta.hasBaseline) {
     const lines = [
@@ -575,11 +519,7 @@ export function formatFailureDeltaText(delta: FailureDelta, runner: string): str
   return lines.join('\n');
 }
 
-/**
- * Format a delta result as JSON. Mirrors formatFailureDeltaText's
- * "still-failing is a count, not a dump" choice -- `stillFailingCount` only,
- * not `stillFailing: string[]`, keeping the JSON and text shapes symmetric.
- */
+/** Format a delta result as JSON. Mirrors formatFailureDeltaText's "still-failing is a count, not a dump" choice -- `stillFailingCount` only, not `stillFailing: string[]`, keeping the JSON and text shapes symmetric. */
 export function formatFailureDeltaJson(delta: FailureDelta, runner: string): string {
   return displaySafeJson(
     {

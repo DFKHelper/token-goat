@@ -1,19 +1,6 @@
-// Regression (SKILL-HIT-LOCK-TOCTOU): incrementSkillHit used to do a plain read-modify-write on
-// its <skill>.hits sidecar with no concurrency protection -- two callers hitting the same skill
-// at nearly the same time could both read count:N, both increment to N+1 locally, and whichever
-// wrote last silently dropped the other caller's hit. The fix wraps the read-modify-write in an
-// mkdir-based lock (acquireSkillHitLock in skill_cache.ts).
+// Regression (SKILL-HIT-LOCK-TOCTOU): incrementSkillHit used to do a plain read-modify-write on its <skill>.hits sidecar with no concurrency protection -- two callers hitting the same skill at nearly the same time could both read count:N, both increment to N+1 locally, and whichever wrote last silently dropped the other caller's hit. The fix wraps the read-modify-write in an mkdir-based lock (acquireSkillHitLock in skill_cache.ts).
 //
-// To prove the race deterministically instead of hoping real scheduling happens to interleave,
-// this guards fs.readFile for one specific hits file with a synchronization barrier: every
-// concurrent read of that path is held open until `expectedConcurrent` reads are simultaneously
-// pending, then all are released together -- forcing every unlocked caller to observe the same
-// pre-increment count before any of them writes. A short escape-hatch timeout releases a solo
-// pending read on its own so the locked (fixed) case -- where a correct lock never lets more than
-// one caller reach this read at a time -- doesn't hang waiting for a concurrency level the fix is
-// specifically designed to prevent. vi.spyOn cannot patch fs/promises exports (non-configurable),
-// so a module mock with hoisted state is the portable way to inject this, matching
-// pack_toctou_race.test.ts, parser_sha_race.test.ts, and worker_draining_rmfail.test.ts.
+// To prove the race deterministically instead of hoping real scheduling happens to interleave, this guards fs.readFile for one specific hits file with a synchronization barrier: every concurrent read of that path is held open until `expectedConcurrent` reads are simultaneously pending, then all are released together -- forcing every unlocked caller to observe the same pre-increment count before any of them writes. A short escape-hatch timeout releases a solo pending read on its own so the locked (fixed) case -- where a correct lock never lets more than one caller reach this read at a time -- doesn't hang waiting for a concurrency level the fix is specifically designed to prevent. vi.spyOn cannot patch fs/promises exports (non-configurable), so a module mock with hoisted state is the portable way to inject this, matching pack_toctou_race.test.ts, parser_sha_race.test.ts, and worker_draining_rmfail.test.ts.
 const mockState = vi.hoisted(() => ({
   delayReadPath: '' as string,
   expectedConcurrent: 0,
@@ -42,9 +29,7 @@ vi.mock('fs/promises', async (importOriginal) => {
     }
     return (actual.readFile as (...args: unknown[]) => Promise<unknown>)(p, ...rest)
   }) as typeof actual.readFile
-  // Fails the first mkdir attempt against a specific path with a non-EEXIST error, simulating
-  // the transient Windows race where a just-rmdir'd lock directory briefly rejects an immediate
-  // re-mkdir with e.g. EPERM/EBUSY instead of ENOENT/success.
+  // Fails the first mkdir attempt against a specific path with a non-EEXIST error, simulating the transient Windows race where a just-rmdir'd lock directory briefly rejects an immediate re-mkdir with e.g. EPERM/EBUSY instead of ENOENT/success.
   const guardedMkdir = (async (p: unknown, ...rest: unknown[]) => {
     if (mockState.failMkdirPath && typeof p === 'string' && p === mockState.failMkdirPath) {
       mockState.failMkdirPath = ''
@@ -57,9 +42,7 @@ vi.mock('fs/promises', async (importOriginal) => {
   return { ...actual, default: actual, readFile: guardedReadFile, mkdir: guardedMkdir }
 })
 
-// vi.mock is hoisted -- wraps the real redactSecrets in a spy (calls through by default) so
-// tests can both assert it ran and force a one-off throw to exercise storeOutput/storeCompact's
-// fail-safe path, mirroring disk_cache.test.ts's identical setup for storeBlob().
+// vi.mock is hoisted -- wraps the real redactSecrets in a spy (calls through by default) so tests can both assert it ran and force a one-off throw to exercise storeOutput/storeCompact's fail-safe path, mirroring disk_cache.test.ts's identical setup for storeBlob().
 vi.mock('../src/secret_redact.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   const real = original['redactSecrets'] as (text: string) => { text: string; count: number }
@@ -69,8 +52,7 @@ vi.mock('../src/secret_redact.js', async (importOriginal) => {
   }
 })
 
-// vi.mock is hoisted -- wraps the real recordStat in a spy so tests can assert a
-// 'secret_redacted' stat fired, mirroring disk_cache.test.ts.
+// vi.mock is hoisted -- wraps the real recordStat in a spy so tests can assert a 'secret_redacted' stat fired, mirroring disk_cache.test.ts.
 vi.mock('../src/stats.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   const real = original['recordStat'] as (...args: unknown[]) => void
@@ -496,10 +478,7 @@ describe('storeOutput and getCompact round trip', () => {
 
     expect(meta).not.toBeNull()
     expect(meta!.skillName).toContain('testskill')
-    // Both are deterministic functions of `body` (sha256 hex, first 16 chars; UTF-8 byte
-    // length) -- pin the exact values rather than just the format/positivity, which would
-    // still pass on a hash truncated to the wrong length or a byte count off by any amount
-    // that stays positive.
+    // Both are deterministic functions of `body` (sha256 hex, first 16 chars; UTF-8 byte length) -- pin the exact values rather than just the format/positivity, which would still pass on a hash truncated to the wrong length or a byte count off by any amount that stays positive.
     expect(meta!.contentSha).toBe('183c50b28c5a8ebd')
     expect(meta!.bodyBytes).toBe(40)
   })
@@ -523,9 +502,7 @@ describe('storeOutput and getCompact round trip', () => {
   })
 
   it('does not introduce replacement characters when truncating multi-byte UTF-8 at arbitrary boundaries', async () => {
-    // Regression test: truncation must find valid UTF-8 character boundaries.
-    // Using a 3-byte character (中) repeated such that the truncation point
-    // lands in the middle of a character, not at a boundary.
+    // Regression test: truncation must find valid UTF-8 character boundaries. Using a 3-byte character (中) repeated such that the truncation point lands in the middle of a character, not at a boundary.
     const char = '中' // 3 bytes in UTF-8
     // Create body of ~300KB. 300*1024 / 3 = 102400, so we get exactly 307200 bytes
     const largeBody = char.repeat(102400)
@@ -534,14 +511,11 @@ describe('storeOutput and getCompact round trip', () => {
     expect(meta).not.toBeNull()
     expect(meta!.truncated).toBe(true)
 
-    // Verify the stored body doesn't contain replacement characters (U+FFFD).
-    // If truncation happened at a character boundary, no replacements would appear.
+    // Verify the stored body doesn't contain replacement characters (U+FFFD). If truncation happened at a character boundary, no replacements would appear.
     const storedPath = path.resolve(tempDir, `${meta!.outputId}.txt`)
     const stored = await fs.readFile(storedPath, 'utf-8')
     expect(stored).not.toContain('�')
-    // Pin the exact deterministic post-truncation length (in UTF-16 code units) so an
-    // off-by-N shift in the boundary-finding logic -- which would still avoid replacement
-    // characters and still satisfy a bare ">0" check -- is caught too.
+    // Pin the exact deterministic post-truncation length (in UTF-16 code units) so an off-by-N shift in the boundary-finding logic -- which would still avoid replacement characters and still satisfy a bare ">0" check -- is caught too.
     expect(stored.length).toBe(87381)
   })
 
@@ -722,9 +696,7 @@ describe('suite-named skill compact round-trip (colon in name)', () => {
 
     // Pre-fix: listSkills used .replace(':', '_') (no /g, only first colon) while storeCompact kept colons, so compactLen was always 0.
     expect(entry).toBeDefined()
-    // compactLen is the on-disk byte size of compactText -- pin the exact deterministic value
-    // (fixed ASCII fixture, no sourceSha prefix here) instead of just ">0", which the pre-fix
-    // regression's zero value would also technically satisfy for any non-zero-length text.
+    // compactLen is the on-disk byte size of compactText -- pin the exact deterministic value (fixed ASCII fixture, no sourceSha prefix here) instead of just ">0", which the pre-fix regression's zero value would also technically satisfy for any non-zero-length text.
     expect(entry!.compactLen).toBe(Buffer.byteLength(compactText, 'utf-8'))
   })
 
@@ -784,8 +756,7 @@ describe('sanitizeSkillId collision regression', () => {
 
 describe('listSkills regression - hyphenated session id', () => {
   it('resolves compactLen correctly when the session id contains embedded hyphens (fail-on-buggy: splitting the outputId on the first hyphen truncated a UUID-shaped session fragment)', async () => {
-    // A realistic UUID session id: safeSessionFragment keeps all 16 leading chars,
-    // several of which are hyphens, since UUIDs are alphanumeric-and-hyphen throughout.
+    // A realistic UUID session id: safeSessionFragment keeps all 16 leading chars, several of which are hyphens, since UUIDs are alphanumeric-and-hyphen throughout.
     const sessionId = '550e8400-e29b-41d4-a716-446655440000'
     const skillName = 'myskill'
     await storeOutput(sessionId, skillName, 'Body content')
@@ -794,21 +765,15 @@ describe('listSkills regression - hyphenated session id', () => {
     const skills = await listSkills(sessionId)
     const skill = skills.find((s) => s.name === skillName)
     expect(skill).toBeDefined()
-    // Pin the exact deterministic byte size instead of just ">0" -- the hyphen-splitting bug
-    // this test targets resolves to the WRONG skill entry (or none), not merely a zero length,
-    // but an exact-value pin also catches any regression in compactLen's own byte-count logic.
+    // Pin the exact deterministic byte size instead of just ">0" -- the hyphen-splitting bug this test targets resolves to the WRONG skill entry (or none), not merely a zero length, but an exact-value pin also catches any regression in compactLen's own byte-count logic.
     expect(skill!.compactLen).toBe(Buffer.byteLength('Compact content', 'utf-8'))
   })
 
   it('picks the newest cached version of a skill, not whichever meta file readdir happens to return first (fail-on-buggy: dedup-by-first-seen without a ts sort surfaces an arbitrary older version)', async () => {
-    // <=16 chars so it matches production's outputIdFor (which truncates the session fragment
-    // to 16 chars via safeSessionFragment) -- a longer raw id here would desync this fixture's
-    // hand-built outputIds from what storeOutput/listSkills actually produce.
+    // <=16 chars so it matches production's outputIdFor (which truncates the session fragment to 16 chars via safeSessionFragment) -- a longer raw id here would desync this fixture's hand-built outputIds from what storeOutput/listSkills actually produce.
     const sessionId = 'sessionrepro1234'
     const skillName = 'myskill'
-    // Deliberately give the OLDER entry an outputId that sorts alphabetically BEFORE the
-    // NEWER entry's (fs.readdir's order is filesystem-dependent, commonly filename order,
-    // not chronological -- the sha suffix is unrelated to recency).
+    // Deliberately give the OLDER entry an outputId that sorts alphabetically BEFORE the NEWER entry's (fs.readdir's order is filesystem-dependent, commonly filename order, not chronological -- the sha suffix is unrelated to recency).
     await fs.writeFile(
       path.resolve(tempDir, `${sessionId}-${skillName}-aaaaaaaa.meta`),
       JSON.stringify({ outputId: `${sessionId}-${skillName}-aaaaaaaa`, skillName, contentSha: 'aaaaaaaa', bodyBytes: 5, ts: 1000, truncated: false }),
@@ -827,8 +792,7 @@ describe('listSkills regression - hyphenated session id', () => {
   })
 
   it('does not leak another session skill whose session fragment is a superstring of the queried session id (fail-on-buggy: listSkills\' prefix check omits the trailing "-" boundary hasSessionOutput uses)', async () => {
-    // 'sess-a' is a strict string-prefix of 'sess-ab', so an unbounded .startsWith check
-    // conflates the two sessions even though they are distinct.
+    // 'sess-a' is a strict string-prefix of 'sess-ab', so an unbounded .startsWith check conflates the two sessions even though they are distinct.
     await storeOutput('sess-a', 'skillone', 'Body for session sess-a')
     await storeOutput('sess-ab', 'skilltwo', 'Body for session sess-ab')
 
@@ -1053,10 +1017,7 @@ describe('getSkillFilePath / installedSkillPath disk fallback', () => {
 })
 
 describe('installedSkillPath — plugin-scoped `plugin:skill` resolution (regression)', () => {
-  // Regression: installedSkillPath treated a plugin-scoped name (e.g. `chrome-devtools-mcp:a11y-debugging`)
-  // as one literal directory segment under ~/.claude/skills/<name>/SKILL.md, which never matches how
-  // plugin skills are actually laid out on disk (~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/skills/<skill>/SKILL.md,
-  // discoverable only via installed_plugins.json). Every plugin skill silently resolved to null.
+  // Regression: installedSkillPath treated a plugin-scoped name (e.g. `chrome-devtools-mcp:a11y-debugging`) as one literal directory segment under ~/.claude/skills/<name>/SKILL.md, which never matches how plugin skills are actually laid out on disk (~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/skills/<skill>/SKILL.md, discoverable only via installed_plugins.json). Every plugin skill silently resolved to null.
   const sourceDir = path.resolve(__dirname, '.temp-skill-source-plugin')
   const pluginInstallDir = path.resolve(__dirname, '.temp-plugin-install', 'my-plugin', '1.0.0')
   const manifestPath = path.resolve(__dirname, '.temp-plugin-manifest.json')
@@ -1208,12 +1169,7 @@ describe('incrementSkillHit concurrency (regression: unlocked read-modify-write 
       const CONCURRENCY = 5
       const hitsPath = path.join(raceDir, `${SKILL}.hits`)
 
-      // Force every concurrent read of this skill's hits file to pause until CONCURRENCY reads
-      // are simultaneously pending, then release them all together -- guaranteeing every
-      // unlocked caller observes the same pre-increment count instead of relying on real
-      // scheduling luck. A correct lock never lets more than one caller reach this read at a
-      // time, so under the fix each read hits the barrier's escape-hatch timeout and proceeds
-      // solo instead of ever reaching the CONCURRENCY threshold.
+      // Force every concurrent read of this skill's hits file to pause until CONCURRENCY reads are simultaneously pending, then release them all together -- guaranteeing every unlocked caller observes the same pre-increment count instead of relying on real scheduling luck. A correct lock never lets more than one caller reach this read at a time, so under the fix each read hits the barrier's escape-hatch timeout and proceeds solo instead of ever reaching the CONCURRENCY threshold.
       mockState.delayReadPath = hitsPath
       mockState.expectedConcurrent = CONCURRENCY
 
@@ -1232,10 +1188,7 @@ describe('incrementSkillHit concurrency (regression: unlocked read-modify-write 
       const hitsPath = path.join(raceDir, `${SKILL}.hits`)
       const lockPath = `${hitsPath}.lock`
 
-      // Simulate the transient Windows race this bug actually surfaces from: mkdir on the lock
-      // path fails with a non-EEXIST error (e.g. EPERM/EBUSY right after a prior holder's rmdir),
-      // which acquireSkillHitLock treats as "give up immediately" rather than retrying. Seed the
-      // hits file with a known value first so an unprotected write is directly observable.
+      // Simulate the transient Windows race this bug actually surfaces from: mkdir on the lock path fails with a non-EEXIST error (e.g. EPERM/EBUSY right after a prior holder's rmdir), which acquireSkillHitLock treats as "give up immediately" rather than retrying. Seed the hits file with a known value first so an unprotected write is directly observable.
       await fs.mkdir(raceDir, { recursive: true })
       await fs.writeFile(hitsPath, JSON.stringify({ count: 1, lastTs: 0 }), 'utf-8')
       mockState.failMkdirPath = lockPath
@@ -1319,11 +1272,7 @@ describe('Compact staleness tracking', () => {
     const skills = await listSkills(sessionId)
     const skill = skills.find((s) => s.name === 'myskill')
     expect(skill).toBeDefined()
-    // compactStale is computed against the CURRENT body's contentSha, and the second
-    // storeOutput call above changed the body after the compact was stored against the
-    // original SHA, so it must be true here -- pin the real value instead of just
-    // "defined", which the old (inverted) inline comment's claimed "should be false" would
-    // also have silently passed under.
+    // compactStale is computed against the CURRENT body's contentSha, and the second storeOutput call above changed the body after the compact was stored against the original SHA, so it must be true here -- pin the real value instead of just "defined", which the old (inverted) inline comment's claimed "should be false" would also have silently passed under.
     expect(skill!.compactStale).toBe(true)
   })
 })

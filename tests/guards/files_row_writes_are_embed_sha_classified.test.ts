@@ -1,22 +1,4 @@
-/**
- * Structural guard for the "reparse drops embed_sha" defect class.
- *
- * `parser.ts::writeParseResult` used to re-insert a file's `files` row on every reparse (a parser-
- * fingerprint bump, a touched mtime, `--force-refresh`) with no `embed_sha` column at all, so the
- * next embedding pass always saw "no embedding on record" and recomputed one for content that
- * already had a correct, unchanged embedding -- content and embedding freshness are independent
- * keys, and a writer that drops one of them on every write forces full re-embedding for free.
- *
- * A per-site regression test (tests/parser_embed_sha_preserved_on_reparse.test.ts) pins that one
- * function's fix. It says nothing about the next `files`-table writer someone adds -- this repo
- * already has 6 other `INSERT INTO files`/`UPDATE files SET` sites across db.ts, embeddings.ts, and
- * worker.ts, each of which either has to carry `embed_sha` forward, deliberately clear it, write a
- * freshly computed one, or not touch the column at all -- and a new one is exactly as easy to get
- * silently wrong (an unconditional re-insert with no embed_sha column) as writeParseResult's was.
- *
- * So this guard enumerates every literal `INSERT INTO files`/`UPDATE files SET` SQL statement found
- * in `src/` and requires an explicit classification for each. An unclassified write site is red.
- */
+/** Structural guard for the "reparse drops embed_sha" defect class. `parser.ts::writeParseResult` used to re-insert a file's `files` row on every reparse (a parser- fingerprint bump, a touched mtime, `--force-refresh`) with no `embed_sha` column at all, so the next embedding pass always saw "no embedding on record" and recomputed one for content that already had a correct, unchanged embedding -- content and embedding freshness are independent keys, and a writer that drops one of them on every write forces full re-embedding for free. A per-site regression test (tests/parser_embed_sha_preserved_on_reparse.test.ts) pins that one function's fix. It says nothing about the next `files`-table writer someone adds -- this repo already has 6 other `INSERT INTO files`/`UPDATE files SET` sites across db.ts, embeddings.ts, and worker.ts, each of which either has to carry `embed_sha` forward, deliberately clear it, write a freshly computed one, or not touch the column at all -- and a new one is exactly as easy to get silently wrong (an unconditional re-insert with no embed_sha column) as writeParseResult's was. So this guard enumerates every literal `INSERT INTO files`/`UPDATE files SET` SQL statement found in `src/` and requires an explicit classification for each. An unclassified write site is red. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -32,8 +14,7 @@ const SRC_DIR = path.join(HERE, '..', '..', 'src')
 interface WriteSite {
   readonly file: string
   readonly line: number
-  /** The SQL statement's own text (trimmed), used as the classification key so a line-number
-   * shift from unrelated edits nearby does not itself invalidate a classification. */
+  /** The SQL statement's own text (trimmed), used as the classification key so a line-number shift from unrelated edits nearby does not itself invalidate a classification. */
   readonly sql: string
 }
 
@@ -67,13 +48,11 @@ function writeSites(): readonly WriteSite[] {
 }
 
 type Bucket =
-  /** A fresh row write that carries the PRIOR embed_sha forward when content is unchanged, and
-   * resets it (to a fresh value or null) when content changed -- the C2 fix's own shape. */
+  /** A fresh row write that carries the PRIOR embed_sha forward when content is unchanged, and resets it (to a fresh value or null) when content changed -- the C2 fix's own shape. */
   | 'carries-embed-sha-forward-on-unchanged-content'
   /** Writes a freshly computed embed_sha after a real embedding just succeeded for this content. */
   | 'writes-a-freshly-computed-embed-sha'
-  /** Deliberately invalidates embed_sha (sets it NULL) because the chunks/vectors it described were
-   * just removed or are about to be recomputed -- an intentional reset, not an accidental drop. */
+  /** Deliberately invalidates embed_sha (sets it NULL) because the chunks/vectors it described were just removed or are about to be recomputed -- an intentional reset, not an accidental drop. */
   | 'deliberately-clears-embed-sha'
   /** Touches only unrelated columns (mtime or other bookkeeping); embed_sha is not part of this statement's column list at all, so there is nothing to carry forward or drop. No write site is in this bucket today -- the retry counters that used to be were moved out of `files` into `index_retries`, so a `files` row again means "this file is indexed". */
   | 'does-not-touch-the-embed-sha-column'
@@ -83,9 +62,7 @@ interface Classification {
   readonly reason: string
 }
 
-/** Keyed on file + a stable, whitespace-normalized prefix of the SQL text, not line number (which
- * shifts under the block-comment collapse `stripComments` performs) and not the trailing
- * whitespace an `[^'"`]*` capture can pick up right before a template-literal `${...}` splice. */
+/** Keyed on file + a stable, whitespace-normalized prefix of the SQL text, not line number (which shifts under the block-comment collapse `stripComments` performs) and not the trailing whitespace an `[^'"`]*` capture can pick up right before a template-literal `${...}` splice. */
 function key(site: WriteSite): string {
   return `${site.file}::${site.sql.replace(/\s+/g, ' ').trim().slice(0, 50)}`
 }
@@ -182,12 +159,7 @@ describe('every files-table write site is classified for embed_sha handling (rep
   })
 
   it('the classified carry-forward INSERT statement still names embed_sha as a column and passes embedShaToCarry as its value', () => {
-    // The key() prefix used for classification lookup above is deliberately short (so ordinary
-    // whitespace churn does not break it), which means it cannot by itself tell "the INSERT still
-    // carries embed_sha forward" from "the INSERT was quietly narrowed back to the pre-C2 column
-    // list, which happens to share the same first 50 characters". This test reads the FULL,
-    // untruncated statement (and the .run(...) call passing its bound parameters) instead of the
-    // truncated key, so narrowing the column list without touching the shared prefix is red here.
+    // The key() prefix used for classification lookup above is deliberately short (so ordinary whitespace churn does not break it), which means it cannot by itself tell "the INSERT still carries embed_sha forward" from "the INSERT was quietly narrowed back to the pre-C2 column list, which happens to share the same first 50 characters". This test reads the FULL, untruncated statement (and the .run(...) call passing its bound parameters) instead of the truncated key, so narrowing the column list without touching the shared prefix is red here.
     const site = writeSites().find((s) => key(s) === 'parser.ts::INSERT INTO files (path, sha, mtime, language, ind')
     expect(site, 'the classified writeParseResult INSERT site was not found by the scan at all').toBeDefined()
     expect(

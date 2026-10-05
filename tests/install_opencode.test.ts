@@ -5,10 +5,7 @@ import type * as NodeOs from 'node:os'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by
-// default) so each test below can point `~` at an isolated temp dir instead of
-// touching the real `~/.config/opencode/` or `%APPDATA%\opencode\` (mirrors
-// the pattern in install_pi.test.ts).
+// vi.mock is hoisted -- wrap homedir (delegating to the real implementation by default) so each test below can point `~` at an isolated temp dir instead of touching the real `~/.config/opencode/` or `%APPDATA%\opencode\` (mirrors the pattern in install_pi.test.ts).
 vi.mock('node:os', async (importOriginal) => {
   const original = await importOriginal<typeof NodeOs>()
   return {
@@ -46,12 +43,9 @@ beforeEach(() => {
   realPlatform = process.platform
   origAppData = process.env['APPDATA']
   origXdgConfigHome = process.env['XDG_CONFIG_HOME']
-  // Always sandbox APPDATA into TMP by default, regardless of host platform: on
-  // Windows, install and uninstall remove the plugin an older token-goat wrote under
-  // %APPDATA%\opencode\, so without this they would reach the developer's real one.
+  // Always sandbox APPDATA into TMP by default, regardless of host platform: on Windows, install and uninstall remove the plugin an older token-goat wrote under %APPDATA%\opencode\, so without this they would reach the developer's real one.
   process.env['APPDATA'] = path.join(TMP, 'appdata')
-  // Sandbox XDG_CONFIG_HOME off by default too, so the ~/.config fallback tests
-  // exercise the actual fallback branch instead of a developer's real override.
+  // Sandbox XDG_CONFIG_HOME off by default too, so the ~/.config fallback tests exercise the actual fallback branch instead of a developer's real override.
   delete process.env['XDG_CONFIG_HOME']
 })
 
@@ -78,10 +72,7 @@ describe('opencodePluginPath', () => {
     )
   })
 
-  // Regression: opencode resolves its plugin root via Global.Path.config, which uses
-  // the xdg-basedir package and honors XDG_CONFIG_HOME on macOS/Linux. token-goat's
-  // installer used to hardcode ~/.config unconditionally, so a user with
-  // XDG_CONFIG_HOME set would have the plugin written somewhere opencode never looks.
+  // Regression: opencode resolves its plugin root via Global.Path.config, which uses the xdg-basedir package and honors XDG_CONFIG_HOME on macOS/Linux. token-goat's installer used to hardcode ~/.config unconditionally, so a user with XDG_CONFIG_HOME set would have the plugin written somewhere opencode never looks.
   it('resolves under $XDG_CONFIG_HOME/opencode/plugins on non-Windows when set', () => {
     setPlatform('linux')
     process.env['XDG_CONFIG_HOME'] = path.join(TMP, 'xdg-config')
@@ -174,12 +165,7 @@ describe('installOpencode', () => {
   })
 
   it('overwrites a hand-modified file wholesale instead of merging or warning', () => {
-    // Design decision (documented in opencode_install.ts): the plugin is a
-    // single generated artifact with no merge target -- opencode auto-discovers
-    // whatever file sits in its plugins directory, so there is no config file
-    // to merge into. install always reconciles it to the current template on
-    // any content difference, with no .bak and no confirmation prompt (the
-    // same reasoning as installPi/installCodex).
+    // Design decision (documented in opencode_install.ts): the plugin is a single generated artifact with no merge target -- opencode auto-discovers whatever file sits in its plugins directory, so there is no config file to merge into. install always reconciles it to the current template on any content difference, with no .bak and no confirmation prompt (the same reasoning as installPi/installCodex).
     const p = opencodePluginPath()
     fs.mkdirSync(path.dirname(p), { recursive: true })
     fs.writeFileSync(p, '// a user hand-edited this file\nexport const TokenGoatPlugin = async () => ({})\n')
@@ -255,21 +241,11 @@ describe('OPENCODE_PLUGIN_SCRIPT speaks the real hook protocol', () => {
     expect(match?.[1]).not.toMatch(/"glob"/)
   })
 
-  // Regression: callHook's inner spawnSync("token-goat", [...]) depended on PATH
-  // resolution with no shell:true -- on Windows, a global npm install resolves
-  // "token-goat" to a .cmd/.ps1 shim, which spawnSync cannot exec without
-  // shell: true, so every hook call silently failed (r.error set, callHook
-  // returning null). resolveEntryPath() reads an install-time sidecar (see
-  // installOpencode in opencode_install.ts) so callHook can invoke the real
-  // token-goat entry directly via process.execPath instead, mirroring pi.ts's
-  // identical fix.
+  // Regression: callHook's inner spawnSync("token-goat", [...]) depended on PATH resolution with no shell:true -- on Windows, a global npm install resolves "token-goat" to a .cmd/.ps1 shim, which spawnSync cannot exec without shell: true, so every hook call silently failed (r.error set, callHook returning null). resolveEntryPath() reads an install-time sidecar (see installOpencode in opencode_install.ts) so callHook can invoke the real token-goat entry directly via process.execPath instead, mirroring pi.ts's identical fix.
   it('reads the baked entry path via resolveEntryPath() before falling back to a bare PATH-resolved "token-goat"', () => {
     expect(OPENCODE_PLUGIN_SCRIPT).toMatch(/function resolveEntryPath\(\)/)
     expect(OPENCODE_PLUGIN_SCRIPT).toMatch(/token-goat-entry\.json/)
-    // The spawnSync fallback now lives in callHookViaSpawn -- callHook itself tries the
-    // in-process hook lib (resolveRelayInProcess) first, only calling callHookViaSpawn
-    // when that's unavailable. See the "in-process hook call" describe block below for
-    // coverage of the in-process path taking priority and never spawning a process.
+    // The spawnSync fallback now lives in callHookViaSpawn -- callHook itself tries the in-process hook lib (resolveRelayInProcess) first, only calling callHookViaSpawn when that's unavailable. See the "in-process hook call" describe block below for coverage of the in-process path taking priority and never spawning a process.
     const callHookMatch = /function callHookViaSpawn\([\s\S]*?\n\}/.exec(OPENCODE_PLUGIN_SCRIPT)
     expect(callHookMatch).not.toBeNull()
     const body = callHookMatch?.[0] ?? ''
@@ -289,10 +265,7 @@ describe('OPENCODE_PLUGIN_SCRIPT speaks the real hook protocol', () => {
     expect(fallbackBlock).toContain('token-goat hook')
   })
 
-  // Regression: callHook used to spawnSync a whole second node process
-  // (`token-goat hook <event>`) for every single tool call in this long-lived plugin
-  // host. It now tries an in-process import() of the sibling dist/token-goat-hook.mjs
-  // hook lib first, falling back to callHookViaSpawn only when that's unavailable.
+  // Regression: callHook used to spawnSync a whole second node process (`token-goat hook <event>`) for every single tool call in this long-lived plugin host. It now tries an in-process import() of the sibling dist/token-goat-hook.mjs hook lib first, falling back to callHookViaSpawn only when that's unavailable.
   it('tries the in-process hook lib (resolveRelayInProcess) before ever calling callHookViaSpawn', () => {
     expect(OPENCODE_PLUGIN_SCRIPT).toMatch(/function resolveRelayInProcess\(\)/)
     expect(OPENCODE_PLUGIN_SCRIPT).toMatch(/token-goat-hook\.mjs/)

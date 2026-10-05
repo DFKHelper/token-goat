@@ -11,9 +11,7 @@ import {
 } from '../src/failures_state.js';
 
 describe('failures_state', () => {
-  // Mirrors project_memory.test.ts: failuresStatePath() resolves through
-  // constants.ts::dataDir(), cached once at module load (tests/setup/isolate-home.ts), so
-  // isolation is done by wiping the shared `${dataDir()}/projects` dir before/after each test.
+  // Mirrors project_memory.test.ts: failuresStatePath() resolves through constants.ts::dataDir(), cached once at module load (tests/setup/isolate-home.ts), so isolation is done by wiping the shared `${dataDir()}/projects` dir before/after each test.
   const projectsDir = path.join(dataDir(), 'projects');
 
   beforeEach(() => {

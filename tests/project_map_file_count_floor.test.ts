@@ -1,16 +1,4 @@
-/**
- * `map`'s file count is a floor once the walk stopped at its ceiling.
- *
- * walkProject bounds itself at MAX_FILES_SCANNED (20000) and simply stops, so on a tree larger than
- * that `files.length` is exactly the ceiling and the language histogram is tallied over a partial
- * tree. formatProjectMap printed both flat -- `Files: 20000` -- which no reader can tell apart from a
- * repository that genuinely holds 20000 source files. collectWalkIndexFiles already treats the same
- * ceiling as a floor in its refusal text ("walk stopped at N; the real total is at least that"); this
- * pins the renderer to the same honesty.
- *
- * Both halves are asserted: the floor form present AND the flat form absent. A previous defect in
- * this repo printed a fabricated `lines 0-0` that a presence-only assertion sailed straight past.
- */
+/** `map`'s file count is a floor once the walk stopped at its ceiling. walkProject bounds itself at MAX_FILES_SCANNED (20000) and simply stops, so on a tree larger than that `files.length` is exactly the ceiling and the language histogram is tallied over a partial tree. formatProjectMap printed both flat -- `Files: 20000` -- which no reader can tell apart from a repository that genuinely holds 20000 source files. collectWalkIndexFiles already treats the same ceiling as a floor in its refusal text ("walk stopped at N; the real total is at least that"); this pins the renderer to the same honesty. Both halves are asserted: the floor form present AND the flat form absent. A previous defect in this repo printed a fabricated `lines 0-0` that a presence-only assertion sailed straight past. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -30,9 +18,7 @@ afterEach(() => {
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 
-// Provenance: HAND-DERIVED. Built here from the values the assertions read, never from
-// buildProjectMap's output, so the renderer is checked against a stated input rather than against
-// itself.
+// Provenance: HAND-DERIVED. Built here from the values the assertions read, never from buildProjectMap's output, so the renderer is checked against a stated input rather than against itself.
 function mapOf(over: Partial<ProjectMap>): ProjectMap {
   return {
     rootDir: path.join(os.tmpdir(), 'someproj'),
@@ -71,8 +57,7 @@ describe('formatProjectMap file count honesty', () => {
     const lines = text.split('\n')
 
     expect(lines).toContain(`Files: at least 20000 (walk stopped at the ${MAX_FILES_SCANNED}-file cap)`)
-    // The flat form is what shipped, and it is a substring of nothing in the honest line, so an
-    // exact whole-line check is what proves it is gone rather than merely reworded around.
+    // The flat form is what shipped, and it is a substring of nothing in the honest line, so an exact whole-line check is what proves it is gone rather than merely reworded around.
     expect(lines).not.toContain('Files: 20000')
     expect(lines).toContain('Languages: typescript 19000, python 1000 (counted over a truncated walk; each count is a lower bound)')
     expect(lines).not.toContain('Languages: typescript 19000, python 1000')

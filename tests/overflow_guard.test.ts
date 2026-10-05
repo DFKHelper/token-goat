@@ -117,15 +117,11 @@ describe('overflow_guard', () => {
     })
 
     it('charges each kept line by its RAW length, not its ANSI-stripped length, when accounting against the budget', () => {
-      // Regression: trimToBudget measured each line's cost via stripAnsiCodes(ln).length but
-      // kept.push(ln) retained the RAW (un-stripped) line. For ANSI-heavy lines this let the
-      // accounting discount bytes that were never actually removed from the emitted output, so
-      // the real total length of the kept lines could silently exceed the computed char budget.
+      // Regression: trimToBudget measured each line's cost via stripAnsiCodes(ln).length but kept.push(ln) retained the RAW (un-stripped) line. For ANSI-heavy lines this let the accounting discount bytes that were never actually removed from the emitted output, so the real total length of the kept lines could silently exceed the computed char budget.
       const budgetTokens = 1000
       const charBudget = (budgetTokens - 64) * 3 // 2808
 
-      // Each line is short once ANSI is stripped (5 visible chars) but nearly 3x longer once
-      // the ANSI open/close codes are counted (14 raw chars) -- a wide raw/stripped gap.
+      // Each line is short once ANSI is stripped (5 visible chars) but nearly 3x longer once the ANSI open/close codes are counted (14 raw chars) -- a wide raw/stripped gap.
       const ansiLine = '\x1b[31m' + 'x'.repeat(5) + '\x1b[0m'
       const text = Array(1000).fill(ansiLine).join('\n')
 
@@ -135,9 +131,7 @@ describe('overflow_guard', () => {
       expect(markerIdx).toBeGreaterThan(-1)
       const body = result.slice(0, markerIdx - 1) // drop the '\n' just before the marker
 
-      // The real (raw) length of what is actually kept and emitted must not exceed the char
-      // budget the function computed for itself -- this is the accounting invariant the bug
-      // violated (real raw output ran to roughly 2.5x the budget in this shape pre-fix).
+      // The real (raw) length of what is actually kept and emitted must not exceed the char budget the function computed for itself -- this is the accounting invariant the bug violated (real raw output ran to roughly 2.5x the budget in this shape pre-fix).
       expect(body.length).toBeLessThanOrEqual(charBudget)
     })
   })
@@ -201,14 +195,9 @@ describe('overflow_guard', () => {
 })
 
 describe('dense payloads are trimmed against their own divisor', () => {
-  // The entry check prices `text` by classifying it, but the trim loop's char budget multiplied by
-  // guardDivisor()'s default -- so a base64 blob was measured at ~1.09 bytes/token on the way in and
-  // spent at 3.0 bytes/token on the way out, and a 1000-token cap emitted ~2.7x that. An overflow
-  // guard that overshoots is the one failure it exists to prevent.
+  // The entry check prices `text` by classifying it, but the trim loop's char budget multiplied by guardDivisor()'s default -- so a base64 blob was measured at ~1.09 bytes/token on the way in and spent at 3.0 bytes/token on the way out, and a 1000-token cap emitted ~2.7x that. An overflow guard that overshoots is the one failure it exists to prevent.
   //
-  // Fixture provenance: HAND-DERIVED. The payload is built to satisfy classifyContent's three
-  // documented conditions (no whitespace, dense alphabet, >=16 distinct characters); the expected
-  // bound is the budget the caller asked for, not a number read off the implementation.
+  // Fixture provenance: HAND-DERIVED. The payload is built to satisfy classifyContent's three documented conditions (no whitespace, dense alphabet, >=16 distinct characters); the expected bound is the budget the caller asked for, not a number read off the implementation.
   const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 
   it('keeps a dense payload inside the token budget it was given', () => {

@@ -7,12 +7,7 @@ import type * as UtilModule from '../src/util.js'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// installOpenclaw/uninstallOpenclaw/isOpenclawInstalled fold plugin-path membership
-// checks via foldPath() for a case-insensitive-filesystem-correct comparison (Windows/
-// macOS). Mirrors tests/memory_prune_collation.test.ts's approach: mock foldPath itself
-// (not isCaseInsensitiveFs, since foldPath/isCaseInsensitiveFs call each other in-module
-// and vi.mock can't intercept same-module calls) with a toggle, so both platform branches
-// are exercised regardless of the host OS running this suite.
+// installOpenclaw/uninstallOpenclaw/isOpenclawInstalled fold plugin-path membership checks via foldPath() for a case-insensitive-filesystem-correct comparison (Windows/ macOS). Mirrors tests/memory_prune_collation.test.ts's approach: mock foldPath itself (not isCaseInsensitiveFs, since foldPath/isCaseInsensitiveFs call each other in-module and vi.mock can't intercept same-module calls) with a toggle, so both platform branches are exercised regardless of the host OS running this suite.
 vi.mock('node:os', async (importOriginal) => {
   const original = await importOriginal<typeof NodeOs>()
   return {

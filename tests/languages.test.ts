@@ -26,19 +26,11 @@ import { extractR } from '../src/languages/r.js'
 import { expectFast } from './helpers/pathological_scan.js'
 import { parseFixture } from './helpers/parse-fixture.js'
 
-// Every `?.docstring).toBe('SomeClassName' | '')` assertion in this file was updated to `?.parent`
-// when the `symbols.parent` column was added: the containing class/type name these regex
-// adapters recover for a method/property now lives in its own `parent` field, not overloaded
-// into `docstring` (see db.ts's SCHEMA_SQL comment for the full history). What each assertion
-// actually verifies -- correct parent recovery for a single-line-span symbol -- is unchanged.
+// Every `?.docstring).toBe('SomeClassName' | '')` assertion in this file was updated to `?.parent` when the `symbols.parent` column was added: the containing class/type name these regex adapters recover for a method/property now lives in its own `parent` field, not overloaded into `docstring` (see db.ts's SCHEMA_SQL comment for the full history). What each assertion actually verifies -- correct parent recovery for a single-line-span symbol -- is unchanged.
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helpers ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// C#
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- C# ---------------------------------------------------------------------------
 
 describe('csharp adapter', () => {
   it('extracts class, method, namespace, and using import', () => {
@@ -57,11 +49,7 @@ public class UserService {
     const { symbols, imports } = extractCsharp(content, 'UserService.cs')
     const names = symbols.map((s) => s.name)
     expect(names).toContain('UserService')
-    // Regression: this test's name promises "method" coverage but only ever checked the class
-    // symbol -- `expect(symbols.length).toBeGreaterThan(0)` (removed) stayed true as long as
-    // UserService alone indexed, so a broken METHOD_RE could drop GetUser silently and this test
-    // would still pass. Verified this now fails if METHOD_RE is broken (temporarily forced to
-    // never match during audit) and passes on the real implementation.
+    // Regression: this test's name promises "method" coverage but only ever checked the class symbol -- `expect(symbols.length).toBeGreaterThan(0)` (removed) stayed true as long as UserService alone indexed, so a broken METHOD_RE could drop GetUser silently and this test would still pass. Verified this now fails if METHOD_RE is broken (temporarily forced to never match during audit) and passes on the real implementation.
     expect(names).toContain('GetUser')
     expect(imports.some((i) => i.target === 'System')).toBe(true)
   })
@@ -266,8 +254,7 @@ public class Widget {
     expect(countProp?.parent).toBe('Calc')
     const labelProp = symbols.find((s) => s.name === 'Label')
     expect(labelProp?.kind).toBe('var')
-    // Regression: an expression-bodied METHOD (parens between name and `=>`) must still be
-    // indexed as a method, not misdetected as a property by PROPERTY_ARROW_RE.
+    // Regression: an expression-bodied METHOD (parens between name and `=>`) must still be indexed as a method, not misdetected as a property by PROPERTY_ARROW_RE.
     const add = symbols.find((s) => s.name === 'Add')
     expect(add?.kind).toBe('method')
   })
@@ -291,9 +278,7 @@ public delegate void @Handler(int a);
 `
     const { symbols, imports } = extractCsharp(content, 'Generated.cs')
     const names = symbols.map((s) => s.name)
-    // The `@` is a lexical escape, not part of the identifier, so the stored name is the bare
-    // one every other file refers to. An over-fix that merely widens the character class while
-    // keeping the `@` in the capture fails right here.
+    // The `@` is a lexical escape, not part of the identifier, so the stored name is the bare one every other file refers to. An over-fix that merely widens the character class while keeping the `@` in the capture fails right here.
     expect(names).toEqual(['namespace.Generated', 'class', 'event', 'operator', 'class', 'Handler'])
     expect(names.some((n) => n.includes('@'))).toBe(false)
     expect(imports.map((i) => i.target)).toEqual(['System.Text'])
@@ -328,12 +313,10 @@ public class Q
 `
     const { symbols, imports } = extractCsharp(content, 'Generated.cs')
     expect(symbols.map((s) => s.name)).toEqual(['Q', 'Thing', 'Count', 'Header', 'Dispose', 'Run'])
-    // The recorded name is the final segment, never the alias qualifier: an over-fix that
-    // captures the qualifier too (`global::System.IDisposable.Dispose`) fails right here.
+    // The recorded name is the final segment, never the alias qualifier: an over-fix that captures the qualifier too (`global::System.IDisposable.Dispose`) fails right here.
     expect(symbols.find((s) => s.kind === 'method' && s.name === 'Dispose')).toBeTruthy()
     expect(symbols.some((s) => s.name.includes('::'))).toBe(false)
-    // `global::X` and `X` are the same entity, so the import key drops the root qualifier; a
-    // non-global extern alias names a different assembly root and is kept verbatim.
+    // `global::X` and `X` are the same entity, so the import key drops the root qualifier; a non-global extern alias names a different assembly root and is kept verbatim.
     expect(imports.map((i) => i.target)).toEqual([
       'System.Text',
       'System.Math',
@@ -343,11 +326,7 @@ public class Q
   })
 
   it('still indexes members whose line carries a single colon (generic constraint, ternary) after the alias-qualifier widening', () => {
-    // The alias qualifier must be admitted as the two-character `::` alternative, never by adding
-    // a bare `:` to the type filler's character class. With a bare `:` the lazy filler runs past
-    // the real declaration boundary and every member below is DROPPED, not over-matched: the
-    // `where T : IComparable` constraint, the `? :` in an expression body, and the `? :` in a
-    // property initializer each swallow the name slot. This is the control for that over-fix.
+    // The alias qualifier must be admitted as the two-character `::` alternative, never by adding a bare `:` to the type filler's character class. With a bare `:` the lazy filler runs past the real declaration boundary and every member below is DROPPED, not over-matched: the `where T : IComparable` constraint, the `? :` in an expression body, and the `? :` in a property initializer each swallow the name slot. This is the control for that over-fix.
     const content = `public class Guarded
 {
     public void Constrained<T>() where T : IComparable
@@ -405,8 +384,7 @@ public class Bar {
 }
 `
     const { symbols } = extractCsharp(content, 'Foo.cs')
-    // Regression: an unmatched brace inside a commented-out code block must not be counted
-    // toward braceDepth - otherwise depthInClass drifts and Real is never detected as a method.
+    // Regression: an unmatched brace inside a commented-out code block must not be counted toward braceDepth - otherwise depthInClass drifts and Real is never detected as a method.
     const real = symbols.find((s) => s.name === 'Real')
     expect(real?.kind).toBe('method')
     expect(real?.parent).toBe('Foo')
@@ -424,9 +402,7 @@ public class Foo {
 }
 `
     const { symbols } = extractCsharp(content, 'Point.cs')
-    // Regression: a brace-less one-line positional record never opens a body, so
-    // currentClass must be cleared right after it - otherwise every subsequent
-    // top-level class/member is mis-parented under the record forever.
+    // Regression: a brace-less one-line positional record never opens a body, so currentClass must be cleared right after it - otherwise every subsequent top-level class/member is mis-parented under the record forever.
     const bar = symbols.find((s) => s.name === 'Bar')
     expect(bar?.kind).toBe('method')
     expect(bar?.parent).toBe('Foo')
@@ -446,16 +422,14 @@ public class Baz {
 }
 `
     const { symbols } = extractCsharp(content, 'Point.cs')
-    // Foo is top-level (not nested inside the record), so it must not inherit Point as its
-    // enclosing class -- the stuck record frame previously caused exactly this misparent.
+    // Foo is top-level (not nested inside the record), so it must not inherit Point as its enclosing class -- the stuck record frame previously caused exactly this misparent.
     const foo = symbols.find((s) => s.name === 'Foo')
     expect(foo?.kind).toBe('class')
     expect(foo?.parent).toBe('')
     const bar = symbols.find((s) => s.name === 'Bar')
     expect(bar?.kind).toBe('method')
     expect(bar?.parent).toBe('Foo')
-    // Baz is declared after Foo's closing brace pops Foo off the stack, which previously
-    // exposed the still-stuck Point frame underneath it.
+    // Baz is declared after Foo's closing brace pops Foo off the stack, which previously exposed the still-stuck Point frame underneath it.
     const baz = symbols.find((s) => s.name === 'Baz')
     expect(baz?.kind).toBe('class')
     expect(baz?.parent).toBe('')
@@ -473,8 +447,7 @@ public class Foo {
 }
 `
     const { symbols } = extractCsharp(content, 'Empty.cs')
-    // Regression: a class opened and closed on its own declaration line never rises above
-    // classStartDepth, so currentClass must be cleared right after it too.
+    // Regression: a class opened and closed on its own declaration line never rises above classStartDepth, so currentClass must be cleared right after it too.
     const bar = symbols.find((s) => s.name === 'Bar')
     expect(bar?.kind).toBe('method')
     expect(bar?.parent).toBe('Foo')
@@ -490,8 +463,7 @@ public class Foo {
 }
 `
     const { symbols } = extractCsharp(content, 'Foo.cs')
-    // Regression: an unbalanced brace inside a // line comment must not be counted
-    // toward braceDepth - otherwise depthInClass drifts and After is never detected.
+    // Regression: an unbalanced brace inside a // line comment must not be counted toward braceDepth - otherwise depthInClass drifts and After is never detected.
     const after = symbols.find((s) => s.name === 'After')
     expect(after?.kind).toBe('method')
     expect(after?.parent).toBe('Foo')
@@ -509,9 +481,7 @@ public class Foo {
 }
 `
     const { symbols } = extractCsharp(content, 'Foo.cs')
-    // Regression: the string literal "{" contains a literal brace character. If it is counted
-    // toward braceDepth, Bar is never detected (wrong depth) and currentClass never pops after
-    // Foo's real closing brace, mis-parenting everything declared afterward.
+    // Regression: the string literal "{" contains a literal brace character. If it is counted toward braceDepth, Bar is never detected (wrong depth) and currentClass never pops after Foo's real closing brace, mis-parenting everything declared afterward.
     const bar = symbols.find((s) => s.name === 'Bar')
     expect(bar?.kind).toBe('method')
     expect(bar?.parent).toBe('Foo')
@@ -528,10 +498,7 @@ public class Foo {
 }
 `
     const { symbols } = extractCsharp(content, 'Outer.cs')
-    // Regression: nested class headers were already recorded as symbols, but currentClass was a
-    // single scalar that only ever latched onto the FIRST class seen - a nested class's own
-    // members were measured against the OUTER class's start depth (depthInClass 2, never
-    // matching the depthInClass === 1 gate), so they were silently dropped from the index.
+    // Regression: nested class headers were already recorded as symbols, but currentClass was a single scalar that only ever latched onto the FIRST class seen - a nested class's own members were measured against the OUTER class's start depth (depthInClass 2, never matching the depthInClass === 1 gate), so they were silently dropped from the index.
     const inner = symbols.find((s) => s.name === 'Inner')
     expect(inner?.kind).toBe('class')
     expect(inner?.parent).toBe('Outer')
@@ -565,19 +532,14 @@ public class Foo {
 }
 `
     const { symbols } = extractCsharp(content, 'Foo.cs')
-    // Regression: stripStringLiterals does not strip a trailing // comment, so the } inside
-    // it cancelled out the real { that opened Bar's body, desyncing braceDepth and popping
-    // Foo's scope one method early - After was mis-parented as top-level, not Foo's member.
+    // Regression: stripStringLiterals does not strip a trailing // comment, so the } inside it cancelled out the real { that opened Bar's body, desyncing braceDepth and popping Foo's scope one method early - After was mis-parented as top-level, not Foo's member.
     const after = symbols.find((s) => s.name === 'After')
     expect(after?.kind).toBe('method')
     expect(after?.parent).toBe('Foo')
   })
 
   it('does not let a nested quote inside an interpolation hole desync scope depth', () => {
-    // Regression: stripStringLiterals did not track interpolation-hole brace depth, so the
-    // nested `"` in `Replace("}", "")` was read as closing the outer `$"..."` string early,
-    // exposing the hole's own `"}"` as bare unstripped code and leaking an unmatched `}` into
-    // braceDepth - popping Formatter's scope one method early and mis-parenting after/after2.
+    // Regression: stripStringLiterals did not track interpolation-hole brace depth, so the nested `"` in `Replace("}", "")` was read as closing the outer `$"..."` string early, exposing the hole's own `"}"` as bare unstripped code and leaking an unmatched `}` into braceDepth - popping Formatter's scope one method early and mis-parenting after/after2.
     const content = `class Formatter {
     void clean() {
         var x = $"{raw.Replace("}", "")}";
@@ -596,13 +558,7 @@ public class Foo {
   })
 
   it('does not let a nested quote inside a verbatim interpolated string ($@"...") hole desync scope depth', () => {
-    // Regression: findMultilineOpener/findMultilineCloser's 'verbatim' case (used for C#
-    // $@"..."/@$"..." strings, which stripMultilineStringSpan handles before stripStringLiterals
-    // ever sees the line) had no interpolation-hole awareness, unlike stripStringLiterals's own
-    // bareBraceHole handling for the non-verbatim $"..." case above. The nested `"` in
-    // `Map("}")` was read as closing the outer $@"..." string early, exposing the hole's own
-    // `"}"` as bare unstripped code and leaking an unmatched `}` into braceDepth - popping Foo's
-    // scope one method early and dropping Baz.
+    // Regression: findMultilineOpener/findMultilineCloser's 'verbatim' case (used for C# $@"..."/@$"..." strings, which stripMultilineStringSpan handles before stripStringLiterals ever sees the line) had no interpolation-hole awareness, unlike stripStringLiterals's own bareBraceHole handling for the non-verbatim $"..." case above. The nested `"` in `Map("}")` was read as closing the outer $@"..." string early, exposing the hole's own `"}"` as bare unstripped code and leaking an unmatched `}` into braceDepth - popping Foo's scope one method early and dropping Baz.
     const content = `class Foo {
     public void Bar() {
         var s = $@"{Map("}")}";
@@ -618,11 +574,7 @@ public class Foo {
   })
 
   it('does not let a C# `{{` escaped literal brace inside an interpolated string open a hole', () => {
-    // Regression: stripStringLiterals's bareBraceHole branch treated any `{` as opening an
-    // interpolation hole unconditionally, with no check for C#'s `{{` literal-brace escape. A
-    // `{{` inside a `$"..."` string opened a hole that never closed on this line, so the rest of
-    // the line (and the real code after it) was read as hole content instead of blanked string
-    // content, desyncing braceDepth and dropping every symbol after the offending method.
+    // Regression: stripStringLiterals's bareBraceHole branch treated any `{` as opening an interpolation hole unconditionally, with no check for C#'s `{{` literal-brace escape. A `{{` inside a `$"..."` string opened a hole that never closed on this line, so the rest of the line (and the real code after it) was read as hole content instead of blanked string content, desyncing braceDepth and dropping every symbol after the offending method.
     const content = `public class Alpha {
     public void First() {
         var s = $"{{";
@@ -650,10 +602,7 @@ public class Foo {
 }
 `
     const { symbols } = extractCsharp(content, 'Foo.cs')
-    // Regression: PROPERTY_RE requires the '{'/get/set tokens on the same line as the property
-    // declaration. Standard Allman brace style puts the brace (and get/set) on their own
-    // following lines, so the property was silently omitted from the index entirely - not
-    // mis-parented, just absent.
+    // Regression: PROPERTY_RE requires the '{'/get/set tokens on the same line as the property declaration. Standard Allman brace style puts the brace (and get/set) on their own following lines, so the property was silently omitted from the index entirely - not mis-parented, just absent.
     const bar = symbols.find((s) => s.name === 'Bar' && s.kind === 'var')
     expect(bar).toBeDefined()
     expect(bar?.parent).toBe('Foo')
@@ -670,23 +619,14 @@ public class Foo {
 }
 `
     const { symbols } = extractCsharp(content, 'Foo.cs')
-    // Regression: ALLMAN_ACCESSOR_RE only matched the auto-property shorthand ('get;'/'set;'),
-    // so an Allman-style property with a real accessor body ('get { return 1; }') matched none
-    // of PROPERTY_RE (needs a same-line '{'), the Allman header check (accessor line must be
-    // exactly 'get;'/'set;'), PROPERTY_ARROW_RE (needs '=>'), or METHOD_RE (needs '(' after the
-    // name) - the property was silently dropped from the index entirely.
+    // Regression: ALLMAN_ACCESSOR_RE only matched the auto-property shorthand ('get;'/'set;'), so an Allman-style property with a real accessor body ('get { return 1; }') matched none of PROPERTY_RE (needs a same-line '{'), the Allman header check (accessor line must be exactly 'get;'/'set;'), PROPERTY_ARROW_RE (needs '=>'), or METHOD_RE (needs '(' after the name) - the property was silently dropped from the index entirely.
     const bar = symbols.find((s) => s.name === 'Bar' && s.kind === 'var')
     expect(bar).toBeDefined()
     expect(bar?.parent).toBe('Foo')
   })
 
   it('does not phantom-capture a nested generic type argument as the method name', () => {
-    // Regression: METHOD_RE's name-suffix pattern was `[<(]` (matches any `<` or `(`), so a
-    // generic return type followed by another generic type argument let the lazy name-capture
-    // group stop at the FIRST `<` it saw - inside the return type itself - phantom-capturing
-    // the inner type name ("List") instead of the real method name ("GetMap"). A `readonly`
-    // field also got miscaptured as a method because `readonly` was absent from the modifier
-    // alternation, so the field's type name ("Dictionary") was phantom-captured as a method too.
+    // Regression: METHOD_RE's name-suffix pattern was `[<(]` (matches any `<` or `(`), so a generic return type followed by another generic type argument let the lazy name-capture group stop at the FIRST `<` it saw - inside the return type itself - phantom-capturing the inner type name ("List") instead of the real method name ("GetMap"). A `readonly` field also got miscaptured as a method because `readonly` was absent from the modifier alternation, so the field's type name ("Dictionary") was phantom-captured as a method too.
     const content = `public class Foo {
     public Dictionary<string, List<int>> GetMap() { return null; }
     private static readonly Dictionary<string, Func<int>> Handlers = new();
@@ -703,9 +643,7 @@ public class Foo {
   })
 
   it('assigns distinct symbol kinds for struct/interface/enum instead of collapsing all to class', () => {
-    // Regression: CLASS_HEADER_RE only captured the type name, never the class/struct/interface/
-    // enum/record keyword itself, so the usage site hardcoded kind to the literal string 'class'
-    // for every one of these constructs.
+    // Regression: CLASS_HEADER_RE only captured the type name, never the class/struct/interface/ enum/record keyword itself, so the usage site hardcoded kind to the literal string 'class' for every one of these constructs.
     const content = `public struct Point {
     public int X;
 }
@@ -730,11 +668,7 @@ public record Vector(int X, int Y);
   })
 
   it('does not open a phantom verbatim string on an ordinary literal ending in "@"', () => {
-    // Regression: findMultilineOpener's verbatim-string branch (`/\$?@\$?"/`) had no
-    // isInsideStringLiteral guard, unlike the sibling triple-quote branch a few lines above it.
-    // An ordinary string like `"@"` textually matches `@"`, so it was misread as opening a
-    // verbatim string that never closes on this line, masking every subsequent line until a
-    // stray `"` happened to appear anywhere later in the file - swallowing both methods below.
+    // Regression: findMultilineOpener's verbatim-string branch (`/\$?@\$?"/`) had no isInsideStringLiteral guard, unlike the sibling triple-quote branch a few lines above it. An ordinary string like `"@"` textually matches `@"`, so it was misread as opening a verbatim string that never closes on this line, masking every subsequent line until a stray `"` happened to appear anywhere later in the file - swallowing both methods below.
     const content = `public class ConfigHolder
 {
     private const string At = "@";
@@ -757,11 +691,7 @@ public record Vector(int X, int Y);
   })
 
   it('does not leak a positional record scope whose signature spans multiple lines', () => {
-    // Regression: the self-contained-one-liner pop was gated on openedFrameThisLine, so it only
-    // fired on the exact line that pushed the frame. A brace-less positional record's signature
-    // can wrap onto later lines (`record Person(\n  string First,\n  string Last);`), and since
-    // it never opens a real `{` body, bodyEntered never flips true either - so neither pop path
-    // ever fired and the frame stayed stranded, mis-parenting every following top-level class.
+    // Regression: the self-contained-one-liner pop was gated on openedFrameThisLine, so it only fired on the exact line that pushed the frame. A brace-less positional record's signature can wrap onto later lines (`record Person(\n  string First,\n  string Last);`), and since it never opens a real `{` body, bodyEntered never flips true either - so neither pop path ever fired and the frame stayed stranded, mis-parenting every following top-level class.
     const content = `public record Person(
     string First,
     string Last);
@@ -828,8 +758,7 @@ public class C
 `
     const { symbols } = extractCsharp(content, 'Test.cs')
     expect(symbols.find((s) => s.name === 'Pair')?.parent).toBe('C')
-    // The explicit-interface qualifier is matched but not captured, so the recorded name is the
-    // final segment -- not "IDisposable.Dispose", which no caller would ever search for.
+    // The explicit-interface qualifier is matched but not captured, so the recorded name is the final segment -- not "IDisposable.Dispose", which no caller would ever search for.
     expect(symbols.find((s) => s.name === 'Dispose')?.parent).toBe('C')
   })
 
@@ -888,9 +817,7 @@ public int Count { get; set; }
   })
 })
 
-// ---------------------------------------------------------------------------
-// PHP
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PHP ---------------------------------------------------------------------------
 
 describe('php adapter', () => {
   // HAND-DERIVED: a `.php` file is HTML until `<?php` opens PHP and `?>` returns to markup (PHP Manual, "Language Reference" > "Basic syntax" > "Escaping from HTML"). The markup below is ordinary template text and the expected symbol list is read off this source, not off the extractor.
@@ -967,10 +894,7 @@ function helperFn() {}
     const names = symbols.map((s) => s.name)
     expect(names).toContain('UserService')
     expect(names).toContain('getUser')
-    // Regression: this test's name promises "function" coverage (the top-level helperFn) but
-    // never actually checked it -- `expect(symbols.length).toBeGreaterThan(0)` (removed) stayed
-    // true from the class/method alone, so a broken top-level-function pattern could drop
-    // helperFn silently with this test still green.
+    // Regression: this test's name promises "function" coverage (the top-level helperFn) but never actually checked it -- `expect(symbols.length).toBeGreaterThan(0)` (removed) stayed true from the class/method alone, so a broken top-level-function pattern could drop helperFn silently with this test still green.
     expect(names).toContain('helperFn')
     expect(imports.some((i) => i.target.includes('User'))).toBe(true)
   })
@@ -1039,10 +963,7 @@ use const App\\Config\\MAX_RETRIES;
     expect(imports).toHaveLength(0)
   })
 
-  // Regression: `use Trait;` inside a class body is a trait-use declaration (mixing a
-  // trait's methods into the class), not a namespace import -- USE_RE had no brace-depth
-  // gate, unlike every other classifier in this file, so a trait use was misrecorded as
-  // an `imports` entry even though it has no relation to any real namespace dependency.
+  // Regression: `use Trait;` inside a class body is a trait-use declaration (mixing a trait's methods into the class), not a namespace import -- USE_RE had no brace-depth gate, unlike every other classifier in this file, so a trait use was misrecorded as an `imports` entry even though it has no relation to any real namespace dependency.
   it('does not record a trait-use declaration inside a class body as a namespace import', () => {
     const content = `<?php
 namespace App;
@@ -1062,9 +983,7 @@ class Foo
   })
 
   it('indexes a final class constant, including a final combined with a visibility modifier', () => {
-    // PHP 8.1+ allows `final const`. Regression: the modifier group allowed at most one modifier
-    // and did not include `final` at all, so `final const FOO = 1;` and
-    // `final public const BAR = 2;` silently dropped the constant from the index.
+    // PHP 8.1+ allows `final const`. Regression: the modifier group allowed at most one modifier and did not include `final` at all, so `final const FOO = 1;` and `final public const BAR = 2;` silently dropped the constant from the index.
     const content = `<?php
 class Foo {
     final const FOO = 1;
@@ -1120,8 +1039,7 @@ class Foo {
     const { symbols } = extractPhp(content, 'nested.php')
     const baz = symbols.find((s) => s.name === 'baz')
     expect(baz).toBeDefined()
-    // baz is nested two brace-levels inside Foo (inside bar's body), not directly in Foo's
-    // own body, so it must not be classified as a method of Foo.
+    // baz is nested two brace-levels inside Foo (inside bar's body), not directly in Foo's own body, so it must not be classified as a method of Foo.
     expect(baz?.kind).toBe('function')
     expect(baz?.parent).toBe('')
     // bar is directly in Foo's body (one brace level in) and must still be a real method.
@@ -1174,9 +1092,7 @@ function afterGlob() {}
     const scan = symbols.find((s) => s.name === 'scan')
     expect(scan?.kind).toBe('method')
     expect(scan?.parent).toBe('Scanner')
-    // Regression: 'src/*.php' inside the glob() string call must not be mistaken for a
-    // comment opener - otherwise everything after it (including this declaration) is
-    // silently swallowed as "inside a never-closed comment".
+    // Regression: 'src/*.php' inside the glob() string call must not be mistaken for a comment opener - otherwise everything after it (including this declaration) is silently swallowed as "inside a never-closed comment".
     const afterGlob = symbols.find((s) => s.name === 'afterGlob')
     expect(afterGlob?.kind).toBe('function')
     expect(afterGlob?.parent).toBe('')
@@ -1229,8 +1145,7 @@ class Outer {
 }
 `
     const { symbols } = extractPhp(content, 'FnLocalClass.php')
-    // Helper is declared two brace-levels inside Outer (inside make's body), not directly in
-    // Outer's own body, so it is not a real nested class of Outer - PHP has no nested classes.
+    // Helper is declared two brace-levels inside Outer (inside make's body), not directly in Outer's own body, so it is not a real nested class of Outer - PHP has no nested classes.
     expect(symbols.find((s) => s.name === 'Helper')?.parent).toBe('')
   })
 
@@ -1248,10 +1163,7 @@ class Foo {
 function afterFoo() {}
 `
     const { symbols } = extractPhp(content, 'Foo.php')
-    // Regression: the string literal "{" contains a literal brace character. If it is counted
-    // toward braceDepth, Foo's real closing brace never brings braceDepth back down to its
-    // start depth, so Foo's context is never popped and afterFoo is silently mis-parented as
-    // one of Foo's own methods instead of being a top-level function.
+    // Regression: the string literal "{" contains a literal brace character. If it is counted toward braceDepth, Foo's real closing brace never brings braceDepth back down to its start depth, so Foo's context is never popped and afterFoo is silently mis-parented as one of Foo's own methods instead of being a top-level function.
     const a = symbols.find((s) => s.name === 'a')
     expect(a?.kind).toBe('method')
     expect(a?.parent).toBe('Foo')
@@ -1268,9 +1180,7 @@ class A {
 }
 `
     const { symbols } = extractPhp(content, 'A.php')
-    // Regression: stripStringLiterals does not strip trailing // or # comments, so the }
-    // inside the comment on the const line was counted as real code, popping A's scope one
-    // declaration early and mis-parenting method1 as a top-level function instead of A's method.
+    // Regression: stripStringLiterals does not strip trailing // or # comments, so the } inside the comment on the const line was counted as real code, popping A's scope one declaration early and mis-parenting method1 as a top-level function instead of A's method.
     const method1 = symbols.find((s) => s.name === 'method1')
     expect(method1?.kind).toBe('method')
     expect(method1?.parent).toBe('A')
@@ -1285,21 +1195,14 @@ implements Bar, Baz
 }
 `
     const { symbols } = extractPhp(content, 'Foo.php')
-    // Regression: the 'implements Bar, Baz' line has zero net braces, so braceDepth still
-    // equals the just-pushed Foo frame's start depth. Without a bodyEntered gate, the class
-    // context popped immediately on that line - before the '{' on the next line was even
-    // seen - and method1 was mis-parented as a top-level function instead of Foo's method.
+    // Regression: the 'implements Bar, Baz' line has zero net braces, so braceDepth still equals the just-pushed Foo frame's start depth. Without a bodyEntered gate, the class context popped immediately on that line - before the '{' on the next line was even seen - and method1 was mis-parented as a top-level function instead of Foo's method.
     const method1 = symbols.find((s) => s.name === 'method1')
     expect(method1?.kind).toBe('method')
     expect(method1?.parent).toBe('Foo')
   })
 
   it('classifies kind correctly when the declared name is itself a substring of the keyword', () => {
-    // Regression: kind was derived from `stripped.split(name)[0]` then checking
-    // includes('interface'|'trait'|'enum'). When the name is a case-sensitive substring of the
-    // keyword itself (e.g. an interface literally named "face", so the source reads
-    // "interface face"), split(name) lands its split point INSIDE the keyword text, corrupting
-    // the substring check and misclassifying the symbol as kind 'class'.
+    // Regression: kind was derived from `stripped.split(name)[0]` then checking includes('interface'|'trait'|'enum'). When the name is a case-sensitive substring of the keyword itself (e.g. an interface literally named "face", so the source reads "interface face"), split(name) lands its split point INSIDE the keyword text, corrupting the substring check and misclassifying the symbol as kind 'class'.
     const content = `<?php
 interface face {
     public function look();
@@ -1359,9 +1262,7 @@ class Dto {
   })
 })
 
-// ---------------------------------------------------------------------------
-// HTML
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- HTML ---------------------------------------------------------------------------
 
 describe('html adapter', () => {
   it('extracts id symbols, class symbols, and link imports', () => {
@@ -1459,18 +1360,14 @@ describe('html adapter', () => {
   })
 
   it('extracts a heading whose text spans multiple lines', () => {
-    // Regression: HEADING_RE lacked the `s` (dotall) flag, so `.` in `(.*?)` couldn't match
-    // the newlines a formatter/pretty-printer commonly inserts between the tag and its text,
-    // and the heading/section was silently dropped rather than falling back to anything.
+    // Regression: HEADING_RE lacked the `s` (dotall) flag, so `.` in `(.*?)` couldn't match the newlines a formatter/pretty-printer commonly inserts between the tag and its text, and the heading/section was silently dropped rather than falling back to anything.
     const content = `<h1>\n  Multi-line Title\n</h1>\n<p>body</p>`
     const { sections } = extractHtml(content, 'multiline.html')
     expect(sections.some((s) => s.heading === 'Multi-line Title')).toBe(true)
   })
 
   it('headings are included in symbols via parseFile', async () => {
-    // Regression: extractHtml computed headings into .sections, but extractSymbolsNoTreeSitter
-    // only consumed .symbols, so headings never entered the index and were unreachable via
-    // symbol/skeleton/outline or the live `section` command.
+    // Regression: extractHtml computed headings into .sections, but extractSymbolsNoTreeSitter only consumed .symbols, so headings never entered the index and were unreachable via symbol/skeleton/outline or the live `section` command.
     const result = await parseFixture('page.html', '<h2 id="setup">Setup Guide</h2>\n<p>content</p>\n<h3>Next Steps</h3>')
     const heading = result.symbols.find((s) => s.name === 'Setup Guide')
     expect(heading?.kind).toBe('heading')
@@ -1480,10 +1377,7 @@ describe('html adapter', () => {
   })
 
   it('does not match id=/class= inside a longer attribute name lacking a left boundary', () => {
-    // Regression: ID_RE/CLASS_RE had no left boundary, so they matched inside longer attribute
-    // names like data-id=, data-testid=, gid=, uuid=, valid=, data-class= etc, falsely feeding
-    // html_id/html_class symbols. The same unboundaried pattern was inlined a third time in the
-    // heading-anchor extraction, so a heading like `<h2 data-id="x">` registered a false anchor.
+    // Regression: ID_RE/CLASS_RE had no left boundary, so they matched inside longer attribute names like data-id=, data-testid=, gid=, uuid=, valid=, data-class= etc, falsely feeding html_id/html_class symbols. The same unboundaried pattern was inlined a third time in the heading-anchor extraction, so a heading like `<h2 data-id="x">` registered a false anchor.
     const content = `<div data-id="phantom-id" data-testid="phantom-testid" gid="phantom-gid" data-class="phantom-class">real</div>
 <div id="real-id" class="real-class">content</div>
 <h2 data-id="not-an-anchor">Real Heading</h2>`
@@ -1500,19 +1394,14 @@ describe('html adapter', () => {
   })
 
   it('dedupes and caps id/class symbols instead of emitting one row per occurrence unbounded', () => {
-    // Regression: extractHtml pushed one symbol per id= occurrence and per class token with no
-    // MAX_SYMBOLS cap and no dedup, unlike every other language adapter in this codebase.
-    // Minified/framework-generated HTML can emit thousands of duplicate symbol rows.
+    // Regression: extractHtml pushed one symbol per id= occurrence and per class token with no MAX_SYMBOLS cap and no dedup, unlike every other language adapter in this codebase. Minified/framework-generated HTML can emit thousands of duplicate symbol rows.
     const lines: string[] = []
     for (let i = 0; i < 5100; i++) {
       lines.push(`<div id="dup-widget" class="dup-token">item ${i}</div>`)
     }
     const content = lines.join('\n')
     const { symbols } = extractHtml(content, 'huge.html')
-    // Each id/class occurrence is on its own line, so (name, line) dedup does not collapse them
-    // - without a cap this would emit 10,200 symbol rows (5100 ids + 5100 classes). The cap must
-    // stop emission at exactly MAX_SYMBOLS (10,000, raised from 500 -- see makeSymbolEmitter's own
-    // comment in common.ts for the measurement).
+    // Each id/class occurrence is on its own line, so (name, line) dedup does not collapse them - without a cap this would emit 10,200 symbol rows (5100 ids + 5100 classes). The cap must stop emission at exactly MAX_SYMBOLS (10,000, raised from 500 -- see makeSymbolEmitter's own comment in common.ts for the measurement).
     expect(symbols.length).toBe(10_000)
     // Duplicate id/class values within the SAME line must be deduped, not just capped.
     const sameLineContent = '<div id="only-once" class="only-once-cls only-once-cls">x</div>'
@@ -1555,9 +1444,7 @@ describe('html adapter', () => {
   })
 
   it('does not index commented-out markup and preserves the real section line range', () => {
-    // Regression: <!-- ... --> comments were never stripped before the heading/id/class/link/
-    // script regexes ran, so dead/commented-out markup was indexed identically to live markup -
-    // including corrupting the real subsequent section's start/end-line bookkeeping.
+    // Regression: <!-- ... --> comments were never stripped before the heading/id/class/link/ script regexes ran, so dead/commented-out markup was indexed identically to live markup - including corrupting the real subsequent section's start/end-line bookkeeping.
     const content = `<!--
 <h1>Deprecated Title</h1>
 <div id="dead-panel" class="dead-widget"></div>
@@ -1604,9 +1491,7 @@ const html = '<div id="phantom-script-id" class="phantom-script-class"></div>'
   })
 
   it('finds a real heading after a <script> body containing an unmatched literal <!-- marker', () => {
-    // A literal `<!--` inside a <script> string with no closing `-->` in that same tag would,
-    // if HTML_COMMENT_RE ran before script-body masking, greedily consume everything up to the
-    // NEXT `-->` anywhere later in the document, silently eating real headings in between.
+    // A literal `<!--` inside a <script> string with no closing `-->` in that same tag would, if HTML_COMMENT_RE ran before script-body masking, greedily consume everything up to the NEXT `-->` anywhere later in the document, silently eating real headings in between.
     const content = `<script>
 const marker = '<!-- not a real comment opener'
 </script>
@@ -1635,9 +1520,7 @@ const marker = '<!-- not a real comment opener'
   })
 })
 
-// ---------------------------------------------------------------------------
-// Liquid
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Liquid ---------------------------------------------------------------------------
 
 describe('liquid adapter', () => {
   it('extracts include/render imports and schema symbol', () => {
@@ -1669,9 +1552,7 @@ describe('liquid adapter', () => {
   })
 
   it('detects whitespace-control tags ({%- ... -%})', () => {
-    // Regression: INCLUDE_RE/SECTION_RE/RENDER_RE/SCHEMA_RE all required a plain `{%`
-    // opener, so Shopify's dominant whitespace-control form `{%- render 'x' -%}` never
-    // matched and was silently dropped.
+    // Regression: INCLUDE_RE/SECTION_RE/RENDER_RE/SCHEMA_RE all required a plain `{%` opener, so Shopify's dominant whitespace-control form `{%- render 'x' -%}` never matched and was silently dropped.
     const content = `{%- render 'wsc-render' -%}
 {%- include 'wsc-include' -%}
 {%- section 'wsc-section' -%}
@@ -1704,17 +1585,14 @@ describe('liquid adapter', () => {
   })
 
   it('extracts a heading whose text spans multiple lines', () => {
-    // Regression: HEADING_RE lacked the `s` (dotall) flag, so `.` in `(.*?)` couldn't match
-    // the newlines a formatter/pretty-printer commonly inserts between the tag and its text,
-    // and the heading/section was silently dropped rather than falling back to anything.
+    // Regression: HEADING_RE lacked the `s` (dotall) flag, so `.` in `(.*?)` couldn't match the newlines a formatter/pretty-printer commonly inserts between the tag and its text, and the heading/section was silently dropped rather than falling back to anything.
     const content = `<h1>\n  Multi-line Title\n</h1>`
     const { sections } = extractLiquid(content, 'multiline.liquid', 'multiline.liquid')
     expect(sections.some((s) => s.heading === 'Multi-line Title')).toBe(true)
   })
 
   it('headings are included in symbols via parseFile', async () => {
-    // Regression: extractLiquid computed headings into .sections, but extractSymbolsNoTreeSitter
-    // only consumed .symbols, so headings never entered the index.
+    // Regression: extractLiquid computed headings into .sections, but extractSymbolsNoTreeSitter only consumed .symbols, so headings never entered the index.
     const result = await parseFixture('test.liquid', '<h2>Setup Guide</h2>\n<p>content</p>')
     const heading = result.symbols.find((s) => s.name === 'Setup Guide')
     expect(heading?.kind).toBe('heading')
@@ -1747,16 +1625,10 @@ describe('liquid adapter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Kotlin
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Kotlin ---------------------------------------------------------------------------
 
 describe('kotlin adapter', () => {
-  // FORMAT-DERIVED: shapes taken from the Kotlin language reference, "Type aliases" (which gives
-  // `typealias NodeSet = Set<Network.Node>` and the function-type form, and states that type
-  // aliases may be declared only at the top level) and the grammar production `typeAlias:
-  // modifiers? 'typealias' simpleIdentifier typeParameters? '=' type`. Not written from
-  // kotlin.ts's own regexes.
+  // FORMAT-DERIVED: shapes taken from the Kotlin language reference, "Type aliases" (which gives `typealias NodeSet = Set<Network.Node>` and the function-type form, and states that type aliases may be declared only at the top level) and the grammar production `typeAlias: modifiers? 'typealias' simpleIdentifier typeParameters? '=' type`. Not written from kotlin.ts's own regexes.
   it('indexes top-level typealias declarations and leaves illegal nested ones out', () => {
     const content = `package demo
 
@@ -1786,8 +1658,7 @@ class Holder {
       expect(names).toContain(n)
       expect(symbols.find((s) => s.name === n)?.kind).toBe('type')
     }
-    // Must not appear: a type alias is a top-level declaration only, so neither the class-body
-    // nor the function-body form is a real declaration.
+    // Must not appear: a type alias is a top-level declaration only, so neither the class-body nor the function-body form is a real declaration.
     expect(names).not.toContain('NestedNotLegal')
     expect(names).not.toContain('LocalNotLegal')
     // Must not appear: an alias written inside a raw string or a comment is not a declaration.
@@ -1795,9 +1666,7 @@ class Holder {
     expect(names).not.toContain('FromComment')
   })
 
-  // FORMAT-DERIVED: the generic-function forms come from the Kotlin language reference, "Generics"
-  // (`fun <T : Comparable<T>> sort(list: List<T>)` is the reference's own example) and the grammar's
-  // `functionDeclaration: modifiers? 'fun' typeParameters? ...` production. Not read off kotlin.ts.
+  // FORMAT-DERIVED: the generic-function forms come from the Kotlin language reference, "Generics" (`fun <T : Comparable<T>> sort(list: List<T>)` is the reference's own example) and the grammar's `functionDeclaration: modifiers? 'fun' typeParameters? ...` production. Not read off kotlin.ts.
   it('extracts a top-level and a member function whose type parameter carries a generic bound', () => {
     const content = `package demo
 
@@ -1935,10 +1804,7 @@ class Config {
   })
 
   it('does not let a nested quote inside an interpolation hole desync scope depth', () => {
-    // Regression: stripStringLiterals did not track interpolation-hole brace depth, so the
-    // nested `"` in `replace("}", "")` was read as closing the outer `"..."` string early,
-    // exposing the hole's own `"}"` as bare unstripped code and leaking an unmatched `}` into
-    // braceDepth - popping Formatter's scope one method early and mis-parenting after/after2.
+    // Regression: stripStringLiterals did not track interpolation-hole brace depth, so the nested `"` in `replace("}", "")` was read as closing the outer `"..."` string early, exposing the hole's own `"}"` as bare unstripped code and leaking an unmatched `}` into braceDepth - popping Formatter's scope one method early and mis-parenting after/after2.
     const content = `class Formatter {
     fun clean() {
         val x = "\${raw.replace("}", "")}"
@@ -1957,10 +1823,7 @@ class Config {
   })
 
   it('indexes members of a modifier-prefixed companion object instead of dropping them', () => {
-    // Regression: CLASS_HEADER_RE's modifier list never included `companion`, so
-    // `companion object { ... }` (with or without a leading visibility modifier) never got a
-    // frame pushed for it at all -- yet its brace still incremented braceDepth, silently dropping
-    // every member declared inside from the index.
+    // Regression: CLASS_HEADER_RE's modifier list never included `companion`, so `companion object { ... }` (with or without a leading visibility modifier) never got a frame pushed for it at all -- yet its brace still incremented braceDepth, silently dropping every member declared inside from the index.
     const content = `class Foo {
   private companion object {
     fun x() {}
@@ -1994,10 +1857,7 @@ class Bar {
   })
 
   it('does not index a function-local class as a member of the enclosing class', () => {
-    // Regression: the class/companion detection branch had no depthInClass gate, unlike the
-    // method/const branch just below it -- so a class declared inside a method body (a
-    // function-local class, legal Kotlin) got emitted as a real nested class member of the
-    // enclosing class instead of being skipped as function-local.
+    // Regression: the class/companion detection branch had no depthInClass gate, unlike the method/const branch just below it -- so a class declared inside a method body (a function-local class, legal Kotlin) got emitted as a real nested class member of the enclosing class instead of being skipped as function-local.
     const content = `class Outer {
     fun makeThing(): Foo {
         class LocalHelper {
@@ -2032,10 +1892,7 @@ class Bar {
   })
 
   it('indexes backtick-quoted Kotlin declaration names, including the members of a backtick-named class', () => {
-    // Regression: FUN_RE/TOP_FUN_RE/CLASS_HEADER_RE/COMPANION_RE all admitted only a bare
-    // identifier, so a backtick-quoted name (the standard Kotlin test-naming idiom) produced no
-    // symbol at all -- and a backtick-quoted class header pushed no frame, so its members were
-    // dropped too.
+    // Regression: FUN_RE/TOP_FUN_RE/CLASS_HEADER_RE/COMPANION_RE all admitted only a bare identifier, so a backtick-quoted name (the standard Kotlin test-naming idiom) produced no symbol at all -- and a backtick-quoted class header pushed no frame, so its members were dropped too.
     const content = `class Calculator {
     fun addPlain(a: Int, b: Int): Int = a + b
 
@@ -2069,9 +1926,7 @@ fun \`top level quoted\`(): Int = 2
   })
 
   it('still indexes plain Kotlin declaration names exactly, with no delimiter bleed into the captured name', () => {
-    // Over-fix control for the backtick admission above: widening the bare identifier character
-    // class (rather than admitting a backtick-DELIMITED name as a separate alternative) lets a
-    // supertype clause or a companion keyword bleed into the captured name.
+    // Over-fix control for the backtick admission above: widening the bare identifier character class (rather than admitting a backtick-DELIMITED name as a separate alternative) lets a supertype clause or a companion keyword bleed into the captured name.
     const content = `interface Animal {
     fun speak(): String
 }
@@ -2099,10 +1954,7 @@ fun topLevel(): Int = 1
   })
 
   it('classifies interface and singleton object declarations with their own kind instead of collapsing everything CLASS_HEADER_RE matches to "class"', () => {
-    // Regression: CLASS_HEADER_RE's single capture group only grabbed the declaration name, never
-    // the keyword (class/interface/object) that introduced it, so the caller hardcoded kind
-    // 'class' for every match -- silently mislabeling a real `interface Foo { ... }` and a
-    // singleton `object Foo { ... }` (both very common idioms) as a plain class in the index.
+    // Regression: CLASS_HEADER_RE's single capture group only grabbed the declaration name, never the keyword (class/interface/object) that introduced it, so the caller hardcoded kind 'class' for every match -- silently mislabeling a real `interface Foo { ... }` and a singleton `object Foo { ... }` (both very common idioms) as a plain class in the index.
     const content = `interface Animal {
     fun speak(): String
 }
@@ -2137,8 +1989,7 @@ class Dog : Animal {
 }
 `
     const { symbols } = extractKotlin(content, 'Foo.kt')
-    // Regression: currentClass must not clear until the real body-opening brace is seen -
-    // otherwise a ktlint-formatted multi-line constructor header drops every member of the class.
+    // Regression: currentClass must not clear until the real body-opening brace is seen - otherwise a ktlint-formatted multi-line constructor header drops every member of the class.
     const bar = symbols.find((s) => s.name === 'bar')
     expect(bar?.kind).toBe('method')
     expect(bar?.parent).toBe('Foo')
@@ -2158,8 +2009,7 @@ class Dog : Animal {
 }
 `
     const { symbols } = extractKotlin(content, 'Foo.kt')
-    // Regression: a stray `}` inside a block comment must not be counted toward braceDepth -
-    // otherwise the class closes early and every member declared after the comment is dropped.
+    // Regression: a stray `}` inside a block comment must not be counted toward braceDepth - otherwise the class closes early and every member declared after the comment is dropped.
     const second = symbols.find((s) => s.name === 'second')
     expect(second?.kind).toBe('method')
     expect(second?.parent).toBe('Foo')
@@ -2181,8 +2031,7 @@ fun afterFoo(): Int {
 }
 `
     const { symbols } = extractKotlin(content, 'Foo.kt')
-    // Regression: a `{` inside a // comment must not be counted toward braceDepth - otherwise
-    // the class never closes and every top-level declaration after it is misattributed as a member.
+    // Regression: a `{` inside a // comment must not be counted toward braceDepth - otherwise the class never closes and every top-level declaration after it is misattributed as a member.
     const afterFoo = symbols.find((s) => s.name === 'afterFoo')
     expect(afterFoo?.kind).toBe('function')
     expect(afterFoo?.parent).toBe('')
@@ -2201,10 +2050,7 @@ fun afterFoo(): Int {
 }
 `
     const { symbols } = extractKotlin(content, 'Foo.kt')
-    // Regression: the string literal "{" contains a literal brace character. If it is counted
-    // toward braceDepth, Foo's real closing brace never brings braceDepth back down to its
-    // start depth, so currentClass is never cleared and afterFoo is silently mis-parented as
-    // one of Foo's own methods instead of being a top-level function.
+    // Regression: the string literal "{" contains a literal brace character. If it is counted toward braceDepth, Foo's real closing brace never brings braceDepth back down to its start depth, so currentClass is never cleared and afterFoo is silently mis-parented as one of Foo's own methods instead of being a top-level function.
     const bar = symbols.find((s) => s.name === 'bar')
     expect(bar?.kind).toBe('method')
     expect(bar?.parent).toBe('Foo')
@@ -2226,10 +2072,7 @@ fun afterFoo(): Int {
 }
 `
     const { symbols } = extractKotlin(content, 'Outer.kt')
-    // Regression: a nested class header was previously gated to column 0 only, so an indented
-    // nested/inner class (companion object member, sealed subclass, nested data class - all
-    // idiomatic Kotlin) was never emitted as a symbol, and none of its members were attributed
-    // to it either.
+    // Regression: a nested class header was previously gated to column 0 only, so an indented nested/inner class (companion object member, sealed subclass, nested data class - all idiomatic Kotlin) was never emitted as a symbol, and none of its members were attributed to it either.
     const inner = symbols.find((s) => s.name === 'Inner')
     expect(inner?.kind).toBe('class')
     expect(inner?.parent).toBe('Outer')
@@ -2249,10 +2092,7 @@ fun afterEmpty(): Int {
 }
 `
     const { symbols } = extractKotlin(content, 'Repro.kt')
-    // Regression: an empty class body (`class Empty {}`) has a net brace delta of zero for its
-    // line, so bodyEntered never flipped true and the class frame was never popped - every
-    // declaration after it, including afterEmpty, was silently dropped instead of being
-    // recognized as a top-level function.
+    // Regression: an empty class body (`class Empty {}`) has a net brace delta of zero for its line, so bodyEntered never flipped true and the class frame was never popped - every declaration after it, including afterEmpty, was silently dropped instead of being recognized as a top-level function.
     const empty = symbols.find((s) => s.name === 'Empty')
     expect(empty?.kind).toBe('class')
     const afterEmpty = symbols.find((s) => s.name === 'afterEmpty')
@@ -2272,10 +2112,7 @@ fun bar(): Int {
 }
 `
     const { symbols } = extractKotlin(content, 'Repro.kt')
-    // Regression: a class/data class declared with only a primary constructor and no body block
-    // at all (idiomatic Kotlin, e.g. DTOs) never opens a `{`, so bodyEntered never flipped true
-    // and the phantom class frame lingered forever - every declaration after it, including foo
-    // and bar, was silently dropped instead of being recognized as top-level functions.
+    // Regression: a class/data class declared with only a primary constructor and no body block at all (idiomatic Kotlin, e.g. DTOs) never opens a `{`, so bodyEntered never flipped true and the phantom class frame lingered forever - every declaration after it, including foo and bar, was silently dropped instead of being recognized as top-level functions.
     const point = symbols.find((s) => s.name === 'Point')
     expect(point?.kind).toBe('class')
     const foo = symbols.find((s) => s.name === 'foo')
@@ -2314,8 +2151,7 @@ fun afterAll(): Int {
 }
 `
     const { symbols } = extractKotlin(content, 'Repro.kt')
-    // Guards against a naive fix that pops on any paren-balanced, brace-less line - a genuinely
-    // multi-line constructor header must stay on the stack until its body actually opens.
+    // Guards against a naive fix that pops on any paren-balanced, brace-less line - a genuinely multi-line constructor header must stay on the stack until its body actually opens.
     const method = symbols.find((s) => s.name === 'method')
     expect(method?.kind).toBe('method')
     expect(method?.parent).toBe('Foo')
@@ -2331,9 +2167,7 @@ fun afterAll(): Int {
 }
 `
     const { symbols } = extractKotlin(content, 'Repro.kt')
-    // Regression: depthInClass was gated with >= 1 instead of === 1, so a bare statement or
-    // local declaration nested inside a method body (depthInClass 2+) was ALSO matched as if
-    // it were a direct member of the enclosing class.
+    // Regression: depthInClass was gated with >= 1 instead of === 1, so a bare statement or local declaration nested inside a method body (depthInClass 2+) was ALSO matched as if it were a direct member of the enclosing class.
     const handle = symbols.find((s) => s.name === 'handle')
     expect(handle?.kind).toBe('method')
     expect(handle?.parent).toBe('Service')
@@ -2342,10 +2176,7 @@ fun afterAll(): Int {
   })
 
   it('does not drop members of a class whose supertype colon starts the next line', () => {
-    // Regression: the immediate-pop check popped the class frame as soon as its constructor
-    // parens balanced back to 0 with no body brace on that same line - but a header can
-    // legitimately continue onto the next line via a leading `:` (Allman/next-line-brace style),
-    // which this same-line-only check could never see coming.
+    // Regression: the immediate-pop check popped the class frame as soon as its constructor parens balanced back to 0 with no body brace on that same line - but a header can legitimately continue onto the next line via a leading `:` (Allman/next-line-brace style), which this same-line-only check could never see coming.
     const content = `class Foo(val x: Int)
     : Bar(x) {
     fun doWork() {}
@@ -2362,9 +2193,7 @@ fun afterAll(): Int {
   })
 
   it('does not drop members of a class with a wrapped, comma-separated supertype list', () => {
-    // Regression: same root cause as the leading-colon case above, but here the continuation
-    // signal is a trailing `,`/`:` on each wrapped line rather than a leading one - the official
-    // Kotlin coding-convention example for this exact style.
+    // Regression: same root cause as the leading-colon case above, but here the continuation signal is a trailing `,`/`:` on each wrapped line rather than a leading one - the official Kotlin coding-convention example for this exact style.
     const content = `class MyFavouriteVeryLongClassHolder :
     MyLongHolder<MyFavouriteVeryLongClass>(),
     SomeOtherInterface,
@@ -2392,10 +2221,7 @@ fun main() {}
   })
 
   it('does not drop members of a class whose Allman-style body brace is on its own line', () => {
-    // Regression: the pendingPop resolution only whitelisted a leading `:`/`,` continuation
-    // (the wrapped-supertype-list case) and ran before this line's own brace-counting, so a
-    // standalone `{` on its own line was treated as "not a continuation" and popped the frame
-    // before the brace-counting below ever got a chance to flip bodyEntered.
+    // Regression: the pendingPop resolution only whitelisted a leading `:`/`,` continuation (the wrapped-supertype-list case) and ran before this line's own brace-counting, so a standalone `{` on its own line was treated as "not a continuation" and popped the frame before the brace-counting below ever got a chance to flip bodyEntered.
     const content = `class Foo
 {
     fun bar() {}
@@ -2491,16 +2317,10 @@ class Utils {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Swift
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Swift ---------------------------------------------------------------------------
 
 describe('swift adapter', () => {
-  // FORMAT-DERIVED: shapes taken from The Swift Programming Language, "Declarations" chapter --
-  // "Type Alias Declaration" (`typealias`, legal at file scope and as a type member), "Protocol
-  // Associated Type Declaration" (`associatedtype`, a protocol member), and "Macro Declaration"
-  // (`macro`, file scope only; introduced by SE-0382 Expression Macros). Not written from
-  // swift.ts's own regexes.
+  // FORMAT-DERIVED: shapes taken from The Swift Programming Language, "Declarations" chapter -- "Type Alias Declaration" (`typealias`, legal at file scope and as a type member), "Protocol Associated Type Declaration" (`associatedtype`, a protocol member), and "Macro Declaration" (`macro`, file scope only; introduced by SE-0382 Expression Macros). Not written from swift.ts's own regexes.
   it('indexes typealias, associatedtype and macro declarations', () => {
     const content = `let doc = """
 typealias FromRawString = Int
@@ -2613,8 +2433,7 @@ final actor Counter {
     const { symbols } = extractSwift(content, 'BankAccount.swift')
     const account = symbols.find((s) => s.name === 'BankAccount')
     expect(account?.kind).toBe('actor')
-    // The actor's members must be parented to it, not dropped (regression: a missing 'actor'
-    // keyword in TYPE_HEADER_RE dropped the actor's frame, so every member vanished too).
+    // The actor's members must be parented to it, not dropped (regression: a missing 'actor' keyword in TYPE_HEADER_RE dropped the actor's frame, so every member vanished too).
     const balance = symbols.find((s) => s.name === 'balance')
     expect(balance?.kind).toBe('var')
     expect(balance?.parent).toBe('BankAccount')
@@ -2754,9 +2573,7 @@ func firstElement<T>(_ items: [T]) -> T? {
   })
 
   it('does not desync brace depth across a multi-line triple-quoted string containing braces', () => {
-    // Regression class shared with kotlin.ts's raw-string handling: an unmasked """..."""
-    // span containing a literal `{`/`}` would desync braceDepth and mis-parent (or drop) every
-    // symbol declared after it.
+    // Regression class shared with kotlin.ts's raw-string handling: an unmasked """...""" span containing a literal `{`/`}` would desync braceDepth and mis-parent (or drop) every symbol declared after it.
     const content = `class Formatter {
     func template() -> String {
         return """
@@ -2782,8 +2599,7 @@ func firstElement<T>(_ items: [T]) -> T? {
   })
 
   it('does not count a brace inside a regex literal as nesting', () => {
-    // The worst of this batch: `/\{/` left the struct frame open for the rest of the file, so every
-    // later top-level declaration was emitted as a method of a type it has nothing to do with.
+    // The worst of this batch: `/\{/` left the struct frame open for the rest of the file, so every later top-level declaration was emitted as a method of a type it has nothing to do with.
     const content = `struct S {
   let openBrace = /\\{/
 }
@@ -2797,8 +2613,7 @@ func topLevel() {}
   })
 
   it('keeps a type frame open across a nested block comment', () => {
-    // Swift block comments nest. Ending the outer span at the inner `*/` exposed the commented `}`,
-    // which popped the frame early and dropped every member after it.
+    // Swift block comments nest. Ending the outer span at the inner `*/` exposed the commented `}`, which popped the frame early and dropped every member after it.
     const content = `struct S {
   /* outer
      /* inner */ }
@@ -2815,18 +2630,14 @@ func topLevel() {}
     expect(symbols.map((s) => s.name)).toContain('f')
   })
 
-  // The constraint above is two levels deep, the depth the shared clause was first built for. A
-  // primary associated type whose argument is itself a nested collection reaches four, and the
-  // clause sits between `func` and the name, so overflowing it leaves the name matcher staring at
-  // `>` and drops the declaration entirely rather than just its constraint.
+  // The constraint above is two levels deep, the depth the shared clause was first built for. A primary associated type whose argument is itself a nested collection reaches four, and the clause sits between `func` and the name, so overflowing it leaves the name matcher staring at `>` and drops the declaration entirely rather than just its constraint.
   it('indexes a declaration whose generic constraint nests four levels deep', () => {
     const { symbols } = extractSwift('func f<C: Collection<Dictionary<String, Array<Int>>>>(_: C) {}\n', 'g4.swift')
     expect(symbols.map((s) => s.name)).toContain('f')
   })
 
   it('indexes Unicode and backtick-escaped declaration names in full', () => {
-    // An ASCII-only name class did not skip these, it truncated them: `Café` was indexed as `Caf`
-    // and its members were parented to that name, so neither name resolved.
+    // An ASCII-only name class did not skip these, it truncated them: `Café` was indexed as `Caf` and its members were parented to that name, so neither name resolved.
     const content = `struct Café {
   var café = 0
   var \`default\` = 1
@@ -2883,8 +2694,7 @@ prefix func ~~~(x: Int) -> Int { x }
   })
 
   it('indexes file-scope declarations that are indented or split across lines', () => {
-    // Leading whitespace has no meaning in Swift: a declaration indented inside a `#if` region is
-    // still file-scope. Brace depth, not indentation, decides.
+    // Leading whitespace has no meaning in Swift: a declaration indented inside a `#if` region is still file-scope. Brace depth, not indentation, decides.
     const { symbols } = extractSwift('  struct S {}\n  func f() {}\n', 'w.swift')
     expect(symbols.map((s) => s.name)).toEqual(['S', 'f'])
     const split = extractSwift('func g\n() {}\n', 's.swift')
@@ -2904,8 +2714,7 @@ prefix func ~~~(x: Int) -> Int { x }
   })
 
   it('does not index a local declared inside a function body', () => {
-    // The gate this batch replaced (indentation) also happened to block locals; brace depth has
-    // to keep blocking them or every local becomes a phantom file-scope symbol.
+    // The gate this batch replaced (indentation) also happened to block locals; brace depth has to keep blocking them or every local becomes a phantom file-scope symbol.
     const content = `func outer() {
   let localVar = 1
   func inner() {}
@@ -2921,9 +2730,7 @@ prefix func ~~~(x: Int) -> Int { x }
   })
 })
 
-// ---------------------------------------------------------------------------
-// Scala
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Scala ---------------------------------------------------------------------------
 
 describe('scala adapter', () => {
   // FORMAT-DERIVED: brace-free bodies introduced by a trailing `:` come from the Scala 3 Reference, "Other New Features" > "Optional Braces" (the `indent` / `end marker` rules); `"""..."""` multi-line string literals from the Scala 3 Reference, "Changed Features" > "String Interpolation" and the Scala Language Specification 1.3.2 "Character Literals and String Literals". Not written from this repo's own regex.
@@ -2985,11 +2792,7 @@ object Main {
     const names = symbols.map((s) => s.name)
     expect(names).toContain('Point')
     expect(symbols.find((s) => s.name === 'Point')?.kind).toBe('class')
-    // A second top-level type (object Main) and Point's nested method must both still be
-    // found -- regression test for a bug where an early `continue` after a class/object/trait
-    // match skipped brace-counting on that same line, so `bodyEntered` never flipped true,
-    // the frame never popped, and every subsequent top-level declaration in the file silently
-    // stopped being detected.
+    // A second top-level type (object Main) and Point's nested method must both still be found -- regression test for a bug where an early `continue` after a class/object/trait match skipped brace-counting on that same line, so `bodyEntered` never flipped true, the frame never popped, and every subsequent top-level declaration in the file silently stopped being detected.
     expect(symbols.find((s) => s.name === 'Main')?.kind).toBe('object')
     expect(symbols.find((s) => s.name === 'distance')?.kind).toBe('function')
     expect(symbols.find((s) => s.name === 'distance')?.parent).toBe('Point')
@@ -3010,10 +2813,7 @@ case class User(name: String, age: Int)
   })
 
   it('extracts a Scala 3 enum type and its nested methods', () => {
-    // Regression: `enum` is a Scala 3 (2021) type keyword absent from CLASS_RE/OBJECT_RE/
-    // TRAIT_RE, so the whole `enum Color { ... }` block AND its `def isRed` were dropped
-    // from the index -- the missing-type-keyword gap class already closed for Swift `actor`
-    // and Dart `mixin class`.
+    // Regression: `enum` is a Scala 3 (2021) type keyword absent from CLASS_RE/OBJECT_RE/ TRAIT_RE, so the whole `enum Color { ... }` block AND its `def isRed` were dropped from the index -- the missing-type-keyword gap class already closed for Swift `actor` and Dart `mixin class`.
     const content = `enum Color {
   case Red, Green, Blue
   def isRed: Boolean = this == Red
@@ -3037,8 +2837,7 @@ class Sibling {
     const isRed = symbols.find((s) => s.name === 'isRed')
     expect(isRed?.kind).toBe('function')
     expect(isRed?.parent).toBe('Color')
-    // Frame bookkeeping stays intact: a sibling declaration after the enum bodies close is
-    // still recognized as top-level (a dropped closing brace would corrupt the gate).
+    // Frame bookkeeping stays intact: a sibling declaration after the enum bodies close is still recognized as top-level (a dropped closing brace would corrupt the gate).
     expect(symbols.find((s) => s.name === 'Sibling')?.kind).toBe('class')
     expect(symbols.find((s) => s.name === 'hi')?.parent).toBe('Sibling')
   })
@@ -3055,14 +2854,9 @@ class Sibling {
     expect(names).not.toContain('inner')
   })
 
-  // HAND-DERIVED from the Scala Language Specification, section 1.3.4 "Character Literals" (a
-  // character literal is a single character, or an escape, between two single quotes) and section
-  // 1.3.6 "Symbol Literals" (`'ident`, a single quote followed by an identifier and NOT closed by
-  // a second quote). Scala 3 dropped symbol literals and spells a quoted block `'{ ... }`, which
-  // is likewise an unclosed single quote. The expectations are read off that grammar.
+  // HAND-DERIVED from the Scala Language Specification, section 1.3.4 "Character Literals" (a character literal is a single character, or an escape, between two single quotes) and section 1.3.6 "Symbol Literals" (`'ident`, a single quote followed by an identifier and NOT closed by a second quote). Scala 3 dropped symbol literals and spells a quoted block `'{ ... }`, which is likewise an unclosed single quote. The expectations are read off that grammar.
   //
-  // Regression: a naive quote rule treated the `'` of `'sym` as opening a string, so everything
-  // after it on the line was blanked -- including the closing `}` -- and `b` was never found.
+  // Regression: a naive quote rule treated the `'` of `'sym` as opening a string, so everything after it on the line was blanked -- including the closing `}` -- and `b` was never found.
   it('reads a symbol literal as an unclosed quote rather than a string, keeping the brace after it', () => {
     const content = `object O {
   def a: Int = { val s = 'sym; 1 }
@@ -3073,9 +2867,7 @@ class Sibling {
     expect(symbols.find((s) => s.name === 'b')?.parent).toBe('O')
   })
 
-  // The second layer of the same rule. Once a symbol literal no longer blanks the rest of the
-  // line, the trailing `//` comment has to be stripped on its own merits -- otherwise the `{` in
-  // the comment text is counted as a real brace and `b` is lost again, for the opposite reason.
+  // The second layer of the same rule. Once a symbol literal no longer blanks the rest of the line, the trailing `//` comment has to be stripped on its own merits -- otherwise the `{` in the comment text is counted as a real brace and `b` is lost again, for the opposite reason.
   it('still strips a line comment that follows a symbol literal, so a brace in the comment is not counted', () => {
     const content = `object P {
   val s = 'sym  // note { unbalanced
@@ -3104,17 +2896,14 @@ import java.util.{_}
 `
     const { imports } = extractScala(content, 'Imports.scala')
     const targets = imports.map((i) => i.target)
-    // Regression test for a bug where BRACE_IMPORT_RE's absence meant IMPORT_RE's character
-    // class (which stops at `{`) captured only the truncated, non-actionable prefix
-    // ("scala.collection.") and dropped every selector actually being imported.
+    // Regression test for a bug where BRACE_IMPORT_RE's absence meant IMPORT_RE's character class (which stops at `{`) captured only the truncated, non-actionable prefix ("scala.collection.") and dropped every selector actually being imported.
     expect(targets).toContain('scala.collection.mutable')
     expect(targets).toContain('scala.collection.immutable')
     // A rename selector (`A => Renamed`) resolves to the original name callers reference.
     expect(targets).toContain('foo.bar.A')
     expect(targets).not.toContain('foo.bar.Renamed')
     expect(targets).toContain('foo.bar.B')
-    // A bare wildcard selector keeps the `._` form rather than emitting `java.util._`
-    // literalized from a stray underscore split.
+    // A bare wildcard selector keeps the `._` form rather than emitting `java.util._` literalized from a stray underscore split.
     expect(targets).toContain('java.util._')
   })
 
@@ -3125,11 +2914,7 @@ import java.util.{_}
   })
 
   it('extracts top-level val/var declarations, not just nested ones', () => {
-    // Regression: VAL_RE/VAR_RE are checked inside the `frame !== null` (nested-in-type)
-    // branch, but the top-level (`frame === null`) branch only ever called FUNC_RE.exec --
-    // unlike kotlin.ts's CONST_RE, which is checked in both its nested and top-level
-    // branches. Every top-level `val`/`var` (Scala script/worksheet style, or Scala 3's
-    // top-level definitions outside any object) was silently dropped from the index.
+    // Regression: VAL_RE/VAR_RE are checked inside the `frame !== null` (nested-in-type) branch, but the top-level (`frame === null`) branch only ever called FUNC_RE.exec -- unlike kotlin.ts's CONST_RE, which is checked in both its nested and top-level branches. Every top-level `val`/`var` (Scala script/worksheet style, or Scala 3's top-level definitions outside any object) was silently dropped from the index.
     const content = `val PI: Double = 3.14159
 var counter: Int = 0
 def foo() = 1
@@ -3141,13 +2926,7 @@ def foo() = 1
   })
 
   it('extracts declarations with multiple stacked modifiers', () => {
-    // Regression: the modifier group in CLASS_RE/OBJECT_RE/TRAIT_RE/FUNC_RE/VAL_RE/VAR_RE was
-    // `(?:...)?` (zero or ONE modifier), but real Scala routinely stacks several -- `sealed
-    // abstract class` is the idiomatic ADT base-class pattern and `final case class` is an
-    // extremely common case-class form. With only one modifier allowed, the second modifier word
-    // sat where the keyword (`class`/`def`/`val`/...) was expected, so the whole line failed to
-    // match and the declaration -- plus every symbol nested in a dropped type's body -- was
-    // silently absent from the index.
+    // Regression: the modifier group in CLASS_RE/OBJECT_RE/TRAIT_RE/FUNC_RE/VAL_RE/VAR_RE was `(?:...)?` (zero or ONE modifier), but real Scala routinely stacks several -- `sealed abstract class` is the idiomatic ADT base-class pattern and `final case class` is an extremely common case-class form. With only one modifier allowed, the second modifier word sat where the keyword (`class`/`def`/`val`/...) was expected, so the whole line failed to match and the declaration -- plus every symbol nested in a dropped type's body -- was silently absent from the index.
     const content = `sealed abstract class Shape {
   final def area(): Double = 0.0
 }
@@ -3173,10 +2952,7 @@ sealed trait Status
   })
 
   it('does not leak a TypeFrame for a fully bodyless one-line case class', () => {
-    // Regression: `case class Foo(x: Int)` has NO `{}` at all -- no brace ever arrives to flip
-    // `bodyEntered`, so the pushed TypeFrame was never popped. That permanently failed
-    // `typeDetectionGateOk` for every subsequent top-level declaration, silently dropping the
-    // rest of the file's symbols from the index.
+    // Regression: `case class Foo(x: Int)` has NO `{}` at all -- no brace ever arrives to flip `bodyEntered`, so the pushed TypeFrame was never popped. That permanently failed `typeDetectionGateOk` for every subsequent top-level declaration, silently dropping the rest of the file's symbols from the index.
     const content = `case class Foo(x: Int)
 
 case object Bar
@@ -3196,8 +2972,7 @@ def topLevelFn(): Unit = {}
   })
 
   it('does not leak a TypeFrame for a bodyless trait or abstract class', () => {
-    // Regression: the bodyless-declaration pop was spelled for `case class`/`case object` only, so `sealed trait Op` -- the other half of the canonical Scala ADT pairing, and just as brace-free -- kept its TypeFrame forever. Every later top-level declaration then failed typeDetectionGateOk and vanished from the index, and the first later brace flipped the stale frame's bodyEntered, so that sibling's members were reparented onto the bodyless trait.
-    // Fixture provenance: HAND-DERIVED. The source is the ADT pattern documented in the Scala 3 book ("Algebraic Datatypes"); the expected symbol list is what the declarations plainly say, computed without reference to the extractor.
+    // Regression: the bodyless-declaration pop was spelled for `case class`/`case object` only, so `sealed trait Op` -- the other half of the canonical Scala ADT pairing, and just as brace-free -- kept its TypeFrame forever. Every later top-level declaration then failed typeDetectionGateOk and vanished from the index, and the first later brace flipped the stale frame's bodyEntered, so that sibling's members were reparented onto the bodyless trait. Fixture provenance: HAND-DERIVED. The source is the ADT pattern documented in the Scala 3 book ("Algebraic Datatypes"); the expected symbol list is what the declarations plainly say, computed without reference to the extractor.
     const content = `package com.example.adt
 
 sealed trait Op
@@ -3234,8 +3009,7 @@ class Later {
   })
 
   it('keeps a multi-line parameter list open while sweeping stale bodyless frames', () => {
-    // Guards the sweep's `openParens` condition: `val a: Int,` inside a multi-line parameter list is itself declaration-shaped, so without the paren check the sweep would pop the class frame before its body brace arrived and drop every member.
-    // Fixture provenance: HAND-DERIVED. Ordinary multi-line Scala constructor-parameter formatting; expectations read off the declarations, not off the extractor.
+    // Guards the sweep's `openParens` condition: `val a: Int,` inside a multi-line parameter list is itself declaration-shaped, so without the paren check the sweep would pop the class frame before its body brace arrived and drop every member. Fixture provenance: HAND-DERIVED. Ordinary multi-line Scala constructor-parameter formatting; expectations read off the declarations, not off the extractor.
     const content = `object Wrapper {
   sealed trait Op
 
@@ -3268,9 +3042,7 @@ class AfterMulti {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Lua
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Lua ---------------------------------------------------------------------------
 
 describe('lua adapter', () => {
   it('extracts function declarations and local variables', () => {
@@ -3294,13 +3066,7 @@ end
   })
 
   it('indexes every name in a multi-name local declaration', () => {
-    // HAND-DERIVED: the shape comes from the Lua 5.4 reference manual, section 3.3.7 "Local
-    // Declarations": `stat ::= local attnamelist ['=' explist]`,
-    // `attnamelist ::= Name attrib {',' Name attrib}`, `attrib ::= ['<' Name '>']`. So one
-    // `local` statement binds a whole list of names, each optionally carrying a `<const>` or
-    // `<close>` attribute. The expected names below are read off this source text, not off the
-    // adapter's own regex. The old pattern captured only the first name, so every name after the
-    // comma was dropped from the index outright.
+    // HAND-DERIVED: the shape comes from the Lua 5.4 reference manual, section 3.3.7 "Local Declarations": `stat ::= local attnamelist ['=' explist]`, `attnamelist ::= Name attrib {',' Name attrib}`, `attrib ::= ['<' Name '>']`. So one `local` statement binds a whole list of names, each optionally carrying a `<const>` or `<close>` attribute. The expected names below are read off this source text, not off the adapter's own regex. The old pattern captured only the first name, so every name after the comma was dropped from the index outright.
     const content = `local ok, err = pcall(dofile, "cfg.lua")
 local sqrt, floor, ceil = math.sqrt, math.floor, math.ceil
 local limit <const> = 10
@@ -3341,10 +3107,7 @@ end
   })
 
   it('indexes a colon-defined method under its own name, not the whole receiver path', () => {
-    // Regression: FUNC_RE captures the full `M:bar` path, and the name was split on '.' only, so
-    // the idiomatic Lua method form was stored as `M:bar` -- `symbol bar` and `read "f.lua::bar"`
-    // both missed it, while the dotted `function M.foo()` on the line above resolved as `foo`.
-    // The sibling assignment path in this same file already split on both separators.
+    // Regression: FUNC_RE captures the full `M:bar` path, and the name was split on '.' only, so the idiomatic Lua method form was stored as `M:bar` -- `symbol bar` and `read "f.lua::bar"` both missed it, while the dotted `function M.foo()` on the line above resolved as `foo`. The sibling assignment path in this same file already split on both separators.
     const content = `function M.foo(a)
   return a
 end
@@ -3368,10 +3131,7 @@ end
   })
 
   it('attributes a function nested in a colon method to the trimmed method name', () => {
-    // The trimmed name is also what gets pushed on the frame stack, so it becomes the `parent` of
-    // anything declared inside the method body. Pinned because it is the one place the trim is
-    // visible on a symbol other than the method itself, and because the dotted form has always
-    // reported the bare name here -- the two spellings must not disagree.
+    // The trimmed name is also what gets pushed on the frame stack, so it becomes the `parent` of anything declared inside the method body. Pinned because it is the one place the trim is visible on a symbol other than the method itself, and because the dotted form has always reported the bare name here -- the two spellings must not disagree.
     const content = `function M:outer()
   local function child()
     return 1
@@ -3390,8 +3150,7 @@ end
   })
 
   it('extracts function-value assignments (local/bare/dotted) as functions, not variables', () => {
-    // Regression: `local cb = function()` was misfiled as a plain `variable`, and the bare/
-    // dotted `M.foo = function()` idiom was dropped entirely. Both are function definitions.
+    // Regression: `local cb = function()` was misfiled as a plain `variable`, and the bare/ dotted `M.foo = function()` idiom was dropped entirely. Both are function definitions.
     const content = `local handler = function(a)
   return a + 1
 end
@@ -3412,9 +3171,7 @@ local plain = 5
   })
 
   it('does not let a function-value assignment body desync subsequent parent attribution', () => {
-    // Regression: `local cb = function()` opens a `function ... end` body but the old code
-    // pushed no frame for it, so the body's own `end` prematurely popped the enclosing
-    // function -- corrupting the parent of anything declared after it in that body.
+    // Regression: `local cb = function()` opens a `function ... end` body but the old code pushed no frame for it, so the body's own `end` prematurely popped the enclosing function -- corrupting the parent of anything declared after it in that body.
     const content = `function outer()
   local cb = function(x)
     return x
@@ -3432,10 +3189,7 @@ end
   })
 
   it('does not let an if/for/while block desync nested-function parent attribution', () => {
-    // Regression test: `if ... then`, `for ... do`, and `while ... do` blocks also close
-    // with `end`. Without a placeholder frame for them, that `end` popped the enclosing
-    // function's own frame early, so a function declared later in the same body lost its
-    // correct parent.
+    // Regression test: `if ... then`, `for ... do`, and `while ... do` blocks also close with `end`. Without a placeholder frame for them, that `end` popped the enclosing function's own frame early, so a function declared later in the same body lost its correct parent.
     const content = `function outer()
   if true then
     print("hi")
@@ -3451,10 +3205,7 @@ end
   })
 
   it('does not let a same-line one-liner function desync subsequent parent attribution', () => {
-    // Regression test: a one-liner like `function foo() return 1 end` closes its own `end`
-    // on the same line. Unconditionally pushing a scope frame for it left that frame
-    // permanently unpopped (no later bare `end` line exists to close it), so every
-    // subsequent top-level function in the file was incorrectly parented under it.
+    // Regression test: a one-liner like `function foo() return 1 end` closes its own `end` on the same line. Unconditionally pushing a scope frame for it left that frame permanently unpopped (no later bare `end` line exists to close it), so every subsequent top-level function in the file was incorrectly parented under it.
     const content = `function foo() return 1 end
 
 function bar() return 2 end
@@ -3480,12 +3231,7 @@ function bar() return 2 end
   })
 
   it('does not let a bare anonymous function expression desync subsequent parent attribution', () => {
-    // Regression: a `function() ... end` used as an expression (a `return function() ... end`
-    // closure, or a callback argument like `foo(function() ... end)`) matches none of
-    // FUNC_RE/LOCAL_FUNC_RE/ASSIGN_FUNC_RE (no name, no `= function(`), so the old code pushed
-    // no frame for it. Its own `end` line then popped whatever real frame happened to be on
-    // top of the stack instead -- here, `makeCb`'s frame -- leaving `makeCb`'s own closing
-    // `end` to pop `outer` instead, so `after` (declared next) lost its correct parent.
+    // Regression: a `function() ... end` used as an expression (a `return function() ... end` closure, or a callback argument like `foo(function() ... end)`) matches none of FUNC_RE/LOCAL_FUNC_RE/ASSIGN_FUNC_RE (no name, no `= function(`), so the old code pushed no frame for it. Its own `end` line then popped whatever real frame happened to be on top of the stack instead -- here, `makeCb`'s frame -- leaving `makeCb`'s own closing `end` to pop `outer` instead, so `after` (declared next) lost its correct parent.
     const content = `function outer()
   local function makeCb()
     return function()
@@ -3517,10 +3263,7 @@ end
   })
 
   it('pops one frame per `end` token when multiple closes share a line', () => {
-    // Regression: `end end` (a common compact style closing two nested blocks on one line)
-    // only popped ONE frame regardless of how many `end` keywords were present, leaving a
-    // stale frame on the stack and misattributing the parent of every symbol declared
-    // afterward in the enclosing scope.
+    // Regression: `end end` (a common compact style closing two nested blocks on one line) only popped ONE frame regardless of how many `end` keywords were present, leaving a stale frame on the stack and misattributing the parent of every symbol declared afterward in the enclosing scope.
     const content = `function outer()
   local function inner()
     local function innermost()
@@ -3626,9 +3369,7 @@ end
   })
 })
 
-// ---------------------------------------------------------------------------
-// Elixir
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Elixir ---------------------------------------------------------------------------
 
 describe('elixir adapter', () => {
   it('extracts defmodule, def, defp, and defstruct', () => {
@@ -3670,10 +3411,7 @@ end
   })
 
   it('extracts a defprotocol and parents its def signatures to the protocol', () => {
-    // Regression: `defprotocol` (a named, module-like container) was absent from the extractor,
-    // so the protocol name was dropped entirely and its body pushed only an anonymous block
-    // frame -- leaving every `def` signature inside orphaned to the top level instead of
-    // attributed to the protocol. A trailing module confirms frame balance stays intact.
+    // Regression: `defprotocol` (a named, module-like container) was absent from the extractor, so the protocol name was dropped entirely and its body pushed only an anonymous block frame -- leaving every `def` signature inside orphaned to the top level instead of attributed to the protocol. A trailing module confirms frame balance stays intact.
     const content = `defprotocol My.Sizeable do
   def size(data)
   def empty?(data)
@@ -3695,9 +3433,7 @@ end
   })
 
   it('attributes every function in a module to that module, not just the first', () => {
-    // Regression test: only `defmodule` pushed a scope frame, so the FIRST function's own
-    // `end` incorrectly popped the module frame, leaving every function declared after it
-    // with no parent at all.
+    // Regression test: only `defmodule` pushed a scope frame, so the FIRST function's own `end` incorrectly popped the module frame, leaving every function declared after it with no parent at all.
     const content = `defmodule MyApp.Greeter do
   def hello(name) do
     "Hello, " <> name
@@ -3714,9 +3450,7 @@ end
   })
 
   it('does not let a nested do-block construct (quote/case/etc) desync scope tracking', () => {
-    // Regression test: a `quote do ... end` (or case/cond/try/receive/if) inside a function
-    // body closes with `end` too. Without a placeholder frame for it, that `end` popped the
-    // enclosing function's own frame early, corrupting attribution for whatever came after.
+    // Regression test: a `quote do ... end` (or case/cond/try/receive/if) inside a function body closes with `end` too. Without a placeholder frame for it, that `end` popped the enclosing function's own frame early, corrupting attribution for whatever came after.
     const content = `defmodule Helpers do
   defmacro debug(expr) do
     quote do
@@ -3735,11 +3469,7 @@ end
   })
 
   it('does not let a bare (do-less) multi-clause `fn ... end` desync scope tracking', () => {
-    // Regression test: `fn` opens a block closed by a bare `end` without ever using the `do`
-    // keyword (e.g. `handler = fn` / multi-clause fn stored to a variable). Only `do`-ending
-    // lines pushed a placeholder frame, so this `end` had no frame of its own to pop and
-    // instead prematurely popped the enclosing function's real frame -- corrupting parent
-    // attribution for every symbol declared after it in the same module.
+    // Regression test: `fn` opens a block closed by a bare `end` without ever using the `do` keyword (e.g. `handler = fn` / multi-clause fn stored to a variable). Only `do`-ending lines pushed a placeholder frame, so this `end` had no frame of its own to pop and instead prematurely popped the enclosing function's real frame -- corrupting parent attribution for every symbol declared after it in the same module.
     const content = `defmodule Helpers do
   def process(x) do
     handler = fn
@@ -3761,12 +3491,7 @@ end
   })
 
   it('closes an inline fn block whose `end` is followed by a closing paren, not just whitespace (FORMAT-DERIVED: `Enum.map(list, fn x -> ... end)` is the documented style for passing an anonymous function as the last argument of a call, per Elixir\'s Enum/Kernel.SpecialForms docs)', () => {
-    // Regression: the old `end`-detection only matched `end` alone or `end` followed by
-    // whitespace, so a `fn ... end)` closer (no space before the paren) matched neither and its
-    // block frame was never popped. The NEXT real `end` in the file (closing the enclosing
-    // `process` def) was consumed to close that stray frame instead, so `process` itself never
-    // closed and its span ballooned to swallow `after_fn` below it, also misattributing
-    // `after_fn`'s parent.
+    // Regression: the old `end`-detection only matched `end` alone or `end` followed by whitespace, so a `fn ... end)` closer (no space before the paren) matched neither and its block frame was never popped. The NEXT real `end` in the file (closing the enclosing `process` def) was consumed to close that stray frame instead, so `process` itself never closed and its span ballooned to swallow `after_fn` below it, also misattributing `after_fn`'s parent.
     const content = `defmodule Helpers do
   def process(list) do
     Enum.map(list, fn x ->
@@ -3874,16 +3599,9 @@ end
     expect(symbols.find((s) => s.name === 'after_it')?.parent).toBe('M')
   })
 
-  // HAND-DERIVED from the Elixir "Sigils" guide and the `Kernel.SpecialForms` docs: a sigil is
-  // `~`, one lowercase letter or a run of uppercase letters, then a delimiter drawn from
-  // `/ | " ' ( [ { <`; the bracket forms close on their mirror and nest, the rest close on a
-  // repeat of the same character; an uppercase sigil takes no escapes, a lowercase one does.
-  // Only the `"""` and `'''` heredoc forms were masked, so a sigil that merely spanned lines was
-  // read as ordinary code. The expectations come from that grammar, not from our masker.
+  // HAND-DERIVED from the Elixir "Sigils" guide and the `Kernel.SpecialForms` docs: a sigil is `~`, one lowercase letter or a run of uppercase letters, then a delimiter drawn from `/ | " ' ( [ { <`; the bracket forms close on their mirror and nest, the rest close on a repeat of the same character; an uppercase sigil takes no escapes, a lowercase one does. Only the `"""` and `'''` heredoc forms were masked, so a sigil that merely spanned lines was read as ordinary code. The expectations come from that grammar, not from our masker.
   //
-  // Regression: a `def` inside a multi-line sigil was indexed as a real function, and a bare
-  // `end` inside one popped the enclosing module frame -- truncating the module's span and
-  // orphaning every function declared after it.
+  // Regression: a `def` inside a multi-line sigil was indexed as a real function, and a bare `end` inside one popped the enclosing module frame -- truncating the module's span and orphaning every function declared after it.
   it('does not read a def inside a multi-line sigil as a real function', () => {
     const content = `defmodule P do
   @s ~s{
@@ -3941,15 +3659,10 @@ end
   })
 })
 
-// ---------------------------------------------------------------------------
-// Dart
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Dart ---------------------------------------------------------------------------
 
 describe('dart adapter', () => {
-  // FORMAT-DERIVED: shapes taken from the Dart language specification, "Type aliases", and the
-  // dart.dev language tour section "Typedefs", which give both the generalised `typedef Name =
-  // Type;` form (Dart 2.13) and the pre-2.13 `typedef ReturnType name(params);` form. Not
-  // written from dart.ts's own regexes.
+  // FORMAT-DERIVED: shapes taken from the Dart language specification, "Type aliases", and the dart.dev language tour section "Typedefs", which give both the generalised `typedef Name = Type;` form (Dart 2.13) and the pre-2.13 `typedef ReturnType name(params);` form. Not written from dart.ts's own regexes.
   it('indexes both typedef forms and stops the function-type alias fabricating a symbol named Function', () => {
     const content = `const doc = """
 typedef FromRawString = int;
@@ -3984,9 +3697,7 @@ void topLevel() {}
     expect(names).not.toContain('FromComment')
   })
 
-  // FORMAT-DERIVED: shapes taken from the Dart language specification -- "Generics" (bounded type
-  // parameters, `T extends Comparable<T>`), "Extensions", and "Mixins" (the mixin-application
-  // class `class A<T> = B with C;`). Not written from dart.ts's own regexes.
+  // FORMAT-DERIVED: shapes taken from the Dart language specification -- "Generics" (bounded type parameters, `T extends Comparable<T>`), "Extensions", and "Mixins" (the mixin-application class `class A<T> = B with C;`). Not written from dart.ts's own regexes.
   it('indexes a function, an extension and a mixin-application class whose type parameter carries a generic bound', () => {
     const content = `int boundedFunc<T extends Comparable<T>>(T a, T b) => 0;
 
@@ -4013,12 +3724,7 @@ class AfterAlias {
     expect(symbols.find((s) => s.name === 'afterMember')?.parent).toBe('AfterAlias')
   })
 
-  // HAND-DERIVED: the bound above is two levels deep, which is exactly the depth GENERIC_CLAUSE was
-  // first built for, so it agreed with that ceiling by construction and said nothing about the
-  // level past it. `Comparable<Map<String, List<int>>>` is four, and reachable Dart -- comparing a
-  // composite value. At that depth the alias and typedef matchers missed, the mixin-application
-  // class leaked a frame that swallowed the rest of the file, and the typedef fell through to
-  // FUNC_RE and filed a phantom top-level symbol literally named `Function`.
+  // HAND-DERIVED: the bound above is two levels deep, which is exactly the depth GENERIC_CLAUSE was first built for, so it agreed with that ceiling by construction and said nothing about the level past it. `Comparable<Map<String, List<int>>>` is four, and reachable Dart -- comparing a composite value. At that depth the alias and typedef matchers missed, the mixin-application class leaked a frame that swallowed the rest of the file, and the typedef fell through to FUNC_RE and filed a phantom top-level symbol literally named `Function`.
   it('indexes declarations whose bound nests deeper than the clause was first built for', () => {
     const content = `typedef Cmp<T extends Comparable<Map<String, List<int>>>> = int Function(T a, T b);
 
@@ -4038,12 +3744,7 @@ class AfterDeepAlias {
     expect(symbols.find((s) => s.name === 'deepMember')?.parent).toBe('AfterDeepAlias')
   })
 
-  // A regex cannot balance brackets to arbitrary depth, so CLASS_ALIAS_RE will always have a level
-  // past which it misses; this bound is deliberately nested past the current ceiling to sit in that
-  // region. What must not survive there is the blast radius: a missed alias used to leak a type
-  // frame that nothing popped, costing every later declaration in the file rather than just its own
-  // name. The brace-less shape check is what bounds that, and this is the test that holds it -- the
-  // deeper test above passes on the ceiling alone and would not notice the backstop being removed.
+  // A regex cannot balance brackets to arbitrary depth, so CLASS_ALIAS_RE will always have a level past which it misses; this bound is deliberately nested past the current ceiling to sit in that region. What must not survive there is the blast radius: a missed alias used to leak a type frame that nothing popped, costing every later declaration in the file rather than just its own name. The brace-less shape check is what bounds that, and this is the test that holds it -- the deeper test above passes on the ceiling alone and would not notice the backstop being removed.
   it('still loses only the alias itself when a class bound nests past any clause ceiling', () => {
     const content = `class WayDeep<T extends A<B<C<D<E<int>>>>>> = Object with Mixin;
 
@@ -4058,10 +3759,7 @@ class AfterWayDeep {
     expect(symbols.find((s) => s.name === 'wayDeepMember')?.parent).toBe('AfterWayDeep')
   })
 
-  // FORMAT-DERIVED: the Dart specification's `typeParameter` production permits metadata before the
-  // identifier, so an annotation argument can put a `;` on a class header line that does open a
-  // body. The brace-less check above has to read structure, not raw text, or it suppresses the
-  // frame for a real class and drops every member of it.
+  // FORMAT-DERIVED: the Dart specification's `typeParameter` production permits metadata before the identifier, so an annotation argument can put a `;` on a class header line that does open a body. The brace-less check above has to read structure, not raw text, or it suppresses the frame for a real class and drops every member of it.
   it('does not mistake a semicolon inside type-parameter metadata for a brace-less class', () => {
     const content = `abstract class Marker {}
 
@@ -4076,12 +3774,7 @@ class Annotated<@Deprecated('semi;') T>
     expect(symbols.find((s) => s.name === 'annotatedMember')?.parent).toBe('Annotated')
   })
 
-  // HAND-DERIVED: `Type name(` is the only shape a Dart method declaration has -- there is no `fun`
-  // or `func` keyword to anchor on -- so FUNC_RE is the one matcher here that is not `^`-anchored,
-  // and ordinary prose satisfies it. Kotlin, Swift, Go and TypeScript were probed with the same
-  // shape and none fabricates a symbol, because each anchors on a keyword; this is specific to
-  // Dart's grammar. The literal needs whitespace before the fake declaration to satisfy FUNC_RE's
-  // `(?:^|\s)` prefix, which is why `b` below fires and a quote-hugging one would not.
+  // HAND-DERIVED: `Type name(` is the only shape a Dart method declaration has -- there is no `fun` or `func` keyword to anchor on -- so FUNC_RE is the one matcher here that is not `^`-anchored, and ordinary prose satisfies it. Kotlin, Swift, Go and TypeScript were probed with the same shape and none fabricates a symbol, because each anchors on a keyword; this is specific to Dart's grammar. The literal needs whitespace before the fake declaration to satisfy FUNC_RE's `(?:^|\s)` prefix, which is why `b` below fires and a quote-hugging one would not.
   it('does not file a method declaration found inside a string literal', () => {
     const content = `class C {
   String a = ' Foo baz(';
@@ -4282,8 +3975,7 @@ abstract base class Combined {
 `
     const { symbols } = extractDart(content, 'shapes.dart')
     const byName = (n: string) => symbols.find((s) => s.name === n)
-    // Regression: a bare `^class` anchor dropped every modifier-prefixed declaration, taking the
-    // type AND its members with it. `abstract class Shape` is the ubiquitous case.
+    // Regression: a bare `^class` anchor dropped every modifier-prefixed declaration, taking the type AND its members with it. `abstract class Shape` is the ubiquitous case.
     expect(byName('Shape')?.kind).toBe('class')
     expect(byName('area')?.kind).toBe('function')
     expect(byName('area')?.parent).toBe('Shape')
@@ -4326,10 +4018,7 @@ extension StringHelpers on String {
   })
 
   it('detects every top-level type, not just the first', () => {
-    // Regression test: an early `continue` after a class/enum/mixin/extension match skipped
-    // brace-counting on that same line, so `bodyEntered` never flipped true, the frame never
-    // popped, and every subsequent top-level declaration silently stopped being detected
-    // (same bug class as the Scala fix above).
+    // Regression test: an early `continue` after a class/enum/mixin/extension match skipped brace-counting on that same line, so `bodyEntered` never flipped true, the frame never popped, and every subsequent top-level declaration silently stopped being detected (same bug class as the Scala fix above).
     const content = `class Animal {
   void speak() {
     print("sound");
@@ -4356,12 +4045,7 @@ class Robot {
   })
 
   it('extracts a Dart 3.3 extension type distinctly from a plain function, with members nested under it', () => {
-    // Regression: `extension type Name(repr)` shares the `extension` keyword prefix with the
-    // plain `extension Name on Type` form but takes a `(repr)` primary constructor instead of
-    // `on Type`, so EXTENSION_RE's `on\s+` requirement never matched it. Left unmatched, the
-    // line fell through to FUNC_RE, which misread the representation-type constructor's parens
-    // as a function call -- mis-indexing the whole declaration as a plain top-level function and,
-    // because no scope frame was pushed for it, dropping every member declared inside its body.
+    // Regression: `extension type Name(repr)` shares the `extension` keyword prefix with the plain `extension Name on Type` form but takes a `(repr)` primary constructor instead of `on Type`, so EXTENSION_RE's `on\s+` requirement never matched it. Left unmatched, the line fell through to FUNC_RE, which misread the representation-type constructor's parens as a function call -- mis-indexing the whole declaration as a plain top-level function and, because no scope frame was pushed for it, dropping every member declared inside its body.
     const content = `extension type Meters(int value) {
   int toMillimeters() {
     return value * 1000;
@@ -4377,16 +4061,11 @@ class Robot {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Zig
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Zig ---------------------------------------------------------------------------
 
 describe('zig adapter', () => {
   it('extracts fn, container types, const, and var declarations with real Zig syntax', () => {
-    // Regression: Zig has no keyword-first `struct Foo` form. Named containers are bound to a
-    // `const` (`const Point = struct { ... }`). The old extractor matched a fictional
-    // `pub struct Foo` grammar, so a real container was misfiled as a plain `const` and its
-    // methods dropped. These assertions use the syntax real .zig files actually contain.
+    // Regression: Zig has no keyword-first `struct Foo` form. Named containers are bound to a `const` (`const Point = struct { ... }`). The old extractor matched a fictional `pub struct Foo` grammar, so a real container was misfiled as a plain `const` and its methods dropped. These assertions use the syntax real .zig files actually contain.
     const content = `const std = @import("std");
 
 const Point = struct {
@@ -4428,8 +4107,7 @@ var counter: i32 = 0;
     expect(symbols.find((s) => s.name === 'Color')?.kind).toBe('enum')
     expect(symbols.find((s) => s.name === 'Payload')?.kind).toBe('union')
     expect(symbols.find((s) => s.name === 'Handle')?.kind).toBe('opaque')
-    // A method nested in a container body is extracted and parented to the container -- the
-    // core symptom of the old bug (no frame pushed => every method dropped).
+    // A method nested in a container body is extracted and parented to the container -- the core symptom of the old bug (no frame pushed => every method dropped).
     const init = symbols.find((s) => s.name === 'init')
     expect(init?.kind).toBe('function')
     expect(init?.parent).toBe('Point')
@@ -4441,10 +4119,7 @@ var counter: i32 = 0;
   })
 
   it('detects every top-level container and its methods, not just the first', () => {
-    // Regression test: an early `continue` after a container match (and after a brace-bodied
-    // `fn` match) skipped brace-counting on that same line, so `bodyEntered` never flipped
-    // true, the frame never popped, and detection silently broke for anything declared after
-    // it in the file (same bug class as the Scala/Dart fixes above).
+    // Regression test: an early `continue` after a container match (and after a brace-bodied `fn` match) skipped brace-counting on that same line, so `bodyEntered` never flipped true, the frame never popped, and detection silently broke for anything declared after it in the file (same bug class as the Scala/Dart fixes above).
     const content = `const Point = struct {
     x: f32,
 
@@ -4470,13 +4145,7 @@ const Vector = struct {
   })
 
   it('indexes pub-qualified top-level const and var declarations', () => {
-    // HAND-DERIVED: `pub const` / `pub var` are the ordinary spelling of a public top-level
-    // declaration in Zig (language reference, "Container Level Variables" / "Keyword pub"); the
-    // expected names below are read off this source text, not off the adapter's own regex.
-    // CONST_RE/VAR_RE were anchored at `^const`/`^var` with no `pub` prefix, so every public
-    // constant and variable -- the re-export block at the top of a typical root module -- was
-    // dropped from the index entirely, while `pub const Point = struct` still resolved because
-    // CONTAINER_RE does allow the prefix.
+    // HAND-DERIVED: `pub const` / `pub var` are the ordinary spelling of a public top-level declaration in Zig (language reference, "Container Level Variables" / "Keyword pub"); the expected names below are read off this source text, not off the adapter's own regex. CONST_RE/VAR_RE were anchored at `^const`/`^var` with no `pub` prefix, so every public constant and variable -- the re-export block at the top of a typical root module -- was dropped from the index entirely, while `pub const Point = struct` still resolved because CONTAINER_RE does allow the prefix.
     const content = `pub const std = @import("std");
 pub const max_len: usize = 4096;
 pub var global_counter: u32 = 0;
@@ -4495,15 +4164,9 @@ const private_pi = 3.14;
   })
 
   it('indexes export, extern and threadlocal top-level declarations', () => {
-    // HAND-DERIVED: the prefixes and their legal ordering are read off the Zig grammar comment
-    // above `expectTopLevelDecl` in ziglang/zig `lib/std/zig/Parse.zig`:
-    //   Decl <- (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE? / KEYWORD_inline /
-    //            KEYWORD_noinline)? FnProto (SEMICOLON / Block)
+    // HAND-DERIVED: the prefixes and their legal ordering are read off the Zig grammar comment above `expectTopLevelDecl` in ziglang/zig `lib/std/zig/Parse.zig`: Decl <- (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE? / KEYWORD_inline / KEYWORD_noinline)? FnProto (SEMICOLON / Block)
     //         / (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE?)? KEYWORD_threadlocal? VarDecl
-    // with `pub` eaten one level up in ContainerDeclarations, so `pub` always comes first. The
-    // names below are read off this source text, not off the adapter's regexes. Before the fix
-    // the four patterns accepted only a bare optional `pub`, so every one of these declarations
-    // produced no symbol at all.
+    // with `pub` eaten one level up in ContainerDeclarations, so `pub` always comes first. The names below are read off this source text, not off the adapter's regexes. Before the fix the four patterns accepted only a bare optional `pub`, so every one of these declarations produced no symbol at all.
     const content = `export const build_id: u32 = 7;
 export var error_count: usize = 0;
 threadlocal var scratch: [64]u8 = undefined;
@@ -4544,13 +4207,9 @@ pub export const Wrapper = struct {
     expect(symbols.find((s) => s.name === 'environ')?.kind).toBe('var')
     expect(symbols.find((s) => s.name === 'printf')?.kind).toBe('function')
     expect(symbols.find((s) => s.name === 'Wrapper')?.kind).toBe('struct')
-    // The container frame must still be pushed for a prefixed container, so its methods keep
-    // their parent instead of being dropped.
+    // The container frame must still be pushed for a prefixed container, so its methods keep their parent instead of being dropped.
     expect(symbols.find((s) => s.name === 'get')?.parent).toBe('Wrapper')
-    // `inline`/`noinline` are legal on functions only, so the widened variable prefix must not
-    // admit them. (The mirror case `threadlocal fn` is not asserted: FUNC_RE deliberately allows
-    // `fn` after any whitespace so function-type expressions still match, and `threadlocal fn` is
-    // not legal Zig anyway, so over-matching it costs nothing.)
+    // `inline`/`noinline` are legal on functions only, so the widened variable prefix must not admit them. (The mirror case `threadlocal fn` is not asserted: FUNC_RE deliberately allows `fn` after any whitespace so function-type expressions still match, and `threadlocal fn` is not legal Zig anyway, so over-matching it costs nothing.)
     expect(
       extractZig('inline var bogus_b: u8 = 0;\n', 'x.zig').symbols.map((s) => s.name),
       'inline var is not legal Zig and must not be admitted as a variable',
@@ -4558,11 +4217,7 @@ pub export const Wrapper = struct {
   })
 
   it('does not misattribute a method-local struct as a direct member of the enclosing type', () => {
-    // Regression: a local `const Inner = struct { ... }` declared inside a method's body -- a
-    // common Zig idiom for local helper types -- sits at depthInType 2+ relative to the
-    // enclosing struct, not 1. The prior ungated `scopeStack.length > 0` check misattributed it
-    // as a direct member of the enclosing struct (parent: 'Foo'), the same bug class already
-    // fixed with the === 1 depth gate in swift.ts/dart.ts/scala.ts.
+    // Regression: a local `const Inner = struct { ... }` declared inside a method's body -- a common Zig idiom for local helper types -- sits at depthInType 2+ relative to the enclosing struct, not 1. The prior ungated `scopeStack.length > 0` check misattributed it as a direct member of the enclosing struct (parent: 'Foo'), the same bug class already fixed with the === 1 depth gate in swift.ts/dart.ts/scala.ts.
     const content = `const Foo = struct {
     pub fn bar() void {
         const Inner = struct {
@@ -4579,9 +4234,7 @@ pub export const Wrapper = struct {
   })
 })
 
-// ---------------------------------------------------------------------------
-// R
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- R ---------------------------------------------------------------------------
 
 describe('r adapter', () => {
   it('extracts function assignments and S4 class definitions', () => {
@@ -4615,8 +4268,7 @@ bar = function() { 2 }
   })
 
   it('extracts R 4.1 backslash-lambda assignments alongside the classic function form', () => {
-    // Regression: the R 4.1 (2021) `\(...)` lambda shorthand is now idiomatic, but requiring
-    // the literal `function` keyword dropped every named lambda defined with it.
+    // Regression: the R 4.1 (2021) `\(...)` lambda shorthand is now idiomatic, but requiring the literal `function` keyword dropped every named lambda defined with it.
     const content = `square <- function(x) x^2
 add <- \\(a, b) a + b
 triple = \\(x) x * 3
@@ -4652,9 +4304,7 @@ triple = \\(x) x * 3
   })
 })
 
-// ---------------------------------------------------------------------------
-// GraphQL
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GraphQL ---------------------------------------------------------------------------
 
 describe('graphql adapter', () => {
   it('extracts type, query, mutation, enum, and fragment', () => {
@@ -4739,11 +4389,7 @@ type Query { users: [User] }
     expect(imports.some((i) => i.target === 'user.graphql')).toBe(true)
   })
 
-  // Regression: the import extraction pass used to scan the raw, unmasked content, while every
-  // other pass (types, directives, fragments, operations, schema) ran against content with
-  // """..."""` block descriptions already blanked. A description whose prose merely mentions or
-  // gives an example of the #import pragma syntax got matched as a real import, writing a
-  // phantom, non-existent dependency edge into the index.
+  // Regression: the import extraction pass used to scan the raw, unmasked content, while every other pass (types, directives, fragments, operations, schema) ran against content with """..."""` block descriptions already blanked. A description whose prose merely mentions or gives an example of the #import pragma syntax got matched as a real import, writing a phantom, non-existent dependency edge into the index.
   it('does not extract a phantom import from #import-pragma-shaped prose inside a """..."""` block description', () => {
     const content = `"""
 desc mentions:
@@ -4758,8 +4404,7 @@ type User {
   })
 
   it('stripHashComments preserves a `#` inside a quoted string (used before parsing GraphQL SDL)', () => {
-    // A description string containing a literal `#` must not have its content past the `#`
-    // treated as a comment and truncated - `type Foo {` on the same line must survive intact.
+    // A description string containing a literal `#` must not have its content past the `#` treated as a comment and truncated - `type Foo {` on the same line must survive intact.
     const content = '"A weird desc # not a comment" type Foo {\n  id: ID!\n}\n'
     const stripped = stripHashComments(content)
     expect(stripped).toContain('type Foo {')
@@ -4788,13 +4433,7 @@ type Foo {
   })
 
   it('does not drop every symbol after a literal `#` inside an open """..."""` block description', () => {
-    // Regression: extractGraphql used to strip `#` comments BEFORE masking """..."""` block
-    // descriptions. stripHashComments's own quote-awareness only tracks quote parity within a
-    // single line, so a `#` inside a still-open description (whose opening """` is on an
-    // earlier line) looked "not inside a string" and got treated as a real comment - including
-    // when it appeared right before the description's own closing """` on the same line, which
-    // deleted that closer too. With the closer gone, the description-masking pass never found a
-    // matching end for the rest of the file, silently dropping every symbol after it.
+    // Regression: extractGraphql used to strip `#` comments BEFORE masking """..."""` block descriptions. stripHashComments's own quote-awareness only tracks quote parity within a single line, so a `#` inside a still-open description (whose opening """` is on an earlier line) looked "not inside a string" and got treated as a real comment - including when it appeared right before the description's own closing """` on the same line, which deleted that closer too. With the closer gone, the description-masking pass never found a matching end for the rest of the file, silently dropping every symbol after it.
     const content = `"""
 Some text with a # comment marker here """
 type Foo {
@@ -4812,10 +4451,7 @@ type Bar {
   })
 
   it('does not treat a `"""`-looking sequence inside a real `#` comment as a description opener', () => {
-    // Regression guard for the fix above: masking descriptions before stripping `#` comments
-    // must not itself misread a `"""`-looking sequence that merely appears inside an ordinary
-    // `#` comment (e.g. documentation prose referencing the syntax) as a real opener - that
-    // would wrongly swallow every declaration after it as "still inside a description".
+    // Regression guard for the fix above: masking descriptions before stripping `#` comments must not itself misread a `"""`-looking sequence that merely appears inside an ordinary `#` comment (e.g. documentation prose referencing the syntax) as a real opener - that would wrongly swallow every declaration after it as "still inside a description".
     const content = `# see """ for details on descriptions
 type Foo {
   id: ID!
@@ -4832,10 +4468,7 @@ type Bar {
   })
 
   it('blanks a single-line "..." description containing declaration-like text before matching (defense-in-depth alongside the block-string fix)', () => {
-    // A single-line description's own line always starts with the opening quote, so the
-    // line-anchored declaration regexes below can't match its content directly today - this
-    // asserts the description is still blanked (not just "happens not to match yet") so the
-    // behavior doesn't silently depend on that anchoring detail.
+    // A single-line description's own line always starts with the opening quote, so the line-anchored declaration regexes below can't match its content directly today - this asserts the description is still blanked (not just "happens not to match yet") so the behavior doesn't silently depend on that anchoring detail.
     const content = `"query GetFoo on a Foo returns nothing real"
 type Foo {
   id: ID
@@ -4855,9 +4488,7 @@ type Foo {
   })
 
   it('reports correct line numbers for many scattered type declarations', () => {
-    // Regression guard for a quadratic slice+split line-number bug: with many matches spread
-    // across a large file, each declaration's reported lineStart must match its real 1-based
-    // line, not drift or degrade under a stale/incremental offset calculation.
+    // Regression guard for a quadratic slice+split line-number bug: with many matches spread across a large file, each declaration's reported lineStart must match its real 1-based line, not drift or degrade under a stale/incremental offset calculation.
     const blockCount = 60
     const lines: string[] = []
     const expectedLines = new Map<string, number>()
@@ -4880,11 +4511,7 @@ type Foo {
   })
 
   it('ends a declaration at its own closing brace, not at the line before the next declaration', () => {
-    // Regression: graphql_idx relied on assignFlatEndLines alone, so every symbol was stretched to
-    // the line before the next declaration. That swallowed blank lines, `#` comments and -- worst
-    // of all -- the `"""..."""` description belonging to the NEXT declaration into this symbol's
-    // body, so `token-goat read "schema.graphql::User"` returned Post's docs as part of User.
-    // proto_idx/terraform_idx already correct their flat spans with findMatchingBraceEndLine.
+    // Regression: graphql_idx relied on assignFlatEndLines alone, so every symbol was stretched to the line before the next declaration. That swallowed blank lines, `#` comments and -- worst of all -- the `"""..."""` description belonging to the NEXT declaration into this symbol's body, so `token-goat read "schema.graphql::User"` returned Post's docs as part of User. proto_idx/terraform_idx already correct their flat spans with findMatchingBraceEndLine.
     const content = `type User {
   id: ID!
 }
@@ -4934,9 +4561,7 @@ schema {
   })
 })
 
-// ---------------------------------------------------------------------------
-// SQL
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- SQL ---------------------------------------------------------------------------
 
 describe('sql adapter', () => {
   it('extracts CREATE TABLE, VIEW, FUNCTION, INDEX', () => {
@@ -4975,11 +4600,7 @@ CREATE UNIQUE INDEX idx_users_name ON users(name);
     expect(names).toContain('srv.db.dbo.Widgets')
   })
 
-  // Fixture provenance: HAND-DERIVED. The identifiers are written from the escaping rule each
-  // dialect states -- SQL:2016 delimited identifier (`""` is one `"`), MySQL identifier syntax
-  // (a doubled backtick is one backtick), T-SQL delimited identifiers (`]]` is one `]`) -- and the
-  // expected names are the characters those rules spell out, computed by hand rather than read
-  // from any output of this adapter.
+  // Fixture provenance: HAND-DERIVED. The identifiers are written from the escaping rule each dialect states -- SQL:2016 delimited identifier (`""` is one `"`), MySQL identifier syntax (a doubled backtick is one backtick), T-SQL delimited identifiers (`]]` is one `]`) -- and the expected names are the characters those rules spell out, computed by hand rather than read from any output of this adapter.
   it('reads a doubled delimiter inside a delimited identifier as one escaped character rather than a close followed by a reopen (regression: QUOTED matched only up to the first half of the escape, so CREATE TABLE "a.""b".c was captured as "a." and indexed under the fabricated name a. -- a name the file never declares, which is worse than no symbol at all because the index then looks populated)', () => {
     const content = [
       'CREATE TABLE "a.""b".c (id int);',
@@ -4991,8 +4612,7 @@ CREATE UNIQUE INDEX idx_users_name ON users(name);
     expect(names).toContain('a."b.c')
     expect(names).toContain('m`n.t2')
     expect(names).toContain('b]racket.t3')
-    // A fabricated name is worse than a missing one, so the wrong spellings are asserted absent:
-    // a test that only checks the right name exists passes against code emitting both.
+    // A fabricated name is worse than a missing one, so the wrong spellings are asserted absent: a test that only checks the right name exists passes against code emitting both.
     expect(names).not.toContain('a.')
     expect(names).not.toContain('m')
     expect(names).not.toContain('b.t3')
@@ -5029,9 +4649,7 @@ CREATE UNIQUE INDEX idx_users_name ON users(name);
     const sym = symbols.find((s) => s.name === 'a;b')
     expect(sym).toBeDefined()
     expect(sym?.lineStart).toBe(1)
-    // The fixture has four lines; the `5` this asserted before was the phantom
-    // line a trailing newline used to add. Four still proves the subject here,
-    // which is that the statement is not truncated to line 1.
+    // The fixture has four lines; the `5` this asserted before was the phantom line a trailing newline used to add. Four still proves the subject here, which is that the statement is not truncated to line 1.
     expect(sym?.lineEnd).toBe(4)
   })
 
@@ -5113,11 +4731,7 @@ CREATE TABLE "order" (id int);
   })
 
   it('does not drop symbols after a double-quoted identifier containing an apostrophe', () => {
-    // Regression: standard SQL permits any character, including `'`, inside a delimited
-    // identifier (e.g. a possessive/label-style column name). The scanner used to leave
-    // double-quoted spans' contents unconsumed as opaque, so a `'` inside one opened a phantom
-    // single-quoted string on the next iteration that never found a real closing `'`, blanking
-    // every DDL statement after it through EOF.
+    // Regression: standard SQL permits any character, including `'`, inside a delimited identifier (e.g. a possessive/label-style column name). The scanner used to leave double-quoted spans' contents unconsumed as opaque, so a `'` inside one opened a phantom single-quoted string on the next iteration that never found a real closing `'`, blanking every DDL statement after it through EOF.
     const content = `
 CREATE TABLE t ("user's_data" TEXT);
 CREATE TABLE real_table (id int);
@@ -5151,8 +4765,7 @@ CREATE TABLE real_table (id int);
   })
 
   it('does not drop symbols after a backtick-delimited (MySQL) identifier containing an apostrophe', () => {
-    // Same phantom-string failure mode as the double-quoted case above, for the sibling
-    // backtick-quoting form the adapter's own NAME_PAT also matches.
+    // Same phantom-string failure mode as the double-quoted case above, for the sibling backtick-quoting form the adapter's own NAME_PAT also matches.
     const content = `
 CREATE TABLE \`user's_data\` (id int);
 CREATE TABLE real_table (id int);
@@ -5164,10 +4777,7 @@ CREATE TABLE real_table (id int);
   })
 
   it('does not create a phantom table from a CREATE TABLE sitting inside a `#` (MySQL/MariaDB) line comment', () => {
-    // Regression: stripSqlStringLiterals only recognized `--` and `/* */` comment forms, so a
-    // `#`-commented CREATE TABLE (MySQL's third comment syntax) survived masking and matched the
-    // live DDL patterns below, producing a phantom symbol - whether the comment leads a line or
-    // trails real, uncommented DDL on the same line.
+    // Regression: stripSqlStringLiterals only recognized `--` and `/* */` comment forms, so a `#`-commented CREATE TABLE (MySQL's third comment syntax) survived masking and matched the live DDL patterns below, producing a phantom symbol - whether the comment leads a line or trails real, uncommented DDL on the same line.
     const content = `
 # CREATE TABLE fake_from_hash (id int);
 CREATE TABLE real_table (id int);
@@ -5222,10 +4832,7 @@ CREATE TABLE public.orders (id int);
   })
 
   it('does not drop symbols after a multi-line string literal containing a literal `--`', () => {
-    // Regression: a `--` inside a multi-line string literal used to be blanked out by a
-    // line-scoped comment pre-pass that ran before string-literal stripping and had no
-    // awareness the line started mid-string, taking the closing quote with it and flipping
-    // string-parity tracking for the rest of the file.
+    // Regression: a `--` inside a multi-line string literal used to be blanked out by a line-scoped comment pre-pass that ran before string-literal stripping and had no awareness the line started mid-string, taking the closing quote with it and flipping string-parity tracking for the rest of the file.
     const content = `
 EXECUTE 'CREATE TABLE ghost (id int)
 -- text');
@@ -5240,12 +4847,7 @@ CREATE TABLE real_table (id int);
   })
 
   it('does not drop symbols after a multi-line string containing a `/*`-looking sequence', () => {
-    // Regression: block-comment stripping used to run as a separate pre-pass
-    // (`stripCstyleComments`) before string-literal stripping, and had no awareness that a line
-    // could start mid-way through an already-open multi-line string literal from a prior line.
-    // A `/*` that merely appears inside such a string (e.g. stored as part of a default text
-    // value) was misread as a real comment opener; since no real `*/` ever follows it, the
-    // "comment" never closes and every real statement after it - to EOF - was silently dropped.
+    // Regression: block-comment stripping used to run as a separate pre-pass (`stripCstyleComments`) before string-literal stripping, and had no awareness that a line could start mid-way through an already-open multi-line string literal from a prior line. A `/*` that merely appears inside such a string (e.g. stored as part of a default text value) was misread as a real comment opener; since no real `*/` ever follows it, the "comment" never closes and every real statement after it - to EOF - was silently dropped.
     const content = `CREATE TABLE t (
   note TEXT DEFAULT 'line one
 /* looks like a comment
@@ -5288,11 +4890,7 @@ CREATE TABLE real_table (id int);
   })
 
   it('indexes past the old 500-symbol cap: 600 CREATE TABLE statements all come back', () => {
-    // HAND-DERIVED: tableCount is a loop bound chosen independently of extractSql's own output,
-    // comfortably past the old MAX_SYMBOLS = 500 (which silently dropped everything past it with
-    // no disclosure) and well under the new 10,000 (see common.ts's makeSymbolEmitter comment for
-    // the measurement: a 35,000-statement/1.7MB file indexed in 2.4s, and this repo's own largest
-    // file was already at 439 symbols, 88% of the old cap).
+    // HAND-DERIVED: tableCount is a loop bound chosen independently of extractSql's own output, comfortably past the old MAX_SYMBOLS = 500 (which silently dropped everything past it with no disclosure) and well under the new 10,000 (see common.ts's makeSymbolEmitter comment for the measurement: a 35,000-statement/1.7MB file indexed in 2.4s, and this repo's own largest file was already at 439 symbols, 88% of the old cap).
     const tableCount = 600
     const content = Array.from({ length: tableCount }, (_, i) => `CREATE TABLE tbl_${i} (id int);`).join('\n')
     const symbols = extractSql(content, 'many600.sql')
@@ -5301,9 +4899,7 @@ CREATE TABLE real_table (id int);
   })
 })
 
-// ---------------------------------------------------------------------------
-// INI
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- INI ---------------------------------------------------------------------------
 
 describe('ini adapter', () => {
   it('extracts [section] headers as ini_section symbols', () => {
@@ -5326,9 +4922,7 @@ debug = true
   })
 
   it('extracts a quoted git-config-style subsection header', () => {
-    // Regression: HEADER_RE's name charset didn't allow spaces or quotes, so a real,
-    // common git-config-style header like [branch "master"] never matched and the whole
-    // line was silently skipped rather than producing an ini_section symbol.
+    // Regression: HEADER_RE's name charset didn't allow spaces or quotes, so a real, common git-config-style header like [branch "master"] never matched and the whole line was silently skipped rather than producing an ini_section symbol.
     const content = `[branch "master"]
 remote = origin
 merge = refs/heads/master
@@ -5370,9 +4964,7 @@ CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
   })
 })
 
-// ---------------------------------------------------------------------------
-// .env (extractEnv)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- .env (extractEnv) ---------------------------------------------------------------------------
 
 describe('env adapter', () => {
   it('extracts KEY=value assignments as env_key symbols', () => {
@@ -5437,10 +5029,7 @@ API_KEY=secret
     expect(names).not.toContain('https')
   })
 
-  // Regression: extractEnv scanned every line independently for a column-0 `KEY=value`
-  // assignment, with no notion of an open quote carried over from a previous line. A
-  // multi-line double-quoted value whose embedded content happened to look like an
-  // assignment (e.g. `PHANTOM_KEY=phantom`) was misread as a real, separate key.
+  // Regression: extractEnv scanned every line independently for a column-0 `KEY=value` assignment, with no notion of an open quote carried over from a previous line. A multi-line double-quoted value whose embedded content happened to look like an assignment (e.g. `PHANTOM_KEY=phantom`) was misread as a real, separate key.
   it('does not emit a phantom key from a line embedded inside a multi-line quoted value', () => {
     const content = `MULTILINE="first line
 PHANTOM_KEY=phantom
@@ -5473,14 +5062,7 @@ B="two"
     expect(symbols.map((s) => s.name)).toEqual(['A', 'B'])
   })
 
-  // Regression: _lineClosesQuote/_detectOpenQuote treated any char immediately preceding a
-  // quote as escaping it if it was a backslash, with no notion of odd/even backslash runs, and
-  // applied that escape logic to single-quoted values too (which have no escape semantics in
-  // dotenv/POSIX). A single-quoted value ending in a backslash (`DIR='C:\Users\me\'`) was
-  // misread as an escaped, still-open quote, silently swallowing every subsequent key as a
-  // phantom multi-line continuation. A double-quoted value ending in an even run of backslashes
-  // (`WIN="C:\path\\"`, i.e. one literal trailing backslash) closes correctly either way, but is
-  // included here to pin down the odd/even-run distinction for double quotes too.
+  // Regression: _lineClosesQuote/_detectOpenQuote treated any char immediately preceding a quote as escaping it if it was a backslash, with no notion of odd/even backslash runs, and applied that escape logic to single-quoted values too (which have no escape semantics in dotenv/POSIX). A single-quoted value ending in a backslash (`DIR='C:\Users\me\'`) was misread as an escaped, still-open quote, silently swallowing every subsequent key as a phantom multi-line continuation. A double-quoted value ending in an even run of backslashes (`WIN="C:\path\\"`, i.e. one literal trailing backslash) closes correctly either way, but is included here to pin down the odd/even-run distinction for double quotes too.
   it('closes a single-quoted value on any quote regardless of a trailing backslash, and correctly parses a double-quoted value with an even trailing backslash run', () => {
     const content = String.raw`DIR='C:\Users\me\'
 API_KEY=abc123
@@ -5523,9 +5105,7 @@ CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
   })
 })
 
-// ---------------------------------------------------------------------------
-// Makefile
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Makefile ---------------------------------------------------------------------------
 
 describe('makefile adapter', () => {
   it('extracts targets and define blocks', () => {
@@ -5606,8 +5186,7 @@ clean::
   })
 
   it('splits a multi-target rule into separate symbols instead of fusing the names', () => {
-    // Regression: `all clean:` used to capture the whole "all clean" run as a single symbol
-    // name, so `token-goat symbol clean` returned nothing for a target visibly in the source.
+    // Regression: `all clean:` used to capture the whole "all clean" run as a single symbol name, so `token-goat symbol clean` returned nothing for a target visibly in the source.
     const content = `all clean:\n\techo done\n`
     const symbols = extractMakefile(content, 'Makefile')
     const names = symbols.map((s) => s.name)
@@ -5638,10 +5217,7 @@ test:
   })
 
   it('masks the entire outer define body of a legally nested define...endef block, not just up to the first inner endef', () => {
-    // Regression: DEFINE_BLOCK_RE was non-greedy, so with a nested `define`/`endef` pair the
-    // mask stopped at the FIRST (inner) endef, leaving the rest of the outer define's body
-    // unmasked and scanned as real rule text -- a fake target line left over in that
-    // unmasked tail was wrongly emitted as a real makefile_target symbol.
+    // Regression: DEFINE_BLOCK_RE was non-greedy, so with a nested `define`/`endef` pair the mask stopped at the FIRST (inner) endef, leaving the rest of the outer define's body unmasked and scanned as real rule text -- a fake target line left over in that unmasked tail was wrongly emitted as a real makefile_target symbol.
     const content = `define outer
 define inner
 endef
@@ -5661,12 +5237,7 @@ test:
   })
 
   it('does not mistake a tab-indented recipe line starting with "define" for a define block opener', () => {
-    // Regression: DEFINE_LINE_RE/ENDEF_LINE_RE used `^\s*`, which matches a leading tab too -
-    // but a tab-indented line in a Makefile is always a shell recipe line (arbitrary text
-    // handed to the shell), never a make directive. A recipe command that happened to start
-    // with the word "define" (e.g. `\tdefine X = 1`) was misread as opening a define...endef
-    // block; since a real column-0 endef never appears inside a recipe, no closer was found
-    // and everything from that line to EOF was masked, silently dropping every later target.
+    // Regression: DEFINE_LINE_RE/ENDEF_LINE_RE used `^\s*`, which matches a leading tab too - but a tab-indented line in a Makefile is always a shell recipe line (arbitrary text handed to the shell), never a make directive. A recipe command that happened to start with the word "define" (e.g. `\tdefine X = 1`) was misread as opening a define...endef block; since a real column-0 endef never appears inside a recipe, no closer was found and everything from that line to EOF was masked, silently dropping every later target.
     const content = `first:
 \tdefine X = 1
 second:
@@ -5682,12 +5253,7 @@ third:
   })
 
   it('emits a makefile_define symbol for a legally space-indented define block, not just column-0', () => {
-    // Regression: DEFINE_LINE_RE (used by maskDefineBlocks to detect and mask the block body)
-    // tolerates GNU make's legal leading spaces before `define`, but DEFINE_RE (the separate
-    // regex that actually emits the makefile_define symbol) was hard-anchored at column 0 with
-    // no such tolerance - so a legally space-indented `  define VAR` block was correctly masked
-    // (its body didn't corrupt target scanning) but VAR itself was never surfaced as a symbol,
-    // silently vanishing from the index despite valid Makefile syntax.
+    // Regression: DEFINE_LINE_RE (used by maskDefineBlocks to detect and mask the block body) tolerates GNU make's legal leading spaces before `define`, but DEFINE_RE (the separate regex that actually emits the makefile_define symbol) was hard-anchored at column 0 with no such tolerance - so a legally space-indented `  define VAR` block was correctly masked (its body didn't corrupt target scanning) but VAR itself was never surfaced as a symbol, silently vanishing from the index despite valid Makefile syntax.
     const content = `  define GREETING
   echo hi
   endef
@@ -5703,11 +5269,7 @@ build:
   })
 
   it('recognizes a modifier-prefixed define block (override/export) instead of scanning its body for phantom targets', () => {
-    // Regression: DEFINE_LINE_RE/DEFINE_RE only recognized a bare `define`, not GNU make's legal
-    // `override define`/`export define`/`private define` modifier prefixes. maskDefineBlocks
-    // never entered the block for a modifier-prefixed opener, so its body (often help/usage text
-    // with colons) was left unmasked and scanned by TARGET_RE for phantom makefile_target
-    // symbols, while the real variable name was dropped entirely since DEFINE_RE never matched.
+    // Regression: DEFINE_LINE_RE/DEFINE_RE only recognized a bare `define`, not GNU make's legal `override define`/`export define`/`private define` modifier prefixes. maskDefineBlocks never entered the block for a modifier-prefixed opener, so its body (often help/usage text with colons) was left unmasked and scanned by TARGET_RE for phantom makefile_target symbols, while the real variable name was dropped entirely since DEFINE_RE never matched.
     const content = `override define HELP_TEXT
 usage: make foo
 run this: to build
@@ -5735,11 +5297,7 @@ real:
   })
 
   it('does not create a phantom target from a colon inside a backslash-continued variable assignment', () => {
-    // Regression: TARGET_RE scanned every physical line independently, never accounting for
-    // GNU make's backslash-newline line continuation. A variable assignment wrapped across
-    // multiple physical lines (a search path, a sed substitution) legitimately has a colon in
-    // its continuation line, which TARGET_RE misread as a new rule header - even though that
-    // line is logically still part of the preceding assignment, not an independent statement.
+    // Regression: TARGET_RE scanned every physical line independently, never accounting for GNU make's backslash-newline line continuation. A variable assignment wrapped across multiple physical lines (a search path, a sed substitution) legitimately has a colon in its continuation line, which TARGET_RE misread as a new rule header - even though that line is logically still part of the preceding assignment, not an independent statement.
     const content = [
       'PATHS = /usr/bin:/usr/local/bin \\',
       '        /opt/bin:/sbin',
@@ -5770,12 +5328,7 @@ real:
   })
 
   it('does not misread a backslash-continued value line starting with the word "define" as a real define opener', () => {
-    // Regression: maskContinuationLines ran AFTER maskDefineBlocks, so a wrapped variable
-    // assignment whose continuation line happens to start with the ordinary word "define" (e.g.
-    // a list of make directive names) was still visible to DEFINE_LINE_RE when maskDefineBlocks
-    // scanned. That opened a phantom define block with no matching endef, masking every line
-    // through EOF (dropping every real target after it), and DEFINE_RE (which read the
-    // continuation-unaware `stripped` copy) separately emitted a phantom makefile_define symbol.
+    // Regression: maskContinuationLines ran AFTER maskDefineBlocks, so a wrapped variable assignment whose continuation line happens to start with the ordinary word "define" (e.g. a list of make directive names) was still visible to DEFINE_LINE_RE when maskDefineBlocks scanned. That opened a phantom define block with no matching endef, masking every line through EOF (dropping every real target after it), and DEFINE_RE (which read the continuation-unaware `stripped` copy) separately emitted a phantom makefile_define symbol.
     const content = [
       'DIRECTIVES = include ifdef \\',
       '    define undef pragma \\',
@@ -5796,13 +5349,7 @@ real:
   })
 
   it('does not let a backslash-terminated define-body line swallow the endef and drop every target after it', () => {
-    // Regression: continuation-masking and define-block-masking ran as two independent line
-    // scans. maskContinuationLines had no awareness of define/endef boundaries, so a define
-    // body's last line ending in `\` caused the following `endef` line to be blanked as a
-    // "continuation" even though GNU make does not join continuations across an endef
-    // terminator - endef is a literal directive line regardless of what the previous body line
-    // ended with. Blanking it meant maskDefineBlocks's depth counter never saw the endef and
-    // masked every line through EOF, dropping every real target declared after the block.
+    // Regression: continuation-masking and define-block-masking ran as two independent line scans. maskContinuationLines had no awareness of define/endef boundaries, so a define body's last line ending in `\` caused the following `endef` line to be blanked as a "continuation" even though GNU make does not join continuations across an endef terminator - endef is a literal directive line regardless of what the previous body line ended with. Blanking it meant maskDefineBlocks's depth counter never saw the endef and masked every line through EOF, dropping every real target declared after the block.
     const content = [
       'define BUILD',
       'gcc -o foo \\',
@@ -5911,8 +5458,7 @@ CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
   })
 
   it('detects and indexes a .mk fragment via parseFile', async () => {
-    // Regression: a `.mk` fragment (config.mk, rules.mk) was classified 'unknown' and produced
-    // zero symbols despite extractMakefile handling its content -- `.mk` had no extension mapping.
+    // Regression: a `.mk` fragment (config.mk, rules.mk) was classified 'unknown' and produced zero symbols despite extractMakefile handling its content -- `.mk` had no extension mapping.
     const result = await parseFixture('rules.mk', 'build:\n\techo building\n\nclean:\n\trm -rf out\n')
     expect(result.language).toBe('makefile')
     expect(result.symbols.find((s) => s.name === 'build')?.kind).toBe('makefile_target')
@@ -5920,9 +5466,7 @@ CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
   })
 })
 
-// ---------------------------------------------------------------------------
-// Protobuf
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Protobuf ---------------------------------------------------------------------------
 
 describe('proto adapter', () => {
   it('extracts message, service, rpc, enum, and import', () => {
@@ -5999,8 +5543,7 @@ service UserService {
 `
     const { symbols } = extractProto(content, 'nested.proto')
     const names = symbols.map((s) => s.name)
-    // Regression: TOP_LEVEL_RE was anchored to column 0 with no leading-whitespace
-    // allowance, so an indented nested message/enum never matched at all.
+    // Regression: TOP_LEVEL_RE was anchored to column 0 with no leading-whitespace allowance, so an indented nested message/enum never matched at all.
     expect(names).toContain('Inner')
     expect(names).toContain('Status')
 
@@ -6010,9 +5553,7 @@ service UserService {
     expect(inner?.kind).toBe('proto_message')
     expect(status?.kind).toBe('proto_enum')
 
-    // Regression: the shared flat end-line propagation assumes siblings, not nesting, so
-    // without brace-matching Outer's range gets truncated to right before Inner starts, and
-    // Inner (the last section in file order) over-extends all the way to EOF.
+    // Regression: the shared flat end-line propagation assumes siblings, not nesting, so without brace-matching Outer's range gets truncated to right before Inner starts, and Inner (the last section in file order) over-extends all the way to EOF.
     expect(inner?.lineStart).toBe(2)
     expect(inner?.lineEnd).toBe(4)
     expect(status?.lineStart).toBe(5)
@@ -6034,10 +5575,7 @@ message Bar {
     const { symbols } = extractProto(content, 'quotes.proto')
     const foo = symbols.find((s) => s.name === 'Foo')
     const bar = symbols.find((s) => s.name === 'Bar')
-    // Regression: the naive /\*[\s\S]*?\*\/ regex has no string-literal awareness, so the
-    // "/*" inside Foo's string literal gets treated as opening a real block comment that
-    // doesn't close until Bar's actual "*/", blanking out Foo's closing brace and merging
-    // it into Bar's range.
+    // Regression: the naive /\*[\s\S]*?\*\/ regex has no string-literal awareness, so the "/*" inside Foo's string literal gets treated as opening a real block comment that doesn't close until Bar's actual "*/", blanking out Foo's closing brace and merging it into Bar's range.
     expect(foo?.lineEnd).toBe(3)
     expect(bar).toBeDefined()
     expect(bar?.lineStart).toBe(5)
@@ -6045,10 +5583,7 @@ message Bar {
   })
 
   it('gives the last rpc in a service its own lineEnd, not the rest of the file', () => {
-    // Regression: rpc symbols never got a blockEndLines entry, unlike message/enum/service/
-    // extend/oneof, so the last rpc in a service fell back to the flat "next section start -
-    // 1 / totalLines" model -- swallowing the service's closing brace and any unrelated
-    // trailing content (comments, a sibling top-level declaration) into the rpc's own range.
+    // Regression: rpc symbols never got a blockEndLines entry, unlike message/enum/service/ extend/oneof, so the last rpc in a service fell back to the flat "next section start - 1 / totalLines" model -- swallowing the service's closing brace and any unrelated trailing content (comments, a sibling top-level declaration) into the rpc's own range.
     const content = `message Foo {
   string bar = 1;
 }
@@ -6098,18 +5633,13 @@ message M {
     const { symbols } = extractProto(content, 'blank_before.proto')
     const foo = symbols.find((s) => s.name === 'Foo')
     const choice = symbols.find((s) => s.name === 'choice')
-    // Regression: RPC_RE/ONEOF_RE started with `^\s+`, and \s matches newlines, so a blank
-    // line right before the keyword let `^` anchor at the blank line and \s+ bridge across
-    // the newline down to the keyword -- reporting the blank line's number instead of the
-    // actual rpc/oneof keyword line.
+    // Regression: RPC_RE/ONEOF_RE started with `^\s+`, and \s matches newlines, so a blank line right before the keyword let `^` anchor at the blank line and \s+ bridge across the newline down to the keyword -- reporting the blank line's number instead of the actual rpc/oneof keyword line.
     expect(foo?.lineStart).toBe(3)
     expect(choice?.lineStart).toBe(8)
   })
 
   it('extracts rpc methods declared at column 0 inside an unindented service body', () => {
-    // Regression: RPC_RE required at least one leading space/tab (`^[ 	]+rpc`), so a
-    // column-0 rpc line inside a column-0 service block was never matched - only the
-    // service itself got indexed.
+    // Regression: RPC_RE required at least one leading space/tab (`^[ 	]+rpc`), so a column-0 rpc line inside a column-0 service block was never matched - only the service itself got indexed.
     const content = `service Greeter {
 rpc SayHello(HelloRequest) returns (HelloResponse) {}
 rpc SayBye(ByeRequest) returns (ByeResponse) {}
@@ -6135,10 +5665,7 @@ message Bar {
     const { symbols } = extractProto(content, 'url_string.proto')
     const foo = symbols.find((s) => s.name === 'Foo')
     const bar = symbols.find((s) => s.name === 'Bar')
-    // Regression: stripComments' line-comment pass had no string-literal awareness, so the
-    // "//" inside the URL got treated as a real comment start and blanked the rest of the
-    // line -- deleting the string's closing quote, desyncing quote-tracking, and corrupting
-    // Foo's brace range / Bar's extraction.
+    // Regression: stripComments' line-comment pass had no string-literal awareness, so the "//" inside the URL got treated as a real comment start and blanked the rest of the line -- deleting the string's closing quote, desyncing quote-tracking, and corrupting Foo's brace range / Bar's extraction.
     expect(foo?.lineStart).toBe(1)
     expect(foo?.lineEnd).toBe(3)
     expect(bar).toBeDefined()
@@ -6178,9 +5705,7 @@ enum Color {
 }
 `
     const { symbols } = extractPowershell(content, 'script.ps1')
-    // 6, not 5: the Widget class's constructor is PowerShell's own class-name-as-method
-    // convention, so 'Widget' legitimately appears twice -- once as the class, once as its
-    // constructor method.
+    // 6, not 5: the Widget class's constructor is PowerShell's own class-name-as-method convention, so 'Widget' legitimately appears twice -- once as the class, once as its constructor method.
     expect(symbols.length).toBe(6)
     const names = symbols.map((s) => s.name)
     
@@ -6219,9 +5744,7 @@ function MyFunction {
   })
 
   it('indexes a scope-qualified function under its real name, not the scope prefix', () => {
-    // `function global:prompt { }` is the canonical PowerShell profile-customization pattern.
-    // Regression: the name regex excluded `:` from the name character class, so `global` (the
-    // scope qualifier) was captured as the function name instead of `prompt`.
+    // `function global:prompt { }` is the canonical PowerShell profile-customization pattern. Regression: the name regex excluded `:` from the name character class, so `global` (the scope qualifier) was captured as the function name instead of `prompt`.
     const content = `function global:prompt {
   "PS> "
 }
@@ -6353,14 +5876,7 @@ function Bar {
     expect(names).toContain('Bar')
   })
 
-  // Regression: findUnquoted (used by the # and <# comment-marker search) toggled its
-  // double-quote state on every literal `"`, with no backtick-escape awareness -- unlike
-  // stripPowershellStringLiterals, which correctly treats a backtick immediately before a `"`
-  // inside a double-quoted string as PowerShell's real escape sequence. A backtick-escaped quote
-  // was misread as the string's real closing quote, so a `#` appearing later on the same (still
-  // logically-open) string got treated as a real comment marker and truncated the rest of the
-  // line -- including a closing brace -- desyncing braceDepth and silently dropping every
-  // top-level declaration for the rest of the file.
+  // Regression: findUnquoted (used by the # and <# comment-marker search) toggled its double-quote state on every literal `"`, with no backtick-escape awareness -- unlike stripPowershellStringLiterals, which correctly treats a backtick immediately before a `"` inside a double-quoted string as PowerShell's real escape sequence. A backtick-escaped quote was misread as the string's real closing quote, so a `#` appearing later on the same (still logically-open) string got treated as a real comment marker and truncated the rest of the line -- including a closing brace -- desyncing braceDepth and silently dropping every top-level declaration for the rest of the file.
   it('does not lose a closing brace after a backtick-escaped quote followed by a literal # on the same string', () => {
     const content = `function Foo {
     $x = "abc\`"def#ghi" }
@@ -6400,11 +5916,7 @@ function AfterClass {
   })
 
   it('clears currentClass after a one-liner class whose string literal contains an unbalanced brace', () => {
-    // Regression: the one-liner check counted braces on the raw line, not the string-stripped
-    // copy the real braceDepth tracker uses. A default value like "}" nets the real braces to
-    // zero but adds a phantom close-brace to the raw count, so openCount !== closeCount, the
-    // class is wrongly treated as multi-line, and currentClass is never cleared - stranding it
-    // and dropping every top-level declaration that follows.
+    // Regression: the one-liner check counted braces on the raw line, not the string-stripped copy the real braceDepth tracker uses. A default value like "}" nets the real braces to zero but adds a phantom close-brace to the raw count, so openCount !== closeCount, the class is wrongly treated as multi-line, and currentClass is never cleared - stranding it and dropping every top-level declaration that follows.
     const content = `class Foo { [string]$X = "}" }
 function Bar { "hi" }
 function Baz { "yo" }
@@ -6464,9 +5976,7 @@ function AfterComment {
 }
 `
     const { symbols } = extractPowershell(content, 'string_brace.ps1')
-    // Regression: the string literal "{" contains a literal brace character. If it is counted
-    // toward braceDepth, depthInClass drifts and Bar is either missed or mis-parented, and
-    // currentClass may never pop after Foo's real closing brace.
+    // Regression: the string literal "{" contains a literal brace character. If it is counted toward braceDepth, depthInClass drifts and Bar is either missed or mis-parented, and currentClass may never pop after Foo's real closing brace.
     const bar = symbols.find((s) => s.name === 'Bar')
     expect(bar?.kind).toBe('method')
     expect(bar?.parent).toBe('Foo')
@@ -6492,10 +6002,7 @@ function Get-Foo { $x = 1 }
 function Get-Bar { $y = 2 }
 `
     const { symbols } = extractPowershell(content, 'hash_then_marker.ps1')
-    // Regression: the `#` line comment starts before the `<#` sequence, so `<#` here is just
-    // text inside ordinary comment prose, not a real block-comment opener. Mistaking it for one
-    // leaves inBlockComment stuck true (no #> ever follows), silently dropping every symbol
-    // from this point to EOF.
+    // Regression: the `#` line comment starts before the `<#` sequence, so `<#` here is just text inside ordinary comment prose, not a real block-comment opener. Mistaking it for one leaves inBlockComment stuck true (no #> ever follows), silently dropping every symbol from this point to EOF.
     const names = symbols.map((s) => s.name)
     expect(names).toContain('Get-Foo')
     expect(names).toContain('Get-Bar')
@@ -6527,12 +6034,7 @@ function Get-Foo {
   })
 
   it('does not open a phantom here-string on an ordinary literal ending in "@" or \'@\'', () => {
-    // Regression: findMultilineOpener's PowerShell branch (`/@("|')\s*$/`) had no
-    // isInsideStringLiteral guard. A line like `$email = "admin@"` ends with the two characters
-    // `@"`, so it was misread as opening a here-string. PowerShell here-strings never close on
-    // their opening line, and the real closer requires a line that STARTS with `"@` - which
-    // never occurs in ordinary code - so once falsely triggered, the rest of the file was
-    // silently swallowed from the index.
+    // Regression: findMultilineOpener's PowerShell branch (`/@("|')\s*$/`) had no isInsideStringLiteral guard. A line like `$email = "admin@"` ends with the two characters `@"`, so it was misread as opening a here-string. PowerShell here-strings never close on their opening line, and the real closer requires a line that STARTS with `"@` - which never occurs in ordinary code - so once falsely triggered, the rest of the file was silently swallowed from the index.
     const content = `function Get-Email {
     $email = "admin@"
     return $email
@@ -6568,13 +6070,7 @@ function Get-Other {
   })
 
   it('does not let a trailing backslash before a string literal\'s closing quote desync brace-depth tracking', () => {
-    // Regression: PowerShell strings do not use backslash as an escape character - a backslash
-    // right before the closing quote (e.g. a Windows path literal like "C:\Temp\") is just a
-    // literal character, not an escaped quote. The brace-depth scanner used to reuse common.ts's
-    // C-like `stripStringLiterals`, which treats backslash as an escape and so misread that
-    // trailing backslash as escaping the real closing quote, leaving the string "open" past its
-    // true end and swallowing the rest of the line - including the `}` that follows - as phantom
-    // string content. That desynced braceDepth for every line afterward, dropping AfterSetup.
+    // Regression: PowerShell strings do not use backslash as an escape character - a backslash right before the closing quote (e.g. a Windows path literal like "C:\Temp\") is just a literal character, not an escaped quote. The brace-depth scanner used to reuse common.ts's C-like `stripStringLiterals`, which treats backslash as an escape and so misread that trailing backslash as escaping the real closing quote, leaving the string "open" past its true end and swallowing the rest of the line - including the `}` that follows - as phantom string content. That desynced braceDepth for every line afterward, dropping AfterSetup.
     const content = `function Setup {
   if ($true) { $Path = "C:\\Temp\\" }
 }
@@ -6672,9 +6168,7 @@ function AfterClass {}
 })
 })
 
-// ---------------------------------------------------------------------------
-// Terraform / HCL
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Terraform / HCL ---------------------------------------------------------------------------
 
 describe('terraform adapter', () => {
   it('extracts resource, data, variable, output, module, provider, and locals with Terraform addressing names', () => {
@@ -6729,8 +6223,7 @@ locals {
     expect(byName('provider.aws')?.kind).toBe('tf_provider')
     expect(byName('provider.aws')).toMatchObject({ lineStart: 21, lineEnd: 23 })
 
-    // locals contains its own nested `{ }` (the common_tags map literal) -- proves the block's
-    // own end line is found via true brace matching, not truncated at the first nested `{`.
+    // locals contains its own nested `{ }` (the common_tags map literal) -- proves the block's own end line is found via true brace matching, not truncated at the first nested `{`.
     expect(byName('locals')?.kind).toBe('tf_locals')
     expect(byName('locals')).toMatchObject({ lineStart: 25, lineEnd: 29 })
   })
@@ -6758,8 +6251,7 @@ resource "aws_instance" "web" {
     const symbols = extractTerraform(content, 'main.tf')
     const byName = (name: string) => symbols.find((s) => s.name === name)
 
-    // Nested required_providers {} block proves the settings block's own end line is found via
-    // true brace matching, not truncated at the first nested { (same proof as the locals test).
+    // Nested required_providers {} block proves the settings block's own end line is found via true brace matching, not truncated at the first nested { (same proof as the locals test).
     expect(byName('terraform')?.kind).toBe('tf_settings')
     expect(byName('terraform')).toMatchObject({ lineStart: 1, lineEnd: 10 })
 
@@ -6794,15 +6286,13 @@ resource "aws_instance" "db" {
 `
     const symbols = extractTerraform(content, 'nested.tf')
     const names = symbols.map((s) => s.name)
-    // Regression guard: nested lifecycle/dynamic sub-blocks are not themselves resource/data/
-    // variable/output/module/provider/locals blocks and must never be emitted as symbols.
+    // Regression guard: nested lifecycle/dynamic sub-blocks are not themselves resource/data/ variable/output/module/provider/locals blocks and must never be emitted as symbols.
     expect(names).not.toContain('ebs_block_device')
     expect(names).not.toContain('lifecycle')
 
     const web = symbols.find((s) => s.name === 'aws_instance.web')
     const db = symbols.find((s) => s.name === 'aws_instance.db')
-    // Without true brace matching, the flat "ends where the next section starts" model would
-    // truncate web's range or let it swallow db entirely.
+    // Without true brace matching, the flat "ends where the next section starts" model would truncate web's range or let it swallow db entirely.
     expect(web).toMatchObject({ lineStart: 1, lineEnd: 14 })
     expect(db).toMatchObject({ lineStart: 16, lineEnd: 18 })
   })
@@ -6834,8 +6324,7 @@ variable "next" {
     const symbols = extractTerraform(content, 'string_brace.tf')
     const configVar = symbols.find((s) => s.name === 'var.config')
     const nextVar = symbols.find((s) => s.name === 'var.next')
-    // Regression: an unbalanced-looking "{" / "}" inside a quoted default value must not be
-    // counted as real block nesting -- if it were, var.config would swallow var.next's range.
+    // Regression: an unbalanced-looking "{" / "}" inside a quoted default value must not be counted as real block nesting -- if it were, var.config would swallow var.next's range.
     expect(configVar).toMatchObject({ lineStart: 1, lineEnd: 3 })
     expect(nextVar).toMatchObject({ lineStart: 5, lineEnd: 7 })
   })
@@ -6857,8 +6346,7 @@ resource "aws_instance" "after" {
     const symbols = extractTerraform(content, 'heredoc.tf')
     const policy = symbols.find((s) => s.name === 'aws_iam_policy.example')
     const after = symbols.find((s) => s.name === 'aws_instance.after')
-    // Regression: an unmasked heredoc body has unbalanced braces and stray quote characters
-    // that would desync brace/quote tracking for the rest of the file if not masked out first.
+    // Regression: an unmasked heredoc body has unbalanced braces and stray quote characters that would desync brace/quote tracking for the rest of the file if not masked out first.
     expect(policy).toMatchObject({ lineStart: 1, lineEnd: 8 })
     expect(after).toMatchObject({ lineStart: 10, lineEnd: 12 })
   })
@@ -6928,9 +6416,7 @@ one_liner() { echo hi; }
   })
 
   it('does not treat a var/function inside a bare { ...; } grouping block as top-level', () => {
-    // Regression: a bash `{ ...; }` compound-command grouping block (not a function) bumps
-    // braceDepth but never sets inFunction, so a naive inFunction-only gate wrongly treats
-    // anything nested inside it as top-level.
+    // Regression: a bash `{ ...; }` compound-command grouping block (not a function) bumps braceDepth but never sets inFunction, so a naive inFunction-only gate wrongly treats anything nested inside it as top-level.
     const content = `{
   echo hello
   INNER_VAR=set
@@ -6943,8 +6429,7 @@ NEXT_VAR=ok
   })
 
   it('does not mistake a word-glued # in ${VAR#pattern} parameter expansion for a comment', () => {
-    // Regression: a generic C-style line-comment stripper treats any unquoted `#` as an opener,
-    // which would truncate this line at the `#` inside ${APP_NAME#my} and never see NEXT_VAR.
+    // Regression: a generic C-style line-comment stripper treats any unquoted `#` as an opener, which would truncate this line at the `#` inside ${APP_NAME#my} and never see NEXT_VAR.
     const content = 'PREFIX=${APP_NAME#my}\nNEXT_VAR=ok\n'
     const symbols = extractBash(content, 'expand.sh')
     expect(symbols.find((s) => s.name === 'PREFIX')).toMatchObject({ kind: 'variable', lineStart: 1 })

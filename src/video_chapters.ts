@@ -1,8 +1,4 @@
-/**
- * Reads embedded chapter markers and subtitle-stream metadata out of a video file via
- * `ffprobe`, so an agent can see a video's structure without downloading/transcoding it.
- * Gated on ffprobe being present on PATH; degrades with a clear message when it isn't.
- */
+/** Reads embedded chapter markers and subtitle-stream metadata out of a video file via `ffprobe`, so an agent can see a video's structure without downloading/transcoding it. Gated on ffprobe being present on PATH; degrades with a clear message when it isn't. */
 
 import { spawnSync } from 'node:child_process'
 
@@ -57,9 +53,7 @@ interface FfprobeOutput {
   streams?: FfprobeStream[]
 }
 
-/** Reads chapters + subtitle-stream metadata from a video file via ffprobe. Throws a
- * clear "ffprobe not found" error if ffprobe isn't on PATH, or a parse error if
- * ffprobe's own invocation fails (e.g. the file isn't a media file it recognizes). */
+/** Reads chapters + subtitle-stream metadata from a video file via ffprobe. Throws a clear "ffprobe not found" error if ffprobe isn't on PATH, or a parse error if ffprobe's own invocation fails (e.g. the file isn't a media file it recognizes). */
 export function extractVideoChapters(file: string): VideoChaptersResult {
   if (!isFfprobeAvailable()) {
     throw new Error('ffprobe not found on PATH; video-chapters requires ffmpeg (install ffmpeg and ensure ffprobe is on PATH)')

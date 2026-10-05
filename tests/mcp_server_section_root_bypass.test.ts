@@ -1,16 +1,6 @@
-// Regression: the `section` MCP tool's confinement gate validates and pins a target against
-// `root` (the git-toplevel-resolved projectRoot from resolveToolRoot), but the actual disk read
-// was passing the RAW, unresolved `projectRoot` argument straight to `runSection` instead of
-// `root` -- every other file-reading tool (read/skeleton/outline/refs/brief/grep/imports/exports)
-// passes `projectRoot: root`, only `section` passed `...(projectRoot !== undefined ? { projectRoot } : {})`.
+// Regression: the `section` MCP tool's confinement gate validates and pins a target against `root` (the git-toplevel-resolved projectRoot from resolveToolRoot), but the actual disk read was passing the RAW, unresolved `projectRoot` argument straight to `runSection` instead of `root` -- every other file-reading tool (read/skeleton/outline/refs/brief/grep/imports/exports) passes `projectRoot: root`, only `section` passed `...(projectRoot !== undefined ? { projectRoot } : {})`.
 //
-// The divergence bites whenever a caller passes a projectRoot that is a strict subdirectory of a
-// git repo (an ordinary monorepo/subpackage call): resolveToolRoot walks up to the git toplevel to
-// compute `root`, so the gate validates and pins a path resolved against the (broader) toplevel,
-// while the buggy execution layer resolves the same relative spec against the (narrower, raw)
-// subdirectory -- an entirely different, never-validated, never-pinned file on disk. That breaks
-// the TOCTOU identity-pin invariant this gate exists to enforce and can serve content the gate
-// never approved.
+// The divergence bites whenever a caller passes a projectRoot that is a strict subdirectory of a git repo (an ordinary monorepo/subpackage call): resolveToolRoot walks up to the git toplevel to compute `root`, so the gate validates and pins a path resolved against the (broader) toplevel, while the buggy execution layer resolves the same relative spec against the (narrower, raw) subdirectory -- an entirely different, never-validated, never-pinned file on disk. That breaks the TOCTOU identity-pin invariant this gate exists to enforce and can serve content the gate never approved.
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -56,16 +46,13 @@ describe('mcp section tool: execution base must equal the gate-validated base', 
   })
 
   it('section: a relative spec is resolved against the gate-validated root, not the raw subdirectory projectRoot', async () => {
-    // A real git repo, with a subdirectory as the caller-supplied projectRoot -- this is what
-    // makes resolveToolRoot's git-toplevel walk diverge from the raw argument.
+    // A real git repo, with a subdirectory as the caller-supplied projectRoot -- this is what makes resolveToolRoot's git-toplevel walk diverge from the raw argument.
     repoRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-section-bypass-')))
     execFileSync('git', ['init', '--quiet'], { cwd: repoRoot })
     subDir = path.join(repoRoot, 'packages', 'app')
     fs.mkdirSync(subDir, { recursive: true })
 
-    // Same relative filename in both locations: the gate validates and pins the copy directly
-    // under repoRoot (the resolved root); a bug in section reads the copy under the subdirectory
-    // instead, which the gate never inspected at all.
+    // Same relative filename in both locations: the gate validates and pins the copy directly under repoRoot (the resolved root); a bug in section reads the copy under the subdirectory instead, which the gate never inspected at all.
     fs.writeFileSync(path.join(repoRoot, 'notes.md'), `# Heading\n\n${IN_ROOT}\n`)
     fs.writeFileSync(path.join(subDir, 'notes.md'), `# Heading\n\n${NEVER_VALIDATED}\n`)
 
@@ -77,9 +64,7 @@ describe('mcp section tool: execution base must equal the gate-validated base', 
       arguments: { spec: 'notes.md::Heading', projectRoot: subDir },
     })
     const text = textOf(result)
-    // The gate validated and pinned repoRoot/notes.md (IN_ROOT). If execution reads a different,
-    // never-validated file instead (packages/app/notes.md), the pin's identity contract is
-    // defeated and content the gate never approved is served.
+    // The gate validated and pinned repoRoot/notes.md (IN_ROOT). If execution reads a different, never-validated file instead (packages/app/notes.md), the pin's identity contract is defeated and content the gate never approved is served.
     expect(text).not.toContain(NEVER_VALIDATED)
     expect(text).toContain(IN_ROOT)
   })

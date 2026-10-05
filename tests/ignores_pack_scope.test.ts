@@ -1,10 +1,4 @@
-/**
- * `.tokengoatignore` is read in exactly one place, cmdPack, but the README said `index` honoured
- * it and that `ignores` listed its patterns. Neither was true, and the failure is silent and
- * security-relevant: the file is named "ignore", so someone keeping a directory of credentials out
- * of the index reaches for it first, sees no error, and gets the whole directory indexed anyway.
- * Confirmed live before the fix -- an excluded file's body came straight back out of `symbol`.
- */
+/** `.tokengoatignore` is read in exactly one place, cmdPack, but the README said `index` honoured it and that `ignores` listed its patterns. Neither was true, and the failure is silent and security-relevant: the file is named "ignore", so someone keeping a directory of credentials out of the index reaches for it first, sees no error, and gets the whole directory indexed anyway. Confirmed live before the fix -- an excluded file's body came straight back out of `symbol`. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -80,11 +74,7 @@ describe('ignores reports the scope of .tokengoatignore', () => {
   })
 })
 
-// The correction lives wherever `.tokengoatignore` is described, which is the command
-// reference -- that moved from README.md into docs/cli.md when the README was split. Both
-// files are read, so the guarantee holds whichever one carries the prose, and the combined
-// text is asserted non-empty first: a mistyped path would otherwise read as a clean pass on
-// the negative check, with only the positive one noticing.
+// The correction lives wherever `.tokengoatignore` is described, which is the command reference -- that moved from README.md into docs/cli.md when the README was split. Both files are read, so the guarantee holds whichever one carries the prose, and the combined text is asserted non-empty first: a mistyped path would otherwise read as a clean pass on the negative check, with only the positive one noticing.
 describe('the docs no longer promise indexing honours the file', () => {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const docs = ['README.md', path.join('docs', 'cli.md')]

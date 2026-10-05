@@ -1,10 +1,4 @@
-/**
- * HTML structure inspection, querying, and structural linting for token-goat.
- *
- * Provides a lightweight, zero-dependency, security-safe HTML5 parser, CSS selector
- * engine (`html-query`), structural outliner (`html-outline`), and DOM validator/linter
- * (`html-lint`).
- */
+/** HTML structure inspection, querying, and structural linting for token-goat. Provides a lightweight, zero-dependency, security-safe HTML5 parser, CSS selector engine (`html-query`), structural outliner (`html-outline`), and DOM validator/linter (`html-lint`). */
 
 import { countNoun } from './util.js'
 import { displaySafeText } from './paths.js'
@@ -60,9 +54,7 @@ export const HTML_VOID_TAGS = new Set([
 // Elements whose contents are raw text, not tags
 const RAW_TEXT_TAGS = new Set(['script', 'style'])
 
-/**
- * Scan forward to find the closing '>' of an HTML tag, respecting quoted attribute strings.
- */
+/** Scan forward to find the closing '>' of an HTML tag, respecting quoted attribute strings. */
 function findTagEnd(html: string, startPos: number): number {
   let inQuote: '"' | "'" | null = null
   for (let i = startPos + 1; i < html.length; i++) {
@@ -82,10 +74,7 @@ function findTagEnd(html: string, startPos: number): number {
   return -1
 }
 
-/**
- * Scan forward to find the matching closing tag `</tag>` for raw text elements,
- * case-insensitively and without allocating lowercased copies of the document.
- */
+/** Scan forward to find the matching closing tag `</tag>` for raw text elements, case-insensitively and without allocating lowercased copies of the document. */
 function findRawTextEnd(html: string, startPos: number, tag: string): number {
   const target = `</${tag}`
   const targetLen = target.length
@@ -103,9 +92,7 @@ function findRawTextEnd(html: string, startPos: number, tag: string): number {
   return html.length
 }
 
-/**
- * Tokenize and parse HTML into a DOM tree while tracking line numbers.
- */
+/** Tokenize and parse HTML into a DOM tree while tracking line numbers. */
 export function parseHtml(html: string): {
   root: HtmlNode
   issues: HtmlLintIssue[]
@@ -377,9 +364,7 @@ export function parseHtml(html: string): {
   return { root, issues, tagCounts }
 }
 
-/**
- * Perform full linting on HTML text, calculating tag counts and structural errors.
- */
+/** Perform full linting on HTML text, calculating tag counts and structural errors. */
 export function lintHtml(htmlText: string): HtmlLintResult {
   const { issues, tagCounts } = parseHtml(htmlText)
   const errors = issues.filter((i) => i.type === 'error')
@@ -393,9 +378,7 @@ export function lintHtml(htmlText: string): HtmlLintResult {
   }
 }
 
-/**
- * Generates a structural outline of an HTML file.
- */
+/** Generates a structural outline of an HTML file. */
 export function outlineHtml(htmlText: string): HtmlOutlineSummary {
   const { root } = parseHtml(htmlText)
 
@@ -471,15 +454,11 @@ export function outlineHtml(htmlText: string): HtmlOutlineSummary {
   }
 }
 
-/**
- * Format the HTML outline into readable text for agents.
- */
+/** Format the HTML outline into readable text for agents. */
 export function formatHtmlOutline(summary: HtmlOutlineSummary): string {
   const lines: string[] = []
   lines.push(`HTML Document (${summary.totalElements} elements, ${summary.uniqueTags.length} unique tags, max depth ${summary.maxDepth})`)
-  // Every interpolation below is a string the document's author chose, landing in a summary line
-  // token-goat speaks in its own voice, outside any fence. A page titled `[tg] ...` would otherwise
-  // put an unescaped authority marker into that line with nothing to say it came from the document.
+  // Every interpolation below is a string the document's author chose, landing in a summary line token-goat speaks in its own voice, outside any fence. A page titled `[tg] ...` would otherwise put an unescaped authority marker into that line with nothing to say it came from the document.
   if (summary.title) lines.push(`Title: "${displaySafeText(summary.title)}"`)
   if (summary.doctype) lines.push(`DOCTYPE: ${displaySafeText(summary.doctype)}`)
   lines.push(`Assets: ${summary.scripts} scripts, ${summary.styles} stylesheets`)
@@ -535,9 +514,7 @@ interface ParsedCompoundSelector {
   attributes: AttributeQualifier[]
 }
 
-/**
- * Split a string by a delimiter character only when outside quotes (' or ") and brackets ([ ]).
- */
+/** Split a string by a delimiter character only when outside quotes (' or ") and brackets ([ ]). */
 function splitTopLevel(str: string, delimiter: string): string[] {
   const results: string[] = []
   let start = 0
@@ -565,10 +542,7 @@ function splitTopLevel(str: string, delimiter: string): string[] {
   return results
 }
 
-/**
- * Tokenize a sub-selector into compound selectors and combinators (`>`),
- * respecting quotes and brackets inside attribute selectors.
- */
+/** Tokenize a sub-selector into compound selectors and combinators (`>`), respecting quotes and brackets inside attribute selectors. */
 function tokenizeSelector(sel: string): string[] {
   const tokens: string[] = []
   let i = 0
@@ -618,10 +592,7 @@ function tokenizeSelector(sel: string): string[] {
   return tokens
 }
 
-/**
- * Parse a single compound selector token into its constituent tag, ids, classes, and attributes.
- * Example: `button.btn.primary#submit[data-action="save"][type="button"]`
- */
+/** Parse a single compound selector token into its constituent tag, ids, classes, and attributes. Example: `button.btn.primary#submit[data-action="save"][type="button"]` */
 function parseCompoundSelector(sel: string): ParsedCompoundSelector {
   const result: ParsedCompoundSelector = {
     ids: [],
@@ -699,9 +670,7 @@ function parseCompoundSelector(sel: string): ParsedCompoundSelector {
   return result
 }
 
-/**
- * Match a compound CSS selector against an HTML node.
- */
+/** Match a compound CSS selector against an HTML node. */
 function matchesCompoundSelector(node: HtmlNode, sel: string): boolean {
   if (!sel || node.tag === '#root') return false
   if (sel === '*') return true
@@ -763,9 +732,7 @@ export interface HtmlQueryResult {
   sourceHtml: string
 }
 
-/**
- * Query DOM tree by CSS selector. Supports tags, #id, .class, [attr=val], child (>), descendant (space).
- */
+/** Query DOM tree by CSS selector. Supports tags, #id, .class, [attr=val], child (>), descendant (space). */
 export function queryHtml(
   htmlText: string,
   selectorStr: string,
@@ -858,10 +825,7 @@ export function queryHtml(
   return { elements, fanned: elements.length > 1, sourceHtml: htmlText }
 }
 
-/**
- * Extract clean, readable in-order text from an HtmlNode.
- * Strips script/style blocks, comments, and tags, decoding standard HTML entities.
- */
+/** Extract clean, readable in-order text from an HtmlNode. Strips script/style blocks, comments, and tags, decoding standard HTML entities. */
 export function extractNodeText(node: HtmlNode, sourceHtml?: string): string {
   if (RAW_TEXT_TAGS.has(node.tag.toLowerCase())) return ''
 
@@ -891,10 +855,7 @@ export function extractNodeText(node: HtmlNode, sourceHtml?: string): string {
   return parts.join(' ')
 }
 
-/**
- * Serialize an HtmlNode back into HTML markup.
- * If sourceHtml is provided and offsets are valid, slices the exact original source verbatim.
- */
+/** Serialize an HtmlNode back into HTML markup. If sourceHtml is provided and offsets are valid, slices the exact original source verbatim. */
 export function serializeHtmlNode(node: HtmlNode, indent = 0, sourceHtml?: string): string {
   if (node.tag === '#root') {
     return node.children.map((c) => serializeHtmlNode(c, indent, sourceHtml)).join('\n')

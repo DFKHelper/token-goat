@@ -1,14 +1,4 @@
-/**
- * `scripts/adoption-baseline.mjs` rebuilds token-goat's weekly npm downloads, stars and forks from the public APIs, for the weekly `adoption.yml` job summary.
- *
- * Provenance:
- * - `tests/fixtures/adoption/*.json` are CAPTURE: real responses fetched on 2026-09-29 from `api.npmjs.org/downloads/range/2026-06-25:2026-09-28/token-goat`, `api.npmjs.org/downloads/point/last-day/token-goat`, the first page of `api.github.com/repos/DFKHelper/token-goat/stargazers` (Accept `application/vnd.github.star+json`) and of `.../forks?sort=oldest`. The GitHub entries were cut to their first few and stripped to the one timestamp field the script reads, so no user login or id is committed. The range fixture keeps npm's zero-filled 2026-09-28, a day it had not counted yet when fetched: the last-day endpoint said 2026-09-27 at the same moment.
- * - The repository's `created_at` (2026-05-16T00:31:24Z) is CAPTURE from `api.github.com/repos/DFKHelper/token-goat` on the same day.
- * - The 401 status is CAPTURE: an unauthenticated GET of the stargazers list answered `401 Requires authentication` on 2026-09-29.
- * - Week boundaries, sums and cumulative counts below are HAND-DERIVED from the fixture values and a calendar, not from the script.
- *
- * The real default `fetch` path runs against the live APIs in the dogfood run and in the weekly workflow; `collect` here gets an injected fetch that serves the captured bodies by URL.
- */
+/** `scripts/adoption-baseline.mjs` rebuilds token-goat's weekly npm downloads, stars and forks from the public APIs, for the weekly `adoption.yml` job summary. Provenance: - `tests/fixtures/adoption/*.json` are CAPTURE: real responses fetched on 2026-09-29 from `api.npmjs.org/downloads/range/2026-06-25:2026-09-28/token-goat`, `api.npmjs.org/downloads/point/last-day/token-goat`, the first page of `api.github.com/repos/DFKHelper/token-goat/stargazers` (Accept `application/vnd.github.star+json`) and of `.../forks?sort=oldest`. The GitHub entries were cut to their first few and stripped to the one timestamp field the script reads, so no user login or id is committed. The range fixture keeps npm's zero-filled 2026-09-28, a day it had not counted yet when fetched: the last-day endpoint said 2026-09-27 at the same moment. - The repository's `created_at` (2026-05-16T00:31:24Z) is CAPTURE from `api.github.com/repos/DFKHelper/token-goat` on the same day. - The 401 status is CAPTURE: an unauthenticated GET of the stargazers list answered `401 Requires authentication` on 2026-09-29. - Week boundaries, sums and cumulative counts below are HAND-DERIVED from the fixture values and a calendar, not from the script. The real default `fetch` path runs against the live APIs in the dogfood run and in the weekly workflow; `collect` here gets an injected fetch that serves the captured bodies by URL. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 

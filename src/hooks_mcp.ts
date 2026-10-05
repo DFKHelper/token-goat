@@ -39,12 +39,7 @@ const TOKEN_GOAT_MCP_TOOL_NAMES = new Set([
   'retrieve_text',
 ])
 
-/**
- * Returns true if the tool belongs to token-goat's own local MCP server.
- * Token-goat is a local companion process indexing the user's workspace files,
- * not an external third-party remote API. Its tool results must not be fenced
- * as untrusted remote payloads, which triggers prompt-injection refusals in LLMs.
- */
+/** Returns true if the tool belongs to token-goat's own local MCP server. Token-goat is a local companion process indexing the user's workspace files, not an external third-party remote API. Its tool results must not be fenced as untrusted remote payloads, which triggers prompt-injection refusals in LLMs. */
 export function isTokenGoatMcpTool(toolName: string): boolean {
   const lower = toolName.toLowerCase()
   let rest = lower

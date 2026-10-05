@@ -17,22 +17,18 @@ import {
   unavailableEmbedSha,
 } from '../src/parser.js'
 
-// The indexing.large_file_symbol_only_kb value these tests pass to isEmbedFresh. Matches config.ts's
-// own default so the gate is exercised at the value a real install runs at.
+// The indexing.large_file_symbol_only_kb value these tests pass to isEmbedFresh. Matches config.ts's own default so the gate is exercised at the value a real install runs at.
 const SYMBOL_ONLY_KB = 500
 
 let TMP: string
 let prevEmbeddingsEnv: string | undefined
-// Several tests here move the indexing size thresholds to reach the branch they are about, and
-// those values are now visible in what gets stamped (the `oversize:` marker carries the threshold),
-// so a leaked value would change a later test's expected stamp. Snapshot and restore per test.
+// Several tests here move the indexing size thresholds to reach the branch they are about, and those values are now visible in what gets stamped (the `oversize:` marker carries the threshold), so a leaked value would change a later test's expected stamp. Snapshot and restore per test.
 let prevIndexingThresholds: { symbolOnly: number; skip: number }
 
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-embed-gate-'))
   prevEmbeddingsEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
-  // The suite forces embeddings off by default (tests/setup/isolate-home.ts); these tests need
-  // it on to exercise the enabled indexFileEmbeddings path. A test setting its own value wins.
+  // The suite forces embeddings off by default (tests/setup/isolate-home.ts); these tests need it on to exercise the enabled indexFileEmbeddings path. A test setting its own value wins.
   process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
   const cfg = loadConfig()
   prevIndexingThresholds = {
@@ -55,27 +51,17 @@ afterEach(() => {
   }
 })
 
-// Bug 2: a file skipped for policy reasons (a salesforce_metadata file >512KB, or a
-// .profile-meta.xml file) called deleteFileEmbeddings but never stamped files.embed_sha. With
-// embed_sha left empty, the freshness gate (worker.ts/cli.ts, which require embedSha === sha)
-// could never hold, so every `token-goat index` re-reported the file as "Indexed" and every
-// worker drain re-read its (potentially multi-megabyte) content into indexFileEmbeddings forever.
-// The delete-and-skip IS the intended terminal state and must be recorded as done.
+// Bug 2: a file skipped for policy reasons (a salesforce_metadata file >512KB, or a .profile-meta.xml file) called deleteFileEmbeddings but never stamped files.embed_sha. With embed_sha left empty, the freshness gate (worker.ts/cli.ts, which require embedSha === sha) could never hold, so every `token-goat index` re-reported the file as "Indexed" and every worker drain re-read its (potentially multi-megabyte) content into indexFileEmbeddings forever. The delete-and-skip IS the intended terminal state and must be recorded as done.
 describe('policy-skipped files stamp embed_sha so they are not re-embedded every drain', () => {
   it('stamps the real sha for a >512KB salesforce metadata file (bug 2)', async () => {
     const dbPath = path.join(TMP, 'index.db')
-    // indexFileEmbeddings checks the generic large_file_symbol_only_kb threshold BEFORE the
-    // salesforce-specific >512 KB rule, so at the default of 500 KB nothing can reach the
-    // salesforce branch at all -- this test named that branch while actually exercising the
-    // generic one, which was invisible while both stamped the same bare sha. Raise the generic
-    // threshold past 512 KB so the fixture really lands on the branch the test is about.
+    // indexFileEmbeddings checks the generic large_file_symbol_only_kb threshold BEFORE the salesforce-specific >512 KB rule, so at the default of 500 KB nothing can reach the salesforce branch at all -- this test named that branch while actually exercising the generic one, which was invisible while both stamped the same bare sha. Raise the generic threshold past 512 KB so the fixture really lands on the branch the test is about.
     const raised = structuredClone(loadConfig())
     raised.indexing.large_file_symbol_only_kb = 1024
     raised.indexing.large_file_skip_kb = 4096
     saveConfig(raised)
     const file = path.join(TMP, 'CustomObject__c.object-meta.xml')
-    // >512KB measured in UTF-16 code units (content.length), with multi-byte UTF-8 chars mixed in
-    // so the file is a realistic large generated-metadata dump.
+    // >512KB measured in UTF-16 code units (content.length), with multi-byte UTF-8 chars mixed in so the file is a realistic large generated-metadata dump.
     const body = '<é日本語 value="permission-set-entry"/>\n'.repeat(20000)
     fs.writeFileSync(file, `<?xml version="1.0"?>\n${body}`, 'utf8')
     expect(fs.readFileSync(file, 'utf8').length).toBeGreaterThan(512 * 1024)
@@ -107,14 +93,7 @@ describe('policy-skipped files stamp embed_sha so they are not re-embedded every
   })
 })
 
-// Bug: indexing.large_file_symbol_only_kb was a fully write-path-wired config knob (declared,
-// range-validated, clamped to large_file_skip_kb, persisted) with zero read-side consumers --
-// a file between the symbol-only and full-skip thresholds was embedded exactly as if the field
-// did not exist. indexFileEmbeddings must skip embedding (but indexFileSync must still index
-// symbols normally) once content exceeds large_file_symbol_only_kb. Asserts on the chunks table
-// (not just the terminal embed_sha marker, which a REAL successful embed would also stamp) so
-// this test actually discriminates "embedding ran" from "embedding was skipped" in an
-// environment where the optional embedding deps are installed.
+// Bug: indexing.large_file_symbol_only_kb was a fully write-path-wired config knob (declared, range-validated, clamped to large_file_skip_kb, persisted) with zero read-side consumers -- a file between the symbol-only and full-skip thresholds was embedded exactly as if the field did not exist. indexFileEmbeddings must skip embedding (but indexFileSync must still index symbols normally) once content exceeds large_file_symbol_only_kb. Asserts on the chunks table (not just the terminal embed_sha marker, which a REAL successful embed would also stamp) so this test actually discriminates "embedding ran" from "embedding was skipped" in an environment where the optional embedding deps are installed.
 describe('large_file_symbol_only_kb gates embedding independently of symbol indexing', () => {
   it('indexes symbols but skips embedding for a file between the symbol-only and skip thresholds', async () => {
     const dbPath = path.join(TMP, 'index.db')
@@ -133,8 +112,7 @@ describe('large_file_symbol_only_kb gates embedding independently of symbol inde
       expect(fs.readFileSync(file, 'utf8').length).toBeGreaterThan(1024)
 
       indexFileSync(file, dbPath)
-      // querySymbols defaults limit to 100, so this caps at 100 even though the fixture writes
-      // 200 functions -- pin to the real capped count, not the fixture's total.
+      // querySymbols defaults limit to 100, so this caps at 100 even though the fixture writes 200 functions -- pin to the real capped count, not the fixture's total.
       const symbols = querySymbols({ filePath: file }, dbPath)
       expect(symbols.length).toBe(100)
       expect(symbols.some((s) => s.name === 'fn0')).toBe(true)
@@ -159,22 +137,16 @@ describe('large_file_symbol_only_kb gates embedding independently of symbol inde
   })
 })
 
-// Bug 3: when the optional embedding deps are absent (no embedding runtime, or no
-// sqlite-vec chunk_vectors table), embedIndexFile skipped embedding and returned normally, yet
-// indexFileEmbeddings stamped embed_sha = sha as if the file had really been embedded. A user who
-// indexed a project without the deps, then installed them later, would find every previously
-// indexed unchanged file permanently skipped, leaving the semantic index empty for that content.
+// Bug 3: when the optional embedding deps are absent (no embedding runtime, or no sqlite-vec chunk_vectors table), embedIndexFile skipped embedding and returned normally, yet indexFileEmbeddings stamped embed_sha = sha as if the file had really been embedded. A user who indexed a project without the deps, then installed them later, would find every previously indexed unchanged file permanently skipped, leaving the semantic index empty for that content.
 describe('deps-absent embedding does not falsely stamp a file as embedded (bug 3)', () => {
   it('stamps an unavailable-marker embed_sha, not the bare sha, when chunk_vectors is absent', async () => {
     const dbPath = path.join(TMP, 'index.db')
-    // Drop chunk_vectors immediately, before anything probes it, to simulate an install where
-    // sqlite-vec never loaded (the vec table is the independently-optional half of the deps).
+    // Drop chunk_vectors immediately, before anything probes it, to simulate an install where sqlite-vec never loaded (the vec table is the independently-optional half of the deps).
     const db = getDb(dbPath)
     db.prepare('DROP TABLE IF EXISTS chunk_vectors').run()
 
     const file = path.join(TMP, 'foo.ts')
-    // Comfortably above MIN_CHUNK_CHARS so chunkFile yields at least one chunk (an empty/too-small
-    // file has nothing to embed and is a legitimate bare-sha 'embedded' terminal state instead).
+    // Comfortably above MIN_CHUNK_CHARS so chunkFile yields at least one chunk (an empty/too-small file has nothing to embed and is a legitimate bare-sha 'embedded' terminal state instead).
     const fn = 'export function foo(n: number): number {\n  return n * 2 + 1\n}\n\n'
     fs.writeFileSync(file, fn.repeat(12), 'utf8')
     indexFileSync(file, dbPath)
@@ -188,9 +160,7 @@ describe('deps-absent embedding does not falsely stamp a file as embedded (bug 3
     expect(entry?.embedSha).toBe(unavailableEmbedSha(sha ?? ''))
     expect(entry?.embedSha).not.toBe(sha)
 
-    // Gate behavior: still "fresh" while deps remain absent (so an unchanged file is not
-    // re-entered on every drain), but NOT fresh once the deps become available -- forcing the
-    // real first embed instead of silently masquerading as done forever.
+    // Gate behavior: still "fresh" while deps remain absent (so an unchanged file is not re-entered on every drain), but NOT fresh once the deps become available -- forcing the real first embed instead of silently masquerading as done forever.
     expect(isEmbedFresh(entry?.embedSha, sha ?? '', true, false, SYMBOL_ONLY_KB)).toBe(true)
     expect(isEmbedFresh(entry?.embedSha, sha ?? '', true, true, SYMBOL_ONLY_KB)).toBe(false)
   })
@@ -225,14 +195,11 @@ describe('isEmbedFresh', () => {
     expect(isEmbedFresh(disabledEmbedSha(sha), sha, true, false, SYMBOL_ONLY_KB)).toBe(false)
   })
 
-  // HAND-DERIVED: the marker strings are built by calling the producer (oversizeEmbedSha), and the
-  // expected verdicts come from the rule "a size skip is only still correct at the size threshold it
-  // was decided under", not from reading the gate's own branches.
+  // HAND-DERIVED: the marker strings are built by calling the producer (oversizeEmbedSha), and the expected verdicts come from the rule "a size skip is only still correct at the size threshold it was decided under", not from reading the gate's own branches.
   it('an oversize marker is fresh only at the threshold it was stamped under', () => {
     expect(isEmbedFresh(oversizeEmbedSha(sha, 500), sha, true, true, 500)).toBe(true)
     expect(isEmbedFresh(oversizeEmbedSha(sha, 500), sha, true, false, 500)).toBe(true)
-    // Raising indexing.large_file_symbol_only_kb re-opens the decision: the file is now under the
-    // threshold and must be re-examined rather than left permanently skipped.
+    // Raising indexing.large_file_symbol_only_kb re-opens the decision: the file is now under the threshold and must be re-examined rather than left permanently skipped.
     expect(isEmbedFresh(oversizeEmbedSha(sha, 1), sha, true, true, 500)).toBe(false)
     // Lowering it re-opens the decision too, so the marker is re-stamped with the value in force.
     expect(isEmbedFresh(oversizeEmbedSha(sha, 500), sha, true, true, 1)).toBe(false)

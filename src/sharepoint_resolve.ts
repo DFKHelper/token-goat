@@ -1,10 +1,4 @@
-/**
- * Best-effort resolution of a SharePoint/OneDrive sharing URL to a local synced file
- * path, so `token-goat` can read a document an agent was only given a share link for
- * instead of failing outright. Purely local: no network call, no Graph API, no
- * credentials -- OneDrive's local sync-folder layout is undocumented, so this makes a
- * conservative attempt and reports honestly when it can't find a match.
- */
+/** Best-effort resolution of a SharePoint/OneDrive sharing URL to a local synced file path, so `token-goat` can read a document an agent was only given a share link for instead of failing outright. Purely local: no network call, no Graph API, no credentials -- OneDrive's local sync-folder layout is undocumented, so this makes a conservative attempt and reports honestly when it can't find a match. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -21,24 +15,17 @@ export interface ParsedShareUrl {
 
 const TENANT_HOST_RE = /^([a-z0-9-]+?)(-my)?\.sharepoint\.com$/i
 
-/** Parses a SharePoint/OneDrive-for-Business sharing URL into its tenant/site/path
- * pieces. Strips the `/:x:/r/`-style view-mode prefix Office adds to "open in app"
- * links. Throws for URLs this project doesn't have enough local context to resolve
- * (short `1drv.ms` links need a network redirect to expand, which this stays out of). */
+/** Parses a SharePoint/OneDrive-for-Business sharing URL into its tenant/site/path pieces. Strips the `/:x:/r/`-style view-mode prefix Office adds to "open in app" links. Throws for URLs this project doesn't have enough local context to resolve (short `1drv.ms` links need a network redirect to expand, which this stays out of). */
 export function parseShareUrl(url: string): ParsedShareUrl {
   let u: URL
   try {
     u = new URL(url)
   } catch {
-    // Unparseable input can still carry access material after a `?` (a malformed share link
-    // keeps its token), and the origin+pathname redaction used below needs a URL object that
-    // doesn't exist here -- so redact by string truncation instead. Same contract either way:
-    // no query string ever reaches an error message.
+    // Unparseable input can still carry access material after a `?` (a malformed share link keeps its token), and the origin+pathname redaction used below needs a URL object that doesn't exist here -- so redact by string truncation instead. Same contract either way: no query string ever reaches an error message.
     throw new Error(`not a valid URL: ${redactUrlQuery(url)}`)
   }
 
-  // SharePoint sharing links carry access material (tokens/signatures) in the query
-  // string, so error messages echo only origin + pathname, never the raw url/href.
+  // SharePoint sharing links carry access material (tokens/signatures) in the query string, so error messages echo only origin + pathname, never the raw url/href.
   const safeUrl = u.origin + u.pathname
 
   if (/^1drv\.ms$/i.test(u.hostname)) {
@@ -104,11 +91,7 @@ export interface ResolveResult {
   triedPaths: string[]
 }
 
-/** Tries `root` joined with `libSegments` as-is, then with the default document
- * library's local alias applied to the first segment ("Shared Documents" syncs
- * locally as "Documents"). Shared by both the sync-root loop and the site-subfolder
- * loop in {@link resolveLocalPath}, which try this same raw-then-aliased sequence
- * rooted at different directories. Appends every path it tries to `triedPaths`. */
+/** Tries `root` joined with `libSegments` as-is, then with the default document library's local alias applied to the first segment ("Shared Documents" syncs locally as "Documents"). Shared by both the sync-root loop and the site-subfolder loop in {@link resolveLocalPath}, which try this same raw-then-aliased sequence rooted at different directories. Appends every path it tries to `triedPaths`. */
 function tryLibraryPaths(root: string, libSegments: string[], triedPaths: string[]): string | null {
   const rawJoined = path.join(root, ...libSegments)
   triedPaths.push(rawJoined)
@@ -126,32 +109,20 @@ function tryLibraryPaths(root: string, libSegments: string[], triedPaths: string
   return null
 }
 
-/** Best-effort match of a parsed share URL against locally-synced OneDrive/SharePoint
- * folders. Tries each candidate sync root with the library path joined as-is, then
- * with the default document library's local alias ("Shared Documents" syncs locally
- * as "Documents"), then -- for a team site -- scans the root for a subfolder whose
- * name contains the site name (multi-site sync roots nest one folder per site). */
+/** Best-effort match of a parsed share URL against locally-synced OneDrive/SharePoint folders. Tries each candidate sync root with the library path joined as-is, then with the default document library's local alias ("Shared Documents" syncs locally as "Documents"), then -- for a team site -- scans the root for a subfolder whose name contains the site name (multi-site sync roots nest one folder per site). */
 export function resolveLocalPath(
   parsed: ParsedShareUrl,
   env: NodeJS.ProcessEnv = process.env,
   home: string = os.homedir(),
 ): ResolveResult {
   const roots = candidateRoots(env, home)
-  // Split on both '/' and '\' -- on Windows, `\` is also a path separator, and a segment
-  // like '..%5C..%5C..%5CWindows%5Cwin.ini' decodes (see decodeURIComponent in
-  // parseShareUrl) to a single '/'-free segment containing literal backslashes that never
-  // equals '..' and never gets split by a '/'-only filter, yet path.win32.join still
-  // collapses it across directory boundaries. Reject '.'/'..' segments so a crafted URL
-  // can't walk the resolved path outside the sync root this way.
+  // Split on both '/' and '\' -- on Windows, `\` is also a path separator, and a segment like '..%5C..%5C..%5CWindows%5Cwin.ini' decodes (see decodeURIComponent in parseShareUrl) to a single '/'-free segment containing literal backslashes that never equals '..' and never gets split by a '/'-only filter, yet path.win32.join still collapses it across directory boundaries. Reject '.'/'..' segments so a crafted URL can't walk the resolved path outside the sync root this way.
   const libSegments = parsed.libraryPath
     .split(/[/\\]+/)
     .filter((s) => s.length > 0 && s !== '.' && s !== '..')
   const triedPaths: string[] = []
 
-  // Belt and braces: the segment filter above is exactly the kind of guard that gets
-  // bypassed again (this file's own history is the example), so every candidate path is
-  // also verified, after resolution, to still reside under the root it was joined from --
-  // independent of how the segments were produced.
+  // Belt and braces: the segment filter above is exactly the kind of guard that gets bypassed again (this file's own history is the example), so every candidate path is also verified, after resolution, to still reside under the root it was joined from -- independent of how the segments were produced.
   function withinRoot(root: string, candidate: string): boolean {
     const resolvedRoot = path.resolve(root) + path.sep
     const resolvedCandidate = path.resolve(candidate)

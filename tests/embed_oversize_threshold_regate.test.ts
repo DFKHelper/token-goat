@@ -1,26 +1,4 @@
-/**
- * Regression: raising `indexing.large_file_symbol_only_kb` must actually re-embed the files it
- * just admitted.
- *
- * indexFileEmbeddings skips embedding for any file over that threshold and stamps `files.embed_sha`
- * so the worker stops re-reading it on every drain. It used to stamp the file's BARE content sha,
- * which is the same value a genuinely successful embed writes -- so once the user raised the
- * threshold (exactly what `token-goat doctor`'s embedding-coverage remediation tells them to do),
- * the freshness gate still read "already embedded, unchanged" and the background worker never
- * re-embedded any of them. The index reported itself fresh while `semantic` stayed blind to that
- * content until something edited it; `symbol` and `read` worked normally, so nothing looked wrong.
- * The same class was already fixed twice with marker prefixes -- `disabled:` for the config-off case
- * and `unavailable:` for the missing-deps case -- and the size threshold is the third condition of
- * that shape.
- *
- * Driven through the REAL default worker path: `drainOnce(DIR)` with no injected index callback, so
- * this exercises makeIndexer's shipping default rather than a test-supplied stand-in. See CLAUDE.md
- * on the injected-seam trap.
- *
- * The embedding backend is the one thing stubbed (setPipelineFnForTesting, the same seam
- * tests/embeddings_non_finite_vector.test.ts uses): it is not what this test is about, and leaving
- * it real would make the second drain fetch a model over the network.
- */
+/** Regression: raising `indexing.large_file_symbol_only_kb` must actually re-embed the files it just admitted. indexFileEmbeddings skips embedding for any file over that threshold and stamps `files.embed_sha` so the worker stops re-reading it on every drain. It used to stamp the file's BARE content sha, which is the same value a genuinely successful embed writes -- so once the user raised the threshold (exactly what `token-goat doctor`'s embedding-coverage remediation tells them to do), the freshness gate still read "already embedded, unchanged" and the background worker never re-embedded any of them. The index reported itself fresh while `semantic` stayed blind to that content until something edited it; `symbol` and `read` worked normally, so nothing looked wrong. The same class was already fixed twice with marker prefixes -- `disabled:` for the config-off case and `unavailable:` for the missing-deps case -- and the size threshold is the third condition of that shape. Driven through the REAL default worker path: `drainOnce(DIR)` with no injected index callback, so this exercises makeIndexer's shipping default rather than a test-supplied stand-in. See CLAUDE.md on the injected-seam trap. The embedding backend is the one thing stubbed (setPipelineFnForTesting, the same seam tests/embeddings_non_finite_vector.test.ts uses): it is not what this test is about, and leaving it real would make the second drain fetch a model over the network. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -40,9 +18,7 @@ let prevEmbeddingsEnv: string | undefined
 let originalSymbolOnly: number
 let originalSkip: number
 
-// HAND-DERIVED: 200 one-line exported functions, sized to clear a 1 KB large_file_symbol_only_kb
-// threshold and stay well under a 1024 KB large_file_skip_kb. Computed from the thresholds under
-// test, not read off any producer's output.
+// HAND-DERIVED: 200 one-line exported functions, sized to clear a 1 KB large_file_symbol_only_kb threshold and stay well under a 1024 KB large_file_skip_kb. Computed from the thresholds under test, not read off any producer's output.
 const OVERSIZE_SOURCE =
   Array.from({ length: 200 }, (_, i) => `export function oversizeGateFn${i}(): number { return ${i} }`).join('\n') + '\n'
 
@@ -50,8 +26,7 @@ beforeEach(() => {
   DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-oversize-regate-'))
   fs.mkdirSync(path.join(DIR, 'queue'), { recursive: true })
   prevEmbeddingsEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
-  // The suite forces embeddings off (tests/setup/isolate-home.ts); the oversize branch under test
-  // only runs with them on, because the disabled branch short-circuits above it.
+  // The suite forces embeddings off (tests/setup/isolate-home.ts); the oversize branch under test only runs with them on, because the disabled branch short-circuits above it.
   process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
   const cfg = structuredClone(loadConfig())
   originalSymbolOnly = cfg.indexing.large_file_symbol_only_kb
@@ -97,8 +72,7 @@ describe('raising large_file_symbol_only_kb re-embeds the files it admits', () =
     await pendingEmbeddings()
 
     const dbPath = path.join(DIR, 'global.db')
-    // The parse side really ran, so this is the whole drain -> index -> symbols chain, not a
-    // freshness check in isolation.
+    // The parse side really ran, so this is the whole drain -> index -> symbols chain, not a freshness check in isolation.
     expect(querySymbols({ name: 'oversizeGateFn0', limit: 10 }, dbPath).length).toBe(1)
 
     const skipped = getFileEntry(src, dbPath)
@@ -121,12 +95,7 @@ describe('raising large_file_symbol_only_kb re-embeds the files it admits', () =
     const after = getFileEntry(src, dbPath)
     // Same content, so the sha must not have moved -- what must move is the embed stamp.
     expect(after?.sha).toBe(sha)
-    // The file was re-examined rather than left permanently skipped. Compared against the value
-    // actually stored before the raise, not against a constructed marker: pre-fix both stamps were
-    // the same bare sha, so this is the assertion that discriminates -- it is byte-identical either
-    // side of the raise when the gate wrongly holds. Whether the re-examination lands on a real
-    // embed (bare sha) or on an `unavailable:` marker depends on whether the optional sqlite-vec
-    // table is usable on this machine, and neither is what this test is about.
+    // The file was re-examined rather than left permanently skipped. Compared against the value actually stored before the raise, not against a constructed marker: pre-fix both stamps were the same bare sha, so this is the assertion that discriminates -- it is byte-identical either side of the raise when the gate wrongly holds. Whether the re-examination lands on a real embed (bare sha) or on an `unavailable:` marker depends on whether the optional sqlite-vec table is usable on this machine, and neither is what this test is about.
     expect(after?.embedSha).not.toBe(stampWhileOversize)
     expect(after?.embedSha?.startsWith('oversize:')).toBe(false)
   })

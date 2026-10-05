@@ -1,28 +1,4 @@
-/**
- * The containment boundary must fold case the way the filesystem does, or more conservatively --
- * never less.
- *
- * `toLowerCase()` folds by Unicode's rules. NTFS folds by its own `$UpCase` table. They disagree on
- * roughly a hundred characters, and every disagreement where JavaScript folds a pair that NTFS
- * keeps apart is a confinement bypass: the gate compares two strings, sees the root, and admits a
- * directory that is a genuinely separate place on disk. `U+212A` KELVIN SIGN is the cleanest of
- * them -- it lowercases to ASCII `k` in JavaScript, while `worK`(U+212A) and `work` are two
- * different directories on an NTFS volume.
- *
- * That was live. With `projectRoot` set to `<base>/work`, the MCP `read` tool returned the contents
- * of `<base>/wor`+U+212A+`/secret.txt`, and `grep` leaked the same file through its own walk. The
- * identity pin offered nothing: the gate pinned the file it went on to open, having concluded it
- * was in-root.
- *
- * The fold used for containment is now ASCII-only, which is strictly more conservative than either
- * table -- it can refuse a legitimate read whose root and target differ in the case of a non-ASCII
- * letter, and it cannot admit one that is outside. `foldCase` itself is deliberately untouched,
- * because `db.ts` mirrors that one into SQL as `TG_LOWER` and the two must stay byte-identical.
- *
- * PROVENANCE: CAPTURE. The directory pair is created on the real filesystem and the test refuses to
- * draw a conclusion unless that filesystem actually keeps the two apart, so the premise is read off
- * the volume under test rather than assumed from the Unicode tables.
- */
+/** The containment boundary must fold case the way the filesystem does, or more conservatively -- never less. `toLowerCase()` folds by Unicode's rules. NTFS folds by its own `$UpCase` table. They disagree on roughly a hundred characters, and every disagreement where JavaScript folds a pair that NTFS keeps apart is a confinement bypass: the gate compares two strings, sees the root, and admits a directory that is a genuinely separate place on disk. `U+212A` KELVIN SIGN is the cleanest of them -- it lowercases to ASCII `k` in JavaScript, while `worK`(U+212A) and `work` are two different directories on an NTFS volume. That was live. With `projectRoot` set to `<base>/work`, the MCP `read` tool returned the contents of `<base>/wor`+U+212A+`/secret.txt`, and `grep` leaked the same file through its own walk. The identity pin offered nothing: the gate pinned the file it went on to open, having concluded it was in-root. The fold used for containment is now ASCII-only, which is strictly more conservative than either table -- it can refuse a legitimate read whose root and target differ in the case of a non-ASCII letter, and it cannot admit one that is outside. `foldCase` itself is deliberately untouched, because `db.ts` mirrors that one into SQL as `TG_LOWER` and the two must stay byte-identical. PROVENANCE: CAPTURE. The directory pair is created on the real filesystem and the test refuses to draw a conclusion unless that filesystem actually keeps the two apart, so the premise is read off the volume under test rather than assumed from the Unicode tables. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -48,45 +24,31 @@ describe('the containment fold is ASCII-only', () => {
   it('folds ASCII, and leaves the characters the filesystem does not fold alone', () => {
     expect(foldCaseForContainment('WorK/File.TS')).toBe('work/file.ts')
     expect(foldCaseForContainment(`wor${KELVIN}`), 'the Kelvin sign folded to k, which is the bypass').toBe(`wor${KELVIN}`)
-    // Calibration, and the reason this fold had to be a new function: the Unicode fold DOES collapse
-    // it, so a containment check built on `foldCase` cannot tell the two directories apart.
+    // Calibration, and the reason this fold had to be a new function: the Unicode fold DOES collapse it, so a containment check built on `foldCase` cannot tell the two directories apart.
     expect(foldCase(`wor${KELVIN}`), 'toLowerCase no longer folds the Kelvin sign, so this test no longer describes the defect').toBe('work')
-    // And `foldCase` must stay exactly what it was: db.ts mirrors it into SQL as TG_LOWER, and a
-    // change here silently stops every stored path key matching its own row.
+    // And `foldCase` must stay exactly what it was: db.ts mirrors it into SQL as TG_LOWER, and a change here silently stops every stored path key matching its own row.
     expect(foldCase('WorK/File.TS')).toBe('work/file.ts')
   })
 
   it('does not treat a Unicode-folding sibling directory as the root', () => {
-    // Pure-string, so it runs everywhere: `isInsideRoot` resolves through the filesystem, but two
-    // absent paths resolve to themselves.
+    // Pure-string, so it runs everywhere: `isInsideRoot` resolves through the filesystem, but two absent paths resolve to themselves.
     const base = path.join(os.tmpdir(), 'tg-fold-lexical')
     const sneaked = path.join(base, `wor${KELVIN}`, 'secret.txt')
     const root = path.join(base, 'work')
     if (process.platform === 'darwin') {
-      // Not an exemption -- a different filesystem. U+212A is CANONICALLY equivalent to `K`
-      // (`'K'.normalize('NFC')` is `'K'`, code point 4b), and APFS is normalization-
-      // insensitive, so on macOS `worK` spelled with the Kelvin sign and `worK` spelled with a
-      // plain K are not two directories that fold together -- they are one directory the OS will
-      // not let you create twice. "Inside" is then the truth, and refusing would decline a real
-      // path. The bypass this file is about needs two DISTINCT directories, which is what every
-      // other platform gives you here.
+      // Not an exemption -- a different filesystem. U+212A is CANONICALLY equivalent to `K` (`'K'.normalize('NFC')` is `'K'`, code point 4b), and APFS is normalization- insensitive, so on macOS `worK` spelled with the Kelvin sign and `worK` spelled with a plain K are not two directories that fold together -- they are one directory the OS will not let you create twice. "Inside" is then the truth, and refusing would decline a real path. The bypass this file is about needs two DISTINCT directories, which is what every other platform gives you here.
       expect(isInsideRoot(sneaked, root), 'macOS stopped treating the Kelvin sign as the same file, so this branch is now wrong').toBe(true)
     } else {
       expect(isInsideRoot(sneaked, root)).toBe(false)
     }
 
-    // The pair that is a live bypass on EVERY platform, macOS included, so the branch above is a
-    // platform difference rather than a hole in the coverage. `I` (U+0130) and `i` followed by a
-    // combining dot (U+0069 U+0307) lowercase to the identical string, yet they stay distinct under
-    // NFD -- `49 307` against `69 307` -- so a normalization-insensitive filesystem still holds them
-    // as two directories. The Unicode fold puts one inside the other; the ASCII fold does not.
+    // The pair that is a live bypass on EVERY platform, macOS included, so the branch above is a platform difference rather than a hole in the coverage. `I` (U+0130) and `i` followed by a combining dot (U+0069 U+0307) lowercase to the identical string, yet they stay distinct under NFD -- `49 307` against `69 307` -- so a normalization-insensitive filesystem still holds them as two directories. The Unicode fold puts one inside the other; the ASCII fold does not.
     const dotted = 'İ'
     const decomposed = 'i̇'
     expect(foldCase(dotted), 'toLowerCase no longer collapses these, so this pair no longer describes the defect').toBe(foldCase(decomposed))
     expect(foldCaseForContainment(dotted), 'the containment fold collapsed a pair the filesystem keeps apart').not.toBe(foldCaseForContainment(decomposed))
     expect(isInsideRoot(path.join(base, dotted, 'secret.txt'), path.join(base, decomposed))).toBe(false)
-    // The mirror: an ordinary ASCII case difference must still be accepted on a case-insensitive
-    // volume, or this fix is just a refusal.
+    // The mirror: an ordinary ASCII case difference must still be accepted on a case-insensitive volume, or this fix is just a refusal.
     if (process.platform === 'win32' || process.platform === 'darwin') {
       expect(isInsideRoot(path.join(base, 'Work', 'file.ts'), path.join(base, 'work'))).toBe(true)
     }
@@ -136,9 +98,7 @@ describe('the MCP tools refuse a directory only a Unicode fold puts inside the r
     } catch {
       distinct = false
     }
-    // Calibration. On a volume that really does fold the two names together -- or one that refuses
-    // the character outright -- the sibling IS the root, there is nothing outside to reach, and a
-    // refusal below would prove nothing about the fold.
+    // Calibration. On a volume that really does fold the two names together -- or one that refuses the character outright -- the sibling IS the root, there is nothing outside to reach, and a refusal below would prove nothing about the fold.
     if (!distinct) {
       expect(true, 'this volume does not keep the two spellings apart, so the escape does not exist here').toBe(true)
       return
@@ -165,8 +125,7 @@ describe('the MCP tools refuse a directory only a Unicode fold puts inside the r
     expect(textOf(grep), 'grep walked into a directory outside the root').not.toContain('CANARY_FOLD_SECRET')
     expect(grep.isError).toBe(true)
 
-    // The mirror case. Both assertions above are refusals, and a gate that refused everything would
-    // satisfy them; this pins that an ordinary in-root read still works.
+    // The mirror case. Both assertions above are refusals, and a gate that refused everything would satisfy them; this pins that an ordinary in-root read still works.
     const ok = await client.callTool({ name: 'read', arguments: { spec: path.join(root, 'ordinary.txt'), projectRoot: root } })
     expect(textOf(ok), 'an ordinary in-root read stopped working, so the fold is now refusing legitimate paths').toContain('IN_ROOT_CONTENT')
     expect(ok.isError).toBeFalsy()

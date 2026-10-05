@@ -1,10 +1,4 @@
-// Regression guard: `bash-output`/`web-output --section <heading>` share
-// _applyFiltersAndPrint(), which called extractSection() and, when it returned null (the
-// requested heading wasn't found), left `content` unchanged instead of erroring -- silently
-// printing the full unfiltered output. This is an outlier: the sibling `skill-section` and
-// `gdrive-sections --heading` commands both report a clear error when their requested
-// section/heading isn't found. Drive the real run() entry against a real web-output cache
-// entry so this exercises the actual command wiring, not the filter helper in isolation.
+// Regression guard: `bash-output`/`web-output --section <heading>` share _applyFiltersAndPrint(), which called extractSection() and, when it returned null (the requested heading wasn't found), left `content` unchanged instead of erroring -- silently printing the full unfiltered output. This is an outlier: the sibling `skill-section` and `gdrive-sections --heading` commands both report a clear error when their requested section/heading isn't found. Drive the real run() entry against a real web-output cache entry so this exercises the actual command wiring, not the filter helper in isolation.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { run } from '../src/cli.js'
@@ -55,10 +49,7 @@ describe('web-output --section on a missing heading', () => {
   })
 })
 
-// Regression: postFetchHandler's compress_bodies path cached only the cleaned text, so a raw
-// fetch body was permanently unrecoverable once cleaned -- a lossy store with no recovery path.
-// web-output --raw (new) recovers it via storeWebOutput's optional rawContent param; the default
-// (no --raw) path must stay byte-identical to before this change.
+// Regression: postFetchHandler's compress_bodies path cached only the cleaned text, so a raw fetch body was permanently unrecoverable once cleaned -- a lossy store with no recovery path. web-output --raw (new) recovers it via storeWebOutput's optional rawContent param; the default (no --raw) path must stay byte-identical to before this change.
 describe('web-output --raw', () => {
   it('returns the raw pre-clean body when a raw copy was stored, and the default (no --raw) stays the cleaned body', async () => {
     const id = storeWebOutput('https://example.com/raw-cli', 'cleaned body', undefined, '<html><body data-secret="x">cleaned body</body></html>')
@@ -70,8 +61,7 @@ describe('web-output --raw', () => {
     stdout.length = 0
     const defaultCode = await runCli(['web-output', id])
     expect(defaultCode).toBe(0)
-    // Fenced by provenance like every other recall of a fetched page; the point here is that the
-    // default path serves the cleaned body, not the stored raw markup.
+    // Fenced by provenance like every other recall of a fetched page; the point here is that the default path serves the cleaned body, not the stored raw markup.
     expect(unfence(stdout.join(''))).toBe('cleaned body')
     expect(stdout.join('')).not.toContain('data-secret')
   })

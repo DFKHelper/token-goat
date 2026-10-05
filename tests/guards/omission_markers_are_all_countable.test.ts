@@ -1,17 +1,4 @@
-/**
- * Every mid-trim omission marker a tool filter writes has to be countable by the census that
- * reports them, or the lines it discarded are simply missing from the report with nothing saying
- * so. That is not hypothetical: the cloud filter's `[token-goat: N plan detail lines omitted]`
- * spelling lacked the literal ` more ` the census pattern required, so every plan-detail trim was
- * omitted from the omission census -- an under-count that looks exactly like a filter that never
- * fired.
- *
- * FORMAT-DERIVED: the marker strings are read out of the producers' own source at run time rather
- * than transcribed here, so a new filter spelling is picked up the moment it is written. That is
- * the weaker provenance tier -- it proves the census agrees with the source, not that a shipped
- * build emits these bytes -- but it is the tier that matters for this defect, which is precisely a
- * consumer disagreeing with its producers.
- */
+/** Every mid-trim omission marker a tool filter writes has to be countable by the census that reports them, or the lines it discarded are simply missing from the report with nothing saying so. That is not hypothetical: the cloud filter's `[token-goat: N plan detail lines omitted]` spelling lacked the literal ` more ` the census pattern required, so every plan-detail trim was omitted from the omission census -- an under-count that looks exactly like a filter that never fired. FORMAT-DERIVED: the marker strings are read out of the producers' own source at run time rather than transcribed here, so a new filter spelling is picked up the moment it is written. That is the weaker provenance tier -- it proves the census agrees with the source, not that a shipped build emits these bytes -- but it is the tier that matters for this defect, which is precisely a consumer disagreeing with its producers. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'

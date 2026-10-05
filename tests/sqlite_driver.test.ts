@@ -1,23 +1,4 @@
-/**
- * `src/sqlite_driver.ts` against better-sqlite3 itself, as a differential oracle.
- *
- * The driver replaced better-sqlite3 as the runtime SQLite binding: it is the same engine reached
- * through `node:sqlite` instead of a native addon, which removes 36 packages, the last deprecated
- * entry, and an install script from every consumer install. Nothing in `src/` imports better-sqlite3
- * any more.
- *
- * The risk that swap creates is not that the driver fails loudly -- the whole suite would go red.
- * It is that the driver agrees with better-sqlite3 on the cases the suite happens to exercise and
- * diverges quietly somewhere else, because three parts of it are reimplementations rather than
- * passthroughs: `pragma()`, `transaction()`, and the `reader` flag. A test written only against the
- * driver would encode whatever the driver does, including its bugs. So the cases below run both
- * libraries over the same input and require the answers to match, which means better-sqlite3 stays
- * as a devDependency -- not shipped to anyone, and earning its place as the reference.
- *
- * `reader` gets the longest list because it is a security check, not a convenience: it is the third
- * defence-in-depth layer in `sqlite_query.ts`'s read-only guard, and it is derived (from the
- * prepared statement's column count) rather than read from SQLite directly.
- */
+/** `src/sqlite_driver.ts` against better-sqlite3 itself, as a differential oracle. The driver replaced better-sqlite3 as the runtime SQLite binding: it is the same engine reached through `node:sqlite` instead of a native addon, which removes 36 packages, the last deprecated entry, and an install script from every consumer install. Nothing in `src/` imports better-sqlite3 any more. The risk that swap creates is not that the driver fails loudly -- the whole suite would go red. It is that the driver agrees with better-sqlite3 on the cases the suite happens to exercise and diverges quietly somewhere else, because three parts of it are reimplementations rather than passthroughs: `pragma()`, `transaction()`, and the `reader` flag. A test written only against the driver would encode whatever the driver does, including its bugs. So the cases below run both libraries over the same input and require the answers to match, which means better-sqlite3 stays as a devDependency -- not shipped to anyone, and earning its place as the reference. `reader` gets the longest list because it is a security check, not a convenience: it is the third defence-in-depth layer in `sqlite_query.ts`'s read-only guard, and it is derived (from the prepared statement's column count) rather than read from SQLite directly. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -39,15 +20,7 @@ afterEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 })
 })
 
-/**
- * The two handles as one iterable, so a case can be written once and run against both.
- *
- * The reference is cast to the driver's type. TypeScript models the two `transaction()` overloads
- * with mutually incompatible generic signatures, so a plain array of both widens to a union nothing
- * can call -- but "these are interchangeable at every call site in this repository" is precisely the
- * claim the driver makes and this file exists to check. The cast states that claim; the assertions
- * below are what actually test it, at run time, where it matters.
- */
+/** The two handles as one iterable, so a case can be written once and run against both. The reference is cast to the driver's type. TypeScript models the two `transaction()` overloads with mutually incompatible generic signatures, so a plain array of both widens to a union nothing can call -- but "these are interchangeable at every call site in this repository" is precisely the claim the driver makes and this file exists to check. The cast states that claim; the assertions below are what actually test it, at run time, where it matters. */
 function both(ours: Database, theirs: Reference.Database): Database[] {
   return [ours, theirs as unknown as Database]
 }
@@ -68,12 +41,7 @@ function pair(): { ours: Database; theirs: Reference.Database; close: () => void
 }
 
 describe('reader: does this statement produce rows', () => {
-  // node:sqlite has no `reader`, so the driver derives it from the prepared statement's column
-  // count. Every shape sqlite_query.ts's guard could plausibly meet is listed, including the ones
-  // that make the derivation non-obvious: a SELECT matching no rows is still a reader (it has
-  // columns, it just returns none), EXPLAIN is a reader, VALUES is a reader, and PRAGMA flips on
-  // whether it reads or assigns. If SQLite ever changes one of these, this goes red rather than the
-  // read-only guard silently weakening.
+  // node:sqlite has no `reader`, so the driver derives it from the prepared statement's column count. Every shape sqlite_query.ts's guard could plausibly meet is listed, including the ones that make the derivation non-obvious: a SELECT matching no rows is still a reader (it has columns, it just returns none), EXPLAIN is a reader, VALUES is a reader, and PRAGMA flips on whether it reads or assigns. If SQLite ever changes one of these, this goes red rather than the read-only guard silently weakening.
   const SHAPES = [
     'SELECT * FROM t',
     'SELECT 1',
@@ -100,9 +68,7 @@ describe('reader: does this statement produce rows', () => {
     }
   })
 
-  // Anchors the assertion above. Without this, a driver whose `reader` was hardcoded `true` and a
-  // reference that also said `true` everywhere would agree perfectly and prove nothing -- the list
-  // has to actually contain both answers for "they match" to mean anything.
+  // Anchors the assertion above. Without this, a driver whose `reader` was hardcoded `true` and a reference that also said `true` everywhere would agree perfectly and prove nothing -- the list has to actually contain both answers for "they match" to mean anything.
   it('and the shape list really contains both answers', () => {
     const { theirs, close } = pair()
     try {
@@ -131,9 +97,7 @@ describe('pragma', () => {
   })
 
   it('actually applies an assigning pragma rather than only reporting one', () => {
-    // The reimplementation runs `PRAGMA x = y` through prepare().all(), which returns no rows. A
-    // version that swallowed the statement instead of executing it would return the same empty
-    // result and look identical here -- so the value is read back afterwards.
+    // The reimplementation runs `PRAGMA x = y` through prepare().all(), which returns no rows. A version that swallowed the statement instead of executing it would return the same empty result and look identical here -- so the value is read back afterwards.
     const { ours, theirs, close } = pair()
     try {
       for (const db of [ours, theirs]) db.pragma('user_version = 41')
@@ -171,8 +135,7 @@ describe('transaction', () => {
             throw new Error('boom')
           })(),
         ).toThrow('boom')
-        // Both halves: the commit must have landed AND the rollback must have unwound. Asserting
-        // only the count would pass on a driver that committed nothing and rolled back nothing.
+        // Both halves: the commit must have landed AND the rollback must have unwound. Asserting only the count would pass on a driver that committed nothing and rolled back nothing.
         expect(db.prepare('SELECT b FROM t ORDER BY a').pluck().all()).toEqual(['kept'])
       }
     } finally {
@@ -181,8 +144,7 @@ describe('transaction', () => {
   })
 
   it('nests, so a transactional helper can call another one', () => {
-    // This is the case a naive implementation gets wrong: an inner BEGIN throws "cannot start a
-    // transaction within a transaction", so the driver has to use SAVEPOINT when already inside one.
+    // This is the case a naive implementation gets wrong: an inner BEGIN throws "cannot start a transaction within a transaction", so the driver has to use SAVEPOINT when already inside one.
     const { ours, theirs, close } = pair()
     try {
       for (const db of both(ours, theirs)) {
@@ -213,9 +175,7 @@ describe('transaction', () => {
           try {
             inner('bad')
           } catch {
-            // Swallowed on purpose: the outer transaction chooses to continue, which is the whole
-            // reason savepoints exist. A driver that rolled the entire transaction back here would
-            // lose 'outer' and 'after' too.
+            // Swallowed on purpose: the outer transaction chooses to continue, which is the whole reason savepoints exist. A driver that rolled the entire transaction back here would lose 'outer' and 'after' too.
           }
           db.prepare("INSERT INTO t VALUES(2,'after')").run()
         })()
@@ -227,11 +187,7 @@ describe('transaction', () => {
   })
 
   it('exposes .immediate(), and it takes the write lock up front', () => {
-    // Six call sites depend on .immediate() specifically. A driver that defined it as an alias for
-    // the deferred form would pass every other test in this file: the difference only shows under
-    // concurrency, where a deferred BEGIN takes the write lock late and can fail mid-transaction. So
-    // it is checked against SQLite's own view -- a second connection must be locked out while the
-    // immediate transaction is open, before that transaction has written anything.
+    // Six call sites depend on .immediate() specifically. A driver that defined it as an alias for the deferred form would pass every other test in this file: the difference only shows under concurrency, where a deferred BEGIN takes the write lock late and can fail mid-transaction. So it is checked against SQLite's own view -- a second connection must be locked out while the immediate transaction is open, before that transaction has written anything.
     const dbPath = path.join(tmp, 'lock.db')
     const writer = new Database(dbPath)
     writer.exec('CREATE TABLE t(a)')
@@ -280,8 +236,7 @@ describe('statement surface', () => {
   const BIG = 9007199254740993n
 
   it('safeIntegers reads a value past 2^53 exactly, on both libraries', () => {
-    // The reason sqlite_query.ts turns this on for arbitrary user databases: without it a 64-bit
-    // INTEGER beyond Number.MAX_SAFE_INTEGER does not survive the trip out.
+    // The reason sqlite_query.ts turns this on for arbitrary user databases: without it a 64-bit INTEGER beyond Number.MAX_SAFE_INTEGER does not survive the trip out.
     const { ours, theirs, close } = pair()
     try {
       for (const db of both(ours, theirs)) {
@@ -294,21 +249,11 @@ describe('statement surface', () => {
   })
 
   it('differs from better-sqlite3 by default: it throws where better-sqlite3 silently rounds', () => {
-    // The one behavioural difference between the two libraries that this repository accepts rather
-    // than papers over, so it is pinned here instead of left to be discovered.
+    // The one behavioural difference between the two libraries that this repository accepts rather than papers over, so it is pinned here instead of left to be discovered.
     //
-    // Without safeIntegers, better-sqlite3 hands back the nearest double -- 9007199254740992 for
-    // the value 9007199254740993, wrong by one, with no error. node:sqlite refuses. Reproducing the
-    // rounding would mean building silent data corruption on purpose, and sqlite_query.ts's own
-    // module doc already calls that behaviour out as the thing it has to defend against, so the
-    // refusal is kept.
+    // Without safeIntegers, better-sqlite3 hands back the nearest double -- 9007199254740992 for the value 9007199254740993, wrong by one, with no error. node:sqlite refuses. Reproducing the rounding would mean building silent data corruption on purpose, and sqlite_query.ts's own module doc already calls that behaviour out as the thing it has to defend against, so the refusal is kept.
     //
-    // It is safe to keep because no production read can reach it. Only two paths touch a database
-    // this repository did not write: `sqlite-query`, which sets safeIntegers(true) and normalises
-    // every value through normalizeSqliteScalar, and `sqlite-schema`, which reads PRAGMA metadata
-    // and COUNT(*) -- a row count above 2^53 is not a database anyone has. Every other read is
-    // against token-goat's own schema, whose integers are line numbers, byte sizes, counts and
-    // millisecond timestamps.
+    // It is safe to keep because no production read can reach it. Only two paths touch a database this repository did not write: `sqlite-query`, which sets safeIntegers(true) and normalises every value through normalizeSqliteScalar, and `sqlite-schema`, which reads PRAGMA metadata and COUNT(*) -- a row count above 2^53 is not a database anyone has. Every other read is against token-goat's own schema, whose integers are line numbers, byte sizes, counts and millisecond timestamps.
     const { ours, theirs, close } = pair()
     try {
       for (const db of both(ours, theirs)) db.prepare('INSERT INTO t VALUES(?, NULL)').run(BIG)
@@ -383,8 +328,7 @@ describe('connection options', () => {
     for (const options of [{ readonly: true }, { fileMustExist: true }]) {
       expect(() => new Database(missing, options), JSON.stringify(options)).toThrow(/unable to open/i)
       expect(() => new Reference(missing, options), JSON.stringify(options)).toThrow(/unable to open/i)
-      // The refusal must be a refusal, not a create-then-fail: a stray file here would leave the
-      // next open succeeding against an empty database.
+      // The refusal must be a refusal, not a create-then-fail: a stray file here would leave the next open succeeding against an empty database.
       expect(fs.existsSync(missing), 'no file may be created').toBe(false)
     }
   })
@@ -438,8 +382,7 @@ describe('the ExperimentalWarning filter', () => {
     const restore = suppressSqliteExperimentalWarning()
     try {
       const mk = (name: string, message: string): Error => Object.assign(new Error(message), { name })
-      // process.emitWarning defers to nextTick, so these are emitted directly to keep the test
-      // synchronous -- the filter sits on process.emit, which is what nextTick would call anyway.
+      // process.emitWarning defers to nextTick, so these are emitted directly to keep the test synchronous -- the filter sits on process.emit, which is what nextTick would call anyway.
       process.emit('warning', mk('ExperimentalWarning', 'SQLite is an experimental feature'))
       process.emit('warning', mk('DeprecationWarning', 'something genuinely deprecated'))
       process.emit('warning', mk('ExperimentalWarning', 'some unrelated experimental feature'))
@@ -448,22 +391,17 @@ describe('the ExperimentalWarning filter', () => {
       process.off('warning', listener)
     }
 
-    // All three assertions matter. A filter that ate everything would satisfy the first alone, and
-    // one that ate nothing would satisfy the last two.
+    // All three assertions matter. A filter that ate everything would satisfy the first alone, and one that ate nothing would satisfy the last two.
     expect(seen.join('\n')).not.toContain('SQLite is an experimental feature')
     expect(seen.join('\n')).toContain('something genuinely deprecated')
     expect(seen.join('\n')).toContain('some unrelated experimental feature')
   })
 
   it('leaves the built binary printing no experimental warning at all', () => {
-    // The end of the chain the unit test above only covers in pieces: the real bundle, spawned the
-    // way a user or a hook spawns it, must produce a clean stderr. This is the property that
-    // actually matters -- token-goat runs as a PreToolUse hook on every Read, Grep, Glob and
-    // WebFetch, so one unconditional stderr line per invocation would be printed constantly.
+    // The end of the chain the unit test above only covers in pieces: the real bundle, spawned the way a user or a hook spawns it, must produce a clean stderr. This is the property that actually matters -- token-goat runs as a PreToolUse hook on every Read, Grep, Glob and WebFetch, so one unconditional stderr line per invocation would be printed constantly.
     const bundle = path.join(repoRoot, 'dist', 'token-goat.mjs')
     const r = spawnSync(process.execPath, [bundle, '--version'], { encoding: 'utf8' })
-    // Anchors the negative assertion below: a spawn that failed to run at all would print no
-    // warning either, and would look exactly like success here.
+    // Anchors the negative assertion below: a spawn that failed to run at all would print no warning either, and would look exactly like success here.
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout.trim(), 'the command must actually have run').toMatch(/\d+\.\d+\.\d+/)
     expect(r.stderr, 'a hook fires on every Read/Grep/Glob/WebFetch; stderr must stay clean').not.toContain(
@@ -473,10 +411,7 @@ describe('the ExperimentalWarning filter', () => {
 })
 
 describe('defaults a caller never names', () => {
-  // The class of bug that hides here: an option nobody passes, whose default the two libraries
-  // disagree about. Nothing in the port mentions busy_timeout, so nothing would have failed --
-  // sqlite_query.ts opens a user's database readonly with no timeout argument, and would have gone
-  // from better-sqlite3's five seconds of patience to none the moment another process held a lock.
+  // The class of bug that hides here: an option nobody passes, whose default the two libraries disagree about. Nothing in the port mentions busy_timeout, so nothing would have failed -- sqlite_query.ts opens a user's database readonly with no timeout argument, and would have gone from better-sqlite3's five seconds of patience to none the moment another process held a lock.
   it('opens with the same busy_timeout better-sqlite3 opens with', () => {
     const { ours, theirs, close } = pair()
     try {
@@ -501,11 +436,7 @@ describe('defaults a caller never names', () => {
 })
 
 describe('error result codes', () => {
-  // The divergence that made this section necessary. better-sqlite3 puts the SQLite result code's
-  // name in `err.code`; node:sqlite puts a generic `ERR_SQLITE_ERROR` there and the number in
-  // `err.errcode`. index_reclaim.ts branches on the name to tell a lock it should wait out from an
-  // error it must rethrow, so an untranslated code turned a deferred VACUUM into a crash. These are
-  // differential rather than hard-coded: whatever better-sqlite3 answers is the expected answer.
+  // The divergence that made this section necessary. better-sqlite3 puts the SQLite result code's name in `err.code`; node:sqlite puts a generic `ERR_SQLITE_ERROR` there and the number in `err.errcode`. index_reclaim.ts branches on the name to tell a lock it should wait out from an error it must rethrow, so an untranslated code turned a deferred VACUUM into a crash. These are differential rather than hard-coded: whatever better-sqlite3 answers is the expected answer.
   const FAILURES: { name: string; setup: string; boom: string }[] = [
     { name: 'a primary-key collision', setup: 'CREATE TABLE p(x INTEGER PRIMARY KEY); INSERT INTO p VALUES(1)', boom: 'INSERT INTO p VALUES(1)' },
     { name: 'a NOT NULL violation', setup: 'CREATE TABLE n(x INTEGER NOT NULL)', boom: 'INSERT INTO n VALUES(NULL)' },
@@ -528,8 +459,7 @@ describe('error result codes', () => {
         return 'DID_NOT_THROW'
       }
       const expected = codeOf(() => theirs.exec(boom))
-      // Anchor: a test that compared two `undefined`s, or two "never threw" sentinels, would pass
-      // while proving nothing. The reference must have produced a real SQLite code first.
+      // Anchor: a test that compared two `undefined`s, or two "never threw" sentinels, would pass while proving nothing. The reference must have produced a real SQLite code first.
       expect(String(expected)).toMatch(/^SQLITE_/)
       expect(codeOf(() => ours.exec(boom))).toBe(expected)
     } finally {
@@ -538,8 +468,7 @@ describe('error result codes', () => {
   })
 
   it('keeps node:sqlite errcode and errstr alongside the rewritten code', () => {
-    // Only `code` is rewritten. The error object, its message and its stack are the ones SQLite and
-    // Node produced, and the raw numeric pair stays readable by anything that wants it.
+    // Only `code` is rewritten. The error object, its message and its stack are the ones SQLite and Node produced, and the raw numeric pair stays readable by anything that wants it.
     const { ours, close } = pair()
     try {
       ours.exec('CREATE TABLE p(x INTEGER PRIMARY KEY)')
@@ -572,8 +501,7 @@ describe('error result codes', () => {
       } catch (e) {
         code = (e as { code?: unknown }).code
       }
-      // The prefix, not the exact string: SQLite may answer SQLITE_BUSY or an extended member of
-      // that family, and index_reclaim.ts matches the family by prefix for exactly that reason.
+      // The prefix, not the exact string: SQLite may answer SQLITE_BUSY or an extended member of that family, and index_reclaim.ts matches the family by prefix for exactly that reason.
       expect(String(code)).toMatch(/^SQLITE_BUSY/)
     } finally {
       holder.exec('ROLLBACK')
@@ -583,10 +511,7 @@ describe('error result codes', () => {
   })
 
   it('translates codes it has never seen thrown, including every extended family', () => {
-    // The table is data, and the tests above can only provoke a handful of its rows. This pins the
-    // arithmetic (`primary | subcode << 8`), the two-value special cases, the one gap SQLite leaves
-    // in the SQLITE_ABORT family, and the fallbacks -- an unknown subcode degrades to the primary
-    // name rather than inventing one, and an unknown primary degrades to node's own generic code.
+    // The table is data, and the tests above can only provoke a handful of its rows. This pins the arithmetic (`primary | subcode << 8`), the two-value special cases, the one gap SQLite leaves in the SQLITE_ABORT family, and the fallbacks -- an unknown subcode degrades to the primary name rather than inventing one, and an unknown primary degrades to node's own generic code.
     expect(sqliteResultCodeName(5)).toBe('SQLITE_BUSY')
     expect(sqliteResultCodeName(19)).toBe('SQLITE_CONSTRAINT')
     expect(sqliteResultCodeName(100)).toBe('SQLITE_ROW')

@@ -1,35 +1,4 @@
-/**
- * ExitPlanMode plan-body deduplication hook.
- *
- * `ExitPlanMode` is a Claude Code plan-mode tool that approves, modifies, or
- * rejects a proposed plan. When approving, its tool_result echoes the ENTIRE
- * plan text back verbatim after a "## Approved Plan:" marker. This creates
- * triplication:
- *
- * 1. The plan body is already in the tool's own `tool_input` (the plan the
- *    user approved).
- * 2. The plan body is echoed in the tool's `tool_result` (below the marker).
- * 3. The plan text is separately persisted to the plans file by Claude Code's
- *    own plan-mode mechanism.
- *
- * This hook detects the "## Approved Plan:" marker and, once it has verified
- * the text after the marker actually corresponds to this same call's own
- * `tool_input.plan`, replaces the echoed plan body with a short pointer,
- * keeping only the "User has approved your plan" confirmation line which is
- * the actually load-bearing part.
- *
- * post_tool_use only: inspects the tool result for the marker. If found, AND
- * the post-marker text corresponds to `tool_input.plan`, rewrites to omit the
- * plan body. Otherwise (marker not found -- e.g. plan was rejected, or result
- * has a different shape; or `tool_input.plan` is missing; or the post-marker
- * text doesn't correspond to it -- e.g. the marker string appears inside
- * unrelated content, or Claude Code echoed something other than a verbatim
- * plan copy) passes through untouched. Truncation is applied only once
- * correspondence is positively confirmed, never on marker presence alone.
- *
- * No pre_tool_use handler: ExitPlanMode's `tool_input` is the plan text
- * itself -- nothing worth denying or annotating before the tool runs.
- */
+/** ExitPlanMode plan-body deduplication hook. `ExitPlanMode` is a Claude Code plan-mode tool that approves, modifies, or rejects a proposed plan. When approving, its tool_result echoes the ENTIRE plan text back verbatim after a "## Approved Plan:" marker. This creates triplication: 1. The plan body is already in the tool's own `tool_input` (the plan the user approved). 2. The plan body is echoed in the tool's `tool_result` (below the marker). 3. The plan text is separately persisted to the plans file by Claude Code's own plan-mode mechanism. This hook detects the "## Approved Plan:" marker and, once it has verified the text after the marker actually corresponds to this same call's own `tool_input.plan`, replaces the echoed plan body with a short pointer, keeping only the "User has approved your plan" confirmation line which is the actually load-bearing part. post_tool_use only: inspects the tool result for the marker. If found, AND the post-marker text corresponds to `tool_input.plan`, rewrites to omit the plan body. Otherwise (marker not found -- e.g. plan was rejected, or result has a different shape; or `tool_input.plan` is missing; or the post-marker text doesn't correspond to it -- e.g. the marker string appears inside unrelated content, or Claude Code echoed something other than a verbatim plan copy) passes through untouched. Truncation is applied only once correspondence is positively confirmed, never on marker presence alone. No pre_tool_use handler: ExitPlanMode's `tool_input` is the plan text itself -- nothing worth denying or annotating before the tool runs. */
 
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
@@ -37,18 +6,11 @@ import { emitRewrite, getToolName, getToolInput, passOutput, extractToolResultTe
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { redactSecrets } from './secret_redact.js'
 
-/**
- * Plan-body omission marker that replaces the echoed plan text after we
- * detect the split point. Tells the user why the plan body was removed.
- */
+/** Plan-body omission marker that replaces the echoed plan text after we detect the split point. Tells the user why the plan body was removed. */
 const PLAN_OMIT_POINTER =
   '[token-goat: plan body omitted -- identical to this call\'s own tool_input, already saved to the plans file]'
 
-/**
- * Split marker that demarcates where the plan body echo starts in the tool
- * result. When found, everything after this marker (the plan body) is
- * replaced with PLAN_OMIT_POINTER.
- */
+/** Split marker that demarcates where the plan body echo starts in the tool result. When found, everything after this marker (the plan body) is replaced with PLAN_OMIT_POINTER. */
 const APPROVED_PLAN_MARKER = '## Approved Plan:'
 
 export function postExitPlanModeHandler(event: HookEvent): HookOutput {
@@ -92,14 +54,7 @@ export function postExitPlanModeHandler(event: HookEvent): HookOutput {
       return passOutput()
     }
 
-    // Through emitRewrite rather than a hand-built object, which is what finally settles the stat
-    // question the comment at the top of this handler left open. That comment declined to count
-    // redactions because counting every one would credit this handler for secrets the truncation had
-    // already dropped, and counting only the survivors "would mean re-scanning the emitted slice for
-    // placeholders": emitRewrite does exactly that re-scan, on the emitted text and nothing else, so
-    // the survivors-only count is now free rather than machinery. It also records the byte saving,
-    // which this handler produced for several releases without ever reporting, leaving a real
-    // mechanism invisible in `token-goat stats`.
+    // Through emitRewrite rather than a hand-built object, which is what finally settles the stat question the comment at the top of this handler left open. That comment declined to count redactions because counting every one would credit this handler for secrets the truncation had already dropped, and counting only the survivors "would mean re-scanning the emitted slice for placeholders": emitRewrite does exactly that re-scan, on the emitted text and nothing else, so the survivors-only count is now free rather than machinery. It also records the byte saving, which this handler produced for several releases without ever reporting, leaving a real mechanism invisible in `token-goat stats`.
     return emitRewrite(`${prefix}${notice}`, 'exitplanmode', {
       kind: 'plan_echo_collapse',
       originalBytes: Buffer.byteLength(output, 'utf-8'),

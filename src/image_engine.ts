@@ -1,14 +1,4 @@
-/**
- * Pure TypeScript / JavaScript Image Processing Engine for token-goat.
- *
- * Provides zero-native-dependency image metadata extraction, decoding, resampling,
- * and re-encoding for PNG, JPEG, GIF, BMP, WebP, TIFF, and SVG formats.
- *
- * No native decoder, so none of the C buffer-overflow classes that come with one. That is not the
- * same as being safe on untrusted input, and the difference is what {@link MAX_DECODED_BYTES} and
- * its call sites below exist for: every buffer here is sized from a number an attacker wrote in a
- * file header, and a size check is the only thing standing between that number and the allocator.
- */
+/** Pure TypeScript / JavaScript Image Processing Engine for token-goat. Provides zero-native-dependency image metadata extraction, decoding, resampling, and re-encoding for PNG, JPEG, GIF, BMP, WebP, TIFF, and SVG formats. No native decoder, so none of the C buffer-overflow classes that come with one. That is not the same as being safe on untrusted input, and the difference is what {@link MAX_DECODED_BYTES} and its call sites below exist for: every buffer here is sized from a number an attacker wrote in a file header, and a size check is the only thing standing between that number and the allocator. */
 
 import * as zlib from "node:zlib"
 import jpeg from "jpeg-js"
@@ -17,17 +7,7 @@ import omggif from "omggif"
 /** Ceiling on the pixel buffer a single decode may allocate, in bytes. Every decoder below sizes its output from the image's own header, so without a ceiling the file chooses how much memory token-goat allocates. Measured on this engine before the ceiling existed: a 3.7 KB GIF declaring a 1600x1600 canvas and 160 frames allocated 1,562 MB, linearly, because each frame is a full canvas and all of them are held at once -- 500 frames fits in 11.5 KB and comes to 5.1 GB. `image_shrink.max_image_pixels` does not stop it: that gate is `width * height` and never looks at the frame count, so 1600x1600 passes with 96% of the budget to spare (measured against this file's current 64,000,000 default). 256 MB leaves only about a 4.9% margin over the largest a still image at the default 64 MP gate in image_shrink.ts admits (64,000,000 x 4 bytes of RGBA = 256,000,000 bytes, against the 268,435,456-byte ceiling here) -- a much tighter relationship than an earlier, lower default left, because this check is the actual hard bound regardless of what that header-level gate allows through: raising the gate does not raise this. What the margin still has room for is the multi-frame case, where roughly 26 frames fit at the 1568px resize target and around 130 at 800x600. Refusing is cheap: {@link shrinkImage} catches the throw and returns null, which passes the original file through to the model untouched. Declining to shrink a very long animation is a better outcome than allocating gigabytes to do it. */
 const MAX_DECODED_BYTES = 256 * 1024 * 1024
 
-/**
- * Throw unless a `width * height * bytesPerPixel * frames` buffer is within {@link MAX_DECODED_BYTES}.
- *
- * Takes the dimensions rather than the product so the multiplication happens here, where it is
- * checked, instead of at each call site where an overflow to `Infinity` or a negative from a signed
- * header field would be passed in already collapsed to something that compares as safe.
- *
- * Exported because the decoders are not the only place a frame count sizes a buffer: the animated
- * branch of {@link shrinkImage} allocates its GIF output the same way, and one ceiling covering
- * both is the only way peak memory is actually the number this file advertises.
- */
+/** Throw unless a `width * height * bytesPerPixel * frames` buffer is within {@link MAX_DECODED_BYTES}. Takes the dimensions rather than the product so the multiplication happens here, where it is checked, instead of at each call site where an overflow to `Infinity` or a negative from a signed header field would be passed in already collapsed to something that compares as safe. Exported because the decoders are not the only place a frame count sizes a buffer: the animated branch of {@link shrinkImage} allocates its GIF output the same way, and one ceiling covering both is the only way peak memory is actually the number this file advertises. */
 export function assertDecodableSize(
   what: string,
   width: number,
@@ -261,12 +241,7 @@ export function probeBufferMeta(buf: Buffer): ImageMeta | null {
     let height = 0
     let pages = 0
 
-    // A TIFF's pages are a linked list, each IFD holding the offset of the next, and nothing in the
-    // format stops that offset pointing at an IFD already visited. Following it without remembering
-    // where it has been is an unbreakable loop: measured before this set existed, a 64-byte file
-    // whose only IFD pointed at itself never returned. It is a synchronous loop with no allocation,
-    // so it does not run out of memory and get killed -- it holds the thread forever, which for a
-    // pre-read hook means the agent's Read never comes back at all.
+    // A TIFF's pages are a linked list, each IFD holding the offset of the next, and nothing in the format stops that offset pointing at an IFD already visited. Following it without remembering where it has been is an unbreakable loop: measured before this set existed, a 64-byte file whose only IFD pointed at itself never returned. It is a synchronous loop with no allocation, so it does not run out of memory and get killed -- it holds the thread forever, which for a pre-read hook means the agent's Read never comes back at all.
     const seenIfdOffsets = new Set<number>()
 
     while (ifdOffset > 0 && ifdOffset + 2 <= buf.length) {
@@ -349,17 +324,11 @@ export function decodePng(buf: Buffer): DecodedImage {
       height = data.readUInt32BE(4)
       const bitDepth = data[8] ?? 8
       colorType = data[9] ?? 6
-      // Only 8 bits per sample. The row loop below indexes samples as single bytes, so a 16-bit
-      // image read as 8-bit does not fail -- it silently returns the wrong picture. Measured: a
-      // 16-bit opaque red pixel came back as [255, 255, 0, 0], a transparent yellow. Sub-byte
-      // depths (1, 2, 4) pack several pixels into one byte and are wrong the same way. Handing the
-      // model a corrupted image while reporting success is worse than not shrinking it, and
-      // throwing here means shrinkImage passes the untouched original through instead.
+      // Only 8 bits per sample. The row loop below indexes samples as single bytes, so a 16-bit image read as 8-bit does not fail -- it silently returns the wrong picture. Measured: a 16-bit opaque red pixel came back as [255, 255, 0, 0], a transparent yellow. Sub-byte depths (1, 2, 4) pack several pixels into one byte and are wrong the same way. Handing the model a corrupted image while reporting success is worse than not shrinking it, and throwing here means shrinkImage passes the untouched original through instead.
       if (bitDepth !== 8) {
         throw new Error("Unsupported PNG bit depth: " + bitDepth)
       }
-      // Adam7 stores the image as seven interleaved sub-images. The row loop assumes one pass over
-      // full-width scanlines, so an interlaced file decodes to noise for the same reason.
+      // Adam7 stores the image as seven interleaved sub-images. The row loop assumes one pass over full-width scanlines, so an interlaced file decodes to noise for the same reason.
       const interlace = data[12] ?? 0
       if (interlace !== 0) {
         throw new Error("Unsupported PNG interlace method: " + interlace)
@@ -391,15 +360,9 @@ export function decodePng(buf: Buffer): DecodedImage {
   const rowBytes = width * bpp
   const rowSize = 1 + rowBytes
 
-  // A non-interlaced PNG's zlib stream is exactly one filter byte plus one row of samples per
-  // scanline. That is a bound the file cannot argue with, so it is the bound used, rather than a
-  // round number: anything past it is not data this image could need.
+  // A non-interlaced PNG's zlib stream is exactly one filter byte plus one row of samples per scanline. That is a bound the file cannot argue with, so it is the bound used, rather than a round number: anything past it is not data this image could need.
   //
-  // Without it the IDAT decides the allocation, and it can be enormously smaller than what it
-  // expands to. Measured on this decoder before the bound: a 510 KB PNG declaring 4000x4000 -- 16
-  // MP exactly, so it clears the pixel gate -- inflated to 512 MB, took 1,025 MB of external memory
-  // once the concatenation is counted, and needed 61 MB. 512 MB was the figure chosen for the test
-  // file, not a limit the code imposed; nothing here stopped it going higher.
+  // Without it the IDAT decides the allocation, and it can be enormously smaller than what it expands to. Measured on this decoder before the bound: a 510 KB PNG declaring 4000x4000 -- 16 MP exactly, so it clears the pixel gate -- inflated to 512 MB, took 1,025 MB of external memory once the concatenation is counted, and needed 61 MB. 512 MB was the figure chosen for the test file, not a limit the code imposed; nothing here stopped it going higher.
   const maxRawBytes = height * rowSize
   const compressed = Buffer.concat(idatChunks)
   let decompressed: Buffer
@@ -563,16 +526,12 @@ export function decodeBmp(buf: Buffer): DecodedImage {
     throw new Error("Unsupported BMP compression: " + compression)
   }
 
-  // Only 24- and 32-bit BMPs have a branch in the pixel loop below. Every other depth fell through
-  // it and returned the zero-filled buffer: a fully transparent image, with no error, which
-  // shrinkImage would then re-encode and hand to the model as the file's contents.
+  // Only 24- and 32-bit BMPs have a branch in the pixel loop below. Every other depth fell through it and returned the zero-filled buffer: a fully transparent image, with no error, which shrinkImage would then re-encode and hand to the model as the file's contents.
   if (bpp !== 24 && bpp !== 32) {
     throw new Error("Unsupported BMP bit depth: " + bpp)
   }
 
-  // BMP stores both dimensions signed, and width is used unmodified. A negative one makes the
-  // product negative, which slips under a `> limit` test, so the check has to be for a valid size
-  // rather than merely a small one -- assertDecodableSize rejects on sign and finiteness first.
+  // BMP stores both dimensions signed, and width is used unmodified. A negative one makes the product negative, which slips under a `> limit` test, so the check has to be for a valid size rather than merely a small one -- assertDecodableSize rejects on sign and finiteness first.
   assertDecodableSize("BMP", width, height, 4)
 
   const rowStride = Math.floor((bpp * width + 31) / 32) * 4
@@ -617,12 +576,7 @@ function clearCanvasRect(canvas: Buffer, canvasWidth: number, rect: { x: number;
   }
 }
 
-/**
- * Decode a GIF's frames.
- *
- * `maxFrames` stops after that many. A caller that wants a still out of an animation should pass 1
- * rather than take `frames[0]` from a full decode, which pays for every frame to use one.
- */
+/** Decode a GIF's frames. `maxFrames` stops after that many. A caller that wants a still out of an animation should pass 1 rather than take `frames[0]` from a full decode, which pays for every frame to use one. */
 export function decodeGif(buf: Buffer, opts?: { maxFrames?: number }): DecodedAnimatedGif {
   const reader = new omggif.GifReader(buf)
   const width = reader.width

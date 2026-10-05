@@ -1,13 +1,6 @@
-// Regression: the MCP confinement gate (`rejectOutsideRoot` -> `isWithinProjectRoot`) resolved a
-// RELATIVE target against the resolved `projectRoot`, but the execution layer resolved the same
-// target against the server process's own cwd. Two different bases meant the gate admitted
-// `<projectRoot>/x` while the read served `<server cwd>/x`, so confinement only held when the
-// server happened to be launched from the workspace root.
+// Regression: the MCP confinement gate (`rejectOutsideRoot` -> `isWithinProjectRoot`) resolved a RELATIVE target against the resolved `projectRoot`, but the execution layer resolved the same target against the server process's own cwd. Two different bases meant the gate admitted `<projectRoot>/x` while the read served `<server cwd>/x`, so confinement only held when the server happened to be launched from the workspace root.
 //
-// Every pre-existing confinement test (tests/mcp_server_read_confinement.test.ts) passes an
-// ABSOLUTE path and never changes the process's cwd, so the two bases coincide there and the
-// divergence is invisible. Each test below therefore sets the server process's cwd to a directory
-// that is deliberately NOT the projectRoot -- that divergence is the entire bug.
+// Every pre-existing confinement test (tests/mcp_server_read_confinement.test.ts) passes an ABSOLUTE path and never changes the process's cwd, so the two bases coincide there and the divergence is invisible. Each test below therefore sets the server process's cwd to a directory that is deliberately NOT the projectRoot -- that divergence is the entire bug.
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -82,12 +75,10 @@ describe('mcp confinement: gate base must equal execution base', () => {
     vi.clearAllMocks()
     querySymbolsMock.mockReturnValue([])
     originalCwd = process.cwd()
-    // fs.realpathSync: macOS's os.tmpdir() is a symlink (/var -> /private/var), and the gate
-    // compares REAL paths -- an unrealpath'd root would not match the realpath'd target.
+    // fs.realpathSync: macOS's os.tmpdir() is a symlink (/var -> /private/var), and the gate compares REAL paths -- an unrealpath'd root would not match the realpath'd target.
     root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-div-root-')))
     serverCwd = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-div-cwd-')))
-    // Same RELATIVE names in both directories: the gate validates the copy under `root`, the
-    // buggy execution layer reads the copy under the server's cwd.
+    // Same RELATIVE names in both directories: the gate validates the copy under `root`, the buggy execution layer reads the copy under the server's cwd.
     fs.writeFileSync(path.join(root, 'inside.txt'), `${IN_ROOT}\n`)
     fs.writeFileSync(path.join(serverCwd, 'inside.txt'), `${SECRET}\n`)
     fs.writeFileSync(path.join(serverCwd, 'secret.txt'), `${SECRET}\n`)
@@ -142,8 +133,7 @@ describe('mcp confinement: gate base must equal execution base', () => {
   // ---- Symptom 2: `brief` ------------------------------------------------------------------
 
   it('brief: a relative spec resolves its symbol against projectRoot, not the server cwd', async () => {
-    // Echo whatever file path the resolver asks for straight back as the symbol body, so the
-    // rendered output literally carries the contents of whichever copy was resolved.
+    // Echo whatever file path the resolver asks for straight back as the symbol body, so the rendered output literally carries the contents of whichever copy was resolved.
     querySymbolsMock.mockImplementation((q: { filePath?: string }) => {
       if (q.filePath === undefined || !fs.existsSync(q.filePath)) return []
       return [
@@ -188,9 +178,7 @@ describe('mcp confinement: gate base must equal execution base', () => {
     const { client, close } = await connectedClient()
     cleanup = close
 
-    // The pattern is a strict PREFIX of the marker, never the marker itself: runGrep echoes the
-    // pattern back in its "No matches for '...'" line, so searching for the whole marker would
-    // make that very refusal message satisfy a naive `toContain(SECRET)` check.
+    // The pattern is a strict PREFIX of the marker, never the marker itself: runGrep echoes the pattern back in its "No matches for '...'" line, so searching for the whole marker would make that very refusal message satisfy a naive `toContain(SECRET)` check.
     const result = await client.callTool({ name: 'grep', arguments: { pattern: 'SECRET-MARKER', projectRoot: root } })
     expect(textOf(result)).not.toContain(SECRET)
   })
@@ -235,15 +223,7 @@ describe('mcp confinement: gate base must equal execution base', () => {
 
   // ---- Symptom 4: `refs` had no confinement gate and no root-scoped query at all ----------
   //
-  // Unlike the file-reading tools above, `refs` never resolves a path off disk -- it queries the
-  // shared global.db `refs` table by symbol name. Its exposure is therefore not "serve the wrong
-  // file's bytes" but "leak reference rows recorded against an unrelated project": with no
-  // `projectRoot` schema field, no confinement gate, and no `rootDir` passed into `queryRefs`,
-  // asking for a symbol name that happens to also exist in some OTHER indexed project returned
-  // that other project's call sites too. Seed the shared global.db with a same-named symbol
-  // referenced once inside `root` and once inside `serverCwd` (standing in for an unrelated
-  // project sharing the same index) to prove the fix scopes the query to `projectRoot`, not the
-  // server process's cwd.
+  // Unlike the file-reading tools above, `refs` never resolves a path off disk -- it queries the shared global.db `refs` table by symbol name. Its exposure is therefore not "serve the wrong file's bytes" but "leak reference rows recorded against an unrelated project": with no `projectRoot` schema field, no confinement gate, and no `rootDir` passed into `queryRefs`, asking for a symbol name that happens to also exist in some OTHER indexed project returned that other project's call sites too. Seed the shared global.db with a same-named symbol referenced once inside `root` and once inside `serverCwd` (standing in for an unrelated project sharing the same index) to prove the fix scopes the query to `projectRoot`, not the server process's cwd.
   it('refs: a bare symbol name is scoped to projectRoot, not the server cwd or the whole shared index', async () => {
     const db = getDb(globalDbPath())
     const insertRef = db.prepare('INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)')

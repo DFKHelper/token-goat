@@ -1,14 +1,6 @@
-// Regression: `rejectOutsideRoot` (src/mcp_server.ts) read the `confine_reads_to_project_root`
-// setting via `loadConfig()` with NO argument, so it fell back to `resolveConfigProjectRoot()` --
-// the server process's own cwd -- even though the request's resolved `projectRoot` was already
-// available as a parameter. A `.token-goat.toml` sitting in the server's cwd with
-// `confine_reads_to_project_root = false` therefore switched confinement off for a DIFFERENT
-// workspace, one whose own config still held the secure default. The security decision for
-// workspace A was read from workspace B's config.
+// Regression: `rejectOutsideRoot` (src/mcp_server.ts) read the `confine_reads_to_project_root` setting via `loadConfig()` with NO argument, so it fell back to `resolveConfigProjectRoot()` -- the server process's own cwd -- even though the request's resolved `projectRoot` was already available as a parameter. A `.token-goat.toml` sitting in the server's cwd with `confine_reads_to_project_root = false` therefore switched confinement off for a DIFFERENT workspace, one whose own config still held the secure default. The security decision for workspace A was read from workspace B's config.
 //
-// tests/mcp_server_root_divergence.test.ts covers the EXECUTION base (which directory a relative
-// path resolves against); this file covers the CONFIG base (which .token-goat.toml the gate's
-// on/off decision itself is read from) -- a distinct divergence, same root cause shape.
+// tests/mcp_server_root_divergence.test.ts covers the EXECUTION base (which directory a relative path resolves against); this file covers the CONFIG base (which .token-goat.toml the gate's on/off decision itself is read from) -- a distinct divergence, same root cause shape.
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -84,8 +76,7 @@ describe('mcp confine_reads_to_project_root: gate must read the REQUEST projectR
   })
 
   it('confinement stays ON for projectRoot even when the server cwd has its own config disabling it', async () => {
-    // The server cwd's config would legitimately disable confinement -- for THAT workspace.
-    // projectRoot has no override, so it keeps the secure default (confine = true).
+    // The server cwd's config would legitimately disable confinement -- for THAT workspace. projectRoot has no override, so it keeps the secure default (confine = true).
     fs.writeFileSync(path.join(serverCwd, '.token-goat.toml'), 'mcp.confine_reads_to_project_root = false\n')
     process.chdir(serverCwd)
 
@@ -101,12 +92,7 @@ describe('mcp confine_reads_to_project_root: gate must read the REQUEST projectR
     expect(textOf(result)).not.toContain(SECRET)
   })
 
-  // This test previously asserted the opposite: that the request projectRoot's own
-  // .token-goat.toml could turn confinement off. That is now blocked, deliberately. A per-project
-  // file arrives with the repository, so honouring it here meant any cloned project could hand the
-  // MCP server the whole filesystem. `mcp` is one of the sections a project file may not set
-  // (PROJECT_LOCKED_SECTIONS in src/config.ts). The setting itself still works: it comes from the
-  // global config or TOKEN_GOAT_MCP_CONFINE_READS, neither of which a repository can write.
+  // This test previously asserted the opposite: that the request projectRoot's own .token-goat.toml could turn confinement off. That is now blocked, deliberately. A per-project file arrives with the repository, so honouring it here meant any cloned project could hand the MCP server the whole filesystem. `mcp` is one of the sections a project file may not set (PROJECT_LOCKED_SECTIONS in src/config.ts). The setting itself still works: it comes from the global config or TOKEN_GOAT_MCP_CONFINE_READS, neither of which a repository can write.
   it('ignores a request projectRoot that tries to turn confinement off from its own config file', async () => {
     fs.writeFileSync(path.join(projectRoot, '.token-goat.toml'), 'mcp.confine_reads_to_project_root = false\n')
     process.chdir(serverCwd)

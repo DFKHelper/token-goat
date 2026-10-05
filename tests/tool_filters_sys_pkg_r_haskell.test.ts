@@ -1,14 +1,4 @@
-/**
- * Coverage for three filters that ship on by default and whose only existing
- * fixtures were written from their own matcher regexes: `sys-pkg`, `rcmd` and
- * `haskell`. Every fixture here carries a provenance line naming where its
- * bytes came from; a fixture read off our own regex proves only that the
- * matcher matches itself, so none of those appear below.
- *
- * Each case asserts a must-not-drop list of specific lines that have to survive
- * the filter, not a byte ratio: dropping more always improves a ratio, so a
- * ratio floor cannot tell a good collapse from an over-collapse.
- */
+/** Coverage for three filters that ship on by default and whose only existing fixtures were written from their own matcher regexes: `sys-pkg`, `rcmd` and `haskell`. Every fixture here carries a provenance line naming where its bytes came from; a fixture read off our own regex proves only that the matcher matches itself, so none of those appear below. Each case asserts a must-not-drop list of specific lines that have to survive the filter, not a byte ratio: dropping more always improves a ratio, so a ratio floor cannot tell a good collapse from an over-collapse. */
 import { describe, expect, it } from 'vitest'
 
 import { rCmdFilter, haskellFilter } from '../src/tool_filters/languages.js'
@@ -19,14 +9,9 @@ function compress(filter: { compress: (a: string, b: string, c: number, d: strin
   return filter.compress(stdout, stderr, exitCode, argv)
 }
 
-// ---------------------------------------------------------------------------
-// sys-pkg (apt branch)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- sys-pkg (apt branch) ---------------------------------------------------------------------------
 
-// CAPTURE. Verbatim stdout of `apt-get -s install --reinstall coreutils`, apt 2.8.3 (amd64) on
-// Ubuntu 24.04.4 LTS, run through WSL on this machine. `-s` simulates: it reads the local package
-// lists only and makes no network request. Package names are stock Ubuntu packages; the capture
-// carries no account, host or path identifying this machine.
+// CAPTURE. Verbatim stdout of `apt-get -s install --reinstall coreutils`, apt 2.8.3 (amd64) on Ubuntu 24.04.4 LTS, run through WSL on this machine. `-s` simulates: it reads the local package lists only and makes no network request. Package names are stock Ubuntu packages; the capture carries no account, host or path identifying this machine.
 const APT_SIMULATE_CAPTURE = [
   'NOTE: This is only a simulation!',
   '      apt-get needs root privileges for real execution.',
@@ -44,9 +29,7 @@ const APT_SIMULATE_CAPTURE = [
   '',
 ].join('\n')
 
-// CAPTURE. Same apt 2.8.3 / Ubuntu 24.04.4 run, `apt-get -s install tg-no-such-package-xyz`:
-// the seven stdout lines above through `Reading state information...`, this single stderr line,
-// and exit code 100.
+// CAPTURE. Same apt 2.8.3 / Ubuntu 24.04.4 run, `apt-get -s install tg-no-such-package-xyz`: the seven stdout lines above through `Reading state information...`, this single stderr line, and exit code 100.
 const APT_MISSING_PACKAGE_STDERR = 'E: Unable to locate package tg-no-such-package-xyz\n'
 
 describe('sys-pkg on captured apt output', () => {
@@ -56,8 +39,7 @@ describe('sys-pkg on captured apt output', () => {
 
   it('keeps the decision lines of a simulated install', () => {
     const out = compress(sysPackageFilter, APT_SIMULATE_CAPTURE, ['apt-get', '-s', 'install', '--reinstall', 'coreutils'])
-    // Must-not-drop: the counts line is the whole answer to "what would this do", and the
-    // Inst/Conf pair names the exact version apt picked.
+    // Must-not-drop: the counts line is the whole answer to "what would this do", and the Inst/Conf pair names the exact version apt picked.
     expect(out).toContain('0 upgraded, 0 newly installed, 1 reinstalled, 0 to remove and 28 not upgraded.')
     expect(out).toContain('Inst coreutils [9.4-3ubuntu6.3]')
     expect(out).toContain('Conf coreutils (9.4-3ubuntu6.3')
@@ -75,16 +57,9 @@ describe('sys-pkg on captured apt output', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// rcmd
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- rcmd ---------------------------------------------------------------------------
 
-// FORMAT-DERIVED. R is not installed on this machine and cannot be installed here (no network),
-// so this is written from the producer's documentation rather than a run: R Core Team, "Writing R
-// Extensions", section 1.3 "Checking and building packages", which documents `R CMD check`
-// emitting one `* checking <what> ... <result>` line per check with results OK, NOTE, WARNING,
-// ERROR or SKIPPED, a `* DONE (<pkg>)` line, and a closing `Status:` summary. It is weaker than a
-// CAPTURE: it proves agreement with that documented shape, not that a given R build emits it.
+// FORMAT-DERIVED. R is not installed on this machine and cannot be installed here (no network), so this is written from the producer's documentation rather than a run: R Core Team, "Writing R Extensions", section 1.3 "Checking and building packages", which documents `R CMD check` emitting one `* checking <what> ... <result>` line per check with results OK, NOTE, WARNING, ERROR or SKIPPED, a `* DONE (<pkg>)` line, and a closing `Status:` summary. It is weaker than a CAPTURE: it proves agreement with that documented shape, not that a given R build emits it.
 const R_CMD_CHECK_FORMAT = [
   '* using R version 4.4.1 (2024-06-14)',
   "* checking for file 'pkg/DESCRIPTION' ... OK",
@@ -108,9 +83,7 @@ describe('rcmd on documented R CMD check output', () => {
 
   it('keeps a SKIPPED check instead of counting it as an OK one', () => {
     const out = compress(rCmdFilter, R_CMD_CHECK_FORMAT, ['R', 'CMD', 'check', 'pkg'])
-    // Must-not-drop: a skipped check is a result, not a pass. It is the only line saying the
-    // package's tests never ran, so folding it into the OK tally both deletes it and makes the
-    // note an untrue claim about how many checks passed.
+    // Must-not-drop: a skipped check is a result, not a pass. It is the only line saying the package's tests never ran, so folding it into the OK tally both deletes it and makes the note an untrue claim about how many checks passed.
     expect(out).toContain('* checking tests ... SKIPPED')
     expect(out).toContain('collapsed 6 R CMD check-OK line(s)')
     expect(out).not.toContain('collapsed 7 R CMD check-OK line(s)')
@@ -124,19 +97,11 @@ describe('rcmd on documented R CMD check output', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// haskell
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- haskell ---------------------------------------------------------------------------
 
-// FORMAT-DERIVED. No Haskell toolchain is installed on this machine and none can be installed
-// here (no network). Written from the producers' documentation: the GHC User's Guide, "Using GHC
+// FORMAT-DERIVED. No Haskell toolchain is installed on this machine and none can be installed here (no network). Written from the producers' documentation: the GHC User's Guide, "Using GHC
 // / Modes of operation", which documents `--make` progress lines of the form
-// `[N of M] Compiling <Module> ( <source>, <object> )` followed by `Linking <target> ...`, and
-// GHC error diagnostics rendered as `<file>:<line>:<col>: error: [GHC-<code>]` with an indented
-// body; plus the Cabal User Guide's `cabal build` output (`Resolving dependencies...`,
-// `Configuring <pkg>...`, `Preprocessing library for <pkg>..`, `Building library for <pkg>..`)
-// and cabal's `cabal: ` diagnostic prefix. FORMAT-DERIVED, not CAPTURE: it proves agreement with
-// the documented shape, not that a shipped cabal build emits exactly these bytes.
+// `[N of M] Compiling <Module> ( <source>, <object> )` followed by `Linking <target> ...`, and GHC error diagnostics rendered as `<file>:<line>:<col>: error: [GHC-<code>]` with an indented body; plus the Cabal User Guide's `cabal build` output (`Resolving dependencies...`, `Configuring <pkg>...`, `Preprocessing library for <pkg>..`, `Building library for <pkg>..`) and cabal's `cabal: ` diagnostic prefix. FORMAT-DERIVED, not CAPTURE: it proves agreement with the documented shape, not that a shipped cabal build emits exactly these bytes.
 const CABAL_BUILD_FAILURE_FORMAT = [
   'Resolving dependencies...',
   'Configuring mypkg-0.1.0.0...',
@@ -163,8 +128,7 @@ describe('haskell on documented cabal/GHC output', () => {
 
   it('keeps the whole GHC diagnostic and the cabal verdict while collapsing the progress lines', () => {
     const out = compress(haskellFilter, CABAL_BUILD_FAILURE_FORMAT, ['cabal', 'build'])
-    // Must-not-drop: the diagnostic header, every line of its indented body (the caret line is
-    // what points at the offending token), and cabal's closing verdict on the last line.
+    // Must-not-drop: the diagnostic header, every line of its indented body (the caret line is what points at the offending token), and cabal's closing verdict on the last line.
     expect(out).toContain('src/Mypkg/B.hs:12:1: error: [GHC-88464]')
     expect(out).toContain('    Variable not in scope: frobnicate :: Int -> Int')
     expect(out).toContain('12 | main = frobnicate 3')

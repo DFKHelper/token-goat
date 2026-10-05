@@ -209,10 +209,7 @@ describe('Salesforce metadata XML adapter', () => {
       extractSalesforceMetadata('<CustomLabels><labels><fullName>Broken', 'Broken.labels-meta.xml'),
     ).toEqual({ symbols: [], refs: [] })
 
-    // MAX_SYMBOLS is 10,000 (raised from 1000: matches every sibling language adapter's cap, see
-    // languages.test.ts's own html.ts cap test for the same convention) - a large org's
-    // CustomLabels.labels-meta.xml can hold well over 1000 entries, so 10,100 unique labels plus
-    // one exact duplicate proves both the cap and the dedup still apply at the new ceiling.
+    // MAX_SYMBOLS is 10,000 (raised from 1000: matches every sibling language adapter's cap, see languages.test.ts's own html.ts cap test for the same convention) - a large org's CustomLabels.labels-meta.xml can hold well over 1000 entries, so 10,100 unique labels plus one exact duplicate proves both the cap and the dedup still apply at the new ceiling.
     const repeated = Array.from(
       { length: 10_100 },
       (_, index) => `<labels><fullName>Label_${index}</fullName></labels>`,

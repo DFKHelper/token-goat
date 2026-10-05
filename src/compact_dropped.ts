@@ -1,10 +1,4 @@
-/**
- * The paths a compaction summary left out, kept beside the session so the resume packet can name them.
- *
- * postCompactHandler already checks which of the paths the manifest printed reappear in the summary Claude Code wrote, but until now it only counted them for the stats ledger. The model coming out of the compaction learns nothing from a count: the files the summary forgot are the ones it will re-read blind or not know to look at. PostCompact fires before SessionStart(compact), so the list written here is on disk by the time postCompactRecovery builds the resume packet for that same compaction.
- *
- * One file per state key, rewritten by every compaction that carries a summary, and removed by one that carries none (Codex CLI's post-compact input has no summary field), so a list from an earlier compaction is never presented as this one's.
- */
+/** The paths a compaction summary left out, kept beside the session so the resume packet can name them. postCompactHandler already checks which of the paths the manifest printed reappear in the summary Claude Code wrote, but until now it only counted them for the stats ledger. The model coming out of the compaction learns nothing from a count: the files the summary forgot are the ones it will re-read blind or not know to look at. PostCompact fires before SessionStart(compact), so the list written here is on disk by the time postCompactRecovery builds the resume packet for that same compaction. One file per state key, rewritten by every compaction that carries a summary, and removed by one that carries none (Codex CLI's post-compact input has no summary field), so a list from an earlier compaction is never presented as this one's. */
 
 import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'

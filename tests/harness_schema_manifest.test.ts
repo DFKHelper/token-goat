@@ -11,29 +11,7 @@ import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
 import { runAdapter } from '../src/hook_adapters.js'
 import { copilotCapture } from './fixtures/copilot_cli_1_0_88.js'
 
-/**
- * Cross-checks the Copilot shim against a shape manifest derived from Copilot's own published
- * TypeScript declarations (`schemas/copilot_cli.hooks.json`, produced by
- * `scripts/extract_harness_schema.mjs`).
- *
- * Why this file exists, concretely. Four separate features have shipped from this repo wired,
- * tested, green, and doing nothing at runtime, all with one mechanism: the repo restated its belief
- * about a harness's wire format in a fixture, the belief was wrong, and the fixture agreed with the
- * bug. `tests/hook_event_harness_matrix.test.ts` was written to close that gap and does not: driving
- * all four historical defects back in as mutations leaves it green on all four, because its
- * `toolPayload` sends Copilot a Claude Code shaped payload that Copilot never sends.
- *
- * The manifest is not a belief -- it is read out of the vendor's declarations. So the check here is
- * *totality*, not shape: every REQUIRED field the vendor declares on a hook input must be accounted
- * for, either by a mapping onto the canonical field the bridge builds, or by an explicit entry in
- * `DELIBERATELY_UNMAPPED` giving a reason. A vendor field with neither fails this test. That is the
- * property that makes the `error`-field defect impossible to reintroduce: `error` is declared
- * required on `PostToolUseFailureHookInput`, so dropping it from the builder leaves it unaccounted.
- *
- * Note the manifest is derived, not vendored: Copilot's `types.d.ts` carries no license grant and
- * this repo is PolyForm Noncommercial, so field names and types are extracted and no vendor source
- * is redistributed.
- */
+/** Cross-checks the Copilot shim against a shape manifest derived from Copilot's own published TypeScript declarations (`schemas/copilot_cli.hooks.json`, produced by `scripts/extract_harness_schema.mjs`). Why this file exists, concretely. Four separate features have shipped from this repo wired, tested, green, and doing nothing at runtime, all with one mechanism: the repo restated its belief about a harness's wire format in a fixture, the belief was wrong, and the fixture agreed with the bug. `tests/hook_event_harness_matrix.test.ts` was written to close that gap and does not: driving all four historical defects back in as mutations leaves it green on all four, because its `toolPayload` sends Copilot a Claude Code shaped payload that Copilot never sends. The manifest is not a belief -- it is read out of the vendor's declarations. So the check here is *totality*, not shape: every REQUIRED field the vendor declares on a hook input must be accounted for, either by a mapping onto the canonical field the bridge builds, or by an explicit entry in `DELIBERATELY_UNMAPPED` giving a reason. A vendor field with neither fails this test. That is the property that makes the `error`-field defect impossible to reintroduce: `error` is declared required on `PostToolUseFailureHookInput`, so dropping it from the builder leaves it unaccounted. Note the manifest is derived, not vendored: Copilot's `types.d.ts` carries no license grant and this repo is PolyForm Noncommercial, so field names and types are extracted and no vendor source is redistributed. */
 
 const MANIFEST_PATH = path.join(__dirname, '..', 'schemas', 'copilot_cli.hooks.json')
 
@@ -49,12 +27,7 @@ interface Manifest {
 
 const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8')) as Manifest
 
-/**
- * Copilot hook events this bridge wires, and the vendor interface that describes each one's
- * payload. Only events with a declared interface appear: `preCompact` has no `PreCompactHookInput`
- * in the declarations at all, which is consistent with the bridge's own note that Copilot's
- * preCompact is notification-only, and there is nothing to cross-check for it here.
- */
+/** Copilot hook events this bridge wires, and the vendor interface that describes each one's payload. Only events with a declared interface appear: `preCompact` has no `PreCompactHookInput` in the declarations at all, which is consistent with the bridge's own note that Copilot's preCompact is notification-only, and there is nothing to cross-check for it here. */
 const EVENT_TO_INTERFACE: Record<string, string> = {
   preToolUse: 'PreToolUseHookInput',
   postToolUse: 'PostToolUseHookInput',
@@ -75,11 +48,7 @@ const VENDOR_TO_CANONICAL: Record<string, string> = {
   prompt: 'prompt',
 }
 
-/**
- * Vendor fields the bridge deliberately does not carry, each with the reason. An entry here is a
- * decision on the record, which is the point: the failure this file exists to prevent is a field
- * disappearing without anyone deciding anything.
- */
+/** Vendor fields the bridge deliberately does not carry, each with the reason. An entry here is a decision on the record, which is the point: the failure this file exists to prevent is a field disappearing without anyone deciding anything. */
 const DELIBERATELY_UNMAPPED: Record<string, string> = {
   timestamp:
     'token-goat stamps its own receipt time when it records a stat; the harness emit time is not used by any handler.',
@@ -161,18 +130,13 @@ describe('Copilot hook-input shape manifest', () => {
       env,
     )
     const canonical = JSON.parse(fs.readFileSync(capturePath, 'utf8')) as Record<string, unknown>
-    // hooks_session.ts's userPromptSubmitHandler reads event.raw['prompt'] and returns early on
-    // '', so a missing key here is not a degraded hint -- it is every prompt-keyed branch dead.
+    // hooks_session.ts's userPromptSubmitHandler reads event.raw['prompt'] and returns early on '', so a missing key here is not a degraded hint -- it is every prompt-keyed branch dead.
     expect(canonical['prompt']).toBe('summarize the failing test')
     expect(canonical['cwd']).toBe(cwd)
   })
 })
 
-/**
- * The key Copilot CLI's command hooks really send for the working directory is `cwd`, not the SDK's `workingDirectory`: every payload Copilot CLI 1.0.88 sent in the tg-captures run carried `cwd` and none carried `workingDirectory`.
- *
- * PROVENANCE: CAPTURE. tests/fixtures/copilot_cli_1_0_88/C1a-005-postToolUse-view.json and C7-007-userPromptSubmitted.json, the stdin Copilot CLI 1.0.88 handed a hook (see tests/fixtures/copilot_cli_1_0_88.ts). The payload's `cwd` is set to a directory different from the one the shim runs in, so a builder that ignored `cwd` and fell back to process.cwd() fails here instead of being accidentally right, as it would be when Copilot spawns the hook in the project directory.
- */
+/** The key Copilot CLI's command hooks really send for the working directory is `cwd`, not the SDK's `workingDirectory`: every payload Copilot CLI 1.0.88 sent in the tg-captures run carried `cwd` and none carried `workingDirectory`. PROVENANCE: CAPTURE. tests/fixtures/copilot_cli_1_0_88/C1a-005-postToolUse-view.json and C7-007-userPromptSubmitted.json, the stdin Copilot CLI 1.0.88 handed a hook (see tests/fixtures/copilot_cli_1_0_88.ts). The payload's `cwd` is set to a directory different from the one the shim runs in, so a builder that ignored `cwd` and fell back to process.cwd() fails here instead of being accidentally right, as it would be when Copilot spawns the hook in the project directory. */
 describe('Copilot CLI 1.0.88 working directory (CAPTURE C1a, C7)', () => {
   const fallbackId = (dir: string): string => 'copilot-' + createHash('sha256').update(dir).digest('hex').slice(0, 16)
 

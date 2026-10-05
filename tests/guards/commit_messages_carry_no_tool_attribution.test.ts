@@ -1,28 +1,8 @@
-/**
- * No commit message in this repository's history credits the tool that helped
- * write it.
- *
- * `.lefthook-scripts/check-commit-msg.sh` stops one arriving through `git
- * commit`, and that is where a developer sees the error. It is not sufficient
- * on its own: a rebase, an amend, a merge, `--no-verify`, and a clone that
- * never ran `lefthook install` all produce commits the hook never sees. This
- * scans what actually landed, so a message that got past the hook is caught
- * before it is pushed rather than after.
- *
- * The check covers the whole reachable history rather than only new commits,
- * because "new" has no stable definition here -- the upstream ref is not always
- * fetched, and an offending message is as likely to arrive by rewriting an old
- * commit as by writing a new one. Reading every message costs under 100 ms.
- */
+/** No commit message in this repository's history credits the tool that helped write it. `.lefthook-scripts/check-commit-msg.sh` stops one arriving through `git commit`, and that is where a developer sees the error. It is not sufficient on its own: a rebase, an amend, a merge, `--no-verify`, and a clone that never ran `lefthook install` all produce commits the hook never sees. This scans what actually landed, so a message that got past the hook is caught before it is pushed rather than after. The check covers the whole reachable history rather than only new commits, because "new" has no stable definition here -- the upstream ref is not always fetched, and an offending message is as likely to arrive by rewriting an old commit as by writing a new one. Reading every message costs under 100 ms. */
 import { execFileSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 
-/**
- * PROVENANCE: HAND-DERIVED. These are the two trailers and the one URL shape an
- * assistant harness appends, written from that instruction text rather than
- * from any message in this repository, so the guard does not encode only the
- * spellings that happen to have occurred here.
- */
+/** PROVENANCE: HAND-DERIVED. These are the two trailers and the one URL shape an assistant harness appends, written from that instruction text rather than from any message in this repository, so the guard does not encode only the spellings that happen to have occurred here. */
 const FORBIDDEN: readonly { readonly what: string; readonly re: RegExp; readonly sample: string }[] = [
   {
     what: 'a Co-Authored-By trailer',
@@ -65,15 +45,12 @@ describe('commit messages', () => {
   const history = messages()
 
   it('reaches a history worth checking', () => {
-    // Without this, a `git log` that returned nothing -- a shallow clone, a
-    // renamed default branch, a spawn that failed into an empty string --
-    // would make every assertion below pass by having nothing to test.
+    // Without this, a `git log` that returned nothing -- a shallow clone, a renamed default branch, a spawn that failed into an empty string -- would make every assertion below pass by having nothing to test.
     expect(history.length).toBeGreaterThan(1_000)
   })
 
   it.each(FORBIDDEN)('carry no $what', ({ re, sample }) => {
-    // The population is defined by absence, so the pattern gets a positive of
-    // its own: a typo that matches nothing would otherwise read as clean.
+    // The population is defined by absence, so the pattern gets a positive of its own: a typo that matches nothing would otherwise read as clean.
     expect(re.test(sample), 'the pattern no longer matches the thing it forbids').toBe(true)
 
     const offenders = history.filter((commit) => re.test(commit.body)).map((commit) => commit.sha.slice(0, 8))

@@ -8,16 +8,12 @@ import { ToolFilter } from './base.js'
 import { makeAiCliFilter } from './families.js'
 import { ERROR_SIGNAL_RE, pathStem, pathName, positionalArgs } from './helpers.js'
 
-// ---------------------------------------------------------------------------
-// Shared regex constants — GhCopilot / Copilot (standalone)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Shared regex constants — GhCopilot / Copilot (standalone) ---------------------------------------------------------------------------
 const _GH_COPILOT_SPINNER_RE = /^\s*(?:Asking GitHub Copilot|Generating|Thinking|Fetching)\s*(?:\.{1,3}\s*)?$/i
 const _GH_COPILOT_BANNER_RE = /^\s*(?:Welcome to GitHub Copilot|Using GitHub Copilot|Authenticated as|GitHub Copilot\s+v\d+)/i
 const _GH_COPILOT_DISCLAIMER_RE = /^\s*(?:Disclaimer:|This response was|GitHub Copilot|The commands?\s+(?:above|below)|Please review|Always review|Remember to)/i
 
-// ---------------------------------------------------------------------------
-// Aider
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Aider ---------------------------------------------------------------------------
 const _AIDER_APPLYING_RE = /^\s*(?:Applying\s+edits?(?:\s+to\s+\S+)?|Applied\s+edit\s+to\s+\S+)\s*(?:\.{1,3}\s*)?$/i
 const _AIDER_TOKENS_RE = /^\s*Tokens:\s+\d[\d,]*\s+sent,\s+\d[\d,]*\s+received/i
 const _AIDER_COST_RE = /^\s*Cost:\s+\$[\d.]+\s+message,\s+\$[\d.]+\s+session/i
@@ -25,15 +21,11 @@ const _AIDER_REPOMAP_RE = /^\s*(?:Repo-map:|Added\s+\S+\s+to\s+the\s+chat|Remove
 const _AIDER_BANNER_RE = /^\s*aider\s+v\d+\.\d+/i
 const _AIDER_FOOTER_NOISE_RE = /^\s*(?:Use\s+ctrl-c|Run\s+with\s+--help|You\s+can\s+skip\s+this)/i
 
-// ---------------------------------------------------------------------------
-// Copilot (standalone binary)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Copilot (standalone binary) ---------------------------------------------------------------------------
 const _COPILOT_WORKSPACE_NOISE_RE = /^\s*(?:Starting\s+Copilot\s+workspace|Loading\s+model:|Copilot\s+workspace\s+(?:starting|loaded|ready)|Streaming\.\.\.|▌\s*$|Turn\s+\d+\s*:)/i
 const _COPILOT_COMPLETION_STATS_RE = /^\s*(?:Completion\s+tokens:|Prompt\s+tokens:|Total\s+tokens:|Input\s+tokens:|Output\s+tokens:)\s*\d/i
 
-// ---------------------------------------------------------------------------
-// Gemini CLI
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Gemini CLI ---------------------------------------------------------------------------
 const _GEMINI_STARTUP_RE = /^\s*(?:[✓✗►]|>)\s*(?:Model:|Theme:|Tools:|Sandbox:|Checkpointing:|Context(?:\s+limit)?:|Version:|Authenticated(?:\s+as)?:|Connecting)/i
 const _GEMINI_BANNER_RE = /^\s*Gemini\s+CLI\s+v\d+/i
 const _GEMINI_TOKEN_METER_RE = /^\s*(?:Token\s+usage|Context|Tokens):\s+[\d,]+\s*\/\s*[\d,]+/i
@@ -41,9 +33,7 @@ const _GEMINI_TOOL_SPINNER_RE = /^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✓✗►✦
 const _GEMINI_FOOTER_RE = /^\s*(?:Type\s+\/help|Press\s+Ctrl|Use\s+Ctrl)/i
 const _GEMINI_THINKING_RE = /^\s*(?:Thinking|Generating|Processing)\s*(?:\.{1,3}\s*)?$/i
 
-// ---------------------------------------------------------------------------
-// Claude CLI
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Claude CLI ---------------------------------------------------------------------------
 const _CLAUDE_CLI_MODEL_HDR_RE = /^\s*[◆◇►✦]\s+claude-/i
 const _CLAUDE_CLI_STATS_RE = /^\s*[↑↓⇑⇓]\s*\d[\d,]*(?:(?:\s*[↑↓⇑⇓]\s*|\s+)\d[\d,]*)?\s*tokens/i
 const _CLAUDE_CLI_CONTEXT_RE = /^\s*(?:Context(?:\s+window)?|Token\s+limit):\s+[\d,]+\s*\/\s*[\d,]+/i
@@ -53,16 +43,12 @@ const _CLAUDE_CLI_SPINNER_RE = /^\s*[◎⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s+(?:Thi
 const _CLAUDE_CLI_TOOL_LOG_RE = /^\s*(?:>\s+Using\s+tool:|✓\s+Tool\s+result:|◎\s+Tool:)/i
 const _CLAUDE_CLI_SKIP_SUBCMDS = new Set(['install', 'update', 'doctor', 'config', 'login', 'logout'])
 
-// ---------------------------------------------------------------------------
-// Cursor
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Cursor ---------------------------------------------------------------------------
 const _CURSOR_STARTUP_RE = /^\s*(?:Extension\s+host\s+(?:started|starting)|Extension\s+'cursor[^']*'\s+activated|Starting\s+debug\s+adapter|Opening\s+folder\s*(?:\.+\s*)?$|Restoring\s+(?:windows?|session)|Reusing\s+existing\s+extension\s+host|Connection\s+(?:established|to\s+remote)|Tunnel\s+(?:connected|connecting|status))/i
 const _CURSOR_TELEMETRY_RE = /^\s*(?:Telemetry\s+is\s+(?:disabled|enabled)|Crash\s+reporter|Sending\s+telemetry|Analytics:)/i
 const _CURSOR_BANNER_RE = /^\s*Cursor\s+v?\d+\.\d+/i
 
-// ---------------------------------------------------------------------------
-// Windsurf
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Windsurf ---------------------------------------------------------------------------
 const _WINDSURF_STARTUP_RE = /^\s*(?:Extension\s+host\s+(?:started|starting)|Extension\s+'\S+'\s+activated|Starting\s+debug\s+adapter|Opening\s+folder\s*(?:\.+\s*)?$|Restoring\s+(?:windows?|session)|Reusing\s+existing\s+extension\s+host)/i
 const _WINDSURF_CODEIUM_NOISE_RE = /^\s*(?:Codeium\s*(?::\s*)?(?:Activating|Activated|index(?:ing)?:?\s*loading|index\s+(?:loaded|ready)|Extension\s+loaded)|Connecting\s+to\s+Codeium\s+server|Authentication\s+status\s*:|Model\s+status\s*:|Codeium\s+(?:ready|connected|disconnected))/i
 const _WINDSURF_BANNER_RE = /^\s*Windsurf\s+v?\d+\.\d+/i
@@ -73,9 +59,7 @@ const _WINDSURF_CASCADE_SPINNER_RE = /^\s*(?:Thinking|Generating|Cascade\s+is\s+
 const _WINDSURF_CONTEXT_RE = /^\s*(?:Context(?:\s+window)?|Token\s+(?:usage|count))\s*:\s*[\d,]+\s*\/\s*[\d,]+/i
 const _WINDSURF_WORKSPACE_RE = /^\s*(?:Loading\s+workspace|Indexing\s+workspace|Workspace\s+(?:indexed|ready|loading)|Scanning\s+files|File\s+watcher)/i
 
-// ---------------------------------------------------------------------------
-// OpenCode
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- OpenCode ---------------------------------------------------------------------------
 const _OPENCODE_BANNER_RE = /^\s*(?:Open[Cc]ode|opencode)\s+v?\d+\.\d+/i
 const _OPENCODE_PROVIDER_RE = /^\s*Provider\s*:\s*\S/i
 const _OPENCODE_MODEL_RE_KL = /^\s*Model\s*:\s*\S/i
@@ -86,18 +70,14 @@ const _OPENCODE_TOOL_RESULT_RE = /^\s*(?:←|<-)\s+\S.*\(\d+\s+chars?\)/
 const _OPENCODE_SPINNER_RE = /^\s*(?:[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|\.{2,})\s*$/
 const _OPENCODE_SESSION_SAVE_RE = /^\s*Session\s+saved\s+to\s+\S+/i
 
-// ---------------------------------------------------------------------------
-// Continue
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Continue ---------------------------------------------------------------------------
 const _CONTINUE_INDEXING_RE = /^\s*Indexing\s*:\s*\d+\s*\/\s*\d+\s*files?/i
 const _CONTINUE_MODEL_LOAD_RE = /^\s*Loading\s+model\s*:\s*\S/i
 const _CONTINUE_CONFIG_RE = /^\s*Config\s+(?:loaded\s+from|reloaded|initializ)/i
 const _CONTINUE_TOKENS_RE = /^\s*Tokens\s*:\s*\d[\d,]*\s+prompt,\s+\d[\d,]*\s+completion/i
 const _CONTINUE_BANNER_RE = /^\s*Continue(?:\.dev)?\s+v?\d+\.\d+/i
 
-// ---------------------------------------------------------------------------
-// Cline
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Cline ---------------------------------------------------------------------------
 const _CLINE_BANNER_RE = /^\s*(?:Cline|claude-dev)\s+v\d+\.\d+/i
 const _CLINE_TOKENS_RE = /^\s*Tokens\s*:\s*[\d,]+\s*\(/i
 const _CLINE_COST_RE = /^\s*API\s+Cost\s*:\s*\$[\d.]+/i
@@ -108,9 +88,7 @@ const _CLINE_MCP_STATUS_RE = /^\s*MCP\s+Server\s+['"]?\w/i
 const _CLINE_FILE_READ_RE = /^\s*Reading\s+file\s*:\s*\S+\s*(?:\.{1,3}\s*)?$/i
 const _CLINE_WANTS_EXECUTE_RE = /^\s*Cline\s+wants\s+to\s+(?:execute|run|write|read|create|delete|use)\s*:/i
 
-// ---------------------------------------------------------------------------
-// Codex (bespoke — structural algorithm; see CodexExecFilter below)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Codex (bespoke — structural algorithm; see CodexExecFilter below) ---------------------------------------------------------------------------
 const _CODEX_SEPARATOR_RE = /^-{4,}$/
 const _CODEX_MODEL_RE = /^model\s*:\s*(?<model>\S+)/i
 const _CODEX_TOKENS_USED_RE = /^tokens used$/i
@@ -124,9 +102,7 @@ function _trimBlankEdges(input: string[]): string[] {
   return out
 }
 
-// ===========================================================================
-// Filter instances
-// ===========================================================================
+// =========================================================================== Filter instances ===========================================================================
 
 export const ghCopilotFilter = makeAiCliFilter({
   name: 'gh-copilot',
@@ -310,11 +286,9 @@ export const clineFilter = makeAiCliFilter({
   droppedNoiseNote: (n) => `dropped ${n} noise line(s)`,
 })
 
-// ---------------------------------------------------------------------------
-// CodexExecFilter — bespoke structural algorithm
+// --------------------------------------------------------------------------- CodexExecFilter — bespoke structural algorithm
 //
-// Codex output has a distinctive two-separator header block followed by a role-labelled transcript. The algorithm: 1. Scan the first 20 lines for two `--------` separators. 2. Bail (passthrough) if fewer than two separators are found. 3. Extract the model name from the config block between the separators. 4. Scan backward over the whole transcript for a "tokens used" footer whose next non-blank line is a token count. 5. `codex exec` echoes the final agent message verbatim after that count line, so when anything follows it, that echo is the answer: it carries no role labels, so there is nothing to guess at. 6. Otherwise fall back to the last "codex" role label before the footer, and say in the header how many earlier turns were dropped, because a bare `codex` line inside an answer body is indistinguishable from a role label. 7. Emit `[codex: model=X, tokens=Y]` followed by the answer body.
-// ---------------------------------------------------------------------------
+// Codex output has a distinctive two-separator header block followed by a role-labelled transcript. The algorithm: 1. Scan the first 20 lines for two `--------` separators. 2. Bail (passthrough) if fewer than two separators are found. 3. Extract the model name from the config block between the separators. 4. Scan backward over the whole transcript for a "tokens used" footer whose next non-blank line is a token count. 5. `codex exec` echoes the final agent message verbatim after that count line, so when anything follows it, that echo is the answer: it carries no role labels, so there is nothing to guess at. 6. Otherwise fall back to the last "codex" role label before the footer, and say in the header how many earlier turns were dropped, because a bare `codex` line inside an answer body is indistinguishable from a role label. 7. Emit `[codex: model=X, tokens=Y]` followed by the answer body. ---------------------------------------------------------------------------
 
 export class CodexExecFilter extends ToolFilter {
   readonly name = 'codex-exec'
@@ -399,15 +373,9 @@ export class CodexExecFilter extends ToolFilter {
 
 export const codexExecFilter = new CodexExecFilter()
 
-// ===========================================================================
-// Ordered registry for this batch
-// ===========================================================================
+// =========================================================================== Ordered registry for this batch ===========================================================================
 
-/**
- * AI-CLI filter batch. Must be spread BEFORE CI_FILTERS in TOOL_FILTERS so
- * that GhCopilotFilter (matching `gh copilot explain/suggest`) takes
- * precedence over the broader GhFilter that claims all `gh` commands.
- */
+/** AI-CLI filter batch. Must be spread BEFORE CI_FILTERS in TOOL_FILTERS so that GhCopilotFilter (matching `gh copilot explain/suggest`) takes precedence over the broader GhFilter that claims all `gh` commands. */
 export const AI_CLI_FILTERS: ToolFilter[] = [
   // GhCopilotFilter and CopilotFilter co-located; GhCopilotFilter MUST precede GhRunLogFilter and GhFilter in TOOL_FILTERS (see dispatch.ts comment).
   ghCopilotFilter,

@@ -204,8 +204,7 @@ describe('compressMcpResult -- empty-value pruning path', () => {
   })
 
   it('does not recurse unbounded on a pathologically deep payload -- bails to null instead of blowing the stack', () => {
-    // Built via string concatenation (not JSON.stringify on a nested object) so the test itself
-    // does not depend on the native stringifier's own recursion depth, only on compressMcpResult's.
+    // Built via string concatenation (not JSON.stringify on a nested object) so the test itself does not depend on the native stringifier's own recursion depth, only on compressMcpResult's.
     const depth = 5000
     const text = '{"child":'.repeat(depth) + '{"value":null}' + '}'.repeat(depth)
     expect(() => compressMcpResult(text)).not.toThrow()

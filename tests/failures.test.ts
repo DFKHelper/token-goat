@@ -48,8 +48,7 @@ FAILED tests/test_a.py::test_foo - assertion error
 FAILED tests/test_b.py::test_bar - timeout
 `;
       const result = extractFailures(output);
-      // Pin the exact two FAILED lines, not just "at least one line was captured" -- a
-      // regression that stopped after the first match would still satisfy length > 0.
+      // Pin the exact two FAILED lines, not just "at least one line was captured" -- a regression that stopped after the first match would still satisfy length > 0.
       expect(result.summaryLines).toEqual([
         'FAILED tests/test_a.py::test_foo - assertion error',
         'FAILED tests/test_b.py::test_bar - timeout',
@@ -170,9 +169,7 @@ test tests::example_test ... FAILED
 `;
       const result = extractFailures(output);
       expect(result.runner).toBe('cargo');
-      // Pin the exact block and its name, matching the parity check the go extractor's
-      // equivalent smoke test already does -- length > 0 alone would pass even with the wrong
-      // test name captured or extra spurious blocks.
+      // Pin the exact block and its name, matching the parity check the go extractor's equivalent smoke test already does -- length > 0 alone would pass even with the wrong test name captured or extra spurious blocks.
       expect(result.blocks).toHaveLength(1);
       expect(result.blocks[0]?.name).toBe('tests::example_test');
     });
@@ -239,8 +236,7 @@ FAILED component initialization
 `;
       const result = extractFailures(output);
       expect(result.runner).toBe('unknown');
-      // Pin the exact two matching lines (ERROR + FAILED), not just "at least one" -- the
-      // non-matching "Some random output" line must also be correctly excluded.
+      // Pin the exact two matching lines (ERROR + FAILED), not just "at least one" -- the non-matching "Some random output" line must also be correctly excluded.
       expect(result.summaryLines).toEqual([
         'ERROR in module: something went wrong',
         'FAILED component initialization',
@@ -287,8 +283,7 @@ FAIL
       const output = 'FAILED test1\nFAILED test2';
       const result = extractFailures(output);
       const count = getFailureCount(result);
-      // Pin the exact count of 2 -- length > 0 alone would still pass if the fallback
-      // undercounted (e.g. deduped or stopped early).
+      // Pin the exact count of 2 -- length > 0 alone would still pass if the fallback undercounted (e.g. deduped or stopped early).
       expect(count).toBe(2);
     });
 
@@ -424,11 +419,7 @@ ${longBody}
 
   describe('ANSI-colorized output', () => {
     it('should detect and count colorized pytest FAILED lines (ANSI-wrapped)', () => {
-      // Real `pytest --color=yes` output colors the FAILED token itself. Without
-      // stripping ANSI codes first, the escape sequence right before "FAILED"
-      // breaks the fallback `line.startsWith('FAILED ')` check, and the escape
-      // codes touching "FAILED" also break detectRunner's `\bFAILED\b` boundary,
-      // so real failures were silently reported as zero.
+      // Real `pytest --color=yes` output colors the FAILED token itself. Without stripping ANSI codes first, the escape sequence right before "FAILED" breaks the fallback `line.startsWith('FAILED ')` check, and the escape codes touching "FAILED" also break detectRunner's `\bFAILED\b` boundary, so real failures were silently reported as zero.
       const output = `
 short test summary info
 \x1b[31mFAILED\x1b[0m tests/test_a.py::test_foo - assertion error
@@ -439,9 +430,7 @@ short test summary info
     });
 
     it('should detect and extract colorized Go --- FAIL: blocks (ANSI-wrapped)', () => {
-      // Real colorized `go test` output wraps the whole "--- FAIL: ..." line in an
-      // escape sequence, so it no longer starts with the literal "-" the anchored
-      // GO_FAIL/detectRunner regexes require.
+      // Real colorized `go test` output wraps the whole "--- FAIL: ..." line in an escape sequence, so it no longer starts with the literal "-" the anchored GO_FAIL/detectRunner regexes require.
       const output = `
 \x1b[31m--- FAIL: TestExample (0.00s)\x1b[0m
         main_test.go:15: assertion failed

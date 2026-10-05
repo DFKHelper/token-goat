@@ -1,10 +1,4 @@
-/**
- * Language-specific import and export extractors.
- *
- * Scans source text across 25+ programming languages to identify exported symbol names
- * and imported module specifiers, covering tree-sitter languages and specialized legacy
- * languages through dedicated adapter dispatch tables.
- */
+/** Language-specific import and export extractors. Scans source text across 25+ programming languages to identify exported symbol names and imported module specifiers, covering tree-sitter languages and specialized legacy languages through dedicated adapter dispatch tables. */
 
 import * as path from 'node:path'
 
@@ -74,13 +68,7 @@ function braceAdapterImportsFor(e: string, text: string): ((content: string, fil
   return BRACE_ADAPTER_IMPORTS.get(e)
 }
 
-/**
- * Extract exported symbol names from source text. The tree-sitter indexer
- * stores a symbol's body starting at the inner declaration (e.g. `function`),
- * not the `export` modifier on its parent statement, so a body-prefix heuristic
- * misses real exports — this scans the source so `exports` is functional for the
- * flagship TS/JS case as well as Python, Rust, and Java.
- */
+/** Extract exported symbol names from source text. The tree-sitter indexer stores a symbol's body starting at the inner declaration (e.g. `function`), not the `export` modifier on its parent statement, so a body-prefix heuristic misses real exports — this scans the source so `exports` is functional for the flagship TS/JS case as well as Python, Rust, and Java. */
 export function extractExportNames(text: string, ext: string): string[] {
   const names: string[] = []
   const push = (s: string | undefined): void => {
@@ -120,11 +108,7 @@ export function extractExportNames(text: string, ext: string): string[] {
   return names
 }
 
-/**
- * Split `s` on top-level commas only, ignoring commas nested inside `{...}` groups. Used to
- * enumerate a Rust `use` brace group's selectors without splitting inside a nested group
- * (`io::{self, Read}` inside `std::{fs, io::{self, Read}}` must stay one selector).
- */
+/** Split `s` on top-level commas only, ignoring commas nested inside `{...}` groups. Used to enumerate a Rust `use` brace group's selectors without splitting inside a nested group (`io::{self, Read}` inside `std::{fs, io::{self, Read}}` must stay one selector). */
 function splitTopLevelCommas(s: string): string[] {
   const parts: string[] = []
   let depth = 0
@@ -143,13 +127,7 @@ function splitTopLevelCommas(s: string): string[] {
   return parts
 }
 
-/**
- * Expand a Rust `use base::{selector, selector, ...}` brace group into one fully-qualified
- * target per selector, recursing into nested groups (`std::{fs, io::{self, Read}}` ->
- * `std::fs`, `std::io`, `std::io::Read`). `self` resolves to `base` itself (the group's own
- * module), and a rename (`Read as R`) resolves to the original name, matching what call sites
- * actually reference.
- */
+/** Expand a Rust `use base::{selector, selector, ...}` brace group into one fully-qualified target per selector, recursing into nested groups (`std::{fs, io::{self, Read}}` -> `std::fs`, `std::io`, `std::io::Read`). `self` resolves to `base` itself (the group's own module), and a rename (`Read as R`) resolves to the original name, matching what call sites actually reference. */
 function expandRustUseGroup(base: string, inner: string): string[] {
   const results: string[] = []
   for (const part of splitTopLevelCommas(inner)) {
@@ -170,13 +148,7 @@ function expandRustUseGroup(base: string, inner: string): string[] {
   return results
 }
 
-/**
- * Extract import/include module specifiers from source text, covering the
- * bundled tree-sitter languages plus a few common extras. Returns one entry per
- * import in source order, de-duplicated. This is deliberately index-independent:
- * the symbol index does not store import statements as rows for the tree-sitter
- * languages, so a query-only `imports` returned nothing for TS/JS/Python/etc.
- */
+/** Extract import/include module specifiers from source text, covering the bundled tree-sitter languages plus a few common extras. Returns one entry per import in source order, de-duplicated. This is deliberately index-independent: the symbol index does not store import statements as rows for the tree-sitter languages, so a query-only `imports` returned nothing for TS/JS/Python/etc. */
 export function extractImports(text: string, ext: string): string[] {
   const found: string[] = []
   const push = (s: string | undefined): void => {
@@ -414,15 +386,7 @@ export function extractImports(text: string, ext: string): string[] {
   return found
 }
 
-/**
- * {@link extractImports}'s dispatch key, derived from `filePath` rather than a bare
- * `path.extname()` call: a `Makefile`/`GNUmakefile`/`BSDmakefile` (mirrors parser_types.ts's
- * FILENAME_LANGUAGE basename map) has no real file extension, so `path.extname()` alone always
- * yields `''` for it -- routing to extractImports' generic fallback, which requires a literal
- * `#include` and never matches Make's own `include`/`-include`/`sinclude` directives. Maps such
- * a basename to the synthetic `.mk` key extractImports' Makefile branch dispatches on; every
- * other path falls through to its real `path.extname()`.
- */
+/** {@link extractImports}'s dispatch key, derived from `filePath` rather than a bare `path.extname()` call: a `Makefile`/`GNUmakefile`/`BSDmakefile` (mirrors parser_types.ts's FILENAME_LANGUAGE basename map) has no real file extension, so `path.extname()` alone always yields `''` for it -- routing to extractImports' generic fallback, which requires a literal `#include` and never matches Make's own `include`/`-include`/`sinclude` directives. Maps such a basename to the synthetic `.mk` key extractImports' Makefile branch dispatches on; every other path falls through to its real `path.extname()`. */
 export function importsExtensionFor(filePath: string): string {
   const ext = path.extname(filePath)
   if (ext === '' || FILENAME_LANGUAGE.has(path.basename(filePath).toLowerCase())) return basenameImportsExtension(detectLanguage(filePath)) ?? ext

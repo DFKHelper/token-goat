@@ -8,12 +8,7 @@ import { locatePdfPages } from '../src/pdf_extract.js'
 import { run } from '../src/cli.js'
 import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
-// Hand-authored 3-page PDF with DISTINCT text per page (same fixture shape as
-// tests/pdf_extract.test.ts's MINIMAL_PDF), so a locate pass can prove it
-// returns the right page numbers and nothing more. The MediaBox is standard
-// Letter (612x792) at 12pt: pdfjs clips glyphs that fall outside the page box,
-// so a narrow 200x200 box would silently drop the trailing word of each line
-// and the fixture text would not be what it reads as. /Length is exact.
+// Hand-authored 3-page PDF with DISTINCT text per page (same fixture shape as tests/pdf_extract.test.ts's MINIMAL_PDF), so a locate pass can prove it returns the right page numbers and nothing more. The MediaBox is standard Letter (612x792) at 12pt: pdfjs clips glyphs that fall outside the page box, so a narrow 200x200 box would silently drop the trailing word of each line and the fixture text would not be what it reads as. /Length is exact.
 const THREE_PAGE_PDF =
   '%PDF-1.4\n' +
   '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
@@ -48,16 +43,12 @@ function mixedFontsBytes(): Uint8Array {
   return new Uint8Array(Buffer.from(MIXED_FONTS_PDF, 'latin1'))
 }
 
-// The new truncated-scan assertions below are HAND-DERIVED: which pages match "a" and how many
-// pages the fixture has are read off THREE_PAGE_PDF's own text streams above, independently of
-// locatePdfPages's implementation -- not from running the code and pasting its output back.
+// The new truncated-scan assertions below are HAND-DERIVED: which pages match "a" and how many pages the fixture has are read off THREE_PAGE_PDF's own text streams above, independently of locatePdfPages's implementation -- not from running the code and pasting its output back.
 describe('locatePdfPages', () => {
   it('returns only the single page whose text matches', async () => {
     const { matches, truncated } = await locatePdfPages(threePageBytes(), 'beta', {})
     expect(matches.map((m) => m.page)).toEqual([2])
-    // Full line, trailing word included -- guards against the fixture's page text being
-    // silently clipped (a too-narrow MediaBox drops the last word, and a snippet check for
-    // just "beta" would still pass on the truncated text).
+    // Full line, trailing word included -- guards against the fixture's page text being silently clipped (a too-narrow MediaBox drops the last word, and a snippet check for just "beta" would still pass on the truncated text).
     expect(matches[0]?.snippet).toBe('beta summary detail')
     expect(truncated).toBe(false)
   })
@@ -82,18 +73,14 @@ describe('locatePdfPages', () => {
   })
 
   it('stops after maxMatches page-matches and reports the scan as truncated', async () => {
-    // "a" appears on every page (alpha, beta, gamma); the cap must stop at 2 pages, with page 3
-    // left unscanned -- this is the case that must be disclosed, not printed as a plain total.
+    // "a" appears on every page (alpha, beta, gamma); the cap must stop at 2 pages, with page 3 left unscanned -- this is the case that must be disclosed, not printed as a plain total.
     const { matches, truncated } = await locatePdfPages(threePageBytes(), 'a', { maxMatches: 2 })
     expect(matches.map((m) => m.page)).toEqual([1, 2])
     expect(truncated).toBe(true)
   })
 
   it('does not report truncated when the cap is reached on the exact last page scanned', async () => {
-    // maxMatches equals the number of matching pages in the full 3-page document (and the whole
-    // document is scanned) -- the cap and the true total coincide, so this must NOT be reported
-    // as truncated even though matches.length === maxMatches. This is the distinction the fix
-    // exists to get right: hitting the cap is not the same as stopping early.
+    // maxMatches equals the number of matching pages in the full 3-page document (and the whole document is scanned) -- the cap and the true total coincide, so this must NOT be reported as truncated even though matches.length === maxMatches. This is the distinction the fix exists to get right: hitting the cap is not the same as stopping early.
     const { matches, truncated } = await locatePdfPages(threePageBytes(), 'a', { maxMatches: 3 })
     expect(matches.map((m) => m.page)).toEqual([1, 2, 3])
     expect(truncated).toBe(false)
@@ -206,9 +193,7 @@ describe('pdf-locate CLI', () => {
     expect(parsed.matches[0]?.snippet).toContain('beta')
   })
 
-  // HAND-DERIVED: "a" matches all three pages of THREE_PAGE_PDF's own text (read off the fixture
-  // above), so a --max-matches of 2 must stop with page 3 unscanned -- the exact "cap reached
-  // while pages remained" case defect 1 exists to disclose, not the coincidental exact-cap case.
+  // HAND-DERIVED: "a" matches all three pages of THREE_PAGE_PDF's own text (read off the fixture above), so a --max-matches of 2 must stop with page 3 unscanned -- the exact "cap reached while pages remained" case defect 1 exists to disclose, not the coincidental exact-cap case.
   it('renders a floor with the max-matches escape hatch when the scan is truncated', async () => {
     const code = await runCli(['pdf-locate', '<file>', 'a', '--max-matches', '2'])
     expect(code).toBe(0)

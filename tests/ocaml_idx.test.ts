@@ -1,12 +1,4 @@
-/**
- * Source-level test for the OCaml adapter (src/languages/ocaml.ts), following the shape and
- * mutation-testing discipline `tests/haskell_idx.test.ts` established: one assertion per rule
- * that can silently regress while a >=1-symbol smoke check stays green.
- *
- * Every fixture below is HAND-DERIVED from The OCaml Manual's Lexical conventions chapter
- * (https://v2.ocaml.org/manual/lex.html), independently of ocaml.ts's own regexes and masking
- * loop -- not from this repo's extractor.
- */
+/** Source-level test for the OCaml adapter (src/languages/ocaml.ts), following the shape and mutation-testing discipline `tests/haskell_idx.test.ts` established: one assertion per rule that can silently regress while a >=1-symbol smoke check stays green. Every fixture below is HAND-DERIVED from The OCaml Manual's Lexical conventions chapter (https://v2.ocaml.org/manual/lex.html), independently of ocaml.ts's own regexes and masking loop -- not from this repo's extractor. */
 import { describe, expect, it } from 'vitest'
 
 import { extractOcaml } from '../src/languages/ocaml.js'
@@ -102,21 +94,14 @@ describe('"..." string escaping (manual, "String literals")', () => {
 
 describe("'a type-variable vs 'c' character-literal disambiguation (manual, \"Character literals\")", () => {
   it("a bare type-variable tick ('a) is not treated as an unterminated character literal that scans forward for the next quote: a later definition, and a later string containing an apostrophe, are both still found on their own lines", () => {
-    // If a masker mistook this `'a` for a Haskell-style character literal and scanned forward for
-    // the next `'` to close it (rather than requiring the closing quote at the fixed lookahead a
-    // real OCaml character literal always has), it would find the apostrophe inside "it's fine"
-    // on a much later line and blank everything in between -- swallowing realAfter's own line.
+    // If a masker mistook this `'a` for a Haskell-style character literal and scanned forward for the next `'` to close it (rather than requiring the closing quote at the fixed lookahead a real OCaml character literal always has), it would find the apostrophe inside "it's fine" on a much later line and blank everything in between -- swallowing realAfter's own line.
     const src = ["let f : 'a -> int = fun x -> 0", `let realAfter = "it's fine"`].join('\n')
     const result = extractOcaml(src, 'test.ml')
     expect(names(result)).toContain('f')
     expect(names(result)).toContain('realAfter')
   })
 
-  // The next two are correctness/regression pins, not independently mutation-discriminating: a
-  // top-level `let name = ...` binding's name is captured from the prefix before `=`, so how the
-  // RHS character literal is masked cannot change whether `name` itself is found here (that
-  // dependency only shows up when masking a literal's content wrongly crosses into a NEW line, as
-  // pinned by the type-variable/multi-line-string tests above).
+  // The next two are correctness/regression pins, not independently mutation-discriminating: a top-level `let name = ...` binding's name is captured from the prefix before `=`, so how the RHS character literal is masked cannot change whether `name` itself is found here (that dependency only shows up when masking a literal's content wrongly crosses into a NEW line, as pinned by the type-variable/multi-line-string tests above).
   it("a character literal containing '=' does not error and still yields its binding's name", () => {
     const src = ["let notAnEquation = '='", '', 'let realAfter = 1'].join('\n')
     const result = extractOcaml(src, 'test.ml')

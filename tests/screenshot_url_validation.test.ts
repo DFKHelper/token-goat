@@ -1,14 +1,4 @@
-/**
- * Security regression: takeScreenshot passed `url` straight to page.goto() with zero
- * validation. Injected content could aim the headless browser at cloud metadata
- * (http://169.254.169.254/) or a localhost-only service, and with image_shrink.ocr_enabled
- * on, the rendered page gets transcribed back into the model's context -- a capability
- * token-goat adds. validateScreenshotUrl rejects non-http(s) schemes and literal
- * loopback/link-local/RFC1918 hosts, behind a screenshot.block_private_targets opt-out.
- *
- * Scope: this is a synchronous literal-IP check only. A hostname that resolves to a private
- * IP (DNS rebinding) is NOT covered -- see the comment on isBlockedLiteralIp in screenshot.ts.
- */
+/** Security regression: takeScreenshot passed `url` straight to page.goto() with zero validation. Injected content could aim the headless browser at cloud metadata (http://169.254.169.254/) or a localhost-only service, and with image_shrink.ocr_enabled on, the rendered page gets transcribed back into the model's context -- a capability token-goat adds. validateScreenshotUrl rejects non-http(s) schemes and literal loopback/link-local/RFC1918 hosts, behind a screenshot.block_private_targets opt-out. Scope: this is a synchronous literal-IP check only. A hostname that resolves to a private IP (DNS rebinding) is NOT covered -- see the comment on isBlockedLiteralIp in screenshot.ts. */
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { validateScreenshotUrl } from '../src/screenshot.js'
@@ -52,10 +42,7 @@ describe('validateScreenshotUrl', () => {
     expect(() => validateScreenshotUrl('http://192.168.1.1/')).toThrow()
   })
 
-  // Regression: isBlockedLiteralIp only did exact `::1` / `^fe80:` / `^f[cd]..:` string tests,
-  // so every IPv4-mapped spelling slipped through. `new URL` normalizes [::ffff:127.0.0.1] to
-  // [::ffff:7f00:1], which matches none of those patterns -- and Chrome then connects to
-  // 127.0.0.1. There was no IPv6 case in this file at all before these.
+  // Regression: isBlockedLiteralIp only did exact `::1` / `^fe80:` / `^f[cd]..:` string tests, so every IPv4-mapped spelling slipped through. `new URL` normalizes [::ffff:127.0.0.1] to [::ffff:7f00:1], which matches none of those patterns -- and Chrome then connects to 127.0.0.1. There was no IPv6 case in this file at all before these.
   it('rejects IPv4-mapped loopback in IPv6 form', () => {
     expect(() => validateScreenshotUrl('http://[::ffff:127.0.0.1]/')).toThrow(
       /loopback\/link-local\/private IP/,
@@ -94,16 +81,7 @@ describe('validateScreenshotUrl', () => {
     expect(() => validateScreenshotUrl('http://[2606:4700:4700::1111]/')).not.toThrow()
   })
 
-  // Regression: the webfetch.ts SSRF classifier (isPrivateIPv4/isPrivateIPv6) and this file's
-  // literal-IP classifier were two independently maintained range tables. webfetch.ts additionally
-  // blocked carrier-grade NAT (100.64.0.0/10, RFC 6598), IETF protocol assignments (192.0.0.0/24,
-  // RFC 6890), benchmarking (198.18.0.0/15, RFC 2544), multicast (224.0.0.0/4) and reserved space
-  // (240.0.0.0/4), none of which this screenshot policy rejected -- so a page redirect or
-  // sub-resource aimed at an internal service on any of those ranges (e.g. a cloud VPC routing
-  // internal traffic over CGNAT) reached the headless browser and had its rendered output OCR'd
-  // back into the model's context, a class of internal target the fetch channel already refused.
-  // FORMAT-DERIVED: ranges cited from RFC 6598 (100.64.0.0/10), RFC 6890 (192.0.0.0/24),
-  // RFC 2544 (198.18.0.0/15), RFC 1112 (224.0.0.0/4 multicast) and RFC 1112 (240.0.0.0/4 reserved).
+  // Regression: the webfetch.ts SSRF classifier (isPrivateIPv4/isPrivateIPv6) and this file's literal-IP classifier were two independently maintained range tables. webfetch.ts additionally blocked carrier-grade NAT (100.64.0.0/10, RFC 6598), IETF protocol assignments (192.0.0.0/24, RFC 6890), benchmarking (198.18.0.0/15, RFC 2544), multicast (224.0.0.0/4) and reserved space (240.0.0.0/4), none of which this screenshot policy rejected -- so a page redirect or sub-resource aimed at an internal service on any of those ranges (e.g. a cloud VPC routing internal traffic over CGNAT) reached the headless browser and had its rendered output OCR'd back into the model's context, a class of internal target the fetch channel already refused. FORMAT-DERIVED: ranges cited from RFC 6598 (100.64.0.0/10), RFC 6890 (192.0.0.0/24), RFC 2544 (198.18.0.0/15), RFC 1112 (224.0.0.0/4 multicast) and RFC 1112 (240.0.0.0/4 reserved).
   it('rejects carrier-grade NAT, IETF protocol assignment, benchmarking, multicast and reserved ranges', () => {
     expect(() => validateScreenshotUrl('http://100.64.0.1/')).toThrow(/private IP/)
     expect(() => validateScreenshotUrl('http://192.0.0.170/')).toThrow(/private IP/)
@@ -123,8 +101,7 @@ describe('validateScreenshotUrl', () => {
     expect(() => validateScreenshotUrl('http://100.64.0.1/')).not.toThrow()
   })
 
-  // Regression: error text interpolated the full `url`, so a signed screenshot URL rejected
-  // for its scheme printed its own access token into stderr and from there model context.
+  // Regression: error text interpolated the full `url`, so a signed screenshot URL rejected for its scheme printed its own access token into stderr and from there model context.
   it('never echoes the query string when rejecting a scheme', () => {
     const secret = 'sig=SECRET_SCREENSHOT_TOKEN_98765'
     try {

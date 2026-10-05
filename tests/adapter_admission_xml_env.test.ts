@@ -1,19 +1,4 @@
-/**
- * Loop 56 regression coverage for two admission gaps in the adapters that no earlier sweep
- * touched: the dotenv extractor behind `languages/env_idx.ts`, and `languages/salesforce_metadata.ts`.
- *
- * Both fixtures are FORMAT-DERIVED, and neither was read off token-goat's own matchers:
- *
- * - The indented and tab-indented `.env` assignments come from dotenv's own parser, whose LINE
- *   regex opens with `^\s*(?:export\s+)?([\w.-]+)`, i.e. leading blanks are part of a legal
- *   assignment. Source: https://raw.githubusercontent.com/motdotla/dotenv/master/lib/main.js
- * - The `</fullName >` and `</name >` end tags come from the XML 1.0 grammar, production [42]:
- *   `ETag ::= '</' Name S? '>'`, so whitespace before the `>` is legal in any end tag.
- *   Source: https://www.w3.org/TR/xml/#sec-starttags
- *
- * Coverage drives the REAL indexing pipeline (indexFileSync writing the symbols table, then
- * querySymbols reading it back), not the adapter functions in isolation.
- */
+/** Loop 56 regression coverage for two admission gaps in the adapters that no earlier sweep touched: the dotenv extractor behind `languages/env_idx.ts`, and `languages/salesforce_metadata.ts`. Both fixtures are FORMAT-DERIVED, and neither was read off token-goat's own matchers: - The indented and tab-indented `.env` assignments come from dotenv's own parser, whose LINE regex opens with `^\s*(?:export\s+)?([\w.-]+)`, i.e. leading blanks are part of a legal assignment. Source: https://raw.githubusercontent.com/motdotla/dotenv/master/lib/main.js - The `</fullName >` and `</name >` end tags come from the XML 1.0 grammar, production [42]: `ETag ::= '</' Name S? '>'`, so whitespace before the `>` is legal in any end tag. Source: https://www.w3.org/TR/xml/#sec-starttags Coverage drives the REAL indexing pipeline (indexFileSync writing the symbols table, then querySymbols reading it back), not the adapter functions in isolation. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'

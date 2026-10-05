@@ -2,22 +2,14 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-// Importing relay registers EVERY hook module (including hooks_websearch) for its
-// side-effects, so runHook dispatches through the real production registry --
-// not a test-only handler reference. buildEvent maps a Claude Code payload onto
-// a HookEvent exactly as relay() does on stdin.
+// Importing relay registers EVERY hook module (including hooks_websearch) for its side-effects, so runHook dispatches through the real production registry -- not a test-only handler reference. buildEvent maps a Claude Code payload onto a HookEvent exactly as relay() does on stdin.
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
 import type { HookOutput } from '../src/types.js'
 import { unfence } from './helpers/unfence.js'
 
-/**
- * A post on a WebSearch result always returns the fenced copy now: the fence is decided by where
- * the text came from, not by whether the scan hit. The caching/dedup tests below are not about the
- * fence, so they assert the body survived the round trip rather than restating the wrapper's
- * format -- the fence's own tests, further down this file, pin that.
- */
+/** A post on a WebSearch result always returns the fenced copy now: the fence is decided by where the text came from, not by whether the scan hit. The caching/dedup tests below are not about the fence, so they assert the body survived the round trip rather than restating the wrapper's format -- the fence's own tests, further down this file, pin that. */
 function expectFencedPost(post: HookOutput, body: string): void {
   expect(post.hookType).toBe('rewriteOutput')
   if (post.hookType !== 'rewriteOutput') throw new Error('unreachable')
@@ -187,9 +179,7 @@ describe('WebSearch caching/dedup hooks (real runHook dispatch)', () => {
   })
 })
 
-// A WebSearch result is third-party web content -- exactly as untrusted as a WebFetch result --
-// yet postWebSearchHandler previously called storeMcpOutput and returned pass with no injection
-// scan and no fence at all. Mirrors the assertions in tests/hooks_fetch.test.ts's injection suite.
+// A WebSearch result is third-party web content -- exactly as untrusted as a WebFetch result -- yet postWebSearchHandler previously called storeMcpOutput and returned pass with no injection scan and no fence at all. Mirrors the assertions in tests/hooks_fetch.test.ts's injection suite.
 describe('WebSearch injection fencing on the live post hook', () => {
   const toolName = 'WebSearch'
   const query = 'latest React 20 release notes'
@@ -212,8 +202,7 @@ describe('WebSearch injection fencing on the live post hook', () => {
 
   it('fences an ordinary WebSearch result too, with a notice that names no pattern', async () => {
     const out = await runHook(buildEvent('post_tool_use', postPayload('ordinary search result text')))
-    // A search result is somebody else's text whether or not the eight deliberately-narrow patterns
-    // matched, so a clean scan changes the notice's wording and nothing else.
+    // A search result is somebody else's text whether or not the eight deliberately-narrow patterns matched, so a clean scan changes the notice's wording and nothing else.
     expect(out.hookType).toBe('rewriteOutput')
     if (out.hookType !== 'rewriteOutput') throw new Error('unreachable')
     expect(out.updatedOutput).toContain('<untrusted-web-content>')
@@ -222,9 +211,7 @@ describe('WebSearch injection fencing on the live post hook', () => {
     expect(unfence(out.updatedOutput)).toBe('ordinary search result text')
   })
 
-  // The exact regression class documented in CLAUDE.arch.md's Security Boundaries: a caching
-  // guard (here, the in-band error check) must never sit above the injection scan, or a hostile
-  // result that also flags itself as an error slips through unfenced.
+  // The exact regression class documented in CLAUDE.arch.md's Security Boundaries: a caching guard (here, the in-band error check) must never sit above the injection scan, or a hostile result that also flags itself as an error slips through unfenced.
   it('fences a result that is BOTH an in-band error response AND carries an injection pattern (ordering regression)', async () => {
     const out = await runHook(
       buildEvent(
@@ -240,12 +227,7 @@ describe('WebSearch injection fencing on the live post hook', () => {
   })
 })
 
-// postWebSearchHandler fenced an injection match but never redacted a secret at all -- unlike
-// postMcpHandler (hooks_mcp.ts), which redacts inside its compression branch, WebSearch has no
-// compression branch any large result reaches, so a credential that trips no injection pattern
-// reached the model unredacted regardless of size. storeMcpOutput() already redacts the
-// persisted copy separately (mcp_cache.ts) -- these tests are about the live rewrite the model
-// reads THIS turn.
+// postWebSearchHandler fenced an injection match but never redacted a secret at all -- unlike postMcpHandler (hooks_mcp.ts), which redacts inside its compression branch, WebSearch has no compression branch any large result reaches, so a credential that trips no injection pattern reached the model unredacted regardless of size. storeMcpOutput() already redacts the persisted copy separately (mcp_cache.ts) -- these tests are about the live rewrite the model reads THIS turn.
 describe('WebSearch secret redaction on the live post hook', () => {
   const toolName = 'WebSearch'
   const query = 'latest React 20 release notes'
@@ -267,9 +249,7 @@ describe('WebSearch secret redaction on the live post hook', () => {
     }
   })
 
-  // The same ordering-discipline regression class this file's injection describe block above
-  // already covers for the in-band-error guard, applied to redaction instead of the fence: a
-  // guard that returns early must never skip redaction either.
+  // The same ordering-discipline regression class this file's injection describe block above already covers for the in-band-error guard, applied to redaction instead of the fence: a guard that returns early must never skip redaction either.
   it('redacts a secret in a result that is also an in-band error response (ordering-discipline regression)', async () => {
     const out = await runHook(
       buildEvent(

@@ -7,15 +7,7 @@ import { recordStat, GLOBAL_SCHEMA_SQL } from '../src/stats.js'
 import { cappedSourceBytesSaved, PER_FILE_COUNTERFACTUAL_CEILING } from '../src/util.js'
 import { VERSION } from '../src/version.js'
 
-/**
- * Provenance: HAND-DERIVED. Every expected number below is computed from the inputs by the
- * arithmetic the cap is specified as (min(source, ceiling) - emitted, floored at 1), not read off
- * `cappedSourceBytesSaved`'s implementation. The structural guard at the bottom is FORMAT-DERIVED
- * from the shape the 13 call sites had before this change (`Math.max(1, fullSourceBytes -
- * Buffer.byteLength(x, 'utf8'))`, cited at src/cli.ts and src/config_commands.ts in the commit
- * that introduced the cap), and it scans src/ while living in tests/, so it can never match
- * itself.
- */
+/** Provenance: HAND-DERIVED. Every expected number below is computed from the inputs by the arithmetic the cap is specified as (min(source, ceiling) - emitted, floored at 1), not read off `cappedSourceBytesSaved`'s implementation. The structural guard at the bottom is FORMAT-DERIVED from the shape the 13 call sites had before this change (`Math.max(1, fullSourceBytes - Buffer.byteLength(x, 'utf8'))`, cited at src/cli.ts and src/config_commands.ts in the commit that introduced the cap), and it scans src/ while living in tests/, so it can never match itself. */
 
 function openStatsDb(dbPath: string): Database.Database {
   const db = new Database(dbPath)
@@ -23,11 +15,7 @@ function openStatsDb(dbPath: string): Database.Database {
   return db
 }
 
-/**
- * The `stats` table as it stood before `tg_version` existed, derived from production's own DDL by
- * removing that one column rather than restating the schema by hand -- a restated copy drifts
- * from the real one silently (see the comment on `openStatsDb` in tests/stats.test.ts).
- */
+/** The `stats` table as it stood before `tg_version` existed, derived from production's own DDL by removing that one column rather than restating the schema by hand -- a restated copy drifts from the real one silently (see the comment on `openStatsDb` in tests/stats.test.ts). */
 function openLegacyStatsDb(dbPath: string): Database.Database {
   const legacyDdl = GLOBAL_SCHEMA_SQL.replace(/,\s*\n\s*tg_version TEXT/, '')
   if (legacyDdl === GLOBAL_SCHEMA_SQL) {
@@ -60,8 +48,7 @@ describe('stats provenance column and capped credit', () => {
       }
       expect(row.kind).toBe('pdf_meta')
       expect(row.bytes_saved).toBe(1234)
-      // Without the stamp, a change to how a kind computes bytes_saved mixes two accountings in
-      // one column with nothing to separate them by afterwards.
+      // Without the stamp, a change to how a kind computes bytes_saved mixes two accountings in one column with nothing to separate them by afterwards.
       expect(row.tg_version).toBe(VERSION)
       expect(row.tg_version).toBeTruthy()
     } finally {
@@ -70,9 +57,7 @@ describe('stats provenance column and capped credit', () => {
   })
 
   it('still records the row on a database predating the column, instead of silently writing nothing', () => {
-    // recordStat swallows every failure by design, so naming a column the table lacks would not
-    // throw -- it would stop telemetry dead for every existing install, invisibly. This is the
-    // exact degradation path statsHasVersionColumn exists for.
+    // recordStat swallows every failure by design, so naming a column the table lacks would not throw -- it would stop telemetry dead for every existing install, invisibly. This is the exact degradation path statsHasVersionColumn exists for.
     const db = openLegacyStatsDb(path.join(tempDir, 'legacy.db'))
     try {
       const cols = (db.prepare('PRAGMA table_info(stats)').all() as { name: string }[]).map((c) => c.name)
@@ -92,8 +77,7 @@ describe('stats provenance column and capped credit', () => {
   })
 
   it('caps the counterfactual at the per-file ceiling instead of crediting a whole binary', () => {
-    // A 40 MB scan surfaced through pdf-meta: the emitted metadata is a few hundred bytes, and the
-    // pre-cap formula credited ~40 MB against it. No Read of that file could have cost that.
+    // A 40 MB scan surfaced through pdf-meta: the emitted metadata is a few hundred bytes, and the pre-cap formula credited ~40 MB against it. No Read of that file could have cost that.
     const fortyMb = 40 * 1024 * 1024
     const emitted = 400
     expect(cappedSourceBytesSaved(fortyMb, emitted)).toBe(PER_FILE_COUNTERFACTUAL_CEILING - emitted)
@@ -109,16 +93,13 @@ describe('stats provenance column and capped credit', () => {
   })
 
   it('keeps the floor of 1 so an over-emitting command still counts as an event', () => {
-    // Floor preserved from the call sites' original Math.max(1, ...): the row count for a kind is
-    // a usage count, and dropping to 0 or negative would make an unprofitable call look identical
-    // to one that never happened.
+    // Floor preserved from the call sites' original Math.max(1, ...): the row count for a kind is a usage count, and dropping to 0 or negative would make an unprofitable call look identical to one that never happened.
     expect(cappedSourceBytesSaved(500, 5_000)).toBe(1)
     expect(cappedSourceBytesSaved(0, 0)).toBe(1)
   })
 
   it('leaves no uncapped whole-file counterfactual behind in src/', () => {
-    // Structural guard against reintroduction: the defect was one expression repeated at 13 call
-    // sites, so fixing the instances without pinning the shape invites the 14th.
+    // Structural guard against reintroduction: the defect was one expression repeated at 13 call sites, so fixing the instances without pinning the shape invites the 14th.
     const roots = ['src']
     const offenders: string[] = []
     const walk = (dir: string): void => {

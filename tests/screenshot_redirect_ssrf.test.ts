@@ -1,26 +1,4 @@
-/**
- * Security regression: validateScreenshotUrl ran ONCE, before page.goto() -- and page.goto
- * follows redirects. So `http://attacker.example/r` answering `302 Location:
- * http://169.254.169.254/latest/meta-data/` rendered cloud instance metadata, and with
- * image_shrink.ocr_enabled that content is transcribed straight into model context.
- *
- * This drives a REAL browser, because checking validateScreenshotUrl in isolation cannot prove
- * page.goto was actually prevented from following the redirect -- which is the entire defect. A
- * local server plays both the attacker and the metadata endpoint; Chrome's --host-resolver-rules
- * maps the two hostnames onto it, so no network access is needed and no genuinely-private address
- * is ever contacted. Skipped when no Chrome/Chromium is found.
- *
- * Since the DNS-rebinding fix the policy judges resolved ADDRESSES, not hostnames, so this file's
- * own setup -- a public-looking `attacker.example` whose resolver rule points at loopback -- is
- * itself a rebinding case and is now refused one hop earlier, before the 302 is ever requested.
- * That is a strictly stronger outcome, and the assertions below check it that way. The
- * interception path that catches a redirect hop *after* an allowed first hop is exercised
- * deterministically against the real handler in screenshot.test.ts.
- *
- * Chrome cannot start under the sandboxed HOME/LOCALAPPDATA that tests/setup/isolate-home.ts
- * installs (it can't create its user-data/crashpad dirs), so the real values it stashed in
- * TG_REAL_* are restored for the duration of this file and put back afterwards.
- */
+/** Security regression: validateScreenshotUrl ran ONCE, before page.goto() -- and page.goto follows redirects. So `http://attacker.example/r` answering `302 Location: http://169.254.169.254/latest/meta-data/` rendered cloud instance metadata, and with image_shrink.ocr_enabled that content is transcribed straight into model context. This drives a REAL browser, because checking validateScreenshotUrl in isolation cannot prove page.goto was actually prevented from following the redirect -- which is the entire defect. A local server plays both the attacker and the metadata endpoint; Chrome's --host-resolver-rules maps the two hostnames onto it, so no network access is needed and no genuinely-private address is ever contacted. Skipped when no Chrome/Chromium is found. Since the DNS-rebinding fix the policy judges resolved ADDRESSES, not hostnames, so this file's own setup -- a public-looking `attacker.example` whose resolver rule points at loopback -- is itself a rebinding case and is now refused one hop earlier, before the 302 is ever requested. That is a strictly stronger outcome, and the assertions below check it that way. The interception path that catches a redirect hop *after* an allowed first hop is exercised deterministically against the real handler in screenshot.test.ts. Chrome cannot start under the sandboxed HOME/LOCALAPPDATA that tests/setup/isolate-home.ts installs (it can't create its user-data/crashpad dirs), so the real values it stashed in TG_REAL_* are restored for the duration of this file and put back afterwards. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as http from 'node:http'

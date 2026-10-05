@@ -1,26 +1,4 @@
-/**
- * Guard: a delimiter sitting inside an opaque string literal must not steer a span walk.
- *
- * Two span walks read raw source a character at a time and decide where a symbol ends: R's own
- * parameter-list scan plus the brace scan behind it, and `assignBraceBlockSpans` for the
- * brace-delimited languages. Both used to know only the literal forms whose delimiters are fixed,
- * so a literal whose closer is decided by its opener stayed invisible to them: R's raw character
- * constant (`r"(...)"`) and PHP's heredoc (`<<<EOT`). The content of either is verbatim, so it may
- * hold an unpaired `"` -- and once a walk re-pairs the quotes inside one, the very next `)` or `}`
- * in that literal's text reads as a real delimiter and the enclosing symbol ends on that line.
- *
- * Every case here asserts exact bounds. A span assertion that only checks the symbol exists passes
- * against the wrong span just as happily as the right one: in each of these fixtures the symbol was
- * always found, it was its extent that was wrong.
- *
- * Fixture provenance: FORMAT-DERIVED. R raw character constant syntax (quote, optional dash run,
- * mirrored bracket) is from the R base help page `?Quotes`, section "Raw character constants",
- * added in R 4.0.0. PHP heredoc syntax is from the PHP Manual, "Strings", section "Heredoc". Swift
- * extended string delimiter syntax (any matching number of `#`, combining with `"""` for the
- * multi-line form, and `\` losing its escaping meaning inside) is from The Swift Programming
- * Language, "Strings and Characters", section "Extended String Delimiters". The expected line
- * numbers are HAND-DERIVED: counted off the fixture text, not read from any output.
- */
+/** Guard: a delimiter sitting inside an opaque string literal must not steer a span walk. Two span walks read raw source a character at a time and decide where a symbol ends: R's own parameter-list scan plus the brace scan behind it, and `assignBraceBlockSpans` for the brace-delimited languages. Both used to know only the literal forms whose delimiters are fixed, so a literal whose closer is decided by its opener stayed invisible to them: R's raw character constant (`r"(...)"`) and PHP's heredoc (`<<<EOT`). The content of either is verbatim, so it may hold an unpaired `"` -- and once a walk re-pairs the quotes inside one, the very next `)` or `}` in that literal's text reads as a real delimiter and the enclosing symbol ends on that line. Every case here asserts exact bounds. A span assertion that only checks the symbol exists passes against the wrong span just as happily as the right one: in each of these fixtures the symbol was always found, it was its extent that was wrong. Fixture provenance: FORMAT-DERIVED. R raw character constant syntax (quote, optional dash run, mirrored bracket) is from the R base help page `?Quotes`, section "Raw character constants", added in R 4.0.0. PHP heredoc syntax is from the PHP Manual, "Strings", section "Heredoc". Swift extended string delimiter syntax (any matching number of `#`, combining with `"""` for the multi-line form, and `\` losing its escaping meaning inside) is from The Swift Programming Language, "Strings and Characters", section "Extended String Delimiters". The expected line numbers are HAND-DERIVED: counted off the fixture text, not read from any output. */
 import { describe, expect, it } from 'vitest'
 
 import { assignBraceBlockSpans } from '../../src/languages/common.js'
@@ -94,8 +72,7 @@ describe('span walks and opaque literals', () => {
   })
 
   it('reads a raw constant only where the r prefix is a token of its own', () => {
-    // `var"(` is the tail of an identifier followed by an ordinary constant, not a raw one, so the
-    // walk must fall back to its quote rules and still close the parameter list on line 1.
+    // `var"(` is the tail of an identifier followed by an ordinary constant, not a raw one, so the walk must fall back to its quote rules and still close the parameter list on line 1.
     const source = [
       'q <- function(x = var + "(a)") {',
       '  x',
@@ -259,15 +236,7 @@ describe('span walks and opaque literals', () => {
     expect(swiftSpans(source)).toEqual(['G 1-7', 'title 2-2', 'real 4-6'])
   })
 
-  // Bash here documents, PowerShell here-strings. FORMAT-DERIVED: the delimiter word being an
-  // ordinary shell word subject to quote removal, and `<<<`/`<<` being a here string and a left
-  // shift rather than here-document openers, is from the GNU Bash Reference Manual, sections
-  // 3.6.6 "Here Documents", 3.6.7 "Here Strings" and 6.5 "Shell Arithmetic". A here-string opening
-  // with `@"`/`@'` as the last token on its line and closing with `"@`/`'@` at the start of a line
-  // is from the PowerShell `about_Quoting_Rules` topic, section "Here-strings". Expected line
-  // numbers are HAND-DERIVED: counted off the fixture text, not read from any output. Both run
-  // through the real parseFile dispatch, so each exercises the shipping adapter-table entry rather
-  // than a set of options the test supplies for itself.
+  // Bash here documents, PowerShell here-strings. FORMAT-DERIVED: the delimiter word being an ordinary shell word subject to quote removal, and `<<<`/`<<` being a here string and a left shift rather than here-document openers, is from the GNU Bash Reference Manual, sections 3.6.6 "Here Documents", 3.6.7 "Here Strings" and 6.5 "Shell Arithmetic". A here-string opening with `@"`/`@'` as the last token on its line and closing with `"@`/`'@` at the start of a line is from the PowerShell `about_Quoting_Rules` topic, section "Here-strings". Expected line numbers are HAND-DERIVED: counted off the fixture text, not read from any output. Both run through the real parseFile dispatch, so each exercises the shipping adapter-table entry rather than a set of options the test supplies for itself.
   it('closes a bash here document whose delimiter was quoted with a backslash', async () => {
     const source = [
       'first_fn() {',

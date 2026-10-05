@@ -1,23 +1,4 @@
-/**
- * Guard against the "NO_COLOR-aware helper exists but callers reimplement a
- * simpler, non-compliant check" class.
- *
- * src/render/ansi.ts exports colorStdout() specifically to respect the NO_COLOR env-var convention
- * (no-color.org) before emitting ANSI escape codes. Every actual stdout-writing helper across the
- * CLI (out() in cli.ts, writeRaw() in cli_stats.ts, emit() in config_commands.ts, graph_commands.ts
- * and read_commands.ts) independently duplicated the same
- * `process.stdout.isTTY === true ? text : stripAnsi(text)` check instead of calling colorStdout() --
- * so `NO_COLOR=1 token-goat <cmd>` run on a real TTY still emitted ANSI codes at every one of those
- * five call sites, silently violating the convention colorStdout() itself correctly implements.
- *
- * Both populations here are derived from the source tree rather than listed by hand. The earlier
- * version of this guard carried a nine-name array, and when the eight byte-identical emit()/emitErr()
- * copies were folded into src/emit.ts, six of those names stopped satisfying the rule -- not because
- * the invariant broke but because the file that satisfies it moved. A hand-kept list answers "did
- * these specific files change" when the question is "does anything strip ANSI without asking
- * colorStdout first", and it degrades the other way too: a new stdout writer added tomorrow is
- * simply absent from it, and absence reads as compliance.
- */
+/** Guard against the "NO_COLOR-aware helper exists but callers reimplement a simpler, non-compliant check" class. src/render/ansi.ts exports colorStdout() specifically to respect the NO_COLOR env-var convention (no-color.org) before emitting ANSI escape codes. Every actual stdout-writing helper across the CLI (out() in cli.ts, writeRaw() in cli_stats.ts, emit() in config_commands.ts, graph_commands.ts and read_commands.ts) independently duplicated the same `process.stdout.isTTY === true ? text : stripAnsi(text)` check instead of calling colorStdout() -- so `NO_COLOR=1 token-goat <cmd>` run on a real TTY still emitted ANSI codes at every one of those five call sites, silently violating the convention colorStdout() itself correctly implements. Both populations here are derived from the source tree rather than listed by hand. The earlier version of this guard carried a nine-name array, and when the eight byte-identical emit()/emitErr() copies were folded into src/emit.ts, six of those names stopped satisfying the rule -- not because the invariant broke but because the file that satisfies it moved. A hand-kept list answers "did these specific files change" when the question is "does anything strip ANSI without asking colorStdout first", and it degrades the other way too: a new stdout writer added tomorrow is simply absent from it, and absence reads as compliance. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'

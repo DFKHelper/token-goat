@@ -1,6 +1,4 @@
-/**
- * Built-bundle check for the Visual Basic adapter: the shipped dist/token-goat.mjs, not source, indexes a small VB project and answers `symbol` and `read` from it. This is the only test that proves the adapter survived bundling and is reached from the real CLI path, including the `.cls` content refinement.
- */
+/** Built-bundle check for the Visual Basic adapter: the shipped dist/token-goat.mjs, not source, indexes a small VB project and answers `symbol` and `read` from it. This is the only test that proves the adapter survived bundling and is reached from the real CLI path, including the `.cls` content refinement. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

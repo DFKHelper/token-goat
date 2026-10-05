@@ -14,12 +14,7 @@ function walk(dir: string, out: string[] = []): string[] {
   return out
 }
 
-/**
- * `walk('src')` with its population pinned. The floor cannot live inside `walk` -- the recursion
- * calls it once per subdirectory -- so it lives on the single entry point the scans below use. An
- * empty walk here reports "every kind is registered" / "every kind has a producer" for the same
- * reason a correct tree does.
- */
+/** `walk('src')` with its population pinned. The floor cannot live inside `walk` -- the recursion calls it once per subdirectory -- so it lives on the single entry point the scans below use. An empty walk here reports "every kind is registered" / "every kind has a producer" for the same reason a correct tree does. */
 function scannedSrcFiles(): readonly string[] {
   return pinnedPopulation({
     what: 'src/**/*.ts files scanned for stat-kind call sites',

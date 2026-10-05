@@ -1,13 +1,4 @@
-/**
- * Copilot's per-server MCP tool-definition cache, and the waste section built on it.
- *
- * The renderer is driven through `runWasteCommand` rather than by exporting
- * `printCopilotReport` for the test's benefit. Both fixtures are supplied the
- * way Copilot itself supplies them, through `COPILOT_HOME` and
- * `COPILOT_CACHE_HOME`, so the path under test is the shipping path: the real
- * cache-root resolution runs, and nothing here injects a value that the
- * shipping code would have obtained some other way.
- */
+/** Copilot's per-server MCP tool-definition cache, and the waste section built on it. The renderer is driven through `runWasteCommand` rather than by exporting `printCopilotReport` for the test's benefit. Both fixtures are supplied the way Copilot itself supplies them, through `COPILOT_HOME` and `COPILOT_CACHE_HOME`, so the path under test is the shipping path: the real cache-root resolution runs, and nothing here injects a value that the shipping code would have obtained some other way. */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -26,8 +17,7 @@ function tool(name: string, description: string, extraSchemaPad = ''): unknown {
     name,
     description,
     inputSchema: { type: 'object', properties: { q: { type: 'string', description: extraSchemaPad } } },
-    // Present in every real cache entry and never sent to a model. If these
-    // are counted the estimate roughly triples, so a test has to pin it.
+    // Present in every real cache entry and never sent to a model. If these are counted the estimate roughly triples, so a test has to pin it.
     annotations: { readOnlyHint: true, title: 'x'.repeat(200) },
     icons: [{ src: 'data:image/png;base64,' + 'A'.repeat(400) }],
   }
@@ -72,8 +62,7 @@ describe('readCopilotMcpTools', () => {
 
   it('resolves the cache directory through COPILOT_CACHE_HOME with no argument passed', () => {
     writeCache('a.json', { serverName: 'srv', updatedAt: '2026-01-01T00:00:00Z', tools: [tool('t', 'd')] })
-    // Called with no argument on purpose: this is what buildCopilotWasteReport
-    // does, so a break in the default resolution chain has to fail here.
+    // Called with no argument on purpose: this is what buildCopilotWasteReport does, so a break in the default resolution chain has to fail here.
     const report = readCopilotMcpTools()
     expect(report.cacheFound).toBe(true)
     expect(report.servers.map((s) => s.serverName)).toEqual(['srv'])
@@ -93,8 +82,7 @@ describe('readCopilotMcpTools', () => {
     ).length
     expect(server?.definitionBytes).toBe(wireOnly)
 
-    // The whole entry is far larger. Without this the test would still pass if
-    // the implementation summed the entire file, because both are "some number".
+    // The whole entry is far larger. Without this the test would still pass if the implementation summed the entire file, because both are "some number".
     const wholeEntry = JSON.stringify(tools).length
     expect(wholeEntry).toBeGreaterThan(wireOnly * 2)
     expect(server?.definitionBytes).toBeLessThan(wholeEntry)

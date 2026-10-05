@@ -1,9 +1,4 @@
-/**
- * A `uses: actions/checkout@v4` reference resolves through a mutable tag: whoever controls the
- * action repository can repoint it at any commit, and every workflow run picks that up silently.
- * Supply-chain review asks for a commit SHA instead. The publish workflow was already pinned; CI
- * and Pages were not, and Pages holds `pages: write` and `id-token: write`.
- */
+/** A `uses: actions/checkout@v4` reference resolves through a mutable tag: whoever controls the action repository can repoint it at any commit, and every workflow run picks that up silently. Supply-chain review asks for a commit SHA instead. The publish workflow was already pinned; CI and Pages were not, and Pages holds `pages: write` and `id-token: write`. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'

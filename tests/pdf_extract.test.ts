@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { extractPdfMeta, extractPdfOutline, extractPdfText, MAX_PDF_TEXT_BYTES, parsePageRange, readPageTextItems, withPdfDocument } from '../src/pdf_extract.js';
 
-// Minimal hand-authored single-page PDF (Helvetica text object), the standard
-// fixture shape for exercising a PDF parser without a binary test asset.
+// Minimal hand-authored single-page PDF (Helvetica text object), the standard fixture shape for exercising a PDF parser without a binary test asset.
 const MINIMAL_PDF = `%PDF-1.4
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
@@ -31,9 +30,7 @@ function pdfBytes(): Uint8Array {
   return new Uint8Array(Buffer.from(MINIMAL_PDF, 'latin1'));
 }
 
-// Same shape as MINIMAL_PDF, but with three text objects: two on the same row at
-// different x (a simulated two-column line) and one on a row below, to exercise
-// --layout's row-grouping + left-to-right reconstruction.
+// Same shape as MINIMAL_PDF, but with three text objects: two on the same row at different x (a simulated two-column line) and one on a row below, to exercise --layout's row-grouping + left-to-right reconstruction.
 const LAYOUT_PDF = `%PDF-1.4
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
@@ -64,11 +61,7 @@ function layoutPdfBytes(): Uint8Array {
   return new Uint8Array(Buffer.from(LAYOUT_PDF, 'latin1'));
 }
 
-// A/B/C/D on a single visual line, but with SMOOTHLY DRIFTING y (each adjacent pair within
-// Y_EPSILON=2, e.g. baseline jitter from a scanned/rotated PDF) such that the first and last
-// item's y differ by more than Y_EPSILON. Regression: reconstructLayout used to compare every
-// new item's y only against the row's FIRST item, not its nearest neighbor, so this whole
-// chain got wrongly split into two rows once cumulative drift exceeded Y_EPSILON from A.
+// A/B/C/D on a single visual line, but with SMOOTHLY DRIFTING y (each adjacent pair within Y_EPSILON=2, e.g. baseline jitter from a scanned/rotated PDF) such that the first and last item's y differ by more than Y_EPSILON. Regression: reconstructLayout used to compare every new item's y only against the row's FIRST item, not its nearest neighbor, so this whole chain got wrongly split into two rows once cumulative drift exceeded Y_EPSILON from A.
 const DRIFT_PDF = `%PDF-1.4
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
@@ -100,9 +93,7 @@ function driftPdfBytes(): Uint8Array {
   return new Uint8Array(Buffer.from(DRIFT_PDF, 'latin1'));
 }
 
-// Two-page PDF where page 1 has an empty content stream (a blank cover page) and page 2
-// has real text -- exercises extractPdfMeta's multi-page text-layer sample, which must
-// not conclude "no text layer" from page 1 alone.
+// Two-page PDF where page 1 has an empty content stream (a blank cover page) and page 2 has real text -- exercises extractPdfMeta's multi-page text-layer sample, which must not conclude "no text layer" from page 1 alone.
 const BLANK_FIRST_PAGE_PDF = `%PDF-1.4
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
@@ -270,11 +261,7 @@ describe('pdfjs item shape backing the plain-text join (precondition, independen
   });
 });
 
-// HAND-DERIVED: object/xref/trailer syntax and the /Outlines, /First, /Last, /Parent, /Count
-// outline-dictionary keys are per ISO 32000-1 sections 7.5 (file structure) and 12.3.3 (document
-// outline), computed independently of src/pdf_extract.ts rather than read off its own parser.
-// Builds a single-page PDF whose outline is a chain of `depth` nested items (item i's /First
-// points to item i+1, one bookmark per level), so opening the outline recurses `depth` levels.
+// HAND-DERIVED: object/xref/trailer syntax and the /Outlines, /First, /Last, /Parent, /Count outline-dictionary keys are per ISO 32000-1 sections 7.5 (file structure) and 12.3.3 (document outline), computed independently of src/pdf_extract.ts rather than read off its own parser. Builds a single-page PDF whose outline is a chain of `depth` nested items (item i's /First points to item i+1, one bookmark per level), so opening the outline recurses `depth` levels.
 function deepOutlinePdfBytes(depth: number): Uint8Array {
   const objs: string[] = [];
   objs[1] = '<< /Type /Catalog /Pages 2 0 R /Outlines 4 0 R >>';
@@ -310,10 +297,7 @@ describe('extractPdfOutline', () => {
     expect(await extractPdfOutline(pdfBytes())).toEqual([]);
   });
 
-  // pdfjs-dist marshals the outline tree through an in-process structuredClone even with no real
-  // worker thread; a chain of ~800 single-child bookmarks blows the JS call stack during that
-  // clone, which throws outside the promise chain and crashes the whole process unless guarded.
-  // 2000 levels leaves comfortable margin over the measured ~800-level crash threshold.
+  // pdfjs-dist marshals the outline tree through an in-process structuredClone even with no real worker thread; a chain of ~800 single-child bookmarks blows the JS call stack during that clone, which throws outside the promise chain and crashes the whole process unless guarded. 2000 levels leaves comfortable margin over the measured ~800-level crash threshold.
   it('rejects instead of crashing the process on a pathologically deep outline', async () => {
     await expect(extractPdfOutline(deepOutlinePdfBytes(2000))).rejects.toThrow();
   });

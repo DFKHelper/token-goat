@@ -1,19 +1,4 @@
-/**
- * `postBrowserImageHandler` has two shrink branches and one text branch, and each of the three had
- * a distinct accounting defect.
- *
- * The already-shown-screenshot branch credited base64 CHARACTERS (`originalDataUrl.length`) while
- * the shrink branch beside it credits DECODED bytes, and both file under the same `image_shrink`
- * kind. Base64 inflates by 4/3, so a repeat screenshot booked roughly a third more than an
- * identical shrink of the same pixels, and `token-goat stats` summed the two units into one row.
- *
- * The Tab Context dedup branch replaced a repeated tab listing with a short placeholder and
- * recorded nothing at all, so the entire mechanism was absent from the ledger.
- *
- * Both expectations below are derived from an independent measurement of the artifact the handler
- * actually emitted (decode the fixture, measure the returned string), never from the arithmetic
- * the handler itself performs.
- */
+/** `postBrowserImageHandler` has two shrink branches and one text branch, and each of the three had a distinct accounting defect. The already-shown-screenshot branch credited base64 CHARACTERS (`originalDataUrl.length`) while the shrink branch beside it credits DECODED bytes, and both file under the same `image_shrink` kind. Base64 inflates by 4/3, so a repeat screenshot booked roughly a third more than an identical shrink of the same pixels, and `token-goat stats` summed the two units into one row. The Tab Context dedup branch replaced a repeated tab listing with a short placeholder and recorded nothing at all, so the entire mechanism was absent from the ledger. Both expectations below are derived from an independent measurement of the artifact the handler actually emitted (decode the fixture, measure the returned string), never from the arithmetic the handler itself performs. */
 import { tempConfigPath } from './helpers/temp-config.js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import sharp from 'sharp'
@@ -107,11 +92,7 @@ describe('browser image handler credits the unit its stat kind is denominated in
     const expectedBytes = jpegDecodedBytes - Buffer.byteLength(second.updatedOutput, 'utf-8')
     expect(calls[0]!.slice(0, 2), 'a repeat screenshot must be credited in decoded bytes, not base64 characters').toEqual(['image_shrink', expectedBytes])
 
-    // The tokens column is deliberately NOT bytes/4. An image is billed as 28x28-pixel patches, so the
-    // two columns of this one row are denominated in different units on purpose: bytes for the wire,
-    // visual tokens for the bill. The fixture is 3000x3000, which the standard tier caps at 39 x 39 =
-    // 1521 patches, less round(121 / 4) = 30 for the notice sent in its place. Before this split the
-    // row credited a quarter of a twelve-megabyte delta as three million tokens.
+    // The tokens column is deliberately NOT bytes/4. An image is billed as 28x28-pixel patches, so the two columns of this one row are denominated in different units on purpose: bytes for the wire, visual tokens for the bill. The fixture is 3000x3000, which the standard tier caps at 39 x 39 = 1521 patches, less round(121 / 4) = 30 for the notice sent in its place. Before this split the row credited a quarter of a twelve-megabyte delta as three million tokens.
     expect(calls[0]![2], 'the tokens column is visual tokens, not a byte count divided by four').toBe(1521 - 30)
     expect(calls[0]![2]).not.toBe(Math.round(expectedBytes / 4))
 

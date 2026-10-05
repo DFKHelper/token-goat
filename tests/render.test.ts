@@ -513,10 +513,7 @@ describe('Stats rendering', () => {
   })
 
   it('never names a kind that saved nothing as the biggest saver or the token leader', () => {
-    // compact_summary is the first kind deliberately recorded at (0, 0) forever: it measures how
-    // large a compaction summary was, and that summary was written whether or not token-goat was
-    // watching. Ranking it as a saver would put "Biggest saver compact_summary -- 0.0%" in front
-    // of the user, which reads as a finding rather than as an empty ranking.
+    // compact_summary is the first kind deliberately recorded at (0, 0) forever: it measures how large a compaction summary was, and that summary was written whether or not token-goat was watching. Ranking it as a saver would put "Biggest saver compact_summary -- 0.0%" in front of the user, which reads as a finding rather than as an empty ranking.
     const stats = { ...minimalStats }
     stats.by_kind = [{ kind: 'compact_summary', bytes: 0, tokens: 0, events: 2 }]
     const result = renderStats(stats)
@@ -533,8 +530,7 @@ describe('Stats rendering', () => {
     const result = renderStats(stats)
     expect(result).toContain('Biggest saver')
     expect(result).toContain('Token leader')
-    // The measurement has more events than the saver, so a ranking that fell back to event count
-    // -- or that simply took the first row -- would still name it here.
+    // The measurement has more events than the saver, so a ranking that fell back to event count -- or that simply took the first row -- would still name it here.
     expect(result).not.toMatch(/Biggest saver\s+\S*compact_summary/)
   })
 
@@ -573,8 +569,7 @@ describe('Stats rendering', () => {
     const result = renderStats(stats)
     const byKindBlock = result.split('By kind')[1]?.split('By source')[0] ?? ''
     for (const kind of stats.by_kind) {
-      // The name column truncates long kind names with an ellipsis, so only assert on a
-      // length-safe prefix rather than the full (possibly-truncated) literal name.
+      // The name column truncates long kind names with an ellipsis, so only assert on a length-safe prefix rather than the full (possibly-truncated) literal name.
       expect(byKindBlock).toContain(kind.kind.slice(0, 10))
     }
     expect(byKindBlock).not.toContain('Other')
@@ -701,10 +696,7 @@ describe('Stats rendering', () => {
 
   it('renderStats "By kind" table does not silently drop kinds unmapped to any _KIND_GROUPS bucket', () => {
     const stats = { ...minimalStats }
-    // 'mystery_new_kind' is not a member of any group in _KIND_GROUPS, so _kindGroupLabel()
-    // falls back to 'Other' for it. It is also responsible for the majority of bytes/tokens,
-    // so Insights will name it as the biggest saver -- the By-kind table must not contradict
-    // that by omitting it entirely.
+    // 'mystery_new_kind' is not a member of any group in _KIND_GROUPS, so _kindGroupLabel() falls back to 'Other' for it. It is also responsible for the majority of bytes/tokens, so Insights will name it as the biggest saver -- the By-kind table must not contradict that by omitting it entirely.
     stats.by_kind = [
       { kind: 'mystery_new_kind', bytes: 40000, tokens: 4000, events: 50 },
       { kind: 'read_replacement', bytes: 10000, tokens: 1000, events: 20 },
@@ -720,9 +712,7 @@ describe('Stats rendering', () => {
 
   it('renderByProjectSection percentages use the grand total, not the sum of displayed rows', () => {
     const stats = { ...minimalStats }
-    // Grand total across the whole period is far larger than what these 3 displayed
-    // (top-N filtered) projects sum to -- each is truly worth 10% of the grand total,
-    // but naively summing just the displayed rows would make each look like 33.3%.
+    // Grand total across the whole period is far larger than what these 3 displayed (top-N filtered) projects sum to -- each is truly worth 10% of the grand total, but naively summing just the displayed rows would make each look like 33.3%.
     stats.totals = { ...stats.totals, bytes: 100000, tokens: 10000 }
     stats.by_project = [
       { project: 'ProjectA', hash: 'aaa111', path: '/a', bytes: 10000, tokens: 1000, events: 10 },

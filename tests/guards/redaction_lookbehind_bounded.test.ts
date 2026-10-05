@@ -1,19 +1,4 @@
-/**
- * The redaction pass runs over every command output and every cached blob before either reaches
- * the model, so its cost is paid on the hot path. Its patterns looked safe by the usual rule --
- * no nested or overlapping quantifier, so no single match can backtrack catastrophically -- and
- * the module header said so. That rule misses the case that actually bit: a variable-length
- * lookbehind is re-evaluated at every start position, so an unbounded run inside one makes the
- * whole pass quadratic in the input even though no individual match ever backtracks.
- *
- * `generic_secret_assignment` held `\s*` on both sides of its separator. The input
- * `'password' + ' '.repeat(n) + '=!'` took 108 ms at n=20000 and 1726 ms at n=80000: four times
- * the work for twice the input. Bounding the runs made the same inputs 0.5 ms and 2.2 ms.
- *
- * The timing assertion below is the symptom and is deliberately loose. This structural check is
- * the invariant, and it is what fails immediately and without a stopwatch if an unbounded
- * quantifier is ever put back inside a lookbehind.
- */
+/** The redaction pass runs over every command output and every cached blob before either reaches the model, so its cost is paid on the hot path. Its patterns looked safe by the usual rule -- no nested or overlapping quantifier, so no single match can backtrack catastrophically -- and the module header said so. That rule misses the case that actually bit: a variable-length lookbehind is re-evaluated at every start position, so an unbounded run inside one makes the whole pass quadratic in the input even though no individual match ever backtracks. `generic_secret_assignment` held `\s*` on both sides of its separator. The input `'password' + ' '.repeat(n) + '=!'` took 108 ms at n=20000 and 1726 ms at n=80000: four times the work for twice the input. Bounding the runs made the same inputs 0.5 ms and 2.2 ms. The timing assertion below is the symptom and is deliberately loose. This structural check is the invariant, and it is what fails immediately and without a stopwatch if an unbounded quantifier is ever put back inside a lookbehind. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -27,11 +12,7 @@ const source = fs.readFileSync(
   'utf8',
 )
 
-/**
- * Bodies of every `(?<=...)` and `(?<!...)` in the source, brackets balanced. Written by hand
- * rather than with a regex because the thing being scanned for is a regex: a nested-bracket
- * pattern is exactly what a regex reads badly.
- */
+/** Bodies of every `(?<=...)` and `(?<!...)` in the source, brackets balanced. Written by hand rather than with a regex because the thing being scanned for is a regex: a nested-bracket pattern is exactly what a regex reads badly. */
 function lookbehindBodies(text: string): string[] {
   const bodies: string[] = []
   for (let start = 0; start < text.length; start += 1) {
@@ -114,8 +95,7 @@ describe('lookbehind quantifiers stay bounded', () => {
     expect(offenders, 'each of these makes the whole pass quadratic in input size').toEqual([])
   })
 
-  // The symptom the invariant above exists to prevent. The budget is ~400x the measured cost and
-  // ~5x below the pre-fix cost, so it is not a benchmark and should not flake on a loaded machine.
+  // The symptom the invariant above exists to prevent. The budget is ~400x the measured cost and ~5x below the pre-fix cost, so it is not a benchmark and should not flake on a loaded machine.
   it('stays fast on a long whitespace run after a keyword', () => {
     const input = `password${' '.repeat(80_000)}=!`
 

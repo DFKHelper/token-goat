@@ -1,36 +1,4 @@
-/**
- * `resolveThroughLinks` walked an unbounded path one `lstatSync` at a time, on a PRE-APPROVAL code
- * path, and the cost was superlinear rather than merely quadratic.
- *
- * MEASURED at 3cd0b044, against the real `isInsideRoot`, one process, same machine:
- *
- *     segments   bytes      isInsideRoot       one realpathSync
- *         10        106            1.3 ms               0.1 ms
- *       1000       6946           38.4 ms               0.3 ms
- *      20000     168946        8,062.5 ms               4.3 ms
- *     200000    1888946    1,301,906.1 ms              14.9 ms
- *
- * That last row is 21m42s of pinned CPU for one call, a factor of ~87,000 over a single realpath.
- * Per-segment cost climbs 38.4us -> 403us -> 6,510us across those rows: the `Array.shift()` queue is
- * one term, and reallocating the growing `base` string in `joinSegment` is the other, which is why
- * the index cursor alone was never going to be sufficient and why the length CAP is the
- * load-bearing control this file asserts.
- *
- * THE IMPACT IS A HANG, NOT SLOWNESS. The reachable path is `getFilePath(event)` ->
- * `vscodePathAllowed` -> `isInsideRoot`, from `hooks_read.ts:22`, `hooks_write.ts:35` and
- * `image_shrink.ts:40` -- BEFORE the user approves the tool call, on a model-chosen path. In VS
- * Code that hook runs IN-PROCESS with no timeout available (`src/vscode_duplicate.ts:124-127` says
- * so); in Claude Code it is a subprocess pinning one core for as long as it takes. A model emitting
- * one long path hangs the editor's hook, and nothing on the other side can cancel it.
- *
- * THE CAP IS INSIDE `resolveThroughLinks`, not at the three hook call sites, because
- * `assertProjectScopeTarget` and every CLI caller reach the same walk and would have been left
- * uncapped by a call-site fix.
- *
- * PROVENANCE: CAPTURE for the timings above (real runs, harness in the commit message) and CAPTURE
- * for everything asserted below -- each expectation is measured from a real call, and the errno
- * cases plant a real unreadable directory rather than describing one.
- */
+/** `resolveThroughLinks` walked an unbounded path one `lstatSync` at a time, on a PRE-APPROVAL code path, and the cost was superlinear rather than merely quadratic. MEASURED at 3cd0b044, against the real `isInsideRoot`, one process, same machine: segments   bytes      isInsideRoot       one realpathSync 10        106            1.3 ms               0.1 ms 1000       6946           38.4 ms               0.3 ms 20000     168946        8,062.5 ms               4.3 ms 200000    1888946    1,301,906.1 ms              14.9 ms That last row is 21m42s of pinned CPU for one call, a factor of ~87,000 over a single realpath. Per-segment cost climbs 38.4us -> 403us -> 6,510us across those rows: the `Array.shift()` queue is one term, and reallocating the growing `base` string in `joinSegment` is the other, which is why the index cursor alone was never going to be sufficient and why the length CAP is the load-bearing control this file asserts. THE IMPACT IS A HANG, NOT SLOWNESS. The reachable path is `getFilePath(event)` -> `vscodePathAllowed` -> `isInsideRoot`, from `hooks_read.ts:22`, `hooks_write.ts:35` and `image_shrink.ts:40` -- BEFORE the user approves the tool call, on a model-chosen path. In VS Code that hook runs IN-PROCESS with no timeout available (`src/vscode_duplicate.ts:124-127` says so); in Claude Code it is a subprocess pinning one core for as long as it takes. A model emitting one long path hangs the editor's hook, and nothing on the other side can cancel it. THE CAP IS INSIDE `resolveThroughLinks`, not at the three hook call sites, because `assertProjectScopeTarget` and every CLI caller reach the same walk and would have been left uncapped by a call-site fix. PROVENANCE: CAPTURE for the timings above (real runs, harness in the commit message) and CAPTURE for everything asserted below -- each expectation is measured from a real call, and the errno cases plant a real unreadable directory rather than describing one. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -42,14 +10,7 @@ import { CAN_SYMLINK } from './helpers/can-symlink.js'
 
 const POSIX = process.platform !== 'win32'
 
-/**
- * The cap, restated here rather than imported.
- *
- * Importing the constant would make this test agree with whatever the implementation currently
- * says, including with a change that raised it to 4 GB. 4096 is PATH_MAX on Linux; macOS is 1024
- * and Windows is 260 (32,767 with the extended prefix), so no real path any caller has is anywhere
- * near it and the cap costs no legitimate use.
- */
+/** The cap, restated here rather than imported. Importing the constant would make this test agree with whatever the implementation currently says, including with a change that raised it to 4 GB. 4096 is PATH_MAX on Linux; macOS is 1024 and Windows is 260 (32,767 with the extended prefix), so no real path any caller has is anywhere near it and the cap costs no legitimate use. */
 const MAX_BYTES = 4096
 
 const scratches: string[] = []
@@ -69,36 +30,15 @@ afterEach(() => {
   }
 })
 
-/**
- * A scratch root in the spelling the implementation will canonicalize it to.
- *
- * `.native`, not the plain `fs.realpathSync`: the latter is a JS walker that follows symlinks and
- * otherwise echoes back the spelling it was handed. Ask the OS instead. The difference is invisible
- * on a developer box and decisive on GitHub's `windows-latest`, whose temp root is the 8.3 alias
- * `C:\Users\RUNNER~1\...`. `canonicalize` expands such a segment, and expansion makes the path
- * LONGER (`RUNNER~1` -> `runneradmin`, +3 bytes), so a fixture sized against the short spelling to
- * sit one byte under the 4096-byte cap arrives three bytes over it. The under-the-cap half then
- * fails for the expansion rather than for the cap under test. Same class on macOS, where
- * `/var/folders/...` canonicalizes to `/private/var/folders/...`, +8 bytes.
- */
+/** A scratch root in the spelling the implementation will canonicalize it to. `.native`, not the plain `fs.realpathSync`: the latter is a JS walker that follows symlinks and otherwise echoes back the spelling it was handed. Ask the OS instead. The difference is invisible on a developer box and decisive on GitHub's `windows-latest`, whose temp root is the 8.3 alias `C:\Users\RUNNER~1\...`. `canonicalize` expands such a segment, and expansion makes the path LONGER (`RUNNER~1` -> `runneradmin`, +3 bytes), so a fixture sized against the short spelling to sit one byte under the 4096-byte cap arrives three bytes over it. The under-the-cap half then fails for the expansion rather than for the cap under test. Same class on macOS, where `/var/folders/...` canonicalizes to `/private/var/folders/...`, +8 bytes. */
 function scratch(): string {
   const d = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-walkcap-')))
   scratches.push(d)
   return d
 }
 
-/**
- * A path of `n` segments under `root`, lexically inside it by construction.
- *
- * Eight-character segments, so that n=200,000 reproduces the ~1.89 MB shape of the measured
- * 1,301,906 ms row above rather than a shorter path that would understate it.
- */
-/**
- * Exactly `bytes` bytes of `ch`, broken into `<= 200`-byte components separated by `path.sep`.
- *
- * The separators are part of the count, so the caller's byte budget is honoured exactly and the
- * cap-straddling pair stays a pair.
- */
+/** A path of `n` segments under `root`, lexically inside it by construction. Eight-character segments, so that n=200,000 reproduces the ~1.89 MB shape of the measured 1,301,906 ms row above rather than a shorter path that would understate it. */
+/** Exactly `bytes` bytes of `ch`, broken into `<= 200`-byte components separated by `path.sep`. The separators are part of the count, so the caller's byte budget is honoured exactly and the cap-straddling pair stays a pair. */
 function segmented(ch: string, bytes: number): string {
   const chars = Array.from({ length: bytes }, (_, i) => (i > 0 && i % 201 === 200 ? path.sep : ch))
   // Never end on a separator: a trailing one changes what the path names.
@@ -120,11 +60,7 @@ describe('the path-resolution walk is bounded', () => {
     const answer = isInsideRoot(target, root)
     const elapsed = performance.now() - t0
 
-    // The pre-fix measurement for this exact shape was 1,301,906 ms. The bound below is deliberately
-    // three orders of magnitude looser than the ~0.3 ms the capped path actually costs, so it is a
-    // statement about the ALGORITHM rather than about this machine's load -- and it is still more
-    // than six orders of magnitude under the pre-fix figure. A regression that reintroduces the walk
-    // cannot squeeze under it.
+    // The pre-fix measurement for this exact shape was 1,301,906 ms. The bound below is deliberately three orders of magnitude looser than the ~0.3 ms the capped path actually costs, so it is a statement about the ALGORITHM rather than about this machine's load -- and it is still more than six orders of magnitude under the pre-fix figure. A regression that reintroduces the walk cannot squeeze under it.
     expect(
       elapsed,
       `resolving a ${Buffer.byteLength(target, 'utf8')}-byte path took ${elapsed.toFixed(1)} ms. The cap in ` +
@@ -137,35 +73,20 @@ describe('the path-resolution walk is bounded', () => {
   })
 
   it('refuses a path one byte over the cap and accepts the same shape one byte under it', (ctx) => {
-    // The behavioural statement of the cap, independent of any clock. Both of these are LEXICALLY
-    // inside the root and differ only in length, so a passing pair can only mean the length itself
-    // is what decided -- which is what makes this the assertion that survives a fast machine.
+    // The behavioural statement of the cap, independent of any clock. Both of these are LEXICALLY inside the root and differ only in length, so a passing pair can only mean the length itself is what decided -- which is what makes this the assertion that survives a fast machine.
     const root = scratch()
-    // The premise every length below rests on: the implementation measures the cap against the
-    // CANONICAL spelling of the path, so a root that canonicalizes to something else makes the
-    // arithmetic here wrong by exactly the difference in length. Stated as its own assertion
-    // because when it broke it broke as a bare `expected false to be true` twenty lines down, on
-    // one CI runner, saying nothing about spellings or about length.
+    // The premise every length below rests on: the implementation measures the cap against the CANONICAL spelling of the path, so a root that canonicalizes to something else makes the arithmetic here wrong by exactly the difference in length. Stated as its own assertion because when it broke it broke as a bare `expected false to be true` twenty lines down, on one CI runner, saying nothing about spellings or about length.
     expect(fs.realpathSync.native(root), 'the scratch root is not in its canonical spelling, so the byte budget below is computed against a path the implementation never sees').toBe(root)
     const pad = MAX_BYTES - Buffer.byteLength(root, 'utf8') - 2
     expect(pad, 'the scratch root is too long for this fixture to straddle the cap').toBeGreaterThan(16)
 
-    // Spread over 200-byte components rather than one giant one. `NAME_MAX` is 255 bytes per
-    // component on ext4 and APFS, so a single 3,900-byte name is ENAMETOOLONG at the first `lstat`
-    // and the walk fails for a reason that has nothing to do with the cap under test. Windows has no
-    // such per-component limit, which is why this only ever failed on the two platforms no one runs
-    // the suite on locally. The total byte length -- the thing the cap measures -- is unchanged.
+    // Spread over 200-byte components rather than one giant one. `NAME_MAX` is 255 bytes per component on ext4 and APFS, so a single 3,900-byte name is ENAMETOOLONG at the first `lstat` and the walk fails for a reason that has nothing to do with the cap under test. Windows has no such per-component limit, which is why this only ever failed on the two platforms no one runs the suite on locally. The total byte length -- the thing the cap measures -- is unchanged.
     const under = `${root}${path.sep}${segmented('u', pad)}`
     const over = `${root}${path.sep}${segmented('o', pad + 8)}`
     expect(Buffer.byteLength(under, 'utf8')).toBeLessThanOrEqual(MAX_BYTES)
     expect(Buffer.byteLength(over, 'utf8')).toBeGreaterThan(MAX_BYTES)
 
-    // The positive half needs the OS to answer ENOENT for an absent component, which is what tells
-    // `resolveThroughLinks` the segment provably is not a link. Every other errno fails closed by
-    // design, so a platform that answers ENAMETOOLONG here would make `under` false for a reason
-    // that is not the cap. Probed rather than assumed: the single-component version of this fixture
-    // was ENAMETOOLONG on ext4 and APFS and nobody knew, because the only machine that ran it was a
-    // Windows box where the same shape is ENOENT.
+    // The positive half needs the OS to answer ENOENT for an absent component, which is what tells `resolveThroughLinks` the segment provably is not a link. Every other errno fails closed by design, so a platform that answers ENAMETOOLONG here would make `under` false for a reason that is not the cap. Probed rather than assumed: the single-component version of this fixture was ENAMETOOLONG on ext4 and APFS and nobody knew, because the only machine that ran it was a Windows box where the same shape is ENOENT.
     const errno = ((): string => {
       try {
         fs.lstatSync(under)
@@ -182,56 +103,18 @@ describe('the path-resolution walk is bounded', () => {
     expect(isInsideRoot(under, root), 'a legitimate path under the cap must still resolve').toBe(true)
   })
 
-  // NOT POSIX-gated, and the gate that used to be here was justified by a measurement that is
-  // false. The comment claimed "Windows refuses to CREATE a symlink whose stored target exceeds
-  // MAX_PATH, absolute or relative (measured -- ENOENT from symlinkSync, both spellings)". Re-run
-  // on win32 (Windows 11, Node 24): a 3,837-byte RELATIVE dir target, the same 3,837-byte target as
-  // a file symlink, a 3,082-byte ABSOLUTE dir target and a 3,082-byte junction all created
-  // successfully and read back at their full stored length. So the gate was stricter than its own
-  // stated reason, and it was costing the ONLY case that discriminates cap 2 its only automated
-  // execution -- on the one machine anyone actually runs this suite on, since `origin/main` is 167
-  // commits behind and no CI has ever seen this file. CAN_SYMLINK still gates it, because an
-  // unprivileged Windows account without Developer Mode genuinely cannot create one; that is a
-  // permission fact, checked at run time, rather than an inherited belief about path lengths.
+  // NOT POSIX-gated, and the gate that used to be here was justified by a measurement that is false. The comment claimed "Windows refuses to CREATE a symlink whose stored target exceeds MAX_PATH, absolute or relative (measured -- ENOENT from symlinkSync, both spellings)". Re-run on win32 (Windows 11, Node 24): a 3,837-byte RELATIVE dir target, the same 3,837-byte target as a file symlink, a 3,082-byte ABSOLUTE dir target and a 3,082-byte junction all created successfully and read back at their full stored length. So the gate was stricter than its own stated reason, and it was costing the ONLY case that discriminates cap 2 its only automated execution -- on the one machine anyone actually runs this suite on, since `origin/main` is 167 commits behind and no CI has ever seen this file. CAN_SYMLINK still gates it, because an unprivileged Windows account without Developer Mode genuinely cannot create one; that is a permission fact, checked at run time, rather than an inherited belief about path lengths.
   it.runIf(CAN_SYMLINK)('refuses a SHORT path whose link expansion pushes the resolved form over the cap', (ctx) => {
-    // The second cap earns its place here and only here. The entry cap measures the INPUT, and this
-    // input is 60-odd bytes. A link target is spliced into the remaining work, so the walk can
-    // outgrow whatever arrived: without the in-loop check on the growing `base`, the resolved form
-    // is unbounded no matter how small the caller's string was. Remove either cap alone and the
-    // over-the-cap case above still passes, which is why this case exists to tell them apart.
-    // A RELATIVE target of many 100-byte segments. Three OS limits shape this fixture and all
-    // three were hit while writing it: a single path COMPONENT is capped at 255 bytes on NTFS and
-    // ext4; Windows refuses to create a symlink whose stored target exceeds MAX_PATH, absolute or
-    // relative; and Linux caps the stored target itself at PATH_MAX, so the target alone cannot
-    // exceed the cap. The root is therefore DEEPENED first, so that root + target crosses 4096
-    // while the target on its own stays under it. None of the target's segments exists, which is
-    // fine -- an absent component is ENOENT, provably not a link, so the walk keeps going while
-    // `base` grows, which is precisely the growth being capped.
+    // The second cap earns its place here and only here. The entry cap measures the INPUT, and this input is 60-odd bytes. A link target is spliced into the remaining work, so the walk can outgrow whatever arrived: without the in-loop check on the growing `base`, the resolved form is unbounded no matter how small the caller's string was. Remove either cap alone and the over-the-cap case above still passes, which is why this case exists to tell them apart. A RELATIVE target of many 100-byte segments. Three OS limits shape this fixture and all three were hit while writing it: a single path COMPONENT is capped at 255 bytes on NTFS and ext4; Windows refuses to create a symlink whose stored target exceeds MAX_PATH, absolute or relative; and Linux caps the stored target itself at PATH_MAX, so the target alone cannot exceed the cap. The root is therefore DEEPENED first, so that root + target crosses 4096 while the target on its own stays under it. None of the target's segments exists, which is fine -- an absent component is ENOENT, provably not a link, so the walk keeps going while `base` grows, which is precisely the growth being capped.
     const segment = 'x'.repeat(100)
     let root = scratch()
     while (root.length < 400) {
       root = path.join(root, 'd'.repeat(60))
       fs.mkdirSync(root, { recursive: true })
     }
-    // How long a stored target the platform will actually accept, MEASURED rather than assumed.
-    // Darwin's PATH_MAX is 1024, so `symlinkSync` there answers ENAMETOOLONG for the 3,837-byte
-    // target Linux and Windows both take -- and the whole fixture died on macOS with an error that
-    // said nothing about the cap. Probing keeps the case at full strength everywhere it can be built
-    // and reports honestly where it cannot, instead of inheriting one platform's limit as a belief.
+    // How long a stored target the platform will actually accept, MEASURED rather than assumed. Darwin's PATH_MAX is 1024, so `symlinkSync` there answers ENAMETOOLONG for the 3,837-byte target Linux and Windows both take -- and the whole fixture died on macOS with an error that said nothing about the cap. Probing keeps the case at full strength everywhere it can be built and reports honestly where it cannot, instead of inheriting one platform's limit as a belief.
     //
-    // Only a LENGTH refusal may shorten the candidate. A bare `catch` would swallow EACCES, EEXIST,
-    // ENOENT or EPERM just as quietly, walk all 38 rungs down, and then report "the platform refused
-    // even a single 100-byte target" -- a length story told about a permission or fixture fault. So
-    // the errno is discriminated: ENAMETOOLONG is the POSIX answer and EINVAL is what Windows has
-    // been observed to return for an over-long stored target, and anything else is re-thrown with
-    // the rung it died on attached.
-    // ENAMETOOLONG is the POSIX answer and the one macOS actually gives, its PATH_MAX being 1024.
-    // ENOENT is here because the comment block above records Windows having answered it for an
-    // over-MAX_PATH stored target: that measurement was later refuted on Windows 11 / Node 24, where
-    // every length up to 3,837 bytes creates successfully and the catch never runs at all, but a
-    // runner with long-path support off or an older Node could still reproduce it, and hard-failing
-    // there would turn a fixture that used to degrade gracefully into a red build. EINVAL is kept as
-    // a defensive entry only; it is unreproduced on every platform available here.
+    // Only a LENGTH refusal may shorten the candidate. A bare `catch` would swallow EACCES, EEXIST, ENOENT or EPERM just as quietly, walk all 38 rungs down, and then report "the platform refused even a single 100-byte target" -- a length story told about a permission or fixture fault. So the errno is discriminated: ENAMETOOLONG is the POSIX answer and EINVAL is what Windows has been observed to return for an over-long stored target, and anything else is re-thrown with the rung it died on attached. ENAMETOOLONG is the POSIX answer and the one macOS actually gives, its PATH_MAX being 1024. ENOENT is here because the comment block above records Windows having answered it for an over-MAX_PATH stored target: that measurement was later refuted on Windows 11 / Node 24, where every length up to 3,837 bytes creates successfully and the catch never runs at all, but a runner with long-path support off or an older Node could still reproduce it, and hard-failing there would turn a fixture that used to degrade gracefully into a red build. EINVAL is kept as a defensive entry only; it is unreproduced on every platform available here.
     const LENGTH_REFUSALS = new Set(['ENAMETOOLONG', 'ENOENT', 'EINVAL'])
     const linkPath = path.join(root, 'lnk')
     let linkTarget = ''
@@ -273,33 +156,18 @@ describe('the path-resolution walk is bounded', () => {
   })
 
   it('refuses an over-cap INPUT whose resolved form would collapse back under the cap', () => {
-    // THE CASE THAT DISCRIMINATES CAP 1, which nothing did until this was written. The two caps
-    // are not redundant, but the assertions around them could not tell them apart: comment out the
-    // entry check `Buffer.byteLength(p) > MAX_RESOLVE_PATH_BYTES` and the whole of
-    // path_containment_walk_cap + containment_matrix + pre_handler_fs_touches_are_gated stayed at
-    // 19 passed / 3 skipped / 0 failed (reproduced on this machine before writing this). The
-    // over-the-cap pair above cannot see it because the in-loop cap 2 catches that input too and
-    // returns the same verdict, and the 1.89 MB timing case is pinned at a budget the uncapped path
-    // fits inside (measured 217 ms against a 500 ms budget).
+    // THE CASE THAT DISCRIMINATES CAP 1, which nothing did until this was written. The two caps are not redundant, but the assertions around them could not tell them apart: comment out the entry check `Buffer.byteLength(p) > MAX_RESOLVE_PATH_BYTES` and the whole of path_containment_walk_cap + containment_matrix + pre_handler_fs_touches_are_gated stayed at 19 passed / 3 skipped / 0 failed (reproduced on this machine before writing this). The over-the-cap pair above cannot see it because the in-loop cap 2 catches that input too and returns the same verdict, and the 1.89 MB timing case is pinned at a budget the uncapped path fits inside (measured 217 ms against a 500 ms budget).
     //
-    // The discriminator is an input that is over the cap in BYTES while its RESOLVED form never is:
-    // ~900 `ab/..` pairs collapse to nothing, so `candidate` never grows past `<root>/ab` and cap 2
-    // is never reached. Cap 1 present -> unresolvable -> false. Cap 1 removed -> the walk runs to
-    // completion and answers TRUE, i.e. a 5,465-byte attacker-chosen path reads as CONTAINED.
+    // The discriminator is an input that is over the cap in BYTES while its RESOLVED form never is: ~900 `ab/..` pairs collapse to nothing, so `candidate` never grows past `<root>/ab` and cap 2 is never reached. Cap 1 present -> unresolvable -> false. Cap 1 removed -> the walk runs to completion and answers TRUE, i.e. a 5,465-byte attacker-chosen path reads as CONTAINED.
     //
-    // Preferred over a timing assertion deliberately: this is a CORRECTNESS difference, not a
-    // performance one, so it needs no clock, no budget, and no headroom argument, and it says
-    // something stronger than "cap 1 makes it fast" -- it says cap 1 is what makes the answer
-    // right. Measured both ways on win32: false with the cap, true without it.
+    // Preferred over a timing assertion deliberately: this is a CORRECTNESS difference, not a performance one, so it needs no clock, no budget, and no headroom argument, and it says something stronger than "cap 1 makes it fast" -- it says cap 1 is what makes the answer right. Measured both ways on win32: false with the cap, true without it.
     const root = scratch()
     const target = root + path.sep + Array.from({ length: 900 }, () => `ab${path.sep}..`).join(path.sep) + `${path.sep}ab`
     expect(
       Buffer.byteLength(target, 'utf8'),
       'the INPUT has to exceed the cap or the entry check is not what this case is asking about',
     ).toBeGreaterThan(MAX_BYTES)
-    // Calibration for the other half: the same shape, short enough to be under the cap, must still
-    // answer TRUE. Without it, a `false` above is indistinguishable from a walk that simply cannot
-    // handle `..` at all.
+    // Calibration for the other half: the same shape, short enough to be under the cap, must still answer TRUE. Without it, a `false` above is indistinguishable from a walk that simply cannot handle `..` at all.
     const shortSame = root + path.sep + Array.from({ length: 3 }, () => `ab${path.sep}..`).join(path.sep) + `${path.sep}ab`
     expect(Buffer.byteLength(shortSame, 'utf8')).toBeLessThan(MAX_BYTES)
     expect(isInsideRoot(shortSame, root), 'the dotdot-pair shape resolves to <root>/ab, which IS inside the root').toBe(true)
@@ -314,9 +182,7 @@ describe('the path-resolution walk is bounded', () => {
   })
 
   it('stays bounded at the adversarial worst case: the longest path the cap still admits', () => {
-    // Just under the cap with the shortest possible segments is the most lstat calls an attacker can
-    // buy: ~2,000 of them. Measured at 72.65 ms post-fix on this machine. The bound below leaves
-    // room for a loaded CI runner while still being far under anything a user would notice.
+    // Just under the cap with the shortest possible segments is the most lstat calls an attacker can buy: ~2,000 of them. Measured at 72.65 ms post-fix on this machine. The bound below leaves room for a loaded CI runner while still being far under anything a user would notice.
     const root = scratch()
     const budget = MAX_BYTES - Buffer.byteLength(root, 'utf8') - 4
     const segments = Math.floor(budget / 2)
@@ -332,12 +198,7 @@ describe('the path-resolution walk is bounded', () => {
 })
 
 describe('an unreadable ancestor fails closed rather than resolving lexically', () => {
-  // The walk used to catch EVERY lstatSync throw and treat the segment as "not a link". EACCES on an
-  // untraversable ancestor is not evidence that nothing is a link -- it is evidence that the answer
-  // is unknown -- and answering "not a link" turns an unknown into a permissive verdict on a
-  // pre-approval path. ENOENT and ENOTDIR are genuinely different: they prove the component is
-  // absent, so it provably is not a link, and the walk must keep going or every not-yet-created
-  // install target would be refused.
+  // The walk used to catch EVERY lstatSync throw and treat the segment as "not a link". EACCES on an untraversable ancestor is not evidence that nothing is a link -- it is evidence that the answer is unknown -- and answering "not a link" turns an unknown into a permissive verdict on a pre-approval path. ENOENT and ENOTDIR are genuinely different: they prove the component is absent, so it provably is not a link, and the walk must keep going or every not-yet-created install target would be refused.
   it('still resolves a path whose components simply do not exist yet (ENOENT is not a failure)', () => {
     const root = scratch()
 
@@ -348,8 +209,7 @@ describe('an unreadable ancestor fails closed rather than resolving lexically', 
     const root = scratch()
     fs.writeFileSync(path.join(root, 'a-file'), 'not a directory\n')
 
-    // Nonsensical as a target, but it must produce an answer rather than a throw, and the answer
-    // must be the lexical-containment one: nothing here is a link.
+    // Nonsensical as a target, but it must produce an answer rather than a throw, and the answer must be the lexical-containment one: nothing here is a link.
     expect(isInsideRoot(path.join(root, 'a-file', 'under', 'it.ts'), root)).toBe(true)
   })
 

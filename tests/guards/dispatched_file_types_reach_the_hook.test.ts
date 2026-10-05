@@ -1,23 +1,4 @@
-/**
- * `TEXT_FILE_TYPE_EXTS`/`BINARY_FILE_TYPE_EXTS` in src/hooks_read.ts decide whether a read even
- * reaches `dispatchFileTypeHandler`. Their comment calls them the single source of truth mirroring
- * that dispatcher's own split, and until this guard existed nothing held them to it: `.svg` and
- * `.xml` were routed by the dispatcher to handlers with 8 KB and 20 KB thresholds while the gate
- * omitted both, so neither threshold was reachable below the 100 KB generic catch-all, and by then
- * the catch-all would have fired anyway. The whole suite stayed green because every test for those
- * handlers called them directly, which supplies precisely the routing the shipping path omits.
- *
- * This is the drift check rather than a behavior test: tests/file_type_dispatch_reaches_hook.test.ts
- * proves the two extensions that were broken now fire through `preReadHandler`, and this file proves
- * the *next* handler added to the dispatcher cannot be silently unreachable in the same way. It
- * deliberately reads both lists out of source rather than importing them, because the sets are
- * module-private and exporting them purely for a test would widen the module's surface to satisfy
- * the guard rather than the product.
- *
- * Markdown is excluded on purpose: `dispatchFileTypeHandler` returns null for md/mdx/markdown/rst
- * so the caller skips the result, which means those extensions are handled upstream and genuinely
- * do not belong in the gate.
- */
+/** `TEXT_FILE_TYPE_EXTS`/`BINARY_FILE_TYPE_EXTS` in src/hooks_read.ts decide whether a read even reaches `dispatchFileTypeHandler`. Their comment calls them the single source of truth mirroring that dispatcher's own split, and until this guard existed nothing held them to it: `.svg` and `.xml` were routed by the dispatcher to handlers with 8 KB and 20 KB thresholds while the gate omitted both, so neither threshold was reachable below the 100 KB generic catch-all, and by then the catch-all would have fired anyway. The whole suite stayed green because every test for those handlers called them directly, which supplies precisely the routing the shipping path omits. This is the drift check rather than a behavior test: tests/file_type_dispatch_reaches_hook.test.ts proves the two extensions that were broken now fire through `preReadHandler`, and this file proves the *next* handler added to the dispatcher cannot be silently unreachable in the same way. It deliberately reads both lists out of source rather than importing them, because the sets are module-private and exporting them purely for a test would widen the module's surface to satisfy the guard rather than the product. Markdown is excluded on purpose: `dispatchFileTypeHandler` returns null for md/mdx/markdown/rst so the caller skips the result, which means those extensions are handled upstream and genuinely do not belong in the gate. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -32,11 +13,7 @@ function readSource(rel: string): string {
   return fs.readFileSync(path.join(SRC, rel), 'utf8')
 }
 
-/**
- * Extensions `dispatchFileTypeHandler` routes on, read out of its own body. Covers both shapes it
- * uses: `ext === 'pdf'` and `['odt', 'ods'].includes(ext)`. The md/rst early return is dropped
- * because it returns null rather than dispatching.
- */
+/** Extensions `dispatchFileTypeHandler` routes on, read out of its own body. Covers both shapes it uses: `ext === 'pdf'` and `['odt', 'ods'].includes(ext)`. The md/rst early return is dropped because it returns null rather than dispatching. */
 function dispatchedExtensions(): string[] {
   const source = readSource(path.join('hints', 'file_type_handler.ts'))
   const start = source.indexOf('export function dispatchFileTypeHandler')
@@ -67,8 +44,7 @@ function gatedExtensions(): string[] {
 
 describe('every file type the dispatcher handles is one the read hook lets through to it', () => {
   it('routes each dispatched extension through the hook gate', () => {
-    // Both anchors are extensions whose handlers carry a threshold well under the 100 KB generic
-    // gate, which is the condition that makes an omission invisible rather than merely wrong.
+    // Both anchors are extensions whose handlers carry a threshold well under the 100 KB generic gate, which is the condition that makes an omission invisible rather than merely wrong.
     const dispatched = pinnedPopulation({
       what: 'extensions dispatchFileTypeHandler routes to a handler',
       items: dispatchedExtensions(),

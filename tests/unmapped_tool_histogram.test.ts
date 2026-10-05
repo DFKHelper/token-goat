@@ -11,13 +11,7 @@ import { readUnmappedTools, pruneStalePatternCoveredUnmappedTools, GLOBAL_SCHEMA
 import { checkUnmappedTools } from '../src/cli_doctor.js'
 import { MCP_TOOL_PATTERN } from '../src/mcp_tool_pattern.js'
 
-/**
- * The unrecognized-tool histogram, driven through the real `runHook` rather than around it.
- *
- * The gap this whole mechanism exists to close is the injected-seam trap: a test hands a handler the payload the shipping path drops upstream, so the drop is invisible. Testing the recorder in isolation would repeat that mistake one level out -- the question is not "does the INSERT work", it is "does dispatch notice a name no handler wanted". So these register real handlers and call the real dispatcher.
- *
- * Tool names are prefixed `TgTest`/`tgtest_` because `recordUnmappedTool` writes to the process's one real global database, which the whole suite shares. Unique names make each assertion depend only on the rows this file created.
- */
+/** The unrecognized-tool histogram, driven through the real `runHook` rather than around it. The gap this whole mechanism exists to close is the injected-seam trap: a test hands a handler the payload the shipping path drops upstream, so the drop is invisible. Testing the recorder in isolation would repeat that mistake one level out -- the question is not "does the INSERT work", it is "does dispatch notice a name no handler wanted". So these register real handlers and call the real dispatcher. Tool names are prefixed `TgTest`/`tgtest_` because `recordUnmappedTool` writes to the process's one real global database, which the whole suite shares. Unique names make each assertion depend only on the rows this file created. */
 describe('unrecognized tool-name histogram', () => {
   beforeEach(() => {
     clearModuleCaches()
@@ -70,11 +64,7 @@ describe('unrecognized tool-name histogram', () => {
     expect(row?.near_miss).toBeNull()
   })
 
-  // Regression: a real GitHub MCP tool call reached preMcpHandler exactly as designed (it
-  // registers with toolPattern '^mcp__', not an exact toolName), but noteUnrecognizedTool only
-  // checked the exact-toolName list, so the call was logged as unmapped anyway. CAPTURE: a live
-  // global.db's unmapped_tools table held mcp__plugin_github_github__get_file_contents with 244
-  // pre_tool_use hits despite the GitHub compression pack and preMcpHandler both covering it.
+  // Regression: a real GitHub MCP tool call reached preMcpHandler exactly as designed (it registers with toolPattern '^mcp__', not an exact toolName), but noteUnrecognizedTool only checked the exact-toolName list, so the call was logged as unmapped anyway. CAPTURE: a live global.db's unmapped_tools table held mcp__plugin_github_github__get_file_contents with 244 pre_tool_use hits despite the GitHub compression pack and preMcpHandler both covering it.
   it('does not flag a tool name covered by a registered toolPattern', async () => {
     registerHook('pre_tool_use', async () => ({ hookType: 'pass' }), { toolPattern: MCP_TOOL_PATTERN })
     await dispatch('mcp__plugin_github_github__get_file_contents')
@@ -180,10 +170,7 @@ describe('doctor reads the histogram', () => {
   })
 
   it('lists a tool seen on both hook events once, not once per event', () => {
-    // Uses a non-MCP name deliberately: the real captured example this once used
-    // (mcp__plugin_github_github__get_file_contents) is now pruned as pattern-covered before
-    // this dedup logic even runs -- see 'drops a pre-existing pattern-covered row' below, which
-    // keeps that real fixture and its provenance note.
+    // Uses a non-MCP name deliberately: the real captured example this once used (mcp__plugin_github_github__get_file_contents) is now pruned as pattern-covered before this dedup logic even runs -- see 'drops a pre-existing pattern-covered row' below, which keeps that real fixture and its provenance note.
     insert('tgtest_dual_event_tool', null, 244, 'pre_tool_use')
     insert('tgtest_dual_event_tool', null, 241, 'post_tool_use')
     const { message } = checkUnmappedTools(dbPath)
@@ -193,9 +180,7 @@ describe('doctor reads the histogram', () => {
     expect(message).toContain('(244x)')
   })
 
-  // Regression: a stale row written before noteUnrecognizedTool checked toolPattern (see the
-  // real-dispatch tests above) survives forever in unmapped_tools unless cleaned, so doctor kept
-  // reporting an MCP tool as unmapped even after the recorder itself was fixed.
+  // Regression: a stale row written before noteUnrecognizedTool checked toolPattern (see the real-dispatch tests above) survives forever in unmapped_tools unless cleaned, so doctor kept reporting an MCP tool as unmapped even after the recorder itself was fixed.
   it('drops a pre-existing pattern-covered row instead of reporting it forever', () => {
     insert('mcp__plugin_github_github__get_file_contents', null, 244, 'pre_tool_use')
     insert('mcp__plugin_github_github__get_file_contents', null, 241, 'post_tool_use')

@@ -1,24 +1,4 @@
-/**
- * Embedding freshness must be decided on `files.embed_sha` alone, never on parse freshness.
- *
- * Both shipping index paths -- `worker.ts::makeIndexer` (the dirty-queue drain) and `cli.ts::cmdIndex`
- * (`token-goat index`) -- conjoined `parseUnchanged` into `embedUnchanged`. `files.parser_sha` answers
- * "which extractor wrote the symbol/ref rows"; it says nothing about whether the stored vectors still
- * describe this content. Conjoining it meant a parser-stamp bump re-embedded every file in the index
- * even though the bytes never moved, and made `writeParseResult`'s `embedShaToCarry` dead for exactly
- * the waste its own comment says it exists to prevent. Measured before the fix on an isolated 300-file
- * project: a stamp-only reparse cost 94% of the work of indexing from nothing (reparse 12257ms, full
- * 12908ms, against a 347ms no-op floor).
- *
- * Driven on the real default wiring -- `drainOnce` with no injected callback, and `cmdIndex` itself --
- * with only the embedding backend stubbed (`setPipelineFnForTesting`, as in
- * tests/embeddings_chunker_change_keeps_vectors.test.ts), since a real model is not what this is about.
- *
- * Provenance: HAND-DERIVED. The fixture is forty one-line exported functions; the stale parser stamp is
- * written by this file, and the expectation -- chunk rows keep their identity across a stamp-only
- * reparse, and are rebuilt when the content really moves or the path spelling does -- is computed from
- * what a reparse means, not read back out of any gate in `src/`.
- */
+/** Embedding freshness must be decided on `files.embed_sha` alone, never on parse freshness. Both shipping index paths -- `worker.ts::makeIndexer` (the dirty-queue drain) and `cli.ts::cmdIndex` (`token-goat index`) -- conjoined `parseUnchanged` into `embedUnchanged`. `files.parser_sha` answers "which extractor wrote the symbol/ref rows"; it says nothing about whether the stored vectors still describe this content. Conjoining it meant a parser-stamp bump re-embedded every file in the index even though the bytes never moved, and made `writeParseResult`'s `embedShaToCarry` dead for exactly the waste its own comment says it exists to prevent. Measured before the fix on an isolated 300-file project: a stamp-only reparse cost 94% of the work of indexing from nothing (reparse 12257ms, full 12908ms, against a 347ms no-op floor). Driven on the real default wiring -- `drainOnce` with no injected callback, and `cmdIndex` itself -- with only the embedding backend stubbed (`setPipelineFnForTesting`, as in tests/embeddings_chunker_change_keeps_vectors.test.ts), since a real model is not what this is about. Provenance: HAND-DERIVED. The fixture is forty one-line exported functions; the stale parser stamp is written by this file, and the expectation -- chunk rows keep their identity across a stamp-only reparse, and are rebuilt when the content really moves or the path spelling does -- is computed from what a reparse means, not read back out of any gate in `src/`. */
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import * as fs from 'node:fs'

@@ -12,17 +12,7 @@ function u32(n: number): Buffer {
   return b
 }
 
-/**
- * Builds a single-entry zip-format archive whose local file header AND central directory record
- * both declare `declaredUncompressedSize` bytes of content, while the entry's real DEFLATE
- * stream, once actually decompressed, produces `realPayload.length` bytes -- a forged central
- * directory, the same shape a real zip bomb can carry. fflate's zip reader does not verify
- * CRC-32 on read, so this needs no checksum forgery to parse cleanly; only the size fields lie.
- *
- * Used to prove a decompression-size check that trusts the declared size alone is theatre: call
- * with `declaredUncompressedSize` small and `realPayload` large, and a check gated only on the
- * declared field will wave it through.
- */
+/** Builds a single-entry zip-format archive whose local file header AND central directory record both declare `declaredUncompressedSize` bytes of content, while the entry's real DEFLATE stream, once actually decompressed, produces `realPayload.length` bytes -- a forged central directory, the same shape a real zip bomb can carry. fflate's zip reader does not verify CRC-32 on read, so this needs no checksum forgery to parse cleanly; only the size fields lie. Used to prove a decompression-size check that trusts the declared size alone is theatre: call with `declaredUncompressedSize` small and `realPayload` large, and a check gated only on the declared field will wave it through. */
 export function buildLyingSizeZip(entryName: string, realPayload: Uint8Array, declaredUncompressedSize: number): Uint8Array {
   const nameBytes = Buffer.from(entryName, 'utf-8')
   const compressed = zlib.deflateRawSync(Buffer.from(realPayload.buffer, realPayload.byteOffset, realPayload.byteLength), { level: 1 })
@@ -78,8 +68,7 @@ export function buildLyingSizeZip(entryName: string, realPayload: Uint8Array, de
   return new Uint8Array(Buffer.concat([localHeader, compressed, centralHeader, eocd]))
 }
 
-/** A `sizeMB` payload of zeros -- highly compressible, like a real zip bomb's source, and cheap
- * to build (an already-zeroed buffer, no fill work). */
+/** A `sizeMB` payload of zeros -- highly compressible, like a real zip bomb's source, and cheap to build (an already-zeroed buffer, no fill work). */
 export function zeroPayload(sizeMB: number): Uint8Array {
   return new Uint8Array(sizeMB * 1024 * 1024)
 }

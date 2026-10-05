@@ -1,23 +1,4 @@
-/**
- * Shared scanner for the injectable seams on the indexer/worker critical path.
- *
- * CLAUDE.md names one failure mode for this area specifically: "a test always supplies the
- * dependency the shipping path omits", so the tested path and the shipped path are different code.
- * A release once shipped with `drainOnce`'s default index callback being a stub that never wrote to
- * the `symbols` table, and the suite stayed green because every worker test injected its own
- * callback.
- *
- * A "seam" here is (a) a parameter of an EXPORTED function in one of {@link SEAM_FILES} that is
- * optional or default-valued and function-typed -- an injectable callback the shipping path leaves
- * to its default -- or (b) a module-level `set<Name>ForTesting` override, which is the same
- * substitution one level up. A plain `dbPath = globalDbPath()` / `dir = dataDir()` default is
- * deliberately NOT counted: passing a temp path is how a test isolates itself, not a way for it to
- * replace behavior, and counting every one of them would bury the callbacks that matter in path
- * plumbing.
- *
- * Kept in a plain `.ts` module rather than inside the guard test so the population can also be
- * listed from a scratch script when adding a seam, without running vitest.
- */
+/** Shared scanner for the injectable seams on the indexer/worker critical path. CLAUDE.md names one failure mode for this area specifically: "a test always supplies the dependency the shipping path omits", so the tested path and the shipped path are different code. A release once shipped with `drainOnce`'s default index callback being a stub that never wrote to the `symbols` table, and the suite stayed green because every worker test injected its own callback. A "seam" here is (a) a parameter of an EXPORTED function in one of {@link SEAM_FILES} that is optional or default-valued and function-typed -- an injectable callback the shipping path leaves to its default -- or (b) a module-level `set<Name>ForTesting` override, which is the same substitution one level up. A plain `dbPath = globalDbPath()` / `dir = dataDir()` default is deliberately NOT counted: passing a temp path is how a test isolates itself, not a way for it to replace behavior, and counting every one of them would bury the callbacks that matter in path plumbing. Kept in a plain `.ts` module rather than inside the guard test so the population can also be listed from a scratch script when adding a seam, without running vitest. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -41,10 +22,7 @@ function splitTopLevel(params: string): string[] {
   let prev = ''
   for (const ch of params) {
     if (ch === '(' || ch === '[' || ch === '{' || ch === '<') depth++
-    // The `>` of an arrow type closes nothing: counting it drives depth negative, after which the
-    // remaining commas no longer read as top level, so a signature with two callbacks reported only
-    // its first seam and the second slipped in undeclared -- the exact blindness this guard exists
-    // to prevent.
+    // The `>` of an arrow type closes nothing: counting it drives depth negative, after which the remaining commas no longer read as top level, so a signature with two callbacks reported only its first seam and the second slipped in undeclared -- the exact blindness this guard exists to prevent.
     else if (ch === ')' || ch === ']' || ch === '}' || (ch === '>' && prev !== '=')) depth--
     if (ch === ',' && depth === 0) {
       out.push(current)
@@ -59,11 +37,7 @@ function splitTopLevel(params: string): string[] {
   return out
 }
 
-/**
- * Every exported `function NAME(...)` signature in `source`, as {name, params, line}. Reads the raw
- * text rather than a TS AST deliberately: the guard must stay runnable with no extra dependency, and
- * the shapes it looks for are ordinary declaration syntax.
- */
+/** Every exported `function NAME(...)` signature in `source`, as {name, params, line}. Reads the raw text rather than a TS AST deliberately: the guard must stay runnable with no extra dependency, and the shapes it looks for are ordinary declaration syntax. */
 function signatures(source: string): Array<{ name: string; params: string; line: number }> {
   const out: Array<{ name: string; params: string; line: number }> = []
   const decl = /\bexport\s+(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^(]*>)?\s*\(/g
@@ -125,9 +99,7 @@ export function collectSeams(repoRoot: string): Seam[] {
         seams.push({ id: `${file}::${sig.name}::${name}`, file, fn: sig.name, param: name, line: sig.line })
       }
     }
-    // A module-level testing override is the same substitution one level up: production reads the
-    // real backend, every test installs its own through the setter. Counted as a seam named for its
-    // setter so a second one cannot be added without a decision.
+    // A module-level testing override is the same substitution one level up: production reads the real backend, every test installs its own through the setter. Counted as a seam named for its setter so a second one cannot be added without a decision.
     setterRe.lastIndex = 0
     let s: RegExpExecArray | null
     while ((s = setterRe.exec(source)) !== null) {

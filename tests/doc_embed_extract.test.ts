@@ -9,8 +9,7 @@ import { pptxAllSlidesText } from '../src/pptx_extract.js'
 import { allSheetsHeadText } from '../src/xlsx_extract.js'
 import { buildDocxFixture, buildFarCornerXlsxFixture, buildPptxFixture } from './helpers/ooxml_fixtures.js'
 
-// Minimal hand-authored single-page PDF (Helvetica text object), the standard fixture shape for
-// exercising a PDF parser without a binary test asset -- same shape as tests/pdf_extract.test.ts.
+// Minimal hand-authored single-page PDF (Helvetica text object), the standard fixture shape for exercising a PDF parser without a binary test asset -- same shape as tests/pdf_extract.test.ts.
 const MINIMAL_PDF = `%PDF-1.4
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
@@ -112,11 +111,7 @@ describe('extractEmbeddableDocumentText', () => {
     expect(text).toContain('Alice')
   })
 
-  // Both of these used to resolve to null, and the indexer read null as "this document holds no
-  // text": a settled verdict that clears the file's embeddings and records it as done, so nothing
-  // ever read it again. A missing or corrupt file is not a verdict, it is a failure, and the two
-  // have to arrive differently for the caller to treat them differently. See
-  // tests/document_extraction_failure_is_retried.test.ts for what the indexer does with each.
+  // Both of these used to resolve to null, and the indexer read null as "this document holds no text": a settled verdict that clears the file's embeddings and records it as done, so nothing ever read it again. A missing or corrupt file is not a verdict, it is a failure, and the two have to arrive differently for the caller to treat them differently. See tests/document_extraction_failure_is_retried.test.ts for what the indexer does with each.
   it('throws for a nonexistent path rather than reporting an empty document', async () => {
     await expect(extractEmbeddableDocumentText(path.join(dir, 'does-not-exist.pdf'))).rejects.toThrow()
   })

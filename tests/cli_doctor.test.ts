@@ -231,8 +231,7 @@ describe('cli_doctor', () => {
       expect(result.message).toMatch(/\d+ KB/)
     })
 
-    // Regression (task #172): checkDbExists only checked fs.existsSync + reported size, so a 0-byte or truncated file (e.g. from a crash mid-creation) still reported 'ok'. It now validates the SQLite magic header ("SQLite format 3\0") the same way checkConfigValid parses TOML content instead of just checking file presence.
-    // CAPTURE (round 12 dogfood, built bundle, isolated home): `doctor` on a 0-byte global.db failed this row and named --repair, then its own later checks opened the file and left a valid 303,104-byte database behind, so --repair found nothing to do. SQLite opens a zero-length file as an empty database; the row says so instead of calling it corrupt.
+    // Regression (task #172): checkDbExists only checked fs.existsSync + reported size, so a 0-byte or truncated file (e.g. from a crash mid-creation) still reported 'ok'. It now validates the SQLite magic header ("SQLite format 3\0") the same way checkConfigValid parses TOML content instead of just checking file presence. CAPTURE (round 12 dogfood, built bundle, isolated home): `doctor` on a 0-byte global.db failed this row and named --repair, then its own later checks opened the file and left a valid 303,104-byte database behind, so --repair found nothing to do. SQLite opens a zero-length file as an empty database; the row says so instead of calling it corrupt.
     it('returns warn (not ok, not fail) for a 0-byte global.db, naming the index rebuild rather than --repair', () => {
       const dbPath = path.join(tempDir, 'global.db')
       fs.writeFileSync(dbPath, '')

@@ -37,23 +37,16 @@ describe('buildCommandManifest', () => {
     expect(bridgesStatus).toBeDefined()
     const jsonOpt = bridgesStatus?.options.find((o) => o.flags.includes('--json'))
     expect(jsonOpt).toBeDefined()
-    // Pin the real registered description text instead of just ">0", so a regression that
-    // swapped in the wrong option's description (still non-empty) is caught too.
+    // Pin the real registered description text instead of just ">0", so a regression that swapped in the wrong option's description (still non-empty) is caught too.
     expect(jsonOpt?.description).toBe('emit the matrix as JSON instead of text')
   })
 
   it('captures a real command\'s required argument', () => {
     const manifest = buildCommandManifest(buildProgram())
-    // Specimen is `read <spec> [more...]`, not `symbol`: `symbol`'s first positional became
-    // OPTIONAL when `--grep` was added (the pattern is the query in that mode), so it no longer
-    // exercises the required-argument path this test exists for. The optional case `symbol` now
-    // represents is covered by the test below.
+    // Specimen is `read <spec> [more...]`, not `symbol`: `symbol`'s first positional became OPTIONAL when `--grep` was added (the pattern is the query in that mode), so it no longer exercises the required-argument path this test exists for. The optional case `symbol` now represents is covered by the test below.
     const read = manifest.find((e) => e.name === 'read')
     expect(read).toBeDefined()
-    // Pin the exact count so a regression that dropped or duplicated the argument list (still
-    // non-empty) is caught too. The trailing `[more...]` exists to catch space-separated extras
-    // and report them instead of dropping them silently; it is optional, so it does not disturb
-    // the required/optional distinction this test pins.
+    // Pin the exact count so a regression that dropped or duplicated the argument list (still non-empty) is caught too. The trailing `[more...]` exists to catch space-separated extras and report them instead of dropping them silently; it is optional, so it does not disturb the required/optional distinction this test pins.
     expect(read?.arguments.length).toBe(2)
     expect(read?.arguments[0]?.required).toBe(true)
     expect(read?.arguments[1]?.required).toBe(false)
@@ -63,10 +56,7 @@ describe('buildCommandManifest', () => {
     const manifest = buildCommandManifest(buildProgram())
     const symbol = manifest.find((e) => e.name === 'symbol')
     expect(symbol).toBeDefined()
-    // `symbol [name] [more...]` takes no required argument at all -- omitting the name is how a
-    // `--grep` pattern search is invoked. Pins the other half of the required/optional
-    // distinction, so a regression that marked every argument required (or dropped the
-    // argument list entirely) is caught rather than silently passing the case above.
+    // `symbol [name] [more...]` takes no required argument at all -- omitting the name is how a `--grep` pattern search is invoked. Pins the other half of the required/optional distinction, so a regression that marked every argument required (or dropped the argument list entirely) is caught rather than silently passing the case above.
     expect(symbol?.arguments.length).toBe(2)
     expect(symbol?.arguments.every((a) => !a.required)).toBe(true)
   })
@@ -155,8 +145,7 @@ describe('filterCommandManifest', () => {
 
   it('falls back to a literal substring match on an invalid regex pattern', () => {
     const manifest = buildCommandManifest(buildProgram())
-    // "(" alone is an invalid regex; the fallback path does a literal substring search instead
-    // of throwing, and this nonsense pattern (still containing an unbalanced "(") matches nothing.
+    // "(" alone is an invalid regex; the fallback path does a literal substring search instead of throwing, and this nonsense pattern (still containing an unbalanced "(") matches nothing.
     expect(filterCommandManifest(manifest, 'zzz-no-such-command-exists(')).toEqual([])
   })
 })

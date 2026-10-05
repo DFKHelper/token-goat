@@ -1,12 +1,4 @@
-/**
- * Unit tests for cache / history commands (D1) and session / cost commands (D2).
- *
- * listBlobs is mutation-verified in D1 (see end of file).
- * buildResumePacket cap is mutation-verified in D2 (see end of file).
- * Command handlers are tested by driving them against a real isolated TOKEN_GOAT_HOME,
- * with output captured via process.stdout mocking. Real-bundle integration is
- * covered by tests/command_matrix_e2e.*.test.ts.
- */
+/** Unit tests for cache / history commands (D1) and session / cost commands (D2). listBlobs is mutation-verified in D1 (see end of file). buildResumePacket cap is mutation-verified in D2 (see end of file). Command handlers are tested by driving them against a real isolated TOKEN_GOAT_HOME, with output captured via process.stdout mocking. Real-bundle integration is covered by tests/command_matrix_e2e.*.test.ts. */
 
 import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
@@ -15,23 +7,9 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Redirects configPath() to a per-test-file temp file so the cache-audit large_file_skip_kb
-// tests below can saveConfig() without touching the real per-worker DATA_DIR/config.toml that
-// other tests in this file (and other files sharing this worker) implicitly depend on. Mirrors
-// tests/hooks_grep.test.ts/hooks_bash.test.ts's pattern. Confirmed necessary: writing through
-// the shared config.toml here broke cmdCompactHint's "reflects the real session tier" test
-// further down this same file, even mutating only one unrelated field.
+// Redirects configPath() to a per-test-file temp file so the cache-audit large_file_skip_kb tests below can saveConfig() without touching the real per-worker DATA_DIR/config.toml that other tests in this file (and other files sharing this worker) implicitly depend on. Mirrors tests/hooks_grep.test.ts/hooks_bash.test.ts's pattern. Confirmed necessary: writing through the shared config.toml here broke cmdCompactHint's "reflects the real session tier" test further down this same file, even mutating only one unrelated field.
 //
-// dataDir() is redirected the same way, but per-TEST (not per-file, reassigned in beforeEach
-// below) to a fresh subdirectory of that test's own tmpHome -- unlike TOKEN_GOAT_HOME
-// (read live from process.env on every call), DATA_DIR is cached once at module load (see
-// constants.ts's own doc comment on _resetDataDirCacheForTesting), so tests/setup/isolate-home.ts
-// pins it to the SAME real directory for every test file sharing this Vitest worker. Any test in
-// this file that writes real fixture files under dataDir()-derived paths (e.g. webCacheDir() in
-// webfetch.ts, exercised by cmdCleanCache/cmdPruneCache's stale-.tmp-download sweep below) would
-// otherwise write into that shared worker-wide directory instead of an isolated one -- confirmed
-// to destabilize an unrelated test elsewhere in this exact file under full-suite load before this
-// mock existed (see the cmdPruneCache stale-download test's own regression comment below).
+// dataDir() is redirected the same way, but per-TEST (not per-file, reassigned in beforeEach below) to a fresh subdirectory of that test's own tmpHome -- unlike TOKEN_GOAT_HOME (read live from process.env on every call), DATA_DIR is cached once at module load (see constants.ts's own doc comment on _resetDataDirCacheForTesting), so tests/setup/isolate-home.ts pins it to the SAME real directory for every test file sharing this Vitest worker. Any test in this file that writes real fixture files under dataDir()-derived paths (e.g. webCacheDir() in webfetch.ts, exercised by cmdCleanCache/cmdPruneCache's stale-.tmp-download sweep below) would otherwise write into that shared worker-wide directory instead of an isolated one -- confirmed to destabilize an unrelated test elsewhere in this exact file under full-suite load before this mock existed (see the cmdPruneCache stale-download test's own regression comment below).
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return { ...original, configPath: () => _testConfigPath, dataDir: () => _testDataDir }
@@ -61,20 +39,14 @@ beforeEach(() => {
   prevHome = process.env['TOKEN_GOAT_HOME']
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmd-cache-'))
   process.env['TOKEN_GOAT_HOME'] = tmpHome
-  // See the vi.mock('../src/constants.js', ...) comment above: a subdirectory of this test's own
-  // fresh tmpHome, so it's cleaned up by the existing tmpHome rmSync in afterEach with no separate
-  // teardown needed.
+  // See the vi.mock('../src/constants.js', ...) comment above: a subdirectory of this test's own fresh tmpHome, so it's cleaned up by the existing tmpHome rmSync in afterEach with no separate teardown needed.
   _testDataDir = path.join(tmpHome, 'data-dir')
-  // Pin harness detection so getContextPressure's fillFraction (scaled by the
-  // per-harness auto-trigger multiplier) doesn't depend on the ambient
-  // environment this suite happens to run in.
+  // Pin harness detection so getContextPressure's fillFraction (scaled by the per-harness auto-trigger multiplier) doesn't depend on the ambient environment this suite happens to run in.
   prevHarnessOverride = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
   process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'generic'
   stdoutLines = []
   writeSpy = spyOnWrite(process.stdout, stdoutLines)
-  // Some command paths (e.g. renderShortStats's zero-events branch) emit via console.log rather
-  // than process.stdout.write directly; Vitest's worker pool intercepts console.* separately from
-  // process.stdout, so capturedOutput() would silently miss that text without this second spy.
+  // Some command paths (e.g. renderShortStats's zero-events branch) emit via console.log rather than process.stdout.write directly; Vitest's worker pool intercepts console.* separately from process.stdout, so capturedOutput() would silently miss that text without this second spy.
   consoleLogSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
     stdoutLines.push(args.map((a) => String(a)).join(' ') + '\n')
   })
@@ -209,19 +181,14 @@ describe('cmdBashHistory', () => {
     expect(dataLines).toBe(2)
   })
 
-  // Regression: a non-numeric --limit used to silently coerce to NaN
-  // (Number.parseInt('abc', 10) is NaN, and Math.max(1, NaN) is NaN, which
-  // .slice(0, NaN) treats as 0), so bash-history printed "No bash output
-  // entries cached." even when the cache held real entries, instead of
-  // failing loudly on the malformed flag.
+  // Regression: a non-numeric --limit used to silently coerce to NaN (Number.parseInt('abc', 10) is NaN, and Math.max(1, NaN) is NaN, which .slice(0, NaN) treats as 0), so bash-history printed "No bash output entries cached." even when the cache held real entries, instead of failing loudly on the malformed flag.
   it('rejects a non-numeric --limit instead of silently reporting an empty cache', () => {
     const e = { id: 'real1', command: 'echo hi', output: '', exitCode: 0, storedAt: Date.now(), sizeBytes: 0 }
     storeBlob(BASH_OUTPUT_SUBDIR, 'real1', e)
     expect(() => cmdBashHistory({ limit: 'abc' })).toThrow('bash-history: --limit must be a positive number, got: "abc"')
   })
 
-  // #232 regression: a bare Number.parseInt accepts trailing garbage ("30x" -> 30) and
-  // exponential notation ("1e3" -> 1) instead of rejecting them.
+  // #232 regression: a bare Number.parseInt accepts trailing garbage ("30x" -> 30) and exponential notation ("1e3" -> 1) instead of rejecting them.
   it('rejects trailing garbage in --limit instead of silently truncating', () => {
     expect(() => cmdBashHistory({ limit: '30x' })).toThrow('bash-history: --limit must be a positive number, got: "30x"')
   })
@@ -234,11 +201,7 @@ describe('cmdBashHistory', () => {
     expect(() => cmdBashHistory({ limit: '-5' })).toThrow('bash-history: --limit must be a positive number, got: "-5"')
   })
 
-  // --limit 0 is rejected outright rather than silently sliced to an empty result: a
-  // .slice(0, 0) would print "No bash output entries cached." even though entries genuinely
-  // exist (the blob stored below), a false-clean claim about the cache's contents. Matches
-  // runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top
-  // validation for the same failure mode.
+  // --limit 0 is rejected outright rather than silently sliced to an empty result: a .slice(0, 0) would print "No bash output entries cached." even though entries genuinely exist (the blob stored below), a false-clean claim about the cache's contents. Matches runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top validation for the same failure mode.
   it('rejects --limit 0 instead of silently reporting an empty cache', () => {
     const e = { id: 'real1', command: 'echo hi', output: '', exitCode: 0, storedAt: Date.now(), sizeBytes: 0 }
     storeBlob(BASH_OUTPUT_SUBDIR, 'real1', e)
@@ -281,16 +244,13 @@ describe('cmdWebHistory', () => {
     expect(rows).toBe(2)
   })
 
-  // Regression: same NaN-coercion bug as cmdBashHistory's --limit (see above) —
-  // a non-numeric --limit used to silently report an empty cache instead of
-  // failing loudly.
+  // Regression: same NaN-coercion bug as cmdBashHistory's --limit (see above) — a non-numeric --limit used to silently report an empty cache instead of failing loudly.
   it('rejects a non-numeric --limit instead of silently reporting an empty cache', () => {
     storeBlob(WEB_OUTPUT_SUBDIR, 'realweb1', { url: 'https://example.com', content: 'hello' })
     expect(() => cmdWebHistory({ limit: 'abc' })).toThrow('web-history: --limit must be a positive number, got: "abc"')
   })
 
-  // #232 regression: same trailing-garbage / exponential-notation gap as cmdBashHistory's
-  // --limit (see above).
+  // #232 regression: same trailing-garbage / exponential-notation gap as cmdBashHistory's --limit (see above).
   it('rejects trailing garbage in --limit instead of silently truncating', () => {
     expect(() => cmdWebHistory({ limit: '30x' })).toThrow('web-history: --limit must be a positive number, got: "30x"')
   })
@@ -299,11 +259,7 @@ describe('cmdWebHistory', () => {
     expect(() => cmdWebHistory({ limit: '1e3' })).toThrow('web-history: --limit must be a positive number, got: "1e3"')
   })
 
-  // --limit 0 is rejected outright rather than silently sliced to an empty result: a
-  // .slice(0, 0) would print "No web output entries cached." even though entries genuinely
-  // exist (the blob stored below), a false-clean claim about the cache's contents. Matches
-  // runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top
-  // validation for the same failure mode.
+  // --limit 0 is rejected outright rather than silently sliced to an empty result: a .slice(0, 0) would print "No web output entries cached." even though entries genuinely exist (the blob stored below), a false-clean claim about the cache's contents. Matches runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top validation for the same failure mode.
   it('rejects --limit 0 instead of silently reporting an empty cache', () => {
     storeBlob(WEB_OUTPUT_SUBDIR, 'realweb1', { url: 'https://example.com', content: 'hello' })
     expect(() => cmdWebHistory({ limit: '0' })).toThrow('web-history: --limit must be a positive number, got: "0"')
@@ -329,11 +285,7 @@ describe('cmdMcpHistory', () => {
     expect(dataLines).toBe(2)
   })
 
-  // Regression: cmdMcpHistory had its own bare Number.parseInt + Math.max(1, n) --limit
-  // handling instead of reusing requireNonNegativeStrictInt like cmdBashHistory/cmdWebHistory
-  // (see those describe blocks above), so it silently diverged from its siblings on the exact
-  // same command family: a non-numeric --limit parsed to NaN -> Math.max(1, NaN) is NaN ->
-  // .slice(0, NaN) treats as 0, instead of failing loudly on the malformed flag.
+  // Regression: cmdMcpHistory had its own bare Number.parseInt + Math.max(1, n) --limit handling instead of reusing requireNonNegativeStrictInt like cmdBashHistory/cmdWebHistory (see those describe blocks above), so it silently diverged from its siblings on the exact same command family: a non-numeric --limit parsed to NaN -> Math.max(1, NaN) is NaN -> .slice(0, NaN) treats as 0, instead of failing loudly on the malformed flag.
   it('rejects a non-numeric --limit instead of silently reporting an empty cache', () => {
     const e = { command: 'mcp:realtool preview', storedAt: Date.now(), sizeBytes: 0 }
     storeBlob(BASH_OUTPUT_SUBDIR, 'mcp_real1', e)
@@ -348,18 +300,12 @@ describe('cmdMcpHistory', () => {
     expect(() => cmdMcpHistory({ limit: '1e3' })).toThrow('mcp-history: --limit must be a positive number, got: "1e3"')
   })
 
-  // Regression: the old Math.max(1, n) silently clamped a negative --limit to 1 (still
-  // returning a row) instead of erroring, unlike cmdBashHistory/cmdWebHistory's --limit -5.
+  // Regression: the old Math.max(1, n) silently clamped a negative --limit to 1 (still returning a row) instead of erroring, unlike cmdBashHistory/cmdWebHistory's --limit -5.
   it('rejects a negative --limit instead of silently clamping to 1', () => {
     expect(() => cmdMcpHistory({ limit: '-5' })).toThrow('mcp-history: --limit must be a positive number, got: "-5"')
   })
 
-  // --limit 0 is rejected outright rather than silently sliced to an empty result: a
-  // .slice(0, 0) would print "No mcp output entries cached." even though entries genuinely
-  // exist (the blob stored above), a false-clean claim about the cache's contents. Matches
-  // runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top
-  // validation for the same failure mode -- and now matches cmdBashHistory/cmdWebHistory,
-  // which share this same rejection via parseLimitOpt.
+  // --limit 0 is rejected outright rather than silently sliced to an empty result: a .slice(0, 0) would print "No mcp output entries cached." even though entries genuinely exist (the blob stored above), a false-clean claim about the cache's contents. Matches runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top validation for the same failure mode -- and now matches cmdBashHistory/cmdWebHistory, which share this same rejection via parseLimitOpt.
   it('rejects --limit 0 instead of silently reporting an empty cache', () => {
     const e = { command: 'mcp:realtool preview', storedAt: Date.now(), sizeBytes: 0 }
     storeBlob(BASH_OUTPUT_SUBDIR, 'mcp_real1', e)
@@ -395,17 +341,12 @@ describe('cmdCleanCache', () => {
     expect(out).toContain(`${BASH_OUTPUT_SUBDIR}: removed 1`)
   })
 
-  // Regression: cleanupStaleDownloads (webfetch.ts) -- which removes orphaned .tmp files left in
-  // webCacheDir() by a process killed mid-download -- was fully implemented and unit-tested but
-  // had zero production callers. clean-cache is the established "sweep every cache subdir"
-  // entrypoint; it never touched webCacheDir() at all before this wiring.
+  // Regression: cleanupStaleDownloads (webfetch.ts) -- which removes orphaned .tmp files left in webCacheDir() by a process killed mid-download -- was fully implemented and unit-tested but had zero production callers. clean-cache is the established "sweep every cache subdir" entrypoint; it never touched webCacheDir() at all before this wiring.
   it('also sweeps orphaned .tmp download files from the web fetch cache dir', () => {
     const staleTmp = path.join(dataDir(), 'web_cache', 'stale-download.jpg.tmp')
     fs.mkdirSync(path.dirname(staleTmp), { recursive: true })
     fs.writeFileSync(staleTmp, 'partial')
-    // cleanupStaleDownloads only removes a .tmp file once it's old enough to be safely treated
-    // as abandoned (not an active in-progress download) -- backdate the mtime well past that
-    // threshold so this fixture actually is stale, matching its name.
+    // cleanupStaleDownloads only removes a .tmp file once it's old enough to be safely treated as abandoned (not an active in-progress download) -- backdate the mtime well past that threshold so this fixture actually is stale, matching its name.
     const staleTime = new Date(Date.now() - 15 * 60 * 1000)
     fs.utimesSync(staleTmp, staleTime, staleTime)
     try {
@@ -434,22 +375,12 @@ describe('cmdPruneCache', () => {
     expect(parsed.maxAgeMs).toBeCloseTo(2 * 3600 * 1000, -3)
   })
 
-  // Regression: cmdCleanCache wires cleanupStaleDownloads (see the matching cmdCleanCache test
-  // above) but that wiring was never mirrored onto this sibling command -- prune-cache is
-  // documented as "clean-cache but with caller-specified eviction bounds", so a stale .tmp
-  // download left behind after a killed webfetch was silently NOT swept by prune-cache while
-  // clean-cache did sweep it, an unexplained behavior divergence between the two. Uses this
-  // file's own per-test dataDir() mock (see the vi.mock comment at the top of this file) rather
-  // than the real per-worker dataDir() -- an earlier attempt at this exact fix, before that mock
-  // existed, reproducibly destabilized the unrelated cmdCost "No stats recorded yet" test
-  // elsewhere in this file under full-suite load by touching the real worker-shared directory.
+  // Regression: cmdCleanCache wires cleanupStaleDownloads (see the matching cmdCleanCache test above) but that wiring was never mirrored onto this sibling command -- prune-cache is documented as "clean-cache but with caller-specified eviction bounds", so a stale .tmp download left behind after a killed webfetch was silently NOT swept by prune-cache while clean-cache did sweep it, an unexplained behavior divergence between the two. Uses this file's own per-test dataDir() mock (see the vi.mock comment at the top of this file) rather than the real per-worker dataDir() -- an earlier attempt at this exact fix, before that mock existed, reproducibly destabilized the unrelated cmdCost "No stats recorded yet" test elsewhere in this file under full-suite load by touching the real worker-shared directory.
   it('also sweeps orphaned .tmp download files from the web fetch cache dir, same as clean-cache', () => {
     const staleTmp = path.join(dataDir(), 'web_cache', 'stale-download.jpg.tmp')
     fs.mkdirSync(path.dirname(staleTmp), { recursive: true })
     fs.writeFileSync(staleTmp, 'partial')
-    // cleanupStaleDownloads only removes a .tmp file once it's old enough to be safely treated
-    // as abandoned (not an active in-progress download) -- backdate the mtime well past that
-    // threshold so this fixture actually is stale, matching its name.
+    // cleanupStaleDownloads only removes a .tmp file once it's old enough to be safely treated as abandoned (not an active in-progress download) -- backdate the mtime well past that threshold so this fixture actually is stale, matching its name.
     const staleTime = new Date(Date.now() - 15 * 60 * 1000)
     fs.utimesSync(staleTmp, staleTime, staleTime)
     try {
@@ -474,12 +405,7 @@ describe('cmdPruneCache', () => {
     expect((parsed.removed[BASH_OUTPUT_SUBDIR] ?? 0)).toBeGreaterThanOrEqual(2)
   })
 
-  // M5 regression: a non-numeric --maxCount/--maxAgeHours used to silently
-  // coerce to NaN (Number.parseInt / parseFloat both return NaN, and
-  // Math.max(0, NaN) is NaN), so prune-cache would run with maxCount=NaN or
-  // maxAgeMs=NaN instead of failing loudly -- a NaN bound makes every
-  // count/age comparison in pruneBlobs false, silently pruning nothing while
-  // reporting success.
+  // M5 regression: a non-numeric --maxCount/--maxAgeHours used to silently coerce to NaN (Number.parseInt / parseFloat both return NaN, and Math.max(0, NaN) is NaN), so prune-cache would run with maxCount=NaN or maxAgeMs=NaN instead of failing loudly -- a NaN bound makes every count/age comparison in pruneBlobs false, silently pruning nothing while reporting success.
   it('rejects a non-numeric --maxCount instead of silently coercing to NaN', () => {
     expect(() => cmdPruneCache({ maxCount: 'abc' })).toThrow(/--maxCount must be a valid integer/)
   })
@@ -492,10 +418,7 @@ describe('cmdPruneCache', () => {
     expect(() => cmdPruneCache({ maxCount: 'NaN', maxAgeHours: '2' })).toThrow(/--maxCount must be a valid integer/)
   })
 
-  // #232 regression: Number.parseInt accepts trailing garbage ("5x" -> 5) and exponential
-  // notation ("1e3" -> 1) instead of rejecting them, and the old Math.max(0, parsed) clamp
-  // silently coerced a negative value to 0 (which evicts nearly the whole cache) instead of
-  // erroring -- exactly the wrong-direction failure mode for a destructive eviction bound.
+  // #232 regression: Number.parseInt accepts trailing garbage ("5x" -> 5) and exponential notation ("1e3" -> 1) instead of rejecting them, and the old Math.max(0, parsed) clamp silently coerced a negative value to 0 (which evicts nearly the whole cache) instead of erroring -- exactly the wrong-direction failure mode for a destructive eviction bound.
   it('rejects trailing garbage in --maxCount instead of silently truncating', () => {
     expect(() => cmdPruneCache({ maxCount: '5x' })).toThrow(/--maxCount must be a valid integer/)
   })
@@ -584,15 +507,7 @@ describe('cmdCacheAudit', () => {
     expect(checks).toContain('hooks:project')
   })
 
-  // Regression: a corrupted/misconfigured indexing.large_file_skip_kb (e.g. left at a tiny
-  // value from an aborted test run or stray manual `config set`) silently skips nearly every
-  // real source file from indexing, with no error anywhere -- exactly what happened to this
-  // repo's own live config.toml this session. cache-audit must surface it. Mutates only the one
-  // field being tested (structuredClone + restore, matching this session's established pattern
-  // in tests/hooks_session.test.ts/embed_sha_gate.test.ts) rather than writing a full
-  // defaultConfig() snapshot, which would clobber unrelated config state other tests in this
-  // shared-worker-DATA_DIR file depend on (confirmed: a blanket defaultConfig() write here broke
-  // cmdCompactHint's "reflects the real session tier" test further down the file).
+  // Regression: a corrupted/misconfigured indexing.large_file_skip_kb (e.g. left at a tiny value from an aborted test run or stray manual `config set`) silently skips nearly every real source file from indexing, with no error anywhere -- exactly what happened to this repo's own live config.toml this session. cache-audit must surface it. Mutates only the one field being tested (structuredClone + restore, matching this session's established pattern in tests/hooks_session.test.ts/embed_sha_gate.test.ts) rather than writing a full defaultConfig() snapshot, which would clobber unrelated config state other tests in this shared-worker-DATA_DIR file depend on (confirmed: a blanket defaultConfig() write here broke cmdCompactHint's "reflects the real session tier" test further down the file).
   it('flags a suspiciously small indexing.large_file_skip_kb as an issue', () => {
     const originalSkipKb = loadConfig().indexing.large_file_skip_kb
     const cfg = structuredClone(loadConfig())
@@ -773,8 +688,7 @@ describe('cmdCompactHint', () => {
     expect(typeof parsed.eventCount).toBe('number')
   })
 
-  // A session with exactly one recorded event used to render "1 events". The zero-event and
-  // multi-event cases both pass regardless of the singular branch, so pin count==1 explicitly.
+  // A session with exactly one recorded event used to render "1 events". The zero-event and multi-event cases both pass regardless of the singular branch, so pin count==1 explicitly.
   it('text mode: a single recorded event renders "1 event", not "1 events"', () => {
     const session = { files: [], hintsShown: [], webFetches: [['https://example.com/only', 'w0']], bashOutputs: [], curlDownloads: [] }
     storeBlob(SESSIONS_SUBDIR, 'compact-hint-one-event', session)
@@ -790,11 +704,7 @@ describe('cmdCompactHint', () => {
     expect(capturedOutput()).toContain('Auto-compact')
   })
 
-  // Regression: cmdCompactHint used to call getContextPressure() with no
-  // argument, which always short-circuits to a hardcoded { fillFraction: 0,
-  // tier: 'cool' } regardless of real session activity. Seed enough recorded
-  // bash/web activity to push the real session past the 'warm' threshold
-  // (0.5) and confirm the reported tier reflects it instead of always 'cool'.
+  // Regression: cmdCompactHint used to call getContextPressure() with no argument, which always short-circuits to a hardcoded { fillFraction: 0, tier: 'cool' } regardless of real session activity. Seed enough recorded bash/web activity to push the real session past the 'warm' threshold (0.5) and confirm the reported tier reflects it instead of always 'cool'.
   it('reflects the real session tier instead of a hardcoded "cool"', () => {
     const webFetches: Array<[string, string]> = Array.from({ length: 200 }, (_, i) => [`https://example.com/${i}`, `w${i}`])
     const bashOutputs: Array<[string, string]> = Array.from({ length: 300 }, (_, i) => [`hash${i}`, `out${i}`])
@@ -839,11 +749,7 @@ describe('cmdSessionSummary', () => {
     cmdSessionSummary({ json: true })
     const parsed = JSON.parse(capturedOutput()) as { sessionId: string; sessionCount: number; filesRead: number; filesEdited: number; topFiles: string[] }
     expect(parsed.sessionId).toBe('summ-test-2')
-    // Pin the real counts and content, not just their types -- a regression swapping the
-    // filesRead/filesEdited filters (both are `f.wasEdited === true`/`!== true` predicates over
-    // the same array, an easy copy-paste-and-flip mistake) would still satisfy "is a number".
-    // Asymmetric fixture (2 unedited, 1 edited) so the two counts differ and a swap is
-    // observable -- a 1-and-1 split would make either filter's result indistinguishable.
+    // Pin the real counts and content, not just their types -- a regression swapping the filesRead/filesEdited filters (both are `f.wasEdited === true`/`!== true` predicates over the same array, an easy copy-paste-and-flip mistake) would still satisfy "is a number". Asymmetric fixture (2 unedited, 1 edited) so the two counts differ and a swap is observable -- a 1-and-1 split would make either filter's result indistinguishable.
     expect(parsed.filesRead).toBe(2)
     expect(parsed.filesEdited).toBe(1)
     // Sorted by readCount descending: src/c.ts (3), src/e.ts (2), src/d.ts (1).

@@ -1,10 +1,4 @@
-/**
- * Built-bundle check for the OCaml adapter (src/languages/ocaml.ts): the shipped
- * dist/token-goat.mjs, not source, indexes a small project with one OCaml file and answers
- * `outline`, `symbol` and `read` from it. Modeled directly on tests/haskell_bundle_e2e.test.ts,
- * this repo's own established shape for proving a new masker-then-scan adapter survived bundling
- * and is reached from the real CLI path rather than only from a source-level unit test.
- */
+/** Built-bundle check for the OCaml adapter (src/languages/ocaml.ts): the shipped dist/token-goat.mjs, not source, indexes a small project with one OCaml file and answers `outline`, `symbol` and `read` from it. Modeled directly on tests/haskell_bundle_e2e.test.ts, this repo's own established shape for proving a new masker-then-scan adapter survived bundling and is reached from the real CLI path rather than only from a source-level unit test. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -39,8 +33,7 @@ beforeAll(() => {
     APPDATA: path.join(home, 'AppData', 'Roaming'),
     TOKEN_GOAT_EMBEDDINGS_ENABLED: '0',
   }
-  // HAND-DERIVED: minimal OCaml per The OCaml Manual's "String literals" section
-  // (https://v2.ocaml.org/manual/lex.html#sss:stringliterals), using `^` for string concatenation.
+  // HAND-DERIVED: minimal OCaml per The OCaml Manual's "String literals" section (https://v2.ocaml.org/manual/lex.html#sss:stringliterals), using `^` for string concatenation.
   fs.writeFileSync(
     project + '/sample.ml',
     'let mlGreet name = "hello, " ^ name\n',

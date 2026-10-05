@@ -1,12 +1,4 @@
-/**
- * Zero-dependency WebVTT/SRT transcript reader. Both formats are cue blocks of
- * `TIMESTAMP --> TIMESTAMP` followed by one or more text lines, separated by a blank line.
- * VTT timestamps use `.` for the millisecond separator and allow an optional cue identifier
- * line and trailing cue-settings after the arrow; SRT timestamps use `,` and always prefix
- * each cue with a numeric index line. A speaker is read from a leading `<v Name>` tag (VTT,
- * e.g. Teams-exported captions) or a leading `Name:` prefix (common in both formats when the
- * source tool doesn't use `<v>` tags).
- */
+/** Zero-dependency WebVTT/SRT transcript reader. Both formats are cue blocks of `TIMESTAMP --> TIMESTAMP` followed by one or more text lines, separated by a blank line. VTT timestamps use `.` for the millisecond separator and allow an optional cue identifier line and trailing cue-settings after the arrow; SRT timestamps use `,` and always prefix each cue with a numeric index line. A speaker is read from a leading `<v Name>` tag (VTT, e.g. Teams-exported captions) or a leading `Name:` prefix (common in both formats when the source tool doesn't use `<v>` tags). */
 
 import * as fs from 'node:fs'
 import { compileGuardedRegex } from './regex_guard.js'
@@ -127,26 +119,19 @@ export function buildTranscriptOutline(cues: TranscriptCue[], bucketCount = 10):
   }
   const speakers = [...speakerCounts.entries()].map(([name, cueCount]) => ({ name, cueCount }))
 
-  // Cues are not guaranteed to be in chronological array order (multi-track exports,
-  // corrected/appended captions), so the last array element is not necessarily the one
-  // with the latest end time -- use the true max across all cues instead.
+  // Cues are not guaranteed to be in chronological array order (multi-track exports, corrected/appended captions), so the last array element is not necessarily the one with the latest end time -- use the true max across all cues instead.
   const durationSeconds = cues.reduce((max, c) => (c.endSeconds > max ? c.endSeconds : max), 0)
   const bucketSize = durationSeconds / Math.min(bucketCount, cues.length)
   const markers: TranscriptOutlineEntry[] = []
   let nextBucketStart = 0
-  // Same non-chronological-array-order concern as durationSeconds above: this loop relies
-  // on startSeconds being non-decreasing as it walks the array to advance nextBucketStart,
-  // so sort a local copy first rather than trusting cue order.
+  // Same non-chronological-array-order concern as durationSeconds above: this loop relies on startSeconds being non-decreasing as it walks the array to advance nextBucketStart, so sort a local copy first rather than trusting cue order.
   const sortedCues = [...cues].sort((a, b) => a.startSeconds - b.startSeconds)
   for (const cue of sortedCues) {
     if (cue.startSeconds >= nextBucketStart) {
       const preview = cue.text.slice(0, 60) + (cue.text.length > 60 ? '...' : '')
       markers.push({ timestamp: formatTimestamp(cue.startSeconds), preview })
       nextBucketStart += bucketSize
-      // When every cue shares the same end time (e.g. zero-duration keyframe/scene-marker
-      // cues), durationSeconds and therefore bucketSize are both 0, so nextBucketStart never
-      // advances and every cue would otherwise satisfy the >= check -- bound the marker
-      // count directly so the outline stays an outline instead of a full cue dump.
+      // When every cue shares the same end time (e.g. zero-duration keyframe/scene-marker cues), durationSeconds and therefore bucketSize are both 0, so nextBucketStart never advances and every cue would otherwise satisfy the >= check -- bound the marker count directly so the outline stays an outline instead of a full cue dump.
       if (markers.length >= Math.min(bucketCount, cues.length)) break
     }
   }
@@ -170,8 +155,7 @@ export function parseSliceOptions(opts: { speaker?: string; from?: string; to?: 
 }
 
 export function sliceTranscript(cues: TranscriptCue[], opts: TranscriptSliceOptions): TranscriptCue[] {
-  // Guarded, not merely compiled: see regex_guard.ts. A refused pattern throws here rather than
-  // silently matching nothing, because a --grep that quietly returns no cue reads as an empty file.
+  // Guarded, not merely compiled: see regex_guard.ts. A refused pattern throws here rather than silently matching nothing, because a --grep that quietly returns no cue reads as an empty file.
   let re: RegExp | undefined
   if (opts.grep !== undefined) {
     const guarded = compileGuardedRegex(opts.grep, 'i')

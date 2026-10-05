@@ -1,8 +1,4 @@
-/**
- * The file types added to the language table in 2.9.11, driven through the real default index path (indexFileSync -> symbols table -> querySymbols), plus the PL/SQL package support in the SQL adapter, COBOL continuation lines, and the partial-refs notice for COBOL and Natural.
- *
- * Every fixture below is HAND-DERIVED from the language's own documentation, cited next to it, never from this repo's extractor regexes.
- */
+/** The file types added to the language table in 2.9.11, driven through the real default index path (indexFileSync -> symbols table -> querySymbols), plus the PL/SQL package support in the SQL adapter, COBOL continuation lines, and the partial-refs notice for COBOL and Natural. Every fixture below is HAND-DERIVED from the language's own documentation, cited next to it, never from this repo's extractor regexes. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

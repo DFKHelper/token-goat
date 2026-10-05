@@ -1,11 +1,4 @@
-/**
- * `uninstall --purge`: delete everything token-goat has written to disk.
- *
- * Uninstall deliberately leaves the data directory alone, because it holds an index that took
- * real time to build and a user who reinstalls wants it back. Offboarding a machine wants the
- * opposite, and "remove it by hand" is not an answer an organisation can put in a runbook: there
- * are two roots, they differ per platform, and neither is obvious.
- */
+/** `uninstall --purge`: delete everything token-goat has written to disk. Uninstall deliberately leaves the data directory alone, because it holds an index that took real time to build and a user who reinstalls wants it back. Offboarding a machine wants the opposite, and "remove it by hand" is not an answer an organisation can put in a runbook: there are two roots, they differ per platform, and neither is obvious. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -48,11 +41,7 @@ export function directorySize(root: string): number {
   return total
 }
 
-/**
- * The roots token-goat writes to. Two, not one: the data directory holds the index, caches and
- * logs, while the home directory holds session state and the OCR cache, and they are different
- * places on every platform.
- */
+/** The roots token-goat writes to. Two, not one: the data directory holds the index, caches and logs, while the home directory holds session state and the OCR cache, and they are different places on every platform. */
 export function purgeRoots(): string[] {
   // Resolved, because TOKEN_GOAT_HOME is used as spelled (forward slashes from Git Bash, a trailing separator) while dataDir() is built by path.join: unresolved, the two printed with different separators, and one directory under two spellings was purged and then reported as already gone.
   const roots = [dataDir(), tokenGoatHome()].map((root) => path.resolve(root))
@@ -63,11 +52,7 @@ export function purgeRoots(): string[] {
 export function purgeDataDirectories(): PurgeResult {
   const result: PurgeResult = { removed: [], absent: [], failed: [] }
   for (const root of purgeRoots()) {
-    // fileIsAbsent, not fs.existsSync: existsSync answers false for a directory it has no
-    // permission to look at, and reporting "already gone" for a root that is still there, still
-    // holding the index, is the one answer this command must never give. Anything other than a
-    // plain ENOENT now falls through to the delete, so a permission problem is reported as a
-    // failure with the reason attached rather than as a success.
+    // fileIsAbsent, not fs.existsSync: existsSync answers false for a directory it has no permission to look at, and reporting "already gone" for a root that is still there, still holding the index, is the one answer this command must never give. Anything other than a plain ENOENT now falls through to the delete, so a permission problem is reported as a failure with the reason attached rather than as a success.
     if (fileIsAbsent(root)) {
       result.absent.push(root)
       continue

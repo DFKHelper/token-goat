@@ -1,15 +1,4 @@
-/**
- * Confirms postEditHandler is actually wired into the hook registry for every
- * edit-tool name via the real, production-only import side effect in
- * hooks_edit.ts — not a hand-registered stand-in that could pass even if the
- * real registerHook() call site were missing an alias.
- *
- * Isolated in its own file (rather than added to hooks_edit.test.ts) because
- * it needs a fresh, unmocked hook_registry.js module instance: importing it
- * fresh from an already-warm test file risks other tests in that file
- * silently inheriting a second registry instance whose handlers never get
- * cleared by the outer beforeEach's clearModuleCaches().
- */
+/** Confirms postEditHandler is actually wired into the hook registry for every edit-tool name via the real, production-only import side effect in hooks_edit.ts — not a hand-registered stand-in that could pass even if the real registerHook() call site were missing an alias. Isolated in its own file (rather than added to hooks_edit.test.ts) because it needs a fresh, unmocked hook_registry.js module instance: importing it fresh from an already-warm test file risks other tests in that file silently inheriting a second registry instance whose handlers never get cleared by the outer beforeEach's clearModuleCaches(). */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'

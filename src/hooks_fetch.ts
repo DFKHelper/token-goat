@@ -17,10 +17,7 @@ function extractToolResponse(raw: Record<string, unknown>): string {
   return extractToolResponseField(raw, BODY_FIRST_TOOL_RESPONSE_KEYS);
 }
 
-/** Identity check shared by every WebFetch handler below: only a WebFetch call with a valid url
- * is in scope. Deliberately does NOT require a session id -- see {@link resolveWebFetchContext}
- * for the session-scoped variant used by the caching/dedup paths, and postFetchHandler's own
- * comment for why the injection scan must run even without one. */
+/** Identity check shared by every WebFetch handler below: only a WebFetch call with a valid url is in scope. Deliberately does NOT require a session id -- see {@link resolveWebFetchContext} for the session-scoped variant used by the caching/dedup paths, and postFetchHandler's own comment for why the injection scan must run even without one. */
 function resolveWebFetchUrl(event: HookEvent): { toolInput: Record<string, unknown>; url: string } | null {
   const toolName = getToolName(event);
   if (toolName !== 'WebFetch') {
@@ -36,10 +33,7 @@ function resolveWebFetchUrl(event: HookEvent): { toolInput: Record<string, unkno
   return { toolInput, url };
 }
 
-/** Shared prologue for the session-scoped caching/dedup paths (preFetchHandler's recall check,
- * postFetchHandler's storeWebOutput): only a WebFetch call with a valid url AND a session id is
- * in scope -- caching is inherently session-keyed, so a call with no session id has nothing to
- * cache against. Everything else passes through untouched. */
+/** Shared prologue for the session-scoped caching/dedup paths (preFetchHandler's recall check, postFetchHandler's storeWebOutput): only a WebFetch call with a valid url AND a session id is in scope -- caching is inherently session-keyed, so a call with no session id has nothing to cache against. Everything else passes through untouched. */
 function resolveWebFetchContext(event: HookEvent): { toolInput: Record<string, unknown>; url: string } | null {
   if (!event.sessionId) {
     return null;
@@ -65,9 +59,7 @@ export function preFetchHandler(event: HookEvent): HookOutput {
   try {
     // webfetch.allow/webfetch.deny gate every WebFetch call regardless of session id -- unlike the dedup check below, blocking a URL has nothing to do with caching, so it must run even for a harness that sends no session_id (see resolveWebFetchContext's own comment). One refused URL refuses the whole call: the harness fetches the list as one tool call, so there is no way to let the rest through.
     for (const url of webFetchPolicyUrls(event)) {
-      // Unconditional, and ahead of the configurable policy: an operator's allow/deny list is
-      // about which ordinary hosts they want reached, not about whether the machine's own cloud
-      // credentials are reachable through a fetched URL.
+      // Unconditional, and ahead of the configurable policy: an operator's allow/deny list is about which ordinary hosts they want reached, not about whether the machine's own cloud credentials are reachable through a fetched URL.
       const metadataRefusal = metadataEndpointRefusal(url);
       if (metadataRefusal !== null) {
         return denyOutput(`WebFetch blocked: ${metadataRefusal}.`);
@@ -130,18 +122,12 @@ export function postFetchHandler(event: HookEvent): HookOutput {
 
     // Everything below this point (dedup cache lookup key reuse aside, the actual store) is inherently session-scoped -- a missing session id has nothing to cache against, but the fence and redaction above must still apply to whatever was scanned.
     if (!event.sessionId) {
-      // Unconditional: a fetched page is third-party web content by provenance, so it is fenced
-      // whether or not the eight deliberately-narrow patterns matched. It used to pass through
-      // unfenced on a clean scan, which meant any payload those patterns miss reached the model
-      // unmarked -- the fence's whole job is to survive a miss.
+      // Unconditional: a fetched page is third-party web content by provenance, so it is fenced whether or not the eight deliberately-narrow patterns matched. It used to pass through unfenced on a clean scan, which meant any payload those patterns miss reached the model unmarked -- the fence's whole job is to survive a miss.
       return emitRewriteIfChanged(body, fenceWithMatches(bodyRedacted.text, injectionMatches), 'fetch');
     }
 
     if (!body || body.length < 1024) {
-      // Unconditional: a fetched page is third-party web content by provenance, so it is fenced
-      // whether or not the eight deliberately-narrow patterns matched. It used to pass through
-      // unfenced on a clean scan, which meant any payload those patterns miss reached the model
-      // unmarked -- the fence's whole job is to survive a miss.
+      // Unconditional: a fetched page is third-party web content by provenance, so it is fenced whether or not the eight deliberately-narrow patterns matched. It used to pass through unfenced on a clean scan, which meant any payload those patterns miss reached the model unmarked -- the fence's whole job is to survive a miss.
       return emitRewriteIfChanged(body, fenceWithMatches(bodyRedacted.text, injectionMatches), 'fetch');
     }
 
@@ -165,8 +151,7 @@ export function postFetchHandler(event: HookEvent): HookOutput {
     // storedBody may differ from body (extractCleanText above), so redact it fresh rather than reusing bodyRedacted -- same "redact what is actually about to be shown" reasoning as fencing storedBody rather than the raw body just below.
     const storedRedacted = storedBody === body ? bodyRedacted : redactSecrets(storedBody);
 
-    // Fence storedBody (the compressed copy just cached above), not the raw body -- fencing the raw body here would both defeat compress_bodies' token savings and return content that disagrees with what a later `token-goat web-output <id>` recall of the same cache entry would return.
-    // Unconditional: a fetched page is third-party web content by provenance, so it is fenced whether or not the eight deliberately-narrow patterns matched. It used to be fenced only on a hit, which meant any payload those patterns miss reached the model unmarked -- the fence's whole job is to survive a miss. The scan result now only decides whether the notice names pattern(s).
+    // Fence storedBody (the compressed copy just cached above), not the raw body -- fencing the raw body here would both defeat compress_bodies' token savings and return content that disagrees with what a later `token-goat web-output <id>` recall of the same cache entry would return. Unconditional: a fetched page is third-party web content by provenance, so it is fenced whether or not the eight deliberately-narrow patterns matched. It used to be fenced only on a hit, which meant any payload those patterns miss reached the model unmarked -- the fence's whole job is to survive a miss. The scan result now only decides whether the notice names pattern(s).
     const fencedStored = fenceWithMatches(storedRedacted.text, injectionMatches);
 
     // Ship the compressed copy already computed and cached above instead of discarding it -- previously storedBody was only ever consumed by the injection-detected branch, so a compressed HTML body's savings never reached the model. Gated on compression having actually happened (storedBody !== body) so an unchanged body is never re-credited, and on the same net-benefit floor bash_compress uses so a rewrite whose savings don't clear the recall notice's own cost isn't credited as compression.

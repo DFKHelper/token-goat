@@ -1,28 +1,4 @@
-/**
- * `GENERIC_CLAUSE` is a nesting-aware type-parameter group shared by the Dart, Kotlin and Swift
- * regex adapters. Building a pattern by concatenating an imported constant puts it out of reach of
- * `regexp/no-super-linear-backtracking`, which only analyses a literal or a same-file const: moving
- * these five patterns onto the shared clause dropped ten entries from `eslint-suppressions.json`
- * without fixing a single one of them. The linter stopped looking; it did not start approving.
- *
- * This is the empirical backstop that replaces what the static rule can no longer see. The oracle is
- * a WALL CLOCK, because that is the only thing that separates a clause the engine walks once from
- * one it backtracks over: a unit test asserting the same symbols come out looks identical either way.
- * The adapters run over whatever is in a repository being indexed, including generated and
- * machine-mangled sources, so an unclosed or absurdly nested generic clause is ordinary input.
- *
- * PROVENANCE: HAND-DERIVED. The pathological shapes are built here from the clause's own alphabet
- * (`<`, `>`, and identifier text), independently of anything in src/, and the timings are read off
- * `Date.now()` in this file. The budget is loose -- 2 s against shapes that measure under a
- * millisecond -- so a loaded CI runner cannot fail it; a pattern that has gone super-linear on these
- * lengths takes minutes, not milliseconds.
- *
- * Calibrated by substituting a deliberately ambiguous clause (`<(?:[^>]|[^>])*>`) for the real one:
- * the run did not return inside three minutes and was killed. Note the failure shape that produces
- * -- V8 cannot interrupt a backtracking regex, so a regressed clause wedges the worker rather than
- * printing a red assertion, and the budget below is only reached by a pattern slow enough to matter
- * and still able to finish. A file in this suite that stops terminating is this guard firing.
- */
+/** `GENERIC_CLAUSE` is a nesting-aware type-parameter group shared by the Dart, Kotlin and Swift regex adapters. Building a pattern by concatenating an imported constant puts it out of reach of `regexp/no-super-linear-backtracking`, which only analyses a literal or a same-file const: moving these five patterns onto the shared clause dropped ten entries from `eslint-suppressions.json` without fixing a single one of them. The linter stopped looking; it did not start approving. This is the empirical backstop that replaces what the static rule can no longer see. The oracle is a WALL CLOCK, because that is the only thing that separates a clause the engine walks once from one it backtracks over: a unit test asserting the same symbols come out looks identical either way. The adapters run over whatever is in a repository being indexed, including generated and machine-mangled sources, so an unclosed or absurdly nested generic clause is ordinary input. PROVENANCE: HAND-DERIVED. The pathological shapes are built here from the clause's own alphabet (`<`, `>`, and identifier text), independently of anything in src/, and the timings are read off `Date.now()` in this file. The budget is loose -- 2 s against shapes that measure under a millisecond -- so a loaded CI runner cannot fail it; a pattern that has gone super-linear on these lengths takes minutes, not milliseconds. Calibrated by substituting a deliberately ambiguous clause (`<(?:[^>]|[^>])*>`) for the real one: the run did not return inside three minutes and was killed. Note the failure shape that produces -- V8 cannot interrupt a backtracking regex, so a regressed clause wedges the worker rather than printing a red assertion, and the budget below is only reached by a pattern slow enough to matter and still able to finish. A file in this suite that stops terminating is this guard firing. */
 import { describe, expect, it } from 'vitest'
 
 import { extractDart } from '../../src/languages/dart.js'

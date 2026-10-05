@@ -1,10 +1,4 @@
-/**
- * Guard: the guards' view of the repository does not depend on which index git happened to hand them.
- *
- * `git ls-files` reads `$GIT_INDEX_FILE`. `git commit --only <paths>` points that at a temporary index holding HEAD plus only the named paths, for the duration of the hooks, so a guard that enumerates tracked files during a partial commit sees a truncated repository and reports invariants broken that are not. Measured on this repo before the fix: `git commit --only <one file>` with a second file staged took the pre-commit guard suite to 7 failed files, while `npx vitest run tests/guards` on the same tree at the same moment was 162/162 green.
- *
- * Two halves, and both are needed. `tests/helpers/tracked-files.ts` owns the enumeration and deletes the variable itself, so a guard is right even when run outside the suite setup; `tests/setup/isolate-home.ts` deletes it process-wide, which is the only thing that also stops a test's own scratch `git add` writing its fixture paths into the commit index git is preparing.
- */
+/** Guard: the guards' view of the repository does not depend on which index git happened to hand them. `git ls-files` reads `$GIT_INDEX_FILE`. `git commit --only <paths>` points that at a temporary index holding HEAD plus only the named paths, for the duration of the hooks, so a guard that enumerates tracked files during a partial commit sees a truncated repository and reports invariants broken that are not. Measured on this repo before the fix: `git commit --only <one file>` with a second file staged took the pre-commit guard suite to 7 failed files, while `npx vitest run tests/guards` on the same tree at the same moment was 162/162 green. Two halves, and both are needed. `tests/helpers/tracked-files.ts` owns the enumeration and deletes the variable itself, so a guard is right even when run outside the suite setup; `tests/setup/isolate-home.ts` deletes it process-wide, which is the only thing that also stops a test's own scratch `git add` writing its fixture paths into the commit index git is preparing. */
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

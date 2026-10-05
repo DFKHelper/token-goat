@@ -3,20 +3,9 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Regression (M31): writeParseResult computed the SHA written to the `files` table from a
-// SEPARATE, LATER re-read of the file from disk (via fingerprintFile/safeSha), not from the
-// content that was actually parsed. If the file changes on disk between the initial
-// read-for-parsing and writeParseResult's own read, the recorded SHA does not match the
-// symbols actually indexed -- and since the worker's incremental drain skips reindexing a
-// file whose SHA is unchanged, a file can get permanently stuck with stale symbols.
+// Regression (M31): writeParseResult computed the SHA written to the `files` table from a SEPARATE, LATER re-read of the file from disk (via fingerprintFile/safeSha), not from the content that was actually parsed. If the file changes on disk between the initial read-for-parsing and writeParseResult's own read, the recorded SHA does not match the symbols actually indexed -- and since the worker's incremental drain skips reindexing a file whose SHA is unchanged, a file can get permanently stuck with stale symbols.
 //
-// This drives the REAL shipping entry point (indexFileSync -> writeParseResult),
-// not a reimplementation. The only mocked boundary is node:fs.readFileSync itself, which is
-// made to answer with two different byte sequences for the SAME path across the two reads a
-// pre-fix implementation performs (once to parse, once inside writeParseResult to fingerprint).
-// vi.spyOn cannot patch node:fs (its namespace exports are non-configurable), so a module mock
-// with a hoisted queue is the portable way to inject this, matching the pattern already used in
-// worker_draining_rmfail.test.ts.
+// This drives the REAL shipping entry point (indexFileSync -> writeParseResult), not a reimplementation. The only mocked boundary is node:fs.readFileSync itself, which is made to answer with two different byte sequences for the SAME path across the two reads a pre-fix implementation performs (once to parse, once inside writeParseResult to fingerprint). vi.spyOn cannot patch node:fs (its namespace exports are non-configurable), so a module mock with a hoisted queue is the portable way to inject this, matching the pattern already used in worker_draining_rmfail.test.ts.
 const mockState = vi.hoisted(() => ({ target: '', queue: [] as string[] }))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
@@ -66,9 +55,7 @@ describe('writeParseResult SHA race (M31)', () => {
     const laterContent = 'export function laterVersion(): number {\n  return 2\n}\n'
     fs.writeFileSync(file, parsedContent)
 
-    // First readFileSync (indexFileSync's own read, 'utf8') sees the content that gets parsed.
-    // Second readFileSync (fingerprintFile's read, no encoding -> Buffer, pre-fix only) would
-    // see a file that has since changed -- simulating a concurrent edit landing mid-index.
+    // First readFileSync (indexFileSync's own read, 'utf8') sees the content that gets parsed. Second readFileSync (fingerprintFile's read, no encoding -> Buffer, pre-fix only) would see a file that has since changed -- simulating a concurrent edit landing mid-index.
     mockState.queue = [parsedContent, laterContent]
 
     indexFileSync(file, dbPath)

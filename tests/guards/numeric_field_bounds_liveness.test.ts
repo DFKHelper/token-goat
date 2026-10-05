@@ -1,13 +1,4 @@
-/**
- * Guard against orphaned NUMERIC_FIELD_BOUNDS entries in src/config.ts.
- *
- * NUMERIC_FIELD_BOUNDS's own doc comment says every entry is "Extracted from _buildConfig" --
- * i.e. each key should name a real, live config field. An entry left over from a feature that
- * was never ported (or was later removed) is 100% dead code: config set on that key throws
- * "key not found" via walkParent before validateNumericField is ever reached, so the bound is
- * unreachable and misleads future maintainers into thinking the field is settable. This guard
- * fails loudly and locally if a bound key doesn't resolve to a real defaultConfig() field.
- */
+/** Guard against orphaned NUMERIC_FIELD_BOUNDS entries in src/config.ts. NUMERIC_FIELD_BOUNDS's own doc comment says every entry is "Extracted from _buildConfig" -- i.e. each key should name a real, live config field. An entry left over from a feature that was never ported (or was later removed) is 100% dead code: config set on that key throws "key not found" via walkParent before validateNumericField is ever reached, so the bound is unreachable and misleads future maintainers into thinking the field is settable. This guard fails loudly and locally if a bound key doesn't resolve to a real defaultConfig() field. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'

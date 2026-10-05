@@ -23,27 +23,11 @@ const MAX_RESUME_DROPPED = 16
 /** Row suffix for a file the latest compaction summary did not mention. */
 const DROPPED_MARK = ' (not in the compaction summary)'
 
-// Mirrors the Python predecessor's `_SKILL_MAX_COUNT`/`_SKILL_MAX_CHARS_EACH` (resume.py):
-// how many recently-loaded skills to surface, and how many characters of each one's checklist
-// section to keep before the per-skill budget forces a truncation.
+// Mirrors the Python predecessor's `_SKILL_MAX_COUNT`/`_SKILL_MAX_CHARS_EACH` (resume.py): how many recently-loaded skills to surface, and how many characters of each one's checklist section to keep before the per-skill budget forces a truncation.
 const SKILL_MAX_COUNT = 3
 const SKILL_MAX_CHARS_EACH = 400
 
-/**
- * Build the `## Skills` section: for each of the most recently loaded skills this session
- * (per {@link listSkills}, already sorted newest-first), extract its checklist/DoD section
- * (via {@link extractChecklistSection}) from the skill's on-disk body -- the same source
- * `token-goat skill-body <name>` reads. Falls back to a bare pointer line when no checklist
- * section is found (an unstructured skill, or the source file is no longer readable) so the
- * skill's use this session is still visible even without extractable content, mirroring the
- * Python original's identical fallback.
- *
- * Ports resume.py's "Section 1: Skill checklists" -- dropped entirely in the TS port even
- * though every primitive it needs (listSkills, getSkillFilePath, extractChecklistSection) was
- * already implemented and unit-tested here, just never wired to this call site. Without it,
- * `token-goat resume` silently omitted every skill a session had loaded, unlike the Python
- * predecessor whose resume packet led with exactly this section.
- */
+/** Build the `## Skills` section: for each of the most recently loaded skills this session (per {@link listSkills}, already sorted newest-first), extract its checklist/DoD section (via {@link extractChecklistSection}) from the skill's on-disk body -- the same source `token-goat skill-body <name>` reads. Falls back to a bare pointer line when no checklist section is found (an unstructured skill, or the source file is no longer readable) so the skill's use this session is still visible even without extractable content, mirroring the Python original's identical fallback. Ports resume.py's "Section 1: Skill checklists" -- dropped entirely in the TS port even though every primitive it needs (listSkills, getSkillFilePath, extractChecklistSection) was already implemented and unit-tested here, just never wired to this call site. Without it, `token-goat resume` silently omitted every skill a session had loaded, unlike the Python predecessor whose resume packet led with exactly this section. */
 async function buildSkillsSection(sessionId: string): Promise<string[]> {
   const skills = await listSkills(sessionId)
   if (skills.length === 0) return []
@@ -134,11 +118,7 @@ export async function buildResumePacket(sessionId: string): Promise<string | nul
   for (const entry of recentBash) {
     if (Array.isArray(entry) && typeof entry[1] === 'string') {
       const bashEntry = getBashOutput(entry[1])
-      // A multi-line command (heredoc, multi-line script) embeds literal newlines into
-      // bashEntry.command; pushed raw, each line becomes its own top-level markdown line
-      // with only the first prefixed `- `, breaking this list's structure for the model
-      // reading it. Collapse to one line, same defect class as mcp_compress.ts's cellText.
-      // displaySafeText replaces the old tab/newline squeeze rather than stacking with it: it already escapes C0 controls, and the two together would double-process the same bytes.
+      // A multi-line command (heredoc, multi-line script) embeds literal newlines into bashEntry.command; pushed raw, each line becomes its own top-level markdown line with only the first prefixed `- `, breaking this list's structure for the model reading it. Collapse to one line, same defect class as mcp_compress.ts's cellText. displaySafeText replaces the old tab/newline squeeze rather than stacking with it: it already escapes C0 controls, and the two together would double-process the same bytes.
       if (bashEntry !== null) bashRows.push(`- ${displaySafeText(bashEntry.command)}`)
     }
   }

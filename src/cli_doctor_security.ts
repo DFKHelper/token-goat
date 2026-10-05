@@ -1,10 +1,4 @@
-/**
- * Security posture and configuration override diagnostics for token-goat doctor.
- *
- * Checks network offline mode, injection scanning, Google Drive integration,
- * fetch allow/deny policies, secret redaction patterns, MCP root confinement,
- * cross-project symbol exposure, locked config environment overrides, and data directory permissions.
- */
+/** Security posture and configuration override diagnostics for token-goat doctor. Checks network offline mode, injection scanning, Google Drive integration, fetch allow/deny policies, secret redaction patterns, MCP root confinement, cross-project symbol exposure, locked config environment overrides, and data directory permissions. */
 
 import * as fs from 'node:fs'
 
@@ -13,9 +7,7 @@ import type { DoctorResult } from './doctor_result.js'
 import { envBool } from './env.js'
 import { compileCustomPatterns } from './secret_redact.js'
 
-/**
- * The safe direction for each project-locked setting that is a boolean.
- */
+/** The safe direction for each project-locked setting that is a boolean. */
 export const LOCKED_BOOLEAN_SAFE_VALUE: Readonly<Record<string, boolean>> = {
   'gdrive.enabled': false,
   'injection.enabled': true,
@@ -27,9 +19,7 @@ export const LOCKED_BOOLEAN_SAFE_VALUE: Readonly<Record<string, boolean>> = {
   'webfetch.compress_bodies': true,
 }
 
-/**
- * Every project-locked config key that an environment variable can still override.
- */
+/** Every project-locked config key that an environment variable can still override. */
 export function lockedEnvOverridableKeys(): string[] {
   const out: string[] = []
   for (const key of Object.keys(CONFIG_KEY_ENV_OVERRIDES)) {
@@ -47,9 +37,7 @@ export interface EnvOverriddenSetting {
   readonly kind: 'weakened' | 'replaced'
 }
 
-/**
- * Locked settings the environment is holding open or replacing.
- */
+/** Locked settings the environment is holding open or replacing. */
 export function envOverriddenSecuritySettings(): EnvOverriddenSetting[] {
   const out: EnvOverriddenSetting[] = []
   for (const setting of lockedEnvOverridableKeys()) {

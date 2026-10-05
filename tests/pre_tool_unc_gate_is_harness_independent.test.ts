@@ -1,24 +1,4 @@
-/**
- * No pre_tool_use handler stats a UNC or device path, on any harness.
- *
- * The gate that rejects `\\server\share` used to sit behind a VS-Code check, so on every other
- * harness a `Read` of a model-chosen UNC path reached `fs.statSync` and Windows dialled the named
- * host. Measured 2026-09-13 through `preReadHandler` on a default-harness event:
- * `\\10.255.255.1\share\x.txt` took 21.0 s -- an SMB connect timeout -- against 21 ms for a local
- * control. VS Code is where the pre-approval window is guaranteed, but it is not the only place it
- * exists: any tool call the user has not pre-approved is still pending when the hook runs, and a
- * hook that dials out on the model's say-so is an SSRF primitive whichever client is driving.
- *
- * Only the UNC/device half is harness-independent. Workspace containment stays VS-Code-scoped,
- * because only VS Code supplies a workspace folder to be contained by --
- * tests/vscode_pre_handler_path_gate.test.ts covers that half, and the last case here pins that an
- * ordinary out-of-project path is still looked at elsewhere, so this fix is not a blanket refusal.
- *
- * PROVENANCE: the tool names are the canonical ones the live registry is keyed on, read from
- * handlersFor rather than a list, so a handler added later is swept too. The UNC and device path
- * spellings are HAND-DERIVED. As in the sibling sweep, node:fs is wrapped so a UNC path throws
- * inside the wrapper and no network access happens even against unfixed code.
- */
+/** No pre_tool_use handler stats a UNC or device path, on any harness. The gate that rejects `\\server\share` used to sit behind a VS-Code check, so on every other harness a `Read` of a model-chosen UNC path reached `fs.statSync` and Windows dialled the named host. Measured 2026-09-13 through `preReadHandler` on a default-harness event: `\\10.255.255.1\share\x.txt` took 21.0 s -- an SMB connect timeout -- against 21 ms for a local control. VS Code is where the pre-approval window is guaranteed, but it is not the only place it exists: any tool call the user has not pre-approved is still pending when the hook runs, and a hook that dials out on the model's say-so is an SSRF primitive whichever client is driving. Only the UNC/device half is harness-independent. Workspace containment stays VS-Code-scoped, because only VS Code supplies a workspace folder to be contained by -- tests/vscode_pre_handler_path_gate.test.ts covers that half, and the last case here pins that an ordinary out-of-project path is still looked at elsewhere, so this fix is not a blanket refusal. PROVENANCE: the tool names are the canonical ones the live registry is keyed on, read from handlersFor rather than a list, so a handler added later is swept too. The UNC and device path spellings are HAND-DERIVED. As in the sibling sweep, node:fs is wrapped so a UNC path throws inside the wrapper and no network access happens even against unfixed code. */
 import * as fsReal from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

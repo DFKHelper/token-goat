@@ -1,10 +1,4 @@
-/**
- * Built-bundle check for the six template adapters (Jinja2, Handlebars, ERB, EJS, Nunjucks,
- * Twig): the shipped dist/token-goat.mjs, not source, indexes a small project with one file per
- * dialect and answers `outline`, `symbol` and `read` from it. This is the only test that proves
- * the delimiter-masking-then-HTML-handoff adapter survived bundling and is reached from the real
- * CLI path, matching tests/vhdl_bundle_e2e.test.ts's shape for the tree-sitter-free adapters.
- */
+/** Built-bundle check for the six template adapters (Jinja2, Handlebars, ERB, EJS, Nunjucks, Twig): the shipped dist/token-goat.mjs, not source, indexes a small project with one file per dialect and answers `outline`, `symbol` and `read` from it. This is the only test that proves the delimiter-masking-then-HTML-handoff adapter survived bundling and is reached from the real CLI path, matching tests/vhdl_bundle_e2e.test.ts's shape for the tree-sitter-free adapters. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

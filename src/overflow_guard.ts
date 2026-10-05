@@ -1,50 +1,23 @@
-/**
- * Overflow guard — cap oversized output to protect the model's context.
- *
- * Provides token-count estimation and line-based truncation for safety-net
- * protection against accidentally dumping huge payloads to the model.
- */
+/** Overflow guard — cap oversized output to protect the model's context. Provides token-count estimation and line-based truncation for safety-net protection against accidentally dumping huge payloads to the model. */
 
 import { stripAnsiEscapes } from './render/ansi.js'
 import { safeSlice } from './util.js'
 import type { ContentClass } from './token_estimate.js'
 import { classifyContent, guardDivisor } from './token_estimate.js'
 
-/**
- * Estimate tokens from a character count: ~3 chars/token (conservative).
- *
- * Split out from {@link estimateTokens} so a caller that only has a size -- a byte count read from
- * a file stat or a transcript line length, with no string in hand -- estimates against the same
- * ratio instead of reimplementing it or materializing a throwaway string of that length. The two
- * have drifted apart in this codebase before; this keeps the arithmetic in one place.
- */
+/** Estimate tokens from a character count: ~3 chars/token (conservative). Split out from {@link estimateTokens} so a caller that only has a size -- a byte count read from a file stat or a transcript line length, with no string in hand -- estimates against the same ratio instead of reimplementing it or materializing a throwaway string of that length. The two have drifted apart in this codebase before; this keeps the arithmetic in one place. */
 /** Never use this to credit a saving. It divides by three at the default class, which over-estimates on purpose: this is an overflow guard's estimator, and guessing high is its safe direction. Crediting a saving reverses that, so savings go through `stats.ts::savedTokensFromBytes` instead. A guard test pins the separation. Pass `cls` when the caller knows the bytes are a dense payload; omitted, it prices them as text, which is what this function has always done. */
 export function estimateTokensFromLength(length: number, cls: ContentClass = 'text'): number {
   return Math.max(1, Math.floor(Math.max(0, length) / guardDivisor(cls)) + 1)
 }
 
-/**
- * Estimate tokens from text, at ~3 chars/token for ordinary text and ~1.1 for a dense payload.
- * Strips ANSI color codes before counting to avoid inflating token estimates.
- *
- * Classifies rather than taking the class from the caller: this overload is the one that has the string in hand, so the one thing it can do that a byte count cannot is look. A base64 blob costs nearly three times what the flat estimate said, and a guard that under-estimates by that much fires after the context it was protecting is already spent.
- */
+/** Estimate tokens from text, at ~3 chars/token for ordinary text and ~1.1 for a dense payload. Strips ANSI color codes before counting to avoid inflating token estimates. Classifies rather than taking the class from the caller: this overload is the one that has the string in hand, so the one thing it can do that a byte count cannot is look. A base64 blob costs nearly three times what the flat estimate said, and a guard that under-estimates by that much fires after the context it was protecting is already spent. */
 export function estimateTokens(text: string): number {
   const stripped = stripAnsiEscapes(text)
   return estimateTokensFromLength(stripped.length, classifyContent(stripped))
 }
 
-/**
- * Trim text to fit within a token budget, keeping leading lines.
- *
- * Preserves as many leading whole lines as fit within the budget, appending
- * a marker line that explains the cap and suggests remediation.
- *
- * @param text The text to trim.
- * @param budgetTokens The maximum allowed tokens.
- * @param command Optional command label for tailored hint text.
- * @returns Trimmed text with marker, or original text if within budget.
- */
+/** Trim text to fit within a token budget, keeping leading lines. Preserves as many leading whole lines as fit within the budget, appending a marker line that explains the cap and suggests remediation. @param text The text to trim. @param budgetTokens The maximum allowed tokens. @param command Optional command label for tailored hint text. @returns Trimmed text with marker, or original text if within budget. */
 export function trimToBudget(text: string, budgetTokens: number, command?: string): string {
   const markerMarginTokens = 64
 
@@ -58,8 +31,7 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
 
   const lines = text.split('\n')
   if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
-  // A trailing newline leaves an empty piece behind. Counting it inflates the
-  // "of N lines" total, and keeping it can spend budget on a blank line.
+  // A trailing newline leaves an empty piece behind. Counting it inflates the "of N lines" total, and keeping it can spend budget on a blank line.
   const totalLines = lines.length
 
   const bodyBudget = Math.max(1, budgetTokens - markerMarginTokens)
@@ -70,13 +42,10 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
 
   for (const ln of lines) {
     const stripped = stripAnsiEscapes(ln)
-    // Charge the RAW line length, not the ANSI-stripped length: kept.push(ln) below retains
-    // the raw (un-stripped) line, so accounting must match what is actually emitted. Charging
-    // the stripped length would let ANSI-heavy lines discount bytes that are never removed.
+    // Charge the RAW line length, not the ANSI-stripped length: kept.push(ln) below retains the raw (un-stripped) line, so accounting must match what is actually emitted. Charging the stripped length would let ANSI-heavy lines discount bytes that are never removed.
     const cost = ln.length + 1
     if (kept.length === 0 && cost > charBudget) {
-      // Slice the stripped string so the budget is measured and cut on visible characters; avoids ANSI bytes silently consuming budget and eliminates dangling escape sequences from a mid-code cut.
-      // Use safeSlice to avoid splitting UTF-16 surrogate pairs.
+      // Slice the stripped string so the budget is measured and cut on visible characters; avoids ANSI bytes silently consuming budget and eliminates dangling escape sequences from a mid-code cut. Use safeSlice to avoid splitting UTF-16 surrogate pairs.
       const truncated = safeSlice(stripped, charBudget)
       kept.push(truncated)
       break
@@ -95,23 +64,14 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
   return kept.join('\n') + '\n' + marker
 }
 
-/**
- * Result of capping a JSON-serializable array to a token budget.
- */
+/** Result of capping a JSON-serializable array to a token budget. */
 export interface JsonRowCapResult<T> {
   items: T[]
   truncated: boolean
   totalCount: number
 }
 
-/**
- * Cap a JSON-serializable array to fit within a token budget, keeping as many leading whole
- * items as fit. Unlike {@link trimToBudget}, this never truncates mid-item -- truncating inside
- * a serialized JSON value would corrupt the payload -- so callers must surface the cap via the
- * returned `truncated` flag (e.g. an added `truncated`/`totalCount` field in the JSON response)
- * rather than a trailing text marker. The first item is always kept even if it alone exceeds the
- * budget, matching {@link trimToBudget}'s "never return nothing" behavior.
- */
+/** Cap a JSON-serializable array to fit within a token budget, keeping as many leading whole items as fit. Unlike {@link trimToBudget}, this never truncates mid-item -- truncating inside a serialized JSON value would corrupt the payload -- so callers must surface the cap via the returned `truncated` flag (e.g. an added `truncated`/`totalCount` field in the JSON response) rather than a trailing text marker. The first item is always kept even if it alone exceeds the budget, matching {@link trimToBudget}'s "never return nothing" behavior. */
 export function capJsonRows<T>(items: readonly T[], budgetTokens: number): JsonRowCapResult<T> {
   const totalCount = items.length
   const charBudget = Math.max(1, budgetTokens * guardDivisor())

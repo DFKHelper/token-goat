@@ -1,10 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
-// Fixture provenance: HAND-DERIVED. The rows below are a synthetic file written by hand to satisfy the
-// documented thresholds (a block of at least COMMENT_FOLD_MIN_BLOCK comment lines, of which
-// COMMENT_FOLD_KEEP_LINES survive), not captured from a run and not read off the planner's own source.
-// That is the right strength here because what is under test is the gating decision -- which setting
-// admits which fold, and which lookups a disabled fold must not perform -- rather than any wire format.
+// Fixture provenance: HAND-DERIVED. The rows below are a synthetic file written by hand to satisfy the documented thresholds (a block of at least COMMENT_FOLD_MIN_BLOCK comment lines, of which COMMENT_FOLD_KEEP_LINES survive), not captured from a run and not read off the planner's own source. That is the right strength here because what is under test is the gating decision -- which setting admits which fold, and which lookups a disabled fold must not perform -- rather than any wire format.
 
 const enqueueDirtyPathSafe = vi.fn()
 const getFileEntry = vi.fn()
@@ -50,8 +46,7 @@ describe('comment folding is gated on its own setting, not on the body fold', ()
 
     expect(folded).not.toBeNull()
     expect(folded?.folds.map((f) => f.kind)).toEqual(['comment'])
-    // The kept head must survive: a ratio assertion alone would be satisfied by dropping the whole block,
-    // which is the failure this fold exists to avoid.
+    // The kept head must survive: a ratio assertion alone would be satisfied by dropping the whole block, which is the failure this fold exists to avoid.
     expect(folded?.numbered.join('\n')).toContain('Opening summary sentence a reader navigates by.')
     expect(folded?.numbered.length).toBeLessThan(rows.length)
     expect(COMMENT_FOLD_KEEP_LINES).toBeGreaterThan(0)
@@ -72,9 +67,7 @@ describe('comment folding is gated on its own setting, not on the body fold', ()
 
     foldDelivery(rowsWithOneLongComment(), 'C:/proj/sample.ts', 'sample.ts')
 
-    // Without the guard this path hashed the whole file, queried the index, and -- on the common stale-stamp
-    // miss -- appended the file to the dirty queue on every single read, all to build spans the disabled body
-    // planner then discarded.
+    // Without the guard this path hashed the whole file, queried the index, and -- on the common stale-stamp miss -- appended the file to the dirty queue on every single read, all to build spans the disabled body planner then discarded.
     expect(enqueueDirtyPathSafe).not.toHaveBeenCalled()
     expect(getFileEntry).not.toHaveBeenCalled()
     expect(fingerprintFile).not.toHaveBeenCalled()

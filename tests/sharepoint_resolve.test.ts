@@ -31,9 +31,7 @@ describe('parseShareUrl', () => {
     expect(() => parseShareUrl('not a url')).toThrow(/not a valid URL/)
   })
 
-  // Regression: the unparseable-URL branch interpolated the RAW input, so a malformed share
-  // link carrying ?token=... leaked it -- contradicting the no-query-string contract the
-  // origin+pathname redaction on the parsed branch already established.
+  // Regression: the unparseable-URL branch interpolated the RAW input, so a malformed share link carrying ?token=... leaked it -- contradicting the no-query-string contract the origin+pathname redaction on the parsed branch already established.
   it('never echoes the query string when the URL is unparseable (security regression)', () => {
     const secretToken = 'token=SECRET_SHARE_TOKEN_54321'
     try {
@@ -103,10 +101,7 @@ describe('resolveLocalPath', () => {
   })
 
   it("normalizes away '..' segments before new URL() ever hands them to the parser (WHATWG URL spec resolves dot-segments)", () => {
-    // Belt-and-braces: confirms the production entry point (parseShareUrl) can never
-    // actually produce a '..'-bearing libraryPath in the first place, since new URL()
-    // resolves dot-segments (RFC 3986 5.2.4) -- including percent-encoded ones -- before
-    // resolveLocalPath ever sees the value.
+    // Belt-and-braces: confirms the production entry point (parseShareUrl) can never actually produce a '..'-bearing libraryPath in the first place, since new URL() resolves dot-segments (RFC 3986 5.2.4) -- including percent-encoded ones -- before resolveLocalPath ever sees the value.
     const parsed = parseShareUrl('https://contoso.sharepoint.com/sites/TeamSite/Documents/Reports/foo/../etc/passwd')
     expect(parsed.libraryPath).not.toContain('..')
   })
@@ -122,10 +117,7 @@ describe('resolveLocalPath', () => {
   })
 
   it('rejects the backslash-encoded traversal payload (%5C survives decodeURIComponent, never splits on "/", never equals ".." -- security regression)', () => {
-    // https://x.sharepoint.com/sites/S/Docs/..%5C..%5C..%5CWindows%5Cwin.ini decodes to a
-    // single segment '..\..\..\Windows\win.ini' that a '/'-only split never breaks apart
-    // and that never literally equals '..', so the old '/'.split().filter(s => s !== '..')
-    // guard let it straight through; path.win32.join then collapsed it outside the root.
+    // https://x.sharepoint.com/sites/S/Docs/..%5C..%5C..%5CWindows%5Cwin.ini decodes to a single segment '..\..\..\Windows\win.ini' that a '/'-only split never breaks apart and that never literally equals '..', so the old '/'.split().filter(s => s !== '..') guard let it straight through; path.win32.join then collapsed it outside the root.
     const siteRoot = path.join(root, 'backslash-traversal-root')
     fs.mkdirSync(siteRoot, { recursive: true })
     const parsed = parseShareUrl(
@@ -174,9 +166,7 @@ describe('resolveLocalPath', () => {
   })
 
   it('does not scan for a site-name subfolder for a personal (non-"site") URL, even when the root itself has no direct match', () => {
-    // parsed.siteType === 'personal' here, so resolveLocalPath's site-subfolder scan (gated on
-    // `parsed.siteType === 'site'`) must never run -- confirmed by there being no subfolder
-    // resolution possible at all: only the raw root is ever tried.
+    // parsed.siteType === 'personal' here, so resolveLocalPath's site-subfolder scan (gated on `parsed.siteType === 'site'`) must never run -- confirmed by there being no subfolder resolution possible at all: only the raw root is ever tried.
     const personalRoot = path.join(root, 'personal-no-subfolder-root')
     fs.mkdirSync(path.join(personalRoot, 'alice_contoso_com - Documents', 'Documents'), { recursive: true })
     fs.writeFileSync(path.join(personalRoot, 'alice_contoso_com - Documents', 'Documents', 'notes.docx'), '')
@@ -190,8 +180,7 @@ describe('resolveLocalPath', () => {
     fs.mkdirSync(sharedRoot, { recursive: true })
     const parsed = parseShareUrl('https://contoso.sharepoint.com/sites/TeamSite/Reports/budget.xlsx')
     const result = resolveLocalPath(parsed, { OneDriveCommercial: sharedRoot, OneDrive: sharedRoot }, root)
-    // Every attempted path is under sharedRoot exactly once per distinct segment combination --
-    // if candidateRoots failed to dedup, the same set of tried paths would appear twice.
+    // Every attempted path is under sharedRoot exactly once per distinct segment combination -- if candidateRoots failed to dedup, the same set of tried paths would appear twice.
     const uniqueTried = new Set(result.triedPaths)
     expect(uniqueTried.size).toBe(result.triedPaths.length)
   })

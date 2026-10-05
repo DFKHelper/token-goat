@@ -1,18 +1,4 @@
-/**
- * Regression: a vector holding a NaN (or an infinity) used to be stored as readily as a real one,
- * and sqlite-vec then reports no distance at all for that row. JavaScript reads the resulting SQL
- * NULL as `null`, which compares as 0 against the distance threshold and subtracts as 0 in the
- * re-ranking, so one such row cleared every threshold and sorted ahead of every genuine match --
- * in every project sharing `global.db`, since the index is machine-wide.
- *
- * Two independent guards, tested independently: `embedTexts` refuses to hand back a vector with a
- * non-finite component (the write side), and `fetchScopedHits` ignores a row whose distance is not
- * a finite number (the read side, which also covers a row an earlier build already wrote).
- *
- * The read-side cases seed vectors directly into a real sqlite-vec-backed DB and query with a
- * hand-built vector, exactly as tests/semantic_project_scope.test.ts does -- no model inference
- * required, only the optional native extension, and the suite skips cleanly without it.
- */
+/** Regression: a vector holding a NaN (or an infinity) used to be stored as readily as a real one, and sqlite-vec then reports no distance at all for that row. JavaScript reads the resulting SQL NULL as `null`, which compares as 0 against the distance threshold and subtracts as 0 in the re-ranking, so one such row cleared every threshold and sorted ahead of every genuine match -- in every project sharing `global.db`, since the index is machine-wide. Two independent guards, tested independently: `embedTexts` refuses to hand back a vector with a non-finite component (the write side), and `fetchScopedHits` ignores a row whose distance is not a finite number (the read side, which also covers a row an earlier build already wrote). The read-side cases seed vectors directly into a real sqlite-vec-backed DB and query with a hand-built vector, exactly as tests/semantic_project_scope.test.ts does -- no model inference required, only the optional native extension, and the suite skips cleanly without it. */
 import { createRequire } from 'node:module'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -71,10 +57,7 @@ function seedChunk(dbPath: string, filePath: string, vec: number[]): void {
   insertChunkVector(vecStmt, result.lastInsertRowid, vec)
 }
 
-/**
- * Store a poisoned row the way an older build did -- packing the bytes directly, bypassing packVec
- * -- because packVec now refuses it. The read-side guard exists precisely for rows already on disk.
- */
+/** Store a poisoned row the way an older build did -- packing the bytes directly, bypassing packVec -- because packVec now refuses it. The read-side guard exists precisely for rows already on disk. */
 function seedRawChunk(dbPath: string, filePath: string, vec: number[]): void {
   const db = getDb(dbPath)
   const result = db
@@ -107,10 +90,7 @@ describe('embedTexts rejects a non-finite vector', () => {
     await expect(embedTexts(['some text'])).rejects.toThrow(/[Nn]on-finite embedding component at index 7/)
   })
 
-  // A value that is finite as a JavaScript number but too large for a 32-bit float becomes
-  // Infinity the instant it is written into the Float32Array, so a Number.isFinite check upstream
-  // of the packing lets it through and stores exactly the poisoned row it was meant to stop.
-  // packVec is the one place every stored vector passes through, so the guarantee lives there.
+  // A value that is finite as a JavaScript number but too large for a 32-bit float becomes Infinity the instant it is written into the Float32Array, so a Number.isFinite check upstream of the packing lets it through and stores exactly the poisoned row it was meant to stop. packVec is the one place every stored vector passes through, so the guarantee lives there.
   it.each([
     ['1e39', 1e39],
     ['-1e39', -1e39],
@@ -150,8 +130,7 @@ describe.skipIf(!canExerciseVec0)('fetchScopedHits ignores a non-finite distance
     seedRawChunk(dbPath, 'c:/rootA/poisoned.ts', Array(DEFAULT_DIM).fill(NaN))
     const db = getDb(dbPath)
 
-    // A threshold of 0 admits nothing at all: before the fix the null distance compared as 0 and
-    // passed even this, which is what made it sort first everywhere.
+    // A threshold of 0 admits nothing at all: before the fix the null distance compared as 0 and passed even this, which is what made it sort first everywhere.
     const { hits, candidateCount } = fetchScopedHits(db, GOOD_VEC, 10, 0, 'c:/rootA')
 
     expect(candidateCount).toBe(1) // the ANN scan did return the row...

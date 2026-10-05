@@ -6,10 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as UtilModule from '../src/util.js'
 
-// Force the case-insensitive-FS branch on every platform (CI Linux is case-sensitive), same
-// pattern as embeddings_collation.test.ts. deleteFileEmbeddings folds the query param via
-// foldPath() and reads the pathEqClause() SQL clause internally, so mocking isCaseInsensitiveFs
-// exercises pathEqClause's TG_LOWER()-backed branch end-to-end.
+// Force the case-insensitive-FS branch on every platform (CI Linux is case-sensitive), same pattern as embeddings_collation.test.ts. deleteFileEmbeddings folds the query param via foldPath() and reads the pathEqClause() SQL clause internally, so mocking isCaseInsensitiveFs exercises pathEqClause's TG_LOWER()-backed branch end-to-end.
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<typeof UtilModule>()
   return { ...actual, isCaseInsensitiveFs: vi.fn(() => true) }
@@ -49,9 +46,7 @@ function chunkCount(dbPath: string, p: string): number {
 }
 
 describe('pathEqClause non-ASCII case folding (TG_LOWER)', () => {
-  // Sanity check that this pair actually exercises the gap: SQLite's built-in LOWER() only
-  // folds ASCII A-Z, so LOWER('Ä') stays 'Ä' (not 'ä') in a default build. If this assertion
-  // ever starts failing, the codepoint pair below no longer proves anything and needs swapping.
+  // Sanity check that this pair actually exercises the gap: SQLite's built-in LOWER() only folds ASCII A-Z, so LOWER('Ä') stays 'Ä' (not 'ä') in a default build. If this assertion ever starts failing, the codepoint pair below no longer proves anything and needs swapping.
   it('confirms the vanilla SQL LOWER() function does NOT fold Ä to ä (the gap being closed)', () => {
     const db = getDb(path.join(TMP, 'lower-check.db'))
     const row = db.prepare('SELECT LOWER(?) v').get('Ä') as { v: string }
@@ -63,16 +58,11 @@ describe('pathEqClause non-ASCII case folding (TG_LOWER)', () => {
     seed(db, 'c:/proj/Ätest.ts') // walker casing
     deleteFileEmbeddings(getDb(db), 'c:/proj/ätest.ts') // edit-queue casing, different non-ASCII case
 
-    // A LOWER()-based pathEqClause (the pre-fix bug) folds only ASCII, so 'Ätest.ts' stays
-    // 'Ätest.ts' while the JS-side foldPath() param is already 'ätest.ts' -- they never match
-    // and the row survives. TG_LOWER() folds both sides identically, so it must be gone.
+    // A LOWER()-based pathEqClause (the pre-fix bug) folds only ASCII, so 'Ätest.ts' stays 'Ätest.ts' while the JS-side foldPath() param is already 'ätest.ts' -- they never match and the row survives. TG_LOWER() folds both sides identically, so it must be gone.
     expect(chunkCount(db, 'c:/proj/Ätest.ts')).toBe(0)
   })
 
-  // Correctness, not just perf: a plain mixed-ASCII-case input must still resolve through
-  // pathEqClause's TG_LOWER()-backed branch after the expression-index fix below -- this locks
-  // in the everyday case (not just the non-ASCII edge case above) alongside the index-usage
-  // assertion.
+  // Correctness, not just perf: a plain mixed-ASCII-case input must still resolve through pathEqClause's TG_LOWER()-backed branch after the expression-index fix below -- this locks in the everyday case (not just the non-ASCII edge case above) alongside the index-usage assertion.
   it('case-insensitive FS: matches a path differing only by ASCII casing (Foo.ts vs foo.ts)', () => {
     const db = path.join(TMP, 'index.db')
     seed(db, 'c:/proj/Foo.ts') // walker casing
@@ -82,14 +72,7 @@ describe('pathEqClause non-ASCII case folding (TG_LOWER)', () => {
 })
 
 describe('pathEqClause query plan (full table scan fix)', () => {
-  // Regression: TG_LOWER() is a custom SQL function, so a plain column index cannot satisfy a
-  // `TG_LOWER(column) = ?` WHERE clause -- every pathEqClause()-built query used to be a full
-  // table SCAN on the case-insensitive-filesystem branch, regardless of table size. db.ts adds
-  // an expression index (`CREATE INDEX ... ON chunks(TG_LOWER(file_path))`) that SQLite matches
-  // against pathEqClause's exact output text. Build the clause the same way every real caller
-  // does (parser.ts, embeddings.ts, index_reader.ts) and confirm via EXPLAIN QUERY PLAN that the
-  // resulting SQL uses SEARCH, not SCAN -- this is the assertion that locks the perf fix in so
-  // it cannot silently regress back to a full scan.
+  // Regression: TG_LOWER() is a custom SQL function, so a plain column index cannot satisfy a `TG_LOWER(column) = ?` WHERE clause -- every pathEqClause()-built query used to be a full table SCAN on the case-insensitive-filesystem branch, regardless of table size. db.ts adds an expression index (`CREATE INDEX ... ON chunks(TG_LOWER(file_path))`) that SQLite matches against pathEqClause's exact output text. Build the clause the same way every real caller does (parser.ts, embeddings.ts, index_reader.ts) and confirm via EXPLAIN QUERY PLAN that the resulting SQL uses SEARCH, not SCAN -- this is the assertion that locks the perf fix in so it cannot silently regress back to a full scan.
   it('a query built from pathEqClause uses SEARCH (not SCAN), not a full table scan', () => {
     const db = getDb(path.join(TMP, 'plan.db'))
     const clause = pathEqClause('file_path')
@@ -154,16 +137,14 @@ describe('projectScopeClause', () => {
   })
 
   it('builds a half-open range whose upper bound is the separator advanced by one code point', () => {
-    // The bound is what makes the filter index-searchable, and it is also the whole boundary
-    // argument: only a string sharing every character up to the `/` can land inside [lower, upper).
+    // The bound is what makes the filter index-searchable, and it is also the whole boundary argument: only a string sharing every character up to the `/` can land inside [lower, upper).
     const { params } = projectScopeClause('file_path')
     expect(params('c:/proj')).toEqual(['c:/proj/', 'c:/proj0'])
     expect(params('c:/proj/')).toEqual(['c:/proj/', 'c:/proj0'])
   })
 
   it('case-sensitive FS: a root differing only by case does NOT match', () => {
-    // LIKE folded ASCII case implicitly, so the old clause matched a genuinely different directory
-    // on a filesystem where `/x/Repo` and `/x/repo` are two separate places. The range does not.
+    // LIKE folded ASCII case implicitly, so the old clause matched a genuinely different directory on a filesystem where `/x/Repo` and `/x/repo` are two separate places. The range does not.
     vi.mocked(isCaseInsensitiveFs).mockReturnValue(false)
     const db = path.join(TMP, 'case-sensitive.db')
     seed(db, 'c:/Proj/File.ts')

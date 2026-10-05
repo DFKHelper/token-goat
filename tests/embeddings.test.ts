@@ -59,15 +59,7 @@ describe('embeddings module', () => {
   })
 
   describe('chunkFile() on a file whose lines are much wider than the overlap budget', () => {
-    // `overlap` is documented as a character budget, but it was turned into a line count with
-    // `Math.ceil(overlap / 40)` -- a fixed 5 lines for the default 200, whatever those lines
-    // actually held. On lines wider than the 40-char guess that fixed count was the only bound,
-    // and it bounded the wrong quantity: each chunk was prefilled with 5 whole lines of overlap,
-    // which on 3,000-char lines is 15,000 characters rather than 200. Chunks were stored at
-    // 18,005 chars against a MAX_CHUNK_CHARS of 8,000 -- past the size cap this function exists
-    // to enforce, and past the embedding model's context window it is set from -- and the
-    // database held 5.84x the source it was indexing, every duplicated byte embedded too.
-    // Minified bundles, generated code, long CSV or log lines and single-line JSON all qualify.
+    // `overlap` is documented as a character budget, but it was turned into a line count with `Math.ceil(overlap / 40)` -- a fixed 5 lines for the default 200, whatever those lines actually held. On lines wider than the 40-char guess that fixed count was the only bound, and it bounded the wrong quantity: each chunk was prefilled with 5 whole lines of overlap, which on 3,000-char lines is 15,000 characters rather than 200. Chunks were stored at 18,005 chars against a MAX_CHUNK_CHARS of 8,000 -- past the size cap this function exists to enforce, and past the embedding model's context window it is set from -- and the database held 5.84x the source it was indexing, every duplicated byte embedded too. Minified bundles, generated code, long CSV or log lines and single-line JSON all qualify.
     const LINE_CHARS = 3000
     const LINE_COUNT = 100
     const content = Array.from({ length: LINE_COUNT }, (_, i) =>
@@ -85,25 +77,19 @@ describe('embeddings module', () => {
     it('does not store several times the source it is indexing', () => {
       const chunks = embeddings.chunkFile('wide.ts', content)
 
-      // Some duplication is the point of overlap, so this is not a demand for exactly 1.00x --
-      // it is a bound loose enough that honest overlap passes and the 5.84x measured before the
-      // fix cannot. The whole-file numbers are asserted rather than a per-chunk ratio because
-      // amplification is what actually costs storage and embedding time.
+      // Some duplication is the point of overlap, so this is not a demand for exactly 1.00x -- it is a bound loose enough that honest overlap passes and the 5.84x measured before the fix cannot. The whole-file numbers are asserted rather than a per-chunk ratio because amplification is what actually costs storage and embedding time.
       const stored = chunks.reduce((total, c) => total + c.text.length, 0)
       expect(stored).toBeLessThan(content.length * 1.5)
     })
 
     it('still overlaps consecutive chunks when the lines do fit the budget', () => {
-      // The fix must not become "no overlap ever". On lines narrow enough for the 200-char
-      // budget to cover several, consecutive chunks still have to share lines, or the guard
-      // above would be satisfied by simply deleting the overlap.
+      // The fix must not become "no overlap ever". On lines narrow enough for the 200-char budget to cover several, consecutive chunks still have to share lines, or the guard above would be satisfied by simply deleting the overlap.
       const narrow = Array.from({ length: 400 }, (_, i) => `const v${i} = ${i}`).join('\n')
 
       const chunks = embeddings.chunkFile('narrow.ts', narrow, 500)
 
       expect(chunks.length).toBeGreaterThan(1)
-      // Reported as the offending boundaries rather than a collapsed boolean, so a failure says
-      // which chunk pairs stopped sharing lines instead of only "expected false to be true".
+      // Reported as the offending boundaries rather than a collapsed boolean, so a failure says which chunk pairs stopped sharing lines instead of only "expected false to be true".
       const notOverlapping = chunks
         .slice(1)
         .map((c, i) => ({ after: chunks[i].endLine, startsAt: c.startLine }))
@@ -113,28 +99,16 @@ describe('embeddings module', () => {
   })
 
   describe('chunkFile() on content that never clears the minimum chunk size', () => {
-    // A below-floor chunk is dropped rather than emitted, and the window used to be pinned back to
-    // that chunk's own start so its lines could not be lost. For content that trims to nothing the
-    // pin never lifted: `startLine` stopped advancing, the buffer grew without bound, and every
-    // following line re-tripped the size flush and re-ran `trim()` over an ever-longer string.
-    // 8,000 blank lines took 127 ms and 64,000 took 11.3 s -- an 89-fold rise for an 8-fold input --
-    // and every run produced no chunks at all. Note the size below is deliberately large: the same
-    // commit also stopped this loop rebuilding a string it already had, which on its own cut the
-    // cost enough that a smaller file no longer separates a fixed loop from a quadratic one.
+    // A below-floor chunk is dropped rather than emitted, and the window used to be pinned back to that chunk's own start so its lines could not be lost. For content that trims to nothing the pin never lifted: `startLine` stopped advancing, the buffer grew without bound, and every following line re-tripped the size flush and re-ran `trim()` over an ever-longer string. 8,000 blank lines took 127 ms and 64,000 took 11.3 s -- an 89-fold rise for an 8-fold input -- and every run produced no chunks at all. Note the size below is deliberately large: the same commit also stopped this loop rebuilding a string it already had, which on its own cut the cost enough that a smaller file no longer separates a fixed loop from a quadratic one.
     //
-    // Only the cost is asserted here. What the pin is for -- keeping the lines of a dropped
-    // below-floor chunk -- is already pinned by the short-lines-before-a-long-line case below, and
-    // that case goes red if this narrowing ever widens back into removing the pin outright. The indexer accepts files up to 500 KB, where that
-    // extrapolates to minutes of one core inside the worker's drain loop, spent to produce nothing.
+    // Only the cost is asserted here. What the pin is for -- keeping the lines of a dropped below-floor chunk -- is already pinned by the short-lines-before-a-long-line case below, and that case goes red if this narrowing ever widens back into removing the pin outright. The indexer accepts files up to 500 KB, where that extrapolates to minutes of one core inside the worker's drain loop, spent to produce nothing.
     it('does not take quadratic time on a file that is entirely blank lines', () => {
       const started = Date.now()
 
       const chunks = embeddings.chunkFile('blank.txt', '\n'.repeat(128_000))
 
       expect(chunks).toEqual([])
-      // At this size the fixed loop takes about 5 ms and the quadratic one about 6,300 ms, so the
-      // bound sits several hundred times above the real cost and three times below the defect --
-      // it cannot fire on a slow or loaded machine, and the quadratic cannot slip under it.
+      // At this size the fixed loop takes about 5 ms and the quadratic one about 6,300 ms, so the bound sits several hundred times above the real cost and three times below the defect -- it cannot fire on a slow or loaded machine, and the quadratic cannot slip under it.
       expect(Date.now() - started).toBeLessThan(2_000)
     })
 
@@ -162,9 +136,7 @@ describe('embeddings module', () => {
     it('should create chunks with correct metadata', () => {
       const content = 'a'.repeat(100) + '\n' + 'b'.repeat(100)
       const chunks = embeddings.chunkFile('test.ts', content, 80)
-      // Regression: the original `if (chunks.length > 0)` guard meant this test's body could
-      // silently execute zero assertions if chunking ever regressed to an empty result -- pin the
-      // real chunk count instead so that failure mode is caught rather than passing trivially.
+      // Regression: the original `if (chunks.length > 0)` guard meant this test's body could silently execute zero assertions if chunking ever regressed to an empty result -- pin the real chunk count instead so that failure mode is caught rather than passing trivially.
       expect(chunks.length).toBe(2)
       const chunk = chunks[0]
       expect(chunk.filePath).toBe('test.ts')
@@ -214,19 +186,11 @@ describe('embeddings module', () => {
       const chunksCRLF = embeddings.chunkFile('test.ts', contentCRLF, 500)
       const chunksLF = embeddings.chunkFile('test.ts', contentLF, 500)
 
-      // The regression this guards is that CRLF splitting behaves identically to LF splitting
-      // (content.split(/\r?\n/) normalizes both). Compare the two runs against each other rather
-      // than against a literal chunk count: the count a given input splits into is a function of
-      // the overlap and size tunables, so a literal pins this test to their current values and
-      // fails when they are legitimately retuned, while saying nothing about CRLF at all. Every
-      // chunk's line range and text must match across the two, which is the actual claim and is
-      // stronger than an equal count -- a per-chunk boundary that diverged while the totals
-      // happened to agree would satisfy a count pin and fails here.
+      // The regression this guards is that CRLF splitting behaves identically to LF splitting (content.split(/\r?\n/) normalizes both). Compare the two runs against each other rather than against a literal chunk count: the count a given input splits into is a function of the overlap and size tunables, so a literal pins this test to their current values and fails when they are legitimately retuned, while saying nothing about CRLF at all. Every chunk's line range and text must match across the two, which is the actual claim and is stronger than an equal count -- a per-chunk boundary that diverged while the totals happened to agree would satisfy a count pin and fails here.
       expect(chunksCRLF.map((c) => [c.startLine, c.endLine, c.text])).toEqual(
         chunksLF.map((c) => [c.startLine, c.endLine, c.text]),
       )
-      // ...and the file must actually have split, or the comparison above is vacuously true for
-      // any two single-chunk results.
+      // ...and the file must actually have split, or the comparison above is vacuously true for any two single-chunk results.
       expect(chunksLF.length).toBeGreaterThan(1)
 
       const crlfText = chunksCRLF[0].text
@@ -344,10 +308,7 @@ describe('embeddings module', () => {
       const chunks = embeddings.chunkFile('leadgap.ts', content, embeddings.MAX_CHUNK_CHARS, 200, boundaries)
 
       expect(chunks.length).toBe(1)
-      // The folded chunk now spans the leading comment line in addition to the
-      // symbol's own lines, so it must not be mislabeled 'symbol' - it should carry
-      // the generic 'window' kind, same as any other chunk that isn't exactly one
-      // boundary's content.
+      // The folded chunk now spans the leading comment line in addition to the symbol's own lines, so it must not be mislabeled 'symbol' - it should carry the generic 'window' kind, same as any other chunk that isn't exactly one boundary's content.
       expect(chunks[0].kind).toBe('window')
       expect(chunks[0].startLine).toBe(1)
       expect(chunks[0].endLine).toBe(4)
@@ -397,9 +358,7 @@ describe('embeddings module', () => {
       expect(chunks[0].startLine).toBe(1)
       expect(chunks[chunks.length - 1].endLine).toBe(contentLines.length)
       expect(chunks.map((c) => c.text).join('\n')).toContain('const E = 5')
-      // Must actually take the boundary-merging path (single-line start===end boundaries kept,
-      // not silently filtered out and falling back to plain window splitting - a fallback would
-      // still satisfy the loose assertions above without proving boundary merging ran at all).
+      // Must actually take the boundary-merging path (single-line start===end boundaries kept, not silently filtered out and falling back to plain window splitting - a fallback would still satisfy the loose assertions above without proving boundary merging ran at all).
       expect(chunks.every((c) => c.kind === 'symbol')).toBe(true)
     })
 
@@ -435,9 +394,7 @@ describe('embeddings module', () => {
     })
 
     it('does not silently drop a boundary range whose real content is interspersed with enough whitespace to clear MIN_CHUNK_CHARS in raw chars but not in trimmed chars (regression: chunkFile\'s own boundary/gap pre-filter (gapLength) measured raw length, disagreeing with splitRangeIntoChunks\' now-trimmed-length too-small check -- a whitespace-heavy leading boundary range passed the outer "big enough to stand alone" check, was handed to splitRangeIntoChunks as a lone range with no accumulated chunks yet, and was silently dropped there instead of being folded into a neighbor, taking its real content line down with it)', () => {
-      // A short leading boundary section: 3 whitespace-only lines followed by one real line -- big
-      // enough in raw chars (with newlines) to clear MIN_CHUNK_CHARS as a standalone range, but not
-      // once trimmed.
+      // A short leading boundary section: 3 whitespace-only lines followed by one real line -- big enough in raw chars (with newlines) to clear MIN_CHUNK_CHARS as a standalone range, but not once trimmed.
       const leadingBoundaryLines = ['                                              ', '   ', '   ', 'const real = 1']
       const restOfFile = Array.from({ length: 5 }, (_, i) => `function f${i}() { return ${i}; }`)
       const contentLines = [...leadingBoundaryLines, ...restOfFile]
@@ -451,8 +408,7 @@ describe('embeddings module', () => {
       for (const c of chunks) {
         for (let line = c.startLine; line <= c.endLine; line++) covered.add(line)
       }
-      // Line 4 ("const real = 1") must land in some chunk -- it is real content and must never be
-      // silently lost, regardless of how the surrounding whitespace gets folded.
+      // Line 4 ("const real = 1") must land in some chunk -- it is real content and must never be silently lost, regardless of how the surrounding whitespace gets folded.
       expect(covered.has(4)).toBe(true)
     })
 
@@ -489,8 +445,7 @@ describe('embeddings module', () => {
 
       const chunks = embeddings.chunkFile('samestart.ts', content, embeddings.MAX_CHUNK_CHARS, 200, boundaries)
 
-      // The inner boundary is fully nested in the outer one and must be dropped entirely,
-      // leaving exactly one chunk covering the whole outer range tagged with the outer kind.
+      // The inner boundary is fully nested in the outer one and must be dropped entirely, leaving exactly one chunk covering the whole outer range tagged with the outer kind.
       expect(chunks.length).toBe(1)
       expect(chunks[0].kind).toBe('symbol')
       expect(chunks[0].startLine).toBe(1)
@@ -753,10 +708,7 @@ describe('embeddings module', () => {
   })
 
   describe('cmdSemantic over-fetch + merge composition (regression: merge before truncate, not after)', () => {
-    // Simulates rerankHits' best-first output for a single semantic-search call: three hits in
-    // the same file, ordered by ascending (already re-ranked) distance. Hit A and hit C sit close
-    // enough together (gap of 4 lines, within the default proximity of 20) that mergeNearbyHits
-    // should combine them into one hit; hit B is far away in the same file and never merges.
+    // Simulates rerankHits' best-first output for a single semantic-search call: three hits in the same file, ordered by ascending (already re-ranked) distance. Hit A and hit C sit close enough together (gap of 4 lines, within the default proximity of 20) that mergeNearbyHits should combine them into one hit; hit B is far away in the same file and never merges.
     const hit = (startLine: number, endLine: number, distance: number, text: string): SearchHit => ({
       filePath: 'src/auth.ts',
       startLine,
@@ -773,8 +725,7 @@ describe('embeddings module', () => {
     const n = 2
 
     it('drops a mergeable hit when truncating to n before merging (the pre-fix composition)', () => {
-      // Old cmdSemantic: searchSemantic already truncated to n=2 raw hits (best-first: A, B)
-      // before mergeNearbyHits ever ran, so chunk C never gets a chance to merge with chunk A.
+      // Old cmdSemantic: searchSemantic already truncated to n=2 raw hits (best-first: A, B) before mergeNearbyHits ever ran, so chunk C never gets a chance to merge with chunk A.
       const preFixResult = mergeNearbyHits(rawHits.slice(0, n))
       expect(preFixResult.length).toBe(2)
       const authHit = preFixResult.find((h) => h.startLine === 1)
@@ -782,8 +733,7 @@ describe('embeddings module', () => {
     })
 
     it('merges the over-fetched candidate pool before truncating to n (the fixed composition)', () => {
-      // New cmdSemantic: searchSemantic over-fetches all 3 candidates, mergeNearbyHits runs on
-      // the full pool first, and only the merged result is truncated to n.
+      // New cmdSemantic: searchSemantic over-fetches all 3 candidates, mergeNearbyHits runs on the full pool first, and only the merged result is truncated to n.
       const postFixResult = mergeNearbyHits(rawHits).slice(0, n)
       expect(postFixResult.length).toBe(2)
       const mergedHit = postFixResult.find((h) => h.startLine === 1)
@@ -817,9 +767,7 @@ describe('embeddings module', () => {
       // 'authenticate' appears in neither text, so boost is 0 on both — pure penalty test.
       const hits = [mk('Dist/bundle.js', 0.4, 'some code'), mk('src/auth.ts', 0.5, 'other code')]
       const out = embeddings.rerankHits(hits, 'authenticate', 8)
-      // Dist/ (capitalized) hit has the lower raw distance but must still be demoted, matching
-      // the lowercase dist/ case above — segment matching against _GENERATED_PATH_SEGMENTS is
-      // case-insensitive.
+      // Dist/ (capitalized) hit has the lower raw distance but must still be demoted, matching the lowercase dist/ case above — segment matching against _GENERATED_PATH_SEGMENTS is case-insensitive.
       expect(out[0].filePath).toBe('src/auth.ts')
       expect(out.map((h) => h.distance)).toContain(0.4)
     })
@@ -839,9 +787,7 @@ describe('embeddings module', () => {
         mk('src/a.ts', 0.53, 'the log rotates nightly'),
         mk('src/b.ts', 0.5, 'totally unrelated content'),
       ]
-      // 'log' is exactly _MIN_TOKEN_LEN (3) chars; with the boost applied, a.ts's adjusted
-      // distance (0.53 - 0.05 = 0.48) beats b.ts's raw 0.5. Without it, b.ts (lower raw
-      // distance, no boost either way) would win instead.
+      // 'log' is exactly _MIN_TOKEN_LEN (3) chars; with the boost applied, a.ts's adjusted distance (0.53 - 0.05 = 0.48) beats b.ts's raw 0.5. Without it, b.ts (lower raw distance, no boost either way) would win instead.
       const out = embeddings.rerankHits(hits, 'log', 8)
       expect(out[0].filePath).toBe('src/a.ts')
     })
@@ -854,17 +800,13 @@ describe('embeddings module', () => {
 
     describe('path-priority scoring (deprioritizes archival/superseded and docs paths)', () => {
       afterEach(() => {
-        // Restore the default semantic weights after any test that overrides them, so a later
-        // test in this file (or another file sharing the isolated TOKEN_GOAT_HOME) never sees a
-        // config.toml left behind with a non-default archive_weight/docs_weight.
+        // Restore the default semantic weights after any test that overrides them, so a later test in this file (or another file sharing the isolated TOKEN_GOAT_HOME) never sees a config.toml left behind with a non-default archive_weight/docs_weight.
         saveConfig(defaultConfig())
         invalidateConfigCache()
       })
 
       it('ranks live source ahead of an archival hit with slightly higher raw similarity (lower distance)', () => {
-        // 'design' appears in neither text, so boost is 0 on both -- pure path-priority test.
-        // archive/old-design.md's raw distance (0.40) is better (lower) than src/thing.ts's
-        // (0.45), but the default archive_weight (0.7) demotes it: 0.40 + (1 - 0.7) = 0.70 > 0.45.
+        // 'design' appears in neither text, so boost is 0 on both -- pure path-priority test. archive/old-design.md's raw distance (0.40) is better (lower) than src/thing.ts's (0.45), but the default archive_weight (0.7) demotes it: 0.40 + (1 - 0.7) = 0.70 > 0.45.
         const hits = [
           mk('archive/old-design.md', 0.40, 'legacy notes about the thing'),
           mk('src/thing.ts', 0.45, 'export function thing() {}'),
@@ -876,8 +818,7 @@ describe('embeddings module', () => {
       })
 
       it('still surfaces a much better archival match (nudge, not a hard filter)', () => {
-        // archive/old-design.md's raw distance (0.10) is so much better than src/thing.ts's
-        // (0.45) that even penalized by archive_weight (0.10 + 0.30 = 0.40) it still beats 0.45.
+        // archive/old-design.md's raw distance (0.10) is so much better than src/thing.ts's (0.45) that even penalized by archive_weight (0.10 + 0.30 = 0.40) it still beats 0.45.
         const hits = [
           mk('archive/old-design.md', 0.10, 'legacy notes about the thing'),
           mk('src/thing.ts', 0.45, 'export function thing() {}'),
@@ -886,12 +827,7 @@ describe('embeddings module', () => {
         expect(out.map((h) => h.filePath)).toEqual(['archive/old-design.md', 'src/thing.ts'])
       })
 
-      // Regression: the penalty was first applied as a DIVISOR on `distance - boost`. That term goes
-      // negative whenever a hit's raw distance falls below _MAX_VERBATIM_BOOST (0.25), which any
-      // near-verbatim match does, and dividing a negative number by a weight < 1 makes it MORE
-      // negative -- so the archival penalty silently became an archival BONUS for exactly the
-      // strongest matches, the ones most likely to be followed. Both hits below share the query
-      // tokens, so both earn the same full boost and the ONLY difference is the path penalty.
+      // Regression: the penalty was first applied as a DIVISOR on `distance - boost`. That term goes negative whenever a hit's raw distance falls below _MAX_VERBATIM_BOOST (0.25), which any near-verbatim match does, and dividing a negative number by a weight < 1 makes it MORE negative -- so the archival penalty silently became an archival BONUS for exactly the strongest matches, the ones most likely to be followed. Both hits below share the query tokens, so both earn the same full boost and the ONLY difference is the path penalty.
       it('still demotes an archival hit when the verbatim boost drives the score negative', () => {
         const text = 'compact session manifest token budget'
         const hits = [
@@ -908,8 +844,7 @@ describe('embeddings module', () => {
         saveConfig(cfg)
         invalidateConfigCache()
 
-        // Same inputs as the first test above -- with the penalty off, pure raw-distance
-        // ordering wins and the archival hit (lower raw distance) now ranks first.
+        // Same inputs as the first test above -- with the penalty off, pure raw-distance ordering wins and the archival hit (lower raw distance) now ranks first.
         const hits = [
           mk('archive/old-design.md', 0.40, 'legacy notes about the thing'),
           mk('src/thing.ts', 0.45, 'export function thing() {}'),
@@ -1007,9 +942,7 @@ describe('embeddings module', () => {
             all: () => [],
             // chunk_vectors existence probe (searchSemantic gate) - return a row so the gate passes and the KNN query under test runs.
             get: () => ({}),
-            // The provenance read (ensureEmbeddingProvenance) answers with the stack that is
-            // actually running, which is what a database in the steady state holds. Anything else
-            // would send this mock down the invalidation path, which is a different test's job.
+            // The provenance read (ensureEmbeddingProvenance) answers with the stack that is actually running, which is what a database in the steady state holds. Anything else would send this mock down the invalidation path, which is a different test's job.
             pluck: () => ({
               get: () =>
                 sql.includes('embedding_provenance') ? embeddings.embeddingProvenance() : undefined,

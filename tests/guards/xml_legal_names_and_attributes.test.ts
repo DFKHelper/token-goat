@@ -1,35 +1,4 @@
-/**
- * Guard: the XML tokenizer must parse the XML the spec calls legal, not the subset a regex is
- * comfortable with.
- *
- * Two shapes of ordinary, spec-legal XML were silently mangled.
- *
- * A `>` inside a quoted attribute value is explicitly legal (only `<` and `&` are forbidden there),
- * and appears in real documents any time an attribute holds a comparison, an arrow, or a fragment of
- * markup. The tag pattern ended the element at the first `>` it saw, so `<item title="a>b" id="1">`
- * parsed as an element whose title was `"a`, whose `id` had vanished, and the rest of whose start
- * tag became text content.
- *
- * XML Names are Unicode: `<café>` and `<数据>` are as legal as `<item>`. The name class was
- * ASCII-only, so `café` was truncated to `caf` -- the element was there under a name no query would
- * ever ask for -- and `数据`, which begins with a non-ASCII character, was dropped from the tree
- * entirely along with its text, while `xml-outline` still presented its summary as complete.
- *
- * Both failures are silent, which is what makes them worth a guard: the command exits 0 and prints
- * a well-formed answer. A caller cannot tell a document that has no `id` attribute from one whose
- * `id` was eaten, or a document with two children from one with three.
- *
- * Why didn't a test catch this: every fixture in `tests/xml_query.test.ts` is ASCII, and every
- * attribute value in them is a plain word. The gap was in the input domain rather than the logic,
- * so exercising the existing fixtures harder would never have reached it. These cases feed the
- * tokenizer the legal inputs no fixture used.
- *
- * The controls carry real weight. Quote-aware scanning must not break self-closing detection, which
- * is decided by a `/` immediately before the closing `>` -- and a `/` also turns up inside ordinary
- * attribute values such as a path or a URL. Widening the name class must not start matching `<!--`,
- * `<![CDATA[`, `<?xml` or `<!DOCTYPE` as elements, since those are also `<` followed by a character
- * that is not a letter.
- */
+/** Guard: the XML tokenizer must parse the XML the spec calls legal, not the subset a regex is comfortable with. Two shapes of ordinary, spec-legal XML were silently mangled. A `>` inside a quoted attribute value is explicitly legal (only `<` and `&` are forbidden there), and appears in real documents any time an attribute holds a comparison, an arrow, or a fragment of markup. The tag pattern ended the element at the first `>` it saw, so `<item title="a>b" id="1">` parsed as an element whose title was `"a`, whose `id` had vanished, and the rest of whose start tag became text content. XML Names are Unicode: `<café>` and `<数据>` are as legal as `<item>`. The name class was ASCII-only, so `café` was truncated to `caf` -- the element was there under a name no query would ever ask for -- and `数据`, which begins with a non-ASCII character, was dropped from the tree entirely along with its text, while `xml-outline` still presented its summary as complete. Both failures are silent, which is what makes them worth a guard: the command exits 0 and prints a well-formed answer. A caller cannot tell a document that has no `id` attribute from one whose `id` was eaten, or a document with two children from one with three. Why didn't a test catch this: every fixture in `tests/xml_query.test.ts` is ASCII, and every attribute value in them is a plain word. The gap was in the input domain rather than the logic, so exercising the existing fixtures harder would never have reached it. These cases feed the tokenizer the legal inputs no fixture used. The controls carry real weight. Quote-aware scanning must not break self-closing detection, which is decided by a `/` immediately before the closing `>` -- and a `/` also turns up inside ordinary attribute values such as a path or a URL. Widening the name class must not start matching `<!--`, `<![CDATA[`, `<?xml` or `<!DOCTYPE` as elements, since those are also `<` followed by a character that is not a letter. */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -85,8 +54,7 @@ describe('a literal > inside an attribute value', () => {
     expect(item?.attributes).toEqual({ title: 'a>b', id: '1' })
   })
 
-  // A `/` inside a value is common (paths, URLs), and quote-aware scanning must not let one be read
-  // as the slash that makes a tag self-closing.
+  // A `/` inside a value is common (paths, URLs), and quote-aware scanning must not let one be read as the slash that makes a tag self-closing.
   it('still treats a slash inside a value as part of the value', () => {
     const item = parseXml('<root><item href="a/b">text</item></root>').children[0]
     expect(item?.attributes.href).toBe('a/b')
@@ -136,9 +104,7 @@ describe('non-ASCII XML names', () => {
     expect(summary.tree?.children.map((c) => c.tag)).toEqual(['café', '数据', 'plain'])
   })
 
-  // `<!--`, `<![CDATA[`, `<?` and `<!DOCTYPE` are all `<` followed by something that is not a
-  // letter. A name class widened far enough to swallow one of them would turn a comment into an
-  // element and its contents into the document.
+  // `<!--`, `<![CDATA[`, `<?` and `<!DOCTYPE` are all `<` followed by something that is not a letter. A name class widened far enough to swallow one of them would turn a comment into an element and its contents into the document.
   it('still treats comments, CDATA, instructions and the doctype as markup, not elements', () => {
     const doc = '<?xml version="1.0"?><!DOCTYPE r><r><!-- note --><![CDATA[raw > text]]><b>x</b></r>'
     const root = parseXml(doc)
@@ -161,17 +127,14 @@ describe('text content', () => {
     expect(parseXml('<r>a<![CDATA[b]]>c</r>').text).toBe('abc')
   })
 
-  // The counterweight: a pretty-printed document is mostly newlines and indentation between tags,
-  // and treating that as content would put it in every element's text and every character count.
+  // The counterweight: a pretty-printed document is mostly newlines and indentation between tags, and treating that as content would put it in every element's text and every character count.
   it('still ignores the whitespace between tags in a pretty-printed document', () => {
     expect(parseXml('<r>\n  <a>x</a>\n</r>').text, 'indentation was captured as element text').toBe('')
   })
 })
 
 describe('a doctype whose system identifier contains a >', () => {
-  // A SystemLiteral is quoted and may hold any character, `>` included. Ending the doctype at the
-  // first `>` let the rest of the literal be tokenized as markup, so a document could name its own
-  // root: the element the tool reported was one hidden inside the doctype string.
+  // A SystemLiteral is quoted and may hold any character, `>` included. Ending the doctype at the first `>` let the rest of the literal be tokenized as markup, so a document could name its own root: the element the tool reported was one hidden inside the doctype string.
   it('does not let an element hidden inside the literal become the root', () => {
     expect(parseXml('<!DOCTYPE r SYSTEM "x><fake/>"><r/>').tag, 'the reported root came from inside the doctype').toBe('r')
   })
@@ -215,9 +178,7 @@ describe('line numbers', () => {
 })
 
 describe('serialized attribute values', () => {
-  // Whitespace in an attribute value is normalised to spaces by every conforming XML reader, so a
-  // raw newline or tab in the output means something different from the document it came from.
-  // token-goat's own parser round-tripped it, which is exactly why nothing noticed.
+  // Whitespace in an attribute value is normalised to spaces by every conforming XML reader, so a raw newline or tab in the output means something different from the document it came from. token-goat's own parser round-tripped it, which is exactly why nothing noticed.
   it('escapes a newline and a tab so the value survives another reader', () => {
     const node = parseXml('<r a="x&#xA;y&#x9;z"/>')
     const out = serializeXmlNode(node)

@@ -1,12 +1,4 @@
-/**
- * Built-bundle check for the five Lisp-family adapters (Common Lisp, Scheme, Racket, Clojure,
- * Emacs Lisp) added in commit 8c16530e: the shipped dist/token-goat.mjs, not source, indexes a
- * small project with one file per dialect and answers `outline`, `symbol` and `read` from it.
- * These adapters shipped with only two enumeration guards and no dedicated test file (source-level
- * or bundle), unlike the six template adapters this file is modeled on
- * (tests/templates_bundle_e2e.test.ts) which shipped both. This is the only test that proves each
- * masker-then-depth-scan adapter survived bundling and is reached from the real CLI path.
- */
+/** Built-bundle check for the five Lisp-family adapters (Common Lisp, Scheme, Racket, Clojure, Emacs Lisp) added in commit 8c16530e: the shipped dist/token-goat.mjs, not source, indexes a small project with one file per dialect and answers `outline`, `symbol` and `read` from it. These adapters shipped with only two enumeration guards and no dedicated test file (source-level or bundle), unlike the six template adapters this file is modeled on (tests/templates_bundle_e2e.test.ts) which shipped both. This is the only test that proves each masker-then-depth-scan adapter survived bundling and is reached from the real CLI path. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

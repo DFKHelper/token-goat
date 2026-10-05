@@ -99,10 +99,7 @@ describe('normalizePath', () => {
     })
   })
 
-  // Regression: UNC paths (\\host\share\...) have a case-insensitive host and share segment,
-  // analogous to a drive letter, but were never folded -- two differently-cased references to
-  // the same network share normalized to two different strings and silently missed each other
-  // in every case-insensitive-path lookup this codebase does.
+  // Regression: UNC paths (\\host\share\...) have a case-insensitive host and share segment, analogous to a drive letter, but were never folded -- two differently-cased references to the same network share normalized to two different strings and silently missed each other in every case-insensitive-path lookup this codebase does.
   it('lowercases a UNC path host and share segment', () => {
     expect(normalizePath('\\\\FileServer\\Dev\\foo.ts')).toBe('//fileserver/dev/foo.ts')
   })
@@ -117,10 +114,7 @@ describe('normalizePath', () => {
     )
   })
 
-  // Regression (bug #244): a `\\?\` extended-length-path prefix used to survive
-  // the backslash->forward-slash conversion as `//?/...`, which then incorrectly
-  // matched UNC_HOST_SHARE_RE (host=`?`, "share"=`c:`), producing a nonsense
-  // UNC-folded key that diverged from the plain-form path's normalized output.
+  // Regression (bug #244): a `\\?\` extended-length-path prefix used to survive the backslash->forward-slash conversion as `//?/...`, which then incorrectly matched UNC_HOST_SHARE_RE (host=`?`, "share"=`c:`), producing a nonsense UNC-folded key that diverged from the plain-form path's normalized output.
   it('normalizes a plain \\\\?\\ extended-length path identically to its non-extended equivalent', () => {
     expect(normalizePath('\\\\?\\C:\\Windows\\System32')).toBe(normalizePath('C:\\Windows\\System32'))
     expect(normalizePath('\\\\?\\C:\\Windows\\System32')).toBe('c:/Windows/System32')
@@ -194,11 +188,7 @@ describe('normalizePath', () => {
       expect(spy).not.toHaveBeenCalled()
     })
 
-    // Mutation-testing gap: with two short-name-looking segments in one path, expandShortPath
-    // must resolve through the LAST one, not the first -- resolving through only the first would
-    // leave the second short-name segment (and hence the rest of the path key) unexpanded, so a
-    // path built from git's long-form output and one built through the short-form segment would
-    // never converge to the same normalized key.
+    // Mutation-testing gap: with two short-name-looking segments in one path, expandShortPath must resolve through the LAST one, not the first -- resolving through only the first would leave the second short-name segment (and hence the rest of the path key) unexpanded, so a path built from git's long-form output and one built through the short-form segment would never converge to the same normalized key.
     it('resolves through the last short-name segment when a path contains two', () => {
       setPlatform('win32')
       const spy = vi.spyOn(fs.realpathSync, 'native').mockReturnValue('C:\\AAAA-long\\BBBB-long')
@@ -216,13 +206,7 @@ describe('normalizePath', () => {
   })
 })
 
-// lowercaseDriveLetter is the helper extracted out of normalizePath's inline drive-letter step
-// (and now also used by project.ts's canonicalize, replacing that file's own drifted inline
-// copy) so the rule can only be defined once. normalizePath's own drive-letter behavior is
-// still covered by the 'lowercases an uppercase drive-letter prefix' / 'leaves an
-// already-lowercase forward-slash path unchanged' tests above; these test the extracted unit
-// directly, including the ASCII-only guard that the original paths.ts inline check had and the
-// unconditional project.ts inline check did not.
+// lowercaseDriveLetter is the helper extracted out of normalizePath's inline drive-letter step (and now also used by project.ts's canonicalize, replacing that file's own drifted inline copy) so the rule can only be defined once. normalizePath's own drive-letter behavior is still covered by the 'lowercases an uppercase drive-letter prefix' / 'leaves an already-lowercase forward-slash path unchanged' tests above; these test the extracted unit directly, including the ASCII-only guard that the original paths.ts inline check had and the unconditional project.ts inline check did not.
 describe('lowercaseDriveLetter', () => {
   it('lowercases an uppercase ASCII drive-letter prefix', () => {
     expect(lowercaseDriveLetter('C:/foo/bar')).toBe('c:/foo/bar')
@@ -241,17 +225,11 @@ describe('lowercaseDriveLetter', () => {
   })
 
   it('does not fold a non-ASCII uppercase letter before a colon (the guard this helper preserves from paths.ts\'s original inline check): a real Windows drive letter is always ASCII A-Z, so a non-ASCII character here is never a genuine drive letter, and folding it would invoke locale-sensitive String.prototype.toLowerCase() semantics for no real benefit', () => {
-    // U+03A9 GREEK CAPITAL LETTER OMEGA has a well-defined lowercase mapping (ω) that an
-    // unconditional `s[0].toLowerCase()` (project.ts's old inline check) would have applied;
-    // the ASCII-only /^[A-Z]$/ guard leaves it untouched instead.
+    // U+03A9 GREEK CAPITAL LETTER OMEGA has a well-defined lowercase mapping (ω) that an unconditional `s[0].toLowerCase()` (project.ts's old inline check) would have applied; the ASCII-only /^[A-Z]$/ guard leaves it untouched instead.
     expect(lowercaseDriveLetter('Ω:/foo')).toBe('Ω:/foo')
   })
 
-  // Regression (8th instance of this case-fold bug class): a UNC path's host and share are
-  // case-insensitive on Windows, exactly like a drive letter, but lowercaseDriveLetter only
-  // ever checked for a drive-letter-shaped prefix. By the time normalizePath/canonicalize call
-  // this helper, backslashes are already forward slashes, so the UNC form to fold is
-  // `//host/share/...`.
+  // Regression (8th instance of this case-fold bug class): a UNC path's host and share are case-insensitive on Windows, exactly like a drive letter, but lowercaseDriveLetter only ever checked for a drive-letter-shaped prefix. By the time normalizePath/canonicalize call this helper, backslashes are already forward slashes, so the UNC form to fold is `//host/share/...`.
   it('lowercases a UNC path host and share segment', () => {
     expect(lowercaseDriveLetter('//FileServer/Dev/foo.ts')).toBe('//fileserver/dev/foo.ts')
   })
@@ -286,14 +264,7 @@ describe('normalizeDarwinSystemAlias', () => {
     expect(normalizeDarwinSystemAlias('/variant/example')).toBe('/variant/example')
   })
 
-  // Mutation-testing gap: the existing exact-match assertion above only exercises lowercase
-  // '/var'; the second branch's uppercase coverage ('/VAR/FOLDERS/example') only exercises the
-  // slice(0,5)-with-trailing-slash branch, never the bare exact-match branch with uppercase input
-  // -- so a case-sensitive regression on just the first branch (p === '/var' instead of
-  // p.toLowerCase() === '/var') would go unnoticed. Forces platform to 'darwin' (rather than
-  // branching the expectation on the host's real platform like the test above) because this
-  // suite runs on ubuntu-latest and windows-latest in CI, never on a real macOS host, so a
-  // platform-conditional expectation here would never actually exercise the mutated line at all.
+  // Mutation-testing gap: the existing exact-match assertion above only exercises lowercase '/var'; the second branch's uppercase coverage ('/VAR/FOLDERS/example') only exercises the slice(0,5)-with-trailing-slash branch, never the bare exact-match branch with uppercase input -- so a case-sensitive regression on just the first branch (p === '/var' instead of p.toLowerCase() === '/var') would go unnoticed. Forces platform to 'darwin' (rather than branching the expectation on the host's real platform like the test above) because this suite runs on ubuntu-latest and windows-latest in CI, never on a real macOS host, so a platform-conditional expectation here would never actually exercise the mutated line at all.
   it('normalizes a bare uppercase /VAR (no trailing content) case-insensitively on macOS', () => {
     const realPlatform = process.platform
     Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
@@ -306,11 +277,7 @@ describe('normalizeDarwinSystemAlias', () => {
 })
 
 describe('resolveIndexPath', () => {
-  // These assert on WHICH resolver is invoked (path.win32.resolve vs the ambient, host-native
-  // path.resolve), not just the output value: on a real Windows host, the ambient path.resolve
-  // is already win32-native, so a value-only assertion would pass even against the pre-fix bug
-  // that only broke on non-Windows hosts (CI's ubuntu-latest). Spying on the call is what makes
-  // this regression catchable from a Windows dev machine's local pre-push run too, not just CI.
+  // These assert on WHICH resolver is invoked (path.win32.resolve vs the ambient, host-native path.resolve), not just the output value: on a real Windows host, the ambient path.resolve is already win32-native, so a value-only assertion would pass even against the pre-fix bug that only broke on non-Windows hosts (CI's ubuntu-latest). Spying on the call is what makes this regression catchable from a Windows dev machine's local pre-push run too, not just CI.
   it('uses path.win32.resolve, not the ambient path.resolve, when file is Windows-drive-absolute (fail-on-buggy: passes trivially on a real Windows host even without the fix, since the ambient resolve is win32-native there)', () => {
     const win32Spy = vi.spyOn(path.win32, 'resolve')
     try {
@@ -351,12 +318,7 @@ describe('resolveIndexPath', () => {
     expect(resolveIndexPath('C:/Projects/repo-a/src/foo.ts', cwd)).toBe(resolveIndexPath('c:/Projects/repo-a/src/foo.ts', cwd))
   })
 
-  // Mutation-testing gap: a colon at index 1 with no following slash/backslash (e.g. "C:foo.ts")
-  // is a Windows drive-RELATIVE path, not absolute -- it means "foo.ts relative to whatever the
-  // current directory on drive C: happens to be", which this codebase can never determine, not
-  // "foo.ts at the root of drive C:". isWindowsAbsolute's regex requires a separator right after
-  // the colon specifically to exclude this case and fall through to the ambient (non-win32)
-  // resolver instead of silently mis-resolving it as if it were absolute.
+  // Mutation-testing gap: a colon at index 1 with no following slash/backslash (e.g. "C:foo.ts") is a Windows drive-RELATIVE path, not absolute -- it means "foo.ts relative to whatever the current directory on drive C: happens to be", which this codebase can never determine, not "foo.ts at the root of drive C:". isWindowsAbsolute's regex requires a separator right after the colon specifically to exclude this case and fall through to the ambient (non-win32) resolver instead of silently mis-resolving it as if it were absolute.
   it('does not treat a drive-relative path (colon with no following separator) as Windows-absolute', () => {
     const win32Spy = vi.spyOn(path.win32, 'resolve')
     try {
@@ -369,10 +331,7 @@ describe('resolveIndexPath', () => {
 })
 
 describe('toDisplayPath', () => {
-  // Regression: an earlier pass defaulted the display root to process.cwd() when the caller
-  // had none. That made the same query print differently depending on the directory it ran
-  // from -- ambiguous once printed and unresolvable elsewhere. An absent root must yield the
-  // absolute path, never a cwd-relative one.
+  // Regression: an earlier pass defaulted the display root to process.cwd() when the caller had none. That made the same query print differently depending on the directory it ran from -- ambiguous once printed and unresolvable elsewhere. An absent root must yield the absolute path, never a cwd-relative one.
   it('returns the absolute path unchanged when no root is available', () => {
     expect(toDisplayPath(undefined, '/home/user/repo/src/foo.ts')).toBe('/home/user/repo/src/foo.ts')
   })
@@ -412,11 +371,7 @@ describe('toDisplayPath', () => {
     }
     afterEach(() => setPlatform(realPlatform))
 
-    // fail-on-buggy: on win32, path.relative() between different drive letters returns the
-    // target's own absolute path rather than a '..'-prefixed chain. A naive
-    // `!rel.startsWith('..')` check would treat that returned absolute path as "inside root"
-    // and (with the forward-slash rewrite) print it as a bogus relative path. This asserts the
-    // real absolute path comes back unchanged, not a mangled false-relative one.
+    // fail-on-buggy: on win32, path.relative() between different drive letters returns the target's own absolute path rather than a '..'-prefixed chain. A naive `!rel.startsWith('..')` check would treat that returned absolute path as "inside root" and (with the forward-slash rewrite) print it as a bogus relative path. This asserts the real absolute path comes back unchanged, not a mangled false-relative one.
     it('returns the absolute path unchanged for a target on a different drive letter than root', () => {
       setPlatform('win32')
       const result = toDisplayPath('C:/proj', 'D:/other/x.ts')

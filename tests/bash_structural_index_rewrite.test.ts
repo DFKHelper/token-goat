@@ -1,18 +1,4 @@
-/**
- * Batch Q — recognizing a plain-enumeration rg/grep structural search on the Bash path and
- * rewriting it to the token-goat index command that answers it exactly, instead of running the
- * text search and costing the model a follow-up call.
- *
- * FIXTURE PROVENANCE: every fixture body below is HAND-DERIVED -- written directly for this test
- * from the language's own def/class/import syntax, independent of `src/bash_structural_index.ts`'s
- * own regexes. None of it is copied from that file's matcher, so a fixture that happened to agree
- * with a wrong regex would not silently pass.
- *
- * These are the pass-through cases the batch brief calls out as the ones that keep the feature
- * honest: a context flag, a count flag, a files-only flag, a pipe, a never-indexed target, a
- * stale target, and a language mismatch (`^def ` against a `.ts` file). A suite that only proves
- * the rewrite fires proves nothing about this feature's correctness gate.
- */
+/** Batch Q — recognizing a plain-enumeration rg/grep structural search on the Bash path and rewriting it to the token-goat index command that answers it exactly, instead of running the text search and costing the model a follow-up call. FIXTURE PROVENANCE: every fixture body below is HAND-DERIVED -- written directly for this test from the language's own def/class/import syntax, independent of `src/bash_structural_index.ts`'s own regexes. None of it is copied from that file's matcher, so a fixture that happened to agree with a wrong regex would not silently pass. These are the pass-through cases the batch brief calls out as the ones that keep the feature honest: a context flag, a count flag, a files-only flag, a pipe, a never-indexed target, a stale target, and a language mismatch (`^def ` against a `.ts` file). A suite that only proves the rewrite fires proves nothing about this feature's correctness gate. */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -97,12 +83,7 @@ function indexed(filePath: string): void {
   expect(getFileEntry(resolved)).not.toBeNull()
 }
 
-/** The structural-index-rewritten command, or null when this hook's rewrite did not fire. Keys
- *  on this module's own disclosure marker rather than the bare `rewriteInput` hookType, because
- *  the pre-existing `bash_compress` feature also returns `rewriteInput` for a plain `rg`/`grep`
- *  call it recognizes -- a pass-through case for THIS feature legitimately still gets wrapped by
- *  that unrelated, already-shipped mechanism, and asserting on hookType alone would conflate the
- *  two rewrites. */
+/** The structural-index-rewritten command, or null when this hook's rewrite did not fire. Keys on this module's own disclosure marker rather than the bare `rewriteInput` hookType, because the pre-existing `bash_compress` feature also returns `rewriteInput` for a plain `rg`/`grep` call it recognizes -- a pass-through case for THIS feature legitimately still gets wrapped by that unrelated, already-shipped mechanism, and asserting on hookType alone would conflate the two rewrites. */
 function rewrittenCommand(output: ReturnType<typeof preBashHandler>): string | null {
   if (output.hookType !== 'rewriteInput' || typeof output.updatedInput['command'] !== 'string') return null
   const cmd = output.updatedInput['command']
@@ -110,10 +91,7 @@ function rewrittenCommand(output: ReturnType<typeof preBashHandler>): string | n
 }
 
 beforeAll(() => {
-  // Forward-slashed throughout (including TMP itself): these paths are embedded literally into
-  // shell command strings below, and a Windows backslash there would collide with the shell's own
-  // escape syntax during shlexSplit's quote-aware parsing -- forward slashes work fine as file
-  // paths on Windows and sidestep that ambiguity entirely.
+  // Forward-slashed throughout (including TMP itself): these paths are embedded literally into shell command strings below, and a Windows backslash there would collide with the shell's own escape syntax during shlexSplit's quote-aware parsing -- forward slashes work fine as file paths on Windows and sidestep that ambiguity entirely.
   const posix = (p: string): string => p.replace(/\\/g, '/')
   // Resolved with `realpathSync.native` so the base is already the OS's own spelling, the same reason tests/helpers/containment_matrix.ts resolves its base. The rewrite names the path the index holds, and the index holds a canonical one: where `os.tmpdir()` is reached through a Windows 8.3 alias (`C:/Users/RUNNER~1`, which is what GitHub's Windows runner reports) or the macOS `/var` symlink, a TMP taken straight from `mkdtempSync` is a spelling the rewrite never emits, so every assertion below compared two different names for one file.
   TMP = posix(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-structural-index-'))))
@@ -201,10 +179,7 @@ describe('structural index rewrite -- rewrite cases', () => {
     expect(cmd).toContain(`outline ${MD_FILE}`)
   })
 
-  // HAND-DERIVED: the invariant this whole batch rests on -- the emitted command is one
-  // `token-goat` invocation, with the disclosure printed by its own `--notice` flag rather than
-  // shelled out via `echo ... &&`, and its only quoted argument uses double quotes (valid in both
-  // a POSIX shell and PowerShell 5.1), never a POSIX-only single-quoted one.
+  // HAND-DERIVED: the invariant this whole batch rests on -- the emitted command is one `token-goat` invocation, with the disclosure printed by its own `--notice` flag rather than shelled out via `echo ... &&`, and its only quoted argument uses double quotes (valid in both a POSIX shell and PowerShell 5.1), never a POSIX-only single-quoted one.
   it('emits a command with no shell chaining operator and no single-quoted argument', () => {
     const out = preBashHandler(bashEvent(`rg 'def test_' ${PY_FILE}`))
     const cmd = rewrittenCommand(out)
@@ -214,10 +189,7 @@ describe('structural index rewrite -- rewrite cases', () => {
     expect(cmd).not.toContain("'")
   })
 
-  // HAND-DERIVED: `_tg_harness` values `hooks_cli.ts` stamps onto the payload for each bridge
-  // (see src/hooks_cli.ts::result['_tg_harness']). Before this batch, `detectStructuralIndexRewrite`
-  // returned null for all three on this platform (win32) -- see the removed guard this test
-  // replaces coverage for.
+  // HAND-DERIVED: `_tg_harness` values `hooks_cli.ts` stamps onto the payload for each bridge (see src/hooks_cli.ts::result['_tg_harness']). Before this batch, `detectStructuralIndexRewrite` returned null for all three on this platform (win32) -- see the removed guard this test replaces coverage for.
   describe('fires on every harness now that the command is shell-agnostic', () => {
     it.each(['vscode', 'codex', 'copilot_cli'])('rewrites for _tg_harness=%s', (harness) => {
       const out = preBashHandler(bashEvent(`rg '^def ' ${PY_FILE}`, harness))
@@ -228,10 +200,7 @@ describe('structural index rewrite -- rewrite cases', () => {
 
 describe('structural index rewrite -- unsafe path refuses to rewrite', () => {
   it('passes through a path containing a character with no shared-safe shell form', () => {
-    // `$` starts variable expansion inside a double-quoted string in both a POSIX shell and
-    // PowerShell -- dualShellArg refuses to quote it rather than emit a form only one of the two
-    // would parse as a literal dollar sign. Has no space, so it stays one argv token unquoted in
-    // the raw command line below without needing test-harness-level quoting of its own.
+    // `$` starts variable expansion inside a double-quoted string in both a POSIX shell and PowerShell -- dualShellArg refuses to quote it rather than emit a form only one of the two would parse as a literal dollar sign. Has no space, so it stays one argv token unquoted in the raw command line below without needing test-harness-level quoting of its own.
     const unsafeDir = path.join(TMP, 'has$dollar')
     fs.mkdirSync(unsafeDir, { recursive: true })
     const unsafeFile = path.join(unsafeDir, 'service.py').replace(/\\/g, '/')

@@ -1,13 +1,4 @@
-/**
- * The in-house SpreadsheetML reader, against hand-authored XML parts.
- *
- * tests/xlsx_extract.test.ts already reads real workbooks, but every one of them is written by
- * ExcelJS, so it only ever proves the reader against a single producer's output. ExcelJS never
- * emits an inline string, never writes a boolean or error cell, always writes a custom
- * `formatCode` rather than a builtin date `numFmtId`, always names its parts `sheetN.xml`, and
- * never writes a 1904-epoch workbook. Those are exactly the shapes a different producer will hand
- * us, so they are assembled here from literal part strings instead.
- */
+/** The in-house SpreadsheetML reader, against hand-authored XML parts. tests/xlsx_extract.test.ts already reads real workbooks, but every one of them is written by ExcelJS, so it only ever proves the reader against a single producer's output. ExcelJS never emits an inline string, never writes a boolean or error cell, always writes a custom `formatCode` rather than a builtin date `numFmtId`, always names its parts `sheetN.xml`, and never writes a 1904-epoch workbook. Those are exactly the shapes a different producer will hand us, so they are assembled here from literal part strings instead. */
 import { zipSync } from 'fflate'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -169,9 +160,7 @@ describe('date detection and serial conversion', () => {
   })
 
   it('non-firing guard: real number formats are not mistaken for dates', () => {
-    // The quoted-literal and bracketed-section cases carry date letters inside them on purpose: a
-    // format whose only y/m/d/h/s live in a literal suffix or a colour tag is still a number
-    // format, and that is the whole reason those sections are stripped before the test.
+    // The quoted-literal and bracketed-section cases carry date letters inside them on purpose: a format whose only y/m/d/h/s live in a literal suffix or a colour tag is still a number format, and that is the whole reason those sections are stripped before the test.
     const numericFormats = ['General', '0.00', '#,##0.00', '0.00%', '"$"#,##0.00', '0.00" days"', '"May"#,##0', '[Red]-#,##0', '@']
     expect(numericFormats.length).toBeGreaterThan(0)
     for (const code of numericFormats) {
@@ -206,10 +195,7 @@ describe('part resolution and whitespace', () => {
     expect(ws?.getCell('A1').value).toBe('  padded  ')
   })
 
-  // A text cell holding digits is ordinary spreadsheet content -- a zip code, a part number, an
-  // invoice id, a version string. The XML parser was converting any such value to a number before
-  // the reader saw it, so the cell came back altered: `007` as `7`, `01234` as `1234`, `1.50` as
-  // `1.5`. Nothing reported it; the wrong value was simply served.
+  // A text cell holding digits is ordinary spreadsheet content -- a zip code, a part number, an invoice id, a version string. The XML parser was converting any such value to a number before the reader saw it, so the cell came back altered: `007` as `7`, `01234` as `1234`, `1.50` as `1.5`. Nothing reported it; the wrong value was simply served.
   it.each([
     ['007'],
     ['01234'],
@@ -289,11 +275,7 @@ describe('sparse sheets and malformed input', () => {
   })
 
   it('walks a row to its own last column, not the sheet-wide maximum, when includeEmpty is set', async () => {
-    // Row 1 is four columns wide, so the sheet columnCount is 4. Row 2 populates A and C, leaving an
-    // interior gap at B and nothing at D. ExcelJS -- which this reader stands in for -- walks each
-    // row out to its OWN last column with includeEmpty, filling interior gaps but not padding past
-    // the row's own width. So getRow(2) yields three cells (A, an empty B, C), not four. Pre-fix the
-    // shim used the sheet-wide maximum and appended a phantom empty D to every short row.
+    // Row 1 is four columns wide, so the sheet columnCount is 4. Row 2 populates A and C, leaving an interior gap at B and nothing at D. ExcelJS -- which this reader stands in for -- walks each row out to its OWN last column with includeEmpty, filling interior gaps but not padding past the row's own width. So getRow(2) yields three cells (A, an empty B, C), not four. Pre-fix the shim used the sheet-wide maximum and appended a phantom empty D to every short row.
     const file = buildXlsx({
       sheets: [
         {

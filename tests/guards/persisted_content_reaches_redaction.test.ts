@@ -1,19 +1,4 @@
-/**
- * Structural guard on the persist boundary: a function that writes externally-sourced content
- * (shell output, fetched pages, a tool's own error text, indexed file/tool-output evidence) to
- * disk must reach `redactSecrets` before the write, not just before it is shown back to the
- * model. CLAUDE.arch.md's Security Boundaries section names this as the invariant "every path
- * that persists bytes goes through redactSecrets" -- this guard is its regression test.
- *
- * The population is hand-curated from the write funnels swept for this invariant (disk_cache.ts's
- * storeBlob callers, plus the two writers that persist their own plain files rather than routing
- * through storeBlob), not auto-discovered by walking every `writeFileSync` call in src -- most of
- * those persist purely internal state (config, ledgers of our own ids) with nothing externally
- * sourced to redact, and a blind sweep would need an EXEMPT entry for nearly every one of them,
- * diluting the signal to noise this guard exists to catch. Each site here is one this session's
- * sweep confirmed receives content from a shell command, a fetched page, an MCP result, or a
- * failed tool call's own error text.
- */
+/** Structural guard on the persist boundary: a function that writes externally-sourced content (shell output, fetched pages, a tool's own error text, indexed file/tool-output evidence) to disk must reach `redactSecrets` before the write, not just before it is shown back to the model. CLAUDE.arch.md's Security Boundaries section names this as the invariant "every path that persists bytes goes through redactSecrets" -- this guard is its regression test. The population is hand-curated from the write funnels swept for this invariant (disk_cache.ts's storeBlob callers, plus the two writers that persist their own plain files rather than routing through storeBlob), not auto-discovered by walking every `writeFileSync` call in src -- most of those persist purely internal state (config, ledgers of our own ids) with nothing externally sourced to redact, and a blind sweep would need an EXEMPT entry for nearly every one of them, diluting the signal to noise this guard exists to catch. Each site here is one this session's sweep confirmed receives content from a shell command, a fetched page, an MCP result, or a failed tool call's own error text. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -30,11 +15,7 @@ const SRC_DIR = path.join(HERE, '..', '..', 'src')
 const SELF_EXCLUDE_MARKER = 'NOSUCH[X]TOKEN'
 void SELF_EXCLUDE_MARKER
 
-// `storeBlob(` counts as reaching redaction too: it is disk_cache.ts's funnel for the JSON-envelope
-// caches (verified above in storeBlob's own body) and always redacts the full JSON before writing,
-// so a caller that hands it a value has already reached redaction even without calling
-// redactSecrets itself. `reaches()` only walks same-file calls, so this is how a cross-file
-// delegation to that funnel is recognized without building a cross-file call graph.
+// `storeBlob(` counts as reaching redaction too: it is disk_cache.ts's funnel for the JSON-envelope caches (verified above in storeBlob's own body) and always redacts the full JSON before writing, so a caller that hands it a value has already reached redaction even without calling redactSecrets itself. `reaches()` only walks same-file calls, so this is how a cross-file delegation to that funnel is recognized without building a cross-file call graph.
 const REDACT_TERMINALS: readonly string[] = ['redactSecrets(', 'storeBlob(']
 
 /** True when `body` reaches the redaction boundary itself. */
@@ -77,8 +58,7 @@ describe('every function persisting externally-sourced content reaches redactSec
       mustInclude: ['hooks_tool_failure.ts::postToolUseFailureHandler'],
     })
 
-    // Symmetric stale-key check: every named site must still exist, so an exemption (or, here, a
-    // pinned site) can't silently outlive the function it names.
+    // Symmetric stale-key check: every named site must still exist, so an exemption (or, here, a pinned site) can't silently outlive the function it names.
     const stale = PERSIST_SITES.filter((s) => !siteExists(s)).map((s) => `${s.file}::${s.fn}`)
     expect(stale, `PERSIST_SITES names a function that no longer exists:\n  ${stale.join('\n  ')}`).toEqual([])
   })

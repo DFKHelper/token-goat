@@ -1,20 +1,4 @@
-/**
- * Holds `src/xml_parser.ts` to the exact output of the library it replaced.
- *
- * `fast-xml-parser` stays in devDependencies purely to be the oracle here. That is the same
- * arrangement `exceljs` has for the xlsx reader, and it is the opposite of the injected-seam trap
- * CLAUDE.md warns about: the thing under test is compared against a genuinely different
- * implementation, not against a mock of itself. If the two ever disagree on any shape a real
- * document can contain, one of these cases goes red and names the input.
- *
- * Three corpora, in increasing order of how much they prove:
- *
- *   1. a hand-written table of shapes, which is the only place edge cases can be stated directly;
- *   2. every XML part of a .docx and a .pptx this suite already builds;
- *   3. every XML part of a workbook written by ExcelJS, which matters because it is a third-party
- *      producer whose output nobody here designed -- it emits inline strings, shared strings,
- *      number formats and relationship parts that the hand-written table would not think to cover.
- */
+/** Holds `src/xml_parser.ts` to the exact output of the library it replaced. `fast-xml-parser` stays in devDependencies purely to be the oracle here. That is the same arrangement `exceljs` has for the xlsx reader, and it is the opposite of the injected-seam trap CLAUDE.md warns about: the thing under test is compared against a genuinely different implementation, not against a mock of itself. If the two ever disagree on any shape a real document can contain, one of these cases goes red and names the input. Three corpora, in increasing order of how much they prove: 1. a hand-written table of shapes, which is the only place edge cases can be stated directly; 2. every XML part of a .docx and a .pptx this suite already builds; 3. every XML part of a workbook written by ExcelJS, which matters because it is a third-party producer whose output nobody here designed -- it emits inline strings, shared strings, number formats and relationship parts that the hand-written table would not think to cover. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -28,12 +12,7 @@ import { buildDocxFixture, buildPptxFixture } from './helpers/ooxml_fixtures.js'
 /** The exact options ooxml_extract.ts used to pass. Changing one here invalidates the comparison. */
 const oracle = new XMLParser({ ignoreAttributes: false, preserveOrder: false, trimValues: false, parseTagValue: false })
 
-/**
- * Deep equality is not enough on its own: these trees are consumed by walking `Object.entries`, so
- * two objects with the same pairs in a different order produce collected text runs in a different
- * order. Comparing the JSON encoding compares key order as well, which is the property that
- * actually matters, and it also makes the failure message show both trees.
- */
+/** Deep equality is not enough on its own: these trees are consumed by walking `Object.entries`, so two objects with the same pairs in a different order produce collected text runs in a different order. Comparing the JSON encoding compares key order as well, which is the property that actually matters, and it also makes the failure message show both trees. */
 function expectMatchesOracle(xml: string, label: string): void {
   const mine = parseXml(xml)
   const theirs = oracle.parse(xml)
@@ -76,9 +55,7 @@ const CORPUS: Record<string, string> = {
   'repeated attribute-only elements': '<a><b k="1"/><b k="2"/></a>',
   'a realistic run of word paragraphs':
     '<w:p><w:r><w:t>A</w:t></w:r><w:r><w:t xml:space="preserve"> </w:t></w:r><w:r><w:t>B</w:t></w:r></w:p>',
-  // Malformed shapes. The point of these is not that the handling is elegant, it is that these
-  // commands read files other software produced and a slightly broken part should still give up
-  // its text. Whatever the previous library did with each, this does too.
+  // Malformed shapes. The point of these is not that the handling is elegant, it is that these commands read files other software produced and a slightly broken part should still give up its text. Whatever the previous library did with each, this does too.
   'unclosed inner element': '<a><b></a>',
   'unclosed root': '<a>',
   'no markup at all': 'not xml at all',
@@ -115,8 +92,7 @@ describe('xml_parser on real OOXML parts', () => {
       { text: 'Body text with a  double space, an ampersand & and a less-than <.' },
       { text: 'Trailing paragraph', headingLevel: 2 },
     ])
-    // A part count is asserted so this cannot quietly pass by finding nothing to compare -- the
-    // same vacuity trap the temp-leak guard had to close.
+    // A part count is asserted so this cannot quietly pass by finding nothing to compare -- the same vacuity trap the temp-leak guard had to close.
     expect(compareAllParts(zip, 'docx')).toBeGreaterThan(0)
   })
 
@@ -182,16 +158,13 @@ describe('xml_parser on a workbook written by ExcelJS', () => {
 describe('xml_parser deliberate differences from fast-xml-parser', () => {
   it('decodes numeric character references, which fast-xml-parser leaves as literal text', () => {
     const xml = '<a><b>&#65;&#x42;&#8217;</b></a>'
-    // Stated as an assertion about the oracle too, not just as a comment: if a future
-    // fast-xml-parser starts decoding these, this line goes red and tells us the divergence is
-    // gone rather than leaving a stale claim in a docblock.
+    // Stated as an assertion about the oracle too, not just as a comment: if a future fast-xml-parser starts decoding these, this line goes red and tells us the divergence is gone rather than leaving a stale claim in a docblock.
     expect((oracle.parse(xml) as { a: { b: string } }).a.b, 'fast-xml-parser now decodes numeric references; the documented divergence is stale').toBe('&#65;&#x42;&#8217;')
     expect((parseXml(xml) as { a: { b: string } }).a.b).toBe('AB’')
   })
 
   it('leaves an out-of-range or malformed numeric reference exactly as written', () => {
-    // Inventing a replacement character here would put content in the document that the producer
-    // never wrote, which is worse than showing the escape.
+    // Inventing a replacement character here would put content in the document that the producer never wrote, which is worse than showing the escape.
     expect(decodeXmlEntities('&#1114112;')).toBe('&#1114112;')
     expect(decodeXmlEntities('&#xD800;')).toBe('&#xD800;')
     expect(decodeXmlEntities('&nbsp;')).toBe('&nbsp;')
@@ -212,8 +185,7 @@ describe('xml_parser security properties', () => {
       '<!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///etc/passwd"> <!ENTITY inline "SECRET">]>' +
       '<r><a>&xxe;</a><b>&inline;</b></r>'
     const parsed = parseXml(xml) as { r: { a: string; b: string } }
-    // Both are left as literal text. There is no code path that could read the file or expand the
-    // internal entity, because the declaration block is skipped without being looked at.
+    // Both are left as literal text. There is no code path that could read the file or expand the internal entity, because the declaration block is skipped without being looked at.
     expect(parsed.r.a).toBe('&xxe;')
     expect(parsed.r.b).toBe('&inline;')
   })

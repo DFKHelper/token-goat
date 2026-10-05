@@ -1,14 +1,4 @@
-/**
- * End-to-end smoke test against the BUILT bundle (dist/token-goat.mjs).
- *
- * The indexer regression in worker.test.ts runs against the TypeScript source.
- * That can never catch a parser that gets tree-shaken out of the esbuild
- * bundle — which is exactly what happened when nothing reachable called the
- * real indexer: `parseFile` and every language extractor vanished from the
- * shipped artifact. This test builds the real bundle, runs `index` over a tiny
- * git fixture with an isolated data dir, then runs `symbol` and asserts a known
- * symbol resolves from the shipped binary.
- */
+/** End-to-end smoke test against the BUILT bundle (dist/token-goat.mjs). The indexer regression in worker.test.ts runs against the TypeScript source. That can never catch a parser that gets tree-shaken out of the esbuild bundle — which is exactly what happened when nothing reachable called the real indexer: `parseFile` and every language extractor vanished from the shipped artifact. This test builds the real bundle, runs `index` over a tiny git fixture with an isolated data dir, then runs `symbol` and asserts a known symbol resolves from the shipped binary. */
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -26,13 +16,7 @@ import type * as ConfigModule from '../src/config.js'
 
 import { BUNDLE, readCoreBundleText } from './helpers/bundle.js'
 
-// Partial mock that defaults to calling through to the REAL loadConfig (so the spawned-bundle
-// tests and the prune test above see identical behavior to before this mock existed -- they
-// never read blocked_roots either way). Only the new blocked_roots test below overrides the
-// return value, and restores the pass-through afterward via vi.importActual (see its own
-// describe block) rather than a module-level variable, since vi.mock's factory is hoisted
-// above all top-level code in this file and a captured variable would still be in its
-// temporal dead zone when the hoisted factory closure first runs.
+// Partial mock that defaults to calling through to the REAL loadConfig (so the spawned-bundle tests and the prune test above see identical behavior to before this mock existed -- they never read blocked_roots either way). Only the new blocked_roots test below overrides the return value, and restores the pass-through afterward via vi.importActual (see its own describe block) rather than a module-level variable, since vi.mock's factory is hoisted above all top-level code in this file and a captured variable would still be in its temporal dead zone when the hoisted factory closure first runs.
 vi.mock('../src/config.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ConfigModule>()
   return { ...actual, loadConfig: vi.fn(actual.loadConfig) }
@@ -80,10 +64,7 @@ beforeAll(() => {
     'export function refHelper(): number {\n  return 1\n}\n' +
       'export function refDriver(): number {\n  return refHelper() + refHelper()\n}\n',
   )
-  // Two classes each defining a `compress` method, plus one uniquely-named method. The bare
-  // `read ambig.ts::compress` ambiguity regression and the qualified `AlphaLinter.compress`
-  // disambiguation both run against the REAL indexed DB and the shipped resolver here, not a
-  // mocked querySymbols seam (the injected-seam trap CLAUDE.md warns against).
+  // Two classes each defining a `compress` method, plus one uniquely-named method. The bare `read ambig.ts::compress` ambiguity regression and the qualified `AlphaLinter.compress` disambiguation both run against the REAL indexed DB and the shipped resolver here, not a mocked querySymbols seam (the injected-seam trap CLAUDE.md warns against).
   fs.writeFileSync(
     path.join(repo, 'ambig.ts'),
     [
@@ -103,45 +84,34 @@ beforeAll(() => {
       '',
     ].join('\n'),
   )
-  // A `macro_rules!` definition, so a Rust extractor addition that only ever gets exercised
-  // against source (never the tree-shaken bundle) is caught here (regression: the same class
-  // of bug that dropped mod_item/foreign_mod_item/macro_definition from RUST_KIND_BY_TYPE could
-  // just as easily be a bundling gap instead of a missing map entry).
+  // A `macro_rules!` definition, so a Rust extractor addition that only ever gets exercised against source (never the tree-shaken bundle) is caught here (regression: the same class of bug that dropped mod_item/foreign_mod_item/macro_definition from RUST_KIND_BY_TYPE could just as easily be a bundling gap instead of a missing map entry).
   fs.writeFileSync(
     path.join(repo, 'macro_fixture.rs'),
     ['#[macro_export]', 'macro_rules! bundleMacroSymbol {', '    () => {};', '}', ''].join('\n'),
   )
-  // A top-level `static` and a `union` — same tree-shaking concern as the macro fixture above: a
-  // static_item/union_item extractor addition proven only against source (never the built bundle)
-  // could still be a bundling gap. These resolve from the shipped binary in the e2e test below.
+  // A top-level `static` and a `union` — same tree-shaking concern as the macro fixture above: a static_item/union_item extractor addition proven only against source (never the built bundle) could still be a bundling gap. These resolve from the shipped binary in the e2e test below.
   fs.writeFileSync(
     path.join(repo, 'static_union_fixture.rs'),
     ['static BUNDLE_STATIC_SYMBOL: u32 = 42;', 'union BundleUnionSymbol { a: u32, b: f32 }', ''].join(
       '\n',
     ),
   )
-  // A C `union` — same tree-shaking concern: the union_specifier -> 'union' entry added to
-  // CPP_KIND_BY_TYPE (shared by the c and cpp grammars) must resolve from the shipped binary too.
+  // A C `union` — same tree-shaking concern: the union_specifier -> 'union' entry added to CPP_KIND_BY_TYPE (shared by the c and cpp grammars) must resolve from the shipped binary too.
   fs.writeFileSync(
     path.join(repo, 'union_fixture.c'),
     ['union BundleCUnionSymbol {', '  int i;', '  float f;', '};', ''].join('\n'),
   )
-  // An anonymous-tag C `typedef` — same tree-shaking concern: the type_definition -> 'type' entry
-  // added to CPP_KIND_BY_TYPE plus its declarator-chain name helper must resolve from the shipped
-  // binary. The alias lives only on the declarator (the struct itself is anonymous), so a bundling
-  // gap would leave it invisible just as a missing map entry would.
+  // An anonymous-tag C `typedef` — same tree-shaking concern: the type_definition -> 'type' entry added to CPP_KIND_BY_TYPE plus its declarator-chain name helper must resolve from the shipped binary. The alias lives only on the declarator (the struct itself is anonymous), so a bundling gap would leave it invisible just as a missing map entry would.
   fs.writeFileSync(
     path.join(repo, 'typedef_fixture.c'),
     ['typedef struct {', '  int x;', '  int y;', '} BundleCTypedefSymbol;', ''].join('\n'),
   )
-  // A C++ `namespace` — same tree-shaking concern: the namespace_definition -> 'namespace' entry
-  // added to CPP_KIND_BY_TYPE must resolve from the shipped binary too.
+  // A C++ `namespace` — same tree-shaking concern: the namespace_definition -> 'namespace' entry added to CPP_KIND_BY_TYPE must resolve from the shipped binary too.
   fs.writeFileSync(
     path.join(repo, 'namespace_fixture.cpp'),
     ['namespace BundleNamespaceSymbol {', '  void inner() {}', '}', ''].join('\n'),
   )
-  // A Go `interface` with declared methods — same tree-shaking concern: the method_elem -> 'method'
-  // entry added to GO_KIND_BY_TYPE must resolve from the shipped binary too, not just from source.
+  // A Go `interface` with declared methods — same tree-shaking concern: the method_elem -> 'method' entry added to GO_KIND_BY_TYPE must resolve from the shipped binary too, not just from source.
   fs.writeFileSync(
     path.join(repo, 'iface_fixture.go'),
     [
@@ -153,9 +123,7 @@ beforeAll(() => {
       '',
     ].join('\n'),
   )
-  // A TS `interface` with a method/property signature — same tree-shaking concern: the
-  // method_signature/property_signature -> 'method'/'var' entries added to TSJS_KIND_BY_TYPE must
-  // resolve from the shipped binary too, not just from source.
+  // A TS `interface` with a method/property signature — same tree-shaking concern: the method_signature/property_signature -> 'method'/'var' entries added to TSJS_KIND_BY_TYPE must resolve from the shipped binary too, not just from source.
   fs.writeFileSync(
     path.join(repo, 'iface_fixture.ts'),
     [
@@ -166,85 +134,52 @@ beforeAll(() => {
       '',
     ].join('\n'),
   )
-  // A Java `@interface` with an annotation type element — same tree-shaking concern: the
-  // annotation_type_element_declaration -> 'method' entry added to JAVA_KIND_BY_TYPE must
-  // resolve from the shipped binary too, not just from source.
+  // A Java `@interface` with an annotation type element — same tree-shaking concern: the annotation_type_element_declaration -> 'method' entry added to JAVA_KIND_BY_TYPE must resolve from the shipped binary too, not just from source.
   fs.writeFileSync(
     path.join(repo, 'anno_fixture.java'),
     ['@interface BundleJavaAnno {', '  String bundleJavaAnnoElement() default "";', '}', ''].join('\n'),
   )
-  // A PEP 695 (Python 3.12) `type` alias statement — same tree-shaking concern: the
-  // type_alias_statement -> 'type' entry added to PY_KIND_BY_TYPE plus its custom
-  // left-field name helper (the node carries no `name` field) must resolve from the shipped
-  // binary too, not just from source.
+  // A PEP 695 (Python 3.12) `type` alias statement — same tree-shaking concern: the type_alias_statement -> 'type' entry added to PY_KIND_BY_TYPE plus its custom left-field name helper (the node carries no `name` field) must resolve from the shipped binary too, not just from source.
   fs.writeFileSync(
     path.join(repo, 'pep695_fixture.py'),
     ['type BundlePyTypeAlias = list[int]', ''].join('\n'),
   )
-  // A Rust trait associated type (`type Item;`, the Iterator::Item / Deref::Target pattern) — same
-  // tree-shaking concern: the associated_type -> 'type' entry added to RUST_KIND_BY_TYPE must
-  // resolve from the shipped binary too, not just from source.
+  // A Rust trait associated type (`type Item;`, the Iterator::Item / Deref::Target pattern) — same tree-shaking concern: the associated_type -> 'type' entry added to RUST_KIND_BY_TYPE must resolve from the shipped binary too, not just from source.
   fs.writeFileSync(
     path.join(repo, 'assoc_type_fixture.rs'),
     ['trait BundleAssocTypeTrait {', '    type BundleAssocTypeItem;', '}', ''].join('\n'),
   )
-  // A bare `Gemfile` (no extension, plain Ruby syntax) — same has-extractor-but-no-dispatch-entry
-  // concern as the .mk fixture below: the FILENAME_LANGUAGE 'gemfile' -> 'ruby' entry must resolve
-  // from the shipped binary too, not just from source, or a bundling regression could silently
-  // re-break every real project's dependency manifest.
+  // A bare `Gemfile` (no extension, plain Ruby syntax) — same has-extractor-but-no-dispatch-entry concern as the .mk fixture below: the FILENAME_LANGUAGE 'gemfile' -> 'ruby' entry must resolve from the shipped binary too, not just from source, or a bundling regression could silently re-break every real project's dependency manifest.
   fs.writeFileSync(
     path.join(repo, 'Gemfile'),
     ['def bundle_gemfile_symbol', '  1', 'end', ''].join('\n'),
   )
-  // A bare `Vagrantfile` (no extension, plain Ruby syntax -- `Vagrant.configure(...) do ... end`
-  // is ordinary Ruby) -- same has-extractor-but-no-dispatch-entry gap as Gemfile/Rakefile above.
-  // Without a FILENAME_LANGUAGE 'vagrantfile' -> 'ruby' entry it fell through to 'unknown' and
-  // indexed zero symbols despite the ruby tree-sitter grammar handling its content exactly like
-  // any other .rb file.
+  // A bare `Vagrantfile` (no extension, plain Ruby syntax -- `Vagrant.configure(...) do ... end` is ordinary Ruby) -- same has-extractor-but-no-dispatch-entry gap as Gemfile/Rakefile above. Without a FILENAME_LANGUAGE 'vagrantfile' -> 'ruby' entry it fell through to 'unknown' and indexed zero symbols despite the ruby tree-sitter grammar handling its content exactly like any other .rb file.
   fs.writeFileSync(
     path.join(repo, 'Vagrantfile'),
     ['def bundle_vagrantfile_symbol', '  1', 'end', ''].join('\n'),
   )
-  // A bare `Brewfile` (no extension, plain Ruby DSL -- Homebrew Bundle's `brew "wget"` / `cask
-  // "..."` / `tap "..."` calls are ordinary Ruby method calls) -- same has-extractor-but-no-
-  // dispatch-entry gap as Gemfile/Vagrantfile above. Without a FILENAME_LANGUAGE 'brewfile' ->
-  // 'ruby' entry it fell through to 'unknown' and indexed zero symbols despite the ruby
-  // tree-sitter grammar handling its content exactly like any other .rb file.
+  // A bare `Brewfile` (no extension, plain Ruby DSL -- Homebrew Bundle's `brew "wget"` / `cask "..."` / `tap "..."` calls are ordinary Ruby method calls) -- same has-extractor-but-no- dispatch-entry gap as Gemfile/Vagrantfile above. Without a FILENAME_LANGUAGE 'brewfile' -> 'ruby' entry it fell through to 'unknown' and indexed zero symbols despite the ruby tree-sitter grammar handling its content exactly like any other .rb file.
   fs.writeFileSync(
     path.join(repo, 'Brewfile'),
     ['def bundle_brewfile_symbol', '  1', 'end', ''].join('\n'),
   )
-  // A `.rake` file (Rake task definitions, e.g. lib/tasks/foo.rake) — plain Ruby syntax
-  // (`task :foo do ... end` / `def ...`), the same has-extractor-but-no-extension gap
-  // previously fixed for `.mk` fragments: the ruby tree-sitter grammar handles `.rake`
-  // content identically to any other `.rb` file, but without an EXTENSION_LANGUAGE
-  // '.rake' -> 'ruby' entry it fell through to 'unknown' and indexed zero symbols.
+  // A `.rake` file (Rake task definitions, e.g. lib/tasks/foo.rake) — plain Ruby syntax (`task :foo do ... end` / `def ...`), the same has-extractor-but-no-extension gap previously fixed for `.mk` fragments: the ruby tree-sitter grammar handles `.rake` content identically to any other `.rb` file, but without an EXTENSION_LANGUAGE '.rake' -> 'ruby' entry it fell through to 'unknown' and indexed zero symbols.
   fs.writeFileSync(
     path.join(repo, 'bundle_rake_fixture.rake'),
     ['def bundle_rake_symbol', '  1', 'end', ''].join('\n'),
   )
-  // A Kotlin file whose only import is aliased (`import ... as ...`, idiomatic when two imported
-  // names collide) -- extractImports' generic `import|require|use|#include` fallback (which .kt
-  // was routed through before the dedicated-branch fix) greedily captures the whole line,
-  // reporting "foo.bar.Baz as Qux" as a single non-actionable import target instead of the real
-  // dependency "foo.bar.Baz" that kotlin.ts's own symbol/import extractor already resolves.
+  // A Kotlin file whose only import is aliased (`import ... as ...`, idiomatic when two imported names collide) -- extractImports' generic `import|require|use|#include` fallback (which .kt was routed through before the dedicated-branch fix) greedily captures the whole line, reporting "foo.bar.Baz as Qux" as a single non-actionable import target instead of the real dependency "foo.bar.Baz" that kotlin.ts's own symbol/import extractor already resolves.
   fs.writeFileSync(
     path.join(repo, 'kotlin_alias_fixture.kt'),
     ['import foo.bar.Baz as Qux', '', 'fun bundleKotlinAliasFn() {}', ''].join('\n'),
   )
-  // A Swift file whose only import is a submodule import (`import class UIKit.UIView`, importing
-  // just one member of a module) -- the same generic-fallback gap as Kotlin above, mirrored from
-  // swift.ts's IMPORT_RE: the fallback captures "class UIKit.UIView" verbatim instead of the real
-  // "UIKit.UIView" target.
+  // A Swift file whose only import is a submodule import (`import class UIKit.UIView`, importing just one member of a module) -- the same generic-fallback gap as Kotlin above, mirrored from swift.ts's IMPORT_RE: the fallback captures "class UIKit.UIView" verbatim instead of the real "UIKit.UIView" target.
   fs.writeFileSync(
     path.join(repo, 'swift_submodule_fixture.swift'),
     ['import class UIKit.UIView', '', 'func bundleSwiftSubmoduleFn() {}', ''].join('\n'),
   )
-  // A TS function with a leading `/** ... */` doc comment -- same tree-shaking concern as every
-  // fixture above, but for `precedingDocComment`/`makeSymbol`'s new docstring wiring: TS/JS was
-  // previously one of 14 extractors that always stored `docstring: ''`, so `symbol --stats` always
-  // reported "undocumented" for it even against a heavily-docblocked file. Resolves from the
-  // shipped binary here, not just from source.
+  // A TS function with a leading `/** ... */` doc comment -- same tree-shaking concern as every fixture above, but for `precedingDocComment`/`makeSymbol`'s new docstring wiring: TS/JS was previously one of 14 extractors that always stored `docstring: ''`, so `symbol --stats` always reported "undocumented" for it even against a heavily-docblocked file. Resolves from the shipped binary here, not just from source.
   fs.writeFileSync(
     path.join(repo, 'doc_fixture.ts'),
     ['/**', ' * Doc comment for the bundle docstring regression.', ' */', 'export function bundleDocstringSymbol(): number {', '  return 1', '}', ''].join(
@@ -487,13 +422,7 @@ describe('built bundle end-to-end indexing', () => {
   }, 120000)
 })
 
-/**
- * Regression for the silent same-file ambiguity bug: `read file::name` used to return
- * candidates[0] (whichever ORDER BY placed first) with no warning when several classes in one
- * file each defined a method of that name. These run the SHIPPED bundle against a real indexed
- * fixture (ambig.ts, two classes each with `compress`), so they exercise the production
- * resolver path end-to-end, not an injected querySymbols mock.
- */
+/** Regression for the silent same-file ambiguity bug: `read file::name` used to return candidates[0] (whichever ORDER BY placed first) with no warning when several classes in one file each defined a method of that name. These run the SHIPPED bundle against a real indexed fixture (ambig.ts, two classes each with `compress`), so they exercise the production resolver path end-to-end, not an injected querySymbols mock. */
 describe('built bundle rejects ambiguous file::symbol lookups (regression)', () => {
   beforeAll(() => {
     const idx = runBundle(['index', repo])
@@ -603,14 +532,7 @@ describe('built bundle resolves relative reader paths (regression for path keyin
   }, 30000)
 })
 
-/**
- * Regression for the relative-root index keying bug. `token-goat index .` (a
- * relative root) used to store relative file_path keys, while every reader
- * resolves to the absolute-normalized key — so a relative-root index was
- * unqueryable. This runs the SHIPPED bundle from inside the repo with `.` as the
- * root, then (a) inspects the DB to prove the stored key is absolute-normalized,
- * and (b) proves a reader query resolves non-empty. Both fail on pre-fix code.
- */
+/** Regression for the relative-root index keying bug. `token-goat index .` (a relative root) used to store relative file_path keys, while every reader resolves to the absolute-normalized key — so a relative-root index was unqueryable. This runs the SHIPPED bundle from inside the repo with `.` as the root, then (a) inspects the DB to prove the stored key is absolute-normalized, and (b) proves a reader query resolves non-empty. Both fail on pre-fix code. */
 describe('built bundle keys a relative-root index on the absolute path', () => {
   let relRepo: string
   let relData: string
@@ -634,10 +556,7 @@ describe('built bundle keys a relative-root index on the absolute path', () => {
     return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
   }
 
-  // Mirror constants.ts::defaultDataDir so the test can open the same global DB the bundle
-  // wrote to under the redirected data dir. darwin now also honors an XDG_DATA_HOME override
-  // (already set to `base` by relEnv() above) before falling back to the Library/Application
-  // Support path -- matching defaultDataDir()'s darwin branch fix.
+  // Mirror constants.ts::defaultDataDir so the test can open the same global DB the bundle wrote to under the redirected data dir. darwin now also honors an XDG_DATA_HOME override (already set to `base` by relEnv() above) before falling back to the Library/Application Support path -- matching defaultDataDir()'s darwin branch fix.
   function globalDbFor(base: string): string {
     if (process.platform === 'win32') return path.join(base, 'dfk-helper', 'token-goat', 'global.db')
     return path.join(base, 'token-goat', 'global.db')
@@ -697,11 +616,7 @@ describe('built bundle keys a relative-root index on the absolute path', () => {
   }, 30000)
 })
 
-/**
- * Smoke the newly-registered commands against the shipped bundle. exports,
- * imports, find, and web-output were implemented (or partly implemented) but not
- * reachable; these prove they run from dist and return the expected output.
- */
+/** Smoke the newly-registered commands against the shipped bundle. exports, imports, find, and web-output were implemented (or partly implemented) but not reachable; these prove they run from dist and return the expected output. */
 describe('built bundle exposes exports / imports / find / web-output', () => {
   let cmdRepo: string
   let cmdData: string
@@ -799,8 +714,7 @@ describe('built bundle exposes exports / imports / find / web-output', () => {
 })
 
 describe('cmdIndex prunes deleted files (shipping path)', () => {
-  // cmdIndex is async (it awaits the per-file embeddings step alongside the syntactic parse),
-  // so this test must await it too - a bare call returns before the walk/prune loop finishes.
+  // cmdIndex is async (it awaits the per-file embeddings step alongside the syntactic parse), so this test must await it too - a bare call returns before the walk/prune loop finishes.
   it('removes a deleted file\'s symbols on re-index via --walk', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmdindex-prune-'))
     const dbPath = path.join(dir, 'idx.db')
@@ -831,9 +745,7 @@ describe('cmdIndex honors worker.blocked_roots (shipping path)', () => {
     vi.mocked(loadConfig).mockImplementation(actual.loadConfig)
   })
 
-  // Regression: worker.blocked_roots (set via `token-goat project exclude`) was validated from
-  // TOML and reported by `token-goat ignores`/`doctor`, but cmdIndex never consulted it -- a
-  // file under a blocked root was indexed exactly like any other file.
+  // Regression: worker.blocked_roots (set via `token-goat project exclude`) was validated from TOML and reported by `token-goat ignores`/`doctor`, but cmdIndex never consulted it -- a file under a blocked root was indexed exactly like any other file.
   it('skips files under a blocked root during --walk indexing', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmdindex-blocked-'))
     const dbPath = path.join(dir, 'idx.db')
@@ -864,9 +776,7 @@ describe('cmdIndex honors worker.blocked_roots (shipping path)', () => {
   })
 })
 
-// Drives the real default cmdIndex path (walk -> parseFile -> DB write), not an injected/mocked
-// callback -- CLAUDE.md's critical-path rule for indexer changes: a mock-callback unit test does
-// not count as coverage for this path (see the worker default-callback regression it documents).
+// Drives the real default cmdIndex path (walk -> parseFile -> DB write), not an injected/mocked callback -- CLAUDE.md's critical-path rule for indexer changes: a mock-callback unit test does not count as coverage for this path (see the worker default-callback regression it documents).
 describe('docstring column population (indexer critical path)', () => {
   it('populates symbols.docstring for a TS function with a leading /** */ block via the real cmdIndex path', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-docstring-e2e-'))
@@ -897,10 +807,7 @@ describe('docstring column population (indexer critical path)', () => {
     }
   })
 
-  // ADJACENCY GUARD regression: a file-header comment separated from the first symbol by a blank
-  // line must NOT be attributed to that symbol -- this is precedingDocComment's whole reason for
-  // existing (see its own doc comment / boundSymbolDocstring's), reproducing the shared-region
-  // blowup `body` once had if it were ever skipped.
+  // ADJACENCY GUARD regression: a file-header comment separated from the first symbol by a blank line must NOT be attributed to that symbol -- this is precedingDocComment's whole reason for existing (see its own doc comment / boundSymbolDocstring's), reproducing the shared-region blowup `body` once had if it were ever skipped.
   it('does not attach a file-header comment to a symbol separated from it by a blank line', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-docstring-adjacency-e2e-'))
     const dbPath = path.join(dir, 'idx.db')
@@ -930,8 +837,7 @@ describe('docstring column population (indexer critical path)', () => {
     }
   })
 
-  // Go was one of the extractors still calling makeSymbol without lines/style, so its symbols
-  // always stored docstring: '' -- this proves the real cmdIndex path now populates it.
+  // Go was one of the extractors still calling makeSymbol without lines/style, so its symbols always stored docstring: '' -- this proves the real cmdIndex path now populates it.
   it('populates symbols.docstring for a Go func with a leading // doc-comment run via the real cmdIndex path', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-docstring-go-e2e-'))
     const dbPath = path.join(dir, 'idx.db')
@@ -962,11 +868,7 @@ describe('docstring column population (indexer critical path)', () => {
   })
 })
 
-// symbols.parent (indexer critical path): regex-based adapters (Kotlin, PHP, ...) used to
-// overload `docstring` to carry the enclosing class/type name for a single-line-span symbol
-// (see db.ts's SCHEMA_SQL comment for the full history). This proves the real cmdIndex path now
-// writes that name into its own `parent` column AND, separately, a real `/** ... */` doc comment
-// into `docstring` -- the new capability this column split enables.
+// symbols.parent (indexer critical path): regex-based adapters (Kotlin, PHP, ...) used to overload `docstring` to carry the enclosing class/type name for a single-line-span symbol (see db.ts's SCHEMA_SQL comment for the full history). This proves the real cmdIndex path now writes that name into its own `parent` column AND, separately, a real `/** ... */` doc comment into `docstring` -- the new capability this column split enables.
 describe('symbols.parent population for regex-adapter languages (indexer critical path)', () => {
   it('populates both symbols.parent and symbols.docstring for a documented Kotlin method via the real cmdIndex path', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-parent-kotlin-e2e-'))

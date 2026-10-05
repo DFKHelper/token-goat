@@ -628,12 +628,7 @@ describe('MCP secret redaction on the live post hook', () => {
   })
 })
 
-/**
- * Two blocks of the MCP ContentBlock union carried content no surface here ever looked at.
- * PROVENANCE for both shapes: FORMAT-DERIVED from the ContentBlock union (TextContent,
- * ImageContent, AudioContent, EmbeddedResource, ResourceLink) at modelcontextprotocol.io/specification;
- * PROVENANCE for the array being an accepted `updatedToolOutput`: see tests/fixtures/mcp_bare_array_payloads.ts.
- */
+/** Two blocks of the MCP ContentBlock union carried content no surface here ever looked at. PROVENANCE for both shapes: FORMAT-DERIVED from the ContentBlock union (TextContent, ImageContent, AudioContent, EmbeddedResource, ResourceLink) at modelcontextprotocol.io/specification; PROVENANCE for the array being an accepted `updatedToolOutput`: see tests/fixtures/mcp_bare_array_payloads.ts. */
 describe('MCP content blocks a string rewrite cannot carry', () => {
   const toolName = 'mcp__evil_server__fetch_doc'
   const AWS_KEY = 'AKIAABCDEFGHIJKLMNOP'

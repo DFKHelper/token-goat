@@ -1,25 +1,4 @@
-/**
- * Security regression: the screenshot policy classified the *hostname string*, never the address
- * actually dialled. `http://rebind.test/` resolving to 127.0.0.1 (or 169.254.169.254) passed
- * every check -- scheme, literal-IP, and the per-request interception added by the redirect fix,
- * because interception re-ran the same name-based policy. That is DNS rebinding, and it made the
- * whole literal-IP block list bypassable with one DNS record.
- *
- * The fix resolves every host before the request is allowed, refuses when ANY resolved address is
- * private/loopback/link-local/metadata/unspecified, fails closed when a name does not resolve at
- * all, and then PINS the validated address into Chromium's resolver via --host-resolver-rules so
- * the address that was validated is the address that gets connected to. Validating one lookup and
- * letting Chromium run a second, independent one leaves exactly the gap the attack needs.
- *
- * These drive a REAL browser: checking the validator in isolation cannot prove the browser was
- * actually prevented from connecting. A local server plays the private victim; Chrome's
- * --host-resolver-rules maps the hostname onto it, so no genuinely-private address is ever
- * contacted and no network access is needed. Skipped when no Chrome/Chromium is found.
- *
- * Chrome cannot start under the sandboxed HOME/LOCALAPPDATA that tests/setup/isolate-home.ts
- * installs, so the real values it stashed in TG_REAL_* are restored for this file and put back
- * afterwards -- same afterAll discipline as screenshot_redirect_ssrf.test.ts.
- */
+/** Security regression: the screenshot policy classified the *hostname string*, never the address actually dialled. `http://rebind.test/` resolving to 127.0.0.1 (or 169.254.169.254) passed every check -- scheme, literal-IP, and the per-request interception added by the redirect fix, because interception re-ran the same name-based policy. That is DNS rebinding, and it made the whole literal-IP block list bypassable with one DNS record. The fix resolves every host before the request is allowed, refuses when ANY resolved address is private/loopback/link-local/metadata/unspecified, fails closed when a name does not resolve at all, and then PINS the validated address into Chromium's resolver via --host-resolver-rules so the address that was validated is the address that gets connected to. Validating one lookup and letting Chromium run a second, independent one leaves exactly the gap the attack needs. These drive a REAL browser: checking the validator in isolation cannot prove the browser was actually prevented from connecting. A local server plays the private victim; Chrome's --host-resolver-rules maps the hostname onto it, so no genuinely-private address is ever contacted and no network access is needed. Skipped when no Chrome/Chromium is found. Chrome cannot start under the sandboxed HOME/LOCALAPPDATA that tests/setup/isolate-home.ts installs, so the real values it stashed in TG_REAL_* are restored for this file and put back afterwards -- same afterAll discipline as screenshot_redirect_ssrf.test.ts. */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as http from 'node:http'

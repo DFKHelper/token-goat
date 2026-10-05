@@ -1,33 +1,4 @@
-/**
- * The created-configs ledger folded case unconditionally, so on a case-SENSITIVE filesystem two
- * different files answered to one key -- and this ledger answers a DELETE question.
- *
- * `uninstallZed` (`src/bridges/zed_install.ts:185`) does, in effect:
- *
- *     if (fileIsEmpty && takeCreatedConfig(settingsPath)) fs.rmSync(settingsPath)
- *
- * On Linux `/home/u/Repo/.zed/settings.json` and `/home/u/repo/.zed/settings.json` are two
- * different files. With an unconditional `.toLowerCase()` in the match key, an install into the
- * first left an entry that answered "token-goat created this" for the second, and uninstall deleted
- * a settings file the user wrote. `recordCreatedConfig` carried the mirror of the same bug: the
- * second directory's entry was seen as already present and never recorded, so ITS backups were
- * orphaned at uninstall while the user was told they were gone.
- *
- * The fix is to fold through `foldPath`, which asks the platform, instead of lowercasing
- * unconditionally. Matching must still fold where the filesystem does: install and uninstall are
- * separate runs that can legitimately spell the same path with different case, and that case is the
- * in-band control below -- without it, "does not match" would also pass against a ledger that had
- * stopped matching anything at all.
- *
- * THE DIFFERENTIATING CASE ONLY RUNS ON A CASE-SENSITIVE FILESYSTEM, and there is no honest way
- * around that: on NTFS and a default APFS volume the two paths ARE one file, so the pre-fix
- * behaviour is correct there. The gate is measured at run time against the actual scratch
- * directory rather than inferred from `process.platform`, because a macOS runner may be either and
- * a Linux runner mounting a case-insensitive volume would otherwise report a pass it did not earn.
- *
- * PROVENANCE: CAPTURE. The case-sensitivity gate is probed by creating two real files; every
- * ledger answer is read back from a real ledger written by the real functions.
- */
+/** The created-configs ledger folded case unconditionally, so on a case-SENSITIVE filesystem two different files answered to one key -- and this ledger answers a DELETE question. `uninstallZed` (`src/bridges/zed_install.ts:185`) does, in effect: if (fileIsEmpty && takeCreatedConfig(settingsPath)) fs.rmSync(settingsPath) On Linux `/home/u/Repo/.zed/settings.json` and `/home/u/repo/.zed/settings.json` are two different files. With an unconditional `.toLowerCase()` in the match key, an install into the first left an entry that answered "token-goat created this" for the second, and uninstall deleted a settings file the user wrote. `recordCreatedConfig` carried the mirror of the same bug: the second directory's entry was seen as already present and never recorded, so ITS backups were orphaned at uninstall while the user was told they were gone. The fix is to fold through `foldPath`, which asks the platform, instead of lowercasing unconditionally. Matching must still fold where the filesystem does: install and uninstall are separate runs that can legitimately spell the same path with different case, and that case is the in-band control below -- without it, "does not match" would also pass against a ledger that had stopped matching anything at all. THE DIFFERENTIATING CASE ONLY RUNS ON A CASE-SENSITIVE FILESYSTEM, and there is no honest way around that: on NTFS and a default APFS volume the two paths ARE one file, so the pre-fix behaviour is correct there. The gate is measured at run time against the actual scratch directory rather than inferred from `process.platform`, because a macOS runner may be either and a Linux runner mounting a case-insensitive volume would otherwise report a pass it did not earn. PROVENANCE: CAPTURE. The case-sensitivity gate is probed by creating two real files; every ledger answer is read back from a real ledger written by the real functions. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -42,12 +13,7 @@ const ENV_KEYS = ['XDG_DATA_HOME', 'LOCALAPPDATA', 'HOME', 'USERPROFILE', 'TOKEN
 let saved: Record<string, string | undefined>
 let base: string
 
-/**
- * Does THIS directory distinguish `A` from `a`? Probed, not assumed.
- *
- * Creating one file and asking whether the other spelling exists is the only answer that survives a
- * case-insensitive volume mounted on Linux or a case-sensitive one on macOS.
- */
+/** Does THIS directory distinguish `A` from `a`? Probed, not assumed. Creating one file and asking whether the other spelling exists is the only answer that survives a case-insensitive volume mounted on Linux or a case-sensitive one on macOS. */
 function caseSensitiveHere(dir: string): boolean {
   const upper = path.join(dir, 'CaseProbe')
   const lower = path.join(dir, 'caseprobe')
@@ -85,8 +51,7 @@ afterEach(() => {
 
 describe('the created-configs ledger folds case only where the filesystem does', () => {
   it('records and takes back the exact same path (in-band control)', () => {
-    // Runs everywhere. Every other assertion in this file is a "does not match", and a "does not
-    // match" is worthless unless a match is first observed to be possible.
+    // Runs everywhere. Every other assertion in this file is a "does not match", and a "does not match" is worthless unless a match is first observed to be possible.
     const p = path.join(base, 'Repo', '.zed', 'settings.json')
 
     recordCreatedConfig(p)
@@ -110,15 +75,12 @@ describe('the created-configs ledger folds case only where the filesystem does',
           "is a user's own file being removed.",
       ).toBe(false)
       expect(takeCreatedConfig(sibling)).toBe(false)
-      // The mirror half: the sibling must still be recordable. Pre-fix it was seen as already
-      // present, never written, and its backups were orphaned at uninstall.
+      // The mirror half: the sibling must still be recordable. Pre-fix it was seen as already present, never written, and its backups were orphaned at uninstall.
       recordCreatedConfig(sibling)
       expect(hasCreatedConfig(sibling), 'the second directory could not be recorded at all, so its backups would be orphaned').toBe(true)
       expect(hasCreatedConfig(recorded), 'recording the sibling must not have disturbed the original entry').toBe(true)
     } else {
-      // On NTFS or a default APFS volume these two spellings name ONE file, so matching them is
-      // correct and refusing to would break the ordinary case of install and uninstall spelling the
-      // same path differently across two runs.
+      // On NTFS or a default APFS volume these two spellings name ONE file, so matching them is correct and refusing to would break the ordinary case of install and uninstall spelling the same path differently across two runs.
       expect(
         hasCreatedConfig(sibling),
         'this filesystem is case-insensitive, so the two spellings are the same file and the ledger ' +
@@ -129,9 +91,7 @@ describe('the created-configs ledger folds case only where the filesystem does',
   })
 
   it('reports which half of the previous case actually ran, so a skip is visible', () => {
-    // Not decoration: the differentiating branch is the one that catches the defect, and on this
-    // machine it may not have run. Naming the platform answer in the run output is what stops a
-    // green Windows run from reading as coverage of the Linux behaviour.
+    // Not decoration: the differentiating branch is the one that catches the defect, and on this machine it may not have run. Naming the platform answer in the run output is what stops a green Windows run from reading as coverage of the Linux behaviour.
     expect(typeof CASE_SENSITIVE).toBe('boolean')
     expect(
       CASE_SENSITIVE,

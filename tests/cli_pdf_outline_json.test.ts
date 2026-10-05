@@ -1,8 +1,4 @@
-// Regression guard: pdf-outline was the only outline-style CLI command missing --json (skeleton,
-// outline, section, symbol, semantic, and json-outline all had it), forcing an agent to
-// hand-parse the indented "  Title  (p.N)" text form instead of getting structured entries.
-// Drives the real run() entry so this exercises the actual command wiring, not runPdfOutline()
-// in isolation.
+// Regression guard: pdf-outline was the only outline-style CLI command missing --json (skeleton, outline, section, symbol, semantic, and json-outline all had it), forcing an agent to hand-parse the indented "  Title  (p.N)" text form instead of getting structured entries. Drives the real run() entry so this exercises the actual command wiring, not runPdfOutline() in isolation.
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,8 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { run } from '../src/cli.js'
 import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
-// Same fixture shape as cli_doc_extract_stats.test.ts's PDF_WITH_OUTLINE: a minimal one-page
-// PDF plus an /Outlines catalog entry with one bookmark item pointing at the page.
+// Same fixture shape as cli_doc_extract_stats.test.ts's PDF_WITH_OUTLINE: a minimal one-page PDF plus an /Outlines catalog entry with one bookmark item pointing at the page.
 const PDF_WITH_OUTLINE = '%PDF-1.4\n' +
   '1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Outlines 6 0 R >>\nendobj\n' +
   '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n' +

@@ -1,18 +1,4 @@
-/**
- * The guard that makes `--batch-serve` safe to rely on.
- *
- * Serving many invocations from one process is only sound while a served invocation is
- * indistinguishable from a spawned one. The risk is state: the server restores cwd, restores the
- * environment, resets `process.exitCode` and calls `clearModuleCaches()` between requests, but a
- * module-level cache that no reset covers would let one request colour the next, and a test
- * suite that ran only the batched path would never find out. Worse, it could go the other way --
- * a batched run passing where the real CLI is broken -- which is exactly the injected-seam trap
- * the bundle tests exist to prevent, wearing a new costume.
- *
- * So every command below runs both ways and the two results are compared byte for byte, including
- * exit status and stderr. Failures here mean the command is not safe to batch, not that the
- * assertion needs relaxing.
- */
+/** The guard that makes `--batch-serve` safe to rely on. Serving many invocations from one process is only sound while a served invocation is indistinguishable from a spawned one. The risk is state: the server restores cwd, restores the environment, resets `process.exitCode` and calls `clearModuleCaches()` between requests, but a module-level cache that no reset covers would let one request colour the next, and a test suite that ran only the batched path would never find out. Worse, it could go the other way -- a batched run passing where the real CLI is broken -- which is exactly the injected-seam trap the bundle tests exist to prevent, wearing a new costume. So every command below runs both ways and the two results are compared byte for byte, including exit status and stderr. Failures here mean the command is not safe to batch, not that the assertion needs relaxing. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -38,14 +24,11 @@ function fixture(): string {
   return dir
 }
 
-// Deliberately spans shapes rather than commands that happen to be cheap: a plain read, a
-// filesystem walk, structured output, a help path, an error path, and a nonzero exit.
+// Deliberately spans shapes rather than commands that happen to be cheap: a plain read, a filesystem walk, structured output, a help path, an error path, and a nonzero exit.
 const CASES: Array<{ label: string; args: string[] }> = [
   { label: 'version', args: ['--version'] },
   { label: 'help', args: ['--help'] },
-  // Subcommand help, at both depths. This used to kill the batch server outright: commander only
-  // copies the exit-override callback into a subcommand when that subcommand is created, so every
-  // subcommand fell through to a real process.exit(). Top-level `--help` above never caught it.
+  // Subcommand help, at both depths. This used to kill the batch server outright: commander only copies the exit-override callback into a subcommand when that subcommand is created, so every subcommand fell through to a real process.exit(). Top-level `--help` above never caught it.
   { label: 'subcommand help', args: ['symbol', '--help'] },
   { label: 'nested subcommand help', args: ['worker', 'start', '--help'] },
   { label: 'outline', args: ['outline', 'sample.ts'] },
@@ -120,14 +103,7 @@ describe('batch-serve is indistinguishable from spawning the bundle', () => {
     expect(ok.status, 'a clean command reported the previous failure as its own status').toBe(0)
   })
 
-  // The isolation seam itself, driven directly. The two tests above pass an `env` on the request
-  // that does the polluting, and supplying one is exactly what used to make the restore run at
-  // all -- with `env` absent, no snapshot was taken and nothing undid what the command wrote. A
-  // request that omits `env` is the normal case for the CLI (`hook --harness` sets
-  // TOKEN_GOAT_HARNESS_OVERRIDE itself, as does the config layer), and a spawned process drops
-  // that on exit, so the batched path has to as well. serveOne's `runFn` is a real parameter of
-  // the production server, not a test-only seam; what it stands in for here is any command that
-  // writes to process.env, which several do.
+  // The isolation seam itself, driven directly. The two tests above pass an `env` on the request that does the polluting, and supplying one is exactly what used to make the restore run at all -- with `env` absent, no snapshot was taken and nothing undid what the command wrote. A request that omits `env` is the normal case for the CLI (`hook --harness` sets TOKEN_GOAT_HARNESS_OVERRIDE itself, as does the config layer), and a spawned process drops that on exit, so the batched path has to as well. serveOne's `runFn` is a real parameter of the production server, not a test-only seam; what it stands in for here is any command that writes to process.env, which several do.
   it('restores the environment after a request that brought none of its own', async () => {
     const key = 'TG_BATCH_LEAK_PROBE'
     delete process.env[key]

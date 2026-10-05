@@ -1,24 +1,4 @@
-/**
- * Source-level test for the Haskell adapter (src/languages/haskell.ts), following the shape and
- * mutation-testing discipline `tests/lisp_family_idx.test.ts` established for the five Lisp-family
- * adapters: one assertion per rule that can silently regress while a >=1-symbol smoke check stays
- * green.
- *
- * Every fixture below is HAND-DERIVED from the Haskell 2010 Language Report sections cited inline
- * (https://www.haskell.org/onlinereport/haskell2010/), independently of haskell.ts's own regexes
- * and masking loop -- not from this repo's extractor.
- *
- * This adapter's top-level definitions are found by column-0 boundary (see haskell.ts's module
- * doc), which means a line's own classification depends only on the text BEFORE its first `=`/
- * `::` -- text after that point (a string or character literal's payload) never changes which
- * symbol gets created. So a masking bug in a string/character literal cannot be pinned by asking
- * "does the right symbol still appear" the way the Lisp tests do for a def on the same line as a
- * char literal; it has to be pinned by asking "does an otherwise-non-definition line stay a
- * non-definition" -- a stray `=` character inside an unmasked comment/string/char literal is
- * exactly the kind of leaked content that would wrongly promote a bare identifier line into a
- * fake equation. Each masking test below is built that way, and each was confirmed to flip red
- * under a targeted mutation of the rule it pins (see the coder's report for the captured output).
- */
+/** Source-level test for the Haskell adapter (src/languages/haskell.ts), following the shape and mutation-testing discipline `tests/lisp_family_idx.test.ts` established for the five Lisp-family adapters: one assertion per rule that can silently regress while a >=1-symbol smoke check stays green. Every fixture below is HAND-DERIVED from the Haskell 2010 Language Report sections cited inline (https://www.haskell.org/onlinereport/haskell2010/), independently of haskell.ts's own regexes and masking loop -- not from this repo's extractor. This adapter's top-level definitions are found by column-0 boundary (see haskell.ts's module doc), which means a line's own classification depends only on the text BEFORE its first `=`/ `::` -- text after that point (a string or character literal's payload) never changes which symbol gets created. So a masking bug in a string/character literal cannot be pinned by asking "does the right symbol still appear" the way the Lisp tests do for a def on the same line as a char literal; it has to be pinned by asking "does an otherwise-non-definition line stay a non-definition" -- a stray `=` character inside an unmasked comment/string/char literal is exactly the kind of leaked content that would wrongly promote a bare identifier line into a fake equation. Each masking test below is built that way, and each was confirmed to flip red under a targeted mutation of the rule it pins (see the coder's report for the captured output). */
 import { describe, expect, it } from 'vitest'
 
 import { extractHaskell } from '../src/languages/haskell.js'
@@ -46,10 +26,7 @@ describe('nested {- -} block comments (Haskell 2010 Report section 2.3, "Comment
 
 describe('the "--" comment rule (Report section 2.3 + the varsym/dashes exclusion in section 2.4)', () => {
   it('a run of dashes followed by a symbol character is a legal lexeme, not a comment: "-->" used as an infix operator does not hide the real "=" after it', () => {
-    // Report 2.3: '"-->" ... do not begin a comment, because ... [it is a] legal lexeme.' If a
-    // masker wrongly treats "--" as a comment opener regardless of what follows, it blanks
-    // everything from "-->" to end of line, including the defining "= True" -- so this single
-    // clause's own "checkPositive" would never be classified as an equation at all.
+    // Report 2.3: '"-->" ... do not begin a comment, because ... [it is a] legal lexeme.' If a masker wrongly treats "--" as a comment opener regardless of what follows, it blanks everything from "-->" to end of line, including the defining "= True" -- so this single clause's own "checkPositive" would never be classified as an equation at all.
     const src = ['checkPositive x | x --> 0 = True', '', 'realAfter :: Int', 'realAfter = 42'].join('\n')
     const result = extractHaskell(src, 'test.hs')
     expect(names(result)).toContain('checkPositive')
@@ -73,8 +50,7 @@ describe('string/character literal escaping (Report section 2.6)', () => {
   })
 
   it('an escaped quote inside a string does not end the string early: a bare identifier applying such a string is not mistaken for an equation', () => {
-    // If `\"` wrongly closed the string, the leftover ` a = b"` becomes live text containing a
-    // bare "=", wrongly promoting this bare-identifier-applied-to-a-string line into an equation.
+    // If `\"` wrongly closed the string, the leftover ` a = b"` becomes live text containing a bare "=", wrongly promoting this bare-identifier-applied-to-a-string line into an equation.
     const src = ['notAnEquation "esc \\" a = b"', '', 'realAfter :: Int', 'realAfter = 1'].join('\n')
     const result = extractHaskell(src, 'test.hs')
     expect(names(result)).not.toContain('notAnEquation')

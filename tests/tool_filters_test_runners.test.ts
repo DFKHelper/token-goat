@@ -136,26 +136,13 @@ describe('vitest filter (family factory)', () => {
   })
 })
 
-/**
- * `--reporter=verbose` output, which the ported golden suite above never saw.
- *
- * Fixture provenance: CAPTURE. Every line here is copied byte for byte out of
- * tests/fixtures/bench/vitest-run.txt, which is the redirected output of
- * `npx vitest run tests/paths.test.ts tests/config.test.ts --reporter=verbose` in this repo.
- * That distinction is the whole reason this describe exists: the golden tests above write their
- * summary lines flush against the left margin (`'Test Files  8 passed (8)'`), which is what
- * `summaryRe` required and what vitest has never actually printed -- it right-aligns the labels.
- * A fixture shaped by the regex agrees with the regex, so three separate mismatches sat here
- * behind a green suite, and `token-goat bench` scored a real verbose run at 2 bytes saved out of
- * 22,684.
- */
+/** `--reporter=verbose` output, which the ported golden suite above never saw. Fixture provenance: CAPTURE. Every line here is copied byte for byte out of tests/fixtures/bench/vitest-run.txt, which is the redirected output of `npx vitest run tests/paths.test.ts tests/config.test.ts --reporter=verbose` in this repo. That distinction is the whole reason this describe exists: the golden tests above write their summary lines flush against the left margin (`'Test Files  8 passed (8)'`), which is what `summaryRe` required and what vitest has never actually printed -- it right-aligns the labels. A fixture shaped by the regex agrees with the regex, so three separate mismatches sat here behind a green suite, and `token-goat bench` scored a real verbose run at 2 bytes saved out of 22,684. */
 describe('vitest filter on --reporter=verbose output', () => {
   const TICKS = [
     ' ✓ tests/paths.test.ts > safeJoin > joins normally when no part contains a colon 28ms',
     ' ✓ tests/paths.test.ts > safeJoin > throws when any part contains a colon (drive-letter escape) 1ms',
     ' ✓ tests/paths.test.ts > normalizePath > converts backslashes to forward slashes 0ms',
-    // A test NAME ending in something shaped like a file-header duration. This one was counted as
-    // a passing FILE rather than a passing test.
+    // A test NAME ending in something shaped like a file-header duration. This one was counted as a passing FILE rather than a passing test.
     ' ✓ tests/config.test.ts > loadConfig > clamps a below-range env var override for TOKEN_GOAT_HOOK_WATCHDOG_MS to the documented min (100ms) 1ms',
   ]
   const SUMMARY = [
@@ -181,9 +168,7 @@ describe('vitest filter on --reporter=verbose output', () => {
   })
 
   it('keeps a summary line that follows a stdout block, rather than counting it into the block', () => {
-    // The collapse loop drops any indented line inside an open output block. Vitest indents its
-    // summary, so before summaryRe allowed leading whitespace, a run whose last test printed to
-    // stdout lost its counts entirely -- the one part of a run's output nobody can do without.
+    // The collapse loop drops any indented line inside an open output block. Vitest indents its summary, so before summaryRe allowed leading whitespace, a run whose last test printed to stdout lost its counts entirely -- the one part of a run's output nobody can do without.
     const text = [' stdout | tests/a.test.ts > logs', '   some logged line', ...SUMMARY].join('\n')
     const result = vitestFilter.apply(text, '', 0, ['vitest', '--reporter=verbose'])
     for (const line of SUMMARY) expect(result.text).toContain(line)

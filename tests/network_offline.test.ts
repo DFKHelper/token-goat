@@ -1,10 +1,4 @@
-/**
- * Enterprise evaluation asks one question about egress: can this thing open a connection I did not
- * ask for? The honest answer had five parts -- its own HTTP fetches, the embedding-model download,
- * the OCR language-data download, screenshot, and Google Drive -- and no single lever to say no.
- * `network.offline` is that lever. It is a locked section, so a cloned repository cannot switch it
- * back off from its own .token-goat.toml.
- */
+/** Enterprise evaluation asks one question about egress: can this thing open a connection I did not ask for? The honest answer had five parts -- its own HTTP fetches, the embedding-model download, the OCR language-data download, screenshot, and Google Drive -- and no single lever to say no. `network.offline` is that lever. It is a locked section, so a cloned repository cannot switch it back off from its own .token-goat.toml. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -100,8 +94,7 @@ describe('performHttpFetch under offline mode', () => {
 })
 
 describe('ocrBlockedOffline', () => {
-  // Both directions matter. Blocking whenever offline is set would break an air-gapped machine
-  // that already has the language file, which is the install most likely to have set the flag.
+  // Both directions matter. Blocking whenever offline is set would break an air-gapped machine that already has the language file, which is the install most likely to have set the flag.
   it('does not block when offline mode is off, whatever the cache holds', () => {
     delete process.env['TOKEN_GOAT_OFFLINE']
     process.env['TOKEN_GOAT_HOME'] = root

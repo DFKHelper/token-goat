@@ -221,8 +221,7 @@ describe('preSkillHandler — duplicate-load advisory', () => {
     expect(delta).toBe(PER_FILE_COUNTERFACTUAL_CEILING);
   });
 
-  // Regression: storeOutput dedups an identical body across sessions and used to return the first session's entry without recording anything for the second, so the reload deny fired only in the first session that ever loaded the skill. Every later session re-injected the whole body on a repeat load.
-  // HAND-DERIVED: two session ids and one body chosen for this test; the expected deny follows from the rule that a repeat load in the same session is denied, independent of the cache layout.
+  // Regression: storeOutput dedups an identical body across sessions and used to return the first session's entry without recording anything for the second, so the reload deny fired only in the first session that ever loaded the skill. Every later session re-injected the whole body on a repeat load. HAND-DERIVED: two session ids and one body chosen for this test; the expected deny follows from the rule that a repeat load in the same session is denied, independent of the cache layout.
   it('denies a repeat load in a second session that loaded the same body the first session cached', async () => {
     const body = 'Shared body for ollama, byte-identical in both sessions.';
     await runHook(skillPostEvent('ollama', body, 'sess-first'));

@@ -1,13 +1,4 @@
-/**
- * Tests for the miscellaneous filter family (Batch K2).
- *
- * Covers: PsqlFilter, MySQLFilter, Sqlite3Filter, RedisCLIFilter,
- * SysPackageFilter, WmicFilter, ProtocFilter, SassFilter, ToxFilter, NoxFilter,
- * WasmPackFilter, NgFilter, PlaywrightFilter, CypressFilter,
- * DotenvFilter, EnvFilter, JsonArrayFilter, SeverityLogFilter, TailTruncFilter.
- *
- * Ported from the Python golden tests in tests/test_bash_compress_*.py.
- */
+/** Tests for the miscellaneous filter family (Batch K2). Covers: PsqlFilter, MySQLFilter, Sqlite3Filter, RedisCLIFilter, SysPackageFilter, WmicFilter, ProtocFilter, SassFilter, ToxFilter, NoxFilter, WasmPackFilter, NgFilter, PlaywrightFilter, CypressFilter, DotenvFilter, EnvFilter, JsonArrayFilter, SeverityLogFilter, TailTruncFilter. Ported from the Python golden tests in tests/test_bash_compress_*.py. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -41,9 +32,7 @@ import {
 import { detectFromCommand, selectFilter, TOOL_FILTERS } from '../src/tool_filters/dispatch.js'
 import { headTailCompress } from '../src/tool_filters/helpers.js'
 
-// ---------------------------------------------------------------------------
-// Helper
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helper ---------------------------------------------------------------------------
 
 function apply(
   filter: { compress: (a: string, b: string, c: number, d: string[]) => string },
@@ -54,9 +43,7 @@ function apply(
   return filter.compress(stdout, stderr, exitCode, argv)
 }
 
-// ---------------------------------------------------------------------------
-// MISC_FILTERS ordering invariants
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- MISC_FILTERS ordering invariants ---------------------------------------------------------------------------
 
 describe('MISC_FILTERS ordering', () => {
   it('TailTruncFilter is the last entry in MISC_FILTERS', () => {
@@ -98,9 +85,7 @@ describe('PlaywrightFilter dispatch ordering', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// PlaywrightFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PlaywrightFilter ---------------------------------------------------------------------------
 
 describe('PlaywrightFilter matches', () => {
   const f = new PlaywrightFilter()
@@ -144,9 +129,7 @@ describe('PlaywrightFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// CypressFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CypressFilter ---------------------------------------------------------------------------
 
 describe('CypressFilter matches', () => {
   const f = new CypressFilter()
@@ -210,9 +193,7 @@ describe('CypressFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// PsqlFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PsqlFilter ---------------------------------------------------------------------------
 
 describe('PsqlFilter dispatch', () => {
   it('selectFilter routes psql', () => expect(selectFilter(['psql', '-U', 'pg'])).toBeInstanceOf(PsqlFilter))
@@ -291,9 +272,7 @@ describe('PsqlFilter table collapse', () => {
 
 describe('PsqlFilter border-style-2 output (\\pset border 2)', () => {
   it('treats the header row under a leading top border as the header, not a data row', () => {
-    // border-2 style: top border BEFORE the header text, unlike the default style where the
-    // header text has no border above it. The old state machine only popped the header line
-    // on the FIRST border line seen, so the header fell through into the dataRows bucket here.
+    // border-2 style: top border BEFORE the header text, unlike the default style where the header text has no border above it. The old state machine only popped the header line on the FIRST border line seen, so the header fell through into the dataRows bucket here.
     const dataRows = Array.from({ length: 30 }, (_, i) => `|  ${i} | person${i} |`)
     const text =
       '+----+---------+\n' +
@@ -306,19 +285,12 @@ describe('PsqlFilter border-style-2 output (\\pset border 2)', () => {
 
     // Header text is preserved verbatim, not swallowed into the truncated data-row bucket.
     expect(out).toContain('| id | name    |')
-    // The internal row-count summary must reflect the true 30 data rows, not 31 (header
-    // counted as a row). psql's own "(30 rows)" footer line is untouched either way, so this
-    // asserts on token-goat's own generated summary text specifically.
+    // The internal row-count summary must reflect the true 30 data rows, not 31 (header counted as a row). psql's own "(30 rows)" footer line is untouched either way, so this asserts on token-goat's own generated summary text specifically.
     expect(out).toContain('[token-goat: 30 rows')
     expect(out).not.toContain('[token-goat: 31 rows')
   })
 
-  // Regression: the border-1-vs-border-2 branch gated on `kept.length` alone -- truthy
-  // whenever ANYTHING earlier in the whole output was kept (a NOTICE line, a blank line,
-  // a prior query's result), not just an immediately-preceding header line. A leading
-  // NOTICE before a border-2 table wrongly triggered the border-1 pop-from-`kept` branch,
-  // popping the unrelated NOTICE line as the "header" and desyncing inTable/afterHeader
-  // state -- duplicating the top border and dropping the header/data separator entirely.
+  // Regression: the border-1-vs-border-2 branch gated on `kept.length` alone -- truthy whenever ANYTHING earlier in the whole output was kept (a NOTICE line, a blank line, a prior query's result), not just an immediately-preceding header line. A leading NOTICE before a border-2 table wrongly triggered the border-1 pop-from-`kept` branch, popping the unrelated NOTICE line as the "header" and desyncing inTable/afterHeader state -- duplicating the top border and dropping the header/data separator entirely.
   it('does not corrupt a border-2 table preceded by a NOTICE line', () => {
     const text =
       'NOTICE:  some notice text\n' +
@@ -334,9 +306,7 @@ describe('PsqlFilter border-style-2 output (\\pset border 2)', () => {
     expect(out).toBe(text.trimEnd())
   })
 
-  // Same corruption reproduced with nothing but a leading blank line before the table --
-  // realistic whenever this table isn't the very first output (e.g. a blank separator
-  // line between two query results).
+  // Same corruption reproduced with nothing but a leading blank line before the table -- realistic whenever this table isn't the very first output (e.g. a blank separator line between two query results).
   it('does not corrupt a border-2 table preceded by a blank line', () => {
     const text =
       '\n' +
@@ -352,9 +322,7 @@ describe('PsqlFilter border-style-2 output (\\pset border 2)', () => {
     expect(out).toBe(text.trimEnd())
   })
 
-  // Genuine default (border-1) style must still work: header text with no top border,
-  // immediately followed by the separator border -- the one case the pop-from-`kept`
-  // branch is meant to handle.
+  // Genuine default (border-1) style must still work: header text with no top border, immediately followed by the separator border -- the one case the pop-from-`kept` branch is meant to handle.
   it('still parses genuine border-1 style output (header text, then separator, no top border)', () => {
     const text = ' id | name \n----+------\n  1 | a\n  2 | b\n(2 rows)\n'
     const out = apply(psqlFilter, text, ['psql'])
@@ -370,9 +338,7 @@ describe('PsqlFilter keeps errors', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// MySQLFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- MySQLFilter ---------------------------------------------------------------------------
 
 describe('MySQLFilter dispatch', () => {
   it('selectFilter routes mysql', () => expect(selectFilter(['mysql', '-u', 'root'])).toBeInstanceOf(MySQLFilter))
@@ -398,10 +364,7 @@ describe('MySQLFilter query compression', () => {
 })
 
 describe('MySQLFilter dump compression', () => {
-  // Realistic mysqldump per-table structure: leading `--` comment lines, a
-  // blank line, THEN the DROP TABLE/CREATE TABLE body, ending in another
-  // blank line. (A fixture without the `--` comments before the blank line
-  // masks the backwards blank-line-skip bug entirely — see regression below.)
+  // Realistic mysqldump per-table structure: leading `--` comment lines, a blank line, THEN the DROP TABLE/CREATE TABLE body, ending in another blank line. (A fixture without the `--` comments before the blank line masks the backwards blank-line-skip bug entirely — see regression below.)
   const table = (i: number): string => [
     '--',
     `-- Table structure for table \`tbl${i}\``,
@@ -441,9 +404,7 @@ describe('MySQLFilter dump compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Sqlite3Filter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Sqlite3Filter ---------------------------------------------------------------------------
 
 describe('Sqlite3Filter dispatch', () => {
   it('selectFilter routes sqlite3', () => expect(selectFilter(['sqlite3', 'mydb.db'])).toBeInstanceOf(Sqlite3Filter))
@@ -469,11 +430,7 @@ describe('Sqlite3Filter row collapse', () => {
     expect(out).not.toContain('row12|data')
   })
 
-  // CAPTURE. Verbatim stdout of sqlite3 3.44.4 (32-bit, 2025-02-19 f1e31fd9961a) run on this machine as:
-  //   sqlite3 demo.db "create table t(id integer, name text, status text); insert into t select value, 'item'||value, case when value=25 then 'FAILED' else 'ok' end from generate_series(1,25);"
-  //   sqlite3 demo.db "select * from t order by id;"
-  //   sqlite3 -json demo.db "select * from t order by id;"
-  // The table is synthetic: no real data, identifiers or paths appear in it.
+  // CAPTURE. Verbatim stdout of sqlite3 3.44.4 (32-bit, 2025-02-19 f1e31fd9961a) run on this machine as: sqlite3 demo.db "create table t(id integer, name text, status text); insert into t select value, 'item'||value, case when value=25 then 'FAILED' else 'ok' end from generate_series(1,25);" sqlite3 demo.db "select * from t order by id;" sqlite3 -json demo.db "select * from t order by id;" The table is synthetic: no real data, identifiers or paths appear in it.
   const SQLITE_PLAIN_CAPTURE = Array.from(
     { length: 25 },
     (_, i) => `${i + 1}|item${i + 1}|${i + 1 === 25 ? 'FAILED' : 'ok'}`,
@@ -488,8 +445,7 @@ describe('Sqlite3Filter row collapse', () => {
 
   it('keeps the last rows of an ORDER BY result, not only the first', () => {
     const out = apply(sqlite3Filter, SQLITE_PLAIN_CAPTURE, ['sqlite3', 'demo.db', 'select * from t order by id;'])
-    // Must-not-drop: the head rows the note claims, the row count, and the final row, which is the
-    // only place the FAILED status appears and the one an `order by` was asked for.
+    // Must-not-drop: the head rows the note claims, the row count, and the final row, which is the only place the FAILED status appears and the one an `order by` was asked for.
     expect(out).toContain('1|item1|ok')
     expect(out).toContain('5|item5|ok')
     expect(out).toContain('25 rows')
@@ -527,24 +483,14 @@ describe('Sqlite3Filter row collapse', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// RedisCLIFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- RedisCLIFilter ---------------------------------------------------------------------------
 
 describe('RedisCLIFilter dispatch', () => {
   it('selectFilter routes redis-cli', () => expect(selectFilter(['redis-cli', 'GET', 'key'])).toBeInstanceOf(RedisCLIFilter))
 })
 
 describe('RedisCLIFilter SCAN compression', () => {
-  // FORMAT-DERIVED, not CAPTURE: redis is not installed on this machine and this loop may not make
-  // a network request to install it. Source: the Redis command reference for SCAN. Its "Return
-  // value" section states that the reply's first element is a string representing an unsigned 64
-  // bit number (the cursor), and its "SCAN basic usage" section shows redis-cli rendering exactly
-  // that: a quoted cursor followed by a nested indexed key list whose first entry shares a line
-  // with the outer `2)` index, as in `1) "17"` then `2)  1) "key:12"` then `    2) "key:8"`.
-  // The shape this fixture used to carry, `1) (integer) 0`, is not something redis emits for SCAN:
-  // it was written from the detector's own regex, so the detector and the fixture agreed with each
-  // other while the filter never fired on a real reply.
+  // FORMAT-DERIVED, not CAPTURE: redis is not installed on this machine and this loop may not make a network request to install it. Source: the Redis command reference for SCAN. Its "Return value" section states that the reply's first element is a string representing an unsigned 64 bit number (the cursor), and its "SCAN basic usage" section shows redis-cli rendering exactly that: a quoted cursor followed by a nested indexed key list whose first entry shares a line with the outer `2)` index, as in `1) "17"` then `2)  1) "key:12"` then `    2) "key:8"`. The shape this fixture used to carry, `1) (integer) 0`, is not something redis emits for SCAN: it was written from the detector's own regex, so the detector and the fixture agreed with each other while the filter never fired on a real reply.
   function scanReply(keys: string[], cursor = '17'): string {
     const nested = keys.map((k, i) => (i === 0 ? `2)  1) "${k}"` : `    ${i + 1}) "${k}"`))
     return [`1) "${cursor}"`, ...nested].join('\n')
@@ -554,8 +500,7 @@ describe('RedisCLIFilter SCAN compression', () => {
     const out = apply(redisCLIFilter, scanReply(Array.from({ length: 20 }, (_, i) => `key:${i}`)), ['redis-cli'])
     expect(out).toContain('20 keys total')
     expect(out).not.toContain('"key:19"')
-    // Must-not-drop: the first key, which shares its line with the outer `2)` index, and the
-    // cursor, without which the caller cannot resume the scan.
+    // Must-not-drop: the first key, which shares its line with the outer `2)` index, and the cursor, without which the caller cannot resume the scan.
     expect(out).toContain('"key:0"')
     expect(out).toContain('1) "17"')
   })
@@ -581,9 +526,7 @@ describe('RedisCLIFilter bulk OK', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// SysPackageFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- SysPackageFilter ---------------------------------------------------------------------------
 
 describe('SysPackageFilter dispatch', () => {
   it('selectFilter routes apt-get', () => expect(selectFilter(['apt-get', 'install', 'curl'])).toBeInstanceOf(SysPackageFilter))
@@ -600,13 +543,7 @@ describe('SysPackageFilter apt compression', () => {
     expect(out).not.toContain('Get:1')
   })
 
-  // HAND-DERIVED. CAPTURE was impossible: reproducing `apt-get update` needs a Debian host and a
-  // network fetch, and this loop may make neither. The shapes come from apt's acquire status
-  // reporter, which prefixes every per-URI outcome with one of `Hit:`, `Get:`, `Ign:` or `Err:`.
-  // `Hit:` and `Get:` are the two success outcomes and carry the same kind of information, so
-  // collapsing one to a count while printing the other verbatim was an asymmetry with nothing
-  // behind it, and it collapsed the minority: on an already-current sources list every line is a
-  // `Hit:`. `Ign:` and `Err:` are the diagnostic outcomes and must still arrive whole.
+  // HAND-DERIVED. CAPTURE was impossible: reproducing `apt-get update` needs a Debian host and a network fetch, and this loop may make neither. The shapes come from apt's acquire status reporter, which prefixes every per-URI outcome with one of `Hit:`, `Get:`, `Ign:` or `Err:`. `Hit:` and `Get:` are the two success outcomes and carry the same kind of information, so collapsing one to a count while printing the other verbatim was an asymmetry with nothing behind it, and it collapsed the minority: on an already-current sources list every line is a `Hit:`. `Ign:` and `Err:` are the diagnostic outcomes and must still arrive whole.
   it('collapses Hit:N index lines the same way it collapses Get:N, and keeps Ign:/Err:', () => {
     const out = apply(sysPackageFilter,
       [
@@ -661,9 +598,7 @@ describe('SysPackageFilter brew compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// WmicFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- WmicFilter ---------------------------------------------------------------------------
 
 /** Right-pad `s` with spaces to `width` chars, mirroring wmic's fixed-width column layout. */
 function wmicPad(s: string, width: number): string {
@@ -677,8 +612,7 @@ describe('WmicFilter dispatch', () => {
 
 describe('WmicFilter compression', () => {
   it('collapses fixed-width column padding to a 2-space delimiter, preserving column order', () => {
-    // Realistic `wmic process get name,processid` output: every column is right-padded
-    // to a fixed width drawn from the WMI property schema, far wider than the data.
+    // Realistic `wmic process get name,processid` output: every column is right-padded to a fixed width drawn from the WMI property schema, far wider than the data.
     const header = wmicPad('Name', 80) + wmicPad('ProcessId', 15)
     const row1 = wmicPad('System Idle Process', 80) + wmicPad('0', 15)
     const row2 = wmicPad('System', 80) + wmicPad('4', 15)
@@ -719,9 +653,7 @@ describe('WmicFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ProtocFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ProtocFilter ---------------------------------------------------------------------------
 
 describe('ProtocFilter dispatch', () => {
   it('selectFilter routes protoc', () => expect(selectFilter(['protoc', '--go_out=.', 'foo.proto'])).toBeInstanceOf(ProtocFilter))
@@ -766,9 +698,7 @@ describe('ProtocFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// SassFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- SassFilter ---------------------------------------------------------------------------
 
 describe('SassFilter dispatch', () => {
   it('selectFilter routes sass', () => expect(selectFilter(['sass', 'src/main.scss', 'dist/main.css'])).toBeInstanceOf(SassFilter))
@@ -798,9 +728,7 @@ describe('SassFilter compression', () => {
     expect(out).toMatch(/collapsed 3 duplicate deprecation/)
   })
 
-  // Regression: the dedup key was truncated to the first 60 characters of each
-  // deprecation line, so distinct warnings from different files sharing a long
-  // common prefix collided and one was silently dropped as a false "repeat".
+  // Regression: the dedup key was truncated to the first 60 characters of each deprecation line, so distinct warnings from different files sharing a long common prefix collided and one was silently dropped as a false "repeat".
   it('does not drop a distinct deprecation warning that shares its first 60 characters with another', () => {
     const w1 = 'Deprecation Warning: some-mixin is deprecated, use other-mixin instead in file-a.scss'
     const w2 = 'Deprecation Warning: some-mixin is deprecated, use other-mixin instead in file-b.scss'
@@ -817,14 +745,10 @@ describe('SassFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ToxFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ToxFilter ---------------------------------------------------------------------------
 
 describe('ToxFilter dispatch', () => {
-  // `tox` is deliberately absent from TWO_TOKEN_PREFIXES, so `-e <env>` is never
-  // mistaken for a launcher token and stripped down to a bare env name like
-  // `py312` (which would match no registered filter and run unfiltered).
+  // `tox` is deliberately absent from TWO_TOKEN_PREFIXES, so `-e <env>` is never mistaken for a launcher token and stripped down to a bare env name like `py312` (which would match no registered filter and run unfiltered).
   it('selectFilter routes tox', () => expect(selectFilter(['tox'])).toBeInstanceOf(ToxFilter))
   it('selectFilter routes tox --parallel', () => expect(selectFilter(['tox', '--parallel'])).toBeInstanceOf(ToxFilter))
   it('selectFilter routes tox -e py312 (regression: was mis-stripped to a bare env name)', () => {
@@ -864,9 +788,7 @@ describe('ToxFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// NoxFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- NoxFilter ---------------------------------------------------------------------------
 
 describe('NoxFilter dispatch', () => {
   it('selectFilter routes nox', () => expect(selectFilter(['nox', '-s', 'lint'])).toBeInstanceOf(NoxFilter))
@@ -895,9 +817,7 @@ describe('NoxFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// WasmPackFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- WasmPackFilter ---------------------------------------------------------------------------
 
 describe('WasmPackFilter dispatch', () => {
   it('selectFilter routes wasm-pack', () => expect(selectFilter(['wasm-pack', 'build'])).toBeInstanceOf(WasmPackFilter))
@@ -941,9 +861,7 @@ describe('WasmPackFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// NgFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- NgFilter ---------------------------------------------------------------------------
 
 describe('NgFilter dispatch', () => {
   it('selectFilter routes ng', () => expect(selectFilter(['ng', 'build'])).toBeInstanceOf(NgFilter))
@@ -977,9 +895,7 @@ describe('NgFilter test compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// DotenvFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- DotenvFilter ---------------------------------------------------------------------------
 
 describe('DotenvFilter dispatch', () => {
   it('selectFilter routes dotenv', () => expect(selectFilter(['dotenv', '-e', '.env', 'node', 'app.js'])).toBeInstanceOf(DotenvFilter))
@@ -1010,9 +926,7 @@ describe('DotenvFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// EnvFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- EnvFilter ---------------------------------------------------------------------------
 
 describe('EnvFilter dispatch', () => {
   it('selectFilter routes bare env (after prefix-strip fallback)', () => {
@@ -1082,9 +996,7 @@ describe('EnvFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// JsonArrayFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- JsonArrayFilter ---------------------------------------------------------------------------
 
 describe('JsonArrayFilter dispatch', () => {
   it('matches json binary stem', () => {
@@ -1140,8 +1052,7 @@ describe('JsonArrayFilter compression', () => {
   })
 
   it('does NOT dedup distinct records that merely share the same fields (regression)', () => {
-    // Same shape ({id, name}) but every value differs — a typical homogeneous API/DB list
-    // response. None of these are duplicates; all must be preserved.
+    // Same shape ({id, name}) but every value differs — a typical homogeneous API/DB list response. None of these are duplicates; all must be preserved.
     const arr = Array.from({ length: 10 }, (_, i) => ({ id: i, name: `item${i}` }))
     const out = apply(jsonArrayFilter, JSON.stringify(arr), ['json'])
     expect(out).not.toContain('duplicate objects')
@@ -1169,9 +1080,7 @@ describe('JsonArrayFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// SeverityLogFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- SeverityLogFilter ---------------------------------------------------------------------------
 
 describe('SeverityLogFilter.detect', () => {
   it('detects log stream with ≥30% log-level lines', () => {
@@ -1209,11 +1118,7 @@ describe('SeverityLogFilter compression', () => {
   })
 
   it('suppresses DEBUG/INFO lines but keeps WARN/ERROR with context', () => {
-    // WARN and ERROR are spaced far enough apart that, even at the config
-    // default context_lines=3 (see [bash_severity_log] in config.ts), their
-    // expanded context windows don't merge into full coverage — leaving a
-    // gap of unrelated DEBUG lines in the middle that must still be
-    // suppressed.
+    // WARN and ERROR are spaced far enough apart that, even at the config default context_lines=3 (see [bash_severity_log] in config.ts), their expanded context windows don't merge into full coverage — leaving a gap of unrelated DEBUG lines in the middle that must still be suppressed.
     const lines = [
       '2024-01-01 DEBUG trace: a',
       '2024-01-01 DEBUG trace: b',
@@ -1237,8 +1142,7 @@ describe('SeverityLogFilter compression', () => {
 })
 
 describe('SeverityLogFilter honors [bash_severity_log] config (not hardcoded 2/0.5)', () => {
-  // saveConfig does not create configPath()'s parent directory itself; make
-  // sure it exists before writing (same pattern as bash_runner.test.ts).
+  // saveConfig does not create configPath()'s parent directory itself; make sure it exists before writing (same pattern as bash_runner.test.ts).
   fs.mkdirSync(path.dirname(configPath()), { recursive: true })
 
   afterEach(() => {
@@ -1250,9 +1154,7 @@ describe('SeverityLogFilter honors [bash_severity_log] config (not hardcoded 2/0
     }
   })
 
-  // INFO-tagged filler around a WARN so detect()'s >=30%-keyword-lines gate
-  // still passes (INFO scores 0.1, below the WARN's 0.5, so with the default
-  // threshold only the WARN line — plus context — is kept as primary).
+  // INFO-tagged filler around a WARN so detect()'s >=30%-keyword-lines gate still passes (INFO scores 0.1, below the WARN's 0.5, so with the default threshold only the WARN line — plus context — is kept as primary).
   function buildLines(): string {
     return [
       '2024-01-01 INFO filler line a',
@@ -1273,8 +1175,7 @@ describe('SeverityLogFilter honors [bash_severity_log] config (not hardcoded 2/0
     saveConfig(cfg)
 
     const out = severityLogFilter.compress(buildLines(), '', 0, [])
-    // With the old hardcoded context_lines=2, 'filler line a' (4 lines before
-    // the WARN) and 'filler line h' (4 lines after) would be suppressed.
+    // With the old hardcoded context_lines=2, 'filler line a' (4 lines before the WARN) and 'filler line h' (4 lines after) would be suppressed.
     expect(out).toContain('filler line a')
     expect(out).toContain('filler line h')
     expect(out).not.toMatch(/suppressed/)
@@ -1285,10 +1186,7 @@ describe('SeverityLogFilter honors [bash_severity_log] config (not hardcoded 2/0
     cfg.bash_severity_log.score_threshold = 0.99 // config.ts's validated range is [0.0, 1.0]
     saveConfig(cfg)
 
-    // Build a log stream where WARN is the only elevated-severity line so
-    // detect() still fires (needs >=30% keyword-matching lines) but, once a
-    // near-1.0 threshold is configured, WARN itself scores below it and
-    // should no longer survive as a primary/context line.
+    // Build a log stream where WARN is the only elevated-severity line so detect() still fires (needs >=30% keyword-matching lines) but, once a near-1.0 threshold is configured, WARN itself scores below it and should no longer survive as a primary/context line.
     const lines = [
       '2024-01-01 INFO one',
       '2024-01-01 INFO two',
@@ -1301,9 +1199,7 @@ describe('SeverityLogFilter honors [bash_severity_log] config (not hardcoded 2/0
   })
 })
 
-// ---------------------------------------------------------------------------
-// TailTruncFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- TailTruncFilter ---------------------------------------------------------------------------
 
 describe('TailTruncFilter', () => {
   it('matches() returns false (content-based, not auto-dispatched by command name)', () => {

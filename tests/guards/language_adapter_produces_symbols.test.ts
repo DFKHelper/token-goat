@@ -1,29 +1,4 @@
-/**
- * Structural guard on the parser's per-language adapter layer: every registered {@link Language}
- * must actually produce at least one symbol on a real file of its own language, through the real
- * default indexing path (indexFileSync -> writeParseResult -> symbols table), not a mock callback
- * or an isolated unit test of the extractor function alone.
- *
- * This is the specific shape recorded elsewhere in this repo ("a stale name in a matcher list
- * hides behind its siblings"): a list of N adapters where one entry silently stopped producing
- * anything is invisible to a check that only asserts the UNION across all N is non-empty, because
- * the other N-1 keep the union non-zero forever. Each language below is asserted individually.
- *
- * Every fixture is provenance-tagged in its own file: CAPTURE fixtures are real files already
- * tracked in this repo (cited by path below); HAND-DERIVED fixtures under
- * tests/fixtures/language_adapter_symbols/ carry a HAND-DERIVED comment naming that they were
- * written from the language's own syntax, not from this repo's extractor regexes.
- *
- * Grammar availability: nine languages use a tree-sitter grammar that ships as an optional
- * dependency (see package.json optionalDependencies). A guard that silently skips an adapter
- * whose grammar failed to load would pass vacuously in exactly the environment where the feature
- * is broken -- so a missing tree-sitter grammar is NOT a skip here: it fails the run with an
- * explicit message naming which grammar did not load, on the premise that this repo's own dev/CI
- * environment always has them installed (they are also devDependency-equivalent here; see
- * node_modules/tree-sitter-*). If a future environment genuinely cannot carry native grammars,
- * that decision belongs in this file's exemption list, made explicitly and reviewably -- not as
- * a silent fallthrough.
- */
+/** Structural guard on the parser's per-language adapter layer: every registered {@link Language} must actually produce at least one symbol on a real file of its own language, through the real default indexing path (indexFileSync -> writeParseResult -> symbols table), not a mock callback or an isolated unit test of the extractor function alone. This is the specific shape recorded elsewhere in this repo ("a stale name in a matcher list hides behind its siblings"): a list of N adapters where one entry silently stopped producing anything is invisible to a check that only asserts the UNION across all N is non-empty, because the other N-1 keep the union non-zero forever. Each language below is asserted individually. Every fixture is provenance-tagged in its own file: CAPTURE fixtures are real files already tracked in this repo (cited by path below); HAND-DERIVED fixtures under tests/fixtures/language_adapter_symbols/ carry a HAND-DERIVED comment naming that they were written from the language's own syntax, not from this repo's extractor regexes. Grammar availability: nine languages use a tree-sitter grammar that ships as an optional dependency (see package.json optionalDependencies). A guard that silently skips an adapter whose grammar failed to load would pass vacuously in exactly the environment where the feature is broken -- so a missing tree-sitter grammar is NOT a skip here: it fails the run with an explicit message naming which grammar did not load, on the premise that this repo's own dev/CI environment always has them installed (they are also devDependency-equivalent here; see node_modules/tree-sitter-*). If a future environment genuinely cannot carry native grammars, that decision belongs in this file's exemption list, made explicitly and reviewably -- not as a silent fallthrough. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -54,16 +29,7 @@ interface AdapterCase {
   readonly source: string
   /** The basename the fixture is copied to before indexing, so detectLanguage sees the real extension/filename it routes on. */
   readonly targetBasename: string
-  /**
-   * Symbol names this fixture must resolve, asserted one by one.
-   *
-   * A bare "produced at least one symbol" floor is satisfied by whichever construct still works,
-   * so a construct that stopped resolving hides behind its siblings. Both adapters listed below
-   * shipped exactly that way: nginx emitted its `upstream` and `location` symbols while `http`,
-   * `events` and every `server` block were absent, and caddy emitted its site headers while the
-   * blocks nested inside them were dropped. Populate this for any adapter whose fixture covers
-   * more than one construct.
-   */
+  /** Symbol names this fixture must resolve, asserted one by one. A bare "produced at least one symbol" floor is satisfied by whichever construct still works, so a construct that stopped resolving hides behind its siblings. Both adapters listed below shipped exactly that way: nginx emitted its `upstream` and `location` symbols while `http`, `events` and every `server` block were absent, and caddy emitted its site headers while the blocks nested inside them were dropped. Populate this for any adapter whose fixture covers more than one construct. */
   readonly mustResolve?: readonly string[]
 }
 
@@ -79,11 +45,7 @@ const CASES: readonly AdapterCase[] = [
   { language: 'c', kind: 'tree-sitter', source: path.join(HAND_FIXTURES, 'sample.c'), targetBasename: 'sample.c' },
   { language: 'cpp', kind: 'tree-sitter', source: path.join(HAND_FIXTURES, 'sample.cpp'), targetBasename: 'sample.cpp' },
 
-  // --- regex-based extractors ---
-  // README.md and not CLAUDE.md: CLAUDE.md is gitignored, so it exists on a developer box and on no
-  // CI checkout anywhere. `caseIsLive` then dropped markdown from the population, and the pinned
-  // membership check caught it -- on the first CI run the file ever saw. See the tracked-source
-  // assertion below, which now refuses any fixture that can go missing the same way.
+  // --- regex-based extractors --- README.md and not CLAUDE.md: CLAUDE.md is gitignored, so it exists on a developer box and on no CI checkout anywhere. `caseIsLive` then dropped markdown from the population, and the pinned membership check caught it -- on the first CI run the file ever saw. See the tracked-source assertion below, which now refuses any fixture that can go missing the same way.
   { language: 'markdown', kind: 'regex', source: path.join(REPO_ROOT, 'README.md'), targetBasename: 'README.md' },
   { language: 'json', kind: 'regex', source: path.join(REPO_ROOT, 'package.json'), targetBasename: 'package.json' },
   { language: 'yaml', kind: 'regex', source: path.join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), targetBasename: 'ci.yml' },
@@ -215,11 +177,7 @@ describe('every registered language adapter produces symbols on a real file, thr
       mustInclude: ['typescript', 'javascript', 'python', 'markdown', 'json'],
     })
 
-    // Every fixture source must be a TRACKED file. An untracked one is present on the machine that
-    // wrote the case and absent everywhere else, which silently shrinks the population rather than
-    // failing: markdown pointed at the gitignored CLAUDE.md and was live locally, dead on every CI
-    // runner. `git ls-files` is asked once for the whole set, and its answer is checked to be
-    // non-empty so a git failure cannot read as "all tracked".
+    // Every fixture source must be a TRACKED file. An untracked one is present on the machine that wrote the case and absent everywhere else, which silently shrinks the population rather than failing: markdown pointed at the gitignored CLAUDE.md and was live locally, dead on every CI runner. `git ls-files` is asked once for the whole set, and its answer is checked to be non-empty so a git failure cannot read as "all tracked".
     const tracked = new Set(
       trackedFiles({ repo: REPO_ROOT, pathspec: CASES.map((c) => path.relative(REPO_ROOT, c.source)) }).map((s) => path.resolve(REPO_ROOT, s)),
     )

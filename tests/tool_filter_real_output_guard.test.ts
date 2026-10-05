@@ -4,39 +4,7 @@ import { join } from 'node:path'
 import { detectFromCommand } from '../src/tool_filters/dispatch.js'
 import { resolveMinNetSavingsBytes } from '../src/tool_filters/base.js'
 
-/**
- * Staleness guard for tool filters, backed by real captured output.
- *
- * A filter whose matcher encodes a format its tool no longer emits is
- * invisible today: it classifies every line as pass-through, saves a handful
- * of bytes, falls under `bash_compress.min_net_savings_bytes`, and the
- * shipping path then discards the filter output wholesale and prints the raw
- * report with no note at all. Nothing fails; the filter has simply stopped
- * working. That exact state shipped for `ruff` and for `golangci-lint`.
- *
- * Every fixture below is real output from the named tool version, captured by
- * running that tool, not a sample written from the filter's own regexes. When
- * a tool changes its default report layout, the entry here goes red instead of
- * silently degrading to a pass-through.
- *
- * Every capture also carries a must-not-drop list, because the ratio floor is
- * blind in one direction: over-collapsing *improves* the ratio. Broken pylint
- * scored 0.696 and the fix scores 0.413, so a ratio floor alone would have
- * passed the bug and failed the fix.
- *
- * No upper ratio bound, deliberately. It would catch over-collapse that no
- * must-not-drop line covers, but a ceiling can be cleared by bumping a number,
- * which is the same reflex that produced the invented fixtures this corpus
- * exists to replace. A must-not-drop entry cannot be satisfied that way: it
- * forces someone to say out loud that a specific line of real tool output is
- * allowed to disappear.
- *
- * Decay: the fixtures pin the format as of their capture date. They do not
- * re-capture themselves, so an entry left untouched for years proves the
- * filter still handles *that* version's format, not today's. Re-capture on a
- * tool major bump is the maintenance the corpus needs; the guard's value is
- * that a re-capture immediately shows whether the filter survived it.
- */
+/** Staleness guard for tool filters, backed by real captured output. A filter whose matcher encodes a format its tool no longer emits is invisible today: it classifies every line as pass-through, saves a handful of bytes, falls under `bash_compress.min_net_savings_bytes`, and the shipping path then discards the filter output wholesale and prints the raw report with no note at all. Nothing fails; the filter has simply stopped working. That exact state shipped for `ruff` and for `golangci-lint`. Every fixture below is real output from the named tool version, captured by running that tool, not a sample written from the filter's own regexes. When a tool changes its default report layout, the entry here goes red instead of silently degrading to a pass-through. Every capture also carries a must-not-drop list, because the ratio floor is blind in one direction: over-collapsing *improves* the ratio. Broken pylint scored 0.696 and the fix scores 0.413, so a ratio floor alone would have passed the bug and failed the fix. No upper ratio bound, deliberately. It would catch over-collapse that no must-not-drop line covers, but a ceiling can be cleared by bumping a number, which is the same reflex that produced the invented fixtures this corpus exists to replace. A must-not-drop entry cannot be satisfied that way: it forces someone to say out loud that a specific line of real tool output is allowed to disappear. Decay: the fixtures pin the format as of their capture date. They do not re-capture themselves, so an entry left untouched for years proves the filter still handles *that* version's format, not today's. Re-capture on a tool major bump is the maintenance the corpus needs; the guard's value is that a re-capture immediately shows whether the filter survived it. */
 
 interface Capture {
   /** Fixture file under `tests/fixtures/tool_output/`. */
@@ -51,22 +19,11 @@ interface Capture {
   rawBytes: number
   /** Floor on the fraction of bytes removed, well above the pass-through case. */
   minRatio: number
-  /**
-   * Whether a healthy filter clears `bash_compress.min_net_savings_bytes` on
-   * this capture, so the shipping path actually keeps the compressed body.
-   * A small report can compress well and still fall under the absolute floor
-   * once it pays for its own marker, so this is recorded per capture with a
-   * reason rather than assumed.
-   */
+  /** Whether a healthy filter clears `bash_compress.min_net_savings_bytes` on this capture, so the shipping path actually keeps the compressed body. A small report can compress well and still fall under the absolute floor once it pays for its own marker, so this is recorded per capture with a reason rather than assumed. */
   clearsShippingFloor: boolean
   /** Why `clearsShippingFloor` is false, when it is. */
   floorNote?: string
-  /**
-   * Exact lines the compressed body must still carry. A ratio floor alone
-   * cannot catch a filter that over-collapses: pylint's broken code matcher
-   * scored a *better* ratio than the fix, because it was throwing away the
-   * errors it is supposed to always keep.
-   */
+  /** Exact lines the compressed body must still carry. A ratio floor alone cannot catch a filter that over-collapses: pylint's broken code matcher scored a *better* ratio than the fix, because it was throwing away the errors it is supposed to always keep. */
   mustContain?: string[]
   /** Substrings the compressed body must not carry. */
   mustNotContain?: string[]

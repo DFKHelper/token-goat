@@ -8,21 +8,9 @@ import { extractR } from '../src/languages/r.js'
 import { extractPowershell } from '../src/languages/powershell_idx.js'
 import { stripMultilineStringSpan, type MultilineStringState } from '../src/languages/common.js'
 
-// ---------------------------------------------------------------------------
-// Regression coverage for the multi-line string forms `stripStringLiterals`'s own
-// doc comment calls out as gaps: PHP heredoc/nowdoc, Kotlin/C# triple-quoted raw
-// strings, C# verbatim strings, and PowerShell here-strings. Each of these can
-// contain an unbalanced `{`/`}` and span multiple lines - before the shared
-// `stripMultilineStringSpan` masking, such a brace desynced the regex adapters'
-// brace-depth counters, mis-parenting or dropping every symbol declared after the
-// string closed.
+// --------------------------------------------------------------------------- Regression coverage for the multi-line string forms `stripStringLiterals`'s own doc comment calls out as gaps: PHP heredoc/nowdoc, Kotlin/C# triple-quoted raw strings, C# verbatim strings, and PowerShell here-strings. Each of these can contain an unbalanced `{`/`}` and span multiple lines - before the shared `stripMultilineStringSpan` masking, such a brace desynced the regex adapters' brace-depth counters, mis-parenting or dropping every symbol declared after the string closed.
 //
-// Every `?.docstring).toBe('Before'|'After')` assertion below was updated to `?.parent` when
-// the `symbols.parent` column was added: the containing class name these regex adapters recover
-// for a method now lives in its own `parent` field, not overloaded into `docstring` (see
-// db.ts's SCHEMA_SQL comment for the full history). What each assertion actually verifies --
-// that scope tracking survived the multi-line string without desyncing -- is unchanged.
-// ---------------------------------------------------------------------------
+// Every `?.docstring).toBe('Before'|'After')` assertion below was updated to `?.parent` when the `symbols.parent` column was added: the containing class name these regex adapters recover for a method now lives in its own `parent` field, not overloaded into `docstring` (see db.ts's SCHEMA_SQL comment for the full history). What each assertion actually verifies -- that scope tracking survived the multi-line string without desyncing -- is unchanged. ---------------------------------------------------------------------------
 
 describe('PHP heredoc/nowdoc multi-line masking', () => {
   it('does not let braces inside a heredoc desync scope depth', () => {
@@ -141,9 +129,7 @@ class After {
   })
 
   it('does not treat a """ appearing inside an already-open single-line string literal as a raw-string opener (mirrors the PHP heredoc-inside-string guard)', () => {
-    // One unescaped `"` precedes the `"""` run, so isInsideStringLiteral is true at that
-    // index -- pre-fix, findMultilineOpener had no such guard for Kotlin and would have
-    // misdetected this as opening a real multi-line raw string.
+    // One unescaped `"` precedes the `"""` run, so isInsideStringLiteral is true at that index -- pre-fix, findMultilineOpener had no such guard for Kotlin and would have misdetected this as opening a real multi-line raw string.
     const { code, state } = stripMultilineStringSpan('val x = "before """', null, 'kotlin')
     expect(code).toBe('val x = "before """')
     expect(state).toBeNull()
@@ -152,11 +138,7 @@ class After {
   it('registers a genuine second raw-string opener after a first raw string closes mid-line, even when the closed string\'s own content contains an odd (unbalanced) apostrophe (fail-on-buggy: isInsideStringLiteral scanned from index 0 instead of from `from`, so the closed string\'s dangling apostrophe made the second opener look like it was still inside a single-quoted string)', () => {
     const openState: MultilineStringState = { kind: 'tripleQuote', identifier: '3' }
     const { state } = stripMultilineStringSpan(`it's""" val b = """`, openState, 'kotlin')
-    // The first `"""` (closing the carried-in raw string) lands right after `it's`; that
-    // content -- not real code, just the already-closed string's own body -- contains a lone
-    // apostrophe. Scanning isInsideStringLiteral from index 0 (pre-fix) reads that dangling
-    // apostrophe as an unclosed single-quoted string spanning all the way to the second `"""`,
-    // wrongly vetoing it as "inside a string literal" and leaving mlState null.
+    // The first `"""` (closing the carried-in raw string) lands right after `it's`; that content -- not real code, just the already-closed string's own body -- contains a lone apostrophe. Scanning isInsideStringLiteral from index 0 (pre-fix) reads that dangling apostrophe as an unclosed single-quoted string spanning all the way to the second `"""`, wrongly vetoing it as "inside a string literal" and leaving mlState null.
     expect(state).not.toBeNull()
     expect(state?.kind).toBe('tripleQuote')
   })
@@ -285,11 +267,7 @@ public class After {
   it('registers a genuine second verbatim-string opener after a first verbatim string closes mid-line, even when the closed string\'s own content contains an http:// URL (fail-on-buggy: lineCommentStartIndex scanned from index 0 instead of from `from`, so the closed string\'s http:// looked like a real // line comment)', () => {
     const openState: MultilineStringState = { kind: 'verbatim', identifier: '' }
     const { state } = stripMultilineStringSpan('http://x"; var b = @"', openState, 'csharp')
-    // The first `"` (closing the carried-in verbatim string) lands right after `http://x`; that
-    // content is the already-closed string's own body, not real code. Scanning
-    // lineCommentStartIndex from index 0 (pre-fix) reads its `http://` as a real `//` line
-    // comment starting at index 5, wrongly vetoing the genuine `var b = @"` opener at index 19
-    // as "inside a comment" and leaving mlState null.
+    // The first `"` (closing the carried-in verbatim string) lands right after `http://x`; that content is the already-closed string's own body, not real code. Scanning lineCommentStartIndex from index 0 (pre-fix) reads its `http://` as a real `//` line comment starting at index 5, wrongly vetoing the genuine `var b = @"` opener at index 19 as "inside a comment" and leaving mlState null.
     expect(state).not.toBeNull()
     expect(state?.kind).toBe('verbatim')
   })
@@ -297,11 +275,7 @@ public class After {
   it('registers a genuine second verbatim-string opener after a first verbatim string closes mid-line, even when the closed string\'s own content contains an unbalanced /* (fail-on-buggy: isInsideSameLineBlockComment scanned from index 0 instead of from `from`, so the closed string\'s dangling /* made the second opener look like it was still inside a block comment)', () => {
     const openState: MultilineStringState = { kind: 'verbatim', identifier: '' }
     const { state } = stripMultilineStringSpan('/* unterminated"; var b = @"', openState, 'csharp')
-    // The first `"` (closing the carried-in verbatim string) lands right after `/*
-    // unterminated`; that content is the already-closed string's own body, not real code.
-    // Scanning isInsideSameLineBlockComment from index 0 (pre-fix) reads its unbalanced `/*` as
-    // a real block-comment opener with no closer on the line, wrongly vetoing the genuine
-    // `var b = @"` opener as "inside a block comment" and leaving mlState null.
+    // The first `"` (closing the carried-in verbatim string) lands right after `/* unterminated`; that content is the already-closed string's own body, not real code. Scanning isInsideSameLineBlockComment from index 0 (pre-fix) reads its unbalanced `/*` as a real block-comment opener with no closer on the line, wrongly vetoing the genuine `var b = @"` opener as "inside a block comment" and leaving mlState null.
     expect(state).not.toBeNull()
     expect(state?.kind).toBe('verbatim')
   })
@@ -437,11 +411,7 @@ public class After {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Interaction with existing single-line string/comment handling: multi-line masking
-// must not break single-line strings, or lines that contain no multi-line-string
-// opener at all.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Interaction with existing single-line string/comment handling: multi-line masking must not break single-line strings, or lines that contain no multi-line-string opener at all. ---------------------------------------------------------------------------
 
 describe('stripMultilineStringSpan interaction with single-line content', () => {
   it('leaves a line with no opener completely unchanged', () => {
@@ -503,11 +473,7 @@ describe('stripMultilineStringSpan interaction with single-line content', () => 
   })
 })
 
-// Regression: findMultilineOpener did not check whether opener-shaped text (e.g. `<<<EOT`,
-// `"""`, `@"`) sat inside a real `//`/`#` line comment before treating it as a genuine opener.
-// An opener that never closes (no matching closer anywhere later in the file) then masked
-// every remaining line as string content until EOF, silently dropping every symbol declared
-// after the commented-out example.
+// Regression: findMultilineOpener did not check whether opener-shaped text (e.g. `<<<EOT`, `"""`, `@"`) sat inside a real `//`/`#` line comment before treating it as a genuine opener. An opener that never closes (no matching closer anywhere later in the file) then masked every remaining line as string content until EOF, silently dropping every symbol declared after the commented-out example.
 describe('comment-awareness: opener-shaped text inside a real line comment is not a real opener', () => {
   it('PHP: does not open a heredoc from opener-shaped text inside a // comment', () => {
     const content = `<?php
@@ -608,20 +574,9 @@ function AfterFunction {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Scala and Dart multi-line string literals. Both languages were declared
-// `tripleQuote: true` (Dart also `tripleSingleQuote: true`) for brace-span
-// assignment in `src/parser.ts`, but neither extractor carried any multi-line
-// string state, so a declaration-shaped line inside a `"""` / `'''` body was
-// extracted as a real symbol.
+// --------------------------------------------------------------------------- Scala and Dart multi-line string literals. Both languages were declared `tripleQuote: true` (Dart also `tripleSingleQuote: true`) for brace-span assignment in `src/parser.ts`, but neither extractor carried any multi-line string state, so a declaration-shaped line inside a `"""` / `'''` body was extracted as a real symbol.
 //
-// Fixture provenance: FORMAT-DERIVED. The delimiters come from the Scala
-// Language Specification, chapter 1 "Lexical Syntax", section 1.3.5 "String
-// Literals" (multi-line string literals, delimited by `"""`), and from the Dart
-// Programming Language Specification, section "Strings" (multi-line strings
-// delimited by `'''` or `"""`, with the `r` prefix marking a raw string). The
-// surrounding declarations are ordinary source in each language.
-// ---------------------------------------------------------------------------
+// Fixture provenance: FORMAT-DERIVED. The delimiters come from the Scala Language Specification, chapter 1 "Lexical Syntax", section 1.3.5 "String Literals" (multi-line string literals, delimited by `"""`), and from the Dart Programming Language Specification, section "Strings" (multi-line strings delimited by `'''` or `"""`, with the `r` prefix marking a raw string). The surrounding declarations are ordinary source in each language. ---------------------------------------------------------------------------
 
 describe('Scala """ multi-line string masking', () => {
   it('does not extract declaration-shaped content inside a """ string as real symbols', () => {
@@ -756,12 +711,7 @@ void fabricatedDoubleFn() {}
   })
 })
 
-// Fixture provenance: FORMAT-DERIVED. Every R literal form below is spelled from the R Language
-// Definition, section 10.3.1 "Literal constants" (ordinary character constants and their backslash
-// escapes) and section 10.3.2 "Identifiers" (backtick-quoted non-syntactic names), plus the R base
-// help page `?Quotes`, section "Raw character constants" (the `r"(...)"` family, its `[`/`{`
-// delimiter variants and its dash-padded forms). R has no block comment, so `#` to end of line is
-// the only comment form exercised.
+// Fixture provenance: FORMAT-DERIVED. Every R literal form below is spelled from the R Language Definition, section 10.3.1 "Literal constants" (ordinary character constants and their backslash escapes) and section 10.3.2 "Identifiers" (backtick-quoted non-syntactic names), plus the R base help page `?Quotes`, section "Raw character constants" (the `r"(...)"` family, its `[`/`{` delimiter variants and its dash-padded forms). R has no block comment, so `#` to end of line is the only comment form exercised.
 describe('R multi-line character constant masking', () => {
   it('does not extract declaration-shaped content inside a raw string as real symbols', () => {
     const content = `realBefore <- function(x) {

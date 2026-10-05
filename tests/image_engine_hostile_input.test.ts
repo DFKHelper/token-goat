@@ -1,21 +1,4 @@
-/**
- * The image decoders against files built to abuse them.
- *
- * Every buffer in `image_engine.ts` is sized from a number in the file's own header, and until the
- * decoders were bounded the file chose how much memory token-goat allocated and how long it ran.
- * That surface arrived with the move off sharp: libvips enforced `limitInputPixels` inside the
- * decode, whereas `image_shrink.max_image_pixels` is a check on the header's `width * height` run
- * in front of hand-rolled decoders that had no limits of their own. It never saw a frame count or a
- * compression ratio, so three of the five files below pass it with room to spare.
- *
- * Fixture provenance: HAND-DERIVED. Every file here is assembled byte by byte in this file from the
- * published container formats -- GIF89a (w3.org/Graphics/GIF/spec-gif89a.txt), PNG (w3.org/TR/png),
- * BMP's BITMAPINFOHEADER, TIFF 6.0 section 2 -- and not from anything this repo emits. That
- * direction matters here more than usual: a fixture produced by our own encoder can only describe
- * images we already write correctly, and every defect in this file is about a file we would never
- * have produced ourselves. The numbers quoted in the comments are measurements taken against the
- * decoders before they were bounded, not estimates.
- */
+/** The image decoders against files built to abuse them. Every buffer in `image_engine.ts` is sized from a number in the file's own header, and until the decoders were bounded the file chose how much memory token-goat allocated and how long it ran. That surface arrived with the move off sharp: libvips enforced `limitInputPixels` inside the decode, whereas `image_shrink.max_image_pixels` is a check on the header's `width * height` run in front of hand-rolled decoders that had no limits of their own. It never saw a frame count or a compression ratio, so three of the five files below pass it with room to spare. Fixture provenance: HAND-DERIVED. Every file here is assembled byte by byte in this file from the published container formats -- GIF89a (w3.org/Graphics/GIF/spec-gif89a.txt), PNG (w3.org/TR/png), BMP's BITMAPINFOHEADER, TIFF 6.0 section 2 -- and not from anything this repo emits. That direction matters here more than usual: a fixture produced by our own encoder can only describe images we already write correctly, and every defect in this file is about a file we would never have produced ourselves. The numbers quoted in the comments are measurements taken against the decoders before they were bounded, not estimates. */
 
 import * as zlib from 'node:zlib'
 
@@ -86,13 +69,7 @@ function honestRgbaRows(width: number, height: number, fill = 0x40): Buffer {
 
 // --- GIF construction -------------------------------------------------------------------------
 
-/**
- * A GIF declaring a `width` x `height` canvas and `frames` frames, each frame a 1x1 sub-image.
- *
- * The sub-frame is 1x1 so the *file* stays tiny while each decoded frame is a full canvas. That
- * asymmetry is the whole attack: the cost of declaring a frame is about 23 bytes, and the cost of
- * decoding one is `width * height * 4`.
- */
+/** A GIF declaring a `width` x `height` canvas and `frames` frames, each frame a 1x1 sub-image. The sub-frame is 1x1 so the *file* stays tiny while each decoded frame is a full canvas. That asymmetry is the whole attack: the cost of declaring a frame is about 23 bytes, and the cost of decoding one is `width * height * 4`. */
 function gif(width: number, height: number, frames: number): Buffer {
   const parts: Buffer[] = [Buffer.from('GIF89a', 'ascii')]
   const lsd = Buffer.alloc(7)
@@ -129,16 +106,7 @@ function bmp(width: number, height: number, bpp: number): Buffer {
   return buf
 }
 
-/**
- * The same GIF with a comment extension (0x21 0xFE, sub-blocks, 0x00 terminator) spliced in ahead
- * of the trailer.
- *
- * Padding is what makes a shrink of a synthetic GIF observable at all. `shrinkImage` returns null
- * when its output is not smaller than its input, and a hand-built GIF is a few hundred bytes, so
- * every synthetic case would return null for that reason and no assertion on the return value
- * could tell a refusal from a successful shrink that was not worth keeping. A comment the
- * re-encode drops gives the shrink something real to remove.
- */
+/** The same GIF with a comment extension (0x21 0xFE, sub-blocks, 0x00 terminator) spliced in ahead of the trailer. Padding is what makes a shrink of a synthetic GIF observable at all. `shrinkImage` returns null when its output is not smaller than its input, and a hand-built GIF is a few hundred bytes, so every synthetic case would return null for that reason and no assertion on the return value could tell a refusal from a successful shrink that was not worth keeping. A comment the re-encode drops gives the shrink something real to remove. */
 function gifPaddedTo(width: number, height: number, frames: number, commentBytes: number): Buffer {
   const base = gif(width, height, frames)
   const body = base.subarray(0, base.length - 1)
@@ -154,8 +122,7 @@ function gifPaddedTo(width: number, height: number, frames: number, commentBytes
 describe('decoders refuse to allocate on a header they cannot vouch for', () => {
   it('rejects a GIF whose frame count would allocate gigabytes from a few kilobytes', () => {
     const bomb = gif(1600, 1600, 500)
-    // The scale is the finding. Both of these are asserted rather than described, so a future
-    // change that makes the file large or the canvas small quietly stops testing the attack.
+    // The scale is the finding. Both of these are asserted rather than described, so a future change that makes the file large or the canvas small quietly stops testing the attack.
     expect(bomb.length).toBeLessThan(16 * 1024)
     expect(1600 * 1600).toBeLessThan(16_000_000)
 
@@ -168,26 +135,21 @@ describe('decoders refuse to allocate on a header they cannot vouch for', () => 
   })
 
   it('decodes only the frames a caller asked for, and prices the ceiling on those', () => {
-    // The still-image branch of shrinkImage wants frame 0. Taking it from a full decode pays a
-    // canvas for every frame it then discards, and the same 500-frame file the test above rejects
-    // is a file it would have had to reject rather than read one frame of.
+    // The still-image branch of shrinkImage wants frame 0. Taking it from a full decode pays a canvas for every frame it then discards, and the same 500-frame file the test above rejects is a file it would have had to reject rather than read one frame of.
     const still = decodeGif(gif(1600, 1600, 500), { maxFrames: 1 })
     expect(still.frames).toHaveLength(1)
     expect(still.width).toBe(1600)
   })
 
   it('still decodes an animation small enough to be honest', () => {
-    // The other side of the bound. A ceiling that rejects everything would pass the test above
-    // while removing the feature, and nothing in that test could tell the difference.
+    // The other side of the bound. A ceiling that rejects everything would pass the test above while removing the feature, and nothing in that test could tell the difference.
     const ok = decodeGif(gif(48, 48, 3))
     expect(ok.frames).toHaveLength(3)
     expect(ok.width).toBe(48)
   })
 
   it('rejects a PNG whose image data expands past what its own dimensions allow', () => {
-    // 64x64 needs 64 * (1 + 256) = 16,448 bytes of scanline. This supplies 8 MB of zeros, which
-    // deflates to a few kilobytes -- the same shape as the 510 KB / 512 MB file measured against
-    // the unbounded decoder, at a size that is quick to build in a test.
+    // 64x64 needs 64 * (1 + 256) = 16,448 bytes of scanline. This supplies 8 MB of zeros, which deflates to a few kilobytes -- the same shape as the 510 KB / 512 MB file measured against the unbounded decoder, at a size that is quick to build in a test.
     const overlong = png({ width: 64, height: 64, raw: Buffer.alloc(8 * 1024 * 1024) })
     expect(overlong.length).toBeLessThan(64 * 1024)
 
@@ -207,9 +169,7 @@ describe('decoders refuse to allocate on a header they cannot vouch for', () => 
   })
 
   it('does not hang on a TIFF whose page chain points at itself', () => {
-    // Synchronous, allocation-free, and therefore never killed: measured before the fix, this
-    // 64-byte file held the thread indefinitely. In a pre-read hook that is an agent whose Read
-    // never returns, which is why this asserts on elapsed time rather than only on the value.
+    // Synchronous, allocation-free, and therefore never killed: measured before the fix, this 64-byte file held the thread indefinitely. In a pre-read hook that is an agent whose Read never returns, which is why this asserts on elapsed time rather than only on the value.
     const buf = Buffer.alloc(64)
     buf[0] = 0x49
     buf[1] = 0x49
@@ -236,9 +196,7 @@ describe('decoders refuse to allocate on a header they cannot vouch for', () => 
 })
 
 describe('decoders refuse input they would otherwise decode into the wrong picture', () => {
-  // These are not availability bugs. Each of them returned successfully with wrong pixels, which
-  // shrinkImage would re-encode and hand to the model as the contents of the file. Throwing means
-  // the shrink is skipped and the untouched original is what the model sees.
+  // These are not availability bugs. Each of them returned successfully with wrong pixels, which shrinkImage would re-encode and hand to the model as the contents of the file. Throwing means the shrink is skipped and the untouched original is what the model sees.
 
   it.each([
     [16, 'two bytes per sample, read as one'],
@@ -246,8 +204,7 @@ describe('decoders refuse input they would otherwise decode into the wrong pictu
     [2, 'four pixels packed per byte'],
     [1, 'eight pixels packed per byte'],
   ])('refuses a %i-bit PNG rather than decoding it as 8-bit (%s)', (bitDepth) => {
-    // Measured at 16-bit before the fix: an opaque red pixel came back as [255, 255, 0, 0], a
-    // transparent yellow. No error, no signal -- just a different image.
+    // Measured at 16-bit before the fix: an opaque red pixel came back as [255, 255, 0, 0], a transparent yellow. No error, no signal -- just a different image.
     expect(() => decodePng(png({ width: 2, height: 1, bitDepth, raw: Buffer.alloc(64) }))).toThrow(
       /Unsupported PNG bit depth/,
     )
@@ -260,14 +217,12 @@ describe('decoders refuse input they would otherwise decode into the wrong pictu
   })
 
   it.each([8, 16, 4, 1])('refuses a %i-bit BMP rather than returning a blank image', (bpp) => {
-    // The pixel loop only has branches for 24 and 32. Every other depth fell straight through it
-    // and returned the zero-filled buffer, which is a fully transparent image reported as a success.
+    // The pixel loop only has branches for 24 and 32. Every other depth fell straight through it and returned the zero-filled buffer, which is a fully transparent image reported as a success.
     expect(() => decodeBmp(bmp(1, 1, bpp))).toThrow(/Unsupported BMP bit depth/)
   })
 
   it('refuses a BMP whose signed width is negative', () => {
-    // width * height goes negative, which passes any `> limit` test, and the allocation then throws
-    // somewhere less obvious. The dimensions are checked for validity, not merely for size.
+    // width * height goes negative, which passes any `> limit` test, and the allocation then throws somewhere less obvious. The dimensions are checked for validity, not merely for size.
     expect(() => decodeBmp(bmp(-4, 4, 24))).toThrow(/Invalid BMP dimensions/)
   })
 
@@ -281,18 +236,13 @@ describe('decoders refuse input they would otherwise decode into the wrong pictu
 })
 
 describe('the shrink path bounds what it writes, not only what it reads', () => {
-  // The decode ceiling covers the frames coming in. shrinkImage's GIF output buffer is a second
-  // allocation of the same shape at five bytes per pixel per frame rather than four, so between
-  // 21 and 26 frames of this canvas the input passes and the output does not: peak memory was the
-  // sum of two budgets with one of them unchecked. Both cases below decode without complaint --
-  // what they discriminate is whether anything then looks at the size of the buffer being written.
+  // The decode ceiling covers the frames coming in. shrinkImage's GIF output buffer is a second allocation of the same shape at five bytes per pixel per frame rather than four, so between 21 and 26 frames of this canvas the input passes and the output does not: peak memory was the sum of two budgets with one of them unchecked. Both cases below decode without complaint -- what they discriminate is whether anything then looks at the size of the buffer being written.
 
   const CANVAS = 1600
   const PAD = 1024 * 1024
 
   it('refuses an animation whose output buffer would clear the ceiling its input did not', async () => {
-    // 21 x 1600 x 1600: 215MB at 4 bytes per pixel, which is under the ceiling, and 269MB at the 5
-    // the writer wants, which is over it.
+    // 21 x 1600 x 1600: 215MB at 4 bytes per pixel, which is under the ceiling, and 269MB at the 5 the writer wants, which is over it.
     const out = await shrinkImage(gifPaddedTo(CANVAS, CANVAS, 21, PAD), {
       maxDimension: CANVAS,
       sizeThresholdBytes: 0,
@@ -306,8 +256,7 @@ describe('the shrink path bounds what it writes, not only what it reads', () => 
   })
 
   it('still shrinks an animation both budgets have room for', async () => {
-    // The other side. Without this, a bound that refused every animation would pass the test above
-    // and remove the feature, and nothing in that test could tell.
+    // The other side. Without this, a bound that refused every animation would pass the test above and remove the feature, and nothing in that test could tell.
     const out = await shrinkImage(gifPaddedTo(320, 240, 3, PAD), {
       maxDimension: 160,
       sizeThresholdBytes: 0,
@@ -320,10 +269,7 @@ describe('the shrink path bounds what it writes, not only what it reads', () => 
 })
 
 describe('the JPEG decoder is bounded by our ceiling, not by jpeg-js defaults', () => {
-  // HAND-DERIVED. A bare SOI + SOF0 + EOI assembled from JPEG's own marker layout (ITU-T T.81
-  // section B.2.2: length, sample precision, number of lines, samples per line, component spec),
-  // not from anything this repo encodes. 9000x9000 is 81MP: over the 67.1MP that MAX_DECODED_BYTES
-  // allows at 4 bytes a pixel, and under jpeg-js's own 100MP default.
+  // HAND-DERIVED. A bare SOI + SOF0 + EOI assembled from JPEG's own marker layout (ITU-T T.81 section B.2.2: length, sample precision, number of lines, samples per line, component spec), not from anything this repo encodes. 9000x9000 is 81MP: over the 67.1MP that MAX_DECODED_BYTES allows at 4 bytes a pixel, and under jpeg-js's own 100MP default.
   function sofOnly(width: number, height: number): Buffer {
     return Buffer.from([
       0xff, 0xd8, 0xff, 0xc0, 0x00, 0x0b, 0x08,
@@ -334,8 +280,7 @@ describe('the JPEG decoder is bounded by our ceiling, not by jpeg-js defaults', 
   }
 
   it('refuses a resolution the library would have accepted', () => {
-    // Naming the limit in the message is the whole point: at 81MP jpeg-js's own default never fires,
-    // so a message mentioning maxResolutionInMP can only come from the option decodeJpeg passes.
+    // Naming the limit in the message is the whole point: at 81MP jpeg-js's own default never fires, so a message mentioning maxResolutionInMP can only come from the option decodeJpeg passes.
     expect(() => decodeJpeg(sofOnly(9000, 9000))).toThrow(/maxResolutionInMP limit exceeded/)
     expect(() => jpeg.decode(sofOnly(9000, 9000), { useTArray: true })).not.toThrow(
       /maxResolutionInMP limit exceeded/,
@@ -343,8 +288,7 @@ describe('the JPEG decoder is bounded by our ceiling, not by jpeg-js defaults', 
   })
 
   it('non-firing: leaves an ordinary photo-sized frame alone', () => {
-    // 4000x3000 is 12MP. It has no scan data, so it still fails -- but on the missing scan, never on
-    // a limit, which is what separates a bound from a blanket refusal.
+    // 4000x3000 is 12MP. It has no scan data, so it still fails -- but on the missing scan, never on a limit, which is what separates a bound from a blanket refusal.
     expect(() => decodeJpeg(sofOnly(4000, 3000))).not.toThrow(/limit exceeded/)
   })
 })

@@ -99,8 +99,7 @@ Some content here
 
       expect(key1).toBeDefined()
       expect(key1?.lineStart).toBe(2)
-      // The value's opening quote is on line 3, not line 2 where the key/colon are -- the
-      // newline in the colon-to-quote gap must be counted, not just newlines inside the string.
+      // The value's opening quote is on line 3, not line 2 where the key/colon are -- the newline in the colon-to-quote gap must be counted, not just newlines inside the string.
       expect(key1?.lineEnd).toBe(3)
       expect(key1?.body).toContain('value on the next line')
 
@@ -110,12 +109,7 @@ Some content here
     })
 
     it('bounds each key body by its own value, not the whole line, on minified json', async () => {
-      // A single-line document with many top-level keys, each holding a sizeable object. The
-      // regression this pins: body used to default to the key's whole source LINE, which on
-      // minified JSON is the entire file -- so every key stored a full copy of the document and
-      // total stored bytes grew as keys x filesize. A 1.5 MB, 1142-key real-world file inflated
-      // global.db by 1.6 GB that way, which stretched reindex transactions past db.ts's 15s
-      // busy_timeout and surfaced to users as "database is locked".
+      // A single-line document with many top-level keys, each holding a sizeable object. The regression this pins: body used to default to the key's whole source LINE, which on minified JSON is the entire file -- so every key stored a full copy of the document and total stored bytes grew as keys x filesize. A 1.5 MB, 1142-key real-world file inflated global.db by 1.6 GB that way, which stretched reindex transactions past db.ts's 15s busy_timeout and surfaced to users as "database is locked".
       const keyCount = 60
       const filler = 'x'.repeat(400)
       const entries = Array.from(
@@ -127,9 +121,7 @@ Some content here
 
       expect(result.symbols).toHaveLength(keyCount)
 
-      // The invariant, stated as the property that actually failed: total stored body bytes
-      // must scale with the document, not with keys x document. Asserting a per-key size cap
-      // alone would not catch a regression that merely lowered the multiplier.
+      // The invariant, stated as the property that actually failed: total stored body bytes must scale with the document, not with keys x document. Asserting a per-key size cap alone would not catch a regression that merely lowered the multiplier.
       const totalBody = result.symbols.reduce((n, s) => n + s.body.length, 0)
       expect(totalBody).toBeLessThan(content.length * 2)
 
@@ -149,8 +141,7 @@ Some content here
       const deps = result.symbols.find((s) => s.name === 'deps')
       expect(deps).toBeDefined()
       expect(deps?.lineStart).toBe(2)
-      // Previously lineEnd was the key's own line (2) and body was just `"deps": {`, so
-      // `read file::deps` returned an opening brace instead of the value.
+      // Previously lineEnd was the key's own line (2) and body was just `"deps": {`, so `read file::deps` returned an opening brace instead of the value.
       expect(deps?.lineEnd).toBe(5)
       expect(deps?.body).toContain('"b": 2')
       expect(deps?.body.trimEnd().endsWith('}')).toBe(true)
@@ -159,14 +150,11 @@ Some content here
     it('handles adversarial json without over-consuming or dropping top-level keys', async () => {
       const parse = parseFixture
 
-      // Escaped quotes and escaped backslashes inside both key and value. An off-by-one in the
-      // escape handling would either swallow the following key or split this one. Names come
-      // back unescaped (`\"` -> `"`), which is the correct JSON reading of the key.
+      // Escaped quotes and escaped backslashes inside both key and value. An off-by-one in the escape handling would either swallow the following key or split this one. Names come back unescaped (`\"` -> `"`), which is the correct JSON reading of the key.
       const esc = await parse('escapes.json', '{"a\\"b":"v\\"x","tail\\\\":"end","z":1}')
       expect(esc.symbols.map((s) => s.name)).toEqual(['a"b', 'tail\\', 'z'])
 
-      // A key whose value ends in an EVEN run of backslashes: the final quote is real, not
-      // escaped, so the next key must still be seen.
+      // A key whose value ends in an EVEN run of backslashes: the final quote is real, not escaped, so the next key must still be seen.
       const evenSlash = await parse('even.json', '{"k":"ends\\\\\\\\","next":2}')
       expect(evenSlash.symbols.map((s) => s.name)).toContain('next')
 
@@ -176,8 +164,7 @@ Some content here
       expect(obj?.lineStart).toBe(2)
       expect(obj?.lineEnd).toBe(4)
 
-      // Mismatched closer: `[` must not be closed by `}`. The value body has to stop at the
-      // offending character instead of running to EOF and swallowing the rest of the document.
+      // Mismatched closer: `[` must not be closed by `}`. The value body has to stop at the offending character instead of running to EOF and swallowing the rest of the document.
       const mismatch = await parse('mismatch.json', '{"bad":[1,2}, "after":3}')
       const bad = mismatch.symbols.find((s) => s.name === 'bad')
       expect(bad).toBeDefined()
@@ -585,8 +572,7 @@ plain = "a.b.c"
 
       const result = await parseFixture('test.css', content)
 
-      // Regression: extractCssSymbols scanned raw lines without stripping /* */ comments
-      // first, so a commented-out selector at column 0 was indexed as a live one.
+      // Regression: extractCssSymbols scanned raw lines without stripping /* */ comments first, so a commented-out selector at column 0 was indexed as a live one.
       const names = result.symbols.map((s) => s.name)
       expect(names).not.toContain('.legacy-btn')
       expect(names).toContain('.active')
@@ -872,9 +858,7 @@ CMD ["node", "server.js"]
       const result = await parseFixture('Dockerfile', content)
 
       expect(result.language).toBe('dockerfile')
-      // Pin the exact directive count and their names -- length > 0 plus a vacuously-true
-      // Array.prototype.every check (which passes even on an empty array) would miss a
-      // regression that dropped some directives or silently renamed them.
+      // Pin the exact directive count and their names -- length > 0 plus a vacuously-true Array.prototype.every check (which passes even on an empty array) would miss a regression that dropped some directives or silently renamed them.
       expect(result.symbols).toHaveLength(6)
       const names = result.symbols.map((s) => s.name)
       expect(names).toEqual([
@@ -950,14 +934,7 @@ COPY . .
     })
   })
 
-  // Line-based (non-tree-sitter) adapters used to give every symbol a one-line placeholder span
-  // (lineEnd === lineStart, body === the signature line), so `read "file::symbol"` returned only
-  // the declaration, not the body. These assert the real block span now reaches the closing
-  // brace/`end`, WITHOUT over-running into the next sibling, and that a brace hidden inside a
-  // string or heredoc never closes (C#) or opens (bash/elixir) a span. Each asserts
-  // lineEnd > lineStart first: that structural half is what goes red on the pre-fix code, where
-  // every span was a single line. Run through the real parseFile dispatch, so the C-style case
-  // exercises the production assignBraceBlockSpans wrapper rather than a direct extractor call.
+  // Line-based (non-tree-sitter) adapters used to give every symbol a one-line placeholder span (lineEnd === lineStart, body === the signature line), so `read "file::symbol"` returned only the declaration, not the body. These assert the real block span now reaches the closing brace/`end`, WITHOUT over-running into the next sibling, and that a brace hidden inside a string or heredoc never closes (C#) or opens (bash/elixir) a span. Each asserts lineEnd > lineStart first: that structural half is what goes red on the pre-fix code, where every span was a single line. Run through the real parseFile dispatch, so the C-style case exercises the production assignBraceBlockSpans wrapper rather than a direct extractor call.
   describe('block spans for line-based languages', () => {
     it('gives a C# method a real block span via the dispatch wrapper, quote-aware', async () => {
       const content = [
@@ -1073,10 +1050,7 @@ COPY . .
     })
 
     it('widens a C# method whose signature line carries a block comment holding stray braces', async () => {
-      // A `/* { } */` comment on the signature line must not derail the brace search: without
-      // block-comment skipping, findBlockOpenBrace grabs the comment's `{` and
-      // findMatchingBraceEndLine closes on the comment's `}` at the same line, so the method never
-      // widens (stays lineEnd === lineStart) and `read Cmt.cs::Compute` returns only its signature.
+      // A `/* { } */` comment on the signature line must not derail the brace search: without block-comment skipping, findBlockOpenBrace grabs the comment's `{` and findMatchingBraceEndLine closes on the comment's `}` at the same line, so the method never widens (stays lineEnd === lineStart) and `read Cmt.cs::Compute` returns only its signature.
       const content = [
         'public class Widget',
         '{',
@@ -1103,9 +1077,7 @@ COPY . .
     })
 
     it('does not let a semicolon-less declaration swallow a following control-flow block', async () => {
-      // Scala has no `;` statement terminator, so a `val` above a bare `if (...) {}` used to have
-      // its span widened to include the unrelated if-block. The keyword stop must keep `base` a
-      // one-line symbol while the real method below still widens normally.
+      // Scala has no `;` statement terminator, so a `val` above a bare `if (...) {}` used to have its span widened to include the unrelated if-block. The keyword stop must keep `base` a one-line symbol while the real method below still widens normally.
       const content = [
         'class Calc {',
         '  val base = 10',
@@ -1132,18 +1104,7 @@ COPY . .
     })
 
     it('indexes backtick-quoted names, package objects and operator defs, and keeps every span one line', async () => {
-      // Three separate admission gaps in scala.ts, all of which produced NO symbol at all: a
-      // backtick-quoted name (`def `adds two numbers``, `val `odd val``, `object `Odd Object``),
-      // Scala's `package object` form (the `package` keyword is not one of the modifiers the
-      // object pattern accepts), and the operator spellings the def pattern's operator class
-      // could not express (`:::`, because `:` was missing, and `unary_-`, which is alphanumeric
-      // followed by operator characters). A dropped type header also drops every member of its
-      // body, so `go` and `helper` went missing with their parents. The dropped starts then
-      // widened assignBraceBlockSpans' search window, whose cap is the NEXT known symbol start:
-      // with lines 9, 10, 13, 14, 17 and 18 unindexed, `plainDef` on line 8 searched all the way
-      // to line 20, latched onto the `{` opening `object `Odd Object`` on line 13 and recorded
-      // lineEnd 15 -- a span reaching past the end of its own enclosing class. The full ordered
-      // list is pinned with lineEnd on every row: membership assertions cannot see that.
+      // Three separate admission gaps in scala.ts, all of which produced NO symbol at all: a backtick-quoted name (`def `adds two numbers``, `val `odd val``, `object `Odd Object``), Scala's `package object` form (the `package` keyword is not one of the modifiers the object pattern accepts), and the operator spellings the def pattern's operator class could not express (`:::`, because `:` was missing, and `unary_-`, which is alphanumeric followed by operator characters). A dropped type header also drops every member of its body, so `go` and `helper` went missing with their parents. The dropped starts then widened assignBraceBlockSpans' search window, whose cap is the NEXT known symbol start: with lines 9, 10, 13, 14, 17 and 18 unindexed, `plainDef` on line 8 searched all the way to line 20, latched onto the `{` opening `object `Odd Object`` on line 13 and recorded lineEnd 15 -- a span reaching past the end of its own enclosing class. The full ordered list is pinned with lineEnd on every row: membership assertions cannot see that.
       const content = [
         'package demo',
         '',
@@ -1192,11 +1153,7 @@ COPY . .
     })
 
     it('leaves plain-form scala declarations byte-identical when the quoted-name alternative is added', async () => {
-      // The over-fix guard for the test above. The tempting way to admit a backtick name is to
-      // drop a backtick and a space into the bare identifier class; in kotlin.ts that made the
-      // name run past the declaration head and capture a trailing space bled in from the
-      // supertype clause ("Animal " instead of "Animal"). Nothing here is quoted, so this list
-      // must be identical before and after any widening of the name patterns.
+      // The over-fix guard for the test above. The tempting way to admit a backtick name is to drop a backtick and a space into the bare identifier class; in kotlin.ts that made the name run past the declaration head and capture a trailing space bled in from the supertype clause ("Animal " instead of "Animal"). Nothing here is quoted, so this list must be identical before and after any widening of the name patterns.
       const content = [
         'sealed abstract class Animal extends Thing with Named {',
         '  val legs: Int = 4',
@@ -1225,8 +1182,7 @@ COPY . .
     })
 
     it('still widens an Allman-brace multi-line signature (keyword stop must not misfire)', async () => {
-      // The brace opens on its own line after a `)` at depth 0. That line starts with `{`, not a
-      // control keyword, so the finding-1 keyword stop must leave this legitimate widening intact.
+      // The brace opens on its own line after a `)` at depth 0. That line starts with `{`, not a control keyword, so the finding-1 keyword stop must leave this legitimate widening intact.
       const content = [
         'public class Svc',
         '{',
@@ -1267,9 +1223,7 @@ COPY . .
     })
 
     it('does not stretch a symbol to end-of-file when its brace never closes', async () => {
-      // An unbalanced/unclosed brace (a file being edited) must yield no widening rather than a
-      // span running to EOF: findMatchingBraceEndLine returns -1 (noMatchValue) and the symbol is
-      // left at its signature line.
+      // An unbalanced/unclosed brace (a file being edited) must yield no widening rather than a span running to EOF: findMatchingBraceEndLine returns -1 (noMatchValue) and the symbol is left at its signature line.
       const content = [
         'public class Broken',
         '{',

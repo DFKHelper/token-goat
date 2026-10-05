@@ -1,14 +1,4 @@
-/**
- * The language table (src/language_specs.ts) replaced six hand-kept per-site lists. This pins each
- * derived list against the list it replaced, so the refactor is proven identical everywhere except
- * the differences named below, each one on purpose.
- *
- * Provenance: HAND-DERIVED. Every OLD_* literal is copied from the pre-refactor source at commit
- * 896e55f1: src/parser_types.ts EXTENSION_LANGUAGE and FILENAME_LANGUAGE, src/hooks_read.ts
- * DIFFABLE_SOURCE_RE and SOURCE_EXT_RE (plus isSourceExtension's apex/salesforce fallback),
- * src/hooks_grep.ts SOURCE_EXT_RE, src/hooks_bash.ts SYMBOL_BEARING_LANGUAGES, src/pack.ts
- * LANG_MAP, src/ref_blindness.ts LANGUAGE_LABELS. None of it is read from the table under test.
- */
+/** The language table (src/language_specs.ts) replaced six hand-kept per-site lists. This pins each derived list against the list it replaced, so the refactor is proven identical everywhere except the differences named below, each one on purpose. Provenance: HAND-DERIVED. Every OLD_* literal is copied from the pre-refactor source at commit 896e55f1: src/parser_types.ts EXTENSION_LANGUAGE and FILENAME_LANGUAGE, src/hooks_read.ts DIFFABLE_SOURCE_RE and SOURCE_EXT_RE (plus isSourceExtension's apex/salesforce fallback), src/hooks_grep.ts SOURCE_EXT_RE, src/hooks_bash.ts SYMBOL_BEARING_LANGUAGES, src/pack.ts LANG_MAP, src/ref_blindness.ts LANGUAGE_LABELS. None of it is read from the table under test. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -101,26 +91,22 @@ const BATCH_D_IDS = ['asm', 'batch', 'erlang']
 // VHDL, added on its own: entity/architecture/package/function/procedure.
 const BATCH_VHDL = ['.vhd', '.vhdl']
 const BATCH_VHDL_IDS = ['vhdl']
-// Six template dialects that mask their own delimiters then hand off to the HTML extractor;
-// markup like html/liquid, so they carry no symbol-bearing/source-hint/grep/diffable flags.
+// Six template dialects that mask their own delimiters then hand off to the HTML extractor; markup like html/liquid, so they carry no symbol-bearing/source-hint/grep/diffable flags.
 const BATCH_TEMPLATES = ['.j2', '.jinja', '.jinja2', '.hbs', '.handlebars', '.erb', '.ejs', '.njk', '.twig']
 const BATCH_TEMPLATES_IDS = ['jinja2', 'handlebars', 'erb', 'ejs', 'nunjucks', 'twig']
 const SF_MARKUP = ['.cmp', '.app', '.evt', '.intf', '.design', '.auradoc', '.tokens', '.page', '.component', '.email']
 // Five Lisp-family dialects, each its own extractor (see src/languages/common_lisp.ts's module doc).
 const BATCH_LISP = ['.lisp', '.lsp', '.cl', '.scm', '.ss', '.rkt', '.rktl', '.clj', '.cljs', '.cljc', '.el']
 const BATCH_LISP_IDS = ['common_lisp', 'scheme', 'racket', 'clojure', 'emacs_lisp']
-// The old hand-kept grep-hook regex already matched `.clj` (no adapter existed yet); every other
-// Lisp extension is brand new to the grep set.
+// The old hand-kept grep-hook regex already matched `.clj` (no adapter existed yet); every other Lisp extension is brand new to the grep set.
 const BATCH_LISP_GREP_ADDED = BATCH_LISP.filter((e) => e !== '.clj')
 // Haskell, added on its own: module/data/newtype/type/class/instance/function (see haskell.ts).
 const BATCH_HASKELL = ['.hs']
 const BATCH_HASKELL_IDS = ['haskell']
-// OCaml, added on its own: module/module type/type/exception/class/let (see ocaml.ts). `.mli`
-// interface files share `.ml`'s lexical rules and extractor.
+// OCaml, added on its own: module/module type/type/exception/class/let (see ocaml.ts). `.mli` interface files share `.ml`'s lexical rules and extractor.
 const BATCH_OCAML = ['.ml', '.mli']
 const BATCH_OCAML_IDS = ['ocaml']
-// F#, added on its own: namespace/module/type/exception/let (see fsharp.ts). `.fsi` signature
-// files and `.fsx` scripts share `.fs`'s lexical rules and extractor.
+// F#, added on its own: namespace/module/type/exception/let (see fsharp.ts). `.fsi` signature files and `.fsx` scripts share `.fs`'s lexical rules and extractor.
 const BATCH_FSHARP = ['.fs', '.fsi', '.fsx']
 const BATCH_FSHARP_IDS = ['fsharp']
 // Nix, added on its own: let-bound names and attribute-set keys (see nix.ts).

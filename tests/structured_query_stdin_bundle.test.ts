@@ -1,8 +1,4 @@
-/**
- * stdin support for json-query, yaml-query, xml-query via `-` file argument.
- *
- * Tests the built bundle spawned with piped stdin. HAND-DERIVED test inputs.
- */
+/** stdin support for json-query, yaml-query, xml-query via `-` file argument. Tests the built bundle spawned with piped stdin. HAND-DERIVED test inputs. */
 
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
@@ -74,9 +70,7 @@ describe('structured query stdin (json/yaml/xml with - argument)', () => {
   })
 
   it('json-query with a real file path still works', () => {
-    // This ensures we didn't break the normal file-path case.
-    // Since we have no fixture dir, we just verify the error is about reading the file,
-    // not about stdin handling.
+    // This ensures we didn't break the normal file-path case. Since we have no fixture dir, we just verify the error is about reading the file, not about stdin handling.
     const result = run(['json-query', '/nonexistent/file.json', 'a.b'])
     expect(result.code).toBe(1)
     expect(result.err).toMatch(/Could not read/)

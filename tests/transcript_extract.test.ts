@@ -68,10 +68,7 @@ describe('parseTranscript', () => {
     expect(parseTranscript('not a transcript file')).toEqual([])
   })
 
-  // #233 regression: the speaker was extracted from the <v Alice> tag on the raw first line, but
-  // the cue's text was then computed by running the leading-`Name:` heuristic a SECOND time on the
-  // tag-stripped text -- so dialogue that happens to start with "Word:" (e.g. "Bob said: hello")
-  // was mistaken for a redundant speaker label and silently deleted.
+  // #233 regression: the speaker was extracted from the <v Alice> tag on the raw first line, but the cue's text was then computed by running the leading-`Name:` heuristic a SECOND time on the tag-stripped text -- so dialogue that happens to start with "Word:" (e.g. "Bob said: hello") was mistaken for a redundant speaker label and silently deleted.
   it('does not strip a leading "Word:" from dialogue when the speaker already came from a <v> tag', () => {
     const content = `1\n00:00:01.000 --> 00:00:02.000\n<v Alice>Bob said: hello there everyone\n`
     const cues = parseTranscript(content)
@@ -127,11 +124,7 @@ describe('buildTranscriptOutline', () => {
     expect(buildTranscriptOutline([])).toEqual({ speakers: [], durationSeconds: 0, markers: [] })
   })
 
-  // Regression: durationSeconds was taken from the last cue in ARRAY order, not the max
-  // endSeconds across all cues. Cues are not guaranteed to be chronologically ordered
-  // (multi-track exports, appended/corrected captions), so an out-of-order trailing cue
-  // silently corrupted the reported duration (and, via the bucket-size math it drove, could
-  // drop later cues from the markers list entirely).
+  // Regression: durationSeconds was taken from the last cue in ARRAY order, not the max endSeconds across all cues. Cues are not guaranteed to be chronologically ordered (multi-track exports, appended/corrected captions), so an out-of-order trailing cue silently corrupted the reported duration (and, via the bucket-size math it drove, could drop later cues from the markers list entirely).
   it('computes duration from the max end time across all cues, not the last cue in array order', () => {
     const outOfOrderVtt = `WEBVTT
 
@@ -155,10 +148,7 @@ Line one appended last
     expect(outline.durationSeconds).toBe(32)
   })
 
-  // Sibling regression to the durationSeconds fix: the marker-sampling loop also assumed
-  // cues arrive in non-decreasing startSeconds order to advance nextBucketStart, so an
-  // out-of-order array left every cue after the first permanently unreachable once a later
-  // cue happened to appear first.
+  // Sibling regression to the durationSeconds fix: the marker-sampling loop also assumed cues arrive in non-decreasing startSeconds order to advance nextBucketStart, so an out-of-order array left every cue after the first permanently unreachable once a later cue happened to appear first.
   it('samples markers across the full duration even when cues are not in chronological array order', () => {
     const cues = [
       { index: 1, startSeconds: 100, endSeconds: 100, speaker: null, text: 'late cue appears first in array' },
@@ -171,11 +161,7 @@ Line one appended last
     expect(outline.markers.map((m) => m.timestamp)).toContain('00:00:00')
   })
 
-  // Regression: when every cue's endSeconds is 0 (zero-duration keyframe/scene-marker cues,
-  // e.g. `00:00:00.000 --> 00:00:00.000`), durationSeconds and therefore bucketSize both
-  // evaluate to 0, so nextBucketStart never advances past 0 and every cue satisfied the
-  // `startSeconds >= nextBucketStart` check -- turning the bounded "outline" into a full dump
-  // of every cue.
+  // Regression: when every cue's endSeconds is 0 (zero-duration keyframe/scene-marker cues, e.g. `00:00:00.000 --> 00:00:00.000`), durationSeconds and therefore bucketSize both evaluate to 0, so nextBucketStart never advances past 0 and every cue satisfied the `startSeconds >= nextBucketStart` check -- turning the bounded "outline" into a full dump of every cue.
   it('caps the marker count even when all cues have zero duration (bucketSize would be 0)', () => {
     const cues = Array.from({ length: 50 }, (_, i) => ({
       index: i + 1,
@@ -188,10 +174,7 @@ Line one appended last
     expect(outline.markers.length).toBeLessThanOrEqual(10)
   })
 
-  // Regression: Math.max(...cues.map(...)) spreads every cue as an individual call argument,
-  // which throws "RangeError: Maximum call stack size exceeded" once the array is large enough
-  // (empirically >~120k elements on V8/Node) instead of computing the max -- a real crash on
-  // any long auto-generated word-level caption transcript, not just a theoretical concern.
+  // Regression: Math.max(...cues.map(...)) spreads every cue as an individual call argument, which throws "RangeError: Maximum call stack size exceeded" once the array is large enough (empirically >~120k elements on V8/Node) instead of computing the max -- a real crash on any long auto-generated word-level caption transcript, not just a theoretical concern.
   it('does not throw on a very large cue array (Math.max spread call-stack limit)', () => {
     const cues = Array.from({ length: 150000 }, (_, i) => ({
       index: i + 1,

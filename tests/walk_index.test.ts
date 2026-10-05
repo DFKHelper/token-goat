@@ -1,11 +1,4 @@
-/**
- * Policy tests for the non-git walk-index fallback (`token-goat index --walk`).
- *
- * Covers the three guards that replace what `git ls-files` gives for free:
- * over-broad-root refusal, the file-count ceiling, and .env / generated-file
- * exclusion. The end-to-end "a symbol resolves after --walk" path is exercised
- * against the built bundle in worker_index_e2e.test.ts.
- */
+/** Policy tests for the non-git walk-index fallback (`token-goat index --walk`). Covers the three guards that replace what `git ls-files` gives for free: over-broad-root refusal, the file-count ceiling, and .env / generated-file exclusion. The end-to-end "a symbol resolves after --walk" path is exercised against the built bundle in worker_index_e2e.test.ts. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -57,10 +50,7 @@ describe('assertWalkableRoot', () => {
 
 describe('walkProject maxFiles', () => {
   it('stops at an explicit maxFiles ceiling', () => {
-    // Pins the real walker, not a mock. walkProject has two separate ceiling checks -- the outer
-    // `while` and an inner per-entry `break` -- and missing either one silently caps --force-walk
-    // back at the default, which would look exactly like the flag working until the file count
-    // came back suspiciously round.
+    // Pins the real walker, not a mock. walkProject has two separate ceiling checks -- the outer `while` and an inner per-entry `break` -- and missing either one silently caps --force-walk back at the default, which would look exactly like the flag working until the file count came back suspiciously round.
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-walk-max-'))
     try {
       for (let i = 0; i < 8; i++) fs.writeFileSync(path.join(root, `f${i}.ts`), 'export const x = 1\n')
@@ -133,8 +123,7 @@ describe('collectWalkIndexFiles', () => {
   it('raises the ceiling under force, and still refuses past the forced ceiling', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-walk-force-'))
     try {
-      // Honour maxFiles the way the real walkProject does -- a mock that ignored it would let
-      // this test pass against a --force-walk that never actually reached the walker.
+      // Honour maxFiles the way the real walkProject does -- a mock that ignored it would let this test pass against a --force-walk that never actually reached the walker.
       vi.doMock('../src/baseline.js', async () => {
         const actual = (await vi.importActual('../src/baseline.js')) as Record<string, unknown>
         return {
@@ -157,10 +146,7 @@ describe('collectWalkIndexFiles', () => {
   })
 
   it('still refuses an over-broad root even under force', async () => {
-    // The load-bearing half of the force contract. --force-walk is the user accepting a *volume*
-    // cost for a folder they meant to index; it is never a licence to walk a filesystem root or
-    // the home directory, which is not what anyone means at any file count. If this ever passes,
-    // a typo'd root becomes a whole-drive scan.
+    // The load-bearing half of the force contract. --force-walk is the user accepting a *volume* cost for a folder they meant to index; it is never a licence to walk a filesystem root or the home directory, which is not what anyone means at any file count. If this ever passes, a typo'd root becomes a whole-drive scan.
     vi.resetModules()
     const { collectWalkIndexFiles: collect } = await import('../src/walk_index.js')
     expect(() => collect(os.homedir(), { force: true })).toThrow()

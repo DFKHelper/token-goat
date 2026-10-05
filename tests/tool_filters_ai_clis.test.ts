@@ -1,12 +1,4 @@
-/**
- * Tests for the AI-CLI streaming assistant filter family (Batch I).
- *
- * Covers: AiderFilter, GhCopilotFilter, CopilotFilter, GeminiCliFilter,
- * ClaudeCliFilter, CursorFilter, WindsurfFilter, OpenCodeFilter,
- * ContinueFilter, ClineFilter, CodexExecFilter.
- *
- * Ported from the Python AI-CLI test suite (git ref 2098981^).
- */
+/** Tests for the AI-CLI streaming assistant filter family (Batch I). Covers: AiderFilter, GhCopilotFilter, CopilotFilter, GeminiCliFilter, ClaudeCliFilter, CursorFilter, WindsurfFilter, OpenCodeFilter, ContinueFilter, ClineFilter, CodexExecFilter. Ported from the Python AI-CLI test suite (git ref 2098981^). */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -30,9 +22,7 @@ import {
 import { selectFilter } from '../src/tool_filters/dispatch.js'
 import type { ToolFilter } from '../src/tool_filters/base.js'
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helpers ---------------------------------------------------------------------------
 
 function apply(
   filter: ToolFilter,
@@ -43,9 +33,7 @@ function apply(
   return filter.compress(stdout, stderr, exitCode, argv)
 }
 
-// ---------------------------------------------------------------------------
-// AI_CLI_FILTERS array sanity
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- AI_CLI_FILTERS array sanity ---------------------------------------------------------------------------
 
 describe('AI_CLI_FILTERS array', () => {
   it('contains all 11 filters', () => {
@@ -62,9 +50,7 @@ describe('AI_CLI_FILTERS array', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GhCopilotFilter — dispatch
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhCopilotFilter — dispatch ---------------------------------------------------------------------------
 
 describe('GhCopilotFilter dispatch', () => {
   it('matches gh copilot explain', () => {
@@ -102,9 +88,7 @@ describe('GhCopilotFilter dispatch', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GhCopilotFilter — compression
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GhCopilotFilter — compression ---------------------------------------------------------------------------
 
 const _GH_COPILOT_EXPLAIN = [
   'Welcome to GitHub Copilot in the CLI!',
@@ -151,9 +135,7 @@ describe('GhCopilotFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// CopilotFilter — dispatch
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CopilotFilter — dispatch ---------------------------------------------------------------------------
 
 describe('CopilotFilter dispatch', () => {
   it('matches copilot binary', () => {
@@ -170,9 +152,7 @@ describe('CopilotFilter dispatch', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// CopilotFilter — compression
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CopilotFilter — compression ---------------------------------------------------------------------------
 
 const _COPILOT_STANDALONE_EXPLAIN = [
   'GitHub Copilot v1.0.3',
@@ -211,9 +191,7 @@ describe('CopilotFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// AiderFilter — dispatch
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- AiderFilter — dispatch ---------------------------------------------------------------------------
 
 describe('AiderFilter dispatch', () => {
   it('matches aider binary', () => {
@@ -235,9 +213,7 @@ describe('AiderFilter dispatch', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// AiderFilter — compression
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- AiderFilter — compression ---------------------------------------------------------------------------
 
 const _AIDER_VERBOSE = [
   'aider v0.52.1',
@@ -299,9 +275,7 @@ describe('AiderFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GeminiCliFilter — dispatch + compression
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GeminiCliFilter — dispatch + compression ---------------------------------------------------------------------------
 
 describe('GeminiCliFilter dispatch', () => {
   it('matches gemini binary', () => {
@@ -361,9 +335,7 @@ describe('GeminiCliFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ClaudeCliFilter — dispatch (custom matches)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ClaudeCliFilter — dispatch (custom matches) ---------------------------------------------------------------------------
 
 describe('ClaudeCliFilter dispatch', () => {
   it('matches plain claude invocation', () => {
@@ -391,9 +363,7 @@ describe('ClaudeCliFilter dispatch', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ClaudeCliFilter — compression
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ClaudeCliFilter — compression ---------------------------------------------------------------------------
 
 const _CLAUDE_CLI_VERBOSE = [
   '◆ claude-3-5-sonnet-20241022',
@@ -440,9 +410,7 @@ describe('ClaudeCliFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// CursorFilter — dispatch + compression
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CursorFilter — dispatch + compression ---------------------------------------------------------------------------
 
 describe('CursorFilter dispatch', () => {
   it('matches cursor binary', () => {
@@ -498,9 +466,7 @@ describe('CursorFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// WindsurfFilter — dispatch + compression
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- WindsurfFilter — dispatch + compression ---------------------------------------------------------------------------
 
 describe('WindsurfFilter dispatch', () => {
   it('matches windsurf binary', () => {
@@ -567,9 +533,7 @@ describe('WindsurfFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// OpenCodeFilter — dispatch + compression
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- OpenCodeFilter — dispatch + compression ---------------------------------------------------------------------------
 
 describe('OpenCodeFilter dispatch', () => {
   it('matches opencode binary', () => {
@@ -632,9 +596,7 @@ describe('OpenCodeFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ContinueFilter — dispatch + compression
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ContinueFilter — dispatch + compression ---------------------------------------------------------------------------
 
 describe('ContinueFilter dispatch', () => {
   it('matches continue binary', () => {
@@ -686,9 +648,7 @@ describe('ContinueFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ClineFilter — dispatch + compression (incl. alwaysKeepRe)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ClineFilter — dispatch + compression (incl. alwaysKeepRe) ---------------------------------------------------------------------------
 
 describe('ClineFilter dispatch', () => {
   it('matches cline binary', () => {
@@ -750,9 +710,7 @@ describe('ClineFilter compression', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// CodexExecFilter — dispatch + compression
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CodexExecFilter — dispatch + compression ---------------------------------------------------------------------------
 
 describe('CodexExecFilter dispatch', () => {
   it('is an instance of CodexExecFilter class', () => {
@@ -787,9 +745,7 @@ describe('CodexExecFilter dispatch', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// CodexExecFilter — compression (structural algorithm)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CodexExecFilter — compression (structural algorithm) ---------------------------------------------------------------------------
 
 const _CODEX_TRANSCRIPT = [
   'OpenAI Codex v1.0.0',
@@ -952,9 +908,7 @@ describe('CodexExecFilter compression on real codex-cli 0.148.0 output', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Dispatch ordering: GhCopilotFilter precedes GhFilter in TOOL_FILTERS
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Dispatch ordering: GhCopilotFilter precedes GhFilter in TOOL_FILTERS ---------------------------------------------------------------------------
 
 describe('dispatch ordering: AI_CLI_FILTERS before CI_FILTERS', () => {
   it('gh copilot explain routes to gh-copilot, not gh or gh-run-log', () => {
@@ -979,9 +933,7 @@ describe('dispatch ordering: AI_CLI_FILTERS before CI_FILTERS', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Answer text must survive the footer rules
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Answer text must survive the footer rules ---------------------------------------------------------------------------
 
 describe('AI-CLI footer rules do not eat answer prose', () => {
   // CAPTURE: `claude --model haiku --print` on 2026-09-15, Claude Code 2.1.270, asked for four exact lines. The first line is the CLI's own startup warning; the rest is the answer. Before this fixture existed, `Tip:` and `Note:` sat in claude-cli's footer drop rule, so the two middle lines -- ordinary answer prose -- were deleted and counted as noise, while the warning line above them, the only real noise in the capture, survived because no rule describes it.

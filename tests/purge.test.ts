@@ -1,8 +1,4 @@
-/**
- * `uninstall --purge`. Uninstall deliberately leaves the data directories alone, which is right
- * for a reinstall and wrong for offboarding a machine: "remove it by hand" is not something an
- * organisation can put in a runbook when there are two roots and they differ per platform.
- */
+/** `uninstall --purge`. Uninstall deliberately leaves the data directories alone, which is right for a reinstall and wrong for offboarding a machine: "remove it by hand" is not something an organisation can put in a runbook when there are two roots and they differ per platform. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -65,8 +61,7 @@ describe('purgeRoots', () => {
   })
 
   it('does not list the same root twice when the two resolve to one directory', () => {
-    // The collision is built by pointing the home at whatever the data directory resolved to on
-    // this platform. Asserting set size equals array length would pass without ever colliding.
+    // The collision is built by pointing the home at whatever the data directory resolved to on this platform. Asserting set size equals array length would pass without ever colliding.
     process.env['TOKEN_GOAT_HOME'] = purgeRoots()[0] as string
 
     expect(purgeRoots().length).toBe(1)
@@ -116,18 +111,14 @@ describe('purgeDataDirectories', () => {
   })
 
   it('reports a root it cannot reach as failed, not as absent', async (ctx) => {
-    // A root behind a permission wall looks exactly like a missing one to fs.existsSync, and
-    // "already gone" is the one answer this command must never give about data that is still
-    // there. The wall goes on the parent, because what a sealed directory hides is its contents,
-    // not its own entry.
+    // A root behind a permission wall looks exactly like a missing one to fs.existsSync, and "already gone" is the one answer this command must never give about data that is still there. The wall goes on the parent, because what a sealed directory hides is its contents, not its own entry.
     const walled = path.join(root, 'walled')
     const home = path.join(walled, 'home')
     seed(home, 'session.json', 40)
     process.env['TOKEN_GOAT_HOME'] = home
     const constants = await import('../src/constants.js')
     constants._resetDataDirCacheForTesting()
-    // ctx.skip rather than a bare return, so a runner that ignores the permission change (root,
-    // or an elevated shell) reports a skipped test instead of a passing one.
+    // ctx.skip rather than a bare return, so a runner that ignores the permission change (root, or an elevated shell) reports a skipped test instead of a passing one.
     if (!sealDirectory(walled)) ctx.skip()
     try {
       if (fs.existsSync(home)) ctx.skip()
@@ -163,10 +154,7 @@ describe('formatBytes', () => {
   })
 })
 
-// The CLI half. The delete logic above is unit-tested; what a runbook actually depends on is that
-// `uninstall --purge` reaches it, and that it refuses while the worker is alive rather than
-// deleting files the worker is about to rewrite. The roots come from purgeRoots() rather than a
-// hardcoded layout, because the data directory sits somewhere different on every platform.
+// The CLI half. The delete logic above is unit-tested; what a runbook actually depends on is that `uninstall --purge` reaches it, and that it refuses while the worker is alive rather than deleting files the worker is about to rewrite. The roots come from purgeRoots() rather than a hardcoded layout, because the data directory sits somewhere different on every platform.
 describe('uninstall --purge through the built bundle', () => {
   const bundle = path.resolve(process.cwd(), 'dist', 'token-goat.mjs')
 

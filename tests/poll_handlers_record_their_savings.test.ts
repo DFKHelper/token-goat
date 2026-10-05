@@ -1,15 +1,4 @@
-/**
- * The BashOutput and TaskOutput poll handlers replace a large tool result with something much
- * smaller -- a suffix delta, a collapsed body, or a short "unchanged" notice -- and until now
- * recorded none of it. Every one of those rewrites is a real token saving that never appeared in
- * `token-goat stats`, so the two loudest poll paths in a long agent run read as if they saved
- * nothing at all.
- *
- * The saving is computed inside `emitRewrite` from the string actually returned, never from a
- * caller-supplied delta, so a recorded number cannot disagree with what the model received. These
- * tests pin that: the recorded bytes must equal originalBytes minus the emitted length, for the
- * literal output the handler returned.
- */
+/** The BashOutput and TaskOutput poll handlers replace a large tool result with something much smaller -- a suffix delta, a collapsed body, or a short "unchanged" notice -- and until now recorded none of it. Every one of those rewrites is a real token saving that never appeared in `token-goat stats`, so the two loudest poll paths in a long agent run read as if they saved nothing at all. The saving is computed inside `emitRewrite` from the string actually returned, never from a caller-supplied delta, so a recorded number cannot disagree with what the model received. These tests pin that: the recorded bytes must equal originalBytes minus the emitted length, for the literal output the handler returned. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

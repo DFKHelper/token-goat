@@ -1,12 +1,4 @@
-/**
- * `waste` accounts for harness-injected context off the same pass it already makes.
- *
- * The injected classes -- task lists, slash-expanded skill bodies, compaction boundaries -- arrive
- * on transcript lines that carry no `message` field, and `parseTranscript` skips those on its first
- * gate. That is precisely why this cost went unreported: the parser walked straight past it. These
- * tests pin that the accounting happens on the existing walk, that it lands in the report, and that
- * it does not disturb the tool-call ledger it shares a loop with.
- */
+/** `waste` accounts for harness-injected context off the same pass it already makes. The injected classes -- task lists, slash-expanded skill bodies, compaction boundaries -- arrive on transcript lines that carry no `message` field, and `parseTranscript` skips those on its first gate. That is precisely why this cost went unreported: the parser walked straight past it. These tests pin that the accounting happens on the existing walk, that it lands in the report, and that it does not disturb the tool-call ledger it shares a loop with. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

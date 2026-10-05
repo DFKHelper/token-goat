@@ -3,13 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type * as NodeModule from 'node:module'
 
-// version.ts has no direct test file. Its two branches:
-//  - typeof __TG_VERSION__ === 'string': only true in the esbuild-built bundle
-//    (exercised by the built-bundle command matrix's --version cases, not here).
-//  - the runtime fallback (require('../package.json')), which is what every
-//    vitest run actually takes since __TG_VERSION__ is undefined under tsx/vitest.
-// Neither the fallback's `pkg.version ?? '0.0.0'` default, nor VERSION's equality
-// with the real package.json version field, had ever been directly asserted.
+// version.ts has no direct test file. Its two branches: - typeof __TG_VERSION__ === 'string': only true in the esbuild-built bundle (exercised by the built-bundle command matrix's --version cases, not here). - the runtime fallback (require('../package.json')), which is what every vitest run actually takes since __TG_VERSION__ is undefined under tsx/vitest. Neither the fallback's `pkg.version ?? '0.0.0'` default, nor VERSION's equality with the real package.json version field, had ever been directly asserted.
 describe('VERSION', () => {
   afterEach(() => {
     vi.doUnmock('node:module')

@@ -1,14 +1,4 @@
-/**
- * Regression coverage for reader path keying.
- *
- * The symbol index keys every row by `normalizePath(absolutePath)`, but the
- * read commands receive paths exactly as the user typed them ("src/worker.ts",
- * "src\\worker.ts", "./src/worker.ts"). The DB lookup is exact equality
- * (`file_path = ?`), so a raw relative or backslash path silently returns
- * nothing. `resolveIndexPath` converts user input to the stored key form before
- * querying. These tests pin both the pure mapping and the real-DB contract: the
- * raw relative path MUST miss (the pre-fix bug) and the resolved key MUST hit.
- */
+/** Regression coverage for reader path keying. The symbol index keys every row by `normalizePath(absolutePath)`, but the read commands receive paths exactly as the user typed them ("src/worker.ts", "src\\worker.ts", "./src/worker.ts"). The DB lookup is exact equality (`file_path = ?`), so a raw relative or backslash path silently returns nothing. `resolveIndexPath` converts user input to the stored key form before querying. These tests pin both the pure mapping and the real-DB contract: the raw relative path MUST miss (the pre-fix bug) and the resolved key MUST hit. */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'

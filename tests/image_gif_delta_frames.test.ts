@@ -8,13 +8,7 @@ import { decodeGif, GIF_WEB_PALETTE, quantizeRgbaToIndexed } from '../src/image_
 import { gifFrameDelta, sliceIndexedRect, unionRects } from '../src/image_gif_encode.js'
 import { shrinkImage } from '../src/image_shrink.js'
 
-// FORMAT-DERIVED from omggif's own writer (node_modules/omggif/omggif.js, `GifWriter.addFrame`,
-// whose x/y/w/h arguments become the image descriptor's Left/Top/Width/Height and whose
-// `opts.disposal` becomes the graphic control extension's disposal field). Built here rather than
-// committed because the shrink path needs a source over its 512 KB threshold, and because the
-// property under test is the shape of what token-goat writes, not of what any one encoder produced.
-// Frame 0 is a full canvas; every frame after it is a genuine sub-rectangle, which is what makes
-// the source smaller than a full-canvas re-encode of the same animation.
+// FORMAT-DERIVED from omggif's own writer (node_modules/omggif/omggif.js, `GifWriter.addFrame`, whose x/y/w/h arguments become the image descriptor's Left/Top/Width/Height and whose `opts.disposal` becomes the graphic control extension's disposal field). Built here rather than committed because the shrink path needs a source over its 512 KB threshold, and because the property under test is the shape of what token-goat writes, not of what any one encoder produced. Frame 0 is a full canvas; every frame after it is a genuine sub-rectangle, which is what makes the source smaller than a full-canvas re-encode of the same animation.
 const W = 1400
 const H = 1400
 const PATCH = 160
@@ -137,8 +131,7 @@ describe('the shrink path re-encodes animated GIFs as delta frames', () => {
     expect(src.length).toBeGreaterThan(512 * 1024)
 
     const result = await shrinkImage(src)
-    // Full-canvas output for this source is several times the input and the size guard declines it,
-    // so a regression to full-canvas frames turns this null rather than merely making it larger.
+    // Full-canvas output for this source is several times the input and the size guard declines it, so a regression to full-canvas frames turns this null rather than merely making it larger.
     expect(result).not.toBeNull()
     expect(result!.shrunkBytes).toBeLessThan(src.length)
 
@@ -146,15 +139,13 @@ describe('the shrink path re-encodes animated GIFs as delta frames', () => {
     expect(reader.numFrames()).toBe(FRAMES + 1)
     expect(reader.frameInfo(0).width).toBe(W)
     for (let i = 0; i < reader.numFrames(); i++) {
-      // Every frame quantizes to the same fixed palette, so it is written once as the global colour
-      // table; a local table per frame would be 768 bytes each of pure duplication.
+      // Every frame quantizes to the same fixed palette, so it is written once as the global colour table; a local table per frame would be 768 bytes each of pure duplication.
       expect(reader.frameInfo(i).has_local_palette).toBe(false)
     }
     for (let i = 1; i < reader.numFrames(); i++) {
       const info = reader.frameInfo(i)
       expect(info.width).toBeLessThan(W)
-      // Disposal 1 (leave in place) is the only disposal a delta frame may carry: anything that
-      // clears its rectangle erases the region the next frame inherits its unchanged pixels from.
+      // Disposal 1 (leave in place) is the only disposal a delta frame may carry: anything that clears its rectangle erases the region the next frame inherits its unchanged pixels from.
       expect(info.disposal).toBe(1)
       expect(info.delay).toBe(8)
     }
@@ -190,11 +181,7 @@ describe('the shrink path re-encodes animated GIFs as delta frames', () => {
       expect(mismatched).toBe(0)
     }
 
-    // Must not drop, as literal values rather than a count: (10, 10) is outside every patch and has
-    // to hold the background colour in every delivered frame, and the centre of patch 3 has to be
-    // background before frame 4 paints it and the patch colour from frame 4 onwards. A delta
-    // encoder that dropped the unchanged region would blank the first; one that dropped the changed
-    // region would blank the second.
+    // Must not drop, as literal values rather than a count: (10, 10) is outside every patch and has to hold the background colour in every delivered frame, and the centre of patch 3 has to be background before frame 4 paints it and the patch colour from frame 4 onwards. A delta encoder that dropped the unchanged region would blank the first; one that dropped the changed region would blank the second.
     const corner = [0, 255, 85, 255]
     const centreBackground = [109, 146, 85, 255]
     const painted = [0, 255, 170, 255]
@@ -211,11 +198,7 @@ describe('the shrink path re-encodes animated GIFs as delta frames', () => {
     const writer = new omggif.GifWriter(buf, W, H, { loop: 0 })
     writer.addFrame(0, 0, W, H, base, { palette: SOURCE_PALETTE, delay: 8, disposal: 1 })
     for (let i = 0; i < FRAMES; i++) {
-      // Disposal 2 punches a genuine transparent hole into the composited canvas that follows it,
-      // which is the one shape a disposal-1 delta cannot express. Two of them back to back, at
-      // different positions, is the case where the frame that has to be disposed is wider than the
-      // hole itself: its own box already spans the previous hole, and everything opaque inside that
-      // span has to be repainted by the frame after it even though none of it changed.
+      // Disposal 2 punches a genuine transparent hole into the composited canvas that follows it, which is the one shape a disposal-1 delta cannot express. Two of them back to back, at different positions, is the case where the frame that has to be disposed is wider than the hole itself: its own box already spans the previous hole, and everything opaque inside that span has to be repainted by the frame after it even though none of it changed.
       writer.addFrame(patchX(i), PATCH_Y, PATCH, PATCH, new Array<number>(PATCH * PATCH).fill(20 + i), {
         palette: SOURCE_PALETTE,
         delay: 8,
@@ -256,9 +239,7 @@ describe('the shrink path re-encodes animated GIFs as delta frames', () => {
       expect(mismatched).toBe(0)
     }
 
-    // Must not drop, literal: patch 3 is painted in frame 4 and its disposal leaves frame 5 with a
-    // genuinely transparent hole there, while a pixel outside the hole keeps the background colour
-    // rather than being cleared along with it.
+    // Must not drop, literal: patch 3 is painted in frame 4 and its disposal leaves frame 5 with a genuinely transparent hole there, while a pixel outside the hole keeps the background colour rather than being cleared along with it.
     const centre = { x: patchX(3) + PATCH / 2, y: PATCH_Y + PATCH / 2 }
     expect(pixelAt(output.frames[4]!.data, W, centre.x, centre.y)).toEqual([0, 255, 170, 255])
     expect(pixelAt(output.frames[5]!.data, W, centre.x, centre.y)).toEqual([0, 0, 0, 0])
@@ -266,12 +247,7 @@ describe('the shrink path re-encodes animated GIFs as delta frames', () => {
   })
 
   it('repaints everything a widened clear wiped, not just what changed', async () => {
-    // A disposal-3 frame restores an opaque region, so the composited step after it changes two
-    // disjoint places at once -- the restored region and whatever the frame painted -- and the box
-    // spanning them is full of opaque background that changed nothing. When the frame after that
-    // punches a transparent hole, that whole box is what has to be disposed, so the repaint frame
-    // has to cover the box and not merely the hole. Measured: covering only the changed box leaves
-    // 128,000 background pixels transparent.
+    // A disposal-3 frame restores an opaque region, so the composited step after it changes two disjoint places at once -- the restored region and whatever the frame painted -- and the box spanning them is full of opaque background that changed nothing. When the frame after that punches a transparent hole, that whole box is what has to be disposed, so the repaint frame has to cover the box and not merely the hole. Measured: covering only the changed box leaves 128,000 background pixels transparent.
     const buf = Buffer.alloc(W * H * 5 * 6 + 4096)
     const writer = new omggif.GifWriter(buf, W, H, { loop: 0 })
     writer.addFrame(0, 0, W, H, baseIndexes(), { palette: SOURCE_PALETTE, delay: 8, disposal: 1 })
@@ -302,15 +278,12 @@ describe('the shrink path re-encodes animated GIFs as delta frames', () => {
         mismatched: 0,
       })
     }
-    // Must not drop, literal: the background midway between the restored region and the hole is
-    // inside the disposed box and has to come back opaque in the last frame.
+    // Must not drop, literal: the background midway between the restored region and the hole is inside the disposed box and has to come back opaque in the last frame.
     expect(pixelAt(output.frames[3]!.data, W, 500, PATCH_Y + PATCH / 2)).toEqual([109, 146, 0, 255])
   })
 
   it('treats an index that means black in one frame and transparent in the next as a change', async () => {
-    // The transparent index the quantizer reserves is index 0, which in a frame with no transparency
-    // at all is plain black. Comparing raw indexes between frames therefore reads an opaque black
-    // block and the transparent hole that replaces it as identical, and the hole never gets written.
+    // The transparent index the quantizer reserves is index 0, which in a frame with no transparency at all is plain black. Comparing raw indexes between frames therefore reads an opaque black block and the transparent hole that replaces it as identical, and the hole never gets written.
     const BLOCK = 200
     const BLOCK_X = 300
     const palette = SOURCE_PALETTE.slice()
@@ -338,12 +311,10 @@ describe('the shrink path re-encodes animated GIFs as delta frames', () => {
     expect(result).not.toBeNull()
     const input = decodeGif(src)
     const output = decodeGif(result!.data)
-    // The collision the test exists for: the same index 0 in both frames, meaning black in one and
-    // transparent in the other.
+    // The collision the test exists for: the same index 0 in both frames, meaning black in one and transparent in the other.
     expect(quantizeRgbaToIndexed(input.frames[1]!.data, W, H).transparentIndex).toBeNull()
     expect(quantizeRgbaToIndexed(input.frames[2]!.data, W, H).transparentIndex).toBe(0)
-    // Must not drop, literal: opaque black while the block is painted, genuinely transparent once
-    // its disposal has cleared it.
+    // Must not drop, literal: opaque black while the block is painted, genuinely transparent once its disposal has cleared it.
     expect(pixelAt(output.frames[1]!.data, W, BLOCK_X + 10, PATCH_Y + 10)).toEqual([0, 0, 0, 255])
     expect(pixelAt(output.frames[2]!.data, W, BLOCK_X + 10, PATCH_Y + 10)).toEqual([0, 0, 0, 0])
   })

@@ -1,13 +1,4 @@
-/**
- * Regression: `token-goat compact-doc` (cmdCompactDoc in config_commands.ts) never called
- * recordStat at all, and stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `compact-doc`
- * entry either -- so the compact-doc bucket in `token-goat stats --full` was permanently zero
- * regardless of real `compact-doc` usage (same class of registry/producer desync fixed for
- * map_lookup/changed_lookup/csv_query/brief_view, see project_runchanged_missing_stat memory).
- * Drives the real, unmocked `run()` CLI entrypoint against a real scratch file and asserts a
- * real stats row appears via summarize() against the real (test-isolated) global stats DB -- a
- * synthetic recordStat/DB insert would not catch the original absence.
- */
+/** Regression: `token-goat compact-doc` (cmdCompactDoc in config_commands.ts) never called recordStat at all, and stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `compact-doc` entry either -- so the compact-doc bucket in `token-goat stats --full` was permanently zero regardless of real `compact-doc` usage (same class of registry/producer desync fixed for map_lookup/changed_lookup/csv_query/brief_view, see project_runchanged_missing_stat memory). Drives the real, unmocked `run()` CLI entrypoint against a real scratch file and asserts a real stats row appears via summarize() against the real (test-isolated) global stats DB -- a synthetic recordStat/DB insert would not catch the original absence. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

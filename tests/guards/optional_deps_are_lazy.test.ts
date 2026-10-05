@@ -1,24 +1,4 @@
-/**
- * An optional dependency that is imported statically is not optional. SECURITY.md tells an
- * evaluator to install with `--omit=optional` to avoid the advisories that live in the native
- * packages, and that install produced a CLI that could not run a single command: `token-goat
- * --version` exited with ERR_MODULE_NOT_FOUND for `fflate`, because src/archive_query.ts imported
- * it at module scope. fflate is an esbuild external, so the static import survived into the built
- * bundle as a top-level `import ... from "fflate"`, which Node resolves before any code runs --
- * long before reaching the zip command that actually wanted it.
- *
- * tests/guards/startup_lazy_deps.test.ts is the sibling and not a duplicate: it measures what an
- * invocation costs, against a hand-written list of five heavy packages, and two of those are
- * required dependencies that are perfectly allowed to be there. This one asks whether the program
- * runs at all when an optional package is absent, and takes its list from `optionalDependencies`
- * so a new one is covered the day it is added rather than the day somebody remembers.
- *
- * The check is on the built output rather than on source, because that is where the failure
- * lived: a lazy `await import()` compiles to a runtime call that only resolves when reached,
- * while a static import compiles to a top-level import statement that always resolves. Every
- * other optional-dependency reader already uses createLazyModuleLoader; this keeps the next one
- * from quietly regressing.
- */
+/** An optional dependency that is imported statically is not optional. SECURITY.md tells an evaluator to install with `--omit=optional` to avoid the advisories that live in the native packages, and that install produced a CLI that could not run a single command: `token-goat --version` exited with ERR_MODULE_NOT_FOUND for `fflate`, because src/archive_query.ts imported it at module scope. fflate is an esbuild external, so the static import survived into the built bundle as a top-level `import ... from "fflate"`, which Node resolves before any code runs -- long before reaching the zip command that actually wanted it. tests/guards/startup_lazy_deps.test.ts is the sibling and not a duplicate: it measures what an invocation costs, against a hand-written list of five heavy packages, and two of those are required dependencies that are perfectly allowed to be there. This one asks whether the program runs at all when an optional package is absent, and takes its list from `optionalDependencies` so a new one is covered the day it is added rather than the day somebody remembers. The check is on the built output rather than on source, because that is where the failure lived: a lazy `await import()` compiles to a runtime call that only resolves when reached, while a static import compiles to a top-level import statement that always resolves. Every other optional-dependency reader already uses createLazyModuleLoader; this keeps the next one from quietly regressing. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,8 +16,7 @@ const OPTIONAL = Object.keys(
 )
 
 function distFiles(): string[] {
-  // Pinned: if the bundle's output filenames or extension ever change, this walk returns nothing
-  // and every lazy-import assertion below passes without reading a single line of the build.
+  // Pinned: if the bundle's output filenames or extension ever change, this walk returns nothing and every lazy-import assertion below passes without reading a single line of the build.
   return [
     ...pinnedPopulation({
       what: 'dist/*.mjs bundle files',
@@ -85,13 +64,7 @@ describe('optional dependencies stay off the startup path', () => {
     expect(offenders, 'Node resolves these before any command runs; --omit=optional cannot start').toEqual([])
   })
 
-  // The counterpart claim: the check above passes because optional deps are lazy, not because the
-  // matcher is incapable of reporting one. This used to be shown by pointing at better-sqlite3,
-  // which was a required dependency imported statically -- true until the move to node:sqlite left
-  // `jsonc-parser` as the only runtime dependency, and that one is reached through createRequire,
-  // so no npm package is statically imported anywhere in the output today. The mechanism is proven
-  // directly instead: the test above establishes that the matcher matches real dist lines, and this
-  // one establishes that an optional package sitting in one is what it reports.
+  // The counterpart claim: the check above passes because optional deps are lazy, not because the matcher is incapable of reporting one. This used to be shown by pointing at better-sqlite3, which was a required dependency imported statically -- true until the move to node:sqlite left `jsonc-parser` as the only runtime dependency, and that one is reached through createRequire, so no npm package is statically imported anywhere in the output today. The mechanism is proven directly instead: the test above establishes that the matcher matches real dist lines, and this one establishes that an optional package sitting in one is what it reports.
   it('reports an optional dependency when a chunk does import it statically', () => {
     const synthetic = 'import { unzipSync } from "fflate"\nimport * as own from "./chunk-ABC.mjs"\nconst late = await import("sharp")\n'
 

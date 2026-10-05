@@ -1,6 +1,4 @@
-/**
- * Built-bundle check for the ABAP, SAS, PL/I, RPG, JCL and OpenEdge ABL adapters: the shipped dist/token-goat.mjs, not source, indexes one file of each through `index . --walk` and answers `outline`, `symbol` and `read "file::Name"` from them. An ABL `.p` and `.cls` are found by content, so this also proves the content routing is reached from the real walker, and that a Pascal `.p` beside them is left alone.
- */
+/** Built-bundle check for the ABAP, SAS, PL/I, RPG, JCL and OpenEdge ABL adapters: the shipped dist/token-goat.mjs, not source, indexes one file of each through `index . --walk` and answers `outline`, `symbol` and `read "file::Name"` from them. An ABL `.p` and `.cls` are found by content, so this also proves the content routing is reached from the real walker, and that a Pascal `.p` beside them is left alone. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

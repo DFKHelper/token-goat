@@ -1,34 +1,4 @@
-/**
- * Guard: every cache type a production writer persists into `cache_recall` must be a member of
- * `VALID_TYPES`, so the recall queries' row cap can never discard a wanted row.
- *
- * The recall search path (src/recall_index.ts) applies its cap and its type predicate on opposite
- * sides of the SQL boundary. `ftsSearch`, `likeSearch` and `listRecentRecall` each end in
- * `... LIMIT ?`, and only then does `mapRowsToHits` run the rows through `isRecallCacheType`. Cap
- * first, filter second is the shape that silently returns fewer rows than asked for, because the
- * rows the filter removes were already counted against the cap and the rows past the cap were never
- * fetched to replace them. `token-goat recall` compounds it: `runRecallCommand` asks for
- * `limit + 1` rows purely so it can tell the reader "more are available", so a single dropped row
- * both shortens the listing and suppresses the notice that the listing is short.
- *
- * That loss is unreachable today for one reason only: the filter has nothing to reject. There are
- * exactly three production writers -- `storeBashOutputSync`, `storeWebOutput`, `storeMcpOutput` --
- * and each passes a string literal that is already a `VALID_TYPES` member, so every row in the
- * table answers `isRecallCacheType` true and `mapRowsToHits` is a pass-through. The invariant is
- * what makes the query correct, not the query's own ordering.
- *
- * This guard pins that invariant at the writers rather than rearranging the query. Constraining the
- * writer set prevents the whole class: no persisted row can ever be unrepresentable, so cap-then-
- * filter stays equivalent to filter-then-cap for every query on this table, present and future.
- * Moving the predicate into SQL would fix the three queries that exist and leave the fourth one
- * somebody adds next year exposed, and applying the cap after the filter would mean over-fetching
- * an unbounded number of rows to fill it. `cache_type` is a plain `TEXT NOT NULL` column with no
- * CHECK constraint (see SCHEMA_SQL in src/db.ts), so nothing below this level enforces it either.
- *
- * What this cannot catch: a writer that reaches the table through raw SQL instead of
- * `indexRecallEntry`, and a value passed as a variable rather than a literal. Both are failed
- * explicitly below rather than skipped, so the guard cannot be defeated by changing call shape.
- */
+/** Guard: every cache type a production writer persists into `cache_recall` must be a member of `VALID_TYPES`, so the recall queries' row cap can never discard a wanted row. The recall search path (src/recall_index.ts) applies its cap and its type predicate on opposite sides of the SQL boundary. `ftsSearch`, `likeSearch` and `listRecentRecall` each end in `... LIMIT ?`, and only then does `mapRowsToHits` run the rows through `isRecallCacheType`. Cap first, filter second is the shape that silently returns fewer rows than asked for, because the rows the filter removes were already counted against the cap and the rows past the cap were never fetched to replace them. `token-goat recall` compounds it: `runRecallCommand` asks for `limit + 1` rows purely so it can tell the reader "more are available", so a single dropped row both shortens the listing and suppresses the notice that the listing is short. That loss is unreachable today for one reason only: the filter has nothing to reject. There are exactly three production writers -- `storeBashOutputSync`, `storeWebOutput`, `storeMcpOutput` -- and each passes a string literal that is already a `VALID_TYPES` member, so every row in the table answers `isRecallCacheType` true and `mapRowsToHits` is a pass-through. The invariant is what makes the query correct, not the query's own ordering. This guard pins that invariant at the writers rather than rearranging the query. Constraining the writer set prevents the whole class: no persisted row can ever be unrepresentable, so cap-then- filter stays equivalent to filter-then-cap for every query on this table, present and future. Moving the predicate into SQL would fix the three queries that exist and leave the fourth one somebody adds next year exposed, and applying the cap after the filter would mean over-fetching an unbounded number of rows to fill it. `cache_type` is a plain `TEXT NOT NULL` column with no CHECK constraint (see SCHEMA_SQL in src/db.ts), so nothing below this level enforces it either. What this cannot catch: a writer that reaches the table through raw SQL instead of `indexRecallEntry`, and a value passed as a variable rather than a literal. Both are failed explicitly below rather than skipped, so the guard cannot be defeated by changing call shape. */
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'

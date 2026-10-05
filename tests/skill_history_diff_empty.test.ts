@@ -1,9 +1,4 @@
-// Regression guard: `skill-history` and `skill-diff` must treat a never-created skill-outputs
-// directory as an empty cache (exit 0), not a fatal error. The dir does not exist on a fresh
-// install (no skill ever loaded) or a fresh CI checkout; the previous implementations called
-// fs.readdir on the missing dir, caught the ENOENT, and rethrew it as a CliError -> exit 1.
-// These tests point the cache at a path that does not exist and drive the real run() entry,
-// so they fail on the pre-fix code and pass once the missing-dir case degrades to an empty listing.
+// Regression guard: `skill-history` and `skill-diff` must treat a never-created skill-outputs directory as an empty cache (exit 0), not a fatal error. The dir does not exist on a fresh install (no skill ever loaded) or a fresh CI checkout; the previous implementations called fs.readdir on the missing dir, caught the ENOENT, and rethrew it as a CliError -> exit 1. These tests point the cache at a path that does not exist and drive the real run() entry, so they fail on the pre-fix code and pass once the missing-dir case degrades to an empty listing.
 import { mkdtempSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -32,8 +27,7 @@ function missingSkillsDir(): string {
   return join(mkdtempSync(join(tmpdir(), 'tg-empty-cache-')), 'never-created')
 }
 
-// run() sets process.exitCode = 1 on a CliError and leaves it untouched on success. Drive the
-// real CLI entry against the missing cache and report the resulting exit code.
+// run() sets process.exitCode = 1 on a CliError and leaves it untouched on success. Drive the real CLI entry against the missing cache and report the resulting exit code.
 async function exitCodeOf(argv: string[]): Promise<number | string | undefined> {
   const prev = process.exitCode
   process.exitCode = 0
@@ -93,10 +87,7 @@ describe('skill-history / skill-diff against a never-created cache', () => {
   })
 })
 
-// Regression guard: a `--session-id` filter that hides every cached skill must not be reported as an
-// empty cache. "No skills cached yet." for a cache that holds skills under a different session is the
-// same defect `refs --exclude-tests` had -- a filtered view rendered as a definitive absence -- and it
-// sends the caller off to re-cache work that is already there. The unfiltered path must stay untouched.
+// Regression guard: a `--session-id` filter that hides every cached skill must not be reported as an empty cache. "No skills cached yet." for a cache that holds skills under a different session is the same defect `refs --exclude-tests` had -- a filtered view rendered as a definitive absence -- and it sends the caller off to re-cache work that is already there. The unfiltered path must stay untouched.
 describe('skill-list / skill-size under a --session-id filter that hides everything', () => {
   async function cacheOneSkillUnder(sessionId: string): Promise<void> {
     setSkillOutputsDirForTesting(mkdtempSync(join(tmpdir(), 'tg-session-filter-')))
@@ -153,15 +144,7 @@ describe('skill-list / skill-size under a --session-id filter that hides everyth
   })
 })
 
-// Regression guard: `skill-diff`'s TOCTOU race. listOutputs() can find 2+ cached versions of a
-// skill, but by the time the body reads happen, a concurrent storeOutput()/prune-cache eviction
-// may have deleted the older version's .txt file -- fs.promises.readFile then resolves via its
-// .catch(() => null), which previously reused the exact same "only one cached version" text as
-// the genuine <2-versions case, falsely implying a second version never existed. Simulate the
-// race deterministically: store two versions (different bodies, so content-hash dedup in
-// findCrossSessionEntry doesn't collapse them into one entry), then delete the older version's
-// .txt file on disk before invoking skill-diff -- this exercises the same
-// "listOutputs() found >=2, but a readFile failed" path a real race would hit.
+// Regression guard: `skill-diff`'s TOCTOU race. listOutputs() can find 2+ cached versions of a skill, but by the time the body reads happen, a concurrent storeOutput()/prune-cache eviction may have deleted the older version's .txt file -- fs.promises.readFile then resolves via its .catch(() => null), which previously reused the exact same "only one cached version" text as the genuine <2-versions case, falsely implying a second version never existed. Simulate the race deterministically: store two versions (different bodies, so content-hash dedup in findCrossSessionEntry doesn't collapse them into one entry), then delete the older version's .txt file on disk before invoking skill-diff -- this exercises the same "listOutputs() found >=2, but a readFile failed" path a real race would hit.
 describe('skill-diff when a version is evicted mid-diff (TOCTOU race)', () => {
   it('reports the version was evicted, not that only one version ever existed', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'tg-skill-diff-race-'))
@@ -172,9 +155,7 @@ describe('skill-diff when a version is evicted mid-diff (TOCTOU race)', () => {
     expect(first).not.toBeNull()
     expect(second).not.toBeNull()
 
-    // cmdSkillDiff picks its "older" version from versions.sort((a, b) => b.ts - a.ts)[1] --
-    // find that same second-ranked entry here (instead of assuming storeOutput call order
-    // matches ts order, which a same-millisecond tie could break) and delete its .txt file.
+    // cmdSkillDiff picks its "older" version from versions.sort((a, b) => b.ts - a.ts)[1] -- find that same second-ranked entry here (instead of assuming storeOutput call order matches ts order, which a same-millisecond tie could break) and delete its .txt file.
     const versions = (await listOutputs())
       .filter((m) => m.skillName === 'race-skill')
       .sort((a, b) => b.ts - a.ts)

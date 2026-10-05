@@ -111,9 +111,7 @@ describe('WebFetch hook persistence', () => {
     const cacheId = getWebFetchCacheId(url)
     expect(cacheId).not.toBeNull()
 
-    // A subsequent pre-fetch of the same URL/session must be denied, naming the
-    // web-output command and the cache id, rather than letting the redundant
-    // network fetch proceed.
+    // A subsequent pre-fetch of the same URL/session must be denied, naming the web-output command and the cache id, rather than letting the redundant network fetch proceed.
     const result = preFetchHandler({
       eventName: 'pre_tool_use',
       toolName: 'WebFetch',
@@ -156,10 +154,7 @@ describe('WebFetch hook persistence', () => {
       raw: { tool_response: largeResponse },
     } as HookEvent)
 
-    // Simulate a brand-new process (or a new terminal tab / new session): every
-    // in-memory module cache is wiped, and a different session id is used, but
-    // the on-disk cache under TOKEN_GOAT_HOME survives (same as a real new
-    // CLI hook invocation reading the same ~/.token-goat directory).
+    // Simulate a brand-new process (or a new terminal tab / new session): every in-memory module cache is wiped, and a different session id is used, but the on-disk cache under TOKEN_GOAT_HOME survives (same as a real new CLI hook invocation reading the same ~/.token-goat directory).
     clearModuleCaches()
 
     const result = preFetchHandler({

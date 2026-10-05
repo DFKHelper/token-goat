@@ -1,20 +1,4 @@
-/**
- * `token-goat index` enumerates files with `git ls-files`, which returns every tracked file
- * regardless of language -- walkProject's `detectLanguageOfFile() !== 'unknown'` filter is on a
- * different path and never sees them. indexFileEmbeddings then had no check of its own between the
- * document-extraction branch (PDF/DOCX/PPTX/XLSX only) and a generic `decodeSource(readFile)`, so a
- * JPEG fell through to the generic read, decoded to mojibake without failing, and was chunked. On
- * one real machine-wide index that produced 39,477 chunk rows from 333 JPEGs, each carrying a
- * 384-dimensional vector.
- *
- * The second gate is the chunk-count ceiling. Byte size, the only ceiling that existed, does not
- * separate generated data from source: chunk cuts snap to structure, so the twenty worst files on
- * that same index were generated JSON snapshots comfortably under the 500 KB byte threshold, each
- * turning thousands of one-line keys into thousands of near-identical chunks.
- *
- * These drive the real default path -- indexFileSync then indexFileEmbeddings, exactly what
- * cmdIndex and worker.ts::makeIndexer each do per file -- rather than a mock callback.
- */
+/** `token-goat index` enumerates files with `git ls-files`, which returns every tracked file regardless of language -- walkProject's `detectLanguageOfFile() !== 'unknown'` filter is on a different path and never sees them. indexFileEmbeddings then had no check of its own between the document-extraction branch (PDF/DOCX/PPTX/XLSX only) and a generic `decodeSource(readFile)`, so a JPEG fell through to the generic read, decoded to mojibake without failing, and was chunked. On one real machine-wide index that produced 39,477 chunk rows from 333 JPEGs, each carrying a 384-dimensional vector. The second gate is the chunk-count ceiling. Byte size, the only ceiling that existed, does not separate generated data from source: chunk cuts snap to structure, so the twenty worst files on that same index were generated JSON snapshots comfortably under the 500 KB byte threshold, each turning thousands of one-line keys into thousands of near-identical chunks. These drive the real default path -- indexFileSync then indexFileEmbeddings, exactly what cmdIndex and worker.ts::makeIndexer each do per file -- rather than a mock callback. */
 import { createRequire } from 'node:module'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -54,14 +38,7 @@ function vec0Working(): boolean {
 
 const canExerciseRealEmbeddings = vec0Working() && isAvailable() && modelFilesPresent()
 
-/**
- * PROVENANCE: CAPTURE -- real JPEG bytes, produced by the repository's own shipping JPEG encoder
- * (src/image_engine.ts::encodeJpeg), which is what token-goat writes to disk when it shrinks an
- * image. Not hand-written from the gate's own extension list: the point of the fixture is that the
- * bytes really are an encoded image, and the assertion below checks that those bytes, decoded as
- * UTF-8, would genuinely have produced chunkable text -- so the gate is what stops them, not an
- * accidentally-empty file.
- */
+/** PROVENANCE: CAPTURE -- real JPEG bytes, produced by the repository's own shipping JPEG encoder (src/image_engine.ts::encodeJpeg), which is what token-goat writes to disk when it shrinks an image. Not hand-written from the gate's own extension list: the point of the fixture is that the bytes really are an encoded image, and the assertion below checks that those bytes, decoded as UTF-8, would genuinely have produced chunkable text -- so the gate is what stops them, not an accidentally-empty file. */
 function realJpegBytes(): Buffer {
   const width = 96
   const height = 96
@@ -78,11 +55,7 @@ function realJpegBytes(): Buffer {
   return encodeJpeg(width, height, rgba, 90)
 }
 
-/**
- * PROVENANCE: HAND-DERIVED -- a generated data snapshot in the shape the census found on a real
- * index (`memory/ads/kw-*-snap.json`): many short top-level keys, each holding a small record.
- * Sized here to clear the ceiling by construction, not copied from the producer under test.
- */
+/** PROVENANCE: HAND-DERIVED -- a generated data snapshot in the shape the census found on a real index (`memory/ads/kw-*-snap.json`): many short top-level keys, each holding a small record. Sized here to clear the ceiling by construction, not copied from the producer under test. */
 function snapshotJson(keys: number): string {
   const entries = Array.from({ length: keys }, (_, i) => `  "keyword_metric_row_${i}": { "clicks": ${i}, "impressions": ${i * 31}, "cost_micros": ${i * 1013}, "conversions": ${i % 7} }`)
   return `{\n${entries.join(',\n')}\n}\n`
@@ -144,8 +117,7 @@ describe('indexFileEmbeddings refuses files with no embeddable text', () => {
     const sha = fingerprintFile(jsonPath) as string
     expect(getFileEntry(jsonPath, dbPath)?.embedSha).toBe(maxChunksEmbedSha(sha, 600))
 
-    // The file is still fully indexed for symbols: the gate takes it out of `semantic`, never out of `symbol`/`read`/`refs`.
-    // Queried by `canonicalizeIndexPath` rather than the raw `jsonPath`: symbol rows are keyed on the canonical spelling `indexFileSync` mints, so a literal `file_path = ?` against `jsonPath` matches nothing wherever the temp dir is reached through an alias.
+    // The file is still fully indexed for symbols: the gate takes it out of `semantic`, never out of `symbol`/`read`/`refs`. Queried by `canonicalizeIndexPath` rather than the raw `jsonPath`: symbol rows are keyed on the canonical spelling `indexFileSync` mints, so a literal `file_path = ?` against `jsonPath` matches nothing wherever the temp dir is reached through an alias.
     const symbols = db.prepare('SELECT COUNT(*) c FROM symbols WHERE file_path = ?').get(canonicalizeIndexPath(jsonPath)) as { c: number }
     expect(symbols.c).toBeGreaterThan(600)
   })

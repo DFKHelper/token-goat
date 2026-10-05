@@ -1,19 +1,4 @@
-/**
- * Regression: `indexing.skip_dirs`, `indexing.large_file_skip_kb`, and
- * `indexing.large_file_symbol_only_kb` were fully defined, validated, clamped, and surfaced in
- * `config-get`/manifest output (config.ts), and `skip_dirs` is documented in README.md as a
- * real, working `[indexing] skip_dirs = [...]` feature -- but nothing in the indexing pipeline
- * (`cmdIndex`, `indexFileSync`, `indexFileEmbeddings`, `walkProject`) ever actually read any of
- * the three. Every one of them was a silent no-op: setting `large_file_skip_kb = 1` still fully
- * indexed a multi-megabyte file, and `skip_dirs = ["generated"]` still indexed everything under
- * a `generated/` directory.
- *
- * Drives the real `cmdIndex` (the shipping `token-goat index` path) and `walkProject` against a
- * real, isolated config.toml (same convention as hooks_screenshot.test.ts: redirect
- * constants.js's configPath() to a per-test-file temp file, saveConfig() a real Config object,
- * invalidateConfigCache() so loadConfig() picks it up) -- not a mocked loadConfig() -- since the
- * whole defect was several real call sites never consulting the real config at all.
- */
+/** Regression: `indexing.skip_dirs`, `indexing.large_file_skip_kb`, and `indexing.large_file_symbol_only_kb` were fully defined, validated, clamped, and surfaced in `config-get`/manifest output (config.ts), and `skip_dirs` is documented in README.md as a real, working `[indexing] skip_dirs = [...]` feature -- but nothing in the indexing pipeline (`cmdIndex`, `indexFileSync`, `indexFileEmbeddings`, `walkProject`) ever actually read any of the three. Every one of them was a silent no-op: setting `large_file_skip_kb = 1` still fully indexed a multi-megabyte file, and `skip_dirs = ["generated"]` still indexed everything under a `generated/` directory. Drives the real `cmdIndex` (the shipping `token-goat index` path) and `walkProject` against a real, isolated config.toml (same convention as hooks_screenshot.test.ts: redirect constants.js's configPath() to a per-test-file temp file, saveConfig() a real Config object, invalidateConfigCache() so loadConfig() picks it up) -- not a mocked loadConfig() -- since the whole defect was several real call sites never consulting the real config at all. */
 import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -51,9 +36,7 @@ import Database from '../src/sqlite_driver.js'
 
 type Vec0State = 'working' | 'broken' | 'absent'
 
-// Mirrors tests/embeddings_index_wiring.test.ts's classifyVec0()/canExerciseRealEmbeddings:
-// 'absent' (sqlite-vec not installed) is a legitimate platform skip; 'broken' (installed but
-// vec0 fails to load) must fail loudly, not be silently skipped.
+// Mirrors tests/embeddings_index_wiring.test.ts's classifyVec0()/canExerciseRealEmbeddings: 'absent' (sqlite-vec not installed) is a legitimate platform skip; 'broken' (installed but vec0 fails to load) must fail loudly, not be silently skipped.
 function classifyVec0(): Vec0State {
   const req = createRequire(import.meta.url)
   try {
@@ -100,9 +83,7 @@ beforeEach(() => {
 afterEach(() => {
   if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
   else process.env['TOKEN_GOAT_HOME'] = prevHome
-  // Several tests below set TOKEN_GOAT_EMBEDDINGS_ENABLED='true' to exercise the embedding
-  // path; loadConfig() reads it process-wide, so leaving it set would leak into whichever test
-  // runs next in this worker and silently change its embeddings-enabled behavior.
+  // Several tests below set TOKEN_GOAT_EMBEDDINGS_ENABLED='true' to exercise the embedding path; loadConfig() reads it process-wide, so leaving it set would leak into whichever test runs next in this worker and silently change its embeddings-enabled behavior.
   if (prevEmbeddingsEnv === undefined) delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
   else process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = prevEmbeddingsEnv
   invalidateConfigCache()
@@ -224,15 +205,7 @@ describe('indexing.large_file_skip_kb', () => {
     expect(querySymbols({ name: 'ordinarySymbol', limit: 10 }, dbPath).length).toBeGreaterThan(0)
   })
 
-  // Regression: cmdIndex's own skip_dirs/large_file_skip_kb pre-filter (the `continue` above,
-  // mirroring indexFileSync's early returns) left stale symbols/refs/files rows behind for a
-  // file that was indexed while small/allowed and later grew past the cap -- and never cleared
-  // files.sha, so the file's sha stayed permanently mismatched and it kept getting re-selected
-  // as "changed" (never unchanged-skipped) on every subsequent `token-goat index` run without
-  // the stale data ever actually being cleaned up. Drives the real shipping `token-goat index`
-  // path (cmdIndex) end-to-end: index a file normally, then grow it past a newly-lowered
-  // large_file_skip_kb and re-run, asserting the stale symbol no longer resolves and the files
-  // row (including sha) is gone.
+  // Regression: cmdIndex's own skip_dirs/large_file_skip_kb pre-filter (the `continue` above, mirroring indexFileSync's early returns) left stale symbols/refs/files rows behind for a file that was indexed while small/allowed and later grew past the cap -- and never cleared files.sha, so the file's sha stayed permanently mismatched and it kept getting re-selected as "changed" (never unchanged-skipped) on every subsequent `token-goat index` run without the stale data ever actually being cleaned up. Drives the real shipping `token-goat index` path (cmdIndex) end-to-end: index a file normally, then grow it past a newly-lowered large_file_skip_kb and re-run, asserting the stale symbol no longer resolves and the files row (including sha) is gone.
   it('clears stale rows and files.sha via cmdIndex when a previously-indexed file grows past large_file_skip_kb', async () => {
     const src = path.join(TMP, 'growable.ts')
     fs.writeFileSync(src, 'export function growableCliSymbol(): number {\n  return 1\n}\n')
@@ -257,35 +230,19 @@ describe('indexing.large_file_skip_kb', () => {
     expect(querySymbols({ name: 'growableCliSymbol', limit: 10 }, dbPath).length).toBe(0)
     expect(getFileEntry(normSrc, dbPath)).toBeNull()
 
-    // A further run while still over the cap must settle at the same stable state rather than
-    // endlessly re-processing or resurrecting stale rows.
+    // A further run while still over the cap must settle at the same stable state rather than endlessly re-processing or resurrecting stale rows.
     await cmdIndex(TMP, { walk: true, dbPath })
     expect(querySymbols({ name: 'growableCliSymbol', limit: 10 }, dbPath).length).toBe(0)
     expect(getFileEntry(normSrc, dbPath)).toBeNull()
   })
 })
 
-// Regression: cmdIndex's skip_dirs/large_file_skip_kb pre-filter branches called only
-// deleteFileRows (symbols/refs/files) before `continue`, never deleteFileEmbeddings --
-// indexFileEmbeddings (which has its own correct embeddings cleanup) is never reached for a
-// file caught by this pre-filter, so a file that was indexed with embeddings enabled, then
-// later excluded via skip_dirs or large_file_skip_kb, left its chunks/chunk_vectors rows
-// orphaned forever -- not reachable by pruneDeletedFiles either, since the file still exists
-// on disk. `token-goat semantic` kept silently matching content from a file meant to be fully
-// excluded from the index. Drives the real `cmdIndex` path with real embeddings end-to-end,
-// not a mocked/injected callback -- the exact shipping path this bug lived in.
+// Regression: cmdIndex's skip_dirs/large_file_skip_kb pre-filter branches called only deleteFileRows (symbols/refs/files) before `continue`, never deleteFileEmbeddings -- indexFileEmbeddings (which has its own correct embeddings cleanup) is never reached for a file caught by this pre-filter, so a file that was indexed with embeddings enabled, then later excluded via skip_dirs or large_file_skip_kb, left its chunks/chunk_vectors rows orphaned forever -- not reachable by pruneDeletedFiles either, since the file still exists on disk. `token-goat semantic` kept silently matching content from a file meant to be fully excluded from the index. Drives the real `cmdIndex` path with real embeddings end-to-end, not a mocked/injected callback -- the exact shipping path this bug lived in.
 describe('cmdIndex skip pre-filter also removes orphaned embeddings (regression)', () => {
   it.skipIf(!canExerciseRealEmbeddings)(
     'removes chunk_vectors/chunks, not just symbol rows, once a file becomes skip_dirs-excluded, and semantic search stops matching it',
     async () => {
-      // walkProject (behind cmdIndex's --walk fallback) already prunes skip_dirs directories
-      // during the walk itself, before cmdIndex's loop ever sees the file -- so the buggy
-      // pre-filter branch inside cmdIndex's loop (the actual site of this fix) is unreachable in
-      // walk mode. Only the git-tracked path (getTrackedFiles / git ls-files, which does NOT
-      // consult skip_dirs) still hands cmdIndex a file whose directory was added to skip_dirs
-      // AFTER it was first indexed, exactly matching the real-world scenario this bug describes.
-      // A bare `git init` + `git add` (no commit, no user.name/user.email needed) is enough for
-      // `git ls-files` to list the file.
+      // walkProject (behind cmdIndex's --walk fallback) already prunes skip_dirs directories during the walk itself, before cmdIndex's loop ever sees the file -- so the buggy pre-filter branch inside cmdIndex's loop (the actual site of this fix) is unreachable in walk mode. Only the git-tracked path (getTrackedFiles / git ls-files, which does NOT consult skip_dirs) still hands cmdIndex a file whose directory was added to skip_dirs AFTER it was first indexed, exactly matching the real-world scenario this bug describes. A bare `git init` + `git add` (no commit, no user.name/user.email needed) is enough for `git ls-files` to list the file.
       execFileSync('git', ['init', '-q'], { cwd: TMP })
 
       process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
@@ -323,9 +280,7 @@ describe('cmdIndex skip pre-filter also removes orphaned embeddings (regression)
       cfg.indexing.skip_dirs = ['toskip']
       saveConfig(cfg)
 
-      // The file is still git-tracked (skip_dirs only affects the walk-mode fallback and
-      // cmdIndex's own pre-filter, not what git considers tracked), so getTrackedFiles still
-      // hands it to cmdIndex's loop, where the isUnderSkipDir pre-filter branch now fires.
+      // The file is still git-tracked (skip_dirs only affects the walk-mode fallback and cmdIndex's own pre-filter, not what git considers tracked), so getTrackedFiles still hands it to cmdIndex's loop, where the isUnderSkipDir pre-filter branch now fires.
       await cmdIndex(TMP, { dbPath })
 
       expect(querySymbols({ name: 'lookUpAccountByEmailAddress', limit: 10 }, dbPath).length).toBe(0)
@@ -391,20 +346,7 @@ describe('cmdIndex skip pre-filter also removes orphaned embeddings (regression)
   )
 })
 
-// Regression: indexFileSync's OWN isParseSkipEligible branch (parser.ts) called only
-// deleteFileRows before its early return, never deleteFileEmbeddings -- unlike cmdIndex's and
-// makeIndexer's pre-filters (both already covered above), which call removeFileFromIndex
-// (deleteFileRows + deleteFileEmbeddings) BEFORE ever reaching indexFileSync, so they never
-// actually exercise indexFileSync's own buggy branch. indexFileSync is also called directly,
-// without that pre-filter, from runRead/runSkeleton/runOutline (read_commands.ts) behind the
-// user-facing --force-refresh flag -- which imports and calls ONLY indexFileSync, never
-// indexFileEmbeddings (see read_commands.ts's imports). So a file indexed with real embeddings,
-// then made skip-eligible by a config change alone (no edit-hook re-index), left orphaned
-// chunks/chunk_vectors forever once --force-refresh drove indexFileSync directly -- not
-// reachable by pruneDeletedFiles since the file still exists on disk. Drives indexFileSync
-// alone on the second pass (mirroring the real --force-refresh call shape exactly), not
-// cmdIndex/indexFileEmbeddings, so this trips the specific branch the other two regression
-// tests above cannot reach.
+// Regression: indexFileSync's OWN isParseSkipEligible branch (parser.ts) called only deleteFileRows before its early return, never deleteFileEmbeddings -- unlike cmdIndex's and makeIndexer's pre-filters (both already covered above), which call removeFileFromIndex (deleteFileRows + deleteFileEmbeddings) BEFORE ever reaching indexFileSync, so they never actually exercise indexFileSync's own buggy branch. indexFileSync is also called directly, without that pre-filter, from runRead/runSkeleton/runOutline (read_commands.ts) behind the user-facing --force-refresh flag -- which imports and calls ONLY indexFileSync, never indexFileEmbeddings (see read_commands.ts's imports). So a file indexed with real embeddings, then made skip-eligible by a config change alone (no edit-hook re-index), left orphaned chunks/chunk_vectors forever once --force-refresh drove indexFileSync directly -- not reachable by pruneDeletedFiles since the file still exists on disk. Drives indexFileSync alone on the second pass (mirroring the real --force-refresh call shape exactly), not cmdIndex/indexFileEmbeddings, so this trips the specific branch the other two regression tests above cannot reach.
 describe('indexFileSync own skip-eligible branch also removes orphaned embeddings (regression)', () => {
   it.skipIf(!canExerciseRealEmbeddings)(
     'removes chunk_vectors/chunks once a previously-indexed file grows past large_file_skip_kb, driving indexFileSync alone (the --force-refresh shape)',
@@ -439,23 +381,14 @@ describe('indexFileSync own skip-eligible branch also removes orphaned embedding
       const hitsBefore = mergeNearbyHits(await searchSemantic(db, query, 5))
       expect(hitsBefore.some((h) => h.filePath === key)).toBe(true)
 
-      // Simulate a config change alone (e.g. git pull swapping in a lowered
-      // large_file_skip_kb, or the user editing config directly) -- the file's own content on
-      // disk is untouched by the edit hook, so nothing enqueues queue/dirty.txt; the only thing
-      // that reconciles this file's index state is a direct indexFileSync call.
+      // Simulate a config change alone (e.g. git pull swapping in a lowered large_file_skip_kb, or the user editing config directly) -- the file's own content on disk is untouched by the edit hook, so nothing enqueues queue/dirty.txt; the only thing that reconciles this file's index state is a direct indexFileSync call.
       const cfg = defaultConfig()
       cfg.indexing.large_file_skip_kb = 1
       saveConfig(cfg)
-      // Grow the file past the newly-lowered 1 KB cap -- a plain file write, standing in for
-      // an external change (git pull/checkout) that lands new bytes on disk without ever
-      // going through Claude Code's own edit hook (which is what would normally enqueue
-      // queue/dirty.txt).
+      // Grow the file past the newly-lowered 1 KB cap -- a plain file write, standing in for an external change (git pull/checkout) that lands new bytes on disk without ever going through Claude Code's own edit hook (which is what would normally enqueue queue/dirty.txt).
       fs.writeFileSync(filePath, `// ${'x'.repeat(2000)}\n` + content)
 
-      // Real-world trigger: token-goat read/skeleton/outline --force-refresh, which calls ONLY
-      // indexFileSync (see read_commands.ts's resolveSymbolSpec/runSkeleton/runOutline) --
-      // never indexFileEmbeddings. This is the exact call shape that must clean up embeddings
-      // on its own.
+      // Real-world trigger: token-goat read/skeleton/outline --force-refresh, which calls ONLY indexFileSync (see read_commands.ts's resolveSymbolSpec/runSkeleton/runOutline) -- never indexFileEmbeddings. This is the exact call shape that must clean up embeddings on its own.
       parserModule.indexFileSync(filePath, dbPath)
 
       expect(querySymbols({ name: 'lookUpInvoiceByReference', limit: 10 }, dbPath).length).toBe(0)
@@ -475,17 +408,7 @@ describe('indexFileSync own skip-eligible branch also removes orphaned embedding
   )
 })
 
-// Regression: indexFileEmbeddings's early-return branches for a symbol-only-tier file (over
-// large_file_symbol_only_kb but under large_file_skip_kb -- keeps symbols, intentionally skips
-// embedding) called deleteFileEmbeddings and returned WITHOUT stamping files.embed_sha. Because
-// the embedUnchanged gate in both cmdIndex (cli.ts) and makeIndexer (worker.ts) compares
-// entry.embedSha against a real sha, embed_sha stayed perpetually unset/stale for such a file,
-// so indexFileEmbeddings got re-entered -- one extra statSync + a no-op deleteFileEmbeddings call
-// -- on every single subsequent `token-goat index` run, forever, even though nothing about the
-// file ever changed. Drives the real cmdIndex path (not an injected callback), spying only on
-// parser.js's indexFileEmbeddings to count real invocations while still calling through to the
-// real implementation -- the same seam tests/cmdindex_unchanged_skip.test.ts already uses for
-// this exact kind of gate regression.
+// Regression: indexFileEmbeddings's early-return branches for a symbol-only-tier file (over large_file_symbol_only_kb but under large_file_skip_kb -- keeps symbols, intentionally skips embedding) called deleteFileEmbeddings and returned WITHOUT stamping files.embed_sha. Because the embedUnchanged gate in both cmdIndex (cli.ts) and makeIndexer (worker.ts) compares entry.embedSha against a real sha, embed_sha stayed perpetually unset/stale for such a file, so indexFileEmbeddings got re-entered -- one extra statSync + a no-op deleteFileEmbeddings call -- on every single subsequent `token-goat index` run, forever, even though nothing about the file ever changed. Drives the real cmdIndex path (not an injected callback), spying only on parser.js's indexFileEmbeddings to count real invocations while still calling through to the real implementation -- the same seam tests/cmdindex_unchanged_skip.test.ts already uses for this exact kind of gate regression.
 describe('indexing.large_file_symbol_only_kb embed_sha stamping (regression)', () => {
   it('stamps a threshold-bearing embed_sha for a symbol-only-tier file so a repeat cmdIndex run does not re-enter indexFileEmbeddings', async () => {
     process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
@@ -494,8 +417,7 @@ describe('indexing.large_file_symbol_only_kb embed_sha stamping (regression)', (
     saveConfig(cfg)
 
     const src = path.join(TMP, 'symbolonly.ts')
-    // 20 KB, not 2 KB: the third phase below moves the threshold to 10 KB, and the file has to stay
-    // clearly over it so the re-entry it proves costs no real embedding (and so no model fetch).
+    // 20 KB, not 2 KB: the third phase below moves the threshold to 10 KB, and the file has to stay clearly over it so the re-entry it proves costs no real embedding (and so no model fetch).
     fs.writeFileSync(
       src,
       `// ${'x'.repeat(20000)}\nexport function symbolOnlySymbol(): number {\n  return 1\n}\n`,
@@ -506,10 +428,7 @@ describe('indexing.large_file_symbol_only_kb embed_sha stamping (regression)', (
       .spyOn(parserModule, 'indexFileEmbeddings')
       .mockImplementation((fp, dbp, sha) => realIndexFileEmbeddings(fp, dbp, sha))
 
-    // First run: the file is new, so indexFileEmbeddings must be entered once (it hits the
-    // large_file_symbol_only_kb branch internally, deletes any embeddings, and stamps the oversize
-    // marker for the threshold in force -- not a bare sha, which is what a genuinely successful
-    // embed writes and would make this skip indistinguishable from one).
+    // First run: the file is new, so indexFileEmbeddings must be entered once (it hits the large_file_symbol_only_kb branch internally, deletes any embeddings, and stamps the oversize marker for the threshold in force -- not a bare sha, which is what a genuinely successful embed writes and would make this skip indistinguishable from one).
     await cmdIndex(TMP, { walk: true, dbPath })
     expect(embedSpy).toHaveBeenCalledTimes(1)
     expect(querySymbols({ name: 'symbolOnlySymbol', limit: 10 }, dbPath).length).toBeGreaterThan(0)
@@ -521,18 +440,12 @@ describe('indexing.large_file_symbol_only_kb embed_sha stamping (regression)', (
 
     embedSpy.mockClear()
 
-    // Second run over the SAME, byte-identical file with the SAME threshold: embedUnchanged must
-    // hold, so indexFileEmbeddings must not be re-entered at all.
+    // Second run over the SAME, byte-identical file with the SAME threshold: embedUnchanged must hold, so indexFileEmbeddings must not be re-entered at all.
     await cmdIndex(TMP, { walk: true, dbPath })
     expect(embedSpy).not.toHaveBeenCalled()
     expect(querySymbols({ name: 'symbolOnlySymbol', limit: 10 }, dbPath).length).toBeGreaterThan(0)
 
-    // Third run, content still byte-identical, but the user has raised the threshold -- which is
-    // what `token-goat doctor`'s embedding-coverage remediation tells them to do. The skip was a
-    // decision about a config value, not about the content, so it has to be re-made: with a bare
-    // sha stamped above, the gate held and every previously-skipped file stayed permanently absent
-    // from the semantic index. 10 KB keeps this 20 KB fixture over the cap, so the re-entry is
-    // observable without any real embedding running.
+    // Third run, content still byte-identical, but the user has raised the threshold -- which is what `token-goat doctor`'s embedding-coverage remediation tells them to do. The skip was a decision about a config value, not about the content, so it has to be re-made: with a bare sha stamped above, the gate held and every previously-skipped file stayed permanently absent from the semantic index. 10 KB keeps this 20 KB fixture over the cap, so the re-entry is observable without any real embedding running.
     embedSpy.mockClear()
     const raised = defaultConfig()
     raised.indexing.large_file_symbol_only_kb = 10

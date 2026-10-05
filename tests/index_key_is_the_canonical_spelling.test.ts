@@ -1,29 +1,4 @@
-/**
- * Regression: the index wrote rows under whatever spelling the caller happened to use, while every
- * reader addresses a row through `normalizePath`. Two of that function's steps rewrite the
- * DIRECTORY prefix -- `expandShortPath` expands a Windows 8.3 segment, `normalizeDarwinSystemAlias`
- * turns `/var/...` into `/private/var/...` -- and the writer applied neither. On a machine whose
- * project or temp path is reached through an 8.3 alias or the macOS `/var` symlink the file indexed
- * normally and then could not be looked up at all: `symbol`, `read`, `refs` and `section` each
- * answered as though it had never been indexed.
- *
- * Why no test caught it: every test built its fixtures under `os.tmpdir()`, and on Linux and on a
- * developer machine with a short user name that path is already canonical, so writer and reader
- * agreed by accident of environment. It surfaced only on GitHub's Windows runner
- * (`C:/Users/RUNNER~1`) and on macOS (`/var/folders`).
- *
- * FIXTURE PROVENANCE
- *
- * The two spellings below are HAND-DERIVED: a backslash drive path is rewritten on every platform,
- * and `/mnt/c/...` only on Windows, since on Linux it is where WSL mounts the C: drive and the key has
- * to be a path the indexer can open (BE-21). The expected answers are computed from the input by hand
- * rather than read off the implementation.
- *
- * The end-to-end case is CAPTURE in the sense that matters: it does not invent a non-canonical
- * spelling, it asks the OS for one. `fs.realpathSync.native` disagreeing with the path `mkdtempSync`
- * just returned IS the condition the bug needs, and where the OS has no such disagreement to offer
- * there is nothing on that platform to regress, so the case reports that rather than pretending.
- */
+/** Regression: the index wrote rows under whatever spelling the caller happened to use, while every reader addresses a row through `normalizePath`. Two of that function's steps rewrite the DIRECTORY prefix -- `expandShortPath` expands a Windows 8.3 segment, `normalizeDarwinSystemAlias` turns `/var/...` into `/private/var/...` -- and the writer applied neither. On a machine whose project or temp path is reached through an 8.3 alias or the macOS `/var` symlink the file indexed normally and then could not be looked up at all: `symbol`, `read`, `refs` and `section` each answered as though it had never been indexed. Why no test caught it: every test built its fixtures under `os.tmpdir()`, and on Linux and on a developer machine with a short user name that path is already canonical, so writer and reader agreed by accident of environment. It surfaced only on GitHub's Windows runner (`C:/Users/RUNNER~1`) and on macOS (`/var/folders`). FIXTURE PROVENANCE The two spellings below are HAND-DERIVED: a backslash drive path is rewritten on every platform, and `/mnt/c/...` only on Windows, since on Linux it is where WSL mounts the C: drive and the key has to be a path the indexer can open (BE-21). The expected answers are computed from the input by hand rather than read off the implementation. The end-to-end case is CAPTURE in the sense that matters: it does not invent a non-canonical spelling, it asks the OS for one. `fs.realpathSync.native` disagreeing with the path `mkdtempSync` just returned IS the condition the bug needs, and where the OS has no such disagreement to offer there is nothing on that platform to regress, so the case reports that rather than pretending. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -53,12 +28,9 @@ describe('the spelling the index is keyed on', () => {
   it('lets a file indexed through the OS-reported alias still be looked up', () => {
     const made = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-alias-'))
     const real = fs.realpathSync.native(made)
-    // Compared RAW, not normalized. Normalizing both sides erases the alias that is the whole
-    // condition here -- the first draft did that and skipped itself on the one platform shape it
-    // was written for, passing against a parser that still had the bug.
+    // Compared RAW, not normalized. Normalizing both sides erases the alias that is the whole condition here -- the first draft did that and skipped itself on the one platform shape it was written for, passing against a parser that still had the bug.
     if (real === made) {
-      // No alias on this platform's temp root, so there is no divergence here to regress. Windows
-      // runners (8.3) and macOS (`/var`) do supply one, and that is where this case has teeth.
+      // No alias on this platform's temp root, so there is no divergence here to regress. Windows runners (8.3) and macOS (`/var`) do supply one, and that is where this case has teeth.
       expect(real).toBe(made)
       return
     }

@@ -108,9 +108,7 @@ describe('extractZipEntry', () => {
     await expect(extractZipEntry(garbage, 'a.txt')).rejects.toThrow()
   })
 
-  // Gap 2: extractZipEntry used to call fflate's unzipSync with no size bound of any kind, so a
-  // requested entry's *declared* uncompressed size sized fflate's own allocation with nothing
-  // stopping it from being huge.
+  // Gap 2: extractZipEntry used to call fflate's unzipSync with no size bound of any kind, so a requested entry's *declared* uncompressed size sized fflate's own allocation with nothing stopping it from being huge.
   it('rejects an entry over the decompressed-size limit by its declared size, without decompressing it', async () => {
     // 520MB of zeros, honestly declared, compresses to a few MB in well under a second.
     const zip = zipSync({ 'bomb.bin': zeroPayload(520) }, { level: 1 })
@@ -124,14 +122,11 @@ describe('extractZipEntry', () => {
 
     expect(err).toBeInstanceOf(ZipOutputTooLargeError)
     expect(err?.message).toMatch(/over the 500MB decompressed-size limit/)
-    // Proves the declared-size fast path fired instead of decompressing first: fully
-    // materializing 520MB would take measurably longer than this.
+    // Proves the declared-size fast path fired instead of decompressing first: fully materializing 520MB would take measurably longer than this.
     expect(elapsedMs).toBeLessThan(1000)
   })
 
-  // The declared size field is attacker-controlled and can understate the truth. A check gated
-  // only on it is theatre; this proves the real-time running-total check -- not the declared-size
-  // fast path -- is what actually catches an entry that lies.
+  // The declared size field is attacker-controlled and can understate the truth. A check gated only on it is theatre; this proves the real-time running-total check -- not the declared-size fast path -- is what actually catches an entry that lies.
   it('rejects an entry that lies about its declared size, catching it long before the real 600MB payload is fully decompressed', async () => {
     const realPayload = zeroPayload(600)
     const zip = buildLyingSizeZip('lying.bin', realPayload, 1024) // declares only 1KB
@@ -145,16 +140,13 @@ describe('extractZipEntry', () => {
     const match = /over (\d+)MB decompressed so far/.exec(err?.message ?? '')
     expect(match).not.toBeNull()
     const decompressedSoFarMB = Number(match?.[1])
-    // Real payload is 600MB; a running total anywhere near the 500MB limit (not the 600MB real
-    // size) proves extraction was aborted mid-stream, not after full decompression.
+    // Real payload is 600MB; a running total anywhere near the 500MB limit (not the 600MB real size) proves extraction was aborted mid-stream, not after full decompression.
     expect(decompressedSoFarMB).toBeGreaterThanOrEqual(500)
     expect(decompressedSoFarMB).toBeLessThan(550)
   })
 })
 
-// fflate is an optional dependency. When it is absent the two zip commands must say so, because
-// the message they used to give -- "not a valid zip-format file" -- sent the reader to inspect an
-// archive that was fine. The error type is what read_commands.ts branches on.
+// fflate is an optional dependency. When it is absent the two zip commands must say so, because the message they used to give -- "not a valid zip-format file" -- sent the reader to inspect an archive that was fine. The error type is what read_commands.ts branches on.
 describe('ArchiveDependencyMissingError', () => {
   it('names the package and the command it enables, not the archive', () => {
     const err = new ArchiveDependencyMissingError()

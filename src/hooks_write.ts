@@ -1,32 +1,4 @@
-/**
- * pre_tool_use hook for the Write tool: full-rewrite detector (feature-queue #302).
- *
- * The gap: `hooks_edit.ts::postEditHandler` already intercepts Write AFTER it happens (enqueue
- * reindex, emit a markdown-section hint), but nothing intercepts it BEFORE. When an agent uses
- * Write to rewrite an EXISTING file where only a small portion actually changed, it has to send
- * the entire new file content through the tool call -- every unchanged line burns tokens that a
- * targeted `Edit` (or `token-goat replace` / `write-file --from`, see CLAUDE.md's "Writing Files
- * with Special Characters" section) would have avoided.
- *
- * This hook compares the incoming Write's new content against the current on-disk content --
- * only possible when the file already exists; a Write creating a brand-new file has nothing to
- * compare against and always passes through with zero comparison attempted -- and, when the
- * unchanged-line fraction is high on a non-trivially large file, emits an advisory hint
- * recommending Edit instead. Never blocks: Write is sometimes genuinely the right tool (a real
- * full-file rewrite), so this is `context`-only, exactly like hooks_glob.ts's dedup hint.
- *
- * Diff-detection approach: checked for a reusable line-diff utility first (per task instructions)
- * -- `bash_output_cache.ts::summarizeOutputDelta` is bag-of-lines only (counts issue-marker lines
- * present/absent, or a bare old-vs-new line-count delta), not order-aware, so it can't distinguish
- * "10% of lines changed, scattered" from "one contiguous 90% rewrite"; `read_commands.ts`'s
- * `parseDiffHunks`/`splitDiffHunks` shell out to `git diff` against a committed ref and a path
- * already on disk, which doesn't fit here (the new content is a pending tool_input, not yet
- * written, and spawning `git diff --no-index` on every Write would add subprocess latency to a
- * hook that must stay fast and must also work outside a git repo). Neither is an adequate fit, so
- * this hook computes its own line-level LCS length -- the honest, order-respecting signal the task
- * asked for -- bounded by {@link MAX_LINES_FOR_DIFF} so the O(n*m) DP never turns a Write into a
- * multi-second hook call.
- */
+/** pre_tool_use hook for the Write tool: full-rewrite detector (feature-queue #302). The gap: `hooks_edit.ts::postEditHandler` already intercepts Write AFTER it happens (enqueue reindex, emit a markdown-section hint), but nothing intercepts it BEFORE. When an agent uses Write to rewrite an EXISTING file where only a small portion actually changed, it has to send the entire new file content through the tool call -- every unchanged line burns tokens that a targeted `Edit` (or `token-goat replace` / `write-file --from`, see CLAUDE.md's "Writing Files with Special Characters" section) would have avoided. This hook compares the incoming Write's new content against the current on-disk content -- only possible when the file already exists; a Write creating a brand-new file has nothing to compare against and always passes through with zero comparison attempted -- and, when the unchanged-line fraction is high on a non-trivially large file, emits an advisory hint recommending Edit instead. Never blocks: Write is sometimes genuinely the right tool (a real full-file rewrite), so this is `context`-only, exactly like hooks_glob.ts's dedup hint. Diff-detection approach: checked for a reusable line-diff utility first (per task instructions) -- `bash_output_cache.ts::summarizeOutputDelta` is bag-of-lines only (counts issue-marker lines present/absent, or a bare old-vs-new line-count delta), not order-aware, so it can't distinguish "10% of lines changed, scattered" from "one contiguous 90% rewrite"; `read_commands.ts`'s `parseDiffHunks`/`splitDiffHunks` shell out to `git diff` against a committed ref and a path already on disk, which doesn't fit here (the new content is a pending tool_input, not yet written, and spawning `git diff --no-index` on every Write would add subprocess latency to a hook that must stay fast and must also work outside a git repo). Neither is an adequate fit, so this hook computes its own line-level LCS length -- the honest, order-respecting signal the task asked for -- bounded by {@link MAX_LINES_FOR_DIFF} so the O(n*m) DP never turns a Write into a multi-second hook call. */
 import { readFileSync, statSync } from 'node:fs'
 
 import type { HookEvent } from './hook_registry.js'
@@ -37,53 +9,20 @@ import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 import type { HookOutput } from './types.js'
 
-/**
- * Performance safety valve for the O(n*m) LCS computation below. Independent of the
- * user-configurable `hints.write_rewrite_min_lines` floor (which gates whether the detector
- * fires at all): this caps how large a file the detector will even attempt to diff, so a huge
- * file's Write never turns into a multi-second (or memory-heavy) synchronous hook call. Above
- * this size the detector fails open (passes through, no comparison) rather than block on a diff
- * that's too expensive to be worth it.
- */
+/** Performance safety valve for the O(n*m) LCS computation below. Independent of the user-configurable `hints.write_rewrite_min_lines` floor (which gates whether the detector fires at all): this caps how large a file the detector will even attempt to diff, so a huge file's Write never turns into a multi-second (or memory-heavy) synchronous hook call. Above this size the detector fails open (passes through, no comparison) rather than block on a diff that's too expensive to be worth it. */
 const MAX_LINES_FOR_DIFF = 4000
 
-/**
- * Byte-size gate applied to the OLD file's `stat.size` before it is ever read into memory.
- * `MAX_LINES_FOR_DIFF` above only rejects an oversized file AFTER `readFileSync` has already
- * loaded the whole thing and `splitLines` has already run -- so a huge single-line file (a
- * minified bundle, a data dump) or a huge multi-GB log sailed straight through that gate and
- * synchronously read its entire content into a JS string on every single Write, exactly the
- * unbounded-`readFileSync` pattern already fixed for the catch-all file-type dispatch in
- * hooks_read.ts (see SLICE_ESTIMATE_SCAN_CAP_BYTES there). Checked against `stat.size`, which is
- * already available post-`statSync`, before any read is attempted.
- */
+/** Byte-size gate applied to the OLD file's `stat.size` before it is ever read into memory. `MAX_LINES_FOR_DIFF` above only rejects an oversized file AFTER `readFileSync` has already loaded the whole thing and `splitLines` has already run -- so a huge single-line file (a minified bundle, a data dump) or a huge multi-GB log sailed straight through that gate and synchronously read its entire content into a JS string on every single Write, exactly the unbounded-`readFileSync` pattern already fixed for the catch-all file-type dispatch in hooks_read.ts (see SLICE_ESTIMATE_SCAN_CAP_BYTES there). Checked against `stat.size`, which is already available post-`statSync`, before any read is attempted. */
 const MAX_OLD_FILE_BYTES_FOR_DIFF = 4 * 1024 * 1024
 
-/**
- * Split into lines, without the phantom trailing element a final newline produces.
- *
- * `'a\nb\n'.split(/\n/)` is `['a', 'b', '']`: three elements for a two-line file. Both numbers
- * this module reports were computed from that array, so a 40-line file was described as a
- * "41-line file", and the empty element matched its counterpart in the new content on every
- * comparison, adding a free +1 to the unchanged count -- 30 of 40 lines kept was reported as 76%
- * rather than 75%. Nearly every text file ends in a newline, so this was the normal case, not an
- * edge one, and both figures appear verbatim in the message the model is shown. The minimum-lines
- * gate read the same inflated count, so a file one line short of the threshold passed it.
- */
+/** Split into lines, without the phantom trailing element a final newline produces. `'a\nb\n'.split(/\n/)` is `['a', 'b', '']`: three elements for a two-line file. Both numbers this module reports were computed from that array, so a 40-line file was described as a "41-line file", and the empty element matched its counterpart in the new content on every comparison, adding a free +1 to the unchanged count -- 30 of 40 lines kept was reported as 76% rather than 75%. Nearly every text file ends in a newline, so this was the normal case, not an edge one, and both figures appear verbatim in the message the model is shown. The minimum-lines gate read the same inflated count, so a file one line short of the threshold passed it. */
 function splitLines(text: string): string[] {
   const lines = text.split(/\r\n|\r|\n/)
   if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
   return lines
 }
 
-/**
- * Length of the longest common subsequence between two line arrays, via the standard O(n*m)
- * time / O(min(n,m)) space DP (two rolling rows, always iterating the shorter side as the inner
- * loop). Order-respecting by construction -- unlike a multiset/bag-of-lines intersection, lines
- * that recur out of order don't inflate the "unchanged" count, so a genuine full-file rewrite
- * that happens to share some common lines (imports, boilerplate) doesn't masquerade as a small
- * edit.
- */
+/** Length of the longest common subsequence between two line arrays, via the standard O(n*m) time / O(min(n,m)) space DP (two rolling rows, always iterating the shorter side as the inner loop). Order-respecting by construction -- unlike a multiset/bag-of-lines intersection, lines that recur out of order don't inflate the "unchanged" count, so a genuine full-file rewrite that happens to share some common lines (imports, boilerplate) doesn't masquerade as a small edit. */
 function lcsLength(a: string[], b: string[]): number {
   const [shortArr, longArr] = a.length <= b.length ? [a, b] : [b, a]
   const n = shortArr.length
@@ -100,14 +39,7 @@ function lcsLength(a: string[], b: string[]): number {
   return prev[n] ?? 0
 }
 
-/**
- * pre_tool_use handler for Write. Fails open on every path that isn't a clean "existing file,
- * mostly-unchanged rewrite" match: missing/non-string content, a path that doesn't exist yet
- * (brand-new file -- zero comparison attempted), a directory at that path, an old file over
- * `MAX_OLD_FILE_BYTES_FOR_DIFF` (never even read), a read error, a file below
- * `hints.write_rewrite_min_lines`, a diff too large to compute cheaply, or an
- * unchanged-line fraction below `hints.write_rewrite_unchanged_pct` all just `passOutput()`.
- */
+/** pre_tool_use handler for Write. Fails open on every path that isn't a clean "existing file, mostly-unchanged rewrite" match: missing/non-string content, a path that doesn't exist yet (brand-new file -- zero comparison attempted), a directory at that path, an old file over `MAX_OLD_FILE_BYTES_FOR_DIFF` (never even read), a read error, a file below `hints.write_rewrite_min_lines`, a diff too large to compute cheaply, or an unchanged-line fraction below `hints.write_rewrite_unchanged_pct` all just `passOutput()`. */
 export function preWriteRewriteHandler(event: HookEvent): HookOutput {
   try {
     if (getToolName(event) !== 'Write') return passOutput()
@@ -122,8 +54,7 @@ export function preWriteRewriteHandler(event: HookEvent): HookOutput {
     try {
       stat = statSync(filePath)
     } catch {
-      // Doesn't exist yet (or the path is otherwise unreachable) -- a brand-new-file Write has
-      // nothing to compare against and must always pass through untouched.
+      // Doesn't exist yet (or the path is otherwise unreachable) -- a brand-new-file Write has nothing to compare against and must always pass through untouched.
       return passOutput()
     }
     if (!stat.isFile()) return passOutput()

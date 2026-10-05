@@ -1,12 +1,4 @@
-/**
- * The compaction manifest's web-URL section must carry what subagents fetched, not only the parent.
- *
- * `selectManifestFiles` merges sibling subagent blobs so a file a subagent read survives compaction; the web-URL section was built from `getSessionWebFetches()` alone, which holds only the parent's in-memory state. A subagent's fetched URLs live in its own agent-salted blob on disk and reached nothing -- the exact loss the file merge exists to prevent, one section over. A fetched URL is the most expensive row in the manifest to lose: re-reading a file costs a read, while a URL nobody recorded is gone with the cache id that would have recalled it for free.
- *
- * Provenance: HAND-DERIVED. The sibling blobs are written through the real `saveSessionState`
- * under the same `${sessionId}:agent:${agentId}` key shape relay.ts's `sessionStateKey` builds,
- * so the on-disk layout under test is the production writer's, not a fixture's idea of it.
- */
+/** The compaction manifest's web-URL section must carry what subagents fetched, not only the parent. `selectManifestFiles` merges sibling subagent blobs so a file a subagent read survives compaction; the web-URL section was built from `getSessionWebFetches()` alone, which holds only the parent's in-memory state. A subagent's fetched URLs live in its own agent-salted blob on disk and reached nothing -- the exact loss the file merge exists to prevent, one section over. A fetched URL is the most expensive row in the manifest to lose: re-reading a file costs a read, while a URL nobody recorded is gone with the cache id that would have recalled it for free. Provenance: HAND-DERIVED. The sibling blobs are written through the real `saveSessionState` under the same `${sessionId}:agent:${agentId}` key shape relay.ts's `sessionStateKey` builds, so the on-disk layout under test is the production writer's, not a fixture's idea of it. */
 
 import fs from 'node:fs'
 import os from 'node:os'

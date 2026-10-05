@@ -1,14 +1,6 @@
-// End-to-end regression for the bash_compress Windows-shell fix, driving the REAL production
-// path: bashRunner.run() -> wrapAndCompress -> spawnSync({ shell: wrappedShell() }). Before the
-// fix, spawnSync `shell: true` on Windows was cmd.exe, so a bash construct like arithmetic
-// expansion `$((6*7))` was echoed literally instead of evaluated. After the fix it runs under
-// Git-Bash and evaluates to 42.
+// End-to-end regression for the bash_compress Windows-shell fix, driving the REAL production path: bashRunner.run() -> wrapAndCompress -> spawnSync({ shell: wrappedShell() }). Before the fix, spawnSync `shell: true` on Windows was cmd.exe, so a bash construct like arithmetic expansion `$((6*7))` was echoed literally instead of evaluated. After the fix it runs under Git-Bash and evaluates to 42.
 //
-// Windows-only by nature: the whole point is that the wrapper no longer falls through to
-// cmd.exe. On POSIX both `shell: true` (/bin/sh) and any bash evaluate `$((6*7))`, so there is
-// nothing to discriminate — the cross-platform locateBashOnPath tests in tests/shell.test.ts
-// carry the platform-independent coverage. Tri-state: assert on Windows-with-bash, skip only
-// when no bash is installed, never silently pass.
+// Windows-only by nature: the whole point is that the wrapper no longer falls through to cmd.exe. On POSIX both `shell: true` (/bin/sh) and any bash evaluate `$((6*7))`, so there is nothing to discriminate — the cross-platform locateBashOnPath tests in tests/shell.test.ts carry the platform-independent coverage. Tri-state: assert on Windows-with-bash, skip only when no bash is installed, never silently pass.
 import { describe, expect, it } from 'vitest'
 
 import * as bashRunner from '../src/bash_runner.js'
@@ -42,8 +34,7 @@ describe('compress runs the inner command under bash on Windows', () => {
     })
 
     expect(exit).toBe(0)
-    // The single-quoted bash argument is literally p\\q (two backslashes): `printf %s`
-    // does not interpret backslash escapes, so both must survive byte-for-byte.
+    // The single-quoted bash argument is literally p\\q (two backslashes): `printf %s` does not interpret backslash escapes, so both must survive byte-for-byte.
     expect(captured).toContain('p\\\\q')
   })
 })

@@ -17,9 +17,7 @@ import {
 import { selectFilter } from '../src/tool_filters/dispatch.js'
 import type { ToolFilter } from '../src/tool_filters/base.js'
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helpers ---------------------------------------------------------------------------
 
 function apply(
   filter: ToolFilter,
@@ -31,9 +29,7 @@ function apply(
   return filter.apply(stdout, stderr, exitCode, argv).text
 }
 
-// ---------------------------------------------------------------------------
-// Dispatch ordering — KubectlLogsFilter must precede KubectlFilter; DockerComposeFilter must precede DockerFilter.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Dispatch ordering — KubectlLogsFilter must precede KubectlFilter; DockerComposeFilter must precede DockerFilter. ---------------------------------------------------------------------------
 
 describe('CONTAINER_FILTERS dispatch ordering', () => {
   it('KubectlLogsFilter wins for kubectl logs', () => {
@@ -82,9 +78,7 @@ describe('CONTAINER_FILTERS dispatch ordering', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// DockerFilter — ported from Python TestDockerFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- DockerFilter — ported from Python TestDockerFilter ---------------------------------------------------------------------------
 
 describe('DockerFilter', () => {
   const f = new DockerFilter()
@@ -195,10 +189,7 @@ describe('DockerFilter', () => {
   })
 
   it('collapses legacy (non-BuildKit) "---> <hex>" intermediate-layer lines', () => {
-    // Classic `DOCKER_BUILDKIT=0 docker build` output prints a bare 12-char-hex intermediate
-    // layer hash per step (` ---> a1b2c3d4e5f6`), with no `sha256:` label -- that labeled form
-    // is specific to the *different*, already-handled BuildKit `#N ... sha256:...` lines
-    // covered by the tests above.
+    // Classic `DOCKER_BUILDKIT=0 docker build` output prints a bare 12-char-hex intermediate layer hash per step (` ---> a1b2c3d4e5f6`), with no `sha256:` label -- that labeled form is specific to the *different*, already-handled BuildKit `#N ... sha256:...` lines covered by the tests above.
     const text = [
       'Step 1/4 : FROM node:18',
       ' ---> aaaaaaaaaaaa',
@@ -222,10 +213,7 @@ describe('DockerFilter', () => {
   })
 
   it('keeps the failing step header for a legacy (non-BuildKit) RUN failure whose error text never spells out "error"', () => {
-    // npm's real-world failure marker is "npm ERR!", not the literal substring "error" -- and
-    // the docker-emitted failure line ("returned a non-zero code") doesn't say "error" either.
-    // A failing RUN step must still keep its "Step N/M :" header so the agent knows *which*
-    // command failed, not just see an orphaned npm ERR! line with no context.
+    // npm's real-world failure marker is "npm ERR!", not the literal substring "error" -- and the docker-emitted failure line ("returned a non-zero code") doesn't say "error" either. A failing RUN step must still keep its "Step N/M :" header so the agent knows *which* command failed, not just see an orphaned npm ERR! line with no context.
     const text = [
       'Step 1/4 : FROM node:18',
       ' ---> aaaaaaaaaaaa',
@@ -241,9 +229,7 @@ describe('DockerFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// DockerComposeFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- DockerComposeFilter ---------------------------------------------------------------------------
 
 describe('DockerComposeFilter', () => {
   const f = new DockerComposeFilter()
@@ -306,9 +292,7 @@ describe('DockerComposeFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// KubectlFilter — ported from Python TestKubectlFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- KubectlFilter — ported from Python TestKubectlFilter ---------------------------------------------------------------------------
 
 describe('KubectlFilter', () => {
   const f = new KubectlFilter()
@@ -380,8 +364,7 @@ describe('KubectlFilter', () => {
   })
 
   it('get truncates long table when -n namespace precedes the subcommand', () => {
-    // Global `-n <namespace>` before the subcommand is valid kubectl syntax
-    // (`kubectl -n myns get pods`) and must not shift positional routing.
+    // Global `-n <namespace>` before the subcommand is valid kubectl syntax (`kubectl -n myns get pods`) and must not shift positional routing.
     const rows = ['NAME READY STATUS RESTARTS AGE']
     for (let i = 0; i < 50; i++) rows.push(`pod-${i} 1/1 Running 0 5m`)
     const text = rows.join('\n')
@@ -618,9 +601,7 @@ describe('KubectlFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// KubectlLogsFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- KubectlLogsFilter ---------------------------------------------------------------------------
 
 describe('KubectlLogsFilter', () => {
   const f = new KubectlLogsFilter()
@@ -751,9 +732,7 @@ describe('KubectlLogsFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// HelmFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- HelmFilter ---------------------------------------------------------------------------
 
 describe('HelmFilter', () => {
   const f = new HelmFilter()
@@ -800,12 +779,7 @@ describe('HelmFilter', () => {
     expect(result).not.toContain('release-10')
   })
 
-  // HAND-DERIVED status values, from helm 3's release.Status constants, which helm list prints
-  // verbatim in its STATUS column: deployed, failed, superseded, uninstalling, uninstalled,
-  // unknown, pending-install, pending-upgrade, pending-rollback. CAPTURE was impossible: helm is
-  // not installed here and this loop may not install it. All lowercase, which is why the shared
-  // TABLE_ROW_ANOMALY_RE, whose kubectl and CloudFormation entries are capitalised, saw nothing
-  // wrong with any of them.
+  // HAND-DERIVED status values, from helm 3's release.Status constants, which helm list prints verbatim in its STATUS column: deployed, failed, superseded, uninstalling, uninstalled, unknown, pending-install, pending-upgrade, pending-rollback. CAPTURE was impossible: helm is not installed here and this loop may not install it. All lowercase, which is why the shared TABLE_ROW_ANOMALY_RE, whose kubectl and CloudFormation entries are capitalised, saw nothing wrong with any of them.
   it('list keeps a failed release that sorts past the row cap', () => {
     const rows = ['NAME\tNAMESPACE\tREVISION\tSTATUS\tCHART']
     for (let i = 0; i < 25; i++) {
@@ -820,11 +794,7 @@ describe('HelmFilter', () => {
     expect(result).toContain('2 row(s) kept for a not-ready status')
   })
 
-  // The two bare words in the shared anomaly pattern had no boundaries on them, so they matched
-  // inside any longer word: a chart or release name merely CONTAINING "failed" or "unknown" pinned
-  // a perfectly healthy row, spending the row budget on rows nothing is wrong with and pushing out
-  // the ones that are. HAND-DERIVED: the status values are helm 3's own release.Status constants,
-  // and the chart names below are ordinary naming, not shapes read off the matcher.
+  // The two bare words in the shared anomaly pattern had no boundaries on them, so they matched inside any longer word: a chart or release name merely CONTAINING "failed" or "unknown" pinned a perfectly healthy row, spending the row budget on rows nothing is wrong with and pushing out the ones that are. HAND-DERIVED: the status values are helm 3's own release.Status constants, and the chart names below are ordinary naming, not shapes read off the matcher.
   it('list does not treat a healthy row as an anomaly because a name contains the word failed or unknown', () => {
     const rows = ['NAME\tNAMESPACE\tREVISION\tSTATUS\tCHART']
     for (let i = 0; i < 25; i++) {
@@ -833,8 +803,7 @@ describe('HelmFilter', () => {
       rows.push(`release-${i}\tdefault\t1\t${status}\t${chart}`)
     }
     const result = apply(f, rows.join('\n'), '', 0, ['helm', 'list'])
-    // Survival anchor: the genuinely failed release is still kept, so this cannot pass by the
-    // anomaly rule having stopped firing altogether.
+    // Survival anchor: the genuinely failed release is still kept, so this cannot pass by the anomaly rule having stopped firing altogether.
     expect(result).toContain('release-22\tdefault\t1\tfailed')
     expect(result).toContain('1 row(s) kept for a not-ready status')
     // Both healthy rows sort past the cap and must not be rescued by their chart names.
@@ -886,9 +855,7 @@ describe('HelmFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Regression: KubectlLogsFilter dedup flush order Verified fail-pre (without the prevKey flush guard) / pass-post.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Regression: KubectlLogsFilter dedup flush order Verified fail-pre (without the prevKey flush guard) / pass-post. ---------------------------------------------------------------------------
 
 describe('KubectlLogsFilter dedup flush regression', () => {
   it('flushes omit marker when switching to a different message mid-stream (>50 lines)', () => {

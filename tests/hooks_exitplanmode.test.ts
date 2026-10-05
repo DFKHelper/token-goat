@@ -2,10 +2,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-// Importing relay registers EVERY hook module (including hooks_exitplanmode) for its
-// side-effects, so runHook dispatches through the real production registry --
-// not a test-only handler reference. buildEvent maps a Claude Code payload onto
-// a HookEvent exactly as relay() does on stdin.
+// Importing relay registers EVERY hook module (including hooks_exitplanmode) for its side-effects, so runHook dispatches through the real production registry -- not a test-only handler reference. buildEvent maps a Claude Code payload onto a HookEvent exactly as relay() does on stdin.
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
 import { summarize } from '../src/stats.js'
@@ -39,13 +36,7 @@ describe('ExitPlanMode plan-body deduplication hook (real runHook dispatch)', ()
     return { tool_name: toolName, tool_input: toolInput, session_id: sessionId, tool_response: { output, status: 'success' } }
   }
 
-  // The rewrite now goes through the shared net-benefit gate
-  // (tool_filters/base.ts::isRewriteWorthwhile): the omission pointer itself costs
-  // ~108 bytes, and the default floor (bash_compress.min_net_savings_bytes) is 100,
-  // so a plan body has to be comfortably larger than ~208 bytes for the rewrite to
-  // clear the floor. Every test below that asserts a rewrite uses a plan body sized
-  // well above that; a dedicated pair of tests further down covers the below-floor
-  // (untouched) and above-floor (rewritten) boundary explicitly.
+  // The rewrite now goes through the shared net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile): the omission pointer itself costs ~108 bytes, and the default floor (bash_compress.min_net_savings_bytes) is 100, so a plan body has to be comfortably larger than ~208 bytes for the rewrite to clear the floor. Every test below that asserts a rewrite uses a plan body sized well above that; a dedicated pair of tests further down covers the below-floor (untouched) and above-floor (rewritten) boundary explicitly.
   const bigPlanBody = 'This is the plan body. '.repeat(20) // ~480 bytes
 
   it('leaves an unrelated body untouched when a short plan merely occurs somewhere inside it', async () => {
@@ -64,10 +55,7 @@ ${unrelatedBody}`
   })
 
   it('records the bytes it removed, priced on what it actually emitted', async () => {
-    // Provenance: HAND-DERIVED. Both sides are measured here from the strings this test built, not
-    // read back out of the handler. The handler emitted this rewrite for several releases while
-    // recording nothing at all, so the mechanism was invisible in `token-goat stats` and its net
-    // benefit could never be checked against the gate that admits it.
+    // Provenance: HAND-DERIVED. Both sides are measured here from the strings this test built, not read back out of the handler. The handler emitted this rewrite for several releases while recording nothing at all, so the mechanism was invisible in `token-goat stats` and its net benefit could never be checked against the gate that admits it.
     const marker = '## Approved Plan:'
     const output = `User has approved your plan.
 
@@ -86,8 +74,7 @@ ${bigPlanBody}`
   })
 
   it('records nothing on the branch that declines to rewrite, rather than a zero-byte saving', async () => {
-    // The mirror. A stat kind that fires on a pass branch would report a saving for a call where the
-    // original text went through untouched.
+    // The mirror. A stat kind that fires on a pass branch would report a saving for a call where the original text went through untouched.
     const marker = '## Approved Plan:'
     const tiny = 'do the thing'
     const output = `User has approved your plan.
@@ -229,8 +216,7 @@ ${tiny}`
   })
 
   it('does not truncate when tool_input has no plan field to verify correspondence against', async () => {
-    // Old (buggy) behavior truncated on marker presence alone, with no attempt to
-    // confirm the post-marker text actually is this call's own approved plan.
+    // Old (buggy) behavior truncated on marker presence alone, with no attempt to confirm the post-marker text actually is this call's own approved plan.
     const output = 'User has approved your plan.\n\n## Approved Plan:\nSome plan body'
     const res = await runHook(buildEvent('post_tool_use', postPayload(output)))
     expect(res.hookType).toBe('pass')
@@ -245,10 +231,7 @@ ${tiny}`
   })
 
   it('does not truncate real content that merely quotes the marker string as an example (unanchored indexOf trap)', async () => {
-    // A plan describing this very hook can contain the literal marker string as
-    // example text, with no actual plan-approval echo following it. The
-    // unanchored `indexOf` alone would treat that as a truncation point; the
-    // correspondence check against tool_input.plan must prevent that.
+    // A plan describing this very hook can contain the literal marker string as example text, with no actual plan-approval echo following it. The unanchored `indexOf` alone would treat that as a truncation point; the correspondence check against tool_input.plan must prevent that.
     const explanation =
       'This hook looks for the "## Approved Plan:" marker in tool output and truncates everything after it, replacing it with a short pointer.'
     const output = `User has approved your plan.\n\n${explanation}`
@@ -260,10 +243,7 @@ ${tiny}`
 
   describe('net-benefit gate (shared tool_filters/base.ts::isRewriteWorthwhile)', () => {
     it('leaves a below-floor plan body untouched -- omitting it would not clear the net-savings floor', async () => {
-      // A short plan body: the pointer text (~108 bytes) plus the default
-      // min_net_savings_bytes floor (100) together demand ~208+ bytes of
-      // omittable body before the rewrite pays for itself. This body is
-      // deliberately short of that.
+      // A short plan body: the pointer text (~108 bytes) plus the default min_net_savings_bytes floor (100) together demand ~208+ bytes of omittable body before the rewrite pays for itself. This body is deliberately short of that.
       const marker = '## Approved Plan:'
       const planBody = 'Fix the bug.'
       const output = `User has approved your plan.\n\n${marker}\n${planBody}`

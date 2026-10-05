@@ -1,21 +1,8 @@
-// Regression: none of the MCP server's tool handlers accepted a root/cwd/project argument, so
-// they all inherited whatever process.cwd() the MCP server process happened to be launched
-// with -- opaque and often NOT the actual workspace root for an MCP client. `semantic` is the
-// only exposed MCP tool among the now project-scoped commands (map/semantic/find/dead/stats --
-// the rest of that set are CLI-only, not MCP tools), so it's the one that needed a projectRoot
-// parameter threaded through to searchSemantic's rootDir argument.
+// Regression: none of the MCP server's tool handlers accepted a root/cwd/project argument, so they all inherited whatever process.cwd() the MCP server process happened to be launched with -- opaque and often NOT the actual workspace root for an MCP client. `semantic` is the only exposed MCP tool among the now project-scoped commands (map/semantic/find/dead/stats -- the rest of that set are CLI-only, not MCP tools), so it's the one that needed a projectRoot parameter threaded through to searchSemantic's rootDir argument.
 //
-// searchSemantic needs a real sqlite-vec-backed DB plus the embedding model to exercise
-// end-to-end (expensive to fixture -- see semantic_project_scope.test.ts for that), so this
-// mocks searchSemantic (same pattern as semantic_overflow_guard.test.ts) and drives the tool
-// call through the REAL MCP protocol layer (Client <-> McpServer over InMemoryTransport, same
-// pattern as mcp_server.test.ts) to assert the projectRoot argument actually reaches
-// searchSemantic's rootDir parameter, instead of being silently dropped.
+// searchSemantic needs a real sqlite-vec-backed DB plus the embedding model to exercise end-to-end (expensive to fixture -- see semantic_project_scope.test.ts for that), so this mocks searchSemantic (same pattern as semantic_overflow_guard.test.ts) and drives the tool call through the REAL MCP protocol layer (Client <-> McpServer over InMemoryTransport, same pattern as mcp_server.test.ts) to assert the projectRoot argument actually reaches searchSemantic's rootDir parameter, instead of being silently dropped.
 //
-// The mock resolves a non-empty hit so runSemantic's success path never falls through to the
-// real FTS fallback (searchSymbolsFts) -- that fallback queries the real, order-dependent
-// global.db, which would make this test's pass/fail flaky depending on what other test files
-// ran earlier in the same worker process.
+// The mock resolves a non-empty hit so runSemantic's success path never falls through to the real FTS fallback (searchSymbolsFts) -- that fallback queries the real, order-dependent global.db, which would make this test's pass/fail flaky depending on what other test files ran earlier in the same worker process.
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -62,9 +49,7 @@ describe('mcp semantic tool projectRoot scoping', () => {
   let prevEmbedEnv: string | undefined
 
   beforeEach(() => {
-    // These assertions are about which rootDir reaches the mocked searchSemantic, not about
-    // indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would
-    // otherwise stop runSemantic from calling searchSemantic at all.
+    // These assertions are about which rootDir reaches the mocked searchSemantic, not about indexing.embeddings_enabled, which isolate-home.ts defaults to false for the suite and would otherwise stop runSemantic from calling searchSemantic at all.
     prevEmbedEnv = process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
     process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
     vi.clearAllMocks()
@@ -77,9 +62,7 @@ describe('mcp semantic tool projectRoot scoping', () => {
   })
 
   it('passes an explicit projectRoot argument through to searchSemantic as rootDir, not process.cwd()', async () => {
-    // Must be a real, absolute, existing directory -- runSemantic now validates projectRoot
-    // (see mcp_server_semantic_projectroot_validation.test.ts) and rejects anything else before
-    // it ever reaches searchSemantic.
+    // Must be a real, absolute, existing directory -- runSemantic now validates projectRoot (see mcp_server_semantic_projectroot_validation.test.ts) and rejects anything else before it ever reaches searchSemantic.
     const scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-sem-scope-'))
     const { client, close } = await connectedClient()
     try {
@@ -88,9 +71,7 @@ describe('mcp semantic tool projectRoot scoping', () => {
       expect(result.isError).toBe(false)
       expect(searchSemanticMock).toHaveBeenCalledTimes(1)
       const call = searchSemanticMock.mock.calls[0]
-      // rootDir is searchSemantic's 6th positional argument (db, query, topK, modelName, maxDistance, rootDir).
-      // The MCP layer resolves the root once and passes the RESOLVED value on, so the raw
-      // argument spelling is deliberately not what arrives here.
+      // rootDir is searchSemantic's 6th positional argument (db, query, topK, modelName, maxDistance, rootDir). The MCP layer resolves the root once and passes the RESOLVED value on, so the raw argument spelling is deliberately not what arrives here.
       expect(call?.[5]).toBe(resolveProjectRoot({ project: scratchRoot }))
       expect(call?.[5]).not.toBe(process.cwd())
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -103,9 +84,7 @@ describe('mcp semantic tool projectRoot scoping', () => {
   })
 
   it('falls back to the resolved project root (not the raw process.cwd()) when no projectRoot argument is given', async () => {
-    // Regression: the default used to be the raw `process.cwd()`, which silently scoped a
-    // `semantic` call made from a project subdirectory to that subtree only. It must now resolve
-    // up to the actual project root the same way runFind/runChanged already do.
+    // Regression: the default used to be the raw `process.cwd()`, which silently scoped a `semantic` call made from a project subdirectory to that subtree only. It must now resolve up to the actual project root the same way runFind/runChanged already do.
     const { client, close } = await connectedClient()
     try {
       const result = await client.callTool({ name: 'semantic', arguments: { query: 'anything' } })

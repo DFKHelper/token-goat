@@ -124,12 +124,7 @@ describe('pruneIndex', () => {
     expect(result.kept).toBe(1)
   })
 
-  // Regression (bug #243): path.join(memoryDir, target) mangles both a URL
-  // target and an absolute-path target into a bogus path that always reports
-  // as missing, so genuinely-valid entries were silently classified as dead
-  // and deleted with no confirmation. A URL is never resolvable locally (and
-  // is not "dead" by that measure); an absolute path must be existsSync-checked
-  // directly rather than joined onto memoryDir.
+  // Regression (bug #243): path.join(memoryDir, target) mangles both a URL target and an absolute-path target into a bogus path that always reports as missing, so genuinely-valid entries were silently classified as dead and deleted with no confirmation. A URL is never resolvable locally (and is not "dead" by that measure); an absolute path must be existsSync-checked directly rather than joined onto memoryDir.
   it('does not flag a URL-target entry as dead', () => {
     const memoryMd = `- [Spec](https://github.com/example/repo/blob/main/SPEC.md)
 `
@@ -251,9 +246,7 @@ Some notes here
 
     const result = pruneIndex(tempDir)
 
-    // Exactly one dead entry line ("- [Entry 2](missing.md)\n", 24 chars) is removed -- pin the
-    // real estimateTokens() value instead of just ">0", so a regression that dropped the wrong
-    // line's contribution (still non-zero) is caught too.
+    // Exactly one dead entry line ("- [Entry 2](missing.md)\n", 24 chars) is removed -- pin the real estimateTokens() value instead of just ">0", so a regression that dropped the wrong line's contribution (still non-zero) is caught too.
     expect(result.tokensSaved).toBe(9)
   })
 
@@ -330,9 +323,7 @@ describe('findContentDuplicates', () => {
 
     const result = await findContentDuplicates(tempDir, { threshold: 0.5 })
 
-    // Exactly one cluster of the two files -- pin the exact deterministic Jaccard similarity
-    // (7 shared words / 9 union words, rounded to 3dp) instead of just ">0"/">0", so a
-    // regression in the similarity math (still non-zero) is caught too.
+    // Exactly one cluster of the two files -- pin the exact deterministic Jaccard similarity (7 shared words / 9 union words, rounded to 3dp) instead of just ">0"/">0", so a regression in the similarity math (still non-zero) is caught too.
     expect(result.length).toBe(1)
     expect(result[0]?.similarity).toBe(0.778)
     expect(result[0]?.method).toBe('jaccard')
@@ -364,8 +355,7 @@ describe('findContentDuplicates', () => {
 
     const result = await findContentDuplicates(tempDir, { threshold: 0.5 })
 
-    // Both files are the identical 17-char 'some content here' snippet -- pin the exact sum of
-    // both members' estimateTokens() (6 each) instead of just ">0".
+    // Both files are the identical 17-char 'some content here' snippet -- pin the exact sum of both members' estimateTokens() (6 each) instead of just ">0".
     expect(result[0]?.tokens).toBe(12)
   })
 
@@ -384,21 +374,12 @@ the quick brown fox`
 
     const result = await findContentDuplicates(tempDir, { threshold: 0.5 })
 
-    // Both files reduce to the identical post-frontmatter body -- pin the exact single-cluster
-    // count instead of just ">0".
+    // Both files reduce to the identical post-frontmatter body -- pin the exact single-cluster count instead of just ">0".
     expect(result.length).toBe(1)
   })
 })
 
-// Regression: `_opts.threshold` was dead text accidentally merged into a `//` comment on the
-// same physical line, so no caller-supplied threshold ever reached any comparison -- the
-// Jaccard fallback used its own hardcoded constant (correct, matches pre-port Python), but the
-// embedding/cosine path that threshold is actually meant to govern was never ported at all
-// ("not implemented in this port; skip gracefully"), even though this repo already ships a
-// working embeddings module used elsewhere for semantic search. These tests exercise the
-// now-wired embedding path directly (bypassing the real embedding pipeline via
-// setPipelineFnForTesting) and prove `threshold` actually changes clustering output --
-// the pre-fix hardcoded-Jaccard-only behavior would fail both assertions below.
+// Regression: `_opts.threshold` was dead text accidentally merged into a `//` comment on the same physical line, so no caller-supplied threshold ever reached any comparison -- the Jaccard fallback used its own hardcoded constant (correct, matches pre-port Python), but the embedding/cosine path that threshold is actually meant to govern was never ported at all ("not implemented in this port; skip gracefully"), even though this repo already ships a working embeddings module used elsewhere for semantic search. These tests exercise the now-wired embedding path directly (bypassing the real embedding pipeline via setPipelineFnForTesting) and prove `threshold` actually changes clustering output -- the pre-fix hardcoded-Jaccard-only behavior would fail both assertions below.
 describe('findContentDuplicates embedding path (regression)', () => {
   let tempDir: string
   let prevEmbeddingsEnv: string | undefined
@@ -539,10 +520,7 @@ line 1
     const file1Report = reports.find((r) => r.path === file1)
     const file2Report = reports.find((r) => r.path === file2)
 
-    // Only the shared line overlaps (each file's "Other content" line is unique to it) -- pin
-    // the exact single-entry overlap text (including which sibling file it's shared with)
-    // instead of just ">0", so a regression that mis-attributed the overlap or dropped/doubled
-    // the "Other content" lines into the overlap set (still non-empty) is caught too.
+    // Only the shared line overlaps (each file's "Other content" line is unique to it) -- pin the exact single-entry overlap text (including which sibling file it's shared with) instead of just ">0", so a regression that mis-attributed the overlap or dropped/doubled the "Other content" lines into the overlap set (still non-empty) is caught too.
     expect(file1Report?.crossFileOverlaps).toEqual(['"This line appears in both files" also in CLAUDE2.md'])
     expect(file2Report?.crossFileOverlaps).toEqual(['"This line appears in both files" also in CLAUDE1.md'])
   })

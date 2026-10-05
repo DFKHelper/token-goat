@@ -1,10 +1,4 @@
-/**
- * Core graph traversal, scope analysis, and cycle detection primitives.
- *
- * Implements pure and DB-backed graph helpers: enclosingSymbol, looksLikeTypeClass,
- * bfsCallChains, isDeadSymbol, resolveCallers, ancestry dispatch resolution,
- * symbol kind classifications, and Tarjan SCC cycle detection.
- */
+/** Core graph traversal, scope analysis, and cycle detection primitives. Implements pure and DB-backed graph helpers: enclosingSymbol, looksLikeTypeClass, bfsCallChains, isDeadSymbol, resolveCallers, ancestry dispatch resolution, symbol kind classifications, and Tarjan SCC cycle detection. */
 
 import { querySymbols, queryRefs, queryRefsByContext } from './index_reader.js'
 import { resolveProjectRoot } from './project.js'
@@ -17,10 +11,7 @@ import type { SymbolEntry, RefEntry } from './parser_types.js'
 
 // ---- helpers ----------------------------------------------------------------
 
-/** Reference-query cap shared by every {@link queryRefs} call in code graph traversal (existence checks,
- * caller resolution, dead-symbol detection) -- keeping this as one constant instead of a
- * hardcoded 500 at each site means a future cap change can't miss a site and silently
- * reintroduce the "existence check stops too early" bug this value was raised to fix. */
+/** Reference-query cap shared by every {@link queryRefs} call in code graph traversal (existence checks, caller resolution, dead-symbol detection) -- keeping this as one constant instead of a hardcoded 500 at each site means a future cap change can't miss a site and silently reintroduce the "existence check stops too early" bug this value was raised to fix. */
 export const DEFAULT_REF_QUERY_LIMIT = 500
 
 /** Symbol-query cap for "every symbol in one file" lookups. A single filePath already narrows the query to one file with no other predicate to combine against, so any finite cap here is a silent truncation waiting to happen rather than a real bound: a file indexed with more than 10000 symbols (e.g. a generated file with one const per data row) had its tail dropped, and every enclosingSymbol lookup on a line past the cut returned null instead of the real symbol, misreporting callers/impact rows as "(module scope)" and letting runTestFor/find --symbol report false negatives. Set to the same unbounded sentinel as UNBOUNDED_REF_LIMIT below (SQLite: LIMIT -1 is unlimited) rather than a bigger finite number, since there is no size at which "every symbol in one file" stops needing to mean literally every symbol. */

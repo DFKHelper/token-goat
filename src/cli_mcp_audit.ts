@@ -1,10 +1,4 @@
-/**
- * CLI handler for `token-goat mcp-audit`.
- *
- * Scans .mcp.json for MCP server definitions and estimates per-server
- * token costs from cached MCP tool calls. Correlates schema complexity
- * against real call frequency.
- */
+/** CLI handler for `token-goat mcp-audit`. Scans .mcp.json for MCP server definitions and estimates per-server token costs from cached MCP tool calls. Correlates schema complexity against real call frequency. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -39,11 +33,7 @@ interface McpAuditReport {
   configSourcePaths: string[]
   /** Every path discovery checked, in order, for the "no" case's message. */
   configSourcesChecked: string[]
-  /**
-   * True when there is a real basis for `totalCost` -- either a config source was found (so we
-   * know the declared server set, even if it's empty) or the cache recorded at least one real
-   * MCP call. False means `totalCost` is not a measurement, it is the absence of one.
-   */
+  /** True when there is a real basis for `totalCost` -- either a config source was found (so we know the declared server set, even if it's empty) or the cache recorded at least one real MCP call. False means `totalCost` is not a measurement, it is the absence of one. */
   costKnown: boolean
   servers: Array<{
     name: string
@@ -82,21 +72,12 @@ function readMcpJsonFile(configPath: string): McpServerConfig | null {
   }
 }
 
-/**
- * Read .mcp.json from the project root.
- * Supports both { mcpServers: {...} } and direct {...} formats.
- */
+/** Read .mcp.json from the project root. Supports both { mcpServers: {...} } and direct {...} formats. */
 export function readMcpConfig(projectRoot: string): McpServerConfig | null {
   return readMcpJsonFile(path.join(projectRoot, '.mcp.json'))
 }
 
-/**
- * `projectRoot` in and out of `resolveProjectRoot` (see resolveFilter's cwd handling in
- * dispatch.ts for the same class of case-mismatch) is canonicalized to a lowercase drive letter,
- * but `~/.claude.json` keys `projects` by whatever casing Claude Code literally saw at session
- * start (often uppercase on Windows) -- lowercasing alone would still miss it, so both drive-
- * letter cases are tried alongside both slash forms.
- */
+/** `projectRoot` in and out of `resolveProjectRoot` (see resolveFilter's cwd handling in dispatch.ts for the same class of case-mismatch) is canonicalized to a lowercase drive letter, but `~/.claude.json` keys `projects` by whatever casing Claude Code literally saw at session start (often uppercase on Windows) -- lowercasing alone would still miss it, so both drive- letter cases are tried alongside both slash forms. */
 function driveLetterCaseVariants(p: string): string[] {
   const m = /^([a-zA-Z]:)(.*)$/s.exec(p)
   if (m === null) return [p]
@@ -145,16 +126,7 @@ function discoverMcpConfig(projectRoot: string, home: string): McpConfigDiscover
   return { servers: fromCopilotJson, sourcePaths: fromCopilotJson !== null ? [copilotJsonPath] : [], sourcesChecked }
 }
 
-/**
- * Analyze bash output cache for MCP server calls.
- * Returns a map of server name -> call metrics.
- * MCP results share {@link BASH_OUTPUT_SUBDIR} with plain Bash-tool output
- * entries (see mcp_cache.ts's storeMcpOutput), distinguished only by the
- * `mcp_` id prefix it mints -- same filter cmdMcpHistory uses in
- * cache_session_commands.ts. Without it, ordinary Bash command output sitting
- * in the same cache falls through the `command` regex below into the
- * 'unknown' bucket and gets miscounted as MCP server cost.
- */
+/** Analyze bash output cache for MCP server calls. Returns a map of server name -> call metrics. MCP results share {@link BASH_OUTPUT_SUBDIR} with plain Bash-tool output entries (see mcp_cache.ts's storeMcpOutput), distinguished only by the `mcp_` id prefix it mints -- same filter cmdMcpHistory uses in cache_session_commands.ts. Without it, ordinary Bash command output sitting in the same cache falls through the `command` regex below into the 'unknown' bucket and gets miscounted as MCP server cost. */
 export function analyzeMcpCache(): Map<string, { callCount: number; perCallEstimate: number; totalBytes: number }> {
   const serverMetrics = new Map<string, { callCount: number; perCallEstimate: number; totalBytes: number }>()
 
@@ -166,21 +138,9 @@ export function analyzeMcpCache(): Map<string, { callCount: number; perCallEstim
     const command = typeof entry['command'] === 'string' ? entry['command'] : ''
     const sizeBytes = typeof entry['sizeBytes'] === 'number' ? entry['sizeBytes'] : 0
 
-    // Extract server name from command like "mcp:mcp__plugin_name__...". The name is whatever the
-    // harness put between the two `__` separators -- an .mcp.json key, which is free-form JSON and
-    // routinely carries a dot (`my.server`, `acme.tools`) -- so it is matched lazily up to the next
-    // separator rather than against a guessed character class. A dotted name used to miss the match
-    // entirely and land in the bucket below, showing up twice in the report: once from config with
-    // zero calls, once as unattributed cost.
+    // Extract server name from command like "mcp:mcp__plugin_name__...". The name is whatever the harness put between the two `__` separators -- an .mcp.json key, which is free-form JSON and routinely carries a dot (`my.server`, `acme.tools`) -- so it is matched lazily up to the next separator rather than against a guessed character class. A dotted name used to miss the match entirely and land in the bucket below, showing up twice in the report: once from config with zero calls, once as unattributed cost.
     const toolMatch = command.match(/^mcp:mcp__(.+?)__/i)
-    // A non-MCP label is not an MCP server with an unknown name -- it is not a server at all.
-    // hooks_agent_spawn and hooks_websearch store Agent and WebSearch results through
-    // storeMcpOutput so they are recallable, which mints them the same `mcp_` id prefix the filter
-    // above keys on, so they reached this loop and were billed as MCP server cost under a made-up
-    // 'unknown' server. On this machine every one of the 43 cached entries was an Agent or
-    // WebSearch call, so the whole report was 63597 tokens of cost attributed to a server that does
-    // not exist. Same reasoning as the `mcp_` prefix filter's own note above, applied to the labels
-    // that get past it: no server name, no server row.
+    // A non-MCP label is not an MCP server with an unknown name -- it is not a server at all. hooks_agent_spawn and hooks_websearch store Agent and WebSearch results through storeMcpOutput so they are recallable, which mints them the same `mcp_` id prefix the filter above keys on, so they reached this loop and were billed as MCP server cost under a made-up 'unknown' server. On this machine every one of the 43 cached entries was an Agent or WebSearch call, so the whole report was 63597 tokens of cost attributed to a server that does not exist. Same reasoning as the `mcp_` prefix filter's own note above, applied to the labels that get past it: no server name, no server row.
     if (!toolMatch) continue
     const toolName = toolMatch[1] as string
 
@@ -198,9 +158,7 @@ export function analyzeMcpCache(): Map<string, { callCount: number; perCallEstim
   return serverMetrics
 }
 
-/**
- * Build the audit report by merging config and cache data.
- */
+/** Build the audit report by merging config and cache data. */
 export function buildMcpAuditReport(projectRoot: string, home: string = os.homedir()): McpAuditReport {
   const discovery = discoverMcpConfig(projectRoot, home)
   const config = discovery.servers
@@ -218,11 +176,7 @@ export function buildMcpAuditReport(projectRoot: string, home: string = os.homed
       const cost = perCallTokens * callCount
 
       servers.push({
-        // Escaped here, at construction, rather than at print time: the server name is a key an
-        // arbitrary repository's .mcp.json chooses, and it reaches a model verbatim through both
-        // the printed table and `--json`. Unescaped, it can spell token-goat's own `[tg]` and
-        // `[token-goat: ...]` markers and speak in this tool's voice inside the model's context;
-        // a newline or `|` in it also breaks the markdown table apart.
+        // Escaped here, at construction, rather than at print time: the server name is a key an arbitrary repository's .mcp.json chooses, and it reaches a model verbatim through both the printed table and `--json`. Unescaped, it can spell token-goat's own `[tg]` and `[token-goat: ...]` markers and speak in this tool's voice inside the model's context; a newline or `|` in it also breaks the markdown table apart.
         name: displaySafeText(name),
         perCallTokens,
         callCount,

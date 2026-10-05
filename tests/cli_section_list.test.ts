@@ -1,8 +1,4 @@
-// Regression guard: read_commands.ts exports runListSections (list every heading in a file),
-// but cli.ts never imported it or registered a --list flag on the `section` command, so
-// `token-goat section <file> --list` was a dead command surface -- Commander rejected --list
-// outright as an unknown option instead of listing sections. Drive the real run() entry so
-// this exercises the actual command wiring, not the handler function in isolation.
+// Regression guard: read_commands.ts exports runListSections (list every heading in a file), but cli.ts never imported it or registered a --list flag on the `section` command, so `token-goat section <file> --list` was a dead command surface -- Commander rejected --list outright as an unknown option instead of listing sections. Drive the real run() entry so this exercises the actual command wiring, not the handler function in isolation.
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -40,8 +36,7 @@ describe('section --list', () => {
   it('lists every heading in a file instead of rejecting --list as unknown', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'tg-section-list-'))
     mdFile = join(tmpDir, 'doc.md')
-    // listSections() returns only the shallowest heading level found in the file, so this
-    // fixture uses two same-level headings (no top H1) to exercise both entries.
+    // listSections() returns only the shallowest heading level found in the file, so this fixture uses two same-level headings (no top H1) to exercise both entries.
     writeFileSync(mdFile, ['## First Heading', 'body a', '', '## Second Heading', 'body b', ''].join('\n'), 'utf-8')
 
     stdout = []

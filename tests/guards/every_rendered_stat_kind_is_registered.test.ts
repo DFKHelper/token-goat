@@ -2,18 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { isRegisteredKind, _registeredKinds } from '../../src/stats.js'
 import { _renderedKindNames } from '../../src/render/stats_renderer.js'
 
-/**
- * The third mirror in the stat-registry guard family.
- *
- * guards/every_recorded_stat_kind_is_registered.test.ts checks recorded implies registered.
- * guards/every_registered_stat_kind_has_a_producer.test.ts checks registered implies produced.
- * Neither covers a name that exists only in the RENDERER: stats_renderer.ts's _KIND_GROUPS decides
- * which group heading a kind prints under, and a name listed there that stats.ts never registered
- * has no source, no producer, and can never carry a byte -- it is a group membership for a row that
- * cannot exist. That is how twenty-nine names carried over from the Python port (bash_output_cached,
- * web_output_recall, skill_body_recall, compact_manifest and the rest) sat in the by-kind table's
- * group sets forever, invisible to both existing guards.
- */
+/** The third mirror in the stat-registry guard family. guards/every_recorded_stat_kind_is_registered.test.ts checks recorded implies registered. guards/every_registered_stat_kind_has_a_producer.test.ts checks registered implies produced. Neither covers a name that exists only in the RENDERER: stats_renderer.ts's _KIND_GROUPS decides which group heading a kind prints under, and a name listed there that stats.ts never registered has no source, no producer, and can never carry a byte -- it is a group membership for a row that cannot exist. That is how twenty-nine names carried over from the Python port (bash_output_cached, web_output_recall, skill_body_recall, compact_manifest and the rest) sat in the by-kind table's group sets forever, invisible to both existing guards. */
 
 // Every rendered name with no registration, and the reason it is allowed to have none. Empty on purpose: a rendered name that stats.ts does not register cannot ever produce a row, so the correct answer is always to register it or drop it, never to excuse it. An entry here needs a reason that survives that argument.
 const UNREGISTERED_RENDER_ALLOWLIST: Record<string, string> = {}

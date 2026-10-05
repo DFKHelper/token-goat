@@ -1,14 +1,4 @@
-/**
- * Regression: `token-goat pr-slice` (runPrSlice in read_commands.ts) never called recordStat,
- * and stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `pr-slice`/`pr_slice` entry either
- * -- so its dashboard bucket in `token-goat stats --full` was permanently zero regardless of
- * real usage, the same class of registry/producer desync already fixed for
- * map_lookup/changed_lookup/csv_query/brief_view/session_outline/session_slice/gdrive_sections
- * (see project_runchanged_missing_stat memory). Mocks the `gh`/`git` subprocess boundary (no
- * live network/gh-auth access) and asserts a real stats row appears via summarize() against the
- * real (test-isolated) global stats DB for every slice kind -- a synthetic recordStat/DB insert
- * would not catch the original absence.
- */
+/** Regression: `token-goat pr-slice` (runPrSlice in read_commands.ts) never called recordStat, and stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry had no `pr-slice`/`pr_slice` entry either -- so its dashboard bucket in `token-goat stats --full` was permanently zero regardless of real usage, the same class of registry/producer desync already fixed for map_lookup/changed_lookup/csv_query/brief_view/session_outline/session_slice/gdrive_sections (see project_runchanged_missing_stat memory). Mocks the `gh`/`git` subprocess boundary (no live network/gh-auth access) and asserts a real stats row appears via summarize() against the real (test-isolated) global stats DB for every slice kind -- a synthetic recordStat/DB insert would not catch the original absence. */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 const spawnSyncMock = vi.fn()

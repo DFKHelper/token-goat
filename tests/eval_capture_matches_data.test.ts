@@ -2,24 +2,13 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-/**
- * Every figure published in `demo/evidence/12-eval-paired.txt` (and therefore in
- * `demo/fixtures/token-goat-eval.pdf`, which is rendered from it) is recomputed
- * here from `demo/data/eval-runs.csv` — the same rows a skeptic downloads.
- *
- * This is deliberately a second, independent implementation of the arithmetic in
- * `scripts/generate-eval-capture.py`, not a call into it. Two implementations
- * agreeing is evidence; one implementation agreeing with itself is not. A test
- * that regenerated the capture by running the generator would pass for any
- * generator, including a wrong one.
- */
+/** Every figure published in `demo/evidence/12-eval-paired.txt` (and therefore in `demo/fixtures/token-goat-eval.pdf`, which is rendered from it) is recomputed here from `demo/data/eval-runs.csv` — the same rows a skeptic downloads. This is deliberately a second, independent implementation of the arithmetic in `scripts/generate-eval-capture.py`, not a call into it. Two implementations agreeing is evidence; one implementation agreeing with itself is not. A test that regenerated the capture by running the generator would pass for any generator, including a wrong one. */
 
 const ROOT = path.join(__dirname, '..')
 const CAPTURE = readFileSync(path.join(ROOT, 'demo', 'evidence', '12-eval-paired.txt'), 'utf8')
 const CSV = readFileSync(path.join(ROOT, 'demo', 'data', 'eval-runs.csv'), 'utf8')
 
-// Duplicated from the generator on purpose: if someone changes the exclusion set
-// or the billing weights on one side only, these tests must go red.
+// Duplicated from the generator on purpose: if someone changes the exclusion set or the billing weights on one side only, these tests must go red.
 const CONTAMINATED = new Set(['c7345de33a71', '5d3c55d0fa73'])
 const WEIGHTS = { fresh: 1.0, cacheWrite: 1.25, cacheRead: 0.1 }
 
@@ -34,12 +23,7 @@ interface Run {
   resolved: number
 }
 
-/**
- * RFC 4180 field split. `arm_tool_names` is a quoted JSON array, so it carries
- * both commas and doubled quotes — splitting on `,` misaligns every column after
- * it, which is silent rather than loud. Row width is asserted below to catch a
- * parse that goes wrong anyway.
- */
+/** RFC 4180 field split. `arm_tool_names` is a quoted JSON array, so it carries both commas and doubled quotes — splitting on `,` misaligns every column after it, which is silent rather than loud. Row width is asserted below to catch a parse that goes wrong anyway. */
 function splitRow(line: string): string[] {
   const fields: string[] = []
   let field = ''
@@ -111,8 +95,7 @@ const clean = complete.filter((p) => !CONTAMINATED.has(p.sha.slice(0, 12)))
 
 describe('published eval capture matches the vendored data', () => {
   it('has a non-empty population to check', () => {
-    // A guard whose population silently empties passes vacuously. This repo has
-    // shipped that defect before, so the floors are asserted, not assumed.
+    // A guard whose population silently empties passes vacuously. This repo has shipped that defect before, so the floors are asserted, not assumed.
     expect(runs.length).toBeGreaterThan(20)
     expect(complete.length).toBeGreaterThanOrEqual(8)
     expect(clean.length).toBeGreaterThanOrEqual(6)
@@ -169,8 +152,7 @@ describe('published eval capture matches the vendored data', () => {
       `clean billing-weighted saving: ${(100 * (1 - cleanMedian)).toFixed(1)}%`,
     )
     expect(CAPTURE).toContain(`all   billing-weighted saving: ${(100 * (1 - allMedian)).toFixed(1)}%`)
-    // The full-sample figure is the less flattering one; publishing only the
-    // clean number would be the easy way to overstate the result.
+    // The full-sample figure is the less flattering one; publishing only the clean number would be the easy way to overstate the result.
     expect(allMedian).toBeGreaterThan(cleanMedian)
   })
 
@@ -179,8 +161,7 @@ describe('published eval capture matches the vendored data', () => {
     expect(CAPTURE).toContain(ratios.map((r) => r.toFixed(3)).join(', '))
     const worse = ratios.filter((r) => r > 1).length
     expect(CAPTURE).toContain(`pairs where arm B cost MORE : ${worse} of ${clean.length}`)
-    // A published result claiming zero adverse pairs while the data holds one is
-    // the specific dishonesty this assertion exists to prevent.
+    // A published result claiming zero adverse pairs while the data holds one is the specific dishonesty this assertion exists to prevent.
     expect(worse).toBeGreaterThan(0)
   })
 

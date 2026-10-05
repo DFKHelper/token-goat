@@ -1,29 +1,4 @@
-/**
- * `indexing.max_chunks_per_file` used to be checked at exactly one place: the character-budget cut
- * (`chunkFile(...).length`) taken in parser.ts just before `embedIndexFile`. But embeddings.ts's
- * `indexFile` throws that cut away and re-cuts with the model's own tokenizer whenever
- * `embeddingsDepsAvailable(db)` is true, and the token cut is strictly finer (it flushes on a token
- * budget as well as a char one). So a file could clear the ceiling on the coarse count and still
- * store several times the ceiling in `chunks` rows. The `isEmbeddableDocument` branch returned
- * before ever reaching that gate, so documents were embedded with no ceiling at all.
- *
- * Every test in tests/embed_gates_asset_and_chunk_count.test.ts runs with
- * `embeddingsDepsAvailable === false`, which is precisely the branch where the token re-cut does not
- * execute, and its over-cap fixture blows the ceiling on the char count -- so the gate there fires
- * before the re-cut could ever matter. These tests therefore run only with real embeddings present
- * and assert, in the body, that the char cut did NOT exceed the cap, so a zero-chunk result can only
- * mean the post-embed enforcement caught what actually landed.
- *
- * PROVENANCE: CAPTURE for every figure below. The fixture sizes and the expected chunk counts were
- * measured by running the real pipeline (`indexFileSync` -> `indexFileEmbeddings` with the real
- * all-MiniLM-L6-v2 tokenizer) against these exact fixtures and reading `SELECT COUNT(*) FROM chunks`
- * off the resulting SQLite index, before any assertion here was written: prose(80) -> char cut 4,
- * stored 9; prose(20) -> char cut 1, stored 3; the 100-paragraph .docx -> char cut 4, stored 12.
- * Nothing here is read off the cap's own source. The .docx bytes come from
- * tests/helpers/ooxml_fixtures.ts::buildDocxFixture, whose own provenance line is FORMAT-DERIVED
- * from ECMA-376, and they are passed through the shipping extractor
- * (src/doc_embed_extract.ts::extractEmbeddableDocumentText) rather than hand-decoded here.
- */
+/** `indexing.max_chunks_per_file` used to be checked at exactly one place: the character-budget cut (`chunkFile(...).length`) taken in parser.ts just before `embedIndexFile`. But embeddings.ts's `indexFile` throws that cut away and re-cuts with the model's own tokenizer whenever `embeddingsDepsAvailable(db)` is true, and the token cut is strictly finer (it flushes on a token budget as well as a char one). So a file could clear the ceiling on the coarse count and still store several times the ceiling in `chunks` rows. The `isEmbeddableDocument` branch returned before ever reaching that gate, so documents were embedded with no ceiling at all. Every test in tests/embed_gates_asset_and_chunk_count.test.ts runs with `embeddingsDepsAvailable === false`, which is precisely the branch where the token re-cut does not execute, and its over-cap fixture blows the ceiling on the char count -- so the gate there fires before the re-cut could ever matter. These tests therefore run only with real embeddings present and assert, in the body, that the char cut did NOT exceed the cap, so a zero-chunk result can only mean the post-embed enforcement caught what actually landed. PROVENANCE: CAPTURE for every figure below. The fixture sizes and the expected chunk counts were measured by running the real pipeline (`indexFileSync` -> `indexFileEmbeddings` with the real all-MiniLM-L6-v2 tokenizer) against these exact fixtures and reading `SELECT COUNT(*) FROM chunks` off the resulting SQLite index, before any assertion here was written: prose(80) -> char cut 4, stored 9; prose(20) -> char cut 1, stored 3; the 100-paragraph .docx -> char cut 4, stored 12. Nothing here is read off the cap's own source. The .docx bytes come from tests/helpers/ooxml_fixtures.ts::buildDocxFixture, whose own provenance line is FORMAT-DERIVED from ECMA-376, and they are passed through the shipping extractor (src/doc_embed_extract.ts::extractEmbeddableDocumentText) rather than hand-decoded here. */
 
 import { createRequire } from 'node:module'
 import * as fs from 'node:fs'

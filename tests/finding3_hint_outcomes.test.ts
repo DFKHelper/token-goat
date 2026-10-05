@@ -12,9 +12,7 @@ import { makeHookEvent } from './helpers/hook-event.js'
 
 const tmpFiles: string[] = []
 
-// Unrecognized extension (deliberately not .txt) -- these tests exercise the generic
-// size-based soft-hint/deny gate specifically, not one of the per-type handlers
-// dispatchFileTypeHandler() short-circuits .txt/.csv/.html/etc to.
+// Unrecognized extension (deliberately not .txt) -- these tests exercise the generic size-based soft-hint/deny gate specifically, not one of the per-type handlers dispatchFileTypeHandler() short-circuits .txt/.csv/.html/etc to.
 function makeTmpFile(content = 'data', sizeBytes?: number): string {
   const p = path.join(
     os.tmpdir(),
@@ -128,8 +126,7 @@ describe('Finding #3 — large-file hint outcomes logging', () => {
     event = readEvent(largeFile)
     preReadHandler(event)
 
-    // Should have recorded "ignored" outcome (hint fired but full read was done)
-    // The hint should have been consumed by the re-read handler
+    // Should have recorded "ignored" outcome (hint fired but full read was done) The hint should have been consumed by the re-read handler
     pending = takePendingLargeFileHint(normalized)
     expect(pending).toBeNull() // Should be null because it was consumed
   })

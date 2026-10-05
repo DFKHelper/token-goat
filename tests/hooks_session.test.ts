@@ -11,8 +11,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
   return { ...actual, runGit: vi.fn() };
 });
 
-// Redirects configPath() to a per-test-file temp file so the hints.git_hint_max_ms wiring
-// tests can set a non-default config value deterministically. Mirrors tests/hooks_bash.test.ts.
+// Redirects configPath() to a per-test-file temp file so the hints.git_hint_max_ms wiring tests can set a non-default config value deterministically. Mirrors tests/hooks_bash.test.ts.
 vi.mock('../src/constants.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>();
   return { ...original, configPath: () => _testConfigPath };
@@ -650,13 +649,7 @@ describe('hooks_session', () => {
       expect(result.hookType).toBe('pass');
     });
 
-    // Regression: the short-prompt length gate (< 8 trimmed chars) predates the drift-nudge
-    // feature and originally only existed to skip the git-branch subprocess for trivial prompts
-    // like "ok"/"yes"/"go". checkSkillVersionDrift was later added AFTER that same early return,
-    // so real, pending drift was silently never surfaced (and never marked notified) whenever a
-    // session's next turn happened to be short -- a very common real pattern ("continue", "yes",
-    // "go on", "next"). The nudge should still surface on a short prompt, even though no branch
-    // line is computed for it.
+    // Regression: the short-prompt length gate (< 8 trimmed chars) predates the drift-nudge feature and originally only existed to skip the git-branch subprocess for trivial prompts like "ok"/"yes"/"go". checkSkillVersionDrift was later added AFTER that same early return, so real, pending drift was silently never surfaced (and never marked notified) whenever a session's next turn happened to be short -- a very common real pattern ("continue", "yes", "go on", "next"). The nudge should still surface on a short prompt, even though no branch line is computed for it.
     it('still surfaces the drift nudge on a short prompt (below the git-branch length gate)', async () => {
       const sessionId = nonce();
       seedOldSkillVersionSnapshot(sessionId);
@@ -678,15 +671,7 @@ describe('hooks_session', () => {
   });
 });
 
-/**
- * Hints about harness-injected context: an oversized task list, and a skill body that slash-command
- * expansion has sent more than once.
- *
- * Neither shape ever reaches a hook -- PreToolUse never fires for TaskCreate/TaskUpdate, and slash
- * expansion happens before any hook runs -- so the only place they are observable is the transcript
- * file whose path the hook payload already carries. These tests drive that path end to end: a real
- * file on disk, read through the same tail-and-filter the hook uses.
- */
+/** Hints about harness-injected context: an oversized task list, and a skill body that slash-command expansion has sent more than once. Neither shape ever reaches a hook -- PreToolUse never fires for TaskCreate/TaskUpdate, and slash expansion happens before any hook runs -- so the only place they are observable is the transcript file whose path the hook payload already carries. These tests drive that path end to end: a real file on disk, read through the same tail-and-filter the hook uses. */
 describe('resident-context hints', () => {
   const written: string[] = [];
 
@@ -729,8 +714,7 @@ describe('resident-context hints', () => {
   }
 
   function skillBody(name: string, size: number): string {
-    // Forward-slash spelling on purpose; the Windows backslash spelling is covered in
-    // tests/resident_context.test.ts, and the name parser accepts either separator.
+    // Forward-slash spelling on purpose; the Windows backslash spelling is covered in tests/resident_context.test.ts, and the name parser accepts either separator.
     const text = `Base directory for this skill: /home/someone/.claude/skills/${name}\n\n# ${name}\n\n${'x'.repeat(size)}`;
     return JSON.stringify({ type: 'user', isMeta: true, message: { role: 'user', content: [{ type: 'text', text }] } });
   }
@@ -827,16 +811,7 @@ describe('resident-context hints', () => {
   });
 });
 
-/**
- * Harness routing for prompt-submit hints.
- *
- * Copilot CLI runs the prompt-submit hook and then drops whatever it returns, so returning context
- * there delivers nothing at all. The hint is queued instead and handed over on the next tool call,
- * where postToolUse's additionalContext does reach the model.
- *
- * Both halves are pinned in one test on purpose. A queue with no drain and a drain with no queue
- * each deliver nothing, and each would still pass a test that watched only its own side.
- */
+/** Harness routing for prompt-submit hints. Copilot CLI runs the prompt-submit hook and then drops whatever it returns, so returning context there delivers nothing at all. The hint is queued instead and handed over on the next tool call, where postToolUse's additionalContext does reach the model. Both halves are pinned in one test on purpose. A queue with no drain and a drain with no queue each deliver nothing, and each would still pass a test that watched only its own side. */
 describe('prompt-submit hint routing by harness', () => {
   const written: string[] = [];
   let prevHarness: string | undefined;
@@ -907,12 +882,7 @@ describe('prompt-submit hint routing by harness', () => {
   }
 
   it('returns the hint directly on Copilot CLI, whose userPromptSubmitted additionalContext is honored despite its docs', async () => {
-    // This used to assert the opposite. Copilot's hooks reference says command-hook output for
-    // this event "is dropped", and that was taken at face value; a live experiment against 1.0.80
-    // showed a returned additionalContext arriving verbatim in the session's assembled prompt
-    // (user.message.transformedContent, wrapped in <system_reminder>). Delivery on this event is
-    // strictly better than the old reroute: the hint lands before the model picks its first tool,
-    // rather than after the first tool call has already been made.
+    // This used to assert the opposite. Copilot's hooks reference says command-hook output for this event "is dropped", and that was taken at face value; a live experiment against 1.0.80 showed a returned additionalContext arriving verbatim in the session's assembled prompt (user.message.transformedContent, wrapped in <system_reminder>). Delivery on this event is strictly better than the old reroute: the hint lands before the model picks its first tool, rather than after the first tool call has already been made.
     setHarness('copilot_cli');
     const sessionId = nonce();
 
@@ -920,8 +890,7 @@ describe('prompt-submit hint routing by harness', () => {
     expect(submitted.hookType).toBe('context');
     expect((submitted as { context: string }).context).toContain('TaskUpdate');
 
-    // Queuing as well would deliver the same hint twice, once per channel -- the specific bug a
-    // half-applied version of this change would produce.
+    // Queuing as well would deliver the same hint twice, once per channel -- the specific bug a half-applied version of this change would produce.
     expect(pendingContextHandler(toolEvent(sessionId)).hookType).toBe('pass');
   });
 

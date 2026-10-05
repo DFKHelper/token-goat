@@ -1,10 +1,4 @@
-/**
- * VS Code's run_in_terminal command is never wrapped in `token-goat compress`.
- *
- * VS Code runs the command in whatever shell the user's terminal uses and its hook payload does not say which, so a quoting that is safe in one shell can end the wrapped string early in another. The rewrite used to be sent for any vscode command without an ASCII single quote. These drive the real registry, normalizer and serializer, and pin that the Claude Code rewrite is unchanged and that a Copilot CLI command is left alone.
- *
- * PROVENANCE: FORMAT-DERIVED. The VS Code envelope and run_in_terminal input keys (command, explanation, goal, mode) are the ones cited in tests/vscode_hooks.test.ts from VS Code 1.136.0's ChatHookService and the workbench bundle's run_in_terminal schema. The Claude Code payload is Claude Code's PreToolUse shape (tool_name "Bash", tool_input.command), and the Copilot CLI one is what the shared shim forwards after mapping `bash` to `Bash` (src/bridges/copilot_cli.ts). Commands are HAND-DERIVED.
- */
+/** VS Code's run_in_terminal command is never wrapped in `token-goat compress`. VS Code runs the command in whatever shell the user's terminal uses and its hook payload does not say which, so a quoting that is safe in one shell can end the wrapped string early in another. The rewrite used to be sent for any vscode command without an ASCII single quote. These drive the real registry, normalizer and serializer, and pin that the Claude Code rewrite is unchanged and that a Copilot CLI command is left alone. PROVENANCE: FORMAT-DERIVED. The VS Code envelope and run_in_terminal input keys (command, explanation, goal, mode) are the ones cited in tests/vscode_hooks.test.ts from VS Code 1.136.0's ChatHookService and the workbench bundle's run_in_terminal schema. The Claude Code payload is Claude Code's PreToolUse shape (tool_name "Bash", tool_input.command), and the Copilot CLI one is what the shared shim forwards after mapping `bash` to `Bash` (src/bridges/copilot_cli.ts). Commands are HAND-DERIVED. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

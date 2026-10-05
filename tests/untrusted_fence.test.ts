@@ -1,14 +1,4 @@
-/**
- * The shared decision point every third-party-content surface routes through.
- *
- * Provenance: HAND-DERIVED. Every input is written here as an attacker or an ordinary document
- * would supply it, and every expectation is computed from the stated invariant -- text is fenced
- * because of where it came from, and the scan only decides what the notice says. Nothing is read
- * off the scanner's own pattern list, which is what would make these tests agree with the blocklist
- * instead of testing the boundary. The one string taken from the implementation is the trigger
- * phrase in `HOSTILE`, which is used only to reach the pattern-naming branch; the benign cases,
- * which are the ones the old scan-gated shape got wrong, depend on no pattern at all.
- */
+/** The shared decision point every third-party-content surface routes through. Provenance: HAND-DERIVED. Every input is written here as an attacker or an ordinary document would supply it, and every expectation is computed from the stated invariant -- text is fenced because of where it came from, and the scan only decides what the notice says. Nothing is read off the scanner's own pattern list, which is what would make these tests agree with the blocklist instead of testing the boundary. The one string taken from the implementation is the trigger phrase in `HOSTILE`, which is used only to reach the pattern-naming branch; the benign cases, which are the ones the old scan-gated shape got wrong, depend on no pattern at all. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { UNTRUSTED_FILE_TAG, UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
@@ -43,8 +33,7 @@ afterEach(() => {
 
 describe('fenceUntrusted', () => {
   it('fences text that matches no pattern at all, under a notice that names none', () => {
-    // The defect this whole module exists to close: a scan-gated fence leaves this string bare, so
-    // an attacker only has to phrase the instruction in a way the eight patterns do not know.
+    // The defect this whole module exists to close: a scan-gated fence leaves this string bare, so an attacker only has to phrase the instruction in a way the eight patterns do not know.
     const fenced = fenceUntrusted(BENIGN, UNTRUSTED_FILE_TAG)
 
     expect(fenced).toContain(`<${UNTRUSTED_FILE_TAG}>`)
@@ -63,8 +52,7 @@ describe('fenceUntrusted', () => {
   })
 
   it('fences an empty string rather than treating "nothing to say" as "nothing to fence"', () => {
-    // Callers decide whether an empty body is worth emitting at all; this function must not make
-    // that decision for them by quietly dropping the wrapper.
+    // Callers decide whether an empty body is worth emitting at all; this function must not make that decision for them by quietly dropping the wrapper.
     expect(fenceUntrusted('', UNTRUSTED_TOOL_TAG)).toContain(`<${UNTRUSTED_TOOL_TAG}>`)
   })
 
@@ -74,9 +62,7 @@ describe('fenceUntrusted', () => {
   })
 
   it('returns the text untouched when injection.enabled is false', () => {
-    // The documented one-line opt-out. It is explicit user configuration rather than a heuristic,
-    // so honouring it does not reintroduce the detector-gated shape -- and it is the escape hatch
-    // for a downstream consumer that cannot handle fence tags.
+    // The documented one-line opt-out. It is explicit user configuration rather than a heuristic, so honouring it does not reintroduce the detector-gated shape -- and it is the escape hatch for a downstream consumer that cannot handle fence tags.
     process.env['TOKEN_GOAT_INJECTION_ENABLED'] = 'false'
     invalidateConfigCache()
 
@@ -112,8 +98,7 @@ describe('scanAndRecord', () => {
 
 describe('fenceWithMatches', () => {
   it('fences without rescanning, using the matches the caller already has', () => {
-    // The hook handlers scan once to pick a return shape, then fence whichever string they settled
-    // on. Rescanning there would both cost a second pass and let the notice disagree with the stat.
+    // The hook handlers scan once to pick a return shape, then fence whichever string they settled on. Rescanning there would both cost a second pass and let the notice disagree with the stat.
     const fenced = fenceWithMatches(BENIGN, ['ignore-previous-instructions'], UNTRUSTED_TOOL_TAG)
 
     expect(fenced).toContain('prompt-injection pattern')

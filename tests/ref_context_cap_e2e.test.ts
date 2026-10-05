@@ -1,20 +1,4 @@
-/**
- * End-to-end regression for the `refs.context` storage cap.
- *
- * A ref's context is the source line it sits on, and on a file a human wrote that is
- * short by construction. Generated metadata is not written that way: a FlexiPage, a
- * serialized Flow, a minified bundle and a one-line JSON document all put the entire
- * document on line 1, so every reference on that line stored the whole file as its
- * context and the bytes written grew with the square of the input. Measured before the
- * cap, on a 779 KB FlexiPage carrying 10,000 component references: 7,789,990,000
- * characters of context, and 58 seconds to index one file.
- *
- * Provenance: HAND-DERIVED. The fixture is a FlexiPage assembled here from the Salesforce
- * metadata element names the adapter already extracts, and the expectations are computed
- * from the input (one line, N references, each context bounded) independently of the code
- * under test. The 7.79e9 figure above is a CAPTURE from running the shipped extractor
- * against a generated 10,000-reference file.
- */
+/** End-to-end regression for the `refs.context` storage cap. A ref's context is the source line it sits on, and on a file a human wrote that is short by construction. Generated metadata is not written that way: a FlexiPage, a serialized Flow, a minified bundle and a one-line JSON document all put the entire document on line 1, so every reference on that line stored the whole file as its context and the bytes written grew with the square of the input. Measured before the cap, on a 779 KB FlexiPage carrying 10,000 component references: 7,789,990,000 characters of context, and 58 seconds to index one file. Provenance: HAND-DERIVED. The fixture is a FlexiPage assembled here from the Salesforce metadata element names the adapter already extracts, and the expectations are computed from the input (one line, N references, each context bounded) independently of the code under test. The 7.79e9 figure above is a CAPTURE from running the shipped extractor against a generated 10,000-reference file. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

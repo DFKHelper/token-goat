@@ -1,21 +1,4 @@
-/**
- * A pattern the INDEXER builds from a file it is indexing, rather than one a caller supplied.
- *
- * `tests/guards/caller_supplied_patterns_are_guarded.test.ts` is the other half of this and does
- * not cover it: it flags a `new RegExp` sink by the NAME of its argument, against a set of names
- * that mean "this came from a `--grep` or a `--filter`". The language adapters interpolate under
- * names like `namesAlt` and `root`, so the guard's population never contained them -- a green run
- * of it has never been evidence about `src/languages/` at all.
- *
- * The risk here is not the caller's risk. A search pattern arrives from a model or a command line
- * and the worry is catastrophic backtracking; an indexer pattern is built from a file that may have
- * been placed in the tree by whoever wrote the repository being reviewed, and the two things that
- * go wrong are a pattern that matches more than the literal it was built from, and a pattern whose
- * SIZE grows with the file. Neither needs a nested quantifier, so a shape check reports both clean.
- *
- * `indexFileSync` runs synchronously inside the worker's drain loop, which has no per-file
- * deadline, so a file that costs seconds costs them to every file queued behind it too.
- */
+/** A pattern the INDEXER builds from a file it is indexing, rather than one a caller supplied. `tests/guards/caller_supplied_patterns_are_guarded.test.ts` is the other half of this and does not cover it: it flags a `new RegExp` sink by the NAME of its argument, against a set of names that mean "this came from a `--grep` or a `--filter`". The language adapters interpolate under names like `namesAlt` and `root`, so the guard's population never contained them -- a green run of it has never been evidence about `src/languages/` at all. The risk here is not the caller's risk. A search pattern arrives from a model or a command line and the worry is catastrophic backtracking; an indexer pattern is built from a file that may have been placed in the tree by whoever wrote the repository being reviewed, and the two things that go wrong are a pattern that matches more than the literal it was built from, and a pattern whose SIZE grows with the file. Neither needs a nested quantifier, so a shape check reports both clean. `indexFileSync` runs synchronously inside the worker's drain loop, which has no per-file deadline, so a file that costs seconds costs them to every file queued behind it too. */
 import { describe, expect, it } from 'vitest'
 
 import { extractApex } from '../src/languages/apex.js'
@@ -24,24 +7,15 @@ import { extractSalesforceMetadata } from '../src/languages/salesforce_metadata.
 
 describe('a pattern built from the file being indexed', () => {
   it('does not grow with the number of types an Apex file declares', () => {
-    // PROVENANCE: HAND-DERIVED. The shape is chosen from what makes a literal alternation expensive
-    // -- many branches sharing a long prefix, and lines that match that prefix and then fail -- not
-    // from anything the adapter does. Against the interpolated alternation this replaced, a replica
-    // of the same pattern measured 0.78 s at 2,000 names, 4.87 s at 4,000 and 17.3 s at 6,000, an
-    // exponent near three; the 2 MB default of `indexing.large_file_skip_kb` admits about 25,000.
+    // PROVENANCE: HAND-DERIVED. The shape is chosen from what makes a literal alternation expensive -- many branches sharing a long prefix, and lines that match that prefix and then fail -- not from anything the adapter does. Against the interpolated alternation this replaced, a replica of the same pattern measured 0.78 s at 2,000 names, 4.87 s at 4,000 and 17.3 s at 6,000, an exponent near three; the 2 MB default of `indexing.large_file_skip_kb` admits about 25,000.
     //
-    // The ceiling is deliberately far above what a linear implementation costs (this runs in tens
-    // of milliseconds) and far below what the previous one did. It is an order-of-magnitude
-    // assertion, not a stopwatch, so a slow CI runner cannot fail it and a quadratic term cannot
-    // pass it.
+    // The ceiling is deliberately far above what a linear implementation costs (this runs in tens of milliseconds) and far below what the previous one did. It is an order-of-magnitude assertion, not a stopwatch, so a slow CI runner cannot fail it and a quadratic term cannot pass it.
     const prefix = 'A'.repeat(30)
     const names = Array.from({ length: 4_000 }, (_, i) => `${prefix}${i}`)
     const content =
       names.map((n) => `class ${n} {`).join('\n') +
       '\n' +
-      // Bait: shares each name's prefix, then fails. Every one of these forces the engine through
-      // the branch list, which is the whole cost when the list is interpolated and none of it when
-      // the name is captured and looked up.
+      // Bait: shares each name's prefix, then fails. Every one of these forces the engine through the branch list, which is the whole cost when the list is interpolated and none of it when the name is captured and looked up.
       names.map((n) => `${n}z () {`).join('\n') +
       '\n'
 
@@ -56,9 +30,7 @@ describe('a pattern built from the file being indexed', () => {
   })
 
   it('still finds a constructor with no access modifier, in any case', () => {
-    // The regression the fix above could plausibly cause: the alternation it replaced carried the
-    // type names, and a capture-then-look-up has to reach the same answer, including Apex's
-    // case-insensitivity, which is why the lookup folds.
+    // The regression the fix above could plausibly cause: the alternation it replaced carried the type names, and a capture-then-look-up has to reach the same answer, including Apex's case-insensitivity, which is why the lookup folds.
     const content = `public class Account_Service {
   account_service() {}
   void helper() {}
@@ -70,15 +42,9 @@ describe('a pattern built from the file being indexed', () => {
   })
 
   it('does not re-read the whole template for every component tag on its one line', () => {
-    // PROVENANCE: CAPTURE. The numbers below are from running this shape against the adapter as it
-    // stood before the fix, over a doubling sweep: 84 ms at 290 KB, 320 ms at 586 KB, 1,323 ms at
-    // 1.2 MB -- four times the work for twice the input. The same sweep afterwards reads 7 / 14 /
-    // 28 ms, which is twice the work for twice the input. A generated LWC template is the real
-    // shape: every tag lands on line 1, so recomputing a line number by slicing from character 0
-    // and its text by splitting the document cost the whole file once per match.
+    // PROVENANCE: CAPTURE. The numbers below are from running this shape against the adapter as it stood before the fix, over a doubling sweep: 84 ms at 290 KB, 320 ms at 586 KB, 1,323 ms at 1.2 MB -- four times the work for twice the input. The same sweep afterwards reads 7 / 14 / 28 ms, which is twice the work for twice the input. A generated LWC template is the real shape: every tag lands on line 1, so recomputing a line number by slicing from character 0 and its text by splitting the document cost the whole file once per match.
     //
-    // The ceiling is an order-of-magnitude assertion, not a stopwatch: forty times what the linear
-    // implementation costs here, and a twentieth of what the quadratic one did.
+    // The ceiling is an order-of-magnitude assertion, not a stopwatch: forty times what the linear implementation costs here, and a twentieth of what the quadratic one did.
     const tags = Array.from({ length: 16_000 }, (_, i) => `<c-widget-${i} lwc:ref="r${i}" id="i${i}" onclick={h${i}}></c-widget-${i}>`)
     const content = `<template>${tags.join('')}</template>`
 
@@ -87,17 +53,13 @@ describe('a pattern built from the file being indexed', () => {
     const elapsed = Date.now() - started
 
     expect(elapsed, 'the adapter reads the whole template once per match again').toBeLessThan(1_200)
-    // The other half: doing nothing would also be fast. The last tag is the one furthest from
-    // character 0, so it is the one a cheap-but-broken pass is likeliest to lose.
+    // The other half: doing nothing would also be fast. The last tag is the one furthest from character 0, so it is the one a cheap-but-broken pass is likeliest to lose.
     expect(symbols.some((s) => s.name === 'r15999' && s.kind === 'lwc_ref')).toBe(true)
     expect(refs.some((r) => r.name === 'c-widget-15999' && r.line === 1)).toBe(true)
   })
 
   it('does not read a dot in an XML root name as a wildcard', () => {
-    // PROVENANCE: HAND-DERIVED. An XML name may legally contain a `.`, and the adapter's own
-    // capture admits one; `CustomXObject` is the minimal string a `.` matches and a literal does
-    // not. Unescaped, the close tag below satisfies the root check and a document that is not well
-    // formed is accepted -- the adapter's only test that the file is what it claims to be.
+    // PROVENANCE: HAND-DERIVED. An XML name may legally contain a `.`, and the adapter's own capture admits one; `CustomXObject` is the minimal string a `.` matches and a literal does not. Unescaped, the close tag below satisfies the root check and a document that is not well formed is accepted -- the adapter's only test that the file is what it claims to be.
     const mismatched = `<?xml version="1.0"?>
 <Custom.Object xmlns="http://soap.sforce.com/2006/04/metadata">
   <label>x</label>

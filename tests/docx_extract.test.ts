@@ -55,9 +55,7 @@ describe('docxText', () => {
     expect(text.split('\n\n')).toHaveLength(6)
   })
 
-  // A paragraph whose whole text is digits was being handed back as a number: an order number
-  // reading `007` printed as `7`, a version reading `1.50` as `1.5`. Mixed text was untouched,
-  // so the corruption only hit the short standalone values most likely to be an identifier.
+  // A paragraph whose whole text is digits was being handed back as a number: an order number reading `007` printed as `7`, a version reading `1.50` as `1.5`. Mixed text was untouched, so the corruption only hit the short standalone values most likely to be an identifier.
   it('returns a numeric-looking paragraph as the text it was written as', async () => {
     const f = path.join(dir, 'numeric.docx')
     fs.writeFileSync(

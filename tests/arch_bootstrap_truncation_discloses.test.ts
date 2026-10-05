@@ -1,20 +1,4 @@
-/**
- * `arch` and `bootstrap-audit` are exempt from the row-truncation guard
- * (tests/guards/truncation_invariant_holds.test.ts) for a shape reason, not a behaviour one:
- * `arch` renders three independent lists under one --top and `bootstrap-audit` reads an installed
- * home rather than an indexed project, so neither fits that guard's single-row-array harness or
- * its fixture. This file is what makes those two exemptions checked rather than asserted.
- *
- * Both reasons used to be about the harness and were read as being about the commands. `arch`
- * said "there is no single row list to check" and `bootstrap-audit` said "audits an installed
- * agent configuration, not a project" -- true sentences, neither of which is a reason the command
- * may drop rows in silence, which is what both were doing: `arch --top 2` cut hubs from 270 and
- * entry points from 511, and `bootstrap-audit --top 1` showed one of 77 installed entries.
- *
- * Provenance: CAPTURE. Every expectation below is measured from a real run of the built bundle
- * against the fixture in this file -- the uncapped count is taken by running the same command
- * with the cap lifted, never read off the source that produces it.
- */
+/** `arch` and `bootstrap-audit` are exempt from the row-truncation guard (tests/guards/truncation_invariant_holds.test.ts) for a shape reason, not a behaviour one: `arch` renders three independent lists under one --top and `bootstrap-audit` reads an installed home rather than an indexed project, so neither fits that guard's single-row-array harness or its fixture. This file is what makes those two exemptions checked rather than asserted. Both reasons used to be about the harness and were read as being about the commands. `arch` said "there is no single row list to check" and `bootstrap-audit` said "audits an installed agent configuration, not a project" -- true sentences, neither of which is a reason the command may drop rows in silence, which is what both were doing: `arch --top 2` cut hubs from 270 and entry points from 511, and `bootstrap-audit --top 1` showed one of 77 installed entries. Provenance: CAPTURE. Every expectation below is measured from a real run of the built bundle against the fixture in this file -- the uncapped count is taken by running the same command with the cap lifted, never read off the source that produces it. */
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -53,12 +37,10 @@ beforeAll(() => {
   projectDir = mkdtempSync(join(tmpdir(), 'tg-arch-trunc-'))
   homeDir = mkdtempSync(join(tmpdir(), 'tg-arch-trunc-home-'))
 
-  // `arch` reads the git-tracked file list, so an untracked temp directory yields zero files and
-  // every assertion below would pass on an empty report. The calibration test guards that too.
+  // `arch` reads the git-tracked file list, so an untracked temp directory yields zero files and every assertion below would pass on an empty report. The calibration test guards that too.
   writeFileSync(join(projectDir, 'hub.ts'), 'export function hub(): number {\n  return 1\n}\n')
   for (let i = 1; i <= ENTRIES; i++) {
-    // Each importer is an entry point (nobody imports it) and each import makes hub.ts a hub;
-    // a second per-file module gives the hubs list more than one member to rank.
+    // Each importer is an entry point (nobody imports it) and each import makes hub.ts a hub; a second per-file module gives the hubs list more than one member to rank.
     writeFileSync(join(projectDir, `leaf${i}.ts`), `import { hub } from './hub.js'\nimport { side } from './side${i}.js'\nexport const v${i} = hub() + side()\n`)
     writeFileSync(join(projectDir, `side${i}.ts`), `export function side(): number {\n  return ${i}\n}\n`)
   }
@@ -80,8 +62,7 @@ beforeAll(() => {
 
 describe('arch discloses each list it cut', () => {
   it('cuts at all, so the assertions below are not reading a complete report', () => {
-    // Calibration first. A repo `arch` finds no tracked files in reports three empty lists and
-    // would satisfy "did not lie about a total" trivially.
+    // Calibration first. A repo `arch` finds no tracked files in reports three empty lists and would satisfy "did not lie about a total" trivially.
     const capped = json(['arch', '--top', String(CAP)], projectDir)
     const full = json(['arch', '--top', '999'], projectDir)
 
@@ -106,12 +87,7 @@ describe('arch discloses each list it cut', () => {
   })
 
   it('flags the two lists independently, so one cut list cannot vouch for the other', () => {
-    // The whole reason this command needs per-list fields: one --top clips both lists, and a
-    // reader of a cut hubs list beside a complete entry-point list has to be able to tell them
-    // apart. Setting the cap to the smaller list's exact size cuts the larger one and leaves the
-    // smaller intact, whichever way round the fixture happens to come out -- which is not a
-    // detail worth hardcoding, since the first version of this test asserted the wrong direction
-    // and the fixture has 10 hubs to 9 entry points.
+    // The whole reason this command needs per-list fields: one --top clips both lists, and a reader of a cut hubs list beside a complete entry-point list has to be able to tell them apart. Setting the cap to the smaller list's exact size cuts the larger one and leaves the smaller intact, whichever way round the fixture happens to come out -- which is not a detail worth hardcoding, since the first version of this test asserted the wrong direction and the fixture has 10 hubs to 9 entry points.
     const full = json(['arch', '--top', '999'], projectDir)
     const hubCount = (full.hubs as unknown[]).length
     const entryCount = (full.entryPoints as unknown[]).length

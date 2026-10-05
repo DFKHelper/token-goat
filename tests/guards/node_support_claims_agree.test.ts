@@ -1,8 +1,4 @@
-/**
- * The README claimed the suite ran on "Node.js 20 and 22" while package.json required >=22 and
- * every CI job pinned 22, so a reviewer building a support matrix from the README got a version
- * nothing was ever tested on. Three places state this and none of them checked each other.
- */
+/** The README claimed the suite ran on "Node.js 20 and 22" while package.json required >=22 and every CI job pinned 22, so a reviewer building a support matrix from the README got a version nothing was ever tested on. Three places state this and none of them checked each other. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -47,8 +43,7 @@ describe('Node support claims', () => {
     expect(required).toBeGreaterThan(0)
     expect(pinned.length).toBeGreaterThan(0)
     expect(label.length).toBeGreaterThan(0)
-    // The trim only ever removes zeroes, so the label cannot quietly become a weaker claim than the
-    // floor it is derived from: `22.16.0` may shorten to `22.16`, never to `22`.
+    // The trim only ever removes zeroes, so the label cannot quietly become a weaker claim than the floor it is derived from: `22.16.0` may shorten to `22.16`, never to `22`.
     const dropped = floor.split('.').slice(label.split('.').length)
     expect(
       dropped.every((part) => Number(part) === 0),

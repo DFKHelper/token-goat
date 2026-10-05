@@ -1,11 +1,4 @@
-/**
- * Regression tests for the pack / tokens / budget / failures CLI commands.
- *
- * Each test drives the REAL registered command via the built bundle and asserts
- * concrete behavior, not just reachability. One helper per non-trivial exit-code
- * gate is mutation-verified (break the structural condition → specific test
- * fails; restore from scratchpad backup → test passes again).
- */
+/** Regression tests for the pack / tokens / budget / failures CLI commands. Each test drives the REAL registered command via the built bundle and asserts concrete behavior, not just reachability. One helper per non-trivial exit-code gate is mutation-verified (break the structural condition → specific test fails; restore from scratchpad backup → test passes again). */
 
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -23,9 +16,7 @@ interface RunResult {
   stderr: string
 }
 
-// Batched against one long-lived bundle process (see tests/cli.test.ts for the same pattern).
-// Calls carrying stdin still spawn for real: the batch protocol passes argv, cwd and env, not a
-// stdin stream.
+// Batched against one long-lived bundle process (see tests/cli.test.ts for the same pattern). Calls carrying stdin still spawn for real: the batch protocol passes argv, cwd and env, not a stdin stream.
 async function run(args: string[], opts: { cwd?: string; input?: string } = {}): Promise<RunResult> {
   if (opts.input !== undefined) {
     const res = spawnSync(process.execPath, [BUNDLE, ...args], {
@@ -118,11 +109,7 @@ describe('pack command', () => {
     expect(fs.readFileSync(dest, 'utf8')).toContain('greet')
   })
 
-  // Regression guard: expandGlobs() applied a path.isAbsolute() guard in the literal-path
-  // branch (skip re-joining against root when the path is already absolute) but not in the
-  // glob-expansion branch, so an absolute glob pattern got its matched hits re-joined against
-  // root anyway -- path.join() does not special-case an absolute second segment, so the result
-  // was a mangled, nonexistent path instead of the real file.
+  // Regression guard: expandGlobs() applied a path.isAbsolute() guard in the literal-path branch (skip re-joining against root when the path is already absolute) but not in the glob-expansion branch, so an absolute glob pattern got its matched hits re-joined against root anyway -- path.join() does not special-case an absolute second segment, so the result was a mangled, nonexistent path instead of the real file.
   it('an absolute glob pattern is not mangled by re-joining its matches against the cwd', async () => {
     const absoluteGlob = `${tmpDir.split(path.sep).join('/')}/hel*.ts`
     const r = await run(['pack', absoluteGlob])
@@ -130,19 +117,14 @@ describe('pack command', () => {
     expect(r.stdout).toContain('greet')
   })
 
-  // Regression guard: cmdPack fell back to reading stdin whenever expandGlobs() returned zero
-  // matches, even when the user explicitly passed a pattern -- so a typo'd pattern silently
-  // packed empty stdin instead of reporting "no files matched". Carries stdin: must keep spawning.
+  // Regression guard: cmdPack fell back to reading stdin whenever expandGlobs() returned zero matches, even when the user explicitly passed a pattern -- so a typo'd pattern silently packed empty stdin instead of reporting "no files matched". Carries stdin: must keep spawning.
   it('a pattern that matches zero files errors instead of silently falling back to stdin', async () => {
     const r = await run(['pack', 'no-such-file-*.ts'], { input: '' })
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('no files matched')
   })
 
-  // Regression guard: --no-ignore was registered on the pack command with the help text
-  // "bypass .tokengoatignore patterns", and collectFiles/collectFromStdin already accepted an
-  // ignore_patterns option, but cmdPack never read a .tokengoatignore file or forwarded any
-  // patterns to collectOpts -- the flag was a complete no-op and the file was never read.
+  // Regression guard: --no-ignore was registered on the pack command with the help text "bypass .tokengoatignore patterns", and collectFiles/collectFromStdin already accepted an ignore_patterns option, but cmdPack never read a .tokengoatignore file or forwarded any patterns to collectOpts -- the flag was a complete no-op and the file was never read.
   describe('.tokengoatignore', () => {
     let ignoreDir: string
 
@@ -231,9 +213,7 @@ describe('budget command', () => {
     expect(r.stdout).toMatch(/\d+% of 200K/)
   })
 
-  // Regression: context.model_window_tokens was a fully-validated, env-overridable config knob
-  // with zero read-side consumers -- cmdBudget only ever showed the percentage when --context
-  // was passed explicitly on every invocation, silently ignoring the configured window size.
+  // Regression: context.model_window_tokens was a fully-validated, env-overridable config knob with zero read-side consumers -- cmdBudget only ever showed the percentage when --context was passed explicitly on every invocation, silently ignoring the configured window size.
   it('shows the percentage fill using the configured context.model_window_tokens when --context is omitted', async () => {
     const r = await run(['budget', 'hello.ts'])
     expect(r.status, r.stderr).toBe(0)

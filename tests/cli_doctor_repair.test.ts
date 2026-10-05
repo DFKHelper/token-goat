@@ -280,8 +280,7 @@ describe('doctor auto-repair and embedding model checks', () => {
         project = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-doctor-repair-mcp-'))
         fs.mkdirSync(path.join(project, '.vscode'), { recursive: true })
         mcpPath = path.join(project, '.vscode', 'mcp.json')
-        // The created-config ledger lives under dataDir(); point it at a scratch dir so the
-        // record/take below cannot touch (or be touched by) the real ledger.
+        // The created-config ledger lives under dataDir(); point it at a scratch dir so the record/take below cannot touch (or be touched by) the real ledger.
         dataHome = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-doctor-repair-datadir-'))
         process.env['LOCALAPPDATA'] = dataHome
         process.env['XDG_DATA_HOME'] = dataHome

@@ -1,9 +1,4 @@
-/**
- * `maxWorkers` is derived from the machine, and the risk of deriving it is that a formula change
- * silently raises it on a CI runner. That is not a hypothetical: 6 workers on the 4-vCPU
- * windows-latest runner pushed ordinary tests past the 30s bound across three consecutive workflow
- * attempts. So the runner shapes are pinned here by value, not left to be re-reasoned about.
- */
+/** `maxWorkers` is derived from the machine, and the risk of deriving it is that a formula change silently raises it on a CI runner. That is not a hypothetical: 6 workers on the 4-vCPU windows-latest runner pushed ordinary tests past the 30s bound across three consecutive workflow attempts. So the runner shapes are pinned here by value, not left to be re-reasoned about. */
 import { describe, expect, it } from 'vitest'
 
 import { resolveMaxWorkers, ROOMY_CPUS, ROOMY_MEMORY_GB, WORKER_CEILING } from './setup/max-workers.js'

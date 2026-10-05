@@ -1,21 +1,4 @@
-/**
- * Regression coverage for the real index-path wiring gap: `indexFileSync` (called by both
- * `cmdIndex` and `worker.ts::makeIndexer`) used to only ever write symbols/refs - the
- * embeddings pipeline (chunkFile/embedTexts/upsertChunks) existed, was fully unit-tested, and
- * had zero production callers other than the delete-on-removal cleanup in index_prune.ts. Every
- * existing embeddings*.test.ts calls embeddings.ts functions directly (the exact
- * injected-seam trap this project's CLAUDE.md warns about for this codebase), so none of them
- * would have caught the real index path never populating chunks/chunk_vectors.
- *
- * This file drives the real choke point - parser.ts's exported `indexFileEmbeddings`, the
- * function `cmdIndex` awaits and `makeIndexer` fires-and-forgets - rather than embeddings.ts's
- * internals directly, and proves: (a) it actually populates chunks/chunk_vectors for a real
- * file, (b) real embedding-vector search then finds a meaning-based match plain FTS misses
- * (the same distinguishing example as tests/semantic_embeddings_e2e.test.ts, at the
- * in-process integration level rather than through a spawned built-bundle process), and (c)
- * indexing degrades gracefully - symbols still index - when the embeddings step is disabled
- * by config or when the optional chunk_vectors table is unavailable.
- */
+/** Regression coverage for the real index-path wiring gap: `indexFileSync` (called by both `cmdIndex` and `worker.ts::makeIndexer`) used to only ever write symbols/refs - the embeddings pipeline (chunkFile/embedTexts/upsertChunks) existed, was fully unit-tested, and had zero production callers other than the delete-on-removal cleanup in index_prune.ts. Every existing embeddings*.test.ts calls embeddings.ts functions directly (the exact injected-seam trap this project's CLAUDE.md warns about for this codebase), so none of them would have caught the real index path never populating chunks/chunk_vectors. This file drives the real choke point - parser.ts's exported `indexFileEmbeddings`, the function `cmdIndex` awaits and `makeIndexer` fires-and-forgets - rather than embeddings.ts's internals directly, and proves: (a) it actually populates chunks/chunk_vectors for a real file, (b) real embedding-vector search then finds a meaning-based match plain FTS misses (the same distinguishing example as tests/semantic_embeddings_e2e.test.ts, at the in-process integration level rather than through a spawned built-bundle process), and (c) indexing degrades gracefully - symbols still index - when the embeddings step is disabled by config or when the optional chunk_vectors table is unavailable. */
 import { createRequire } from 'node:module'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -38,9 +21,7 @@ import Database from '../src/sqlite_driver.js'
 
 type Vec0State = 'working' | 'broken' | 'absent'
 
-// Mirrors tests/embeddings_vec_insert.test.ts's classifyVec0(): 'absent' (package not
-// installed) is a legitimate platform skip; 'broken' (installed but vec0 fails to load) is
-// silent-dead semantic search and must fail loudly, not be swallowed by a skip.
+// Mirrors tests/embeddings_vec_insert.test.ts's classifyVec0(): 'absent' (package not installed) is a legitimate platform skip; 'broken' (installed but vec0 fails to load) is silent-dead semantic search and must fail loudly, not be swallowed by a skip.
 function classifyVec0(): Vec0State {
   const req = createRequire(import.meta.url)
   try {
@@ -61,8 +42,7 @@ function classifyVec0(): Vec0State {
 }
 
 const vec0State = classifyVec0()
-// Both the model and a genuinely loaded vec0 table must be real for these tests to exercise
-// the actual insert/search code, mirroring embeddings_vec_insert.test.ts's canExerciseRealUpsert.
+// Both the model and a genuinely loaded vec0 table must be real for these tests to exercise the actual insert/search code, mirroring embeddings_vec_insert.test.ts's canExerciseRealUpsert.
 const canExerciseRealEmbeddings = vec0State === 'working' && isAvailable() && modelFilesPresent()
 
 let TMP: string
@@ -93,9 +73,7 @@ describe('indexFileEmbeddings wires the real embeddings pipeline into indexing',
       const content = 'export function wiredSymbol(): number {\n' + '  return 1\n'.repeat(10) + '}\n'
       fs.writeFileSync(filePath, content)
 
-      // Drive the real default path: indexFileSync (symbols) then indexFileEmbeddings
-      // (chunks/vectors) for the SAME file - exactly what cmdIndex and worker.ts::makeIndexer
-      // each do for every file they touch.
+      // Drive the real default path: indexFileSync (symbols) then indexFileEmbeddings (chunks/vectors) for the SAME file - exactly what cmdIndex and worker.ts::makeIndexer each do for every file they touch.
       indexFileSync(filePath, dbPath)
       await indexFileEmbeddings(filePath, dbPath)
 
@@ -227,12 +205,7 @@ describe('indexFileEmbeddings wires the real embeddings pipeline into indexing',
   })
 
   it('degrades gracefully - symbols still index - when chunk_vectors is unavailable (sqlite-vec-absent simulation)', async () => {
-    // Drop the real table rather than mocking isAvailable(): this is exactly what
-    // chunkVectorsTableExists() sees on an install where sqlite-vec never loaded, matching
-    // the same simulation tests/embeddings_novec_upsert_search.test.ts already uses for
-    // upsertChunks/searchSemantic. Runs unconditionally (no skipIf): dropping the table
-    // reproduces the absent-dependency condition regardless of what is actually installed on
-    // this machine.
+    // Drop the real table rather than mocking isAvailable(): this is exactly what chunkVectorsTableExists() sees on an install where sqlite-vec never loaded, matching the same simulation tests/embeddings_novec_upsert_search.test.ts already uses for upsertChunks/searchSemantic. Runs unconditionally (no skipIf): dropping the table reproduces the absent-dependency condition regardless of what is actually installed on this machine.
     process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
     const dbPath = path.join(TMP, 'index.db')
     const filePath = path.join(TMP, 'degraded.ts')
@@ -266,9 +239,7 @@ describe('indexFileEmbeddings extracts and embeds text from binary document form
       ])
       fs.writeFileSync(filePath, bytes)
 
-      // Drive the real default path -- indexFileSync (a no-op for these formats, no Language
-      // union member) then indexFileEmbeddings, exactly what cmdIndex and worker.ts::makeIndexer
-      // each do for every file they touch.
+      // Drive the real default path -- indexFileSync (a no-op for these formats, no Language union member) then indexFileEmbeddings, exactly what cmdIndex and worker.ts::makeIndexer each do for every file they touch.
       indexFileSync(filePath, dbPath)
       const sha = fingerprintFile(filePath)
       await indexFileEmbeddings(filePath, dbPath, sha ?? undefined)
@@ -292,9 +263,7 @@ describe('indexFileEmbeddings extracts and embeds text from binary document form
       const fileRow = db.prepare('SELECT embed_sha FROM files WHERE path = ?').get(key) as
         | { embed_sha: string | null }
         | undefined
-      // buildDocxFixture's own zip encoding embeds a timestamp, so embed_sha is NOT stable
-      // across runs even though the visible text is fixed -- see the matching finding in
-      // tests/cmdindex_unchanged_skip.test.ts. Pin the real sha256-hex shape, not an exact value.
+      // buildDocxFixture's own zip encoding embeds a timestamp, so embed_sha is NOT stable across runs even though the visible text is fixed -- see the matching finding in tests/cmdindex_unchanged_skip.test.ts. Pin the real sha256-hex shape, not an exact value.
       expect(fileRow?.embed_sha).toMatch(/^[0-9a-f]{64}$/)
 
       const hits = mergeNearbyHits(await searchSemantic(db, 'plan for the rollout across regions', 5))
@@ -325,11 +294,7 @@ describe('real embeddings find meaning-based matches plain FTS misses', () => {
       const query = 'look up an account using its email address'
       const db = getDb(dbPath)
 
-      // Control: searchSymbolsFts now retries with an OR-joined query when the AND-joined
-      // attempt returns zero rows, so this control must avoid *every* literal word overlap with
-      // the fixture (not just avoid an all-terms-present AND match) -- none of the query's words
-      // appear verbatim in the fixture's name/body/docstring, so even the OR-widened retry can't
-      // match it. That's what makes the embeddings match below a genuine meaning-based hit.
+      // Control: searchSymbolsFts now retries with an OR-joined query when the AND-joined attempt returns zero rows, so this control must avoid *every* literal word overlap with the fixture (not just avoid an all-terms-present AND match) -- none of the query's words appear verbatim in the fixture's name/body/docstring, so even the OR-widened retry can't match it. That's what makes the embeddings match below a genuine meaning-based hit.
       const ftsHits = searchSymbolsFts(query, 20, dbPath)
       expect(ftsHits.some((s) => s.name === 'getUserByEmail')).toBe(false)
 
@@ -374,14 +339,11 @@ describe('indexFileSync indexes Jupyter notebook (.ipynb) code cells as real sym
     expect(helperSymbols.length).toBe(1)
     expect(helperSymbols[0]?.body).toContain('return 42')
 
-    // The stored language is still 'ipynb', not 'python' -- distinguishing a notebook from a plain .py file.
-    // Read through `getFileEntry` rather than raw SQL on the caller's own spelling of `filePath`: the files row is keyed on the canonicalized path `indexFileSync` writes, and `getFileEntry` resolves through that same normalizer.
+    // The stored language is still 'ipynb', not 'python' -- distinguishing a notebook from a plain .py file. Read through `getFileEntry` rather than raw SQL on the caller's own spelling of `filePath`: the files row is keyed on the canonicalized path `indexFileSync` writes, and `getFileEntry` resolves through that same normalizer.
     expect(getFileEntry(filePath, dbPath)?.language).toBe('ipynb')
 
     const refs = queryRefs({ name: 'helper', filePath }, dbPath)
-    // helper() is called exactly once, by notebook_main -- pin the exact count and enclosing
-    // caller so a regression that resolved the ref to the wrong scope (still non-empty) is
-    // caught, matching this test's own exact-count rigor on symbols above.
+    // helper() is called exactly once, by notebook_main -- pin the exact count and enclosing caller so a regression that resolved the ref to the wrong scope (still non-empty) is caught, matching this test's own exact-count rigor on symbols above.
     expect(refs.length).toBe(1)
     expect(refs[0]?.context).toBe('notebook_main')
   })

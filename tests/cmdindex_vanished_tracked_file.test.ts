@@ -1,22 +1,4 @@
-/**
- * Regression: `token-goat index` counted a file it never indexed.
- *
- * A file that git still tracks but that no longer exists in the worktree (the state left by a
- * plain `rm`, and by every rename until the result is staged) is still returned by
- * getTrackedFiles, so it reached cmdIndex's per-file loop on every run. fingerprintFile returns
- * null for it, indexFileSync fail-softs on ENOENT without throwing, so nothing was written and
- * nothing was counted as failed -- and then `indexed += 1` at the bottom of the loop counted the
- * work anyway. Nothing converged it either: deleting the file is exactly what keeps it tracked
- * and absent, so the phantom count repeated on every subsequent run forever.
- *
- * After a rename this produced the headline symptom: `Indexed 1 file into the symbol index`
- * printed by the same run that had just pruned the index empty.
- *
- * Driven through the real cmdIndex against a real git repo with no --walk, because the tracked
- * file list is the only way a path that does not exist reaches the loop at all: the --walk form
- * the sibling tests in cmdindex_unchanged_skip.test.ts use enumerates the filesystem, where a
- * deleted file is simply absent and this branch is unreachable.
- */
+/** Regression: `token-goat index` counted a file it never indexed. A file that git still tracks but that no longer exists in the worktree (the state left by a plain `rm`, and by every rename until the result is staged) is still returned by getTrackedFiles, so it reached cmdIndex's per-file loop on every run. fingerprintFile returns null for it, indexFileSync fail-softs on ENOENT without throwing, so nothing was written and nothing was counted as failed -- and then `indexed += 1` at the bottom of the loop counted the work anyway. Nothing converged it either: deleting the file is exactly what keeps it tracked and absent, so the phantom count repeated on every subsequent run forever. After a rename this produced the headline symptom: `Indexed 1 file into the symbol index` printed by the same run that had just pruned the index empty. Driven through the real cmdIndex against a real git repo with no --walk, because the tracked file list is the only way a path that does not exist reaches the loop at all: the --walk form the sibling tests in cmdindex_unchanged_skip.test.ts use enumerates the filesystem, where a deleted file is simply absent and this branch is unreachable. */
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -74,17 +56,13 @@ describe('cmdIndex and a tracked file that is gone from the worktree', () => {
 
     fs.rmSync(path.join(TMP, 'gone.ts'))
 
-    // A file known to be gone must not be handed to the parser at all. Asserted separately from
-    // the count because the post-parse guard below would otherwise mask this one: with only that
-    // guard, a vanished file is still opened and parsed before being dropped, and the count comes
-    // out right for the wrong reason.
+    // A file known to be gone must not be handed to the parser at all. Asserted separately from the count because the post-parse guard below would otherwise mask this one: with only that guard, a vanished file is still opened and parsed before being dropped, and the count comes out right for the wrong reason.
     const realIndexFileSync = parserModule.indexFileSync
     const parseSpy = vi
       .spyOn(parserModule, 'indexFileSync')
       .mockImplementation((filePath, dbp) => realIndexFileSync(filePath, dbp))
 
-    // The run that notices the deletion. One file is unchanged and one is gone, so nothing at
-    // all was indexed: the count must say so rather than crediting the file it could not read.
+    // The run that notices the deletion. One file is unchanged and one is gone, so nothing at all was indexed: the count must say so rather than crediting the file it could not read.
     const first = await captureIndex({ dbPath })
     expect(first, 'nothing was indexed on this run').toContain('Indexed 0 files into the symbol index.')
     expect(first).toContain('Pruned 1 deleted file(s).')
@@ -96,19 +74,14 @@ describe('cmdIndex and a tracked file that is gone from the worktree', () => {
       'a file already known to be gone must not be opened',
     ).toEqual([])
 
-    // The run after. Its rows are already pruned, so there is no longer even a prune to explain
-    // a non-zero number -- this is the run where the old count was purely phantom, and it
-    // repeated forever, because a deleted file stays tracked and absent indefinitely.
+    // The run after. Its rows are already pruned, so there is no longer even a prune to explain a non-zero number -- this is the run where the old count was purely phantom, and it repeated forever, because a deleted file stays tracked and absent indefinitely.
     const second = await captureIndex({ dbPath })
     expect(second).toContain('Indexed 0 files into the symbol index.')
     expect(second).toContain('Skipped 1 unchanged file(s).')
     expect(second).not.toContain('Pruned')
   })
 
-  // The same credit, through a narrower window: the file is present when the guard above checks
-  // it and gone by the time its parse runs. indexFileSync fail-softs on ENOENT, so nothing is
-  // written and nothing throws, and the count must still not claim it. Simulated by deleting the
-  // file from inside the parse call, which is the one point where the race is deterministic.
+  // The same credit, through a narrower window: the file is present when the guard above checks it and gone by the time its parse runs. indexFileSync fail-softs on ENOENT, so nothing is written and nothing throws, and the count must still not claim it. Simulated by deleting the file from inside the parse call, which is the one point where the race is deterministic.
   it('does not count a file that is deleted while its own parse is running', async () => {
     const racing = path.join(TMP, 'racing.ts')
     fs.writeFileSync(racing, 'export function zqRacing(): number { return 1 }')
@@ -127,10 +100,7 @@ describe('cmdIndex and a tracked file that is gone from the worktree', () => {
     expect(out).not.toContain('Indexed 1 file ')
   })
 
-  // The narrow half: the fix keys on the file being absent, not on the fingerprint being null.
-  // A file that exists but cannot be read right now (a lock held by an AV scanner or an open
-  // editor) also fingerprints as null, and must still get its normal reindex attempt rather than
-  // being silently skipped as though it had been deleted.
+  // The narrow half: the fix keys on the file being absent, not on the fingerprint being null. A file that exists but cannot be read right now (a lock held by an AV scanner or an open editor) also fingerprints as null, and must still get its normal reindex attempt rather than being silently skipped as though it had been deleted.
   it('still attempts a file that exists but could not be fingerprinted', async () => {
     const locked = path.join(TMP, 'locked.ts')
     fs.writeFileSync(locked, 'export function zqLocked(): number {\n  return 1\n}\n')

@@ -37,10 +37,7 @@ describe('markdown symbol extraction ignores fenced code blocks', () => {
   })
 
   it('does not let a nested ``` example close an outer ```` fence early', async () => {
-    // Regression: fence-close was checked by matching only the first backtick
-    // character, not the run length, so a 3-backtick line nested inside an
-    // outer 4-backtick fence wrongly closed it early (CommonMark requires a
-    // closing run >= the opening run's length).
+    // Regression: fence-close was checked by matching only the first backtick character, not the run length, so a 3-backtick line nested inside an outer 4-backtick fence wrongly closed it early (CommonMark requires a closing run >= the opening run's length).
     const md = [
       '# Real',
       '',
@@ -62,9 +59,7 @@ describe('markdown symbol extraction ignores fenced code blocks', () => {
   })
 
   it('does not let a same-char fence-looking line with a trailing info string close an open fence', async () => {
-    // Regression coverage for the third CommonMark condition (the other two are covered by the
-    // two tests above): a closing run must have no trailing info string. A ```json line inside
-    // an already-open ``` fence must stay fenced content, not be read as the real closer.
+    // Regression coverage for the third CommonMark condition (the other two are covered by the two tests above): a closing run must have no trailing info string. A ```json line inside an already-open ``` fence must stay fenced content, not be read as the real closer.
     const md = ['# Real', '', '```', '```json', '# not a heading', '```', '', '## Tail'].join('\n')
     const result = await parseFixture('doc.md', md)
     const headings = result.symbols.filter((s) => s.kind === 'heading').map((s) => s.name)

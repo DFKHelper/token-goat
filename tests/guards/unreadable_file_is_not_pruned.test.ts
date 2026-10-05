@@ -1,25 +1,4 @@
-/**
- * Guard: a dirty file that cannot be examined must never be pruned from the index.
- *
- * `processDirtyBatch` decided a queued path had been deleted with `fs.existsSync`, and on a false
- * it called `remove`, dropping that file's symbols, references, sections and embedding chunks.
- * `fs.existsSync` is a stat inside a bare catch: it answers false for a permission or I/O error
- * exactly as it does for a missing file. So a file held open by an antivirus scanner, sitting
- * behind a deny ACE, or on a share that blinked, was erased from the index while still on disk --
- * silently, with `symbol Foo` returning nothing afterwards until something edited the file again.
- * The branch immediately below it already treated this same class of failure as transient, logging
- * and requeueing it; only the existence check acted on the ambiguity destructively.
- *
- * Why didn't a test catch this: every existing test of the deletion branch deletes the file for
- * real, and a real ENOENT is the one case where `existsSync` and a proper ENOENT check agree. The
- * unreadable-but-present case was never constructed, because constructing it takes an actual
- * permission change rather than a stub. This file makes one.
- *
- * The permission tests assert their own precondition first -- that `fs.existsSync` really does
- * answer false for the file they just created -- and skip if the sandbox would not let them set
- * that up (a root or elevated runner ignores the restriction). A skip means the environment could
- * not host the test, never that the behaviour passed.
- */
+/** Guard: a dirty file that cannot be examined must never be pruned from the index. `processDirtyBatch` decided a queued path had been deleted with `fs.existsSync`, and on a false it called `remove`, dropping that file's symbols, references, sections and embedding chunks. `fs.existsSync` is a stat inside a bare catch: it answers false for a permission or I/O error exactly as it does for a missing file. So a file held open by an antivirus scanner, sitting behind a deny ACE, or on a share that blinked, was erased from the index while still on disk -- silently, with `symbol Foo` returning nothing afterwards until something edited the file again. The branch immediately below it already treated this same class of failure as transient, logging and requeueing it; only the existence check acted on the ambiguity destructively. Why didn't a test catch this: every existing test of the deletion branch deletes the file for real, and a real ENOENT is the one case where `existsSync` and a proper ENOENT check agree. The unreadable-but-present case was never constructed, because constructing it takes an actual permission change rather than a stub. This file makes one. The permission tests assert their own precondition first -- that `fs.existsSync` really does answer false for the file they just created -- and skip if the sandbox would not let them set that up (a root or elevated runner ignores the restriction). A skip means the environment could not host the test, never that the behaviour passed. */
 import * as fs from 'node:fs'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -40,8 +19,7 @@ let unreadable: string | null = null
 /** Directories whose permissions must be restored before the temp tree can be removed. */
 const toRestore: string[] = []
 
-// Run at collection time, not in beforeAll, so `it.skipIf` below can see the result and a runner
-// that would not let us seal the directory reports skipped tests rather than silently passing ones.
+// Run at collection time, not in beforeAll, so `it.skipIf` below can see the result and a runner that would not let us seal the directory reports skipped tests rather than silently passing ones.
 const root = mkdtempSync(join(tmpdir(), 'tg-unreadable-'))
 {
   const sealed = join(root, 'sealed')
@@ -54,8 +32,7 @@ const root = mkdtempSync(join(tmpdir(), 'tg-unreadable-'))
 const sealedFile = unreadable
 const cannotSeal = sealedFile === null
 
-// A second file, indexed for real before its directory is sealed, so one case can assert on the
-// database rather than on injected callbacks.
+// A second file, indexed for real before its directory is sealed, so one case can assert on the database rather than on injected callbacks.
 let indexedThenSealed: string | null = null
 {
   const dir = join(root, 'indexed')
@@ -131,10 +108,7 @@ describe('processDirtyBatch on a file it cannot examine', () => {
   })
 
   it.skipIf(cannotIndex)('leaves its rows in the real index, with no callbacks injected', () => {
-    // The case above injects `remove` and `requeue` to watch which branch is taken, which cannot
-    // show what the shipping path actually does to the database. This one indexes a real file,
-    // takes the permission away, and drains it through processDirtyBatch's own default callbacks:
-    // the symbol has to still be there afterwards.
+    // The case above injects `remove` and `requeue` to watch which branch is taken, which cannot show what the shipping path actually does to the database. This one indexes a real file, takes the permission away, and drains it through processDirtyBatch's own default callbacks: the symbol has to still be there afterwards.
     const target = indexedThenSealed as string
     expect(fs.existsSync(target), 'precondition: existsSync must be wrong here').toBe(false)
     expect(

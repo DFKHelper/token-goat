@@ -1,25 +1,4 @@
-/**
- * Guard for the reachability claim underneath `token-goat bench`'s file paths.
- *
- * `bench` takes `--corpus <dir>` and `--tsv <path>` and does not confine either one. That is
- * deliberate: writing a results row to a file outside the repository is the normal way to keep a
- * history across attempts, and confining it would break the command's stated purpose. The reason it
- * is safe to leave unconfined is not a property of the code that opens the file, it is a property of
- * where the value comes from: both arrive from a flag the operator typed, on a command the operator
- * ran. Nothing model-controlled reaches them. No hook builds these options, no MCP tool exposes the
- * command, and nothing derives a corpus directory from file content.
- *
- * That reasoning was written down in a security response as prose, which is the shape this project
- * has repeatedly found to be invisible until it is wrong: a reachability assertion nobody can
- * re-run decays the moment someone wires the command up a second way. This guard converts it into
- * something mechanical. If a hook handler, an MCP tool, a bridge, or anything else in `src/` starts
- * calling into the bench entry points, the claim stops being true and this test says so, which is
- * the signal to re-triage the finding rather than to add the new caller to the list below.
- *
- * The population is named rather than inferred, and asserted non-empty: a guard that searches for
- * callers and finds none looks identical to a guard whose search stopped working, and this
- * repository has shipped that shape before.
- */
+/** Guard for the reachability claim underneath `token-goat bench`'s file paths. `bench` takes `--corpus <dir>` and `--tsv <path>` and does not confine either one. That is deliberate: writing a results row to a file outside the repository is the normal way to keep a history across attempts, and confining it would break the command's stated purpose. The reason it is safe to leave unconfined is not a property of the code that opens the file, it is a property of where the value comes from: both arrive from a flag the operator typed, on a command the operator ran. Nothing model-controlled reaches them. No hook builds these options, no MCP tool exposes the command, and nothing derives a corpus directory from file content. That reasoning was written down in a security response as prose, which is the shape this project has repeatedly found to be invisible until it is wrong: a reachability assertion nobody can re-run decays the moment someone wires the command up a second way. This guard converts it into something mechanical. If a hook handler, an MCP tool, a bridge, or anything else in `src/` starts calling into the bench entry points, the claim stops being true and this test says so, which is the signal to re-triage the finding rather than to add the new caller to the list below. The population is named rather than inferred, and asserted non-empty: a guard that searches for callers and finds none looks identical to a guard whose search stopped working, and this repository has shipped that shape before. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -31,11 +10,7 @@ import { pinnedPopulation } from './population.js'
 /** Entry points that accept a caller-supplied filesystem path into the bench command. */
 const BENCH_ENTRY_POINTS = ['runBenchCommand', 'loadCorpus', 'appendTsv'] as const
 
-/**
- * Files allowed to reference them, each with the reason it is not a reachability problem.
- * `cli_bench.ts` defines them; `cli.ts` is the commander dispatch table, where the values come
- * straight off the parsed command line.
- */
+/** Files allowed to reference them, each with the reason it is not a reachability problem. `cli_bench.ts` defines them; `cli.ts` is the commander dispatch table, where the values come straight off the parsed command line. */
 const ALLOWED = new Map([
   ['cli_bench.ts', 'defines the bench command'],
   ['cli.ts', 'commander dispatch: both paths come from operator-typed flags'],
@@ -55,12 +30,7 @@ function walkSrc(): string[] {
   return out
 }
 
-/**
- * Pinned: this guard's whole claim is "nothing else calls bench", which a walk returning nothing
- * would also report. The floor sits well under the current count so ordinary file churn does not
- * trip it, and the anchor is the file that defines the entry points: if the walk stops reaching
- * that one, it is no longer scanning the code this guard is about.
- */
+/** Pinned: this guard's whole claim is "nothing else calls bench", which a walk returning nothing would also report. The floor sits well under the current count so ordinary file churn does not trip it, and the anchor is the file that defines the entry points: if the walk stops reaching that one, it is no longer scanning the code this guard is about. */
 function srcFiles(): readonly string[] {
   return pinnedPopulation({
     what: 'src/**/*.ts files scanned for bench callers',
@@ -80,9 +50,7 @@ function referencingFiles(): string[] {
 }
 
 describe('bench file paths stay operator-typed', () => {
-  // Checked per name, not in aggregate. The list first shipped with `appendTsvRow`, which matches
-  // nothing in this codebase, and the whole-list check below stayed green because the other two
-  // names matched: a stale entry narrows the guard's reach and reports nothing while doing it.
+  // Checked per name, not in aggregate. The list first shipped with `appendTsvRow`, which matches nothing in this codebase, and the whole-list check below stayed green because the other two names matched: a stale entry narrows the guard's reach and reports nothing while doing it.
   it.each(BENCH_ENTRY_POINTS)('%s is a name that exists in src/', (name) => {
     const hits = srcFiles().filter((f) => new RegExp(`\\b${name}\\b`).test(fs.readFileSync(f, 'utf8')))
     expect(

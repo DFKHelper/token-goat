@@ -69,14 +69,7 @@ describe('web-output disk read-through (simulated cross-process)', () => {
 })
 
 describe('getWebOutputByUrlFromDisk cross-process URL lookup (m33 regression)', () => {
-  // gdrive.ts's fetchDoc only ever has a URL (never a previously-known cache
-  // id) and each CLI invocation is a fresh process with empty in-memory
-  // maps, so it needs a URL-keyed lookup that reads through to disk.
-  // getWebOutputByUrl cannot do this (see the "clearModuleCaches clears the
-  // in-memory maps" test in web_cache.test.ts -- it's deliberately
-  // memory-only), which is why gdrive-sections used to always re-fetch from
-  // the network on every fresh CLI invocation even when the doc was already
-  // cached on disk from an earlier run.
+  // gdrive.ts's fetchDoc only ever has a URL (never a previously-known cache id) and each CLI invocation is a fresh process with empty in-memory maps, so it needs a URL-keyed lookup that reads through to disk. getWebOutputByUrl cannot do this (see the "clearModuleCaches clears the in-memory maps" test in web_cache.test.ts -- it's deliberately memory-only), which is why gdrive-sections used to always re-fetch from the network on every fresh CLI invocation even when the doc was already cached on disk from an earlier run.
   it('resolves a URL cached by an earlier process, reading through to disk', () => {
     const url = 'https://docs.google.com/document/d/abc123/export?format=txt'
     const cacheId = storeWebOutput(url, '# Title\nbody')
@@ -90,12 +83,7 @@ describe('getWebOutputByUrlFromDisk cross-process URL lookup (m33 regression)', 
     expect(getWebOutputByUrlFromDisk('https://docs.google.com/document/d/never-fetched/export?format=txt')).toBeNull()
   })
 
-  // Regression: getWebOutputByUrlFromDisk used to always recompute cacheIdForUrl(url), which
-  // only matches storeWebOutput's actual id when the entry was stored with the default
-  // dedupKey = url. hooks_fetch.ts stores under a composite `${url}\x00${prompt}` dedupKey
-  // (WebFetch answers are prompt-specific), so a lookup with only the plain url produced the
-  // WRONG cacheId and silently missed an entry that genuinely exists on disk. Passing the same
-  // dedupKey used at store time must resolve it.
+  // Regression: getWebOutputByUrlFromDisk used to always recompute cacheIdForUrl(url), which only matches storeWebOutput's actual id when the entry was stored with the default dedupKey = url. hooks_fetch.ts stores under a composite `${url}\x00${prompt}` dedupKey (WebFetch answers are prompt-specific), so a lookup with only the plain url produced the WRONG cacheId and silently missed an entry that genuinely exists on disk. Passing the same dedupKey used at store time must resolve it.
   it('resolves a URL cached under a composite dedupKey when the same dedupKey is passed', () => {
     const url = 'https://example.com/fetched-with-a-prompt'
     const prompt = 'summarize the pricing section'

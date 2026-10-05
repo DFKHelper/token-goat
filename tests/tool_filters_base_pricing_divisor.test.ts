@@ -1,15 +1,4 @@
-/**
- * Regression: `compressedTokensSaved` in src/tool_filters/base.ts (the function
- * `bash_runner.ts` calls to book every `bash_compress:*` credit) used to divide by 3
- * (`Math.max(1, Math.floor(bytesSaved / 3) + 1)`), while every other pricing callsite in
- * this repo -- `savedTokensFromBytes` in src/stats.ts, and `TEXT_BYTES_PER_TOKEN` in
- * src/content_store.ts -- divides by 4. That inflated every bash-compression credit by
- * roughly a third relative to every sibling kind summed into the same ledger column.
- *
- * Provenance: HAND-DERIVED. Expected values below are computed independently from the
- * two competing formulas (bytes/3 vs bytes/4), not read out of either implementation, so
- * the test cannot pass by construction agreement with the code it checks.
- */
+/** Regression: `compressedTokensSaved` in src/tool_filters/base.ts (the function `bash_runner.ts` calls to book every `bash_compress:*` credit) used to divide by 3 (`Math.max(1, Math.floor(bytesSaved / 3) + 1)`), while every other pricing callsite in this repo -- `savedTokensFromBytes` in src/stats.ts, and `TEXT_BYTES_PER_TOKEN` in src/content_store.ts -- divides by 4. That inflated every bash-compression credit by roughly a third relative to every sibling kind summed into the same ledger column. Provenance: HAND-DERIVED. Expected values below are computed independently from the two competing formulas (bytes/3 vs bytes/4), not read out of either implementation, so the test cannot pass by construction agreement with the code it checks. */
 import { describe, expect, it } from 'vitest'
 
 import { compressedTokensSaved, CompressedOutput } from '../src/tool_filters/base.js'

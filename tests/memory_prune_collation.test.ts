@@ -6,16 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as UtilModule from '../src/util.js'
 
-// pruneIndex's duplicate-target detection folds entry.target via foldPath() for a
-// case-insensitive-filesystem-correct comparison. foldPath and isCaseInsensitiveFs are both
-// defined in util.ts and call each other in-module, so mocking isCaseInsensitiveFs's export
-// alone would NOT affect foldPath's real behavior (same-module calls bypass the export/import
-// indirection vi.mock hooks into). Mock foldPath itself instead -- memory_prune.ts's import of
-// it IS a cross-module live binding vi.mock controls -- with a toggle so both platform branches
-// are exercised regardless of the host OS (CI Linux is case-sensitive; this test's own host may
-// not be). Both target files are written to disk regardless of platform so fs.existsSync
-// succeeds either way -- this isolates the dedup-comparison logic under test from the host OS's
-// own filesystem casing rules.
+// pruneIndex's duplicate-target detection folds entry.target via foldPath() for a case-insensitive-filesystem-correct comparison. foldPath and isCaseInsensitiveFs are both defined in util.ts and call each other in-module, so mocking isCaseInsensitiveFs's export alone would NOT affect foldPath's real behavior (same-module calls bypass the export/import indirection vi.mock hooks into). Mock foldPath itself instead -- memory_prune.ts's import of it IS a cross-module live binding vi.mock controls -- with a toggle so both platform branches are exercised regardless of the host OS (CI Linux is case-sensitive; this test's own host may not be). Both target files are written to disk regardless of platform so fs.existsSync succeeds either way -- this isolates the dedup-comparison logic under test from the host OS's own filesystem casing rules.
 let simulateCaseInsensitiveFs = false
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<typeof UtilModule>()
@@ -46,8 +37,7 @@ describe('pruneIndex duplicate-target detection case-folding', () => {
 - [Second](Feedback_Foo.md)
 `
     fs.writeFileSync(path.join(tempDir, 'MEMORY.md'), memoryMd)
-    // Both casings written to disk so existence checks succeed regardless of host FS
-    // case-sensitivity -- what's under test here is only the dedup comparison itself.
+    // Both casings written to disk so existence checks succeed regardless of host FS case-sensitivity -- what's under test here is only the dedup comparison itself.
     fs.writeFileSync(path.join(tempDir, 'feedback_foo.md'), 'content')
     fs.writeFileSync(path.join(tempDir, 'Feedback_Foo.md'), 'content')
 

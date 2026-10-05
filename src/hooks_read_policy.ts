@@ -39,11 +39,7 @@ export function formatKb(bytes: number): string {
   return (bytes / 1024).toFixed(1)
 }
 
-/**
- * Validates and sanitizes a candidate symbol or heading name for safe inclusion
- * in an executable CLI suggestion string.
- * Rejects symbols with shell-metacharacters, newlines, quotes, or suspicious length.
- */
+/** Validates and sanitizes a candidate symbol or heading name for safe inclusion in an executable CLI suggestion string. Rejects symbols with shell-metacharacters, newlines, quotes, or suspicious length. */
 export function safeSuggestionTarget(raw: string): string | null {
   if (!raw || typeof raw !== 'string') return null
   const trimmed = raw.trim()
@@ -55,11 +51,7 @@ export function safeSuggestionTarget(raw: string): string | null {
   return trimmed
 }
 
-/**
- * Pure decision evaluator for first-read symbol policy.
- * Identifies broad/whole-file reads on large indexed files with symbols or headings,
- * while allowing small bounded slices (e.g. view_range: [1, 50] or small offset/limit).
- */
+/** Pure decision evaluator for first-read symbol policy. Identifies broad/whole-file reads on large indexed files with symbols or headings, while allowing small bounded slices (e.g. view_range: [1, 50] or small offset/limit). */
 export function evaluateFirstReadSymbolPolicy(ctx: ReadPolicyContext): ReadPolicyDecision {
   const {
     event,

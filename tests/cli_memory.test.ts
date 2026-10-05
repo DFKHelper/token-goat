@@ -4,9 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import type * as NodeOs from 'node:os'
 
-// vi.mock is hoisted -- wrap homedir so every test's findClaudeMdFiles() walk-up
-// checks an isolated fake home instead of the real developer machine's
-// ~/.claude/CLAUDE.md, which would otherwise leak into every report.
+// vi.mock is hoisted -- wrap homedir so every test's findClaudeMdFiles() walk-up checks an isolated fake home instead of the real developer machine's ~/.claude/CLAUDE.md, which would otherwise leak into every report.
 vi.mock('node:os', async (importOriginal) => {
   const original = await importOriginal<typeof NodeOs>()
   return {
@@ -116,8 +114,7 @@ describe('runMemoryCommand', () => {
   })
 
   it('--fix leaves cross-file-overlap-only content untouched (advisory, no mechanical fix)', async () => {
-    // Neither file has a duplicate line *within itself*; the only finding is a
-    // line shared *across* the two files, which is never auto-applied.
+    // Neither file has a duplicate line *within itself*; the only finding is a line shared *across* the two files, which is never auto-applied.
     const parentMd = path.join(tempDir, 'CLAUDE.md')
     const childDir = path.join(tempDir, 'child')
     fs.mkdirSync(childDir)

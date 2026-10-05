@@ -1,16 +1,4 @@
-/**
- * A `.ipynb` is indexed from a virtual Python document that parser.ts builds out of the cell
- * sources, so every line number stored for a notebook symbol addresses that document and not the
- * JSON bytes on disk. Any surface that pairs a stored line range with text it read itself is
- * therefore crossing two coordinate systems, and the failure is silent: JSON comes back under a
- * Python symbol's name, or a fold cuts a region that holds no such body, with nothing to say so.
- *
- * Four sites have now been found doing exactly that -- resolveBody, bodyFromSource,
- * buildContextWindow, and resolveFoldSpans. This guard is written against the product surfaces
- * rather than those four call sites, so a fifth one added later is caught by the same assertions:
- * index one small notebook and require that nothing which claims to show a symbol's source ever
- * answers with a line of the file's JSON.
- */
+/** A `.ipynb` is indexed from a virtual Python document that parser.ts builds out of the cell sources, so every line number stored for a notebook symbol addresses that document and not the JSON bytes on disk. Any surface that pairs a stored line range with text it read itself is therefore crossing two coordinate systems, and the failure is silent: JSON comes back under a Python symbol's name, or a fold cuts a region that holds no such body, with nothing to say so. Four sites have now been found doing exactly that -- resolveBody, bodyFromSource, buildContextWindow, and resolveFoldSpans. This guard is written against the product surfaces rather than those four call sites, so a fifth one added later is caught by the same assertions: index one small notebook and require that nothing which claims to show a symbol's source ever answers with a line of the file's JSON. */
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -25,12 +13,7 @@ import { indexedSourceText } from '../../src/indexed_source.js'
 import { querySymbols } from '../../src/index_reader.js'
 import { runRead } from '../../src/read_commands.js'
 
-/**
- * A three-cell notebook whose markdown cell pushes the code cells well out of alignment with their
- * own JSON lines. PROVENANCE: HAND-DERIVED, in the nbformat 4 shape (`cells[].cell_type`,
- * `cells[].source` as a line array) documented at
- * nbformat.readthedocs.io/en/latest/format_description.html.
- */
+/** A three-cell notebook whose markdown cell pushes the code cells well out of alignment with their own JSON lines. PROVENANCE: HAND-DERIVED, in the nbformat 4 shape (`cells[].cell_type`, `cells[].source` as a line array) documented at nbformat.readthedocs.io/en/latest/format_description.html. */
 function notebookJson(): string {
   return JSON.stringify(
     {

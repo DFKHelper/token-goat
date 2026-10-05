@@ -95,8 +95,7 @@ async function sessionStartOutput(event: HookEvent): Promise<HookOutput> {
   // Recovery is resolved before the reminder gate and appended after it, because the two answer different questions: `hints.session_start_reminder` turns off a routing reminder an experienced user does not need, and it must not also turn off the restoration of state that has just been compacted away. A user who silenced the reminder still gets the packet, alone.
   const recovery = await postCompactRecovery(event)
   const cwd = getCwd(event)
-  // Resolved outside the reminder gate for the same reason as the packet: notes are findings the session recorded on purpose, not routing advice a user opts out of.
-  // Loaded here rather than imported: the anchor resolver reads the index, and this module is on the eager path of every hook, not just this one.
+  // Resolved outside the reminder gate for the same reason as the packet: notes are findings the session recorded on purpose, not routing advice a user opts out of. Loaded here rather than imported: the anchor resolver reads the index, and this module is on the eager path of every hook, not just this one.
   const { anchorStatus } = await import('./note_anchor.js')
   const tail = [projectNotesFor(cwd, anchorStatus), recovery].filter((part): part is string => part !== null).join('\n\n')
   const tailOnly = (): HookOutput => (tail === '' ? passOutput() : contextOutput(tail))

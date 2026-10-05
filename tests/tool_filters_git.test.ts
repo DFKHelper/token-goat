@@ -28,9 +28,7 @@ import {
   selectFilter,
 } from '../src/tool_filters/index.js'
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helpers ---------------------------------------------------------------------------
 
 function apply(
   filter: { apply: (a: string, b: string, c: number, d: string[]) => { text: string } },
@@ -49,9 +47,7 @@ const gitCommitFilter = new GitCommitFilter()
 const gitPushFilter = new GitPushFilter()
 const _gitFilter = new GitFilter()
 
-// ---------------------------------------------------------------------------
-// GIT_FILTERS array
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GIT_FILTERS array ---------------------------------------------------------------------------
 
 describe('GIT_FILTERS', () => {
   it('exports 7 filter entries', () => {
@@ -82,9 +78,7 @@ describe('GIT_FILTERS', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitLogFilter — dispatch
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitLogFilter — dispatch ---------------------------------------------------------------------------
 
 describe('GitLogFilter dispatch', () => {
   it('is registered for git log', () => {
@@ -102,9 +96,7 @@ describe('GitLogFilter dispatch', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitLogFilter — oneline format
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitLogFilter — oneline format ---------------------------------------------------------------------------
 
 function makeOneline(n: number): string {
   return Array.from({ length: n }, (_, i) => `abc${String(i).padStart(4, '0')}ef Short commit message ${i}`).join('\n')
@@ -154,11 +146,7 @@ describe('GitLogFilter oneline', () => {
     expect(result).toContain('+1 more commit]')
   })
 
-  // Regression: `git log --graph --oneline` intersperses real commit lines (each prefixed with
-  // ASCII-art connectors like `* `/`| * `) with connector-only lines that carry no commit hash
-  // (e.g. `|\  `, `|/  `, from a merge). The old cap counted every non-empty line as a commit,
-  // so those connector-only lines inflated both the truncation point and the "+N more commits"
-  // tally past the real commit count.
+  // Regression: `git log --graph --oneline` intersperses real commit lines (each prefixed with ASCII-art connectors like `* `/`| * `) with connector-only lines that carry no commit hash (e.g. `|\  `, `|/  `, from a merge). The old cap counted every non-empty line as a commit, so those connector-only lines inflated both the truncation point and the "+N more commits" tally past the real commit count.
   it('--graph --oneline: connector-only lines are not counted as commits', () => {
     const commitLines = Array.from(
       { length: 55 },
@@ -171,16 +159,13 @@ describe('GitLogFilter oneline', () => {
     const text = lines.join('\n')
 
     const result = apply(gitLogFilter, text, ['git', 'log', '--graph', '--oneline'])
-    // 55 real commits, cap 50 -> exactly 5 elided, not 7 (which the connector-line-inflated
-    // count would have reported).
+    // 55 real commits, cap 50 -> exactly 5 elided, not 7 (which the connector-line-inflated count would have reported).
     expect(result).toContain('+5 more commits')
     expect(result).not.toContain('+7 more commits')
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitLogFilter — --oneline combined with --stat/-p
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitLogFilter — --oneline combined with --stat/-p ---------------------------------------------------------------------------
 
 function makeOnelineStat(n: number): string {
   const blocks = Array.from({ length: n }, (_, i) => {
@@ -196,11 +181,7 @@ function makeOnelineStat(n: number): string {
 }
 
 describe('GitLogFilter --oneline --stat combo', () => {
-  // Regression: --oneline combined with --stat interleaves each commit's one-line header with
-  // its own stat lines, so the isOneline branch used to cap by raw non-empty LINE count instead
-  // of commit count -- with ~20 real commits (well under the 50-commit cap) but ~80 raw lines
-  // (over the 50-LINE cap this branch used to apply), it wrongly elided commits that should have
-  // been shown in full.
+  // Regression: --oneline combined with --stat interleaves each commit's one-line header with its own stat lines, so the isOneline branch used to cap by raw non-empty LINE count instead of commit count -- with ~20 real commits (well under the 50-commit cap) but ~80 raw lines (over the 50-LINE cap this branch used to apply), it wrongly elided commits that should have been shown in full.
   it('~20 commits: no bogus elision (commit count, not raw line count, drives the cap)', () => {
     const text = makeOnelineStat(20)
     const result = apply(gitLogFilter, text, ['git', 'log', '--oneline', '--stat'])
@@ -211,9 +192,7 @@ describe('GitLogFilter --oneline --stat combo', () => {
     }
   })
 
-  // 60 real commits, ~240 raw lines. The old line-based cap would report "+190 more commits"
-  // (240 - 50) -- wildly wrong for only 60 actual commits. The fixed commit-block-based cap must
-  // report exactly the 10 commits actually elided (60 - 50).
+  // 60 real commits, ~240 raw lines. The old line-based cap would report "+190 more commits" (240 - 50) -- wildly wrong for only 60 actual commits. The fixed commit-block-based cap must report exactly the 10 commits actually elided (60 - 50).
   it('60 commits: "+N more commits" reflects actual commit count, not raw stat-line count', () => {
     const text = makeOnelineStat(60)
     const result = apply(gitLogFilter, text, ['git', 'log', '--oneline', '--stat'])
@@ -223,9 +202,7 @@ describe('GitLogFilter --oneline --stat combo', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitLogFilter — full format
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitLogFilter — full format ---------------------------------------------------------------------------
 
 function makeFullCommits(n: number): string {
   const blocks: string[] = []
@@ -270,9 +247,7 @@ describe('GitLogFilter full format', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitLogFilter — patch format
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitLogFilter — patch format ---------------------------------------------------------------------------
 
 function makePatchLog(nPatchLines: number): string {
   const diffLines = Array.from({ length: nPatchLines }, (_, i) => `+line ${i}`).join('\n')
@@ -300,9 +275,7 @@ describe('GitLogFilter patch format', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitLogFilter — stat format
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitLogFilter — stat format ---------------------------------------------------------------------------
 
 function makeStatLog(nFiles: number): string {
   const statLines = Array.from({ length: nFiles }, (_, i) => ` src/file${i}.py | 5 +++++`).join('\n')
@@ -329,24 +302,12 @@ describe('GitLogFilter stat format', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitLogFilter — --name-only / --numstat / --stat=<width>
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitLogFilter — --name-only / --numstat / --stat=<width> ---------------------------------------------------------------------------
 
-// Regression: `_compressGitLogEnhanced`'s isStat set named `--stat`, `--shortstat`, `--name-status`
-// but not `--name-only` or `--numstat`, so both fell through to the full-format collapser (above
-// 10 commits) or the oneline hash-only branch (at any commit count), which discard every line
-// that is neither a commit header nor an indented subject -- a bare file path is neither, so every
-// filename vanished. `--stat=<width>` (a variable-width stat header) also missed the set because
-// it is stored in argv as a single `--stat=200` token, which `flags.has('--stat')` never matches.
+// Regression: `_compressGitLogEnhanced`'s isStat set named `--stat`, `--shortstat`, `--name-status` but not `--name-only` or `--numstat`, so both fell through to the full-format collapser (above 10 commits) or the oneline hash-only branch (at any commit count), which discard every line that is neither a commit header nor an indented subject -- a bare file path is neither, so every filename vanished. `--stat=<width>` (a variable-width stat header) also missed the set because it is stored in argv as a single `--stat=200` token, which `flags.has('--stat')` never matches.
 
 describe('GitLogFilter --name-only / --numstat', () => {
-  // CAPTURE: `git log --name-only -12 --no-color` in this repo (token-goat), 2026-09-17, git 2.x.
-  // 12 commits is deliberate: it sits above the `commits.length <= 10` full-format collapse
-  // threshold at which the router used to discard every path, while every other full-format
-  // fixture in this file uses 5. A path line here sits in the exact position a full-format log
-  // puts a body paragraph, so this pins that the router keys off the `--name-only` flag and not
-  // off the shape of the line.
+  // CAPTURE: `git log --name-only -12 --no-color` in this repo (token-goat), 2026-09-17, git 2.x. 12 commits is deliberate: it sits above the `commits.length <= 10` full-format collapse threshold at which the router used to discard every path, while every other full-format fixture in this file uses 5. A path line here sits in the exact position a full-format log puts a body paragraph, so this pins that the router keys off the `--name-only` flag and not off the shape of the line.
   it('keeps every filename across a 12-commit --name-only log', () => {
     const result = apply(gitLogFilter, CAPTURE_NAME_ONLY_12, ['git', 'log', '--name-only', '-12', '--no-color'])
     expect(result).toContain('src/tool_filters/package_managers.ts')
@@ -361,10 +322,7 @@ describe('GitLogFilter --name-only / --numstat', () => {
     expect(result).toContain('index a Groovy generic method whose type-parameter list precedes its return type')
   })
 
-  // CAPTURE: `git log --oneline --name-only -8 --no-color` in this repo, 2026-09-17, git 2.x.
-  // 8 commits sits below the 10-commit full-format threshold, so this pins that the SECOND
-  // dropper -- the oneline branch's hash-only filter -- was fixed independently of the first:
-  // fixture A alone cannot prove this, since it never enters the oneline branch at all.
+  // CAPTURE: `git log --oneline --name-only -8 --no-color` in this repo, 2026-09-17, git 2.x. 8 commits sits below the 10-commit full-format threshold, so this pins that the SECOND dropper -- the oneline branch's hash-only filter -- was fixed independently of the first: fixture A alone cannot prove this, since it never enters the oneline branch at all.
   it('keeps every filename across an 8-commit --oneline --name-only log', () => {
     const result = apply(gitLogFilter, CAPTURE_ONELINE_NAME_ONLY_8, [
       'git',
@@ -381,18 +339,14 @@ describe('GitLogFilter --name-only / --numstat', () => {
     expect(result).not.toContain('more commits')
   })
 
-  // CAPTURE: `git log --numstat -12 --no-color` in this repo, 2026-09-17, git 2.x. No binary-file
-  // line (`-\t-\tpath`) appeared in this capture, so only the real added/deleted numstat shape is
-  // asserted here.
+  // CAPTURE: `git log --numstat -12 --no-color` in this repo, 2026-09-17, git 2.x. No binary-file line (`-\t-\tpath`) appeared in this capture, so only the real added/deleted numstat shape is asserted here.
   it('keeps real numstat lines (tab-separated added/deleted/path) across a 12-commit log', () => {
     const result = apply(gitLogFilter, CAPTURE_NUMSTAT_12, ['git', 'log', '--numstat', '-12', '--no-color'])
     expect(result).toContain('5\t18\tsrc/tool_filters/package_managers.ts')
     expect(result).toContain('7\t2\tsrc/tool_filters/git.ts')
   })
 
-  // 12 commits, each with its own stat lines: above the full-format collapser's 10-commit
-  // threshold, so this proves `--stat=200` is routed to the stat compressor and not the
-  // full-format collapser, which would discard every stat line above that threshold.
+  // 12 commits, each with its own stat lines: above the full-format collapser's 10-commit threshold, so this proves `--stat=200` is routed to the stat compressor and not the full-format collapser, which would discard every stat line above that threshold.
   it('--stat=<width> is treated as a stat shape, not the full-format collapser', () => {
     const commits = Array.from({ length: 12 }, (_, i) =>
       `commit abc${String(i).padStart(4, '0')}ef1234567890\n` +
@@ -409,9 +363,7 @@ describe('GitLogFilter --name-only / --numstat', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitLogFilter stat shapes under the shipping line cap
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitLogFilter stat shapes under the shipping line cap ---------------------------------------------------------------------------
 
 // `_compressGitLogCapped` (the shared body of --stat/--name-only/--numstat/--name-status/-p) caps only the stat/patch lines per commit and left the message body uncapped, so a repo with multi-paragraph commit bodies (this one) pushed a 12-commit stat-shaped log to 335-347 raw lines -- past the 200-line cap the `balanced` profile actually ships into -- and the generic tail-truncation cap then picked survivors by an error-keyword regex matching commit-message prose, not by git structure, dropping 39 of 43 file lines. Every existing stat/name-only/numstat test above drives the filter through the bare `apply` helper, whose default cap is `DEFAULT_MAX_LINES` (1000) -- never the 200 the shipping path (`compressOutput` at the `balanced` profile) actually passes, so none of them could have caught this. These tests drive `compressOutput` directly so the cap under test is the one the CLI ships.
 describe('GitLogFilter stat shapes under the shipping line cap', () => {
@@ -475,9 +427,7 @@ describe('GitLogFilter stat shapes under the shipping line cap', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitDiffFilter — dispatch
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitDiffFilter — dispatch ---------------------------------------------------------------------------
 
 describe('GitDiffFilter dispatch', () => {
   it('is registered for git diff', () => {
@@ -493,9 +443,7 @@ describe('GitDiffFilter dispatch', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitDiffFilter — binary files
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitDiffFilter — binary files ---------------------------------------------------------------------------
 
 describe('GitDiffFilter binary', () => {
   it('binary file collapsed to header + summary', () => {
@@ -518,9 +466,7 @@ describe('GitDiffFilter binary', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitDiffFilter — large hunks
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitDiffFilter — large hunks ---------------------------------------------------------------------------
 
 function makeLargeHunkDiff(nChanged: number): string {
   const hunkLines = Array.from({ length: nChanged }, (_, i) => `+line ${i}`).join('\n')
@@ -551,11 +497,7 @@ describe('GitDiffFilter large hunk', () => {
     expect(result).toContain('+++ b/big.py')
   })
 
-  // Regression: `git diff --cc` (combined diffs from a merge-commit conflict resolution) use a
-  // `diff --cc <path>` file-boundary line instead of `diff --git a/<path> b/<path>`. The file
-  // boundary regex used to only recognize `diff --git `, so combined diffs never got split into
-  // per-file blocks here at all -- the whole diff fell through as a single unprocessed block and
-  // large-hunk compression never applied, even for a single huge hunk.
+  // Regression: `git diff --cc` (combined diffs from a merge-commit conflict resolution) use a `diff --cc <path>` file-boundary line instead of `diff --git a/<path> b/<path>`. The file boundary regex used to only recognize `diff --git `, so combined diffs never got split into per-file blocks here at all -- the whole diff fell through as a single unprocessed block and large-hunk compression never applied, even for a single huge hunk.
   it('git diff --cc gets per-file compression (binary collapse) like a normal diff', () => {
     const text =
       'diff --cc image.png\n' +
@@ -564,17 +506,11 @@ describe('GitDiffFilter large hunk', () => {
     const result = apply(gitDiffFilter, text, ['git', 'diff', '--cc', 'HEAD'])
     expect(result).toContain('diff --cc image.png')
     expect(result).toContain('Binary files a/image.png and b/image.png differ')
-    // The `index` metadata line is dropped only when the block was recognized as a combined-diff
-    // file boundary and ran through binary collapse (header + binary-summary line only). Before
-    // the fix, `diff --cc` never matched the file-boundary regex, so the whole block (including
-    // this line) fell through unprocessed.
+    // The `index` metadata line is dropped only when the block was recognized as a combined-diff file boundary and ran through binary collapse (header + binary-summary line only). Before the fix, `diff --cc` never matched the file-boundary regex, so the whole block (including this line) fell through unprocessed.
     expect(result).not.toContain('index abc123,def456..0000000')
   })
 
-  // Regression: _GIT_DIFF_BINARY_RE only matched the plain two-filename binary message
-  // ("Binary files a/x and b/x differ"). Real `git diff --cc`/`git show --cc` binary-conflict
-  // output omits filenames entirely ("Binary files differ"), so that combined-diff form never
-  // matched and binary collapse never triggered for --cc binary conflicts.
+  // Regression: _GIT_DIFF_BINARY_RE only matched the plain two-filename binary message ("Binary files a/x and b/x differ"). Real `git diff --cc`/`git show --cc` binary-conflict output omits filenames entirely ("Binary files differ"), so that combined-diff form never matched and binary collapse never triggered for --cc binary conflicts.
   it('collapses a combined-diff (--cc) binary message that omits filenames', () => {
     const text =
       'diff --cc image.png\n' +
@@ -586,14 +522,7 @@ describe('GitDiffFilter large hunk', () => {
     expect(result).not.toContain('index abc123,def456..0000000')
   })
 
-  // Regression: real `git diff --cc`/`git show --cc` output for a text conflict uses a
-  // triple-`@` combined-diff hunk header (`@@@ -a,b -c,d +e,f @@@`), one extra `@` per merged
-  // parent -- not the plain-diff `@@ -a,b +c,d @@`. Confirmed against a real merge-commit combined
-  // diff (`git show --cc <merge-sha>`) during dogfooding: with only the file-boundary fix, a large
-  // conflict hunk still passed through byte-identical to the pre-fix output, because
-  // _GIT_DIFF_HUNK_RE never split it into hunks in the first place. Both the file-boundary AND the
-  // hunk-boundary regex need to recognize the combined-diff format for large-hunk truncation to
-  // actually engage on `--cc` output.
+  // Regression: real `git diff --cc`/`git show --cc` output for a text conflict uses a triple-`@` combined-diff hunk header (`@@@ -a,b -c,d +e,f @@@`), one extra `@` per merged parent -- not the plain-diff `@@ -a,b +c,d @@`. Confirmed against a real merge-commit combined diff (`git show --cc <merge-sha>`) during dogfooding: with only the file-boundary fix, a large conflict hunk still passed through byte-identical to the pre-fix output, because _GIT_DIFF_HUNK_RE never split it into hunks in the first place. Both the file-boundary AND the hunk-boundary regex need to recognize the combined-diff format for large-hunk truncation to actually engage on `--cc` output.
   it('git diff --cc: large combined-diff hunk (triple-@ header) gets truncated like a normal diff', () => {
     const changedLines = Array.from({ length: 80 }, (_, i) => `+line ${i}`).join('\n')
     const text =
@@ -607,9 +536,7 @@ describe('GitDiffFilter large hunk', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitDiffFilter — JSONL hunk (semantic summary)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitDiffFilter — JSONL hunk (semantic summary) ---------------------------------------------------------------------------
 
 function makeJsonlDiff(n: number): string {
   const record = { ts: '2026-01-01T00:00:00Z', entity: 'campaign', op: 'create', success: true }
@@ -679,9 +606,7 @@ describe('GitDiffFilter JSONL hunk', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitDiffFilter — whitespace/EOL-only hunk collapse
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitDiffFilter — whitespace/EOL-only hunk collapse ---------------------------------------------------------------------------
 
 describe('GitDiffFilter whitespace/EOL-only hunk collapse', () => {
   it('trailing-whitespace-only hunk collapses to a marker', () => {
@@ -784,9 +709,7 @@ describe('GitDiffFilter whitespace/EOL-only hunk collapse', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitDiffFilter — stat rollup
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitDiffFilter — stat rollup ---------------------------------------------------------------------------
 
 function makeStatDiff(nFiles: number): string {
   const statLines = Array.from(
@@ -867,12 +790,7 @@ describe('GitDiffFilter stat rollup', () => {
     expect(result).not.toContain('file0.txt')
   })
 
-  // Regression: git's brace-compressed rename notation ("prefix/{old => new}/suffix") only had
-  // its stray leading "{" / trailing "}" stripped when the braces spanned the ENTIRE path column
-  // (no prefix or suffix outside them) -- the common real-world case of a prefix and/or suffix
-  // left the braces mid-string, so e.g. "src/{old => new}/file.py" resolved to "new}/file.py"
-  // and got rolled up under a garbage "new}/" directory instead of the correct "src/". The full
-  // two-path form ("old/path => new/path", no braces) already worked and must keep working.
+  // Regression: git's brace-compressed rename notation ("prefix/{old => new}/suffix") only had its stray leading "{" / trailing "}" stripped when the braces spanned the ENTIRE path column (no prefix or suffix outside them) -- the common real-world case of a prefix and/or suffix left the braces mid-string, so e.g. "src/{old => new}/file.py" resolved to "new}/file.py" and got rolled up under a garbage "new}/" directory instead of the correct "src/". The full two-path form ("old/path => new/path", no braces) already worked and must keep working.
   it('rename notation (brace-compressed and full two-path) rolls up under the correct new-path directory', () => {
     const bracedWithPrefixSuffix = Array.from(
       { length: 11 },
@@ -904,11 +822,7 @@ describe('GitDiffFilter stat rollup', () => {
     expect(result).not.toContain('old/')
   })
 
-  // Regression: git's --stat bar-graph glyphs are WIDTH-SCALED once a file's true change count
-  // exceeds --stat-width -- the +/- ratio survives scaling but the absolute glyph count does not
-  // (e.g. a real 900/100 split can render as only 45 '+' / 5 '-' characters). Counting bar glyphs
-  // directly silently undercounted large diffs by up to ~20x; the fix recovers the true split from
-  // the line's numeric total column instead.
+  // Regression: git's --stat bar-graph glyphs are WIDTH-SCALED once a file's true change count exceeds --stat-width -- the +/- ratio survives scaling but the absolute glyph count does not (e.g. a real 900/100 split can render as only 45 '+' / 5 '-' characters). Counting bar glyphs directly silently undercounted large diffs by up to ~20x; the fix recovers the true split from the line's numeric total column instead.
   it('recovers real insert/delete counts from a width-scaled stat bar instead of undercounting', () => {
     const smallFiles = Array.from({ length: 20 }, (_, i) => ` small/file${i}.py | 1 +`)
     const bigFile = ` big/file.ts | 1000 ${'+'.repeat(45)}${'-'.repeat(5)}`
@@ -930,9 +844,7 @@ describe('GitDiffFilter stat rollup', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitDiffFilter multi-file diffs under the shipping line cap
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitDiffFilter multi-file diffs under the shipping line cap ---------------------------------------------------------------------------
 
 // _compressGitDiffBody compressed per hunk and per file but never measured its own output against the line cap it ships into: any diff whose per-hunk-compressed form still exceeded 200 lines (the `balanced` profile's cap) was handed whole to the generic tail-truncation truncator, which keeps 10 head + 10 tail lines plus context around error-signal keyword matches -- in a diff, survivors were chosen by which hunks happened to contain words like `Error`/`failed`, so the file list, the one thing a diff reader needs first, was what got dropped. A real 9-file, 346-line capture from this repo shipped as 58 lines carrying 1 of 9 `diff --git` headers. Every existing diff test above drives the bare `apply` helper, whose default cap is 1000, never the 200 the shipping path (`compressOutput` at the `balanced` profile) actually passes, so none of them could have caught this. These tests drive `compressOutput` directly so the cap under test is the one the CLI ships. Loop-37's `makeMultiHunkDiff(60)` fallback-parity fixture above collapses to ~43 lines after per-hunk capping and would stay green under a reverted fix, so it is not a substitute for the capture-based assertions here.
 describe('GitDiffFilter multi-file diffs under the shipping line cap', () => {
@@ -1000,9 +912,7 @@ describe('GitDiffFilter multi-file diffs under the shipping line cap', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitStatusVerboseFilter — dispatch
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitStatusVerboseFilter — dispatch ---------------------------------------------------------------------------
 
 describe('GitStatusVerboseFilter dispatch', () => {
   it('is registered for git status', () => {
@@ -1010,9 +920,7 @@ describe('GitStatusVerboseFilter dispatch', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitStatusVerboseFilter — short format passthrough
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitStatusVerboseFilter — short format passthrough ---------------------------------------------------------------------------
 
 describe('GitStatusVerboseFilter short format', () => {
   it('short/porcelain format passes through unchanged', () => {
@@ -1024,9 +932,7 @@ describe('GitStatusVerboseFilter short format', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitStatusVerboseFilter — verbose format compression
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitStatusVerboseFilter — verbose format compression ---------------------------------------------------------------------------
 
 describe('GitStatusVerboseFilter verbose format', () => {
   // CAPTURE: real `git status` output from a real scratch repo on this machine (git's own long format, one tracked file modified plus untracked files), pasted verbatim.
@@ -1094,9 +1000,7 @@ describe('GitStatusVerboseFilter verbose format', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitBlameFilter — dispatch
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitBlameFilter — dispatch ---------------------------------------------------------------------------
 
 describe('GitBlameFilter dispatch', () => {
   it('is registered for git blame', () => {
@@ -1108,9 +1012,7 @@ describe('GitBlameFilter dispatch', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitBlameFilter — annotated format
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitBlameFilter — annotated format ---------------------------------------------------------------------------
 
 function makeAnnotated(commit: string, author: string, nLines: number): string {
   return Array.from(
@@ -1148,9 +1050,7 @@ describe('GitBlameFilter annotated', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitBlameFilter — porcelain format
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitBlameFilter — porcelain format ---------------------------------------------------------------------------
 
 function makePorcelain(commit: string, author: string, nLines: number): string {
   const fullHash = (commit.repeat(Math.ceil(40 / commit.length))).slice(0, 40)
@@ -1225,9 +1125,7 @@ describe('GitBlameFilter porcelain', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitFilter — generic fallback dispatch
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitFilter — generic fallback dispatch ---------------------------------------------------------------------------
 
 describe('GitFilter fallback', () => {
   it('git fetch routes to generic git filter', () => {
@@ -1250,10 +1148,7 @@ describe('GitFilter fallback', () => {
     expect(selectFilter(['git', 'grep', 'TODO'])?.name).toBe('grep')
   })
 
-  // Regression: --git-dir/--work-tree taking a SEPARATE next-token value (valid git syntax,
-  // e.g. `git --git-dir /repo/.git fetch origin`) must not leak that path token into
-  // positionals[0] and shift the real subcommand out of position -- or GitFilter.compress()
-  // mistakes the path for the subcommand and skips the remote-progress-line dedup entirely.
+  // Regression: --git-dir/--work-tree taking a SEPARATE next-token value (valid git syntax, e.g. `git --git-dir /repo/.git fetch origin`) must not leak that path token into positionals[0] and shift the real subcommand out of position -- or GitFilter.compress() mistakes the path for the subcommand and skips the remote-progress-line dedup entirely.
   it('drops remote: progress lines for git fetch even with a separate-token --git-dir before the subcommand', () => {
     const stdout = [
       'remote: Counting objects: 100, done.',
@@ -1268,9 +1163,7 @@ describe('GitFilter fallback', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitCommitFilter — dispatch
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitCommitFilter — dispatch ---------------------------------------------------------------------------
 
 describe('GitCommitFilter dispatch', () => {
   it('is registered before generic GitFilter', () => {
@@ -1297,10 +1190,7 @@ describe('GitCommitFilter dispatch', () => {
     expect(gitCommitFilter.matches(['git', 'commit', '--fixup=abc'])).toBe(true)
   })
 
-  // Regression: a word inside a -m/--message value that happens to equal another filter's
-  // subcommand keyword (e.g. "log", "push") must not hijack dispatch away from git-commit --
-  // the tokenizer must skip the value token of value-taking git flags entirely, not scan it
-  // for subcommand-looking words.
+  // Regression: a word inside a -m/--message value that happens to equal another filter's subcommand keyword (e.g. "log", "push") must not hijack dispatch away from git-commit -- the tokenizer must skip the value token of value-taking git flags entirely, not scan it for subcommand-looking words.
   it('routes to git-commit, not git-log, when the message value is the word "log"', () => {
     expect(selectFilter(['git', 'commit', '-m', 'log'])?.name).toBe('git-commit')
   })
@@ -1314,9 +1204,7 @@ describe('GitCommitFilter dispatch', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitCommitFilter — lefthook compression
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitCommitFilter — lefthook compression ---------------------------------------------------------------------------
 
 const _LEFTHOOK_COMMIT_OUTPUT =
   '╭─────────────────────╮\n' +
@@ -1412,9 +1300,7 @@ describe('GitCommitFilter amend with lefthook', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitPushFilter — dispatch
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitPushFilter — dispatch ---------------------------------------------------------------------------
 
 describe('GitPushFilter dispatch', () => {
   it('is registered for git push', () => {
@@ -1434,9 +1320,7 @@ describe('GitPushFilter dispatch', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitPushFilter — passing pytest dots
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitPushFilter — passing pytest dots ---------------------------------------------------------------------------
 
 const _PYTEST_DOTS_PASSING =
   '.'.repeat(50) + ' [ 10%]\n' +
@@ -1482,9 +1366,7 @@ describe('GitPushFilter passing tests', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitPushFilter — failing pytest dots
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitPushFilter — failing pytest dots ---------------------------------------------------------------------------
 
 const _PYTEST_DOTS_FAILING =
   '.'.repeat(40) + 'F' + '.'.repeat(9) + ' [ 10%]\n' +
@@ -1513,9 +1395,7 @@ describe('GitPushFilter failing tests', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitPushFilter — per-error-block truncation cap
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitPushFilter — per-error-block truncation cap ---------------------------------------------------------------------------
 
 function _tracebackLines(label: string, count: number): string {
   return Array.from({ length: count }, (_, i) => `    traceback line ${i} for ${label}`).join('\n')
@@ -1577,9 +1457,7 @@ describe('GitPushFilter two failure blocks each overflowing', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitPushFilter — remote/local progress
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitPushFilter — remote/local progress ---------------------------------------------------------------------------
 
 const _REMOTE_PROGRESS_SMALL =
   'Enumerating objects: 5, done.\n' +
@@ -1680,9 +1558,7 @@ describe('GitPushFilter remote progress', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitCommitFilter — CRLF warning stripping (postNormalise)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GitCommitFilter — CRLF warning stripping (postNormalise) ---------------------------------------------------------------------------
 
 describe('GitCommitFilter CRLF warning stripping', () => {
   it('strips modern single-line CRLF warning', () => {
@@ -1710,8 +1586,7 @@ describe('GitCommitFilter CRLF warning stripping', () => {
 // GitBlameFilter regex fix for filename column (-C/-M)
 describe('GitBlameFilter with filename column', () => {
   it('matches blame lines with optional filename between hash and author', () => {
-    // The regex now allows an optional filename column (e.g., from git blame -C/-M)
-    // before the (Author Name date) parenthesis
+    // The regex now allows an optional filename column (e.g., from git blame -C/-M) before the (Author Name date) parenthesis
     const text = [
       'abc1234a src/module.py (Alice 2025-01-01 10:00:00 +0000  1)    def function_1(): pass',
       'abc1234a src/module.py (Alice 2025-01-01 10:00:00 +0000  2)    def function_2(): pass',
@@ -1739,18 +1614,9 @@ describe('GitBlameFilter with filename column', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitFilter (generic catch-all) diff/show branch — [bash_diff].max_hunks_per_file
+// --------------------------------------------------------------------------- GitFilter (generic catch-all) diff/show branch — [bash_diff].max_hunks_per_file
 //
-// Note: in production, `selectFilter` picks GitDiffFilter (registered before
-// GitFilter in GIT_FILTERS, subcommands ['diff', 'show']) for real `git diff`/
-// `git show` invocations, so this branch inside GitFilter.compress is not
-// reached via the live dispatch path. It remains real, directly-testable
-// code (exercised here the same way the rest of this suite exercises
-// GitFilter), so the hardcoded-vs-config behavior is still verified against
-// the actual compression function, per this project's precedent for
-// tool-filter internals with no CLI-level exercise path.
-// ---------------------------------------------------------------------------
+// Note: in production, `selectFilter` picks GitDiffFilter (registered before GitFilter in GIT_FILTERS, subcommands ['diff', 'show']) for real `git diff`/ `git show` invocations, so this branch inside GitFilter.compress is not reached via the live dispatch path. It remains real, directly-testable code (exercised here the same way the rest of this suite exercises GitFilter), so the hardcoded-vs-config behavior is still verified against the actual compression function, per this project's precedent for tool-filter internals with no CLI-level exercise path. ---------------------------------------------------------------------------
 
 function makeMultiHunkDiff(nHunks: number): string {
   const hunks: string[] = []
@@ -1778,16 +1644,9 @@ describe('GitFilter diff/show fallback delegates to the live diff compressor', (
   })
 })
 
-// ---------------------------------------------------------------------------
-// GitDiffFilter (the filter actually reached by real `git diff`/`git show`
-// invocations, via GIT_FILTERS' selectFilter ordering) — [bash_diff].max_hunks_per_file
+// --------------------------------------------------------------------------- GitDiffFilter (the filter actually reached by real `git diff`/`git show` invocations, via GIT_FILTERS' selectFilter ordering) — [bash_diff].max_hunks_per_file
 //
-// Regression coverage for a real gap: GitDiffFilter routes to
-// _compressGitDiffBody, which only trimmed the CONTENT of individual large hunks
-// (MAX_HUNK_CHANGED) but never capped the NUMBER of hunks kept per file -- so a
-// configured [bash_diff].max_hunks_per_file had zero effect on `git diff`/`git show`
-// output, unlike the raw `diff` command (shell_file.ts's DiffFilter), which did honor it.
-// ---------------------------------------------------------------------------
+// Regression coverage for a real gap: GitDiffFilter routes to _compressGitDiffBody, which only trimmed the CONTENT of individual large hunks (MAX_HUNK_CHANGED) but never capped the NUMBER of hunks kept per file -- so a configured [bash_diff].max_hunks_per_file had zero effect on `git diff`/`git show` output, unlike the raw `diff` command (shell_file.ts's DiffFilter), which did honor it. ---------------------------------------------------------------------------
 
 describe('GitDiffFilter (live git diff/show path) honors [bash_diff].max_hunks_per_file', () => {
   fs.mkdirSync(path.dirname(configPath()), { recursive: true })

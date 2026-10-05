@@ -9,9 +9,7 @@ import {
   getMonitoringRecallHint,
 } from '../src/hints/lang_patterns.js'
 
-// ---------------------------------------------------------------------------
-// isLockFile
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- isLockFile ---------------------------------------------------------------------------
 
 describe('isLockFile', () => {
   it.each([
@@ -49,9 +47,7 @@ describe('isLockFile', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// isManifestFile
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- isManifestFile ---------------------------------------------------------------------------
 
 describe('isManifestFile', () => {
   it.each([
@@ -116,9 +112,7 @@ describe('isManifestFile', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// isInBuildDir
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- isInBuildDir ---------------------------------------------------------------------------
 
 describe('isInBuildDir', () => {
   it.each([
@@ -160,9 +154,7 @@ describe('isInBuildDir', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// isGeneratedFile
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- isGeneratedFile ---------------------------------------------------------------------------
 
 describe('isGeneratedFile', () => {
   it.each([
@@ -214,9 +206,7 @@ describe('isGeneratedFile', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// isBuildCommand
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- isBuildCommand ---------------------------------------------------------------------------
 
 describe('isBuildCommand', () => {
   it.each([
@@ -242,10 +232,7 @@ describe('isBuildCommand', () => {
     // pip
     'pip install -r requirements.txt',
     'pip freeze',
-    // npm audit / npm outdated — regression: isNpmAuditCommand/
-    // isNpmOutdatedCommand (bash_output_cache.ts) each carry a `lockfile`
-    // fingerprint, but neither ever ran outside their own unit tests because
-    // no npm subcommand reached the cache-storage gate in production.
+    // npm audit / npm outdated — regression: isNpmAuditCommand/ isNpmOutdatedCommand (bash_output_cache.ts) each carry a `lockfile` fingerprint, but neither ever ran outside their own unit tests because no npm subcommand reached the cache-storage gate in production.
     'npm audit',
     'npm outdated',
     // Poetry
@@ -379,11 +366,7 @@ describe('getMonitoringRecallHint', () => {
     expect(getMonitoringRecallHint('powershell -NoProfile')).toBeNull()
   })
 
-  // Regression guard: the destructive-cmdlet exclusion regex in isPsMultilineSystemQuery
-  // required a literal trailing "-" after the whole alternation, but the Invoke-(?:Expression|Command)
-  // and Clear-(?:Content|EventLog|Item) branches already end in their own suffix (e.g. "Invoke-Expression"),
-  // so the combined pattern could only match a nonexistent "Invoke-Expression-" / "Clear-Content-" string
-  // and never actually excluded those cmdlets from a multiline PS query block.
+  // Regression guard: the destructive-cmdlet exclusion regex in isPsMultilineSystemQuery required a literal trailing "-" after the whole alternation, but the Invoke-(?:Expression|Command) and Clear-(?:Content|EventLog|Item) branches already end in their own suffix (e.g. "Invoke-Expression"), so the combined pattern could only match a nonexistent "Invoke-Expression-" / "Clear-Content-" string and never actually excluded those cmdlets from a multiline PS query block.
   it('excludes multiline PS blocks containing Invoke-Expression', () => {
     const cmd = 'powershell -Command "Invoke-Expression $x\nGet-Process"'
     expect(getMonitoringRecallHint(cmd)).toBeNull()
@@ -404,13 +387,7 @@ describe('getMonitoringRecallHint', () => {
     expect(getMonitoringRecallHint(cmd)).not.toBeNull()
   })
 
-  // Regression guard: the vite pattern's trailing `$` anchor required the command to end
-  // exactly at "vite"/"vite dev"/"vite build"/"vite preview" with nothing after, so any
-  // trailing flag (e.g. `vite build --watch`) fell through and got no recall hint at all,
-  // unlike every sibling framework dev-server pattern (next/nuxt/remix/astro) which are bare
-  // prefix matches. Fixed with a `\b` word-boundary anchor instead, which also must not
-  // collide with the separate `vitest` pattern declared later in the same array (`vite` is a
-  // literal string prefix of `vitest`, and MONITORING_COMMAND_PATTERNS is first-match-wins).
+  // Regression guard: the vite pattern's trailing `$` anchor required the command to end exactly at "vite"/"vite dev"/"vite build"/"vite preview" with nothing after, so any trailing flag (e.g. `vite build --watch`) fell through and got no recall hint at all, unlike every sibling framework dev-server pattern (next/nuxt/remix/astro) which are bare prefix matches. Fixed with a `\b` word-boundary anchor instead, which also must not collide with the separate `vitest` pattern declared later in the same array (`vite` is a literal string prefix of `vitest`, and MONITORING_COMMAND_PATTERNS is first-match-wins).
   it('returns a hint for vite build with trailing flags', () => {
     expect(getMonitoringRecallHint('vite build --watch')).not.toBeNull()
   })

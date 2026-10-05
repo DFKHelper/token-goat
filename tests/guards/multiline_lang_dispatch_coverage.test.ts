@@ -1,23 +1,4 @@
-/**
- * Guard: every `MultilineStringLang` member has a decided position in the adapter dispatch table.
- *
- * The bug shape this exists for: a dispatch-table entry silently missing an option its language
- * supports. `powershell` declared a multi-line string form in `MultilineStringLang` but its
- * `assignBraceBlockSpans` call omitted `multilineLang`, so the pass that widens a placeholder span
- * to the real body walked braces over raw here-string text. Nothing failed: the omission is
- * invisible to every test that calls an extractor directly, because the widening happens in the
- * wrapper the table supplies.
- *
- * So each member must be either wired (`multilineLang: '<lang>'` in its table entry) or listed in
- * EXEMPT with a reason, and every reason is checked against a marker in the source rather than
- * taken on trust: an exemption that stops being true fails here instead of reading as a decision.
- * Adding a tenth member to the union without a decision fails too, since the union must equal the
- * wired set plus the exempt set exactly.
- *
- * The union members and the table entries are FORMAT-DERIVED, read off the two source files this
- * test parses (`src/languages/common.ts` and `src/parser.ts`), which is the right source here
- * because the claim under test is a relationship between those two files and nothing else.
- */
+/** Guard: every `MultilineStringLang` member has a decided position in the adapter dispatch table. The bug shape this exists for: a dispatch-table entry silently missing an option its language supports. `powershell` declared a multi-line string form in `MultilineStringLang` but its `assignBraceBlockSpans` call omitted `multilineLang`, so the pass that widens a placeholder span to the real body walked braces over raw here-string text. Nothing failed: the omission is invisible to every test that calls an extractor directly, because the widening happens in the wrapper the table supplies. So each member must be either wired (`multilineLang: '<lang>'` in its table entry) or listed in EXEMPT with a reason, and every reason is checked against a marker in the source rather than taken on trust: an exemption that stops being true fails here instead of reading as a decision. Adding a tenth member to the union without a decision fails too, since the union must equal the wired set plus the exempt set exactly. The union members and the table entries are FORMAT-DERIVED, read off the two source files this test parses (`src/languages/common.ts` and `src/parser.ts`), which is the right source here because the claim under test is a relationship between those two files and nothing else. */
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -30,11 +11,7 @@ const COMMON_SRC = readFileSync(path.join(ROOT, 'src', 'languages', 'common.ts')
 const REGISTRY_SRC = readFileSync(path.join(ROOT, 'src', 'languages', 'registry.ts'), 'utf8')
 const R_SRC = readFileSync(path.join(ROOT, 'src', 'languages', 'r.ts'), 'utf8')
 
-/**
- * Why a language that declares a multi-line string form still does not pass `multilineLang` to
- * `assignBraceBlockSpans`. `marker` is the source text that has to be present for the reason to
- * still hold, and `where` says which file it has to be present in.
- */
+/** Why a language that declares a multi-line string form still does not pass `multilineLang` to `assignBraceBlockSpans`. `marker` is the source text that has to be present for the reason to still hold, and `where` says which file it has to be present in. */
 const EXEMPT: Record<string, { reason: string; where: 'entry' | 'r.ts'; markers: readonly string[] }> = {
   csharp: {
     reason: 'C# has two multi-line forms and the brace scanner expresses both directly: `stringEscapes: csharp` makes a verbatim `@"..."` opaque (doubled `""` is the escaped quote), and `rawStringQuotes` measures a variable-length `"""` run. A pre-pass mask adds nothing the scanner does not already do.',
@@ -119,8 +96,7 @@ describe('MultilineStringLang dispatch coverage', () => {
       expect(isWired || isExempt, `${lang} declares a multi-line string form but the adapter table neither passes multilineLang for it nor lists it in EXEMPT with a reason`).toBe(true)
       expect(isWired && isExempt, `${lang} is both wired and exempt: one of the two is stale`).toBe(false)
     }
-    // Exactly: adding a tenth member to the union without a decision fails on the first loop, and
-    // an EXEMPT key for a language no longer in the union fails here.
+    // Exactly: adding a tenth member to the union without a decision fails on the first loop, and an EXEMPT key for a language no longer in the union fails here.
     expect([...members].sort()).toEqual([...wired, ...Object.keys(EXEMPT)].sort())
   })
 
@@ -145,8 +121,7 @@ describe('MultilineStringLang dispatch coverage', () => {
   })
 
   it('the two exempt languages that skip the widening pass really do skip it', () => {
-    // These two are exempt because there is no assignBraceBlockSpans call to pass an option to. If
-    // one gains a call, the exemption is wrong and the entry needs a fresh decision.
+    // These two are exempt because there is no assignBraceBlockSpans call to pass an option to. If one gains a call, the exemption is wrong and the entry needs a fresh decision.
     for (const lang of ['elixir', 'r']) {
       expect(tableEntry(lang), `${lang} now calls assignBraceBlockSpans, so its EXEMPT reason no longer holds`).not.toContain('assignBraceBlockSpans')
     }

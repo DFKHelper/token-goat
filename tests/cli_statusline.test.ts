@@ -4,11 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { buildStatuslineData, renderStatusline, runStatuslineCommand, type StatuslineData } from '../src/cli_statusline.js'
 
-/**
- * Replace process.stdin with a fake emitter and capture process.stdout writes.
- * Mirrors relay.test.ts's withFakeIo helper (same fake-stdin shape readStdinJson
- * expects: 'data' / 'end' / 'error' listeners plus a destroy() method).
- */
+/** Replace process.stdin with a fake emitter and capture process.stdout writes. Mirrors relay.test.ts's withFakeIo helper (same fake-stdin shape readStdinJson expects: 'data' / 'end' / 'error' listeners plus a destroy() method). */
 function withFakeIo(): {
   emit: (payload: string) => void
   emitError: (err: Error) => void
@@ -39,9 +35,7 @@ function withFakeIo(): {
     emitError(err: Error): void {
       queueMicrotask(() => fakeStdin.emit('error', err))
     },
-    // Deliberately emits nothing: simulates a caller that invokes `token-goat
-    // statusline` with stdin attached to a pipe/tty that never sends data and
-    // never closes -- the exact "no hang" scenario requirement #5 targets.
+    // Deliberately emits nothing: simulates a caller that invokes `token-goat statusline` with stdin attached to a pipe/tty that never sends data and never closes -- the exact "no hang" scenario requirement #5 targets.
     neverEnd(): void {
       // intentional no-op
     },
@@ -86,9 +80,7 @@ describe('buildStatuslineData', () => {
     expect(data.project).toBe('token-goat')
     expect(data.model).toBe('Opus')
     expect(data.contextPct).toBe(8)
-    // index/stats lookups run against the isolated per-test data dir (see
-    // tests/setup/isolate-home.ts) -- never null in a working install, but the
-    // exact value depends on other tests' state, so only assert the type here.
+    // index/stats lookups run against the isolated per-test data dir (see tests/setup/isolate-home.ts) -- never null in a working install, but the exact value depends on other tests' state, so only assert the type here.
     expect(data.indexPending === null || typeof data.indexPending === 'number').toBe(true)
     expect(data.savedToday === null || typeof data.savedToday === 'number').toBe(true)
   })
@@ -202,9 +194,7 @@ describe('runStatuslineCommand — stdin handling', () => {
     io.neverEnd()
     vi.useFakeTimers()
     try {
-      // Drive the internal stdin-read timeout forward explicitly instead of measuring wall-clock
-      // elapsed time: this proves the command resolves via its own short timer, not merely that
-      // it happened to return within a generous margin.
+      // Drive the internal stdin-read timeout forward explicitly instead of measuring wall-clock elapsed time: this proves the command resolves via its own short timer, not merely that it happened to return within a generous margin.
       const settlement = runStatuslineCommand()
       await vi.advanceTimersByTimeAsync(1500)
       await settlement

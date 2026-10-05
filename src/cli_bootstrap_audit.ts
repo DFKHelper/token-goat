@@ -237,10 +237,7 @@ export async function buildBootstrapAudit(opts: BootstrapAuditOptions = {}): Pro
   const skills = [...userSkills, ...projectSkills]
   const rankedEntries = [...agents, ...skills]
     .sort((a, b) => b.metadata_bytes - a.metadata_bytes || a.path.localeCompare(b.path))
-  // Counted before --top slices. `metadata_bytes` below is already a whole-set aggregate, so the
-  // report never overstated the total SIZE -- but nothing said how many entries the list was
-  // drawn from, and `--top 1` against 77 installed agents and skills rendered one row that read
-  // as the whole inventory.
+  // Counted before --top slices. `metadata_bytes` below is already a whole-set aggregate, so the report never overstated the total SIZE -- but nothing said how many entries the list was drawn from, and `--top 1` against 77 installed agents and skills rendered one row that read as the whole inventory.
   const largestTotal = rankedEntries.length
   const largest = rankedEntries.slice(0, top)
   const metadataBytes = [...agents, ...skills].reduce((sum, entry) => sum + entry.metadata_bytes, 0)

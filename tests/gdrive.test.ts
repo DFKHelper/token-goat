@@ -126,11 +126,7 @@ describe('gdrive', () => {
 
   describe('getDocSections', () => {
     it('parses headings from a real markdown export (bold markers + anchor suffix)', async () => {
-      // This is the actual shape Google Docs' format=markdown export produces for styled
-      // headings: bold-wrapped text followed by a " {#anchor-slug}" suffix. The old
-      // format=txt export (and the old test fixture of bare "# Heading" lines) never
-      // matched real doc output, since txt export renders no "#" characters at all for
-      // native styled headings.
+      // This is the actual shape Google Docs' format=markdown export produces for styled headings: bold-wrapped text followed by a " {#anchor-slug}" suffix. The old format=txt export (and the old test fixture of bare "# Heading" lines) never matched real doc output, since txt export renders no "#" characters at all for native styled headings.
       const docText = `# **Introduction** {#introduction}
 This is the intro.
 
@@ -166,11 +162,7 @@ More info.
     })
 
     it('strips bold markers and the anchor suffix from a real markdown-export heading', async () => {
-      // Regression test: a heading fixture shaped like the old (wrong) oracle -- a bare
-      // "# Heading" line with no bold markers or anchor suffix -- would pass under the old
-      // regex-only parsing but never occurs in a real Google Docs export. This fixture uses
-      // the real export shape and would have failed under the old parseDocSections, which
-      // left "**Introduction**" and the "{#introduction}" suffix embedded in the heading text.
+      // Regression test: a heading fixture shaped like the old (wrong) oracle -- a bare "# Heading" line with no bold markers or anchor suffix -- would pass under the old regex-only parsing but never occurs in a real Google Docs export. This fixture uses the real export shape and would have failed under the old parseDocSections, which left "**Introduction**" and the "{#introduction}" suffix embedded in the heading text.
       const docText = '# **Introduction** {#introduction}\nBody text.\n'
       mockPerformHttpFetch.mockResolvedValueOnce(fetchResult(docText))
 
@@ -215,12 +207,7 @@ More info.
     })
 
     it('does not mistake a "#" comment line inside a fenced code block for a heading', async () => {
-      // Regression: parseDocSections had no fenced-code-block tracking, unlike every other
-      // section parser in this codebase (which routes through eachUnfencedLine in
-      // markdown_lines.ts). Google Docs' markdown export renders code-formatted text as
-      // ```/~~~ fences, and a shell/Python comment starting with "#" is common inside one -
-      // it was misread as a real ATX heading, both polluting the section list with phantom
-      // headings and truncating the real section's content at the first phantom.
+      // Regression: parseDocSections had no fenced-code-block tracking, unlike every other section parser in this codebase (which routes through eachUnfencedLine in markdown_lines.ts). Google Docs' markdown export renders code-formatted text as ```/~~~ fences, and a shell/Python comment starting with "#" is common inside one - it was misread as a real ATX heading, both polluting the section list with phantom headings and truncating the real section's content at the first phantom.
       const docText = `# **Setup** {#setup}
 Run the installer below.
 
@@ -243,12 +230,7 @@ Done.
       expect(sections[0].content).toContain('Done.')
     })
 
-    // Mutation-testing gap: parseDocSections hand-rolls the same CommonMark fence-closing rule
-    // as markdown_lines.ts's eachUnfencedLine (char match + length >= opener + no trailing info
-    // string), per its own comment, but only had the basic "# inside a fence" test -- unlike
-    // eachUnfencedLine and doc_compact.ts's buildExtractiveCompact, which both have dedicated
-    // regression tests for each of the three conditions. A mismatched ~~~ line inside a ```
-    // fence must not close it; removing the char-match check survives the full suite otherwise.
+    // Mutation-testing gap: parseDocSections hand-rolls the same CommonMark fence-closing rule as markdown_lines.ts's eachUnfencedLine (char match + length >= opener + no trailing info string), per its own comment, but only had the basic "# inside a fence" test -- unlike eachUnfencedLine and doc_compact.ts's buildExtractiveCompact, which both have dedicated regression tests for each of the three conditions. A mismatched ~~~ line inside a ``` fence must not close it; removing the char-match check survives the full suite otherwise.
     it('does not let a mismatched ~~~ close an open ``` fence (a real heading-looking line inside must stay fenced content, not a phantom section)', async () => {
       const docText = `# **Real** {#real}
 Intro.
@@ -272,9 +254,7 @@ After text.
     })
 
     it('does not let a shorter same-char fence run close a longer opener (a real heading-looking line inside must stay fenced content, not a phantom section)', async () => {
-      // Opener is a 4-backtick run; a 3-backtick line inside looks like a valid closer (same
-      // char, empty remainder) but is too short to actually close it. A heading-looking line
-      // right after must stay swallowed as fenced content, not become a phantom section.
+      // Opener is a 4-backtick run; a 3-backtick line inside looks like a valid closer (same char, empty remainder) but is too short to actually close it. A heading-looking line right after must stay swallowed as fenced content, not become a phantom section.
       const docText = `# **Real** {#real}
 Intro.
 
@@ -296,11 +276,7 @@ After text.
     })
 
     it('does not let a same-char fence-looking line with a trailing info string close an open fence', async () => {
-      // The opening ``` is followed by a ```json info-string line, which must NOT close the
-      // fence (it has trailing content after the backtick run). The real closing ``` is two
-      // lines later. A heading-looking line sandwiched between them must stay fenced content --
-      // a mutation that ignores the trailing-info-string check would treat ```json as the
-      // closer, exposing "# Reopened As Fake Heading" as a real (phantom) section boundary.
+      // The opening ``` is followed by a ```json info-string line, which must NOT close the fence (it has trailing content after the backtick run). The real closing ``` is two lines later. A heading-looking line sandwiched between them must stay fenced content -- a mutation that ignores the trailing-info-string check would treat ```json as the closer, exposing "# Reopened As Fake Heading" as a real (phantom) section boundary.
       const docText = `# **Real** {#real}
 Intro.
 

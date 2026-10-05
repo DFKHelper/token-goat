@@ -1,7 +1,4 @@
-/**
- * Unit coverage for src/note_anchor.ts, and the label project_memory.ts renders from its result: whether an anchored project note's symbol still has the body it had when the note was set.
- * Fixtures are HAND-DERIVED: symbol rows are inserted directly into a throwaway DB (the notes.test.ts convention), keyed by the same resolveIndexPath() form the indexer writes, and each expected status follows from the rows inserted, not from the code under test.
- */
+/** Unit coverage for src/note_anchor.ts, and the label project_memory.ts renders from its result: whether an anchored project note's symbol still has the body it had when the note was set. Fixtures are HAND-DERIVED: symbol rows are inserted directly into a throwaway DB (the notes.test.ts convention), keyed by the same resolveIndexPath() form the indexer writes, and each expected status follows from the rows inserted, not from the code under test. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

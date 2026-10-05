@@ -8,12 +8,7 @@ import { SHRINK_ENGINE_REVISION, preReadImageHandler, shrinkCacheKeyForRevision 
 import { makeHookEvent } from './helpers/hook-event.js'
 import { withHarnessOverride } from './helpers/harness-env.js'
 
-// HAND-DERIVED. The RGBA corner values and the expected landing coordinates below are computed from
-// the EXIF specification's meaning of tag 274, not read off this repo's rotation code. The APP1
-// segment layout is FORMAT-DERIVED from TIFF 6.0 section 2 / Exif 2.32 section 4.6.2: SOI, then
-// 0xFFE1, a big-endian segment length, "Exif\0\0", a little-endian TIFF header ("II", 0x002A,
-// first-IFD offset 8), an IFD of one entry (tag 0x0112, type 3 SHORT, count 1, value = orientation)
-// and a zero next-IFD pointer.
+// HAND-DERIVED. The RGBA corner values and the expected landing coordinates below are computed from the EXIF specification's meaning of tag 274, not read off this repo's rotation code. The APP1 segment layout is FORMAT-DERIVED from TIFF 6.0 section 2 / Exif 2.32 section 4.6.2: SOI, then 0xFFE1, a big-endian segment length, "Exif\0\0", a little-endian TIFF header ("II", 0x002A, first-IFD offset 8), an IFD of one entry (tag 0x0112, type 3 SHORT, count 1, value = orientation) and a zero next-IFD pointer.
 function withExifOrientation(jpeg: Buffer, orientation: number): Buffer {
   const tiff = Buffer.alloc(26)
   tiff.write('II', 0, 'ascii')
@@ -33,11 +28,7 @@ function withExifOrientation(jpeg: Buffer, orientation: number): Buffer {
   return Buffer.concat([jpeg.subarray(0, 2), header, payload, jpeg.subarray(2)])
 }
 
-/**
- * A 4x2 frame whose four corners are four distinct colours, so a wrong rotation is always
- * detectable: a symmetric subject cannot tell 90 from 270 and would pass on half the defect.
- * Storage order corners -- TL red, TR green, BL blue, BR white.
- */
+/** A 4x2 frame whose four corners are four distinct colours, so a wrong rotation is always detectable: a symmetric subject cannot tell 90 from 270 and would pass on half the defect. Storage order corners -- TL red, TR green, BL blue, BR white. */
 const W = 4
 const H = 2
 const TL = [255, 0, 0, 255]
@@ -65,11 +56,7 @@ function pixelAt(data: Uint8Array, width: number, x: number, y: number): number[
 }
 
 describe('applyExifOrientation moves pixels the way EXIF tag 274 specifies', () => {
-  // Must not drop: these are the literal corner landings each orientation is defined by. 1 top-left
-  // (identity), 2 top-right (mirror horizontal), 3 bottom-right (rotate 180), 4 bottom-left (mirror
-  // vertical), 5 left-top (transpose), 6 right-top (rotate 90 CW), 7 right-bottom (transverse),
-  // 8 left-bottom (rotate 270 CW). Each case names where the storage top-left pixel ends up, and
-  // the resulting frame dimensions.
+  // Must not drop: these are the literal corner landings each orientation is defined by. 1 top-left (identity), 2 top-right (mirror horizontal), 3 bottom-right (rotate 180), 4 bottom-left (mirror vertical), 5 left-top (transpose), 6 right-top (rotate 90 CW), 7 right-bottom (transverse), 8 left-bottom (rotate 270 CW). Each case names where the storage top-left pixel ends up, and the resulting frame dimensions.
   const cases: Array<{ orientation: number; dims: [number, number]; tlLandsAt: [number, number] }> = [
     { orientation: 1, dims: [4, 2], tlLandsAt: [0, 0] },
     { orientation: 2, dims: [4, 2], tlLandsAt: [3, 0] },
@@ -137,9 +124,7 @@ describe('shrink cache key is salted by the engine revision', () => {
 })
 
 describe('the delivered image for an EXIF-rotated photo is rotated, not sheared', () => {
-  // A 2400x1600 landscape frame carrying orientation 6, with a red block at storage (300..700,
-  // 200..500) and a green block at storage (2100..2300, 1300..1500). Big blocks and a gradient
-  // background so the JPEG survives a downscale and re-encode with its corners intact.
+  // A 2400x1600 landscape frame carrying orientation 6, with a red block at storage (300..700, 200..500) and a green block at storage (2100..2300, 1300..1500). Big blocks and a gradient background so the JPEG survives a downscale and re-encode with its corners intact.
   const SRC_W = 2400
   const SRC_H = 1600
   const RED = [220, 30, 30]
@@ -199,12 +184,10 @@ describe('the delivered image for an EXIF-rotated photo is rotated, not sheared'
     expect(delivered).not.toBeNull()
     const { data, width, height } = delivered as { data: Uint8Array; width: number; height: number }
 
-    // A landscape frame tagged orientation 6 is a portrait photo. Dimensions alone do not catch the
-    // defect -- the shear produced plausible portrait dimensions too -- so the boxes below carry it.
+    // A landscape frame tagged orientation 6 is a portrait photo. Dimensions alone do not catch the defect -- the shear produced plausible portrait dimensions too -- so the boxes below carry it.
     expect(height).toBeGreaterThan(width)
 
-    // Rotate 90 CW maps storage (x, y) to display (SRC_H - 1 - y, x), then the fit-inside downscale
-    // divides by SRC_H / width. Must not drop: these literal coordinates are the whole assertion.
+    // Rotate 90 CW maps storage (x, y) to display (SRC_H - 1 - y, x), then the fit-inside downscale divides by SRC_H / width. Must not drop: these literal coordinates are the whole assertion.
     const scale = width / SRC_H
     const expectRed: [number, number, number, number] = [
       Math.round((SRC_H - 500) * scale), Math.round(300 * scale),

@@ -1,19 +1,4 @@
-/**
- * `updatedToolOutput` must match the tool's own output shape.
- *
- * token-goat emitted a bare string there for every tool. Claude Code accepts that only when the
- * tool's own result is a string (MCP); for every built-in tool it rejects the rewrite with
- * "PostToolUse hook returned updatedToolOutput that does not match <Tool>'s output shape; using
- * original output" and shows the model the original. So every built-in-tool rewrite token-goat
- * shipped was dead on the wire while the suite stayed green.
- *
- * FIXTURE PROVENANCE -- every `tool_response` below is CAPTURE: the key sets and value types are
- * counted from real `toolUseResult` records in recorded Claude Code session transcripts (4,000+
- * results; Read 13,324, WebFetch 3,813, Grep 1,918, WebSearch 1,499, Bash 2,852 base plus its
- * documented variants). Only the key names and value types come from that corpus; every value here
- * is invented placeholder text. None of it is written from token-goat's own serializer, which would
- * agree with the bug by construction.
- */
+/** `updatedToolOutput` must match the tool's own output shape. token-goat emitted a bare string there for every tool. Claude Code accepts that only when the tool's own result is a string (MCP); for every built-in tool it rejects the rewrite with "PostToolUse hook returned updatedToolOutput that does not match <Tool>'s output shape; using original output" and shows the model the original. So every built-in-tool rewrite token-goat shipped was dead on the wire while the suite stayed green. FIXTURE PROVENANCE -- every `tool_response` below is CAPTURE: the key sets and value types are counted from real `toolUseResult` records in recorded Claude Code session transcripts (4,000+ results; Read 13,324, WebFetch 3,813, Grep 1,918, WebSearch 1,499, Bash 2,852 base plus its documented variants). Only the key names and value types come from that corpus; every value here is invented placeholder text. None of it is written from token-goat's own serializer, which would agree with the bug by construction. */
 import { describe, expect, it } from 'vitest'
 
 import type { HookEvent } from '../src/hook_registry.js'
@@ -63,8 +48,7 @@ describe('serializeOutput rewriteOutput: shape matches the tool result', () => {
   })
 
   it('Bash variant keys survive the rewrite (no whitelist rebuild)', () => {
-    // CAPTURE — the seven optional Bash extras seen in the corpus. persistedOutputPath is the
-    // load-bearing one: dropping it takes away the model's only handle on a capped output.
+    // CAPTURE — the seven optional Bash extras seen in the corpus. persistedOutputPath is the load-bearing one: dropping it takes away the model's only handle on a capped output.
     const variantKeys = {
       persistedOutputPath: '/tmp/persisted-output.txt',
       persistedOutputSize: 40000,
@@ -93,8 +77,7 @@ describe('serializeOutput rewriteOutput: shape matches the tool result', () => {
   })
 
   it('WebFetch rewrites result and keeps its metadata', () => {
-    // CAPTURE — {bytes,code,codeText,durationMs,result,url}, 3,813 corpus results. Resolved via
-    // BODY_FIRST because hooks_fetch.ts reads its body with that list.
+    // CAPTURE — {bytes,code,codeText,durationMs,result,url}, 3,813 corpus results. Resolved via BODY_FIRST because hooks_fetch.ts reads its body with that list.
     const resp = { bytes: 1234, code: 200, codeText: 'OK', durationMs: 90, result: 'PAGE BODY', url: 'https://example.com' }
     const out = emitted('WebFetch', resp, 'FENCED BODY') as Record<string, unknown>
     expect(out['result']).toBe('FENCED BODY')
@@ -131,16 +114,13 @@ describe('serializeOutput rewriteOutput: shape matches the tool result', () => {
   })
 
   it('MCP string response stays a bare string', () => {
-    // CAPTURE — 97 corpus results whose toolUseResult is a plain string. This path is the one the
-    // harness already accepts (13 accepted MCP rewrites); it must not regress into an object.
+    // CAPTURE — 97 corpus results whose toolUseResult is a plain string. This path is the one the harness already accepts (13 accepted MCP rewrites); it must not regress into an object.
     const out = emitted('mcp__server__tool', 'ORIGINAL MCP TEXT', 'COMPRESSED MCP TEXT')
     expect(out).toBe('COMPRESSED MCP TEXT')
   })
 
   it('falls back to a bare string when no field resolves', () => {
-    // CAPTURE — WebSearch {durationSeconds,query,results:array,searchCount}, 1,499 corpus results.
-    // No key list resolves a text field here, so the rewrite stays a string: the harness rejects it
-    // and shows the original, which beats injecting the body into a field that never held it.
+    // CAPTURE — WebSearch {durationSeconds,query,results:array,searchCount}, 1,499 corpus results. No key list resolves a text field here, so the rewrite stays a string: the harness rejects it and shows the original, which beats injecting the body into a field that never held it.
     const resp = { durationSeconds: 2.5, query: 'q', results: [{ title: 't' }], searchCount: 1 }
     expect(emitted('WebSearch', resp, 'REWRITTEN')).toBe('REWRITTEN')
   })
@@ -155,10 +135,7 @@ describe('serializeOutput rewriteOutput: shape matches the tool result', () => {
 
 describe('replaceToolResponseField mirrors extractToolResponseField', () => {
   it('non-firing guard: replaces exactly the field extract resolves, over every real shape', () => {
-    // Non-firing in the sense that matters here: on valid, real tool_response shapes the
-    // replacement must land on the very field the extractor reads, never a different one and never
-    // nothing. If the two rules drift, the body survives in its own field and the replacement is
-    // injected somewhere the tool's schema never meant to carry it.
+    // Non-firing in the sense that matters here: on valid, real tool_response shapes the replacement must land on the very field the extractor reads, never a different one and never nothing. If the two rules drift, the body survives in its own field and the replacement is injected somewhere the tool's schema never meant to carry it.
     const cases: readonly { name: string; resp: Record<string, unknown>; keys: readonly string[] }[] = [
       { name: 'Bash', resp: bashResponse(), keys: OUTPUT_FIRST_TOOL_RESPONSE_KEYS },
       { name: 'Bash stderr-only', resp: bashResponse({ stdout: '', stderr: 'DIAGNOSTIC-BODY' }), keys: OUTPUT_FIRST_TOOL_RESPONSE_KEYS },
@@ -191,9 +168,7 @@ describe('replaceToolResponseField mirrors extractToolResponseField', () => {
   })
 
   it('nested Read body is now extractable at all', () => {
-    // Second defect on the same path: the flat key walk matched nothing on Claude Code's real Read
-    // shape (its keys are `file` and `type`; neither is in any key list), so extractReadOutput
-    // returned '' and read:served_elide could never fire. Zero corpus emissions confirm it.
+    // Second defect on the same path: the flat key walk matched nothing on Claude Code's real Read shape (its keys are `file` and `type`; neither is in any key list), so extractReadOutput returned '' and read:served_elide could never fire. Zero corpus emissions confirm it.
     const resp = { type: 'text', file: { filePath: '/p/a.ts', content: 'REAL BODY', numLines: 1, startLine: 1, totalLines: 1 } }
     expect(extractToolResponseField({ tool_response: resp }, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)).toBe('REAL BODY')
   })

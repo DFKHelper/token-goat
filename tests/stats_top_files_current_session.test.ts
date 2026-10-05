@@ -1,8 +1,4 @@
-/**
- * Regression: `token-goat stats` listed whichever session file was newest on disk, so run inside session A it showed files only session B had read. With CLAUDE_CODE_SESSION_ID set it now ranks that session's own blob merged with its salted subagent siblings, and the newest-file scan is labelled as not necessarily this session.
- *
- * Fixture provenance: HAND-DERIVED. Session blobs are written as plain JSON with explicit mtimes (A older, B newer) and read counts chosen by this test; the sibling filename comes from the writer's own `sessionFileStem`, so the test cannot drift from the writer's spelling. The e2e case spawns the built bundle.
- */
+/** Regression: `token-goat stats` listed whichever session file was newest on disk, so run inside session A it showed files only session B had read. With CLAUDE_CODE_SESSION_ID set it now ranks that session's own blob merged with its salted subagent siblings, and the newest-file scan is labelled as not necessarily this session. Fixture provenance: HAND-DERIVED. Session blobs are written as plain JSON with explicit mtimes (A older, B newer) and read counts chosen by this test; the sibling filename comes from the writer's own `sessionFileStem`, so the test cannot drift from the writer's spelling. The e2e case spawns the built bundle. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

@@ -1,10 +1,4 @@
-/**
- * Guard: the deletion scan reads the budget clock on every row, not only on rows that turn out to be deletions.
- *
- * The scan that decides which indexed rows are gone costs a disk stat per row, so it sits under the same budget the change scan does. The trap is where the check goes. A row still on disk takes an early exit, so a clock read placed after that exit is reached only on rows that are deletions -- and an index full of live rows would sail past the bound without ever consulting it. That is the shape this repository keeps shipping: a bound is not a bound when the data decides whether the check is reached.
- *
- * HAND-DERIVED: the clock is a monotonic counter, so "the sweep overran" is arithmetic here rather than a measurement of a real machine under load. Wall-clock timing would make this test a coin flip on a busy runner, which is the one thing a bound's guard must not be.
- */
+/** Guard: the deletion scan reads the budget clock on every row, not only on rows that turn out to be deletions. The scan that decides which indexed rows are gone costs a disk stat per row, so it sits under the same budget the change scan does. The trap is where the check goes. A row still on disk takes an early exit, so a clock read placed after that exit is reached only on rows that are deletions -- and an index full of live rows would sail past the bound without ever consulting it. That is the shape this repository keeps shipping: a bound is not a bound when the data decides whether the check is reached. HAND-DERIVED: the clock is a monotonic counter, so "the sweep overran" is arithmetic here rather than a measurement of a real machine under load. Wall-clock timing would make this test a coin flip on a busy runner, which is the one thing a bound's guard must not be. */
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

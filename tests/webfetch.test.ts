@@ -35,9 +35,7 @@ vi.mock('https', async (importOriginal) => {
 
 vi.mock('dns', async (importOriginal) => {
   const actual = await importOriginal<typeof DnsModule>();
-  // Default: delegate to the real resolver so existing tests (which rely on
-  // real DNS/private-IP behavior for localhost/127.0.0.1/etc.) keep working.
-  // Individual tests override this per-call via mockImplementationOnce.
+  // Default: delegate to the real resolver so existing tests (which rely on real DNS/private-IP behavior for localhost/127.0.0.1/etc.) keep working. Individual tests override this per-call via mockImplementationOnce.
   dnsLookupMock.mockImplementation((...args: unknown[]) => {
     type LookupFn = (...a: unknown[]) => void;
     (actual.lookup as unknown as LookupFn)(...args);
@@ -164,8 +162,7 @@ describe('webfetch', () => {
 
     it('should unwrap IPv4-translated addresses (::ffff:0:a.b.c.d) and check the embedded IPv4', () => {
       expect(isPrivateIPv6('::ffff:0:127.0.0.1')).toBe(true);
-      // 6to4 and the well-known NAT64 prefix carry an IPv4 address the same way ::ffff: does, and
-      // were judged only by their own prefix, so a private address inside one was let through.
+      // 6to4 and the well-known NAT64 prefix carry an IPv4 address the same way ::ffff: does, and were judged only by their own prefix, so a private address inside one was let through.
       expect(isPrivateIPv6('2002:7f00:1::')).toBe(true); // 6to4 wrapping 127.0.0.1
       expect(isPrivateIPv6('2002:a9fe:a9fe::')).toBe(true); // 6to4 wrapping 169.254.169.254
       expect(isPrivateIPv6('2002:808:808::')).toBe(false); // 6to4 wrapping 8.8.8.8 stays reachable
@@ -202,10 +199,7 @@ describe('webfetch', () => {
       // fe95:: is inside fe80::/10 but does not start with the literal "fe80:" prefix
       expect(isPrivateIPv6('fe95::1')).toBe(true);
       expect(isPrivateIPv6('febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff')).toBe(true);
-      // Just outside the /10 range must not be caught by it. The marker is below the range rather
-      // than above it because fec0::/10, which used to serve here, is now refused on its own
-      // account as deprecated site-local -- so it no longer distinguishes a working /10 boundary
-      // from a broken one.
+      // Just outside the /10 range must not be caught by it. The marker is below the range rather than above it because fec0::/10, which used to serve here, is now refused on its own account as deprecated site-local -- so it no longer distinguishes a working /10 boundary from a broken one.
       expect(isPrivateIPv6('fe00::1')).toBe(false);
       expect(isPrivateIPv6('fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff')).toBe(false);
     });
@@ -422,13 +416,11 @@ describe('webfetch', () => {
       vi.resetModules();
       const fresh = await import('../src/webfetch.js');
 
-      // Primary pinned (all:true) lookup fails/comes back empty, forcing the
-      // ALLOW_UNRESOLVED fallback branch to run.
+      // Primary pinned (all:true) lookup fails/comes back empty, forcing the ALLOW_UNRESOLVED fallback branch to run.
       dnsLookupMock.mockImplementationOnce((_hostname, _options, callback) => {
         callback(new Error('primary lookup failed'));
       });
-      // The raw fallback dns.lookup(..., { all: false }) then resolves to a
-      // private/internal address - a classic DNS-rebinding SSRF payload.
+      // The raw fallback dns.lookup(..., { all: false }) then resolves to a private/internal address - a classic DNS-rebinding SSRF payload.
       dnsLookupMock.mockImplementationOnce((_hostname, _options, callback) => {
         callback(null, '127.0.0.1', 4);
       });
@@ -481,10 +473,7 @@ describe('webfetch', () => {
       });
       vi.useFakeTimers();
       try {
-        // Drive the internal deadline timer forward explicitly instead of measuring how long the
-        // real call took: this proves the timeout actually fires (and destroys the request) via
-        // its own setTimeout, not merely that the call happened to return within a generous
-        // wall-clock margin.
+        // Drive the internal deadline timer forward explicitly instead of measuring how long the real call took: this proves the timeout actually fires (and destroys the request) via its own setTimeout, not merely that the call happened to return within a generous wall-clock margin.
         const assertion = expect(
           performHttpFetch('http://slow-loris.example.test/x', {
             deadlineAt: Date.now() + 60,
@@ -670,9 +659,7 @@ describe('webfetch', () => {
       expect(capturedHeaders[1]?.['Authorization']).toBe('Bearer secret-token');
     });
 
-    // Same host, different scheme: the old check compared `host`, which carries no protocol, so
-    // this counted as same-origin and put the bearer token on the wire in cleartext at a
-    // destination the responding server picks.
+    // Same host, different scheme: the old check compared `host`, which carries no protocol, so this counted as same-origin and put the bearer token on the wire in cleartext at a destination the responding server picks.
     it('drops requestHeaders when the redirect downgrades https to http on the same host', async () => {
       const capturedHeaders: Record<string, unknown>[] = [];
       httpsRequestMock.mockImplementationOnce((options) => {

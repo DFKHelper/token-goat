@@ -1,33 +1,4 @@
-/**
- * The open-tab list a browser tool reports must not reach the session file on disk.
- *
- * `hooks_browser_image.ts` shortens a repeated "Tab Context:" block to a placeholder, which means
- * it has to recognize a repeat, which means remembering the previous one across hook processes --
- * and session state is written to disk. The block is a list of the tabs open in the user's browser:
- * titles and full URLs. A URL routinely carries a credential in it (a session token, a signed
- * object link, a password-reset parameter), so storing the block verbatim writes whatever happened
- * to be in the address bar into a file, for a value nothing ever reads back for its content.
- *
- * Only one question is ever asked of the stored value -- is the next block identical to this one --
- * and a fingerprint answers it exactly, so a fingerprint is what gets stored. `curlDownloadKey`
- * already does this for download URLs for the same reason; this is that rule applied to the one
- * remaining place a URL was still being kept whole.
- *
- * PROVENANCE
- *
- * The tab-context fixture is FORMAT-DERIVED from the shape `TAB_CONTEXT_RE` matches in
- * `src/hooks_browser_image.ts`, with the URL replaced by one carrying an obvious marker. The marker
- * is HAND-CHOSEN and appears nowhere in the codebase, so finding it in the file can only mean the
- * block reached disk.
- *
- * WHY IT DRIVES THE HOOK AND READS THE FILE
- *
- * Asserting on `lastTabContextMatches` would only prove the accessor hashes. The property that
- * matters is about bytes on disk, and the path from the tool result to those bytes runs through the
- * hook, the export, and the store -- six touch points, two of which this repo has already shipped a
- * bug in (see the round-trip regression in tests/session_store.test.ts). So the test runs the real
- * post-hook and then reads the file that was actually written.
- */
+/** The open-tab list a browser tool reports must not reach the session file on disk. `hooks_browser_image.ts` shortens a repeated "Tab Context:" block to a placeholder, which means it has to recognize a repeat, which means remembering the previous one across hook processes -- and session state is written to disk. The block is a list of the tabs open in the user's browser: titles and full URLs. A URL routinely carries a credential in it (a session token, a signed object link, a password-reset parameter), so storing the block verbatim writes whatever happened to be in the address bar into a file, for a value nothing ever reads back for its content. Only one question is ever asked of the stored value -- is the next block identical to this one -- and a fingerprint answers it exactly, so a fingerprint is what gets stored. `curlDownloadKey` already does this for download URLs for the same reason; this is that rule applied to the one remaining place a URL was still being kept whole. PROVENANCE The tab-context fixture is FORMAT-DERIVED from the shape `TAB_CONTEXT_RE` matches in `src/hooks_browser_image.ts`, with the URL replaced by one carrying an obvious marker. The marker is HAND-CHOSEN and appears nowhere in the codebase, so finding it in the file can only mean the block reached disk. WHY IT DRIVES THE HOOK AND READS THE FILE Asserting on `lastTabContextMatches` would only prove the accessor hashes. The property that matters is about bytes on disk, and the path from the tool result to those bytes runs through the hook, the export, and the store -- six touch points, two of which this repo has already shipped a bug in (see the round-trip regression in tests/session_store.test.ts). So the test runs the real post-hook and then reads the file that was actually written. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -87,8 +58,7 @@ describe('session state written to disk', () => {
       }),
     )
 
-    // The hook must actually have recorded something, or every assertion below passes on an empty
-    // file -- the vacuous-pass shape this repo keeps hitting.
+    // The hook must actually have recorded something, or every assertion below passes on an empty file -- the vacuous-pass shape this repo keeps hitting.
     const digest = exportSessionState().lastTabContextDigest
     expect(digest, 'the hook recorded no tab context at all, so this test proves nothing').toBeTruthy()
     expect(digest).not.toContain(SECRET)
@@ -98,8 +68,7 @@ describe('session state written to disk', () => {
     const onDisk = readSessionStateFile('taburl')
     expect(onDisk?.lastTabContextDigest, 'the digest did not survive the round-trip').toBe(digest)
 
-    // The whole file, not just the field: a tab URL landing in some other key would be the same
-    // disclosure by a different route.
+    // The whole file, not just the field: a tab URL landing in some other key would be the same disclosure by a different route.
     const raw = fs.readFileSync(path.join(tmpHome, 'sessions', 'taburl.json'), 'utf8')
     expect(raw, 'a tab URL reached the session file on disk').not.toContain(SECRET)
     expect(raw).not.toContain('payroll.example.com')

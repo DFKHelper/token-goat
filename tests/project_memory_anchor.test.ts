@@ -1,7 +1,4 @@
-/**
- * How an anchored project note is stored and shown: the `# anchor:` comment line, its life across set/unset/eviction, and the marker buildInjection adds.
- * Fixtures are HAND-DERIVED: each expected file line and marker is written out from the storage format the note set command documents, and the anchor's status comes from a stub resolver passed in so these tests say nothing about the index (tests/note_anchor.test.ts covers that, and tests/note_anchor_goes_stale_after_reindex.test.ts the real worker path).
- */
+/** How an anchored project note is stored and shown: the `# anchor:` comment line, its life across set/unset/eviction, and the marker buildInjection adds. Fixtures are HAND-DERIVED: each expected file line and marker is written out from the storage format the note set command documents, and the anchor's status comes from a stub resolver passed in so these tests say nothing about the index (tests/note_anchor.test.ts covers that, and tests/note_anchor_goes_stale_after_reindex.test.ts the real worker path). */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 

@@ -1,10 +1,4 @@
-/**
- * Local, bounded storage for generic compressed text and named handoffs.
- *
- * Content is redacted before compression and persistence, then stored through
- * the shared blob funnel so the existing cache bounds and secret protection
- * remain in force.
- */
+/** Local, bounded storage for generic compressed text and named handoffs. Content is redacted before compression and persistence, then stored through the shared blob funnel so the existing cache bounds and secret protection remain in force. */
 import { deflateRawSync } from 'node:zlib'
 import * as path from 'node:path'
 
@@ -18,9 +12,7 @@ import { BYTES_PER_TOKEN } from './token_estimate.js'
 export const CONTENT_MAX_INPUT_CHARS = 512 * 1024
 export const CONTENT_MAX_ITEMS = 256
 export const CONTENT_MAX_BYTES = 32 * 1024 * 1024
-// JSON escaping can expand a 512 KiB string to nearly 3 MiB (for example,
-// every character being a control character). Keep the advertised input limit
-// valid for all legal text while the directory-wide cache limit still bounds use.
+// JSON escaping can expand a 512 KiB string to nearly 3 MiB (for example, every character being a control character). Keep the advertised input limit valid for all legal text while the directory-wide cache limit still bounds use.
 export const CONTENT_MAX_ITEM_BYTES = CONTENT_MAX_INPUT_CHARS * 7
 export const CONTENT_SUBDIR = 'content'
 
@@ -162,8 +154,7 @@ export function createHandoff(name: string, text: string, projectRoot?: string):
     name,
     projectRoot: root,
     contentId: contentIdValue,
-    // Keep the handoff independently resolvable if the generic content entry
-    // is later evicted from the shared bounded cache.
+    // Keep the handoff independently resolvable if the generic content entry is later evicted from the shared bounded cache.
     text: safeText,
     createdAt: Date.now(),
   }

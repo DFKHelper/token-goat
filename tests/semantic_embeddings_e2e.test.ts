@@ -1,19 +1,4 @@
-/**
- * End-to-end proof that `token-goat semantic` performs real embedding-vector similarity
- * search when indexing.embeddings_enabled is on, not just the FTS keyword fallback -
- * exercised against the BUILT bundle (dist/token-goat.mjs), the actual shipping path.
- *
- * The command-matrix e2e's own `semantic` case is a wrong-oracle test: it searches for a
- * literal keyword ("alphamarker") that appears verbatim in the fixture, so plain FTS trivially
- * satisfies it and the assertion can't tell real semantic search apart from the FTS fallback
- * it was meant to prove is gone. This file supplies the missing proof: index a file whose only
- * relevant symbol never uses the query's words, phrase the query as a natural-language sentence
- * (sanitizeFtsQuery ANDs every word as a separate literal FTS token, so filler words like
- * "look"/"an"/"using"/"its" that never appear in real code defeat it trivially), and assert the
- * symbol surfaces anyway - proof of real meaning-based matching, not keyword luck. A control run
- * with embeddings explicitly disabled proves the identical query genuinely misses under the old
- * FTS-only path, so the contrast is demonstrated within this file rather than assumed.
- */
+/** End-to-end proof that `token-goat semantic` performs real embedding-vector similarity search when indexing.embeddings_enabled is on, not just the FTS keyword fallback - exercised against the BUILT bundle (dist/token-goat.mjs), the actual shipping path. The command-matrix e2e's own `semantic` case is a wrong-oracle test: it searches for a literal keyword ("alphamarker") that appears verbatim in the fixture, so plain FTS trivially satisfies it and the assertion can't tell real semantic search apart from the FTS fallback it was meant to prove is gone. This file supplies the missing proof: index a file whose only relevant symbol never uses the query's words, phrase the query as a natural-language sentence (sanitizeFtsQuery ANDs every word as a separate literal FTS token, so filler words like "look"/"an"/"using"/"its" that never appear in real code defeat it trivially), and assert the symbol surfaces anyway - proof of real meaning-based matching, not keyword luck. A control run with embeddings explicitly disabled proves the identical query genuinely misses under the old FTS-only path, so the contrast is demonstrated within this file rather than assumed. */
 import { createRequire } from 'node:module'
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -30,9 +15,7 @@ import Database from '../src/sqlite_driver.js'
 
 type Vec0State = 'working' | 'broken' | 'absent'
 
-// Mirrors tests/embeddings_vec_insert.test.ts's classifyVec0(): 'absent' (package not
-// installed) is a legitimate platform skip; 'broken' (installed but vec0 fails to load) is
-// silent-dead semantic search and must fail loudly, not be swallowed by a skip.
+// Mirrors tests/embeddings_vec_insert.test.ts's classifyVec0(): 'absent' (package not installed) is a legitimate platform skip; 'broken' (installed but vec0 fails to load) is silent-dead semantic search and must fail loudly, not be swallowed by a skip.
 function classifyVec0(): Vec0State {
   const req = createRequire(import.meta.url)
   try {
@@ -53,10 +36,7 @@ function classifyVec0(): Vec0State {
 }
 
 const vec0State = classifyVec0()
-// isAvailable() only proves the onnxruntime-node require succeeded, not that a
-// real inference run will succeed offline (a first-ever run may still need to fetch the model
-// from the hub) - real availability here mirrors embeddings_vec_insert.test.ts's own
-// canExerciseRealUpsert gate: both the model and a genuinely loaded vec0 table.
+// isAvailable() only proves the onnxruntime-node require succeeded, not that a real inference run will succeed offline (a first-ever run may still need to fetch the model from the hub) - real availability here mirrors embeddings_vec_insert.test.ts's own canExerciseRealUpsert gate: both the model and a genuinely loaded vec0 table.
 const canExerciseRealEmbeddings = vec0State === 'working' && isAvailable() && modelFilesPresent()
 
 let repo: string
@@ -90,10 +70,7 @@ function run(args: string[], embeddingsEnabled: boolean): RunResult {
   return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
 }
 
-// Deliberately avoids every word in QUERY: no "look"/"account"/"email"/"address" anywhere in
-// the name or body, so an FTS hit here could only come from a real meaning-based match. (The
-// parameter is named "input", not "address", specifically to avoid the literal overlap that
-// would otherwise let searchSymbolsFts's OR-widened retry match this control by keyword alone.)
+// Deliberately avoids every word in QUERY: no "look"/"account"/"email"/"address" anywhere in the name or body, so an FTS hit here could only come from a real meaning-based match. (The parameter is named "input", not "address", specifically to avoid the literal overlap that would otherwise let searchSymbolsFts's OR-widened retry match this control by keyword alone.)
 const FIXTURE =
   'export function getUserByEmail(input: string): { id: number } | null {\n' +
   '  const match = ACCOUNTS.find((row) => row.contact === input)\n' +
@@ -127,13 +104,7 @@ describe('token-goat semantic performs real embedding search, not just FTS fallb
       expect(idx.status, `index failed: ${idx.stderr}`).toBe(0)
 
       const r = run(['semantic', QUERY], false)
-      // searchSymbolsFts now retries with an OR-joined query when the AND-joined attempt
-      // returns zero rows, so this control must avoid *every* literal word overlap with the
-      // fixture (see FIXTURE's comment above), not merely fail the all-terms-present AND match.
-      // None of QUERY's words appear verbatim in the fixture, so even the OR-widened retry
-      // can't match it. Either the command exits 1 with "no matches" or its output simply omits
-      // the target symbol - both prove keyword search cannot find it, establishing this as a
-      // genuine miss rather than an accidental non-match.
+      // searchSymbolsFts now retries with an OR-joined query when the AND-joined attempt returns zero rows, so this control must avoid *every* literal word overlap with the fixture (see FIXTURE's comment above), not merely fail the all-terms-present AND match. None of QUERY's words appear verbatim in the fixture, so even the OR-widened retry can't match it. Either the command exits 1 with "no matches" or its output simply omits the target symbol - both prove keyword search cannot find it, establishing this as a genuine miss rather than an accidental non-match.
       expect(r.stdout).not.toContain('getUserByEmail')
     },
     60000,

@@ -1,16 +1,4 @@
-/**
- * Guard: the hand-maintained grammar-package list must stay in step with the spec-derived language list.
- *
- * `TREE_SITTER_LANGUAGES` is computed from the language spec table, so adding a tree-sitter row to
- * that table extends it automatically. `TREE_SITTER_GRAMMAR_PACKAGES` beside it in parser.ts is a
- * literal array someone has to remember to edit, and nothing tied the two together. They agree
- * today, nine and nine, which is exactly the state in which a drift is invisible: doctor would go
- * on reporting no missing grammar packages for a language whose package it had never heard of.
- *
- * The population is read out of parser.ts's own source rather than imported, because the array is
- * not exported. Reading it textually is the point: this guard has to see the literal a person
- * edits, not a value derived from the same list it is being checked against.
- */
+/** Guard: the hand-maintained grammar-package list must stay in step with the spec-derived language list. `TREE_SITTER_LANGUAGES` is computed from the language spec table, so adding a tree-sitter row to that table extends it automatically. `TREE_SITTER_GRAMMAR_PACKAGES` beside it in parser.ts is a literal array someone has to remember to edit, and nothing tied the two together. They agree today, nine and nine, which is exactly the state in which a drift is invisible: doctor would go on reporting no missing grammar packages for a language whose package it had never heard of. The population is read out of parser.ts's own source rather than imported, because the array is not exported. Reading it textually is the point: this guard has to see the literal a person edits, not a value derived from the same list it is being checked against. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -31,8 +19,7 @@ function declaredGrammarPackages(): string[] {
 
 describe('tree-sitter grammar packages and tree-sitter languages stay in step', () => {
   it('finds both lists rather than passing on an empty population', () => {
-    // Either list going empty would satisfy a set comparison against the other by vacuous
-    // agreement, and the regex above is one parser.ts rename away from matching nothing.
+    // Either list going empty would satisfy a set comparison against the other by vacuous agreement, and the regex above is one parser.ts rename away from matching nothing.
     expect(declaredGrammarPackages().length, 'TREE_SITTER_GRAMMAR_PACKAGES was not found in src/parser.ts: the literal was renamed or reformatted, so this guard is reading nothing').toBeGreaterThan(5)
     expect(TREE_SITTER_LANGUAGES.length).toBeGreaterThan(5)
   })

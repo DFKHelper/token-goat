@@ -1,17 +1,4 @@
-/**
- * Guard against re-eagerising the hook subsystem from the CLI entry point.
- *
- * src/relay.ts side-effect-imports every hook handler so the registry is populated by the time a
- * hook runs. That makes a *static* import of relay from src/cli.ts enormously expensive: V8
- * compiles a module in full before running any of it, so every CLI command -- `symbol`, `read`,
- * even `--version` -- paid to parse every handler, the whole bash tool-filter registry and the HTML
- * extractor before doing anything, though only `token-goat hook` needs any of it. The same holds
- * for src/bash_runner.ts, which pulls the tool-filter registry in for the `compress` command alone.
- *
- * Both are loaded with `await import(...)` inside the one command that needs them. Nothing fails
- * when someone converts either back to a top-level import -- the CLI still works, the suite stays
- * green, startup just silently gets ~10% slower again -- so the property is asserted here directly.
- */
+/** Guard against re-eagerising the hook subsystem from the CLI entry point. src/relay.ts side-effect-imports every hook handler so the registry is populated by the time a hook runs. That makes a *static* import of relay from src/cli.ts enormously expensive: V8 compiles a module in full before running any of it, so every CLI command -- `symbol`, `read`, even `--version` -- paid to parse every handler, the whole bash tool-filter registry and the HTML extractor before doing anything, though only `token-goat hook` needs any of it. The same holds for src/bash_runner.ts, which pulls the tool-filter registry in for the `compress` command alone. Both are loaded with `await import(...)` inside the one command that needs them. Nothing fails when someone converts either back to a top-level import -- the CLI still works, the suite stays green, startup just silently gets ~10% slower again -- so the property is asserted here directly. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -28,8 +15,7 @@ const DEFERRED = ['./relay.js', './bash_runner.js']
 describe('cli.ts defers the hook subsystem', () => {
   for (const spec of DEFERRED) {
     it(`does not statically import ${spec}`, () => {
-      // Matches any top-level `import ... from '<spec>'` and the bare side-effect form, but not
-      // `await import('<spec>')`, which is a call expression rather than an import statement.
+      // Matches any top-level `import ... from '<spec>'` and the bare side-effect form, but not `await import('<spec>')`, which is a call expression rather than an import statement.
       const staticImport = new RegExp(`^import\\s[^\\n]*['"]${spec.replace('.', '\\.')}['"]`, 'm')
       expect(staticImport.test(CLI_SRC), `cli.ts statically imports ${spec}`).toBe(false)
     })

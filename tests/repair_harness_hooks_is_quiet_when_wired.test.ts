@@ -1,8 +1,4 @@
-/**
- * `repairHarnessHooks` runs at the end of every `token-goat install` and inside `doctor --repair`, and prints "Re-established hook: …" for each harness it rewrote. It reported a Claude Code repair on every run, right after install had wired every event: `hookEventGaps` returns `{missing: [], outdated: [], broken: []}` for a fully wired settings file, and the repair treated any non-null result as a gap. On the Node hook form (macOS, Linux, native hooks off) a second check also fired every time, because it expected the first word of each command to contain "token-goat" while that word is the node binary.
- *
- * Provenance: CAPTURE. The settings file under test is the one the real `installHooks('user')` writes into this sandbox, not a hand-written copy, so the test checks the repair against what install actually produces.
- */
+/** `repairHarnessHooks` runs at the end of every `token-goat install` and inside `doctor --repair`, and prints "Re-established hook: …" for each harness it rewrote. It reported a Claude Code repair on every run, right after install had wired every event: `hookEventGaps` returns `{missing: [], outdated: [], broken: []}` for a fully wired settings file, and the repair treated any non-null result as a gap. On the Node hook form (macOS, Linux, native hooks off) a second check also fired every time, because it expected the first word of each command to contain "token-goat" while that word is the node binary. Provenance: CAPTURE. The settings file under test is the one the real `installHooks('user')` writes into this sandbox, not a hand-written copy, so the test checks the repair against what install actually produces. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 

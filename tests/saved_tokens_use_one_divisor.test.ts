@@ -1,16 +1,4 @@
-/**
- * Every recorded saving converts bytes to tokens the same way.
- *
- * The divisor is an assumption, and this repository writes it out at roughly forty callsites. It
- * drifted: `bash_compress:generic` credited itself through `estimateTokensFromLength`, which divides
- * by three because it is an overflow guard's estimator and guessing high is that estimator's safe
- * direction. Used as a credit the safe direction reverses, so one kind was booked about a third
- * richer than every sibling inside a column that sums them together. On a real database that was
- * 469,422 tokens across 520 events.
- *
- * Provenance: HAND-DERIVED for the arithmetic, plus a source scan for the structural half. Nothing
- * here is read back out of the function it checks.
- */
+/** Every recorded saving converts bytes to tokens the same way. The divisor is an assumption, and this repository writes it out at roughly forty callsites. It drifted: `bash_compress:generic` credited itself through `estimateTokensFromLength`, which divides by three because it is an overflow guard's estimator and guessing high is that estimator's safe direction. Used as a credit the safe direction reverses, so one kind was booked about a third richer than every sibling inside a column that sums them together. On a real database that was 469,422 tokens across 520 events. Provenance: HAND-DERIVED for the arithmetic, plus a source scan for the structural half. Nothing here is read back out of the function it checks. */
 import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -20,9 +8,7 @@ import { savedTokensFromBytes } from '../src/stats.js'
 
 describe('savedTokensFromBytes', () => {
   it('divides by four, and is strictly the more conservative of the two estimators in this repo', () => {
-    // 1200 / 4 = 300 by hand; the guard's floor(1200 / 3) + 1 = 401. The point is not which number is
-    // closer to a real tokenizer, since neither is one: it is that a credit must not reach for the
-    // estimator built to guess high.
+    // 1200 / 4 = 300 by hand; the guard's floor(1200 / 3) + 1 = 401. The point is not which number is closer to a real tokenizer, since neither is one: it is that a credit must not reach for the estimator built to guess high.
     expect(savedTokensFromBytes(1200)).toBe(300)
     expect(estimateTokensFromLength(1200)).toBe(401)
     for (const bytes of [100, 353, 1200, 5628764]) {
@@ -31,16 +17,13 @@ describe('savedTokensFromBytes', () => {
   })
 
   it('never returns a negative credit for a rewrite that grew', () => {
-    // A negative token saving summed into a total silently cancels out real savings elsewhere, which
-    // is worse than reporting zero: the total stays plausible while being wrong in both directions.
+    // A negative token saving summed into a total silently cancels out real savings elsewhere, which is worse than reporting zero: the total stays plausible while being wrong in both directions.
     expect(savedTokensFromBytes(-5000)).toBe(0)
     expect(savedTokensFromBytes(0)).toBe(0)
   })
 
   it('is what every savings callsite uses, so no kind is credited on a different scale', () => {
-    // Structural half. The defect was one callsite reaching for the wrong helper, which nothing
-    // failed on: both functions take a byte count and return a number, so the types agree and only
-    // the scale differs. A scan is the only thing that catches the next one.
+    // Structural half. The defect was one callsite reaching for the wrong helper, which nothing failed on: both functions take a byte count and return a number, so the types agree and only the scale differs. A scan is the only thing that catches the next one.
     const offenders: string[] = []
     const walk = (dir: string): void => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -61,9 +44,7 @@ describe('savedTokensFromBytes', () => {
   })
 
   it('leaves no callsite converting bytes to tokens by hand next to recordStat', () => {
-    // The scan above only catches the one wrong helper by name. It would not have caught a hand-written
-    // Math.round(bytes / 3), which is the same defect typed out instead of imported, so this scan bans
-    // inline byte arithmetic on a recordStat line outright rather than banning one spelling of it.
+    // The scan above only catches the one wrong helper by name. It would not have caught a hand-written Math.round(bytes / 3), which is the same defect typed out instead of imported, so this scan bans inline byte arithmetic on a recordStat line outright rather than banning one spelling of it.
     const offenders: string[] = []
     const walk = (dir: string): void => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -91,14 +72,7 @@ describe('savedTokensFromBytes', () => {
   })
 
   it('keeps the overflow guard out of every file that records a statistic at all', () => {
-    // Both scans above are line-scoped, so a credit computed on one line and passed by name on the
-    // next slips through either of them. Banning the wrong helper from the whole file closes that
-    // without needing to read the code: a file that never imports the divide-by-three estimator
-    // cannot reach it under any spelling, on any line, through any intermediate variable. It also
-    // covered a subtler case than a miscredited saving. hooks_compact.ts recorded a zero-credit
-    // observation, so no total was wrong, but printed est_tokens in its detail string off the guard
-    // and off a UTF-16 length while printing bytes beside it off a byte count: two scales and two
-    // units in one line a user reads next to real /4 figures elsewhere in the same command.
+    // Both scans above are line-scoped, so a credit computed on one line and passed by name on the next slips through either of them. Banning the wrong helper from the whole file closes that without needing to read the code: a file that never imports the divide-by-three estimator cannot reach it under any spelling, on any line, through any intermediate variable. It also covered a subtler case than a miscredited saving. hooks_compact.ts recorded a zero-credit observation, so no total was wrong, but printed est_tokens in its detail string off the guard and off a UTF-16 length while printing bytes beside it off a byte count: two scales and two units in one line a user reads next to real /4 figures elsewhere in the same command.
     const offenders: string[] = []
     const walk = (dir: string): void => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {

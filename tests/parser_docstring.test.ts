@@ -1,12 +1,4 @@
-/**
- * Coverage for {@link precedingDocComment} and the extractors that now use it (`makeSymbol`,
- * `extractTsJsSymbols`, `extractRustSymbols`, `extractGoSymbols`, `extractJavaSymbols`,
- * `extractCppSymbols`, `extractRubySymbols`, `extractWithRegex`) to populate
- * `SymbolEntry.docstring` from a leading comment block. Before this change, Python's
- * `pythonDocstring` was the ONLY extractor that ever set `docstring` to anything but `''` --
- * every other language's `skeleton`/`outline`/`read --stats` annotation reported
- * "undocumented" unconditionally, including this repo's own densely-docblocked TypeScript.
- */
+/** Coverage for {@link precedingDocComment} and the extractors that now use it (`makeSymbol`, `extractTsJsSymbols`, `extractRustSymbols`, `extractGoSymbols`, `extractJavaSymbols`, `extractCppSymbols`, `extractRubySymbols`, `extractWithRegex`) to populate `SymbolEntry.docstring` from a leading comment block. Before this change, Python's `pythonDocstring` was the ONLY extractor that ever set `docstring` to anything but `''` -- every other language's `skeleton`/`outline`/`read --stats` annotation reported "undocumented" unconditionally, including this repo's own densely-docblocked TypeScript. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -89,8 +81,7 @@ describe('precedingDocComment', () => {
     const lines = ['/** Shared-looking header. */', 'function first() {}', 'function second() {}']
     // first() (line 2) sees the comment directly above it.
     expect(precedingDocComment(lines, 2, 'c')).toContain('Shared-looking header.')
-    // second() (line 3) has `function first() {}` directly above it, not a comment -- the same
-    // block must not leak forward onto it.
+    // second() (line 3) has `function first() {}` directly above it, not a comment -- the same block must not leak forward onto it.
     expect(precedingDocComment(lines, 3, 'c')).toBe('')
   })
 })
@@ -421,13 +412,7 @@ describe('extractRubySymbols docstring population', () => {
 })
 
 describe('extractWithRegex (fallback) docstring population', () => {
-  // extractWithRegex only actually runs in production for an unrecognized filename/extension
-  // (where detectLanguage returns 'unknown' -- but extractSymbolsNoTreeSitter short-circuits to
-  // `[]` for 'unknown' before ever reaching it) or as the safety net when a tree-sitter grammar
-  // throws mid-parse on a real language's source, which isn't practical to force deterministically
-  // through `parseFile` in a unit test. Called directly here instead (it's exported for this
-  // reason) -- each FALLBACK_PATTERNS entry carries its own `style`, since the function has no
-  // reliable `Language` to key off at the point it runs.
+  // extractWithRegex only actually runs in production for an unrecognized filename/extension (where detectLanguage returns 'unknown' -- but extractSymbolsNoTreeSitter short-circuits to `[]` for 'unknown' before ever reaching it) or as the safety net when a tree-sitter grammar throws mid-parse on a real language's source, which isn't practical to force deterministically through `parseFile` in a unit test. Called directly here instead (it's exported for this reason) -- each FALLBACK_PATTERNS entry carries its own `style`, since the function has no reliable `Language` to key off at the point it runs.
   it('populates docstring for a Python-shaped def (hash style)', () => {
     const content = ['# Adds two numbers.', 'def add(a, b):', '    return a + b', ''].join('\n')
     const symbols = extractWithRegex(content, 'irrelevant.path')
@@ -451,9 +436,7 @@ describe('extractWithRegex (fallback) docstring population', () => {
 })
 
 describe('regex-adapter docstring population (wired via lines+style, parent separated out)', () => {
-  // These adapters previously stored the enclosing container name in `docstring` (see
-  // db.ts's SCHEMA_SQL v8 -> v9 comment). They now populate `parent` with that container name
-  // and `docstring` with the real preceding /** */ or # comment, via precedingDocComment.
+  // These adapters previously stored the enclosing container name in `docstring` (see db.ts's SCHEMA_SQL v8 -> v9 comment). They now populate `parent` with that container name and `docstring` with the real preceding /** */ or # comment, via precedingDocComment.
 
   it('Kotlin: a method with a /** */ doc comment reports it in docstring, and parent holds the class name', () => {
     const content = [
@@ -619,8 +602,7 @@ describe('regex-adapter docstring population (wired via lines+style, parent sepa
     ].join('\n')
     const { symbols } = extractApex(content, 'Widget.cls')
     const render = symbols.find((s) => s.name === 'render')
-    // apex_method emit() calls don't pass a parent (pre-existing, unrelated to this change --
-    // only apex_trigger's objectName flows through emit's parent arg); the class itself does.
+    // apex_method emit() calls don't pass a parent (pre-existing, unrelated to this change -- only apex_trigger's objectName flows through emit's parent arg); the class itself does.
     expect(symbols.find((s) => s.name === 'Widget' && s.kind === 'apex_class')?.parent).toBe('')
     expect(render?.docstring).toContain('Renders the widget.')
   })

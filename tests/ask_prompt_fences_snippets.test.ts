@@ -1,14 +1,4 @@
-/**
- * `token-goat ask` builds a prompt from indexed symbol bodies and pipes it to a backend that may be
- * `codex` or `claude`. That makes it the one surface where third-party file text reaches a model
- * holding tools, rather than a model reading a tool result, so the snippets must arrive fenced and
- * redacted.
- *
- * Fixture provenance: HAND-DERIVED. The hostile body is written for this test; the assertions
- * compute the expected escape from the input (one bracket replaced) rather than reading it off the
- * neutraliser. The prompt is captured from the real `spawnSync` call the shipping path makes, so
- * what is asserted is what the backend would actually receive.
- */
+/** `token-goat ask` builds a prompt from indexed symbol bodies and pipes it to a backend that may be `codex` or `claude`. That makes it the one surface where third-party file text reaches a model holding tools, rather than a model reading a tool result, so the snippets must arrive fenced and redacted. Fixture provenance: HAND-DERIVED. The hostile body is written for this test; the assertions compute the expected escape from the input (one bracket replaced) rather than reading it off the neutraliser. The prompt is captured from the real `spawnSync` call the shipping path makes, so what is asserted is what the backend would actually receive. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ChildProcess from 'node:child_process'

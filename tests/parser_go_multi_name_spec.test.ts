@@ -1,19 +1,4 @@
-/**
- * Regression: a Go declaration that names several things at once indexed only the first name.
- *
- * `var alphaVar, betaVar = 1, 2` and `const epsilonC, zetaC = 3, 4` are one `var_spec` /
- * `const_spec` node each, and tree-sitter-go repeats the `name` field on that node.
- * `extractGoSymbols` called `nodeName`, which is `childForFieldName('name')` and returns only the
- * first match, so `betaVar` and `zetaC` were absent from the index entirely: `symbol betaVar`
- * found nothing and `read "file::betaVar"` could not serve a package-level variable that plainly
- * exists in the file.
- *
- * Why didn't a test catch this: the Go fixtures in the suite declare one name per line, which is
- * the common style, and the grouped form (`var ( a int \n b string )`) already worked -- each spec
- * there holds a single name, so the grouped-block test passed while proving nothing about a
- * multi-name spec. The bug lives in the gap between those two shapes, and a `toContain` assertion
- * on the first name is green either way. What catches it is asserting the whole name set.
- */
+/** Regression: a Go declaration that names several things at once indexed only the first name. `var alphaVar, betaVar = 1, 2` and `const epsilonC, zetaC = 3, 4` are one `var_spec` / `const_spec` node each, and tree-sitter-go repeats the `name` field on that node. `extractGoSymbols` called `nodeName`, which is `childForFieldName('name')` and returns only the first match, so `betaVar` and `zetaC` were absent from the index entirely: `symbol betaVar` found nothing and `read "file::betaVar"` could not serve a package-level variable that plainly exists in the file. Why didn't a test catch this: the Go fixtures in the suite declare one name per line, which is the common style, and the grouped form (`var ( a int \n b string )`) already worked -- each spec there holds a single name, so the grouped-block test passed while proving nothing about a multi-name spec. The bug lives in the gap between those two shapes, and a `toContain` assertion on the first name is green either way. What catches it is asserting the whole name set. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -98,8 +83,7 @@ describe('Go declarations that name several things at once', () => {
   it('keeps a function-local multi-name declaration out of the index', async () => {
     const result = await parseFile(write('c.go', SOURCE))
     const names = result.symbols.map((s) => s.name)
-    // The scope gate runs before the per-name loop, so both locals must stay out -- not just the
-    // first one, which is all the pre-fix code could ever have emitted.
+    // The scope gate runs before the per-name loop, so both locals must stay out -- not just the first one, which is all the pre-fix code could ever have emitted.
     expect(names).not.toContain('localA')
     expect(names).not.toContain('localB')
   })

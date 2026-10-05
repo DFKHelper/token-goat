@@ -1,17 +1,4 @@
-/**
- * End-to-end regression for the partial-path fallback losing a real match to the query's LIMIT.
- *
- * `token-goat read "worker.ts::drain"` (a filename fragment rather than the full indexed path)
- * misses the exact-path lookup and falls back to a name-only `querySymbols({ name, limit: 50 })`,
- * then filters the rows down to the ones whose path suffix-matches what the user typed. That SQL
- * is `ORDER BY file_path, line_start LIMIT 50`, so for a symbol name with more than 50 definitions
- * across the machine-wide index (`run`, `main`, `handler` all have hundreds) the requested file's
- * row was truncated away before the JS filter ever saw it, and the command reported a symbol that
- * is plainly there as "not found" -- purely because its path sorted late alphabetically.
- *
- * Drives the real, unmocked pipeline: real files on disk, real indexFileSync, real (test-isolated)
- * global.db, real runRead.
- */
+/** End-to-end regression for the partial-path fallback losing a real match to the query's LIMIT. `token-goat read "worker.ts::drain"` (a filename fragment rather than the full indexed path) misses the exact-path lookup and falls back to a name-only `querySymbols({ name, limit: 50 })`, then filters the rows down to the ones whose path suffix-matches what the user typed. That SQL is `ORDER BY file_path, line_start LIMIT 50`, so for a symbol name with more than 50 definitions across the machine-wide index (`run`, `main`, `handler` all have hundreds) the requested file's row was truncated away before the JS filter ever saw it, and the command reported a symbol that is plainly there as "not found" -- purely because its path sorted late alphabetically. Drives the real, unmocked pipeline: real files on disk, real indexFileSync, real (test-isolated) global.db, real runRead. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -49,8 +36,7 @@ afterAll(() => {
 
 describe('partial-path fallback survives more same-named definitions than the query limit', () => {
   it('resolves a bare filename whose indexed path sorts past the 50-row query limit', () => {
-    // p60.ts is the 60th path in `ORDER BY file_path` among the 60 rows sharing this symbol name,
-    // so a limit applied before the path filter drops it.
+    // p60.ts is the 60th path in `ORDER BY file_path` among the 60 rows sharing this symbol name, so a limit applied before the path filter drops it.
     const { text, code } = runRead({ spec: `p60.ts::${SYMBOL}` })
     expect(code).toBe(0)
     expect(text).toContain('return 60')
@@ -63,8 +49,7 @@ describe('partial-path fallback survives more same-named definitions than the qu
   })
 
   it('still refuses a bare filename that only shares a non-boundary suffix', () => {
-    // `xp60.ts` is not a path-segment suffix of `<root>/p60.ts`; narrowing the query by final
-    // segment must not loosen into a raw endsWith match.
+    // `xp60.ts` is not a path-segment suffix of `<root>/p60.ts`; narrowing the query by final segment must not loosen into a raw endsWith match.
     const { code } = runRead({ spec: `xp60.ts::${SYMBOL}` })
     expect(code).toBe(1)
   })

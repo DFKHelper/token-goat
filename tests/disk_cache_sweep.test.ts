@@ -1,13 +1,4 @@
-/**
- * Regression coverage for the automatic cache sweep.
- *
- * Two gaps existed here, neither of which any test caught. First, pruneBlobs skipped every file
- * whose name did not end in `.json`, so `.txt`/`.gz` payloads from older versions, `.tmp` files
- * from interrupted atomic writes, and `.lock` files whose holder died survived every prune
- * forever. Second, nothing invoked eviction for these directories automatically: storeBlob prunes
- * the subdir it writes, but session state is written outside that funnel, so the sessions
- * directory grew without any bound at all.
- */
+/** Regression coverage for the automatic cache sweep. Two gaps existed here, neither of which any test caught. First, pruneBlobs skipped every file whose name did not end in `.json`, so `.txt`/`.gz` payloads from older versions, `.tmp` files from interrupted atomic writes, and `.lock` files whose holder died survived every prune forever. Second, nothing invoked eviction for these directories automatically: storeBlob prunes the subdir it writes, but session state is written outside that funnel, so the sessions directory grew without any bound at all. */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
@@ -80,8 +71,7 @@ describe('pruneBlobDir non-JSON companions', () => {
   })
 
   it('does not let a fresh non-JSON file consume a count-budget slot', () => {
-    // The count budget is expressed in addressable blobs, so a `.txt` companion must not push a
-    // `.json` blob out. With maxCount 2 and two fresh .json blobs plus one .txt, nothing is due.
+    // The count budget is expressed in addressable blobs, so a `.txt` companion must not push a `.json` blob out. With maxCount 2 and two fresh .json blobs plus one .txt, nothing is due.
     const dir = path.join(home, 'bash_outputs')
     const a = writeFile(dir, 'a.json', false)
     const b = writeFile(dir, 'b.json', false)
@@ -115,8 +105,7 @@ describe('sweepCacheRoots', () => {
   })
 
   it('reaps stale cache files under an extra root too', () => {
-    // The stranded legacy root: the same age policy applies to it, so its contents age out
-    // without any bespoke "delete the old directory" migration.
+    // The stranded legacy root: the same age policy applies to it, so its contents age out without any bespoke "delete the old directory" migration.
     const legacyJson = writeFile(path.join(extraRoot, 'mcp_outputs'), 'x.json', true)
     const legacyGz = writeFile(path.join(extraRoot, 'mcp_outputs'), 'x.gz', true)
     const legacyFresh = writeFile(path.join(extraRoot, 'mcp_outputs'), 'y.json', false)
@@ -128,8 +117,7 @@ describe('sweepCacheRoots', () => {
   })
 
   it('never count-evicts fresh session blobs, however many there are', () => {
-    // Session blobs hold live read-dedup state and cannot be re-fetched, so the sessions policy is
-    // age-only. Count-capping them would silently reset a live conversation's state.
+    // Session blobs hold live read-dedup state and cannot be re-fetched, so the sessions policy is age-only. Count-capping them would silently reset a live conversation's state.
     const dir = path.join(home, 'sessions')
     const written: string[] = []
     for (let i = 0; i < DEFAULT_MAX_COUNT + 5; i++) written.push(writeFile(dir, `s${i}.json`, false))
@@ -139,9 +127,7 @@ describe('sweepCacheRoots', () => {
   })
 
   it('still count-evicts a count-capped subdir past its budget', () => {
-    // Anti-vacuity control for the case above: the age-only exemption is specific to sessions, not
-    // a sweep that silently applies no count budget anywhere. bash_outputs' real budget is 4096
-    // blobs, so the env override sets a small one rather than writing 4k files.
+    // Anti-vacuity control for the case above: the age-only exemption is specific to sessions, not a sweep that silently applies no count budget anywhere. bash_outputs' real budget is 4096 blobs, so the env override sets a small one rather than writing 4k files.
     const dir = path.join(home, 'bash_outputs')
     for (let i = 0; i < 5; i++) writeFile(dir, `b${i}.json`, false)
     process.env['TOKEN_GOAT_BASH_CACHE_MAX_FILES'] = '2'

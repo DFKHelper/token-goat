@@ -37,9 +37,7 @@ describe('pptxOutline', () => {
   })
 
   it('reports hasNotes: false for a notesSlideN.xml part with no actual notes text', async () => {
-    // PowerPoint auto-creates a notesSlideN.xml part for every slide on save, whether or not
-    // the user typed anything into the notes pane -- hasNotes must reflect actual content,
-    // not mere presence of the ZIP part.
+    // PowerPoint auto-creates a notesSlideN.xml part for every slide on save, whether or not the user typed anything into the notes pane -- hasNotes must reflect actual content, not mere presence of the ZIP part.
     const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pptx-emptynotes-'))
     const file2 = path.join(dir2, 'sample.pptx')
     fs.writeFileSync(file2, buildPptxFixture([{ title: 'Slide with an empty notes placeholder', notes: '' }]))
@@ -87,10 +85,7 @@ describe('pptxNotesText', () => {
 })
 
 describe('notes are resolved via the slide relationship, not the slideN.xml filename number', () => {
-  // Simulates duplicating slide 2 (which has notes) in PowerPoint: the duplicate becomes
-  // physical slide 3, but PowerPoint allocates a fresh, non-matching notesSlide part (7)
-  // for it rather than reusing/renaming to notesSlide3.xml -- the notesSlide numbering
-  // counter is independent of slide numbering.
+  // Simulates duplicating slide 2 (which has notes) in PowerPoint: the duplicate becomes physical slide 3, but PowerPoint allocates a fresh, non-matching notesSlide part (7) for it rather than reusing/renaming to notesSlide3.xml -- the notesSlide numbering counter is independent of slide numbering.
   it('follows the notesSlide relationship target instead of guessing notesSlideN.xml', async () => {
     const dir3 = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pptx-notesmismatch-'))
     const file3 = path.join(dir3, 'sample.pptx')
@@ -128,12 +123,7 @@ describe('pptxTextGrep', () => {
 })
 
 describe('pptxSlideText with a table shape', () => {
-  // PowerPoint tables (`p:graphicFrame` > `a:tbl` > `a:tr` > `a:tc`) don't use `p:sp` at all --
-  // a real, common slide shape (comparison tables, data grids) that pptxOutline's bodyChars
-  // (whole-tree collectTextRuns) and pptxTextGrep (same) both already account for, but
-  // pptxSlideText builds its blocks from slideShapes()'s p:sp-only collection, silently
-  // dropping every table's cell text from the one command whose whole job is showing a
-  // slide's actual text.
+  // PowerPoint tables (`p:graphicFrame` > `a:tbl` > `a:tr` > `a:tc`) don't use `p:sp` at all -- a real, common slide shape (comparison tables, data grids) that pptxOutline's bodyChars (whole-tree collectTextRuns) and pptxTextGrep (same) both already account for, but pptxSlideText builds its blocks from slideShapes()'s p:sp-only collection, silently dropping every table's cell text from the one command whose whole job is showing a slide's actual text.
   let tableDir: string
   let tableFile: string
 
@@ -174,9 +164,7 @@ describe('slide numbering follows presentation display order, not slideN.xml fil
   beforeAll(() => {
     reorderedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pptx-reorder-'))
     reorderedFile = path.join(reorderedDir, 'reordered.pptx')
-    // Physical files are created in this order: slide1.xml=Intro, slide2.xml=Middle,
-    // slide3.xml=Conclusion. The deck's actual display order (as PowerPoint's "Move Slide"
-    // would produce, without renaming any part) puts physical slide 3 first and slide 1 last.
+    // Physical files are created in this order: slide1.xml=Intro, slide2.xml=Middle, slide3.xml=Conclusion. The deck's actual display order (as PowerPoint's "Move Slide" would produce, without renaming any part) puts physical slide 3 first and slide 1 last.
     const bytes = buildPptxFixture(
       [{ title: 'Intro' }, { title: 'Middle' }, { title: 'Conclusion' }],
       [3, 2, 1],
@@ -207,18 +195,14 @@ describe('slide numbering follows presentation display order, not slideN.xml fil
 })
 
 describe('a repeated r:id resolving to the same slide part is deduplicated, not re-listed once per repeat', () => {
-  // FORMAT-DERIVED: ECMA-376 addresses each <p:sldId> to a distinct slide part via its r:id; the
-  // same resolved part naming a second <p:sldId> is not something an authoring tool produces --
-  // it is the exact shape an adversarial deck uses to force N reparses of one part for O(1)
-  // bytes on disk, since parseSlide has no cache and nothing else bounded the list length.
+  // FORMAT-DERIVED: ECMA-376 addresses each <p:sldId> to a distinct slide part via its r:id; the same resolved part naming a second <p:sldId> is not something an authoring tool produces -- it is the exact shape an adversarial deck uses to force N reparses of one part for O(1) bytes on disk, since parseSlide has no cache and nothing else bounded the list length.
   let dupDir: string
   let dupFile: string
 
   beforeAll(() => {
     dupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pptx-dup-'))
     dupFile = path.join(dupDir, 'dup.pptx')
-    // order=[1, 1, 2] emits three distinct <p:sldId>/r:id pairs, but the first two both resolve
-    // (via presentation.xml.rels) to physical slide1.xml -- the same-target-twice shape.
+    // order=[1, 1, 2] emits three distinct <p:sldId>/r:id pairs, but the first two both resolve (via presentation.xml.rels) to physical slide1.xml -- the same-target-twice shape.
     const bytes = buildPptxFixture(
       [{ title: 'Repeated' }, { title: 'Other' }],
       [1, 1, 2],
@@ -246,11 +230,7 @@ describe('a repeated r:id resolving to the same slide part is deduplicated, not 
   })
 })
 
-// pptxOutline/pptxNotesText/pptxTextGrep each walk every slide with no wall clock at all, unlike
-// pptxAllSlidesText/allSheetsHeadText which already take the deadline/assertOoxmlWithinDeadline
-// pair from ooxml_extract.ts. Mirrors doc_embed_extract.test.ts's pptxAllSlidesText/
-// allSheetsHeadText deadline coverage: force the deadline already-expired so the test doesn't
-// depend on wall-clock timing to be slow enough to trip the real default.
+// pptxOutline/pptxNotesText/pptxTextGrep each walk every slide with no wall clock at all, unlike pptxAllSlidesText/allSheetsHeadText which already take the deadline/assertOoxmlWithinDeadline pair from ooxml_extract.ts. Mirrors doc_embed_extract.test.ts's pptxAllSlidesText/ allSheetsHeadText deadline coverage: force the deadline already-expired so the test doesn't depend on wall-clock timing to be slow enough to trip the real default.
 describe('pptxOutline / pptxNotesText / pptxTextGrep refuse past their deadline as a DocumentRefusedError', () => {
   it('pptxOutline throws a document refusal once the deadline has passed, not a plain Error', async () => {
     const expiredDeadline = Date.now() - 1

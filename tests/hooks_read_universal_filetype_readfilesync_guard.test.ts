@@ -3,23 +3,9 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Regression: the "Universal file type handler" block in hooks_read.ts (the catch-all for
-// non-code, non-markdown large files -- .csv/.txt/.html/etc) used to call
-// fs.readFileSync(normalized, 'utf8') unconditionally, with no size guard, before it had even
-// computed ftEffectiveLength (the requested-slice-aware size the per-type handlers actually
-// gate on). Every OTHER full-content fs.readFileSync in this file guards behind
-// `size <= SLICE_ESTIMATE_SCAN_CAP_BYTES` (2MB) first -- this call site was the one exception.
-// Known-dispatched file types (isKnownFileType, via DISPATCHED_FILE_TYPE_EXTS) are unconditional
-// on size and are explicitly excluded from the earlier whole-file LARGE_FILE_BYTES deny gate, so
-// a multi-GB .csv/.txt/.html file reaches this block regardless of size -- meaning a cheap,
-// bounded offset/limit Read request against such a file triggered a full synchronous read of the
-// entire file into a JS string, even though the resulting small ftEffectiveLength was always
-// going to make the handler return shouldBlock: false without ever touching that content.
+// Regression: the "Universal file type handler" block in hooks_read.ts (the catch-all for non-code, non-markdown large files -- .csv/.txt/.html/etc) used to call fs.readFileSync(normalized, 'utf8') unconditionally, with no size guard, before it had even computed ftEffectiveLength (the requested-slice-aware size the per-type handlers actually gate on). Every OTHER full-content fs.readFileSync in this file guards behind `size <= SLICE_ESTIMATE_SCAN_CAP_BYTES` (2MB) first -- this call site was the one exception. Known-dispatched file types (isKnownFileType, via DISPATCHED_FILE_TYPE_EXTS) are unconditional on size and are explicitly excluded from the earlier whole-file LARGE_FILE_BYTES deny gate, so a multi-GB .csv/.txt/.html file reaches this block regardless of size -- meaning a cheap, bounded offset/limit Read request against such a file triggered a full synchronous read of the entire file into a JS string, even though the resulting small ftEffectiveLength was always going to make the handler return shouldBlock: false without ever touching that content.
 //
-// vi.spyOn cannot patch node:fs (its namespace exports are non-configurable: "Cannot redefine
-// property"), so a module mock with a hoisted call-count is the portable way to assert
-// readFileSync was never invoked for the oversized file, matching the pattern used in
-// parser_read_failure_swallow.test.ts / index_prune.test.ts.
+// vi.spyOn cannot patch node:fs (its namespace exports are non-configurable: "Cannot redefine property"), so a module mock with a hoisted call-count is the portable way to assert readFileSync was never invoked for the oversized file, matching the pattern used in parser_read_failure_swallow.test.ts / index_prune.test.ts.
 const mockState = vi.hoisted(() => ({ watchedPath: '', callCount: 0 }))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()

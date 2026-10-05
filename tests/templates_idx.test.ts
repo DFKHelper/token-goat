@@ -12,12 +12,7 @@ import {
   type DelimiterPair,
 } from '../src/languages/templates_idx.js'
 
-// All fixtures below are HAND-DERIVED synthetic strings that exercise maskTemplateDelimiters'
-// own masking logic (prefix collisions, unterminated opens, newline preservation, the search
-// bound) -- not evidence a real template engine emits this exact text. The per-dialect
-// FORMAT-DERIVED fixtures (tests/fixtures/language_adapter_symbols/Sample.{j2,hbs,erb,ejs,njk,twig})
-// are the wire-format evidence, exercised through the guard at
-// tests/guards/language_adapter_produces_symbols.test.ts.
+// All fixtures below are HAND-DERIVED synthetic strings that exercise maskTemplateDelimiters' own masking logic (prefix collisions, unterminated opens, newline preservation, the search bound) -- not evidence a real template engine emits this exact text. The per-dialect FORMAT-DERIVED fixtures (tests/fixtures/language_adapter_symbols/Sample.{j2,hbs,erb,ejs,njk,twig}) are the wire-format evidence, exercised through the guard at tests/guards/language_adapter_produces_symbols.test.ts.
 
 describe('maskTemplateDelimiters', () => {
   const JINJA: readonly DelimiterPair[] = [

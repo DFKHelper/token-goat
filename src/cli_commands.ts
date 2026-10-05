@@ -1,16 +1,4 @@
-/**
- * Machine-readable command manifest.
- *
- * `buildCommandManifest` walks a built Commander `Command` tree (from
- * `buildProgram()` in cli.ts) into a plain-object shape safe for
- * `JSON.stringify` -- the same tree-walk `tests/registry.ts::allCommandNames`
- * used to hand-roll for its own narrower "just the names" need, now shared so
- * there is exactly one place that knows how to enumerate the program's
- * commands/subcommands/options/arguments. `token-goat commands --json`
- * exposes this same manifest to users and external tooling (shell
- * completion, doc generators, other scripts) instead of leaving Commander
- * introspection as a test-only capability.
- */
+/** Machine-readable command manifest. `buildCommandManifest` walks a built Commander `Command` tree (from `buildProgram()` in cli.ts) into a plain-object shape safe for `JSON.stringify` -- the same tree-walk `tests/registry.ts::allCommandNames` used to hand-roll for its own narrower "just the names" need, now shared so there is exactly one place that knows how to enumerate the program's commands/subcommands/options/arguments. `token-goat commands --json` exposes this same manifest to users and external tooling (shell completion, doc generators, other scripts) instead of leaving Commander introspection as a test-only capability. */
 
 import type { Command } from 'commander'
 import { compileGuardedRegex } from './regex_guard.js'
@@ -69,17 +57,9 @@ function entryMatches(entry: CommandManifestEntry, re: RegExp | null, pattern: s
   return haystacks.some((h) => (re !== null ? re.test(h) : h.includes(pattern)))
 }
 
-/**
- * Filter a manifest by `pattern`, matched against each entry's name, description, and aliases.
- * A parent that matches directly is kept whole (all of its subcommands included, since the agent
- * asked for that command and its children are part of it). A parent that doesn't match directly
- * but has a matching child is kept with only the matching subcommand(s), so the result stays
- * narrow. Entries with no match anywhere in their own fields or their subcommands' fields are
- * dropped.
- */
+/** Filter a manifest by `pattern`, matched against each entry's name, description, and aliases. A parent that matches directly is kept whole (all of its subcommands included, since the agent asked for that command and its children are part of it). A parent that doesn't match directly but has a matching child is kept with only the matching subcommand(s), so the result stays narrow. Entries with no match anywhere in their own fields or their subcommands' fields are dropped. */
 export function filterCommandManifest(manifest: readonly CommandManifestEntry[], pattern: string): CommandManifestEntry[] {
-  // A pattern that cannot compile, or that would stall, falls back to the literal substring match
-  // `entryMatches` already applies when `re` is null.
+  // A pattern that cannot compile, or that would stall, falls back to the literal substring match `entryMatches` already applies when `re` is null.
   const guarded = compileGuardedRegex(pattern)
   const re: RegExp | null = guarded.ok ? guarded.re : null
   const result: CommandManifestEntry[] = []

@@ -1,18 +1,4 @@
-/**
- * A count recorded in the tokens column must never reach a token total.
- *
- * `secret_redacted` has no numeric slot of its own, so it passes the number of redaction
- * placeholders it emitted as the third `recordStat` argument -- the tokens argument. That is a
- * unit-less quantity sitting in the one headline number this project asks readers to believe, which
- * is the same defect class as pricing an image shrink in bytes: a credit denominated in something
- * that does not bill. The codebase had already reached half of this conclusion, excluding the kind
- * from the renderer's groups because "a redaction removes secret bytes, it does not save a read",
- * and then kept adding it to `total_tokens_saved` anyway.
- *
- * Provenance: HAND-DERIVED. Every number below is chosen here and summed by hand; nothing is read
- * back out of `summarize` and asserted against itself. The two figures are deliberately co-prime
- * multiples so a test that accidentally added them would not land on either.
- */
+/** A count recorded in the tokens column must never reach a token total. `secret_redacted` has no numeric slot of its own, so it passes the number of redaction placeholders it emitted as the third `recordStat` argument -- the tokens argument. That is a unit-less quantity sitting in the one headline number this project asks readers to believe, which is the same defect class as pricing an image shrink in bytes: a credit denominated in something that does not bill. The codebase had already reached half of this conclusion, excluding the kind from the renderer's groups because "a redaction removes secret bytes, it does not save a read", and then kept adding it to `total_tokens_saved` anyway. Provenance: HAND-DERIVED. Every number below is chosen here and summed by hand; nothing is read back out of `summarize` and asserted against itself. The two figures are deliberately co-prime multiples so a test that accidentally added them would not land on either. */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -64,9 +50,7 @@ describe('a count recorded in the tokens column stays out of every token total',
     seed()
     const summary = summarize(30, db)
 
-    // Excluding a kind from the headline while leaving it in the buckets underneath would leave the
-    // parts disagreeing with the whole, which is how the renderer's own exclusion missed this: it
-    // stopped at grouping and never reached aggregation.
+    // Excluding a kind from the headline while leaving it in the buckets underneath would leave the parts disagreeing with the whole, which is how the renderer's own exclusion missed this: it stopped at grouping and never reached aggregation.
     expect(summary.by_kind['secret_redacted']?.tokens_saved).toBe(0)
     expect(summary.by_kind['secret_redacted']?.events, 'the event itself is still counted').toBe(1)
     expect(kindToSource('secret_redacted')).toBe(SOURCE_OTHER)
@@ -86,17 +70,12 @@ describe('a count recorded in the tokens column stays out of every token total',
   })
 
   it('pins the set of count kinds, so a new one cannot be added without deciding it is one', () => {
-    // Structural half. A future kind that puts a count in the tokens column is invisible: it does not
-    // fail anything, it just quietly inflates the total by however many things it counted. This is
-    // the same shape as the guard below, from the other end.
+    // Structural half. A future kind that puts a count in the tokens column is invisible: it does not fail anything, it just quietly inflates the total by however many things it counted. This is the same shape as the guard below, from the other end.
     expect([...COUNT_ONLY_KINDS].sort()).toEqual(['secret_redacted'])
   })
 
   it('finds no producer recording a non-zero tokens value against zero bytes outside that set', () => {
-    // A source scan, because the defect is a callsite shape rather than a value: `recordStat(kind, 0,
-    // someCount)` is what a count-in-the-tokens-column looks like at the point it is written. Kinds
-    // that legitimately save tokens without saving bytes do not exist here (a token saving comes from
-    // emitting fewer bytes), so this pattern is a reliable flag rather than a heuristic.
+    // A source scan, because the defect is a callsite shape rather than a value: `recordStat(kind, 0, someCount)` is what a count-in-the-tokens-column looks like at the point it is written. Kinds that legitimately save tokens without saving bytes do not exist here (a token saving comes from emitting fewer bytes), so this pattern is a reliable flag rather than a heuristic.
     const offenders: string[] = []
     const srcDir = path.join(process.cwd(), 'src')
     const walk = (dir: string): void => {

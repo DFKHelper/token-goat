@@ -8,9 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { PACKAGE_MANAGER_FILTERS, detectFromCommand, resolvePackageManagerScript, selectFilter, TOOL_FILTERS } from '../src/tool_filters/index.js'
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helpers ---------------------------------------------------------------------------
 
 const filterByName = (name: string) => {
   const f = TOOL_FILTERS.find((x) => x.name === name) ?? PACKAGE_MANAGER_FILTERS.find((x) => x.name === name)
@@ -34,9 +32,7 @@ const vcpkgFilter = filterByName('vcpkg')
 const npmFilter = filterByName('npm')
 const depListFilter = filterByName('dep-list')
 
-// ---------------------------------------------------------------------------
-// PACKAGE_MANAGER_FILTERS array
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PACKAGE_MANAGER_FILTERS array ---------------------------------------------------------------------------
 
 describe('PACKAGE_MANAGER_FILTERS', () => {
   it('exports 15 filter entries', () => {
@@ -50,9 +46,7 @@ describe('PACKAGE_MANAGER_FILTERS', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// NpmInstallFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- NpmInstallFilter ---------------------------------------------------------------------------
 
 describe('NpmInstallFilter (npm path)', () => {
   it('matches npm install', () => {
@@ -176,9 +170,7 @@ describe('NpmInstallFilter (pnpm path)', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// PnpmFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PnpmFilter ---------------------------------------------------------------------------
 
 describe('PnpmFilter', () => {
   it('matches pnpm install', () => {
@@ -258,9 +250,7 @@ describe('PnpmFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// YarnFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- YarnFilter ---------------------------------------------------------------------------
 
 describe('YarnFilter', () => {
   it('matches yarn install', () => {
@@ -385,9 +375,7 @@ describe('YarnFilter berry (v2+)', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// PipFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PipFilter ---------------------------------------------------------------------------
 
 describe('PipFilter', () => {
   it('matches pip install', () => {
@@ -488,9 +476,7 @@ describe('PipFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// UvFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- UvFilter ---------------------------------------------------------------------------
 
 describe('UvFilter', () => {
   it('matches uv sync', () => {
@@ -573,9 +559,7 @@ describe('UvFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// CondaFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- CondaFilter ---------------------------------------------------------------------------
 
 describe('CondaFilter', () => {
   it('matches conda install', () => {
@@ -709,9 +693,7 @@ describe('CondaFilter env export', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// GemFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- GemFilter ---------------------------------------------------------------------------
 
 describe('GemFilter', () => {
   it('matches gem install', () => {
@@ -770,9 +752,7 @@ describe('GemFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// BundlerFilter (factory-based)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- BundlerFilter (factory-based) ---------------------------------------------------------------------------
 
 describe('BundlerFilter (makePackageManagerFilter factory)', () => {
   it('matches bundle', () => {
@@ -818,9 +798,7 @@ describe('BundlerFilter (makePackageManagerFilter factory)', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ComposerFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ComposerFilter ---------------------------------------------------------------------------
 
 describe('ComposerFilter', () => {
   it('matches composer install', () => {
@@ -889,9 +867,7 @@ describe('ComposerFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// NuGetFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- NuGetFilter ---------------------------------------------------------------------------
 
 describe('NuGetFilter', () => {
   it('matches nuget', () => {
@@ -947,9 +923,7 @@ describe('NuGetFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// PubFilter (factory-based)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- PubFilter (factory-based) ---------------------------------------------------------------------------
 
 describe('PubFilter (makePackageManagerFilter factory)', () => {
   it('matches pub get', () => {
@@ -991,9 +965,7 @@ describe('PubFilter (makePackageManagerFilter factory)', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// ConanFilter (errorPassthrough = true)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- ConanFilter (errorPassthrough = true) ---------------------------------------------------------------------------
 
 describe('ConanFilter', () => {
   it('matches conan install', () => {
@@ -1033,9 +1005,7 @@ describe('ConanFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// VcpkgFilter (errorPassthrough = true)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- VcpkgFilter (errorPassthrough = true) ---------------------------------------------------------------------------
 
 describe('VcpkgFilter', () => {
   it('matches vcpkg', () => {
@@ -1076,9 +1046,7 @@ describe('VcpkgFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// NodePackageFilter (general npm/pnpm/yarn)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- NodePackageFilter (general npm/pnpm/yarn) ---------------------------------------------------------------------------
 
 describe('NodePackageFilter', () => {
   it('matches npm (non-install subcommands)', () => {
@@ -1209,9 +1177,7 @@ describe('NodePackageFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// DepListFilter
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- DepListFilter ---------------------------------------------------------------------------
 
 describe('DepListFilter', () => {
   it('matches pip list', () => {
@@ -1260,9 +1226,7 @@ describe('DepListFilter', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Dispatch integration
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Dispatch integration ---------------------------------------------------------------------------
 
 describe('Dispatch: package-manager filters in TOOL_FILTERS', () => {
   it('pnpm install dispatches to npm_install filter', () => {
@@ -1358,9 +1322,7 @@ describe('Dispatch: package-manager filters in TOOL_FILTERS', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Package-manager run-script resolution: `npm test` / `npm run <script>` / `yarn <script>` / `pnpm run <script>` / `bun run <script>` resolve to the argv the script actually executes (via the nearest ancestor package.json), so dispatch lands on the SPECIFIC filter (vitest, eslint, ...) instead of the generic npm/pnpm/yarn/bun catch-all.
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Package-manager run-script resolution: `npm test` / `npm run <script>` / `yarn <script>` / `pnpm run <script>` / `bun run <script>` resolve to the argv the script actually executes (via the nearest ancestor package.json), so dispatch lands on the SPECIFIC filter (vitest, eslint, ...) instead of the generic npm/pnpm/yarn/bun catch-all. ---------------------------------------------------------------------------
 
 describe('Dispatch: package-manager run-script resolution', () => {
   let dir: string
@@ -1481,11 +1443,7 @@ describe('Dispatch: package-manager run-script resolution', () => {
     expect(f?.name).toBe('vitest')
   })
 
-  // PROVENANCE: FORMAT-DERIVED. `install`, `version` and `why` are yarn's own subcommands, read
-  // off yarn's published command list; `"install": "husky install"` and a `"version"` release
-  // script are ordinary package.json entries. The bare-name branch used to justify itself on the
-  // scripts-map lookup missing for a built-in, which is true only until someone writes a script
-  // by that name -- and then yarn's own install output was handed to husky's filter.
+  // PROVENANCE: FORMAT-DERIVED. `install`, `version` and `why` are yarn's own subcommands, read off yarn's published command list; `"install": "husky install"` and a `"version"` release script are ordinary package.json entries. The bare-name branch used to justify itself on the scripts-map lookup missing for a built-in, which is true only until someone writes a script by that name -- and then yarn's own install output was handed to husky's filter.
   it('a bare yarn built-in runs the built-in, even when a script shares its name', () => {
     writePkg({ install: 'husky install', version: 'vitest run', why: 'eslint .', lint: 'eslint .' })
     expect(resolvePackageManagerScript(['yarn', 'install'], dir)).toBeNull()

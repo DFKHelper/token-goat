@@ -1,26 +1,4 @@
-/**
- * Shared apparatus for testing `isInsideRoot` against real filesystem shapes.
- *
- * Four rounds of audit on the containment primitive have each hand-rebuilt the same fixture
- * scaffolding, and every rebuild re-decided the platform gating and re-derived the expected
- * answers by hand. This module exists so the fifth does not.
- *
- * PROVENANCE: CAPTURE / HAND-DERIVED, split deliberately, and the split is the point.
- *
- *   - The GROUND TRUTH for a materializable case is CAPTURE: {@link assertContainment} actually
- *     creates the target on disk, runs `fs.realpathSync` on it and on the root, and compares them
- *     with `path.relative`. That oracle shares no code with `resolveThroughLinks` -- it is the
- *     kernel's own answer, reached through Node's realpath -- so a case cannot pass by the
- *     implementation agreeing with itself. This is the specific failure mode the repo has hit six
- *     or more times: a fixture written from the code's own matcher.
- *   - Each case ALSO carries a hand-written `expect`, and the two are cross-checked against each
- *     other before either is compared to `isInsideRoot`. A disagreement fails the test naming both
- *     sides, rather than quietly trusting whichever one was written last.
- *   - A case that cannot be materialized (a dangling leaf, an ELOOP pair -- realpath throws on
- *     both by construction) must say so via `unmaterializable`, and that string is printed in the
- *     failure. HAND-DERIVED expectations are fine there, because the question is logic rather than
- *     a wire format, but they are marked so nobody later mistakes one for a captured answer.
- */
+/** Shared apparatus for testing `isInsideRoot` against real filesystem shapes. Four rounds of audit on the containment primitive have each hand-rebuilt the same fixture scaffolding, and every rebuild re-decided the platform gating and re-derived the expected answers by hand. This module exists so the fifth does not. PROVENANCE: CAPTURE / HAND-DERIVED, split deliberately, and the split is the point. - The GROUND TRUTH for a materializable case is CAPTURE: {@link assertContainment} actually creates the target on disk, runs `fs.realpathSync` on it and on the root, and compares them with `path.relative`. That oracle shares no code with `resolveThroughLinks` -- it is the kernel's own answer, reached through Node's realpath -- so a case cannot pass by the implementation agreeing with itself. This is the specific failure mode the repo has hit six or more times: a fixture written from the code's own matcher. - Each case ALSO carries a hand-written `expect`, and the two are cross-checked against each other before either is compared to `isInsideRoot`. A disagreement fails the test naming both sides, rather than quietly trusting whichever one was written last. - A case that cannot be materialized (a dangling leaf, an ELOOP pair -- realpath throws on both by construction) must say so via `unmaterializable`, and that string is printed in the failure. HAND-DERIVED expectations are fine there, because the question is logic rather than a wire format, but they are marked so nobody later mistakes one for a captured answer. */
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -39,41 +17,15 @@ export interface ContainmentCase {
   readonly label: string
   /** Absolute path to ask about. */
   readonly target: string
-  /**
-   * The expected answer, cross-checked against the realpath oracle below. Where the two are
-   * checkable this is the KERNEL's answer: what the path really names, not what the implementation
-   * would like it to name.
-   */
+  /** The expected answer, cross-checked against the realpath oracle below. Where the two are checkable this is the KERNEL's answer: what the path really names, not what the implementation would like it to name. */
   readonly expect: boolean
-  /**
-   * Set when the implementation deliberately answers `false` for a target the kernel says IS inside
-   * the root -- a conservative refusal rather than a hole. The value is the reason, and it is
-   * required rather than optional so that a fail-closed divergence has to be argued for in writing
-   * instead of quietly encoded as an expectation. Only this direction is allowed: a case claiming
-   * the implementation says `true` where the kernel says `false` is a security defect, and no field
-   * here will let you record one.
-   */
+  /** Set when the implementation deliberately answers `false` for a target the kernel says IS inside the root -- a conservative refusal rather than a hole. The value is the reason, and it is required rather than optional so that a fail-closed divergence has to be argued for in writing instead of quietly encoded as an expectation. Only this direction is allowed: a case claiming the implementation says `true` where the kernel says `false` is a security defect, and no field here will let you record one. */
   readonly conservative?: string
-  /**
-   * Set when the shape cannot be created on disk, so the realpath oracle cannot run: a dangling
-   * leaf, an ELOOP pair, a path the platform refuses outright. The value is the reason, printed on
-   * failure, and its presence is what downgrades this row from CAPTURE to HAND-DERIVED.
-   */
+  /** Set when the shape cannot be created on disk, so the realpath oracle cannot run: a dangling leaf, an ELOOP pair, a path the platform refuses outright. The value is the reason, printed on failure, and its presence is what downgrades this row from CAPTURE to HAND-DERIVED. */
   readonly unmaterializable?: string
 }
 
-/**
- * The independent oracle: does `target` really live under `root`, per the kernel?
- *
- * Materializes `target` (creating its parents, following whatever links are already planted), then
- * compares `realpathSync` of both sides with `path.relative`. Returns null when the shape cannot be
- * materialized, which is the caller's cue to fall back to the case's declared expectation.
- *
- * Deliberately NOT written in terms of anything in `path_containment.ts`: no `foldPath`, no
- * `canonicalize`, no segment walk. `path.relative` folds case on Windows already, and on a
- * case-insensitive macOS volume realpath returns the on-disk spelling for both sides, so the
- * comparison is the platform's own.
- */
+/** The independent oracle: does `target` really live under `root`, per the kernel? Materializes `target` (creating its parents, following whatever links are already planted), then compares `realpathSync` of both sides with `path.relative`. Returns null when the shape cannot be materialized, which is the caller's cue to fall back to the case's declared expectation. Deliberately NOT written in terms of anything in `path_containment.ts`: no `foldPath`, no `canonicalize`, no segment walk. `path.relative` folds case on Windows already, and on a case-insensitive macOS volume realpath returns the on-disk spelling for both sides, so the comparison is the platform's own. */
 function realpathOracle(target: string, root: string): boolean | null {
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true })
@@ -86,26 +38,7 @@ function realpathOracle(target: string, root: string): boolean | null {
   }
 }
 
-/**
- * Resolve target and root through the SAME resolver, preferring the native one.
- *
- * `fs.realpathSync` is a JS walker: it replaces symlinks but otherwise hands back the spelling it
- * was given. That is not the kernel's answer, and the difference is invisible on a developer box
- * while being decisive on a CI runner:
- *
- *   - Win32 extended-length prefix. `\\?\C:\...` makes the JS walker `lstat('C:')` and throw
- *     `EISDIR`; the native call resolves it to its plain form.
- *   - Win32 8.3 alias. GitHub's windows runner has `os.tmpdir()` under `C:\Users\RUNNER~1\...`. The
- *     JS walker preserves `RUNNER~1`, the native one expands it. Resolving one side each way put
- *     the same file "outside" its own root.
- *   - Darwin normalization. APFS is normalization-insensitive, so `cafe\u0301` and `caf\u00e9` name
- *     one directory. The JS walker echoes whichever spelling it was handed; the native call returns
- *     the on-disk one.
- *
- * `fs.realpathSync.native` asks the OS, which is what this oracle claims to be reporting. The JS
- * walker stays as the fallback for a platform or shape the native call refuses. Both sides always
- * go through the same one: a mixed pair compares two different questions and answers neither.
- */
+/** Resolve target and root through the SAME resolver, preferring the native one. `fs.realpathSync` is a JS walker: it replaces symlinks but otherwise hands back the spelling it was given. That is not the kernel's answer, and the difference is invisible on a developer box while being decisive on a CI runner: - Win32 extended-length prefix. `\\?\C:\...` makes the JS walker `lstat('C:')` and throw `EISDIR`; the native call resolves it to its plain form. - Win32 8.3 alias. GitHub's windows runner has `os.tmpdir()` under `C:\Users\RUNNER~1\...`. The JS walker preserves `RUNNER~1`, the native one expands it. Resolving one side each way put the same file "outside" its own root. - Darwin normalization. APFS is normalization-insensitive, so `cafe\u0301` and `caf\u00e9` name one directory. The JS walker echoes whichever spelling it was handed; the native call returns the on-disk one. `fs.realpathSync.native` asks the OS, which is what this oracle claims to be reporting. The JS walker stays as the fallback for a platform or shape the native call refuses. Both sides always go through the same one: a mixed pair compares two different questions and answers neither. */
 function resolveBoth(target: string, root: string): { rt: string; rr: string } {
   try {
     return { rt: fs.realpathSync.native(target), rr: fs.realpathSync.native(root) }
@@ -114,22 +47,14 @@ function resolveBoth(target: string, root: string): { rt: string; rr: string } {
   }
 }
 
-/**
- * Assert `isInsideRoot` answers `expect` for every case, and that `expect` itself survives the
- * independent oracle.
- *
- * Asserts the population is non-empty first: a matrix that silently collected nothing passes every
- * other assertion in this file, and a guard that can pass vacuously is worse than no guard.
- */
+/** Assert `isInsideRoot` answers `expect` for every case, and that `expect` itself survives the independent oracle. Asserts the population is non-empty first: a matrix that silently collected nothing passes every other assertion in this file, and a guard that can pass vacuously is worse than no guard. */
 export function assertContainment(cases: readonly ContainmentCase[], root: string): void {
   expect(cases.length, 'containment matrix is empty -- a vacuous pass, not a passing test').toBeGreaterThan(0)
 
   let captured = 0
   let materializable = 0
   for (const c of cases) {
-    // ORDER MATTERS: ask the implementation FIRST, oracle SECOND. The oracle materializes the
-    // target, and for a dangling-leaf case that write travels through the link and creates the
-    // very file whose absence is the shape under test. Measuring first preserves it.
+    // ORDER MATTERS: ask the implementation FIRST, oracle SECOND. The oracle materializes the target, and for a dangling-leaf case that write travels through the link and creates the very file whose absence is the shape under test. Measuring first preserves it.
     const actual = isInsideRoot(c.target, root)
 
     if (c.unmaterializable === undefined) {
@@ -159,10 +84,7 @@ export function assertContainment(cases: readonly ContainmentCase[], root: strin
     }
   }
 
-  // A matrix whose every case is hand-declared proves only that the expectations agree with the
-  // implementation, which is the closed loop this helper exists to avoid. Only enforced when the
-  // matrix claimed at least one materializable case -- a deliberately all-unmaterializable matrix
-  // (ELOOP pairs, say) is a legitimate HAND-DERIVED suite and says so in every label.
+  // A matrix whose every case is hand-declared proves only that the expectations agree with the implementation, which is the closed loop this helper exists to avoid. Only enforced when the matrix claimed at least one materializable case -- a deliberately all-unmaterializable matrix (ELOOP pairs, say) is a legitimate HAND-DERIVED suite and says so in every label.
   if (materializable > 0) {
     expect(captured, 'no case in this matrix reached the realpath oracle').toBe(materializable)
   }
@@ -205,18 +127,7 @@ export const link = {
   },
 }
 
-/**
- * A fresh scratch root plus a sibling "outside" directory, both real and both cleaned by the caller.
- *
- * `parent` defaults to the OS temp root. The one caller that overrides it needs the fixture on the
- * same volume as `process.cwd()`, which the temp root is not on GitHub's windows runner (workspace
- * on `D:`, temp on `C:`) -- and `path.relative` across volumes returns an absolute path, so a
- * "relative root" fixture built there is not relative at all.
- *
- * Resolved with `realpathSync.native` rather than the JS walker so the base is already the OS's own
- * spelling: that runner's temp root is `C:\Users\RUNNER~1\...`, and an 8.3 alias left in the root
- * makes the oracle and the implementation disagree about a path that is plainly inside it.
- */
+/** A fresh scratch root plus a sibling "outside" directory, both real and both cleaned by the caller. `parent` defaults to the OS temp root. The one caller that overrides it needs the fixture on the same volume as `process.cwd()`, which the temp root is not on GitHub's windows runner (workspace on `D:`, temp on `C:`) -- and `path.relative` across volumes returns an absolute path, so a "relative root" fixture built there is not relative at all. Resolved with `realpathSync.native` rather than the JS walker so the base is already the OS's own spelling: that runner's temp root is `C:\Users\RUNNER~1\...`, and an 8.3 alias left in the root makes the oracle and the implementation disagree about a path that is plainly inside it. */
 export function scratchPair(prefix: string, parent: string = os.tmpdir()): { base: string; root: string; outside: string; cleanup: () => void } {
   const base = fs.realpathSync.native(fs.mkdtempSync(path.join(parent, prefix)))
   const root = path.join(base, 'root')
@@ -237,13 +148,7 @@ export function scratchPair(prefix: string, parent: string = os.tmpdir()): { bas
   }
 }
 
-/**
- * Claim a virtual drive letter with `subst`, for the shapes that need a WRITABLE DRIVE ROOT.
- *
- * The OS temp root never is one, and a drive root is its own case: `path.posix.dirname('x:/f')` is
- * `'x:'`, slashless, which is how a dangling link directly in a drive root once read as contained.
- * Returns null on POSIX, without a free letter, or without the symlink privilege.
- */
+/** Claim a virtual drive letter with `subst`, for the shapes that need a WRITABLE DRIVE ROOT. The OS temp root never is one, and a drive root is its own case: `path.posix.dirname('x:/f')` is `'x:'`, slashless, which is how a dangling link directly in a drive root once read as contained. Returns null on POSIX, without a free letter, or without the symlink privilege. */
 export function claimSubstDrive(): { letter: string; backing: string; release: () => void } | null {
   if (!IS_WINDOWS || !CAN_SYMLINK) return null
   let letter: string | null = null

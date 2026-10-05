@@ -1,18 +1,4 @@
-/**
- * Guard: every directory this repository keeps first-party code in is named by the `lint` script.
- *
- * `scripts/` sat outside the linter entirely for the life of the project. Nothing reported that,
- * because a directory eslint is never pointed at produces no findings at all -- the same clean
- * output as a directory with nothing wrong. When it was finally pointed at, it had 41 `no-undef`
- * errors, every one of them a Node runtime global against a config that declared no environment.
- *
- * CI runs exactly one lint command (`npm run lint`, in the `lint` job), so covering a directory in
- * CI and naming it in that script are the same thing. This guard reads the script string and the
- * flat config, rather than running eslint, so it stays fast and states a wiring fact.
- *
- * What it cannot catch: a directory added later that nobody lists here, and a config block that
- * names a directory but disables the rules that matter in it. It checks the wiring, not the rules.
- */
+/** Guard: every directory this repository keeps first-party code in is named by the `lint` script. `scripts/` sat outside the linter entirely for the life of the project. Nothing reported that, because a directory eslint is never pointed at produces no findings at all -- the same clean output as a directory with nothing wrong. When it was finally pointed at, it had 41 `no-undef` errors, every one of them a Node runtime global against a config that declared no environment. CI runs exactly one lint command (`npm run lint`, in the `lint` job), so covering a directory in CI and naming it in that script are the same thing. This guard reads the script string and the flat config, rather than running eslint, so it stays fast and states a wiring fact. What it cannot catch: a directory added later that nobody lists here, and a config block that names a directory but disables the rules that matter in it. It checks the wiring, not the rules. */
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'

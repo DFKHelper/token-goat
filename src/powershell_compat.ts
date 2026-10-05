@@ -1,31 +1,10 @@
-/**
- * Adapts bash-style heredocs and inline Python scripts with complex quotes
- * for reliable execution under PowerShell (both pwsh 7+ and Windows PowerShell 5.1).
- *
- * Windows PowerShell unescapes/strips quotes when passing arguments to native
- * binaries (like python.exe), causing `SyntaxError: unterminated string literal`.
- * Bash heredocs (`<<'EOF'`) also fail under PowerShell's parser.
- *
- * Converting heredoc bodies and inline Python `-c` scripts into UTF-8 Base64
- * decoded stdin streams (`[System.Text.Encoding]::UTF8.GetString(...) | <cmd>`)
- * bypasses shell argument parsing and delivers byte-for-byte exact script text.
- */
+/** Adapts bash-style heredocs and inline Python scripts with complex quotes for reliable execution under PowerShell (both pwsh 7+ and Windows PowerShell 5.1). Windows PowerShell unescapes/strips quotes when passing arguments to native binaries (like python.exe), causing `SyntaxError: unterminated string literal`. Bash heredocs (`<<'EOF'`) also fail under PowerShell's parser. Converting heredoc bodies and inline Python `-c` scripts into UTF-8 Base64 decoded stdin streams (`[System.Text.Encoding]::UTF8.GetString(...) | <cmd>`) bypasses shell argument parsing and delivers byte-for-byte exact script text. */
 
-/**
- * Matches bash heredocs:
- * `<cmd> <<[-]?'DELIM'\n<body>\nDELIM`
- *
- * Preceded by start of command, newline, semicolon, &&, or ||.
- */
+/** Matches bash heredocs: `<cmd> <<[-]?'DELIM'\n<body>\nDELIM` Preceded by start of command, newline, semicolon, &&, or ||. */
 // eslint-disable-next-line regexp/no-super-linear-backtracking
 const HEREDOC_RE = /(?:^|(?<=[;\r\n]|&&|\|\|))\s*([^\r\n;&|<]+?)\s*<<-?\s*(['"]?)([A-Za-z0-9_]+)\2([^\r\n]*?)(?:\r?\n)([\s\S]*?)(?:\r?\n)[ \t]*\3[ \t]*(?=$|[\r\n;&|])/g
 
-/**
- * Matches inline python invocations with -c:
- * `python [preFlags] -c <quoted_script> [postArgs]`
- *
- * Preceded by start of command, newline, semicolon, &&, or || (not pipe |).
- */
+/** Matches inline python invocations with -c: `python [preFlags] -c <quoted_script> [postArgs]` Preceded by start of command, newline, semicolon, &&, or || (not pipe |). */
 // eslint-disable-next-line regexp/no-super-linear-backtracking
 const INLINE_PYTHON_RE = /(?:^|(?<=[;\r\n]|&&|\|\|))\s*((?:[A-Za-z0-9_.:\\/-]*[\\/])?(?:python3?|py)(?:\.exe)?)\s+([^;&|\r\n]*?)-c\s+/gi
 
@@ -40,9 +19,7 @@ function interpreterOptionsOnly(preFlags: string): boolean {
   return true
 }
 
-/**
- * Adapts bash heredoc syntax into PowerShell base64 stdin piping.
- */
+/** Adapts bash heredoc syntax into PowerShell base64 stdin piping. */
 export function adaptHeredoc(command: string): string {
   return command.replace(HEREDOC_RE, (_match, prefix: string, _quote: string, _delim: string, suffix: string, body: string) => {
     let targetCmd = (prefix.trim() + ' ' + (suffix ? suffix.trim() : '')).trim()
@@ -63,10 +40,7 @@ export function adaptHeredoc(command: string): string {
   })
 }
 
-/**
- * Adapts inline `python -c ...` commands into base64 stdin piping to prevent
- * PowerShell quote stripping and `SyntaxError: unterminated string literal`.
- */
+/** Adapts inline `python -c ...` commands into base64 stdin piping to prevent PowerShell quote stripping and `SyntaxError: unterminated string literal`. */
 export function adaptInlinePython(command: string): string {
   let result = ''
   let lastIndex = 0
@@ -151,10 +125,7 @@ export function adaptInlinePython(command: string): string {
   return result
 }
 
-/**
- * Transforms bash heredocs and inline Python scripts with quotes into
- * safe PowerShell stdin piping constructs.
- */
+/** Transforms bash heredocs and inline Python scripts with quotes into safe PowerShell stdin piping constructs. */
 export function adaptPowerShellCommand(command: string): string {
   if (!command) return command
   let adapted = command

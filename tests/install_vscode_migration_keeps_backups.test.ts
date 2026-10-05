@@ -1,22 +1,4 @@
-/**
- * The user -> project migration must not delete the recovery copies it just made.
- *
- * `install --vscode` now defaults to project scope, and the first post-upgrade run MIGRATES an
- * existing user-scope install rather than refusing it. That migration is implemented by calling
- * `uninstallVscode()`, which ends by sweeping the `.bak.<ISO>` files token-goat created for the
- * files it touched -- correct for a real uninstall, wrong here. This is the one path that rewrites
- * a user-scope file WITHOUT being asked to, so it is exactly where commit a804e9f9's guarantee
- * ("every existing file the installer overwrites gets a recovery copy") has to hold, and it was
- * the one place it did not: the copy was written and then deleted seconds later, in the same run.
- *
- * The assertion is that the user's own pre-migration content is still RECOVERABLE afterwards, not
- * that some file matching `.bak.` exists. A backup holding the post-rewrite bytes would satisfy the
- * weaker check and recover nothing.
- *
- * PROVENANCE: HAND-DERIVED. The user content is arbitrary marker text this test writes into the
- * files an existing user-scope install leaves behind; the file locations come from the real
- * `installVscode({})` run in the arrange step, not from a hardcoded list.
- */
+/** The user -> project migration must not delete the recovery copies it just made. `install --vscode` now defaults to project scope, and the first post-upgrade run MIGRATES an existing user-scope install rather than refusing it. That migration is implemented by calling `uninstallVscode()`, which ends by sweeping the `.bak.<ISO>` files token-goat created for the files it touched -- correct for a real uninstall, wrong here. This is the one path that rewrites a user-scope file WITHOUT being asked to, so it is exactly where commit a804e9f9's guarantee ("every existing file the installer overwrites gets a recovery copy") has to hold, and it was the one place it did not: the copy was written and then deleted seconds later, in the same run. The assertion is that the user's own pre-migration content is still RECOVERABLE afterwards, not that some file matching `.bak.` exists. A backup holding the post-rewrite bytes would satisfy the weaker check and recover nothing. PROVENANCE: HAND-DERIVED. The user content is arbitrary marker text this test writes into the files an existing user-scope install leaves behind; the file locations come from the real `installVscode({})` run in the arrange step, not from a hardcoded list. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -97,14 +79,12 @@ describe('installVscode migrating a user-scope install into the project', () => 
     const result = installVscode({ project: true, projectRoot: project })
     expect(result.migratedFromUserScope, 'the migration branch did not run, so this proves nothing').toBe(true)
 
-    // The migration really did rewrite both user files -- otherwise "the content survives" would be
-    // trivially true because nothing was overwritten.
+    // The migration really did rewrite both user files -- otherwise "the content survives" would be trivially true because nothing was overwritten.
     expect(fs.readFileSync(userMcp, 'utf8')).not.toContain('token-goat-managed')
     expect(fs.readFileSync(userInstructions, 'utf8')).not.toContain('token-goat-vscode-begin')
 
     expect(backupsOf(userMcp).some((t) => t.includes(USER_MCP_MARKER)), 'no backup holds the user-authored server entry').toBe(true)
-    // Both halves: the note proves the copy predates the rewrite, the marker proves it is a copy of
-    // the file as it stood WITH the block, which is the state a recovery would restore.
+    // Both halves: the note proves the copy predates the rewrite, the marker proves it is a copy of the file as it stood WITH the block, which is the state a recovery would restore.
     expect(
       backupsOf(userInstructions).some((t) => t.includes(USER_NOTE) && t.includes('token-goat-vscode-begin')),
       'no backup holds the instructions file as it stood before the migration',
@@ -112,8 +92,7 @@ describe('installVscode migrating a user-scope install into the project', () => 
   })
 
   it('still sweeps its own backups on a real uninstall, which is what the user asked for', () => {
-    // The other half of the option: without this, "keep the backups" would just be leaking litter
-    // on every uninstall, and the fix would have traded one defect for another.
+    // The other half of the option: without this, "keep the backups" would just be leaking litter on every uninstall, and the fix would have traded one defect for another.
     const { userMcp, userInstructions } = arrangeUserScopeInstallWithUserContent()
     expect(uninstallVscode({})).toBe(true)
     expect(backupsOf(userMcp)).toEqual([])

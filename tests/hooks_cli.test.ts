@@ -104,9 +104,7 @@ describe('normalizePayload', () => {
   })
 
   it('leaves Gemini read_file input keys untouched (file_path is already token-goat\'s own canonical key)', () => {
-    // Confirmed against gemini-cli's own ReadFileToolParams interface: Gemini's
-    // real read_file tool sends `file_path`, identical to token-goat's internal
-    // key (see getFilePath() in hooks_common.ts) -- no remap needed or performed.
+    // Confirmed against gemini-cli's own ReadFileToolParams interface: Gemini's real read_file tool sends `file_path`, identical to token-goat's internal key (see getFilePath() in hooks_common.ts) -- no remap needed or performed.
     const payload: HookPayload = {
       tool_name: 'read_file',
       tool_input: { file_path: '/tmp/test.txt' },
@@ -128,9 +126,7 @@ describe('normalizePayload', () => {
   })
 
   it('remaps Gemini list_directory\'s dir_path to token-goat\'s file_path key (regression: GEMINI_INPUT_KEY_MAP had no Read entry, so getFilePath() silently saw undefined for every list_directory call)', () => {
-    // list_directory's real target-directory argument is `dir_path` (confirmed
-    // against gemini-cli's own LSToolParams interface), not `file_path` --
-    // getFilePath() (hooks_common.ts) only ever reads `file_path`/`notebook_path`.
+    // list_directory's real target-directory argument is `dir_path` (confirmed against gemini-cli's own LSToolParams interface), not `file_path` -- getFilePath() (hooks_common.ts) only ever reads `file_path`/`notebook_path`.
     const payload: HookPayload = {
       tool_name: 'list_directory',
       tool_input: { dir_path: '/tmp/project' },
@@ -141,13 +137,7 @@ describe('normalizePayload', () => {
   })
 
   it('leaves Gemini read_many_files\'s include key untouched (no single-file-path remap is possible for a glob-pattern array)', () => {
-    // read_many_files's real argument is `include` (confirmed against
-    // gemini-cli's own ReadManyFilesParams interface): an array of glob
-    // patterns, not a single file path. There is no string to remap it to, so
-    // it is deliberately left as-is; getFilePath() returns undefined for this
-    // call and preReadHandler/postReadHandler already fall back to
-    // passOutput() on an undefined path, so the real tool call still succeeds
-    // -- it just gets no session-dedup tracking or read-count hints.
+    // read_many_files's real argument is `include` (confirmed against gemini-cli's own ReadManyFilesParams interface): an array of glob patterns, not a single file path. There is no string to remap it to, so it is deliberately left as-is; getFilePath() returns undefined for this call and preReadHandler/postReadHandler already fall back to passOutput() on an undefined path, so the real tool call still succeeds -- it just gets no session-dedup tracking or read-count hints.
     const payload: HookPayload = {
       tool_name: 'read_many_files',
       tool_input: { include: ['src/**/*.ts', 'README.md'] },
@@ -158,9 +148,7 @@ describe('normalizePayload', () => {
   })
 
   it('remaps Gemini grep_search\'s dir_path to token-goat\'s path key', () => {
-    // grep_search's real target-directory argument is `dir_path` (confirmed
-    // against gemini-cli's GrepToolParams interface); preReadHandler's Grep
-    // fallback only recognizes `path`, so this one still needs remapping.
+    // grep_search's real target-directory argument is `dir_path` (confirmed against gemini-cli's GrepToolParams interface); preReadHandler's Grep fallback only recognizes `path`, so this one still needs remapping.
     const payload: HookPayload = {
       tool_name: 'grep_search',
       tool_input: { pattern: 'foo', dir_path: '/tmp' },
@@ -192,13 +180,7 @@ describe('normalizePayload', () => {
     expect(result).not.toHaveProperty('functionCallId')
   })
 
-  // FORMAT-DERIVED. The AfterTool tool_response shape below is read off Gemini CLI's own hook
-  // reference, not off token-goat's key lists: google-gemini/gemini-cli, docs/hooks/reference.md,
-  // https://raw.githubusercontent.com/google-gemini/gemini-cli/main/docs/hooks/reference.md fetched
-  // 2026-08-27, lines 122-123 verbatim: "`tool_response`: (`object`) The result containing
-  // `llmContent`, `returnDisplay`, and optional `error`." The bodies ('hello from gemini', the
-  // inlineData part) are invented filler; only the KEY NAMES are load-bearing and only those come
-  // from the citation.
+  // FORMAT-DERIVED. The AfterTool tool_response shape below is read off Gemini CLI's own hook reference, not off token-goat's key lists: google-gemini/gemini-cli, docs/hooks/reference.md, https://raw.githubusercontent.com/google-gemini/gemini-cli/main/docs/hooks/reference.md fetched 2026-08-27, lines 122-123 verbatim: "`tool_response`: (`object`) The result containing `llmContent`, `returnDisplay`, and optional `error`." The bodies ('hello from gemini', the inlineData part) are invented filler; only the KEY NAMES are load-bearing and only those come from the citation.
   it('adds output alongside llmContent in a gemini post tool_response so the response-reading handlers see the body (llmContent is in neither tool_response key list, so every post handler read an empty string on Gemini)', () => {
     const payload: HookPayload = {
       tool_name: 'run_shell_command',
@@ -221,10 +203,7 @@ describe('normalizePayload', () => {
     expect(result['tool_response']).toEqual({ llmContent: [{ inlineData: { data: 'AAAA' } }], returnDisplay: 'image' })
   })
 
-  // Non-firing guard: the llmContent alias must not disturb any OTHER gemini tool_response shape it
-  // touches. Every case here is a real non-llmContent post payload the alias runs over, and each must
-  // come back byte-identical. Asserts over a non-empty collection, with the non-emptiness asserted
-  // before the loop.
+  // Non-firing guard: the llmContent alias must not disturb any OTHER gemini tool_response shape it touches. Every case here is a real non-llmContent post payload the alias runs over, and each must come back byte-identical. Asserts over a non-empty collection, with the non-emptiness asserted before the loop.
   it('non-firing: the gemini llmContent alias leaves every other tool_response shape byte-identical', () => {
     const untouched: Array<Record<string, unknown>> = [
       { output: 'already canonical', llmContent: 'ignored because output wins' },
@@ -241,10 +220,7 @@ describe('normalizePayload', () => {
   })
 
   describe('grok harness', () => {
-    // Confirmed empirically (2026-07-09) against grok 0.2.93: unlike Codex/
-    // Gemini, grok's entire wire payload is camelCase (toolName/toolInput/
-    // sessionId), not just its tool-name vocabulary. See the live-capture
-    // notes on GROK_TOOL_NAME_MAP / grokToCanonicalWire in hooks_cli.ts.
+    // Confirmed empirically (2026-07-09) against grok 0.2.93: unlike Codex/ Gemini, grok's entire wire payload is camelCase (toolName/toolInput/ sessionId), not just its tool-name vocabulary. See the live-capture notes on GROK_TOOL_NAME_MAP / grokToCanonicalWire in hooks_cli.ts.
 
     it('translates camelCase wire keys to snake_case and remaps read_file to Read', () => {
       const payload: HookPayload = {
@@ -307,9 +283,7 @@ describe('normalizePayload', () => {
     })
 
     it('unwraps run_terminal_command\'s tagged toolResult into tool_response with content + exit_code (post_tool_use)', () => {
-      // Confirmed shape from a live grok run_terminal_command postToolUse
-      // capture: { type: "Bash", output: [...bytes], output_for_prompt:
-      // "exit: 0\n<stdout>\n", exit_code: 0, command, ... }.
+      // Confirmed shape from a live grok run_terminal_command postToolUse capture: { type: "Bash", output: [...bytes], output_for_prompt: "exit: 0\n<stdout>\n", exit_code: 0, command, ... }.
       const payload: HookPayload = {
         toolName: 'run_terminal_command',
         toolInput: { command: 'echo hi' },
@@ -320,9 +294,7 @@ describe('normalizePayload', () => {
     })
 
     it('falls back to the first string field (other than type) for tools whose toolResult shape is not the Bash one', () => {
-      // Confirmed shapes from live captures: list_dir -> { type, Content },
-      // read_file -> { type, FileContent }, search_replace -> { type, EditsApplied }.
-      // The exact key name is tool-specific and not otherwise enumerated here.
+      // Confirmed shapes from live captures: list_dir -> { type, Content }, read_file -> { type, FileContent }, search_replace -> { type, EditsApplied }. The exact key name is tool-specific and not otherwise enumerated here.
       const payload: HookPayload = {
         toolName: 'read_file',
         toolInput: { target_file: 'notes.txt' },
@@ -376,10 +348,7 @@ describe('normalizePayload', () => {
     })
   })
 
-  // Kimi is the reason remapToolName() keys its input-key map off the EFFECTIVE tool name rather
-  // than off a successful rename: Kimi's Read is already spelled `Read`, but its path argument is
-  // `path`, not `file_path`. Remapping only on a rename would leave every path-scoped handler
-  // seeing no path at all.
+  // Kimi is the reason remapToolName() keys its input-key map off the EFFECTIVE tool name rather than off a successful rename: Kimi's Read is already spelled `Read`, but its path argument is `path`, not `file_path`. Remapping only on a rename would leave every path-scoped handler seeing no path at all.
   it('renames Kimi Read\'s `path` argument to file_path even though the tool name needs no rename', () => {
     const payload: HookPayload = {
       tool_name: 'Read',
@@ -432,9 +401,7 @@ describe('normalizePayload', () => {
     expect(result['tool_input']).toEqual({ command: 'echo hello' })
   })
 
-  // Generalizing remapToolName's key lookup must not start remapping keys for the other harnesses:
-  // grok's own tool vocabulary is snake_case, so a raw `read_file` still routes through the rename
-  // and an unrelated grok tool never collides with the PascalCase GROK_INPUT_KEY_MAP entries.
+  // Generalizing remapToolName's key lookup must not start remapping keys for the other harnesses: grok's own tool vocabulary is snake_case, so a raw `read_file` still routes through the rename and an unrelated grok tool never collides with the PascalCase GROK_INPUT_KEY_MAP entries.
   it('still remaps grok read_file target_file to file_path after the shared-helper generalization', () => {
     const payload: HookPayload = {
       toolName: 'read_file',

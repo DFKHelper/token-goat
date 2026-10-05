@@ -1,19 +1,4 @@
-/**
- * The containment matrix: every filesystem shape `isInsideRoot` has ever been wrong about, plus the
- * ones an auditor probed and found it right about, in one place with one oracle.
- *
- * `isInsideRoot` is the whole trust boundary for project-scope installs (`assertWriteInScope` ->
- * `assertProjectScopeTarget` -> here) and for the VS Code pre-approval path gate. Four audit rounds
- * have each found a different shape it mishandled, and each round's regression test was hand-rolled
- * beside the last one's, so the next shape had to be thought of from scratch. This file is the
- * standing population instead.
- *
- * PROVENANCE: CAPTURE. Every materializable expectation below is cross-checked inside
- * {@link assertContainment} against `fs.realpathSync` -- the kernel's own answer, sharing no code
- * with the implementation under test -- and a disagreement fails the case naming both sides. The
- * handful of shapes that cannot exist on disk by construction (an ELOOP pair) are tagged
- * HAND-DERIVED via `unmaterializable` and say so in the failure message.
- */
+/** The containment matrix: every filesystem shape `isInsideRoot` has ever been wrong about, plus the ones an auditor probed and found it right about, in one place with one oracle. `isInsideRoot` is the whole trust boundary for project-scope installs (`assertWriteInScope` -> `assertProjectScopeTarget` -> here) and for the VS Code pre-approval path gate. Four audit rounds have each found a different shape it mishandled, and each round's regression test was hand-rolled beside the last one's, so the next shape had to be thought of from scratch. This file is the standing population instead. PROVENANCE: CAPTURE. Every materializable expectation below is cross-checked inside {@link assertContainment} against `fs.realpathSync` -- the kernel's own answer, sharing no code with the implementation under test -- and a disagreement fails the case naming both sides. The handful of shapes that cannot exist on disk by construction (an ELOOP pair) are tagged HAND-DERIVED via `unmaterializable` and say so in the failure message. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -40,15 +25,7 @@ afterEach(() => {
   while (cleanups.length > 0) (cleanups.pop() as () => void)()
 })
 
-/**
- * Join path parts WITHOUT collapsing anything.
- *
- * `path.join` normalizes `..` lexically, so `path.join(root, 'jn', '..', 'x')` is already
- * `<root>/x` before the test ever runs: the link-then-dotdot cases silently degrade into plain
- * inside-the-root cases and pass for the wrong reason. Every case below that contains a `..`
- * therefore builds its target with this, not with `path.join`. (Found by the realpath oracle, which
- * reported "inside" for a case whose whole point was that it escaped.)
- */
+/** Join path parts WITHOUT collapsing anything. `path.join` normalizes `..` lexically, so `path.join(root, 'jn', '..', 'x')` is already `<root>/x` before the test ever runs: the link-then-dotdot cases silently degrade into plain inside-the-root cases and pass for the wrong reason. Every case below that contains a `..` therefore builds its target with this, not with `path.join`. (Found by the realpath oracle, which reported "inside" for a case whose whole point was that it escaped.) */
 function raw(...parts: readonly string[]): string {
   return parts.join(path.sep)
 }
@@ -85,12 +62,7 @@ describe('containment matrix', () => {
 
     const cases: ContainmentCase[] = [
       { label: 'a file behind a directory link that leaves the root', target: path.join(root, 'jn', 'leak.txt'), expect: false },
-      // PLATFORM-DIVERGENT, and the oracle is what established it rather than a guess. Win32
-      // collapses `..` LEXICALLY in its path parser, before the object manager ever resolves the
-      // junction, so `<root>\jn\..` really does name `<root>` and the file really is written
-      // inside. POSIX resolves the symlink first and lands in `<base>`, outside. `isInsideRoot`
-      // resolves link-first on both, so on Windows it refuses a path the kernel would have kept
-      // inside: conservative, declared, and asserted as such rather than papered over.
+      // PLATFORM-DIVERGENT, and the oracle is what established it rather than a guess. Win32 collapses `..` LEXICALLY in its path parser, before the object manager ever resolves the junction, so `<root>\jn\..` really does name `<root>` and the file really is written inside. POSIX resolves the symlink first and lands in `<base>`, outside. `isInsideRoot` resolves link-first on both, so on Windows it refuses a path the kernel would have kept inside: conservative, declared, and asserted as such rather than papered over.
       IS_WINDOWS
         ? {
             label: 'junction-then-dotdot (Win32 collapses the dotdot lexically, so it stays inside)',
@@ -126,16 +98,11 @@ describe('containment matrix', () => {
   })
 
   it('accepts a root given as a RELATIVE path', () => {
-    // Built under the repo's gitignored `.tmp/`, not under the OS temp root: on GitHub's windows
-    // runner the workspace is on `D:` and the temp root on `C:`, and `path.relative` between volumes
-    // returns an ABSOLUTE path, so the fixture silently stopped being the shape this case is named
-    // for. Same volume as cwd is the only property that matters here.
+    // Built under the repo's gitignored `.tmp/`, not under the OS temp root: on GitHub's windows runner the workspace is on `D:` and the temp root on `C:`, and `path.relative` between volumes returns an ABSOLUTE path, so the fixture silently stopped being the shape this case is named for. Same volume as cwd is the only property that matters here.
     const sameVolume = path.join(process.cwd(), '.tmp')
     fs.mkdirSync(sameVolume, { recursive: true })
     const { root, outside } = scratch(sameVolume)
-    // Relative to the process cwd, which vitest leaves at the repo root. A caller passing
-    // `process.cwd()`-relative roots is not hypothetical: `projectScopeRoot` resolves `opts.projectRoot`
-    // exactly because a bridge may hand one in unresolved.
+    // Relative to the process cwd, which vitest leaves at the repo root. A caller passing `process.cwd()`-relative roots is not hypothetical: `projectScopeRoot` resolves `opts.projectRoot` exactly because a bridge may hand one in unresolved.
     const relRoot = path.relative(process.cwd(), root)
     expect(path.isAbsolute(relRoot), 'the fixture root must be expressible relative to cwd').toBe(false)
 
@@ -157,8 +124,7 @@ describe('containment matrix', () => {
 
     assertContainment(
       [
-        // The leaf does not exist, so `realpathSync` throws and the pre-fix code fell back to a
-        // LEXICAL answer -- which is true, and wrong. Measured before the oracle materializes it.
+        // The leaf does not exist, so `realpathSync` throws and the pre-fix code fell back to a LEXICAL answer -- which is true, and wrong. Measured before the oracle materializes it.
         { label: 'a dangling leaf link pointing out of the root', target: path.join(root, 'dang-out'), expect: false },
         { label: 'a dangling leaf link pointing back inside the root', target: path.join(root, 'dang-in'), expect: true },
         {
@@ -173,11 +139,7 @@ describe('containment matrix', () => {
   })
 
   it.runIf(process.platform === 'darwin')('treats an NFD spelling and its NFC form as the same path', () => {
-    // APFS and HFS+ are normalization-INSENSITIVE: a directory created as NFC 'e\u0301' opens under
-    // the NFD spelling and vice versa, so a target spelled one way under a root spelled the other
-    // is genuinely the same location. ext4 and NTFS are normalization-SENSITIVE and would make
-    // these two distinct paths, which is why the normalization in `isInsideRoot` is darwin-gated
-    // and why this test is too. Skipped honestly off macOS rather than asserted from a string fold.
+    // APFS and HFS+ are normalization-INSENSITIVE: a directory created as NFC 'e\u0301' opens under the NFD spelling and vice versa, so a target spelled one way under a root spelled the other is genuinely the same location. ext4 and NTFS are normalization-SENSITIVE and would make these two distinct paths, which is why the normalization in `isInsideRoot` is darwin-gated and why this test is too. Skipped honestly off macOS rather than asserted from a string fold.
     const { base } = scratch()
     const nfc = path.join(base, 'caf\u00e9')
     const nfd = path.join(base, 'cafe\u0301')
@@ -194,9 +156,7 @@ describe('containment matrix', () => {
 
   describe('windows-only path spellings', () => {
     it.runIf(IS_WINDOWS)('is not fooled by a trailing-dot or trailing-space component', () => {
-      // Win32 strips a trailing dot or space from a component before the filesystem ever sees it,
-      // which historically let `foo/../` style escapes hide behind `foo. /..`. The oracle catches
-      // the stripping because it asks realpath what the path actually named.
+      // Win32 strips a trailing dot or space from a component before the filesystem ever sees it, which historically let `foo/../` style escapes hide behind `foo. /..`. The oracle catches the stripping because it asks realpath what the path actually named.
       const { root, outside } = scratch()
       fs.mkdirSync(path.join(root, 'sub'), { recursive: true })
 
@@ -213,22 +173,9 @@ describe('containment matrix', () => {
     it.runIf(IS_WINDOWS)('resolves the extended-length \\\\?\\ prefix the same way as the plain spelling', () => {
       const { root, outside } = scratch()
 
-      // THESE ROWS USED TO BE HAND-DERIVED ON A FALSE PREMISE. They were marked
-      // `unmaterializable` with the reason "Node's realpathSync throws EISDIR on the \\?\ spelling,
-      // so there is no independent oracle for it". The first half is true; the conclusion is not.
-      // `fs.realpathSync.native` hands the string to the OS instead of walking it in JS, and it
-      // answers BOTH rows -- measured on win32, resolving each to its plain spelling while
-      // `realpathSync` throws `EISDIR: ... lstat 'C:'`. So there was an oracle all along, and
-      // asserting `expect: false` for both without consulting it was a fixture restating the
-      // implementation.
+      // THESE ROWS USED TO BE HAND-DERIVED ON A FALSE PREMISE. They were marked `unmaterializable` with the reason "Node's realpathSync throws EISDIR on the \\?\ spelling, so there is no independent oracle for it". The first half is true; the conclusion is not. `fs.realpathSync.native` hands the string to the OS instead of walking it in JS, and it answers BOTH rows -- measured on win32, resolving each to its plain spelling while `realpathSync` throws `EISDIR: ... lstat 'C:'`. So there was an oracle all along, and asserting `expect: false` for both without consulting it was a fixture restating the implementation.
       //
-      // Consulted, the oracle AGREES with the escape row and DISAGREES with the inside row:
-      // `\\?\<root>\a.txt` genuinely names a file inside the root. The refusal is kept, because
-      // refusing the prefixed spelling of an inside path is the safe direction and accepting the
-      // prefixed spelling of an OUTSIDE path would be a bypass -- but it is now recorded as what it
-      // is, a deliberate decision to be stricter than the kernel, rather than as an absence of
-      // ground truth. `conservative` makes that a checked claim: if `isInsideRoot` ever starts
-      // accepting this row, the note goes red instead of quietly becoming stale.
+      // Consulted, the oracle AGREES with the escape row and DISAGREES with the inside row: `\\?\<root>\a.txt` genuinely names a file inside the root. The refusal is kept, because refusing the prefixed spelling of an inside path is the safe direction and accepting the prefixed spelling of an OUTSIDE path would be a bypass -- but it is now recorded as what it is, a deliberate decision to be stricter than the kernel, rather than as an absence of ground truth. `conservative` makes that a checked claim: if `isInsideRoot` ever starts accepting this row, the note goes red instead of quietly becoming stale.
       assertContainment(
         [
           { label: 'an escape written with the \\\\?\\ prefix', target: `\\\\?\\${path.join(outside, 'stolen.txt')}`, expect: false },
@@ -268,9 +215,7 @@ describe('containment matrix', () => {
     })
 
     it.runIf(IS_WINDOWS)('does not read an alternate-data-stream suffix as an escape', () => {
-      // `file.txt:stream` names a stream ON that file, so it is inside the root exactly when the
-      // file is. The failure to guard against is the opposite one -- a `:` making the path parse as
-      // a drive-qualified absolute somewhere else.
+      // `file.txt:stream` names a stream ON that file, so it is inside the root exactly when the file is. The failure to guard against is the opposite one -- a `:` making the path parse as a drive-qualified absolute somewhere else.
       const { root } = scratch()
       fs.writeFileSync(path.join(root, 'a.txt'), 'host file\n')
 
@@ -283,19 +228,7 @@ describe('containment matrix', () => {
   })
 
   describe('at a drive root', () => {
-    /**
-     * A dangling link sitting DIRECTLY in a drive root was resolved lexically, so it read as
-     * contained. `resolveThroughLinks` walked up with `path.posix.dirname`, and
-     * `path.posix.dirname('x:/dangfile')` is `'x:'` -- slashless, so the `while (cur.includes('/'))`
-     * loop exited with nothing resolved BEFORE the drive root `x:/` was ever tried, and the readlink
-     * branch that exists precisely to follow a dangling link was never reached. One level deeper the
-     * same shape was refused correctly, which is why nothing looked broken. POSIX was unaffected
-     * (`path.posix.dirname('/dangfile')` is `'/'`, which does contain a slash), so this was invisible
-     * on two of three CI platforms.
-     *
-     * `subst` is what gives an unprivileged process a writable DRIVE ROOT; the OS temp root never is
-     * one. Absorbed here from the standalone file this shape used to live in.
-     */
+    /** A dangling link sitting DIRECTLY in a drive root was resolved lexically, so it read as contained. `resolveThroughLinks` walked up with `path.posix.dirname`, and `path.posix.dirname('x:/dangfile')` is `'x:'` -- slashless, so the `while (cur.includes('/'))` loop exited with nothing resolved BEFORE the drive root `x:/` was ever tried, and the readlink branch that exists precisely to follow a dangling link was never reached. One level deeper the same shape was refused correctly, which is why nothing looked broken. POSIX was unaffected (`path.posix.dirname('/dangfile')` is `'/'`, which does contain a slash), so this was invisible on two of three CI platforms. `subst` is what gives an unprivileged process a writable DRIVE ROOT; the OS temp root never is one. Absorbed here from the standalone file this shape used to live in. */
     it.runIf(IS_WINDOWS && CAN_SYMLINK)('resolves links and plain paths sitting directly in a drive root', (ctx) => {
       const drive = claimSubstDrive()
       if (drive === null) {

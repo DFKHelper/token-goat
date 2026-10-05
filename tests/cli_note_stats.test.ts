@@ -1,12 +1,4 @@
-/**
- * Regression coverage for the "silently missing recordStat" bug class (see MEMORY.md's
- * project_runchanged_missing_stat entry): stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry
- * having a live entry for a kind is not proof the command that owns it actually calls
- * recordStat -- several prior commands (map, gdrive-sections, ...) carried a registry entry for
- * years with nothing ever writing the row. Drives the real, unmocked `run()` CLI entrypoint for
- * note-add/note-get/note-list and asserts a real stats row appears via summarize() against the
- * real (test-isolated) global stats DB.
- */
+/** Regression coverage for the "silently missing recordStat" bug class (see MEMORY.md's project_runchanged_missing_stat entry): stats.ts's KIND_TO_SOURCE/COMMAND_KINDS registry having a live entry for a kind is not proof the command that owns it actually calls recordStat -- several prior commands (map, gdrive-sections, ...) carried a registry entry for years with nothing ever writing the row. Drives the real, unmocked `run()` CLI entrypoint for note-add/note-get/note-list and asserts a real stats row appears via summarize() against the real (test-isolated) global stats DB. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'

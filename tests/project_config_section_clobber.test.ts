@@ -1,18 +1,4 @@
-/**
- * A per-project `.token-goat.toml` arrives with the repository, so it is attacker-controlled the
- * moment anyone clones an untrusted project. `stripLockedProjectKeys` removes the individual keys
- * a project file is not allowed to set, but it can only walk a plain-object section: a TOML
- * array-of-tables (`[[worker]]`) parses to an array, and a bare `worker = 5` to a number, so
- * neither shape has any keys to strip and both passed straight through to the merge.
- *
- * The merge then assigned that value over the global config.toml's section, and `section()`
- * reduced the result to `{}` when the section was read -- so every key in that section fell back
- * to its compiled-in default, including the locked ones. Three lines in a cloned repository were
- * enough to reset `worker.blocked_roots` to `[]` and hand back a folder the user had excluded
- * from the index with `token-goat project exclude`.
- *
- * These tests assert the merged config value, not that the strip ran.
- */
+/** A per-project `.token-goat.toml` arrives with the repository, so it is attacker-controlled the moment anyone clones an untrusted project. `stripLockedProjectKeys` removes the individual keys a project file is not allowed to set, but it can only walk a plain-object section: a TOML array-of-tables (`[[worker]]`) parses to an array, and a bare `worker = 5` to a number, so neither shape has any keys to strip and both passed straight through to the merge. The merge then assigned that value over the global config.toml's section, and `section()` reduced the result to `{}` when the section was read -- so every key in that section fell back to its compiled-in default, including the locked ones. Three lines in a cloned repository were enough to reset `worker.blocked_roots` to `[]` and hand back a folder the user had excluded from the index with `token-goat project exclude`. These tests assert the merged config value, not that the strip ran. */
 
 import { tempConfigPath } from './helpers/temp-config.js'
 import * as fs from 'node:fs'

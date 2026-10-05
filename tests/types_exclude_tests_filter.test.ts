@@ -1,11 +1,4 @@
-/**
- * `types --exclude-tests`: every sibling read command (dead, refs, call-chain, symbol, semantic,
- * brief) already has this opt-in filter; `types` was the only one missing it. Mirrors
- * `dead`/`symbol`'s own `--exclude-tests` test files as the template -- same two traps: filtering
- * after `--limit` would silently under-return, and reporting a filtered-to-nothing result as a
- * bare "No type declarations found" would turn "you asked the wrong question" into "there is no
- * answer".
- */
+/** `types --exclude-tests`: every sibling read command (dead, refs, call-chain, symbol, semantic, brief) already has this opt-in filter; `types` was the only one missing it. Mirrors `dead`/`symbol`'s own `--exclude-tests` test files as the template -- same two traps: filtering after `--limit` would silently under-return, and reporting a filtered-to-nothing result as a bare "No type declarations found" would turn "you asked the wrong question" into "there is no answer". */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'

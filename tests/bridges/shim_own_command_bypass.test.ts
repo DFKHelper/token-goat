@@ -1,11 +1,4 @@
-/**
- * The Claude Code shim skips the in-process/spawn round trip entirely for a pre_tool_use Bash
- * call that is token-goat's own CLI, because none of preBashHandlerInner's extractors match one
- * (see isOwnTokenGoatCommand's docstring in shim_common.ts). These tests prove the bypass by
- * checking whether a fake baked entry was actually invoked, not just by reading stdout: a
- * `{}` response is also what a normal call produces when it fails to resolve a real binary, so
- * stdout alone cannot distinguish "bypassed" from "fell through and failed".
- */
+/** The Claude Code shim skips the in-process/spawn round trip entirely for a pre_tool_use Bash call that is token-goat's own CLI, because none of preBashHandlerInner's extractors match one (see isOwnTokenGoatCommand's docstring in shim_common.ts). These tests prove the bypass by checking whether a fake baked entry was actually invoked, not just by reading stdout: a `{}` response is also what a normal call produces when it fails to resolve a real binary, so stdout alone cannot distinguish "bypassed" from "fell through and failed". */
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

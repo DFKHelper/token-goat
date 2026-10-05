@@ -1,17 +1,4 @@
-/**
- * Cached-output recall counted a line that does not exist.
- *
- * Almost every captured blob ends in a newline, and `content.split(/\r?\n/)` turns that final
- * newline into a trailing empty string. The narrowing paths in `_applyFiltersAndPrint` all
- * measured from `lines.length`, so that phantom entry cost one real line every time: `--tail N`
- * returned N-1 lines, `--tail 1` returned nothing at all, and the default 30/80 elision silently
- * dropped the last line of every long capture -- the line most likely to hold the exit status or
- * the error a caller came back for.
- *
- * `bash-output --file` is the driver here because it runs the exact shared filter code that
- * `bash-output <id>`, `web-output`, `mcp-output`, and `retrieve` all reach, without needing a
- * seeded blob store.
- */
+/** Cached-output recall counted a line that does not exist. Almost every captured blob ends in a newline, and `content.split(/\r?\n/)` turns that final newline into a trailing empty string. The narrowing paths in `_applyFiltersAndPrint` all measured from `lines.length`, so that phantom entry cost one real line every time: `--tail N` returned N-1 lines, `--tail 1` returned nothing at all, and the default 30/80 elision silently dropped the last line of every long capture -- the line most likely to hold the exit status or the error a caller came back for. `bash-output --file` is the driver here because it runs the exact shared filter code that `bash-output <id>`, `web-output`, `mcp-output`, and `retrieve` all reach, without needing a seeded blob store. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -71,11 +58,7 @@ function blob(n: number): string {
   return lines.join('\n') + '\n'
 }
 
-/**
- * Non-empty output lines of the recalled body, so neither a trailing blank from the print itself
- * nor the untrusted-content fence around it is counted as content. Cached tool output is fenced by
- * provenance now, and this file is about the line arithmetic inside the fence, not the fence.
- */
+/** Non-empty output lines of the recalled body, so neither a trailing blank from the print itself nor the untrusted-content fence around it is counted as content. Cached tool output is fenced by provenance now, and this file is about the line arithmetic inside the fence, not the fence. */
 function bodyLines(stdout: string): string[] {
   return unfence(stdout).split(/\r?\n/).filter((l) => l !== '')
 }
@@ -98,9 +81,7 @@ describe('output filters on content that ends in a newline', () => {
   })
 
   it('shows a full 80-line tail window under the default elision', () => {
-    // No narrowing flag at all: the 30/80 head/tail window applies. The phantom entry occupied
-    // one of the 80 tail slots, so the window opened one line late -- the oldest line of the
-    // tail, not the newest, was the one silently lost.
+    // No narrowing flag at all: the 30/80 head/tail window applies. The phantom entry occupied one of the 80 tail slots, so the window opened one line late -- the oldest line of the tail, not the newest, was the one silently lost.
     const r = recall(blob(200), [])
     expect(r.status, r.stderr).toBe(0)
     const lines = bodyLines(r.stdout)
@@ -119,15 +100,13 @@ describe('output filters on content that ends in a newline', () => {
   })
 
   it('--full still returns the blob verbatim, trailing newline and all', () => {
-    // --full deliberately keeps the raw split: it is the lossless escape hatch other commands
-    // point recovery instructions at, so trimming anything there would be its own regression.
+    // --full deliberately keeps the raw split: it is the lossless escape hatch other commands point recovery instructions at, so trimming anything there would be its own regression.
     const text = blob(200)
     const r = recall(text, ['--full'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('line 200')
     expect(r.stdout).not.toContain('...(elided lines ')
-    // Verbatim inside the fence: --full is the lossless escape hatch, and the fence wraps it
-    // without touching a byte of it.
+    // Verbatim inside the fence: --full is the lossless escape hatch, and the fence wraps it without touching a byte of it.
     expect(unfence(r.stdout.replace(/\r\n/g, '\n'))).toBe(text)
   })
 

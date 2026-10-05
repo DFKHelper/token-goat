@@ -1,16 +1,4 @@
-/**
- * Regression: worker.ts's incremental drain path (makeIndexer) sha-gates so a touched-but-
- * unchanged file skips reindexing, but `cmdIndex` (the `token-goat index` bulk CLI command)
- * called indexFileSync unconditionally for every tracked file on every invocation, and
- * indexFileEmbeddings re-chunked/re-embedded every file every run even when byte-for-byte
- * unchanged. A repeated `token-goat index` over an unchanged tree did full work every time
- * instead of being a fast no-op.
- *
- * Drives the real `cmdIndex` (the shipping path for the CLI `index` command), spying only on
- * `parserModule.indexFileSync`/`indexFileEmbeddings` to count invocations while still calling
- * through to the real implementations -- the narrowest seam that preserves real DB writes
- * (files.sha / files.embed_sha), which the unchanged-skip gate itself reads.
- */
+/** Regression: worker.ts's incremental drain path (makeIndexer) sha-gates so a touched-but- unchanged file skips reindexing, but `cmdIndex` (the `token-goat index` bulk CLI command) called indexFileSync unconditionally for every tracked file on every invocation, and indexFileEmbeddings re-chunked/re-embedded every file every run even when byte-for-byte unchanged. A repeated `token-goat index` over an unchanged tree did full work every time instead of being a fast no-op. Drives the real `cmdIndex` (the shipping path for the CLI `index` command), spying only on `parserModule.indexFileSync`/`indexFileEmbeddings` to count invocations while still calling through to the real implementations -- the narrowest seam that preserves real DB writes (files.sha / files.embed_sha), which the unchanged-skip gate itself reads. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -49,8 +37,7 @@ afterEach(() => {
 
 describe('cmdIndex unchanged-file skip gate (regression)', () => {
   it('skips indexFileSync for an unchanged file on a repeat run, but still reindexes a changed file', async () => {
-    // Embeddings deliberately left disabled (the tests/setup default): this isolates the
-    // parse-sha half of the gate, which must skip regardless of embedding state.
+    // Embeddings deliberately left disabled (the tests/setup default): this isolates the parse-sha half of the gate, which must skip regardless of embedding state.
     const realIndexFileSync = parserModule.indexFileSync
 
     const stable = path.join(TMP, 'stable.ts')
@@ -62,9 +49,7 @@ describe('cmdIndex unchanged-file skip gate (regression)', () => {
       .spyOn(parserModule, 'indexFileSync')
       .mockImplementation((filePath, dbp) => realIndexFileSync(filePath, dbp))
 
-    // First run: both files are new, so both must be parsed. Each fixture declares exactly one
-    // top-level function -- pin the exact symbol count instead of just ">0", so a regression
-    // that indexed the same file's symbol twice (still non-empty) is caught too.
+    // First run: both files are new, so both must be parsed. Each fixture declares exactly one top-level function -- pin the exact symbol count instead of just ">0", so a regression that indexed the same file's symbol twice (still non-empty) is caught too.
     await cmdIndex(TMP, { walk: true, dbPath })
     expect(indexFileSyncSpy).toHaveBeenCalledTimes(2)
     expect(querySymbols({ name: 'stableSymbol', limit: 10 }, dbPath).length).toBe(1)
@@ -80,8 +65,7 @@ describe('cmdIndex unchanged-file skip gate (regression)', () => {
 
     indexFileSyncSpy.mockClear()
 
-    // Now change one file's content and run a third time: the unchanged file must still be
-    // skipped, but the changed file must be reprocessed.
+    // Now change one file's content and run a third time: the unchanged file must still be skipped, but the changed file must be reprocessed.
     fs.writeFileSync(mutable, 'export function mutableSymbolV2(): number {\n  return 3\n}\n')
     await cmdIndex(TMP, { walk: true, dbPath })
     expect(indexFileSyncSpy).toHaveBeenCalledTimes(1)
@@ -91,11 +75,7 @@ describe('cmdIndex unchanged-file skip gate (regression)', () => {
     expect(querySymbols({ name: 'stableSymbol', limit: 10 }, dbPath).length).toBe(1)
   })
 
-  // Regression: a parser.ts change to what extractRefs/valueRefIdentifiers extracts (e.g. the
-  // extends-clause fix) leaves every already-indexed file's SHA untouched, so the unchanged-skip
-  // gate above silently keeps serving stale symbols/refs computed under the old parser until each
-  // file happens to be edited -- there was no way to force a full reindex short of deleting the
-  // db. --force must bypass both the parse-sha and embed-sha freshness checks unconditionally.
+  // Regression: a parser.ts change to what extractRefs/valueRefIdentifiers extracts (e.g. the extends-clause fix) leaves every already-indexed file's SHA untouched, so the unchanged-skip gate above silently keeps serving stale symbols/refs computed under the old parser until each file happens to be edited -- there was no way to force a full reindex short of deleting the db. --force must bypass both the parse-sha and embed-sha freshness checks unconditionally.
   it('--force reindexes an unchanged file instead of skipping it', async () => {
     const realIndexFileSync = parserModule.indexFileSync
     const src = path.join(TMP, 'stable.ts')
@@ -120,12 +100,7 @@ describe('cmdIndex unchanged-file skip gate (regression)', () => {
     expect(querySymbols({ name: 'stableSymbol', limit: 10 }, dbPath).length).toBe(1)
   })
 
-  // A file only becomes fully skippable (indexFileSync AND indexFileEmbeddings both gated out,
-  // surfaced via the "Skipped N unchanged file(s)" summary line) once it has both a matching
-  // parse-sha AND a matching embed-sha -- see the embed-freshness test below for why these are
-  // tracked independently. With embeddings left at the tests/setup default (disabled), embed_sha
-  // never gets stamped, so this needs the same real pipeline as that test to observe the full
-  // "skipped" (not just "indexed with a no-op reparse") outcome.
+  // A file only becomes fully skippable (indexFileSync AND indexFileEmbeddings both gated out, surfaced via the "Skipped N unchanged file(s)" summary line) once it has both a matching parse-sha AND a matching embed-sha -- see the embed-freshness test below for why these are tracked independently. With embeddings left at the tests/setup default (disabled), embed_sha never gets stamped, so this needs the same real pipeline as that test to observe the full "skipped" (not just "indexed with a no-op reparse") outcome.
   it.skipIf(!isAvailable() || !modelFilesPresent())(
     'prints a skipped count in the summary once a file is fully unchanged (parse + embed)',
     async () => {
@@ -149,9 +124,7 @@ describe('cmdIndex unchanged-file skip gate (regression)', () => {
     },
   )
 
-  // Embeddings require the real onnxruntime-node + sqlite-vec pipeline to actually stamp
-  // files.embed_sha, so this test is skipped when that pipeline isn't usable in this environment
-  // (mirrors the skipIf gating already used in tests/embeddings_index_wiring.test.ts).
+  // Embeddings require the real onnxruntime-node + sqlite-vec pipeline to actually stamp files.embed_sha, so this test is skipped when that pipeline isn't usable in this environment (mirrors the skipIf gating already used in tests/embeddings_index_wiring.test.ts).
   it.skipIf(!isAvailable() || !modelFilesPresent())(
     'also skips indexFileEmbeddings once a file has been successfully embedded and content is unchanged',
     async () => {
@@ -177,11 +150,7 @@ describe('cmdIndex unchanged-file skip gate (regression)', () => {
   )
 })
 
-// Task #337: cmdIndex's bulk walk previously skipped every file with `if (detectLanguage(key)
-// === 'unknown') continue`, which silently excluded PDF/DOCX/PPTX/XLSX (no Language union
-// member) from ever reaching indexFileEmbeddings below, even though the extraction modules for
-// all four formats already work. Drives the real `token-goat index` bulk-walk path (not just the
-// gate's boolean logic in isolation) against a real .docx fixture on disk.
+// Task #337: cmdIndex's bulk walk previously skipped every file with `if (detectLanguage(key) === 'unknown') continue`, which silently excluded PDF/DOCX/PPTX/XLSX (no Language union member) from ever reaching indexFileEmbeddings below, even though the extraction modules for all four formats already work. Drives the real `token-goat index` bulk-walk path (not just the gate's boolean logic in isolation) against a real .docx fixture on disk.
 describe('cmdIndex indexes embeddable document formats (task #337)', () => {
   it.skipIf(!isAvailable() || !modelFilesPresent())(
     'no longer skips a .docx file over the detectLanguage-unknown gate -- it reaches indexFileEmbeddings and gets embedded',
@@ -203,10 +172,7 @@ describe('cmdIndex indexes embeddable document formats (task #337)', () => {
 
       expect(embedSpy).toHaveBeenCalledWith(expect.stringContaining('spec.docx'), dbPath, expect.anything())
       const key = resolveIndexPath(src)
-      // buildDocxFixture's own zip encoding embeds a timestamp, so embedSha is NOT stable
-      // across runs even though the visible text is fixed -- verified empirically (two runs
-      // produced two different values) before landing this, so an exact pin isn't possible.
-      // Pin the real sha256-hex shape instead of just "truthy".
+      // buildDocxFixture's own zip encoding embeds a timestamp, so embedSha is NOT stable across runs even though the visible text is fixed -- verified empirically (two runs produced two different values) before landing this, so an exact pin isn't possible. Pin the real sha256-hex shape instead of just "truthy".
       expect(getFileEntry(key, dbPath)?.embedSha).toMatch(/^[0-9a-f]{64}$/)
 
       const db = getDb(dbPath)

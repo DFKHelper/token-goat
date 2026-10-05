@@ -3,17 +3,13 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-// Pure spy, deliberately NOT calling through: recordStat's real implementation writes to
-// dataDir()/global.db, which is memoized per vitest worker process and is NOT isolated by
-// TOKEN_GOAT_HOME, so calling through would write machine-wide rows from a unit test.
+// Pure spy, deliberately NOT calling through: recordStat's real implementation writes to dataDir()/global.db, which is memoized per vitest worker process and is NOT isolated by TOKEN_GOAT_HOME, so calling through would write machine-wide rows from a unit test.
 vi.mock('../src/stats.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
   return { ...original, recordStat: vi.fn() }
 })
 
-// Importing relay registers every hook module (including hooks_mcp) for its side-effects, so
-// runHook dispatches through the real production registry rather than a handler reference this
-// test imported itself -- the shipping path, not an injected seam.
+// Importing relay registers every hook module (including hooks_mcp) for its side-effects, so runHook dispatches through the real production registry rather than a handler reference this test imported itself -- the shipping path, not an injected seam.
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
 import { recordStat } from '../src/stats.js'
@@ -76,8 +72,7 @@ describe('MCP savings stats (real runHook dispatch)', () => {
     expect(result.hookType).toBe('rewriteOutput')
     if (result.hookType !== 'rewriteOutput') return
 
-    // Independent oracle: measured on the literal emitted artifact (notice line included) and on
-    // the literal input, never re-derived from the handler's own notice/redaction arithmetic.
+    // Independent oracle: measured on the literal emitted artifact (notice line included) and on the literal input, never re-derived from the handler's own notice/redaction arithmetic.
     const expectedSaved =
       Buffer.byteLength(resultText, 'utf-8') - Buffer.byteLength(result.updatedOutput, 'utf-8')
     expect(expectedSaved).toBeGreaterThan(0)
@@ -104,8 +99,7 @@ describe('MCP savings stats (real runHook dispatch)', () => {
 
   it('records mcp:recall for the cached result the dedup deny stopped from arriving again', async () => {
     const toolInput = { query: 'is:issue stats-recall' }
-    // Prose, so the generic compressor declines and the post hook only stores -- keeping this
-    // test about the deny credit alone, with no mcp:compress row in the same ledger.
+    // Prose, so the generic compressor declines and the post hook only stores -- keeping this test about the deny credit alone, with no mcp:compress row in the same ledger.
     const resultText = 'plain prose result body. '.repeat(200)
     expect(Buffer.byteLength(resultText, 'utf-8')).toBeLessThan(PER_FILE_COUNTERFACTUAL_CEILING)
 
@@ -132,8 +126,7 @@ describe('MCP savings stats (real runHook dispatch)', () => {
 
     const calls = statCalls('mcp:recall')
     expect(calls.length).toBe(1)
-    // The cached body carries no secret, so the stored (redacted) copy is byte-identical to the
-    // result text this test handed the post hook -- measured here, not read back out of the cache.
+    // The cached body carries no secret, so the stored (redacted) copy is byte-identical to the result text this test handed the post hook -- measured here, not read back out of the cache.
     expect(calls[0]?.[1]).toBe(Buffer.byteLength(resultText, 'utf-8'))
     expect(calls[0]?.[2]).toBe(Math.round(Buffer.byteLength(resultText, 'utf-8') / 4))
   })

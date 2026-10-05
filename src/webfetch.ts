@@ -41,14 +41,7 @@ type SsrfResolution =
   | { kind: 'blocked' }
   | { kind: 'unresolved' };
 
-/**
- * Resolve `hostname` and validate every returned address is not private —
- * the single source of truth for "is this host safe to connect to". Used as
- * the resolver plugged into every real socket connection (see
- * ssrfPinnedLookup below), so the address that gets validated is always the
- * exact address that gets connected to — closing the DNS-rebinding TOCTOU
- * gap between a separate check and fetch.
- */
+/** Resolve `hostname` and validate every returned address is not private — the single source of truth for "is this host safe to connect to". Used as the resolver plugged into every real socket connection (see ssrfPinnedLookup below), so the address that gets validated is always the exact address that gets connected to — closing the DNS-rebinding TOCTOU gap between a separate check and fetch. */
 async function resolveSsrfSafeAddress(hostname: string): Promise<SsrfResolution> {
   const hostnameLower = hostname.toLowerCase().replace(/\.$/, '');
   if (BLOCKED_HOSTNAMES.has(hostnameLower)) return { kind: 'blocked' };
@@ -73,26 +66,7 @@ async function resolveSsrfSafeAddress(hostname: string): Promise<SsrfResolution>
   return { kind: 'safe', address: first.address, family: first.family, addresses: results };
 }
 
-/**
- * dns.lookup-compatible resolver passed as the `lookup` option on every real
- * HTTP(S) request this module makes (initial request and every redirect
- * hop). Resolving here — rather than trusting a hostname string handed to
- * http(s).request — means the address used to open the TCP/TLS socket is
- * the exact address resolveSsrfSafeAddress just validated, with no gap for
- * a second, independent DNS lookup (and thus DNS rebinding) to slip in.
- *
- * Node's own dual-stack (Happy Eyeballs / autoSelectFamily, default-on since
- * Node 20) connection logic sets `options.all` when it wants every resolved
- * address back to race connections across, and requires the array-callback
- * shape (`callback(err, addresses[])`) in that case -- not the single
- * `callback(err, address, family)` shape used otherwise. Always returning
- * the single-address shape regardless of `options.all` made Node's net
- * internals throw "Invalid IP address: undefined" for any real, non-literal
- * hostname (verified against raw.githubusercontent.com fetch-image dogfood
- * run on Node 24) -- every fetch of a real URL was broken, not just SSRF
- * targets. Both branches below now answer in whichever shape `options.all`
- * asked for.
- */
+/** dns.lookup-compatible resolver passed as the `lookup` option on every real HTTP(S) request this module makes (initial request and every redirect hop). Resolving here — rather than trusting a hostname string handed to http(s).request — means the address used to open the TCP/TLS socket is the exact address resolveSsrfSafeAddress just validated, with no gap for a second, independent DNS lookup (and thus DNS rebinding) to slip in. Node's own dual-stack (Happy Eyeballs / autoSelectFamily, default-on since Node 20) connection logic sets `options.all` when it wants every resolved address back to race connections across, and requires the array-callback shape (`callback(err, addresses[])`) in that case -- not the single `callback(err, address, family)` shape used otherwise. Always returning the single-address shape regardless of `options.all` made Node's net internals throw "Invalid IP address: undefined" for any real, non-literal hostname (verified against raw.githubusercontent.com fetch-image dogfood run on Node 24) -- every fetch of a real URL was broken, not just SSRF targets. Both branches below now answer in whichever shape `options.all` asked for. */
 export function ssrfPinnedLookup(
   hostname: string,
   options: LookupOptions,
@@ -113,11 +87,7 @@ export function ssrfPinnedLookup(
         return;
       }
       if (result.kind === 'unresolved' && ALLOW_UNRESOLVED) {
-        // Even though the pinned (all:true) lookup didn't resolve, whatever
-        // address this raw fallback lookup DOES come back with must still be
-        // validated before it's handed to the socket — otherwise a hostname
-        // engineered to fail the pinned lookup but resolve here (a DNS
-        // rebinding technique) would bypass private-IP blocking entirely.
+        // Even though the pinned (all:true) lookup didn't resolve, whatever address this raw fallback lookup DOES come back with must still be validated before it's handed to the socket — otherwise a hostname engineered to fail the pinned lookup but resolve here (a DNS rebinding technique) would bypass private-IP blocking entirely.
         dnsLookup(hostname, { ...options, all: false }, (err, address, family) => {
           if (err) {
             callback(err, options.all ? [] : '', family);
@@ -160,13 +130,7 @@ export function isPrivateIPv4(ip: string): boolean {
   return isPrivateIpv4Octets(octets[0] as number, octets[1] as number, octets[2] as number);
 }
 
-/**
- * Parse a syntactically valid IPv6 literal (per net.isIPv6) into its 8
- * 16-bit groups, expanding "::" zero-compression and any embedded
- * dotted-decimal IPv4 suffix (the IPv4-mapped/IPv4-translated forms, e.g.
- * `::ffff:1.2.3.4` or `::ffff:0:1.2.3.4`). Returns null only if `ip` fails
- * net.isIPv6 or otherwise can't be decoded.
- */
+/** Parse a syntactically valid IPv6 literal (per net.isIPv6) into its 8 16-bit groups, expanding "::" zero-compression and any embedded dotted-decimal IPv4 suffix (the IPv4-mapped/IPv4-translated forms, e.g. `::ffff:1.2.3.4` or `::ffff:0:1.2.3.4`). Returns null only if `ip` fails net.isIPv6 or otherwise can't be decoded. */
 function parseIPv6Groups(ip: string): number[] | null {
   if (!isIPv6(ip)) return null;
 
@@ -207,14 +171,7 @@ function parseIPv6Groups(ip: string): number[] | null {
   return [...left, ...new Array(missing).fill(0), ...right];
 }
 
-/**
- * True when `ip` is an IPv6 loopback/unique-local/link-local address, or an
- * IPv4-mapped (`::ffff:a.b.c.d`), IPv4-translated (`::ffff:0:a.b.c.d`), or the
- * deprecated IPv4-compatible (`::a.b.c.d`) address whose embedded IPv4
- * address is private. The actual range table (including the 6to4/NAT64 transition prefixes and
- * fc00::/7, fe80::/10, fec0::/10, ff00::/8) lives in url_policy.ts's isPrivateIpv6Groups, shared
- * with screenshot.ts's headless-browser navigation policy so the two channels can't drift.
- */
+/** True when `ip` is an IPv6 loopback/unique-local/link-local address, or an IPv4-mapped (`::ffff:a.b.c.d`), IPv4-translated (`::ffff:0:a.b.c.d`), or the deprecated IPv4-compatible (`::a.b.c.d`) address whose embedded IPv4 address is private. The actual range table (including the 6to4/NAT64 transition prefixes and fc00::/7, fe80::/10, fec0::/10, ff00::/8) lives in url_policy.ts's isPrivateIpv6Groups, shared with screenshot.ts's headless-browser navigation policy so the two channels can't drift. */
 export function isPrivateIPv6(ip: string): boolean {
   const lower = ip.toLowerCase();
   if (lower === '::1') return true; // loopback
@@ -225,10 +182,7 @@ export function isPrivateIPv6(ip: string): boolean {
   return isPrivateIpv6Groups(groups);
 }
 
-// A download in progress writes its .tmp file continuously; 10 minutes with no further writes is
-// long enough that any real fetch (even a slow one) would have finished or timed out on its own,
-// so anything older is safe to treat as abandoned. Below this age, the file is left alone --
-// deleting it out from under an active concurrent download would corrupt or lose that fetch.
+// A download in progress writes its .tmp file continuously; 10 minutes with no further writes is long enough that any real fetch (even a slow one) would have finished or timed out on its own, so anything older is safe to treat as abandoned. Below this age, the file is left alone -- deleting it out from under an active concurrent download would corrupt or lose that fetch.
 const STALE_DOWNLOAD_AGE_MS = 10 * 60 * 1000;
 
 export function cleanupStaleDownloads(): number {
@@ -286,33 +240,20 @@ export function performHttpFetch(targetUrl: string, opts: HttpFetchOpts): Promis
       return;
     }
 
-    // Offline mode is checked here rather than at each command, because this is the one function
-    // every fetch token-goat performs itself goes through, redirects included.
+    // Offline mode is checked here rather than at each command, because this is the one function every fetch token-goat performs itself goes through, redirects included.
     if (loadConfig().network.offline) {
       rejectPromise(new Error(`Offline mode is on (network.offline): refusing to fetch ${truncateUrl(targetUrl)}`));
       return;
     }
 
-    // webfetch.allow/webfetch.deny is the operator's egress policy, and it used to be enforced in
-    // exactly one place: the WebFetch pre-hook, which gates the harness's fetch tool. Every fetch
-    // token-goat performs itself -- `fetch-image`, `gdrive-sections` -- comes through here instead
-    // and ignored the policy completely, so an install configured to deny everything still had two
-    // commands that reached the network. Enforcing at this function covers both, plus any caller
-    // added later, and because redirects recurse into performHttpFetch each hop is checked too:
-    // an allowed host cannot redirect the request onward to a denied one.
+    // webfetch.allow/webfetch.deny is the operator's egress policy, and it used to be enforced in exactly one place: the WebFetch pre-hook, which gates the harness's fetch tool. Every fetch token-goat performs itself -- `fetch-image`, `gdrive-sections` -- comes through here instead and ignored the policy completely, so an install configured to deny everything still had two commands that reached the network. Enforcing at this function covers both, plus any caller added later, and because redirects recurse into performHttpFetch each hop is checked too: an allowed host cannot redirect the request onward to a denied one.
     const policyDenial = urlPolicyDenialReason(targetUrl, loadConfig().webfetch);
     if (policyDenial !== null) {
       rejectPromise(new Error(`${policyDenial}: ${truncateUrl(targetUrl)}`));
       return;
     }
 
-    // Node's http/https `lookup` option (ssrfPinnedLookup, passed to mod.request below) is
-    // only invoked when the hostname actually needs DNS resolution. For a literal IPv4 address
-    // Node connects directly and never calls the custom lookup function at all, silently
-    // bypassing SSRF protection for URLs like http://127.0.0.1/... or http://169.254.169.254/...
-    // (cloud metadata) -- on both the initial request and every redirect hop, since this
-    // function recurses into itself for redirects. Check literal IPs explicitly up front;
-    // there is no DNS to pin for them in the first place.
+    // Node's http/https `lookup` option (ssrfPinnedLookup, passed to mod.request below) is only invoked when the hostname actually needs DNS resolution. For a literal IPv4 address Node connects directly and never calls the custom lookup function at all, silently bypassing SSRF protection for URLs like http://127.0.0.1/... or http://169.254.169.254/... (cloud metadata) -- on both the initial request and every redirect hop, since this function recurses into itself for redirects. Check literal IPs explicitly up front; there is no DNS to pin for them in the first place.
     const literalIp = parsed.hostname.startsWith('[') && parsed.hostname.endsWith(']')
       ? parsed.hostname.slice(1, -1)
       : parsed.hostname;
@@ -371,13 +312,7 @@ export function performHttpFetch(targetUrl: string, opts: HttpFetchOpts): Promis
           rejectPromise(new Error(`Invalid redirect location fetching ${truncateUrl(targetUrl)}`));
           return;
         }
-        // Only forward requestHeaders to the redirect target when the origin is unchanged --
-        // otherwise a caller-supplied Authorization/API-key header would silently leak to
-        // whatever cross-origin host the server redirects to. Protocol is part of that test:
-        // `host` is only host:port, so an https -> http redirect to the same host compared equal
-        // and kept the headers, putting the credential on the wire in cleartext at a destination
-        // the responding server chooses via Location. Comparing origin covers scheme, host and
-        // port together, which is what "same origin" means everywhere else.
+        // Only forward requestHeaders to the redirect target when the origin is unchanged -- otherwise a caller-supplied Authorization/API-key header would silently leak to whatever cross-origin host the server redirects to. Protocol is part of that test: `host` is only host:port, so an https -> http redirect to the same host compared equal and kept the headers, putting the credential on the wire in cleartext at a destination the responding server chooses via Location. Comparing origin covers scheme, host and port together, which is what "same origin" means everywhere else.
         const sameOrigin = nextParsed.origin === parsed.origin;
         const nextOpts: HttpFetchOpts = {
           ...opts,

@@ -1,8 +1,4 @@
-/**
- * Content-class token estimation.
- *
- * Provenance: HAND-DERIVED for the arithmetic -- every expected number below is computed from the input and the published ratio, never read back out of the function under test. The two class ratios themselves are CAPTURE (tiktoken over 120 repository files, recorded in src/token_estimate.ts) and their ranges are already pinned by tests/compress_text_token_accounting.test.ts, so they are not re-asserted here.
- */
+/** Content-class token estimation. Provenance: HAND-DERIVED for the arithmetic -- every expected number below is computed from the input and the published ratio, never read back out of the function under test. The two class ratios themselves are CAPTURE (tiktoken over 120 repository files, recorded in src/token_estimate.ts) and their ranges are already pinned by tests/compress_text_token_accounting.test.ts, so they are not re-asserted here. */
 import { describe, expect, it } from 'vitest'
 
 import { BYTES_PER_TOKEN, GUARD_MARGIN, classifyContent, creditDivisor, guardDivisor } from '../src/token_estimate.js'

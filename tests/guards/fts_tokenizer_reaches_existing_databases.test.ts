@@ -1,14 +1,4 @@
-/**
- * Guard: a change to the FTS5 tokenizer must reach databases that already exist, not only ones created after it.
- *
- * `CREATE VIRTUAL TABLE IF NOT EXISTS ... tokenize='X'` sets the tokenizer exactly once, when the table is first created. Run it again against a table of that name with a different `tokenize=` argument and SQLite does nothing and says nothing -- measured: the stored declaration still reads `tokenize='unicode61'` after a second statement asking for `unicode61 remove_diacritics 2`. So the literal in FTS_SQL is not, on its own, a statement about what any given index actually uses.
- *
- * That made the original change inert twice over. `unicode61` is already FTS5's default, so naming it changed nothing for a new database either; measured across eight accent queries against a table declared `fts5(body)` and one declared `fts5(body, tokenize='unicode61')`, the two agreed on all eight. The release notes nevertheless described it as new support for accented European characters.
- *
- * Two tests, guarding the two halves:
- *  - the behavioral one, which is the point: a database stamped at the previous schema version and carrying the previous tokenizer must come out of `getDb` carrying the current one, with its rows searchable under it.
- *  - the tripwire, which catches the mistake this guard is named for: the tokenizer literal is pinned next to the schema version it shipped with, so moving the literal without bumping SCHEMA_VERSION (and adding the migration step that re-creates the tables) fails here rather than silently splitting users into two populations that search differently.
- */
+/** Guard: a change to the FTS5 tokenizer must reach databases that already exist, not only ones created after it. `CREATE VIRTUAL TABLE IF NOT EXISTS ... tokenize='X'` sets the tokenizer exactly once, when the table is first created. Run it again against a table of that name with a different `tokenize=` argument and SQLite does nothing and says nothing -- measured: the stored declaration still reads `tokenize='unicode61'` after a second statement asking for `unicode61 remove_diacritics 2`. So the literal in FTS_SQL is not, on its own, a statement about what any given index actually uses. That made the original change inert twice over. `unicode61` is already FTS5's default, so naming it changed nothing for a new database either; measured across eight accent queries against a table declared `fts5(body)` and one declared `fts5(body, tokenize='unicode61')`, the two agreed on all eight. The release notes nevertheless described it as new support for accented European characters. Two tests, guarding the two halves: - the behavioral one, which is the point: a database stamped at the previous schema version and carrying the previous tokenizer must come out of `getDb` carrying the current one, with its rows searchable under it. - the tripwire, which catches the mistake this guard is named for: the tokenizer literal is pinned next to the schema version it shipped with, so moving the literal without bumping SCHEMA_VERSION (and adding the migration step that re-creates the tables) fails here rather than silently splitting users into two populations that search differently. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -18,13 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import Database from '../../src/sqlite_driver.js'
 import { FTS_TOKENIZER, SCHEMA_VERSION, closeAllDbs, getDb } from '../../src/db.js'
 
-/**
- * The tokenizer the shipping schema declares, and the schema version that declaration shipped at.
- *
- * FORMAT-DERIVED from FTS5's own tokenizer documentation (https://sqlite.org/fts5.html#unicode61_tokenizer): `remove_diacritics 2` folds diacritics that are encoded as separate combining codepoints, which `remove_diacritics 1` -- the default -- leaves alone.
- *
- * Changing the tokenizer means changing BOTH constants here and adding a MIGRATIONS step that drops, re-creates and rebuilds the tables. Bumping only the literal is the defect this guard exists for.
- */
+/** The tokenizer the shipping schema declares, and the schema version that declaration shipped at. FORMAT-DERIVED from FTS5's own tokenizer documentation (https://sqlite.org/fts5.html#unicode61_tokenizer): `remove_diacritics 2` folds diacritics that are encoded as separate combining codepoints, which `remove_diacritics 1` -- the default -- leaves alone. Changing the tokenizer means changing BOTH constants here and adding a MIGRATIONS step that drops, re-creates and rebuilds the tables. Bumping only the literal is the defect this guard exists for. */
 const DECLARED_TOKENIZER = 'unicode61 remove_diacritics 2'
 const TOKENIZER_SHIPPED_AT_VERSION = 14
 

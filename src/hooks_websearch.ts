@@ -1,23 +1,4 @@
-/**
- * WebSearch caching/dedup hooks.
- *
- * post_tool_use: persist every WebSearch result into the shared MCP/bash-output
- * store via {@link storeMcpOutput} (same mechanism `hooks_mcp.ts` uses for
- * `mcp__*` calls), so results show up in `token-goat recall`/`mcp-history` and
- * are retrievable via `token-goat mcp-output <id>` / `token-goat bash-output <id>`.
- * pre_tool_use: when a same-or-near-identical query already ran this session
- * (within the dedup TTL), deny the repeat and point at the cached result --
- * mirrors `hooks_grep.ts`'s dedup-deny shape, but keyed through the MCP cache
- * (`getMcpOutput`) instead of the grep-specific session ledger.
- *
- * Deliberately no size floor on what gets cached (unlike hooks_agent_spawn.ts's
- * AGENT_RESULT_CACHE_MIN_BYTES, which exists to keep typical small subagent
- * reports out of the cache entirely): WebSearch results are usually small, and
- * the whole point of this handler is dedup, so even a short result is worth
- * pointing a repeat query at instead of re-running the search. The only size
- * gate is `storeMcpOutput`'s own MCP_MAX_CACHE_BYTES ceiling and the empty-body
- * guard shared with every other cache path in this codebase.
- */
+/** WebSearch caching/dedup hooks. post_tool_use: persist every WebSearch result into the shared MCP/bash-output store via {@link storeMcpOutput} (same mechanism `hooks_mcp.ts` uses for `mcp__*` calls), so results show up in `token-goat recall`/`mcp-history` and are retrievable via `token-goat mcp-output <id>` / `token-goat bash-output <id>`. pre_tool_use: when a same-or-near-identical query already ran this session (within the dedup TTL), deny the repeat and point at the cached result -- mirrors `hooks_grep.ts`'s dedup-deny shape, but keyed through the MCP cache (`getMcpOutput`) instead of the grep-specific session ledger. Deliberately no size floor on what gets cached (unlike hooks_agent_spawn.ts's AGENT_RESULT_CACHE_MIN_BYTES, which exists to keep typical small subagent reports out of the cache entirely): WebSearch results are usually small, and the whole point of this handler is dedup, so even a short result is worth pointing a repeat query at instead of re-running the search. The only size gate is `storeMcpOutput`'s own MCP_MAX_CACHE_BYTES ceiling and the empty-body guard shared with every other cache path in this codebase. */
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
@@ -29,20 +10,12 @@ import { recordStat } from './stats.js'
 import { scanAndRecord, fenceWithMatches } from './untrusted_fence.js'
 import { redactSecrets } from './secret_redact.js'
 
-/** Collapse whitespace and case so "React hooks" and "  react   HOOKS  " dedup as the
- *  same query, mirroring grepSignature's normalization intent in hooks_grep.ts. */
+/** Collapse whitespace and case so "React hooks" and "  react   HOOKS  " dedup as the same query, mirroring grepSignature's normalization intent in hooks_grep.ts. */
 function normalizeQuery(query: string): string {
   return query.trim().toLowerCase().replace(/\s+/g, ' ')
 }
 
-/**
- * Canonical, order-stable input to hash/store this WebSearch call under.
- * Keyed on the normalized query plus sorted allow/block domain lists (both
- * change what results come back, so they must be part of the identity), never
- * on the raw `query` string, so near-identical repeats collapse to one cache
- * entry the same way `grepSignature` does for Grep. Returns `null` when there
- * is no usable query to key on.
- */
+/** Canonical, order-stable input to hash/store this WebSearch call under. Keyed on the normalized query plus sorted allow/block domain lists (both change what results come back, so they must be part of the identity), never on the raw `query` string, so near-identical repeats collapse to one cache entry the same way `grepSignature` does for Grep. Returns `null` when there is no usable query to key on. */
 function webSearchSignatureInput(toolInput: Record<string, unknown>): Record<string, unknown> | null {
   const query = toolInput['query']
   if (typeof query !== 'string' || query.trim() === '') return null
@@ -86,11 +59,7 @@ export function postWebSearchHandler(event: HookEvent): HookOutput {
     const injectionMatches = scanAndRecord(resultText)
     // Redact secrets on the same live path the fence above protects, computed here at the same point ahead of every early-return guard below rather than folded into any one of them -- a large WebSearch result can carry a credential (an API key pasted into a forum answer, a leaked token in an indexed gist) that trips no injection pattern at all, so gating redaction on injectionMatches would leave it unredacted. redactSecrets() is pure/synchronous and its own doc comment says it does not swallow a regex-engine failure itself, so it relies on this handler's outer try/catch the same way hooks_mcp.ts's postMcpHandler calls it unwrapped too.
     const redacted = redactSecrets(resultText)
-    // Unconditional: a WebSearch result is third-party web content by provenance, so it is fenced
-    // whether or not the eight deliberately-narrow patterns matched. It used to pass through
-    // unfenced on a clean scan, which meant any payload those patterns miss reached the model
-    // unmarked -- the fence's whole job is to survive a miss. The scan result now only decides
-    // whether the notice names pattern(s).
+    // Unconditional: a WebSearch result is third-party web content by provenance, so it is fenced whether or not the eight deliberately-narrow patterns matched. It used to pass through unfenced on a clean scan, which meant any payload those patterns miss reached the model unmarked -- the fence's whole job is to survive a miss. The scan result now only decides whether the notice names pattern(s).
     const passOrFence = (): HookOutput =>
       emitRewriteIfChanged(resultText, fenceWithMatches(redacted.text, injectionMatches), 'websearch')
 

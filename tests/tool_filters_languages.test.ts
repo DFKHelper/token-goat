@@ -1,17 +1,4 @@
-/**
- * Tests for the language-runtime compression filter family (Batch K1).
- *
- * Covers: NodeFilter, PythonFilter, RubyFilter, BunFilter, DenoFilter,
- * FlutterFilter, DartFilter, SwiftFilter, swiftLintFilter, XcodeFilter,
- * MixFilter, ZigFilter, RCmdFilter, erlangFilter, crystalFilter,
- * haskellFilter, elmFilter, juliaFilter, powerShellFilter.
- *
- * Test strategy:
- *   - Each filter gets a dispatch test (matches() / selectFilter()) to prove
- *     registration in TOOL_FILTERS survived esbuild-free import.
- *   - Each filter gets at least one compress() golden test verifying the
- *     compression logic collapses noise and preserves signal.
- */
+/** Tests for the language-runtime compression filter family (Batch K1). Covers: NodeFilter, PythonFilter, RubyFilter, BunFilter, DenoFilter, FlutterFilter, DartFilter, SwiftFilter, swiftLintFilter, XcodeFilter, MixFilter, ZigFilter, RCmdFilter, erlangFilter, crystalFilter, haskellFilter, elmFilter, juliaFilter, powerShellFilter. Test strategy: - Each filter gets a dispatch test (matches() / selectFilter()) to prove registration in TOOL_FILTERS survived esbuild-free import. - Each filter gets at least one compress() golden test verifying the compression logic collapses noise and preserves signal. */
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -37,9 +24,7 @@ import {
 } from '../src/tool_filters/languages.js'
 import { selectFilter } from '../src/tool_filters/dispatch.js'
 
-// ---------------------------------------------------------------------------
-// Helper
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Helper ---------------------------------------------------------------------------
 
 function compress(
   filter: { compress: (a: string, b: string, c: number, d: string[]) => string },
@@ -50,9 +35,7 @@ function compress(
   return filter.compress(stdout, stderr, exitCode, argv)
 }
 
-// ===========================================================================
-// NodeFilter
-// ===========================================================================
+// =========================================================================== NodeFilter ===========================================================================
 
 describe('NodeFilter dispatch', () => {
   const f = new NodeFilter()
@@ -90,9 +73,7 @@ describe('NodeFilter compress', () => {
   })
 })
 
-// ===========================================================================
-// PythonFilter
-// ===========================================================================
+// =========================================================================== PythonFilter ===========================================================================
 
 describe('PythonFilter dispatch', () => {
   const f = new PythonFilter()
@@ -133,11 +114,7 @@ describe('PythonFilter compress: traceback compaction', () => {
 
 describe('PythonFilter compress: traceback frame integrity (regression)', () => {
   it('never tears a frame apart across the truncation boundary and reports the elided FRAME count, not a raw line count', () => {
-    // 11 real frames: 9 plain 2-line frames, then a frame with a PEP 657
-    // caret-annotation block (3 lines), then a final plain 2-line frame. The
-    // caret frame sits right where a raw-LINE cut would land mid-frame, so
-    // truncation (keep-all <=10 frames, else keep first 2 + last 3 frames)
-    // must operate on whole frames for it to survive intact.
+    // 11 real frames: 9 plain 2-line frames, then a frame with a PEP 657 caret-annotation block (3 lines), then a final plain 2-line frame. The caret frame sits right where a raw-LINE cut would land mid-frame, so truncation (keep-all <=10 frames, else keep first 2 + last 3 frames) must operate on whole frames for it to survive intact.
     const plainFrames = Array.from({ length: 9 }, (_, i) => [
       `    File "module${i}.py", line ${i + 1}, in fn${i}`,
       `      return fn${i + 1}()`,
@@ -180,15 +157,11 @@ describe('PythonFilter compress: traceback frame integrity (regression)', () => 
 
     expect(out).toBe(expected)
 
-    // 11 total frames - 5 kept (first 2 + last 3) = 6 elided FRAMES. The old
-    // line-counting bug reported the raw remaining LINE count instead: 23
-    // raw lines - 5 kept lines = 18, a materially different (wrong) number.
+    // 11 total frames - 5 kept (first 2 + last 3) = 6 elided FRAMES. The old line-counting bug reported the raw remaining LINE count instead: 23 raw lines - 5 kept lines = 18, a materially different (wrong) number.
     expect(out).toContain('6 more frames elided by token-goat')
     expect(out).not.toContain('18 more frames elided by token-goat')
 
-    // The caret-annotation line must never appear detached from its own
-    // frame's header/source line — the frame travels together as a unit,
-    // never split at the truncation boundary.
+    // The caret-annotation line must never appear detached from its own frame's header/source line — the frame travels together as a unit, never split at the truncation boundary.
     const outLines = out.split('\n')
     const caretIdx = outLines.indexOf('             ~~~~~~~~~^~~~~~~~~~~~~~~')
     expect(caretIdx).toBeGreaterThan(1)
@@ -226,9 +199,7 @@ describe('PythonFilter compress: warning dedup', () => {
   })
 })
 
-// ===========================================================================
-// RubyFilter
-// ===========================================================================
+// =========================================================================== RubyFilter ===========================================================================
 
 describe('RubyFilter dispatch', () => {
   const f = new RubyFilter()
@@ -257,9 +228,7 @@ describe('RubyFilter compress', () => {
   })
 })
 
-// ===========================================================================
-// BunFilter
-// ===========================================================================
+// =========================================================================== BunFilter ===========================================================================
 
 describe('BunFilter dispatch', () => {
   const f = new BunFilter()
@@ -292,9 +261,7 @@ describe('BunFilter compress: build assets', () => {
   })
 })
 
-// ===========================================================================
-// DenoFilter
-// ===========================================================================
+// =========================================================================== DenoFilter ===========================================================================
 
 describe('DenoFilter dispatch', () => {
   const f = new DenoFilter()
@@ -317,9 +284,7 @@ describe('DenoFilter compress: compile', () => {
   })
 })
 
-// ===========================================================================
-// FlutterFilter
-// ===========================================================================
+// =========================================================================== FlutterFilter ===========================================================================
 
 describe('FlutterFilter dispatch', () => {
   const f = new FlutterFilter()
@@ -340,9 +305,7 @@ describe('FlutterFilter compress: build', () => {
   })
 })
 
-// ===========================================================================
-// DartFilter
-// ===========================================================================
+// =========================================================================== DartFilter ===========================================================================
 
 describe('DartFilter dispatch', () => {
   const f = new DartFilter()
@@ -379,9 +342,7 @@ describe('DartFilter compress: generic (run/compile)', () => {
   })
 })
 
-// ===========================================================================
-// SwiftFilter
-// ===========================================================================
+// =========================================================================== SwiftFilter ===========================================================================
 
 describe('SwiftFilter dispatch', () => {
   const f = new SwiftFilter()
@@ -405,9 +366,7 @@ describe('SwiftFilter compress: build', () => {
 })
 
 
-// ===========================================================================
-// XcodeFilter
-// ===========================================================================
+// =========================================================================== XcodeFilter ===========================================================================
 
 describe('XcodeFilter dispatch', () => {
   const f = new XcodeFilter()
@@ -429,9 +388,7 @@ describe('XcodeFilter compress', () => {
   })
 })
 
-// ===========================================================================
-// MixFilter
-// ===========================================================================
+// =========================================================================== MixFilter ===========================================================================
 
 describe('MixFilter dispatch', () => {
   const f = new MixFilter()
@@ -482,9 +439,7 @@ describe('MixFilter compress: ecto', () => {
   })
 })
 
-// ===========================================================================
-// ZigFilter
-// ===========================================================================
+// =========================================================================== ZigFilter ===========================================================================
 
 describe('ZigFilter dispatch', () => {
   const f = new ZigFilter()
@@ -509,9 +464,7 @@ describe('ZigFilter compress', () => {
   })
 })
 
-// ===========================================================================
-// RCmdFilter
-// ===========================================================================
+// =========================================================================== RCmdFilter ===========================================================================
 
 describe('RCmdFilter dispatch', () => {
   const f = new RCmdFilter()
@@ -537,9 +490,7 @@ describe('RCmdFilter compress', () => {
   })
 })
 
-// ===========================================================================
-// Factory-built filters: golden output tests
-// ===========================================================================
+// =========================================================================== Factory-built filters: golden output tests ===========================================================================
 
 describe('erlangFilter dispatch', () => {
   it('matches rebar3 compile', () =>
@@ -595,10 +546,7 @@ describe('haskellFilter compress', () => {
     expect(out).toContain('Build completed')
   })
 
-  // Regression: makeLanguageFilter's dedupeRules truncated the dedup key to the first 40
-  // characters by default, so a 4th distinct Warning: line sharing a long common leading
-  // substring with 3 earlier ones collided into the same key and was silently dropped as
-  // a false "repeat" even though its content (beyond char 40) genuinely differs.
+  // Regression: makeLanguageFilter's dedupeRules truncated the dedup key to the first 40 characters by default, so a 4th distinct Warning: line sharing a long common leading substring with 3 earlier ones collided into the same key and was silently dropped as a false "repeat" even though its content (beyond char 40) genuinely differs.
   it('does not drop a distinct 4th warning that shares its first 40 characters with 3 others', () => {
     const prefix = 'Warning: The package list for hackage.haskell.org is 90 days old (foo-service-'
     const w1 = `${prefix}alpha)`
@@ -680,9 +628,7 @@ describe('powerShellFilter compress', () => {
     expect(out).toContain('Done')
   })
 
-  // Regression: the dedup key was truncated to the first 40 characters of each WARNING line,
-  // so two distinct warnings sharing a long common leading substring collided and one was
-  // silently dropped as a false "repeat".
+  // Regression: the dedup key was truncated to the first 40 characters of each WARNING line, so two distinct warnings sharing a long common leading substring collided and one was silently dropped as a false "repeat".
   it('does not drop a distinct warning that shares its first 40 characters with another', () => {
     const w1 = 'WARNING: Failed to install package foo-service-alpha (timeout)'
     const w2 = 'WARNING: Failed to install package foo-service-beta (disk full)'
@@ -763,9 +709,7 @@ describe('powerShellFilter dispatch: CommandNotFoundException reachability', () 
   })
 })
 
-// ===========================================================================
-// LANGUAGE_FILTERS registry
-// ===========================================================================
+// =========================================================================== LANGUAGE_FILTERS registry ===========================================================================
 
 describe('LANGUAGE_FILTERS registry', () => {
   it('contains all 17 filter instances', () => {

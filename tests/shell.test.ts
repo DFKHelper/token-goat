@@ -1,13 +1,6 @@
 // Regression guard for the bash_compress Windows-shell fix (src/shell.ts).
 //
-// The bug: `token-goat compress` re-ran the inner bash command via spawnSync `shell: true`,
-// which on Windows is cmd.exe — so $VAR/$(...)/redirects/quoting broke and commands failed
-// with "The system cannot execute the specified program". The fix resolves the harness's
-// Git-Bash and runs the command under it. The load-bearing, platform-independent piece is
-// locateBashOnPath: it must pick a Git-Bash on PATH while skipping the WSL launcher dirs
-// (System32 / SysWOW64 / WindowsApps), whose bash.exe runs the Linux filesystem and would
-// resolve a Windows cwd against the WSL root. These tests drive that real function with a
-// synthetic PATH + injected existence check, so they run and fail on every platform.
+// The bug: `token-goat compress` re-ran the inner bash command via spawnSync `shell: true`, which on Windows is cmd.exe — so $VAR/$(...)/redirects/quoting broke and commands failed with "The system cannot execute the specified program". The fix resolves the harness's Git-Bash and runs the command under it. The load-bearing, platform-independent piece is locateBashOnPath: it must pick a Git-Bash on PATH while skipping the WSL launcher dirs (System32 / SysWOW64 / WindowsApps), whose bash.exe runs the Linux filesystem and would resolve a Windows cwd against the WSL root. These tests drive that real function with a synthetic PATH + injected existence check, so they run and fail on every platform.
 import * as path from 'node:path'
 
 import { describe, expect, it } from 'vitest'
@@ -19,9 +12,7 @@ import {
   wrappedShell,
 } from '../src/shell.js'
 
-// Colon-free synthetic dirs so the string survives a POSIX PATH split (delimiter ':') while
-// still exercising the backslash-segment logic. Candidates are built with path.join so the
-// injected existence check matches regardless of the host separator.
+// Colon-free synthetic dirs so the string survives a POSIX PATH split (delimiter ':') while still exercising the backslash-segment logic. Candidates are built with path.join so the injected existence check matches regardless of the host separator.
 const WSL_DIR = 'root\\Windows\\System32'
 const APPS_DIR = 'root\\Microsoft\\WindowsApps'
 const GIT_DIR = 'root\\Git\\usr\\bin'
@@ -38,9 +29,7 @@ describe('locateBashOnPath', () => {
   })
 
   it('skips WSL-launcher dirs even when their bash.exe exists and precedes Git-Bash', () => {
-    // Both a System32 and a WindowsApps bash.exe "exist" and sit before Git-Bash on PATH.
-    // The resolver must skip both and return Git-Bash. This is the mutation anchor: drop the
-    // WSL-launcher skip and this returns the System32 launcher instead.
+    // Both a System32 and a WindowsApps bash.exe "exist" and sit before Git-Bash on PATH. The resolver must skip both and return Git-Bash. This is the mutation anchor: drop the WSL-launcher skip and this returns the System32 launcher instead.
     const found = locateBashOnPath(PATH_OF(WSL_DIR, APPS_DIR, GIT_DIR), exists(wslBash, appsBash, gitBash))
     expect(found).toBe(gitBash)
   })

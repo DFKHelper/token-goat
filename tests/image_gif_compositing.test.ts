@@ -12,12 +12,7 @@ import { withHarnessOverride } from './helpers/harness-env.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
-// CAPTURE. Real producer output, not written from this repo's own decoder. Generated on this
-// machine with ImageMagick 7.1.2-18 Q16-HDRI x64 d4e4b2b:20260322 by rendering three 48x48 PNGs
-// (solid #2563eb background, an 8x8 #dc2626 box at y=20 moving x=8 -> 16 -> 24) and running:
-// magick -delay 20 -loop 0 d0.png d1.png d2.png -layers Optimize tests/fixtures/animated_delta.gif
-// `-layers Optimize` is what makes frames 1 and 2 sub-rectangles (16x8 at y=20) rather than full
-// canvases; that delta shape is the whole point of the fixture and is asserted below.
+// CAPTURE. Real producer output, not written from this repo's own decoder. Generated on this machine with ImageMagick 7.1.2-18 Q16-HDRI x64 d4e4b2b:20260322 by rendering three 48x48 PNGs (solid #2563eb background, an 8x8 #dc2626 box at y=20 moving x=8 -> 16 -> 24) and running: magick -delay 20 -loop 0 d0.png d1.png d2.png -layers Optimize tests/fixtures/animated_delta.gif `-layers Optimize` is what makes frames 1 and 2 sub-rectangles (16x8 at y=20) rather than full canvases; that delta shape is the whole point of the fixture and is asserted below.
 const deltaGif = fs.readFileSync(path.join(here, 'fixtures', 'animated_delta.gif'))
 
 const BACKGROUND_RGBA = [37, 99, 235, 255]
@@ -37,16 +32,14 @@ function pixelAt(data: Buffer, width: number, x: number, y: number): number[] {
 describe('decodeGif composites delta frames onto the running canvas', () => {
   it('keeps the fixture in the delta shape its provenance describes', () => {
     expect(probeBufferMeta(deltaGif)?.pages).toBe(3)
-    // Without this the fixture could silently become full-canvas and the compositing test below
-    // would pass on the bug it exists to catch.
+    // Without this the fixture could silently become full-canvas and the compositing test below would pass on the bug it exists to catch.
     expect(new omggif.GifReader(deltaGif).frameInfo(1).width).toBeLessThan(48)
   })
 
   it('reproduces frame 0 background outside a later frame rectangle', () => {
     const { frames, width } = decodeGif(deltaGif)
     expect(frames).toHaveLength(3)
-    // (2, 2) is outside every sub-rectangle (all of which sit at y=20..27), so frames 1 and 2 never
-    // paint it. Before compositing they read [0, 0, 0, 0] there.
+    // (2, 2) is outside every sub-rectangle (all of which sit at y=20..27), so frames 1 and 2 never paint it. Before compositing they read [0, 0, 0, 0] there.
     expect(pixelAt(frames[0]!.data, width, 2, 2)).toEqual(BACKGROUND_RGBA)
     expect(pixelAt(frames[1]!.data, width, 2, 2)).toEqual(BACKGROUND_RGBA)
     expect(pixelAt(frames[2]!.data, width, 2, 2)).toEqual(BACKGROUND_RGBA)
@@ -59,8 +52,7 @@ describe('decodeGif composites delta frames onto the running canvas', () => {
   })
 
   it('non-firing: decodes the full-canvas fixture to exactly the same bytes as before compositing', () => {
-    // tests/fixtures/animated.gif is three full-canvas opaque frames, which compose to themselves;
-    // compositing must not perturb a single byte of what the shrink path already emitted for it.
+    // tests/fixtures/animated.gif is three full-canvas opaque frames, which compose to themselves; compositing must not perturb a single byte of what the shrink path already emitted for it.
     const full = fs.readFileSync(path.join(here, 'fixtures', 'animated.gif'))
     const { frames } = decodeGif(full)
     expect(frames.length).toBeGreaterThan(1)
@@ -80,9 +72,7 @@ describe('decodeGif composites delta frames onto the running canvas', () => {
 })
 
 describe('decodeGif honours frame disposal', () => {
-  // FORMAT-DERIVED from omggif's own writer (node_modules/omggif/omggif.js, `GifWriter.addFrame`,
-  // whose `opts.disposal` is written into the graphic control extension at omggif.js:159-177). Not
-  // a capture: it proves agreement with omggif's encoder, which is also the decoder under test.
+  // FORMAT-DERIVED from omggif's own writer (node_modules/omggif/omggif.js, `GifWriter.addFrame`, whose `opts.disposal` is written into the graphic control extension at omggif.js:159-177). Not a capture: it proves agreement with omggif's encoder, which is also the decoder under test.
   const SIZE = 8
   const RED = 0
   const GREEN = 1
@@ -178,9 +168,7 @@ describe('the shrink path delivers composited, transparency-preserving GIFs', ()
   function deltaSource(): Buffer {
     return makeGif((w) => {
       w.addFrame(0, 0, W, H, noiseIndexes(W * H, 99), { palette: bigPalette })
-      // Large noisy sub-rectangles rather than tiny patches: a delta source whose frames after the
-      // first are cheap encodes to less than its own composited re-encode and the shrink declines,
-      // which would leave this test never reaching the branch it exists to check.
+      // Large noisy sub-rectangles rather than tiny patches: a delta source whose frames after the first are cheap encodes to less than its own composited re-encode and the shrink declines, which would leave this test never reaching the branch it exists to check.
       w.addFrame(0, 0, DELTA_W, H, noiseIndexes(DELTA_W * H, 31), { palette: bigPalette, disposal: 1 })
       w.addFrame(DELTA_W, 0, DELTA_W, H, noiseIndexes(DELTA_W * H, 77), { palette: bigPalette, disposal: 1 })
     }, W, H)
@@ -243,8 +231,7 @@ describe('the shrink path delivers composited, transparency-preserving GIFs', ()
 
     const rgba = Buffer.alloc(reader.width * reader.height * 4)
     reader.decodeAndBlitFrameRGBA(0, rgba)
-    // omggif skips transparent pixels entirely, so the region stays at the zeroed canvas value
-    // rather than arriving as an opaque palette-0 black.
+    // omggif skips transparent pixels entirely, so the region stays at the zeroed canvas value rather than arriving as an opaque palette-0 black.
     expect(rgba[3]).toBe(0)
   })
 })

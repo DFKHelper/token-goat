@@ -11,18 +11,7 @@ import { buildUnrestrictedSpawnAdvisory } from '../src/hooks_agent_spawn.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { rmInSandbox } from './helpers/sandbox-rm.js'
 
-/**
- * The unrestricted-spawn advisory must never fire under Copilot CLI. The advisory's content is
- * Claude Code's Task schema, and Copilot's own task tool carries agent_type rather than
- * subagent_type (CAPTURE: toolArgs {description, prompt, agent_type, name} in
- * tests/fixtures/copilot_cli_1_0_88/C4a-004-preToolUse-task.json), so the absent-field trigger would
- * misclassify every Copilot task spawn as an untyped general-purpose spawn. The channel is not the
- * reason: post_tool_use additionalContext reaches the model on Copilot 1.0.88 (tg-captures C1a).
- *
- * This lives in its own file rather than tests/hooks_agent_spawn.test.ts because getHarnessName()
- * memoizes on first dispatch: the sibling file's earlier tests would pin the ambient harness for
- * the whole worker module registry before a copilot override could take effect.
- */
+/** The unrestricted-spawn advisory must never fire under Copilot CLI. The advisory's content is Claude Code's Task schema, and Copilot's own task tool carries agent_type rather than subagent_type (CAPTURE: toolArgs {description, prompt, agent_type, name} in tests/fixtures/copilot_cli_1_0_88/C4a-004-preToolUse-task.json), so the absent-field trigger would misclassify every Copilot task spawn as an untyped general-purpose spawn. The channel is not the reason: post_tool_use additionalContext reaches the model on Copilot 1.0.88 (tg-captures C1a). This lives in its own file rather than tests/hooks_agent_spawn.test.ts because getHarnessName() memoizes on first dispatch: the sibling file's earlier tests would pin the ambient harness for the whole worker module registry before a copilot override could take effect. */
 
 const RESTRICTED_DEF = '---\nname: lean-coder\ndescription: scoped coder\ntools: Read, Grep, Bash\nmodel: inherit\n---\n\nBody.\n'
 const EXPECTED_ADVISORY = '[token-goat] This spawn ran as general-purpose (the default when subagent_type is omitted), which is unrestricted: its lane starts by paying for every tool and MCP schema on the machine. Tools-restricted agent definitions exist here: lean-coder. A future spawn that fits one of them can pass that name as subagent_type to start with a much smaller prefix. Advisory only: this spawn has already run, and this notice saved nothing.'

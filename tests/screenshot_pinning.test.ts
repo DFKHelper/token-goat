@@ -1,14 +1,4 @@
-/**
- * The half of the DNS-rebinding fix that a real-Chrome test cannot observe: that the address the
- * policy validated is *pinned* into Chromium's resolver, so Chromium cannot perform a second,
- * independent lookup whose answer differs. That gap between two resolutions IS the rebinding
- * attack, and closing it is invisible from the outside -- both a pinned and an unpinned capture
- * simply succeed. So this drives the real takeScreenshot with puppeteer and node:dns stubbed, and
- * asserts on the launch flags and the request decisions the production code actually makes.
- *
- * Chrome's own resolver rules are also the reason the e2e tests can be hermetic; here they are
- * the artefact under test rather than the harness.
- */
+/** The half of the DNS-rebinding fix that a real-Chrome test cannot observe: that the address the policy validated is *pinned* into Chromium's resolver, so Chromium cannot perform a second, independent lookup whose answer differs. That gap between two resolutions IS the rebinding attack, and closing it is invisible from the outside -- both a pinned and an unpinned capture simply succeed. So this drives the real takeScreenshot with puppeteer and node:dns stubbed, and asserts on the launch flags and the request decisions the production code actually makes. Chrome's own resolver rules are also the reason the e2e tests can be hermetic; here they are the artefact under test rather than the harness. */
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'

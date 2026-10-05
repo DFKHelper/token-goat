@@ -1,8 +1,4 @@
-/**
- * Built-bundle check for the Assembly, Windows batch and Erlang adapters: the shipped dist/token-goat.mjs, not source,
- * indexes one file of each through `index . --walk` and answers `outline`, `symbol`, `read "file::Name"` and `imports` from
- * them. The two `.asm` dialects sit side by side, and the index count names exactly the files it indexed.
- */
+/** Built-bundle check for the Assembly, Windows batch and Erlang adapters: the shipped dist/token-goat.mjs, not source, indexes one file of each through `index . --walk` and answers `outline`, `symbol`, `read "file::Name"` and `imports` from them. The two `.asm` dialects sit side by side, and the index count names exactly the files it indexed. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'

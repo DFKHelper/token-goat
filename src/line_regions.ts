@@ -1,11 +1,4 @@
-/**
- * Maps a requested line span onto the file regions that cover it. Split out of read_spec.ts so
- * the Bash hook path can price a line-range read's surgical replacement (bash_range_savings.ts)
- * without importing read_spec.ts, which reaches read_commands.ts and through it the whole
- * parser/language-adapter graph -- a graph the hook's eager bundle has a size ceiling against
- * (tests/guards/dist_chunks_deduped.test.ts). Pure: symbols and numbers in, spans out, no I/O and
- * no database, which is what makes it safe to sit on both paths.
- */
+/** Maps a requested line span onto the file regions that cover it. Split out of read_spec.ts so the Bash hook path can price a line-range read's surgical replacement (bash_range_savings.ts) without importing read_spec.ts, which reaches read_commands.ts and through it the whole parser/language-adapter graph -- a graph the hook's eager bundle has a size ceiling against (tests/guards/dist_chunks_deduped.test.ts). Pure: symbols and numbers in, spans out, no I/O and no database, which is what makes it safe to sit on both paths. */
 import type { SymbolEntry } from './parser_types.js'
 
 /** One contiguous slice of a file that a queried line falls in: the smallest symbol enclosing it, the preamble above the first symbol, or the gap between two symbols. `label` is what gets disclosed in the output header, so a caller that asked for line 142 and got lines 120-190 can see which is which. */

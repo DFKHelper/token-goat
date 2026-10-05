@@ -1,11 +1,4 @@
-/**
- * Item B: `map --json` and `doctor --json`.
- *
- * Drives the real, unmocked `run()` CLI entrypoint (same pattern as cli_map_stats.test.ts)
- * against a scratch project directory with an isolated (empty) index, since the goal is
- * specifically to prove the empty-index case is surfaced correctly, not just that the flag
- * parses.
- */
+/** Item B: `map --json` and `doctor --json`. Drives the real, unmocked `run()` CLI entrypoint (same pattern as cli_map_stats.test.ts) against a scratch project directory with an isolated (empty) index, since the goal is specifically to prove the empty-index case is surfaced correctly, not just that the flag parses. */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -51,10 +44,7 @@ describe('map --json / doctor --json', () => {
   it('`doctor --json` parses as JSON, has one entry per check, statuses in {ok,warn,fail}, and warns the Symbols check against an empty/unindexed project', async () => {
     root = mkdtempSync(join(tmpdir(), 'tg-doctorjson-'))
     writeFileSync(join(root, 'a.ts'), 'export const x = 1\n')
-    // A package.json gives findProject() a real project root to scope the Symbols check to
-    // (see cmdDoctor's rootDir wiring) -- without it the check falls back to the whole shared
-    // global.db, which other tests in this same run may have already populated, defeating the
-    // "unindexed project" assertion below.
+    // A package.json gives findProject() a real project root to scope the Symbols check to (see cmdDoctor's rootDir wiring) -- without it the check falls back to the whole shared global.db, which other tests in this same run may have already populated, defeating the "unindexed project" assertion below.
     writeFileSync(join(root, 'package.json'), '{"name":"tg-doctorjson-fixture"}\n')
     process.chdir(root)
 
@@ -63,8 +53,7 @@ describe('map --json / doctor --json', () => {
       try {
         await run(['node', 'token-goat', 'doctor', '--json'])
       } catch {
-        // doctor throws CliError('doctor checks failed') on any fail-status check — irrelevant
-        // to this test, which only asserts the JSON payload's shape and the Symbols entry.
+        // doctor throws CliError('doctor checks failed') on any fail-status check — irrelevant to this test, which only asserts the JSON payload's shape and the Symbols entry.
         threw = true
       }
     })

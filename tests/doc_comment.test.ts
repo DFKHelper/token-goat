@@ -32,8 +32,7 @@ describe('precedingDocComment', () => {
     })
 
     it('does not swallow source lines between an earlier block comment and a trailing one', () => {
-      // The line above the symbol ends with `*/` because it carries a trailing comment, not because
-      // it closes a doc block: everything between it and the file's license header is code.
+      // The line above the symbol ends with `*/` because it carries a trailing comment, not because it closes a doc block: everything between it and the file's license header is code.
       const lines = [
         '/* Copyright 2026 Example Corp.',
         '   All rights reserved. */',

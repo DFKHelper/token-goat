@@ -1,13 +1,4 @@
-/**
- * Guard against the "required-but-undeclared grammar" class.
- *
- * parser.ts loads each tree-sitter grammar via `_require('tree-sitter-<lang>')`
- * inside a try/catch, so a grammar missing from package.json fails silently:
- * the require throws, the catch swallows it, and that language is silently
- * unparsed in a clean install. `tree-sitter-cpp` was once required but never
- * declared. This test derives the required package list from the parser source
- * itself, so every present and future grammar must be declared as a dependency.
- */
+/** Guard against the "required-but-undeclared grammar" class. parser.ts loads each tree-sitter grammar via `_require('tree-sitter-<lang>')` inside a try/catch, so a grammar missing from package.json fails silently: the require throws, the catch swallows it, and that language is silently unparsed in a clean install. `tree-sitter-cpp` was once required but never declared. This test derives the required package list from the parser source itself, so every present and future grammar must be declared as a dependency. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'

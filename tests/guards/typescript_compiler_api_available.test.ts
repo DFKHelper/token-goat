@@ -1,20 +1,4 @@
-/**
- * `src/ts_refs.ts` (the type-resolved reference tier) and `src/dep_docs.ts` (the `.d.ts` outline)
- * are the only two places that reach for the TypeScript compiler API, and they reach for it off
- * the package's default export. That export is not a fixed surface: on TypeScript 7.0.2 --- the
- * native port --- `import ts from 'typescript'` yields exactly two symbols, `version` and
- * `versionMajorMinor`. Everything else moved behind `typescript/unstable/*`, a path upstream
- * labels unstable.
- *
- * Why didn't a test catch this: nothing asserted the API surface, so a compiler bump that removed
- * it did not fail on the missing symbol. It failed seventeen tests across four files instead ---
- * `ts_refs`, `read_commands`, `dep_docs`, and a bundle-matrix case --- each reporting a downstream
- * symptom (a reference not resolved, an outline row missing) with nothing naming the cause. This
- * asserts the cause directly, so the next such bump fails once, here, saying which symbol went.
- *
- * Extending either module with a new `ts.` call means adding it to the matching list below. That
- * is the point: the list is the contract with the compiler package, written down.
- */
+/** `src/ts_refs.ts` (the type-resolved reference tier) and `src/dep_docs.ts` (the `.d.ts` outline) are the only two places that reach for the TypeScript compiler API, and they reach for it off the package's default export. That export is not a fixed surface: on TypeScript 7.0.2 --- the native port --- `import ts from 'typescript'` yields exactly two symbols, `version` and `versionMajorMinor`. Everything else moved behind `typescript/unstable/*`, a path upstream labels unstable. Why didn't a test catch this: nothing asserted the API surface, so a compiler bump that removed it did not fail on the missing symbol. It failed seventeen tests across four files instead --- `ts_refs`, `read_commands`, `dep_docs`, and a bundle-matrix case --- each reporting a downstream symptom (a reference not resolved, an outline row missing) with nothing naming the cause. This asserts the cause directly, so the next such bump fails once, here, saying which symbol went. Extending either module with a new `ts.` call means adding it to the matching list below. That is the point: the list is the contract with the compiler package, written down. */
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 

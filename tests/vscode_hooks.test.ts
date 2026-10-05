@@ -1,14 +1,4 @@
-/**
- * VS Code agent-hook response shaping (serializeOutput's vscode branch, src/bridges/vscode_hooks.ts).
- *
- * PROVENANCE: FORMAT-DERIVED. Every response field asserted below is one ChatHookService reads in
- * VS Code 1.136.0's resources/app/extensions/copilot/dist/extension.js: PreToolUse takes only
- * hookSpecificOutput.{permissionDecision, permissionDecisionReason, updatedInput, additionalContext};
- * PostToolUse takes hookSpecificOutput.additionalContext and a top-level decision; Stop and
- * SubagentStop take decision/reason inside hookSpecificOutput. Payloads use the envelope
- * executePreToolUseHook builds there, with tool names and input keys from the ToolName enum in the
- * same file and the languageModelTools schemas in resources/app/extensions/copilot/package.json.
- */
+/** VS Code agent-hook response shaping (serializeOutput's vscode branch, src/bridges/vscode_hooks.ts). PROVENANCE: FORMAT-DERIVED. Every response field asserted below is one ChatHookService reads in VS Code 1.136.0's resources/app/extensions/copilot/dist/extension.js: PreToolUse takes only hookSpecificOutput.{permissionDecision, permissionDecisionReason, updatedInput, additionalContext}; PostToolUse takes hookSpecificOutput.additionalContext and a top-level decision; Stop and SubagentStop take decision/reason inside hookSpecificOutput. Payloads use the envelope executePreToolUseHook builds there, with tool names and input keys from the ToolName enum in the same file and the languageModelTools schemas in resources/app/extensions/copilot/package.json. */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../src/stats.js', async (importOriginal) => {

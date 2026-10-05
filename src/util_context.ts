@@ -1,6 +1,4 @@
-/**
- * Source context window building and rendering.
- */
+/** Source context window building and rendering. */
 
 import { readFileSync } from 'node:fs'
 
@@ -12,11 +10,7 @@ export interface SourceContextLine {
   readonly text: string
 }
 
-/**
- * Read an inclusive window of `contextLines` source lines either side of `line` (1-indexed)
- * out of `absPath`. Returns null when `contextLines` is not positive, the file cannot be read,
- * or `line` falls outside the file.
- */
+/** Read an inclusive window of `contextLines` source lines either side of `line` (1-indexed) out of `absPath`. Returns null when `contextLines` is not positive, the file cannot be read, or `line` falls outside the file. */
 export function buildContextWindow(absPath: string, line: number, contextLines: number): SourceContextLine[] | null {
   if (!Number.isFinite(contextLines) || contextLines <= 0) return null
   let text: string
@@ -35,10 +29,7 @@ export function buildContextWindow(absPath: string, line: number, contextLines: 
   return out
 }
 
-/**
- * Render a context window in `grep`'s established form: the matched line as
- * `file:N: text` (plus `matchSuffix`), every surrounding line as `file-N- text`.
- */
+/** Render a context window in `grep`'s established form: the matched line as `file:N: text` (plus `matchSuffix`), every surrounding line as `file-N- text`. */
 export function renderContextWindow(
   displayFile: string,
   matchLine: number,

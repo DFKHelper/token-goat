@@ -1,56 +1,4 @@
-/**
- * Every directory token-goat creates inside its own storage must go through `ensureDirSync`.
- *
- * `ensureDirSync` calls `ensureStorageRootPrivate(dir)` first, which creates whichever of the two
- * roots `dir` falls under 0700 and chmods an already-permissive one down. A bare
- * `fs.mkdirSync(..., { recursive: true })` on a path under a root skips it, so on a shared Linux
- * host that root is left at the umask default (755) and every other local user can list the cached
- * pages, command output, session snapshots and index databases inside it -- the file NAMES alone
- * leak which commands ran and which URLs were fetched.
- *
- * TWO roots, not one, and this guard was green about hardening it did not deliver for a whole
- * release: it lists `tokenGoatHome` in ROOTS below, but `ensureDirSync` hardened `dataDir()` only,
- * and `dataDir() !== tokenGoatHome()`. Two of the eight sites the original sweep visited
- * (`image_ocr.ts`'s ocr-cache, `session_store.ts`'s sessions -- the second named in this guard's
- * own mustInclude) resolve under the home root and got nothing. Routing is what this file can
- * check; that the routing DELIVERS a mode is checked at runtime next door.
- *
- * This guard exists because the original finding was fixed at two sites and the class was not
- * swept. Three more instances of the identical shape were still in the tree afterwards
- * (`bridges/created_configs.ts`, `pending_context.ts`, `hooks_tool_failure.ts`), one of them on a
- * path these very commits made hotter. Each self-repaired on the next token-goat process, so the
- * window was narrow -- but "narrow" is what the first finding said too. A per-site fix leaves the
- * next instance to the next audit; the default has to be inverted so it is red on arrival.
- *
- * How the population is decided, stated rather than left to be reverse-engineered:
- *
- *  - A STORAGE PRODUCER is `dataDir`/`tokenGoatHome`/`DATA_DIR`, or any function that builds a
- *    path (`join`/`resolve`) out of one, to a fixed point across all of `src`.
- *  - A function is STORAGE-TAINTED when its own body names a producer, or calls one of the
- *    hardening helpers (which is a function declaring for itself that it operates on a root), or
- *    when a same-file
- *    function that names one calls it. Taint flows caller -> callee because the path is routinely
- *    computed in the caller and passed down as a parameter -- which is exactly the shape of
- *    `hooks_tool_failure.ts::writeLedger(target)`, one of the three misses.
- *  - The population is every directory-creating call inside a tainted function, whether it goes
- *    through the helper or not. Pinning only the violations would leave the guard able to pass by
- *    finding nothing at all.
- *
- * Both rules over-approximate, deliberately: a false edge widens the population, which is the
- * direction that fails loudly and gets an exemption with a reason written next to it. Resolution is
- * by NAME, so an aliased import (`import { dataDir as d }`) is invisible; nothing in this repo does
- * that today.
- *
- * The POSIX mode itself is asserted at runtime by `tests/data_dir_permissions.test.ts` -- for both
- * roots, and including the ensureDirSync-creates-a-child path that is the one every site here
- * reaches -- honestly skipped on Windows where Node ignores POSIX modes. This guard is the static
- * half and runs everywhere. The file named here did not exist for two rounds, which is the worse
- * half of the same failure: a citation reads as a delivered check.
- *
- * PROVENANCE: CAPTURE. The population is read from `src/**\/*.ts` at run time, not transcribed.
- *
- * I/O: reads `src/**\/*.ts` once and does no network, spawn, or write -- lefthook runs it pre-commit.
- */
+/** Every directory token-goat creates inside its own storage must go through `ensureDirSync`. `ensureDirSync` calls `ensureStorageRootPrivate(dir)` first, which creates whichever of the two roots `dir` falls under 0700 and chmods an already-permissive one down. A bare `fs.mkdirSync(..., { recursive: true })` on a path under a root skips it, so on a shared Linux host that root is left at the umask default (755) and every other local user can list the cached pages, command output, session snapshots and index databases inside it -- the file NAMES alone leak which commands ran and which URLs were fetched. TWO roots, not one, and this guard was green about hardening it did not deliver for a whole release: it lists `tokenGoatHome` in ROOTS below, but `ensureDirSync` hardened `dataDir()` only, and `dataDir() !== tokenGoatHome()`. Two of the eight sites the original sweep visited (`image_ocr.ts`'s ocr-cache, `session_store.ts`'s sessions -- the second named in this guard's own mustInclude) resolve under the home root and got nothing. Routing is what this file can check; that the routing DELIVERS a mode is checked at runtime next door. This guard exists because the original finding was fixed at two sites and the class was not swept. Three more instances of the identical shape were still in the tree afterwards (`bridges/created_configs.ts`, `pending_context.ts`, `hooks_tool_failure.ts`), one of them on a path these very commits made hotter. Each self-repaired on the next token-goat process, so the window was narrow -- but "narrow" is what the first finding said too. A per-site fix leaves the next instance to the next audit; the default has to be inverted so it is red on arrival. How the population is decided, stated rather than left to be reverse-engineered: - A STORAGE PRODUCER is `dataDir`/`tokenGoatHome`/`DATA_DIR`, or any function that builds a path (`join`/`resolve`) out of one, to a fixed point across all of `src`. - A function is STORAGE-TAINTED when its own body names a producer, or calls one of the hardening helpers (which is a function declaring for itself that it operates on a root), or when a same-file function that names one calls it. Taint flows caller -> callee because the path is routinely computed in the caller and passed down as a parameter -- which is exactly the shape of `hooks_tool_failure.ts::writeLedger(target)`, one of the three misses. - The population is every directory-creating call inside a tainted function, whether it goes through the helper or not. Pinning only the violations would leave the guard able to pass by finding nothing at all. Both rules over-approximate, deliberately: a false edge widens the population, which is the direction that fails loudly and gets an exemption with a reason written next to it. Resolution is by NAME, so an aliased import (`import { dataDir as d }`) is invisible; nothing in this repo does that today. The POSIX mode itself is asserted at runtime by `tests/data_dir_permissions.test.ts` -- for both roots, and including the ensureDirSync-creates-a-child path that is the one every site here reaches -- honestly skipped on Windows where Node ignores POSIX modes. This guard is the static half and runs everywhere. The file named here did not exist for two rounds, which is the worse half of the same failure: a citation reads as a delivered check. PROVENANCE: CAPTURE. The population is read from `src/**\/*.ts` at run time, not transcribed. I/O: reads `src/**\/*.ts` once and does no network, spawn, or write -- lefthook runs it pre-commit. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -112,15 +60,7 @@ function storageProducers(files: readonly SrcFile[]): Set<string> {
   return producers
 }
 
-/**
- * Names that only appear in code operating on a storage root, so calling one is self-declaration.
- *
- * Without this, `util.ts` fell out of the population entirely the moment an unrelated refactor in
- * `bridges/created_configs.ts` removed a `path.resolve(` call: that is what had made two functions
- * there producers, which tainted `backupFile`, which tainted its callee `ensureDirSync`. The whole
- * file's coverage rode on an incidental token three modules away. `ensureDirSync` names the
- * hardening helper it dispatches to, which is a direct statement that it operates on a root.
- */
+/** Names that only appear in code operating on a storage root, so calling one is self-declaration. Without this, `util.ts` fell out of the population entirely the moment an unrelated refactor in `bridges/created_configs.ts` removed a `path.resolve(` call: that is what had made two functions there producers, which tainted `backupFile`, which tainted its callee `ensureDirSync`. The whole file's coverage rode on an incidental token three modules away. `ensureDirSync` names the hardening helper it dispatches to, which is a direct statement that it operates on a root. */
 const HARDENERS = /\bensure(?:StorageRoot|DataDir|HomeDir)Private\s*\(/
 
 /** Functions in `file` that name a producer, plus everything they call in the same file. */
@@ -174,12 +114,7 @@ function storageDirSites(): Site[] {
   return out
 }
 
-/**
- * Raw directory creations on storage paths that are allowed, each with the reason.
- *
- * The bar: routing it through `ensureDirSync` would be wrong, not merely inconvenient. "It works
- * today" is not a reason -- that was true of all three sites this guard was written for.
- */
+/** Raw directory creations on storage paths that are allowed, each with the reason. The bar: routing it through `ensureDirSync` would be wrong, not merely inconvenient. "It works today" is not a reason -- that was true of all three sites this guard was written for. */
 const EXEMPT: ReadonlyMap<string, string> = new Map([
   [
     'constants.ts::ensureDataDirPrivate',
@@ -209,9 +144,7 @@ describe('every directory token-goat creates in its own storage is hardened', ()
       mustInclude: [
         'constants.ts::ensureDataDirPrivate',
         'constants.ts::ensureHomeDirPrivate',
-        // The wrapper itself, which the whole guard is about reaching. It dropped out of the
-        // population once, silently, when a refactor elsewhere removed the token that had been
-        // tainting util.ts by accident; naming it here makes that a red run instead.
+        // The wrapper itself, which the whole guard is about reaching. It dropped out of the population once, silently, when a refactor elsewhere removed the token that had been tainting util.ts by accident; naming it here makes that a red run instead.
         'util.ts::ensureDirSync',
         // The two home-root members the guard was silently delivering nothing for.
         'image_ocr.ts::ensureOcrCacheDir',
@@ -237,8 +170,7 @@ describe('every directory token-goat creates in its own storage is hardened', ()
   })
 
   it('names no exemption that has stopped creating a directory', () => {
-    // The stale half: an exemption for code that no longer exists reads as a live decision and
-    // hides the next real instance behind it.
+    // The stale half: an exemption for code that no longer exists reads as a live decision and hides the next real instance behind it.
     const sites = new Set(storageDirSites().map((s) => s.key))
     expect([...EXEMPT.keys()].filter((k) => !sites.has(k))).toEqual([])
   })
