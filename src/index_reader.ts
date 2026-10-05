@@ -5,7 +5,7 @@ import { globalDbPath } from './constants.js'
 import { getDb, withProbeIndex } from './db.js'
 import { ownProjectScope } from './nested_worktrees.js'
 import type { FileIndexEntry, RefEntry, SymbolEntry } from './parser_types.js'
-import { normalizePath } from './paths.js'
+import { normalizePath, hostPathOfIndexKey } from './paths.js'
 import { pathEqClause as pathEq, pathSuffixClause, projectScopeClause } from './sql_path.js'
 import { foldPath } from './util.js'
 
@@ -430,12 +430,14 @@ export function getReadNavigationEvidence(
 
     let isStale = false
     try {
-      const stat = fs.statSync(filePath)
+      const onDisk = hostPathOfIndexKey(filePath)
+      const stat = fs.statSync(onDisk)
       if (fileRow.mtime !== undefined && Math.abs(stat.mtimeMs - fileRow.mtime) > 1000) {
         isStale = true
       }
     } catch {
       // file might be removed or inaccessible
+      isStale = true
     }
 
     const { clause, params } = buildSymbolWhere({ filePath: fileRow.path })

@@ -2,7 +2,10 @@ import type { FirstReadSymbolPolicy } from './config_types.js'
 import type { HookEvent } from './hook_registry.js'
 import { getReadNavigationEvidence, type NavigationEvidence } from './index_reader.js'
 import { editAnywayHint, estimateRequestedSlice, readRequestedSliceWindow } from './hooks_read_slice.js'
-import { displaySafePath, displaySafeText } from './paths.js'
+import { displaySafePath } from './paths.js'
+import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { isWithinQuietHours } from './util.js'
+import { loadConfig } from './config.js'
 
 export interface ReadPolicyContext {
   readonly event: HookEvent
@@ -32,8 +35,24 @@ export type ReadPolicyDecision =
       readonly symbolCount: number
     }
 
-function formatKb(bytes: number): string {
+export function formatKb(bytes: number): string {
   return (bytes / 1024).toFixed(1)
+}
+
+/**
+ * Validates and sanitizes a candidate symbol or heading name for safe inclusion
+ * in an executable CLI suggestion string.
+ * Rejects symbols with shell-metacharacters, newlines, quotes, or suspicious length.
+ */
+export function safeSuggestionTarget(raw: string): string | null {
+  if (!raw || typeof raw !== 'string') return null
+  const trimmed = raw.trim()
+  if (!trimmed || trimmed.length > 80) return null
+  if (/[\r\n\t`"';\\${}|&<>*?~]/.test(trimmed)) return null
+  if (trimmed.includes('::')) return null
+  const probe = `token-goat read "test.ts::${trimmed}"`
+  if (stripUnsafeSuggestions(probe) !== probe) return null
+  return trimmed
 }
 
 /**
@@ -57,15 +76,13 @@ export function evaluateFirstReadSymbolPolicy(ctx: ReadPolicyContext): ReadPolic
   if (!isFirstRead) return { action: 'allow' }
   if (event.toolName === 'Grep') return { action: 'allow' }
   if (fileSize < firstReadSymbolBytes) return { action: 'allow' }
+  if (isWithinQuietHours(loadConfig().hints.quiet_hours)) return { action: 'allow' }
 
   // Check requested slice window: bounded small slices bypass warning and denial
   const window = readRequestedSliceWindow(event)
   if (window.isExplicitSlice && window.limit !== undefined && window.limit > 0) {
     const slice = estimateRequestedSlice(event, normalizedPath)
     if (slice.kind === 'bytes' && slice.bytes < firstReadSymbolBytes) {
-      return { action: 'allow' }
-    }
-    if (slice.kind === 'nearSingleLine') {
       return { action: 'allow' }
     }
   }
@@ -75,7 +92,7 @@ export function evaluateFirstReadSymbolPolicy(ctx: ReadPolicyContext): ReadPolic
     ? ctx.navigationEvidence
     : getReadNavigationEvidence(normalizedPath)
 
-  if (!evidence) return { action: 'allow' }
+  if (!evidence || evidence.isStale) return { action: 'allow' }
   const totalSymbols = evidence.symbolCount + evidence.headingCount
   if (totalSymbols === 0) return { action: 'allow' }
 
@@ -85,12 +102,16 @@ export function evaluateFirstReadSymbolPolicy(ctx: ReadPolicyContext): ReadPolic
 
   if (evidence.symbolCount > 0 && evidence.topSymbols.length > 0) {
     const top = evidence.topSymbols[0]!
-    const safeSymbolName = displaySafeText(top.name)
-    suggestions.push(`token-goat read "${safeShown}::${safeSymbolName}"`)
+    const safeName = safeSuggestionTarget(top.name)
+    if (safeName) {
+      suggestions.push(`token-goat read "${safeShown}::${safeName}"`)
+    }
   } else if (evidence.headingCount > 0 && evidence.topHeadings.length > 0) {
     const top = evidence.topHeadings[0]!
-    const safeHeadingName = displaySafeText(top.name)
-    suggestions.push(`token-goat section "${safeShown}::${safeHeadingName}"`)
+    const safeName = safeSuggestionTarget(top.name)
+    if (safeName) {
+      suggestions.push(`token-goat section "${safeShown}::${safeName}"`)
+    }
   }
 
   suggestions.push(`token-goat outline "${safeShown}"`)

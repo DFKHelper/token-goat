@@ -34,7 +34,7 @@ import {
 } from './hooks_read_slice.js'
 
 import type { HookOutput } from './types.js'
-import { evaluateFirstReadSymbolPolicy } from './hooks_read_policy.js'
+import { evaluateFirstReadSymbolPolicy, safeSuggestionTarget, formatKb } from './hooks_read_policy.js'
 import { buildPackageManifestHint } from './hints.js'
 import { querySymbols, getFileEntry } from './index_reader.js'
 import { extractShellBannerHeading } from './section_reader.js'
@@ -771,7 +771,24 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             ? Math.min(slice.bytes, markdownSize)
             : markdownSize
         const tooLargeForFirstRead = gateSize !== null && gateSize >= largeFileDenyBytes()
-        if (alreadyRead || tooLargeForFirstRead) {
+        const config = loadConfig()
+        const firstReadSymbolDeny = !alreadyRead && gateSize !== null &&
+          config.hints.first_read_symbol_policy === 'deny' &&
+          gateSize >= config.hints.first_read_symbol_bytes
+        const isSmallUnseenSlice = slice.kind === 'bytes' && markdownSize !== null &&
+          slice.bytes < config.hints.reread_deny_min_bytes
+        if ((alreadyRead && !isSmallUnseenSlice) || tooLargeForFirstRead || firstReadSymbolDeny) {
+          if (firstReadSymbolDeny) {
+            recordStat('session_hint', 0, 0)
+            const safeHeading = headingTarget.name ? safeSuggestionTarget(headingTarget.name) : null
+            const sectionSuggestion = safeHeading ? `Run \`token-goat section "${shown}::${safeHeading}"\` to read surgically. ` : ''
+            return denyOutput(
+              sectionSuggestion +
+              `${shown} is large (${formatKb(markdownSize ?? 0)}KB with ${headings.length} headings). Whole-file first read denied by first_read_symbol_policy. ` +
+              `Use \`token-goat outline "${shown}"\` to map sections, or re-read with offset/limit for a specific section. ` +
+              editAnywayHint(normalized)
+            )
+          }
           // A genuinely-first read that's blocked outright (tooLargeForFirstRead, not alreadyRead) never actually happened, so don't record it against re-read dedup -- mirrors the generic large-file path's same rule further below. Otherwise a retry (offset/limit) on the same file hits the "already read this session" 2nd-read deny instead of this same heading-tree guidance, which a genuinely-unread file should still get. A deny that IS because of a real prior read (alreadyRead) still records, same as every other re-read-deny branch in this file.
           if (alreadyRead) {
             // A genuine re-read of a large markdown file: prefer the same unchanged/diff snapshot machinery the isDocDiffable block further below uses, rather than re-emitting the (roughly 1.1KB median) heading tree that says nothing new. This branch is otherwise unreachable for markdown files large enough to trip the heading-tree intercept, since that intercept returns before isDocDiffable runs. Reuses that block's exact message shapes so the session-audit census (DENY_TEMPLATES in session_audit.ts) recognizes them as doc_unchanged_deny/doc_diff_deny rather than a new, invisible shape. recordStat stays session_hint/0 on every branch here (never diff_hint with a byte credit, unlike the isDocDiffable block) because these heading-tree denies are measured to be frequently routed around by a shell re-read anyway, so crediting withheld bytes would book a saving this path cannot back up.
@@ -1032,10 +1049,30 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
     const config = loadConfig()
     const window = readRequestedSliceWindow(event)
-    const isSmallUnseenSlice = window.isExplicitSlice && window.limit !== undefined && (
-      (requestedSlice.kind === 'bytes' && requestedSlice.bytes < config.hints.reread_deny_min_bytes) ||
-      requestedSlice.kind === 'nearSingleLine'
-    )
+    const isSmallUnseenSlice = window.isExplicitSlice && window.limit !== undefined &&
+      requestedSlice.kind === 'bytes' && requestedSlice.bytes < config.hints.reread_deny_min_bytes
+
+    if (fullReads === 0 && !window.isExplicitSlice && rereadBytes >= config.hints.first_read_symbol_bytes && !isDispatchedFileType(normalized)) {
+      const policyDecision = evaluateFirstReadSymbolPolicy({
+        event,
+        normalizedPath: normalized,
+        shownPath: shown,
+        fileSize: rereadBytes,
+        isFirstRead: true,
+        firstReadSymbolBytes: config.hints.first_read_symbol_bytes,
+        firstReadSymbolPolicy: config.hints.first_read_symbol_policy,
+      })
+      if (policyDecision.action === 'deny') {
+        recordStat('session_hint', 0, 0)
+        return denyOutput(policyDecision.message)
+      }
+      if (policyDecision.action === 'warn' && rereadBytes < LARGE_FILE_BYTES) {
+        if (!isWithinQuietHours(config.hints.quiet_hours)) {
+          recordStat('session_hint', 0, 0)
+        }
+        return quietContextOutput(policyDecision.message + contextPressureAdvisorySuffix(), [shown])
+      }
+    }
     if (config.hints.log_large_file_hint_outcomes) {
       const pendingSize = takePendingLargeFileHint(normalized)
       if (pendingSize !== null) {

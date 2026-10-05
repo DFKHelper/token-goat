@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { evaluateFirstReadSymbolPolicy } from '../src/hooks_read_policy.js'
+import { evaluateFirstReadSymbolPolicy, safeSuggestionTarget } from '../src/hooks_read_policy.js'
 import type { HookEvent } from '../src/hook_registry.js'
 import type { NavigationEvidence } from '../src/index_reader.js'
 
@@ -13,6 +13,32 @@ function makeEvent(toolName: string, input: Record<string, unknown>): HookEvent 
     raw: {},
   }
 }
+
+describe('safeSuggestionTarget', () => {
+  it('allows safe identifier strings', () => {
+    expect(safeSuggestionTarget('parseAst')).toBe('parseAst')
+    expect(safeSuggestionTarget('MyClass_v2')).toBe('MyClass_v2')
+    expect(safeSuggestionTarget('Section 1 - Introduction')).toBe('Section 1 - Introduction')
+  })
+
+  it('rejects empty, non-string, or overlong targets', () => {
+    expect(safeSuggestionTarget('')).toBeNull()
+    expect(safeSuggestionTarget('   ')).toBeNull()
+    expect(safeSuggestionTarget('a'.repeat(81))).toBeNull()
+  })
+
+  it('rejects shell metacharacters and injection tokens', () => {
+    expect(safeSuggestionTarget('foo; rm -rf /')).toBeNull()
+    expect(safeSuggestionTarget('foo`id`')).toBeNull()
+    expect(safeSuggestionTarget('foo$(whoami)')).toBeNull()
+    expect(safeSuggestionTarget('foo && bar')).toBeNull()
+    expect(safeSuggestionTarget('foo | bar')).toBeNull()
+    expect(safeSuggestionTarget('foo"bar')).toBeNull()
+    expect(safeSuggestionTarget("foo'bar")).toBeNull()
+    expect(safeSuggestionTarget('foo\nbar')).toBeNull()
+    expect(safeSuggestionTarget('foo::bar')).toBeNull()
+  })
+})
 
 describe('evaluateFirstReadSymbolPolicy', () => {
   const dummyEvidence: NavigationEvidence = {
@@ -67,6 +93,24 @@ describe('evaluateFirstReadSymbolPolicy', () => {
       firstReadSymbolPolicy: 'deny',
       firstReadSymbolBytes: 50_000,
       navigationEvidence: dummyEvidence,
+    })
+    expect(decision.action).toBe('allow')
+  })
+
+  it('passes when evidence is marked stale (fail open)', () => {
+    const staleEvidence: NavigationEvidence = {
+      ...dummyEvidence,
+      isStale: true,
+    }
+    const decision = evaluateFirstReadSymbolPolicy({
+      event: makeEvent('view', { path: 'src/cli.ts' }),
+      normalizedPath: 'src/cli.ts',
+      shownPath: 'src/cli.ts',
+      fileSize: 100_000,
+      isFirstRead: true,
+      firstReadSymbolPolicy: 'deny',
+      firstReadSymbolBytes: 50_000,
+      navigationEvidence: staleEvidence,
     })
     expect(decision.action).toBe('allow')
   })
@@ -130,6 +174,35 @@ describe('evaluateFirstReadSymbolPolicy', () => {
     }
   })
 
+  it('sanitizes unsafe symbol names and safely falls back to outline', () => {
+    const unsafeEvidence: NavigationEvidence = {
+      filePath: 'src/malicious.ts',
+      indexedMtime: 1234567,
+      isStale: false,
+      symbolCount: 1,
+      topSymbols: [
+        { name: 'evil"; rm -rf / #', kind: 'function', lineStart: 1, lineEnd: 10 },
+      ],
+      headingCount: 0,
+      topHeadings: [],
+    }
+    const decision = evaluateFirstReadSymbolPolicy({
+      event: makeEvent('view', { path: 'src/malicious.ts' }),
+      normalizedPath: 'src/malicious.ts',
+      shownPath: 'src/malicious.ts',
+      fileSize: 100_000,
+      isFirstRead: true,
+      firstReadSymbolPolicy: 'warn',
+      firstReadSymbolBytes: 50_000,
+      navigationEvidence: unsafeEvidence,
+    })
+    expect(decision.action).toBe('warn')
+    if (decision.action === 'warn') {
+      expect(decision.message).not.toContain('evil"; rm -rf')
+      expect(decision.message).toContain('Run `token-goat outline "src/malicious.ts"` to read surgically.')
+    }
+  })
+
   it('tailors recommendations for markdown headings', () => {
     const headingEvidence: NavigationEvidence = {
       filePath: 'docs/arch.md',
@@ -137,11 +210,11 @@ describe('evaluateFirstReadSymbolPolicy', () => {
       isStale: false,
       symbolCount: 0,
       topSymbols: [],
-      headingCount: 5,
       topHeadings: [
         { name: 'Architecture Overview', kind: 'heading', lineStart: 1, lineEnd: 20 },
         { name: 'Component Inventory', kind: 'heading', lineStart: 21, lineEnd: 60 },
       ],
+      headingCount: 5,
     }
     const decision = evaluateFirstReadSymbolPolicy({
       event: makeEvent('view', { path: 'docs/arch.md' }),
