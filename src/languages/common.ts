@@ -1875,7 +1875,7 @@ export interface BraceSpanOpts {
   multilineLang?: MultilineStringLang
   /** See {@link BraceScanOpts.interpolation}. */
   interpolation?: InterpolationLang
-  /** Span a C# expression-bodied member (`=> expr;`) through its terminating `;` at bracket depth 0, however many lines the expression takes, instead of leaving it on its first line. */
+  /** Span a C# expression-bodied member (`=> expr;`) through its terminating `;` at bracket depth 0, however many lines the expression takes, instead of leaving it on its first line. `'kotlin'` ends an `= expr` body (Kotlin's `fun f() = expr`, Scala's `def f = expr`) where the expression ends, so the brace search never runs past it into an unrelated block. */
   expressionBodies?: boolean | 'kotlin'
 }
 

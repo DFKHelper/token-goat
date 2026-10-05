@@ -235,7 +235,8 @@ describe('languages whose closer has no positional rule keep matching it anywher
     const result = await parseFixture('Midline.scala', content)
     expect(spansOf(result.symbols)).toEqual([
       ['A', 1, 6],
-      ['s', 3, 3],
+      // The val's expression ends where the literal closes, mid-line 4 before `+ "b"`.
+      ['s', 3, 4],
       ['one', 5, 5],
       ['B', 8, 11],
       ['two', 10, 10],

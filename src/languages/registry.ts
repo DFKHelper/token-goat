@@ -144,7 +144,7 @@ export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLangua
   },
   kotlin: (content, filePath) => assignBraceBlockSpans(extractKotlin(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', expressionBodies: 'kotlin', interpolation: 'kotlin' }),
   swift: (content, filePath) => assignBraceBlockSpans(extractSwift(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', multilineLang: 'swift', interpolation: 'swift' }),
-  scala: (content, filePath) => assignBraceBlockSpans(extractScala(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', interpolation: 'scala' }),
+  scala: (content, filePath) => assignBraceBlockSpans(extractScala(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', expressionBodies: 'kotlin', interpolation: 'scala' }),
   lua: (content, filePath) => extractLua(content, filePath).symbols,
   vb: (content, filePath) => extractVb(content, filePath).symbols,
   elixir: (content, filePath) => extractElixir(content, filePath).symbols,
