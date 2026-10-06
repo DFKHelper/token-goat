@@ -40,6 +40,9 @@ function captureConsole(): { logs: string[]; errors: string[] } {
   const errors: string[] = []
   vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.map(String).join(' ')) })
   vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => { errors.push(a.map(String).join(' ')) })
+  // writeCommandFailure writes the streams directly rather than through console.
+  vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => { logs.push(String(chunk).replace(/\n$/, '')); return true })
+  vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => { errors.push(String(chunk).replace(/\n$/, '')); return true })
   return { logs, errors }
 }
 
@@ -212,11 +215,21 @@ describe('offline', () => {
     expect(logs.join('\n')).not.toContain('Upgrading')
   })
 
-  it('upgrade --check reports the offline setting', async () => {
-    const { logs } = captureConsole()
+  // HAND-DERIVED: offline, --check learns no latest version, so it is a failed check: one `token-goat:` error on stderr and exit 1, never a `[!]` line on stdout with exit 0.
+  it('upgrade --check fails on stderr naming the offline setting', async () => {
+    const { logs, errors } = captureConsole()
     await cmdUpgrade({ check: true })
-    expect(logs.join('\n')).toContain(`Current version: v${VERSION}`)
-    expect(logs.join('\n')).toContain('[!] network.offline is set')
+    expect(process.exitCode).toBe(1)
+    expect(logs).toEqual([])
+    expect(errors.join('\n')).toBe(`token-goat: network.offline is set, so no update check was made.\nCurrent version: v${VERSION}`)
+  })
+
+  it('upgrade --check --json keeps the status body on stdout and exits 1', async () => {
+    const { logs, errors } = captureConsole()
+    await cmdUpgrade({ check: true, json: true })
+    expect(process.exitCode).toBe(1)
+    expect(errors).toEqual([])
+    expect(JSON.parse(logs.join(''))).toMatchObject({ current: VERSION, latest: null, updateAvailable: false, error: expect.stringContaining('network.offline') })
   })
 })
 
@@ -494,5 +507,16 @@ describe('against a registry', () => {
     const { logs } = captureConsole()
     await cmdUpgrade({ check: true })
     expect(logs.join('\n')).toContain(`token-goat is up to date (v${VERSION})`)
+    expect(process.exitCode).toBe(savedExitCode)
+  }, 60_000)
+
+  it('upgrade --check fails on stderr when the registry answers with no usable version', async () => {
+    online('bad')
+    const { logs, errors } = captureConsole()
+    await cmdUpgrade({ check: true })
+    expect(process.exitCode).toBe(1)
+    expect(logs).toEqual([])
+    expect(errors.join('\n')).toMatch(/^token-goat: Could not reach npm or internal registry/)
+    expect(errors.join('\n')).toContain(`Current version: v${VERSION}`)
   }, 60_000)
 })

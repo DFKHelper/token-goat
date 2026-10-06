@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { VERSION } from './version.js'
 import { loadConfig } from './config.js'
 import { displaySafeJson } from './paths.js'
-import { formatCommandError } from './command_error.js'
+import { formatCommandError, writeCommandFailure } from './command_error.js'
 import { dataDir } from './constants.js'
 import { ensureDirSync } from './util.js'
 
@@ -312,13 +312,14 @@ export async function cmdUpgrade(
   const status = await checkUpdateStatus(3500, true)
 
   if (opts.check) {
-    if (opts.json) {
-      console.log(displaySafeJson(status, 2))
+    // A check that never learned the latest version is a failure, the same test upgradeDecision applies: the body stays on stdout for --json, the reason goes to stderr otherwise.
+    const failure = status.error ?? (status.latest ? undefined : 'could not determine the latest version')
+    if (failure !== undefined) {
+      writeCommandFailure(opts.json === true, { ...status }, [`${failure}.`, `Current version: v${status.current}`])
       return
     }
-    if (status.error) {
-      console.log(`Current version: v${status.current}`)
-      console.log(`[!] ${status.error}`)
+    if (opts.json) {
+      console.log(displaySafeJson(status, 2))
       return
     }
     if (status.updateAvailable && status.latest) {

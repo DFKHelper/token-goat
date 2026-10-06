@@ -1835,16 +1835,19 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toMatch(/\d+\.\d+\.\d+/)
   },
   upgrade: () => {
-    const r = run(['upgrade', '--check'])
-    expect(r.status, r.stderr).toBe(0)
-    expect(r.stdout.length).toBeGreaterThan(0)
-    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    // network.offline, so the check asks no registry and its answer does not depend on the network: it learns no latest version, which is a failed check. CAPTURE: `TOKEN_GOAT_OFFLINE=1 token-goat upgrade --check` printed "[!] network.offline is set" on stdout and exited 0.
+    const env = { ...tgEnv(dataBase), TOKEN_GOAT_OFFLINE: '1' }
+    const r = run(['upgrade', '--check'], { env })
+    expect(r.status, r.stdout).toBe(1)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toMatch(/^token-goat: network\.offline is set, so no update check was made\.\r?\nCurrent version: v\d+\.\d+\.\d+/)
 
-    const rJson = run(['upgrade', '--check', '--json'])
-    expect(rJson.status, rJson.stderr).toBe(0)
-    const parsed = JSON.parse(rJson.stdout) as { current: string; latest: string | null; updateAvailable: boolean }
+    const rJson = run(['upgrade', '--check', '--json'], { env })
+    expect(rJson.status, rJson.stderr).toBe(1)
+    const parsed = JSON.parse(rJson.stdout) as { current: string; latest: string | null; updateAvailable: boolean; error?: string }
+    expect(parsed).toMatchObject({ latest: null, updateAvailable: false })
     expect(typeof parsed.current).toBe('string')
-    expect(typeof parsed.updateAvailable).toBe('boolean')
+    expect(parsed.error).toContain('network.offline')
   },
   commands: () => {
     const r = run(['commands'])

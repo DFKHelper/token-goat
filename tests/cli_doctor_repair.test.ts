@@ -13,6 +13,7 @@ import { MODEL_DOWNLOAD_HOST, clearDownloadFailure, isExplicitDownload, recordDo
 import { INSTRUCTION_GATE_BEGIN, INSTRUCTION_GATE_END } from '../src/cli_doctor_guidance.js'
 import { DEV_CHECKOUT_ADVICE } from '../src/cli_upgrade.js'
 import { clearUpdateCheck, seedUpdateCheck } from './helpers/update-check.js'
+import { CliError, formatCommandError } from '../src/command_error.js'
 
 describe('doctor auto-repair and embedding model checks', () => {
   // runDoctorRepair checks the instruction gate against the user-level files and the project root, and writes the project when no gate is active anywhere. Every call gets a scratch project and a scratch home holding the gate `token-goat install` writes to ~/.claude/CLAUDE.md, so a healthy install reads as healthy and nothing touches the real home or the checkout the suite runs from.
@@ -415,6 +416,32 @@ describe('doctor auto-repair and embedding model checks', () => {
       expect(out).toContain('development checkout')
       expect(out).not.toContain('[!] Update available')
       expect(out).not.toContain("Run 'token-goat upgrade'")
+    })
+  })
+
+  describe('a --fix repair that fails', () => {
+    // CAPTURE: `doctor --fix` with a read-only config.toml in a scratch home printed "Repair errors encountered:" and the EPERM line on stdout and exited 0. The failing save is simulated here; the message shape is the one runDoctorRepair builds.
+    async function failingFix(): Promise<{ out: string; err: unknown }> {
+      const config = configModule.defaultConfig()
+      config.network.offline = false
+      config.mcp.confine_reads_to_project_root = true
+      vi.spyOn(configModule, 'loadConfig').mockReturnValue(config)
+      vi.spyOn(configModule, 'saveConfig').mockImplementation(() => { throw new Error('EPERM: operation not permitted') })
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(true)
+      const lines: string[] = []
+      vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')) })
+      const err = await runDoctorAndExit({ rootDir: projectRoot, processes: [], fix: true }).then(() => undefined, (e: unknown) => e)
+      return { out: lines.join('\n'), err }
+    }
+
+    it('fails on stderr naming the repair, after the report, instead of listing it on stdout', async () => {
+      const { out, err } = await failingFix()
+
+      expect(err).toBeInstanceOf(CliError)
+      expect(formatCommandError(err)).toBe('token-goat: 1 repair failed:\n  ✕ Failed to update configuration: EPERM: operation not permitted')
+      expect(out).not.toContain('Repair errors')
+      expect(out).not.toContain('EPERM')
+      expect(out).toContain('Running automatic repairs')
     })
   })
 

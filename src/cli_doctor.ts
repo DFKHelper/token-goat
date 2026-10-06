@@ -4,7 +4,8 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { spawnSync } from 'child_process'
 import { parse } from 'smol-toml'
-import { extractErrorMessage, resolveOnPath } from './util.js'
+import { countNoun, extractErrorMessage, resolveOnPath } from './util.js'
+import { CliError } from './command_error.js'
 import { spawnResolvedSync } from './process_util.js'
 import { displaySafeText } from './paths.js'
 import { PACKAGE_NAME } from './version.js'
@@ -1067,7 +1068,7 @@ export function printDoctorResults(results: DoctorResult[]): void {
   console.log()
 }
 
-/** Run doctor and return exit code (0 for success, 1 for failures). */
+/** Run doctor and return exit code (0 for success, 1 for failures). A --fix repair that failed throws a CliError naming each one once the whole report has printed, so the failure reaches stderr and exits 1 rather than sitting in the stdout report. */
 export async function runDoctorAndExit(opts?: string | {
   dataDir?: string
   configPath?: string
@@ -1080,6 +1081,7 @@ export async function runDoctorAndExit(opts?: string | {
 }): Promise<number> {
   const options = typeof opts === 'string' ? { rootDir: opts } : (opts ?? {})
   const repairRan = options.repair === true || options.fix === true
+  let repairErrors: string[] = []
 
   if (repairRan) {
     console.log('Running automatic repairs...\n')
@@ -1107,13 +1109,7 @@ export async function runDoctorAndExit(opts?: string | {
       console.log()
     }
 
-    if (errors.length > 0) {
-      console.log('Repair errors encountered:')
-      for (const e of errors) {
-        console.log(`  ✕ ${e}`)
-      }
-      console.log()
-    }
+    repairErrors = errors
   }
 
   const results = await runDoctorChecks(options.dataDir, options.configPath, options.rootDir, options.processes)
@@ -1176,5 +1172,9 @@ export async function runDoctorAndExit(opts?: string | {
     }
   }
 
-  return results.some((r) => r.status === 'fail') ? 1 : 0
+  const checksFailed = results.some((r) => r.status === 'fail')
+  if (repairErrors.length > 0) {
+    throw new CliError([`${countNoun(repairErrors.length, 'repair')} failed:`, ...repairErrors.map((e) => `  ✕ ${e}`), ...(checksFailed ? ['doctor checks failed as well; see the report above.'] : [])])
+  }
+  return checksFailed ? 1 : 0
 }
