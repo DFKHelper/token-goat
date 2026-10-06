@@ -183,10 +183,16 @@ function collectSymbolDefs(subject: string, rootDir: string): SymbolEntry[] {
   }
 }
 
+/** The subject read as one exact indexed path, outside vendored trees. */
+function exactFileHit(subject: string, rootDir: string): ResolvedSubject | null {
+  const entry = getFileEntry(resolveSpecPath(subject))
+  return entry && !isIgnoredIndexPath(entry.filePath, rootDir) ? { kind: 'file', path: entry.filePath } : null
+}
+
 /** The subject read as a file: an exact path, else the project's file list matched by basename ("config.ts") or by extensionless stem ("config"). Several matches is reported as ambiguity rather than resolved by picking one, which would be a confident wrong answer. The match runs over the `files` table rather than over symbol rows: `files` is the authoritative list of what is indexed (a file with no extracted symbols has no symbol rows at all), it needs one query instead of a capped path-suffix scan, and it makes the candidate set independent of how many symbols each file happens to contain. */
 function resolveFileHit(subject: string, rootDir: string): ResolvedSubject | null {
-  const entry = getFileEntry(resolveSpecPath(subject))
-  if (entry && !isIgnoredIndexPath(entry.filePath, rootDir)) return { kind: 'file', path: entry.filePath }
+  const exact = exactFileHit(subject, rootDir)
+  if (exact) return exact
   if (subject.includes('/') || subject.includes('\\')) return null
 
   const want = foldPath(subject)
@@ -223,7 +229,8 @@ export function resolveSubject(subject: string, mode: SubjectMode = 'symbol-firs
     return null
   }
 
-  if (/\s/.test(subject)) return null
+  // A subject holding whitespace is no symbol name and no basename, but it can be a path with a space in it (`"src dir/big file.ts"`), which only an exact lookup answers.
+  if (/\s/.test(subject)) return exactFileHit(subject, rootDir)
 
   if (mode === 'symbol-first') {
     const hit = resolveSymbolHit(subject, rootDir)
