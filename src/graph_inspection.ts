@@ -69,7 +69,7 @@ export function runDead(opts: DeadOptions): number {
   if (unknownKinds.length > 0) {
     const label = unknownKinds.length === 1 ? 'kind' : 'kinds'
     const quoted = unknownKinds.map((k) => `'${k}'`).join(', ')
-    emitErr(`Unrecognized ${label}: ${quoted}`)
+    emitErr(formatCommandError(`Unrecognized ${label}: ${quoted}`))
     for (const k of unknownKinds) {
       const closes = rankSimilarNames(knownKinds, k)
       if (closes.length > 0) emitErr(didYouMean(closes))

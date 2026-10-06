@@ -1753,6 +1753,17 @@ describe('runDead integration', () => {
     expect(errCaptured).toContain('bogusnonsense')
   })
 
+  it('says an unrecognized --kind as a token-goat error with the kind escaped', () => {
+    // HAND-DERIVED kind: an ANSI color escape and a newline, which the refusal must not print raw.
+    vi.mocked(distinctSymbolKinds).mockReturnValueOnce([])
+    const errCaptured = captureStderr(() => {
+      expect(runDead({ kind: 'bogus\u001b[31m\nforged' })).toBe(1)
+    })
+    expect(errCaptured.startsWith("token-goat: Unrecognized kind: 'bogus")).toBe(true)
+    expect(errCaptured).not.toContain('\u001b')
+    expect(errCaptured).not.toContain('\nforged')
+  })
+
   it('rejects an unrecognized --kind instead of silently reporting a false-clean "no dead symbols" result', () => {
     const errCaptured = captureStderr(() => {
       const code = runDead({ kind: '__nonexistent_kind_xyzzy__' })

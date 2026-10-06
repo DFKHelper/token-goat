@@ -82,8 +82,15 @@ function writesOf(stmt: ts.Statement, isWrite: (node: ts.Node) => node is ts.Cal
     return calls
   }
   if (ts.isForOfStatement(stmt)) {
-    const inner = single(stmt.statement)
-    return inner === null ? null : writesOf(inner, isWrite)
+    // A loop body may name a value before writing it (`const closes = ...` then `if (closes.length > 0) emitErr(...)`); a declaration prints nothing, so only the other statements decide whether the loop is part of the run.
+    const body = ts.isBlock(stmt.statement) ? stmt.statement.statements.filter((s) => !ts.isVariableStatement(s)) : [stmt.statement]
+    const calls: ts.CallExpression[] = []
+    for (const s of body) {
+      const w = writesOf(s, isWrite)
+      if (w === null) return null
+      calls.push(...w)
+    }
+    return body.length === 0 ? null : calls
   }
   return null
 }

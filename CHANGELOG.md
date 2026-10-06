@@ -6,6 +6,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **`dead --kind` names an unrecognized kind in a `token-goat:` error with the kind escaped.** The message had no prefix and printed the caller's text as given.
 - **`changed`, `diff` and `log` refuse a git ref that starts with `-` in a `token-goat:` error with the ref escaped.** The refusal had no prefix and printed the caller's ref as given, so a control character in it reached the terminal.
 - **A failed git call reads as one clean `token-goat:` error.** `blame` and `log` ended their message in a literal `\n`, `diff` folded git's 130-line usage text into one escaped line, and `changed` outside a repository dumped those 131 lines raw with no `token-goat:` prefix. Every git failure now goes through one formatter: it trims git's output, stops at its usage text, and says `git <command> failed: not a git repository` in one line when there is no repository.
 - **`recall --limit 0` and `search --limit 0` are refused with the same message the other `--limit` commands give.** An empty page answered neither: `recall` printed "Showing 0 entries; more are available" above "No cache entries match", and `search` printed "No results found across active channels []". Both now exit 1 with `--limit must be a positive number, got: "0"`, and a negative value gets the same wording instead of "non-negative".
