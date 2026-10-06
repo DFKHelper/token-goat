@@ -115,4 +115,18 @@ describe('git ref guard: a ref starting with "-" is refused, not handed to git',
     expect(code).toBe(1)
     expect(stderr).toContain("Refusing a git ref that starts with '-'")
   })
+
+  // The refusal is a token-goat error like any other: one `token-goat:` line, with the caller's ref escaped so a control character in it cannot repaint the terminal or forge a line. HAND-DERIVED ref: an ANSI color escape and a newline after the leading dash.
+  it.each([
+    ['diff', (root: string, ref: string) => runDiff({ spec: 'a.ts::target', projectRoot: root, ref })],
+    ['log', (root: string, ref: string) => runLog({ spec: 'a.ts::target', projectRoot: root, ref })],
+    ['changed', (root: string, ref: string) => runChanged({ projectRoot: root, ref })],
+  ])('%s says the refusal as one escaped token-goat error', (_name, run) => {
+    const { root } = makeRepo()
+    const { stderr, code } = capture(() => run(root, '-x\u001b[31m\nforged'))
+    expect(code).toBe(1)
+    expect(stderr.startsWith("token-goat: Refusing a git ref that starts with '-': -x")).toBe(true)
+    expect(stderr).not.toContain('\u001b')
+    expect(stderr.trimEnd().split('\n')).toHaveLength(1)
+  })
 })

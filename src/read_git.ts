@@ -211,7 +211,7 @@ function refIsSafe(ref: string): boolean {
 }
 
 function emitUnsafeRef(ref: string): void {
-  emitErr(`Refusing a git ref that starts with '-': ${ref}`)
+  emitErr(formatCommandError(`Refusing a git ref that starts with '-': ${ref}`))
 }
 
 // The diff `changed` replaces is one shell command, so it is priced like every shell saving: by what the harness would have delivered of it, not by its full size. `git diff --name-only` lists paths relative to the repository top level whatever the cwd, so every git call that takes those names back as pathspecs must run from the top level too (resolveProjectRoot is that top level inside a repository), and must match them literally.
