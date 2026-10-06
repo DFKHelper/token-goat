@@ -1,6 +1,7 @@
 import { executeParallelSearch } from './parallel_search.js';
 import type { FusedSearchResult, SearchExecutionSummary, SearchOptions } from './types.js';
 import { displaySafeJson, displaySafeText } from '../paths.js';
+import { DELETED_TAG } from '../read_commands.js';
 import { resolveProjectConfinement } from '../read_spec.js';
 
 /** Formats one fused result as its location line, naming the channels that agreed on it, and a one-line preview. The fusion score stays in `--json`: it orders the list but tells a reader nothing the order does not. */
@@ -12,7 +13,7 @@ function formatTerminalHit(hit: FusedSearchResult, rank: number): string {
   const spanInfo = showMatch ? `${hit.lineStart}-${hit.lineEnd}` : '';
   const symInfo = hit.name ? ` (${displaySafeText(hit.name)}${hit.kind ? ` · ${hit.kind}` : ''}${spanInfo ? ` ${spanInfo}` : ''})` : spanInfo ? ` (${spanInfo})` : '';
 
-  const lines = [`${rank}. ${loc}${symInfo} ${hit.channels.join('+')}`];
+  const lines = [`${rank}. ${loc}${symInfo} ${hit.channels.join('+')}${hit.deleted === true ? `  ${DELETED_TAG}` : ''}`];
 
   // A one-line hit shows its text match too: the fused preview is the longest of its channels' previews, and a semantic chunk's opening outlengths a line windowed on the match.
   const shownPreview = hit.matchPreview && (showMatch || hit.matchLine === hit.lineStart) ? hit.matchPreview : hit.preview;

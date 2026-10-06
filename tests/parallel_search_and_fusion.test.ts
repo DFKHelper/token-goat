@@ -1,8 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { fuseChannelHits, DEFAULT_RRF_K } from '../src/search/rrf.js';
+import { executeParallelSearch } from '../src/search/parallel_search.js';
+import { formatSearchText } from '../src/search/search_cli.js';
+import { globalDbPath } from '../src/constants.js';
+import { closeAllDbs } from '../src/db.js';
+import { indexFileSync } from '../src/parser.js';
+import { DELETED_TAG } from '../src/read_commands.js';
 import type { ChannelHit, SearchChannel } from '../src/search/types.js';
 import { detectEcosystems } from '../src/bridges/detect_ecosystems.js';
 import { installJetbrains } from '../src/bridges/jetbrains_install.js';
@@ -295,3 +301,54 @@ describe('fusion keeps separate same-named definitions as separate results', () 
     expect(second.channels.slice().sort()).toEqual(['semantic', 'symbol']);
   });
 });
+
+// executeParallelSearch on the real index: indexFileSync writes the rows, the channels run as the CLI runs them. PROVENANCE HAND-DERIVED: the fixtures are written here so each premise holds by construction (one code symbol and one heading naming the query, so two distinct results compete for one slot; two same-named definitions, one deleted after indexing), and every expectation is counted from the shown results, not read off the implementation.
+describe('executeParallelSearch reports what it shows', () => {
+  const dirs: string[] = []
+  afterEach(() => {
+    closeAllDbs()
+    for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true })
+  })
+  function project(files: Record<string, string>): string {
+    const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-search-shown-')))
+    dirs.push(dir)
+    for (const [rel, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
+      fs.writeFileSync(path.join(dir, rel), text)
+      indexFileSync(path.join(dir, rel), globalDbPath())
+    }
+    return dir
+  }
+
+  it('counts each channel over the results it shows, not the hits the limit cut', async () => {
+    const dir = project({ 'src/tool.ts': 'export function zorblax(): number {\n  return 1\n}\n', 'docs/guide.md': '# Guide\n\n## zorblax\n\nNotes.\n' })
+    const summary = await executeParallelSearch({ query: 'zorblax', limit: 1, projectRoot: dir, channels: ['symbol', 'heading'] })
+    expect(summary.results).toHaveLength(1)
+    const shown = { symbol: 0, heading: 0, text: 0, semantic: 0 }
+    for (const r of summary.results) for (const c of r.channels) shown[c] += 1
+    expect(summary.channelCounts).toEqual(shown)
+    expect(summary.channelCounts.symbol + summary.channelCounts.heading).toBe(1)
+    expect(formatSearchText(summary).split('\n')[0]).toContain(`[symbol:${shown.symbol}, heading:${shown.heading}, text:0, semantic:0]`)
+  }, 60_000)
+
+  it('puts a live definition ahead of one whose file is gone, and tags the gone one', async () => {
+    const dir = project({ 'a_gone.ts': 'export function quillwort(): number {\n  return 1\n}\n', 'b_live.ts': 'export function quillwort(): number {\n  return 2\n}\n' })
+    fs.rmSync(path.join(dir, 'a_gone.ts'))
+    const summary = await executeParallelSearch({ query: 'quillwort', limit: 5, projectRoot: dir, channels: ['symbol'] })
+    expect(summary.results.map((r) => path.basename(r.filePath))).toEqual(['b_live.ts', 'a_gone.ts'])
+    expect(summary.results[0]!.deleted).toBeUndefined()
+    expect(summary.results[1]!.deleted).toBe(true)
+    const lines = formatSearchText(summary).split('\n')
+    expect(lines.find((l) => l.includes('b_live.ts'))).not.toContain(DELETED_TAG)
+    expect(lines.find((l) => l.includes('a_gone.ts'))).toContain(DELETED_TAG)
+  }, 60_000)
+
+  // Each channel tops out at one hit here, the gone symbol and the live heading both at rank 1; docs_weight puts the heading below the symbol, so only a sink ahead of the limit cut lets the live one take the single slot.
+  it('gives the one slot a limit leaves to a live result over a gone one from another channel', async () => {
+    const dir = project({ 'a_gone.ts': 'export function quillwort(): number {\n  return 1\n}\n', 'docs/guide.md': '# Guide\n\n## quillwort\n\nNotes.\n' })
+    fs.rmSync(path.join(dir, 'a_gone.ts'))
+    const summary = await executeParallelSearch({ query: 'quillwort', limit: 1, projectRoot: dir, channels: ['symbol', 'heading'] })
+    expect(summary.results.map((r) => path.basename(r.filePath))).toEqual(['guide.md'])
+    expect(summary.channelCounts).toEqual({ symbol: 0, heading: 1, text: 0, semantic: 0 })
+  }, 60_000)
+})

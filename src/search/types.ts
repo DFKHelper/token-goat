@@ -37,6 +37,8 @@ export interface FusedSearchResult {
   /** Line of the best text-channel hit inside the fused range, when one exists. */
   readonly matchLine?: number | undefined;
   readonly matchPreview?: string | undefined;
+  /** Set when the file is gone from disk and the row is what the index last saw of it. */
+  readonly deleted?: true | undefined;
 }
 
 export interface SearchLowConfidence {

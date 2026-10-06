@@ -7,14 +7,14 @@ import { checkSemanticReadiness } from '../embed_preflight.js';
 import { getOwnProjectFileEntries } from '../index_reader.js';
 import { searchSymbolsFtsByKind } from './symbol_fts.js';
 import { projectPathIsConsultable } from '../bridges/project_scope_guard.js';
-import { readFileText } from '../read_commands.js';
+import { fileIsGone, readFileText, sinkGoneRows } from '../read_commands.js';
 import { fuseChannelHits } from './rrf.js';
 import { bodyFromDeclaration } from '../read_suggest.js';
 import { pathPriorityWeight } from './path_weight.js';
 import { loadConfig } from '../config.js';
 import { snippetAround } from '../snippet_window.js';
 import { assessDenseRelevance, floorEmptiedPhrase, weakMatchPhrase } from '../semantic_relevance.js';
-import { ALL_CHANNELS, type ChannelHit, type SearchChannel, type SearchExecutionSummary, type SearchLowConfidence, type SearchOptions } from './types.js';
+import { ALL_CHANNELS, type ChannelHit, type FusedSearchResult, type SearchChannel, type SearchExecutionSummary, type SearchLowConfidence, type SearchOptions } from './types.js';
 
 /** A symbol hit's preview: its docstring, else the first 140 characters of its body from the declaration on, so a decorated symbol previews as `def area(...)` rather than `@property`. */
 export function symbolPreview(sym: { name: string; docstring?: string | null; body?: string | null }): string {
@@ -265,12 +265,6 @@ export async function executeParallelSearch(options: SearchOptions): Promise<Sea
 
   const settled = await Promise.allSettled(channelPromises);
   const channelHitsMap = new Map<SearchChannel, ChannelHit[]>();
-  const channelCounts: Record<SearchChannel, number> = {
-    symbol: 0,
-    heading: 0,
-    text: 0,
-    semantic: 0,
-  };
   const degradedChannels: Array<{ channel: SearchChannel; reason: string }> = [];
   const notes: Array<{ channel: SearchChannel; note: string }> = [];
   let lowConfidence: SearchLowConfidence | undefined;
@@ -279,7 +273,6 @@ export async function executeParallelSearch(options: SearchOptions): Promise<Sea
     if (res.status === 'fulfilled') {
       const { channel, hits, degradedReason, note, lowConfidence: channelLowConfidence } = res.value;
       channelHitsMap.set(channel, hits);
-      channelCounts[channel] = hits.length;
       if (degradedReason) {
         degradedChannels.push({ channel, reason: degradedReason });
       }
@@ -289,11 +282,19 @@ export async function executeParallelSearch(options: SearchOptions): Promise<Sea
   }
 
   const semanticConfig = loadConfig().semantic;
-  const fusedResults = fuseChannelHits(channelHitsMap, {
-    limit,
+  // Fused without the limit so a row whose file is gone can be sunk below every live one before the cut, the order refs pages in: see sinkGoneRows.
+  const fused = fuseChannelHits(channelHitsMap, {
+    limit: Number.MAX_SAFE_INTEGER,
     weightOf: (p) => pathPriorityWeight(p, semanticConfig),
     ...(options.minScore !== undefined ? { minScore: options.minScore } : {}),
   });
+
+  const fusedResults: FusedSearchResult[] = sinkGoneRows(fused, (r) => r.filePath)
+    .slice(0, limit)
+    .map((r) => (fileIsGone(r.filePath) ? { ...r, deleted: true as const } : r));
+  // Counted over what is shown: a channel's own hit count includes hits the limit cut, which overstated what the header's channels contributed.
+  const channelCounts: Record<SearchChannel, number> = { symbol: 0, heading: 0, text: 0, semantic: 0 };
+  for (const r of fusedResults) for (const c of r.channels) channelCounts[c] += 1;
 
   const durationMs = Date.now() - startTime;
 
