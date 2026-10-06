@@ -158,6 +158,21 @@ describe('vue adapter', () => {
     expect(myIconRef).toMatchObject({ line: 22 })
   })
 
+  it('indexes a nameless `export default` function, arrow or class as `default`, and never names a class `extends`', () => {
+    // HAND-DERIVED: one `export default` shape per file, line numbers counted by hand from the script block.
+    const sfc = (body: string) => `<script>\n${body}\n</script>\n<template><div/></template>\n`
+    const defaultOf = (body: string, file: string) => extractVue(sfc(body), file).symbols.filter((s) => s.name === 'default')
+    expect(defaultOf('export default function () {\n  return 1\n}', 'Fn.vue')).toMatchObject([{ kind: 'sfc_script_function', lineStart: 2, lineEnd: 4 }])
+    expect(defaultOf('export default async () => {\n  return 1\n}', 'Arrow.vue')).toMatchObject([{ kind: 'sfc_script_function', lineStart: 2, lineEnd: 4 }])
+    expect(defaultOf('export default class {\n  run() {}\n}', 'Cls.vue')).toMatchObject([{ kind: 'sfc_script_class', lineStart: 2, lineEnd: 4 }])
+    const sub = extractVue(sfc('export default class extends Base {\n  run() {}\n}'), 'Sub.vue').symbols
+    expect(sub.filter((s) => s.kind === 'sfc_script_class').map((s) => s.name)).toEqual(['default'])
+    // A named default keeps its own name; a default that re-exports a value or an options object defines nothing named `default` here.
+    expect(extractVue(sfc('export default function named() {}'), 'Named.vue').symbols.map((s) => s.name)).toContain('named')
+    expect(defaultOf('const v = 1\nexport default v', 'Value.vue')).toEqual([])
+    expect(defaultOf('export default {\n  name: "x"\n}', 'Options.vue')).toEqual([])
+  })
+
   it('does not leak <style> block content into script or template extraction', () => {
     const { symbols, refs } = extractVue(VUE_CONTENT, 'MyButtonPanel.vue')
     // `.wrapper` (a CSS class selector, not a JS declaration or a component tag) must not appear as either a script-declaration symbol or a template ref.

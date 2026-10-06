@@ -2090,6 +2090,34 @@ describe("a stored body says the same thing as the span it is stored with", () =
     expect(sym?.lineEnd).toBe(3)
   })
 
+  // HAND-DERIVED: each source is one statement, so the expected span is its own lines counted by hand.
+  it('indexes a nameless `export default` function, generator, arrow or class as `default`', async () => {
+    const cases: Array<[string, string, string]> = [
+      ['d1.ts', 'export default function () {\n  return 1\n}\n', 'function'],
+      ['d2.js', 'export default async function () {\n  return 1\n}\n', 'function'],
+      ['d3.ts', 'export default function* () {\n  yield 1\n}\n', 'function'],
+      ['d4.ts', 'export default () => {\n  return 1\n}\n', 'function'],
+      ['d5.js', 'export default class {\n  run() {}\n}\n', 'class'],
+    ]
+    for (const [name, source, kind] of cases) {
+      const syms = (await parseFile(write(name, source))).symbols
+      const sym = syms.find((x) => x.name === 'default')
+      expect(sym, name).toMatchObject({ kind, lineStart: 1, lineEnd: 3, body: source.trimEnd() })
+    }
+    // The class's own method is still indexed, and the arrow's body opens a scope like any function's.
+    expect((await parseFile(write('d6.ts', 'export default class {\n  run() {}\n}\n'))).symbols.map((s) => s.name).sort()).toEqual(['default', 'run'])
+    expect((await parseFile(write('d7.ts', 'export default () => {\n  const inner = 1\n  return inner\n}\n'))).symbols.map((s) => s.name)).toEqual(['default'])
+  })
+
+  it('leaves a named default export under its own name and indexes nothing for a re-exported value', async () => {
+    const named = (await parseFile(write('e1.ts', 'export default function named() {}\nexport class Other {}\n'))).symbols
+    expect(named.map((s) => s.name).sort()).toEqual(['Other', 'named'])
+    const value = (await parseFile(write('e2.ts', 'const v = 1\nexport default v\n'))).symbols
+    expect(value.map((s) => s.name)).toEqual(['v'])
+    const object = (await parseFile(write('e3.ts', 'export default { a: 1 }\n'))).symbols
+    expect(object.some((s) => s.name === 'default')).toBe(false)
+  })
+
   it('keeps go declaration keywords, but not for a grouped declaration', async () => {
     const file = write('n.go', 'package main\n\nvar gx = 1\n\nconst gy = 2\n\ntype GT struct{}\n')
     const syms = (await parseFile(file)).symbols

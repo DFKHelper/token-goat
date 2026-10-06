@@ -287,6 +287,12 @@ function isModuleWrapperCallback(node: TsNode): boolean {
 // Right-hand sides that make an assignment a definition rather than a value.
 const TSJS_FN_VALUE_TYPES: ReadonlySet<string> = new Set(['arrow_function', 'function_expression', 'function'])
 
+// The nameless definitions `export default` can carry (`function () {}`, `function* () {}`, `() => {}`, `class {}`), mapped to the kind each is indexed under as `default`.
+const TSJS_ANONYMOUS_DEFAULT_KIND: ReadonlyMap<string, string> = new Map([
+  ...[...TSJS_FN_VALUE_TYPES, 'generator_function'].map((type) => [type, 'function'] as const),
+  ['class', 'class'],
+])
+
 // Is this node the bare `module.exports` member expression?
 function isModuleExports(node: TsNode): boolean {
   if (node.type !== 'member_expression') return false
@@ -413,6 +419,12 @@ export function extractTsJsSymbols(root: TsNode, filePath: string, lines: readon
     if (!insideFunction && node.type === 'expression_statement') {
       const assigned = commonJsAssignmentSymbol(node, filePath, lines)
       if (assigned !== null) out.push(assigned)
+    }
+    // `export default function () {}` and `export default class {}` define something with no name of its own, reachable only as the module's default export, so it is indexed as `default`: the name `symbol default` asks for. tree-sitter puts an expression on the `value` field only after `export default`; a named default export is a `declaration` and is indexed above under its own name.
+    if (!insideFunction && node.type === 'export_statement') {
+      const value = node.childForFieldName('value')
+      const kind = value === null ? undefined : TSJS_ANONYMOUS_DEFAULT_KIND.get(value.type)
+      if (value !== null && kind !== undefined && nodeName(value) === null) out.push(makeSymbol(filePath, 'default', kind, value, lines, 'c'))
     }
     // Class fields bound to a function/arrow are method-equivalent members (auto-bound handlers); index them as 'method'. Data fields are skipped, matching the no-member-indexing convention. TS exposes the field name on `name`, JS on `property`.
     if (node.type === 'public_field_definition' || node.type === 'field_definition') {
