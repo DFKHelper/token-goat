@@ -271,6 +271,17 @@ export function isValidUtf8(buf: Buffer): boolean {
   return Buffer.compare(Buffer.from(buf.toString('utf-8'), 'utf-8'), buf) === 0
 }
 
+/** A tree-sitter node starts at its first real character, so a nested member's stored body has no indent on its first line while every later line keeps the file's (`static create() {` flush left over an indented body). The indent is taken back from the file, only while the line at lineStart still opens with the stored first line, so a stale or deleted file leaves the stored text as it is. */
+function withFileIndent(entry: { filePath: string; lineStart: number }, storedLines: readonly string[], stored: string): string {
+  const first = storedLines[0]!
+  if (/^[ \t]/.test(first)) return stored
+  const source = readFileText(entry.filePath)
+  const diskLine = source === null ? undefined : indexedSourceText(entry.filePath, source).split(/\r?\n/)[entry.lineStart - 1]
+  const indent = diskLine?.match(/^[ \t]+/)?.[0]
+  if (diskLine === undefined || indent === undefined || !diskLine.startsWith(first, indent.length)) return stored
+  return [indent + first, ...storedLines.slice(1)].join('\n')
+}
+
 /** Symbols indexed with an empty stored `body` (e.g. HTML/Liquid heading symbols produced by `sectionsToHeadingSymbols`, which store `body: ''`) need their content re-read from disk by line range instead of rendering blank. Markdown heading symbols span their whole section but store only the heading line (hint_target.ts parses its level from it), so they are re-read the same way, provided the file still has that heading line at lineStart -- an edited file keeps the stored line rather than splicing in unrelated text. Shared by runSymbol, runRead, and runBrief so all three read surfaces resolve these symbols the same way. */
 export function resolveBody(entry: { body: string; filePath: string; lineStart: number; lineEnd: number; kind?: string }): string {
   const storedLines = entry.body.split(/\r?\n/)
@@ -279,7 +290,7 @@ export function resolveBody(entry: { body: string; filePath: string; lineStart: 
   const storedFirstLine = storedLines[0]!
   const storedLineCount = entry.body === '' ? 0 : storedLines.length
   const widenedHeading = entry.kind === 'heading' && storedLineCount > 0 && storedLineCount < entry.lineEnd - entry.lineStart + 1
-  if (entry.body !== '' && !widenedHeading) return stored
+  if (entry.body !== '' && !widenedHeading) return withFileIndent(entry, storedLines, stored)
   const source = readFileText(entry.filePath)
   if (source === null) return stored
   const diskLines = indexedSourceText(entry.filePath, source).split(/\r?\n/)
