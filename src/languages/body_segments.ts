@@ -9,11 +9,12 @@ export interface BodySegment {
   readonly open: boolean
 }
 
-/** The declarations in `code` from `from` on, where `from` sits just inside a body's opening brace or at the start of a line that is already inside one. A declaration ends at a `;`, or at the `}` closing a block it opened, outside every parenthesis and bracket; the scan stops at the `}` that closes the body itself. `code` must have its string literals and comments blanked, offset for offset, so a brace or `;` inside one is text. Slices holding nothing but whitespace and `;` are left out. */
+/** The declarations in `code` from `from` on, where `from` sits just inside a body's opening brace or at the start of a line that is already inside one. A declaration ends at a `;`, or at the `}` closing a block it opened, outside every parenthesis and bracket; the scan stops at the `}` that closes the body itself. `code` must have its string literals and comments blanked, offset for offset, so a brace or `;` inside one is text. stripStringLiterals keeps the quotes and the code of an interpolation hole (`"a${x}b"` becomes `" ${x} "`), so everything between a `"` and the next one is skipped: the hole's `}` would otherwise end the declaration inside its own string. Slices holding nothing but whitespace and `;` are left out. */
 export function bodySegments(code: string, from: number): BodySegment[] {
   const out: BodySegment[] = []
   let braces = 0
   let nest = 0
+  let inString = false
   let start = from
   const cut = (end: number): void => {
     if (/[^\s;]/.test(code.slice(start, end))) out.push({ start, end, open: false })
@@ -21,7 +22,9 @@ export function bodySegments(code: string, from: number): BodySegment[] {
   }
   for (let i = from; i < code.length; i++) {
     const ch = code[i]
-    if (ch === '(' || ch === '[') nest++
+    if (ch === '"') inString = !inString
+    else if (inString) continue
+    else if (ch === '(' || ch === '[') nest++
     else if (ch === ')' || ch === ']') nest = Math.max(0, nest - 1)
     else if (ch === '{') braces++
     else if (ch === '}') {

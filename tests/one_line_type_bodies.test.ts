@@ -24,6 +24,11 @@ describe('bodySegments', () => {
     expect(segs.map((s) => code.slice(s.start, s.end).trim())).toEqual(['val a = run({ 1; 2 });', 'fun g() { val y = [1; 2]'])
     expect(segs.map((s) => s.open)).toEqual([false, true])
   })
+
+  it('reads past the braces of an interpolation hole, which stripStringLiterals leaves between the kept quotes', () => {
+    const code = '  fun s() = " ${x} "; val t = $" {y} "; fun u() = 1 }'
+    expect(bodySegments(code, 0).map((s) => code.slice(s.start, s.end).trim())).toEqual(['fun s() = " ${x} ";', 'val t = $" {y} ";', 'fun u() = 1'])
+  })
 })
 
 describe('PHP one-line type bodies', () => {
@@ -144,6 +149,12 @@ describe('Kotlin one-line type bodies', () => {
     expect(symbols.find((s) => s.name === 'ka')?.body).toBe('fun ka(): Int { return 1 }')
     expect(symbols.find((s) => s.name === 'after')?.body).toBe('fun after() = "}{"')
   })
+
+  it('keeps an interpolated string in its member and indexes the member after it', async () => {
+    const { symbols } = await parseFixture('hole.kt', 'class KH { fun s() = "a${x}b"; fun t() = 1 }\n')
+    expect(symbols.find((s) => s.name === 's')?.body).toBe('fun s() = "a${x}b";')
+    expect(symbols.find((s) => s.name === 't')?.body).toBe('fun t() = 1')
+  })
 })
 
 describe('Scala one-line type bodies', () => {
@@ -210,5 +221,11 @@ describe('Scala one-line type bodies', () => {
     const { symbols } = await parseFixture('body.scala', 'object SC { def sa(): Int = { 1 }; def after(): String = "}{" }\n')
     expect(symbols.find((s) => s.name === 'sa')?.body).toBe('def sa(): Int = { 1 }')
     expect(symbols.find((s) => s.name === 'after')?.body).toBe('def after(): String = "}{"')
+  })
+
+  it('keeps an interpolated string in its member and indexes the member after it', async () => {
+    const { symbols } = await parseFixture('hole.scala', 'object SH { def s(): String = s"a${x}b"; def t(): Int = 1 }\n')
+    expect(symbols.find((s) => s.name === 's')?.body).toBe('def s(): String = s"a${x}b";')
+    expect(symbols.find((s) => s.name === 't')?.body).toBe('def t(): Int = 1')
   })
 })
