@@ -217,6 +217,18 @@ function latestStatBytesSaved(kind: string): number {
   return row ? row.bytes_saved : -1
 }
 
+// File-level defaults, so every describe below (several sit outside 'read_commands') gets a config and a no-git runGit even when `-t` runs it alone; vi.clearAllMocks in a describe's own beforeEach keeps these implementations.
+beforeEach(() => {
+  vi.clearAllMocks()
+  mockLoadConfig.mockReturnValue({
+    indexing: { cross_project_symbols: true },
+    overflow_guard: { enabled: true, max_tokens: 25000 },
+    redaction: DEFAULT_REDACTION,
+  } as unknown as ReturnType<typeof loadConfig>)
+  // resolveProjectRoot (project.ts, not mocked here) calls runGit internally to find the repo top-level; default to "not a git repo" so it falls through to its findProject/cwd fallback instead of exploding on the bare vi.fn() this file's util.js mock otherwise leaves runGit as. Individual tests below (e.g. runChanged) override this per-test as needed.
+  vi.mocked(runGit).mockReturnValue({ exitCode: 1, stdout: '', stderr: 'not a git repo' })
+})
+
 describe('read_commands', () => {
   let tempDir: string
 
@@ -229,14 +241,6 @@ describe('read_commands', () => {
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-read-cmds-'))
-    vi.clearAllMocks()
-    mockLoadConfig.mockReturnValue({
-      indexing: { cross_project_symbols: true },
-      overflow_guard: { enabled: true, max_tokens: 25000 },
-      redaction: DEFAULT_REDACTION,
-    } as unknown as ReturnType<typeof loadConfig>)
-    // resolveProjectRoot (project.ts, not mocked here) calls runGit internally to find the repo top-level; default to "not a git repo" so it falls through to its findProject/cwd fallback instead of exploding on the bare vi.fn() this file's util.js mock otherwise leaves runGit as. Individual tests below (e.g. runChanged) override this per-test as needed.
-    vi.mocked(runGit).mockReturnValue({ exitCode: 1, stdout: '', stderr: 'not a git repo' })
   })
 
   afterEach(() => {
