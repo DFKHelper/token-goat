@@ -30,9 +30,15 @@ export function readStdinJson(
       fn()
     }
 
-    let idleTimer = setTimeout(() => {
-      finish(() => reject(new Error('readStdinJson: timed out waiting for stdin')))
-    }, timeoutMs)
+    // A fired timer is not yet proof the sender went quiet: each event-loop turn runs its timers before the poll that delivers I/O, so a process starved of CPU past the window wakes to its own timeout with the payload already in the pipe, and relay then passes `{}` for a hook the harness did send. setImmediate runs after that poll, so a chunk it delivers still counts.
+    const armIdle = (): ReturnType<typeof setTimeout> =>
+      setTimeout(() => {
+        const seen = totalBytes
+        setImmediate(() => {
+          if (totalBytes === seen) finish(() => reject(new Error('readStdinJson: timed out waiting for stdin')))
+        })
+      }, timeoutMs)
+    let idleTimer = armIdle()
     // Unbounded-duration backstop, never rescheduled -- see MAX_STDIN_WALL_MS.
     const wallTimer = setTimeout(() => {
       finish(() => {
@@ -44,9 +50,7 @@ export function readStdinJson(
     const onData = (chunk: Buffer): void => {
       // Restart the idle window: this timeout bounds a stalled sender, not a slow one.
       clearTimeout(idleTimer)
-      idleTimer = setTimeout(() => {
-        finish(() => reject(new Error('readStdinJson: timed out waiting for stdin')))
-      }, timeoutMs)
+      idleTimer = armIdle()
       totalBytes += chunk.length
       if (totalBytes > maxBytes) {
         // Detaching listeners alone leaves the stream flowing at the OS/event-loop level; destroy it so the fd is released and nothing keeps buffering data no one will read.

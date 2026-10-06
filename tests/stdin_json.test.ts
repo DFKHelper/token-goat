@@ -1,5 +1,8 @@
 /** `readStdinJson`'s timeout is an IDLE timeout, not a deadline on the whole read. It used to be armed once in the promise constructor and never rescheduled, so it was an absolute deadline: a payload that streamed steadily for longer than the timeout was thrown away mid-delivery even though stdin was never idle. That capped the accepted payload at whatever fits through the pipe in five seconds rather than at MAX_STDIN_BYTES, the 64 MB the module deliberately allows -- and `relay` turns the rejection into an empty payload, so the hook exited 0 with valid `{}` on stdout and read-dedup, image shrinking and the dirty-queue enqueue all silently stopped for that call. */
+import { spawnSync } from 'node:child_process'
+import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
+import { pathToFileURL } from 'node:url'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -60,4 +63,21 @@ describe('readStdinJson on a stream that is slow but never idle', () => {
 
     await expect(readStdinJson(120)).rejects.toThrow(/timed out waiting for stdin/)
   })
+})
+
+describe('readStdinJson in a process starved past its idle window', () => {
+  // A PassThrough cannot show this: its data arrives on a microtask, before any timer could fire. Only a real pipe makes the payload wait for the event loop's poll phase, which runs after its timers.
+  it('reads a payload already in the pipe instead of timing out on it', () => {
+    // HAND-DERIVED: the child arms a 100 ms idle window and then holds its event loop for 400 ms, the shape a hook process takes on a machine too busy to schedule it; the payload was written and the pipe closed at spawn, so stdin was never idle from the sender's side.
+    const moduleUrl = pathToFileURL(join(process.cwd(), 'src', 'stdin_json.ts')).href
+    const child = [
+      `const { readStdinJson } = await import(${JSON.stringify(moduleUrl)})`,
+      'const pending = readStdinJson(100)',
+      'const end = Date.now() + 400',
+      'while (Date.now() < end) {}',
+      "pending.then((v) => console.log('resolved', JSON.stringify(v)), (e) => console.log('rejected', e.message))",
+    ].join('\n')
+    const res = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', child], { input: '{"ok":1}', cwd: process.cwd(), encoding: 'utf8', timeout: 60_000 })
+    expect(res.stdout.trim(), res.stderr).toBe('resolved {"ok":1}')
+  }, 90_000)
 })
