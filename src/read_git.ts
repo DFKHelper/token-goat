@@ -336,7 +336,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
     const grepRemoved = preGrepFileCount - postGrepFileCount
     if (matchesGrep !== undefined && grepRemoved > 0) {
       emit(
-        `No non-test files matched --grep ${opts.grep ?? ''} ` +
+        `No non-test files matched --grep ${displaySafeText(opts.grep ?? '')} ` +
           `(${excludeTestsHiddenNote(hiddenTestFiles)}; ${countNoun(grepRemoved, 'other changed file')} did not match the filter)`,
       )
       return 0

@@ -98,6 +98,8 @@ export const UNTRUSTED_ACCESSORS: readonly string[] = [
   's.codec',
   's.language',
   'm.preview',
+  // The caller's own `--grep` value, echoed back in a filtered-to-empty notice. A pattern can hold a newline or a `[tg]` marker as easily as a file name can, and the notice that quotes it is spoken in token-goat's voice.
+  'opts.grep',
 ]
 
 /** What the scan actually matches: the PROPERTY name, with the receiver ignored. The list above reads as `receiver.property` because that is how each value is spelled at the site it was found, and the receiver is what documents where the value came from. But matching on the pair is what let three real defects through. The same untrusted value, spelled with a different receiver, walked straight past a green scan every time: `r.ours.label`    vs `r.oursLabel`      -- conflicts --summary printed the branch label raw `result.filePath` vs `summary.filePath` -- the same file path, one formatter over Enumerating the receivers that are dangerous is a denylist, and a denylist fails open: every shape nobody thought of is permitted by default. This repo has the lesson recorded from an unrelated subsystem, where a denylist of shell separators missed redirection and the fix was to invert it. So the direction here is inverted too: ANY interpolation of a known untrusted property name is suspect regardless of what it hangs off, and a receiver escapes that only by being named in TRUSTED_RECEIVERS with a reason, or the site by being named in ESCAPING_NOT_OWED. Derived from the list rather than retyped, so the two can never drift apart and a name added above is matched below without a second edit. */
@@ -156,6 +158,11 @@ const NEUTRALIZERS: readonly string[] = [
   'displaySafeJson(',
   // A module-local wrapper in cli_install.ts, listed on the same reasoning as the fence wrappers below: it escapes every path it interpolates, so a call site handing it a project-derived path is covered by it. Pinned to that shape by an assertion further down, because a wrapper listed here that stopped escaping would exempt its call sites while printing raw paths.
   'projectHooksCommitNote(',
+  // filter_notice.ts's notices, which escape the filter values they quote; filteredToEmptyNotice in read_outline.ts hands its `--grep` to the second. Pinned to that shape further down.
+
+  'grepFilteredToEmptyNotice(',
+  'filtersFilteredToEmptyNotice(',
+  'filteredToEmptyNotice(',
 ]
 
 /** Fences delimit a payload instead of escaping it, which is the other correct answer. */
@@ -520,6 +527,8 @@ function unescapedSites(): string[] {
         const receiver = m[1] ?? ''
         // Only the leaf receiver is allowlisted, so `path.sep` is trusted while a project-derived `entry.path.name` is not quietly trusted by sharing a segment with it.
         if (TRUSTED_RECEIVERS.has(receiver.slice(receiver.lastIndexOf('.') + 1))) continue
+        // A strict comparison yields a boolean, not the value's text: `emit(x + (opts.grep === undefined ? '\n' : ''))` prints no part of the pattern.
+        if (/^\s*[!=]==/.test(arg.slice((m.index ?? 0) + m[0].length))) continue
         const scope = enclosingExpression(arg, m.index)
         const safe =
           NEUTRALIZERS.some((n) => scope.includes(n)) || FENCES.some((f) => scope.includes(f)) || insideWrappingNeutralizer(arg, m.index)
@@ -755,6 +764,15 @@ describe('project-supplied text reaches no report sink unescaped', () => {
         'interpolates, but its body no longer maps them through displaySafePath. NEUTRALIZERS ' +
         'would now be exempting its two call sites while it prints raw project paths.',
     ).toBe(true)
+
+    // The filter notices are listed in NEUTRALIZERS for the same reason: each escapes the filter value it quotes, and every `--grep` echo in src reaches a sink through one of them.
+    for (const [wrapper, body] of [
+      ['grepFilteredToEmptyNotice', /function grepFilteredToEmptyNotice\([^)]*\): string \{[\s\S]{0,300}?--grep \$\{displaySafeText\(grep\)\}/],
+      ['filtersFilteredToEmptyNotice', /function filtersFilteredToEmptyNotice\([^)]*\): string \{[\s\S]{0,300}?activeFilters\.map\(displaySafeText\)/],
+      ['filteredToEmptyNotice', /function filteredToEmptyNotice\([^)]*\): string \{[\s\S]{0,400}?return filtersFilteredToEmptyNotice\(/],
+    ] as const) {
+      expect(body.test(all), `${wrapper} is listed in NEUTRALIZERS as escaping the filter values it quotes, but its body no longer matches that shape.`).toBe(true)
+    }
 
     // WRAPPING_NEUTRALIZERS exempts every interpolation inside formatCommandError's parentheses, so its body must still escape both the CliError lines and the plain-message branch; a wrapper that stopped escaping would exempt over a hundred error sites while they printed raw project paths.
     expect(

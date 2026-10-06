@@ -448,7 +448,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
       const payload = { source: 'fts', items: [], truncated: false, totalCount: 0, excludeTestsFilteredToEmpty: true, hint: notice }
       return { text: displaySafeJson(payload), code: 0 }
     }
-    return { text: `token-goat: ${notice}`, code: 0 }
+    return { text: `token-goat: ${displaySafeText(notice)}`, code: 0 }
   }
   // Evidence is a project-scoped fallback, not a replacement for source-index matches: its entries are redacted historical observations and carry no source line contract. Only consult it after both source retrieval paths miss and when no source-specific filter was requested.
   if (!anyFilter) {
@@ -522,8 +522,8 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
     return { text, code: 1 }
   }
   let text = indexEmpty
-    ? `no matches for '${query}'\n${emptyIndexMessage(rootDir)}`
-    : `no matches for '${query}'`
+    ? `no matches for '${displaySafeText(query)}'\n${emptyIndexMessage(rootDir)}`
+    : `no matches for '${displaySafeText(query)}'`
   const trimmedQuery = query.trim()
   const isIdentifier = /^[A-Za-z0-9_.:-]+$/.test(trimmedQuery)
   if (!indexEmpty && isIdentifier) {
@@ -565,7 +565,7 @@ export async function runSemanticMulti(queries: readonly string[], opts: Semanti
       entries.push({ query, ...(JSON.parse(sub.text) as Record<string, unknown>) })
       continue
     }
-    blocks.push(`'${query}':\n${sub.text}`)
+    blocks.push(`'${displaySafeText(query)}':\n${sub.text}`)
   }
   return { text: opts.json === true ? displaySafeJson(entries) : blocks.join('\n\n'), code: anyOk ? 0 : 1 }
 }
