@@ -107,6 +107,42 @@ describe('read "file::symbol" prints the doc comment above the body', () => {
   })
 })
 
+describe('symbol NAME prints the doc comment above its preview, as read does', () => {
+  beforeAll(() => {
+    fs.writeFileSync(path.join(proj, 'long.ts'), ['// Sums one to seven.', '// Slowly.', 'export function sevenSum(): number {', '  let t = 0', '  t += 1', '  t += 2', '  t += 3', '  t += 4', '  return t', '}', ''].join('\n'))
+    tg(['index', '.', '--walk'])
+  })
+
+  it('a block doc comment, every line verbatim, labelled in the header', () => {
+    const out = tg(['symbol', 'drop'])
+    expect(out).toMatch(/^# drop \(function\) — .*a\.ts:7-9 \+ 4-line doc comment\n/)
+    expect(out).toContain(sourceLines(3, 9))
+  })
+
+  it('a run of line comments', () => {
+    const out = tg(['symbol', 'count'])
+    expect(out).toMatch(/^# count \(function\) — .*a\.ts:13-15 \+ 2-line doc comment\n/)
+    expect(out).toContain(sourceLines(11, 15))
+  })
+
+  it('a comment a blank line away is not the symbol\'s doc, and nothing is added', () => {
+    const out = tg(['symbol', 'loose'])
+    expect(out).toMatch(/^# loose \(function\) — .*a\.ts:19-19\n/)
+    expect(out).not.toContain('Not attached')
+  })
+
+  it('the doc lines do not use up the body preview', () => {
+    const out = tg(['symbol', 'sevenSum'])
+    expect(out).toContain('// Sums one to seven.\n// Slowly.\nexport function sevenSum(): number {\n  let t = 0\n  t += 1\n  t += 2\n  t += 3\n  ...(3 more lines;')
+  })
+
+  it('a Python docstring, already inside the body, is not printed twice', () => {
+    const out = tg(['symbol', 'greet'])
+    expect(out).not.toContain('doc comment')
+    expect(out.split('Say hello.')).toHaveLength(2)
+  })
+})
+
 describe('outline marks a doc hint that stops before the doc does', () => {
   it('ends the hint in an ellipsis when later doc lines follow', () => {
     const out = tg(['outline', 'a.ts'])

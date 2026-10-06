@@ -16,7 +16,7 @@ import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 import { DIDYOUMEAN_LIMIT, didYouMean, findStructuredKeyPath, nearNamesSkippedNote, nearSymbolNames, rankSimilarNames } from './read_suggest.js'
 import { confinementRefusal, resolveProjectConfinement, stripHtmlIdSpelling } from './read_spec.js'
 import { formatStatsSuffix, hasRealDocstring } from './read_meta.js'
-import { DELETED_TAG, fileIsGone, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, indexFreshness, largestFileSize, recordReadStat, recordStaleServed, resolveBody, sinkGoneRows, staleWarning, truncationFooter, type TruncationTotal } from './read_commands.js'
+import { DELETED_TAG, docCommentLines, fileIsGone, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, indexFreshness, largestFileSize, recordReadStat, recordStaleServed, resolveBody, sinkGoneRows, staleWarning, truncationFooter, type TruncationTotal } from './read_commands.js'
 import { fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 
 /** Body lines shown per `symbol` match before the preview is cut and the cut is announced. */
@@ -309,10 +309,13 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     // Per match, not one banner for the whole result set: a bare `symbol NAME` searches every indexed project, so one hit can be a live file and the next one a checkout that was deleted months ago. A single header line would have to lie about one of them.
     const goneTag = fileIsGone(sym.filePath) ? `  ${DELETED_TAG}` : ''
     const staleTag = stillStale.has(sym.filePath) ? `  ${STALE_TAG}` : ''
-    const header = `# ${sym.name} (${sym.kind}) — ${formatSymbolLocation(toDisplayPath(symbolDisplayRoot, sym.filePath), sym.lineStart, sym.lineEnd)}${statsStr}${goneTag}${staleTag}`
+    // The doc comment sits above lineStart, outside the body, so `symbol` printed the body alone while `read` printed both; it is shown in full and kept out of the SYMBOL_PREVIEW_LINES count, which is a budget for the body.
+    const doc = docCommentLines(sym)
+    const docLabel = doc.length > 0 ? ` + ${doc.length}-line doc comment` : ''
+    const header = `# ${sym.name} (${sym.kind}) — ${formatSymbolLocation(toDisplayPath(symbolDisplayRoot, sym.filePath), sym.lineStart, sym.lineEnd)}${docLabel}${statsStr}${goneTag}${staleTag}`
     const body = resolveBody(sym)
     const bodyLines = body.split(/\r?\n/)
-    const preview = bodyLines.slice(0, SYMBOL_PREVIEW_LINES).join('\n')
+    const preview = [...doc, ...bodyLines.slice(0, SYMBOL_PREVIEW_LINES)].join('\n')
     // The header states the symbol's real line span, so a five-line preview of a forty-line function looked like the whole thing was five lines long -- a silent cap of exactly the kind truncationFooter below exists to prevent. Say what was cut and how to get the rest.
     const dropped = bodyLines.length - SYMBOL_PREVIEW_LINES
     const elided =
