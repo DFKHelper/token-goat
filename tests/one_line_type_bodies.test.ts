@@ -1,4 +1,4 @@
-/** Members declared on the same line as their type's `{`, or after another member on one line, are indexed with their own spans. PROVENANCE: HAND-DERIVED. Each expected row and span is counted by hand from the fixture lines in its test, independently of the extractors; the member syntax is ordinary PHP (PHP Manual, "Classes and Objects", "Interfaces", "Traits", "Enumerations") and Kotlin (Kotlin language reference, "Classes", "Object declarations", "Grammar": `classMemberDeclarations` takes members separated by optional semicolons). */
+/** Members declared on the same line as their type's `{`, or after another member on one line, are indexed with their own spans. PROVENANCE: HAND-DERIVED. Each expected row and span is counted by hand from the fixture lines in its test, independently of the extractors; the member syntax is ordinary PHP (PHP Manual, "Classes and Objects", "Interfaces", "Traits", "Enumerations") and Kotlin (Kotlin language reference, "Classes", "Object declarations", "Grammar": `classMemberDeclarations` takes members separated by optional semicolons) and Scala (Scala Language Specification, "Templates": `TemplateStats` are separated by `semi`; Scala 3 Reference, "Optional Braces"). */
 import { describe, expect, it } from 'vitest'
 
 import { bodySegments } from '../src/languages/body_segments.js'
@@ -143,5 +143,72 @@ describe('Kotlin one-line type bodies', () => {
     const { symbols } = await parseFixture('body.kt', 'class KC { fun ka(): Int { return 1 }; fun after() = "}{" }\n')
     expect(symbols.find((s) => s.name === 'ka')?.body).toBe('fun ka(): Int { return 1 }')
     expect(symbols.find((s) => s.name === 'after')?.body).toBe('fun after() = "}{"')
+  })
+})
+
+describe('Scala one-line type bodies', () => {
+  it('indexes the members of an object, class, trait, given and enum written on one line, and those after the first on a body line', async () => {
+    expect(await rowsFor('one.scala', [
+      'object STwo { def sa(): Int = 1; val sv = 2; var sw = 3; def sb(x: Int): Int = { x + 1 } }', // 1
+      'class SThree { def a(): Unit = {}; def b(): Unit = {', // 2
+      '    println(1)', // 3
+      '  }', // 4
+      '  def c(): Int = 1; def d(): Int = 2', // 5
+      '}', // 6
+      'trait ST { def t(): Int }', // 7
+      'given intOrd: Ord[Int] with { def compare(a: Int, b: Int): Int = 0; def max(a: Int): Int = a }', // 8
+      'enum Color { case Red, Green; def rgb(): Int = 1 }', // 9
+    ])).toEqual([
+      'class SThree  2-6',
+      'enum Color  9-9',
+      'function a SThree 2-2',
+      'function b SThree 2-4',
+      'function c SThree 5-5',
+      'function compare intOrd 8-8',
+      'function d SThree 5-5',
+      'function max intOrd 8-8',
+      'function rgb Color 9-9',
+      'function sa STwo 1-1',
+      'function sb STwo 1-1',
+      'function t ST 7-7',
+      'object STwo  1-1',
+      'object intOrd  8-8',
+      'trait ST  7-7',
+      'val sv STwo 1-1',
+      'var sw STwo 1-1',
+    ])
+  })
+
+  it('indexes a nested type closed on the line, a second member in an indentation body, and leaves a local def out', async () => {
+    expect(await rowsFor('nested.scala', [
+      'object SC { object Inner { def x(): Int = 1 }; def after(): String = "}{" }', // 1
+      'class SL(f: () => Int = () => { 1 }) { def g(): Int = f() }', // 2
+      'object Colon:', // 3
+      '  def p(): Int = 1; def q(): Int = 2', // 4
+      '  def r(): Int = 3', // 5
+      'object Z { def z(): Unit = {', // 6
+      '    val s = "{"; def local(): Int = 3', // 7
+      '  }', // 8
+      '}', // 9
+    ])).toEqual([
+      'class SL  2-2',
+      'function after SC 1-1',
+      'function g SL 2-2',
+      'function p Colon 4-4',
+      'function q Colon 4-4',
+      'function r Colon 5-5',
+      'function x Inner 1-1',
+      'function z Z 6-8',
+      'object Colon  3-5',
+      'object Inner SC 1-1',
+      'object SC  1-1',
+      'object Z  6-9',
+    ])
+  })
+
+  it('stores just the member as the body of one that shares its line', async () => {
+    const { symbols } = await parseFixture('body.scala', 'object SC { def sa(): Int = { 1 }; def after(): String = "}{" }\n')
+    expect(symbols.find((s) => s.name === 'sa')?.body).toBe('def sa(): Int = { 1 }')
+    expect(symbols.find((s) => s.name === 'after')?.body).toBe('def after(): String = "}{"')
   })
 })

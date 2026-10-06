@@ -100,4 +100,30 @@ describe('one-line type bodies reach the index through the production drain', ()
     expect(b).toContain('println(1)')
     expect(b).not.toContain('class KThree')
   }, 60_000)
+
+  it('Scala: stores each member and reads it alone', async () => {
+    expect(await drain({
+      'one.scala': [
+        'object STwo { def sa(): Int = { 1 }; val sv = 2; def sb(): Int = 3 }',
+        'class SThree { def a(): Unit = {}; def b(): Unit = {',
+        '    println(1)',
+        '  }',
+        '}',
+      ],
+    })).toEqual([
+      'object STwo  1-1',
+      'function sa STwo 1-1',
+      'function sb STwo 1-1',
+      'val sv STwo 1-1',
+      'class SThree  2-5',
+      'function a SThree 2-2',
+      'function b SThree 2-4',
+    ])
+    const sa = read('one.scala::sa')
+    expect(sa).toContain('def sa(): Int = { 1 }')
+    expect(sa).not.toContain('val sv')
+    const b = read('one.scala::b')
+    expect(b).toContain('println(1)')
+    expect(b).not.toContain('class SThree')
+  }, 60_000)
 })

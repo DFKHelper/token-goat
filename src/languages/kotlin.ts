@@ -18,7 +18,7 @@ import {
   type AdapterImport,
   makeLineSymbol,
 } from './common.js'
-import { bodySegments, endOpenMember, type BodySegment, type OpenMember } from './body_segments.js'
+import { bodyBraceAt, bodySegments, endOpenMember, type BodySegment, type OpenMember } from './body_segments.js'
 
 interface ClassFrame {
   name: string
@@ -108,18 +108,6 @@ const TOP_FUN_RE = new RegExp(
   'external|actual|expect|tailrec)\\s+)*' +
   'fun\\s+(?:' + GENERIC_CLAUSE + '\\s*)?' + RECEIVER_RE + '(' + NAME_RE + ')\\s*[(<]',
 )
-
-/** The offset of the `{` opening the body of the declaration that starts at `from` in `code`, a string-blanked line: the first one outside every parenthesis before `to`, so a lambda default in a constructor parameter is not taken for the body. -1 when the body does not open there. */
-function bodyBraceAt(code: string, from: number, to: number): number {
-  let parens = 0
-  for (let i = from; i < to; i++) {
-    const ch = code[i]
-    if (ch === '(') parens++
-    else if (ch === ')') parens = Math.max(0, parens - 1)
-    else if (ch === '{' && parens === 0) return i
-  }
-  return -1
-}
 
 /** The members the {@link bodySegments} slices `segs` of `line` declare directly in the type named `parent`, in source order: a method, a SCREAMING_SNAKE const, or a nested class, interface, object or companion object whose body closes inside its slice, followed by that body's own members. extractKotlin's line branches only ever see the first declaration on a line, so a member written after a type header's `{` or after another member on the same line was dropped. `code` is `line` with its string literals blanked; each member's body is its slice. `open` is the member whose block is still open at the end of the line. */
 function inlineKotlinMembers(line: string, code: string, segs: readonly BodySegment[], parent: string, filePath: string, lineNum: number): { members: SymbolEntry[]; open: SymbolEntry | null } {

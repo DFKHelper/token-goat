@@ -37,6 +37,18 @@ export function bodySegments(code: string, from: number): BodySegment[] {
   return out
 }
 
+/** The offset of the `{` opening the body of the declaration that starts at `from` in `code`, a string-blanked line: the first one outside every parenthesis before `to`, so a lambda default in a constructor parameter is not taken for the body. -1 when the body does not open there. */
+export function bodyBraceAt(code: string, from: number, to: number): number {
+  let parens = 0
+  for (let i = from; i < to; i++) {
+    const ch = code[i]
+    if (ch === '(') parens++
+    else if (ch === ')') parens = Math.max(0, parens - 1)
+    else if (ch === '{' && parens === 0) return i
+  }
+  return -1
+}
+
 /** A member whose block was still open at the end of its line, and the brace depth inside that block: it ends on the first later line that brings the depth back below. */
 export interface OpenMember {
   readonly sym: SymbolEntry
