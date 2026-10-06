@@ -212,6 +212,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/languages/asm.ts`](src/languages/asm.ts) | Assembly adapter for GNU as (`.s`, `.S`), NASM (`.asm`, `.nasm`) and IBM High Level Assembler, which share `.asm`: one adapter that picks its dialect from the file's own content. |
 | [`src/languages/bash_idx.ts`](src/languages/bash_idx.ts) | Shell/Bash symbol extractor. |
 | [`src/languages/batch.ts`](src/languages/batch.ts) | Windows batch adapter for `.bat` and `.cmd` files: the labels cmd.exe jumps to, each running to the line before the next label or to the end of the file, with the batch files a `ca |
+| [`src/languages/body_segments.ts`](src/languages/body_segments.ts) | Splitting one source line into the declarations a type body written on that line holds, for the line-at-a-time adapters whose member matchers anchor at the start of a line: `class |
 | [`src/languages/brace_engine.ts`](src/languages/brace_engine.ts) | Shared scanner for the brace-language adapters (Objective-C, Groovy, Solidity, Thrift, GLSL, HLSL, WGSL, Metal). |
 | [`src/languages/caddy.ts`](src/languages/caddy.ts) | Extracts symbols from Caddyfile configurations (global options, snippets, site blocks, directives). |
 | [`src/languages/clojure.ts`](src/languages/clojure.ts) | Clojure adapter: `defn`, `defn-`, `def`, `defmacro`, `defprotocol`, `defrecord`, `deftype`, `defmulti`, `defmethod`, `definterface`, `ns`. |

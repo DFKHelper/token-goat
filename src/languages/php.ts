@@ -15,6 +15,7 @@ import {
   type AdapterImport,
   makeLineSymbol,
 } from './common.js'
+import { bodySegments, type BodySegment } from './body_segments.js'
 
 // PHP keywords are case-insensitive (PHP Manual, "Language Reference" > "Classes and Objects" > "The Basics", and "Functions" > "User-defined functions"), so `Class Repo`, `Public Function run()` and `Var $x` are legal and still turn up in older code. Matching them case-sensitively dropped the entire declaration, and with it every member the class context would have scoped. Each matcher below therefore carries `i`, which changes only the literal keywords: every capture here is `[A-Za-z_]`/`[\w\\]`/`[^'"]`, already case-agnostic, so a name is still indexed with the exact case the source wrote it in.
 const NAMESPACE_RE = /^namespace\s+([\w\\]+)\s*;/i
@@ -54,6 +55,20 @@ const REQUIRE_RE = /^(?:require|include)(?:_once)?\s+['"]([^'"]+)['"]/i
 
 // An enum case declaration (PHP Manual, "Language Reference" > "Enumerations" > "Basics" and "Backed Enumerations"): `case Hearts;` in a pure enum, `case Hearts = 'H';` in a backed one. Requiring `=` or `;` immediately after the name is what separates this from a `switch` arm, which is `case <expr>:` and so never reaches the terminator this pattern demands; the enum-kind and body-depth gates at the call site cover the `case <expr>;` spelling a switch also accepts.
 const ENUM_CASE_RE = /^case\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;)/i
+
+/** The member one {@link bodySegments} slice declares directly in the body of the `kind` named `parent`, or null. Runs the matchers of extractPhp's line branches, which only ever see the first declaration on a line, so a member written after a class header's `{` or after another member on the same line was dropped. The body is the slice itself, which is the whole member when it closes on this line. */
+function inlinePhpMember(text: string, kind: string, parent: string, filePath: string, lineNum: number): SymbolEntry | null {
+  const enumCaseM = kind === 'enum' ? ENUM_CASE_RE.exec(text) : null
+  if (enumCaseM) return makeLineSymbol(filePath, enumCaseM[1] ?? '', 'const', lineNum, text, parent)
+  if (ANON_FN_RE.test(text)) return null
+  const methM = METHOD_RE.exec(text)
+  if (methM) return makeLineSymbol(filePath, methM[1] ?? '', 'method', lineNum, text, parent)
+  const propM = PROP_RE.exec(text)
+  if (propM) return makeLineSymbol(filePath, propM[1] ?? '', 'var', lineNum, text, parent)
+  const constM = CONST_RE.exec(text)
+  if (constM) return makeLineSymbol(filePath, constM[1] ?? '', 'const', lineNum, text, parent)
+  return null
+}
 
 /**
  * Blanks everything outside `<?php ... ?>`, keeping length and line breaks so every line number still lines up.
@@ -95,10 +110,33 @@ export function maskPhpInlineHtml(content: string): string {
 export function extractPhp(
   content: string,
   filePath: string,
-): { symbols: SymbolEntry[]; imports: AdapterImport[] } {
+): { symbols: SymbolEntry[]; imports: AdapterImport[]; settled: ReadonlySet<SymbolEntry> } {
   const symbols: SymbolEntry[] = []
   const imports: AdapterImport[] = []
   const lines = maskPhpInlineHtml(content).split(/\r?\n/)
+  // Members found on a line after its first declaration already carry their real span, so the brace-span pass must leave them alone: searching from the start of their line it would reach the class's `{` or an earlier member's, and stretch them over that block instead.
+  const settled = new Set<SymbolEntry>()
+  // Such members wait here for the end of their line, so they follow the line's first declaration in `symbols` the way they follow it in the source.
+  let lineMembers: SymbolEntry[] = []
+  // The last member on a line whose block was still open at the end of it, and the brace depth inside that block: it ends on the line that brings the depth back below.
+  type OpenMember = { sym: SymbolEntry; depth: number }
+  let openMember: OpenMember | null = null
+  // Returns the member left open at the end of the line, if any.
+  const queueMembers = (segs: readonly BodySegment[], line: string, kind: string, parent: string, lineNum: number, bodyDepth: number): OpenMember | null => {
+    let open: OpenMember | null = null
+    for (const seg of segs) {
+      const sym = inlinePhpMember(line.slice(seg.start, seg.end).trim(), kind, parent, filePath, lineNum)
+      if (sym === null) continue
+      lineMembers.push(sym)
+      settled.add(sym)
+      if (seg.open) open = { sym, depth: bodyDepth + 1 }
+    }
+    return open
+  }
+  const flushMembers = (): void => {
+    symbols.push(...lineMembers)
+    lineMembers = []
+  }
 
   // Stack of (className, braceDepthAtEntry, bodyEntered). Fourth slot is the declaration's own kind (`class`/`interface`/`trait`/`enum`), lower-cased: the enum-case branch below must fire only inside an `enum` body.
   const contextStack: Array<[string, number, boolean, string]> = []
@@ -108,6 +146,7 @@ export function extractPhp(
   let mlState: MultilineStringState | null = null
 
   for (let i = 0; i < lines.length; i++) {
+    flushMembers()
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
 
@@ -145,6 +184,20 @@ export function extractPhp(
     const topFrame = contextStack.length > 0 ? contextStack[contextStack.length - 1] : undefined
     if (topFrame !== undefined && braceDepth > topFrame[1]) {
       topFrame[2] = true
+    }
+
+    if (openMember !== null && braceDepth < openMember.depth) {
+      const { sym } = openMember
+      const ended: SymbolEntry = { ...sym, lineEnd: lineNum, body: [sym.body, ...lines.slice(sym.lineStart, lineNum)].join('\n') }
+      symbols[symbols.indexOf(sym)] = ended
+      settled.delete(sym)
+      settled.add(ended)
+      openMember = null
+    }
+
+    // A line directly in a type's body can hold several members (`public $a; public $b;`). The branches below index the first; the rest are queued here.
+    if (topFrame !== undefined && topFrame[2] && braceDepth - openB + closeB === topFrame[1] + 1 && preLineParenDepth === 0) {
+      openMember = queueMembers(bodySegments(braceLine, 0).slice(1), line, topFrame[3], topFrame[0], lineNum, topFrame[1] + 1) ?? openMember
     }
 
     // Pop context when we close the class brace. Only pop once bodyEntered is true - this guards multi-line class headers (`class Foo`, `implements Bar, Baz`, `{` each on their own line), where brace depth still equals the frame's start depth on the header line.
@@ -204,6 +257,8 @@ export function extractPhp(
       const parent = topFrame !== undefined && preLineDepth === topFrame[1] + 1 ? topFrame[0] : null
       symbols.push(makeLineSymbol(filePath, name, kind, lineNum, stripped.slice(0, 200), parent ?? undefined, lines, 'c'))
       contextStack.push([name, braceDepth - openB + closeB, false, kind])
+      const bodyOpen = braceLine.indexOf('{')
+      if (bodyOpen !== -1) openMember = queueMembers(bodySegments(braceLine, bodyOpen + 1), line, kind, name, lineNum, preLineDepth + 1) ?? openMember
       if (openB > 0 && openB === closeB) {
         // Self-contained one-liner (`class Foo {}`) - body opens and closes on the declaration line itself, so braceDepth never rises above the frame's start depth and the bodyEntered-gated pop above would never fire. Pop it immediately instead.
         contextStack.pop()
@@ -271,5 +326,6 @@ export function extractPhp(
     }
   }
 
-  return { symbols, imports }
+  flushMembers()
+  return { symbols, imports, settled }
 }

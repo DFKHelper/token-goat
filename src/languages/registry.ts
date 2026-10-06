@@ -105,7 +105,10 @@ export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLangua
   // Both halves walk the SAME masked text: the brace pass used to span raw file content, so it nested on braces in the inline HTML the extractor is no longer reading.
   php: (content, filePath) => {
     const code = maskPhpInlineHtml(content)
-    return assignBraceBlockSpans(extractPhp(code, filePath).symbols, code, { lineComment: ['//', '#'], lineCommentExceptions: ['#['], multilineLang: 'php' })
+    const { symbols, settled } = extractPhp(code, filePath)
+    const spanned = assignBraceBlockSpans(symbols.filter((s) => !settled.has(s)), code, { lineComment: ['//', '#'], lineCommentExceptions: ['#['], multilineLang: 'php' })
+    let next = 0
+    return symbols.map((s) => (settled.has(s) ? s : spanned[next++]!))
   },
   html: (content, filePath) => {
     const r = extractHtml(content, filePath)
