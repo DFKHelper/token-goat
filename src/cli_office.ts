@@ -4,6 +4,7 @@ import { CliError, out, requireNonNegativeInt, requirePositiveInt } from './cli.
 import { _applyFiltersAndPrint } from './cli_cached_output.js'
 import { formatCsvTable, parseWhereSpecs } from './csv_query.js'
 import { docxOutline, docxTables, docxText, formatDocxTables } from './docx_extract.js'
+import { emitErr } from './emit.js'
 import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { displaySafeJson, displaySafePath, displaySafeText } from './paths.js'
 import { pptxNotesText, pptxOutline, pptxSlideText, pptxTextGrep } from './pptx_extract.js'
@@ -62,8 +63,11 @@ export async function cmdPdfExtract(
   file: string,
   opts: { pages?: string; head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; layout?: boolean; full?: boolean; lines?: string },
 ): Promise<void> {
-  const text = redactSecrets(await runPdfExtractText(file, opts.pages, opts.layout === true)).text
+  const result = await runPdfExtractText(file, opts.pages, opts.layout === true)
+  const text = redactSecrets(result.text).text
   const printed = _applyFiltersAndPrint(text, opts, true, UNTRUSTED_FILE_TAG)
+  // On stderr after the body, as the recall filters' own notes are: stdout is fenced document text, where a token-goat line would read as part of the document.
+  if (result.pagesNote !== undefined) emitErr(result.pagesNote)
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(printed, 'utf8'))
   recordStat('pdf_extract', bytesSaved, savedTokensFromBytes(bytesSaved))
@@ -80,7 +84,7 @@ export async function cmdPdfLocate(
   if (opts.maxMatches !== undefined) locateOpts.maxMatches = requirePositiveInt('--max-matches', opts.maxMatches)
   if (opts.context !== undefined) locateOpts.context = requirePositiveInt('--context', opts.context)
   if (opts.pages !== undefined) locateOpts.pages = opts.pages
-  const { matches, truncated } = await runPdfLocate(file, pattern, locateOpts)
+  const { matches, truncated, pagesNote } = await runPdfLocate(file, pattern, locateOpts)
 
   const pages = matches.map((m) => m.page)
   let printed: string
@@ -99,6 +103,7 @@ export async function cmdPdfLocate(
     printed = fenceFileText(`${lines.join('\n')}\n\n${summary}`)
     out(printed)
   }
+  if (pagesNote !== undefined) emitErr(pagesNote)
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(printed, 'utf8'))
   recordStat('pdf_locate', bytesSaved, savedTokensFromBytes(bytesSaved))

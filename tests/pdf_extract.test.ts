@@ -175,8 +175,9 @@ describe('parsePageRange', () => {
     expect(parsePageRange('2-5', 10)).toEqual({ start: 2, end: 5 });
   });
 
-  it('clamps to the document page count', () => {
-    expect(parsePageRange('1-99', 10)).toEqual({ start: 1, end: 10 });
+  it('clamps to the document page count and keeps the end it was asked for', () => {
+    expect(parsePageRange('1-99', 10)).toEqual({ start: 1, end: 10, requestedEnd: 99 });
+    expect(parsePageRange('1-10', 10)).toEqual({ start: 1, end: 10 });
   });
 
   it('rejects an invalid spec', () => {
@@ -208,6 +209,8 @@ describe('extractPdfText', () => {
     const result = await extractPdfText(pdfBytes(), '1-5');
     expect(result.pagesExtracted).toBe(1);
     expect(result.text).toContain('Hello PDF');
+    expect(result.pagesNote).toBe("--pages 1-5 runs past the document's 1 page; showing page 1.");
+    expect((await extractPdfText(pdfBytes(), '1')).pagesNote).toBeUndefined();
   });
 
   it('reconstructs row-grouped reading order with --layout', async () => {

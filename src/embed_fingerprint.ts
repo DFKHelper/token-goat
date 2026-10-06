@@ -7,7 +7,7 @@ export const EMBED_FINGERPRINT = '95dcdc87b8d1b482'
 export const EMBED_KIND_FINGERPRINTS: ReadonlyMap<string, string> = new Map([
   ['docx', '9d2bfd8915570b8d'],
   ['markdown', 'e1f6c019be75b1ba'],
-  ['pdf', '9f7048fb6e105b7a'],
+  ['pdf', '6482022422293526'],
   ['pptx', 'fca79005f9d5bd22'],
   ['xlsx', 'a13f497dc471f1e2'],
 ])

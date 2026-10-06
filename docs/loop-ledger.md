@@ -125,7 +125,7 @@ wrong escalates rather than acting.
 | DL-10 | Zig `test "..."` blocks unindexed; `findBlockOpenBrace` statement-start detection | known adapter gaps |
 | DL-11 | `skeleton`/`outline --json` omitting `hiddenByGrep`; `renderRefsTargets` `annotateHiddenByGrep` | json consumers do not use it |
 | DL-12 | `runSectionMulti` collapsing `file::A,A`; `resolveHeaderPos` on `Heading#0`; `openapi-outline` on a non-OpenAPI file | degenerate inputs |
-| DL-13 | `pdf-extract` clamp asymmetry; `xlsx-query` header-only sheet (`xlsx-range` empty-row noise fixed on the owner's request: it stops at the used range and names what it left out) | cosmetic |
+| DL-13 | `xlsx-query` header-only sheet (`xlsx-range` empty-row noise and the `pdf-extract` clamp asymmetry fixed on the owner's request: the range stops at the used range and names what it left out, and a `--pages` range past the last page says so on stderr) | cosmetic |
 | DL-14 | Bounded prose over-credit on pre-read serve/diff branches | bounded, documented |
 | DL-15 | `redactGhBase64Content` not accepting `\r`, not descending nested objects; orphaned `redactSecrets` docblock | narrow |
 | DL-16 | Nine bound sites classified harmless in loop 26; loop 28's three (`postReadHandlerInner` out-of-root drop, `capManifestChars` notice overflow, `adaptiveCharBonus` `* 3`) | measured harmless |

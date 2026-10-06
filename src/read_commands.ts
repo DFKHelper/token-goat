@@ -45,7 +45,7 @@ import {
   formatCommentsSlice,
   formatDescriptionSlice,
 } from './pr_slice.js'
-import { extractPdfMeta, extractPdfOutline, extractPdfText, locatePdfPages, readPdfFileWithinBounds, type PdfLocateResult, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
+import { extractPdfMeta, extractPdfOutline, extractPdfText, locatePdfPages, readPdfFileWithinBounds, type PdfExtractResult, type PdfLocateResult, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
 import { canShrinkFormat, decoderRefusal, isImagePath, probeImageMeta, shrinkImage, ImageDecodeError } from './image_shrink.js'
 import { ocrImage, isTextHeavy, isOcrEngineAvailable, ocrIntegrityFailed } from './image_ocr.js'
 import { takeScreenshot } from './screenshot.js'
@@ -924,9 +924,8 @@ async function readPdfBytes(file: string): Promise<Uint8Array> {
 }
 
 /** Thin async wrapper: reads the PDF off disk and extracts its text. Kept separate from the synchronous run*(opts): number handlers above because pdfjs-dist's parser is async; the caller (cli_office.ts's cmdPdfExtract) drives it through guard() (which supports async actions) rather than runExit (sync-only). Throws on error, matching this file's extractPdfText contract, rather than returning an exit code. */
-export async function runPdfExtractText(file: string, pagesSpec?: string, layout = false): Promise<string> {
-  const result = await extractPdfText(await readPdfBytes(file), pagesSpec, layout)
-  return result.text
+export async function runPdfExtractText(file: string, pagesSpec?: string, layout = false): Promise<PdfExtractResult> {
+  return extractPdfText(await readPdfBytes(file), pagesSpec, layout)
 }
 
 /** Thin async wrapper (same rationale as runPdfExtractText above). */

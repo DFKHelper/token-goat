@@ -9,11 +9,14 @@ import { createLazyModuleLoader } from './lazy_module.js'
 import { loadConfig } from './config.js'
 import { compileGuardedRegex } from './regex_guard.js'
 import { redactSecrets } from './secret_redact.js'
+import { countNoun } from './util.js'
 
 export interface PdfExtractResult {
   text: string
   pageCount: number
   pagesExtracted: number
+  /** Set when the --pages range ran past the last page; see {@link pagesPastEndNote}. */
+  pagesNote?: string
 }
 
 type PdfjsModule = typeof pdfjsTypes
@@ -190,8 +193,15 @@ export async function readPageTextItems(page: pdfjsTypes.PDFPageProxy, budget: n
   return items
 }
 
+/** A page range after {@link parsePageRange} has cut it to the document; `requestedEnd` is set only when the spec's last page was past the document's. */
+export interface PageRange {
+  start: number
+  end: number
+  requestedEnd?: number
+}
+
 /** Parses a 1-indexed inclusive page spec like "1-5" or "3". Returns null (all pages) when unset. */
-export function parsePageRange(spec: string | undefined, pageCount: number): { start: number; end: number } | null {
+export function parsePageRange(spec: string | undefined, pageCount: number): PageRange | null {
   if (!spec) return null
   const m = /^(\d+)(?:-(\d+))?$/.exec(spec.trim())
   if (!m) throw new Error(`invalid --pages spec: ${spec} (expected "N" or "N-M")`)
@@ -199,7 +209,14 @@ export function parsePageRange(spec: string | undefined, pageCount: number): { s
   const end = m[2] ? parseInt(m[2], 10) : start
   if (start < 1 || end < start) throw new Error(`invalid --pages spec: ${spec}`)
   if (start > pageCount) throw new Error(`invalid --pages spec: ${spec} (page ${start} is past end of document with ${pageCount} pages)`)
-  return { start, end: Math.min(end, pageCount) }
+  return end > pageCount ? { start, end: pageCount, requestedEnd: end } : { start, end }
+}
+
+/** The line pdf-extract and pdf-locate print when a --pages range ran past the last page, which is otherwise read as a complete answer for every page it asked for: a start page past the end is refused by parsePageRange, and this is the other half of that. */
+function pagesPastEndNote(range: PageRange | null, pageCount: number): string | undefined {
+  if (range?.requestedEnd === undefined) return undefined
+  const shown = range.start === range.end ? `page ${range.start}` : `pages ${range.start}-${range.end}`
+  return `--pages ${range.start}-${range.requestedEnd} runs past the document's ${countNoun(pageCount, 'page')}; showing ${shown}.`
 }
 
 /** Reconstructs rough reading order from pdfjs's per-item x/y coordinates instead of pdfjs's raw content-stream order (which interleaves columns/sidebars/footnotes on multi-column pages). Groups items into rows by y-proximity, sorts each row left-to-right, and widens the gap between items with a large x-jump (a likely column boundary). This is a heuristic, not a real layout engine -- it will misjudge rotated text, overlapping text boxes, and tables with irregular column widths. */
@@ -377,7 +394,8 @@ export async function extractPdfText(data: Uint8Array, pagesSpec?: string, layou
 
     const text = pages.join('\n\n')
     assertPdfTextWithinBounds(text)
-    return { text, pageCount: doc.numPages, pagesExtracted: end - start + 1 }
+    const pagesNote = pagesPastEndNote(range, doc.numPages)
+    return { text, pageCount: doc.numPages, pagesExtracted: end - start + 1, ...(pagesNote !== undefined ? { pagesNote } : {}) }
   })
 }
 
@@ -391,6 +409,8 @@ export interface PdfLocateResult {
   matches: PdfLocateMatch[]
   // True only when the scan stopped because maxMatches was reached while pages remained unscanned: a scan that covered every requested page and happened to find exactly maxMatches results is a complete answer, not a truncated one, and must report false here so a caller can print a plain total instead of a floor for that case.
   truncated: boolean
+  /** Set when the --pages range ran past the last page; see {@link pagesPastEndNote}. */
+  pagesNote?: string
 }
 
 export async function locatePdfPages(
@@ -430,7 +450,8 @@ export async function locatePdfPages(
     }
     // The loop above exits either by scanning through `end` (i > end, a complete answer) or by hitting maxMatches with pages still left to scan (i <= end). Only the latter is truncation: a scan that covered every page and happened to land exactly on maxMatches results is not missing anything and must not be reported as a floor.
     const truncated = matches.length >= maxMatches && i <= end
-    return { matches, truncated }
+    const pagesNote = pagesPastEndNote(range, doc.numPages)
+    return { matches, truncated, ...(pagesNote !== undefined ? { pagesNote } : {}) }
   })
 }
 
