@@ -22,7 +22,6 @@ export function fenceUntrusted(text: string, tag: string): string {
   return fenceUntrustedContent(text, scanAndRecord(text), tag)
 }
 
-/** {@link fenceUntrusted} for a caller that already ran {@link scanAndRecord} and must not scan the same text twice -- the hook handlers, which need the matches in hand to pick a return shape before they know which string they are fencing. Same opt-out, same unconditional fence. */
 /** {@link fenceUntrusted} for a body whose spans alternate between token-goat's own narration and third-party bytes -- the interleaved shape an elision produces, which has no cut point that puts our voice outside the tag. Same opt-out and same unconditional fence. Only the untrusted spans are scanned, so a notice token-goat wrote can never be what names a pattern in the fence's own preamble. */
 export function fenceUntrustedSpans(spans: readonly FenceSpan[], tag: string): string {
   const joined = spans.map((s) => s.text).join('')
@@ -30,6 +29,7 @@ export function fenceUntrustedSpans(spans: readonly FenceSpan[], tag: string): s
   return fenceUntrustedContent(spans, scanAndRecord(spans.filter((s) => s.own !== true).map((s) => s.text).join('')), tag)
 }
 
+/** {@link fenceUntrusted} for a caller that already ran {@link scanAndRecord} and must not scan the same text twice -- the hook handlers, which need the matches in hand to pick a return shape before they know which string they are fencing. Same opt-out, same unconditional fence. */
 export function fenceWithMatches(text: string, matches: readonly string[], tag?: string): string {
   if (!injectionFencingEnabled()) return text
   return tag === undefined
