@@ -549,6 +549,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/skill_version_drift.ts`](src/skill_version_drift.ts) | Session-scoped nudge for token-goat's own version drift. |
 | [`src/skip_scope.ts`](src/skip_scope.ts) | Which directory segments of an indexed file's path count when the path is tested against a skip-directory set. |
 | [`src/snippet_window.ts`](src/snippet_window.ts) | At most `maxLen` characters of `text` with the character at `idx` a third of the way in (or as near as the text's edges allow), marked `...` on each side that was cut. |
+| [`src/source_text.ts`](src/source_text.ts) | The text a source file's symbol line numbers count: a leading byte order mark dropped, and a lone carriage return (classic Mac OS line endings) read as a line break, so the regex e |
 | [`src/spec_path.ts`](src/spec_path.ts) | `expandSpecPath()` and `resolveSpecPath()`: `~` and Windows shell mount paths in a typed file spec, shared by every file-spec command and its MCP tool. |
 | [`src/sql_path.ts`](src/sql_path.ts) | Exports: `pathEqClause`, `pathSuffixClause`, `projectScopeClause` |
 | [`src/stdin_json.ts`](src/stdin_json.ts) | Reading a JSON payload off stdin, with a timeout and a byte cap. |

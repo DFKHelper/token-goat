@@ -30,6 +30,7 @@ const DECISION_SOURCES = [
   path.join(ROOT, 'src', 'section_reader.ts'),
   path.join(ROOT, 'src', 'line_matchers.ts'),
   path.join(ROOT, 'src', 'encoding.ts'),
+  path.join(ROOT, 'src', 'source_text.ts'),
   path.join(ROOT, 'src', 'constants.ts'),
   path.join(ROOT, 'src', 'util.ts'),
 ]

@@ -18,6 +18,7 @@ import { MAX_DOCUMENT_WORK_MILLIS } from './document_refusal.js'
 import { fingerprintContent } from './fingerprint.js'
 import { pathEqClause } from './sql_path.js'
 import { hasSkipSegmentBelowRoot } from './skip_scope.js'
+import { normalizeSourceText } from './source_text.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { detectLanguage, refineLanguageByContent, TREE_SITTER_LANGUAGES } from './parser_types.js'
 import type { Language, RefEntry, SymbolEntry } from './parser_types.js'
@@ -328,10 +329,8 @@ function mergeParseResults(...results: readonly ParseContentResult[]): ParseCont
 
 /** Shared sync core: pick an extractor for `language` and run it on `content`. */
 function parseContent(content: string, filePath: string, language: Language): ParseContentResult {
-  // Strip UTF-8 BOM if present (U+FEFF); some editors save files with this prefix. Both entry points (parseFile, indexFileSync) funnel through here, so this is the single place BOM stripping needs to happen. Sha/hash computation elsewhere stays on the raw original bytes — only this decoded copy is affected.
-  if (content.charCodeAt(0) === 0xfeff) {
-    content = content.slice(1)
-  }
+  // Strip a UTF-8 BOM (U+FEFF) and read a lone CR as a line break: both entry points (parseFile, indexFileSync) funnel through here, so this is the single place it needs to happen. A CR-only file otherwise put every symbol on line 1. Sha/hash computation elsewhere stays on the raw original bytes — only this decoded copy is affected.
+  content = normalizeSourceText(content)
 
   // A notebook is JSON, not source -- flatten its code/markdown cells into a virtual Python-like document and recurse with language forced to 'python' so it gets the real tree-sitter Python extraction path; a non-Python-kernel or unparseable notebook yields no symbols/refs (never throws).
   if (language === 'ipynb') {
@@ -387,9 +386,8 @@ function parseWithTreeSitter(content: string, filePath: string, language: Langua
 
 /** Symbols for one file's content from tree-sitter and nothing else, or `null` when tree-sitter could not supply them. This exists for the post-read source-skeleton fold in hooks_read.ts, which composes what the model reads out of the symbols returned here. A regex fallback would be wrong there in a way it is not wrong for the index: `extractWithRegex` finds 40-57% of what tree-sitter finds on the same files (measured: 9 against 21, 33 against 82, 48 against 85), and a skeleton built from a partial symbol list omits declarations with nothing in the output to signal the omission. An incomplete map is worse than no map, so that caller delivers the file whole on `null`. Takes content rather than a path on purpose: the fold runs on the FIRST read of a file the indexer may never have touched, and the bytes it has to describe are the ones the harness just delivered, not whatever is on disk now. */
 export function parseSourceSymbolsTreeSitterOnly(content: string, filePath: string, language: Language): SymbolEntry[] | null {
-  // The same BOM strip parseContent does, for the same reason: the delivered text of a file an editor saved with U+FEFF would otherwise shift every tree-sitter offset by one.
-  const text = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content
-  const parsed = parseWithTreeSitter(text, filePath, language)
+  // The same normalization parseContent does, for the same reason: a BOM would shift every tree-sitter offset by one, and a lone CR would put every symbol on line 1.
+  const parsed = parseWithTreeSitter(normalizeSourceText(content), filePath, language)
   return parsed === null ? null : parsed.symbols
 }
 
