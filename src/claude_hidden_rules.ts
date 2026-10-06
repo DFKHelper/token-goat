@@ -1,6 +1,6 @@
-/** Whether a Claude Code session could be under permission rules no settings file shows, so that rewrite_permission.ts must not answer a bypassPermissions rewrite with `allow`: a host that answers prompts itself (an SDK `canUseTool`, any entry point but the terminal CLI), a command-line flag that adds or relays rules (`--disallowedTools`, `--settings`, `--permission-prompt-tool`, any flag not known to be harmless), a PermissionRequest hook in a skill or plugin (whose answers add session rules), and a skill, command, agent or plugin whose frontmatter removes a tool by pattern (`disallowed-tools: Bash(curl *)`). The settings files themselves are read by rewrite_permission.ts. Every doubt (an unreadable process command line or directory, a scan too large to finish) reads as hidden. Imported dynamically by rewrite_permission.ts's loadHiddenRuleCheck with its helpers injected, so it stays off every hook's eager path; it imports only Node built-ins. Claude Code facts are from claude.exe 2.1.x: hook processes get CLAUDE_PID (the claude process) and inherit CLAUDE_CODE_ENTRYPOINT, which Claude Code sets to `cli`, or `sdk-cli` under `-p`, and which every SDK, IDE and remote host sets to its own value; nested `.claude/skills` directories git ignores are skipped ("[skills] Skipped gitignored skills dir"). */
+/** Whether a Claude Code session could be under permission rules no settings file shows, so that rewrite_permission.ts must not answer a bypassPermissions rewrite with `allow`: a host that answers prompts itself (an SDK `canUseTool`, any entry point but the terminal CLI), a command-line flag that adds or relays rules (`--disallowedTools`, `--settings`, `--permission-prompt-tool`, any flag not known to be harmless), a PermissionRequest hook in a skill or plugin (whose answers add session rules), a skill, command, agent or plugin whose frontmatter removes a tool by pattern (`disallowed-tools: Bash(curl *)`), and a subagent whose definition the scan did not read. The settings files themselves are read by rewrite_permission.ts. Every doubt (an unreadable process command line or directory, a scan too large to finish) reads as hidden. Imported dynamically by rewrite_permission.ts's loadHiddenRuleCheck with its helpers injected, so it stays off every hook's eager path; it imports only Node built-ins. Claude Code facts are from claude.exe 2.1.x: hook processes get CLAUDE_PID (the claude process) and inherit CLAUDE_CODE_ENTRYPOINT, which Claude Code sets to `cli`, or `sdk-cli` under `-p`, and which every SDK, IDE and remote host sets to its own value; nested `.claude/skills` directories git ignores are skipped ("[skills] Skipped gitignored skills dir"), judged by `git check-ignore`, which exits 128 for a path past a symbolic link, so a linked directory is never skipped; a hook fired inside a subagent carries `agent_type`, the agent's frontmatter `name` (`plugin:name` for a plugin's agent) or a built-in's. */
 
-import { spawnSync } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -12,46 +12,98 @@ export interface HiddenRuleHelpers {
   readonly runGit: (args: string[], opts: { cwd: string; timeoutMs: number }) => { readonly exitCode: number; readonly stdout: string }
 }
 
+/** What one check is about beyond its session: the clock, and the subagent the hook fired in (the payload's `agent_type`). */
+export interface HiddenRuleQuery {
+  readonly now?: number
+  readonly agentType?: string | undefined
+}
+
 // Claude Code flags that add no permission rule and hand no prompt to anyone else; any other flag on the claude command line reads as a hidden rule source.
 const HARMLESS_FLAGS: ReadonlySet<string> = new Set(['--resume', '-r', '--continue', '-c', '--fork-session', '--session-id', '--name', '-n', '--model', '--fallback-model', '--effort', '--thinking', '--max-thinking-tokens', '--dangerously-skip-permissions', '--allow-dangerously-skip-permissions', '--permission-mode', '--enable-auto-mode', '--verbose', '--debug', '-d', '--debug-file', '--print', '-p', '--output-format', '--include-partial-messages', '--ide', '--chrome', '--no-chrome', '--mcp-config', '--strict-mcp-config', '--append-system-prompt', '--append-system-prompt-file', '--system-prompt', '--system-prompt-file', '--max-turns', '--max-budget-usd', '--worktree', '-w', '--tmux', '--version', '-v', '--allowedtools', '--allowed-tools', '--tools', '--setting-sources', '--disable-slash-commands', '--no-session-persistence'])
 const CLI_ENTRYPOINTS: ReadonlySet<string> = new Set(['cli', 'sdk-cli'])
+// The agent types claude.exe 2.1.291 defines itself, none of which removes a tool by pattern: Explore, Plan and workflow-subagent remove whole tools only. `teammate` is not one of them: it runs another agent's definition, tools included, under its own name.
+const BUILTIN_AGENTS: ReadonlySet<string> = new Set(['Explore', 'Plan', 'general-purpose', 'statusline-setup', 'claude-code-guide', 'web-fetch', 'fork', 'claude', 'worker', 'workflow-subagent', 'comment-thread-analyst'])
 const RULE_DIRS: readonly string[] = ['skills', 'commands', 'agents']
+// A path, as git prints it, at or inside a `.claude` skill, command or agent directory.
+const RULE_PATH = /(?:^|\/)\.claude\/(?:skills|commands|agents)(?:\/|$)/
+const AGENT_PATH = /(?:^|\/)\.claude\/agents(?:\/|$)/
+const CLAUDE_INSIDE = /(?:^|\/)\.claude\//
 const SCAN_BUDGET = 20_000
 const SCAN_TTL_MS = 60_000
 const FILE_HEAD_BYTES = 256 * 1024
 
+/** One scan's answer: the reason it found, the stamp of every directory and file it read (for {@link stillCurrent}), and the agent names it read definitions for. */
+interface ScanResult {
+  readonly reason: string | null
+  readonly stamps: ReadonlyMap<string, string>
+  readonly agents: ReadonlySet<string>
+  readonly pluginAgents: ReadonlySet<string>
+}
+
 let processCache: { readonly key: string; readonly reason: string | null } | undefined
-let scanCache: { readonly key: string; readonly at: number; readonly reason: string | null } | undefined
+let fixedCache: (ScanResult & { readonly key: string; readonly at: number }) | undefined
+let nestedCache: (ScanResult & { readonly key: string; readonly at: number }) | undefined
 
 /** Drop the cached answers, for a test that changes what they read. */
 export function resetHiddenRuleCache(): void {
   processCache = undefined
-  scanCache = undefined
+  fixedCache = undefined
+  nestedCache = undefined
+}
+
+/** Process `pid`'s command line read from /proc, or undefined where there is no /proc to read. */
+function procCommandLine(pid: string): string | undefined {
+  if (process.platform === 'win32' || !fs.existsSync('/proc/self/cmdline')) return undefined
+  return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ').trim()
+}
+
+/** The command that prints process `pid`'s command line, where /proc cannot be read. */
+function commandLineQuery(pid: string): readonly [string, string[]] {
+  if (process.platform === 'win32') return [path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`]]
+  return ['ps', ['-ww', '-o', 'args=', '-p', pid]]
 }
 
 /** The command line of process `pid`, or null when it cannot be read. */
 function commandLine(pid: string): string | null {
   try {
-    if (process.platform === 'win32') {
-      const ps = path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-      const res = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`], { encoding: 'utf8', windowsHide: true, timeout: 15_000 })
-      return res.error === undefined && res.status === 0 ? res.stdout.trim() : null
-    }
-    if (fs.existsSync('/proc/self/cmdline')) return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ').trim()
-    const res = spawnSync('ps', ['-ww', '-o', 'args=', '-p', pid], { encoding: 'utf8', timeout: 15_000 })
+    const proc = procCommandLine(pid)
+    if (proc !== undefined) return proc
+    const [file, args] = commandLineQuery(pid)
+    const res = spawnSync(file, args, { encoding: 'utf8', windowsHide: true, timeout: 15_000 })
     return res.error === undefined && res.status === 0 ? res.stdout.trim() : null
   } catch {
     return null
   }
 }
 
-/** Why the claude process itself could carry rules no file shows, or null: its entry point, then every flag on its command line. */
-function processReason(env: NodeJS.ProcessEnv): string | null {
+/** {@link commandLine} without blocking the event loop while the query runs. */
+async function commandLineAsync(pid: string): Promise<string | null> {
+  try {
+    const proc = procCommandLine(pid)
+    if (proc !== undefined) return proc
+    const [file, args] = commandLineQuery(pid)
+    return await new Promise((resolve) => {
+      execFile(file, args, { encoding: 'utf8', windowsHide: true, timeout: 15_000 }, (err, stdout) => resolve(err === null ? stdout.trim() : null))
+    })
+  } catch {
+    return null
+  }
+}
+
+function processKeyOf(env: NodeJS.ProcessEnv): string {
+  return `${env['CLAUDE_CODE_SESSION_ID'] ?? ''}:${env['CLAUDE_PID'] ?? ''}:${env['CLAUDE_CODE_ENTRYPOINT'] ?? ''}`
+}
+
+/** Why the claude process cannot be checked at all (a host other than the terminal CLI, or no usable CLAUDE_PID), or null when its command line is the next thing to read. */
+function entryReason(env: NodeJS.ProcessEnv): string | null {
   const entrypoint = env['CLAUDE_CODE_ENTRYPOINT'] ?? ''
   if (!CLI_ENTRYPOINTS.has(entrypoint)) return `entry point ${entrypoint === '' ? 'unknown' : entrypoint}`
-  const pid = env['CLAUDE_PID'] ?? ''
-  if (!/^[1-9]\d{0,9}$/.test(pid)) return 'claude process unknown'
-  const line = commandLine(pid)
+  if (!/^[1-9]\d{0,9}$/.test(env['CLAUDE_PID'] ?? '')) return 'claude process unknown'
+  return null
+}
+
+/** Why the claude command line could carry rules no file shows: any flag not known to be harmless. */
+function commandLineReason(line: string | null): string | null {
   if (line === null || line === '') return 'claude command line unreadable'
   for (const raw of line.match(/"[^"]*"?|\S+/g) ?? []) {
     const token = raw.replace(/^"/, '')
@@ -61,6 +113,14 @@ function processReason(env: NodeJS.ProcessEnv): string | null {
     if (!HARMLESS_FLAGS.has(flag)) return `claude started with ${flag}`
   }
   return null
+}
+
+/** Read the claude process's command line for this session ahead of {@link hiddenRuleSource}, without blocking: the resident hook server awaits this before a bypassPermissions call, so its event loop keeps answering while the query runs (about a second on Windows) and the check then finds the answer cached. */
+export async function primeProcessReason(env: NodeJS.ProcessEnv): Promise<void> {
+  const key = processKeyOf(env)
+  if (processCache?.key === key) return
+  const reason = entryReason(env) ?? commandLineReason(await commandLineAsync(env['CLAUDE_PID'] as string))
+  processCache = { key, reason }
 }
 
 /** The frontmatter block of a markdown file, or undefined when it has none. */
@@ -83,8 +143,46 @@ export function frontmatterAddsRule(front: string): boolean {
 }
 
 interface Scan {
+  readonly helpers: HiddenRuleHelpers
   budget: number
   reason: string | null
+  /** Set for the scan of the fixed folders, whose clean answer is re-checked against these stamps on every call. */
+  readonly stamps: Map<string, string> | undefined
+  readonly agents: Set<string>
+  readonly pluginAgents: Set<string>
+  /** Real paths of the directories already walked, so a link back up the tree is walked once. */
+  readonly walked: Set<string>
+}
+
+/** Where a directory or file sits: how deep below its scan root, inside an agents directory, and inside the plugin cache. */
+interface Place {
+  readonly depth: number
+  readonly agents: boolean
+  readonly plugin: boolean
+}
+
+function newScan(helpers: HiddenRuleHelpers, stamped: boolean): Scan {
+  return { helpers, budget: SCAN_BUDGET, reason: null, stamps: stamped ? new Map() : undefined, agents: new Set(), pluginAgents: new Set(), walked: new Set() }
+}
+
+function result(scan: Scan): ScanResult {
+  return { reason: scan.reason, stamps: scan.stamps ?? new Map(), agents: scan.agents, pluginAgents: scan.pluginAgents }
+}
+
+/** What a later call compares to tell whether `file` changed: its modification time, and its size for a file. */
+function stamp(file: string): string {
+  try {
+    const st = fs.statSync(file)
+    return `${st.mtimeMs}:${st.isDirectory() ? 'dir' : st.size}`
+  } catch {
+    return 'absent'
+  }
+}
+
+/** Whether every directory and file a scan read still carries the stamp it had then. */
+function stillCurrent(stamps: ReadonlyMap<string, string>): boolean {
+  for (const [file, was] of stamps) if (stamp(file) !== was) return false
+  return true
 }
 
 /** The first bytes of a file, or null when it cannot be read. */
@@ -101,18 +199,38 @@ function head(file: string): string | null {
   }
 }
 
-function checkFile(file: string, scan: Scan): void {
+function checkFile(file: string, scan: Scan, place: Place): void {
   const lower = file.toLowerCase()
   const json = lower.endsWith('.json')
   if (!json && !lower.endsWith('.md')) return
+  scan.stamps?.set(file, stamp(file))
   const text = head(file)
-  if (text === null) scan.reason = `cannot read ${file}`
-  else if (json ? text.includes('PermissionRequest') : frontmatterAddsRule(frontmatter(text) ?? '')) scan.reason = `rule source ${file}`
+  if (text === null) {
+    scan.reason = `cannot read ${file}`
+    return
+  }
+  const front = json ? undefined : (frontmatter(text) ?? '')
+  if (front === undefined ? text.includes('PermissionRequest') : frontmatterAddsRule(front)) scan.reason = `rule source ${file}`
+  else if (front !== undefined && place.agents) {
+    // An agent's type is its frontmatter name, not its file name.
+    const name = /^name[ \t]*:(.*)$/m.exec(front)?.[1]?.trim().replace(/^(["'])(.*)\1$/, '$2')
+    if (name !== undefined && name !== '') (place.plugin ? scan.pluginAgents : scan.agents).add(name)
+  }
+}
+
+/** Whether `full` is a symbolic link or junction to a directory. */
+function linksToDir(full: string): boolean {
+  try {
+    return fs.lstatSync(full).isSymbolicLink() && fs.statSync(full).isDirectory()
+  } catch {
+    return false
+  }
 }
 
 /** Check every markdown and JSON file under `dir`, following links, within the scan's budget. */
-function scanDir(dir: string, scan: Scan, helpers: HiddenRuleHelpers, depth = 0): void {
-  if (scan.reason !== null || !helpers.sourceAllowed(dir)) return
+function scanDir(dir: string, scan: Scan, place: Place): void {
+  if (scan.reason !== null || !scan.helpers.sourceAllowed(dir)) return
+  scan.stamps?.set(dir, stamp(dir))
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true })
@@ -140,17 +258,36 @@ function scanDir(dir: string, scan: Scan, helpers: HiddenRuleHelpers, depth = 0)
       }
     }
     if (isDir && entry.name !== 'node_modules' && entry.name !== '.git') {
-      if (depth >= 32) scan.reason = `too deep under ${dir}`
-      else scanDir(full, scan, helpers, depth + 1)
+      if (place.depth >= 32) scan.reason = `too deep under ${dir}`
+      else scanDir(full, scan, { ...place, depth: place.depth + 1, agents: place.agents || entry.name === 'agents' })
     } else if (isFile) {
-      checkFile(full, scan)
+      checkFile(full, scan, place)
     }
   }
 }
 
-/** Find nested `.claude` directories under `dir` outside a git checkout, where Claude Code discovers skills from any of them. */
-function walkForClaudeDirs(dir: string, scan: Scan, helpers: HiddenRuleHelpers, depth = 0): void {
-  if (scan.reason !== null || !helpers.sourceAllowed(dir)) return
+/** Check the skill, command and agent directories of one `.claude` directory. */
+function scanClaudeDir(claudeDir: string, scan: Scan): void {
+  for (const sub of RULE_DIRS) scanDir(path.join(claudeDir, sub), scan, { depth: 0, agents: sub === 'agents', plugin: false })
+}
+
+/** Whether `dir` is walked for the first time in this scan, by its real path. */
+function firstWalk(dir: string, scan: Scan): boolean {
+  let real: string
+  try {
+    real = fs.realpathSync.native(dir)
+  } catch {
+    return true
+  }
+  const key = process.platform === 'win32' ? real.toLowerCase() : real
+  if (scan.walked.has(key)) return false
+  scan.walked.add(key)
+  return true
+}
+
+/** Find nested `.claude` directories under `dir`, following links and junctions (Claude Code discovers skills from any of them), and every `node_modules` too, which Claude Code does not skip. */
+function walkForClaudeDirs(dir: string, scan: Scan, depth = 0): void {
+  if (scan.reason !== null || !scan.helpers.sourceAllowed(dir) || !firstWalk(dir, scan)) return
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true })
@@ -165,17 +302,59 @@ function walkForClaudeDirs(dir: string, scan: Scan, helpers: HiddenRuleHelpers, 
       scan.reason = 'too many files to check'
       return
     }
-    if (!entry.isDirectory() || entry.name === 'node_modules' || entry.name === '.git') continue
+    if (entry.name === '.git') continue
     const full = path.join(dir, entry.name)
-    if (entry.name === '.claude') for (const sub of RULE_DIRS) scanDir(path.join(full, sub), scan, helpers)
+    if (!entry.isDirectory() && !(entry.isSymbolicLink() && linksToDir(full))) continue
+    if (entry.name === '.claude') scanClaudeDir(full, scan)
     else if (depth >= 32) scan.reason = `too deep under ${dir}`
-    else walkForClaudeDirs(full, scan, helpers, depth + 1)
+    else walkForClaudeDirs(full, scan, depth + 1)
   }
 }
 
-/** Every skill, command and agent directory Claude Code could load for a session in `cwd` whose project is `project`, plus installed plugins, checked for a rule-adding file. */
-function scanReason(cwd: string, project: string, helpers: HiddenRuleHelpers): string | null {
-  const scan: Scan = { budget: SCAN_BUDGET, reason: null }
+/** Nested skill directories inside a git checkout. Claude Code skips one whose holding folder `git check-ignore` reports, so git lists the candidates: every file in a skill, command or agent directory, and every ignored folder at or inside a `.claude`. A link is never skipped, since check-ignore exits 128 past one, so every link git can see (tracked, untracked, or ignored but not inside an ignored directory) that leads to a directory is followed. */
+function scanGitCheckout(project: string, scan: Scan): void {
+  const list = (args: string[]): string[] | null => {
+    const res = scan.helpers.runGit(['ls-files', '-z', ...args], { cwd: project, timeoutMs: 15_000 })
+    return res.exitCode === 0 ? res.stdout.split('\0').filter((entry) => entry !== '') : null
+  }
+  const tracked = list(['-s'])
+  const untracked = list(['-o', '--exclude-standard'])
+  const ignored = list(['-o', '-i', '--exclude-standard', '--directory'])
+  if (tracked === null || untracked === null || ignored === null) {
+    scan.reason = 'cannot list nested skills'
+    return
+  }
+  // Claude Code asks check-ignore about the folder holding `.claude`, never the skill itself, so an ignored file git lists on its own is still loaded: its folder would have been listed whole had it been ignored.
+  const candidates: string[] = [...untracked, ...ignored.filter((rel) => !rel.endsWith('/'))]
+  for (const record of tracked) {
+    // `<mode> <object> <stage>\t<path>`; mode 120000 is a link.
+    const rel = record.slice(record.indexOf('\t') + 1)
+    if (record.startsWith('120000 ') || RULE_PATH.test(rel)) candidates.push(rel)
+  }
+  // A path ending in `/` with nothing listed beneath it is a folder git did not look inside; git also lists the folders above an ignored file. Only one at or inside a `.claude` can be loaded, since the folder holding that `.claude` is not ignored.
+  const sorted = [...ignored].sort()
+  const ignoredDirs = sorted.filter((rel, i) => rel.endsWith('/') && sorted[i + 1]?.startsWith(rel) !== true && CLAUDE_INSIDE.test(rel))
+  for (const rel of [...candidates, ...ignoredDirs]) {
+    if (scan.reason !== null) return
+    if (--scan.budget < 0) {
+      scan.reason = 'too many files to check'
+      return
+    }
+    const full = path.join(project, rel)
+    const place: Place = { depth: 0, agents: AGENT_PATH.test(rel), plugin: false }
+    if (rel.endsWith('/') || linksToDir(full)) {
+      if (RULE_PATH.test(rel)) scanDir(full, scan, place)
+      else if (path.basename(full) === '.claude') scanClaudeDir(full, scan)
+      else if (!rel.endsWith('/')) walkForClaudeDirs(full, scan)
+    } else if (RULE_PATH.test(rel)) {
+      checkFile(full, scan, place)
+    }
+  }
+}
+
+/** Every skill, command and agent directory Claude Code reads from a fixed place for a session in `cwd` whose project is `project` (the config directory, each `.claude` from the project up, the managed directories), plus installed plugins. Each directory and file read is stamped, so a clean answer is re-checked on every call. */
+function scanFixed(cwd: string, project: string, helpers: HiddenRuleHelpers): ScanResult {
+  const scan = newScan(helpers, true)
   const configDir = helpers.configDir()
   const roots = [configDir, ...[cwd, project].flatMap(helpers.selfAndAncestors).map((d) => path.join(d, '.claude')), ...helpers.managedDirs().map((d) => path.join(d, '.claude'))]
   const seen = new Set<string>()
@@ -183,36 +362,41 @@ function scanReason(cwd: string, project: string, helpers: HiddenRuleHelpers): s
     const key = process.platform === 'win32' ? root.toLowerCase() : root
     if (seen.has(key)) continue
     seen.add(key)
-    for (const sub of RULE_DIRS) scanDir(path.join(root, sub), scan, helpers)
+    scanClaudeDir(root, scan)
   }
   // Installed plugins run from the plugin cache; the marketplace clones and the plugin directory listing beside it only describe plugins, and the listing names PermissionRequest in their descriptions.
-  scanDir(path.join(configDir, 'plugins', 'cache'), scan, helpers)
-  if (scan.reason !== null) return scan.reason
-  // Nested skill directories: inside a git checkout Claude Code skips ignored ones, so git lists exactly the candidates; outside one every directory is walked.
-  const inRepo = helpers.selfAndAncestors(project).some((d) => fs.existsSync(path.join(d, '.git')))
-  if (inRepo) {
-    const res = helpers.runGit(['ls-files', '-co', '--exclude-standard', '-z', '--', ...RULE_DIRS.map((d) => `:(glob)**/.claude/${d}/**`)], { cwd: project, timeoutMs: 15_000 })
-    if (res.exitCode !== 0) return 'cannot list nested skills'
-    for (const rel of res.stdout.split('\0')) {
-      if (rel === '') continue
-      if (--scan.budget < 0) return 'too many files to check'
-      checkFile(path.join(project, rel), scan)
-      if (scan.reason !== null) return scan.reason
-    }
-  } else {
-    walkForClaudeDirs(project, scan, helpers)
-  }
-  return scan.reason
+  scanDir(path.join(configDir, 'plugins', 'cache'), scan, { depth: 0, agents: false, plugin: true })
+  return result(scan)
 }
 
-/** Why the session behind this hook could be under a permission rule no settings file shows, or null when every source was read and none adds one. `env` is the hook's environment, which Claude Code builds. */
-export function hiddenRuleSource(cwd: string, projectDir: string | undefined, env: NodeJS.ProcessEnv, helpers: HiddenRuleHelpers, now = Date.now()): string | null {
-  const processKey = `${env['CLAUDE_CODE_SESSION_ID'] ?? ''}:${env['CLAUDE_PID'] ?? ''}:${env['CLAUDE_CODE_ENTRYPOINT'] ?? ''}`
-  if (processCache?.key !== processKey) processCache = { key: processKey, reason: processReason(env) }
+/** Nested skill directories anywhere under `project`: listed by git inside a checkout, walked outside one. Too many places to stamp, so the answer is kept for a minute. */
+function scanNested(project: string, helpers: HiddenRuleHelpers): ScanResult {
+  const scan = newScan(helpers, false)
+  if (helpers.selfAndAncestors(project).some((d) => fs.existsSync(path.join(d, '.git')))) scanGitCheckout(project, scan)
+  else walkForClaudeDirs(project, scan)
+  return result(scan)
+}
+
+/** Why the subagent the hook fired in could carry rules the scans did not see: an agent type that is neither built in nor named by a definition they read. */
+function agentReason(agentType: string | undefined, scans: readonly ScanResult[]): string | null {
+  if (agentType === undefined || BUILTIN_AGENTS.has(agentType)) return null
+  const colon = agentType.lastIndexOf(':')
+  const known = colon < 0 ? scans.some((s) => s.agents.has(agentType)) : scans.some((s) => s.pluginAgents.has(agentType.slice(colon + 1)))
+  return known ? null : `agent ${agentType} not checked`
+}
+
+/** Why the session behind this hook could be under a permission rule no settings file shows, or null when every source was read and none adds one. `env` is the hook's environment, which Claude Code builds. The fixed folders are re-stamped on every call and rescanned the moment one changed; the nested search is redone after a minute. */
+export function hiddenRuleSource(cwd: string, projectDir: string | undefined, env: NodeJS.ProcessEnv, helpers: HiddenRuleHelpers, query: HiddenRuleQuery = {}): string | null {
+  const now = query.now ?? Date.now()
+  const processKey = processKeyOf(env)
+  if (processCache?.key !== processKey) processCache = { key: processKey, reason: entryReason(env) ?? commandLineReason(commandLine(env['CLAUDE_PID'] as string)) }
   if (processCache.reason !== null) return processCache.reason
   const here = path.resolve(cwd)
   const project = projectDir !== undefined && path.isAbsolute(projectDir) ? path.resolve(projectDir) : here
   const scanKey = `${processKey}:${here}:${project}`
-  if (scanCache?.key !== scanKey || now - scanCache.at > SCAN_TTL_MS) scanCache = { key: scanKey, at: now, reason: scanReason(here, project, helpers) }
-  return scanCache.reason
+  // A stale "hidden" only skips a rewrite, so a found reason keeps its minute; a clean answer is trusted only while nothing it read has changed.
+  if (fixedCache?.key !== scanKey || (fixedCache.reason !== null ? now - fixedCache.at > SCAN_TTL_MS : !stillCurrent(fixedCache.stamps))) fixedCache = { key: scanKey, at: now, ...scanFixed(here, project, helpers) }
+  if (fixedCache.reason !== null) return fixedCache.reason
+  if (nestedCache?.key !== scanKey || now - nestedCache.at > SCAN_TTL_MS) nestedCache = { key: scanKey, at: now, ...scanNested(project, helpers) }
+  return nestedCache.reason ?? agentReason(query.agentType, [fixedCache, nestedCache])
 }

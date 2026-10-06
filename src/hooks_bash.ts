@@ -17,7 +17,7 @@ import { detectHarness } from './bridges/registry.js'
 import { detectFromCommand, hasBareBackground } from './tool_filters/index.js'
 import { canRunWrappedShell, canRunPowerShell } from './shell.js'
 import { detectStructuralIndexRewrite } from './bash_structural_index.js'
-import { loadCodexRules, loadingHiddenRuleCheck, permissionNeutralRewrite, readHintCrossesRule, shellPathWords } from './rewrite_permission.js'
+import { agentTypeOf, loadCodexRules, loadingHiddenRuleCheck, permissionNeutralRewrite, readHintCrossesRule, shellPathWords } from './rewrite_permission.js'
 import { rangeSubstituteFor } from './bash_range_savings.js'
 import { hintTarget, sliceCommand, sliceForPath, type HintSlice, type HintTarget } from './hint_target.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
@@ -100,7 +100,7 @@ function cappedInterpreterRead(event: HookEvent, rawCmd: string, cmd: string, hi
 
 /** A rewrite of this Bash call's command, or null when rewrite_permission.ts finds it could change the permission outcome of the command the model wrote. */
 function shellRewrite(event: HookEvent, kind: 'shell-wrap' | 'shell-query', original: string, command: string): HookOutput | null {
-  return permissionNeutralRewrite({ ...event.toolInput, command }, { kind, harness: detectHarness(), mode: event.raw['permission_mode'], cwd: getCwd(event) ?? process.cwd(), original, rewritten: command })
+  return permissionNeutralRewrite({ ...event.toolInput, command }, { kind, harness: detectHarness(), mode: event.raw['permission_mode'], cwd: getCwd(event) ?? process.cwd(), original, rewritten: command, agentType: agentTypeOf(event.raw) })
 }
 
 /** Wrap a recognized command in `token-goat compress` so its output is structurally compressed on this run. Returns a `rewriteInput` HookOutput that replaces the Bash tool input wholesale (preserving description/timeout), or null when compression is disabled (`TOKEN_GOAT_BASH_COMPRESS=0` or config), the command is unsuitable, or the chosen filter is disabled. @param event  hook event; its toolInput is preserved verbatim except `command` @param rawCmd original command INCLUDING any `cd … &&` prefix and leading assignments (run by compress) @param cmd    the command with both stripped, used only to pick the filter */

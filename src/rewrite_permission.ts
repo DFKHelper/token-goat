@@ -58,6 +58,14 @@ export interface RewriteRequest {
   readonly rewritten: string
   /** For a Read: whether the original path is inside the working directory, where Claude Code reads without a prompt. */
   readonly insideCwd?: boolean
+  /** The hook payload's `agent_type`: the subagent the call came from, whose definition may remove tools by pattern. */
+  readonly agentType?: string | undefined
+}
+
+/** The payload's `agent_type`, which Claude Code sends from inside a subagent and on the main thread of a session started with `--agent`. */
+export function agentTypeOf(raw: Record<string, unknown>): string | undefined {
+  const agentType = raw['agent_type']
+  return typeof agentType === 'string' ? agentType : undefined
 }
 
 const KNOWN_MODES: ReadonlySet<string> = new Set(['default', 'plan', 'acceptEdits', 'auto', 'dontAsk', 'bypassPermissions'])
@@ -331,6 +339,8 @@ function decideAgent(snapshot: PermissionSnapshot): RewriteVerdict {
 }
 
 let hiddenCheck: ((req: RewriteRequest) => boolean) | undefined
+let primeHiddenCheck: ((env: NodeJS.ProcessEnv) => Promise<void>) | undefined
+let primeAhead = false
 
 /** The pure decision, given the merged settings (null when any source could not be read). In auto and bypassPermissions no rewrite may ever add a prompt, so a verdict there is only `skip` or `approve`: auto mode always skips, since its classifier reviews the call a hook allow would wave through and a deferred wrapper is a call it may stop to ask about; bypassPermissions approves a rewrite only when no rule source the hook cannot read could apply (`hidden`, which is true until loadHiddenRuleCheck has run), and skips otherwise. */
 export function decideRewrite(snapshot: PermissionSnapshot | null, req: RewriteRequest, hidden: (req: RewriteRequest) => boolean = (r) => hiddenCheck?.(r) ?? true): RewriteVerdict {
@@ -590,15 +600,23 @@ export async function loadCodexRules(): Promise<void> {
 
 /** Load the check for Claude Code rule sources no settings file shows (claude_hidden_rules.ts); a dynamic import with this module's helpers injected, so it stays off every hook's eager path. */
 export async function loadHiddenRuleCheck(): Promise<void> {
-  if (hiddenCheck !== undefined) return
-  const { hiddenRuleSource } = await import('./claude_hidden_rules.js')
-  const helpers = { configDir: claudeConfigDir, managedDirs, runGit, selfAndAncestors, sourceAllowed }
-  hiddenCheck = (req) => hiddenRuleSource(req.cwd, process.env['CLAUDE_PROJECT_DIR'], process.env, helpers) !== null
+  if (hiddenCheck === undefined) {
+    const { hiddenRuleSource, primeProcessReason } = await import('./claude_hidden_rules.js')
+    const helpers = { configDir: claudeConfigDir, managedDirs, runGit, selfAndAncestors, sourceAllowed }
+    hiddenCheck = (req) => hiddenRuleSource(req.cwd, process.env['CLAUDE_PROJECT_DIR'], process.env, helpers, { agentType: req.agentType }) !== null
+    primeHiddenCheck = primeProcessReason
+  }
+  if (primeAhead) await primeHiddenCheck?.(process.env)
 }
 
-/** Wrap a PreToolUse handler that may rewrite its call so that, on a bypassPermissions call, the hidden rule check is loaded before it runs: until then decideRewrite skips every rewrite there. */
+/** From now on read the claude process's command line before a bypassPermissions handler runs rather than inside it. Called by the resident hook server, whose event loop would otherwise stop for that read (about a second on Windows) and which keeps the answer for every later call of the session; a one-shot hook process does not, since it would pay the read on every call whether or not it rewrites anything. */
+export function primeHiddenRulesAhead(): void {
+  primeAhead = true
+}
+
+/** Wrap a PreToolUse handler that may rewrite its call so that, on a bypassPermissions call, the hidden rule check is loaded (and in the hook server, the claude process read) before it runs: until then decideRewrite skips every rewrite there. */
 export function loadingHiddenRuleCheck<E extends { readonly raw: Record<string, unknown> }, R>(handler: (event: E) => R | Promise<R>): (event: E) => R | Promise<R> {
-  return (event) => (hiddenCheck === undefined && event.raw['permission_mode'] === 'bypassPermissions' ? loadHiddenRuleCheck().then(() => handler(event)) : handler(event))
+  return (event) => ((hiddenCheck === undefined || primeAhead) && event.raw['permission_mode'] === 'bypassPermissions' ? loadHiddenRuleCheck().then(() => handler(event)) : handler(event))
 }
 
 /** Harnesses whose shell permission rules no hook can read, so a wrapped command would be matched against rules token-goat never saw: Copilot CLI takes `--allow-tool`/`--deny-tool` on its command line and runs its hooks from compiled code whose order against them is undocumented; opencode merges permission rules from an organization account and a well-known URL, and its check for directories outside the project reads the paths the wrapper hides; Grok runs Claude Code's hook settings and applies `updatedInput` before its own policy and prompt see the call. */

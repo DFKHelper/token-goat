@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { frontmatterAddsRule, hiddenRuleSource, resetHiddenRuleCache, type HiddenRuleHelpers } from '../src/claude_hidden_rules.js'
+import { frontmatterAddsRule, hiddenRuleSource, primeProcessReason, resetHiddenRuleCache, type HiddenRuleHelpers, type HiddenRuleQuery } from '../src/claude_hidden_rules.js'
 import { selfAndAncestors } from '../src/rewrite_permission.js'
 import { runGit } from '../src/util.js'
 
@@ -70,9 +70,23 @@ function write(file: string, text: string): void {
   fs.writeFileSync(file, text)
 }
 
-function check(b: Box, env: NodeJS.ProcessEnv = {}): string | null {
-  return hiddenRuleSource(b.project, b.project, { CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_PID: plainPid, CLAUDE_CODE_SESSION_ID: 's', ...env }, b.helpers)
+function check(b: Box, env: NodeJS.ProcessEnv = {}, query: HiddenRuleQuery = {}): string | null {
+  return hiddenRuleSource(b.project, b.project, { CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_PID: plainPid, CLAUDE_CODE_SESSION_ID: 's', ...env }, b.helpers, query)
 }
+
+/** Make `at` a directory link (or junction) to `target`; false where this machine may not create one. */
+function link(target: string, at: string, type: 'dir' | 'junction' = 'dir'): boolean {
+  fs.mkdirSync(path.dirname(at), { recursive: true })
+  try {
+    fs.symlinkSync(target, at, type)
+    return true
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EPERM') return false
+    throw err
+  }
+}
+
+const PATTERN_SKILL = '---\nname: s\ndisallowed-tools: Bash(curl *)\n---\n'
 
 describe('frontmatterAddsRule', () => {
   it('a disallowed-tools entry with a pattern adds a rule, in either spelling and list form', () => {
@@ -170,12 +184,159 @@ describe('hiddenRuleSource: rule files', () => {
     expect(check(b)).toBe('too many files to check')
   }, 120_000)
 
-  it('the scan is cached for a minute, then redone', () => {
+  it('a skill written into a fixed folder counts on the next call, not a minute later', () => {
     const b = box('ttl')
-    const env = { CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_PID: plainPid, CLAUDE_CODE_SESSION_ID: 's' }
-    expect(hiddenRuleSource(b.project, b.project, env, b.helpers, 1_000)).toBeNull()
+    expect(check(b, {}, { now: 1_000 })).toBeNull()
     write(path.join(b.config, 'skills', 'net', 'SKILL.md'), '---\ndisallowed-tools: Bash(curl *)\n---\n')
-    expect(hiddenRuleSource(b.project, b.project, env, b.helpers, 30_000)).toBeNull()
-    expect(hiddenRuleSource(b.project, b.project, env, b.helpers, 62_000)).toContain('SKILL.md')
+    expect(check(b, {}, { now: 1_500 })).toContain('SKILL.md')
+    const c = box('ttl-edit')
+    const file = path.join(c.project, '.claude', 'skills', 'web', 'SKILL.md')
+    write(file, '---\ndisallowed-tools: WebFetch\n---\n')
+    expect(check(c, {}, { now: 1_000 })).toBeNull()
+    write(file, '---\ndisallowed-tools: WebFetch(domain:x)\n---\n')
+    expect(check(c, {}, { now: 1_500 })).toContain('SKILL.md')
+  }, 30_000)
+
+  it('the nested search is kept for a minute, then redone', () => {
+    const b = box('ttl-nested')
+    expect(check(b, {}, { now: 1_000 })).toBeNull()
+    write(path.join(b.project, 'pkg', '.claude', 'skills', 's', 'SKILL.md'), PATTERN_SKILL)
+    expect(check(b, {}, { now: 30_000 })).toBeNull()
+    expect(check(b, {}, { now: 62_000 })).toContain('SKILL.md')
+  }, 30_000)
+})
+
+// HAND-DERIVED layouts. Claude Code facts: it does not skip node_modules when it discovers nested skills, and skips a directory only when `git check-ignore` exits 0 (FORMAT-DERIVED from claude.exe 2.1.289); check-ignore exits 128 for a path past a directory link and treats a junction as a plain directory (CAPTURE: git 2.53.0.windows.1, 2026-10-06).
+describe('hiddenRuleSource: nested skills behind node_modules and links', () => {
+  it('a skill directory inside node_modules counts outside a git checkout', () => {
+    const b = box('node-modules')
+    write(path.join(b.project, 'node_modules', 'pkg', '.claude', 'skills', 's', 'SKILL.md'), PATTERN_SKILL)
+    expect(check(b)).toContain(path.join('node_modules', 'pkg', '.claude', 'skills', 's', 'SKILL.md'))
+  }, 30_000)
+
+  it('a directory link or junction outside a git checkout is followed', (ctx) => {
+    const b = box('link-plain')
+    const ext = path.join(root, 'link-plain', 'ext')
+    write(path.join(ext, '.claude', 'skills', 's', 'SKILL.md'), PATTERN_SKILL)
+    if (!link(ext, path.join(b.project, 'linked'))) return ctx.skip()
+    expect(check(b)).toContain('SKILL.md')
+    const c = box('junction-plain')
+    const ext2 = path.join(root, 'junction-plain', 'ext')
+    write(path.join(ext2, '.claude', 'skills', 's', 'SKILL.md'), PATTERN_SKILL)
+    expect(link(ext2, path.join(c.project, 'junc'), 'junction')).toBe(true)
+    expect(check(c)).toContain('SKILL.md')
+  }, 30_000)
+
+  it('a link back up the tree is walked once, not until the depth limit', (ctx) => {
+    const b = box('link-loop')
+    if (!link(b.project, path.join(b.project, 'self'))) return ctx.skip()
+    expect(check(b)).toBeNull()
+  }, 30_000)
+
+  it('a link at a .claude or skills directory itself is followed', (ctx) => {
+    const b = box('link-claude')
+    const ext = path.join(root, 'link-claude', 'ext')
+    write(path.join(ext, 'skills', 's', 'SKILL.md'), PATTERN_SKILL)
+    if (!link(ext, path.join(b.project, 'pkg', '.claude'))) return ctx.skip()
+    expect(check(b)).toContain('SKILL.md')
+  }, 30_000)
+
+  it('inside a git checkout an untracked, tracked or ignored link counts, as check-ignore never skips past one', (ctx) => {
+    for (const how of ['untracked', 'tracked', 'ignored'] as const) {
+      resetHiddenRuleCache()
+      const b = box(`link-git-${how}`)
+      const ext = path.join(root, `link-git-${how}`, 'ext')
+      write(path.join(ext, '.claude', 'skills', 's', 'SKILL.md'), PATTERN_SKILL)
+      expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+      expect(runGit(['config', 'core.symlinks', 'true'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+      if (how === 'ignored') write(path.join(b.project, '.gitignore'), 'linked\n')
+      if (!link(ext, path.join(b.project, 'linked'))) return ctx.skip()
+      if (how === 'tracked') expect(runGit(['add', 'linked'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+      expect(check(b), how).toContain('SKILL.md')
+    }
+  }, 60_000)
+
+  it('inside a git checkout a skill directory under an ignored directory still does not count', () => {
+    const b = box('git-ignored-dir')
+    expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    write(path.join(b.project, '.gitignore'), 'node_modules/\n')
+    write(path.join(b.project, 'node_modules', 'pkg', '.claude', 'skills', 's', 'SKILL.md'), PATTERN_SKILL)
+    expect(check(b)).toBeNull()
+  }, 30_000)
+
+  // FORMAT-DERIVED from claude.exe 2.1.291: nested skill discovery runs `git check-ignore -- <folder holding .claude>` and logs "Skipped gitignored skills dir" only when that exits 0; the skill file and the `.claude` folder are never asked about. Ignore patterns HAND-DERIVED; that git lists `c/.claude/` whole and `a/` above an ignored file was CAPTURED from git 2.53.0.windows.1.
+  it('inside a git checkout an ignored skill or .claude folder counts while the folder holding .claude is not ignored', () => {
+    const cases: readonly (readonly [ignore: string, skill: string])[] = [
+      ['a/**/*.md', 'a/.claude/skills/s/SKILL.md'],
+      ['b/.claude/skills/s/', 'b/.claude/skills/s/SKILL.md'],
+      ['c/.claude/', 'c/.claude/skills/s/SKILL.md'],
+      ['d/.claude/skills/', 'd/.claude/skills/s/SKILL.md'],
+      ['g/*\n!g/x.txt', 'g/.claude/skills/s/SKILL.md'],
+      ['h/.claude/agents/', 'h/.claude/agents/a.md'],
+    ]
+    for (const [ignore, skill] of cases) {
+      resetHiddenRuleCache()
+      const b = box(`git-ignored-${skill[0]}`)
+      expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+      write(path.join(b.project, '.gitignore'), `${ignore}\n`)
+      write(path.join(b.project, 'g', 'x.txt'), 'kept\n')
+      write(path.join(b.project, ...skill.split('/')), PATTERN_SKILL)
+      expect(check(b), ignore).toContain(path.join(...skill.split('/')))
+    }
+    resetHiddenRuleCache()
+    const b = box('git-ignored-holder')
+    expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    write(path.join(b.project, '.gitignore'), 'e/\nf/deep/\n')
+    write(path.join(b.project, 'e', 'sub', '.claude', 'skills', 's', 'SKILL.md'), PATTERN_SKILL)
+    write(path.join(b.project, 'f', 'deep', '.claude', 'skills', 's', 'SKILL.md'), PATTERN_SKILL)
+    write(path.join(b.project, 'f', 'kept.txt'), 'kept\n')
+    expect(check(b)).toBeNull()
+  }, 60_000)
+})
+
+// FORMAT-DERIVED from claude.exe 2.1.291: a hook's `agent_type` is "Agent type name (e.g., "general-purpose", "code-reviewer"). Present when the hook fires from within a subagent"; a markdown agent's type is its frontmatter `name`, and `:` is reserved for a plugin's namespace.
+describe('hiddenRuleSource: the subagent a hook fires in', () => {
+  it('a built-in agent type removes no tool by pattern', () => {
+    const b = box('agent-builtin')
+    expect(check(b, {}, { agentType: 'Explore' })).toBeNull()
+    expect(check(b, {}, { agentType: 'general-purpose' })).toBeNull()
+  }, 30_000)
+
+  it('an agent type no scanned definition names counts as hidden, teammate included', () => {
+    const b = box('agent-unknown')
+    expect(check(b, {}, { agentType: 'code-reviewer' })).toBe('agent code-reviewer not checked')
+    expect(check(b, {}, { agentType: 'teammate' })).toBe('agent teammate not checked')
+  }, 30_000)
+
+  it('an agent defined by a file the scan read is known by its frontmatter name, not its file name', () => {
+    const b = box('agent-file')
+    write(path.join(b.config, 'agents', 'review.md'), '---\nname: "code-reviewer"\ndisallowedTools: WebFetch\n---\n')
+    expect(check(b, {}, { agentType: 'code-reviewer' })).toBeNull()
+    expect(check(b, {}, { agentType: 'review' })).toBe('agent review not checked')
+  }, 30_000)
+
+  it("a plugin's agent is known only by its namespaced type", () => {
+    const b = box('agent-plugin')
+    write(path.join(b.config, 'plugins', 'cache', 'm', 'tools', '1.0.0', 'agents', 'helper.md'), '---\nname: helper\n---\n')
+    expect(check(b, {}, { agentType: 'tools:helper' })).toBeNull()
+    expect(check(b, {}, { agentType: 'helper' })).toBe('agent helper not checked')
+  }, 30_000)
+})
+
+describe('primeProcessReason', () => {
+  it('reads the claude command line ahead, so the check later finds it cached', async () => {
+    const pid = fakeClaude(['--resume', 'abc'])
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const env = { CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_PID: pid, CLAUDE_CODE_SESSION_ID: 'prime' }
+    await primeProcessReason(env)
+    const child = idle.find((c) => String(c.pid) === pid) as ChildProcess
+    await new Promise((resolve) => {
+      child.once('exit', resolve)
+      child.kill()
+    })
+    const b = box('prime')
+    expect(hiddenRuleSource(b.project, b.project, env, b.helpers)).toBeNull()
+    resetHiddenRuleCache()
+    expect(hiddenRuleSource(b.project, b.project, env, b.helpers)).toBe('claude command line unreadable')
   }, 30_000)
 })

@@ -20,7 +20,7 @@ import { loadConfig } from './config.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { getHarnessName } from './bridges/registry.js'
 import { isInsideRoot } from './project.js'
-import { loadingHiddenRuleCheck, permissionNeutralRewrite } from './rewrite_permission.js'
+import { agentTypeOf, loadingHiddenRuleCheck, permissionNeutralRewrite } from './rewrite_permission.js'
 
 /** Target token budget for the entire briefing (project map + cached ids + reminder + report contract). Measured against this repo's own compact map (46 tokens) plus a realistic mid-size project's compact map (~140 tokens, e.g. "Files: 640" + 10 top symbols) combined with the imperative surgical-read reminder (136 tokens, grown from a one-liner in c574b1f6), the report contract added below (~95 tokens), and a 1-3 entry cache-ids block (26-50 tokens): worst-case realistic total lands around 400-470 tokens. 450 left too little headroom once the contract was added, so 550 leaves a real margin above that; revisit this number again if either tail block grows further. */
 const BRIEFING_TARGET_TOKENS = 550
@@ -198,7 +198,7 @@ function preAgentHandler(event: HookEvent): HookOutput {
     const updatedInput = { ...toolInput, prompt: updatedPrompt }
 
     // The prompt is all that changes and Agent rules match the subagent type, so the rewrite carries no permission decision; rewrite_permission.ts declines it only when a rule could look further.
-    return permissionNeutralRewrite(updatedInput, { kind: 'agent', harness: getHarnessName(), mode: event.raw['permission_mode'], cwd: getCwd(event) ?? process.cwd(), original: prompt, rewritten: updatedPrompt }) ?? passOutput()
+    return permissionNeutralRewrite(updatedInput, { kind: 'agent', harness: getHarnessName(), mode: event.raw['permission_mode'], cwd: getCwd(event) ?? process.cwd(), original: prompt, rewritten: updatedPrompt, agentType: agentTypeOf(event.raw) }) ?? passOutput()
   } catch {
     // Any unexpected error: fail open, never block the spawn
     return passOutput()

@@ -33,6 +33,7 @@ import {
   type ServerStatus,
 } from './hook_ipc.js'
 import { relayInProcess } from './relay.js'
+import { primeHiddenRulesAhead } from './rewrite_permission.js'
 import { clearPerRequestCaches } from './reset.js'
 import { VERSION } from './version.js'
 
@@ -201,6 +202,7 @@ export async function runHookServer(slot: number, runCli: RunCli): Promise<void>
     return
   }
   ensureDataDirPrivate()
+  primeHiddenRulesAhead()
   const key = ensureServerKey()
   const keyPath = serverKeyPath()
   const loadedStamp = bundleStamp()

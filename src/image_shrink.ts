@@ -30,7 +30,7 @@ import { VSCODE_TOOL_NAME_KEY } from './hooks_cli.js'
 import { contextOutput, passOutput } from './hooks_common.js'
 import { materializeShrunkImageFile } from './bridges/vscode_hooks.js'
 import { detectHarness } from './bridges/registry.js'
-import { loadingHiddenRuleCheck, permissionNeutralRewrite } from './rewrite_permission.js'
+import { agentTypeOf, loadingHiddenRuleCheck, permissionNeutralRewrite } from './rewrite_permission.js'
 import type { HarnessName } from './bridges/types.js'
 import { displaySafePath } from './paths.js'
 import { recordFileRead } from './session.js'
@@ -454,7 +454,7 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string, even
     if (file === undefined) return passOutput()
     // Claude Code checks Read rules against the rewritten path, so a rule that could match the original or the copy keeps the original Read, and the copy is removed rather than left for the age sweep.
     const cwd = getCwd(event) ?? process.cwd()
-    const rewrite = permissionNeutralRewrite({ ...event.toolInput, file_path: file }, { kind: 'read', harness, mode: event.raw['permission_mode'], cwd, original: filePath, rewritten: file, insideCwd: vscodePathAllowed(filePath, cwd) })
+    const rewrite = permissionNeutralRewrite({ ...event.toolInput, file_path: file }, { kind: 'read', harness, mode: event.raw['permission_mode'], cwd, original: filePath, rewritten: file, insideCwd: vscodePathAllowed(filePath, cwd), agentType: agentTypeOf(event.raw) })
     if (rewrite === null) {
       try {
         fs.unlinkSync(file)

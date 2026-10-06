@@ -58,8 +58,8 @@ function sandbox(name: string, userSettings?: unknown, projectSettings?: unknown
   return { home, project, temp, env }
 }
 
-function hook(box: Sandbox, toolName: string, toolInput: Record<string, unknown>, mode = 'default', env: NodeJS.ProcessEnv = {}): Record<string, unknown> | undefined {
-  const payload = { session_id: `perm-e2e-${path.basename(path.dirname(box.home))}`, cwd: box.project, permission_mode: mode, hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput }
+function hook(box: Sandbox, toolName: string, toolInput: Record<string, unknown>, mode = 'default', env: NodeJS.ProcessEnv = {}, extra: Record<string, unknown> = {}): Record<string, unknown> | undefined {
+  const payload = { session_id: `perm-e2e-${path.basename(path.dirname(box.home))}`, cwd: box.project, permission_mode: mode, hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput, ...extra }
   const res = spawnSync(process.execPath, [BUNDLE, 'hook', 'pre_tool_use'], { cwd: box.project, env: { ...box.env, ...env }, input: JSON.stringify(payload), encoding: 'utf8' })
   expect(res.status, res.stderr).toBe(0)
   return (JSON.parse(res.stdout) as { hookSpecificOutput?: Record<string, unknown> }).hookSpecificOutput
@@ -269,4 +269,25 @@ describe('rewrites in every permission mode (built bundle)', () => {
     expect(spawnAgent('bypassPermissions', { CLAUDE_PID: disallowPid })).toBe('skip')
     expect(spawnAgent('bypassPermissions')).toBe('approve')
   }, 120_000)
+
+  // FORMAT-DERIVED from claude.exe 2.1.291: a hook fired inside a subagent carries `agent_id` and `agent_type`, the type being a built-in name such as "Explore" or a definition's frontmatter `name`.
+  it('in bypassPermissions a call from a subagent no scanned definition names is left alone; a built-in one or one the scan read is approved', async () => {
+    const box = sandbox('bypass-agent-type', { permissions: { allow: ['Bash(go build:*)'] } })
+    fs.mkdirSync(path.join(box.project, '.claude', 'agents'), { recursive: true })
+    fs.writeFileSync(path.join(box.project, '.claude', 'agents', 'file-name.md'), '---\nname: builder\ndescription: builds\n---\nbody\n')
+    const image = path.join(box.project, 'shot.jpg')
+    await writeNoiseJpeg(image)
+    const calls: Record<string, readonly [string, Record<string, unknown>]> = {
+      bash: ['Bash', { command: 'go build ./...' }],
+      image: ['Read', { file_path: image }],
+      agent: ['Agent', { subagent_type: 'general-purpose', description: 'd', prompt: 'find the failing test in the parser module' }],
+    }
+    for (const [name, [tool, input]] of Object.entries(calls)) {
+      const run = (agentType: string): Outcome => outcome(hook(box, tool, input, 'bypassPermissions', claudeEnv(box), { agent_id: 'a1', agent_type: agentType }))
+      expect(run('Explore'), name).toBe('approve')
+      expect(run('builder'), name).toBe('approve')
+      expect(run('file-name'), name).toBe('skip')
+      expect(run('custom'), name).toBe('skip')
+    }
+  }, 180_000)
 })
