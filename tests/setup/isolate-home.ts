@@ -4,6 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { scrubRepoLocalGitEnv } from '../helpers/git-env.js'
+import { scrubClaudeSessionEnv } from '../helpers/harness-env.js'
 import { scrubTokenGoatUserEnv } from '../helpers/token-goat-env.js'
 
 // Unique per TEST FILE, not per worker process. setupFiles runs once per test file, but `pool: 'forks'` REUSES a fork across many files, so keying these dirs on process.pid alone handed consecutive files in the same fork one shared global.db. That is cross-file state leakage, not contention: which files land in which fork varies run to run, so different files failed each run and every one passed in isolation. Reproduced deterministically by running `db.test.ts` then `cli_note.test.ts` in a single fork -- the notes db.test.ts left behind made cli_note's `not.toContain('[STALE]')` fail. A per-file suffix restores the isolation this file's docblock already claimed.
@@ -58,8 +59,7 @@ delete process.env['CLAUDE_PROJECT_DIR']
 // CODEX_HOME points rewrite_permission.ts at Codex's rules files, and an inherited one would hand spawned bundles the developer's own rules; a test that wants it sets its own.
 delete process.env['CODEX_HOME']
 // A suite run from a Claude Code Bash call inherits the session: CLAUDE_PID sends the hidden-rule check to the developer's own claude command line, CLAUDE_CODE_ENTRYPOINT decides whether it trusts the host, the session id keys its cache, and doctor's probe reads the rest as Claude Code signals; CI has none of them, so they are deleted and a test that wants one sets its own.
-for (const key of ['CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_PID', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_VERSION', 'CLAUDE_CODE_SESSION_ATTENDED'] as const) delete process.env[key]
-if (process.env['TERM_PROGRAM'] === 'claude-code') delete process.env['TERM_PROGRAM']
+scrubClaudeSessionEnv(process.env)
 
 const dataHome = path.join(runRoot(), `tg-test-data-${workerScope}`)
 try {
