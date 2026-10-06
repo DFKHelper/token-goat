@@ -22,7 +22,7 @@ import {
   operationLabel,
   parseOpenApiSpec,
 } from './openapi_query.js'
-import { emitGuarded, guardJsonRows, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
+import { emitGuarded, guardJsonRows, guardThenFence, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
 import { CliError, formatCommandError } from './command_error.js'
 import { emit, emitErr } from './emit.js'
@@ -687,7 +687,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
           lines.push(headElidedNotice(totalCount - limited.length, 'item'))
         }
         const plainText = lines.join('\n')
-        emitGuarded(fenceHtmlText(plainText), 'html-query')
+        emit(guardThenFence(plainText, 'html-query', fenceHtmlText))
         recordReadStat('html_query', fullSourceBytes, plainText, opts.file)
       }
       return 0
@@ -726,7 +726,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
         textLines.push(headElidedNotice(totalCount - limited.length, 'element'))
       }
       const plainText = textLines.join('\n\n')
-      emitGuarded(fenceHtmlText(plainText), 'html-query')
+      emit(guardThenFence(plainText, 'html-query', fenceHtmlText))
       recordReadStat('html_query', fullSourceBytes, plainText, opts.file)
     } else {
       const blocks = limited.map((node) => serializeHtmlNode(node, 0, text))
@@ -734,7 +734,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
         blocks.push(headElidedNotice(totalCount - limited.length, 'element'))
       }
       const plainText = blocks.join('\n\n')
-      emitGuarded(fenceHtmlText(plainText), 'html-query')
+      emit(guardThenFence(plainText, 'html-query', fenceHtmlText))
       recordReadStat('html_query', fullSourceBytes, plainText, opts.file)
     }
     return 0
