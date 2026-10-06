@@ -119,10 +119,7 @@ export function vscodeUsesClaudeHooks(settingsPath = vscodeUserSettingsPath()): 
   return (parsed as Record<string, unknown>)['chat.useClaudeHooks'] === true
 }
 
-/**
- * Turns off `chat.useClaudeHooks` in VS Code's user settings if enabled, preserving all comments and other settings.
- * Returns true if the setting was present and set to true and was updated to false; false otherwise.
- */
+/** Turns off `chat.useClaudeHooks` in VS Code's user settings if enabled, preserving all comments and other settings. Returns true if the setting was present and set to true and was updated to false; false otherwise. */
 export function disableVscodeClaudeHooks(settingsPath = vscodeUserSettingsPath()): boolean {
   if (!vscodeUsesClaudeHooks(settingsPath)) return false
   try {
