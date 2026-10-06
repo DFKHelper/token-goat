@@ -188,7 +188,7 @@ function installKimiFiles(): KimiInstallResult {
   for (const { command } of process.platform === 'win32' ? desired : []) {
     const span = hookCommandRewrittenSpan(command, 'cmd')
     if (span !== undefined) {
-      throw new HookCommandRewriteError(`Kimi Code runs hook commands through cmd.exe, which replaces ${span} with the value of the environment variable of that name whenever one is set, before it reads any quotes, so the hook command token-goat would write (${command}) would not run token-goat. Nothing was written. Move the path that contains "${span}" (the Kimi Code home, token-goat's install directory, or Node's) to one without a %...% pair, then run 'token-goat install --kimi' again.`)
+      throw new HookCommandRewriteError(`Kimi Code runs hook commands through cmd.exe, which replaces ${span} with the value of the environment variable of that name whenever one is set, before it reads any quotes, so the hook command token-goat would write (${command}) would not run token-goat. Nothing was written. Move the path that contains "${span}" (the Kimi Code home, token-goat's install directory, or Node's) to one without a %...% pair, then run \`token-goat install --kimi\` again.`)
     }
   }
 

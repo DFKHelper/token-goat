@@ -97,8 +97,9 @@ describe('Copilot CLI skill tool (CAPTURE C5)', () => {
     expect(recalled.stdout).not.toContain('loaded successfully')
 
     // The second load of the same skill in the session is denied, and the command the deny names returns the body above.
-    const again = JSON.stringify(hook('preToolUse', 'C5-004-preToolUse-skill'))
-    expect(again).toContain('token-goat skill-body tgcap-echo')
+    const again = hook('preToolUse', 'C5-004-preToolUse-skill')
+    expect(again['permissionDecision']).toBe('deny')
+    expect(again['permissionDecisionReason']).toContain('token-goat skill-body "tgcap-echo"')
   })
 
   it('finds a project skill under .github/skills in the working directory', () => {

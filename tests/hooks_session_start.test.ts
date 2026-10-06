@@ -379,8 +379,8 @@ describe('the update reminder at session start', () => {
     const context = await contextWithUpdate(false)
     expect(context).toContain(`token-goat update available: v${VERSION} -> v99.0.0`)
     expect(context).toContain(DEV_CHECKOUT_ADVICE)
-    expect(context).not.toContain("run 'token-goat upgrade'")
-    expect(context).not.toContain("Run 'token-goat upgrade'")
+    expect(context).not.toContain('run `token-goat upgrade`')
+    expect(context).not.toContain('Run `token-goat upgrade`')
   })
 
   it('says nothing about an update while offline, when upgrade would do nothing', async () => {

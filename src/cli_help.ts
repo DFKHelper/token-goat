@@ -53,7 +53,7 @@ export function generateCompactHelp(): string {
     '  write-file, zip-list, zip-read, mcp-history, compact-doc, compact-hint,',
     '  conflicts, prune-cache',
     '',
-    'Tip: look up one command instead of this whole list: \'token-goat help <command>\', or \'token-goat commands --grep <pattern>\' anchored (\'^read$\' ~700B; bare \'read\' matches descriptions too, ~7KB).',
+    'Tip: look up one command instead of this whole list: `token-goat help <command>`, or `token-goat commands --grep <pattern>` anchored (\'^read$\' ~700B; bare \'read\' matches descriptions too, ~7KB).',
     '',
   ]
   return lines.join('\n')

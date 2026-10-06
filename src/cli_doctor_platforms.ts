@@ -94,8 +94,8 @@ export function checkVscodeUserScopeHooks(userScope: boolean, projectScope: bool
     name: 'VS Code hooks scope',
     status: 'warn',
     message: projectScope
-      ? 'token-goat VS Code hooks are installed in BOTH ~/.copilot/hooks and this project\'s .github/hooks, and VS Code runs every hooks file it finds, so each hook fires twice. The user-scope copy is also pinned to the first folder of a multi-root workspace. Run "token-goat uninstall --vscode --user" to keep only the project install.'
-      : 'token-goat VS Code hooks are installed in user scope (~/.copilot/hooks). VS Code runs them with the FIRST folder of a multi-root workspace as their working directory, so read hints, image shrinking and edit interception do nothing for any other folder. Run "token-goat install --vscode" in each project to move it to project scope.',
+      ? 'token-goat VS Code hooks are installed in BOTH ~/.copilot/hooks and this project\'s .github/hooks, and VS Code runs every hooks file it finds, so each hook fires twice. The user-scope copy is also pinned to the first folder of a multi-root workspace. Run `token-goat uninstall --vscode --user` to keep only the project install.'
+      : 'token-goat VS Code hooks are installed in user scope (~/.copilot/hooks). VS Code runs them with the FIRST folder of a multi-root workspace as their working directory, so read hints, image shrinking and edit interception do nothing for any other folder. Run `token-goat install --vscode` in each project to move it to project scope.',
   }
 }
 
@@ -111,7 +111,7 @@ export function checkVscodeClaudeHooks(useClaudeHooks: boolean, claudeHooksInsta
     status: 'warn',
     message: vscodeHooksInstalled
       ? 'VS Code has chat.useClaudeHooks on and token-goat hooks are in both ~/.claude/settings.json and the Copilot hooks file, so each hook fires twice in VS Code. Turn chat.useClaudeHooks off in VS Code settings.'
-      : 'VS Code has chat.useClaudeHooks on, so it runs the token-goat hooks from ~/.claude/settings.json in Claude Code wire format, which VS Code reads only in part. Run "token-goat install --vscode" and turn chat.useClaudeHooks off in VS Code settings.',
+      : 'VS Code has chat.useClaudeHooks on, so it runs the token-goat hooks from ~/.claude/settings.json in Claude Code wire format, which VS Code reads only in part. Run `token-goat install --vscode` and turn chat.useClaudeHooks off in VS Code settings.',
   }
 }
 
@@ -188,7 +188,7 @@ export function checkZed(settingsPath: string): DoctorResult | null {
     return {
       name: 'Zed',
       status: 'warn',
-      message: `the token-goat MCP entry in ${displaySafeText(settingsPath)} points at ${displaySafeText(shimPath)}, which no longer exists; run "token-goat uninstall --zed" and then "token-goat install --zed" again.`,
+      message: `the token-goat MCP entry in ${displaySafeText(settingsPath)} points at ${displaySafeText(shimPath)}, which no longer exists; run \`token-goat uninstall --zed\` and then \`token-goat install --zed\` again.`,
     }
   }
   const script = fs.readFileSync(shimPath, 'utf8')
@@ -198,7 +198,7 @@ export function checkZed(settingsPath: string): DoctorResult | null {
     return {
       name: 'Zed',
       status: 'warn',
-      message: `the token-goat shim at ${displaySafeText(shimPath)} points at ${displaySafeText(stalePath)}, which no longer exists; run "token-goat uninstall --zed" and then "token-goat install --zed" again.`,
+      message: `the token-goat shim at ${displaySafeText(shimPath)} points at ${displaySafeText(stalePath)}, which no longer exists; run \`token-goat uninstall --zed\` and then \`token-goat install --zed\` again.`,
     }
   }
   return {
@@ -216,7 +216,7 @@ export function checkCursor(mcpPath: string, claudeHooksInstalled: boolean): Doc
     status: 'ok',
     message: claudeHooksInstalled
       ? `MCP server registered in ${displaySafeText(mcpPath)}. Cursor also imports the token-goat hooks already installed in ~/.claude/settings.json by default, so hooks work in Cursor too with no separate hooks.json entry.`
-      : `MCP server registered in ${displaySafeText(mcpPath)}. Cursor writes and runs no token-goat hooks here: it imports Claude Code hooks from ~/.claude/settings.json by default, but none are installed there yet -- run "token-goat install" to get hooks in Cursor too.`,
+      : `MCP server registered in ${displaySafeText(mcpPath)}. Cursor writes and runs no token-goat hooks here: it imports Claude Code hooks from ~/.claude/settings.json by default, but none are installed there yet -- run \`token-goat install\` to get hooks in Cursor too.`,
   }
 }
 
@@ -246,7 +246,7 @@ export function checkVscodeProjectMcp(projectRoot: string = process.cwd()): Doct
       return {
         name: 'VS Code project MCP',
         status: 'warn',
-        message: `empty residue file at ${displaySafeText(mcpPath)} triggers Copilot CLI deprecation warnings; delete it or run 'token-goat uninstall --vscode'`,
+        message: `empty residue file at ${displaySafeText(mcpPath)} triggers Copilot CLI deprecation warnings; delete it or run \`token-goat uninstall --vscode\``,
       }
     }
     return {

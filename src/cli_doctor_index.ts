@@ -44,7 +44,7 @@ const STORAGE_GROUPS: ReadonlyArray<{ name: string; owns: RegExp; command: strin
   {
     name: 'embeddings',
     owns: /^(chunks|chunk_vectors\w*)$/,
-    command: "these back 'semantic'; to drop them, set indexing.embeddings_enabled = false and indexing.auto_reclaim_embeddings = true, then run 'token-goat doctor --repair'",
+    command: "these back 'semantic'; to drop them, set indexing.embeddings_enabled = false and indexing.auto_reclaim_embeddings = true, then run `token-goat doctor --repair`",
   },
   { name: 'usage stats', owns: /^(stats\w*|hint_\w+|unmapped_tools)$/, command: 'ages out on its own (180-day retention)' },
   { name: 'recall cache', owns: /^cache_recall\w*$/, command: 'ages out on its own' },
@@ -82,10 +82,10 @@ export function oversizeDbMessage(
 ): string {
   const mb = (bytes: number): number => Math.round(bytes / (1024 * 1024))
   const advice: string[] = []
-  if (freeBytes >= sizeBytes / 10) advice.push(`'token-goat reclaim-index' returns the ${mb(freeBytes)} MB of it that is free pages`)
-  if (tempRows > 0) advice.push(`'token-goat project prune' removes ${countNoun(tempRows, 'scratch file')} indexed under the OS temp dir`)
+  if (freeBytes >= sizeBytes / 10) advice.push(`\`token-goat reclaim-index\` returns the ${mb(freeBytes)} MB of it that is free pages`)
+  if (tempRows > 0) advice.push(`\`token-goat project prune\` removes ${countNoun(tempRows, 'scratch file')} indexed under the OS temp dir`)
   if (autoReclaimEmbeddings) {
-    advice.push(`'token-goat doctor --repair' will automatically reclaim embedding vectors and compact global.db`)
+    advice.push(`\`token-goat doctor --repair\` will automatically reclaim embedding vectors and compact global.db`)
   }
   const head = `global.db is ${mb(sizeBytes)} MB at ${displaySafeText(dbPath)} (larger than threshold of ${thresholdMb} MB). `
   const listed = categories.slice(0, 3)
@@ -216,7 +216,7 @@ export function checkSymbolCount(dbPath: string, rootDir?: string): DoctorResult
       return {
         name: 'Symbols',
         status: 'warn',
-        message: `${fileCount} file(s) indexed but 0 symbols extracted — the parser may not be running (check the worker log); try 'token-goat index --force'`,
+        message: `${fileCount} file(s) indexed but 0 symbols extracted — the parser may not be running (check the worker log); try \`token-goat index --force\``,
       }
     }
     // An existing-but-empty index is not healthy, it is unindexed: every surgical-read command (symbol, read, skeleton, semantic) returns nothing, which reads as a real "not found" answer rather than as missing data. This is the failure mode a scratch/isolated TOKEN_GOAT_HOME hits, so say so instead of reporting 0 of everything as ok.
@@ -264,12 +264,12 @@ export function unembeddedReasons(dbPath: string, rootDir: string | undefined, s
 function unembeddedReasonText(reasons: { owed: number; overSizeCap: number }, sizeKb: number): string {
   let text = ''
   if (reasons.owed > 0) {
-    text += ` ${countNoun(reasons.owed, 'file')} ${reasons.owed === 1 ? 'is' : 'are'} still owed an embed: the worker embeds them while it is idle, or run 'token-goat index' in the project to embed them now.`
+    text += ` ${countNoun(reasons.owed, 'file')} ${reasons.owed === 1 ? 'is' : 'are'} still owed an embed: the worker embeds them while it is idle, or run \`token-goat index\` in the project to embed them now.`
   }
   if (reasons.overSizeCap > 0) {
     text +=
       ` ${countNoun(reasons.overSizeCap, 'file')} ${reasons.overSizeCap === 1 ? 'is' : 'are'} over indexing.large_file_symbol_only_kb (currently ${sizeKb} KB) and indexed for symbols only; ` +
-      `raise it with 'token-goat config set indexing.large_file_symbol_only_kb <KB>' and the next 'token-goat index' embeds them.`
+      `raise it with \`token-goat config set indexing.large_file_symbol_only_kb <KB>\` and the next \`token-goat index\` embeds them.`
   }
   return text
 }
@@ -344,7 +344,7 @@ export function checkParserFreshness(dbPath: string, rootDir?: string): DoctorRe
         message:
           `${stale} of ${indexedFiles} indexed file(s) (${pct}%) were parsed by a different build of the ` +
           `extraction logic, so their symbols are whatever that build extracted — 'symbol', 'read', 'outline' and ` +
-          `'skeleton' answer from those rows, and the read-hook body fold declines on them. Run 'token-goat index' ` +
+          `'skeleton' answer from those rows, and the read-hook body fold declines on them. Run \`token-goat index\` ` +
           `in this project to reparse them; --force is not needed, a parser mismatch reindexes on its own`,
       }
     }
@@ -373,7 +373,7 @@ export function checkDirtyQueueHealth(dataDir: string): DoctorResult {
     return {
       name: 'Dirty queue',
       status: 'warn',
-      message: `${pendingCount} file(s) pending reindex -- the worker may be falling behind or stalled; check 'token-goat worker status'`,
+      message: `${pendingCount} file(s) pending reindex -- the worker may be falling behind or stalled; check \`token-goat worker status\``,
     }
   }
 

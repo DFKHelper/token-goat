@@ -34,7 +34,7 @@ describe('checkHookServer', () => {
     const r = checkHookServer({ enabled: true, statuses: [], failure: 'slot 0: EACCES: permission denied' })
     expect(r.status).toBe('warn')
     expect(r.message).toContain('slot 0: EACCES: permission denied')
-    expect(r.message).toContain("Run 'token-goat hook-server run' to see it in the foreground")
+    expect(r.message).toContain("Run `token-goat hook-server run` to see it in the foreground")
   })
 
   it('reports ok when none is running and nothing failed, since the next hook call starts one', () => {

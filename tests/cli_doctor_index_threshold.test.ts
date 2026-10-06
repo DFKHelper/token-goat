@@ -54,7 +54,7 @@ describe('doctor index size threshold and auto-reclaim', () => {
       true,
     )
     expect(msg).toContain('threshold of 1500 MB')
-    expect(msg).toContain("doctor --repair' will automatically reclaim embedding vectors")
+    expect(msg).toContain('`token-goat doctor --repair` will automatically reclaim embedding vectors')
   })
 
   it('checkDbExists warns when global.db exceeds custom max_db_size_mb threshold', () => {

@@ -51,7 +51,7 @@ describe('stale-compact advisory and skill directory names', () => {
 
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat skill-compact demo-skill')
+      expect(result.context).toContain('token-goat skill-compact "demo-skill"')
     }
     // Guards the fixture itself: a compact whose sha matched would make the advisory correctly silent, and the negative test below would then pass for the wrong reason.
     expect(contentHash(BODY).slice(0, 12)).not.toBe('deadbeef1234')

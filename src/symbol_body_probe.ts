@@ -27,9 +27,9 @@ export function checkSymbolBodySize(dbPath: string): DoctorResult {
         message:
           `one or more stored symbol bodies exceed the ${SYMBOL_BODY_CHAR_CAP}-char cap enforced by ` +
           `boundSymbolBody -- likely a pre-fix leftover from a minified/generated file. ` +
-          `A plain 'token-goat reclaim-index' (VACUUM only) CANNOT remove these rows -- it only reclaims freed ` +
-          `pages, it never deletes row content. Only 'token-goat reclaim-index --rebuild' drops and re-derives ` +
-          `them under the cap (stop the worker first with 'token-goat worker stop', since reclaim-index refuses ` +
+          `A plain \`token-goat reclaim-index\` (VACUUM only) CANNOT remove these rows -- it only reclaims freed ` +
+          `pages, it never deletes row content. Only \`token-goat reclaim-index --rebuild\` drops and re-derives ` +
+          `them under the cap (stop the worker first with \`token-goat worker stop\`, since reclaim-index refuses ` +
           `to run while it's live); --rebuild reparses and re-embeds every indexed file across every project and ` +
           `can take a long time on a large multi-project index`,
       }

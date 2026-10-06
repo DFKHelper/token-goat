@@ -83,7 +83,7 @@ export function runDead(opts: DeadOptions): number {
   if (blindKinds.length > 0 && assessableKinds.length === 0) {
     const blindLabel = blindKinds.length === 1 ? 'kind' : 'kinds'
     emitErr(formatCommandError(`Cannot assess deadness for ${blindLabel}: ${blindKinds.map((k) => `'${k}'`).join(', ')} -- ${REF_BLIND_KIND_REASON}.`))
-    emitErr(`Every symbol of ${blindKinds.length === 1 ? 'this kind' : 'these kinds'} would be reported dead, so no result is emitted rather than a wrong one. To hunt unused type declarations, list them with 'token-goat types --json' and search the source for each name directly.`)
+    emitErr(`Every symbol of ${blindKinds.length === 1 ? 'this kind' : 'these kinds'} would be reported dead, so no result is emitted rather than a wrong one. To hunt unused type declarations, list them with \`token-goat types --json\` and search the source for each name directly.`)
     return 1
   }
   const blindKindNote = blindKinds.length > 0

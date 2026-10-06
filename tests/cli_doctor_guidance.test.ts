@@ -60,7 +60,7 @@ describe('cli_doctor_guidance', () => {
       const result = checkInstructionGates(project)
       expect(result.status).toBe('warn')
       expect(result.message).toContain('no project instruction file was found')
-      expect(result.message).toContain("Run 'token-goat install'")
+      expect(result.message).toContain("Run `token-goat install`")
     })
 
     it('returns warn when CLAUDE.md exists without the gate block and no user-level gate exists', () => {
@@ -68,7 +68,7 @@ describe('cli_doctor_guidance', () => {
       const result = checkInstructionGates(project)
       expect(result.status).toBe('warn')
       expect(result.message).toContain('missing in CLAUDE.md')
-      expect(result.message).toContain("Run 'token-goat doctor --fix' to inject automatically.")
+      expect(result.message).toContain("Run `token-goat doctor --fix` to inject automatically.")
     })
 
     it('returns ok when CLAUDE.md has the gate block', () => {

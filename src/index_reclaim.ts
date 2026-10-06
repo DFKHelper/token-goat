@@ -163,7 +163,7 @@ export function cmdReclaimIndex(opts: {
   if (opts.force !== true && isWorkerRunning(path.dirname(dbPath))) {
     throw new Error(
       'reclaim-index: the worker daemon is running and writing to this index. ' +
-        "Stop it first with 'token-goat worker stop', then re-run. " +
+        "Stop it first with `token-goat worker stop`, then re-run. " +
         'Pass --force to proceed anyway (results may be inaccurate if the worker is really live).',
     )
   }
@@ -186,14 +186,14 @@ export function cmdReclaimIndex(opts: {
     }
     // Say this explicitly: after a rebuild the index is intentionally empty, and a user who runs a `symbol`/`read` query before reindexing would otherwise read the empty result as the reclaim having destroyed something.
     process.stdout.write(
-      `  derived rows dropped -- run 'token-goat index' in each project to rebuild them\n`,
+      `  derived rows dropped -- run \`token-goat index\` in each project to rebuild them\n`,
     )
   }
   if (result.vacuumDeferred) {
     // Not a failure of the run: the deletes committed, only the page-reclaim is outstanding. Naming the follow-up command matters, because the on-disk size will not have moved and that otherwise reads as "the command did nothing".
     process.stdout.write(
       `  note: VACUUM could not get an exclusive lock and was skipped, so on-disk size may be ` +
-        `unchanged. The index itself was reclaimed; re-run 'token-goat reclaim-index' once ` +
+        `unchanged. The index itself was reclaimed; re-run \`token-goat reclaim-index\` once ` +
         `nothing else is using the database to release the freed pages\n`,
     )
   }

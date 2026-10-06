@@ -566,7 +566,7 @@ describe('install refuses a hook path the harness rewrites before running it', (
       const res = cli(sb, ['install', flag], { TOKEN_GOAT_NATIVE_HOOKS: native, x: 'expanded', y: 'expanded' })
       expect(res.status, `${native}: ${res.stdout}${res.stderr}`).not.toBe(0)
       expect(res.stderr).toContain(`Move the path that contains "${span}"`)
-      expect(res.stderr).toContain(`then run 'token-goat install ${flag}' again`)
+      expect(res.stderr).toContain('then run `token-goat install ' + flag + '` again')
       // The command it refused is the form that install would have written.
       expect(res.stderr.includes(WIN ? 'tg-hook.exe' : 'tg-hook')).toBe(native === '1' && NATIVE)
       expect(fs.existsSync(file(sb)), 'a hook config was written').toBe(false)

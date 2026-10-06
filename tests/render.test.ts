@@ -352,7 +352,7 @@ describe('Stats rendering', () => {
 
   it('renderStats with { short: true } includes a hint pointing at --full', () => {
     const result = renderStats(minimalStats, { short: true })
-    expect(result).toContain("Run 'token-goat stats --full'")
+    expect(result).toContain('Run `token-goat stats --full`')
   })
 
   it('renderStats handles empty by_kind gracefully', () => {

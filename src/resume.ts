@@ -4,6 +4,7 @@ import { loadBlob } from './disk_cache.js'
 import { SESSIONS_SUBDIR } from './session_store.js'
 import { displaySafePath, displaySafeText } from './paths.js'
 import { neutralizeSpokenMarkers } from './injection_scan.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 import { resolveProjectRoot } from './project.js'
 import { runGit, safeSlice } from './util.js'
 import { getBashOutput } from './bash_output_cache.js'
@@ -52,7 +53,7 @@ async function buildSkillsSection(sessionId: string): Promise<string[]> {
       skillLines.push(`**${displaySafeText(skill.name)}**:`)
       skillLines.push(neutralizeSpokenMarkers(trimmed))
     } else {
-      skillLines.push(`**${displaySafeText(skill.name)}** — \`token-goat skill-body ${displaySafeText(skill.name)} --section DoD\``)
+      skillLines.push(`**${displaySafeText(skill.name)}** — \`token-goat skill-body ${quotedArg(displaySafeText(skill.name))} --section DoD\``)
     }
   }
   skillLines.push('')

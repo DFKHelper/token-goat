@@ -2,7 +2,7 @@
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { leadWithCommand, docSectionHint, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { leadWithCommand, docSectionHint, quotedArg, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { contextOutput, denyOutput, passOutput, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import type { HookOutput } from './types.js'
@@ -604,10 +604,11 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (rgSymbol !== null) {
     const { identifier } = rgSymbol
     recordStat('session_hint', 0, 0)
-    // The correlator here is the identifier, not a path: this hint names no file, and the exact token a follow-through would have to carry is the symbol name. Left to extractPathCorrelator it scraped nothing at all, so the row went in permanently uncreditable.
+    // `symbol` takes one name and would look `A|B` up as a literal name, so each alternative of an `rg "A|B"` search gets its own quoted command. The correlators are those names, not a path: this hint names no file, and the exact token a follow-through would have to carry is a symbol name. Left to extractPathCorrelator it scraped nothing at all, so the row went in permanently uncreditable.
+    const names = [...new Set(identifier.split('|'))]
     return contextOutput(
-      'Use `token-goat symbol ' + identifier + '` to jump directly to the definition without scanning the file.',
-      [identifier],
+      'Use ' + names.map((name) => '`token-goat symbol ' + quotedArg(name) + '`').join(' or ') + ' to jump directly to the definition without scanning the file.',
+      names,
     )
   }
 

@@ -282,7 +282,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
       if (indexedFiles > 0 && embeddedFiles < indexedFiles) {
         console.warn(
           `Matching on meaning found nothing, and only ${embeddedFiles} of ${indexedFiles} indexed file(s) in this ` +
-            `project have embeddings — these results come from keyword search alone. Run 'token-goat doctor' for why.`,
+            `project have embeddings — these results come from keyword search alone. Run \`token-goat doctor\` for why.`,
         )
       }
     } catch {

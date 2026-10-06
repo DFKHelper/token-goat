@@ -144,7 +144,7 @@ export const DEV_CHECKOUT_ADVICE = 'git pull && npm run build && token-goat inst
 
 /** What to tell the user to do about an update, or null when there is nothing to do. Every surface that announces an update (doctor, stats, the session-start reminder) words it through here, so none tells a development checkout to run `upgrade`, which refuses there, and none announces an update while offline, when `upgrade` would make no check. */
 export function updateAdvice(decision: UpgradeDecision): string | null {
-  if (decision === 'install') return "Run 'token-goat upgrade' to update."
+  if (decision === 'install') return "Run `token-goat upgrade` to update."
   if (decision === 'dev-checkout') return `This token-goat runs from a development checkout. To update it, run: ${DEV_CHECKOUT_ADVICE}`
   return null
 }
@@ -324,7 +324,7 @@ export async function cmdUpgrade(
     }
     if (status.updateAvailable && status.latest) {
       console.log(`Update available: v${status.current} -> v${status.latest}`)
-      console.log(`Run 'token-goat upgrade' to update.`)
+      console.log(`Run \`token-goat upgrade\` to update.`)
     } else {
       console.log(`token-goat is up to date (v${status.current})`)
     }
@@ -387,13 +387,13 @@ export async function performUpgrade(onSyncHooks?: () => Promise<void>, npm: Npm
   const launcher = installedLauncher(npm)
   if (launcher) {
     const sync = spawnSync(process.execPath, [launcher, 'install'], { stdio: 'inherit', windowsHide: true })
-    if (sync.status !== 0) return { ok: false, message: `the new version installed, but 'token-goat install' failed (exit code ${sync.status ?? 'unknown'}). Run 'token-goat install' to finish.` }
+    if (sync.status !== 0) return { ok: false, message: `the new version installed, but \`token-goat install\` failed (exit code ${sync.status ?? 'unknown'}). Run \`token-goat install\` to finish.` }
     return { ok: true }
   }
   try {
     if (onSyncHooks) await onSyncHooks()
   } catch (e) {
-    return { ok: false, message: `the new version installed, but syncing hooks failed (${e instanceof Error ? e.message : String(e)}). Run 'token-goat install' to finish.` }
+    return { ok: false, message: `the new version installed, but syncing hooks failed (${e instanceof Error ? e.message : String(e)}). Run \`token-goat install\` to finish.` }
   }
   return { ok: true }
 }

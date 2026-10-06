@@ -950,7 +950,7 @@ function _renderInsightsSection(stats: StatsData): string[] {
       if (compliancePct < 25) {
         lines.push(
           `${_M}${fg(...C.YELLOW)}▸${RESET} ${dim('Low surgical compliance: ')}${fg(...C.TEXT_PRIMARY)}${compliancePct}%${RESET}` +
-            `${dim(` (${commandEvents} command(s) vs ${hintEvents} advisory hints). Run 'token-goat doctor --fix' to inject the instruction gate.`)}`,
+            `${dim(` (${commandEvents} command(s) vs ${hintEvents} advisory hints). Run \`token-goat doctor --fix\` to inject the instruction gate.`)}`,
         )
       }
     }
@@ -986,7 +986,7 @@ function _renderHeader(stats: StatsData): string[] {
 function _renderShortHint(): string[] {
   return [
     '',
-    `${_M}${fg(...C.TEXT_MUTED)}Run 'token-goat stats --full' for the full breakdown (by source, by command, by day).${RESET}`,
+    `${_M}${fg(...C.TEXT_MUTED)}Run \`token-goat stats --full\` for the full breakdown (by source, by command, by day).${RESET}`,
   ]
 }
 

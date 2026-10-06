@@ -761,9 +761,9 @@ export function cmdIgnores(opts: { json?: boolean }): void {
   process.stdout.write(
     report.packIgnorePatterns > 0
       ? `.tokengoatignore: ${report.packIgnorePatterns} pattern${report.packIgnorePatterns === 1 ? '' : 's'}, applied by token-goat pack only -- ` +
-          'it does not exclude anything from the symbol index. To keep a path out of the index, run "token-goat project exclude <path>".\n'
+          'it does not exclude anything from the symbol index. To keep a path out of the index, run `token-goat project exclude <path>`.\n'
       : '.tokengoatignore: not present. It would apply to token-goat pack only -- to keep a path out of the symbol index, ' +
-          'run "token-goat project exclude <path>".\n',
+          'run `token-goat project exclude <path>`.\n',
   )
 }
 

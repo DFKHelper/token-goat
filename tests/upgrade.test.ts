@@ -173,7 +173,7 @@ describe('update check cache', () => {
     expect(output).toContain('Update available:')
     expect(output).toContain(`v${VERSION} → v99.0.0`)
     expect(output).toContain(DEV_CHECKOUT_ADVICE)
-    expect(output).not.toContain("Run 'token-goat upgrade'")
+    expect(output).not.toContain('Run `token-goat upgrade`')
   })
 
   // HAND-DERIVED: offline, `upgrade` makes no check and installs nothing, so a cached update from before going offline has no action to offer.
@@ -186,7 +186,7 @@ describe('update check cache', () => {
 describe('updateAdvice', () => {
   // HAND-DERIVED: what cmdUpgrade does for each decision: installs, refuses with the checkout's own update steps, or has nothing to install.
   it('tells an installed copy to run upgrade', () => {
-    expect(updateAdvice('install')).toBe("Run 'token-goat upgrade' to update.")
+    expect(updateAdvice('install')).toBe('Run `token-goat upgrade` to update.')
   })
   it('gives a development checkout its own update steps', () => {
     expect(updateAdvice('dev-checkout')).toContain(DEV_CHECKOUT_ADVICE)
@@ -400,7 +400,7 @@ describe('performUpgrade', () => {
     vi.stubEnv('FAKE_LAUNCHER_EXIT', '3')
     const outcome = await performUpgrade(undefined, npm())
     expect(outcome.ok).toBe(false)
-    if (!outcome.ok) expect(outcome.message).toContain("'token-goat install' failed (exit code 3)")
+    if (!outcome.ok) expect(outcome.message).toContain('`token-goat install` failed (exit code 3)')
   })
 
   it('tells the user what to run when no npm can be found', async () => {

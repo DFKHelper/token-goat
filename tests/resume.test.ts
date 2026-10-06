@@ -255,7 +255,7 @@ describe('buildResumePacket — Skills section', () => {
     expect(packet).not.toBeNull()
     expect(packet).toContain('## Skills')
     expect(packet).toContain('plain-skill')
-    expect(packet).toContain('token-goat skill-body plain-skill --section DoD')
+    expect(packet).toContain('token-goat skill-body "plain-skill" --section DoD')
   })
 
   // CAPTURE: the webFetches rows below are produced by recordWebFetch + exportSessionState, the same pair that writes a real session blob, rather than by hand-assembling the composite key here. A key spelled from this test's own reading of webFetchKey would agree with a wrong split by construction, which is the defect this fixture exists to catch.

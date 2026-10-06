@@ -3600,6 +3600,23 @@ describe('preBashHandler — rg symbol search hint', () => {
     }
   })
 
+  // HAND-DERIVED: `token-goat symbol` takes one name and resolves `"A|B"` as a literal name (CAPTURE on the built bundle: `token-goat symbol "used|unusedB"` printed "No matches"), so each alternative gets its own quoted command and its own correlator.
+  it('suggests one quoted symbol command per |-joined identifier', () => {
+    const result = preBashHandler(makeBashEvent('rg "DeveloperStatus|ContractStatus" src/types/domain.ts -n'))
+    expect(result).toEqual({
+      hookType: 'context',
+      context: 'Use `token-goat symbol "DeveloperStatus"` or `token-goat symbol "ContractStatus"` to jump directly to the definition without scanning the file.',
+      correlators: ['DeveloperStatus', 'ContractStatus'],
+    })
+  })
+
+  it('quotes a single identifier and drops a repeated alternative', () => {
+    const one = preBashHandler(makeBashEvent('grep -n "ConversationState" src/types/domain.ts'))
+    expect(one).toMatchObject({ context: 'Use `token-goat symbol "ConversationState"` to jump directly to the definition without scanning the file.', correlators: ['ConversationState'] })
+    const repeated = preBashHandler(makeBashEvent('rg -n "Foo|Foo" src/types/domain.ts'))
+    expect(repeated).toMatchObject({ context: 'Use `token-goat symbol "Foo"` to jump directly to the definition without scanning the file.', correlators: ['Foo'] })
+  })
+
   it('passes through rg without -n flag (no symbol hint)', () => {
     const result = preBashHandler(makeBashEvent('rg "MyType" src/types/domain.ts'))
     // No symbol hint fires — may still fire structural or pass

@@ -3506,7 +3506,7 @@ describe('preReadHandler - skill stale compact advisory', () => {
     const result = preReadHandler(readEvent(skillMd))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('skill-compact advskill')
+      expect(result.context).toContain('skill-compact "advskill"')
     }
   })
 
@@ -3516,7 +3516,7 @@ describe('preReadHandler - skill stale compact advisory', () => {
     await storeCompact('default', 'advskill', 'compact slice', contentHash(body).slice(0, 12))
     const result = preReadHandler(readEvent(skillMd))
     const text = result.hookType === 'context' ? result.context : ''
-    expect(text).not.toContain('skill-compact advskill')
+    expect(text).not.toContain('skill-compact "advskill"')
   })
 })
 

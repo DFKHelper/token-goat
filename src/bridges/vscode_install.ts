@@ -231,7 +231,7 @@ function installVscodeScoped(opts: VscodeScopeOptions): VscodeInstallResult {
   } else if (otherScopeHasManagedServer(opts)) {
     const otherPath = otherScopeMcpPath(opts)
     throw new Error(
-      `token-goat is already registered in VS Code project scope (${otherPath}). Installing into user scope too would register it twice and duplicate its tool schemas in this workspace. Run "token-goat uninstall --vscode --project" first if you want to move it, or drop --vscode from this run.`,
+      `token-goat is already registered in VS Code project scope (${otherPath}). Installing into user scope too would register it twice and duplicate its tool schemas in this workspace. Run \`token-goat uninstall --vscode --project\` first if you want to move it, or drop --vscode from this run.`,
     )
   }
   const config = readConfig(mcpPath)

@@ -22,17 +22,18 @@ import { OUTLINE_MIN_HEADINGS, OUTLINE_MAX_REPLACEMENT_RATIO } from './fold_stru
 import { fenceUntrustedFileContent } from './injection_scan.js';
 import { hintTarget } from './hint_target.js';
 import { displaySafeText } from './paths.js';
+import { quotedArg } from './hint_suggestion_guard.js';
 
 const OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES = 6000;
 
 // Largest compact slice still worth inlining rather than pointing at. Deliberately NOT the oversize gate above: that number answers "is the full body too big to hand over", which is a different question from "is this slice cheaper to inline than to make the agent fetch". Denying never prevents the bytes -- the agent runs `skill-body --compact` and receives the identical slice one turn later, having also paid the deny text, a reasoning turn, and a Bash spawn -- so inlining wins at every size the slice is actually smaller than the body. The cap exists only to stop a degenerate marker (a "compact" slice nearly as large as the body it summarises) from being force-fed; past it, the pointer deny still gives the agent the choice.
 const COMPACT_INLINE_MAX_BYTES = 24_000;
 
-/** The `skill-section` heading argument: one the skill body really holds, double-quoted (the only form the relay's suggestion guard keeps), else the `'<heading>'` placeholder. `body` is the text already read on the cold-load path; the reload deny passes only the path and hintTarget reads a bounded head of it. */
+/** The `skill-section` heading argument: one the skill body really holds, quoted by quotedArg, else the `"<heading>"` placeholder, double-quoted like the skill name before it so the relay guard reads the whole command as quoted. `body` is the text already read on the cold-load path; the reload deny passes only the path and hintTarget reads a bounded head of it. */
 function skillSectionArg(skillPath: string | null, body?: string): string {
-  if (skillPath === null) return "'<heading>'";
+  if (skillPath === null) return '"<heading>"';
   const heading = hintTarget(skillPath, 'section', { content: body });
-  return heading.real ? '"' + heading.name + '"' : "'<heading>'";
+  return heading.real ? quotedArg(heading.name) : '"<heading>"';
 }
 
 function extractSkillName(toolInput: Record<string, unknown>): string | null {
@@ -106,6 +107,8 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
       return passOutput();
     }
     const { skillName } = ctx;
+    // The name comes from the model's tool input (`skill`, or `command` when that is absent), so every suggested command carries it as one quoted argument.
+    const nameArg = quotedArg(skillName);
 
     if (!loadConfig().hints.pre_skill_advisory) {
       return passOutput();
@@ -119,8 +122,8 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
       recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit), undefined, 'skill-reload-deny');
       return denyOutput(
         'Skill `' + skillName + '` was already loaded this session and is cached. Use `token-goat skill-section ' +
-          skillName + ' ' + skillSectionArg(await harnessSkillPath(event, skillName)) + '` to recall a section, `token-goat skill-body ' +
-          skillName + ' --compact` to recall the compact slice, or `token-goat skill-body ' + skillName +
+          nameArg + ' ' + skillSectionArg(await harnessSkillPath(event, skillName)) + '` to recall a section, `token-goat skill-body ' +
+          nameArg + ' --compact` to recall the compact slice, or `token-goat skill-body ' + nameArg +
           '` for the full body instead of re-loading it.',
       );
     }
@@ -142,8 +145,8 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
               recordStat('skill_compact_inlined', savedBytes, savedTokensFromBytes(savedBytes));
               return denyOutput(
                 'Skill `' + skillName + '` is large (' + bodyBytes + ' bytes); its compact slice (' + compactBytes +
-                  ' bytes) is inlined below instead of the full body. For a specific section, run `token-goat skill-section ' + skillName +
-                  ' ' + skillSectionArg(sourcePath, body) + '`, or `token-goat skill-body ' + skillName + '` if you need the full body.\n\n' + compact,
+                  ' bytes) is inlined below instead of the full body. For a specific section, run `token-goat skill-section ' + nameArg +
+                  ' ' + skillSectionArg(sourcePath, body) + '`, or `token-goat skill-body ' + nameArg + '` if you need the full body.\n\n' + compact,
               );
             }
           }
@@ -158,9 +161,9 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
             return denyOutput(
               'Skill `' + skillName + '` is large (' + bodyBytes + ' bytes)' +
                 (compact !== null ? ', and its compact slice is too large to inline; ' : ' with no compact slice; ') + tree.phrase +
-                ' Use `token-goat skill-section ' + skillName + ' ' + skillSectionArg(sourcePath, body) + '` to load a specific section' +
-                (compact !== null ? ', `token-goat skill-body ' + skillName + ' --compact` to load the compact slice' : '') +
-                ', or `token-goat skill-body ' + skillName + '` for the full body.\n\n' +
+                ' Use `token-goat skill-section ' + nameArg + ' ' + skillSectionArg(sourcePath, body) + '` to load a specific section' +
+                (compact !== null ? ', `token-goat skill-body ' + nameArg + ' --compact` to load the compact slice' : '') +
+                ', or `token-goat skill-body ' + nameArg + '` for the full body.\n\n' +
                 fenceUntrustedFileContent(tree.sectionsList),
             );
           }
@@ -169,9 +172,9 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
             recordStat('skill_oversized_first_load');
             return denyOutput(
               'Skill `' + skillName + '` is large (' + bodyBytes +
-                ' bytes) and has a compact slice available. Use `token-goat skill-section ' + skillName +
-                ' ' + skillSectionArg(sourcePath, body) + '` to load a specific section, `token-goat skill-body ' + skillName +
-                ' --compact` to load the compact slice, or `token-goat skill-body ' + skillName + '` for the full body.',
+                ' bytes) and has a compact slice available. Use `token-goat skill-section ' + nameArg +
+                ' ' + skillSectionArg(sourcePath, body) + '` to load a specific section, `token-goat skill-body ' + nameArg +
+                ' --compact` to load the compact slice, or `token-goat skill-body ' + nameArg + '` for the full body.',
             );
           }
         }

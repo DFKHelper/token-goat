@@ -149,14 +149,14 @@ export function checkInstructionGates(rootDir: string = process.cwd()): DoctorRe
     return {
       name: 'Instruction gate',
       status: 'warn',
-      message: `missing in ${unGated} and in the user-level instruction files 'token-goat install' writes (agents will bypass token-goat and read whole files). Run 'token-goat doctor --fix' to inject automatically.`,
+      message: `missing in ${unGated} and in the user-level instruction files \`token-goat install\` writes (agents will bypass token-goat and read whole files). Run \`token-goat doctor --fix\` to inject automatically.`,
     }
   }
 
   return {
     name: 'Instruction gate',
     status: 'warn',
-    message: "missing: no user-level instruction file carries it and no project instruction file was found (CLAUDE.md, AGENTS.md, or .github/copilot-instructions.md). Run 'token-goat install', or 'token-goat doctor --fix' to create CLAUDE.md with the routing gate.",
+    message: "missing: no user-level instruction file carries it and no project instruction file was found (CLAUDE.md, AGENTS.md, or .github/copilot-instructions.md). Run `token-goat install`, or `token-goat doctor --fix` to create CLAUDE.md with the routing gate.",
   }
 }
 
@@ -228,7 +228,7 @@ export function checkHarnessCacheEfficiency(rootDir: string = process.cwd()): Do
     return {
       name: 'Harness efficiency',
       status: 'warn',
-      message: `${ideDetected.join(', ')} workspace detected without CLI harness config. IDE hooks cannot fold/trim built-in reads. If you also use a CLI agent, run 'token-goat install' for Claude Code, or 'token-goat install --codex' or '--copilot' for those.`,
+      message: `${ideDetected.join(', ')} workspace detected without CLI harness config. IDE hooks cannot fold/trim built-in reads. If you also use a CLI agent, run \`token-goat install\` for Claude Code, or \`token-goat install --codex\` or '--copilot' for those.`,
     }
   }
 

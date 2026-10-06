@@ -147,7 +147,7 @@ describe('checkCursor doctor report', () => {
     installCursor()
     const result = checkCursor(cursorMcpPath(), false)
     expect(result?.status).toBe('ok')
-    expect(result?.message).toContain('run "token-goat install"')
+    expect(result?.message).toContain('run `token-goat install`')
   })
 })
 

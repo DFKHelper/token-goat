@@ -123,7 +123,7 @@ function installGrokFiles(): GrokInstallResult {
   for (const command of Object.values(config.hooks).flatMap((groups) => (groups ?? []).flatMap((g) => g.hooks.map((h) => h.command)))) {
     const span = hookCommandRewrittenSpan(command, 'grok')
     if (span !== undefined) {
-      throw new HookCommandRewriteError(`Grok CLI substitutes ${span} in a hook command with the value of that environment variable when it loads the hook, whatever the quoting, and refuses to run the hook when it is unset, so the hook command token-goat would write (${command}) would not run token-goat. Nothing was written. Move the path that contains "${span}" (the home directory, token-goat's install directory, or Node's) to one without a $ name, then run 'token-goat install --grok' again.`)
+      throw new HookCommandRewriteError(`Grok CLI substitutes ${span} in a hook command with the value of that environment variable when it loads the hook, whatever the quoting, and refuses to run the hook when it is unset, so the hook command token-goat would write (${command}) would not run token-goat. Nothing was written. Move the path that contains "${span}" (the home directory, token-goat's install directory, or Node's) to one without a $ name, then run \`token-goat install --grok\` again.`)
     }
   }
 

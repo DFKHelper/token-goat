@@ -58,7 +58,7 @@ describe('a failing command names itself on its first stderr line', () => {
   it('keeps the line breaks of a several-line error, prefixing only the first', () => {
     const { lines } = fail(['session-schema', 'nope_table'])
     expect(lines[0]!.startsWith("token-goat: Unknown session store table 'nope_table'. Available tables: sessions, ")).toBe(true)
-    expect(lines[1]).toBe("Run 'token-goat session-schema' to see all tables.")
+    expect(lines[1]).toBe('Run `token-goat session-schema` to see all tables.')
   })
 
   it('leads with the error and puts the extra-argument note after it', () => {

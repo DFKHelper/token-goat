@@ -156,7 +156,7 @@ function installVisualStudioScoped(opts: VisualStudioScopeOptions): VisualStudio
   if (visualStudioOtherScopeHasManagedServer(opts)) {
     const otherScope = scope === 'project' ? 'user' : 'project'
     throw new Error(
-      `token-goat is already registered in Visual Studio ${otherScope} scope (${otherScopeMcpPath(opts)}). Visual Studio reads both files, so installing into ${scope} scope too would register it twice. Run "token-goat uninstall --visualstudio${otherScope === 'project' ? ' --project' : ''}" first if you want to move it, or drop --visualstudio from this run.`,
+      `token-goat is already registered in Visual Studio ${otherScope} scope (${otherScopeMcpPath(opts)}). Visual Studio reads both files, so installing into ${scope} scope too would register it twice. Run ${fencedCommand('token-goat uninstall --visualstudio' + (otherScope === 'project' ? ' --project' : ''))} first if you want to move it, or drop --visualstudio from this run.`,
     )
   }
   // Remembered before the write, because afterwards the file exists either way and nothing in it says who made it.

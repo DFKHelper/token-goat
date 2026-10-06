@@ -613,18 +613,18 @@ export async function cmdUninstall(opts: {
   // An integration whose flag was not passed is left wired and, before this, was left silent: a plain `token-goat uninstall` printed three "Removed" lines while a Codex or Copilot hook still pointed at the binary about to be deleted. That is the offboarding case, and a Copilot preToolUse hook whose target is gone fails closed on every call. So each one that is still present is named here with the exact command that removes it, following the same report-rather-than-delete rule the stray CLAUDE.md blocks above already use: uninstall does not silently undo an integration the caller did not ask about.
   for (const leftover of leftoverIntegrations(opts)) {
     if (skippedUserOnly.includes(leftover.flag.slice(2))) continue
-    out(`NOTE: the token-goat ${leftover.label} is still installed. Run "token-goat uninstall ${leftover.flag}" to remove it.`)
+    out(`NOTE: the token-goat ${leftover.label} is still installed. Run ${fencedCommand('token-goat uninstall ' + leftover.flag)} to remove it.`)
   }
 
   // Cross-scope warning, mirroring installVscode's cross-scope guard (see otherScopeHasManagedServer): uninstall only ever touches the requested scope's mcp.json, so a server registered in the OTHER scope survives silently -- e.g. a project-scope install from before the project->user default flip, uninstalled with a bare `token-goat uninstall --vscode` (which now defaults to user scope). Warn rather than refuse: uninstall is best-effort cleanup (it already reports-not-deletes stray CLAUDE.md blocks above), and refusing here would block a caller who legitimately only wants to strip the requested scope.
   if (opts.vscode === true && otherScopeHasManagedServer(vscodeScopeFromFlags(opts))) {
     const otherScope = opts.user === true ? 'project' : 'user'
-    out(`NOTE: token-goat is still registered in VS Code ${otherScope} scope. Run "token-goat uninstall --vscode${otherScope === 'user' ? ' --user' : ''}" to remove it too.`)
+    out(`NOTE: token-goat is still registered in VS Code ${otherScope} scope. Run ${fencedCommand('token-goat uninstall --vscode' + (otherScope === 'user' ? ' --user' : ''))} to remove it too.`)
   }
 
   if (opts.visualstudio === true && visualStudioOtherScopeHasManagedServer({ project: opts.project === true })) {
     const otherScope = opts.project === true ? 'user' : 'project'
-    out(`NOTE: token-goat is still registered in Visual Studio ${otherScope} scope. Run "token-goat uninstall --visualstudio${otherScope === 'project' ? ' --project' : ''}" to remove it too.`)
+    out(`NOTE: token-goat is still registered in Visual Studio ${otherScope} scope. Run ${fencedCommand('token-goat uninstall --visualstudio' + (otherScope === 'project' ? ' --project' : ''))} to remove it too.`)
   }
 
   // --hermes removes no files: Hermes shares the Claude Code hook entries uninstallHooks() above already stripped, so this only exists for CLI symmetry with the other harness flags (README's uninstall table lists --hermes alongside the rest).

@@ -268,9 +268,12 @@ function picksFor(subject: string, defs: SymbolEntry[]): DefinitionPick[] {
   return ambiguityPicks(subject, defs).map((p) => ({ file: p.candidate.filePath, qualifier: p.qualifier }))
 }
 
-/** A path argument in a `via:` line or a refusal's suggested command: quoted only when whitespace needs it, so the common line stays a command that splits on spaces into its own argv, while `src/my file.ts` stays one argument. */
+/** A word bash and PowerShell both pass on as written: no whitespace, no shell syntax, no `,` (PowerShell's array operator, which turns `a,b` into two arguments) and no leading `@` (PowerShell splatting). */
+const PLAIN_ARG = /^(?!@)[A-Za-z0-9_./=:@+-]+$/
+
+/** A path or name argument in a `via:` line or a refusal's suggested command: bare while it holds only characters no shell treats specially, so the common line stays a command that splits on spaces into its own argv, and quoted otherwise, so `src/my file.ts` stays one argument and `src/(group)/a.ts` or a `$ref` symbol reaches the command as written. */
 function viaArg(value: string): string {
-  return /\s/.test(value) ? quotedArg(value) : value
+  return PLAIN_ARG.test(value) ? value : quotedArg(value)
 }
 
 /** Routes a callers or impact question to the one definition the subject names: a `file::symbol` subject or a name with exactly one definition in this project. Several definitions refuse, and the delegate always receives the resolved `file::symbol` spec, since a bare name makes the graph command pick whichever definition it likes while the `via:` line claims the one resolved here. */
@@ -418,7 +421,7 @@ export function runAnswer(opts: AnswerOptions): number {
   if (cls.intent === 'callers' || cls.intent === 'impact') return answerGraph(cls.intent, cls.subject, resolved, rootDir)
 
   // `-p` is not decoration: `symbol` searches the machine-wide index unless the project scope is opted into, while the router always scopes to this project. Without it the pointer named a command whose output includes same-named definitions from every other checkout on the machine -- a `via:` line that does not reproduce its own window is worse than none, since the reader verifies against it and concludes the answer dropped rows.
-  emit(`via: token-goat symbol ${displaySafeText(resolved.name)} -p --exclude-vendored`)
+  emit(`via: token-goat symbol ${viaArg(displaySafeText(resolved.name))} -p --exclude-vendored`)
   const r = runSymbol({ name: resolved.name, projectRoot: rootDir, limit: ANSWER_DELEGATE_LIMIT, excludeVendored: true })
   if (r.text.length > 0) emit(r.text)
   return routed('symbol', r.code)

@@ -192,7 +192,7 @@ describe('preSkillHandler — duplicate-load advisory', () => {
     expect(pre.hookType).toBe('deny');
     if (pre.hookType === 'deny') {
       expect(pre.message).toContain('already loaded this session');
-      expect(pre.message).toContain('token-goat skill-body ollama --compact');
+      expect(pre.message).toContain('token-goat skill-body "ollama" --compact');
     }
   });
 
@@ -260,7 +260,7 @@ describe('preSkillHandler — oversized first-load gate', () => {
     expect(out.hookType).toBe('deny');
     if (out.hookType === 'deny') {
       expect(out.message).toContain('big-skill');
-      expect(out.message).toContain('token-goat skill-body big-skill');
+      expect(out.message).toContain('token-goat skill-body "big-skill"');
     }
   });
 
@@ -276,7 +276,7 @@ describe('preSkillHandler — oversized first-load gate', () => {
     expect(out.hookType).toBe('deny');
     if (out.hookType === 'deny') {
       expect(out.message).toContain(compact);
-      expect(out.message).toContain('token-goat skill-body inline-skill');
+      expect(out.message).toContain('token-goat skill-body "inline-skill"');
       expect(out.message).not.toContain('--compact');
       // Lossless: the detail past the marker is NOT inlined, it stays behind the named command.
       expect(out.message).not.toContain('x'.repeat(7000));
@@ -295,7 +295,7 @@ describe('preSkillHandler — oversized first-load gate', () => {
     const out = await preSkillHandler(skillPreEvent('huge-compact-skill', 'sess-huge'));
     expect(out.hookType).toBe('deny');
     if (out.hookType === 'deny') {
-      expect(out.message).toContain('token-goat skill-body huge-compact-skill --compact');
+      expect(out.message).toContain('token-goat skill-body "huge-compact-skill" --compact');
       expect(out.message).not.toContain(compact);
     }
   });
@@ -327,7 +327,7 @@ describe('preSkillHandler — oversized first-load gate', () => {
     const out = await preSkillHandler(skillPreEvent('degenerate-compact', 'sess-degen'));
     expect(out.hookType).toBe('deny');
     if (out.hookType === 'deny') {
-      expect(out.message).toContain('token-goat skill-body degenerate-compact --compact');
+      expect(out.message).toContain('token-goat skill-body "degenerate-compact" --compact');
     }
   });
 
@@ -511,8 +511,8 @@ describe('preSkillHandler — heading-tree fallback for an oversized skill with 
     expect(out.message).toContain('with no compact slice');
     expect(out.message).toContain('inlined below');
     expect(out.message).toContain('Section 0');
-    expect(out.message).toContain('token-goat skill-section ' + skillName);
-    expect(out.message).toContain('token-goat skill-body ' + skillName);
+    expect(out.message).toContain('token-goat skill-section "' + skillName + '"');
+    expect(out.message).toContain('token-goat skill-body "' + skillName + '"');
     expect(out.message.indexOf('skill-section') < out.message.lastIndexOf('skill-body')).toBe(true);
 
     const delta = (summarize(30).by_kind['skill_heading_tree_inlined']?.bytes_saved ?? 0) - before;
@@ -610,7 +610,7 @@ describe('preSkillHandler — heading-tree message states the true total when th
     expect(overCapSentence).not.toBe(underCapSentence);
 
     expect(overCapOut.message).toContain('its heading tree shows 40 of 51 headings');
-    expect(overCapOut.message).toContain('token-goat skill-body ' + overCapName);
+    expect(overCapOut.message).toContain('token-goat skill-body "' + overCapName + '"');
     expect(overCapOut.message).not.toContain('40 headings) is inlined below');
     // The 11 headings past the cap are reached the way the shown ones are: skill-section resolves any heading in the file, and outline names them. The sentence reporting the cap once sent the model to skill-body for them instead, which loads the whole body this deny withholds.
     expect(overCapSentence).toContain('the other 11 load by name just the same');

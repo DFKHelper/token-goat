@@ -32,17 +32,17 @@ describe('oversizeDbMessage', () => {
   it('says the file is live data instead of recommending a reclaim that frees nothing', () => {
     const msg = oversizeDbMessage('/data/global.db', 2250 * MB, 1.3 * MB, 0)
     expect(msg).toContain('live index data')
-    expect(msg).not.toContain("'token-goat reclaim-index' returns")
+    expect(msg).not.toContain('`token-goat reclaim-index` returns')
   })
 
   it('sends temp-dir scratch rows to project prune', () => {
     const msg = oversizeDbMessage('/data/global.db', 2250 * MB, 1.3 * MB, 3186)
-    expect(msg).toContain("'token-goat project prune' removes 3186 scratch files")
+    expect(msg).toContain('`token-goat project prune` removes 3186 scratch files')
     expect(msg).not.toContain('live index data')
   })
 
   it('sends a file that is largely free pages to reclaim-index', () => {
-    expect(oversizeDbMessage('/data/global.db', 2000 * MB, 900 * MB, 0)).toContain("'token-goat reclaim-index' returns the 900 MB")
+    expect(oversizeDbMessage('/data/global.db', 2000 * MB, 900 * MB, 0)).toContain('`token-goat reclaim-index` returns the 900 MB')
   })
 
   // HAND-DERIVED: category byte counts are constructed by this test, not read off the message's own formatter.

@@ -77,7 +77,7 @@ describe('token-goat uninstall --vscode cross-scope detection', () => {
     const output = stdout.join('')
     expect(output).toMatch(/still registered in VS Code project scope/)
     // The remedy names the bare command rather than --project: project scope is now what a bare "uninstall --vscode" targets.
-    expect(output).toContain('"token-goat uninstall --vscode" to remove it too')
+    expect(output).toContain('`token-goat uninstall --vscode` to remove it too')
   })
 
   it('does not warn when only one scope was ever registered', async () => {

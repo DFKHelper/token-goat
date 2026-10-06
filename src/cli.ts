@@ -288,7 +288,7 @@ export async function cmdIndex(
       process.stderr.write(
         `token-goat: --force-walk raised the walk cap to ${MAX_FILES_SCANNED_FORCED} files; ` +
           `indexing ${countNoun(files.length, 'file')} may take a long time and produce a large index. ` +
-          `Run 'token-goat doctor' afterwards to check index size.\n`,
+          `Run \`token-goat doctor\` afterwards to check index size.\n`,
       )
     }
   }
@@ -1449,7 +1449,7 @@ export function buildProgram(): Command {
           // Resolved before parsing, because commander answers `<unknown> --help` by printing the top-level help rather than by complaining: the caller asked about one command and silently got the list of all of them. Pre-existing behaviour exited 1 without ever saying why, which is the half of it worth keeping.
           const known = program.commands.some((sub) => sub.name() === cmd || sub.aliases().includes(cmd))
           if (!known) {
-            err(formatCommandError(`unknown command '${displaySafeText(cmd)}'. Run 'token-goat commands --grep <pattern>' to search the list.`))
+            err(formatCommandError(`unknown command '${displaySafeText(cmd)}'. Run \`token-goat commands --grep <pattern>\` to search the list.`))
             process.exitCode = 1
             return
           }

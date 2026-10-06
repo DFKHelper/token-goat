@@ -386,7 +386,7 @@ describe('doctor auto-repair and embedding model checks', () => {
   })
 
   describe('the update notice at the end of a doctor run', () => {
-    // HAND-DERIVED: the suite runs from this repository, a development checkout, and the cache says 99.0.0 is out, so the decision is dev-checkout. The notice once said "Run 'token-goat upgrade'" whatever the decision, which upgrade itself refuses from a checkout, and it printed after --fix had already handled the update in step 7.
+    // HAND-DERIVED: the suite runs from this repository, a development checkout, and the cache says 99.0.0 is out, so the decision is dev-checkout. The notice once said 'Run `token-goat upgrade`' whatever the decision, which upgrade itself refuses from a checkout, and it printed after --fix had already handled the update in step 7.
     async function doctorOutput(opts: { fix?: boolean }): Promise<string> {
       seedUpdateCheck('99.0.0')
       // The full checks run after the repair, so this one needs every section of a real config rather than the few the repair reads.
@@ -407,7 +407,7 @@ describe('doctor auto-repair and embedding model checks', () => {
       expect(out).toContain('[!] Update available: token-goat v')
       expect(out).toContain('-> v99.0.0')
       expect(out).toContain(DEV_CHECKOUT_ADVICE)
-      expect(out).not.toContain("Run 'token-goat upgrade'")
+      expect(out).not.toContain('Run `token-goat upgrade`')
     })
 
     it('prints no notice after --fix, whose own step already handled the update', async () => {
@@ -415,7 +415,7 @@ describe('doctor auto-repair and embedding model checks', () => {
 
       expect(out).toContain('development checkout')
       expect(out).not.toContain('[!] Update available')
-      expect(out).not.toContain("Run 'token-goat upgrade'")
+      expect(out).not.toContain('Run `token-goat upgrade`')
     })
   })
 

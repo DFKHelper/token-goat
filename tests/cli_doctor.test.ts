@@ -426,7 +426,7 @@ describe('cli_doctor', () => {
       expect(result.status).toBe('warn')
       expect(result.message).toContain('1 of 10')
       expect(result.message).toContain('10%')
-      expect(result.message).toContain("9 files are still owed an embed: the worker embeds them while it is idle, or run 'token-goat index' in the project to embed them now.")
+      expect(result.message).toContain("9 files are still owed an embed: the worker embeds them while it is idle, or run `token-goat index` in the project to embed them now.")
       // No file here is over the cap, so naming it would send the reader to a setting that changes nothing.
       expect(result.message).not.toContain('large_file_symbol_only_kb')
       expect(result.message).not.toContain('--force')
@@ -446,7 +446,7 @@ describe('cli_doctor', () => {
       const result = checkEmbeddingCoverage(dbPath)
       expect(result.status).toBe('warn')
       expect(result.message).toContain(`2 files are over indexing.large_file_symbol_only_kb (currently ${kb} KB) and indexed for symbols only`)
-      expect(result.message).toContain("the next 'token-goat index' embeds them.")
+      expect(result.message).toContain("the next `token-goat index` embeds them.")
       expect(result.message).not.toContain('owed')
     })
 

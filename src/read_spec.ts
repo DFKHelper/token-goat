@@ -21,7 +21,7 @@ import {
 } from './read_suggest.js'
 import { countNoun, foldPath } from './util.js'
 import { CliError, formatCommandError } from './command_error.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 
 const PARENT_IDENTIFIER_RE = /^[\w$]+$/
 
@@ -528,7 +528,7 @@ export function resolveSymbolSpecOrEmitError(
 ): SymbolEntry | null {
   const { file, symbol } = parseReadSpec(spec)
   if (symbol === undefined || symbol === '') {
-    emitErr(formatCommandError(`'token-goat ${commandName}' requires a 'file::symbol' spec (got '${spec}')`))
+    emitErr(formatCommandError(`${fencedCommand('token-goat ' + commandName)} requires a 'file::symbol' spec (got '${spec}')`))
     return null
   }
 

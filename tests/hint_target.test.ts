@@ -343,8 +343,8 @@ const SITES: Site[] = [
   },
   {
     name: 'hooks_skill.ts oversized skill deny',
-    real: (h) => 'skill-section SKILL "' + h + '"',
-    fallback: "skill-section SKILL '<heading>'",
+    real: (h) => 'skill-section "SKILL" "' + h + '"',
+    fallback: 'skill-section "SKILL" "<heading>"',
     guarded: true,
     fallbackHeadings: HOSTILE,
     run: async (headings) => {

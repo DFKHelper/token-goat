@@ -5,6 +5,7 @@ import * as fs from 'node:fs'
 import { matchRestOfLine } from './line_matchers.js'
 import { estimateTokensFromLength } from './overflow_guard.js'
 import { displaySafeText } from './paths.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 
 /** A task list at or above this size is worth telling the agent about. Measured: lists that stayed lean cost almost nothing across a whole session, while a single 613 KB reminder re-injected hundreds of times dominated its session's new context. */
 export const LARGE_TASK_LIST_BYTES = 20_000
@@ -266,7 +267,7 @@ export function repeatedSkillBodyHint(injections: readonly SkillBodyInjection[])
     `(${formatBytes(worst.bytes)} total, ~${tokens} tok est). Slash expansion and the Skill tool both send the ` +
     'whole body every time, and no hook can intercept either. If it is already loaded, work from it instead of ' +
     're-invoking; to reread one part, ' +
-    `use \`token-goat skill-section ${skill} '<heading>'\`.`
+    `use \`token-goat skill-section ${quotedArg(skill)} "<heading>"\`.`
   )
 }
 

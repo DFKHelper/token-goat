@@ -29,7 +29,7 @@ function _totalsLines(summary: StatsSummary): string[] {
       ? [
           `Pricing note:   totals mix ${countNoun(Object.keys(summary.by_pricing_version).length, 'tg_version era')} ` +
             `(${countNoun(summary.by_pricing_version[PRICING_VERSION_UNRECORDED]?.events ?? 0, 'row')} unrecorded); ` +
-            `see 'token-goat stats --json' -> by_pricing_version for the breakdown`,
+            `see \`token-goat stats --json\` -> by_pricing_version for the breakdown`,
         ]
       : []),
     // Printed on its own line, below the token total and never inside it, because it counts placeholders rather than tokens. Omitted entirely when nothing was redacted, so the line is information rather than a permanent zero. See COUNT_ONLY_KINDS.
@@ -54,7 +54,7 @@ function _renderShortTotals(summary: StatsSummary): void {
   const lines = [
     ..._totalsLines(summary),
     '',
-    "Run 'token-goat stats --full' for the full breakdown (by source, by command, by day).",
+    "Run `token-goat stats --full` for the full breakdown (by source, by command, by day).",
   ]
   console.log(lines.join('\n'))
 }

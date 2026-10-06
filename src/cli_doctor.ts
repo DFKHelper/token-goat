@@ -567,7 +567,7 @@ export function checkHookLatency(dbPath: string): DoctorResult {
       return {
         name,
         status: 'warn',
-        message: `${label(worst)} is running a p95 of ${worst.p95_ms}ms across ${worst.count} call(s); see 'token-goat stats --hooks' for the full breakdown`,
+        message: `${label(worst)} is running a p95 of ${worst.p95_ms}ms across ${worst.count} call(s); see \`token-goat stats --hooks\` for the full breakdown`,
       }
     }
     const ignored = rows.find((r) => r.p95_ms > budgetMs && !judged.includes(r))
@@ -576,7 +576,7 @@ export function checkHookLatency(dbPath: string): DoctorResult {
       return {
         name,
         status: 'ok',
-        message: `${label(ignored)} hit p95 ${ignored.p95_ms}ms ${age} (${ignored.count} call(s)), too old or too few to judge; see 'token-goat stats --hooks'`,
+        message: `${label(ignored)} hit p95 ${ignored.p95_ms}ms ${age} (${ignored.count} call(s)), too old or too few to judge; see \`token-goat stats --hooks\``,
       }
     }
     const shown = worst ?? rows[0]!
@@ -658,7 +658,7 @@ export function checkWorker(dir: string): DoctorResult {
   if (checkWorkerRunning(dir)) return { name: 'Worker', status: 'ok', message: 'running' }
   const refusal = fs.existsSync(dir) ? dataDirWriteRefusal(dir) : undefined
   if (refusal !== undefined) {
-    return { name: 'Worker', status: 'fail', message: `not running, and cannot start: ${displaySafeText(dir)} cannot be written (${displaySafeText(extractErrorMessage(refusal))}); make it writable, then run 'token-goat worker start'` }
+    return { name: 'Worker', status: 'fail', message: `not running, and cannot start: ${displaySafeText(dir)} cannot be written (${displaySafeText(extractErrorMessage(refusal))}); make it writable, then run \`token-goat worker start\`` }
   }
   return { name: 'Worker', status: 'warn', message: 'not running' }
 }
@@ -668,7 +668,7 @@ export function checkHookServer(state: { enabled: boolean; statuses: readonly Se
   const name = 'Hook server'
   if (!state.enabled) return { name, status: 'ok', message: 'off (hooks.server or TOKEN_GOAT_HOOK_SERVER); every hook call starts its own process' }
   if (state.statuses.length > 0) return { name, status: 'ok', message: `${state.statuses.length} running (${state.statuses.map((s) => `slot ${s.slot}, pid ${s.pid}, ${s.served} served`).join('; ')})` }
-  if (state.failure !== undefined) return { name, status: 'warn', message: `not running, and the last start failed: ${state.failure}. Run 'token-goat hook-server run' to see it in the foreground` }
+  if (state.failure !== undefined) return { name, status: 'warn', message: `not running, and the last start failed: ${state.failure}. Run \`token-goat hook-server run\` to see it in the foreground` }
   return { name, status: 'ok', message: 'not running; the next hook call starts one' }
 }
 
@@ -1065,7 +1065,7 @@ export function printDoctorResults(results: DoctorResult[]): void {
 
   if (hasRepairable) {
     console.log('\nAuto-repair available:')
-    console.log("  Run 'token-goat doctor --repair' to automatically resolve fixable warnings.")
+    console.log("  Run `token-goat doctor --repair` to automatically resolve fixable warnings.")
   }
 
   console.log()

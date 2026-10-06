@@ -347,7 +347,7 @@ export async function checkEmbeddingPreflight(options?: {
         status: 'load_error',
         available: false,
         message: `Failed to warm/load embedding model: ${err}`,
-        suggestion: "Check model integrity or run 'token-goat doctor'",
+        suggestion: "Check model integrity or run `token-goat doctor`",
         error: err,
       })
     }

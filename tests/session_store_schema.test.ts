@@ -158,7 +158,7 @@ describe('Session Store Schema & Discovery', () => {
       expect(diagnostic).not.toBeNull()
       expect(diagnostic).toContain("Table 'sessions' has columns: id, task_id")
       expect(diagnostic).toContain("For 'title', use summary")
-      expect(diagnostic).toContain("Run 'token-goat session-schema sessions'")
+      expect(diagnostic).toContain('Run `token-goat session-schema "sessions"`')
     })
 
     it('diagnoses SQLite no such column error on sessions query', () => {

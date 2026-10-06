@@ -662,7 +662,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       if (stale === true) {
         recordActualRead(event, normalized)
         return quietContextOutput(
-          'This skill\'s cached compact is stale. Run `token-goat skill-compact ' + skillName + '` to regenerate it.',
+          'This skill\'s cached compact is stale. Run `token-goat skill-compact ' + quotedArg(skillName) + '` to regenerate it.',
         )
       }
     } catch {
