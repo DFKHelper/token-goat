@@ -1,15 +1,5 @@
 #!/usr/bin/env node
-/**
- * `post-merge` / `post-rewrite` hook: automatically synchronize token-goat after git pull/merge/rebase.
- *
- * Automatically:
- * 1. Checks if package-lock.json changed; if so, runs `npm install`.
- * 2. Rebuilds the bundle (`npm run build`).
- * 3. Stops resident hook-servers so fresh code is loaded on the next hook invocation.
- * 4. Restarts the worker daemon.
- * 5. Refreshes shims and instructions across Claude Code and Copilot CLI harnesses.
- * 6. Triggers index update for any files needing re-parsing.
- */
+/** `post-merge` / `post-rewrite` hook: automatically synchronize token-goat after git pull/merge/rebase. Automatically: 1. Checks if package-lock.json changed; if so, runs `npm install`. 2. Rebuilds the bundle (`npm run build`). 3. Stops resident hook-servers so fresh code is loaded on the next hook invocation. 4. Restarts the worker daemon. 5. Refreshes shims and instructions across Claude Code and Copilot CLI harnesses. 6. Triggers index update for any files needing re-parsing. In a linked worktree (`git worktree add`) it stops after step 2: steps 3-6 act on the user's real home, so running them from a scratch checkout would point every installed hook at that checkout's build and start a worker from it. */
 
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -59,6 +49,17 @@ function gitChangedFiles() {
   return []
 }
 
+/** True when `cwd` is a linked worktree rather than the main checkout: a linked worktree's git dir is `.git/worktrees/<name>`, apart from the common dir every checkout of the repository shares. */
+function isLinkedWorktree(cwd) {
+  const res = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir'], {
+    cwd,
+    encoding: 'utf8',
+  })
+  if (res.status !== 0 || !res.stdout) return false
+  const [gitDir, commonDir] = res.stdout.split(/\r?\n/).filter(Boolean)
+  return Boolean(gitDir && commonDir) && path.resolve(gitDir) !== path.resolve(commonDir)
+}
+
 function main() {
   const changed = gitChangedFiles()
   console.log('[token-goat post-merge] Synchronizing token-goat after git pull/merge...')
@@ -73,6 +74,13 @@ function main() {
   if (!built || !fs.existsSync(bundlePath)) {
     console.error('[token-goat post-merge] Build failed; aborting daemon and shim reload.')
     process.exit(1)
+  }
+
+  if (isLinkedWorktree(projectRoot)) {
+    console.log(
+      '[token-goat post-merge] Linked worktree: built the bundle only. The installed hooks, shims, worker and index belong to the main checkout, so run `npm run sync` there to move them to a new build.',
+    )
+    return
   }
 
   // 3. Stop resident hook servers (they will respawn with the new build on next hook call)
