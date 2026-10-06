@@ -471,6 +471,17 @@ export function resolveConfigKeyLayer(key: string, effectiveValue: unknown, cfg:
   return { layer: 'project-invalid', path: projectInfo.path, rawValue, effectiveValue, reason: rejectionReason(key, rawValue, effectiveValue, cfg) }
 }
 
+/** Why config.toml's own `rawValue` for `key` did not survive loading, given `persistedCfg` built from that file alone (buildPersistedConfig: no env, no project file), or `null`. Reports only a cause rejectionReason can name: a value the loader replaces for its own reasons (a legacy-sentinel default, a normalized spelling) differs from what was written without being wrong, and calling it rejected would be a false alarm on every old full save. */
+export function globalValueRejection(key: string, rawValue: unknown, persistedCfg: Record<string, unknown>): string | null {
+  let eff: unknown = persistedCfg
+  for (const part of key.split('.')) {
+    if (eff === null || typeof eff !== 'object' || !Object.prototype.hasOwnProperty.call(eff, part)) return null
+    eff = (eff as Record<string, unknown>)[part]
+  }
+  if (rawValueEquals(rawValue, eff)) return null
+  return rejectionReason(key, rawValue, eff, persistedCfg)
+}
+
 // --------------------------------------------------------------------------- load / save ---------------------------------------------------------------------------
 
 export function loadConfig(projectRoot?: string): Config {

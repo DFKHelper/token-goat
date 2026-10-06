@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { parse } from 'smol-toml'
 
-import { readConfigSource, loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField, validateEnumField, getLastConfigParseError, getProjectConfigInfo, readConfigToml, resolveConfigKeyLayer } from './config.js'
+import { readConfigSource, loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField, validateEnumField, getLastConfigParseError, getProjectConfigInfo, readConfigToml, resolveConfigKeyLayer, buildPersistedConfig, globalValueRejection } from './config.js'
 import type { ConfigKeyLayer } from './config.js'
 import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
@@ -391,6 +391,15 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       findings.push({ kind: 'parse_error', key: cfgFile, suggestion: parseErr })
     } else {
       findings.push(...unknownConfigKeyFindings(raw, defCfg, ''))
+      // The loader clamps or drops a bad config.toml value without a word, so `overflow_guard.max_tokens = 500` ran as 1000 while validate said "no issues". Judged against the file alone, so an env var or project file overriding the key neither hides nor excuses it.
+      const persistedCfg = buildPersistedConfig(raw) as unknown as Record<string, unknown>
+      const loadedCfg = loadConfig() as unknown as Record<string, unknown>
+      for (const [k, v] of flattenConfig(raw)) {
+        const reason = globalValueRejection(k, v, persistedCfg)
+        if (reason === null) continue
+        const eff = walkGet(loadedCfg, k.split('.'))
+        findings.push({ kind: 'value_ignored', key: k, suggestion: `${displaySafeJson(v, 0)} is ${reason}; in effect: ${displaySafeJson(eff.found ? eff.value : undefined, 0)}` })
+      }
     }
 
     // A project .token-goat.toml value that validation rejects or clamps is otherwise invisible: nothing errors, and it only surfaces if the user happens to `config get` that one key. `validate` is where a config problem is meant to be found, so report it here too -- via the same resolver `get`/`list`/`set` use, so all four agree about the key.

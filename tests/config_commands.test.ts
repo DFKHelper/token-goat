@@ -1171,6 +1171,76 @@ describe('cmdConfig validate', () => {
     expect(Array.isArray(parsed.findings)).toBe(true)
     expect(parsed.ok).toBe(false)
   })
+
+  // HAND-DERIVED: 500 sits below the 1000-token floor that `config set overflow_guard.max_tokens 500` refuses with "out of range", so the loader raises it to 1000; the file still says 500.
+  describe('a config.toml value the loader rejects or clamps', () => {
+    afterEach(() => { process.exitCode = undefined })
+
+    it('is reported as value_ignored, naming the cause and the value in effect', () => {
+      fs.writeFileSync(_testConfigPath, '[overflow_guard]\nmax_tokens = 500\n', 'utf8')
+      invalidateConfigCache()
+      expect(loadConfig().overflow_guard.max_tokens).toBe(1000)
+      cmdConfig({ action: 'validate', json: true })
+      const parsed = JSON.parse(captured()) as { findings: Array<{ kind: string; key: string; suggestion?: string }>; ok: boolean }
+      expect(parsed.findings).toEqual([{ kind: 'value_ignored', key: 'overflow_guard.max_tokens', suggestion: '500 is outside the allowed range 1000-1000000; in effect: 1000' }])
+      expect(parsed.ok).toBe(false)
+      expect(process.exitCode).toBe(1)
+    })
+
+    it('reads the same way in the text report', () => {
+      fs.writeFileSync(_testConfigPath, '[overflow_guard]\nmax_tokens = 500\n', 'utf8')
+      invalidateConfigCache()
+      cmdConfig({ action: 'validate' })
+      expect(captured()).toContain('[value_ignored] overflow_guard.max_tokens (500 is outside the allowed range 1000-1000000; in effect: 1000)')
+      expect(captured()).toContain('config validate: 1 issue(s) found')
+    })
+
+    it('is still reported when an env var overrides the key, with the env value as the one in effect', () => {
+      fs.writeFileSync(_testConfigPath, '[overflow_guard]\nmax_tokens = 500\n', 'utf8')
+      invalidateConfigCache()
+      process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS'] = '5000'
+      try {
+        cmdConfig({ action: 'validate', json: true })
+      } finally {
+        delete process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS']
+        invalidateConfigCache()
+      }
+      const parsed = JSON.parse(captured()) as { findings: Array<{ kind: string; key: string; suggestion?: string }> }
+      expect(parsed.findings).toEqual([{ kind: 'value_ignored', key: 'overflow_guard.max_tokens', suggestion: '500 is outside the allowed range 1000-1000000; in effect: 5000' }])
+    })
+
+    it('names a value of the wrong type', () => {
+      fs.writeFileSync(_testConfigPath, '[overflow_guard]\nmax_tokens = "lots"\n', 'utf8')
+      invalidateConfigCache()
+      cmdConfig({ action: 'validate', json: true })
+      const parsed = JSON.parse(captured()) as { findings: Array<{ kind: string; key: string; suggestion?: string }> }
+      expect(parsed.findings).toEqual([{ kind: 'value_ignored', key: 'overflow_guard.max_tokens', suggestion: '"lots" is expected a number, got a string; in effect: 25000' }])
+    })
+
+    // `config set` saves every field of loadPersistedConfig(), so this is the file a first `config set` leaves behind.
+    it('reports nothing for a config.toml holding every default, as a full save writes it', () => {
+      saveConfig(loadPersistedConfig())
+      invalidateConfigCache()
+      cmdConfig({ action: 'validate', json: true })
+      const parsed = JSON.parse(captured()) as { findings: unknown[]; ok: boolean }
+      expect(parsed.findings).toEqual([])
+      expect(parsed.ok).toBe(true)
+    })
+
+    it('reports nothing for a stale default the loader replaces on purpose', () => {
+      fs.writeFileSync(_testConfigPath, '[hints]\nlarge_read_redirect_bytes = 45000\n', 'utf8')
+      invalidateConfigCache()
+      cmdConfig({ action: 'validate' })
+      expect(captured()).toContain('config validate: no issues found')
+    })
+
+    it('reports nothing for an in-range value', () => {
+      fs.writeFileSync(_testConfigPath, '[overflow_guard]\nmax_tokens = 5000\n', 'utf8')
+      invalidateConfigCache()
+      cmdConfig({ action: 'validate' })
+      expect(captured()).toContain('config validate: no issues found')
+    })
+  })
 })
 
 // ── config unknown action ────────────────────────────────────────────────────
