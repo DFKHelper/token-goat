@@ -23,6 +23,8 @@ function seed(names: string[]): void {
   db.transaction(() => {
     names.forEach((name, i) => insert.run(`${root}/f${i}.ts`, name, 'function', 1, 1, '', ''))
   })()
+  // On disk too: a miss drops a near name whose only file is gone, so a row with no file behind it would never be offered.
+  names.forEach((name, i) => fs.writeFileSync(`${root}/f${i}.ts`, `function ${name}() {}\n`))
 }
 
 beforeEach(() => {

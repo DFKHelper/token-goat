@@ -176,6 +176,14 @@ export function projectSymbolNames(rootDir: string, budget: number = SUGGEST_NAM
   return names.length > budget ? null : names
 }
 
+/** Each file under `rootDir` that indexes one of `names`, as distinct name and path pairs: what a near-name suggestion needs to check its candidates against disk before offering them. One statement for the whole list, through the name index, and no statement at all for an empty list. */
+export function symbolNameFiles(rootDir: string, names: readonly string[]): Array<{ name: string; filePath: string }> {
+  if (names.length === 0) return []
+  const { clause, params } = ownProjectScope('file_path', rootDir)
+  const sql = `SELECT DISTINCT name, file_path AS filePath FROM symbols WHERE ${clause} AND name IN (${names.map(() => '?').join(', ')})`
+  return getDb(globalDbPath()).prepare(sql).all(...params, ...names) as Array<{ name: string; filePath: string }>
+}
+
 /** Every JSON or YAML file under `rootDir` that has at least one indexed symbol, sorted: the candidate list a miss hands to findStructuredKeyPath (read_suggest.ts). Walks `files`, one row per file, and asks `symbols` only whether each candidate has a row, instead of reading the file path of every symbol in scope: about 170 ms against 1.7 s on a 546k-symbol project, for the identical set of 15,272 files. The path returned is the one stored on the symbol row, so a caller displays the same spelling it did when it collected these from a full-row scan. LIKE folds ASCII case, so `.JSON` and `.Yml` qualify exactly as they did under the old `toLowerCase().endsWith(...)` test. */
 export function projectStructuredFiles(rootDir: string): string[] {
   const { clause, params } = ownProjectScope('f.path', rootDir)

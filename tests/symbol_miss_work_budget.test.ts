@@ -1,4 +1,5 @@
 /** A `symbol NAME` miss on a large project used to take minutes: a user measured 341 s on a 968,240-symbol project, and the same miss here took 310 s on the 546,394-symbol aws-cdk index, 187 s of it inside SQLite. The miss path walked the whole project with forEachSymbol, 10,000 full rows (bodies included) per OFFSET page, and every page sorted the entire scope before skipping to its offset -- 1.2 s for the first page, 5.2 s for the last. The answer it needed was a list of distinct names, one exact-name lookup and a list of JSON/YAML files. Nothing caught it because the near-name tests in tests/read_commands.test.ts mock querySymbols and seed a single row, so the walk was one page of one row and cost nothing; wall clock never enters CI. These tests seed a real index past three scan pages and count the work the miss does through the real connection: statements against `symbols`, and rows fetched with a body. Fixture provenance: HAND-DERIVED. The seeded names and the expected lines are computed from the inputs below; the expected suggestion follows from rankSimilarNames's two-edit budget for a 14-character query, independently of the DB path under test. */
+import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -31,7 +32,10 @@ beforeEach(() => {
       if (i % 10 === 0) file.run(p, 'sha', 0, 'typescript', 0)
     }
     symbol.run(`${root}/zzz_target.ts`, 'quokkaLandmark', 'function', 1, 3, 'function quokkaLandmark() {}', '')
-    file.run(`${root}/zzz_target.ts`, 'sha', 0, 'typescript', 0)
+    // On disk and stamped with its own SHA-256, so a miss that checks its suggestion against disk finds the file present and fresh: a missing file drops the name, and a mismatched hash reindexes it.
+    const target = 'function quokkaLandmark() {\n  return 1\n}\n'
+    fs.writeFileSync(`${root}/zzz_target.ts`, target)
+    file.run(`${root}/zzz_target.ts`, createHash('sha256').update(target).digest('hex'), 0, 'typescript', 0)
   })()
 })
 
@@ -51,12 +55,12 @@ describe('symbol miss on a project spanning several scan pages', () => {
     }
     expect(r.code).toBe(1)
     expect(r.text).toBe(`No matches for 'quokkaLandmarc'\nDid you mean:\n  - quokkaLandmark`)
-    // The lookup itself, the emptiness check, the exact-name check, the names query and the structured-file query. The old walk alone was three page queries on top of the first two.
-    expect(work.statements).toBeLessThanOrEqual(5)
+    // The lookup itself, the emptiness check, the exact-name check, the names query, the one query for the files behind the top-ranked names and the structured-file query. The old walk alone was three page queries on top of the first two.
+    expect(work.statements).toBeLessThanOrEqual(6)
     // No statement on the miss path fetches a body here: the exact-name check finds nothing, and the old walk fetched all 25,001.
     expect(work.bodyRows).toBe(0)
-    // The ranking's candidates are the project's 25,001 distinct names, fetched once, plus the emptiness check's one count row.
-    expect(work.rows).toBeLessThanOrEqual(FILLER_ROWS + 2)
+    // The ranking's candidates are the project's 25,001 distinct names, fetched once, plus the emptiness check's one count row and the one file behind the one ranked name.
+    expect(work.rows).toBeLessThanOrEqual(FILLER_ROWS + 3)
   })
 
   it('reports an exact name hidden by --kind from one indexed lookup, not a walk', () => {

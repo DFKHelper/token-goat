@@ -4,9 +4,9 @@ import { querySymbols } from './index_reader.js'
 import { displaySafeText, toDisplayPath } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
 import { resolveProjectRoot } from './project.js'
-import { readFileText } from './read_commands.js'
+import { fileIsGone, healStaleResultFiles, readFileText } from './read_commands.js'
 import { parseYamlDocument } from './read_structured_data.js'
-import { SUGGEST_NAME_BUDGET, projectSymbolNames } from './symbol_scan.js'
+import { SUGGEST_NAME_BUDGET, projectSymbolNames, symbolNameFiles } from './symbol_scan.js'
 import { foldPath } from './util.js'
 
 export const DIDYOUMEAN_LIMIT = 5
@@ -110,11 +110,37 @@ export function didYouMeanLines(candidates: string[]): string[] {
   return lines
 }
 
-/** The near names a miss on `name` should offer from `rootDir`, or `skipped` when the project has more distinct names than {@link SUGGEST_NAME_BUDGET}. Ranked over every name in the project rather than a capped page of rows: a near-name suggestion drawn from the alphabetically first slice of a large project proposes whatever happens to sort early, which reads as the closest match and points away from the real one. For the same reason a project past the budget gets no ranking at all rather than a ranking of the names read so far. */
+/** How many of a miss's top-ranked near names are checked against disk before they are offered: the first screen of suggestions and well past it, without turning one miss into a check of every file a broad ranking touches. Names ranked below it are offered unchecked. */
+export const NEAR_NAME_LIVE_CHECK = 50
+
+/** The rows `query` returns once the files behind them are healed, without the rows whose file is gone from disk. A suggestion is a command the reader is invited to run, so one drawn from an outdated row leads to a second miss: a name since renamed in a file that was edited outside the index, or a file since deleted. A heal that reindexed anything means the first answer was read from old rows, so the query runs once more. */
+function liveRows<T extends { filePath: string }>(query: () => T[]): T[] {
+  let rows = query()
+  if (healStaleResultFiles(rows.map((r) => r.filePath)).healed) rows = query()
+  return rows.filter((r) => !fileIsGone(r.filePath))
+}
+
+/** The near names a miss on `name` should offer from `rootDir`, or `skipped` when the project has more distinct names than {@link SUGGEST_NAME_BUDGET}. Ranked over every name in the project rather than a capped page of rows: a near-name suggestion drawn from the alphabetically first slice of a large project proposes whatever happens to sort early, which reads as the closest match and points away from the real one. For the same reason a project past the budget gets no ranking at all rather than a ranking of the names read so far. The top {@link NEAR_NAME_LIVE_CHECK} names are checked the way {@link liveRows} checks rows: their files are healed first, the ranking is redone once if that reindexed anything, and a name offered only by files gone from disk is dropped. */
 export function nearSymbolNames(name: string, rootDir: string): { skipped: false; candidates: string[] } | { skipped: true } {
-  const names = projectSymbolNames(rootDir, SUGGEST_NAME_BUDGET)
-  if (names === null) return { skipped: true }
-  return { skipped: false, candidates: rankSimilarNames(names, name) }
+  const rank = (): string[] | null => {
+    const names = projectSymbolNames(rootDir, SUGGEST_NAME_BUDGET)
+    return names === null ? null : rankSimilarNames(names, name)
+  }
+  const sitesOf = (ranked: string[]): Array<{ name: string; filePath: string }> => {
+    const order = new Map(ranked.slice(0, NEAR_NAME_LIVE_CHECK).map((n, i) => [n, i]))
+    // In rank order, so the heal's file cap is spent on the names a reader sees first.
+    return symbolNameFiles(rootDir, [...order.keys()]).sort((a, b) => (order.get(a.name) ?? 0) - (order.get(b.name) ?? 0))
+  }
+  let ranked = rank()
+  if (ranked === null) return { skipped: true }
+  let sites = sitesOf(ranked)
+  if (healStaleResultFiles(sites.map((s) => s.filePath)).healed) {
+    ranked = rank()
+    if (ranked === null) return { skipped: true }
+    sites = sitesOf(ranked)
+  }
+  const live = new Set(sites.filter((s) => !fileIsGone(s.filePath)).map((s) => s.name))
+  return { skipped: false, candidates: ranked.filter((n, i) => i >= NEAR_NAME_LIVE_CHECK || live.has(n)) }
 }
 
 /** What a miss prints in place of "Did you mean" when {@link nearSymbolNames} skipped the ranking, so the absence of a suggestion is not read as "nothing is close". */
@@ -130,7 +156,7 @@ export function unknownSymbolSuggestion(name: string, rootDir: string): string {
 
 export function formatBareNameSpecError(command: string, name: string, projectRoot?: string): string {
   const rootDir = projectRoot ?? resolveProjectRoot({ project: process.cwd() })
-  const matches = querySymbols({ name, limit: 50, rootDir })
+  const matches = liveRows(() => querySymbols({ name, limit: 50, rootDir }))
   const seen = new Set<string>()
   const specs: string[] = []
   for (const m of matches) {
@@ -154,7 +180,7 @@ export function formatBareNameSpecError(command: string, name: string, projectRo
 
 export function formatCrossFileLead(command: string, name: string, excludeFilePath: string, projectRoot?: string): string {
   const rootDir = projectRoot ?? process.cwd()
-  const matches = querySymbols({ name, limit: 50, rootDir })
+  const matches = liveRows(() => querySymbols({ name, limit: 50, rootDir }))
   const excludeResolved = resolveSpecPath(excludeFilePath, rootDir)
   const seen = new Set<string>()
   const specs: string[] = []
