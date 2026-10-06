@@ -22,7 +22,7 @@ import { preReadHandler } from '../src/hooks_read.js'
 import { postReadHandler } from '../src/hooks_read_post.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { recordFileRead, wasFileReadThisSession, markCompacted, getCompactedAt, epochReadCounts, getSessionFileEntry, exportSessionState, importSessionState, type SerializedSession } from '../src/session.js'
+import { recordFileRead, recordSymbolRead, markFileTruncated, unrecordRefusedRead,wasFileReadThisSession, markCompacted, getCompactedAt, epochReadCounts, getSessionFileEntry,exportSessionState, importSessionState, type SerializedSession } from '../src/session.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { makeHookEvent } from './helpers/hook-event.js'
@@ -182,6 +182,92 @@ describe('compaction epoch invalidates in-context read state', () => {
     if (result.hookType === 'deny') {
       expect(result.message).toContain('Tried to read this file 2 times already.')
     }
+  })
+
+  // HAND-DERIVED: a hook process that loaded the session before another one stamped the compaction records its read at t-2000 without snapshotting the two reads the compaction dropped; the model holds that one copy, so the next Read is its first re-read and must not be refused on the lifetime count of three.
+  it('does not refuse a source re-read when a read after the compaction was recorded without knowing of it', () => {
+    const p = tmpSource()
+    const t = Date.now()
+    readAt(p, t - 5000)
+    readAt(p, t - 4000)
+    readAt(p, t - 2000)
+    markCompacted(t - 3000)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).not.toBe('deny')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('(1 read)')
+      expect(result.context).not.toContain('(3 reads)')
+    }
+  })
+
+  // HAND-DERIVED: protect_recent_reads gives up on a file read four times, but four reads before a compaction left nothing in context; the two since are what a fresh file with the same two reads would have, and that file is protected.
+  it('keeps protecting a recent read whose fourth read came before the last compaction', () => {
+    const cfg = defaultConfig()
+    cfg.hints.protect_recent_reads = 4
+    saveConfig(cfg)
+    invalidateConfigCache()
+    const p = tmpSource()
+    const t = Date.now()
+    for (let i = 5; i >= 2; i--) readAt(p, t - i * 1000)
+    markCompacted(t - 1500)
+    readAt(p, t - 1000)
+    readAt(p, t - 500)
+
+    expect(preReadHandler(readEvent(p)).hookType).not.toBe('deny')
+  })
+
+  // HAND-DERIVED: a file whose first read came after the compaction holds both of its reads in context, so the source re-read deny still fires on them.
+  it('still denies a source file first read after the compaction and read whole twice since', () => {
+    const p = tmpSource()
+    const t = Date.now()
+    markCompacted(t - 3000)
+    readAt(p, t - 2000)
+    readAt(p, t - 1000)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') expect(result.message).toContain('Tried to read this file 2 times already.')
+  })
+
+  // HAND-DERIVED: a truncated read made the file's entry after the compaction and one whole read followed it, so both reads are in context.
+  it('counts both reads of a file whose entry a truncated read made after the compaction', () => {
+    const p = tmpSource()
+    const t = Date.now()
+    markCompacted(t - 3000)
+    markFileTruncated(normalizePath(p))
+    readAt(p, t + 1000)
+
+    const entry = getSessionFileEntry(normalizePath(p))
+    expect(entry !== undefined ? epochReadCounts(entry) : null).toEqual({ reads: 2, fullReads: 2 })
+  })
+
+  // HAND-DERIVED: a symbol read made the file's entry after the compaction without counting as a Read; the two whole reads after it are both in context.
+  it('counts both reads of a file whose entry a symbol read made after the compaction', () => {
+    const p = tmpSource()
+    const t = Date.now()
+    markCompacted(t - 3000)
+    recordSymbolRead(normalizePath(p), 'a')
+    readAt(p, t + 1000)
+    readAt(p, t + 2000)
+
+    const entry = getSessionFileEntry(normalizePath(p))
+    expect(entry !== undefined ? epochReadCounts(entry) : null).toEqual({ reads: 2, fullReads: 2 })
+  })
+
+  // HAND-DERIVED: both reads came before the compaction, and the first Read after it was refused, so nothing of the file is in context once the refused read is taken back.
+  it('leaves no read in the epoch when the first Read after a compaction is refused and taken back', () => {
+    const p = tmpSource()
+    const t = Date.now()
+    readAt(p, t - 5000)
+    readAt(p, t - 4000)
+    markCompacted(t - 3000)
+    const before = getSessionFileEntry(normalizePath(p))
+    readAt(p, t - 2000)
+    unrecordRefusedRead(normalizePath(p), before)
+
+    const entry = getSessionFileEntry(normalizePath(p))
+    expect(entry !== undefined ? epochReadCounts(entry) : null).toEqual({ reads: 0, fullReads: 0 })
   })
 
   // HAND-DERIVED: one whole read put the file in context; the second Read is refused as unchanged and PostToolUse never fires for a refused call, so the one read that reached the model is still the only one.

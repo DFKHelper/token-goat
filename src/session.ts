@@ -152,6 +152,11 @@ function resolveFilesKey(normalized: string): string {
   return normalized
 }
 
+/** The epoch snapshot for an entry created now: a file first seen after the last compaction had nothing in context before it, so its base is zero, and {@link epochReadCounts} can tell it apart from an entry a process that missed the compaction left with no base at all. */
+function newEntryEpochBase(): { epochBase?: EpochBase } {
+  return _compactedAt > 0 ? { epochBase: { at: _compactedAt, readCount: 0, fullReadCount: 0 } } : {}
+}
+
 /** Record that `filePath` was read. First read creates an entry; subsequent reads increment `readCount` and refresh `lastReadAt` / `sizeBytes` while preserving the `wasEdited` flag. `isFullRead` (default true) marks whether this particular read carried no offset/limit/view-range slice -- callers passing an explicit slice window must pass `false` so `lastFullReadAt` (and therefore `wasFileFullyReadThisSession`) stays untouched: a ranged read still bumps `readCount`/`lastReadAt` for the count-based and range-level dedup that legitimately treats it as a read, but must never arm a whole-file "unchanged since last read" deny that assumes the model has seen content it was never sent. */
 export function recordFileRead(filePath: string, isFullRead: boolean = true): void {
   const normalized = normalizePath(filePath)
@@ -167,6 +172,7 @@ export function recordFileRead(filePath: string, isFullRead: boolean = true): vo
       wasEdited: false,
       sizeBytes: size,
       ...(isFullRead ? { lastFullReadAt: now, fullReadCount: 1 } : {}),
+      ...newEntryEpochBase(),
     })
     return
   }
@@ -191,13 +197,13 @@ export function unrecordRefusedRead(filePath: string, before: FileEntry | undefi
     _files.delete(key)
     return
   }
-  const { fullReadCount: _fullReadCount, lastFullReadAt: _lastFullReadAt, epochBase: _epochBase, ...rest } = current
+  // The epoch base stays as the refused read left it: either the one `before` carried, or the one that read opened from `before`'s own counts, which nets the restored counts to nothing in the epoch.
+  const { fullReadCount: _fullReadCount, lastFullReadAt: _lastFullReadAt, ...rest } = current
   _files.set(key, {
     ...rest,
     readCount: before.readCount,
     ...(before.fullReadCount !== undefined ? { fullReadCount: before.fullReadCount } : {}),
     ...(before.lastFullReadAt !== undefined ? { lastFullReadAt: before.lastFullReadAt } : {}),
-    ...(before.epochBase !== undefined ? { epochBase: before.epochBase } : {}),
   })
 }
 
@@ -217,6 +223,7 @@ export function recordSymbolRead(filePath: string, symbol: string): void {
       wasEdited: false,
       sizeBytes: fileSize(normalized),
       symbols_read: [symbol],
+      ...newEntryEpochBase(),
     })
     return
   }
@@ -276,12 +283,13 @@ export function wasFileFullyReadThisSession(filePath: string): boolean {
   return entry !== undefined && entry.lastFullReadAt !== undefined && entry.lastFullReadAt >= _compactedAt
 }
 
-/** How many of `entry`'s reads, and of its whole-file reads, landed since the compaction stamped at `compactedAt` (default: this session's last one), i.e. are still in the model's context. Subtracts the {@link FileEntry.epochBase} taken at that epoch; an entry with no base for it was first read inside the epoch, so its counts stand. Whole-file reads count only while the latest one is inside the epoch. */
+/** How many of `entry`'s reads, and of its whole-file reads, landed since the compaction stamped at `compactedAt` (default: this session's last one), i.e. are still in the model's context. Subtracts the {@link FileEntry.epochBase} taken at that epoch. An entry created after a known compaction carries a zero base for it, so one read inside the epoch with no base for it was recorded by a process that had not yet seen the compaction and could not tell how many of its counts came before: it counts as one read, which can let a re-read through but never refuses one. Whole-file reads count only while the latest one is inside the epoch. */
 export function epochReadCounts(entry: FileEntry, compactedAt: number = _compactedAt): { reads: number; fullReads: number } {
   if (entry.lastReadAt < compactedAt) return { reads: 0, fullReads: 0 }
   const base = entry.epochBase !== undefined && entry.epochBase.at === compactedAt ? entry.epochBase : undefined
-  const reads = Math.max(0, entry.readCount - (base?.readCount ?? 0))
   const fullInEpoch = entry.lastFullReadAt !== undefined && entry.lastFullReadAt >= compactedAt
+  if (base === undefined && compactedAt > 0) return { reads: Math.min(entry.readCount, 1), fullReads: fullInEpoch ? 1 : 0 }
+  const reads = Math.max(0, entry.readCount - (base?.readCount ?? 0))
   const fullReads = fullInEpoch ? Math.max(0, (entry.fullReadCount ?? 0) - (base?.fullReadCount ?? 0)) : 0
   return { reads, fullReads }
 }
@@ -710,6 +718,7 @@ export function markFileTruncated(filePath: string, isFullRead: boolean = true):
       sizeBytes: fileSize(normalized),
       wasTruncated: true,
       ...(isFullRead ? { lastFullReadAt: now, fullReadCount: 1 } : {}),
+      ...newEntryEpochBase(),
     })
     return
   }

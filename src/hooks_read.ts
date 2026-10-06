@@ -531,8 +531,8 @@ function contextPressureAdvisorySuffix(): string {
 function isProtectedRecentRead(normalized: string, n: number): boolean {
   if (n <= 0) return false
   const entry = getSessionFileEntry(normalized)
-  // If the file has already been read repeatedly (4+ reads this session), recency no longer protects it from re-read dedup. In sessions with <=4 active files, rank < 4 is trivially true on every call, which would otherwise exempt re-read loops indefinitely.
-  if (entry && entry.readCount >= 4) return false
+  // If the file has already been read repeatedly (4+ reads since the last compaction), recency no longer protects it from re-read dedup. In sessions with <=4 active files, rank < 4 is trivially true on every call, which would otherwise exempt re-read loops indefinitely. Reads from before the compaction left nothing in context, so they do not count toward the four.
+  if (entry && epochReadCounts(entry).reads >= 4) return false
 
   // Pre-compaction reads are excluded from the ranking entirely, not just from being protected themselves: this exemption is about content the model still holds, so a stale entry must not occupy one of the n protection slots and push a genuinely-recent post-compaction read out of the window.
   const compactedAt = getCompactedAt()
