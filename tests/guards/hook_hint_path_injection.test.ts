@@ -111,7 +111,9 @@ describe('the read hint', () => {
     const payload = { tool_name: 'Read', tool_input: { file_path: filePath }, session_id: 'inject-read-control' }
     expect(hook('pre_tool_use', payload).status).toBe(0)
     expect(hook('post_tool_use', { ...payload, tool_response: { file: { content: 'x' } } }).status).toBe(0)
-    const text = emittedText(hook('pre_tool_use', payload).stdout)
+    const second = hook('pre_tool_use', payload)
+    expect(second.status, second.stderr).toBe(0)
+    const text = emittedText(second.stdout)
     expect(text, 'the ordinary path was mangled, or the hint stopped firing at all').toContain('ordinary.ts')
   })
 })
