@@ -16,7 +16,8 @@ import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, displaySafeText, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import { foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { loadConfig } from './config.js'
-import { recordFileRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges } from './session.js'
+import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
+import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges } from './session.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
@@ -105,11 +106,14 @@ function diffHintCredit(counterfactualBytes: number, body: string): number | nul
   return credit
 }
 
+/** The words that open the diff a re-read deny serves in place of the file, which hands the model the current content and so counts as the read it replaced (see {@link preReadHandler}). */
+const SNAPSHOT_DIFF_LEAD = 'Here is what changed:'
+
 /** The deny text for a re-read whose session snapshot shows the file unchanged, or changed by the diff it serves fenced as file content, followed by `suffix`, the narrower read to make instead. Every snapshot-backed re-read deny builds its text here, so none can drift from the shapes session_audit.ts's DENY_TEMPLATES census counts: doc_unchanged_deny and doc_diff_deny, or the session_artifact pair when `suffix` is the bash-output recall. */
 function snapshotDenyText(basename: string, snap: Exclude<SnapshotDiffResult, { kind: 'none' }>, suffix: string): string {
   const lead = snap.kind === 'unchanged'
     ? basename + ' is unchanged since last read. '
-    : 'Content changed since last read of ' + basename + '. Here is what changed:\n\n' + fenceUntrustedFileContent('```diff\n' + snap.diff + '\n```') + '\n\n'
+    : 'Content changed since last read of ' + basename + '. ' + SNAPSHOT_DIFF_LEAD + '\n\n' + fenceUntrustedFileContent('```diff\n' + snap.diff + '\n```') + '\n\n'
   return (lead + suffix).trimEnd()
 }
 
@@ -791,7 +795,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
               editAnywayHint(normalized)
             )
           }
-          // A genuinely-first read that's blocked outright (tooLargeForFirstRead, not alreadyRead) never actually happened, so don't record it against re-read dedup -- mirrors the generic large-file path's same rule further below. Otherwise a retry (offset/limit) on the same file hits the "already read this session" 2nd-read deny instead of this same heading-tree guidance, which a genuinely-unread file should still get. A deny that IS because of a real prior read (alreadyRead) still records, same as every other re-read-deny branch in this file.
+          // A genuinely-first read that's blocked outright (tooLargeForFirstRead, not alreadyRead) never actually happened, so don't record it against re-read dedup -- mirrors the generic large-file path's same rule further below. Otherwise a retry (offset/limit) on the same file hits the "already read this session" 2nd-read deny instead of this same heading-tree guidance, which a genuinely-unread file should still get. A deny that IS because of a real prior read (alreadyRead) still records, same as every other re-read-deny branch in this file, and preReadHandler takes that record back when the deny hands over neither the file nor a diff of it.
           if (alreadyRead) {
             // A genuine re-read of a large markdown file: prefer the same unchanged/diff snapshot machinery the isDocDiffable block further below uses, rather than re-emitting the (roughly 1.1KB median) heading tree that says nothing new. This branch is otherwise unreachable for markdown files large enough to trip the heading-tree intercept, since that intercept returns before isDocDiffable runs. Reuses that block's exact message shapes so the session-audit census (DENY_TEMPLATES in session_audit.ts) recognizes them as doc_unchanged_deny/doc_diff_deny rather than a new, invisible shape. recordStat stays session_hint/0 on every branch here (never diff_hint with a byte credit, unlike the isDocDiffable block) because these heading-tree denies are measured to be frequently routed around by a shell re-read anyway, so crediting withheld bytes would book a saving this path cannot back up.
             const snapDiff = loadSnapshotDiff(sessionStateKey(event), normalized, basename)
@@ -1428,9 +1432,14 @@ export function preReadHandler(event: HookEvent): HookOutput {
   const rawGrepPath = event.toolName === 'Grep' ? event.toolInput['path'] : undefined
   const target = getFilePath(event) ?? (typeof rawGrepPath === 'string' && rawGrepPath !== '' ? resolveEventPath(event, rawGrepPath) : undefined)
   if (preToolPathDeclined(event, target)) return passOutput()
+  const before = event.toolName === 'Read' && target !== undefined ? getSessionFileEntry(target) : undefined
   const output = preReadHandlerInner(event)
   // Every hint here names a token-goat command that reads the file itself, so on a path a deny or ask rule covers it would lead around the rule: Claude Code answers the call on its own.
   if (output.hookType !== 'pass' && target !== undefined && readHintCrossesRule(detectHarness(), getCwd(event) ?? process.cwd(), [target])) return passOutput()
+  // The re-read denies record the Read before refusing it; one that hands over neither the file nor a diff of it left the model holding what it held, so the read is taken back and a repeated refusal neither inflates the counts it quotes nor the manifest's re-read tally.
+  if (output.hookType === 'deny' && event.toolName === 'Read' && target !== undefined && !DELIVERS_CONTENT_RE.test(output.message) && !output.message.includes(SNAPSHOT_DIFF_LEAD)) {
+    unrecordRefusedRead(target, before)
+  }
   return applyHintTracking(event, output, classifyReadHint)
 }
 

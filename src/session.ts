@@ -182,6 +182,25 @@ export function recordFileRead(filePath: string, isFullRead: boolean = true): vo
   })
 }
 
+/** Take back the counts {@link recordFileRead} added for a Read that was then refused without handing over the file: PostToolUse never fires for a refused call, so the model holds no more of the file than it did before. `before` is the entry as it stood before the hook ran; with none, the entry the refused read created is dropped. `lastReadAt` keeps the refused attempt, because protect_recent_reads ranks on it and the retry a refusal invites must stay protected rather than meet the same refusal. */
+export function unrecordRefusedRead(filePath: string, before: FileEntry | undefined): void {
+  const key = resolveFilesKey(normalizePath(filePath))
+  const current = _files.get(key)
+  if (current === undefined) return
+  if (before === undefined) {
+    _files.delete(key)
+    return
+  }
+  const { fullReadCount: _fullReadCount, lastFullReadAt: _lastFullReadAt, epochBase: _epochBase, ...rest } = current
+  _files.set(key, {
+    ...rest,
+    readCount: before.readCount,
+    ...(before.fullReadCount !== undefined ? { fullReadCount: before.fullReadCount } : {}),
+    ...(before.lastFullReadAt !== undefined ? { lastFullReadAt: before.lastFullReadAt } : {}),
+    ...(before.epochBase !== undefined ? { epochBase: before.epochBase } : {}),
+  })
+}
+
 /** Upper bound on distinct symbol tokens tracked per file, so a session that reads many symbols of one file can't grow its entry unboundedly. */
 const MAX_SYMBOLS_PER_FILE = 25
 

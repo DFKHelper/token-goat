@@ -22,7 +22,7 @@ import { preReadHandler } from '../src/hooks_read.js'
 import { postReadHandler } from '../src/hooks_read_post.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { recordFileRead, wasFileReadThisSession, markCompacted, getCompactedAt, epochReadCounts, exportSessionState, importSessionState, type SerializedSession } from '../src/session.js'
+import { recordFileRead, wasFileReadThisSession, markCompacted, getCompactedAt, epochReadCounts, getSessionFileEntry, exportSessionState, importSessionState, type SerializedSession } from '../src/session.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { makeHookEvent } from './helpers/hook-event.js'
@@ -182,6 +182,48 @@ describe('compaction epoch invalidates in-context read state', () => {
     if (result.hookType === 'deny') {
       expect(result.message).toContain('Tried to read this file 2 times already.')
     }
+  })
+
+  // HAND-DERIVED: one whole read put the file in context; the second Read is refused as unchanged and PostToolUse never fires for a refused call, so the one read that reached the model is still the only one.
+  it('does not count a Read refused as unchanged as another read', () => {
+    const content = '# Title\n\nSome content.\n'
+    const p = tmpDoc(content)
+    firstRead(p, content)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') expect(result.message).toContain('unchanged since last read')
+    const entry = getSessionFileEntry(normalizePath(p))
+    expect(entry !== undefined ? epochReadCounts(entry) : null).toEqual({ reads: 1, fullReads: 1 })
+  })
+
+  // HAND-DERIVED: two whole reads reached the model; each refusal after them hands over nothing, so a second refusal still quotes those two reads.
+  it('quotes the same read count on a repeated refusal of a source re-read', () => {
+    const p = tmpSource()
+    const t = Date.now()
+    readAt(p, t - 2000)
+    readAt(p, t - 1000)
+
+    for (let i = 0; i < 2; i++) {
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') expect(result.message).toContain('Tried to read this file 2 times already.')
+    }
+  })
+
+  // HAND-DERIVED: a re-read answered with the diff hands the model the current content, so it counts as the read it replaced.
+  it('still counts a re-read answered with the diff of what changed', () => {
+    const lines = Array.from({ length: 400 }, (_, i) => `Line ${i} of a long document that keeps going on.`)
+    const content = '# Title\n\n' + lines.join('\n') + '\n'
+    const p = tmpDoc(content)
+    firstRead(p, content)
+    fs.writeFileSync(p, content.replace('Line 7 of', 'Line seven of'))
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') expect(result.message).toContain('Here is what changed:')
+    const entry = getSessionFileEntry(normalizePath(p))
+    expect(entry !== undefined ? epochReadCounts(entry) : null).toEqual({ reads: 2, fullReads: 2 })
   })
 
   it('preserves wasEdited across the epoch (an edit is durable knowledge about the repo, not about context)', () => {
