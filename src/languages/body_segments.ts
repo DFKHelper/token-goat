@@ -1,5 +1,7 @@
 /** Splitting one source line into the declarations a type body written on that line holds, for the line-at-a-time adapters whose member matchers anchor at the start of a line: `class Single { function alpha() { return 1; } private $x = 1; const K = 2; }` declares three members, and a matcher run on the whole line sees only the class. Shared by every adapter with that shape, so where one member ends is decided once. */
 
+import type { SymbolEntry } from '../parser_types.js'
+
 /** One declaration's slice of a line: `code.slice(start, end)`. `open` is set on the last slice when a block it opened is still open at the end of the line, so the member's body runs on into later lines. */
 export interface BodySegment {
   readonly start: number
@@ -33,4 +35,26 @@ export function bodySegments(code: string, from: number): BodySegment[] {
   }
   if (/[^\s;]/.test(code.slice(start))) out.push({ start, end: code.length, open: braces > 0 })
   return out
+}
+
+/** A member whose block was still open at the end of its line, and the brace depth inside that block: it ends on the first later line that brings the depth back below. */
+export interface OpenMember {
+  readonly sym: SymbolEntry
+  readonly depth: number
+}
+
+/** Ends `open` on `lineNum`: its row in `symbols` and in `settled` is replaced by one running through that line, with the lines after its own appended to its body. */
+export function endOpenMember(symbols: SymbolEntry[], settled: Set<SymbolEntry>, open: OpenMember, lineNum: number, lines: readonly string[]): void {
+  const { sym } = open
+  const ended: SymbolEntry = { ...sym, lineEnd: lineNum, body: [sym.body, ...lines.slice(sym.lineStart, lineNum)].join('\n') }
+  symbols[symbols.indexOf(sym)] = ended
+  settled.delete(sym)
+  settled.add(ended)
+}
+
+/** `symbols` with the brace-span pass `span` run over every row not in `settled`, in the same order. A member found after the first declaration on its line already carries its real span, and the pass, searching from the start of that line, would reach the type's `{` or an earlier member's and stretch the member over that block instead. */
+export function spanUnsettled(symbols: readonly SymbolEntry[], settled: ReadonlySet<SymbolEntry>, span: (rest: SymbolEntry[]) => SymbolEntry[]): SymbolEntry[] {
+  const spanned = span(symbols.filter((s) => !settled.has(s)))
+  let next = 0
+  return symbols.map((s) => (settled.has(s) ? s : spanned[next++]!))
 }

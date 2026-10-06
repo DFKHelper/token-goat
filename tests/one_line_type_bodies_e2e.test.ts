@@ -74,4 +74,30 @@ describe('one-line type bodies reach the index through the production drain', ()
     expect(beta).toContain('public function beta() { return 2; }')
     expect(beta).not.toContain('gamma')
   }, 60_000)
+
+  it('Kotlin: stores each member and reads it alone', async () => {
+    expect(await drain({
+      'one.kt': [
+        'class KTwo { fun ka(): Int { return 1 }; const val MAX = 3; fun kb() = 4 }',
+        'class KThree { fun a() {} fun b() {',
+        '    println(1)',
+        '  }',
+        '}',
+      ],
+    })).toEqual([
+      'class KTwo  1-1',
+      'const MAX KTwo 1-1',
+      'method ka KTwo 1-1',
+      'method kb KTwo 1-1',
+      'class KThree  2-5',
+      'method a KThree 2-2',
+      'method b KThree 2-4',
+    ])
+    const ka = read('one.kt::ka')
+    expect(ka).toContain('fun ka(): Int { return 1 }')
+    expect(ka).not.toContain('MAX')
+    const b = read('one.kt::b')
+    expect(b).toContain('println(1)')
+    expect(b).not.toContain('class KThree')
+  }, 60_000)
 })

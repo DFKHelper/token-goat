@@ -15,7 +15,7 @@ import {
   type AdapterImport,
   makeLineSymbol,
 } from './common.js'
-import { bodySegments, type BodySegment } from './body_segments.js'
+import { bodySegments, endOpenMember, type BodySegment, type OpenMember } from './body_segments.js'
 
 // PHP keywords are case-insensitive (PHP Manual, "Language Reference" > "Classes and Objects" > "The Basics", and "Functions" > "User-defined functions"), so `Class Repo`, `Public Function run()` and `Var $x` are legal and still turn up in older code. Matching them case-sensitively dropped the entire declaration, and with it every member the class context would have scoped. Each matcher below therefore carries `i`, which changes only the literal keywords: every capture here is `[A-Za-z_]`/`[\w\\]`/`[^'"]`, already case-agnostic, so a name is still indexed with the exact case the source wrote it in.
 const NAMESPACE_RE = /^namespace\s+([\w\\]+)\s*;/i
@@ -118,8 +118,7 @@ export function extractPhp(
   const settled = new Set<SymbolEntry>()
   // Such members wait here for the end of their line, so they follow the line's first declaration in `symbols` the way they follow it in the source.
   let lineMembers: SymbolEntry[] = []
-  // The last member on a line whose block was still open at the end of it, and the brace depth inside that block: it ends on the line that brings the depth back below.
-  type OpenMember = { sym: SymbolEntry; depth: number }
+  // The last member on a line whose block was still open at the end of it.
   let openMember: OpenMember | null = null
   // Returns the member left open at the end of the line, if any.
   const queueMembers = (segs: readonly BodySegment[], line: string, kind: string, parent: string, lineNum: number, bodyDepth: number): OpenMember | null => {
@@ -187,11 +186,7 @@ export function extractPhp(
     }
 
     if (openMember !== null && braceDepth < openMember.depth) {
-      const { sym } = openMember
-      const ended: SymbolEntry = { ...sym, lineEnd: lineNum, body: [sym.body, ...lines.slice(sym.lineStart, lineNum)].join('\n') }
-      symbols[symbols.indexOf(sym)] = ended
-      settled.delete(sym)
-      settled.add(ended)
+      endOpenMember(symbols, settled, openMember, lineNum, lines)
       openMember = null
     }
 

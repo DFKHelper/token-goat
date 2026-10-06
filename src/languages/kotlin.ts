@@ -18,6 +18,7 @@ import {
   type AdapterImport,
   makeLineSymbol,
 } from './common.js'
+import { bodySegments, endOpenMember, type BodySegment, type OpenMember } from './body_segments.js'
 
 interface ClassFrame {
   name: string
@@ -108,16 +109,61 @@ const TOP_FUN_RE = new RegExp(
   'fun\\s+(?:' + GENERIC_CLAUSE + '\\s*)?' + RECEIVER_RE + '(' + NAME_RE + ')\\s*[(<]',
 )
 
+/** The offset of the `{` opening the body of the declaration that starts at `from` in `code`, a string-blanked line: the first one outside every parenthesis before `to`, so a lambda default in a constructor parameter is not taken for the body. -1 when the body does not open there. */
+function bodyBraceAt(code: string, from: number, to: number): number {
+  let parens = 0
+  for (let i = from; i < to; i++) {
+    const ch = code[i]
+    if (ch === '(') parens++
+    else if (ch === ')') parens = Math.max(0, parens - 1)
+    else if (ch === '{' && parens === 0) return i
+  }
+  return -1
+}
+
+/** The members the {@link bodySegments} slices `segs` of `line` declare directly in the type named `parent`, in source order: a method, a SCREAMING_SNAKE const, or a nested class, interface, object or companion object whose body closes inside its slice, followed by that body's own members. extractKotlin's line branches only ever see the first declaration on a line, so a member written after a type header's `{` or after another member on the same line was dropped. `code` is `line` with its string literals blanked; each member's body is its slice. `open` is the member whose block is still open at the end of the line. */
+function inlineKotlinMembers(line: string, code: string, segs: readonly BodySegment[], parent: string, filePath: string, lineNum: number): { members: SymbolEntry[]; open: SymbolEntry | null } {
+  const members: SymbolEntry[] = []
+  let open: SymbolEntry | null = null
+  for (const seg of segs) {
+    const text = line.slice(seg.start, seg.end).trim()
+    const noAnn = stripLeadingAnnotations(text)
+    const fm = FUN_RE.exec(noAnn)
+    const constM = fm === null ? CONST_RE.exec(noAnn) : null
+    const companionM = fm === null && constM === null ? COMPANION_RE.exec(noAnn) : null
+    const classM = fm === null && constM === null && companionM === null ? CLASS_HEADER_RE.exec(noAnn) : null
+    let sym: SymbolEntry | null = null
+    if (fm) sym = makeLineSymbol(filePath, unquoteName(fm[1] ?? ''), 'method', lineNum, text, parent)
+    else if (constM) sym = makeLineSymbol(filePath, constM[1] ?? '', 'const', lineNum, text, parent)
+    else if ((companionM !== null || classM !== null) && !seg.open) {
+      const name = unquoteName((companionM !== null ? companionM[1] : classM?.[2]) ?? 'Companion')
+      const keyword = companionM !== null ? 'object' : (classM?.[1] ?? 'class')
+      members.push(makeLineSymbol(filePath, name, keyword === 'interface' ? 'interface' : keyword === 'object' ? 'object' : 'class', lineNum, text, parent))
+      const brace = bodyBraceAt(code, seg.start, seg.end)
+      if (brace !== -1) members.push(...inlineKotlinMembers(line, code, bodySegments(code, brace + 1), name, filePath, lineNum).members)
+      continue
+    }
+    if (sym === null) continue
+    members.push(sym)
+    if (seg.open) open = sym
+  }
+  return { members, open }
+}
+
 export function extractKotlin(
   content: string,
   filePath: string,
-): { symbols: SymbolEntry[]; imports: AdapterImport[] } {
+): { symbols: SymbolEntry[]; imports: AdapterImport[]; settled: ReadonlySet<SymbolEntry> } {
   const symbols: SymbolEntry[] = []
   const imports: AdapterImport[] = []
   const lines = content.split(/\r?\n/)
 
   const classStack: ClassFrame[] = []
   let braceDepth = 0
+  // Members found on a line after its first declaration already carry their real span, so the brace-span pass leaves them alone (see spanUnsettled).
+  const settled = new Set<SymbolEntry>()
+  // The last such member whose block was still open at the end of its line.
+  let openMember: OpenMember | null = null
   let inComment = false
   let mlState: MultilineStringState | null = null
 
@@ -272,6 +318,22 @@ export function extractKotlin(
     // bodyEntered - the net delta for that line is zero, but depth genuinely peaked one above
     // the frame's start in between the two braces, which a batched delta can never observe.
     const braceLine = stripStringLiterals(line)
+
+    // A line can hold several declarations of one type body: the members after a type header's `{` (`class Two { fun a() = 1; fun b() = 2 }`), and those after the first on a body line (`fun c() = 1; fun d() = 2`). The branches above index only the first declaration on the line; the rest are found here, the header's own body first so the rows keep source order.
+    let lineOpen: OpenMember | null = null
+    const queueMembers = (segs: readonly BodySegment[], parent: string, bodyDepth: number): OpenMember | null => {
+      const { members, open } = inlineKotlinMembers(line, braceLine, segs, parent, filePath, lineNum)
+      symbols.push(...members)
+      for (const m of members) settled.add(m)
+      return open === null ? null : { sym: open, depth: bodyDepth + 1 }
+    }
+    const lineSegs = bodySegments(braceLine, 0)
+    if (frame !== null && frame !== outerFrame && lineSegs[0] !== undefined) {
+      const brace = bodyBraceAt(braceLine, lineSegs[0].start, lineSegs[0].end)
+      if (brace !== -1) lineOpen = queueMembers(bodySegments(braceLine, brace + 1), frame.name, braceDepth + 1)
+    }
+    if (outerFrame !== null && outerDepthInClass === 1) lineOpen = queueMembers(lineSegs.slice(1), outerFrame.name, braceDepth) ?? lineOpen
+
     for (const ch of braceLine) {
       if (ch === '{') {
         braceDepth++
@@ -286,6 +348,11 @@ export function extractKotlin(
         frame.parenBalance--
       }
     }
+    if (openMember !== null && braceDepth < openMember.depth) {
+      endOpenMember(symbols, settled, openMember, lineNum, lines)
+      openMember = null
+    }
+    if (lineOpen !== null) openMember = lineOpen
     // A body-less class/interface/object header (`data class Point(val x: Int, val y: Int)`,
     // no trailing `{`) never flips bodyEntered, so the bodyEntered-gated pop below would leave
     // it on the stack forever, silently misattributing every later top-level declaration as one
@@ -312,5 +379,5 @@ export function extractKotlin(
     }
   }
 
-  return { symbols, imports }
+  return { symbols, imports, settled }
 }

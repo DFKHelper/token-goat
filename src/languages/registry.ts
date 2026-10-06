@@ -9,6 +9,7 @@
 import type { RegexLanguage } from '../language_specs.js'
 import type { SymbolEntry } from '../parser_types.js'
 import { assignBraceBlockSpans } from './common.js'
+import { spanUnsettled } from './body_segments.js'
 import { extractCsharp } from './csharp.js'
 import { extractPhp, maskPhpInlineHtml } from './php.js'
 import { extractHtml } from './html.js'
@@ -106,9 +107,7 @@ export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLangua
   php: (content, filePath) => {
     const code = maskPhpInlineHtml(content)
     const { symbols, settled } = extractPhp(code, filePath)
-    const spanned = assignBraceBlockSpans(symbols.filter((s) => !settled.has(s)), code, { lineComment: ['//', '#'], lineCommentExceptions: ['#['], multilineLang: 'php' })
-    let next = 0
-    return symbols.map((s) => (settled.has(s) ? s : spanned[next++]!))
+    return spanUnsettled(symbols, settled, (rest) => assignBraceBlockSpans(rest, code, { lineComment: ['//', '#'], lineCommentExceptions: ['#['], multilineLang: 'php' }))
   },
   html: (content, filePath) => {
     const r = extractHtml(content, filePath)
@@ -145,7 +144,10 @@ export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLangua
     const r = extractTwig(content, filePath)
     return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
   },
-  kotlin: (content, filePath) => assignBraceBlockSpans(extractKotlin(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', expressionBodies: 'kotlin', interpolation: 'kotlin' }),
+  kotlin: (content, filePath) => {
+    const { symbols, settled } = extractKotlin(content, filePath)
+    return spanUnsettled(symbols, settled, (rest) => assignBraceBlockSpans(rest, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', expressionBodies: 'kotlin', interpolation: 'kotlin' }))
+  },
   swift: (content, filePath) => assignBraceBlockSpans(extractSwift(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', multilineLang: 'swift', interpolation: 'swift' }),
   scala: (content, filePath) => assignBraceBlockSpans(extractScala(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', expressionBodies: 'kotlin', interpolation: 'scala' }),
   lua: (content, filePath) => extractLua(content, filePath).symbols,
