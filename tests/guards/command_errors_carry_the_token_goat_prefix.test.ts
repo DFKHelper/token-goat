@@ -1,4 +1,4 @@
-/** Guard: a CLI error -- the stderr message a command prints on its way to a non-zero exit -- is rendered by src/command_error.ts, so it opens with exactly one `token-goat:` and has its file-derived text escaped. Before this guard a few hundred such writes spelled the message out by hand: most printed no prefix at all ("Symbol 'foo' not found in 'nope.ts'", "File not found: x.csv"), a dozen hand-spelled the prefix, and the `{ text, code }` adapters sent a failure's text to stderr raw, so whether an error said who was speaking depended on which command raised it. Rule 1: in any statement list, the run of stderr writes directly above a non-zero exit (a non-zero `return`, `return null`, `throw`, `process.exitCode = N`, `process.exit(N)`), or directly below a `process.exitCode = N`, must open with a write whose argument calls formatCommandError, formatFailedResultText or formatGitFailure (which renders through formatCommandError). Continuation lines after that first write (a did-you-mean, an empty-index note) are deliberately left as they are: the prefix marks where the error starts. Rule 2: a write of a `{ text, code }` result's text to stderr goes through formatFailedResultText, which is what gives that path the same first line. Rule 3: an exit whose code is `<cond> ? 0 : N` (a `return`, or a `process.exitCode =`) fails on one branch, so when its statement list writes prose to stdout above it (a write whose argument is not a JSON rendering) it must also write to stderr there, or be a REPORTS entry whose stdout text is the answer: `refs a,b` printed "a: (no references found)" to stdout and exited 1 with stderr empty. What this cannot see: an error written somewhere other than directly beside its exit (the write in one function, the exit code set by its caller), and an error printed to stdout beside an exit code held in a variable, which carries no sign of whether it can be non-zero. Hook output is out of scope by construction: hooks answer through their JSON envelope and exit 0, so none of their writes sit beside a non-zero exit. */
+/** Guard: a CLI error -- the stderr message a command prints on its way to a non-zero exit -- is rendered by src/command_error.ts, so it opens with exactly one `token-goat:` and has its file-derived text escaped. Before this guard a few hundred such writes spelled the message out by hand: most printed no prefix at all ("Symbol 'foo' not found in 'nope.ts'", "File not found: x.csv"), a dozen hand-spelled the prefix, and the `{ text, code }` adapters sent a failure's text to stderr raw, so whether an error said who was speaking depended on which command raised it. Rule 1: in any statement list, the run of stderr writes directly above a non-zero exit (a non-zero `return`, `return null`, `throw`, `process.exitCode = N`, `process.exit(N)`), or directly below a `process.exitCode = N`, must open with a write whose argument calls formatCommandError, formatFailedResultText or formatGitFailure (which renders through formatCommandError). Continuation lines after that first write (a did-you-mean, an empty-index note) are deliberately left as they are: the prefix marks where the error starts. Rule 2: a write of a `{ text, code }` result's text to stderr goes through formatFailedResultText, which is what gives that path the same first line. Rule 3: an exit whose code is `<cond> ? 0 : N` (a `return`, or a `process.exitCode =`), or a `process.exitCode =` a variable (`code`, `reply.status ?? 0`), can fail, so when its statement list writes prose to stdout above it (a write whose argument is not a JSON rendering) it must also write to stderr there, or be a REPORTS entry whose stdout text is the answer: `refs a,b` printed "a: (no references found)" to stdout and exited 1 with stderr empty. What this cannot see: an error written somewhere other than directly beside its exit (the write in one function, the exit code set by its caller), and an error printed to stdout beside a `return` of a variable, which every function returning a value would match. `semantic --distances` printed its text to stdout and assigned `process.exitCode = code` beside it, so a failing result would have exited non-zero with its reason on stdout. Hook output is out of scope by construction: hooks answer through their JSON envelope and exit 0, so none of their writes sit beside a non-zero exit. */
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -110,11 +110,18 @@ function isConditionalExitCode(e: ts.Expression | undefined): boolean {
   return (zero(e.whenTrue) && nonZeroLiteral(e.whenFalse)) || (nonZeroLiteral(e.whenTrue) && zero(e.whenFalse))
 }
 
+/** An exit code held in a variable (`code`, `result.code`, `reply.status ?? 0`): nothing at the assignment says it is always 0, so it may fail. A literal, a ternary (checked by {@link isConditionalExitCode}), a call (the callee owns its own writes) and `undefined` (a reset) are not this shape. */
+function isVariableExitCode(e: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(e) || ts.isAwaitExpression(e)) e = e.expression
+  if (ts.isNumericLiteral(e) || ts.isConditionalExpression(e) || ts.isCallExpression(e)) return false
+  return !(ts.isIdentifier(e) && e.text === 'undefined')
+}
+
 function conditionalExit(stmt: ts.Statement): boolean {
   if (ts.isReturnStatement(stmt)) return isConditionalExitCode(stmt.expression)
   if (!ts.isExpressionStatement(stmt)) return false
   const e = stmt.expression
-  return ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken && e.left.getText() === 'process.exitCode' && isConditionalExitCode(e.right)
+  return ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken && e.left.getText() === 'process.exitCode' && (isConditionalExitCode(e.right) || isVariableExitCode(e.right))
 }
 
 const JSON_RENDER = /^(?:displaySafeJson|JSON\.stringify)\(/
@@ -248,9 +255,9 @@ describe('command errors carry the token-goat prefix', () => {
     pinnedPopulation({
       what: 'conditional exits with a stdout write above them in src/',
       items: conditionalExits.map(conditionalLabel),
-      floor: 3,
-      ceiling: 8,
-      mustInclude: ['src/read_refs.ts', 'src/read_structured_data.ts', 'src/cli_install.ts'],
+      floor: 6,
+      ceiling: 11,
+      mustInclude: ['src/read_refs.ts', 'src/read_structured_data.ts', 'src/cli_install.ts', 'src/cli_dispatch.ts', 'src/hook_client.ts'],
     })
     const offenders = conditionalExits.filter((s) => s.prose && !s.stderr && reportFor(s) === undefined).map(conditionalLabel)
     expect(offenders, 'on the failing branch write the reason to stderr through formatCommandError (or writeCommandFailure), keeping only a --json body on stdout; or add a REPORTS entry saying why the stdout text is the answer').toEqual([])

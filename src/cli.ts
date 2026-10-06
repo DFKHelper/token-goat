@@ -170,9 +170,7 @@ export { requireInt, requireNonNegativeInt, requirePositiveInt }
 async function cmdSemantic(query: string | undefined, more: string[], opts: { limit?: string; json?: boolean; grep?: string; excludeTests?: boolean; preflight?: boolean; warm?: boolean; distances?: boolean; all?: boolean }): Promise<void> {
   if (opts.distances === true) {
     if (query !== undefined || opts.preflight === true || opts.warm === true) throw new CliError('--distances reports recorded queries and runs none; drop the query, --preflight and --warm')
-    const { text, code } = runSemanticDistances({ ...(opts.all === true ? { all: true } : {}) })
-    out(text)
-    process.exitCode = code
+    runExitText(() => runSemanticDistances({ ...(opts.all === true ? { all: true } : {}) }))
     return
   }
   if (!query && !opts.preflight && !opts.warm) {
