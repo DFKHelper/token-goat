@@ -121,6 +121,23 @@ describe('hintTarget names what the file holds', () => {
     expect(hintTarget(p, 'section')).toEqual({ name: 'SectionHeading', real: false, slice: 'section' })
   })
 
+  // HAND-DERIVED: YAML keeps a double quote inside a single-quoted key and the TOML index stores a quoted key with its quotes; either, set in the double-quoted key argument config-get and the query commands take, splits it (built bundle 2026-10-06: `config-get "q.toml" ""my key""` exits 1 with "too many arguments").
+  it.each([
+    ['keys.yaml', `'say "hi"': 1\nplain: 2\n`],
+    ['keys.toml', '"my key" = 1\nplain = 2\n'],
+  ])('steps past an indexed key holding a double quote in %s', async (name, body) => {
+    const p = write(uniq('quoted') + '-' + name, body)
+    const { indexFileSync } = await import('../src/parser.js')
+    const { globalDbPath } = await import('../src/constants.js')
+    indexFileSync(p, globalDbPath())
+    expect(hintTarget(p, 'key')).toEqual({ name: 'plain', real: true, slice: 'key' })
+  })
+
+  it('still names a heading holding a double quote, which section resolves', () => {
+    const p = write('quoted.md', '## Using "foo" here\n\nx\n')
+    expect(hintTarget(p, 'section').name).toBe('Using "foo" here')
+  })
+
   it('steps past a hostile heading to the next usable one', () => {
     const p = write('mixed.md', '## $(touch pwned)\n\nx\n\n## Install\n\ny\n')
     expect(hintTarget(p, 'section').name).toBe('Install')
@@ -136,7 +153,7 @@ describe('sliceCommand prints the command each slice runs through', () => {
     ['conf.json', t('a.b', 'key'), `token-goat json-query "conf.json" "['a.b']"`],
     ['conf.json', t("it's", 'key'), 'token-goat json-outline "conf.json"'],
     ['ci.yaml', t('jobs', 'key'), 'token-goat yaml-query "ci.yaml" "jobs"'],
-    ['.env', t('PORT', 'key'), 'token-goat config-get ".env" PORT'],
+    ['.env', t('PORT', 'key'), 'token-goat config-get ".env" "PORT"'],
     ['schema.sql', t('users', 'table'), 'token-goat read "schema.sql::users"'],
     ['mod.ts', t('parseConfig', 'symbol'), 'token-goat read "mod.ts::parseConfig"'],
   ] as const)('%s %s', (shown, target, expected) => {

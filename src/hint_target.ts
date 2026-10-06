@@ -8,7 +8,7 @@ import { indexMatchesDisk } from './index_freshness.js'
 import { commandPathIsTouchable } from './vscode_path_gate.js'
 import { extractMarkdownHeadings, formatHeadingTreeParts, type MarkdownHeading } from './hints/markdown_hints.js'
 import { extractQuickSymbolSamples } from './hooks_read.js'
-import { stripUnsafeSuggestions, leadWithCommand, grepLinesHint } from './hint_suggestion_guard.js'
+import { stripUnsafeSuggestions, leadWithCommand, grepLinesHint, configGetCommand } from './hint_suggestion_guard.js'
 import { getCompactedAt, markHintShown, wasHintShown } from './session.js'
 import { shortFingerprint } from './fingerprint.js'
 import { sessionStateKey, type HookEvent } from './hook_registry.js'
@@ -92,9 +92,11 @@ export function sliceForPath(filePath: string): HintSlice {
 }
 
 /** `name` when it can be pasted into a double-quoted argument and run verbatim, else null. The relay's own guard is the test, so a name passes exactly when a command carrying it survives stripUnsafeSuggestions; a backslash (which would escape the closing quote), the `::` spec separator, and anything displaySafeText would rewrite (a token-goat marker, a control character) are refused on top, since these names also reach channels the relay does not guard. */
-function quotable(raw: string): string | null {
+function quotable(raw: string, slice: HintSlice): string | null {
   const name = raw.trim()
   if (name === '' || name.length > MAX_HINT_NAME_CHARS || name.includes('\\') || name.includes('::')) return null
+  // A key is the whole argument of config-get or a query command, so a `"` in it (a TOML key written `"my key" = 1` indexes with its quotes) splits that argument, and neither command redirects a near-miss name the way section and read do.
+  if (slice === 'key' && name.includes('"')) return null
   if (displaySafeText(name) !== name) return null
   const probe = 'token-goat read "' + name + '"'
   return stripUnsafeSuggestions(probe) === probe ? name : null
@@ -119,7 +121,7 @@ function namedIn(text: string, name: string): boolean {
 /** The candidate a Grep pattern targets, or null when the pattern names none the file holds. A dotted pair both of which the file holds (`Box.open`) names the method as the pair, which `read` resolves; otherwise the longest candidate name that occurs whole in the pattern text, so a hyphenated symbol (`Get-Thing3`) or a multi-word heading (`Heading 3`) is matched as the name the file indexes rather than as the words around it. A heading that occurs twice is skipped, since `section` refuses an ambiguous one. */
 function pickForPattern(candidates: ReadonlyArray<{ name: string; level: number }>, pattern: string, slice: HintSlice): string | null {
   const section = slice === 'section'
-  const held = Array.from(new Set(candidates.flatMap((c) => quotable(c.name) ?? [])))
+  const held = Array.from(new Set(candidates.flatMap((c) => quotable(c.name, slice) ?? [])))
   const text = pattern.replace(/\\[A-Za-z]/g, ' ')
   if (!section) {
     const heldSet = new Set(held)
@@ -135,7 +137,7 @@ function pickForPattern(candidates: ReadonlyArray<{ name: string; level: number 
 /** First usable name in line order. For sections, a heading that occurs twice is skipped (`section` refuses an ambiguous one) and a lone top-level title is passed over for the heading after it, since the title's section is the whole document the deny just refused. */
 function pick(candidates: ReadonlyArray<{ name: string; level: number }>, slice: HintSlice): string | null {
   const usable = candidates.flatMap((c) => {
-    const name = quotable(c.name)
+    const name = quotable(c.name, slice)
     return name === null ? [] : [{ name, level: c.level }]
   })
   if (slice !== 'section') return usable[0]?.name ?? null
@@ -254,7 +256,7 @@ export function sliceCommand(shownPath: string, target: HintTarget): string {
       return 'token-goat section "' + shownPath + '::' + target.name + '"'
     case 'key': {
       const format = structuredFormat(shownPath)
-      if (format === null) return 'token-goat config-get "' + shownPath + '" ' + target.name
+      if (format === null) return configGetCommand(shownPath, target.name)
       if (/^[\w-]+$/.test(target.name)) return 'token-goat ' + format + '-query "' + shownPath + '" "' + target.name + '"'
       if (!target.name.includes("'")) return 'token-goat ' + format + '-query "' + shownPath + '" "[\'' + target.name + '\']"'
       return 'token-goat ' + format + '-outline "' + shownPath + '"'
@@ -283,7 +285,7 @@ export function fileQueryHint(shownPath: string, reason = '', grepSubject = 'pat
   if (format !== null) {
     return leadWithCommand('token-goat ' + format + '-outline "' + shownPath + '"', 'to list the top-level keys, then `token-goat ' + format + '-query "' + shownPath + '" "<key>"` to read one value', reason)
   }
-  if (/\.(toml|ini|cfg)$/i.test(shownPath)) return leadWithCommand('token-goat config-get "' + shownPath + '" "<key>"', 'to read one value', reason)
+  if (/\.(toml|ini|cfg)$/i.test(shownPath)) return leadWithCommand(configGetCommand(shownPath, '<key>'),'to read one value', reason)
   if (/\.(xml|csproj)$/i.test(shownPath)) return leadWithCommand('token-goat xml-outline "' + shownPath + '"', 'to see the element structure, then `token-goat xml-query "' + shownPath + '" "<path>"` to read one element', reason)
   return grepLinesHint('<' + grepSubject + '>', shownPath, reason)
 }

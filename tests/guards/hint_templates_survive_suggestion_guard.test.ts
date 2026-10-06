@@ -254,3 +254,17 @@ describe('the path argument of every suggested command in src', () => {
     expect(slots.filter((s) => s.bare).map((s) => s.where + ' ' + s.key)).toEqual([])
   })
 })
+
+describe('the key argument of every suggested config-get in src', () => {
+  // HAND-DERIVED: the key slot followed the quoted path bare (`config-get ".env" PORT`), outside the quotes the relay checks; configGetCommand (src/hint_suggestion_guard.ts) quotes it, and every site goes through that one helper.
+  const lead = 'token-goat config-get "' + SPACED + '" '
+  const keySlots = stringTemplates(SPACED).flatMap((t) => t.text.split(lead).slice(1).map((after) => ({ where: t.file + ':' + t.line, key: t.file + '::' + lead + after.slice(0, 20), quoted: after.startsWith('"') })))
+
+  it('is scanned', () => {
+    pinnedPopulation({ what: 'key arguments of suggested config-get commands in src', items: keySlots.map((s) => s.key), floor: 1, ceiling: 1, mustInclude: ['hint_suggestion_guard.ts::' + lead] })
+  })
+
+  it('is double-quoted and built by configGetCommand alone', () => {
+    expect(keySlots.filter((s) => !s.quoted || !s.where.startsWith('hint_suggestion_guard.ts:')).map((s) => s.where + ' ' + s.key)).toEqual([])
+  })
+})

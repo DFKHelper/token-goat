@@ -94,6 +94,11 @@ export function grepLinesHint(pattern: string, shownPath: string, reason = ''): 
   return leadWithCommand('token-goat grep "' + pattern + '" "' + shownPath + '" -C 3', 'to read the matching lines', reason)
 }
 
+/** `config-get` for one key of one file, the key double-quoted like the path, the form {@link stripUnsafeSuggestions} checks: a bare key sits outside the quotes, where the relay judges it only by its outside-quote allowlist and a shell splits it at a space. hint_target.ts refuses a key holding `"`, so these quotes always hold. */
+export function configGetCommand(shownPath: string, key: string): string {
+  return 'token-goat config-get "' + shownPath + '" "' + key + '"'
+}
+
 /** The hint for one section of a prose document: `section` with the `outline` alternative only where it runs, and a plain grep for a file type neither serves. */
 export function docSectionHint(shownPath: string, heading: string, reason = ''): string {
   const nav = docNavigation(shownPath)

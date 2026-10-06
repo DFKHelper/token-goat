@@ -10,7 +10,7 @@ import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavin
 import { preToolPathDeclined } from './vscode_path_gate.js'
 import { detectHarness } from './bridges/registry.js'
 import { readHintCrossesRule } from './rewrite_permission.js'
-import { leadWithCommand, docNavigation, quotedArg } from './hint_suggestion_guard.js'
+import { leadWithCommand, docNavigation, quotedArg, configGetCommand } from './hint_suggestion_guard.js'
 import { headingTreeParts, hintTarget, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
 import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, displaySafeText, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
@@ -636,7 +636,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   if (isTsConfigFile(basename) && wasFileReadThisSession(normalized)) {
     recordActualRead(event, normalized)
     return quietContextOutput(
-      leadWithCommand('token-goat config-get "' + shown + '" "compilerOptions.target"', 'for a single compiler option, or `token-goat json-outline "' + shown + '"` for every top-level key', 'Already read ' + basename + '.'),
+      leadWithCommand(configGetCommand(shown, 'compilerOptions.target'),'for a single compiler option, or `token-goat json-outline "' + shown + '"` for every top-level key', 'Already read ' + basename + '.'),
     )
   }
 
@@ -897,7 +897,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     recordActualRead(event, normalized)
     recordStat('session_hint', 0, 0)
     return denyOutput(leadWithCommand(
-      'token-goat config-get "' + shown + '" ' + hintTarget(normalized, 'key').name,
+      configGetCommand(shown, hintTarget(normalized, 'key').name),
       'to extract a specific variable',
       shown + ' was already read this session. Environment files rarely change mid-session.',
     ))

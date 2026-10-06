@@ -149,7 +149,7 @@ describe('surgicalHintFor with a resolved target', () => {
 
   it('sends a .properties key to config-get', () => {
     const hint = surgicalHintFor('app.properties', false, true, false, false, real('db.url', 'key'))
-    expect(hint).toBe('Run `token-goat config-get "app.properties" db.url` to read a specific value.')
+    expect(hint).toBe('Run `token-goat config-get "app.properties" "db.url"` to read a specific value.')
     expect(PLACEHOLDER_KEY_FAILS).toContain('not found')
   })
 
@@ -184,7 +184,7 @@ describe('surgicalHintFor with a resolved target', () => {
   })
 
   it('names the real key for an env file', () => {
-    expect(surgicalHintFor('.env', true, false, false, false, real('DATABASE_URL', 'key'))).toBe('Run `token-goat config-get ".env" DATABASE_URL` to read a specific variable.')
+    expect(surgicalHintFor('.env', true, false, false, false, real('DATABASE_URL', 'key'))).toBe('Run `token-goat config-get ".env" "DATABASE_URL"` to read a specific variable.')
   })
 
   it('reads a real symbol out of a source file, and leads with outline when there is none', () => {

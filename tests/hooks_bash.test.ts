@@ -5245,7 +5245,7 @@ describe('preBashHandler — PowerShell [IO.File]::ReadAllText interception', ()
   it('denies a .NET .env file read with a config-get hint, not the generic symbol hint', () => {
     const result = preBashHandler(makeBashEvent(`[System.IO.File]::ReadAllText('.env')`))
     expect(interceptedReadHint(result)).not.toBeNull()
-    expect(interceptedReadHint(result)).toContain('token-goat config-get ".env" KEY_NAME')
+    expect(interceptedReadHint(result)).toContain('token-goat config-get ".env" "KEY_NAME"')
     expect(interceptedReadHint(result)).not.toContain('SymbolName')
   })
 })
