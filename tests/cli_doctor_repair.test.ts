@@ -224,6 +224,32 @@ describe('doctor auto-repair and embedding model checks', () => {
       expect(repairedShim).not.toContain('old stale shim content')
     })
 
+    it('disables chat.useClaudeHooks in VS Code settings when VS Code hooks are installed', async () => {
+      const mockConfig: Config = {
+        mcp: { confine_reads_to_project_root: false },
+        indexing: { cross_project_symbols: true, embeddings_enabled: true },
+        network: { offline: false },
+        gdrive: { enabled: false },
+      } as unknown as Config
+
+      vi.spyOn(configModule, 'loadConfig').mockReturnValue(mockConfig)
+      vi.spyOn(configModule, 'saveConfig').mockImplementation(() => undefined)
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(true)
+
+      const { installVscode, vscodeUserSettingsPath } = await import('../src/bridges/vscode_install.js')
+      const settings = vscodeUserSettingsPath()
+      fs.mkdirSync(path.dirname(settings), { recursive: true })
+      fs.writeFileSync(settings, '{\n  // custom\n  "chat.useClaudeHooks": true\n}\n', 'utf8')
+      installVscode({ project: true, projectRoot })
+      fs.writeFileSync(settings, '{\n  // custom\n  "chat.useClaudeHooks": true\n}\n', 'utf8')
+
+      const result = await runDoctorRepair({ rootDir: projectRoot })
+      expect(result.repairs.some((r) => r.includes('Disabled VS Code chat.useClaudeHooks'))).toBe(true)
+      const after = fs.readFileSync(settings, 'utf8')
+      expect(after).toContain('// custom')
+      expect(after).toContain('"chat.useClaudeHooks": false')
+    })
+
     describe('deprecated .vscode/mcp.json residue cleanup', () => {
       let project: string
       let mcpPath: string

@@ -4,7 +4,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { copilotHooksOwnersPath, installCopilotCli, isCopilotCliInstalled, readCopilotHooksOwners, uninstallCopilotCli } from '../src/bridges/copilot_cli_install.js'
-import { installVscode, uninstallVscode, VSCODE_HOOK_FILE_EVENT_KEYS, vscodeDecoderConfigured, vscodeHooksInstalled, vscodeUserMcpPath, vscodeUsesClaudeHooks } from '../src/bridges/vscode_install.js'
+import { disableVscodeClaudeHooks, installVscode, uninstallVscode, VSCODE_HOOK_FILE_EVENT_KEYS, vscodeDecoderConfigured, vscodeHooksInstalled, vscodeUserMcpPath, vscodeUserSettingsPath, vscodeUsesClaudeHooks } from '../src/bridges/vscode_install.js'
 import { checkVscodeClaudeHooks, checkVscodeProjectMcp, checkVscodeUserScopeHooks } from '../src/cli_doctor_platforms.js'
 
 const savedAppData = process.env['APPDATA']
@@ -419,6 +419,43 @@ describe('chat.useClaudeHooks double-fire detection', () => {
     const claudeOnly = checkVscodeClaudeHooks(true, true, false)
     expect(claudeOnly?.status).toBe('warn')
     expect(claudeOnly?.message).toContain('install --vscode')
+  })
+
+  it('disableVscodeClaudeHooks turns off chat.useClaudeHooks, preserves comments and other settings, and is idempotent', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-settings-'))
+    try {
+      const settings = path.join(dir, 'settings.json')
+      fs.writeFileSync(settings, '{\n  // keep this comment\n  "chat.useClaudeHooks": true,\n  "editor.fontSize": 14\n}\n')
+      expect(vscodeUsesClaudeHooks(settings)).toBe(true)
+      expect(disableVscodeClaudeHooks(settings)).toBe(true)
+      expect(vscodeUsesClaudeHooks(settings)).toBe(false)
+      const after = fs.readFileSync(settings, 'utf8')
+      expect(after).toContain('// keep this comment')
+      expect(after).toContain('"editor.fontSize": 14')
+      expect(after).toContain('"chat.useClaudeHooks": false')
+      expect(disableVscodeClaudeHooks(settings)).toBe(false)
+      expect(disableVscodeClaudeHooks(path.join(dir, 'missing.json'))).toBe(false)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('installVscode turns off chat.useClaudeHooks when enabled in user settings', () => {
+    const settings = vscodeUserSettingsPath()
+    fs.mkdirSync(path.dirname(settings), { recursive: true })
+    fs.writeFileSync(settings, '{\n  // custom user config\n  "chat.useClaudeHooks": true\n}\n')
+    expect(vscodeUsesClaudeHooks(settings)).toBe(true)
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-proj-'))
+    try {
+      const result = installVscode({ project: true, projectRoot: project })
+      expect(result.disabledClaudeHooks).toBe(true)
+      expect(vscodeUsesClaudeHooks(settings)).toBe(false)
+      const after = fs.readFileSync(settings, 'utf8')
+      expect(after).toContain('// custom user config')
+      expect(after).toContain('"chat.useClaudeHooks": false')
+    } finally {
+      fs.rmSync(project, { recursive: true, force: true })
+    }
   })
 
   it('checkVscodeUserScopeHooks warns on a user-scope install and names the right fix for each case', () => {

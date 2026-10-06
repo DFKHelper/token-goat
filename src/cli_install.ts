@@ -377,7 +377,11 @@ export async function cmdInstall(opts: {
     } else {
       out(VSCODE_USER_SCOPE_MULTIROOT_NOTE)
     }
-    if (vscodeUsesClaudeHooks()) out(VSCODE_DOUBLE_FIRE_NOTE)
+    if (vscodeResult.disabledClaudeHooks) {
+      out('NOTE: Turned off chat.useClaudeHooks in VS Code settings to prevent duplicate hook execution with --vscode hooks.')
+    } else if (vscodeUsesClaudeHooks()) {
+      out(VSCODE_DOUBLE_FIRE_NOTE)
+    }
   }
 
   if (opts.visualstudio === true) {

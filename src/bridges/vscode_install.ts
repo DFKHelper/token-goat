@@ -10,7 +10,8 @@ import { canonicalProjectRoot, copilotHooksFilePaths, installCopilotHooksFile, r
 import { assertProjectScopeTarget, projectPathIsConsultable, projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, takeCreatedConfig } from './created_configs.js'
 import { dropEmptyServers, hasManagedServer, isManagedServer, isResidueServersJson, managedServer, noteRootKeyCreation, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
-import { jsonc, stripBom } from '../jsonc_text.js'
+import { writeSettingsKeepingComments } from './commented_settings.js'
+import { jsonc, parseJsonOrJsonc, stripBom } from '../jsonc_text.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
 
 /** Markers of the VS Code guidance block; exported so the Visual Studio block can tell when it shares a file with this one. */
@@ -118,6 +119,27 @@ export function vscodeUsesClaudeHooks(settingsPath = vscodeUserSettingsPath()): 
   return (parsed as Record<string, unknown>)['chat.useClaudeHooks'] === true
 }
 
+/**
+ * Turns off `chat.useClaudeHooks` in VS Code's user settings if enabled, preserving all comments and other settings.
+ * Returns true if the setting was present and set to true and was updated to false; false otherwise.
+ */
+export function disableVscodeClaudeHooks(settingsPath = vscodeUserSettingsPath()): boolean {
+  if (!vscodeUsesClaudeHooks(settingsPath)) return false
+  try {
+    const raw = fs.readFileSync(settingsPath, 'utf8')
+    const body = stripBom(raw)
+    const prev = parseJsonOrJsonc(body, { allowTrailingComma: true })
+    if (prev === null || typeof prev !== 'object' || Array.isArray(prev)) return false
+    const next = { ...(prev as Record<string, unknown>), 'chat.useClaudeHooks': false }
+    withInstallScope(undefined, () => {
+      writeSettingsKeepingComments(settingsPath, next, { allowTrailingComma: true })
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
 function readConfig(filePath: string): ServersJsonConfig {
   return readServersJson(filePath, 'VS Code')
 }
@@ -134,6 +156,8 @@ export interface VscodeInstallResult {
   migratedFromUserScope: boolean
   /** Which scope was actually written: 'project' (the default) or 'user' (`--user`). */
   scope: 'project' | 'user'
+  /** True when chat.useClaudeHooks was turned off in VS Code settings to prevent duplicate hook execution. */
+  disabledClaudeHooks?: boolean
 }
 
 /** Best-effort check for a token-goat-managed entry already sitting in the *other* scope. Writing this scope on top of that would register token-goat twice -- VS Code merges user- and workspace-scope `mcp.json` when both name the same server, duplicating all of its tool schemas into the workspace. A malformed or unreadable other-scope file is not this call's problem to raise (that surfaces, loudly, the moment someone actually installs into that scope), so this swallows read/parse failures and reports "no managed entry found" rather than throwing. */
@@ -171,7 +195,7 @@ function writeGuidance(filePath: string, userScope: boolean): boolean {
   }
   const body = [
     BEGIN,
-    buildGuidanceBody('VS Code’s supported MCP integration and its built-in file-read tools', { gdrive: loadConfig().gdrive.enabled }),
+    buildGuidanceBody('VS Code’s supported MCP integration and its built-in file-read tools', { gdrive: loadConfig().gdrive?.enabled ?? false }),
     '',
     '**Compressed payloads:** a message containing a token-goat payload block (recognizable by a `recovery: token-goat retrieve <id>` line) is compressed text, not an answer. Call the MCP tool `retrieve_text` with that id to recover the original text, then answer the question the message asks using the recovered text. Never present the raw payload to the user as the response; if the `retrieve_text` tool is unavailable (the MCP server is not running, or the chat is not in Agent mode), say so plainly and ask the user to switch to Agent mode or run `token-goat install --vscode`.',
     '',
@@ -241,13 +265,18 @@ function installVscodeScoped(opts: VscodeScopeOptions): VscodeInstallResult {
   }
   if (scope === 'project') syncVisualStudioProjectGuidance(instructionsPath)
   const hooks = installCopilotHooksFile(vscodeHooksDir(opts), 'vscode')
+  let disabledClaudeHooks = false
+  if (vscodeUsesClaudeHooks()) {
+    disabledClaudeHooks = disableVscodeClaudeHooks()
+  }
   return {
     mcpPath,
     instructionsPath,
     hooksConfigPath: hooks.configPath,
-    alreadyInstalled: config.text === next && !guidanceChanged && !hooks.changed && !migratedFromUserScope,
+    alreadyInstalled: config.text === next && !guidanceChanged && !hooks.changed && !migratedFromUserScope && !disabledClaudeHooks,
     scope,
     migratedFromUserScope,
+    disabledClaudeHooks,
   }
 }
 

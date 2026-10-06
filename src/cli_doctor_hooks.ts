@@ -53,6 +53,7 @@ import { installOpencode, isOpencodeInstalled } from './bridges/opencode_install
 import { installOpenclaw, isOpenclawInstalled } from './bridges/openclaw_install.js'
 import { installPi, isPiInstalled } from './bridges/pi_install.js'
 import { installAntigravity, isAntigravityInstalled } from './bridges/antigravity_install.js'
+import { disableVscodeClaudeHooks, vscodeHooksInstalled, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
 
 export function shimIsCurrent(scriptPath: string, expected: string): boolean {
   try {
@@ -260,6 +261,17 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
     }
   } catch (e) {
     errors.push(`Failed to repair Antigravity CLI integration: ${extractErrorMessage(e)}`)
+  }
+
+  // 14. VS Code chat.useClaudeHooks duplicate conflict
+  try {
+    if (vscodeUsesClaudeHooks() && (vscodeHooksInstalled() || vscodeHooksInstalled({ project: true, projectRoot }))) {
+      if (disableVscodeClaudeHooks()) {
+        repairs.push('Disabled VS Code chat.useClaudeHooks in VS Code settings to prevent duplicate hook execution')
+      }
+    }
+  } catch (e) {
+    errors.push(`Failed to repair VS Code chat.useClaudeHooks: ${extractErrorMessage(e)}`)
   }
 
   return { repairs, errors }
