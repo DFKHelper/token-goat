@@ -1,4 +1,4 @@
-// `pdf-extract --pages 2-5` on a two-page PDF printed page 2 and said nothing about pages 3-5, while `--pages 9` on the same file failed naming the page count, so a range that ran off the end read as a complete answer for every page it asked for. pdf-locate shares the same page parser and stopped silently too. Both now say on stderr how far the range was cut, and stdout keeps only the extracted text or the --json body.
+// `pdf-extract --pages 2-5` on a two-page PDF printed page 2 and said nothing about pages 3-5, while `--pages 9` on the same file failed naming the page count, so a range that ran off the end read as a complete answer for every page it asked for. pdf-locate shares the same page parser and stopped silently too. Both now say on stderr how far the range was cut, and stdout keeps only the extracted text or the --json body. A pdf-locate scan that --max-matches ended early still said "showing pages 1-3" for pages it never searched; it now names the pages it did search.
 //
 // Provenance: the PDF below is FORMAT-DERIVED from ISO 32000-1 (7.7.3.2 page tree with /Kids and /Count, 9.4.3 BT/Tf/Td/Tj text showing), the same object layout tests/cli_doc_extract_fencing.test.ts builds, here with one page per entry. The expected notes are HAND-DERIVED from the page count the fixture declares. The cases run the built dist/token-goat.mjs.
 import * as fs from 'node:fs'
@@ -66,5 +66,33 @@ describe('a --pages range past the last page says where it stopped', () => {
     const json = tg(['pdf-locate', pdf, 'sheet', '--pages', '1-4', '--json'])
     expect(JSON.parse(json.stdout).pages).toEqual([1, 2])
     expect(json.stderr.trim()).toBe("--pages 1-4 runs past the document's 2 pages; showing pages 1-2.")
+  })
+})
+
+describe('pdf-locate stopped by --max-matches names the pages it searched, not the whole cut range', () => {
+  let three: string
+
+  beforeAll(() => {
+    three = path.join(home, 'three.pdf')
+    fs.writeFileSync(three, buildPdf(['alpha one', 'alpha two', 'alpha three']))
+  })
+
+  it('a stop after the first page says only that page was searched', () => {
+    const r = tg(['pdf-locate', three, 'alpha', '--pages', '1-5', '--max-matches', '1'])
+    expect(r.stdout).toContain('p1:')
+    expect(r.stdout).not.toContain('p2:')
+    expect(r.stderr).toContain("--pages 1-5 runs past the document's 3 pages; searched page 1 before --max-matches stopped the scan.")
+    expect(r.stderr).not.toContain('showing pages 1-3')
+  })
+
+  it('a stop part way names the pages searched, in --json mode too', () => {
+    const r = tg(['pdf-locate', three, 'alpha', '--pages', '1-5', '--max-matches', '2', '--json'])
+    expect(JSON.parse(r.stdout).pages).toEqual([1, 2])
+    expect(r.stderr.trim()).toBe("--pages 1-5 runs past the document's 3 pages; searched pages 1-2 before --max-matches stopped the scan.")
+  })
+
+  it('a scan that reached the last page keeps the plain note', () => {
+    const r = tg(['pdf-locate', three, 'alpha', '--pages', '1-5', '--max-matches', '3'])
+    expect(r.stderr.trim()).toBe("--pages 1-5 runs past the document's 3 pages; showing pages 1-3.")
   })
 })

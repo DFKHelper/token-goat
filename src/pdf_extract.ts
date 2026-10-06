@@ -213,10 +213,13 @@ export function parsePageRange(spec: string | undefined, pageCount: number): Pag
 }
 
 /** The line pdf-extract and pdf-locate print when a --pages range ran past the last page, which is otherwise read as a complete answer for every page it asked for: a start page past the end is refused by parsePageRange, and this is the other half of that. */
-function pagesPastEndNote(range: PageRange | null, pageCount: number): string | undefined {
+function pagesPastEndNote(range: PageRange | null, pageCount: number, stoppedAfter?: number): string | undefined {
   if (range?.requestedEnd === undefined) return undefined
-  const shown = range.start === range.end ? `page ${range.start}` : `pages ${range.start}-${range.end}`
-  return `--pages ${range.start}-${range.requestedEnd} runs past the document's ${countNoun(pageCount, 'page')}; showing ${shown}.`
+  const pages = (last: number): string => (range.start === last ? `page ${range.start}` : `pages ${range.start}-${last}`)
+  const cut = `--pages ${range.start}-${range.requestedEnd} runs past the document's ${countNoun(pageCount, 'page')}`
+  // pdf-locate passes the last page it read when --max-matches ended the scan early: "showing" the whole cut range would claim pages it never searched.
+  if (stoppedAfter !== undefined) return `${cut}; searched ${pages(stoppedAfter)} before --max-matches stopped the scan.`
+  return `${cut}; showing ${pages(range.end)}.`
 }
 
 /** Reconstructs rough reading order from pdfjs's per-item x/y coordinates instead of pdfjs's raw content-stream order (which interleaves columns/sidebars/footnotes on multi-column pages). Groups items into rows by y-proximity, sorts each row left-to-right, and widens the gap between items with a large x-jump (a likely column boundary). This is a heuristic, not a real layout engine -- it will misjudge rotated text, overlapping text boxes, and tables with irregular column widths. */
@@ -450,7 +453,7 @@ export async function locatePdfPages(
     }
     // The loop above exits either by scanning through `end` (i > end, a complete answer) or by hitting maxMatches with pages still left to scan (i <= end). Only the latter is truncation: a scan that covered every page and happened to land exactly on maxMatches results is not missing anything and must not be reported as a floor.
     const truncated = matches.length >= maxMatches && i <= end
-    const pagesNote = pagesPastEndNote(range, doc.numPages)
+    const pagesNote = pagesPastEndNote(range, doc.numPages, truncated ? i - 1 : undefined)
     return { matches, truncated, ...(pagesNote !== undefined ? { pagesNote } : {}) }
   })
 }
