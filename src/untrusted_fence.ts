@@ -1,7 +1,9 @@
 /** The single decision point for "should this text be fenced, and under what notice". Every surface that emits third-party text routes through here so the rule lives in one place. It previously lived, restated, in eight separate call sites -- and all eight got it wrong the same way: each gated the fence on `scanForInjectionPatterns` returning a hit, so any payload the eight deliberately-narrow patterns miss was emitted bare. That is the shape CLAUDE.arch.md's Security Boundaries prohibits: a fence gated on a detector re-prices the payload, because a miss then costs the whole protection rather than just the label. The rule, stated once: - `injection.enabled === false` is the documented one-line opt-out for the whole subsystem, so it returns the text untouched. That is a user's explicit configuration, not a heuristic -- the invariant is "not gated on a detector", not "not gated on anything". It also stays the escape hatch for a downstream consumer that cannot handle fence tags. - Otherwise the text is fenced, always. The scan runs only to decide whether the notice names matched pattern(s) and whether an `injection_detected` stat is recorded. - An unreadable config must not cost the fence: it falls back to enabled, with no scan. Failing open on the security action is the wrong direction, and this mirrors `fenceOcrText`, the one site in the codebase that already had this shape before the rest were brought into line. */
 import { loadConfig } from './config.js'
-import { fenceUntrustedContent, scanForInjectionPatterns } from './injection_scan.js'
+import { fenceUntrustedContent, scanForInjectionPatterns, UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import type { FenceSpan } from './injection_scan.js'
+import { displaySafeText } from './paths.js'
+import { redactSecrets } from './secret_redact.js'
 import { recordStat } from './stats.js'
 
 /** Whether the injection subsystem is on. False only when the user set `injection.enabled=false`. */
@@ -46,4 +48,26 @@ export function scanAndRecord(text: string): string[] {
   }
   if (matches.length > 0) recordStat('injection_detected', 0, 0, undefined, matches.join(','))
   return matches
+}
+
+/** Text from a file the user named rather than wrote (a document, a spreadsheet, an archive member, a database row), redacted and then fenced under the file tag. A path given on the command line says where the bytes are, not who wrote them. */
+export function fenceFileText(text: string): string {
+  return fenceUntrusted(redactSecrets(text).text, UNTRUSTED_FILE_TAG)
+}
+
+export function fenceFileFieldIfMatched(text: string): string {
+  const redacted = redactSecrets(text).text
+  const matches = scanAndRecord(redacted)
+  if (matches.length === 0) return displaySafeText(redacted)
+  return fenceUntrustedContent(redacted, matches, UNTRUSTED_FILE_TAG)
+}
+
+/** `value` with every string in it, keys included, passed through `field`: the per-field form of a fence for a `--json` envelope, which a fence around the whole would stop being JSON. A fence cannot wrap a key in place, so a flagged key's fenced form is the key, its notice escaped by `displaySafeJson` as token-goat's markers are in every key. */
+export function fenceJsonStrings(value: unknown, field: (text: string) => string): unknown {
+  if (typeof value === 'string') return field(value)
+  if (Array.isArray(value)) return value.map((v) => fenceJsonStrings(v, field))
+  if (value === null || typeof value !== 'object') return value
+  // A value that serializes itself (a Date) is left to do so, as displaySafeJson leaves it.
+  if (typeof (value as { toJSON?: unknown }).toJSON === 'function') return value
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [field(k), fenceJsonStrings(v, field)]))
 }

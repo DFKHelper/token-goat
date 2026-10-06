@@ -408,7 +408,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/cli_install.ts`](src/cli_install.ts) | The `install`, `uninstall` and `mcp-status` commands and the helpers only they use: the Claude Code base gate, post-install notes, the leftover-integration report and the purge. |
 | [`src/cli_mcp_audit.ts`](src/cli_mcp_audit.ts) | CLI handler for `token-goat mcp-audit`. |
 | [`src/cli_memory.ts`](src/cli_memory.ts) | CLI handler for `token-goat memory --analyze` / `--fix`. |
-| [`src/cli_office.ts`](src/cli_office.ts) | Exports: `fenceFileText`, `fenceFileFieldIfMatched`, `fileSizeOrZero`, `recordDocStat` |
+| [`src/cli_office.ts`](src/cli_office.ts) | The PDF, Office (xlsx/docx/pptx), video-chapter and transcript reader commands; their output is fenced by `fenceFileText` and `fenceFileFieldIfMatched` in `untrusted_fence.ts`. |
 | [`src/cli_payloads.ts`](src/cli_payloads.ts) | `token-goat stats --payloads`: what token-goat itself adds to every session's context, measured rather than estimated from source. |
 | [`src/cli_recall.ts`](src/cli_recall.ts) | CLI handler for `token-goat recall`. |
 | [`src/cli_session.ts`](src/cli_session.ts) | Session, corpus audit, memory, and output recall command handlers. |

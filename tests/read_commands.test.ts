@@ -112,6 +112,8 @@ import { UNBOUNDED_QUERY_LIMIT } from '../src/query_limits.js'
 import { resolveIndexPath, toDisplayPath } from '../src/paths.js'
 import { readSection, listSections, findContainingSection } from '../src/section_reader.js'
 import { loadConfig } from '../src/config.js'
+import { defaultConfig } from '../src/config_defaults.js'
+import { unfence } from './helpers/unfence.js'
 import { indexFileSync, setTreeSitterCoreForTesting } from '../src/parser.js'
 import { ISSUES_URL, SUPPORT_EMAIL } from '../src/version.js'
 import { resolveCallers } from '../src/graph_commands.js'
@@ -141,6 +143,8 @@ const mockListSections = vi.mocked(listSections)
 const mockIndexFileSync = vi.mocked(indexFileSync)
 const mockLoadConfig = vi.mocked(loadConfig)
 const mockTakeScreenshot = vi.mocked(takeScreenshot)
+// The file-content readers (csv, zip, sqlite) redact before they print, and redactSecrets reads its patterns from the config this file stubs.
+const DEFAULT_REDACTION = defaultConfig().redaction
 
 /** Capture stdout/stderr for a function call. */
 function capture(fn: () => void): { stdout: string; stderr: string } {
@@ -228,6 +232,7 @@ describe('read_commands', () => {
     mockLoadConfig.mockReturnValue({
       indexing: { cross_project_symbols: true },
       overflow_guard: { enabled: true, max_tokens: 25000 },
+      redaction: DEFAULT_REDACTION,
     } as unknown as ReturnType<typeof loadConfig>)
     // resolveProjectRoot (project.ts, not mocked here) calls runGit internally to find the repo top-level; default to "not a git repo" so it falls through to its findProject/cwd fallback instead of exploding on the bare vi.fn() this file's util.js mock otherwise leaves runGit as. Individual tests below (e.g. runChanged) override this per-test as needed.
     vi.mocked(runGit).mockReturnValue({ exitCode: 1, stdout: '', stderr: 'not a git repo' })
@@ -4214,7 +4219,7 @@ describe('read_commands', () => {
       const f = path.join(tempDir, 'cols.csv')
       fs.writeFileSync(f, CSV)
       const { stdout } = capture(() => { runCsvQuery({ file: f, columns: 'name,status' }) })
-      expect(stdout.split('\n')[0]).toBe('name,status')
+      expect(unfence(stdout).split('\n')[0]).toBe('name,status')
       expect(stdout).not.toContain('id,name')
     })
 
@@ -4242,7 +4247,7 @@ describe('read_commands', () => {
       const f = path.join(tempDir, 'wherenone.csv')
       fs.writeFileSync(f, CSV)
       const { stdout } = capture(() => { runCsvQuery({ file: f, where: ['status=zzznone'] }) })
-      expect(stdout.trim().split('\n')).toEqual([
+      expect(unfence(stdout).trim().split('\n')).toEqual([
         'id,name,status',
         '  (all 2 data rows were filtered out by --where status=zzznone -- widen or drop the filter to see them)',
       ])
@@ -4916,7 +4921,7 @@ describe('read_commands', () => {
       it('runs a SELECT and prints a CSV-style table', () => {
         const f = makeFixtureDb()
         const { stdout } = capture(() => { runSqliteQuery({ file: f, sql: 'SELECT id, name FROM users ORDER BY id' }) })
-        expect(stdout.split('\n')[0]).toBe('id,name')
+        expect(unfence(stdout).split('\n')[0]).toBe('id,name')
         expect(stdout).toContain('1,Alice')
       })
 
@@ -4969,6 +4974,7 @@ describe('read_commands', () => {
         mockLoadConfig.mockReturnValue({
       indexing: { cross_project_symbols: true },
           overflow_guard: { enabled: true, max_tokens: 20 },
+          redaction: DEFAULT_REDACTION,
         } as unknown as ReturnType<typeof loadConfig>)
         const f = path.join(tempDir, 'big.db')
         const db = new Database(f)
@@ -8116,6 +8122,7 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
     mockLoadConfig.mockReturnValue({
       indexing: { cross_project_symbols: true },
       overflow_guard: { enabled: true, max_tokens: 25000 },
+      redaction: DEFAULT_REDACTION,
     } as unknown as ReturnType<typeof loadConfig>)
   })
 
@@ -8156,7 +8163,7 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
         const code = await runZipRead({ file: zipPath, entry: 'sub/file.txt' })
         expect(code).toBe(0)
       })
-      expect(stdout.trim()).toBe('hello')
+      expect(unfence(stdout).trim()).toBe('hello')
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
@@ -8218,6 +8225,7 @@ describe('zip-list / zip-read reject an over-large compressed archive before rea
     mockLoadConfig.mockReturnValue({
       indexing: { cross_project_symbols: true },
       overflow_guard: { enabled: true, max_tokens: 25000 },
+      redaction: DEFAULT_REDACTION,
     } as unknown as ReturnType<typeof loadConfig>)
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-zip-input-cap-'))
   })

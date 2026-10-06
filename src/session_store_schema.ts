@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 import type { HookEvent } from './hook_registry.js'
 import { getToolName } from './hooks_common.js'
 import { displaySafeJson } from './paths.js'
+import { fenceFileFieldIfMatched, fenceFileText, fenceJsonStrings } from './untrusted_fence.js'
 import { CliError, formatCommandError, formatFailedResultText } from './command_error.js'
 
 export interface SessionStoreColumn {
@@ -409,7 +410,7 @@ export async function describeTarget(
             return { exitCode: 1, text: `Table '${table}' not found in SQLite database ${target}. Available tables: ${avail}` }
           }
           if (opts?.json === true) {
-            return { exitCode: 0, text: displaySafeJson(found) }
+            return { exitCode: 0, text: displaySafeJson(fenceJsonStrings(found, fenceFileFieldIfMatched)) }
           }
           const lines = [
             `# SQLite Table: ${found.name} (${found.kind}) in ${target}`,
@@ -423,12 +424,12 @@ export async function describeTarget(
           }
           // A virtual table whose module is not loaded has no columns to list: the CREATE statement is its schema.
           if (found.createSql !== undefined) lines.push('', `Module ${found.module ?? '?'} is not loaded here, so columns are not available. Declared as:`, found.createSql)
-          return { exitCode: 0, text: lines.join('\n') }
+          return { exitCode: 0, text: fenceFileText(lines.join('\n')) }
         }
         if (opts?.json === true) {
-          return { exitCode: 0, text: displaySafeJson(schema) }
+          return { exitCode: 0, text: displaySafeJson(fenceJsonStrings(schema, fenceFileFieldIfMatched)) }
         }
-        return { exitCode: 0, text: formatSqliteSchema(schema) }
+        return { exitCode: 0, text: fenceFileText(formatSqliteSchema(schema)) }
       }
     } catch (err: unknown) {
       return { exitCode: 1, text: `Error reading SQLite database ${target}: ${err instanceof Error ? err.message : String(err)}` }

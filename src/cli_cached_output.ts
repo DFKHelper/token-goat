@@ -18,7 +18,7 @@ import { redactSecrets } from './secret_redact.js'
 import { AMBIGUOUS_HEADING_LIMIT } from './read_section.js'
 import { extractSection } from './section_reader.js'
 import { clipLongMatchLine } from './tool_filters/helpers.js'
-import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
+import { fenceJsonStrings, fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
 import { countNoun, decodeSource, isWindows } from './util.js'
 import { getWebOutput, getWebOutputRaw } from './web_cache.js'
 
@@ -316,20 +316,12 @@ function extractJsonFromMcpOutput(text: string): unknown {
   }
 }
 
-/** Per-field variant for the `mcp-output --json-query --json` output, still gated on a scan hit. The printed form of the same query is fenced whole, by provenance; a fence wrapped around JSON is no longer JSON, and `--json` output is parsed by callers. Same deliberate exception as `fenceFileFieldIfMatched` in cli_office.ts and `fenceGithubFieldIfMatched` in read_commands.ts. */
+/** Per-field variant for the `mcp-output --json-query --json` output, still gated on a scan hit. The printed form of the same query is fenced whole, by provenance; a fence wrapped around JSON is no longer JSON, and `--json` output is parsed by callers. Same deliberate exception as `fenceFileFieldIfMatched` in untrusted_fence.ts and `fenceGithubFieldIfMatched` in read_commands.ts. */
 function fenceToolFieldIfMatched(text: string): string {
   const redacted = redactSecrets(text).text
   const matches = scanAndRecord(redacted)
   if (matches.length === 0) return redacted
   return fenceUntrustedContent(redacted, matches, UNTRUSTED_TOOL_TAG)
-}
-
-/** A queried MCP value with every string in it, keys included, through {@link fenceToolFieldIfMatched}: each is redacted, which is what the whole-envelope fence this replaced did to both, and fenced on a scan hit. A fence cannot wrap a key in place, so a flagged key's fenced form is the key, its notice escaped by `displaySafeJson` as token-goat's markers are in every key. */
-function fenceJsonStrings(value: unknown): unknown {
-  if (typeof value === 'string') return fenceToolFieldIfMatched(value)
-  if (Array.isArray(value)) return value.map(fenceJsonStrings)
-  if (value === null || typeof value !== 'object') return value
-  return Object.fromEntries(Object.entries(value).map(([k, v]) => [fenceToolFieldIfMatched(k), fenceJsonStrings(v)]))
 }
 
 // MCP results are stored in the same bash-output blob store as `mcp_<hash>`-prefixed ids (see mcp_cache.ts's storeMcpOutput), so `token-goat bash-output <id>` already resolves one — this command exists for discoverability (the id printed in a `[token-goat: compressed, full via mcp-output <id>]` label points here) and to fail clearly on a non-MCP id rather than silently serving whatever bash-output happens to be stored under it.
@@ -371,7 +363,7 @@ export function cmdMcpOutput(
     if (!queryResult.fanned) {
       const val = queryResult.items[0]
       if (opts.json === true) {
-        out(displaySafeJson(fenceJsonStrings(val), 0))
+        out(displaySafeJson(fenceJsonStrings(val, fenceToolFieldIfMatched), 0))
         return
       }
       _applyFiltersAndPrint(displaySafeJson(val), printOpts, true, UNTRUSTED_TOOL_TAG)
@@ -391,7 +383,7 @@ export function cmdMcpOutput(
     const headTruncated = limited.length < totalCount
 
     if (opts.json === true) {
-      const capped = guardJsonRows(limited.map(fenceJsonStrings))
+      const capped = guardJsonRows(limited.map((v) => fenceJsonStrings(v, fenceToolFieldIfMatched)))
       out(displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated || queryResult.truncated, totalCount }, 0))
     } else {
       const lines = limited.map((item) => displaySafeJson(item, 0))

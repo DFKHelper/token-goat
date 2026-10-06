@@ -27,7 +27,7 @@ import { didYouMean, rankSimilarNames } from './read_suggest.js'
 import { CliError, formatCommandError } from './command_error.js'
 import { emit, emitErr } from './emit.js'
 import { headElidedNotice, traversalLimitNotice } from './query_notices.js'
-import { fenceUntrusted } from './untrusted_fence.js'
+import { fenceFileFieldIfMatched, fenceFileText, fenceUntrusted } from './untrusted_fence.js'
 import { extractErrorMessage, requireNonNegativeStrictInt } from './util.js'
 import {
   formatXmlOutline,
@@ -91,14 +91,15 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
     }
     const fullSourceBytes = sumFileSizes([opts.file])
     if (opts.json === true) {
-      const rowsJson = result.rows.map((r) => Object.fromEntries(result.header.map((h, i) => [h, r[i]])))
+      const keys = result.header.map((h) => fenceFileFieldIfMatched(h))
+      const rowsJson = result.rows.map((r) => Object.fromEntries(keys.map((k, i) => [k, fenceFileFieldIfMatched(r[i] ?? '')])))
       const headTruncated = result.rows.length < result.totalRows
       const capped = guardJsonRows(rowsJson)
       const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount: result.totalRows, ...(result.totalRows === 0 && result.preFilterRows > 0 ? { filteredFromRows: result.preFilterRows } : {}) }, 0)
       emit(jsonText)
       recordReadStat('csv_query', fullSourceBytes, jsonText, opts.file)
     } else {
-      const tableText = formatCsvTable(result, (opts.where ?? []).map((w) => `--where ${w}`))
+      const tableText = fenceFileText(formatCsvTable(result, (opts.where ?? []).map((w) => `--where ${w}`)))
       emit(tableText)
       recordReadStat('csv_query', fullSourceBytes, tableText, opts.file)
     }
@@ -131,7 +132,7 @@ export function runCsvProfile(opts: CsvProfileCliOptions): number {
       return 0
     }
     const fullSourceBytes = sumFileSizes([opts.file])
-    const profileText = formatCsvProfile(profiles)
+    const profileText = fenceFileText(formatCsvProfile(profiles))
     emit(profileText)
     recordReadStat('csv_profile', fullSourceBytes, profileText, opts.file)
     return 0

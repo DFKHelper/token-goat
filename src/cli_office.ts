@@ -4,7 +4,7 @@ import { CliError, out, requireNonNegativeInt, requirePositiveInt } from './cli.
 import { _applyFiltersAndPrint } from './cli_cached_output.js'
 import { formatCsvTable, parseWhereSpecs } from './csv_query.js'
 import { docxOutline, docxTables, docxText, formatDocxTables } from './docx_extract.js'
-import { fenceUntrustedContent, UNTRUSTED_FILE_TAG } from './injection_scan.js'
+import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { displaySafeJson, displaySafePath, displaySafeText } from './paths.js'
 import { pptxNotesText, pptxOutline, pptxSlideText, pptxTextGrep } from './pptx_extract.js'
 import {
@@ -25,7 +25,7 @@ import {
   readTranscript,
   sliceTranscript,
 } from './transcript_extract.js'
-import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
+import { fenceFileFieldIfMatched, fenceFileText } from './untrusted_fence.js'
 import { cappedSourceBytesSaved, countNoun, redactUrlQuery } from './util.js'
 import { extractVideoChapters } from './video_chapters.js'
 import {
@@ -37,17 +37,6 @@ import {
   rangeSheet as xlsxRangeSheet,
   xlsxColumns,
 } from './xlsx_extract.js'
-
-export function fenceFileText(text: string): string {
-  return fenceUntrusted(redactSecrets(text).text, UNTRUSTED_FILE_TAG)
-}
-
-export function fenceFileFieldIfMatched(text: string): string {
-  const redacted = redactSecrets(text).text
-  const matches = scanAndRecord(redacted)
-  if (matches.length === 0) return displaySafeText(redacted)
-  return fenceUntrustedContent(redacted, matches, UNTRUSTED_FILE_TAG)
-}
 
 export function fileSizeOrZero(filePath: string): number {
   try {

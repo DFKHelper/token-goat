@@ -33,7 +33,7 @@ function fenceRecallListing(text: string, hits: readonly RecallHit[]): string {
   return fenceUntrusted(text, tag)
 }
 
-/** Scan one hit's snippet and, on a match, return it fenced under its cache type's provenance tag. Per-field and still match-gated, for the `--json` envelope only: see the note at its call site in {@link runRecallCommand}, and `fenceFileFieldIfMatched` in cli_office.ts for the same tradeoff. */
+/** Scan one hit's snippet and, on a match, return it fenced under its cache type's provenance tag. Per-field and still match-gated, for the `--json` envelope only: see the note at its call site in {@link runRecallCommand}, and `fenceFileFieldIfMatched` in untrusted_fence.ts for the same tradeoff. */
 function fenceSnippetIfMatched(hit: RecallHit): string {
   const matches = scanAndRecord(hit.snippet)
   if (matches.length === 0) return hit.snippet

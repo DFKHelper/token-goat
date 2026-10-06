@@ -40,7 +40,17 @@ export const THIRD_PARTY_SOURCE_CALLS: readonly string[] = [
   'xlsxHeadSheet',
   'xlsxRangeSheet',
   'xlsxQuerySheet',
+  // csv_query.ts, archive_query.ts, sqlite_query.ts -- a CSV export, a zip archive's members and names, a SQLite database's rows and schema: data files that arrive from somewhere else for the same reason a spreadsheet does. csv-query, csv-profile, zip-read and sqlite-query printed them bare until these entries were added.
+  'queryCsv',
+  'profileCsv',
+  'listZipEntries',
+  'extractZipEntry',
+  'runReadOnlySqliteQuery',
+  'getSqliteSchema',
+  'getSqliteTables',
 ]
+
+// Deliberately not sources: json-query, yaml-query, xml-query and config-get. They read the structured text files a project is made of (package.json, CI workflows, a pom.xml, .token-goat.toml) the way `read` reads its source, and the guard does not count the user's own project as third party. A fence on every manifest lookup would tax the commonest structured read for text the user's repository already holds. html-query is the exception and is fenced, under its own tag, because HTML usually arrives fetched.
 // `getBashOutput`/`getWebOutput`/`getWebOutputRaw` (the existing, already-fenced bash/web/mcp recall paths) are deliberately NOT in the population above: those functions are also called internally for dedup/hashing/existence-checking, not only to emit third-party text to the model, so anchoring the population on them produces call sites this guard cannot tell apart from a real violation. Their fencing is proven instead by the dedicated behavioral regression tests for `bash-output`/`web-output`/`mcp-output` in tests/cli.test.ts and its neighbors (verification requirement #4), which assert the actual fenced output, not just that some function reaches the call.
 
 /** The bug shape this file previously could not see, expressed directly: a body that runs the scan and then returns the content unfenced when the scan found nothing. The reachability check below asks whether a fence call is *present* somewhere downstream. It cannot ask whether that call is on a branch an early return skips -- and every conditional site contained the call, on the branch that runs only when the scan hits, so the guard was green on all of them and could not have failed. That is not a missing test run; it is an oracle that measures the wrong thing. Worse, `callsFence` accepts `_applyFiltersAndPrint(..., true, ...)` as proof of fencing, and that helper's own emit closure was itself one of the conditional sites. So this predicate matches the shape rather than the reachability: a zero-length test on the scan result guarding a `return`. `scanForInjectionPatterns` is the only way to produce that result, so a body that never calls it is not in scope here. */
@@ -81,6 +91,10 @@ const FENCE_TERMINALS: readonly string[] = [
   'fenceUntrustedOcrText(',
   // Same module as fenceUntrusted, same reason it has to be named: it is the span-taking form, for a body whose third-party bytes and token-goat's own notices alternate.
   'fenceUntrustedSpans(',
+  // The file-tag forms in untrusted_fence.ts, and read_commands.ts's capped form, which ends at fenceFileText.
+  'fenceFileText(',
+  'fenceFileFieldIfMatched(',
+  'guardAndFenceFileText(',
 ]
 
 /** True when `body` reaches the fence boundary itself. */
@@ -119,6 +133,10 @@ export const SOURCE_MODULE_FILES: ReadonlySet<string> = new Set([
   'ooxml_extract.ts',
   // Extracts document text for the embedding index (parser.ts::indexFileEmbeddings) and returns it to that indexer; it never prints. Residual, named rather than left implicit: text indexed this way can later reach the model through `semantic`, whose output is not fenced today. That is a separate surface with a separate cost question -- `semantic` returns mostly the user's own source -- and fencing it is not in scope for this guard, which follows what a command PRINTS. Tracked so the next reader does not have to re-derive it from a green test.
   'doc_embed_extract.ts',
+  // They parse and return rows, entries and schema to the command that prints them.
+  'csv_query.ts',
+  'archive_query.ts',
+  'sqlite_query.ts',
 ])
 
 interface Violation {

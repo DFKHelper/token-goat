@@ -23,7 +23,7 @@ import { resolveSpecPath } from './spec_path.js'
 import { parseJsonOrJsonc } from './jsonc_text.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { parseYamlDocument, parseYamlDocumentAsWritten } from './read_structured_data.js'
-import { DELETED_TAG, emitGuarded, fileExists, fileIsGone, guardJsonRows, healStaleIndex, isValidUtf8, readFileBytes, readFileText, recordReadStat, resolveAgainstProjectRoot, sinkGoneRows, sumFileSizes, healStaleResultFiles, warnIfFilesStale } from './read_commands.js'
+import { DELETED_TAG, emitGuarded, fileExists, fileIsGone, guardAndFenceFileText, guardJsonRows, healStaleIndex, isValidUtf8, readFileBytes, readFileText, recordReadStat, resolveAgainstProjectRoot, sinkGoneRows, sumFileSizes, healStaleResultFiles, warnIfFilesStale } from './read_commands.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
 import { emit, emitErr } from './emit.js'
 import { fileConfinementRefusal } from './read_spec.js'
@@ -45,6 +45,7 @@ import {
   grepFilteredToEmptyNotice,
   requireNonNegativeStrictInt,
 } from './util.js'
+import { fenceFileFieldIfMatched, fenceFileText, fenceJsonStrings } from './untrusted_fence.js'
 import { ZipInputTooLargeError, ZipOutputTooLargeError } from './zip_bounds.js'
 import { CliError, formatCommandError } from './command_error.js'
 import { quotedArg } from './hint_suggestion_guard.js'
@@ -53,6 +54,8 @@ export interface ZipListCliOptions {
   file: string
   json?: boolean
 }
+
+const BINARY_ENTRY_ELIDED = '[binary content elided by token-goat]'
 
 function archiveReadFailure(err: unknown, file: string): string {
   if (err instanceof ArchiveDependencyMissingError || err instanceof ZipOutputTooLargeError) return err.message
@@ -85,12 +88,12 @@ export async function runZipList(opts: ZipListCliOptions): Promise<number> {
 
   const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    const jsonText = displaySafeJson(entries, 0)
+    const jsonText = displaySafeJson(entries.map((e) => ({ ...e, path: fenceFileFieldIfMatched(e.path) })), 0)
     emit(jsonText)
     recordReadStat('zip_list', fullSourceBytes, jsonText, opts.file)
   } else {
-    const text = formatZipList(entries)
-    emitGuarded(text, 'zip-list')
+    const text = guardAndFenceFileText(formatZipList(entries), 'zip-list')
+    emit(text)
     recordReadStat('zip_list', fullSourceBytes, text, opts.file)
   }
   return 0
@@ -144,16 +147,18 @@ export async function runZipRead(opts: ZipReadCliOptions): Promise<number> {
   }
 
   const buf = Buffer.from(content)
-  const text = isValidUtf8(buf) ? buf.toString('utf-8') : '[binary content elided by token-goat]'
+  // The binary placeholder is token-goat's own words, so it stays outside the fence: inside, its marker would be escaped as payload.
+  const text = isValidUtf8(buf) ? buf.toString('utf-8') : null
   const fullSourceBytes = sumFileSizes([opts.file])
 
   if (opts.json === true) {
-    const jsonText = displaySafeJson({ path: opts.entry, text }, 0)
+    const jsonText = displaySafeJson({ path: opts.entry, text: text === null ? BINARY_ENTRY_ELIDED : fenceFileFieldIfMatched(text) }, 0)
     emit(jsonText)
     recordReadStat('zip_read', fullSourceBytes, jsonText, opts.entry)
   } else {
-    emitGuarded(text, 'zip-read')
-    recordReadStat('zip_read', fullSourceBytes, text, opts.entry)
+    const printed = text === null ? BINARY_ENTRY_ELIDED : guardAndFenceFileText(text, 'zip-read')
+    emit(printed)
+    recordReadStat('zip_read', fullSourceBytes, printed, opts.entry)
   }
   return 0
 }
@@ -168,11 +173,11 @@ export function runSqliteSchema(opts: SqliteSchemaCliOptions): number {
     const schema = getSqliteSchema(opts.file)
     const fullSourceBytes = sumFileSizes([opts.file])
     if (opts.json === true) {
-      const jsonText = displaySafeJson(schema, 0)
+      const jsonText = displaySafeJson(fenceJsonStrings(schema, fenceFileFieldIfMatched), 0)
       emit(jsonText)
       recordReadStat('sqlite_schema', fullSourceBytes, jsonText, opts.file)
     } else {
-      const text = formatSqliteSchema(schema)
+      const text = fenceFileText(formatSqliteSchema(schema))
       emit(text)
       recordReadStat('sqlite_schema', fullSourceBytes, text, opts.file)
     }
@@ -193,11 +198,11 @@ export function runSqliteTables(opts: SqliteTablesCliOptions): number {
     const tables = getSqliteTables(opts.file)
     const fullSourceBytes = sumFileSizes([opts.file])
     if (opts.json === true) {
-      const jsonText = displaySafeJson(tables, 0)
+      const jsonText = displaySafeJson(fenceJsonStrings(tables, fenceFileFieldIfMatched), 0)
       emit(jsonText)
       recordReadStat('sqlite_tables', fullSourceBytes, jsonText, opts.file)
     } else {
-      const text = formatSqliteTables(tables)
+      const text = fenceFileText(formatSqliteTables(tables))
       emit(text)
       recordReadStat('sqlite_tables', fullSourceBytes, text, opts.file)
     }
@@ -231,9 +236,9 @@ export function runSqliteQuery(opts: SqliteQueryCliOptions): number {
     const rows = head !== undefined ? result.rows.slice(0, head) : result.rows
 
     if (opts.json === true) {
-      const capped = guardJsonRows(rows)
+      const capped = guardJsonRows(rows.map((r) => fenceJsonStrings(r, fenceFileFieldIfMatched)))
       const jsonText = displaySafeJson({
-        columns: result.columns,
+        columns: result.columns.map(fenceFileFieldIfMatched),
         items: capped.items,
         truncated: capped.truncated || headTruncated || result.rowCapped,
         totalCount,
@@ -250,7 +255,7 @@ export function runSqliteQuery(opts: SqliteQueryCliOptions): number {
       }, 0)
       recordReadStat('sqlite_query', Buffer.byteLength(baselineJsonText, 'utf8'), jsonText, opts.file)
     } else {
-      const text = formatSqliteQueryTable({ ...result, rows }, { headTruncated })
+      const text = fenceFileText(formatSqliteQueryTable({ ...result, rows }, { headTruncated }))
       emit(text)
       const baselineText = formatSqliteQueryTable({ ...result, rows: result.rows }, { headTruncated: false })
       recordReadStat('sqlite_query', Buffer.byteLength(baselineText, 'utf8'), text, opts.file)

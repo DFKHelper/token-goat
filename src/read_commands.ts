@@ -25,7 +25,7 @@ import { resolveProjectRoot } from './project.js'
 import { loadConfig } from './config.js'
 import { fenceUntrustedContent, UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
 import { redactSecrets } from './secret_redact.js'
-import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
+import { fenceFileText, fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
 import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
 import { enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT } from './graph_commands.js'
 import { MAX_ZIP_INPUT_BYTES, ZipInputTooLargeError } from './zip_bounds.js'
@@ -443,12 +443,21 @@ export function guardText(text: string, command: string): string {
   return cfg.overflow_guard.enabled ? trimToBudget(text, cfg.overflow_guard.max_tokens, command) : text
 }
 
+/** {@link guardText} for text from a file the user named rather than wrote: redacted before the cap can cut a secret short of its pattern, then fenced with the cap's marker below the closing tag. Fencing first lets the cap cut the closing tag off; capping unredacted text first can leave a fragment the redactor no longer recognises. */
+export function guardAndFenceFileText(text: string, command: string): string {
+  const redacted = redactSecrets(text).text
+  const capped = guardText(redacted, command)
+  if (capped === redacted) return fenceFileText(redacted)
+  const markerAt = capped.lastIndexOf('\n')
+  return `${fenceFileText(capped.slice(0, markerAt))}\n${capped.slice(markerAt + 1)}`
+}
+
 /** Wrap `text` in an untrusted-content fence under {@link UNTRUSTED_GITHUB_TAG}. A PR's title, description, review comments, and diff are all authorable by anyone who opened the PR or left the comment, so the fence follows that provenance and not the scan result. The scan still runs, purely to name matched pattern(s) in the notice and record the stat. Used by every printed `pr-slice` emit site. The `--json` sites use {@link fenceGithubFieldIfMatched} instead -- see the note there. */
 function fenceGithubText(text: string): string {
   return fenceUntrusted(text, UNTRUSTED_GITHUB_TAG)
 }
 
-/** Per-field variant for the `pr-slice --json` envelopes, still gated on a scan hit. Fencing the envelope once would be O(1) and provenance-correct, but a fence wrapped around JSON is no longer JSON, and `--json` output is parsed by callers; fencing each field unconditionally instead pays a fixed ~129-byte wrapper per field, which a short comment body or a PR title does not absorb. Same deliberate exception as `fenceFileFieldIfMatched` in cli_office.ts, and it needs the same wire-format decision to resolve. */
+/** Per-field variant for the `pr-slice --json` envelopes, still gated on a scan hit. Fencing the envelope once would be O(1) and provenance-correct, but a fence wrapped around JSON is no longer JSON, and `--json` output is parsed by callers; fencing each field unconditionally instead pays a fixed ~129-byte wrapper per field, which a short comment body or a PR title does not absorb. Same deliberate exception as `fenceFileFieldIfMatched` in untrusted_fence.ts, and it needs the same wire-format decision to resolve. */
 function fenceGithubFieldIfMatched(text: string): string {
   const matches = scanAndRecord(text)
   if (matches.length === 0) return text

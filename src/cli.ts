@@ -644,7 +644,8 @@ async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boo
   }
 }
 
-export { fenceFileText, fenceFileFieldIfMatched, fileSizeOrZero } from './cli_office.js'
+export { fileSizeOrZero } from './cli_office.js'
+export { fenceFileText, fenceFileFieldIfMatched } from './untrusted_fence.js'
 export { cmdPdfExtract, cmdPdfLocate, cmdPdfOutline, cmdPdfMeta } from './cli_office.js'
 export {
   cmdDocxOutline,
