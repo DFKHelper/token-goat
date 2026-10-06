@@ -245,6 +245,21 @@ export async function allSheetsHeadText(filePath: string, rows: number, deadline
 export interface XlsxRangeResult {
   header: string[]
   rows: string[][]
+  /** Names the part of the requested range past the sheet's used range, which is left out rather than printed as blank cells. */
+  note?: string
+}
+
+function pastUsedRangeNote(range: { s: { r: number; c: number }; e: { r: number; c: number } }, usedRows: number, usedCols: number): string | undefined {
+  if (usedRows === 0 || usedCols === 0) return '(nothing to show: the sheet is empty)'
+  const usedRef = `A1:${encodeCell({ r: usedRows, c: usedCols })}`
+  if (range.s.r > usedRows || range.s.c > usedCols) {
+    return `(nothing to show: ${encodeCell(range.s)}:${encodeCell(range.e)} is past the sheet's used range ${usedRef})`
+  }
+  const span = (noun: string, from: string, to: string): string => (from === to ? `${noun} ${from}` : `${noun}s ${from}-${to}`)
+  const parts: string[] = []
+  if (range.e.r > usedRows) parts.push(span('row', String(usedRows + 1), String(range.e.r)))
+  if (range.e.c > usedCols) parts.push(span('column', indexToColLetters(usedCols + 1), indexToColLetters(range.e.c)))
+  return parts.length > 0 ? `(not shown: ${parts.join(' and ')}, past the sheet's used range ${usedRef})` : undefined
 }
 
 export async function rangeSheet(filePath: string, sheetName: string | undefined, rangeSpec: string, showFormulas: boolean): Promise<XlsxRangeResult> {
@@ -254,10 +269,15 @@ export async function rangeSheet(filePath: string, sheetName: string | undefined
   const rangeRows = range.e.r - range.s.r + 1
   const rangeCols = range.e.c - range.s.c + 1
   assertCellCount(rangeRows * rangeCols, `range ${rangeSpec} covers ${rangeRows} rows x ${rangeCols} cols`, 'ask for a smaller --range')
+  // Stop at the sheet's used range: past it every cell is blank, and printing those cells reads as empty records rather than as the end of the data, so the note below names them instead.
+  const usedRows = ws.rowCount || 0
+  const usedCols = ws.columnCount || 0
+  const lastRow = range.s.c > usedCols ? 0 : Math.min(range.e.r, usedRows)
+  const lastCol = Math.min(range.e.c, usedCols)
   const rowsOut: string[][] = []
-  for (let r = range.s.r; r <= range.e.r; r++) {
+  for (let r = range.s.r; r <= lastRow; r++) {
     const rowOut: string[] = []
-    for (let c = range.s.c; c <= range.e.c; c++) {
+    for (let c = range.s.c; c <= lastCol; c++) {
       const addr = encodeCell({ r, c })
       const cell = ws.getCell(addr)
       if (showFormulas && cellFormula(cell) !== undefined) {
@@ -269,12 +289,14 @@ export async function rangeSheet(filePath: string, sheetName: string | undefined
     rowsOut.push(rowOut)
   }
   const colLabels = rowsOut[0]?.map((_, i) => indexToColLetters(range.s.c + i)) ?? []
-  return { header: colLabels, rows: rowsOut }
+  const note = pastUsedRangeNote(range, usedRows, usedCols)
+  return { header: colLabels, rows: rowsOut, ...(note !== undefined ? { note } : {}) }
 }
 
 export function formatXlsxRange(result: XlsxRangeResult): string {
-  const lines = [result.header.map(quoteCsvCell).join(',')]
+  const lines = result.rows.length > 0 ? [result.header.map(quoteCsvCell).join(',')] : []
   for (const r of result.rows) lines.push(r.map(quoteCsvCell).join(','))
+  if (result.note !== undefined) lines.push(result.note)
   return lines.join('\n')
 }
 

@@ -221,6 +221,24 @@ describe('rangeSheet', () => {
   it('still returns an ordinary bounded range once the limit exists', async () => {
     expect(formatXlsxRange(await rangeSheet(file, 'Employees', 'A1:B2', false))).toBe('A,B\nname,age\nAlice,30')
   })
+
+  // HAND-DERIVED: Employees is written above as 4 rows by 3 columns (A1:C4) and Blank as no rows at all, so the rows and columns past the used range follow from the fixture, not from rangeSheet.
+  //
+  // Regression: cells past the used range printed as blank columns and blank rows with nothing saying they were outside the data, so `--range A1:E9` on a 5-row sheet read like a sheet with empty records, and a range wholly below the data printed a column header over empty lines.
+  it('leaves out rows and columns past the used range and names them', async () => {
+    expect(formatXlsxRange(await rangeSheet(file, 'Employees', 'A1:E6', false))).toBe(
+      "A,B,C\nname,age,dept\nAlice,30,Eng\nBob,25,Sales\nCarol,40,Eng\n(not shown: rows 5-6 and columns D-E, past the sheet's used range A1:C4)",
+    )
+    expect(formatXlsxRange(await rangeSheet(file, 'Employees', 'B2:D2', false))).toBe(
+      "B,C\n30,Eng\n(not shown: column D, past the sheet's used range A1:C4)",
+    )
+  })
+
+  it('says a range wholly past the used range has nothing to show', async () => {
+    expect(formatXlsxRange(await rangeSheet(file, 'Employees', 'A9:B9', false))).toBe("(nothing to show: A9:B9 is past the sheet's used range A1:C4)")
+    expect(formatXlsxRange(await rangeSheet(file, 'Employees', 'E1:F2', false))).toBe("(nothing to show: E1:F2 is past the sheet's used range A1:C4)")
+    expect(formatXlsxRange(await rangeSheet(file, 'Blank', 'A1:B2', false))).toBe('(nothing to show: the sheet is empty)')
+  })
 })
 
 describe('querySheet', () => {
