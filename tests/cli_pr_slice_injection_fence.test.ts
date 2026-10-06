@@ -156,4 +156,22 @@ describe('pr-slice injection fencing', () => {
     expect(parsed.body).toContain('<untrusted-github-content>')
     expect(parsed.body).toContain('ignore-previous-instructions')
   })
+
+  // A review comment's diff_hunk is the PR author's diff, quoted by GitHub under the comment: as authorable as the body beside it. PROVENANCE FORMAT-DERIVED: `diff_hunk` is the field name GitHub's REST "List review comments on a pull request" response carries, the name src/pr_slice.ts reads; PAYLOAD above.
+  it('--json fences a review comment whose diff hunk matches, not only its body', async () => {
+    const { runPrSlice } = await loadModule()
+    spawnSyncMock
+      .mockReturnValueOnce(GH_OK)
+      .mockReturnValueOnce(GH_OK)
+      .mockReturnValueOnce({
+        status: 0,
+        stdout: JSON.stringify([{ path: 'src/a.ts', line: 5, body: 'Looks fine.', diff_hunk: `@@ -1,2 +1,2 @@\n-old\n+${PAYLOAD}`, user: { login: 'reviewer1' } }]),
+      })
+
+    const { stdout } = capture(() => runPrSlice({ pr: '42', slice: 'comments', repo: 'acme/widgets', json: true }))
+    const parsed = JSON.parse(stdout) as { items: Array<{ body: string; diffHunk: string }> }
+    expect(parsed.items[0]?.body).toBe('Looks fine.')
+    expect(parsed.items[0]?.diffHunk).toContain('<untrusted-github-content>')
+    expect(parsed.items[0]?.diffHunk).toContain('ignore-previous-instructions')
+  })
 })

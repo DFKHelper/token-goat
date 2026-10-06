@@ -67,24 +67,13 @@ const ZERO_MATCH_BYPASS_RE =/\b\w*[Mm]atches\s*\.\s*length\s*===\s*0\s*\)\s*(?:\
 /** Bodies allowed to keep the conditional shape, each with a stated reason. This is an allowlist of KNOWN EXCEPTIONS, not a list of things to check: an omission here fails the test rather than silently skipping a site, which is the opposite of the hand-maintained-population failure mode the header comment describes. Adding a name here is a deliberate act with a reason attached. */
 const CONDITIONAL_FENCE_EXCEPTIONS: ReadonlyMap<string, string> = new Map([
   [
-    'fenceFieldIfMatched',
-    'per-field fence for the --json envelopes: a fence around JSON is not JSON, and an ' +
-      'unconditional ~125-byte wrapper per sheet name/slide title/heading costs more than the ' +
-      'field. Resolving it needs a wire-format change (one sibling `untrusted` field).',
-  ],
-  [
-    'fenceGithubFieldIfMatched',
-    'same exception as fenceFieldIfMatched, for pr-slice --json.',
-  ],
-  [
-    'fenceSnippetIfMatched',
-    'same exception, for recall --json. The printed recall listing is fenced unconditionally as ' +
-      'one block by fenceRecallListing.',
-  ],
-  [
-    'fenceToolFieldIfMatched',
-    'same exception, for every string in mcp-output --json-query --json. The printed form of the ' +
-      'same query is fenced unconditionally by _applyFiltersAndPrint(..., true, UNTRUSTED_TOOL_TAG).',
+    'fenceIfScanMatched',
+    'per-field fence for the --json envelopes, the one copy behind fenceFieldIfMatched (sheet ' +
+      'names, slide titles, headings), pr-slice --json, recall --json and mcp-output --json-query ' +
+      '--json: a fence around JSON is not JSON, and an unconditional ~125-byte wrapper per field ' +
+      'costs more than the field. Resolving it needs a wire-format change (one sibling `untrusted` ' +
+      'field). The printed forms are fenced unconditionally: fenceRecallListing for recall, ' +
+      '_applyFiltersAndPrint(..., true, UNTRUSTED_TOOL_TAG) for mcp-output, guardThenFence for pr-slice.',
   ],
 ])
 
@@ -100,6 +89,7 @@ const FENCE_TERMINALS: readonly string[] = [
   'fenceFileText(',
   'fenceFieldIfMatched(',
   'fenceFileFieldIfMatched(',
+  'fenceIfScanMatched(',
   'guardThenFence(',
   'guardRedactAndFence(',
   'guardAndFenceFileText(',

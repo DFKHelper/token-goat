@@ -2,8 +2,8 @@
 
 import { listRecentRecall, searchRecall, RECALL_DEFAULT_LIMIT, type RecallCacheType, type RecallHit } from './recall_index.js'
 import { pad } from './util.js'
-import { fenceUntrustedContent, UNTRUSTED_WEB_TAG, UNTRUSTED_TOOL_TAG } from './injection_scan.js'
-import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
+import { UNTRUSTED_WEB_TAG, UNTRUSTED_TOOL_TAG } from './injection_scan.js'
+import { fenceIfScanMatched, fenceUntrusted } from './untrusted_fence.js'
 import { displaySafeJson } from './paths.js'
 
 export interface RecallCommandOptions {
@@ -35,9 +35,7 @@ function fenceRecallListing(text: string, hits: readonly RecallHit[]): string {
 
 /** Scan one hit's snippet and, on a match, return it fenced under its cache type's provenance tag. Per-field and still match-gated, for the `--json` envelope only: see the note at its call site in {@link runRecallCommand}, and `fenceFileFieldIfMatched` in untrusted_fence.ts for the same tradeoff. */
 function fenceSnippetIfMatched(hit: RecallHit): string {
-  const matches = scanAndRecord(hit.snippet)
-  if (matches.length === 0) return hit.snippet
-  return fenceUntrustedContent(hit.snippet, matches, fenceTagForCacheType(hit.cacheType))
+  return fenceIfScanMatched(hit.snippet, fenceTagForCacheType(hit.cacheType))
 }
 
 function printHits(query: string | undefined, hits: readonly RecallHit[]): void {

@@ -23,9 +23,9 @@ import { emit, emitErr } from './emit.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
 import { resolveProjectRoot } from './project.js'
 import { loadConfig } from './config.js'
-import { fenceUntrustedContent, scanForInjectionPatterns, UNTRUSTED_FILE_TAG, UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
+import { scanForInjectionPatterns, UNTRUSTED_FILE_TAG, UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
 import { redactSecrets } from './secret_redact.js'
-import { fenceUntrusted, fenceWithMatches, scanAndRecord } from './untrusted_fence.js'
+import { fenceIfScanMatched, fenceUntrusted, fenceWithMatches } from './untrusted_fence.js'
 import { trimToBudget, capJsonRows, estimateTokens, type JsonRowCapResult } from './overflow_guard.js'
 import { enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT } from './graph_commands.js'
 import { MAX_ZIP_INPUT_BYTES, ZipInputTooLargeError } from './zip_bounds.js'
@@ -527,9 +527,7 @@ function guardAndFenceGithubText(text: string): string {
 
 /** Per-field variant for the `pr-slice --json` envelopes, still gated on a scan hit. Fencing the envelope once would be O(1) and provenance-correct, but a fence wrapped around JSON is no longer JSON, and `--json` output is parsed by callers; fencing each field unconditionally instead pays a fixed ~129-byte wrapper per field, which a short comment body or a PR title does not absorb. Same deliberate exception as `fenceFileFieldIfMatched` in untrusted_fence.ts, and it needs the same wire-format decision to resolve. */
 function fenceGithubFieldIfMatched(text: string): string {
-  const matches = scanAndRecord(text)
-  if (matches.length === 0) return text
-  return fenceUntrustedContent(text, matches, UNTRUSTED_GITHUB_TAG)
+  return fenceIfScanMatched(text, UNTRUSTED_GITHUB_TAG)
 }
 
 /** JSON-mode counterpart to {@link guardText}: caps a JSON-serializable array at `config.overflow_guard.max_tokens` (when enabled) by dropping trailing whole items rather than truncating text mid-payload. `symbol`/`refs`/`skeleton`/`outline`'s `--json` branches were the one output path the overflow guard didn't reach -- their text-mode siblings already route through {@link guardText}/{@link emitGuarded}, but JSON mode returned the raw, unbounded array. Exported so `graph_commands.ts` (`types`/`callers`/`dead`/`test-for`) builds the same `{items, truncated, totalCount}` envelope from the same helper rather than reimplementing the cap, which is how the two halves of the envelope migration stay byte-compatible. */
@@ -907,7 +905,12 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
           ...(c.diffHunk !== undefined ? { diffHunk: redactSecrets(c.diffHunk).text } : {}),
         }))
         if (opts.json === true) {
-          const fencedComments = comments.map((c) => ({ ...c, body: fenceGithubFieldIfMatched(c.body) }))
+          // The diff hunk GitHub quotes under a comment is the PR author's diff, as authorable as the body beside it.
+          const fencedComments = comments.map((c) => ({
+            ...c,
+            body: fenceGithubFieldIfMatched(c.body),
+            ...(c.diffHunk !== undefined ? { diffHunk: fenceGithubFieldIfMatched(c.diffHunk) } : {}),
+          }))
           const capped = guardJsonRows(fencedComments)
           const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, 0)
           emit(jsonText)

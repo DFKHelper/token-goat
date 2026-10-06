@@ -1,4 +1,8 @@
 /** The shared decision point every third-party-content surface routes through. Provenance: HAND-DERIVED. Every input is written here as an attacker or an ordinary document would supply it, and every expectation is computed from the stated invariant -- text is fenced because of where it came from, and the scan only decides what the notice says. Nothing is read off the scanner's own pattern list, which is what would make these tests agree with the blocklist instead of testing the boundary. The one string taken from the implementation is the trigger phrase in `HOSTILE`, which is used only to reach the pattern-naming branch; the benign cases, which are the ones the old scan-gated shape got wrong, depend on no pattern at all. */
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { UNTRUSTED_FILE_TAG, UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
@@ -120,5 +124,47 @@ describe('fenceWithMatches', () => {
     invalidateConfigCache()
 
     expect(fenceWithMatches(HOSTILE, ['ignore-previous-instructions'], UNTRUSTED_TOOL_TAG)).toBe(HOSTILE)
+  })
+})
+
+// Three modules carried their own copy of "scan, and fence only on a hit" (pr-slice --json, recall --json, mcp-output --json), each a near-twin of fenceFieldIfMatched. PROVENANCE HAND-DERIVED: BENIGN/HOSTILE above, a `[tg]` marker line written here, and the src tree read as text.
+describe('fenceIfScanMatched', () => {
+  it('returns text that matches no pattern unchanged, markers included', async () => {
+    const { fenceIfScanMatched } = await import('../src/untrusted_fence.js')
+    const text = `[tg] ${BENIGN}`
+    expect(fenceIfScanMatched(text, UNTRUSTED_TOOL_TAG)).toBe(text)
+    expect(recordStat).not.toHaveBeenCalled()
+  })
+
+  it('fences a match under the tag it is given and books the stat once', async () => {
+    const { fenceIfScanMatched } = await import('../src/untrusted_fence.js')
+    const fenced = fenceIfScanMatched(HOSTILE, UNTRUSTED_TOOL_TAG)
+    expect(fenced).toContain(`<${UNTRUSTED_TOOL_TAG}>`)
+    expect(fenced).toContain(`</${UNTRUSTED_TOOL_TAG}>`)
+    expect(fenced).toContain('ignore-previous-instructions')
+    expect(vi.mocked(recordStat)).toHaveBeenCalledTimes(1)
+  })
+
+  it('is what fenceFieldIfMatched fences with, which still escapes the markers of a miss', async () => {
+    const { fenceFieldIfMatched } = await import('../src/untrusted_fence.js')
+    const miss = fenceFieldIfMatched(`[tg] ${BENIGN}`, UNTRUSTED_FILE_TAG)
+    expect(miss).not.toContain('[tg]')
+    expect(miss).toContain(BENIGN)
+    expect(fenceFieldIfMatched(HOSTILE, UNTRUSTED_FILE_TAG)).toContain(`<${UNTRUSTED_FILE_TAG}>`)
+  })
+
+  it('has no copy left outside untrusted_fence.ts', () => {
+    const srcDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src')
+    const copy = /=\s*scanAndRecord\([^)]*\)\s*\n\s*if \(\w+\.length === 0\) return/
+    const offenders: string[] = []
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) walk(full)
+        else if (entry.name.endsWith('.ts') && entry.name !== 'untrusted_fence.ts' && copy.test(fs.readFileSync(full, 'utf8').replace(/\r\n/g, '\n'))) offenders.push(path.relative(srcDir, full))
+      }
+    }
+    walk(srcDir)
+    expect(offenders).toEqual([])
   })
 })

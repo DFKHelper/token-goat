@@ -6,7 +6,7 @@ import { getBashOutput } from './bash_output_cache.js'
 import { CliError, err, formatCommandError, out } from './cli.js'
 import { requireNonNegativeInt } from './cli_dispatch.js'
 import { redactIfDotenv } from './dotenv_redact.js'
-import { fenceUntrustedContent, UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG } from './injection_scan.js'
+import { UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG } from './injection_scan.js'
 import { noMatchMessage, queryJson } from './json_query.js'
 import { displaySafeJson, displaySafeText } from './paths.js'
 import { guardJsonRows } from './read_commands.js'
@@ -18,7 +18,7 @@ import { redactSecrets } from './secret_redact.js'
 import { AMBIGUOUS_HEADING_LIMIT } from './read_section.js'
 import { extractSection } from './section_reader.js'
 import { clipLongMatchLine } from './tool_filters/helpers.js'
-import { fenceJsonStrings, fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
+import { fenceIfScanMatched, fenceJsonStrings, fenceUntrusted } from './untrusted_fence.js'
 import { countNoun, decodeSource, isWindows } from './util.js'
 import { getWebOutput, getWebOutputRaw } from './web_cache.js'
 
@@ -318,10 +318,7 @@ function extractJsonFromMcpOutput(text: string): unknown {
 
 /** Per-field variant for the `mcp-output --json-query --json` output, still gated on a scan hit. The printed form of the same query is fenced whole, by provenance; a fence wrapped around JSON is no longer JSON, and `--json` output is parsed by callers. Same deliberate exception as `fenceFileFieldIfMatched` in untrusted_fence.ts and `fenceGithubFieldIfMatched` in read_commands.ts. */
 function fenceToolFieldIfMatched(text: string): string {
-  const redacted = redactSecrets(text).text
-  const matches = scanAndRecord(redacted)
-  if (matches.length === 0) return redacted
-  return fenceUntrustedContent(redacted, matches, UNTRUSTED_TOOL_TAG)
+  return fenceIfScanMatched(redactSecrets(text).text, UNTRUSTED_TOOL_TAG)
 }
 
 // MCP results are stored in the same bash-output blob store as `mcp_<hash>`-prefixed ids (see mcp_cache.ts's storeMcpOutput), so `token-goat bash-output <id>` already resolves one — this command exists for discoverability (the id printed in a `[token-goat: compressed, full via mcp-output <id>]` label points here) and to fail clearly on a non-MCP id rather than silently serving whatever bash-output happens to be stored under it.
