@@ -12,13 +12,14 @@ import { installJetbrains, jetbrainsInstructionsPath, jetbrainsUserMcpPath, unin
 import { KimiConfigParseError, installKimi, kimiAgentsPath, kimiConfigPath, kimiHookScriptPath, kimiSkillPath, uninstallKimi } from '../src/bridges/kimi_install.js'
 import { OpenclawConfigParseError, installOpenclaw, openclawConfigPath, openclawEntrySidecarPath, openclawPluginPath, uninstallOpenclaw } from '../src/bridges/openclaw_install.js'
 import { _resetDataDirCacheForTesting } from '../src/constants.js'
+import { pinInstalledEntry } from './helpers/installed_entry.js'
 
 const ENV_KEYS = ['CLAUDE_CONFIG_DIR', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'TOKEN_GOAT_HOME', 'TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS', 'KIMI_CODE_HOME'] as const
 
 let saved: Record<string, string | undefined>
 let base: string
 let origCwd: string
-let origArgv1: string
+let restoreEntry: () => void
 
 /** Every home, config and data root pointed into `base`, Kimi Code's own among them, so neither this process nor a child it spawns can reach the developer's `~/.codex`, Kimi home, `~/.openclaw`, JetBrains config or ledger. */
 function isolatedEnv(): Record<(typeof ENV_KEYS)[number], string> {
@@ -46,13 +47,12 @@ beforeEach(() => {
   origCwd = process.cwd()
   // JetBrains picks project scope for a directory holding `.idea`; `base` holds none, so both installs here and the bundle's uninstall take the user scope.
   process.chdir(base)
-  // The installs below run in this process, so each bakes process.argv[1] into its entries as the bundle path, and an uninstall knows an entry for token-goat's by a `token-goat` path segment or `token-goat.mjs` in it. Vitest's worker entry has neither, so these tests passed only in a checkout whose own directory is named token-goat: CAPTURE, a clone at /home/gabe/tg-loop72-clone on WSL (node 24.14.0) kept all six Kimi hooks after the restored-config uninstall. An installed bundle's path, as install_kimi.test.ts stubs it, carries both.
-  origArgv1 = process.argv[1]
-  process.argv[1] = path.join(base, 'node_modules', 'token-goat', 'dist', 'token-goat.mjs')
+  // The installs below run in this process, so each bakes process.argv[1] into its entries as the bundle path, and an uninstall knows an entry for token-goat's by a `token-goat` path segment or `token-goat.mjs` in it. Vitest's worker entry has neither, so these tests passed only in a checkout whose own directory is named token-goat: CAPTURE, a clone at /home/gabe/tg-loop72-clone on WSL (node 24.14.0) kept all six Kimi hooks after the restored-config uninstall. An installed bundle's path, as pinInstalledEntry stubs it, carries both.
+  restoreEntry = pinInstalledEntry(base)
 })
 
 afterEach(() => {
-  process.argv[1] = origArgv1
+  restoreEntry()
   process.chdir(origCwd)
   for (const k of ENV_KEYS) {
     if (saved[k] === undefined) delete process.env[k]

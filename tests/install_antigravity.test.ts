@@ -26,11 +26,12 @@ import {
   isAntigravityInstalled,
   uninstallAntigravity,
 } from '../src/bridges/antigravity_install.js'
+import { pinInstalledEntry } from './helpers/installed_entry.js'
 
 type HooksFile = Record<string, Record<string, { matcher: string; hooks: { type: string; command: string; timeout: number }[] }[]>>
 
 let TMP: string
-let originalArgv1: string
+let restoreEntry: () => void
 
 function readHooks(): HooksFile {
   return JSON.parse(fs.readFileSync(antigravityHooksPath(), 'utf8')) as HooksFile
@@ -47,12 +48,11 @@ function shimPath(): string {
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-agy-install-'))
   ;(os.homedir as unknown as ReturnType<typeof vi.fn>).mockReturnValue(TMP)
-  originalArgv1 = process.argv[1]
-  process.argv[1] = path.join(TMP, 'node_modules', 'token-goat', 'dist', 'token-goat.mjs')
+  restoreEntry = pinInstalledEntry(TMP)
 })
 
 afterEach(() => {
-  process.argv[1] = originalArgv1
+  restoreEntry()
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 

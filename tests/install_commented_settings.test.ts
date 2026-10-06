@@ -9,17 +9,21 @@ import { GeminiSettingsParseError, geminiSettingsPath, installGemini, isGeminiIn
 import { installOpenclaw, isOpenclawInstalled, openclawConfigPath, uninstallOpenclaw } from '../src/bridges/openclaw_install.js'
 import { installQwen, isQwenInstalled, qwenSettingsPath, uninstallQwen } from '../src/bridges/qwen_install.js'
 import '../src/relay.js'
+import { pinInstalledEntry } from './helpers/installed_entry.js'
 
 const ENV_KEYS = ['HOME', 'USERPROFILE'] as const
 const saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
 let home: string
+let restoreEntry: () => void
 
 beforeEach(() => {
   home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-commented-settings-')))
   for (const k of ENV_KEYS) process.env[k] = home
+  restoreEntry = pinInstalledEntry(home)
 })
 
 afterEach(() => {
+  restoreEntry()
   for (const k of ENV_KEYS) {
     if (saved[k] === undefined) delete process.env[k]
     else process.env[k] = saved[k]

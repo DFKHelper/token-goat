@@ -26,6 +26,7 @@ import {
 
 // Side-effect import: registers every hook handler, mirroring cli_install.ts's real cmdInstall path (which now imports relay.js before calling any install* function -- see cmdInstall in src/cli_install.ts) and tests/install_hook_matcher.test.ts's own documented pattern. gemini_install.ts derives its per-event matcher gate from the live handler registry (registeredInternalTools, backed by hook_registry.ts's toolMatcherFor) rather than a hand-maintained list; without this import the registry is empty and every matcher assertion below would be vacuously wrong.
 import '../src/relay.js'
+import { pinInstalledEntry } from './helpers/installed_entry.js'
 
 interface GeminiHookEntry {
   type: string
@@ -53,19 +54,17 @@ function commandsFor(settings: GeminiSettingsShape, event: string): string[] {
 }
 
 let TMP: string
-let originalArgv1: string
+let restoreEntry: () => void
 
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-gemini-install-'))
   const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
   homedirMock.mockReturnValue(TMP)
-  // installGemini/isGeminiInstalled/uninstallGemini identify their own hook commands by checking whether process.argv[1] (the entry path baked into the written command) contains a "token-goat" path segment (GEMINI_ENTRY_PATH_MARKER_PATTERN in gemini_install.ts) -- a real npm install always places the entry under a `node_modules/token-goat/...` directory, so this is reliable in production. Under vitest's fork pool, though, process.argv[1] is tinypool's own internal worker script (node_modules/tinypool/dist/entry/process.js), which has nothing to do with token-goat's identity -- whether it happens to also satisfy the marker depends entirely on whether the repo's checkout *directory* incidentally contains "token-goat" somewhere in its path (true for this repo's usual checkout locations, false for e.g. an arbitrarily-named scratch clone), making the suite pass or fail for reasons unrelated to the code under test. Stub argv[1] to a realistic token-goat entry path so these tests exercise real install/uninstall behavior deterministically, independent of where the repo happens to be checked out.
-  originalArgv1 = process.argv[1]
-  process.argv[1] = path.join(TMP, 'node_modules', 'token-goat', 'dist', 'token-goat.mjs')
+  restoreEntry = pinInstalledEntry(TMP)
 })
 
 afterEach(() => {
-  process.argv[1] = originalArgv1
+  restoreEntry()
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 
@@ -287,7 +286,7 @@ describe('installGemini', () => {
       expect(command).toContain(`"${process.execPath}"`)
       expect(command).toContain(`"${process.argv[1]}"`)
     }
-    // Not asserting isGeminiInstalled() here: it requires process.argv[1] to literally contain a "token-goat" path segment, which the test runner's own entry path does not -- a pre-existing, unrelated environment limitation also hit by the "fresh install" test above, not something this fix changes.
+    expect(isGeminiInstalled()).toBe(true)
   })
 })
 

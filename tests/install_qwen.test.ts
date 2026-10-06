@@ -23,6 +23,7 @@ import {
   qwenSettingsPath,
   uninstallQwen,
 } from '../src/bridges/qwen_install.js'
+import { pinInstalledEntry } from './helpers/installed_entry.js'
 
 interface QwenHookEntry {
   type: string
@@ -55,19 +56,17 @@ const QWEN_EVENT_ARG: Record<string, string> = {
 }
 
 let TMP: string
-let originalArgv1: string
+let restoreEntry: () => void
 
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-qwen-install-'))
   const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
   homedirMock.mockReturnValue(TMP)
-  // Same rationale as install_gemini.test.ts: installQwen/isQwenInstalled/uninstallQwen identify their own hook commands via process.argv[1] containing a "token-goat" path segment (QWEN_ENTRY_PATH_MARKER_PATTERN), which tinypool's worker entry path does not satisfy by default -- stub it to a realistic token-goat entry path for deterministic tests.
-  originalArgv1 = process.argv[1]
-  process.argv[1] = path.join(TMP, 'node_modules', 'token-goat', 'dist', 'token-goat.mjs')
+  restoreEntry = pinInstalledEntry(TMP)
 })
 
 afterEach(() => {
-  process.argv[1] = originalArgv1
+  restoreEntry()
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 

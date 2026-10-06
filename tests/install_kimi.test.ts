@@ -30,6 +30,7 @@ import {
   kimiSkillPath,
   uninstallKimi,
 } from '../src/bridges/kimi_install.js'
+import { pinInstalledEntry } from './helpers/installed_entry.js'
 
 interface KimiHookEntry {
   event?: string
@@ -57,7 +58,7 @@ const KIMI_EVENT_ARG: Record<string, string> = {
 }
 
 let TMP: string
-let originalArgv1: string
+let restoreEntry: () => void
 let originalKimiHome: string | undefined
 
 beforeEach(() => {
@@ -66,13 +67,11 @@ beforeEach(() => {
   homedirMock.mockReturnValue(TMP)
   originalKimiHome = process.env['KIMI_CODE_HOME']
   delete process.env['KIMI_CODE_HOME']
-  // Same rationale as install_qwen.test.ts: the installer identifies its own hook commands by a "token-goat" path segment in the baked command, which tinypool's worker entry path does not satisfy -- stub argv[1] to a realistic entry path.
-  originalArgv1 = process.argv[1]
-  process.argv[1] = path.join(TMP, 'node_modules', 'token-goat', 'dist', 'token-goat.mjs')
+  restoreEntry = pinInstalledEntry(TMP)
 })
 
 afterEach(() => {
-  process.argv[1] = originalArgv1
+  restoreEntry()
   if (originalKimiHome === undefined) {
     delete process.env['KIMI_CODE_HOME']
   } else {

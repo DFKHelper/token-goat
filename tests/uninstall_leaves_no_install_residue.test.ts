@@ -25,11 +25,13 @@ import { installPi, uninstallPi } from '../src/bridges/pi_install.js'
 import { installQwen, qwenSettingsPath, uninstallQwen } from '../src/bridges/qwen_install.js'
 import { installZed, uninstallZed } from '../src/bridges/zed_install.js'
 import '../src/relay.js'
+import { pinInstalledEntry } from './helpers/installed_entry.js'
 
 const ENV_KEYS = ['KIMI_CODE_HOME', 'XDG_CONFIG_HOME', 'APPDATA'] as const
 
 let TMP: string
 let HOME: string
+let restoreEntry: () => void
 const savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {}
 
 const BRIDGES: Array<{ name: string; install: () => unknown; uninstall: () => unknown }> = [
@@ -55,10 +57,12 @@ beforeEach(() => {
   process.env['XDG_CONFIG_HOME'] = path.join(HOME, '.config')
   // Not created: a fresh machine has no per-user config root either, and the Zed bridge makes it.
   process.env['APPDATA'] = path.join(TMP, 'appdata')
+  restoreEntry = pinInstalledEntry(TMP)
   fs.rmSync(path.join(dataDir(), 'created-configs.json'), { force: true })
 })
 
 afterEach(() => {
+  restoreEntry()
   for (const key of ENV_KEYS) {
     if (savedEnv[key] === undefined) delete process.env[key]
     else process.env[key] = savedEnv[key]
