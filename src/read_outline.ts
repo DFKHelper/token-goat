@@ -48,13 +48,15 @@ function firstSentenceEnd(line: string): number | null {
   return null
 }
 
-/** Clip a doc summary line for the outline. */
-function clipDocSummary(firstLine: string): string {
+/** A doc comment's first line, clipped for the outline, ending in an ellipsis whenever the doc says more than the hint shows: a later sentence on that line, or a later non-blank line. */
+function clipDocSummary(docstring: string): string {
+  const [firstLine = '', ...rest] = docstring.split('\n')
+  const more = rest.some((l) => l.trim() !== '') ? '…' : ''
   const sentence = firstSentenceEnd(firstLine)
   if (sentence !== null && sentence <= DOC_SUMMARY_MAX_CHARS) {
-    return sentence === firstLine.length ? firstLine : `${firstLine.slice(0, sentence)}…`
+    return sentence === firstLine.length ? `${firstLine}${more}` : `${firstLine.slice(0, sentence)}…`
   }
-  if (firstLine.length <= DOC_SUMMARY_MAX_CHARS) return firstLine
+  if (firstLine.length <= DOC_SUMMARY_MAX_CHARS) return `${firstLine}${more}`
   const cut = firstLine.lastIndexOf(' ', DOC_SUMMARY_MAX_CHARS)
   return `${firstLine.slice(0, cut > 40 ? cut : DOC_SUMMARY_MAX_CHARS).trimEnd()}…`
 }
@@ -253,7 +255,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
     const rangeStr = `${sym.lineStart.toString().padStart(4)}-${sym.lineEnd.toString().padEnd(6)}`
     const kindStr = sym.kind.padEnd(14)
     const bodyLen = sym.lineEnd - sym.lineStart + 1
-    const docFirst = hasRealDocstring(sym.docstring) ? `  # ${clipDocSummary(sym.docstring.split('\n')[0] ?? '')}` : ''
+    const docFirst = hasRealDocstring(sym.docstring) ? `  # ${clipDocSummary(sym.docstring)}` : ''
     const statsStr = formatStatsSuffix(refCounts, sym)
     const notebookSuffix = isVirtualIndexedPath(sym.filePath) ? NOTEBOOK_CELL_LINES_SUFFIX : ''
     lines.push(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}${statsStr}${notebookSuffix}`)

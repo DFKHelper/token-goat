@@ -6,6 +6,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **`read "file::symbol"` prints the symbol's doc comment above its body, and an `outline` doc hint ends in an ellipsis when the doc goes on.** The outline clipped a doc to its first line and marked nothing when later lines followed, so "Deletes the user." read as the whole doc while its second line warned that every backup goes too, and the read it points to for the full doc printed the body alone. The doc comment now comes back as its own source lines, and the header counts them (`# 3 lines + 4-line doc comment`).
 - **`dead --kind` names an unrecognized kind in a `token-goat:` error with the kind escaped.** The message had no prefix and printed the caller's text as given.
 - **`changed`, `diff` and `log` refuse a git ref that starts with `-` in a `token-goat:` error with the ref escaped.** The refusal had no prefix and printed the caller's ref as given, so a control character in it reached the terminal.
 - **A failed git call reads as one clean `token-goat:` error.** `blame` and `log` ended their message in a literal `\n`, `diff` folded git's 130-line usage text into one escaped line, and `changed` outside a repository dumped those 131 lines raw with no `token-goat:` prefix. Every git failure now goes through one formatter: it trims git's output, stops at its usage text, and says `git <command> failed: not a git repository` in one line when there is no repository.

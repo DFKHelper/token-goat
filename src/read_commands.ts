@@ -8,7 +8,7 @@ import { querySymbols, queryRefCounts, getFileEntry } from './index_reader.js'
 import { indexedSourceText, isVirtualIndexedPath, virtualIndexedScopeNote } from './indexed_source.js'
 import { displaySafeText, normalizePath, displaySafeJson } from './paths.js'
 import { expandSpecPath, resolveSpecPath } from './spec_path.js'
-import { indexFileSync } from './parser.js'
+import { boundSymbolDocstring, indexFileSync, precedingDocComment, type DocCommentStyle } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { compileGuardedRegex } from './regex_guard.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
@@ -74,6 +74,7 @@ import {
 } from './read_spec.js'
 import {
   formatStatsSuffix,
+  hasRealDocstring,
   symbolExtractorGap,
 } from './read_meta.js'
 import { formatCommandError } from './command_error.js'
@@ -282,6 +283,25 @@ export function resolveBody(entry: { body: string; filePath: string; lineStart: 
   if (widenedHeading && diskLines[entry.lineStart - 1]?.trim() !== storedFirstLine.trim()) return entry.body
   return diskLines.slice(Math.max(0, entry.lineStart - 1), entry.lineEnd).join('\n')
 }
+
+/** The source lines of the doc comment the parser read off the lines directly above a symbol, verbatim, so a text read shows the doc outline's hint stands in for. Empty when the symbol has none, when its doc lives inside the body (a Python docstring), or when the comment on disk no longer yields the docstring the index stored. */
+export function docCommentLines(entry: { docstring: string; filePath: string; lineStart: number }): string[] {
+  if (entry.lineStart < 2 || !hasRealDocstring(entry.docstring)) return []
+  const source = readFileText(entry.filePath)
+  if (source === null) return []
+  const lines = indexedSourceText(entry.filePath, source).split(/\r?\n/)
+  for (const style of DOC_COMMENT_STYLES) {
+    const doc = precedingDocComment(lines, entry.lineStart, style)
+    if (doc === '' || boundSymbolDocstring(doc) !== entry.docstring) continue
+    // Widen upward one line at a time until the lines kept read as the whole doc: the comment's first line is where a shorter slice stops yielding it.
+    let start = entry.lineStart - 2
+    while (start > 0 && precedingDocComment(lines.slice(start), entry.lineStart - start, style) !== doc) start--
+    return lines.slice(start, entry.lineStart - 1)
+  }
+  return []
+}
+
+const DOC_COMMENT_STYLES: readonly DocCommentStyle[] = ['c', 'hash', 'vb']
 
 // The one-line warning prepended by staleWarning() when the on-disk file has changed since the index last saw it. Reuses fingerprintFile/files.sha -- the same sha the worker's dirty-queue gate (makeIndexer in worker.ts) compares against -- so "stale" here means exactly what it means there, rather than reinventing a second freshness signal.
 const STALE_WARNING =
@@ -678,12 +698,14 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     return { text, code: 0 }
   }
 
-  const body = resolveBody(match)
+  const doc = docCommentLines(match)
+  const body = [...doc, resolveBody(match)].join('\n')
 
   const bodyLen = match.lineEnd - match.lineStart + 1
   const statsStr = formatStatsSuffix(refCounts, match)
+  const docLabel = doc.length > 0 ? ` + ${doc.length}-line doc comment` : ''
   const lines: string[] = [
-    `# ${countNoun(bodyLen, 'line')} (~${Math.ceil(body.length / 4)} tok)${statsStr}`,
+    `# ${countNoun(bodyLen, 'line')}${docLabel} (~${Math.ceil(body.length / 4)} tok)${statsStr}`,
     body,
   ]
   const warning = staleWarning(match.filePath, 'read')
