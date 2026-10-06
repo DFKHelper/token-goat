@@ -70,7 +70,7 @@ import { extractOcaml } from './ocaml.js'
 import { extractFSharp } from './fsharp.js'
 import { extractNix } from './nix.js'
 
-export { extractCobol, extractNatural, extractSalesforceMetadata, extractVue, extractSvelte, extractAstro, extractCsharp, assignBraceBlockSpans }
+export { extractCobol, extractNatural, extractSalesforceMetadata, extractVue, extractSvelte, extractAstro, extractCsharp, assignBraceBlockSpans, spanUnsettled }
 
 type SymbolExtractor = (content: string, filePath: string) => SymbolEntry[]
 
@@ -102,7 +102,10 @@ function sectionsToHeadingSymbols(
 
 // One entry per adapter-backed `regex` row of src/language_specs.ts, required by the type: a new row without an extractor fails the type check. html/liquid keep their extra sectionsToHeadingSymbols composition inline.
 export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLanguage>, SymbolExtractor> = {
-  csharp: (content, filePath) => assignBraceBlockSpans(extractCsharp(content, filePath).symbols, content, { lineComment: '//', stringEscapes: 'csharp', rawStringQuotes: true, expressionBodies: true, interpolation: 'csharp' }),
+  csharp: (content, filePath) => {
+    const { symbols, settled } = extractCsharp(content, filePath)
+    return spanUnsettled(symbols, settled, (rest) => assignBraceBlockSpans(rest, content, { lineComment: '//', stringEscapes: 'csharp', rawStringQuotes: true, expressionBodies: true, interpolation: 'csharp' }))
+  },
   // Both halves walk the SAME masked text: the brace pass used to span raw file content, so it nested on braces in the inline HTML the extractor is no longer reading.
   php: (content, filePath) => {
     const code = maskPhpInlineHtml(content)

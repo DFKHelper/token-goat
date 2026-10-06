@@ -126,4 +126,30 @@ describe('one-line type bodies reach the index through the production drain', ()
     expect(b).toContain('println(1)')
     expect(b).not.toContain('class SThree')
   }, 60_000)
+
+  it('C#: stores each member and reads it alone', async () => {
+    expect(await drain({
+      'one.cs': [
+        'class CTwo { public int Ca() { return 1; } public int P { get; set; } public int Cb() => 2; }',
+        'class CThree { public void A() { } public void B() {',
+        '    Console.WriteLine(1);',
+        '  }',
+        '}',
+      ],
+    })).toEqual([
+      'class CTwo  1-1',
+      'method Ca CTwo 1-1',
+      'method Cb CTwo 1-1',
+      'var P CTwo 1-1',
+      'method A CThree 2-2',
+      'method B CThree 2-4',
+      'class CThree  2-5',
+    ])
+    const ca = read('one.cs::Ca')
+    expect(ca).toContain('public int Ca() { return 1; }')
+    expect(ca).not.toContain('get; set;')
+    const b = read('one.cs::B')
+    expect(b).toContain('Console.WriteLine(1);')
+    expect(b).not.toContain('class CThree')
+  }, 60_000)
 })

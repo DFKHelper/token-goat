@@ -6,6 +6,7 @@
  */
 
 import type { RefEntry, SymbolEntry } from '../parser_types.js'
+import { bodyBraceAt, bodySegments, endOpenMember, type BodySegment, type OpenMember } from './body_segments.js'
 import {
   stripBlockCommentSpan,
   stripLineComment,
@@ -190,6 +191,69 @@ function nextCodeLines(lines: readonly string[], from: number, count: number): s
   return out
 }
 
+// `record` is class-like (a record is still fundamentally a reference/value class), so it maps to kind 'class' like the other adapters map their closest analog. struct/interface/enum get their own distinct kinds instead of all collapsing to 'class'.
+function typeKind(keyword: string): string {
+  return keyword === 'struct' ? 'struct' : keyword === 'interface' ? 'interface' : keyword === 'enum' ? 'enum' : 'class'
+}
+
+/** The recorded name of the operator OPERATOR_RE matched: `operator +`, `operator checked +`, or `operator int` for a conversion. */
+function operatorName(opM: RegExpExecArray): string {
+  return opM[1] !== undefined ? `operator ${opM[1].replace(/\s+/g, ' ').trim()}` : `operator${opM[2] !== undefined ? ' checked ' : ''}${opM[3] ?? ''}`
+}
+
+/** The names and kinds of the members one declaration `decl` (attributes already stripped) declares in the type named `parent`, tried in extractCsharp's member order: a delegate, an event's declarators, the constructor, a property, the finalizer, an operator, the indexer, then a method. Empty for a field or anything else the index leaves out. */
+function memberDecls(decl: string, parent: string): Array<[string, string]> {
+  const delM = DELEGATE_RE.exec(decl)
+  if (delM) return [[stripVerbatim(delM[1] ?? ''), 'type']]
+  const eventM = EVENT_RE.exec(decl)
+  if (eventM) {
+    const out: Array<[string, string]> = []
+    for (const part of splitEventDeclarators(decl.slice(eventM[0].length).split(/[;{]/)[0] ?? '')) {
+      const declM = EVENT_NAME_RE.exec(part.split('=')[0]?.trim() ?? '')
+      if (declM) out.push([stripVerbatim(declM[1] ?? ''), 'var'])
+    }
+    return out
+  }
+  const ctorM = CONSTRUCTOR_RE.exec(decl)
+  if (ctorM && stripVerbatim(ctorM[1] ?? '') === parent) return [[parent, 'method']]
+  const propM = PROPERTY_RE.exec(decl) ?? PROPERTY_ARROW_RE.exec(decl)
+  if (propM) return [[stripVerbatim(propM[1] ?? ''), 'var']]
+  const finM = FINALIZER_RE.exec(decl)
+  if (finM && stripVerbatim(finM[1] ?? '') === parent) return [[`~${parent}`, 'method']]
+  const opM = OPERATOR_RE.exec(decl)
+  if (opM && isDeclarationPrefix(decl.slice(0, opM.index))) return [[operatorName(opM), 'method']]
+  const ixM = INDEXER_RE.exec(decl)
+  if (ixM && isDeclarationPrefix(decl.slice(0, ixM.index))) return [['this[]', 'var']]
+  const methM = METHOD_RE.exec(decl)
+  const mname = methM ? stripVerbatim(methM[1] ?? '') : ''
+  return mname && mname !== parent ? [[mname, 'method']] : []
+}
+
+/** The members the {@link bodySegments} slices `segs` of `line` declare directly in the type named `parent`, in source order, with a nested class, struct, interface, enum or record whose body closes inside its slice followed by that body's own members. extractCsharp's member branches only ever see the first declaration on a line, so a member written after a type header's `{` or after another member on the same line was dropped. `code` is `line` with its string literals blanked; each member's body is its slice. `open` is the member whose block is still open at the end of the line. */
+function inlineCsharpMembers(line: string, code: string, segs: readonly BodySegment[], parent: string, filePath: string, lineNum: number): { members: SymbolEntry[]; open: SymbolEntry | null } {
+  const members: SymbolEntry[] = []
+  let open: SymbolEntry | null = null
+  for (const seg of segs) {
+    const text = line.slice(seg.start, seg.end).trim()
+    const decl = stripLeadingAttributes(text)
+    const classM = CLASS_HEADER_RE.exec(decl)
+    if (classM) {
+      if (seg.open) continue
+      const name = stripVerbatim(classM[2] ?? '')
+      members.push(makeLineSymbol(filePath, name, typeKind(classM[1] ?? 'class'), lineNum, text, parent))
+      const brace = bodyBraceAt(code, seg.start, seg.end)
+      if (brace !== -1) members.push(...inlineCsharpMembers(line, code, bodySegments(code, brace + 1), name, filePath, lineNum).members)
+      continue
+    }
+    for (const [name, kind] of memberDecls(decl, parent)) {
+      const sym = makeLineSymbol(filePath, name, kind, lineNum, text, parent)
+      members.push(sym)
+      if (seg.open) open = sym
+    }
+  }
+  return { members, open }
+}
+
 const CS_REF_NOISE: ReadonlySet<string> = new Set([
   'if',
   'else',
@@ -288,7 +352,7 @@ const CS_MULTILINE_INVOCATION_RE =
 export function extractCsharp(
   content: string,
   filePath: string,
-): { symbols: SymbolEntry[]; refs: RefEntry[]; imports: AdapterImport[] } {
+): { symbols: SymbolEntry[]; refs: RefEntry[]; imports: AdapterImport[]; settled: ReadonlySet<SymbolEntry> } {
   const symbols: SymbolEntry[] = []
   const refs: RefEntry[] = []
   const imports: AdapterImport[] = []
@@ -303,6 +367,9 @@ export function extractCsharp(
   let falseNesting = 0
   let currentMember: string | undefined
   let memberBodyEntered = false
+  // Members found on a line after its first declaration already carry their real span, so the brace-span pass leaves them alone (see spanUnsettled).
+  const settled = new Set<SymbolEntry>()
+  let openMember: OpenMember | null = null
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
@@ -383,19 +450,11 @@ export function extractCsharp(
     // class/struct/interface/enum/record. Always pushes its own frame, even while already
     // inside another class's body, so a nested class (and its own members) get tracked against
     // their own start depth instead of being silently folded into the enclosing class.
+    const outerFrame = classStack.length > 0 ? classStack[classStack.length - 1]! : null
     const cm = CLASS_HEADER_RE.exec(stripLeadingAttributes(stripped))
     if (cm) {
-      const keyword = cm[1] ?? 'class'
       const cname = stripVerbatim(cm[2] ?? '')
-      // `record` is class-like (a record is still fundamentally a reference/value class), so it
-      // maps to kind 'class' like the other adapters map their closest analog. struct/interface/
-      // enum get their own distinct kinds instead of all collapsing to 'class'.
-      const kind = keyword === 'struct' ? 'struct'
-        : keyword === 'interface' ? 'interface'
-        : keyword === 'enum' ? 'enum'
-        : 'class'
-      const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
-      symbols.push(makeLineSymbol(filePath, cname, kind, lineNum, stripped.slice(0, 200), parent, lines, 'c'))
+      symbols.push(makeLineSymbol(filePath, cname, typeKind(cm[1] ?? 'class'), lineNum, stripped.slice(0, 200), outerFrame?.name, lines, 'c'))
       classStack.push({ name: cname, startDepth: braceDepth, bodyEntered: false })
     }
 
@@ -474,7 +533,7 @@ export function extractCsharp(
         if (finM && stripVerbatim(finM[1] ?? '') === frame.name) specialName = `~${frame.name}`
         else finM = null
         const opM = specialName === null && !isPropertyLine ? OPERATOR_RE.exec(lineNoAttr) : null
-        if (opM && isDeclarationPrefix(lineNoAttr.slice(0, opM.index))) specialName = opM[1] !== undefined ? `operator ${opM[1].replace(/\s+/g, ' ').trim()}` : `operator${opM[2] !== undefined ? ' checked ' : ''}${opM[3] ?? ''}`
+        if (opM && isDeclarationPrefix(lineNoAttr.slice(0, opM.index))) specialName = operatorName(opM)
         const ixM = specialName === null && !isPropertyLine ? INDEXER_RE.exec(lineNoAttr) : null
         if (ixM && isDeclarationPrefix(lineNoAttr.slice(0, ixM.index))) {
           specialName = 'this[]'
@@ -509,6 +568,22 @@ export function extractCsharp(
     const isInterpolatedLine = rawLine.includes('$"') || rawLine.includes('$@"') || rawLine.includes('@$"')
     const baseLine = isInterpolatedLine ? stripLineComment(rawLine) : stripLineComment(line)
     const braceLine = stripStringLiterals(baseLine, { tripleQuotes: true })
+
+    // A line can hold several declarations of one type body: the members after a type header's `{` (`class Two { int A() => 1; int B() => 2; }`), and those after the first on a body line (`int C() => 3; int D() => 4;`). The branches above index only the first declaration on the line; the rest are found here, the header's own body first so the rows keep source order. The segments are cut on `line` itself, since braceLine can be built from rawLine and its offsets would not match.
+    const segCode = stripStringLiterals(line, { tripleQuotes: true })
+    let lineOpen: OpenMember | null = null
+    const queueMembers = (segs: readonly BodySegment[], parent: string, bodyDepth: number): OpenMember | null => {
+      const { members, open } = inlineCsharpMembers(line, segCode, segs, parent, filePath, lineNum)
+      symbols.push(...members)
+      for (const m of members) settled.add(m)
+      return open === null ? null : { sym: open, depth: bodyDepth + 1 }
+    }
+    const lineSegs = bodySegments(segCode, 0)
+    if (frame !== null && frame !== outerFrame && lineSegs[0] !== undefined) {
+      const brace = bodyBraceAt(segCode, lineSegs[0].start, lineSegs[0].end)
+      if (brace !== -1) lineOpen = queueMembers(bodySegments(segCode, brace + 1), frame.name, braceDepth + 1)
+    }
+    if (outerFrame !== null && braceDepth - outerFrame.startDepth === 1) lineOpen = queueMembers(lineSegs.slice(1), outerFrame.name, braceDepth) ?? lineOpen
 
     if (!inFalseBlock && !stripped.startsWith('#')) {
       const declSpans: Array<{ name: string; col: number }> = []
@@ -625,6 +700,11 @@ export function extractCsharp(
     const openBraces = (braceLine.match(/\{/g) ?? []).length
     const closeBraces = (braceLine.match(/\}/g) ?? []).length
     braceDepth += openBraces - closeBraces
+    if (openMember !== null && braceDepth < openMember.depth) {
+      endOpenMember(symbols, settled, openMember, lineNum, lines)
+      openMember = null
+    }
+    if (lineOpen !== null) openMember = lineOpen
 
     if (currentMember !== undefined) {
       if (!memberBodyEntered) {
@@ -676,5 +756,5 @@ export function extractCsharp(
     }
   }
 
-  return { symbols, refs, imports }
+  return { symbols, refs, imports, settled }
 }

@@ -1,4 +1,4 @@
-/** Members declared on the same line as their type's `{`, or after another member on one line, are indexed with their own spans. PROVENANCE: HAND-DERIVED. Each expected row and span is counted by hand from the fixture lines in its test, independently of the extractors; the member syntax is ordinary PHP (PHP Manual, "Classes and Objects", "Interfaces", "Traits", "Enumerations") and Kotlin (Kotlin language reference, "Classes", "Object declarations", "Grammar": `classMemberDeclarations` takes members separated by optional semicolons) and Scala (Scala Language Specification, "Templates": `TemplateStats` are separated by `semi`; Scala 3 Reference, "Optional Braces"). */
+/** Members declared on the same line as their type's `{`, or after another member on one line, are indexed with their own spans. PROVENANCE: HAND-DERIVED. Each expected row and span is counted by hand from the fixture lines in its test, independently of the extractors; the member syntax is ordinary PHP (PHP Manual, "Classes and Objects", "Interfaces", "Traits", "Enumerations") and Kotlin (Kotlin language reference, "Classes", "Object declarations", "Grammar": `classMemberDeclarations` takes members separated by optional semicolons) and Scala (Scala Language Specification, "Templates": `TemplateStats` are separated by `semi`; Scala 3 Reference, "Optional Braces") and C# (C# language specification, "Classes": `class_member_declaration`s follow one another with no separator line required). */
 import { describe, expect, it } from 'vitest'
 
 import { bodySegments } from '../src/languages/body_segments.js'
@@ -227,5 +227,80 @@ describe('Scala one-line type bodies', () => {
     const { symbols } = await parseFixture('hole.scala', 'object SH { def s(): String = s"a${x}b"; def t(): Int = 1 }\n')
     expect(symbols.find((s) => s.name === 's')?.body).toBe('def s(): String = s"a${x}b";')
     expect(symbols.find((s) => s.name === 't')?.body).toBe('def t(): Int = 1')
+  })
+})
+
+describe('C# one-line type bodies', () => {
+  it('indexes the members of a class, struct, interface and record written on one line, and those after the first on a body line', async () => {
+    expect(await rowsFor('one.cs', [
+      'class COne { public int Ca() { return 1; } public int Cv = 2; public int P { get; set; } }', // 1
+      'class CTwo { public CTwo() { } public int Ca() { return 1; }', // 2
+      '  public int Cb() => 2; public int Cc() => 3;', // 3
+      '  public event EventHandler E1, E2; ~CTwo() { } public static CTwo operator +(CTwo a, CTwo b) => a; public int this[int i] => i; public int Q => 4;', // 4
+      '  public int Cd() => 5; public int Ce() {', // 5
+      '    return 6;', // 6
+      '  }', // 7
+      '}', // 8
+      'struct S1 { public int X; public int Y() => 1; }', // 9
+      'interface I1 { int M(); int N(); }', // 10
+      'record R1(int A) { public int B() => A; }', // 11
+      'enum En { A, B }', // 12
+    ])).toEqual([
+      'class COne  1-1',
+      'class CTwo  2-8',
+      'class R1  11-11',
+      'enum En  12-12',
+      'interface I1  10-10',
+      'method B R1 11-11',
+      'method CTwo CTwo 2-2',
+      'method Ca COne 1-1',
+      'method Ca CTwo 2-2',
+      'method Cb CTwo 3-3',
+      'method Cc CTwo 3-3',
+      'method Cd CTwo 5-5',
+      'method Ce CTwo 5-7',
+      'method M I1 10-10',
+      'method N I1 10-10',
+      'method Y S1 9-9',
+      'method operator+ CTwo 4-4',
+      'method ~CTwo CTwo 4-4',
+      'struct S1  9-9',
+      'var E1 CTwo 4-4',
+      'var E2 CTwo 4-4',
+      'var P COne 1-1',
+      'var Q CTwo 4-4',
+      'var this[] CTwo 4-4',
+    ])
+  })
+
+  it('indexes a nested type closed on the line, a delegate, and the member after an interpolated string', async () => {
+    expect(await rowsFor('nested.cs', [
+      'class COut { class CIn { void X() {} } [Obsolete] void After() {} }', // 1
+      'class CS { string S() => $"a{x}b"; int T() => 1; }', // 2
+      'class CD { delegate void D(); public CD(int a) { } }', // 3
+      'class CL { void L() {', // 4
+      '    int Local() => 1; Local();', // 5
+      '  }', // 6
+      '}', // 7
+    ])).toEqual([
+      'class CD  3-3',
+      'class CIn COut 1-1',
+      'class CL  4-7',
+      'class COut  1-1',
+      'class CS  2-2',
+      'method After COut 1-1',
+      'method CD CD 3-3',
+      'method L CL 4-6',
+      'method S CS 2-2',
+      'method T CS 2-2',
+      'method X CIn 1-1',
+      'type D CD 3-3',
+    ])
+  })
+
+  it('stores just the member as the body of one that shares its line', async () => {
+    const { symbols } = await parseFixture('body.cs', 'class CB { int A() { return 1; } string S() => "};"; }\n')
+    expect(symbols.find((s) => s.name === 'A')?.body).toBe('int A() { return 1; }')
+    expect(symbols.find((s) => s.name === 'S')?.body).toBe('string S() => "};";')
   })
 })
