@@ -438,10 +438,34 @@ describe('doctor auto-repair and embedding model checks', () => {
       const { out, err } = await failingFix()
 
       expect(err).toBeInstanceOf(CliError)
-      expect(formatCommandError(err)).toBe('token-goat: 1 repair failed:\n  ✕ Failed to update configuration: EPERM: operation not permitted')
+      expect(formatCommandError(err)).toBe('token-goat: 1 repair failed:\n  ✕ Failed to update configuration: EPERM: operation not permitted. Not applied: Restored permissive read access (mcp.confine_reads_to_project_root = false)')
       expect(out).not.toContain('Repair errors')
       expect(out).not.toContain('EPERM')
       expect(out).toContain('Running automatic repairs')
+    })
+
+    // CAPTURE: the same scratch-home run listed "✓ Enabled semantic embeddings (indexing.embeddings_enabled = true)" under "Repairs applied:" although the save that would apply it had failed.
+    it('does not list a config repair as applied when the config could not be saved', async () => {
+      const { out } = await failingFix()
+
+      expect(out).not.toContain('Restored permissive read access')
+      expect(out).toContain('No automatic repairs needed.')
+    })
+
+    it('does not download the model against an offline switch it failed to turn off', async () => {
+      const config = configModule.defaultConfig()
+      config.network.offline = true
+      config.indexing.embeddings_enabled = false
+      vi.spyOn(configModule, 'loadConfig').mockReturnValue(config)
+      vi.spyOn(configModule, 'saveConfig').mockImplementation(() => { throw new Error('EPERM: operation not permitted') })
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(false)
+      const ensureSpy = vi.spyOn(embedModel, 'ensureModelFiles').mockResolvedValue('mock-dir')
+
+      const result = await runDoctorRepair({ rootDir: projectRoot })
+
+      expect(ensureSpy).not.toHaveBeenCalled()
+      expect(result.repairs.filter((r) => r.includes('network.offline') || r.includes('embeddings_enabled'))).toEqual([])
+      expect(result.errors[0]).toBe('Failed to update configuration: EPERM: operation not permitted. Not applied: Restored network access (network.offline = false); Enabled semantic embeddings (indexing.embeddings_enabled = true)')
     })
   })
 

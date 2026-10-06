@@ -785,25 +785,26 @@ export async function runDoctorRepair(opts?: {
   // Decisions use the effective config, but only the persisted file's own values are mutated and saved: an environment override or a repository's .token-goat.toml must never be written into the global config.
   const projectInfo = getProjectConfigInfo(opts?.rootDir)
   const persisted = loadPersistedConfig()
-  let configDirty = false
-  let offlineNow = cfg.network?.offline === true
-  let embeddingsNow = (cfg.indexing?.embeddings_enabled ?? true) !== false
+  // A config repair is applied only once the save below succeeds, so it waits here rather than in `repairs`.
+  const configRepairs: string[] = []
+  const offlineInConfig = cfg.network?.offline === true
+  const embeddingsInConfig = (cfg.indexing?.embeddings_enabled ?? true) !== false
+  let offlineNow = offlineInConfig
+  let embeddingsNow = embeddingsInConfig
 
   // 1. Repair restrictive settings to permissive defaults
   if (cfg.mcp?.confine_reads_to_project_root) {
     const blocker = repairBlocker('mcp.confine_reads_to_project_root', cfg, projectInfo, 'allow reads outside the project root')
     if (blocker === null) {
       persisted.mcp = { ...persisted.mcp, confine_reads_to_project_root: false }
-      configDirty = true
-      repairs.push('Restored permissive read access (mcp.confine_reads_to_project_root = false)')
+      configRepairs.push('Restored permissive read access (mcp.confine_reads_to_project_root = false)')
     } else notices.push(blocker)
   }
   if (cfg.indexing?.cross_project_symbols === false) {
     const blocker = repairBlocker('indexing.cross_project_symbols', cfg, projectInfo, 'allow cross-project symbol search')
     if (blocker === null) {
       persisted.indexing = { ...persisted.indexing, cross_project_symbols: true }
-      configDirty = true
-      repairs.push('Restored cross-project symbol search (indexing.cross_project_symbols = true)')
+      configRepairs.push('Restored cross-project symbol search (indexing.cross_project_symbols = true)')
     } else notices.push(blocker)
   }
 
@@ -814,28 +815,30 @@ export async function runDoctorRepair(opts?: {
       const blocker = repairBlocker('network.offline', cfg, projectInfo, 'allow the model download')
       if (blocker === null) {
         persisted.network = { ...persisted.network, offline: false }
-        configDirty = true
         offlineNow = false
-        repairs.push('Restored network access (network.offline = false)')
+        configRepairs.push('Restored network access (network.offline = false)')
       } else notices.push(blocker)
     }
     if (!embeddingsNow) {
       const blocker = repairBlocker('indexing.embeddings_enabled', cfg, projectInfo, 'turn semantic embeddings on')
       if (blocker === null) {
         persisted.indexing = { ...persisted.indexing, embeddings_enabled: true }
-        configDirty = true
         embeddingsNow = true
-        repairs.push('Enabled semantic embeddings (indexing.embeddings_enabled = true)')
+        configRepairs.push('Enabled semantic embeddings (indexing.embeddings_enabled = true)')
       } else notices.push(blocker)
     }
   }
 
-  if (configDirty) {
+  if (configRepairs.length > 0) {
     try {
       saveConfig(persisted)
       invalidateConfigCache()
+      repairs.push(...configRepairs)
     } catch (e) {
-      errors.push(`Failed to update configuration: ${extractErrorMessage(e)}`)
+      errors.push(`Failed to update configuration: ${extractErrorMessage(e)}. Not applied: ${configRepairs.join('; ')}`)
+      // The switches stay as they were, so the download below is not attempted against them.
+      offlineNow = offlineInConfig
+      embeddingsNow = embeddingsInConfig
     }
   }
 
