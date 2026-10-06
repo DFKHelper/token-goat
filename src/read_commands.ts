@@ -985,6 +985,10 @@ export async function runImageMeta(file: string): Promise<ImageMeta> {
   if (probe === null) {
     return { width: 0, height: 0, format: null, bytes, decodable: false, shrinkable: false, wouldShrink: false, shrunkBytes: null, shrinkRefusal: null }
   }
+  // A header that parses but declares no width or height (a GIF whose logical screen descriptor is zeroed, a truncated file) describes no image at all, so it is an unreadable image, not a 0x0 one.
+  if (probe.width <= 0 || probe.height <= 0) {
+    throw new Error(`${file} is not a readable image: its ${probe.format ?? 'image'} header gives no width or height`)
+  }
   const shrinkable = canShrinkFormat(probe.format)
   const shrink = shrinkable ? await shrinkImage(data, { sizeThresholdBytes: 0 }) : null
   return {

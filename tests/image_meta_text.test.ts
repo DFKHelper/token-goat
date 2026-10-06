@@ -151,6 +151,16 @@ describe('runImageMeta', () => {
     await expect(runImageMeta(file)).rejects.not.toThrow('Not an image file')
   })
 
+  it('rejects a header that declares a 0x0 image instead of reporting Dimensions: 0x0', async () => {
+    // FORMAT-DERIVED from the GIF89a specification (w3.org/Graphics/GIF/spec-gif89a.txt, section 18): the 6-byte signature "GIF89a" is followed by the logical screen descriptor, whose first four bytes are the width and height; zero bytes declare a 0x0 screen. Written once as .gif and once mislabeled as .png.
+    const bytes = Buffer.concat([Buffer.from('GIF89a', 'latin1'), Buffer.alloc(20)])
+    for (const name of ['zero.gif', 'zero-gif-bytes.png']) {
+      const file = path.join(TMP, name)
+      fs.writeFileSync(file, bytes)
+      await expect(runImageMeta(file)).rejects.toThrow(`${file} is not a readable image: its gif header gives no width or height`)
+    }
+  })
+
   it('the image-meta CLI command prints dimensions/format/size and a shrink line, and does not touch OCR', async () => {
     const side = 700
     const noise = Buffer.allocUnsafe(side * side * 3)
