@@ -121,6 +121,11 @@ describe('headSheet', () => {
     await expect(headSheet(file, 'Nope', 10)).rejects.toThrow(/unknown sheet/)
   })
 
+  // HAND-DERIVED: Blank is added above with no rows at all. Regression: xlsx-head on it printed an empty fence, which reads as a failed or cut-off read rather than as a sheet with nothing in it, while xlsx-sheets already reported the sheet as (empty).
+  it('says an empty sheet is empty instead of printing nothing', async () => {
+    expect(await headSheet(file, 'Blank', 10)).toBe('(nothing to show: the sheet is empty)')
+  })
+
   // Regression: header and each data row were padded independently to Math.max(header.length, row.length) -- a per-row floor derived only from the header's own width -- instead of the sheet-wide widest-row column count. A row wider than the header kept its extra trailing columns with no corresponding header column, and different data rows ended up with different line widths from each other and from the header, desyncing which value belongs to which column. Header and every row must now pad to the sheet's actual used-column-count (WideData's widest row is 4 columns), same fix sheetToCsv already applies.
   it('pads the header and every data row to the sheet-wide widest-row column count, not just the header width', async () => {
     const text = await headSheet(file, 'WideData', 10)

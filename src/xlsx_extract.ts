@@ -132,6 +132,9 @@ function cellFormula(cell: ExcelCell): string | undefined {
   return undefined
 }
 
+/** What xlsx-head and xlsx-range print for a sheet with no cells, in place of an empty fence or a bare column header. */
+const EMPTY_SHEET_NOTE = '(nothing to show: the sheet is empty)'
+
 /** Compute the used range of a worksheet as {rows, cols} plus an A1:X#-style ref string. */
 function usedRange(ws: ExcelWorksheet): { ref: string; rows: number; cols: number } {
   assertScannableExtent(ws)
@@ -227,6 +230,8 @@ function headSheetFromWorksheet(ws: ExcelWorksheet, rows: number, columns?: stri
 export async function headSheet(filePath: string, sheetName?: string, rows = 20, columns?: string[]): Promise<string> {
   const wb = await loadWorkbook(filePath)
   const ws = requireSheet(wb, sheetName)
+  // Said here rather than in headSheetFromWorksheet, whose text the embedding pipeline also indexes: an empty sheet gives it nothing to embed, and a note there would be embedded as if it were the sheet's content.
+  if ((ws.columnCount || 0) === 0) return EMPTY_SHEET_NOTE
   return headSheetFromWorksheet(ws, rows, columns)
 }
 
@@ -250,7 +255,7 @@ export interface XlsxRangeResult {
 }
 
 function pastUsedRangeNote(range: { s: { r: number; c: number }; e: { r: number; c: number } }, usedRows: number, usedCols: number): string | undefined {
-  if (usedRows === 0 || usedCols === 0) return '(nothing to show: the sheet is empty)'
+  if (usedRows === 0 || usedCols === 0) return EMPTY_SHEET_NOTE
   const usedRef = `A1:${encodeCell({ r: usedRows, c: usedCols })}`
   if (range.s.r > usedRows || range.s.c > usedCols) {
     return `(nothing to show: ${encodeCell(range.s)}:${encodeCell(range.e)} is past the sheet's used range ${usedRef})`
