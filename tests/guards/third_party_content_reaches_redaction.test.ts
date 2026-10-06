@@ -16,10 +16,12 @@ const SRC_DIR = path.join(HERE, '..', '..', 'src')
 const SELF_EXCLUDE_MARKER = 'NOSUCH[X]TOKEN'
 void SELF_EXCLUDE_MARKER
 
-/** Helpers that redact before they fence, each defined in another file, so a caller's same-file walk cannot see the redactSecrets call inside them. The last test below checks that each one's own body still calls redactSecrets, so this list cannot vouch for a helper that stopped redacting. */
+/** Helpers that redact before they fence, each defined in another file, so a caller's same-file walk cannot see the redactSecrets call inside them. The last test below checks that each one still reaches redactSecrets through its own file, so this list cannot vouch for a helper that stopped redacting. */
 const REDACTING_FENCE_HELPERS: ReadonlyArray<{ file: string; fn: string }> = [
   { file: 'untrusted_fence.ts', fn: 'fenceFileText' },
+  { file: 'untrusted_fence.ts', fn: 'fenceFieldIfMatched' },
   { file: 'untrusted_fence.ts', fn: 'fenceFileFieldIfMatched' },
+  { file: 'read_commands.ts', fn: 'guardRedactAndFence' },
   { file: 'read_commands.ts', fn: 'guardAndFenceFileText' },
 ]
 
@@ -119,10 +121,11 @@ describe('every function reaching third-party content is adjudicated for redacti
     expect(src).toContain('title: redactSecrets(rawDesc.title).text')
   })
 
-  it('every helper counted as a redaction terminal calls redactSecrets itself', () => {
+  it('every helper counted as a redaction terminal reaches redactSecrets in its own file', () => {
     const notRedacting = REDACTING_FENCE_HELPERS.filter(({ file, fn }) => {
-      const body = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, file), 'utf8')).find((f) => f.name === fn)?.body
-      return body === undefined || !body.includes('redactSecrets(')
+      const fns = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, file), 'utf8'))
+      const helper = fns.find((f) => f.name === fn)
+      return helper === undefined || !reaches(helper, functionMap(fns), (body) => body.includes('redactSecrets('))
     })
     expect(notRedacting.map((h) => `${h.file}::${h.fn}`), 'a helper listed in REDACTING_FENCE_HELPERS no longer redacts, or no longer exists').toEqual([])
   })

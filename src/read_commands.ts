@@ -23,9 +23,9 @@ import { emit, emitErr } from './emit.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
 import { resolveProjectRoot } from './project.js'
 import { loadConfig } from './config.js'
-import { fenceUntrustedContent, UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
+import { fenceUntrustedContent, UNTRUSTED_FILE_TAG, UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
 import { redactSecrets } from './secret_redact.js'
-import { fenceFileText, fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
+import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
 import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
 import { enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT } from './graph_commands.js'
 import { MAX_ZIP_INPUT_BYTES, ZipInputTooLargeError } from './zip_bounds.js'
@@ -443,22 +443,27 @@ export function guardText(text: string, command: string): string {
   return cfg.overflow_guard.enabled ? trimToBudget(text, cfg.overflow_guard.max_tokens, command) : text
 }
 
-/** {@link guardText}, then `fence` around what the cap kept, with the cap's marker below the closing tag. The cap keeps leading lines only, so fencing first lets it cut the closing tag off and leaves token-goat's marker inside the fence. */
-export function guardThenFence(text: string, command: string, fence: (body: string) => string): string {
+/** {@link guardText}, then a fence under `tag` around what the cap kept, with the cap's marker below the closing tag. The cap keeps leading lines only, so fencing first lets it cut the closing tag off and leaves token-goat's marker inside the fence. */
+export function guardThenFence(text: string, command: string, tag: string): string {
   const capped = guardText(text, command)
-  if (capped === text) return fence(text)
+  if (capped === text) return fenceUntrusted(text, tag)
   const markerAt = capped.lastIndexOf('\n')
-  return `${fence(capped.slice(0, markerAt))}\n${capped.slice(markerAt + 1)}`
+  return `${fenceUntrusted(capped.slice(0, markerAt), tag)}\n${capped.slice(markerAt + 1)}`
 }
 
-/** {@link guardThenFence} for text from a file the user named rather than wrote, redacted before the cap can cut a secret short of its pattern: capping unredacted text first can leave a fragment the redactor no longer recognises. */
+/** {@link guardThenFence} for text the user named rather than wrote, redacted before the cap can cut a secret short of its pattern: capping unredacted text first can leave a fragment the redactor no longer recognises. */
+export function guardRedactAndFence(text: string, command: string, tag: string): string {
+  return guardThenFence(redactSecrets(text).text, command, tag)
+}
+
+/** {@link guardRedactAndFence} under the file tag, for a document, a spreadsheet, an archive member or a database row. */
 export function guardAndFenceFileText(text: string, command: string): string {
-  return guardThenFence(redactSecrets(text).text, command, fenceFileText)
+  return guardRedactAndFence(text, command, UNTRUSTED_FILE_TAG)
 }
 
-/** Wrap `text` in an untrusted-content fence under {@link UNTRUSTED_GITHUB_TAG}. A PR's title, description, review comments, and diff are all authorable by anyone who opened the PR or left the comment, so the fence follows that provenance and not the scan result. The scan still runs, purely to name matched pattern(s) in the notice and record the stat. Used by every printed `pr-slice` emit site. The `--json` sites use {@link fenceGithubFieldIfMatched} instead -- see the note there. */
-function fenceGithubText(text: string): string {
-  return fenceUntrusted(text, UNTRUSTED_GITHUB_TAG)
+/** Cap `text` and fence it under {@link UNTRUSTED_GITHUB_TAG}. A PR's title, description, review comments, and diff are all authorable by anyone who opened the PR or left the comment, so the fence follows that provenance and not the scan result. The scan still runs, purely to name matched pattern(s) in the notice and record the stat. Used by every printed `pr-slice` emit site, each of which has already redacted its text. The `--json` sites use {@link fenceGithubFieldIfMatched} instead -- see the note there. */
+function guardAndFenceGithubText(text: string): string {
+  return guardThenFence(text, 'pr-slice', UNTRUSTED_GITHUB_TAG)
 }
 
 /** Per-field variant for the `pr-slice --json` envelopes, still gated on a scan hit. Fencing the envelope once would be O(1) and provenance-correct, but a fence wrapped around JSON is no longer JSON, and `--json` output is parsed by callers; fencing each field unconditionally instead pays a fixed ~129-byte wrapper per field, which a short comment body or a PR title does not absorb. Same deliberate exception as `fenceFileFieldIfMatched` in untrusted_fence.ts, and it needs the same wire-format decision to resolve. */
@@ -802,7 +807,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
           emit(jsonText)
           recordReadStat('pr_slice', fullSourceBytes, jsonText, `${repo}#${opts.pr} files`)
         } else {
-          // Changed-file paths are structured identifiers, not freeform prose, so they are not fenced here the way diff/comments/description text is -- see this file's fenceGithubText doc comment.
+          // Changed-file paths are structured identifiers, not freeform prose, so they are not fenced here the way diff/comments/description text is -- see this file's guardAndFenceGithubText doc comment.
           const text = formatFilesSlice(files)
           emitGuarded(text, 'pr-slice')
           recordReadStat('pr_slice', fullSourceBytes, text, `${repo}#${opts.pr} files`)
@@ -825,7 +830,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
           emit(jsonText)
           recordReadStat('pr_slice', fullSourceBytes, jsonText, `${repo}#${opts.pr} diff:${parsed.path}`)
         } else {
-          emit(guardThenFence(fileDiff, 'pr-slice', fenceGithubText))
+          emit(guardAndFenceGithubText(fileDiff))
           recordReadStat('pr_slice', fullSourceBytes, fileDiff, `${repo}#${opts.pr} diff:${parsed.path}`)
         }
         return 0
@@ -848,7 +853,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
           recordReadStat('pr_slice', fullSourceBytes, jsonText, `${repo}#${opts.pr} comments`)
         } else {
           const text = formatCommentsSlice(comments)
-          emit(guardThenFence(text, 'pr-slice', fenceGithubText))
+          emit(guardAndFenceGithubText(text))
           recordReadStat('pr_slice', fullSourceBytes, text, `${repo}#${opts.pr} comments`)
         }
         return 0
@@ -874,7 +879,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
           recordReadStat('pr_slice', fullSourceBytes, jsonText, `${repo}#${opts.pr} description`)
         } else {
           const text = formatDescriptionSlice(desc)
-          emit(guardThenFence(text, 'pr-slice', fenceGithubText))
+          emit(guardAndFenceGithubText(text))
           recordReadStat('pr_slice', fullSourceBytes, text, `${repo}#${opts.pr} description`)
         }
         return 0

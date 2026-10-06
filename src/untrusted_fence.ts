@@ -55,11 +55,17 @@ export function fenceFileText(text: string): string {
   return fenceUntrusted(redactSecrets(text).text, UNTRUSTED_FILE_TAG)
 }
 
-export function fenceFileFieldIfMatched(text: string): string {
+/** One string of a `--json` envelope from a source the user named rather than wrote: redacted, then fenced under `tag` only when the scan flags it, since a fence around a whole envelope would stop it being JSON. */
+export function fenceFieldIfMatched(text: string, tag: string): string {
   const redacted = redactSecrets(text).text
   const matches = scanAndRecord(redacted)
   if (matches.length === 0) return displaySafeText(redacted)
-  return fenceUntrustedContent(redacted, matches, UNTRUSTED_FILE_TAG)
+  return fenceUntrustedContent(redacted, matches, tag)
+}
+
+/** {@link fenceFieldIfMatched} under the file tag, in the one-argument shape {@link fenceJsonStrings} takes. */
+export function fenceFileFieldIfMatched(text: string): string {
+  return fenceFieldIfMatched(text, UNTRUSTED_FILE_TAG)
 }
 
 /** `value` with every string in it, keys included, passed through `field`: the per-field form of a fence for a `--json` envelope, which a fence around the whole would stop being JSON. A fence cannot wrap a key in place, so a flagged key's fenced form is the key, its notice escaped by `displaySafeJson` as token-goat's markers are in every key. */

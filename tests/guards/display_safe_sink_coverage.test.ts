@@ -166,9 +166,19 @@ const FENCES: readonly string[] = [
   'fenceUntrustedOcrText(',
   'fenceWithMatches(',
   'fenceUntrustedSpans(',
-  // Module-local one-line wrappers over `fenceUntrusted`. A site that fences through the wrapper is fenced just as thoroughly, but the scan reads the expression text and would not see it. Both wrappers are asserted below to still be one-liners delegating to a listed fence.
-  'fenceGithubText(',
-  'fenceHtmlText(',
+  // read_commands.ts's cap-then-fence helpers, each a one-liner delegating to the next and the first to `fenceUntrusted`. A site that fences through one is fenced just as thoroughly, but the scan reads the expression text and would not see it. Each is asserted below to still delegate that way.
+  'guardThenFence(',
+  'guardRedactAndFence(',
+  'guardAndFenceFileText(',
+  'guardAndFenceGithubText(',
+]
+
+/** Each wrapper listed in FENCES, and the fence it must still delegate to. */
+const FENCE_WRAPPERS: ReadonlyArray<readonly [wrapper: string, delegate: string]> = [
+  ['guardThenFence', 'fenceUntrusted'],
+  ['guardRedactAndFence', 'guardThenFence'],
+  ['guardAndFenceFileText', 'guardRedactAndFence'],
+  ['guardAndFenceGithubText', 'guardThenFence'],
 ]
 
 /** Helpers that RETURN untrusted text, matched by call name instead of by property name. The `receiver.property` scan is blind to these by construction. `extractNodeText()` and `serializeHtmlNode()` return a bare `string`, so an expression that interpolates one carries no property name anywhere for `propertyRe()` to match -- there is literally nothing to see. Both hand back the document's own bytes: `serializeHtmlNode` slices the exact original source between a node's offsets, and `extractNodeText` is that same slice with the tags stripped. Matched at the call name, so a future `emit(extractNodeText(node, src))` is caught the day it is written rather than the day somebody remembers this shape exists. */
@@ -728,12 +738,12 @@ describe('project-supplied text reaches no report sink unescaped', () => {
       ).toBe(true)
     }
 
-    // Both fence wrappers listed in FENCES must still be one-liners that delegate to a real fence. If a wrapper ever stops fencing, listing it in FENCES would silently exempt its call sites.
-    for (const wrapper of ['fenceGithubText', 'fenceHtmlText']) {
-      const body = new RegExp(String.raw`function ${wrapper}\(text: string\): string \{\s*return fenceUntrusted\(`)
+    // Every fence wrapper listed in FENCES must still delegate to a real fence before any closing brace. If a wrapper ever stops fencing, listing it in FENCES would silently exempt its call sites.
+    for (const [wrapper, delegate] of FENCE_WRAPPERS) {
+      const body = new RegExp(String.raw`function ${wrapper}\([^)]*\): string \{[^}]*\b${delegate}\(`)
       expect(
         body.test(all),
-        `${wrapper} is listed in FENCES as a wrapper over fenceUntrusted, but its body no longer ` +
+        `${wrapper} is listed in FENCES as a wrapper over ${delegate}, but its body no longer ` +
           'matches that shape. FENCES would now be exempting sites that are not fenced.',
       ).toBe(true)
     }
@@ -774,7 +784,7 @@ describe('project-supplied text reaches no report sink unescaped', () => {
     ).toBe(false)
 
     // ...and stops biting once the same expression is fenced, so the predicate is keyed on the fence being present rather than on the call being absent.
-    const fixed = `emit(fenceHtmlText(serializeHtmlNode(node, 0, src)))  // ${sentinel}`
+    const fixed = `emit(guardRedactAndFence(serializeHtmlNode(node, 0, src), 'html-query', UNTRUSTED_HTML_TAG))  // ${sentinel}`
     const fixedArg = fixed.slice(sinkIndex(fixed, sink) + sink.length)
     const fixedScope = enclosingExpression(fixedArg, sinkIndex(fixedArg, 'serializeHtmlNode('))
     expect(FENCES.some((f) => fixedScope.includes(f))).toBe(true)

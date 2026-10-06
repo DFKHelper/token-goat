@@ -48,10 +48,15 @@ export const THIRD_PARTY_SOURCE_CALLS: readonly string[] = [
   'runReadOnlySqliteQuery',
   'getSqliteSchema',
   'getSqliteTables',
+  // html_query.ts -- a page's elements, title and headings. HTML usually arrives fetched or saved from somewhere else, so html-query and html-outline print it fenced under its own tag. html-outline printed it bare, and html-query's --json form did too, until these entries were added.
+  'queryHtml',
+  'outlineHtml',
+  // dep_docs.ts -- an installed package's README, package.json fields and .d.ts declarations, all written by the package's publisher. dep-docs printed them bare until these entries were added.
+  'findReadmeFile',
+  'extractDtsOutline',
 ]
 
-// Deliberately not sources: json-query, yaml-query, xml-query and config-get. They read the structured text files a project is made of (package.json, CI workflows, a pom.xml, .token-goat.toml) the way `read` reads its source, and the guard does not count the user's own project as third party. A fence on every manifest lookup would tax the commonest structured read for text the user's repository already holds. html-query is the exception and is fenced, under its own tag, because HTML usually arrives fetched.
-// `getBashOutput`/`getWebOutput`/`getWebOutputRaw` (the existing, already-fenced bash/web/mcp recall paths) are deliberately NOT in the population above: those functions are also called internally for dedup/hashing/existence-checking, not only to emit third-party text to the model, so anchoring the population on them produces call sites this guard cannot tell apart from a real violation. Their fencing is proven instead by the dedicated behavioral regression tests for `bash-output`/`web-output`/`mcp-output` in tests/cli.test.ts and its neighbors (verification requirement #4), which assert the actual fenced output, not just that some function reaches the call.
+// Deliberately not sources: json-query, yaml-query, xml-query and config-get. They read the structured text files a project is made of (package.json, CI workflows, a pom.xml, .token-goat.toml) the way `read` reads its source, and the guard does not count the user's own project as third party. A fence on every manifest lookup would tax the commonest structured read for text the user's repository already holds. html-query and html-outline are the exception and are fenced, under their own tag, because HTML usually arrives fetched. html-lint is not a source either: it prints token-goat's own structural diagnostics, which quote at most a tag name, an id or one malformed tag, each through displaySafeText. `getBashOutput`/`getWebOutput`/`getWebOutputRaw` (the existing, already-fenced bash/web/mcp recall paths) are deliberately NOT in the population above: those functions are also called internally for dedup/hashing/existence-checking, not only to emit third-party text to the model, so anchoring the population on them produces call sites this guard cannot tell apart from a real violation. Their fencing is proven instead by the dedicated behavioral regression tests for `bash-output`/`web-output`/`mcp-output` in tests/cli.test.ts and its neighbors (verification requirement #4), which assert the actual fenced output, not just that some function reaches the call.
 
 /** The bug shape this file previously could not see, expressed directly: a body that runs the scan and then returns the content unfenced when the scan found nothing. The reachability check below asks whether a fence call is *present* somewhere downstream. It cannot ask whether that call is on a branch an early return skips -- and every conditional site contained the call, on the branch that runs only when the scan hits, so the guard was green on all of them and could not have failed. That is not a missing test run; it is an oracle that measures the wrong thing. Worse, `callsFence` accepts `_applyFiltersAndPrint(..., true, ...)` as proof of fencing, and that helper's own emit closure was itself one of the conditional sites. So this predicate matches the shape rather than the reachability: a zero-length test on the scan result guarding a `return`. `scanForInjectionPatterns` is the only way to produce that result, so a body that never calls it is not in scope here. */
 /** Every way a body can run the injection scan. `scanAndRecord` is the shared wrapper in src/untrusted_fence.ts; most callers use it rather than `scanForInjectionPatterns` directly. Naming only the raw scanner here would silently narrow the zero-match check below to the two modules that still call it -- which is how this guard measured the wrong thing the first time. */
@@ -62,14 +67,14 @@ const ZERO_MATCH_BYPASS_RE =/\b\w*[Mm]atches\s*\.\s*length\s*===\s*0\s*\)\s*(?:\
 /** Bodies allowed to keep the conditional shape, each with a stated reason. This is an allowlist of KNOWN EXCEPTIONS, not a list of things to check: an omission here fails the test rather than silently skipping a site, which is the opposite of the hand-maintained-population failure mode the header comment describes. Adding a name here is a deliberate act with a reason attached. */
 const CONDITIONAL_FENCE_EXCEPTIONS: ReadonlyMap<string, string> = new Map([
   [
-    'fenceFileFieldIfMatched',
+    'fenceFieldIfMatched',
     'per-field fence for the --json envelopes: a fence around JSON is not JSON, and an ' +
       'unconditional ~125-byte wrapper per sheet name/slide title/heading costs more than the ' +
       'field. Resolving it needs a wire-format change (one sibling `untrusted` field).',
   ],
   [
     'fenceGithubFieldIfMatched',
-    'same exception as fenceFileFieldIfMatched, for pr-slice --json.',
+    'same exception as fenceFieldIfMatched, for pr-slice --json.',
   ],
   [
     'fenceSnippetIfMatched',
@@ -91,9 +96,12 @@ const FENCE_TERMINALS: readonly string[] = [
   'fenceUntrustedOcrText(',
   // Same module as fenceUntrusted, same reason it has to be named: it is the span-taking form, for a body whose third-party bytes and token-goat's own notices alternate.
   'fenceUntrustedSpans(',
-  // The file-tag forms in untrusted_fence.ts, and read_commands.ts's capped form, which ends at fenceFileText.
+  // The file-tag and per-field forms in untrusted_fence.ts, and read_commands.ts's capped forms, which end at fenceUntrusted.
   'fenceFileText(',
+  'fenceFieldIfMatched(',
   'fenceFileFieldIfMatched(',
+  'guardThenFence(',
+  'guardRedactAndFence(',
   'guardAndFenceFileText(',
 ]
 
@@ -137,6 +145,7 @@ export const SOURCE_MODULE_FILES: ReadonlySet<string> = new Set([
   'csv_query.ts',
   'archive_query.ts',
   'sqlite_query.ts',
+  'html_query.ts',
 ])
 
 interface Violation {

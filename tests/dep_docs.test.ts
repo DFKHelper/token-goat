@@ -12,11 +12,18 @@ vi.mock('../src/config.js', () => ({
 import { runDepDocs, extractDtsOutline } from '../src/dep_docs.js'
 import { setTsModuleForTesting } from '../src/ts_compiler.js'
 import { loadConfig } from '../src/config.js'
+import { defaultConfig } from '../src/config_defaults.js'
 import { ROOT } from './helpers/bundle.js'
 
 const mockLoadConfig = vi.mocked(loadConfig)
 
-const DEFAULT_CONFIG = { overflow_guard: { enabled: true, max_tokens: 25000 } } as unknown as ReturnType<typeof loadConfig>
+/** The shipped defaults with only the overflow guard changed: runDepDocs also reads the redaction and injection settings, which a bare overflow_guard object would leave undefined. */
+function overflowConfig(enabled: boolean, maxTokens: number): ReturnType<typeof loadConfig> {
+  const base = defaultConfig()
+  return { ...base, overflow_guard: { ...base.overflow_guard, enabled, max_tokens: maxTokens } }
+}
+
+const DEFAULT_CONFIG = overflowConfig(true, 25000)
 
 describe('runDepDocs — real installed package (commander)', () => {
   beforeEach(() => {
@@ -120,7 +127,7 @@ describe('runDepDocs — README truncation (overflow guard)', () => {
   })
 
   it('caps the text-mode output at overflow_guard.max_tokens instead of dumping the whole README (regression target: an unbounded README defeats the point of a token-savings tool)', () => {
-    mockLoadConfig.mockReturnValue({ overflow_guard: { enabled: true, max_tokens: 50 } } as unknown as ReturnType<typeof loadConfig>)
+    mockLoadConfig.mockReturnValue(overflowConfig(true, 50))
     const { text, code } = runDepDocs({ packageName: 'huge-readme-pkg', projectRoot: dir })
     expect(code).toBe(0)
     expect(text.length).toBeLessThan(200_000)
@@ -128,7 +135,7 @@ describe('runDepDocs — README truncation (overflow guard)', () => {
   })
 
   it('truncates the README field under --json and sets truncated: true, rather than emitting an unbounded string', () => {
-    mockLoadConfig.mockReturnValue({ overflow_guard: { enabled: true, max_tokens: 50 } } as unknown as ReturnType<typeof loadConfig>)
+    mockLoadConfig.mockReturnValue(overflowConfig(true, 50))
     const { text, code } = runDepDocs({ packageName: 'huge-readme-pkg', projectRoot: dir, json: true })
     expect(code).toBe(0)
     const parsed = JSON.parse(text) as { readme: { text: string; truncated: boolean } | null }
@@ -137,7 +144,7 @@ describe('runDepDocs — README truncation (overflow guard)', () => {
   })
 
   it('does not truncate when overflow_guard is disabled', () => {
-    mockLoadConfig.mockReturnValue({ overflow_guard: { enabled: false, max_tokens: 50 } } as unknown as ReturnType<typeof loadConfig>)
+    mockLoadConfig.mockReturnValue(overflowConfig(false, 50))
     const { text, code } = runDepDocs({ packageName: 'huge-readme-pkg', projectRoot: dir, json: true })
     expect(code).toBe(0)
     const parsed = JSON.parse(text) as { readme: { text: string; truncated: boolean } | null }
@@ -167,7 +174,7 @@ describe('runDepDocs — JSON overflow guard shares ONE budget across README + d
   }
 
   it('control: with no README competing for budget, all declarations fit under the full budget', () => {
-    mockLoadConfig.mockReturnValue({ overflow_guard: { enabled: true, max_tokens: 300 } } as unknown as ReturnType<typeof loadConfig>)
+    mockLoadConfig.mockReturnValue(overflowConfig(true, 300))
     const dir = makePkg(false)
     try {
       const { text, code } = runDepDocs({ packageName: 'shared-budget-pkg', projectRoot: dir, json: true })
@@ -181,7 +188,7 @@ describe('runDepDocs — JSON overflow guard shares ONE budget across README + d
   })
 
   it('the same declarations get truncated once an oversized README already consumed the shared budget', () => {
-    mockLoadConfig.mockReturnValue({ overflow_guard: { enabled: true, max_tokens: 300 } } as unknown as ReturnType<typeof loadConfig>)
+    mockLoadConfig.mockReturnValue(overflowConfig(true, 300))
     const dir = makePkg(true)
     try {
       const { text, code } = runDepDocs({ packageName: 'shared-budget-pkg', projectRoot: dir, json: true })

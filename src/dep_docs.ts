@@ -10,7 +10,9 @@ import { trimToBudget, capJsonRows, estimateTokens, type JsonRowCapResult } from
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { suggestPackageNames } from './util_suggest.js'
 import { loadTs } from './ts_compiler.js'
-import { fileExists } from './read_commands.js'
+import { fileExists, guardAndFenceFileText } from './read_commands.js'
+import { redactSecrets } from './secret_redact.js'
+import { fenceFileFieldIfMatched, fenceJsonStrings } from './untrusted_fence.js'
 
 // ---- filesystem helpers -------------------------------------------------------
 
@@ -217,11 +219,6 @@ export function extractDtsOutline(filePath: string, content: string): Declaratio
 
 // ---- overflow guarding ------------------------------------------------------------
 
-function guardText(text: string): string {
-  const cfg = loadConfig()
-  return cfg.overflow_guard.enabled ? trimToBudget(text, cfg.overflow_guard.max_tokens, 'dep-docs') : text
-}
-
 function guardReadmeField(text: string, budgetTokens: number): { text: string; truncated: boolean } {
   const cfg = loadConfig()
   if (!cfg.overflow_guard.enabled) return { text, truncated: false }
@@ -284,6 +281,8 @@ export function runDepDocs(opts: DepDocsOptions): DepDocsResult {
 
   const readmeFile = findReadmeFile(pkgDir)
   const readmeRaw = readmeFile !== null ? (readFileTextOrNull(readmeFile) ?? '') : ''
+  // A README is the package publisher's text, so it is redacted before the cap can cut a secret short of its pattern.
+  const readme = redactSecrets(readmeRaw).text
 
   const typesLocation = resolveTypesLocation(pkgDir, pkgJson, nodeModulesDir, opts.packageName)
   const typescriptAvailable = loadTs() !== null
@@ -299,7 +298,7 @@ export function runDepDocs(opts: DepDocsOptions): DepDocsResult {
     // README and declarations share ONE overflow_guard.max_tokens budget for the combined JSON payload (matching the text path's single trimToBudget() pass over the whole assembled string, src/dep_docs.ts below). Budgeting each field against the full max_tokens independently would let their combined output run up to ~2x the configured ceiling.
     const cfg = loadConfig()
     const maxTokens = cfg.overflow_guard.max_tokens
-    const readmeField = readmeFile !== null ? guardReadmeField(readmeRaw, maxTokens) : null
+    const readmeField = readmeFile !== null ? guardReadmeField(readme, maxTokens) : null
     const readmeTokensUsed = readmeField !== null ? estimateTokens(readmeField.text) : 0
     const remainingBudget = Math.max(0, maxTokens - readmeTokensUsed)
     const declCap = declarations !== null ? guardDeclarationRows(declarations, remainingBudget) : null
@@ -319,7 +318,8 @@ export function runDepDocs(opts: DepDocsOptions): DepDocsResult {
       declarations:
         declCap !== null ? { items: declCap.items, truncated: declCap.truncated, totalCount: declCap.totalCount } : null,
     }
-    const text = displaySafeJson(payload)
+    // Every string here is the publisher's (package.json fields, README, declaration signatures) or a path, so each is fenced where the scan flags it.
+    const text = displaySafeJson(fenceJsonStrings(payload, fenceFileFieldIfMatched))
     recordDepDocsStat(fullSourceBytes, text, opts.packageName)
     return { text, code: 0 }
   }
@@ -352,13 +352,14 @@ export function runDepDocs(opts: DepDocsOptions): DepDocsResult {
   if (readmeFile !== null) {
     lines.push(`## README (${readmeFile})`)
     lines.push('')
-    lines.push(readmeRaw)
+    lines.push(readme)
   } else {
     lines.push('## README')
     lines.push('(none found)')
   }
 
-  const text = guardText(lines.join('\n'))
+  // The whole listing is fenced: its header and declaration rows are the publisher's package.json and .d.ts, and its README the publisher's prose.
+  const text = guardAndFenceFileText(lines.join('\n'), 'dep-docs')
   recordDepDocsStat(fullSourceBytes, text, opts.packageName)
   return { text, code: 0 }
 }

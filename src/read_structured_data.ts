@@ -22,12 +22,12 @@ import {
   operationLabel,
   parseOpenApiSpec,
 } from './openapi_query.js'
-import { emitGuarded, guardJsonRows, guardThenFence, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
+import { emitGuarded, guardJsonRows, guardRedactAndFence, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
 import { CliError, formatCommandError } from './command_error.js'
 import { emit, emitErr } from './emit.js'
 import { headElidedNotice, traversalLimitNotice } from './query_notices.js'
-import { fenceFileFieldIfMatched, fenceFileText, fenceUntrusted } from './untrusted_fence.js'
+import { fenceFieldIfMatched, fenceFileFieldIfMatched, fenceFileText, fenceJsonStrings } from './untrusted_fence.js'
 import { extractErrorMessage, requireNonNegativeStrictInt } from './util.js'
 import {
   formatXmlOutline,
@@ -40,8 +40,9 @@ import {
 } from './xml_query.js'
 import { quotedArg } from './hint_suggestion_guard.js'
 
-function fenceHtmlText(text: string): string {
-  return fenceUntrusted(text, UNTRUSTED_HTML_TAG)
+/** {@link fenceFieldIfMatched} under the HTML tag, for one string of an html-query or html-outline `--json` envelope. */
+function fenceHtmlFieldIfMatched(text: string): string {
+  return fenceFieldIfMatched(text, UNTRUSTED_HTML_TAG)
 }
 
 export interface CsvQueryCliOptions {
@@ -620,12 +621,12 @@ export function runHtmlOutline(opts: HtmlOutlineCliOptions): number {
   const summary = outlineHtml(text)
   const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    const jsonText = displaySafeJson(summary)
+    const jsonText = displaySafeJson(fenceJsonStrings(summary, fenceHtmlFieldIfMatched))
     emit(jsonText)
     recordReadStat('html_outline', fullSourceBytes, jsonText, opts.file)
   } else {
     const outlineText = formatHtmlOutline(summary)
-    emitGuarded(outlineText, 'html-outline')
+    emit(guardRedactAndFence(outlineText, 'html-outline', UNTRUSTED_HTML_TAG))
     recordReadStat('html_outline', fullSourceBytes, outlineText, opts.file)
   }
   return 0
@@ -677,7 +678,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
       const headTruncated = limited.length < totalCount
 
       if (opts.json === true) {
-        const capped = guardJsonRows(limited)
+        const capped = guardJsonRows(limited.map(fenceHtmlFieldIfMatched))
         const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount }, 0)
         emit(jsonText)
         recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
@@ -687,7 +688,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
           lines.push(headElidedNotice(totalCount - limited.length, 'item'))
         }
         const plainText = lines.join('\n')
-        emit(guardThenFence(plainText, 'html-query', fenceHtmlText))
+        emit(guardRedactAndFence(plainText, 'html-query', UNTRUSTED_HTML_TAG))
         recordReadStat('html_query', fullSourceBytes, plainText, opts.file)
       }
       return 0
@@ -709,13 +710,13 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
     const headTruncated = limited.length < totalCount
 
     if (opts.json === true) {
-      const jsonItems = limited.map((n) => ({
+      const jsonItems = limited.map((n) => fenceJsonStrings({
         tag: n.tag,
         attributes: n.attributes,
         text: extractNodeText(n, text),
         line: n.line,
         endLine: n.endLine,
-      }))
+      }, fenceHtmlFieldIfMatched))
       const capped = guardJsonRows(jsonItems)
       const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount })
       emit(jsonText)
@@ -726,7 +727,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
         textLines.push(headElidedNotice(totalCount - limited.length, 'element'))
       }
       const plainText = textLines.join('\n\n')
-      emit(guardThenFence(plainText, 'html-query', fenceHtmlText))
+      emit(guardRedactAndFence(plainText, 'html-query', UNTRUSTED_HTML_TAG))
       recordReadStat('html_query', fullSourceBytes, plainText, opts.file)
     } else {
       const blocks = limited.map((node) => serializeHtmlNode(node, 0, text))
@@ -734,7 +735,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
         blocks.push(headElidedNotice(totalCount - limited.length, 'element'))
       }
       const plainText = blocks.join('\n\n')
-      emit(guardThenFence(plainText, 'html-query', fenceHtmlText))
+      emit(guardRedactAndFence(plainText, 'html-query', UNTRUSTED_HTML_TAG))
       recordReadStat('html_query', fullSourceBytes, plainText, opts.file)
     }
     return 0
