@@ -21,7 +21,8 @@ import { modelFilesPresent } from '../src/embed_model.js'
 import { normalizePath } from '../src/paths.js'
 import { loadConfig } from '../src/config.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { applyRelevanceFloor, runSemantic } from '../src/read_semantic.js'
+import { runSemantic } from '../src/read_semantic.js'
+import { applyRelevanceFloor } from '../src/semantic_relevance.js'
 import Database from '../src/sqlite_driver.js'
 
 function vec0Working(): boolean {

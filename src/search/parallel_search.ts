@@ -13,7 +13,8 @@ import { bodyFromDeclaration } from '../read_suggest.js';
 import { pathPriorityWeight } from './path_weight.js';
 import { loadConfig } from '../config.js';
 import { snippetAround } from '../snippet_window.js';
-import { ALL_CHANNELS, type ChannelHit, type SearchChannel, type SearchExecutionSummary, type SearchOptions } from './types.js';
+import { assessDenseRelevance, floorEmptiedPhrase, weakMatchPhrase } from '../semantic_relevance.js';
+import { ALL_CHANNELS, type ChannelHit, type SearchChannel, type SearchExecutionSummary, type SearchLowConfidence, type SearchOptions } from './types.js';
 
 /** A symbol hit's preview: its docstring, else the first 140 characters of its body from the declaration on, so a decorated symbol previews as `def area(...)` rather than `@property`. */
 export function symbolPreview(sym: { name: string; docstring?: string | null; body?: string | null }): string {
@@ -155,16 +156,21 @@ async function searchTextChannel(query: string, limit: number, rootDir?: string)
   }
 }
 
-/** Searches dense embeddings and semantic vectors. */
-async function searchSemanticChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
+/** Searches dense embeddings and semantic vectors, through the same relevance floor and weak-match label `semantic` applies, so a configured `semantic.max_distance` narrows both and a page of nearest-neighbour noise says so in both. */
+async function searchSemanticChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string; note?: string; lowConfidence?: SearchLowConfidence }> {
   try {
     const preflight = await checkSemanticReadiness(rootDir !== undefined ? { projectRoot: rootDir } : undefined);
     if (preflight.status !== 'ready') {
       return { hits: [], degradedReason: `Semantic indexing not ready: ${preflight.summary}` };
     }
     const db = getDb(globalDbPath());
-    const rawHits = await searchSemantic(db, query, limit * 2, DEFAULT_MODEL, DEFAULT_DISTANCE_THRESHOLD, rootDir);
-    const merged = mergeNearbyHits(rawHits);
+    const relevance = assessDenseRelevance(await searchSemantic(db, query, limit * 2, DEFAULT_MODEL, DEFAULT_DISTANCE_THRESHOLD, rootDir));
+    const merged = mergeNearbyHits(relevance.kept);
+    const floorEmptied = floorEmptiedPhrase(relevance);
+    const weakPhrase = weakMatchPhrase(relevance);
+    const note = floorEmptied !== null
+      ? `found ${floorEmptied}; raise semantic.max_distance to see weaker matches`
+      : weakPhrase !== null ? `found nothing close (${weakPhrase}); its hits may be unrelated` : undefined;
 
     const hits = merged.slice(0, limit).map((hit, idx) => ({
       channel: 'semantic' as SearchChannel,
@@ -176,7 +182,11 @@ async function searchSemanticChannel(query: string, limit: number, rootDir?: str
       rawScore: hit.distance,
       rank: idx + 1,
     }));
-    return { hits };
+    return {
+      hits,
+      ...(note !== undefined ? { note } : {}),
+      ...(relevance.weakClosestDistance !== null ? { lowConfidence: { closestDistance: relevance.weakClosestDistance, threshold: relevance.weakDistance } } : {}),
+    };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return { hits: [], degradedReason: msg };
@@ -205,7 +215,7 @@ export async function executeParallelSearch(options: SearchOptions): Promise<Sea
     ? options.channels.filter((ch) => ALL_CHANNELS.includes(ch))
     : ALL_CHANNELS;
 
-  const channelPromises: Array<Promise<{ channel: SearchChannel; hits: ChannelHit[]; degradedReason?: string }>> = [];
+  const channelPromises: Array<Promise<{ channel: SearchChannel; hits: ChannelHit[]; degradedReason?: string; note?: string; lowConfidence?: SearchLowConfidence }>> = [];
 
   for (const ch of requestedChannels) {
     if (ch === 'symbol') {
@@ -245,6 +255,8 @@ export async function executeParallelSearch(options: SearchOptions): Promise<Sea
             channel: ch,
             hits: res.hits,
             ...(res.degradedReason !== undefined ? { degradedReason: res.degradedReason } : {}),
+            ...(res.note !== undefined ? { note: res.note } : {}),
+            ...(res.lowConfidence !== undefined ? { lowConfidence: res.lowConfidence } : {}),
           }))
           .catch((err: unknown) => ({ channel: ch, hits: [], degradedReason: String(err) })),
       );
@@ -260,15 +272,19 @@ export async function executeParallelSearch(options: SearchOptions): Promise<Sea
     semantic: 0,
   };
   const degradedChannels: Array<{ channel: SearchChannel; reason: string }> = [];
+  const notes: Array<{ channel: SearchChannel; note: string }> = [];
+  let lowConfidence: SearchLowConfidence | undefined;
 
   for (const res of settled) {
     if (res.status === 'fulfilled') {
-      const { channel, hits, degradedReason } = res.value;
+      const { channel, hits, degradedReason, note, lowConfidence: channelLowConfidence } = res.value;
       channelHitsMap.set(channel, hits);
       channelCounts[channel] = hits.length;
       if (degradedReason) {
         degradedChannels.push({ channel, reason: degradedReason });
       }
+      if (note !== undefined) notes.push({ channel, note });
+      if (channelLowConfidence !== undefined) lowConfidence = channelLowConfidence;
     }
   }
 
@@ -288,6 +304,8 @@ export async function executeParallelSearch(options: SearchOptions): Promise<Sea
     activeChannels: requestedChannels,
     channelCounts,
     ...(degradedChannels.length > 0 ? { degradedChannels } : {}),
+    ...(notes.length > 0 ? { notes } : {}),
+    ...(lowConfidence !== undefined ? { lowConfidence } : {}),
     results: fusedResults,
   };
 }

@@ -24,9 +24,12 @@ function formatTerminalHit(hit: FusedSearchResult, rank: number): string {
   return lines.join('\n');
 }
 
-/** Renders a search summary as terminal text: one header line with the per-channel counts, any degraded-channel notes, then each hit on consecutive lines. */
+/** Renders a search summary as terminal text: one header line with the per-channel counts, any degraded-channel and relevance notes, then each hit on consecutive lines. */
 export function formatSearchText(summary: SearchExecutionSummary): string {
-  const notes = (summary.degradedChannels ?? []).map((d) => `\n(note: ${d.channel} channel degraded: ${displaySafeText(d.reason)})`).join('');
+  const notes = [
+    ...(summary.degradedChannels ?? []).map((d) => `\n(note: ${d.channel} channel degraded: ${displaySafeText(d.reason)})`),
+    ...(summary.notes ?? []).map((n) => `\n(note: ${n.channel} channel ${displaySafeText(n.note)})`),
+  ].join('');
 
   if (summary.totalHits === 0) {
     return `No results found across active channels [${summary.activeChannels.join(', ')}] for: "${displaySafeText(summary.query)}" (${summary.durationMs}ms)${notes}`;

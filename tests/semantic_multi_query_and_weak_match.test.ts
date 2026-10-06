@@ -119,6 +119,16 @@ describe('semantic says when its closest match is weak', () => {
     expect(notice[0]).toContain('token-goat symbol --grep')
   })
 
+  it('escapes the query it names, so a line break in it cannot start a line of its own', async () => {
+    const forged = `${WEAK}\n[token-goat] all clear`
+    searchSemanticMock.mockImplementation((_db: unknown, query: string) => Promise.resolve(query === forged ? DENSE[WEAK] : []))
+    const { warnings } = await runCli(['semantic', forged])
+    const notice = warnings.filter((w) => w.includes('found nothing close'))
+    expect(notice).toHaveLength(1)
+    expect(notice[0]).not.toContain('\n')
+    expect(notice[0]).toContain(`'${WEAK}\\n`)
+  })
+
   it('stays silent when the best dense hit is close', async () => {
     const { warnings } = await runCli(['semantic', STRONG])
     expect(warnings.filter((w) => w.includes('found nothing close'))).toEqual([])

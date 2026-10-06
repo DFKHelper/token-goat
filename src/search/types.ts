@@ -39,6 +39,11 @@ export interface FusedSearchResult {
   readonly matchPreview?: string | undefined;
 }
 
+export interface SearchLowConfidence {
+  readonly closestDistance: number;
+  readonly threshold: number;
+}
+
 export interface SearchExecutionSummary {
   readonly query: string;
   readonly durationMs: number;
@@ -46,5 +51,9 @@ export interface SearchExecutionSummary {
   readonly activeChannels: ReadonlyArray<SearchChannel>;
   readonly channelCounts: Record<SearchChannel, number>;
   readonly degradedChannels?: ReadonlyArray<{ readonly channel: SearchChannel; readonly reason: string }> | undefined;
+  /** What a channel that ran has to say about the relevance of what it returned: the semantic floor emptying it, or its best hit being a weak match. */
+  readonly notes?: ReadonlyArray<{ readonly channel: SearchChannel; readonly note: string }> | undefined;
+  /** Set when the semantic channel's best hit is above `semantic.weak_distance`, the same field `semantic --json` carries. */
+  readonly lowConfidence?: SearchLowConfidence | undefined;
   readonly results: ReadonlyArray<FusedSearchResult>;
 }

@@ -18,9 +18,10 @@ import { searchEvidenceSemantically } from './evidence_cache.js'
 import { isIndexEmptyForProject, emptyIndexMessage, getEmbeddingCoverage } from './index_health.js'
 import { querySymbols, searchSymbolsFts } from './index_reader.js'
 import type { SymbolEntry } from './parser_types.js'
-import { displaySafeJson, toDisplayPath } from './paths.js'
+import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { recordSemanticQuery } from './semantic_distances.js'
+import { assessDenseRelevance, floorEmptiedPhrase, weakMatchPhrase } from './semantic_relevance.js'
 import { guardJsonRows, guardText, largestFileSize, readFileText, recordReadStat, warnIfFilesStale } from './read_commands.js'
 import { previewLines } from './read_meta.js'
 import { resolveProjectConfinement } from './read_spec.js'
@@ -107,23 +108,6 @@ interface FusedSemanticHit {
   // Which of the two retrievals produced this row. Derivable from `distance` for the dense leg alone, but not for the lexical one: a row the dense pass found and the FTS pass also voted for keeps its dense fields and only accumulates rank into `rrf`, so before these flags a both-lists row and a dense-only row rendered identically while sorting differently. That is the whole of what a reader cannot otherwise reconstruct from the printed output.
   inDense: boolean
   inLexical: boolean
-}
-
-/** Splits dense hits on the relevance floor, returning what survives and the closest distance that did not. The rejected minimum is what lets the caller say why the half came back empty: a floor is a threshold on a continuum, so "nothing matched" and "the best thing was 0.91 against a floor of 0.9" are different facts and only the second one is actionable. Compares raw `distance` rather than the rerank's `adjustedDistance`, since the floor was measured against raw distances and the rerank's boosts and path penalties are a ranking device with no calibrated scale. */
-export function applyRelevanceFloor(
-  hits: readonly SearchHit[],
-  floor: number,
-): { kept: SearchHit[]; nearestRejected: number | null } {
-  const kept: SearchHit[] = []
-  let nearestRejected: number | null = null
-  for (const h of hits) {
-    if (h.distance <= floor) {
-      kept.push(h)
-    } else if (nearestRejected === null || h.distance < nearestRejected) {
-      nearestRejected = h.distance
-    }
-  }
-  return { kept, nearestRejected }
 }
 
 /** The fields every `--json` answer carries when matching on meaning took no part in it: the preflight's status, summary and required action when the embeddings are not ready, or the error the dense search raised when they were. Nothing when it ran, so a consumer reads a degraded answer the same way whether hits came back, none did, or the index is empty. */
@@ -261,24 +245,20 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
   }
 
   // Relevance floor, applied here rather than inside the scan -- see the max_distance comment on SemanticConfig for why the scan's own bound is the wrong place for it. Reading the nearest rejected distance before filtering is the whole point of the diagnostic below: without it, a floor set too tight for a given corpus removes real answers and says nothing, which is the silent-recall-loss shape this command already had one instance of (an empty dense half only warns when the project is partly unembedded, so on a fully embedded project it warned about nothing at all).
-  let floorNearestRejected: number | null = null
-  if (rawHits.length > 0) {
-    const floor = loadConfig().semantic.max_distance
-    const { kept, nearestRejected } = applyRelevanceFloor(rawHits, floor)
-    floorNearestRejected = nearestRejected
-    // Only when the floor emptied the half outright: trimming a weak tail off a list that still has its best hit is the floor working as intended, and saying so on every ordinary search would be noise.
-    if (kept.length === 0 && nearestRejected !== null) {
-      console.warn(
-        `Matching on meaning found nothing within ${floor} (closest was ${nearestRejected.toFixed(3)}); ` +
-          `these results come from keyword search alone. Raise semantic.max_distance to see weaker matches.`,
-      )
-    }
-    rawHits = kept
+  const relevance = assessDenseRelevance(rawHits)
+  const floorNearestRejected = relevance.nearestRejected
+  const floorEmptied = floorEmptiedPhrase(relevance)
+  if (floorEmptied !== null) {
+    console.warn(
+      `Matching on meaning found ${floorEmptied}; ` +
+        `these results come from keyword search alone. Raise semantic.max_distance to see weaker matches.`,
+    )
   }
+  rawHits = relevance.kept
   // Nearest-neighbour search always returns something, so a page of noise prints exactly like a page of answers; the floor above is left loose on purpose and cannot say so. Measured on the floor's survivors, and only when there are any: an empty dense half already has its own warning.
-  const closestDense = rawHits.reduce<number | null>((best, h) => (best === null || h.distance < best ? h.distance : best), null)
-  const weakDistance = loadConfig().semantic.weak_distance
-  const weakClosestDistance = closestDense !== null && closestDense > weakDistance ? closestDense : null
+  const closestDense = relevance.closestDistance
+  const { weakDistance, weakClosestDistance } = relevance
+  const weakPhrase = weakMatchPhrase(relevance)
   // A query with no dense answer because the model was not ready says nothing about distances, so only a returned hit or a ready, error-free pass is recorded.
   if (closestDense !== null || (preflight.status === 'ready' && !searchSemanticError)) {
     recordSemanticQuery({ projectRoot: rootDir, closestDistance: closestDense, floorRejectedMin: floorNearestRejected, weak: weakClosestDistance !== null })
@@ -441,9 +421,9 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
       emitErr(`Showing ${hits.length} of ${candidatesClipped ? 'at least ' : ''}${countNoun(eligibleCount, 'match', 'matches')} (raise --limit to see the rest).`)
     }
     // Names the query because a multi-query call prints every block's stderr ahead of the blocks themselves.
-    if (weakClosestDistance !== null) {
+    if (weakPhrase !== null) {
       console.warn(
-        `Matching on meaning found nothing close for '${query}' (closest was ${weakClosestDistance.toFixed(3)}, weak above ${weakDistance}); these results may be unrelated. ` +
+        `Matching on meaning found nothing close for '${displaySafeText(query)}' (${weakPhrase}); these results may be unrelated. ` +
           `For a known name try token-goat symbol --grep <pattern> or rg, or rephrase the query.`,
       )
     }
