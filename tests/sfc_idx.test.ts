@@ -167,10 +167,19 @@ describe('vue adapter', () => {
     expect(defaultOf('export default class {\n  run() {}\n}', 'Cls.vue')).toMatchObject([{ kind: 'sfc_script_class', lineStart: 2, lineEnd: 4 }])
     const sub = extractVue(sfc('export default class extends Base {\n  run() {}\n}'), 'Sub.vue').symbols
     expect(sub.filter((s) => s.kind === 'sfc_script_class').map((s) => s.name)).toEqual(['default'])
-    // A named default keeps its own name; a default that re-exports a value or an options object defines nothing named `default` here.
+    // A named default keeps its own name; a default that re-exports a value defines nothing named `default` here.
     expect(extractVue(sfc('export default function named() {}'), 'Named.vue').symbols.map((s) => s.name)).toContain('named')
     expect(defaultOf('const v = 1\nexport default v', 'Value.vue')).toEqual([])
-    expect(defaultOf('export default {\n  name: "x"\n}', 'Options.vue')).toEqual([])
+    expect(defaultOf('const v = 1\nexport default v.w', 'Member.vue')).toEqual([])
+  })
+
+  it('indexes a Vue Options API object or a defineComponent call as a `default` const', () => {
+    // HAND-DERIVED: the two component shapes Vue's own docs show for <script> without setup, line numbers counted by hand from the script block.
+    const sfc = (body: string) => `<script>\n${body}\n</script>\n<template><div/></template>\n`
+    const defaultOf = (body: string, file: string) => extractVue(sfc(body), file).symbols.filter((s) => s.name === 'default')
+    expect(defaultOf('export default {\n  name: "x"\n}', 'Options.vue')).toMatchObject([{ kind: 'sfc_script_const', lineStart: 2, lineEnd: 4 }])
+    expect(defaultOf('import { defineComponent } from "vue"\nexport default defineComponent({\n  name: "y",\n})', 'Comp.vue')).toMatchObject([{ kind: 'sfc_script_const', lineStart: 3, lineEnd: 5 }])
+    expect(defaultOf('export default Vue.extend({\n  name: "z",\n})', 'Ext.vue')).toMatchObject([{ kind: 'sfc_script_const', lineStart: 2, lineEnd: 4 }])
   })
 
   it('does not leak <style> block content into script or template extraction', () => {

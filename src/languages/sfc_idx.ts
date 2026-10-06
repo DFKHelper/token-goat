@@ -120,6 +120,8 @@ const CONST_DECL_RE = /^(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*[:=]/
 const CLASS_DECL_RE = /^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+(?!extends\b)([A-Za-z_$][\w$]*)/
 // A nameless `export default` function, class or arrow, indexed as `default` the way extractTsJsSymbols indexes it in a .ts/.js file. Tried only after the named matchers above, so `export default function named()` keeps its name; group 1 is set for a class.
 const ANONYMOUS_DEFAULT_RE = /^export\s+default\s+(?:async\s+)?(?:function\b|(class)\b|(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>)/
+// A nameless `export default` options object or factory call (`export default {`, `export default defineComponent({`), indexed as a `default` const. Tried after the arrow match, so `export default x => x` stays a function; a bare `export default foo` matches neither and defines nothing here.
+const DEFAULT_VALUE_RE = /^export\s+default\s+(?:\{|[A-Za-z_$][\w$.]*\s*\()/
 
 // Last (1-indexed, script-relative) line of the declaration that starts at `startIdx` (0-indexed) in the string-and-comment-blanked `blanked` lines: the first line where every ( [ { opened since the start is closed again. A declaration that opens nothing, `const x = ref(0)`, ends on its own line, so a following statement's braces can never stretch it (the no-semicolon style has no `;` to stop a forward search). A signature whose `{` sits alone on the next line (Allman) still reaches its body.
 function declarationEndIdx(blanked: readonly string[], startIdx: number): number {
@@ -159,9 +161,10 @@ function extractTopLevelDeclarations(
       const cm = fm ? null : CONST_DECL_RE.exec(trimmed)
       const clm = fm || cm ? null : CLASS_DECL_RE.exec(trimmed)
       const am = fm || cm || clm ? null : ANONYMOUS_DEFAULT_RE.exec(trimmed)
-      const name = fm?.[1] ?? cm?.[1] ?? clm?.[1] ?? (am ? 'default' : undefined)
+      const dm = fm || cm || clm || am ? null : DEFAULT_VALUE_RE.exec(trimmed)
+      const name = fm?.[1] ?? cm?.[1] ?? clm?.[1] ?? (am || dm ? 'default' : undefined)
       if (name) {
-        const kind = fm || (am && am[1] === undefined) ? 'sfc_script_function' : cm ? 'sfc_script_const' : 'sfc_script_class'
+        const kind = fm || (am && am[1] === undefined) ? 'sfc_script_function' : cm || dm ? 'sfc_script_const' : 'sfc_script_class'
         const sym = makeLineSymbol(filePath, name, kind, line)
         const endIdx = declarationEndIdx(lines, i)
         symbols.push(endIdx > i ? { ...sym, lineEnd: startLine + endIdx, body: rawLines.slice(i, endIdx + 1).join('\n') } : sym)

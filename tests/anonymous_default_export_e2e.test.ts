@@ -14,11 +14,16 @@ import { drainOnce, pendingEmbeddings } from '../src/worker.js'
 
 import { runBundle, tgIsolatedEnv } from './helpers/bundle.js'
 
-// HAND-DERIVED: one nameless default per file, written from the ES module grammar; line numbers counted by hand.
+// HAND-DERIVED: one nameless default per file, written from the ES module grammar and the config and component shapes Vite and Vue document; line numbers counted by hand.
 const SOURCES: Record<string, string> = {
   'src/handler.ts': 'import { load } from "./load"\n\nexport default function () {\n  return load()\n}\n',
   'src/widget.js': 'export default class {\n  render() {\n    return 1\n  }\n}\n',
   'src/Panel.vue': '<script>\nexport default function () {\n  return 2\n}\n</script>\n<template><div/></template>\n',
+  'src/config.ts': 'export default {\n  port: 1,\n} satisfies { port: number }\n',
+  'src/vite.config.js': 'import { defineConfig } from "vite"\n\nexport default defineConfig({\n  base: "/",\n})\n',
+  'src/Options.vue': '<script>\nexport default {\n  data() {\n    return { n: 1 }\n  },\n}\n</script>\n<template><div/></template>\n',
+  'src/Comp.vue': '<script>\nimport { defineComponent } from "vue"\nexport default defineComponent({\n  name: "Comp",\n})\n</script>\n<template><div/></template>\n',
+  'src/reexport.ts': 'const foo = 1\nexport default foo\n',
 }
 
 const tempDirs = new Set<string>()
@@ -62,10 +67,15 @@ describe('anonymous default export on the worker default path', () => {
     try {
       const rows = querySymbols({ name: 'default' }, dbPath)
       const byFile = Object.fromEntries(rows.map((r) => [path.basename(r.filePath), r]))
-      expect(Object.keys(byFile).sort()).toEqual(['Panel.vue', 'handler.ts', 'widget.js'])
+      // reexport.ts only names a value defined above it, so it has no `default` of its own.
+      expect(Object.keys(byFile).sort()).toEqual(['Comp.vue', 'Options.vue', 'Panel.vue', 'config.ts', 'handler.ts', 'vite.config.js', 'widget.js'])
       expect(byFile['handler.ts']).toMatchObject({ kind: 'function', lineStart: 3, lineEnd: 5 })
       expect(byFile['widget.js']).toMatchObject({ kind: 'class', lineStart: 1, lineEnd: 5 })
       expect(byFile['Panel.vue']).toMatchObject({ kind: 'sfc_script_function', lineStart: 2, lineEnd: 4 })
+      expect(byFile['config.ts']).toMatchObject({ kind: 'variable', lineStart: 1, lineEnd: 3 })
+      expect(byFile['vite.config.js']).toMatchObject({ kind: 'variable', lineStart: 3, lineEnd: 5 })
+      expect(byFile['Options.vue']).toMatchObject({ kind: 'sfc_script_const', lineStart: 2, lineEnd: 6 })
+      expect(byFile['Comp.vue']).toMatchObject({ kind: 'sfc_script_const', lineStart: 3, lineEnd: 5 })
       expect(querySymbols({ name: 'render' }, dbPath)).toMatchObject([{ kind: 'method' }])
     } finally {
       closeDb(dbPath)
@@ -86,10 +96,15 @@ describe('anonymous default export through the built bundle', () => {
 
     const symbol = run(['symbol', 'default'])
     expect(symbol.status, symbol.stderr).toBe(0)
-    for (const file of ['handler.ts', 'widget.js', 'Panel.vue']) expect(symbol.stdout, file).toContain(file)
+    for (const file of ['handler.ts', 'widget.js', 'Panel.vue', 'config.ts', 'vite.config.js', 'Options.vue', 'Comp.vue']) expect(symbol.stdout, file).toContain(file)
+    expect(symbol.stdout).not.toContain('reexport.ts')
 
     const read = run(['read', 'src/handler.ts::default'])
     expect(read.status, read.stderr).toBe(0)
     expect(read.stdout).toContain('export default function () {\n  return load()\n}')
+
+    const config = run(['read', 'src/vite.config.js::default'])
+    expect(config.status, config.stderr).toBe(0)
+    expect(config.stdout).toContain('export default defineConfig({\n  base: "/",\n})')
   }, 60_000)
 })

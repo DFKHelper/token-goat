@@ -2114,8 +2114,29 @@ describe("a stored body says the same thing as the span it is stored with", () =
     expect(named.map((s) => s.name).sort()).toEqual(['Other', 'named'])
     const value = (await parseFile(write('e2.ts', 'const v = 1\nexport default v\n'))).symbols
     expect(value.map((s) => s.name)).toEqual(['v'])
-    const object = (await parseFile(write('e3.ts', 'export default { a: 1 }\n'))).symbols
-    expect(object.some((s) => s.name === 'default')).toBe(false)
+  })
+
+  it('indexes a nameless `export default` object or call as a `default` variable, through a satisfies or as wrapper too', async () => {
+    // HAND-DERIVED: written from the ES module and TypeScript grammars; line numbers counted by hand.
+    const cases: Array<[string, string]> = [
+      ['f1.ts', 'export default {\n  a: 1,\n}\n'],
+      ['f2.js', 'export default defineConfig({\n  base: "/",\n})\n'],
+      ['f3.ts', 'export default {\n  a: 1,\n} satisfies Config\n'],
+      ['f4.ts', 'export default {\n  a: 1,\n} as Config\n'],
+      ['f5.ts', 'export default Vue.extend({\n  a: 1,\n})\n'],
+    ]
+    for (const [name, source] of cases) {
+      const sym = (await parseFile(write(name, source))).symbols.find((x) => x.name === 'default')
+      expect(sym, name).toMatchObject({ kind: 'variable', lineStart: 1, lineEnd: 3, body: source.trimEnd() })
+    }
+    // A bare name, a member, a literal or a wrapped bare name is something defined elsewhere or nothing at all, so no `default` is made up for it.
+    const none: Array<[string, string]> = [
+      ['g1.ts', 'const v = 1\nexport default v\n'],
+      ['g2.ts', 'import * as ns from "./ns"\nexport default ns.value\n'],
+      ['g3.ts', 'export default 42\n'],
+      ['g4.ts', 'const v = 1\nexport default v satisfies number\n'],
+    ]
+    for (const [name, source] of none) expect((await parseFile(write(name, source))).symbols.some((s) => s.name === 'default'), name).toBe(false)
   })
 
   it('keeps go declaration keywords, but not for a grouped declaration', async () => {
