@@ -16,7 +16,8 @@ import { confinedProjectRoot, confinementRefusal, parseCrossFileMultiSpec, forma
 import { unknownSymbolSuggestion } from './read_suggest.js'
 import { isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote, REF_BLIND_DEF_PROBE_LIMIT } from './ref_blindness.js'
 import { typedRefsForDef } from './graph_traversal.js'
-import { compileGrepMatcher, countNoun, excludeTestsHiddenNote, grepFilteredToEmptyNotice, isTestFile } from './util.js'
+import { compileGrepMatcher, countNoun, excludeTestsHiddenNote, isTestFile } from './util.js'
+import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { buildContextWindow, renderContextWindow, type SourceContextLine } from './util_context.js'
 import { CliError, formatCommandError } from './command_error.js'
 
@@ -195,17 +196,8 @@ function refsSearchBaselineBytes(rows: Iterable<RefEntry>): number {
   return deliveredOutputBytes(total)
 }
 
-/** Render references for several named targets, one block (or JSON entry) each. Shared by runRefs's same-file multi-symbol path (`file::a,b`, keyed by bare symbol) and runRefsCrossFile's pair path (`a.ts::x,b.ts::y`, keyed by symbol or by the full `file::symbol` pair). Those were two loops written out separately and kept in step by hand, described in runRefsCrossFile's own docblock as mirroring this one -- same query construction, same `--callers`/`--limit`/`--top`/`--grep`/`--exclude-tests`/`--json` handling, differing only in where each target's `file` and output key come from. Keeping two copies of that in step by hand is how they drift, and they already had (see `annotateHiddenByGrep`). Prints directly and returns a bare exit code rather than `{text, code}`, per runRefs's own existing convention. */
-function renderRefsTargets(
-  targets: RefsTarget[],
-  opts: RefsOptions,
-  {
-    annotateHiddenByGrep,
-  }: {
-    /** Whether a JSON entry filtered by --grep carries a `hiddenByGrep` count. True for the same-file multi-symbol path and false for the cross-file one, which is not a design decision but the drift this consolidation found: the fix that added the key was applied to one of the two mirrored loops and not the other, so `refs "a.ts::x,b.ts::y" --json --grep` still cannot tell "--grep matched none of the N that exist" from a genuine absence. Preserved exactly as-is here rather than quietly corrected, because changing what a command emits is not a refactor's call to make; it is now one flag in one place instead of a silent difference a hundred lines apart. */
-    annotateHiddenByGrep: boolean
-  },
-): number {
+/** Render references for several named targets, one block (or JSON entry) each. Shared by runRefs's same-file multi-symbol path (`file::a,b`, keyed by bare symbol) and runRefsCrossFile's pair path (`a.ts::x,b.ts::y`, keyed by symbol or by the full `file::symbol` pair). Those were two loops written out separately and kept in step by hand, described in runRefsCrossFile's own docblock as mirroring this one -- same query construction, same `--callers`/`--limit`/`--top`/`--grep`/`--exclude-tests`/`--json` handling, differing only in where each target's `file` and output key come from. Keeping two copies of that in step by hand is how they drift, and they already had: only the same-file loop carried `hiddenByGrep`. Prints directly and returns a bare exit code rather than `{text, code}`, per runRefs's own existing convention. */
+function renderRefsTargets(targets: RefsTarget[], opts: RefsOptions): number {
   // An overloaded `Class.method` target would otherwise print "(no references found)" for a symbol that exists: refuse the whole request with the @line picks, as the single-symbol form does.
   for (const { file, symbol } of targets) {
     if (file === undefined || !symbol.includes('.')) continue
@@ -217,16 +209,19 @@ function renderRefsTargets(
   // Every entry uses the same envelope shape as the single-symbol `refs`/`symbol`/`skeleton`/ `outline` JSON output ({ items, truncated, totalCount }), whether or not it was truncated — a JSON consumer should never have to branch on shape depending on truncation. `--top` opts into a distinct, deliberately different envelope ({ fileCounts, totalFiles, totalRefs, shown }) since the caller explicitly asked for the grouped summary shape instead.
   const jsonOut: Record<string, RefsJsonEntry> = {}
   let anyFound = false
+  // A target whose references --grep filtered out entirely is an answer, not a miss: the single-symbol path prints that notice on stdout and exits 0, so a call whose every target was filtered must too, rather than reporting the same outcome as a failure because two names were asked for instead of one.
+  let anyFilteredByGrep = false
   const lines: string[] = []
   const refRows: RefEntry[] = []
   for (const { file, symbol, key } of targets) {
     const { queryOpts, results, preScanCount, scanLimit, suppressed, preGrepCount, clientFiltered, filteredTotal } = collectRefs(symbol, file, opts)
     if (results.length > 0) anyFound = true
+    else if (opts.grep !== undefined && preGrepCount > 0) anyFilteredByGrep = true
     refRows.push(...results)
     if (opts.json === true) {
       // Same omit-when-zero `hiddenByGrep` the single-spec JSON path emits, per target here: a symbol whose entry is `items: []` because --grep matched none of its references must not be indistinguishable from one that genuinely has none.
       const hiddenByGrep = opts.grep !== undefined ? preGrepCount - (filteredTotal ?? results.length) : 0
-      const withHidden = <T extends object>(payload: T): T => ({ ...payload, ...(annotateHiddenByGrep && hiddenByGrep > 0 ? { hiddenByGrep } : {}) })
+      const withHidden = <T extends object>(payload: T): T => ({ ...payload, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) })
       if (opts.top !== undefined) {
         jsonOut[key] = withHidden(topFilesJsonPayload(results, opts.top))
       } else {
@@ -275,16 +270,16 @@ function renderRefsTargets(
     const text = displaySafeJson(jsonOut)
     emit(text)
     if (anyFound) recordReadStat('symbol_read', fullSourceBytes, text, opts.spec)
-    return anyFound ? 0 : 1
+    return anyFound || anyFilteredByGrep ? 0 : 1
   }
   // Every target missed, so the call failed: its per-target reasons are the error, written to stderr under one token-goat: line as the single-symbol miss is, never to stdout beside an exit 1. Under --json the map above stays the stdout answer, as writeCommandFailure keeps a --json body.
-  if (!anyFound) {
+  if (!anyFound && !anyFilteredByGrep) {
     emitErr(formatCommandError(new CliError(lines)))
     return 1
   }
   const text = lines.join('\n')
   emitGuarded(text, 'symbol')
-  recordReadStat('symbol_read', fullSourceBytes, text, opts.spec)
+  if (anyFound) recordReadStat('symbol_read', fullSourceBytes, text, opts.spec)
   return 0
 }
 
@@ -327,7 +322,6 @@ export function runRefs(opts: RefsOptions): number {
   return renderRefsTargets(
     symbols.map((symbol) => ({ file, symbol, key: symbol })),
     opts,
-    { annotateHiddenByGrep: true },
   )
 }
 
@@ -338,8 +332,6 @@ function runRefsCrossFile(pairs: { file: string; symbol: string }[], opts: RefsO
   return renderRefsTargets(
     pairs.map((p) => ({ file: p.file, symbol: p.symbol, key: keyFor(p) })),
     opts,
-    // Not annotated today; renderRefsTargets's own option doc explains why that is a preserved divergence rather than a decision.
-    { annotateHiddenByGrep: false },
   )
 }
 

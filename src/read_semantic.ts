@@ -26,7 +26,8 @@ import { guardJsonRows, guardText, largestFileSize, readFileText, recordReadStat
 import { previewLines } from './read_meta.js'
 import { resolveProjectConfinement } from './read_spec.js'
 import { ensureWorkerAlive } from './worker_lifecycle.js'
-import { compileGrepMatcher, countNoun, excludeTestsHiddenNote, extractErrorMessage, grepFilteredToEmptyNotice, isTestFile } from './util.js'
+import { compileGrepMatcher, countNoun, excludeTestsHiddenNote, extractErrorMessage, isTestFile } from './util.js'
+import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 
 // Resolves the enclosing symbol for a semantic chunk's line range, keyed off its `startLine`.

@@ -380,7 +380,7 @@ describe('trace command', () => {
     ].join('\n')
     const r = await run(['trace'], { input: oneForeign, cwd: tmpDir })
     expect(r.status, r.stderr).toBe(0)
-    expect(r.stdout).toContain('all 1 frame was filtered out as non-project')
+    expect(r.stdout).toContain('the only frame was filtered out as non-project')
     expect(r.stdout).not.toContain('all 1 frames')
   })
 

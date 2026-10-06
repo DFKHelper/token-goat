@@ -4,9 +4,9 @@ import {
   compileGrepMatcher,
   countNoun,
   excludeTestsHiddenNote,
-  grepFilteredToEmptyNotice,
   isTestFile,
 } from './util.js'
+import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import {
   buildContextWindow,
   renderContextWindow,

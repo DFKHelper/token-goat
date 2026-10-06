@@ -2219,8 +2219,10 @@ describe('read_commands', () => {
       )
       const { text, code } = runOutline({ file: 'a.ts', grep: 'zzzz' })
       expect(code).toBe(0)
-      expect(text).toContain('all 1 indexed symbol was filtered out')
+      expect(text).toContain('the only indexed symbol was filtered out')
       expect(text).not.toContain('symbol were filtered out')
+      // The pronoun agrees too: this multi-filter notice always said "to see them", the half-correction its --grep sibling already had fixed.
+      expect(text).toContain('to see it)')
     })
 
     // Negative control: the plural branch is untouched by the singular fix and must keep its own agreement. Passes both before and after, so it proves the singular assertion above is doing the work rather than the pair drifting together.
@@ -5985,7 +5987,7 @@ describe('read_commands', () => {
         expect(code).toBe(0)
       })
       const all = result.stdout + result.stderr
-      expect(all).toContain('all 1 changed file was filtered out by --grep')
+      expect(all).toContain('the only changed file was filtered out by --grep')
       expect(all).not.toContain('1 changed files')
     })
 
@@ -7265,7 +7267,8 @@ describe('runRefs --grep (single-symbol path, filters on call-site file path)', 
       expect(code).toBe(0)
     })
     const all = result.stdout + result.stderr
-    expect(all).toContain('all 1 reference was filtered out by --grep')
+    expect(all).toContain('the only reference was filtered out by --grep')
+    expect(all).not.toContain('all 1 reference')
     expect(all).not.toContain('1 references')
   })
 
@@ -7406,11 +7409,11 @@ describe('runRefs --exclude-tests (cross-file multi-spec path, additive opt-in)'
     }).stdout
     expect(withFlag).toContain('src/cli.ts:5: realUse()')
     expect(withFlag).not.toContain('vendor/x.ts')
-    expect(withFlag).toContain('all 1 reference was filtered out by --grep')
+    expect(withFlag).toContain('the only reference was filtered out by --grep')
   })
 
-  // Pins both halves of a divergence that renderRefsTargets now carries as one named option (`annotateHiddenByGrep`) instead of as a silent difference between two loops a hundred lines apart. The same-file multi-symbol path emits `hiddenByGrep`, so an entry emptied by --grep is distinguishable from one that genuinely has no references; the cross-file path never has. Neither half was asserted anywhere, so flipping that option in either direction left the whole suite green -- which is how the two loops came apart to begin with. This does not endorse the difference. It makes changing it a deliberate act with a failing test attached, in the direction the same-file comment argues is correct.
-  it('emits hiddenByGrep on the same-file multi-symbol JSON path, and -- today -- not on the cross-file one', () => {
+  // HAND-DERIVED from the mocked rows: both multi-target forms render through renderRefsTargets, and the cross-file one used to omit `hiddenByGrep`, so `refs "a.ts::x,b.ts::y" --json --grep` could not tell "--grep matched none of the N that exist" from a genuine absence. Both halves are asserted, so dropping the key from either form fails here.
+  it('emits hiddenByGrep on both the same-file and the cross-file multi-symbol JSON paths', () => {
     mockQueryRefs.mockImplementation((opts: { name: string }) => {
       if (opts.name === 'alpha') return [ref('src/cli.ts', 5, 'alpha()'), ref('vendor/x.ts', 1, 'alpha()')]
       if (opts.name === 'beta') return [ref('vendor/y.ts', 2, 'beta()')]
@@ -7430,9 +7433,55 @@ describe('runRefs --exclude-tests (cross-file multi-spec path, additive opt-in)'
       capture(() => runRefs({ spec: 'src/a.ts::alpha,src/b.ts::beta', grep: '^src/', json: true })).stdout,
     ) as Record<string, Entry>
     expect(crossFile['src/a.ts::alpha']?.totalCount).toBe(1)
-    expect(crossFile['src/a.ts::alpha']?.hiddenByGrep).toBeUndefined()
+    expect(crossFile['src/a.ts::alpha']?.hiddenByGrep).toBe(1)
     expect(crossFile['src/b.ts::beta']?.totalCount).toBe(0)
-    expect(crossFile['src/b.ts::beta']?.hiddenByGrep).toBeUndefined()
+    expect(crossFile['src/b.ts::beta']?.hiddenByGrep).toBe(1)
+  })
+
+  // HAND-DERIVED from the mocked rows. `refs used --grep nomatch` prints the filtered-to-empty notice on stdout and exits 0, but asking for two names whose references --grep all filtered out exited 1 with the same notices on stderr, so the outcome a caller got depended on how many names it asked for. A target --grep emptied is an answer, so the call succeeds when every target is either found or filtered, and only a call where every target genuinely missed fails.
+  it.each([
+    ['same-file', 'src/a.ts::alpha,beta', 'alpha', 'beta'],
+    ['cross-file', 'src/a.ts::alpha,src/b.ts::beta', 'src/a.ts::alpha', 'src/b.ts::beta'],
+  ])('exits 0 on stdout when --grep filtered out every reference of every %s target', (_form, spec, keyA, keyB) => {
+    mockQueryRefs.mockImplementation((opts: { name: string }) => {
+      if (opts.name === 'alpha') return [ref('vendor/x.ts', 1, 'alpha()'), ref('vendor/z.ts', 4, 'alpha()')]
+      if (opts.name === 'beta') return [ref('vendor/y.ts', 2, 'beta()')]
+      return []
+    })
+    const text = capture(() => {
+      expect(runRefs({ spec, grep: '^src/' })).toBe(0)
+    })
+    expect(text.stderr).toBe('')
+    expect(text.stdout).toContain(`${keyA}: (all 2 references were filtered out by --grep ^src/`)
+    expect(text.stdout).toContain(`${keyB}: (the only reference was filtered out by --grep ^src/ -- widen or drop the filter to see it)`)
+
+    const json = capture(() => {
+      expect(runRefs({ spec, grep: '^src/', json: true })).toBe(0)
+    })
+    const entries = JSON.parse(json.stdout) as Record<string, { totalCount: number; hiddenByGrep?: number }>
+    expect(entries[keyA]).toMatchObject({ totalCount: 0, hiddenByGrep: 2 })
+    expect(entries[keyB]).toMatchObject({ totalCount: 0, hiddenByGrep: 1 })
+  })
+
+  // HAND-DERIVED. The mixed case the issue was reported on: one name --grep emptied and one with no references at all. The filtered one is an answer, as a found one is beside a miss, so the call exits 0 and both reasons go to stdout.
+  it('exits 0 when one target was filtered by --grep and the other has no references', () => {
+    mockQueryRefs.mockImplementation((opts: { name: string }) => (opts.name === 'used' ? [ref('vendor/x.ts', 1, 'used()')] : []))
+    const out = capture(() => {
+      expect(runRefs({ spec: 'src/a.ts::used,unusedB', grep: 'nomatch' })).toBe(0)
+    })
+    expect(out.stderr).toBe('')
+    expect(out.stdout).toContain('used: (the only reference was filtered out by --grep nomatch')
+    expect(out.stdout).toContain('unusedB: (no references found)')
+  })
+
+  // Negative control: with no --grep, every target missing is still a failure on stderr, so the two tests above are about the filter and not about the multi-target path having stopped failing.
+  it('still exits 1 on stderr when every target genuinely has no references', () => {
+    mockQueryRefs.mockReturnValue([])
+    const out = capture(() => {
+      expect(runRefs({ spec: 'src/a.ts::used,unusedB', grep: 'nomatch' })).toBe(1)
+    })
+    expect(out.stdout).toBe('')
+    expect(out.stderr).toContain('unusedB: (no references found)')
   })
 })
 

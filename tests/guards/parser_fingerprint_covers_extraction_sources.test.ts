@@ -54,6 +54,7 @@ const NOT_EXTRACTION: Record<string, string> = {
   'src/config_project.ts': 'project-level config file resolution, same reasoning as src/config.ts',
   'src/config_types.ts': 'type-only config shape declarations, erased at compile time',
   'src/csv_query.ts': 'CSV table querying used by xlsx_extract.ts and the read_structured_data CLI surface, part of the document/embedding pipeline gated by files.embed_sha, not files.parser_sha',
+  'src/filter_notice.ts': 'words the filtered-to-empty notices of listing commands, reached only through the csv_query.ts table renderer; it never sees file content an extractor parses',
   'src/db.ts': 'database connection/schema infrastructure; excluded per this fingerprint\'s own design (see extractionSources() doc comment)',
   'src/doc_embed_extract.ts': 'dispatches pdf/docx/pptx/xlsx text extraction for indexFileEmbeddings only, gated by files.embed_sha',
   'src/document_refusal.ts': 'base error type for document-extraction timeouts/refusals in the embed_sha-gated pipeline',

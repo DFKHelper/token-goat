@@ -26,11 +26,11 @@ import { unknownSymbolSuggestion } from './read_suggest.js'
 import {
   isTestFile,
   compileGrepMatcher,
-  grepFilteredToEmptyNotice,
   excludeTestsHiddenNote,
   countNoun,
   resolveOnPath,
 } from './util.js'
+import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { spawnResolvedSync } from './process_util.js'
 import { buildContextWindow, renderContextWindow } from './util_context.js'
 import { globalDbPath } from './constants.js'

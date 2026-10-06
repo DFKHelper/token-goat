@@ -6,7 +6,7 @@ import { compileGuardedRegexCached } from './regex_guard.js'
 import { parse } from 'csv-parse/sync'
 
 import { headElidedNotice } from './query_notices.js'
-import { filtersFilteredToEmptyNotice } from './util.js'
+import { filtersFilteredToEmptyNotice } from './filter_notice.js'
 
 export type CsvWhereOp = '=' | '!=' | '>' | '<' | '>=' | '<=' | '~='
 

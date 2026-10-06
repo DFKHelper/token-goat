@@ -514,6 +514,12 @@ short test summary info
       expect(text).toContain('[go]');
     });
 
+    // HAND-DERIVED from the inputs. One failure read "showing all 1 current failure(s) as new", a count the subject cannot agree with in the singular.
+    it('names the only failure in the singular and the rest by count in the no-baseline message', () => {
+      expect(formatFailureDeltaText(computeFailureDelta(null, ['TestA']), 'go')).toContain('showing the only current failure as new.');
+      expect(formatFailureDeltaText(computeFailureDelta(null, ['TestA', 'TestB']), 'go')).toContain('showing all 2 current failures as new.');
+    });
+
     it('shows newly failing, newly fixed, and a still-failing count (not a full list)', () => {
       const delta = computeFailureDelta(['TestA', 'TestC'], ['TestA', 'TestB']);
       const text = formatFailureDeltaText(delta, 'pytest');

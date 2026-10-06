@@ -42,9 +42,9 @@ import {
   compileGrepMatcher,
   escapeRegExp,
   extractErrorMessage,
-  grepFilteredToEmptyNotice,
   requireNonNegativeStrictInt,
 } from './util.js'
+import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { fenceFileFieldIfMatched, fenceFileText, fenceJsonStrings } from './untrusted_fence.js'
 import { ZipInputTooLargeError, ZipOutputTooLargeError } from './zip_bounds.js'
 import { CliError, formatCommandError } from './command_error.js'

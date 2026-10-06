@@ -7,6 +7,7 @@ import { canonicalize } from './project.js'
 import { resolveBody, warnIfFilesStale } from './read_commands.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import { countNoun, foldPath, requireNonNegativeStrictInt } from './util.js'
+import { filteredSubject } from './filter_notice.js'
 
 interface TraceFrame {
   file: string
@@ -349,9 +350,7 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
     }
     if (block.frames.length === 0) {
       const preFilterCount = blocks[blockIndex]?.frames.length ?? 0
-      const noun = preFilterCount === 1 ? 'frame' : 'frames'
-      const verb = preFilterCount === 1 ? 'was' : 'were'
-      process.stdout.write(`  (all ${preFilterCount} ${noun} ${verb} filtered out as non-project -- this traceback runs entirely through dependency or runtime code)\n`)
+      process.stdout.write(`  (${filteredSubject(preFilterCount, 'frame', 'frames').subject} filtered out as non-project -- this traceback runs entirely through dependency or runtime code)\n`)
     }
     if (block.exception) process.stdout.write(`${displaySafeText(block.exception)}\n`)
     process.stdout.write('\n')

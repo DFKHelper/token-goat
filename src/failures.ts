@@ -2,6 +2,7 @@
 
 import { stripAnsiEscapes } from './render/ansi.js';
 import { displaySafeJson } from './paths.js';
+import { allOfCount } from './filter_notice.js';
 
 /** A single failure block with name and body. */
 export interface FailureBlock {
@@ -487,7 +488,7 @@ export function computeFailureDelta(prevSignatures: string[] | null, currSignatu
 export function formatFailureDeltaText(delta: FailureDelta, runner: string): string {
   if (!delta.hasBaseline) {
     const lines = [
-      `No baseline yet for this project/key -- showing all ${delta.newlyFailing.length} current failure(s) as new.  [${runner}]`,
+      `No baseline yet for this project/key -- showing ${allOfCount(delta.newlyFailing.length, 'current failure')} as new.  [${runner}]`,
     ];
     if (delta.newlyFailing.length === 0) {
       lines.push('(no failures)');

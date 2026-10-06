@@ -17,6 +17,7 @@ import { buildImportGraph } from './import_graph.js'
 import { detectModules, renderModules } from './modules.js'
 import { estimateTokens } from './overflow_guard.js'
 import { runGit, isTestFile, extractErrorMessage, countNoun, foldPath } from './util.js'
+import { filteredSubject } from './filter_notice.js'
 import { globalDbPath } from './constants.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
@@ -116,11 +117,11 @@ export function runContextFor(opts: ContextForOptions): number {
 
   const skippedByBudget = hits.length - entries.length
   const notices: string[] = []
-  if (skippedByBudget > 0) {
+  if (skippedByBudget > 0 && budget !== undefined) {
     notices.push(
       entries.length === 0
-        ? `All ${countNoun(skippedByBudget, 'matching symbol')} were larger than --budget ${String(opts.budget)} tokens, so none are shown. Raise --budget.`
-        : `Showing ${entries.length} of ${countNoun(hits.length, 'matching symbol')}; ${skippedByBudget} did not fit --budget ${String(opts.budget)} tokens.`,
+        ? `Nothing is shown: ${filteredSubject(skippedByBudget, 'matching symbol', 'matching symbols').subject} larger than --budget ${countNoun(budget, 'token')}. Raise --budget.`
+        : `Showing ${entries.length} of ${countNoun(hits.length, 'matching symbol')}; ${skippedByBudget} did not fit --budget ${countNoun(budget, 'token')}.`,
     )
   }
   if (moreBeyondTop) notices.push(`More matches exist beyond --top ${top} (raise it to see them).`)

@@ -9,7 +9,8 @@ import { guardText, healStaleIndex, readFileText, recordReadStat, resolveAgainst
 import { stripHtmlIdSpelling, parseCrossFileMultiSpec } from './read_spec.js'
 import { didYouMean, filterSimilarHeadings } from './read_suggest.js'
 import { listSections, readSection, type SectionResult } from './section_reader.js'
-import { compileGrepMatcher, countNoun, grepFilteredToEmptyNotice } from './util.js'
+import { compileGrepMatcher, countNoun } from './util.js'
+import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { quotedArg } from './hint_suggestion_guard.js'
 
 // `readSection` only ever resolves headings from the file's own text; a non-heading html element (`<section id="chart1-panel">`) is invisible to it even after the extractor spans its whole element (html.ts::extractHtml), because that span lives in the symbols table, not in the file's heading list. Fall back to an html_id symbol lookup for html files only, so `section "file.html::chart1-panel"` (or the `#chart1-panel` spelling) resolves the same element `read`/`symbol` already do.

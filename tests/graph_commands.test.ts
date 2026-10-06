@@ -1614,7 +1614,7 @@ describe('runCallers --grep', () => {
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(root)
       try {
         const out = captureStdout(() => { expect(runCallers({ symbol: 'grepSingularFn2j5', grep: '^nomatch' })).toBe(0) })
-        expect(out).toContain('all 1 caller was filtered out by --grep')
+        expect(out).toContain('the only caller was filtered out by --grep')
         expect(out).not.toContain('1 callers')
       } finally {
         cwdSpy.mockRestore()
@@ -3112,7 +3112,7 @@ describe('runCallChain --grep', () => {
         const filtered = captureStdout(() => {
           expect(runCallChain({ symbol: 'chainGrepEmptyFn7k3', grep: 'noSuchNameAnywhere9z1' })).toBe(0)
         })
-        expect(filtered).toContain('all 1 chain was filtered out by --grep noSuchNameAnywhere9z1')
+        expect(filtered).toContain('the only chain was filtered out by --grep noSuchNameAnywhere9z1')
         expect(filtered).not.toContain('(no callers)')
       } finally {
         cwdSpy.mockRestore()

@@ -52,6 +52,14 @@ describe('context-for --budget says what the budget rejected', () => {
     ).toMatch(/were larger than --budget/)
   })
 
+  // CAPTURE from the built bundle against this fixture: ZebraShape is the one symbol the query matches. One rejected candidate read "All 1 matching symbol were larger than --budget 1 tokens", wrong in its verb and in its unit.
+  it('names the only rejected candidate in the singular', () => {
+    const r = run(['context-for', 'ZebraShape', '--budget', '1'])
+
+    expect(r.out.trim()).toBe('')
+    expect(r.err).toContain('Nothing is shown: the only matching symbol was larger than --budget 1 token. Raise --budget.')
+  })
+
   it('names the count when the budget rejects some but not all', () => {
     // Sized between "everything fits" and "nothing fits". Found by bisecting real runs, not computed from the estimator, so a change to token estimation fails this loudly rather than silently agreeing with itself.
     const r = run(['context-for', 'widget', '--budget', '900'])

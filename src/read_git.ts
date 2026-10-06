@@ -17,10 +17,10 @@ import {
   compileGrepMatcher,
   countNoun,
   excludeTestsHiddenNote,
-  grepFilteredToEmptyNotice,
   isTestFile,
   runGit,
 } from './util.js'
+import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { walkProject } from './baseline.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
 import { formatCommandError, formatGitFailure } from './command_error.js'

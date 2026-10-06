@@ -9,13 +9,15 @@ import { globalDbPath } from '../src/constants.js'
 import { getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
 import { runSymbol } from '../src/read_symbol.js'
-import { countNoun, excludeTestsHiddenNote, grepFilteredToEmptyNotice } from '../src/util.js'
+import { countNoun, excludeTestsHiddenNote } from '../src/util.js'
+import { grepFilteredToEmptyNotice } from '../src/filter_notice.js'
 
 describe('grepFilteredToEmptyNotice', () => {
   // Same defect family one function over, and the same reason nothing caught it: every fixture filtered out two or more rows. Reproduced against the shipped binary with `token-goat types src/worker.ts --grep zzzNoMatchAtAll`, whose file holds exactly one type declaration: "all 1 type declaration was filtered out ... to see them". The author had already reasoned about agreement here and fixed the verb, so the count-dependent branch was live and half-right -- it contradicted itself one clause later.
   it('agrees the trailing pronoun with the singular noun the count selects', () => {
     const text = grepFilteredToEmptyNotice(1, 'zzz', 'type declaration', 'type declarations')
-    expect(text).toContain('all 1 type declaration was filtered out')
+    expect(text).toContain('the only type declaration was filtered out')
+    expect(text).not.toContain('all 1 ')
     expect(text).toContain('to see it)')
     expect(text).not.toContain('to see them')
   })

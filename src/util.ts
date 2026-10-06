@@ -487,34 +487,12 @@ export function compileGrepMatcher(pattern: string): (candidate: string) => bool
   return (candidate) => re.test(candidate)
 }
 
-/** Shared `--grep`-filtered-to-empty notice for listing commands (`types`, `exports`, `imports`, `dead`, `deps`) that have no `--min-lines` counterpart to `read_commands.ts`'s `filteredToEmptyNotice` (skeleton/outline). Distinguishes "the store genuinely has nothing" from "the store has N items but --grep matched none of them" -- without this, both states render as the same bare empty message and a caller cannot tell whether to widen the filter or give up on the file/project entirely, the same "filtered store renders as populated" trap this repo has hit 9+ times before. `nounSingular`/`nounPlural` name what was filtered (e.g. "type declaration" / "type declarations") so the message matches the command's own vocabulary. */
-export function grepFilteredToEmptyNotice(preFilterCount: number, grep: string, nounSingular: string, nounPlural: string): string {
-  const noun = preFilterCount === 1 ? nounSingular : nounPlural
-  // The verb has to agree with the noun the count already selects: "all 1 dead symbol were filtered out" reads as a typo in the tool rather than as a report about the store, and a single survivor is the most common way to hit this notice.
-  const verb = preFilterCount === 1 ? 'was' : 'were'
-  // The trailing pronoun has to agree for the same reason the verb does -- "all 1 type declaration was filtered out ... to see them" was half-corrected, agreeing the verb and then contradicting it one clause later.
-  const pronoun = preFilterCount === 1 ? 'it' : 'them'
-  return `  (all ${preFilterCount} ${noun} ${verb} filtered out by --grep ${grep} -- widen or drop the filter to see ${pronoun})`
-}
-
-/** The multi-filter sibling of {@link grepFilteredToEmptyNotice}, for surfaces where more than one filter flag can be active at once (skeleton/outline's `--min-lines` + `--grep`, csv-query's repeatable `--where`). Names every active filter rather than blaming the first one, and takes an optional `reassurance` clause for callers that also need to say the underlying store is fine (e.g. "the file is indexed"). Same "filtered store renders as populated" trap as its sibling. */
-export function filtersFilteredToEmptyNotice(preFilterCount: number, activeFilters: string[], nounSingular: string, nounPlural: string, reassurance?: string): string {
-  const noun = preFilterCount === 1 ? nounSingular : nounPlural
-  // Name every filter that is actually active, not just the first one: with both set, blaming one of them sends the caller to widen the wrong knob.
-  const cause = activeFilters.length === 0 ? 'the active filter' : activeFilters.join(' + ')
-  const knob = activeFilters.length > 1 ? 'filters' : 'filter'
-  // The verb has to agree with the noun the count already selects: "all 1 indexed symbol were filtered out" reads as a typo in the tool rather than as a report about the file.
-  const verb = preFilterCount === 1 ? 'was' : 'were'
-  const tail = reassurance === undefined ? '' : `; ${reassurance}`
-  return `  (all ${preFilterCount} ${noun} ${verb} filtered out by ${cause}${tail} -- widen or drop the ${knob} to see them)`
-}
-
 /** `3 references` / `1 reference` -- a count and a noun that agrees with it. Trivial, but the agreement was getting dropped: `refs --exclude-tests` rendered `1 references` because five call sites interpolated `${results.length} references` directly, and a test pinned that output as correct. Reach for this instead of interpolating a bare noun after a count. */
 export function countNoun(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`
 }
 
-/** The parenthetical every `--exclude-tests` surface appends when the flag hid something, e.g. `3 in test files hidden by --exclude-tests`. Shared rather than interpolated per call site because the noun has to agree with the count and it previously did not: fourteen call sites across refs/callers/dead/call-chain/impact/semantic each hard-coded the plural, so hiding a single reference reported "1 in test files hidden" -- which reads as a bug in the tool rather than as a report about the store, and one hidden ref is the most common way to reach this notice at all. Same reasoning as {@link grepFilteredToEmptyNotice} directly above. */
+/** The parenthetical every `--exclude-tests` surface appends when the flag hid something, e.g. `3 in test files hidden by --exclude-tests`. Shared rather than interpolated per call site because the noun has to agree with the count and it previously did not: fourteen call sites across refs/callers/dead/call-chain/impact/semantic each hard-coded the plural, so hiding a single reference reported "1 in test files hidden" -- which reads as a bug in the tool rather than as a report about the store, and one hidden ref is the most common way to reach this notice at all. Same reasoning as grepFilteredToEmptyNotice in filter_notice.ts. */
 export function excludeTestsHiddenNote(count: number): string {
   return `${count} in test ${count === 1 ? 'file' : 'files'} hidden by --exclude-tests`
 }
