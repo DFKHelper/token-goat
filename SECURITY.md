@@ -41,11 +41,11 @@ The following are not treated as security issues unless paired with a working pr
 
 ## Dependency advisories
 
-`npm audit` reports Token-Goat clean for anyone who installs it, and that has been true of a default install since the embedding library that carried every finding was removed. This repository's own tree is clean as well, development dependencies included: `adm-zip` and `hono` were resolved to patched versions once they had cleared Dependabot's seven-day cooldown, not bumped the day a fix was published -- see [`.github/dependabot.yml`](.github/dependabot.yml) for why a plain `npm update` isn't the fix. All three numbers below are reproducible with the commands shown. The one place an advisory can still reach is the optional native runtime, which a default install does not carry, and it is described further down rather than folded into these rows.
+`npm audit` reports Token-Goat clean for anyone who installs it, and that has been true of a default install since the embedding library that carried every finding was removed. This repository's own tree carries one finding, in a development dependency: `source-map-js` 1.2.1, which `vite` reaches through `postcss`, has [GHSA-68fv-2mgg-jv7q](https://github.com/advisories/GHSA-68fv-2mgg-jv7q) (a crafted source map's section offsets stall the event loop). It runs only in the development tooling, never in an install of Token-Goat. The fixed 1.2.2 was published on 2026-09-30 and is resolved once it clears Dependabot's seven-day cooldown, the way `adm-zip`, `hono` and `proxy-addr` were resolved to patched versions, not bumped the day a fix was published -- see [`.github/dependabot.yml`](.github/dependabot.yml) for why a plain `npm update` isn't the fix. All three numbers below are reproducible with the commands shown. The one place an advisory can still reach is the optional native runtime, which a default install does not carry, and it is described further down rather than folded into these rows.
 
 | What you scan | Command | Result |
 | --- | --- | --- |
-| this repository | `npm audit` | clean |
+| this repository | `npm audit` | 1 high, in `source-map-js` (development only) |
 | an install without optional packages | `npm install --omit=optional token-goat` then `npm audit --omit=dev --omit=optional` | clean, 2 packages |
 | a default install | `npm install token-goat` then `npm audit --omit=dev` | clean, 62 packages |
 
