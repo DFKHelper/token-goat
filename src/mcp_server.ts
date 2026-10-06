@@ -11,7 +11,7 @@ import { buildProjectMap, formatProjectMap, mapLookupBytesSaved } from './baseli
 import { claudeConfigDir } from './claude_config_dir.js'
 import { ENV_KEYS, VERSION, dataDir, globalDbPath } from './constants.js'
 import { envStrList } from './env.js'
-import { runRead, runGrep, findSpecSeparator, ABSENT_PIN, ConfinementIdentityError, fileIdentity, pinKey, withPinnedReads } from './read_commands.js'
+import { runRead, runGrep, ABSENT_PIN, ConfinementIdentityError, fileIdentity, pinKey, withPinnedReads } from './read_commands.js'
 import { runSymbol } from './read_symbol.js'
 import { runSection } from './read_section.js'
 import { runSkeleton, runOutline } from './read_outline.js'
@@ -19,7 +19,7 @@ import { runSemantic } from './read_semantic.js'
 import { runBrief } from './read_brief.js'
 import { runChanged } from './read_git.js'
 import { runImports, runExports } from './read_inspect.js'
-import { parseColonLineSpec, parseLineRange, resolveProjectConfinement } from './read_spec.js'
+import { resolveProjectConfinement, specFilePart } from './read_spec.js'
 import { runRefs } from './read_refs.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import {
@@ -364,16 +364,6 @@ export function checkWithinProjectRoot(target: string, resolvedRoot: string): Co
 
   // BOTH spellings get pinned, each with its own identity, and this is the whole reason `pins` is built here instead of by the caller. The read layer resolves the RAW target, so `pinKey(absRaw)` is the key it looks up; pinning only the normalized spelling left that lookup missing, and a miss does not fail closed -- it degrades silently to an unpinned raw read, switching off the identity check and the ABSENT_PIN race guard for the whole request while the gate still reported success. That is not a hypothetical for the WSL mount form: with a project root of `/mnt/c/workspace`, an ordinary in-root target `/mnt/c/workspace/a.txt` normalizes to the synthetic `/mnt/c/workspace/c:/workspace/a.txt`, which nothing ever opens, so EVERY read under such a root was unpinned (measured on Linux, 2026-09-13). Both share the one identity stat'd above, for the reason given there.
   return { inside: true, reason: 'inside', pins: [...pinsFor(abs, realNative, identity), ...pinsFor(absRaw, realRaw, identity)] }
-}
-
-/** The file portion of one `read`/`section` spec: `file::symbol`, `file@N-M`, `file:N-M`, or a bare path. Reuses read_commands.ts's own {@link parseLineRange} and {@link findSpecSeparator} instead of restating their grammar here, so this gate's notion of "the file part" agrees with the execution layer's by construction. Two hand-kept-in-sync regexes previously drifted apart on both syntaxes they cover: an `@` suffix that parseLineRange would decline (no trailing digits, a `::` in the prefix, or a literal file that happens to contain `@`) was still stripped here, validating a shorter in-root prefix while runRead resolved the untouched, longer, possibly out-of-root spec; and a spec with two `::` occurrences split on the FIRST one here but the LAST one in findSpecSeparator (used by both runRead and runSection), so `a::../../b::c` was validated as `a` while `a::../../b` was actually read. When in doubt, this returns the more inclusive (longer) string, never a shortened prefix -- see parseLineRange/findSpecSeparator for the precedence (`@`-range first, then the `:N`/`:N-M` region spec, matching runRead's own check order). */
-function specFilePart(spec: string): string {
-  const range = parseLineRange(spec)
-  if (range !== null) return range.file
-  const region = parseColonLineSpec(spec)
-  if (region !== null) return region.file
-  const colonIdx = findSpecSeparator(spec)
-  return colonIdx === -1 ? spec : spec.slice(0, colonIdx)
 }
 
 /** Every file part one spec can open: {@link specFilePart}'s, plus each shorter prefix ending at an earlier `::`, because runSection's findSectionSeparator falls back to the first `::` that leaves a real file when the last one does not (a heading such as `Foo::bar()`); checking all of them keeps this gate a superset of what the execution layer may open, so an in-root directory behind the last `::` cannot vouch for an outside file before an earlier one. */

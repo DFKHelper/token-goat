@@ -8,7 +8,7 @@ import type { SymbolEntry } from './parser_types.js'
 import { resolveLineRegions, type LineRegion } from './line_regions.js'
 export { resolveLineRegions, type LineRegion } from './line_regions.js'
 import { displaySafeJson, displaySafeText, normalizePath, toDisplayPath } from './paths.js'
-import { resolveSpecPath } from './spec_path.js'
+import { expandSpecPath, resolveSpecPath } from './spec_path.js'
 import { findProject, getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
 import { fileExists, findSpecSeparator, guardText, healStaleIndex, indexFileSyncPinned, indexFreshness, readFileText, recordStaleServed, resolveAgainstProjectRoot, staleWarning, type ReadOptions } from './read_commands.js'
 import { emitErr } from './emit.js'
@@ -67,6 +67,16 @@ export function parseMultiFileSpec(spec: string): string[] | null {
   return parts.length > 1 ? parts : null
 }
 
+/** The file portion of one `read`/`section` spec: `file::symbol`, `file@N-M`, `file:N-M`, or a bare path. Reuses {@link parseLineRange} and {@link findSpecSeparator} instead of restating their grammar here, so the MCP confinement gate's notion of "the file part" agrees with the execution layer's by construction. Two hand-kept-in-sync regexes previously drifted apart on both syntaxes they cover: an `@` suffix that parseLineRange would decline (no trailing digits, a `::` in the prefix, or a literal file that happens to contain `@`) was still stripped here, validating a shorter in-root prefix while runRead resolved the untouched, longer, possibly out-of-root spec; and a spec with two `::` occurrences split on the FIRST one here but the LAST one in findSpecSeparator (used by both runRead and runSection), so `a::../../b::c` was validated as `a` while `a::../../b` was actually read. When in doubt, this returns the more inclusive (longer) string, never a shortened prefix -- see parseLineRange/findSpecSeparator for the precedence (`@`-range first, then the `:N`/`:N-M` region spec, matching runRead's own check order). */
+export function specFilePart(spec: string): string {
+  const range = parseLineRange(spec)
+  if (range !== null) return range.file
+  const region = parseColonLineSpec(spec)
+  if (region !== null) return region.file
+  const colonIdx = findSpecSeparator(spec)
+  return colonIdx === -1 ? spec : spec.slice(0, colonIdx)
+}
+
 export function extraFileArgsNote(
   command: string,
   first: string,
@@ -75,8 +85,11 @@ export function extraFileArgsNote(
 ): string {
   const noun = opts.noun ?? 'file'
   const head = `Note: ${extras.length} extra ${noun} argument(s) ignored (${extras.join(', ')}).`
+  // An unquoted path holding spaces reaches the CLI split into words; when the words rejoined with spaces name a real file, that path is what was meant, so suggest it quoted rather than a comma list of its fragments.
+  const spaced = [first, ...extras].join(' ')
+  if (fileExists(expandSpecPath(noun === 'spec' ? specFilePart(spaced) : spaced))) return `${head} Together they make one ${noun === 'spec' ? 'spec' : 'path'} holding spaces, which a shell splits unless it is quoted: token-goat ${command} ${quotedArg(spaced)}`
   if (opts.mergeable === false) return `${head} Run ${command} once per ${noun}.`
-  return `${head} ${command} reads one ${noun}, or a comma-separated list: token-goat ${command} "${[first, ...extras].join(',')}"`
+  return `${head} ${command} reads one ${noun}, or a comma-separated list: token-goat ${command} ${quotedArg([first, ...extras].join(','))}`
 }
 
 export function parseLineRange(spec: string): { file: string; start: number; end: number } | null {

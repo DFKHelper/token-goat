@@ -1,5 +1,5 @@
 // Regression: a single-argument read command silently dropped every extra space-separated positional. `read a.ts::x b.ts::y` returned only `x`, exit 0, no mention that the second spec was thrown away -- the shape an agent is most likely to type, because the merged form these commands advertise is comma-separated and space is the habit from every other CLI. A note for this existed and was wired to the four file-taking commands only, so `read`, `brief`, `section`, `refs` and `symbol` kept dropping in silence. Nothing tested the note at all, on any command, which is why the gap went unnoticed; this covers all nine.
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -198,5 +198,43 @@ describe('extra positional arguments are reported, never dropped in silence', ()
     expect(output).toContain('2 extra file argument(s) ignored')
     expect(output).toContain(fileB)
     expect(output).toContain(docA)
+  })
+})
+
+// Provenance: CAPTURE for the defect: `token-goat skeleton $PWD/my proj/src dir/big file.ts` in C:/tgdog-pass2/q3 printed `Note: 3 extra file argument(s) ignored (proj/src, dir/big, file.ts). skeleton reads one file, or a comma-separated list: token-goat skeleton "C:/tgdog-pass2/q3/proj/my,proj/src,dir/big,file.ts"`, a path that names nothing. HAND-DERIVED for the expected suggestion: the words a shell split the path into, rejoined with spaces and quoted.
+describe('a path holding spaces that a shell split into several arguments', () => {
+  let bigFile: string
+  let readMe: string
+
+  beforeAll(() => {
+    const srcDir = join(TMP, 'my proj', 'src dir')
+    mkdirSync(srcDir, { recursive: true })
+    bigFile = join(srcDir, 'big file.ts')
+    writeFileSync(bigFile, 'export function zzBig(): number {\n  return 7\n}\n')
+    readMe = join(TMP, 'my proj', 'read me.md')
+    writeFileSync(readMe, '# Read Me\n\n## First Part\nbody\n')
+  })
+
+  for (const c of [
+    { name: 'skeleton', argv: () => ['skeleton'], spaced: () => bigFile },
+    { name: 'read', argv: () => ['read'], spaced: () => `${bigFile}::zzBig` },
+    { name: 'section --list', argv: () => ['section', '--list'], spaced: () => readMe },
+    { name: 'section', argv: () => ['section'], spaced: () => `${docA}::Heading A` },
+  ]) {
+    it(`${c.name} suggests the whole path quoted, and that command runs`, async () => {
+      const spaced = c.spaced()
+      const output = await runCli([...c.argv(), ...spaced.split(' ')])
+      expect(output).toContain(`holding spaces, which a shell splits unless it is quoted: token-goat ${c.name} "${spaced}"`)
+      expect(output).not.toContain('comma-separated list')
+      expect(output).not.toContain(`Run ${c.name} once per`)
+      await runCli([...c.argv(), spaced])
+      expect(lastExitCode, `the suggested command failed: ${spaced}`).toBe(0)
+    })
+  }
+
+  it('keeps the comma form when the words do not name one file together', async () => {
+    const output = await runCli(['skeleton', fileA, fileB])
+    expect(output).toContain(`token-goat skeleton "${fileA},${fileB}"`)
+    expect(output).not.toContain('holding spaces')
   })
 })
