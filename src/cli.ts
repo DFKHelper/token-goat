@@ -188,7 +188,8 @@ async function cmdSemantic(query: string | undefined, more: string[], opts: { li
       return
     }
   }
-  const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
+  // Parsed as any integer here so runSemantic refuses 0 and a negative value itself, in the same words, where --json can put the refusal on stdout as JSON.
+  const limit = opts.limit !== undefined ? requireInt('--limit', opts.limit) : 20
   const semanticOpts = {
     limit,
     ...(opts.json === true ? { json: true } : {}),
@@ -933,7 +934,7 @@ export function buildProgram(): Command {
           () =>
             runSymbol({
               ...(name !== undefined ? { name } : {}),
-              limit: opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20,
+              limit: opts.limit !== undefined ? requirePositiveInt('--limit', opts.limit) : 20,
               ...(opts.file !== undefined ? { file: opts.file } : {}),
               ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
               ...(projectRoot !== undefined ? { projectRoot } : {}),
@@ -992,7 +993,7 @@ export function buildProgram(): Command {
         return runBrief({
           spec,
           ...(opts.json === true ? { json: true } : {}),
-          ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
+          ...(opts.limit !== undefined ? { limit: requirePositiveInt('--limit', opts.limit) } : {}),
           ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),
           ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
@@ -1121,7 +1122,7 @@ export function buildProgram(): Command {
           spec,
           ...(opts.callers === true ? { callers: true } : {}),
           ...(opts.json === true ? { json: true } : {}),
-          ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
+          ...(opts.limit !== undefined ? { limit: requirePositiveInt('--limit', opts.limit) } : {}),
           ...(opts.top !== undefined ? { top: requirePositiveInt('--top', opts.top) } : {}),
           ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),

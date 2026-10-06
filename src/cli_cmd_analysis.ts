@@ -96,7 +96,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
         runFind({
           pattern,
           ...(opts.json === true ? { json: true } : {}),
-          ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
+          ...(opts.limit !== undefined ? { limit: requirePositiveInt('--limit', opts.limit) } : {}),
         }),
       ),
     )
@@ -113,7 +113,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
           spec,
           ...(opts.file !== undefined ? { file: opts.file } : {}),
           ...(opts.json === true ? { json: true } : {}),
-          ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
+          ...(opts.limit !== undefined ? { limit: requirePositiveInt('--limit', opts.limit) } : {}),
         }),
       ),
     )
@@ -153,7 +153,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
         runCallers({
           symbol,
           ...(opts.json === true ? { json: true } : {}),
-          ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
+          ...(opts.limit !== undefined ? { limit: requirePositiveInt('--limit', opts.limit) } : {}),
           ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),
           ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
@@ -172,7 +172,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
       runExit(() =>
         runCallChain({
           symbol,
-          ...(opts.depth !== undefined ? { depth: requireInt('--depth', opts.depth) } : {}),
+          ...(opts.depth !== undefined ? { depth: requirePositiveInt('--depth', opts.depth) } : {}),
           ...(opts.json === true ? { json: true } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),
           ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
@@ -243,7 +243,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
         runTypes({
           ...(file !== undefined ? { file } : {}),
           ...(opts.json === true ? { json: true } : {}),
-          ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
+          ...(opts.limit !== undefined ? { limit: requirePositiveInt('--limit', opts.limit) } : {}),
           ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
           ...(opts.excludeTests === true ? { excludeTests: true } : {}),
         }),
@@ -342,7 +342,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
       runExit(() =>
         runAffected({
           files: opts.stdin === true ? [...files, ...readStdinPaths()] : files,
-          ...(opts.depth !== undefined ? { depth: requireNonNegativeInt('--depth', opts.depth) } : {}),
+          ...(opts.depth !== undefined ? { depth: requirePositiveInt('--depth', opts.depth) } : {}),
           ...(opts.filter !== undefined ? { filter: opts.filter } : {}),
           ...(opts.quiet === true ? { quiet: true } : {}),
           ...(opts.json === true ? { json: true } : {}),

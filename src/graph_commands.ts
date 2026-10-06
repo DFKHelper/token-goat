@@ -82,7 +82,7 @@ export interface CallersOptions {
 
 export function runCallers(opts: CallersOptions): number {
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(formatCommandError(`--limit must be a positive number, got: ${opts.limit}`))
+    emitErr(formatCommandError(`--limit must be a positive number, got: "${opts.limit}"`))
     return 1
   }
 
@@ -214,7 +214,7 @@ export interface CallChainOptions {
 
 export function runCallChain(opts: CallChainOptions): number {
   if (opts.depth !== undefined && opts.depth <= 0) {
-    emitErr(formatCommandError(`--depth must be a positive number, got: ${opts.depth}`))
+    emitErr(formatCommandError(`--depth must be a positive number, got: "${opts.depth}"`))
     return 1
   }
   const maxDepth = opts.depth ?? 8
@@ -338,7 +338,7 @@ export interface ImpactOptions {
 
 export function runImpact(opts: ImpactOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(formatCommandError(`--top must be a positive number, got: ${opts.top}`))
+    emitErr(formatCommandError(`--top must be a positive number, got: "${opts.top}"`))
     return 1
   }
   const top = opts.top ?? 20
@@ -522,7 +522,7 @@ export interface AskOptions {
 
 export function runAsk(opts: AskOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(formatCommandError(`--top must be a positive number, got: ${opts.top}`))
+    emitErr(formatCommandError(`--top must be a positive number, got: "${opts.top}"`))
     return 1
   }
   const top = opts.top ?? 8

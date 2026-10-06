@@ -287,12 +287,12 @@ function renderRefsTargets(targets: RefsTarget[], opts: RefsOptions): number {
 export function runRefs(opts: RefsOptions): number {
   // A limit of 0 (or negative) would translate to SQL `LIMIT 0`, which always returns zero rows regardless of whether references exist -- silently reporting "no references found" for a symbol that's actually referenced. Reject it explicitly instead of querying with it. Both callers (this multi-symbol path and the single-symbol runRefsSingle it delegates to) are covered by this one check since runRefsSingle is never called from outside this file.
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(formatCommandError(`--limit must be a positive number, got: ${opts.limit}`))
+    emitErr(formatCommandError(`--limit must be a positive number, got: "${opts.limit}"`))
     return 1
   }
   // Same reasoning: --top 0 (or negative) is never a meaningful request -- reject explicitly rather than silently rendering an empty summary.
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(formatCommandError(`--top must be a positive number, got: ${opts.top}`))
+    emitErr(formatCommandError(`--top must be a positive number, got: "${opts.top}"`))
     return 1
   }
 

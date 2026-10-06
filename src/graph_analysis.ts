@@ -44,7 +44,7 @@ export interface SimilarOptions {
 
 export function runSimilar(opts: SimilarOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(formatCommandError(`--top must be a positive number, got: ${opts.top}`))
+    emitErr(formatCommandError(`--top must be a positive number, got: "${opts.top}"`))
     return 1
   }
   const sepIdx = opts.spec.lastIndexOf('::')
@@ -88,7 +88,7 @@ export interface ContextForOptions {
 
 export function runContextFor(opts: ContextForOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(formatCommandError(`--top must be a positive number, got: ${opts.top}`))
+    emitErr(formatCommandError(`--top must be a positive number, got: "${opts.top}"`))
     return 1
   }
   const top = opts.top ?? 12
@@ -237,7 +237,7 @@ export interface CoverageGapsOptions {
 
 export function runCoverageGaps(opts: CoverageGapsOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(formatCommandError(`--top must be a positive number, got: ${opts.top}`))
+    emitErr(formatCommandError(`--top must be a positive number, got: "${opts.top}"`))
     return 1
   }
   const top = opts.top ?? 50
@@ -286,7 +286,7 @@ export interface ArchOptions {
 
 export function runArch(opts: ArchOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(formatCommandError(`--top must be a positive number, got: ${opts.top}`))
+    emitErr(formatCommandError(`--top must be a positive number, got: "${opts.top}"`))
     return 1
   }
   const cwd = opts.cwd ?? process.cwd()

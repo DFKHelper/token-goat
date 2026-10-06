@@ -769,7 +769,7 @@ export function cmdHistory(opts: { limit?: string; json?: boolean }): void {
     try {
       limit = requireNonNegativeStrictInt('--limit', opts.limit)
     } catch {
-      throw new CliError(`history: --limit must be a non-negative number, got: "${opts.limit}"`)
+      throw new CliError(`history: --limit must be a positive number, got: "${opts.limit}"`)
     }
     // --limit 0 would slice the merged bash/web list down to zero entries and print "No history entries found" -- an absolute claim about the cache's contents -- even when entries genuinely exist. Reject explicitly instead of silently rendering that false-clean result, matching runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top validation for the same failure mode.
     if (limit === 0) {

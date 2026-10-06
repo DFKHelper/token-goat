@@ -112,7 +112,7 @@ export function computeAffected(opts: AffectedOptions): AffectedResult {
 /** CLI entrypoint. Returns the process exit code. */
 export function runAffected(opts: AffectedOptions): number {
   if (opts.depth !== undefined && opts.depth <= 0) {
-    emitErr(formatCommandError(`--depth must be a positive number, got: ${opts.depth}`))
+    emitErr(formatCommandError(`--depth must be a positive number, got: "${opts.depth}"`))
     return 1
   }
   if (opts.files.length === 0) {

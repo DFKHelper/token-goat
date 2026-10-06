@@ -339,10 +339,7 @@ export async function cmdDocxOutline(file: string, opts: { json?: boolean }): Pr
 }
 
 export async function cmdDocxTables(file: string, opts: { table?: string; json?: boolean }): Promise<void> {
-  const tableIdx = opts.table !== undefined ? parseInt(opts.table, 10) : undefined
-  if (tableIdx !== undefined && (Number.isNaN(tableIdx) || tableIdx < 1)) {
-    throw new CliError(`--table must be a positive integer, got: ${opts.table}`)
-  }
+  const tableIdx = opts.table !== undefined ? requirePositiveInt('--table', opts.table) : undefined
   const tables = await docxTables(file)
   if (tables.length === 0) {
     if (opts.json === true) {

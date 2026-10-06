@@ -839,7 +839,7 @@ export interface FindOptions {
 
 export function runFind(opts: FindOptions): number {
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(formatCommandError(`--limit must be a positive number, got: ${opts.limit}`))
+    emitErr(formatCommandError(`--limit must be a positive number, got: "${opts.limit}"`))
     return 1
   }
 
@@ -917,7 +917,7 @@ export interface LocateHit {
 
 export function runLocate(opts: LocateOptions): number {
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(formatCommandError(`--limit must be a positive number, got: ${opts.limit}`))
+    emitErr(formatCommandError(`--limit must be a positive number, got: "${opts.limit}"`))
     return 1
   }
 

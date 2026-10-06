@@ -398,3 +398,35 @@ describe('recall and search refuse --limit 0', () => {
     }
   }
 })
+
+// Regression guard: the --limit/--depth flags below were parsed non-negative at dispatch and the command then refused 0 with its own unquoted text, so `symbol x --limit -1` said 'must be a non-negative number, got: "-1"' while `--limit 0` said 'must be a positive number, got: 0'. CAPTURE of the pre-fix built bundle: `semantic foo --limit 0` printed "token-goat: --limit must be a positive number, got: 0". HAND-DERIVED: the expected text is requirePositiveInt's wording with the raw value quoted, the same for 0 and -1.
+describe('--limit and --depth that refuse zero say so once, in one wording', () => {
+  const cases: Array<[string[], string]> = [
+    [['semantic', 'q'], '--limit'], [['symbol', 'x'], '--limit'], [['brief', 'x'], '--limit'], [['refs', 'x'], '--limit'],
+    [['find', 'x'], '--limit'], [['locate', 'x'], '--limit'], [['callers', 'x'], '--limit'], [['types'], '--limit'],
+    [['call-chain', 'x'], '--depth'], [['affected', 'a.ts'], '--depth'], [['hot'], '--limit'], [['history'], '--limit'],
+    [['docx-tables', 'missing.docx'], '--table'],
+  ]
+  for (const [cmd, flag] of cases) {
+    for (const bad of ['0', '-1']) {
+      it(`${cmd[0]} ${flag} ${bad} says the value must be positive, quoted`, async () => {
+        captureStderr()
+        const code = await runCli([...cmd, flag, bad])
+        expect(code).toBe(1)
+        const message = stderr.join('')
+        expect(message).toContain(`${flag} must be a positive number, got: "${bad}"`)
+        expect(message).not.toContain('non-negative')
+      })
+    }
+  }
+  for (const bad of ['0', '-1']) {
+    it(`recent ${bad} says the count must be positive, quoted`, async () => {
+      captureStderr()
+      const code = await runCli(['recent', bad])
+      expect(code).toBe(1)
+      const message = stderr.join('')
+      expect(message).toContain(`recent: limit must be a positive number, got: "${bad}"`)
+      expect(message).not.toContain('non-negative')
+    })
+  }
+})

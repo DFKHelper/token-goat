@@ -53,7 +53,7 @@ export interface DeadOptions {
 
 export function runDead(opts: DeadOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(formatCommandError(`--top must be a positive number, got: ${opts.top}`))
+    emitErr(formatCommandError(`--top must be a positive number, got: "${opts.top}"`))
     return 1
   }
   const kinds = opts.kind !== undefined
@@ -336,7 +336,7 @@ export const TYPES_SCAN_LIMIT = -1
 
 export function runTypes(opts: TypesOptions): number {
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(formatCommandError(`--limit must be a positive number, got: ${opts.limit}`))
+    emitErr(formatCommandError(`--limit must be a positive number, got: "${opts.limit}"`))
     return 1
   }
 

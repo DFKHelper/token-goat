@@ -61,7 +61,7 @@ function stableSortImportBindsLast<T extends { body?: string | null }>(rows: rea
 export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // A limit of 0 (or negative) would translate to SQL `LIMIT 0`, which always returns zero rows regardless of whether the symbol exists -- silently reporting "no matches" for a symbol that's actually indexed. Reject it explicitly instead of querying with it.
   if (opts.limit !== undefined && opts.limit <= 0) {
-    return { text: `--limit must be a positive number, got: ${opts.limit}`, code: 1 }
+    return { text: `--limit must be a positive number, got: "${opts.limit}"`, code: 1 }
   }
   // `--grep` IS the query when there is no exact name to anchor on. Combining it with a name is near-useless -- an exact `name = ?` match is already pinned to one identifier, so regex-filtering that same fixed name either matches everything or nothing -- and more likely a caller mistake than real intent, so reject the combination outright rather than silently pick a winner.
   if (opts.name !== undefined && opts.grep !== undefined) {
