@@ -310,12 +310,18 @@ export function docCommentLines(entry: { docstring: string; filePath: string; li
     // Widen upward one line at a time until the lines kept read as the whole doc: the comment's first line is where a shorter slice stops yielding it.
     let start = entry.lineStart - 2
     while (start > 0 && precedingDocComment(lines.slice(start), entry.lineStart - start, style) !== doc) start--
+    // A bare marker line (`//`, `#`, `'''`) atop a line-comment run adds only whitespace the doc trims away, so the loop above stops one line short of it; any marker line still above `start` is such a line, since one with text would have changed the doc. Widen over them while the run itself is line comments: a `/** */` block's top line is `/*`, so a stray `//` above a block is never taken.
+    const marker = DOC_LINE_MARKERS[style]
+    while (start > 0 && (lines[start] ?? '').trim().startsWith(marker) && (lines[start - 1] ?? '').trim().startsWith(marker)) start--
     return lines.slice(start, entry.lineStart - 1)
   }
   return []
 }
 
 const DOC_COMMENT_STYLES: readonly DocCommentStyle[] = ['c', 'hash', 'vb']
+
+// The line-comment marker each style's run is made of, as precedingDocComment reads it.
+const DOC_LINE_MARKERS: Readonly<Record<DocCommentStyle, string>> = { c: '//', hash: '#', vb: "'''" }
 
 // The one-line warning prepended by staleWarning() when the on-disk file has changed since the index last saw it. Reuses fingerprintFile/files.sha -- the same sha the worker's dirty-queue gate (makeIndexer in worker.ts) compares against -- so "stale" here means exactly what it means there, rather than reinventing a second freshness signal.
 const STALE_WARNING =

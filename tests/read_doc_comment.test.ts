@@ -1,6 +1,6 @@
 // `outline` clipped a doc comment to its first line with no ellipsis when later lines followed, so a doc ending "WARNING: also drops every backup" read as finished at its first sentence, and a text `read "file::symbol"` printed the body alone, although docs/cli.md sends the reader there for "the full doc comment". A text read now prints the doc comment's own source lines above the body, and an outline hint ends in an ellipsis whenever the doc goes on.
 //
-// Provenance: every source file below is HAND-DERIVED (written here, in the comment styles the TS, Rust and Python adapters read docs from); the expected output is the same source lines, so it is checked against the input, not against the reader's own code. The cases run the built dist/token-goat.mjs.
+// Provenance: every source file below is HAND-DERIVED (written here, in the comment styles the TS, Rust, Python and Bash adapters read docs from); the expected output is the same source lines, so it is checked against the input, not against the reader's own code. The cases run the built dist/token-goat.mjs.
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -43,6 +43,24 @@ const TS = [
   '  }',
   '}',
   '',
+  '//',
+  '// Bare-topped run.',
+  '// Second line.',
+  'export function bareTop(): void {}',
+  '',
+  '//',
+  '/** Block doc under a stray marker. */',
+  'export function blockUnder(): void {}',
+  '',
+].join('\n')
+
+const SH = [
+  '#',
+  '# Greets the user.',
+  'wave() {',
+  '  echo hi',
+  '}',
+  '',
 ].join('\n')
 
 const PY = [
@@ -59,6 +77,7 @@ beforeAll(() => {
   proj = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-read-doc-proj-'))
   fs.writeFileSync(path.join(proj, 'a.ts'), TS)
   fs.writeFileSync(path.join(proj, 'g.py'), PY)
+  fs.writeFileSync(path.join(proj, 'g.sh'), SH)
 })
 
 afterAll(() => {
@@ -98,6 +117,23 @@ describe('read "file::symbol" prints the doc comment above the body', () => {
     const out = tg(['read', 'a.ts::loose'])
     expect(out).toMatch(/^# 1 line \(~\d+ tok\)\n/)
     expect(out).not.toContain('Not attached')
+  })
+
+  it('a run of line comments whose top line is a bare marker keeps that line', () => {
+    const out = tg(['read', 'a.ts::bareTop'])
+    expect(out).toMatch(/^# 1 line \+ 3-line doc comment \(~\d+ tok\)\n/)
+    expect(out).toContain(sourceLines(31, 34))
+  })
+
+  it('a bare # on top of a shell comment run is kept the same way', () => {
+    const out = tg(['read', 'g.sh::wave'])
+    expect(out).toMatch(/^# 3 lines \+ 2-line doc comment \(~\d+ tok\)\n/)
+    expect(out).toContain(SH.trimEnd())
+  })
+
+  it('a stray // above a block doc comment is not part of that doc', () => {
+    const out = tg(['read', 'a.ts::blockUnder'])
+    expect(out).toMatch(/^# 1 line \+ 1-line doc comment \(~\d+ tok\)\n\/\*\* Block doc/)
   })
 
   it('a Python docstring, already inside the body, is not printed twice', () => {
