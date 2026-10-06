@@ -1,4 +1,4 @@
-/** Members declared on the same line as their type's `{`, or after another member on one line, are indexed with their own spans. PROVENANCE: HAND-DERIVED. Each expected row and span is counted by hand from the fixture lines in its test, independently of the extractors; the member syntax is ordinary PHP (PHP Manual, "Classes and Objects", "Interfaces", "Traits", "Enumerations") and Kotlin (Kotlin language reference, "Classes", "Object declarations", "Grammar": `classMemberDeclarations` takes members separated by optional semicolons) and Scala (Scala Language Specification, "Templates": `TemplateStats` are separated by `semi`; Scala 3 Reference, "Optional Braces") and C# (C# language specification, "Classes": `class_member_declaration`s follow one another with no separator line required). */
+/** Members declared on the same line as their type's `{`, or after another member on one line, are indexed with their own spans. PROVENANCE: HAND-DERIVED. Each expected row and span is counted by hand from the fixture lines in its test, independently of the extractors; the member syntax is ordinary PHP (PHP Manual, "Classes and Objects", "Interfaces", "Traits", "Enumerations") and Kotlin (Kotlin language reference, "Classes", "Object declarations", "Grammar": `classMemberDeclarations` takes members separated by optional semicolons) and Scala (Scala Language Specification, "Templates": `TemplateStats` are separated by `semi`; Scala 3 Reference, "Optional Braces") and C# (C# language specification, "Classes": `class_member_declaration`s follow one another with no separator line required) and Swift (The Swift Programming Language, "Declarations": declarations on one line are separated by `;`; "Lexical Structure", "Regular Expression Literals"). */
 import { describe, expect, it } from 'vitest'
 
 import { bodySegments } from '../src/languages/body_segments.js'
@@ -302,5 +302,81 @@ describe('C# one-line type bodies', () => {
     const { symbols } = await parseFixture('body.cs', 'class CB { int A() { return 1; } string S() => "};"; }\n')
     expect(symbols.find((s) => s.name === 'A')?.body).toBe('int A() { return 1; }')
     expect(symbols.find((s) => s.name === 'S')?.body).toBe('string S() => "};";')
+  })
+})
+
+describe('Swift one-line type bodies', () => {
+  it('indexes the members of a struct, class, protocol, enum, extension and actor written on one line, and those after the first on a body line', async () => {
+    expect(await rowsFor('one.swift', [
+      'struct STwo { var a = 0; var b = 1; func f() -> Int { return 1 }; func g() {} }', // 1
+      'class SThree { init() {}; func a() {}; func b() {', // 2
+      '    print(1)', // 3
+      '  }', // 4
+      '  func c() {}; func d() {}; subscript(i: Int) -> Int { i }; deinit {}', // 5
+      '}', // 6
+      'protocol P1 { associatedtype T; func m(); func n() }', // 7
+      'enum E1 { case x; func e() {} }', // 8
+      'extension STwo { var c: Int { 2 }; static func h() {} }', // 9
+      'actor A1 { let k = 1, j = 2 }', // 10
+    ])).toEqual([
+      'actor A1  10-10',
+      'class SThree  2-6',
+      'enum E1  8-8',
+      'extension STwo  9-9',
+      'method a SThree 2-2',
+      'method b SThree 2-4',
+      'method c SThree 5-5',
+      'method d SThree 5-5',
+      'method deinit SThree 5-5',
+      'method e E1 8-8',
+      'method f STwo 1-1',
+      'method g STwo 1-1',
+      'method h STwo 9-9',
+      'method init SThree 2-2',
+      'method m P1 7-7',
+      'method n P1 7-7',
+      'method subscript SThree 5-5',
+      'protocol P1  7-7',
+      'struct STwo  1-1',
+      'type T P1 7-7',
+      'var a STwo 1-1',
+      'var b STwo 1-1',
+      'var c STwo 9-9',
+      'var j A1 10-10',
+      'var k A1 10-10',
+    ])
+  })
+
+  it('indexes a nested type closed on the line, and the member after an interpolated string or a regex literal', async () => {
+    expect(await rowsFor('nested.swift', [
+      'struct Out { struct In { var x = 0 }; @objc func after() {} }', // 1
+      'class SS { func s() -> String { "a\\(x)b" }; func t() {} }', // 2
+      'class SR { let r = /\\{/; func u() {} }', // 3
+      'class SL { func l() {', // 4
+      '    func local() {}; let y = 1', // 5
+      '  }', // 6
+      '}', // 7
+    ])).toEqual([
+      'class SL  4-7',
+      'class SR  3-3',
+      'class SS  2-2',
+      'method after Out 1-1',
+      'method l SL 4-6',
+      'method s SS 2-2',
+      'method t SS 2-2',
+      'method u SR 3-3',
+      'struct In Out 1-1',
+      'struct Out  1-1',
+      'var r SR 3-3',
+      'var x In 1-1',
+    ])
+  })
+
+  it('stores just the member as the body of one that shares its line', async () => {
+    const { symbols } = await parseFixture('body.swift', 'struct SB { func a() -> Int { return 1 }; let s = "};"; let r = /\\{/; func u() {} }\n')
+    expect(symbols.find((s) => s.name === 'a')?.body).toBe('func a() -> Int { return 1 }')
+    expect(symbols.find((s) => s.name === 's')?.body).toBe('let s = "};";')
+    expect(symbols.find((s) => s.name === 'r')?.body).toBe('let r = /\\{/;')
+    expect(symbols.find((s) => s.name === 'u')?.body).toBe('func u() {}')
   })
 })

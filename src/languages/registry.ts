@@ -151,7 +151,10 @@ export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLangua
     const { symbols, settled } = extractKotlin(content, filePath)
     return spanUnsettled(symbols, settled, (rest) => assignBraceBlockSpans(rest, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', expressionBodies: 'kotlin', interpolation: 'kotlin' }))
   },
-  swift: (content, filePath) => assignBraceBlockSpans(extractSwift(content, filePath).symbols, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', multilineLang: 'swift', interpolation: 'swift' }),
+  swift: (content, filePath) => {
+    const { symbols, settled } = extractSwift(content, filePath)
+    return spanUnsettled(symbols, settled, (rest) => assignBraceBlockSpans(rest, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', multilineLang: 'swift', interpolation: 'swift' }))
+  },
   scala: (content, filePath) => {
     const { symbols, settled } = extractScala(content, filePath)
     return spanUnsettled(symbols, settled, (rest) => assignBraceBlockSpans(rest, content, { lineComment: '//', nestedBlockComments: true, tripleQuote: true, tripleQuoteRunClose: 'last', expressionBodies: 'kotlin', interpolation: 'scala' }))

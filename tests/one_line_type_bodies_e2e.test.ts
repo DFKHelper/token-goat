@@ -152,4 +152,30 @@ describe('one-line type bodies reach the index through the production drain', ()
     expect(b).toContain('Console.WriteLine(1);')
     expect(b).not.toContain('class CThree')
   }, 60_000)
+
+  it('Swift: stores each member and reads it alone', async () => {
+    expect(await drain({
+      'one.swift': [
+        'struct STwo { var sa = 1; func sb() -> Int { return 2 }; func sc() {} }',
+        'class SThree { func a() {}; func b() {',
+        '    print(1)',
+        '  }',
+        '}',
+      ],
+    })).toEqual([
+      'struct STwo  1-1',
+      'var sa STwo 1-1',
+      'method sb STwo 1-1',
+      'method sc STwo 1-1',
+      'class SThree  2-5',
+      'method a SThree 2-2',
+      'method b SThree 2-4',
+    ])
+    const sb = read('one.swift::sb')
+    expect(sb).toContain('func sb() -> Int { return 2 }')
+    expect(sb).not.toContain('var sa')
+    const b = read('one.swift::b')
+    expect(b).toContain('print(1)')
+    expect(b).not.toContain('class SThree')
+  }, 60_000)
 })
