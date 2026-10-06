@@ -260,7 +260,7 @@ function refuseAmbiguousDefs(subject: string, picks: DefinitionPick[], rootDir: 
   const specs = picks.map((p) => `${toDisplayPath(rootDir, p.file)}::${p.qualifier}`)
   const shown = specs.slice(0, 5)
   const more = specs.length - shown.length
-  return refuse('ambiguous', `'${subject}' has ${specs.length} definitions in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, `token-goat ${command} "${specs[0] ?? ''}"`)
+  return refuse('ambiguous', `'${subject}' has ${specs.length} definitions in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, `token-goat ${command} ${quotedArg(specs[0] ?? '')}`)
 }
 
 /** The bare name's definitions as pickable specs. */
@@ -306,9 +306,9 @@ function answerExplain(question: string, subject: string, rootDir: string): numb
       if (file?.kind === 'ambiguous') return refuse('ambiguous', `'${subject}' names ${file.candidates.length} files in this project`, `token-goat outline ${viaArg(toDisplayPath(rootDir, file.candidates[0] ?? ''))}`)
     }
   }
-  if (target === null) return refuse('unresolved', `'${subject}' is not an indexed symbol`, `token-goat semantic "${question}"`)
+  if (target === null) return refuse('unresolved', `'${subject}' is not an indexed symbol`, `token-goat semantic ${quotedArg(question)}`)
   const spec = `${toDisplayPath(rootDir, target.file)}::${displaySafeText(target.qualifier ?? target.name)}`
-  emit(`via: token-goat brief "${spec}" --limit ${ANSWER_DELEGATE_LIMIT}`)
+  emit(`via: token-goat brief ${quotedArg(spec)} --limit ${ANSWER_DELEGATE_LIMIT}`)
   return routed('brief', runBrief({ spec, limit: ANSWER_DELEGATE_LIMIT, projectRoot: rootDir }))
 }
 
@@ -354,7 +354,7 @@ export function runAnswer(opts: AnswerOptions): number {
     return refuse(
       'judgement',
       'that asks for judgement, intent, or runtime behaviour, which the index cannot answer -- it would need the code read and reasoned over',
-      `token-goat semantic "${question}"`,
+      `token-goat semantic ${quotedArg(question)}`,
     )
   }
 
@@ -363,14 +363,14 @@ export function runAnswer(opts: AnswerOptions): number {
     return refuse(
       'no-intent',
       'no intent matched -- this router only answers where/who-calls/what-tests-cover/what-exports/what-imports/what-imports-it/what-breaks/what-does-X-do questions about a named symbol or file',
-      `token-goat semantic "${question}"`,
+      `token-goat semantic ${quotedArg(question)}`,
     )
   }
 
   if (cls.intent === 'explain') return answerExplain(question, cls.subject, resolveProjectRoot({ project: process.cwd() }))
 
   const resolved = resolveSubject(cls.subject, subjectModeFor(cls.intent))
-  if (resolved === null) return refuse('unresolved', `'${cls.subject}' is not an indexed symbol or file`, `token-goat semantic "${question}"`)
+  if (resolved === null) return refuse('unresolved', `'${cls.subject}' is not an indexed symbol or file`, `token-goat semantic ${quotedArg(question)}`)
 
   const rootDir = resolveProjectRoot({ project: process.cwd() })
 
@@ -382,7 +382,7 @@ export function runAnswer(opts: AnswerOptions): number {
     const first = shown[0] ?? ''
     // A symbol intent that got here fell through to the file reading, so re-asking it with one of these paths would refuse again for being a file: point at `outline` instead.
     const next = FILE_INTENTS.has(cls.intent)
-      ? `token-goat answer "${FILE_INTENT_PHRASE[cls.intent] ?? ''} ${first}"`
+      ? `token-goat answer ${quotedArg(`${FILE_INTENT_PHRASE[cls.intent] ?? ''} ${first}`)}`
       : `token-goat outline ${viaArg(first)}`
     return refuse('ambiguous', `'${cls.subject}' names ${resolved.candidates.length} files in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, next)
   }

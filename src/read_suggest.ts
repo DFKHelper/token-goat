@@ -8,6 +8,7 @@ import { fileIsGone, healStaleResultFiles, readFileText } from './read_commands.
 import { parseYamlDocument } from './read_structured_data.js'
 import { SUGGEST_NAME_BUDGET, projectSymbolNames, symbolNameFiles } from './symbol_scan.js'
 import { foldPath } from './util.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 
 export const DIDYOUMEAN_LIMIT = 5
 export const TYPO_TWO_EDIT_MIN_LEN = 8
@@ -170,7 +171,7 @@ export function formatBareNameSpecError(command: string, name: string, projectRo
   }
   const lines = [`Not a file: '${displaySafeText(name)}'. Did you mean:`]
   for (const spec of specs.slice(0, DIDYOUMEAN_LIMIT)) {
-    lines.push(`  - token-goat ${command} "${spec}"`)
+    lines.push(`  - token-goat ${command} ${quotedArg(spec)}`)
   }
   if (specs.length > DIDYOUMEAN_LIMIT) {
     lines.push(`  (${specs.length - DIDYOUMEAN_LIMIT} more not shown)`)
@@ -195,7 +196,7 @@ export function formatCrossFileLead(command: string, name: string, excludeFilePa
   const firstSpec = specs[0]
   const lines = [`'${name}' is defined in ${firstSpec !== undefined ? firstSpec.split('::')[0] : ''}`]
   for (const spec of specs.slice(0, DIDYOUMEAN_LIMIT)) {
-    lines.push(`  - token-goat ${command} "${spec}"`)
+    lines.push(`  - token-goat ${command} ${quotedArg(spec)}`)
   }
   if (specs.length > DIDYOUMEAN_LIMIT) {
     lines.push(`  (${specs.length - DIDYOUMEAN_LIMIT} more not shown)`)

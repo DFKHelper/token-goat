@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { extractImports, importsExtensionFor } from './import_export_extract.js'
 import { querySymbols, queryRefs, searchSymbolsFts } from './index_reader.js'
 import { displaySafeText, normalizePath, toDisplayPath, displaySafeJson } from './paths.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 import { resolveSpecPath } from './spec_path.js'
 import { fenceUntrusted } from './untrusted_fence.js'
 import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
@@ -110,7 +111,7 @@ export function runContextFor(opts: ContextForOptions): number {
     const bodyTokens = estimateTokens(h.body ?? '')
     if (budget !== undefined && tokensSoFar + bodyTokens > budget) continue
     tokensSoFar += bodyTokens
-    entries.push({ file: h.filePath, symbol: h.name, kind: h.kind, line: h.lineStart, readCmd: `token-goat read "${h.filePath}::${h.name}@${h.lineStart}"` })
+    entries.push({ file: h.filePath, symbol: h.name, kind: h.kind, line: h.lineStart, readCmd: `token-goat read ${quotedArg(`${h.filePath}::${h.name}@${h.lineStart}`)}` })
   }
 
   const skippedByBudget = hits.length - entries.length
@@ -129,7 +130,7 @@ export function runContextFor(opts: ContextForOptions): number {
     emit(displaySafeJson(entries))
     return 0
   }
-  for (const e of entries) emit(`token-goat read "${displaySafeText(toDisplayPath(rootDir, e.file))}::${displaySafeText(e.symbol)}@${e.line}"`)
+  for (const e of entries) emit(`token-goat read ${quotedArg(`${displaySafeText(toDisplayPath(rootDir, e.file))}::${displaySafeText(e.symbol)}@${e.line}`)}`)
   return 0
 }
 

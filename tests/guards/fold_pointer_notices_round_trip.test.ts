@@ -28,8 +28,9 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
 
 // Not anchored to the literal `-- ` prefix: proseFoldNotice builds the pointer into its own variable before splicing it after `-- `, so the two substrings never sit adjacent in the raw source text even though they do in the rendered output. The marker alone is enough to identify a pointer-constructing function without the false negative that anchoring would cause.
-const READ_OFFSET_MARKER = 'Read "${shownPath}" with offset='
-const SECTION_MARKER = 'token-goat section "${shownPath}::'
+const READ_OFFSET_MARKER = ['Read "${shownPath}" with offset=']
+// A pointer whose heading comes from the document goes through quotedArg (src/hint_suggestion_guard.ts), which single-quotes a heading holding `$`; one with a fixed placeholder keeps its literal double quotes.
+const SECTION_MARKER = ['token-goat section "${shownPath}::', 'token-goat section ${quotedArg(`${shownPath}::']
 
 function srcFiles(): string[] {
   return fs
@@ -39,28 +40,28 @@ function srcFiles(): string[] {
 }
 
 /** Every `file.ts::function` whose raw body (or a same-file function it calls) constructs a pointer of the given literal shape. */
-function sitesForMarker(marker: string): string[] {
+function sitesForMarker(markers: readonly string[]): string[] {
   const out: string[] = []
   for (const file of srcFiles()) {
     const source = fs.readFileSync(file, 'utf8')
-    if (!source.includes(marker)) continue
+    if (!markers.some((m) => source.includes(m))) continue
     const fns: FnInfo[] = parseTopLevelFunctions(source)
     const map = functionMap(fns)
     for (const fn of fns) {
-      if (reachesRaw(fn, map, (body) => body.includes(marker))) out.push(`${path.basename(file)}::${fn.name}`)
+      if (reachesRaw(fn, map, (body) => markers.some((m) => body.includes(m)))) out.push(`${path.basename(file)}::${fn.name}`)
     }
   }
   return out.sort()
 }
 
 /** Direct definition sites only (not every reachable caller), for the "which shape does each site emit" adjudication below. */
-function definitionSitesForMarker(marker: string): string[] {
+function definitionSitesForMarker(markers: readonly string[]): string[] {
   const out: string[] = []
   for (const file of srcFiles()) {
     const source = fs.readFileSync(file, 'utf8')
-    if (!source.includes(marker)) continue
+    if (!markers.some((m) => source.includes(m))) continue
     for (const fn of parseTopLevelFunctions(source)) {
-      if (fn.body.includes(marker)) out.push(`${path.basename(file)}::${fn.name}`)
+      if (markers.some((m) => fn.body.includes(m))) out.push(`${path.basename(file)}::${fn.name}`)
     }
   }
   return out.sort()

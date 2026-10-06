@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto'
 
 import { querySymbols, queryRefs, countRefs, searchSymbolsFts } from './index_reader.js'
 import { toDisplayPath, displaySafeJson, displaySafeText } from './paths.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 import { resolveSpecPath } from './spec_path.js'
 import { resolveProjectRoot } from './project.js'
 import { specScopeRoot } from './read_spec.js'
@@ -538,7 +539,7 @@ export function runAsk(opts: AskOptions): number {
   const backendLabel = process.env[BACKEND_ENV] ?? ''
 
   interface AskEntry { file: string; symbol: string; kind: string; line: number; readCmd: string }
-  const entries: AskEntry[] = hits.map((h) => ({ file: h.filePath, symbol: h.name, kind: h.kind, line: h.lineStart, readCmd: `token-goat read "${h.filePath}::${h.name}@${h.lineStart}"` }))
+  const entries: AskEntry[] = hits.map((h) => ({ file: h.filePath, symbol: h.name, kind: h.kind, line: h.lineStart, readCmd: `token-goat read ${quotedArg(`${h.filePath}::${h.name}@${h.lineStart}`)}` }))
 
   const degrade = (reason: string, extraNote?: string): number => {
     if (opts.json === true) {
@@ -547,7 +548,7 @@ export function runAsk(opts: AskOptions): number {
     }
     emit(`[degraded mode - ${reason}]`)
     if (extraNote !== undefined) emit(extraNote)
-    for (const e of entries) emit(`token-goat read "${displaySafeText(toDisplayPath(rootDir, e.file))}::${displaySafeText(e.symbol)}@${e.line}"`)
+    for (const e of entries) emit(`token-goat read ${quotedArg(`${displaySafeText(toDisplayPath(rootDir, e.file))}::${displaySafeText(e.symbol)}@${e.line}`)}`)
     return 0
   }
 

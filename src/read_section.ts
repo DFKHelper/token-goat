@@ -139,7 +139,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
         `Retry with one of the qualified commands below to pick one:`,
     ]
     for (const [i, line] of result.occurrences.slice(0, AMBIGUOUS_HEADING_LIMIT).entries()) {
-      lines.push(`  - line ${line}  ->  token-goat section "${specFilePath}::${heading}#${i + 1}"`)
+      lines.push(`  - line ${line}  ->  token-goat section ${quotedArg(`${specFilePath}::${heading}#${i + 1}`)}`)
     }
     if (result.occurrences.length > AMBIGUOUS_HEADING_LIMIT) {
       lines.push(`  (${result.occurrences.length - AMBIGUOUS_HEADING_LIMIT} more not shown)`)

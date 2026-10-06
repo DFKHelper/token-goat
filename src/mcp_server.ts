@@ -45,7 +45,7 @@ import { normalizePath, displaySafeJson } from './paths.js'
 import { expandSpecPath } from './spec_path.js'
 
 // The read_commands.ts handlers below are shared verbatim with the CLI (see the file-level doc comment), so their error/ambiguity/overflow text is written for a shell caller: literal `token-goat <cmd> "..."` retry commands and `--flag`-style CLI switches. An MCP client has no shell and no CLI flags -- only this tool's own JSON params -- so a model driving an MCP client would either try to shell out (which fails) or get stuck. Rewrite those CLI-only affordances into MCP-appropriate guidance (re-call this tool with an adjusted parameter) before wrapping the text into a CallToolResult, without touching read_commands.ts/ overflow_guard.ts's CLI-facing text at all -- the CLI's own output stays unchanged.
-const TOKEN_GOAT_RETRY_RE = /token-goat (\w[\w-]*) "([^"]+)"/g
+const TOKEN_GOAT_RETRY_RE = /token-goat (\w[\w-]*) (?:"([^"]+)"|'([^']+)')/g
 
 // Upper bounds for the MCP tools' numeric params, matching the `.max(CONTENT_MAX_INPUT_CHARS)` convention `compress_text` already uses. The `run*` handlers apply no upper clamp of their own (`limit`/`top` go straight into a SQL LIMIT, `maxLines` into a `.slice`), so an unbounded value there is mostly a no-op cap rather than an allocation; `context` is the one that genuinely amplifies, since every extra line is emitted per match.
 const MCP_MAX_LIMIT = 1000
@@ -65,9 +65,10 @@ const RETRY_PARAM_BY_COMMAND: Record<string, string> = {
 
 /** Rewrites CLI-only affordances (shell retry commands, `--flag` switches) in `text` into MCP tool-call guidance. No-op on text that contains neither. */
 function mcpFriendlyText(text: string): string {
-  let out = text.replace(TOKEN_GOAT_RETRY_RE, (_match, cmd: string, arg: string) => {
+  // quotedArg single-quotes an argument holding `$`, a backtick or `"`, so the argument is in whichever group matched.
+  let out = text.replace(TOKEN_GOAT_RETRY_RE, (_match, cmd: string, doubleQuoted: string | undefined, singleQuoted: string | undefined) => {
     const param = RETRY_PARAM_BY_COMMAND[cmd] ?? 'parameter'
-    return `the "${cmd}" tool again with a more specific ${param} (e.g. "${arg}")`
+    return `the "${cmd}" tool again with a more specific ${param} (e.g. "${doubleQuoted ?? singleQuoted ?? ''}")`
   })
   out = out.replace(/--json\b/g, 'the json parameter')
   out = out.replace(/--limit\b/g, 'the limit parameter')

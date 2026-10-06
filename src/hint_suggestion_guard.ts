@@ -60,8 +60,15 @@ export function stripUnsafeSuggestions(text: string): string {
   }
 }
 
-/** One argument of a suggested `token-goat …` command, double-quoted: the form {@link stripUnsafeSuggestions} checks, and the only form that keeps a path holding a space in one argument (`token-goat scope my proj/a.ts:12` ran as `scope my` plus three stray arguments and exited 1). It escapes nothing: a value that would need escaping is the guard's to drop, not this function's to hide. */
+/** What a double-quoted argument does not hold literally in bash or PowerShell: `$` and a backtick substitute inside double quotes, and `"` (or PowerShell's U+201C-U+201E) closes them. */
+const REWRITTEN_IN_DOUBLE_QUOTES = /[$`"\u201C-\u201E]/
+
+/** What a single-quoted argument cannot hold: `'` or a character PowerShell reads as one (U+2018-U+201B) closes it, and neither shell has an escape inside single quotes that the other reads the same way. */
+const ENDS_SINGLE_QUOTES = /['\u2018-\u201B\r\n]/
+
+/** One argument of a suggested `token-goat …` command, quoted so bash and PowerShell both hand the command the value as written. Double quotes by default: the form {@link stripUnsafeSuggestions} checks, and the only form that keeps a path holding a space in one argument (`token-goat scope my proj/a.ts:12` ran as `scope my` plus three stray arguments and exited 1). A value holding `$`, a backtick or a double quote is single-quoted instead, which both shells keep literal: `symbol '$ref'` missed with `Try: token-goat semantic "$ref"`, which both shells ran as `semantic ""`. `!` and backslash stay out of that trigger: history expansion is off in the non-interactive shell a suggestion runs in, and single-quoting every backslash would change the form of every Windows path for nothing. A value that single quotes cannot hold either stays double-quoted. It escapes nothing: a value that would need escaping is the guard's to drop, not this function's to hide. */
 export function quotedArg(value: string): string {
+  if (REWRITTEN_IN_DOUBLE_QUOTES.test(value) && !ENDS_SINGLE_QUOTES.test(value) && !CONTROL_OR_BIDI.test(value)) return "'" + value + "'"
   return '"' + value + '"'
 }
 

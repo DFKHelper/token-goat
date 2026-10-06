@@ -512,7 +512,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
           ...semanticDegradedFields(preflight, searchSemanticError),
           ...(!indexEmpty && isIdentifier
             ? {
-                symbolSuggestion: `token-goat symbol "${trimmedQuery}"`,
+                symbolSuggestion: `token-goat symbol ${quotedArg(trimmedQuery)}`,
                 ...(symFound ? { indexedSymbolFound: true } : {}),
               }
             : {}),
