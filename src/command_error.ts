@@ -18,6 +18,19 @@ export function formatCommandError(e: unknown): string {
   return 'token-goat: ' + displaySafeText(extractErrorMessage(e))
 }
 
+/** A failed git call's stderr as one `token-goat:` error opening `git <command> failed: `. git ends its message in a line break and follows a refused argument with its whole usage text, so the stderr is trimmed and cut at the `usage:` line; a missing repository, which git words differently per subcommand and wraps in that usage text, is said in one line. */
+export function formatGitFailure(command: string, stderr: string): string {
+  if (/not a git repository/i.test(stderr)) return formatCommandError(new CliError(`git ${command} failed: not a git repository`))
+  const lines: string[] = []
+  for (const line of stderr.trim().split(/\r?\n/)) {
+    if (/^usage:/i.test(line.trimStart())) break
+    lines.push(line.trimEnd())
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  const [first, ...rest] = lines
+  return formatCommandError(new CliError([`git ${command} failed: ${first ?? 'git printed no error message'}`, ...rest]))
+}
+
 /** commander's own parse failures ("error: unknown option '--x'", "error: missing required argument 'spec'", then any "(Did you mean ...?)" line) in the same rendering: its `error:` label gives way to the `token-goat:` one. Takes and returns commander's newline-terminated string. */
 export function formatParseError(str: string): string {
   const lines = (str.endsWith('\n') ? str.slice(0, -1) : str).split('\n')

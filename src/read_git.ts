@@ -23,7 +23,7 @@ import {
 } from './util.js'
 import { walkProject } from './baseline.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
-import { formatCommandError } from './command_error.js'
+import { formatCommandError, formatGitFailure } from './command_error.js'
 
 export interface ConflictsCliOptions {
   path?: string
@@ -286,7 +286,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
   try {
     const result = runGit(['diff', ref, '--name-only'], { cwd })
     if (result.exitCode !== 0) {
-      emitErr(`git diff failed: ${result.stderr}`)
+      emitErr(formatGitFailure('diff', result.stderr))
       const hint = buildChangedRefHint(cwd, ref)
       if (hint !== null) {
         emitErr(formatCommandError(hint))
@@ -471,7 +471,7 @@ export function runDiff(opts: DiffOptions): number {
     return 1
   }
   if (diffResult.exitCode !== 0) {
-    emitErr(formatCommandError(`git diff failed: ${diffResult.stderr}`))
+    emitErr(formatGitFailure('diff', diffResult.stderr))
     return 1
   }
 
@@ -597,7 +597,7 @@ export function runLog(opts: LogOptions): number {
     return 1
   }
   if (logResult.exitCode !== 0) {
-    emitErr(formatCommandError(`git log failed: ${displaySafeText(logResult.stderr)}`))
+    emitErr(formatGitFailure('log', logResult.stderr))
     return 1
   }
 

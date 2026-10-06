@@ -30,7 +30,7 @@ import {
   findCyclesCapped,
 } from './graph_traversal.js'
 import { emit, emitErr } from './emit.js'
-import { formatCommandError } from './command_error.js'
+import { formatCommandError, formatGitFailure } from './command_error.js'
 
 // ---- similar ----------------------------------------------------------------
 
@@ -348,7 +348,7 @@ export function runBlame(opts: BlameOptions): number {
   try {
     const result = runGit(['blame', '-L', `${start},${end}`, '--', filePath], { cwd })
     if (result.exitCode !== 0) {
-      emitErr(formatCommandError(`git blame failed: ${displaySafeText(result.stderr)}`))
+      emitErr(formatGitFailure('blame', result.stderr))
       return 1
     }
     raw = result.stdout
