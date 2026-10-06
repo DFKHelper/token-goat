@@ -28,6 +28,8 @@ interface TypeFrame {
   bodyIndent: number | null
   // Index in `symbols` of the type this frame opened, so its one-line span can be widened to the indentation body when the frame is popped.
   symbolIndex: number
+  // The `end` marker that closes this frame's indentation body when it is not `end <name>`: an anonymous given closes with `end given`.
+  endMarker?: string
 }
 
 // Declaration kinds whose `=`-terminated head hands the body to the lines below it.
@@ -98,6 +100,110 @@ const VAL_RE = new RegExp('^\\s*' + MODS + 'val\\s+(' + NAME + ')')
 // `var x: Int = 5`, `var y = "hello"` — same pattern as val.
 const VAR_RE = new RegExp('^\\s*' + MODS + 'var\\s+(' + NAME + ')')
 
+// A Scala 3 given instance (Scala 3 Reference, "Contextual Abstractions" > "Given Instances"): `given intOrd: Ord[Int] with`, `given listOrd[T](using ord: Ord[T]): Ord[List[T]] with`, Scala 3.6's `given intOrd: Ord[Int]:` and `given [T: Ord] => Ord[List[T]]:`, an alias `given global: ExecutionContext = ForkJoinPool()` and an abstract `given c: Context`. The modifier list leaves out `case`, so a `case given Ord[T] =>` pattern is never read as a definition.
+const GIVEN_RE = /^\s*(?:(?:(?:private|protected)(?:\[[A-Za-z_][A-Za-z0-9_]*\])?|inline|transparent|override|final|implicit|lazy)\s+)*given\s+(?!=(?!>))(\S.*)$/
+
+const SIMPLE_TYPE_HEAD_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*\.)*([A-Za-z_][A-Za-z0-9_]*)\s*/
+
+// Split `text` at the commas that sit outside every bracket and parenthesis.
+function splitTopLevel(text: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!
+    if (ch === '(' || ch === '[') depth++
+    else if (ch === ')' || ch === ']') depth--
+    else if (ch === ',' && depth === 0) {
+      parts.push(text.slice(start, i).trim())
+      start = i + 1
+    }
+  }
+  parts.push(text.slice(start).trim())
+  return parts
+}
+
+// The name the compiler gives an anonymous given (Scala 3 Reference, "Given Instances" > "Anonymous Givens"): `given_`, the implemented type's simple name, then the simple name of each top-level type argument, a tuple argument contributing each of its members, so `given Ord[Int]` is `given_Ord_Int` and `given [T: Ord] => Ord[List[T]]` is `given_Ord_List`. A type this does not model (a function or refinement type) falls back to `given`.
+function anonymousGivenName(typeText: string): string {
+  let text = typeText.trim()
+  // Scala 3.6 writes a conditional given's type and using clauses ahead of `=>`: drop each one.
+  while (text.startsWith('[') || text.startsWith('(')) {
+    let depth = 0
+    let i = 0
+    for (; i < text.length; i++) {
+      const ch = text[i]!
+      if (ch === '(' || ch === '[') depth++
+      else if (ch === ')' || ch === ']') depth--
+      if (depth === 0) break
+    }
+    const after = text.slice(i + 1).trimStart()
+    if (!after.startsWith('=>')) return 'given'
+    text = after.slice(2).trim()
+  }
+  const head = SIMPLE_TYPE_HEAD_RE.exec(text)
+  if (!head) return 'given'
+  const parts = [head[1]!]
+  const tail = text.slice(head[0].length)
+  if (tail !== '') {
+    if (!tail.startsWith('[') || !tail.endsWith(']')) return 'given'
+    for (const arg of splitTopLevel(tail.slice(1, -1))) {
+      const members = arg.startsWith('(') && arg.endsWith(')') ? splitTopLevel(arg.slice(1, -1)) : [arg]
+      for (const member of members) {
+        // The same page names a function type used as a type argument `Function`.
+        if (member.replace(/\[.*\]/g, '').includes('=>')) {
+          parts.push('Function')
+          continue
+        }
+        const m = SIMPLE_TYPE_HEAD_RE.exec(member)
+        if (!m || !/^(?:\[.*\])?$/.test(member.slice(m[0].length))) return 'given'
+        parts.push(m[1]!)
+      }
+    }
+  }
+  return `given_${parts.join('_')}`
+}
+
+// The given declared on `stripped`, or null when the line declares none. `body` says how its template body opens: `colon` for an indented body (a trailing `with` or Scala 3.6's trailing `:`), `brace` for `with {` or `{`, and null for an alias (`= expr`) or an abstract given, which have no body of their own. A colon before the body, outside every bracket, ends the signature, so the identifier ahead of it is the given's own name; with none the given is anonymous.
+function givenHead(stripped: string): { name: string; anonymous: boolean; body: 'colon' | 'brace' | null } | null {
+  const m = GIVEN_RE.exec(stripped)
+  if (!m) return null
+  const rest = m[1]!
+  const blanked = stripStringLiterals(rest, SCALA_STRIP)
+  let depth = 0
+  let sigColon = -1
+  let end = blanked.length
+  let body: 'colon' | 'brace' | null = null
+  for (let i = 0; i < blanked.length; i++) {
+    const ch = blanked[i]!
+    if (ch === '(' || ch === '[') depth++
+    else if (ch === ')' || ch === ']') depth--
+    else if (depth !== 0) continue
+    else if (ch === '{') {
+      end = i
+      body = 'brace'
+      break
+    } else if (ch === '=' && blanked[i + 1] !== '>') {
+      end = i
+      break
+    } else if (ch === ':') {
+      if (blanked.slice(i + 1).trim() === '') {
+        end = i
+        body = 'colon'
+        break
+      }
+      if (sigColon < 0) sigColon = i
+    } else if (blanked.startsWith('with', i) && !/[A-Za-z0-9_]/.test(blanked[i - 1] ?? '') && !/[A-Za-z0-9_]/.test(blanked[i + 4] ?? '')) {
+      end = i
+      body = blanked.slice(i + 4).trim().startsWith('{') ? 'brace' : 'colon'
+      break
+    }
+  }
+  const sig = sigColon >= 0 ? rest.slice(0, sigColon).trim() : ''
+  const named = new RegExp('^(' + NAME + ')\\s*(?:[[(]|$)').exec(sig)
+  if (named) return { name: unquoteName(named[1]!), anonymous: false, body }
+  return { name: anonymousGivenName(sigColon >= 0 ? rest.slice(sigColon + 1, end) : rest.slice(0, end)), anonymous: true, body }
+}
+
 // True when `stripped` opens any declaration this extractor recognizes. Used only by the stale-frame sweep, which needs to distinguish a real new declaration from a continuation line (`) extends Bar {`, `with Baz {`, a bare `{`) that must leave the open frame alone.
 function startsDeclaration(stripped: string): boolean {
   return (
@@ -108,6 +214,7 @@ function startsDeclaration(stripped: string): boolean {
     FUNC_RE.test(stripped) ||
     VAL_RE.test(stripped) ||
     VAR_RE.test(stripped) ||
+    GIVEN_RE.test(stripped) ||
     extensionClauseTail(stripped) !== null
   )
 }
@@ -184,7 +291,7 @@ export function extractScala(
       const top = typeStack[typeStack.length - 1]!
       if (!top.colonBody || indent > top.declIndent) break
       typeStack.pop()
-      const closesWithMarker = indent === top.declIndent && stripped === `end ${top.name}`
+      const closesWithMarker = indent === top.declIndent && stripped === (top.endMarker ?? `end ${top.name}`)
       closeColonFrame(top, closesWithMarker ? lineNum : lastCodeLine)
       if (closesWithMarker) lastCodeLine = lineNum
     }
@@ -268,6 +375,17 @@ export function extractScala(
       const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, enname, 'enum', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
       typeStack.push({ name: enname, startDepth: braceDepth, bodyEntered: false, openParens: 0, declIndent: indent, colonBody: opensColonBody, bodyIndent: null, symbolIndex: symbols.length - 1 })
+      matched = true
+    }
+
+    // A given with a template body is an object holding its members; an alias or abstract given is a value of the type it names.
+    const gm = !matched && typeDetectionGateOk && (!isIndented || typeStack.length > 0) ? givenHead(stripped) : null
+    if (gm) {
+      const parent = typeStack.length > 0 ? typeStack[typeStack.length - 1]!.name : undefined
+      symbols.push(makeLineSymbol(filePath, gm.name, gm.body === null ? 'val' : 'object', lineNum, stripped.slice(0, 200), parent, lines, 'c'))
+      if (gm.body !== null) {
+        typeStack.push({ name: gm.name, startDepth: braceDepth, bodyEntered: false, openParens: 0, declIndent: indent, colonBody: gm.body === 'colon', bodyIndent: null, symbolIndex: symbols.length - 1, ...(gm.anonymous ? { endMarker: 'end given' } : {}) })
+      }
       matched = true
     }
 

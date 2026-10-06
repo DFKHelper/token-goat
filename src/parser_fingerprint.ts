@@ -47,7 +47,7 @@ export const LANGUAGE_PARSER_FINGERPRINTS: ReadonlyMap<string, string> = new Map
   ['rpg', 'd66d5d98d9672869'],
   ['salesforce_metadata', '22de43a2073996c2'],
   ['sas', 'c67156d035a5b559'],
-  ['scala', '9e407ec5f672b111'],
+  ['scala', 'b6834a441d508961'],
   ['scheme', '76efbbb52623038e'],
   ['solidity', 'ae284741a1f8f663'],
   ['sql', '30b3f65505b12534'],
