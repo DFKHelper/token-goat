@@ -75,7 +75,7 @@ export function requireInt(flag: string, raw: string): number {
   return n
 }
 
-// Same numeric parse as requireInt, plus a sign check. Every current --limit/--top flag feeds either a SQL `LIMIT ?` bind or a `.slice(0, n)` row cap, and a negative value breaks both in the opposite direction from what the flag promises: SQLite treats a negative LIMIT as "no limit" (LIMIT -1 returns every row instead of none), and `.slice(0, -1)` silently reinterprets as "everything except the last element" per JS's slice-from-the-end semantics. Zero is fine (both SQL and slice() correctly return nothing for 0), so only strictly-negative is rejected.
+// Same numeric parse as requireInt, plus a sign check. Every current --limit/--top flag feeds either a SQL `LIMIT ?` bind or a `.slice(0, n)` row cap, and a negative value breaks both in the opposite direction from what the flag promises: SQLite treats a negative LIMIT as "no limit" (LIMIT -1 returns every row instead of none), and `.slice(0, -1)` silently reinterprets as "everything except the last element" per JS's slice-from-the-end semantics. Zero is fine (both SQL and slice() correctly return nothing for 0), so only strictly-negative is rejected. A flag whose command has no useful empty page to print uses requirePositiveInt below instead, so 0 and a negative value share one message.
 export function requireNonNegativeInt(flag: string, raw: string): number {
   const n = requireInt(flag, raw)
   if (n < 0) {

@@ -2,7 +2,7 @@
 
 import * as fs from 'node:fs'
 
-import { CliError, out, requireNonNegativeInt } from './cli.js'
+import { CliError, out, requireNonNegativeInt, requirePositiveInt } from './cli.js'
 import { displaySafeJson } from './paths.js'
 import { auditSessionCorpus } from './session_audit.js'
 import { formatSessionAudit } from './session_audit_report.js'
@@ -176,7 +176,7 @@ export function cmdRecall(query: string | undefined, opts: { type?: string; limi
   }
   runRecallCommand(query, {
     ...(type !== undefined ? { type } : {}),
-    ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
+    ...(opts.limit !== undefined ? { limit: requirePositiveInt('--limit', opts.limit) } : {}),
     ...(opts.json === true ? { json: true } : {}),
   })
 }

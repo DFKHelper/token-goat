@@ -383,19 +383,18 @@ describe('waste --top 0 validation', () => {
 })
 
 
-// Regression guard: cmdRecall's --limit flag was parsed via requirePositiveInt instead of requireNonNegativeInt, contradicting every other --limit flag in this file and recall_index.ts::searchRecall's downstream use (limit binds directly into a SQL LIMIT ? clause -- LIMIT 0 is valid SQL and just returns zero rows, no special-casing needed). So `recall --limit 0` threw "--limit must be a positive number" instead of returning zero hits.
-describe('recall --limit 0 validation', () => {
-  it('accepts --limit 0 like every other --limit flag instead of requiring a strictly-positive value', async () => {
-    captureStderr()
-    await runCli(['recall', 'test query', '--limit', '0'])
-    // Pre-fix this exits 1 with '--limit must be a positive number, got: "0"'.
-    expect(stderr.join('')).not.toContain('must be a positive number')
-  })
-
-  it('still rejects a negative --limit with a clean error', async () => {
-    captureStderr()
-    const code = await runCli(['recall', 'test query', '--limit', '-1'])
-    expect(code).toBe(1)
-    expect(stderr.join('')).toContain('--limit')
-  })
+// Regression guard: `recall` and `search` took --limit 0, and an empty page is no answer to either: recall printed "Showing 0 entries; more are available" above "No cache entries match", and search printed "No results found across active channels []". The other --limit commands (symbol, refs, brief, semantic, find, locate, callers, types) already refuse 0, so these two now refuse it at dispatch with the shared requirePositiveInt wording. HAND-DERIVED: the expected text is requirePositiveInt's message with the raw value quoted; the pre-fix output above is a CAPTURE from the built bundle.
+describe('recall and search refuse --limit 0', () => {
+  for (const cmd of [['recall', 'test query'], ['search', 'test query']]) {
+    for (const bad of ['0', '-1']) {
+      it(`${cmd[0]} --limit ${bad} says the value must be positive and prints nothing`, async () => {
+        captureStdout()
+        captureStderr()
+        const code = await runCli([...cmd, '--limit', bad])
+        expect(code).toBe(1)
+        expect(stderr.join('')).toContain(`--limit must be a positive number, got: "${bad}"`)
+        expect(stdout.join('')).toBe('')
+      })
+    }
+  }
 })

@@ -227,7 +227,7 @@ async function cmdSearch(
   } else if (typeof opts.project === 'string') {
     projectRoot = resolveProjectRoot({ project: opts.project })
   }
-  const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
+  const limit = opts.limit !== undefined ? requirePositiveInt('--limit', opts.limit) : 20
   let channels: SearchChannel[] | undefined
   if (opts.channels) {
     const rawList = opts.channels.split(',').map((c) => c.trim().toLowerCase()).filter(Boolean)
