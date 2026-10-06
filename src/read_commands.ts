@@ -273,14 +273,17 @@ export function isValidUtf8(buf: Buffer): boolean {
 
 /** Symbols indexed with an empty stored `body` (e.g. HTML/Liquid heading symbols produced by `sectionsToHeadingSymbols`, which store `body: ''`) need their content re-read from disk by line range instead of rendering blank. Markdown heading symbols span their whole section but store only the heading line (hint_target.ts parses its level from it), so they are re-read the same way, provided the file still has that heading line at lineStart -- an edited file keeps the stored line rather than splicing in unrelated text. Shared by runSymbol, runRead, and runBrief so all three read surfaces resolve these symbols the same way. */
 export function resolveBody(entry: { body: string; filePath: string; lineStart: number; lineEnd: number; kind?: string }): string {
-  const storedFirstLine = entry.body.split(/\r?\n/)[0]!
-  const storedLineCount = entry.body === '' ? 0 : entry.body.split(/\r?\n/).length
+  const storedLines = entry.body.split(/\r?\n/)
+  // A CRLF file's stored body keeps its carriage returns, while the disk slice below and an `@N-M` range read both rejoin lines with `\n`; the stored text is rejoined the same way so every read of the same lines prints the same bytes.
+  const stored = storedLines.join('\n')
+  const storedFirstLine = storedLines[0]!
+  const storedLineCount = entry.body === '' ? 0 : storedLines.length
   const widenedHeading = entry.kind === 'heading' && storedLineCount > 0 && storedLineCount < entry.lineEnd - entry.lineStart + 1
-  if (entry.body !== '' && !widenedHeading) return entry.body
+  if (entry.body !== '' && !widenedHeading) return stored
   const source = readFileText(entry.filePath)
-  if (source === null) return entry.body
+  if (source === null) return stored
   const diskLines = indexedSourceText(entry.filePath, source).split(/\r?\n/)
-  if (widenedHeading && diskLines[entry.lineStart - 1]?.trim() !== storedFirstLine.trim()) return entry.body
+  if (widenedHeading && diskLines[entry.lineStart - 1]?.trim() !== storedFirstLine.trim()) return stored
   return diskLines.slice(Math.max(0, entry.lineStart - 1), entry.lineEnd).join('\n')
 }
 
