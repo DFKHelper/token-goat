@@ -17,15 +17,16 @@ export function estimateTokens(text: string): number {
   return estimateTokensFromLength(stripped.length, classifyContent(stripped))
 }
 
-/** Trim text to fit within a token budget, keeping leading lines. Preserves as many leading whole lines as fit within the budget, appending a marker line that explains the cap and suggests remediation. @param text The text to trim. @param budgetTokens The maximum allowed tokens. @param command Optional command label for tailored hint text. @returns Trimmed text with marker, or original text if within budget. */
-export function trimToBudget(text: string, budgetTokens: number, command?: string): string {
+/** Trim text to fit within a token budget, keeping leading lines. Preserves as many leading whole lines as fit within the budget, appending a marker line that explains the cap and suggests remediation. @param text The text to trim. @param budgetTokens The maximum allowed tokens. @param command Optional command label for tailored hint text. @param opts.reserveTokens Tokens of the budget a caller will spend around the result (a fence's tags and notice), kept out of both the entry check and the body; the marker still names `budgetTokens`. @returns Trimmed text with marker, or original text if within budget. */
+export function trimToBudget(text: string, budgetTokens: number, command?: string, opts: { reserveTokens?: number } = {}): string {
   const markerMarginTokens = 64
+  const reserve = Math.max(0, opts.reserveTokens ?? 0)
 
   // Classify once and spend the same divisor the entry check measured with. These were two different divisors: the check classified, while the char budget below multiplied by guardDivisor()'s `text` default, so a base64 payload was priced at ~1.09 bytes/token on the way in and at 3.0 on the way out. A 1000-token cap then emitted 2583 tokens of it -- an overflow guard overshooting by 2.6x is the one failure it exists to prevent.
   const strippedAll = stripAnsiEscapes(text)
   const contentClass = classifyContent(strippedAll)
   const totalTokens = estimateTokensFromLength(strippedAll.length, contentClass)
-  if (totalTokens <= budgetTokens) {
+  if (totalTokens <= budgetTokens - reserve) {
     return text
   }
 
@@ -34,7 +35,7 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
   // A trailing newline leaves an empty piece behind. Counting it inflates the "of N lines" total, and keeping it can spend budget on a blank line.
   const totalLines = lines.length
 
-  const bodyBudget = Math.max(1, budgetTokens - markerMarginTokens)
+  const bodyBudget = Math.max(1, budgetTokens - markerMarginTokens - reserve)
   const charBudget = bodyBudget * guardDivisor(contentClass)
 
   const kept: string[] = []

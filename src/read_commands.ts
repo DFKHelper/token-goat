@@ -23,10 +23,10 @@ import { emit, emitErr } from './emit.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
 import { resolveProjectRoot } from './project.js'
 import { loadConfig } from './config.js'
-import { fenceUntrustedContent, UNTRUSTED_FILE_TAG, UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
+import { fenceUntrustedContent, scanForInjectionPatterns, UNTRUSTED_FILE_TAG, UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
 import { redactSecrets } from './secret_redact.js'
-import { fenceUntrusted, scanAndRecord } from './untrusted_fence.js'
-import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
+import { fenceUntrusted, fenceWithMatches, scanAndRecord } from './untrusted_fence.js'
+import { trimToBudget, capJsonRows, estimateTokens, type JsonRowCapResult } from './overflow_guard.js'
 import { enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT } from './graph_commands.js'
 import { MAX_ZIP_INPUT_BYTES, ZipInputTooLargeError } from './zip_bounds.js'
 import {
@@ -479,10 +479,35 @@ export function guardText(text: string, command: string): string {
 
 /** {@link guardText}, then a fence under `tag` around what the cap kept, with the cap's marker below the closing tag. The cap keeps leading lines only, so fencing first lets it cut the closing tag off and leaves token-goat's marker inside the fence. */
 export function guardThenFence(text: string, command: string, tag: string): string {
-  const capped = guardText(text, command)
-  if (capped === text) return fenceUntrusted(text, tag)
+  const cfg = loadConfig()
+  if (!cfg.overflow_guard.enabled) return fenceUntrusted(text, tag)
+  const budget = cfg.overflow_guard.max_tokens
+  // The fence's tags, its notice and the escapes it writes into the body come out of the same max_tokens as the body, so the cap is re-run with what the assembled output overshot held back, until it fits. A fixed margin would not do: the escapes grow with how many markers the body carries.
+  let capped = trimToBudget(text, budget, command)
+  let reserve = 0
+  for (let pass = 0; pass < 8; pass++) {
+    const excess = estimateTokens(fenceThenMarker(capped, text, (body) => fenceWithMatches(body, scanUnrecorded(body), tag))) - budget
+    if (excess <= 0) break
+    reserve += excess
+    capped = trimToBudget(text, budget, command, { reserveTokens: reserve })
+  }
+  return fenceThenMarker(capped, text, (body) => fenceUntrusted(body, tag))
+}
+
+/** `capped` fenced by `fence`, with the cap's marker line, when the cap cut anything, below the closing tag rather than inside the fence. */
+function fenceThenMarker(capped: string, text: string, fence: (body: string) => string): string {
+  if (capped === text) return fence(text)
   const markerAt = capped.lastIndexOf('\n')
-  return `${fenceUntrusted(capped.slice(0, markerAt), tag)}\n${capped.slice(markerAt + 1)}`
+  return `${fence(capped.slice(0, markerAt))}\n${capped.slice(markerAt + 1)}`
+}
+
+/** The pattern names a fence's notice would carry for `text`, without booking the injection_detected stat: {@link guardThenFence} measures candidate outputs it does not print, and only the one it prints should count. */
+function scanUnrecorded(text: string): string[] {
+  try {
+    return scanForInjectionPatterns(text)
+  } catch {
+    return []
+  }
 }
 
 /** {@link guardThenFence} for text the user named rather than wrote, redacted before the cap can cut a secret short of its pattern: capping unredacted text first can leave a fragment the redactor no longer recognises. */
