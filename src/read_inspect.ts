@@ -882,11 +882,11 @@ export function runFind(opts: FindOptions): number {
   }
 
   if (fuzzyNames.length > 0) {
-    emitErr(`No symbol name contains '${opts.pattern}'; showing files for the nearest indexed ${fuzzyNames.length === 1 ? 'name' : 'names'}: ${fuzzyNames.join(', ')}`)
+    emitErr(`No symbol name contains '${displaySafeText(opts.pattern)}'; showing files for the nearest indexed ${fuzzyNames.length === 1 ? 'name' : 'names'}: ${fuzzyNames.map(displaySafeText).join(', ')}`)
   }
 
   for (const f of files) {
-    emit(toDisplayPath(rootDir, f))
+    emit(displaySafeText(toDisplayPath(rootDir, f)))
   }
 
   if (limitDropped > 0) {
@@ -1017,7 +1017,7 @@ export function runLocate(opts: LocateOptions): number {
   }
 
   if (fuzzyNames.length > 0) {
-    emitErr(`No exact landmark for '${targetSpec}'; nearest matches: ${fuzzyNames.join(', ')}`)
+    emitErr(`No exact landmark for '${displaySafeText(targetSpec)}'; nearest matches: ${fuzzyNames.map(displaySafeText).join(', ')}`)
   }
 
   for (const hit of hits) {
