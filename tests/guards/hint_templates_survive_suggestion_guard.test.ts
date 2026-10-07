@@ -643,9 +643,9 @@ const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string }> = [
   { key: 'read_semantic.ts::const payload = { source: \'fts\', items: [], truncated: false, totalCount: 0, excludeTestsFilteredToEmpty: true, hint: `no non-test matches for "${query}" (${hidden})` }', reason: R.jsonLeaf },
   ...[
     'powershell_compat.ts::return `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String(\'${Buffer.from(text, \'utf8\').toString(\'base64\')}\'))`',
-    'powershell_compat.ts::bootstrap = `"exec(__import__(\'base64\').b64decode(\'${b64}\').decode())"`',
     'powershell_compat.ts::if (target.kind === \'stdout\') return `[System.Console]::OpenStandardOutput().Write([System.Convert]::FromBase64String(\'${Buffer.from(text, \'utf8\').toString(\'base64\')}\'), 0, ${Buffer.byteLength(text, \'utf8\')})`',
   ].map((key) => ({ key, reason: R.base64 })),
+  { key: 'powershell_compat.ts::const PYTHON_LOADER_ARG = `\'${PYTHON_LOADER.replace(/\'/g, "\'\'")}\'`', reason: R.quoter },
 ]
 
 describe('every value echoed between hand-written quotes in src', () => {

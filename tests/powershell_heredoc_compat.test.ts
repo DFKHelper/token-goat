@@ -11,10 +11,13 @@ import {
 import { run, spawnTarget } from '../src/bash_runner.js'
 import { canRunPowerShell, resolvePowerShell } from '../src/shell.js'
 
-// The texts a rewrite carries as base64, decoded.
+// The texts a rewrite carries as base64 or as the `-c` loader's hex argument, decoded.
 function decodedBodies(adapted: string): string[] {
-  return [...adapted.matchAll(/(?:FromBase64String|b64decode)\('([^']*)'\)/g)].map((m) => Buffer.from(m[1] as string, 'base64').toString('utf8'))
+  return [...adapted.matchAll(/FromBase64String\('([^']*)'\)|'\s+x([0-9a-f]*)(?=\s|$)/g)].map((m) => m[1] !== undefined ? Buffer.from(m[1], 'base64').toString('utf8') : Buffer.from(m[2] as string, 'hex').toString('utf8'))
 }
+
+// A rewrite with the `-c` loader's program text replaced by LOADER, so a test can state the rest exactly.
+const withoutLoader = (adapted: string): string => adapted.replace(/'\(lambda s:.*?\.decode\(''utf-8''\)\)'/g, 'LOADER')
 
 describe('PowerShell Heredoc and Inline Script Adaptation', () => {
   describe('adaptHeredoc', () => {
@@ -54,7 +57,7 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
       const input = `Write-Output "start"; python - <<'EOF'\nprint("middle")\nEOF; Write-Output "end"`
       const adapted = adaptHeredoc(input)
       expect(adapted).toContain('Write-Output "start";')
-      expect(adapted).toContain('| python -X utf8 -; if (-not $?)')
+      expect(adapted).toContain('| python -; $TgQ = $? } finally')
       expect(adapted).toMatch(/ -ErrorAction Ignore; Write-Output "end"$/)
     })
 
@@ -68,7 +71,7 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
       expect(adaptHeredoc(`cat >> 'log.txt' <<'EOF'\nsecond\nEOF`)).toMatch(/^\[System\.IO\.File\]::AppendAllText\(.*\(Write-Output 'log\.txt'\)\)/)
       expect(adaptHeredoc(`cat <<'EOF' >> log.txt\nsecond\nEOF`)).toMatch(/^\[System\.IO\.File\]::AppendAllText\(.*\(Write-Output log\.txt\)\)/)
       expect(decodedBodies(adaptHeredoc(`cat <<'EOF' >> log.txt\nsecond\nEOF`))).toEqual(['second\n'])
-      expect(adaptHeredoc(`cat <<'EOF' | python -\nprint(1)\nEOF`)).toMatch(/\)\) \| python -X utf8 -; if /)
+      expect(adaptHeredoc(`cat <<'EOF' | python -\nprint(1)\nEOF`)).toMatch(/\)\) \| python -; \$TgQ = /)
     })
 
     // HAND-DERIVED: bash runs each pipeline stage in a subshell, so what a heredoc pipe sets never outlives it, whatever the body holds; Windows PowerShell 5.1 pipes text into a native command in $OutputEncoding, ASCII by default, so every pipe runs in a scope with a UTF-8 one.
@@ -105,12 +108,15 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
       expect(decodedBodies(adapted)).toEqual(['h\u00e9llo\n'])
     })
 
-    // HAND-DERIVED: python --help: "-X utf8: enable UTF-8 mode", the command-line form of PYTHONUTF8=1; the py launcher reads its version switch only as its first argument.
-    it('runs a Python heredoc target in UTF-8 mode, after the launcher version switch', () => {
-      expect(adaptHeredoc(`python3 <<'PY'\nprint(42)\nPY`)).toMatch(/\| python3 -X utf8 -; /)
-      expect(adaptHeredoc(`py -3 - <<'PY'\nprint(42)\nPY`)).toMatch(/\| py -3 -X utf8 -; /)
+    // HAND-DERIVED: python --help: "PYTHONIOENCODING: encoding[:errors] used for stdin/stdout/stderr", the only switch a script read from stdin can be given; the command itself, launcher version switch and options included, runs as written.
+    it('runs a Python heredoc target as written, with UTF-8 standard streams', () => {
+      expect(adaptHeredoc(`python3 <<'PY'\nprint(42)\nPY`)).toMatch(/\$env:PYTHONIOENCODING = 'utf-8' \}; .*\| python3 -; /)
+      expect(adaptHeredoc(`py -3 - <<'PY'\nprint(42)\nPY`)).toMatch(/\$env:PYTHONIOENCODING = 'utf-8' \}; .*\| py -3 -; /)
       expect(adaptHeredoc(`python -X utf8 - <<'PY'\nprint(42)\nPY`)).toMatch(/\| python -X utf8 -; /)
-      expect(adaptHeredoc(`node - <<'EOF'\nconsole.log(1)\nEOF`)).toMatch(/\| node -; /)
+      const node = adaptHeredoc(`node - <<'EOF'\nconsole.log(1)\nEOF`)
+      expect(node).toMatch(/\| node -; /)
+      expect(node).not.toContain('PYTHONIOENCODING')
+      for (const adapted of [adaptHeredoc(`python3 <<'PY'\nprint(42)\nPY`), adaptInlinePython(`python -c 'print(1)'`), adaptInlinePython(`python -c "print(1)"`)]) expect(adapted).not.toContain('-X utf8')
     })
 
     // HAND-DERIVED: forms with no PowerShell mapping here (a cat option, a redirect plus a pipe, an assignment) are left whole for PowerShell to report, never half rewritten.
@@ -135,32 +141,34 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
   })
 
   describe('adaptInlinePython', () => {
-    // HAND-DERIVED: the script is a -c argument PowerShell 5.1 would split at its double quotes, so it travels as base64 that Python decodes and runs, still under -c.
-    it('adapts python -c with double quotes inside single quotes to a base64 -c bootstrap', () => {
+    // HAND-DERIVED: the script is a -c argument PowerShell 5.1 would split at its double quotes, so it travels as hex in the next argument, which the -c loader decodes and runs; the loader holds no double quote and imports no module a file in the working directory could shadow.
+    it('adapts python -c with double quotes inside single quotes to a -c loader and a hex argument', () => {
       const input = `python -c 's = "unterminated \\"string\\" literal"; print(s)'`
       const adapted = adaptInlinePython(input)
-      expect(adapted).toMatch(/^python -X utf8 -c "exec\(__import__\('base64'\)\.b64decode\('[A-Za-z0-9+/=]+'\)\.decode\(\)\)"$/)
+      expect(withoutLoader(adapted)).toMatch(/^python -c LOADER x[0-9a-f]+$/)
       expect(decodedBodies(adapted)).toEqual([`s = "unterminated \\"string\\" literal"; print(s)`])
       expect(adapted).not.toContain('|')
+      expect(adapted).not.toContain('"')
+      expect([...adapted.matchAll(/__import__\(''(\w+)''\)/g)].map((m) => m[1])).toEqual(['sys', 'sys'])
     })
 
     // HAND-DERIVED: bash `python -c SCRIPT a b` gives sys.argv ['-c', 'a', 'b'] and leaves stdin to the script, so the arguments stay after the -c string and nothing is piped in.
     it('preserves interpreter flags and arguments after script', () => {
       const input = `python3 -u -c 'import sys; print(sys.argv)' arg1 arg2`
       const adapted = adaptInlinePython(input)
-      expect(adapted).toMatch(/^python3 -u -X utf8 -c "exec\(.*\)" arg1 arg2$/)
+      expect(withoutLoader(adapted)).toMatch(/^python3 -u -c LOADER x[0-9a-f]+ arg1 arg2$/)
     })
 
     it('handles chained statements with python -c', () => {
       const input = `Write-Output "part1"; python -c "print('part2')"; Write-Output "part3"`
       const adapted = adaptInlinePython(input)
-      expect(adapted).toContain('Write-Output "part1"; python -X utf8 -c (')
-      expect(adapted).toMatch(/\.decode\(\)\)'\); Write-Output "part3"$/)
+      expect(adapted).toContain('Write-Output "part1"; python -c $(& { param($TgS)')
+      expect(adapted).toMatch(/ "print\('part2'\)"\); Write-Output "part3"$/)
     })
 
-    // HAND-DERIVED: Windows' CreateProcess takes at most 32,767 characters, and base64 is 4/3 the size of the script, so a script that would not fit is left as written.
-    it('leaves a script too long for a base64 command line as written', () => {
-      const input = `python -c 'print(1)  # ${'x'.repeat(22_000)}'`
+    // HAND-DERIVED: Windows' CreateProcess takes at most 32,767 characters, and hex is twice the size of the script, so a script that would not fit is left as written.
+    it('leaves a script too long for a hex command line as written', () => {
+      const input = `python -c 'print(1)  # ${'x'.repeat(14_000)}'`
       expect(adaptInlinePython(input)).toBe(input)
     })
 
@@ -181,24 +189,24 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
 
     // HAND-DERIVED: python --help lists -X opt and -W arg as options with a separate value; `py -3` is the Windows launcher's version switch.
     it('still adapts an interpreter path and options that take a value', () => {
-      expect(adaptInlinePython(`python -X utf8 -W ignore -c "print(1)"`)).toMatch(/^python -X utf8 -W ignore -c \('exec/)
-      expect(adaptInlinePython(`py -3 -c "print(1)"`)).toMatch(/^py -3 -X utf8 -c \('exec/)
-      expect(adaptInlinePython(`C:/Python312/python.exe -c "print(1)"`)).toMatch(/^C:\/Python312\/python\.exe -X utf8 -c \('exec/)
+      expect(adaptInlinePython(`python -X utf8 -W ignore -c "print(1)"`)).toMatch(/^python -X utf8 -W ignore -c \$\(& /)
+      expect(adaptInlinePython(`py -3 -c "print(1)"`)).toMatch(/^py -3 -c \$\(& /)
+      expect(adaptInlinePython(`C:/Python312/python.exe -c "print(1)"`)).toMatch(/^C:\/Python312\/python\.exe -c \$\(& /)
     })
 
-    // HAND-DERIVED: a double-quoted PowerShell string is expandable ($name, $(...), backtick escapes, doubled quotes), so it must reach python as PowerShell evaluates it: the string is encoded at run time as written, never decoded with bash rules into base64.
+    // HAND-DERIVED: a double-quoted PowerShell string is expandable ($name, $(...), backtick escapes, doubled quotes), so it must reach python as PowerShell evaluates it: the string is encoded at run time as written, never decoded with bash rules, and passed as written when its hex would not fit the command line.
     it('encodes a double-quoted script at run time from the PowerShell string it is', () => {
-      const bootstrap = (expandable: string) => `('exec(__import__(''base64'').b64decode(''' + [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(${expandable})) + ''').decode())')`
-      expect(adaptInlinePython(`$name = 'w'; python -c "print('hi $name')" one`)).toBe(`$name = 'w'; python -X utf8 -c ${bootstrap(`"print('hi $name')"`)} one`)
-      expect(adaptInlinePython('python -c "print(`"q`")"')).toBe(`python -X utf8 -c ${bootstrap('"print(`"q`")"')}`)
-      expect(adaptInlinePython(`python -c "print('$("x" + 'y')')"; Write-Output z`)).toBe(`python -X utf8 -c ${bootstrap(`"print('$("x" + 'y')')"`)}; Write-Output z`)
+      const loaderArgs = (expandable: string) => `$(& { param($TgS) $TgH = 'x' + [System.BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes($TgS)).Replace('-', ''); if ($TgH.Length -gt 28000) { $TgS } else { LOADER; $TgH } } ${expandable})`
+      expect(withoutLoader(adaptInlinePython(`$name = 'w'; python -c "print('hi $name')" one`))).toBe(`$name = 'w'; python -c ${loaderArgs(`"print('hi $name')"`)} one`)
+      expect(withoutLoader(adaptInlinePython('python -c "print(`"q`")"'))).toBe(`python -c ${loaderArgs('"print(`"q`")"')}`)
+      expect(withoutLoader(adaptInlinePython(`python -c "print('$("x" + 'y')')"; Write-Output z`))).toBe(`python -c ${loaderArgs(`"print('$("x" + 'y')')"`)}; Write-Output z`)
     })
 
     // HAND-DERIVED: inside a PowerShell single-quoted string a doubled quote stands for one quote and nothing else is special.
     it('decodes a doubled quote in a single-quoted script', () => {
       const adapted = adaptInlinePython(`python -c 'print(''a\\b'')' 'x;y'; Write-Output z`)
       expect(decodedBodies(adapted)).toEqual([`print('a\\b')`])
-      expect(adapted).toMatch(/\.decode\(\)\)" 'x;y'; Write-Output z$/)
+      expect(adapted).toMatch(/' x[0-9a-f]+ 'x;y'; Write-Output z$/)
     })
 
     it('leaves a python -c inside a string or comment alone', () => {
@@ -220,7 +228,7 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
       expect(adaptPowerShellCommand(heredoc)).toContain('[System.Text.Encoding]::UTF8.GetString')
 
       const inline = `python -c 'print("inline")'`
-      expect(adaptPowerShellCommand(inline)).toContain(`-c "exec(__import__('base64').b64decode(`)
+      expect(adaptPowerShellCommand(inline)).toContain(`-c '(lambda s:`)
     })
   })
 
@@ -440,6 +448,65 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
         const r = runIn(`$w = '${TEXT}'; python -c "import sys; sys.stdout.buffer.write('$w'.encode('utf-8') + b'\\n')"`)
         expect(r.stderr).toBe('')
         expect(r.stdoutHex).toBe(hex(`${TEXT}\n`))
+        expect(r.status).toBe(0)
+      })
+
+      // HAND-DERIVED: python -c puts the working directory first on sys.path, so a module there named like a standard one is imported in its place; an inert base64.py and binascii.py that print MARK stand in for a hostile one.
+      it.skipIf(!hasPython)(`runs a -c script past a base64.py or binascii.py in the working directory${pythonSkip}`, () => {
+        fs.mkdirSync(path.join(dir, 'shadow'))
+        for (const name of ['base64.py', 'binascii.py']) fs.writeFileSync(path.join(dir, 'shadow', name), "print('MARK')\n")
+        for (const cmd of [`Set-Location shadow; python -c 'print("ok")'`, `Set-Location shadow; python -c "print('ok')"`, `Set-Location shadow; cat <<'EOF' | python -\nprint('ok')\nEOF`]) {
+          const r = runIn(cmd)
+          expect(r.stderr).toBe('')
+          expect(r.stdout.trim()).toBe('ok')
+          expect(r.status).toBe(0)
+        }
+      })
+
+      // HAND-DERIVED: unwrapped, Python on Windows opens a file in the ANSI code page and prints in UTF-8 only when told to; the rewrite changes the standard streams alone, so open() reads what it reads unwrapped while a non-ASCII print comes out as UTF-8.
+      it.skipIf(!hasPython)(`reads a file with open() as unwrapped Python does and prints non-ASCII as UTF-8${pythonSkip}`, () => {
+        fs.writeFileSync(path.join(dir, 'cp.txt'), Buffer.from([0x63, 0x61, 0x66, 0xe9]))
+        const script = 'print(len(open("cp.txt").read()))'
+        const direct = spawnSync('python', ['-c', script], { cwd: dir, env, encoding: 'utf8' })
+        for (const cmd of [`python -c '${script}'`, `$s = 'cp.txt'; python -c "print(len(open('$s').read()))"`, `python - <<'EOF'\n${script}\nEOF`]) {
+          const r = runIn(cmd)
+          expect({ status: r.status, stdout: r.stdout.trim(), stderr: r.stderr }).toEqual({ status: direct.status, stdout: direct.stdout.trim(), stderr: direct.stderr })
+        }
+        for (const cmd of [`python -c 'print("${TEXT}")'`, `$w = '${TEXT}'; python -c "print('$w')"`, `python - <<'EOF'\nprint('${TEXT}')\nEOF`]) {
+          const r = runIn(cmd)
+          expect(r.stderr).toBe('')
+          expect(r.stdoutHex).toMatch(new RegExp(`^${hex(TEXT)}(0d)?0a$`))
+          expect(r.status).toBe(0)
+        }
+      })
+
+      // HAND-DERIVED: PowerShell's $env: drive is the process environment, so a variable the rewrite sets for Python has to be put back, removed when it was not set, for the next statement to see what bash's would.
+      it.skipIf(!hasPython)(`leaves $env:PYTHONIOENCODING as it was and honors a value already set${pythonSkip}`, () => {
+        const probe = `cat <<'EOF' | python -\nimport sys; print(sys.stdout.encoding); sys.exit(3)\nEOF\npython -c 'import sys; print(sys.stdout.encoding)'\nWrite-Output "set=$(Test-Path env:PYTHONIOENCODING) value=[$env:PYTHONIOENCODING]"`
+        expect(runIn(probe).stdout.split(/\r?\n/).filter(Boolean)).toEqual(['utf-8', 'utf-8', 'set=False value=[]'])
+        expect(runIn(`$env:PYTHONIOENCODING = 'latin-1'\n${probe}`).stdout.split(/\r?\n/).filter(Boolean)).toEqual(['iso8859-1', 'iso8859-1', 'set=True value=[latin-1]'])
+      })
+
+      // HAND-DERIVED: Python 3.13 quotes the source line of each traceback frame, and for -c that line is the -c argument, so a script carried inside it would be printed whole; the exception line and the output before it are what the original prints.
+      it.skipIf(!hasPython)(`keeps a failing script's traceback short and its exception and output${pythonSkip}`, () => {
+        const pad = `# ${'p'.repeat(3000)}`
+        for (const script of [`raise ValueError("boom")  ${pad}`, `print("first")\n${pad}\nprint("last")\nraise ValueError("boom")`]) {
+          for (const cmd of [`python -c '${script}'`, `$t = 'boom'; python -c "${script.replace(/"/g, "'").replace("'boom'", "'$t'")}"`]) {
+            const r = runIn(cmd)
+            expect(r.stderr).toMatch(/ValueError: boom\r?\n$/)
+            expect(r.stderr).not.toContain('ppp')
+            expect(Buffer.byteLength(r.stderr)).toBeLessThan(2000)
+            if (script.startsWith('print')) expect(r.stdout.split(/\r?\n/).filter(Boolean)).toEqual(['first', 'last'])
+            expect(r.status).toBe(1)
+          }
+        }
+      })
+
+      // HAND-DERIVED: a double-quoted script's length is known only once PowerShell expands it; Windows' CreateProcess takes at most 32,767 characters, which a 25,000-character value carried as hex would pass.
+      it.skipIf(!hasPython)(`runs a double-quoted script that expands past the hex limit as written${pythonSkip}`, () => {
+        const r = runIn(`$env:BIG = 'a' * 25000; python -c "print(len('$env:BIG'))"`)
+        expect(r.stderr).toBe('')
+        expect(r.stdout.trim()).toBe('25000')
         expect(r.status).toBe(0)
       })
 

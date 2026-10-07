@@ -1,4 +1,4 @@
-/** Adapts bash-style heredocs and inline Python scripts with complex quotes for reliable execution under PowerShell (both pwsh 7+ and Windows PowerShell 5.1). Windows PowerShell unescapes/strips quotes when passing arguments to native binaries (like python.exe), causing `SyntaxError: unterminated string literal`. Bash heredocs (`<<'EOF'`) also fail under PowerShell's parser. Carrying heredoc bodies and inline Python `-c` scripts as UTF-8 base64 bypasses shell argument parsing and delivers byte-for-byte exact script text: a heredoc body is decoded and piped into its command (`[System.Text.Encoding]::UTF8.GetString(...) | <cmd>`) or written to its file, and a `-c` script becomes a `-c` bootstrap that decodes and runs it, so its arguments and stdin stay as they were. Every rewritten Python call runs in UTF-8 mode, and the result reads and writes the same bytes under Windows PowerShell 5.1, whose file cmdlets and $OutputEncoding otherwise use the ANSI code page and ASCII. A double-quoted `-c` script is encoded at run time from the PowerShell string it is, so PowerShell still expands it, and only top-level code is rewritten, never text inside a string, here-string or comment. */
+/** Adapts bash-style heredocs and inline Python scripts with complex quotes for reliable execution under PowerShell (both pwsh 7+ and Windows PowerShell 5.1). Windows PowerShell unescapes/strips quotes when passing arguments to native binaries (like python.exe), causing `SyntaxError: unterminated string literal`. Bash heredocs (`<<'EOF'`) also fail under PowerShell's parser. Carrying heredoc bodies as UTF-8 base64 and inline Python `-c` scripts as UTF-8 hex bypasses shell argument parsing and delivers byte-for-byte exact script text: a heredoc body is decoded and piped into its command (`[System.Text.Encoding]::UTF8.GetString(...) | <cmd>`) or written to its file, and a `-c` script goes to a `-c` loader that decodes and runs it, so its arguments and stdin stay as they were. Every rewritten Python call reads and writes its standard streams in UTF-8, and the result reads and writes the same bytes under Windows PowerShell 5.1, whose file cmdlets and $OutputEncoding otherwise use the ANSI code page and ASCII. A double-quoted `-c` script is encoded at run time from the PowerShell string it is, so PowerShell still expands it, and only top-level code is rewritten, never text inside a string, here-string or comment. */
 
 /** Matches the line that opens a bash heredoc, `<cmd> <<[-]?'DELIM' [rest of line]`, preceded by start of command, newline, semicolon, &&, or ||. Its body and closing line are the ones layoutPowerShell found for that `<<`. */
 // eslint-disable-next-line regexp/no-super-linear-backtracking
@@ -199,33 +199,25 @@ function interpreterOptionsOnly(preFlags: string): boolean {
   return true
 }
 
-// A Python interpreter word at the start of a command, and the py launcher's version switch after it (`py -3`, `py -V:3.12`), which has to stay the launcher's first argument.
-const PYTHON_CALL_RE = /^((?:[A-Za-z0-9_.:\\/-]*[\\/])?(?:python3?|py)(?:\.exe)?)((?:[ \t]+-(?:\d[\w.-]*|V:\S+))?)(?=\s|$)/i
-const PYTHON_UTF8_OPTION_RE = /(?:^|\s)-X[ \t]*utf8\b/i
+// A Python interpreter word at the start of a command.
+const PYTHON_CALL_RE = /^(?:[A-Za-z0-9_.:\\/-]*[\\/])?(?:python3?|py)(?:\.exe)?(?=\s|$)/i
 
-// Base64 above this many characters is left as written instead of becoming a `-c` bootstrap, which keeps the rewritten command line under Windows' 32,767-character limit.
-const MAX_BOOTSTRAP_BASE64 = 28_000
+// A script's hex above this many characters is left as written instead of going to the `-c` loader, which keeps the rewritten command line under Windows' 32,767-character limit.
+const MAX_LOADER_HEX = 28_000
 
-// Turns on Python's UTF-8 mode for one interpreter call with `-X utf8`, the command-line form of PYTHONUTF8=1, so only that child sees it: Python on Windows otherwise reads and prints a pipe in the ANSI code page. Options that already name `-X utf8` are left as written.
-function pythonUtf8Option(options: string): string {
-  return PYTHON_UTF8_OPTION_RE.test(options) ? '' : ' -X utf8'
-}
-
-// Adds `-X utf8` to a command that starts with a Python interpreter, after the launcher's version switch, and returns any other command unchanged.
-function withPythonUtf8(command: string): string {
-  const call = PYTHON_CALL_RE.exec(command)
-  if (!call) return command
-  return `${call[0]}${pythonUtf8Option(command)}${command.slice(call[0].length)}`
-}
+// The `-c` program that runs a script carried as hex in the next argument. It imports nothing but sys, so a base64.py or binascii.py in the working directory cannot stand in for a module it uses; it sets stdin, stdout and stderr to UTF-8 (keeping their error handlers) unless PYTHONIOENCODING already names an encoding, so text crosses a pipe intact, while open() keeps the locale encoding as it does when the script runs unwrapped; and it pops the hex from sys.argv, so the script sees the arguments it had, and a traceback that quotes the `-c` line, as Python 3.13 does, prints this line rather than the whole script.
+const PYTHON_LOADER = "(lambda s:(not s.flags.ignore_environment and getattr(s.modules.get('os'),'environ',{}).get('PYTHONIOENCODING')) or [getattr(f,'reconfigure',lambda **k:0)(encoding='utf-8',errors=getattr(f,'errors',None)) for f in (s.stdin,s.stdout,s.stderr)])(__import__('sys'));exec(bytearray.fromhex(__import__('sys').argv.pop(1)[1:]).decode('utf-8'))"
+const PYTHON_LOADER_ARG = `'${PYTHON_LOADER.replace(/'/g, "''")}'`
 
 // A PowerShell expression for `text`, carried as base64 so no quote or `$` in it is read by PowerShell.
 function utf8TextExpression(text: string): string {
   return `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(text, 'utf8').toString('base64')}'))`
 }
 
-// Runs one pipeline with $OutputEncoding set to UTF-8 without a BOM, so text piped into a native command reaches it as UTF-8 under Windows PowerShell 5.1, whose default is ASCII ("héllo" arrived as "h?llo"), as it already does under PowerShell 7. The setting lives in an advanced script block's scope and ends with the pipeline, and every heredoc pipe runs in one, as bash runs each pipeline stage in a subshell, so a variable the pipeline sets never outlives it whatever the body holds. The block runs under the caller's $ErrorActionPreference, and since `& { }` always reports success, a failed pipeline is written back as an ignored error so `$?`, `&&`, `||` and the wrapper's exit code still see it fail.
-function inUtf8PipeScope(pipeline: string): string {
-  return `& { [CmdletBinding()] param($TgEap) $ErrorActionPreference = $TgEap; $OutputEncoding = [System.Text.UTF8Encoding]::new($false); ${pipeline}; if (-not $?) { $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new([System.Exception]::new('pipeline failed'), 'TgPipelineFailed', [System.Management.Automation.ErrorCategory]::NotSpecified, $null)) } } $ErrorActionPreference -ErrorAction Ignore`
+// Runs one pipeline with $OutputEncoding set to UTF-8 without a BOM, so text piped into a native command reaches it as UTF-8 under Windows PowerShell 5.1, whose default is ASCII ("héllo" arrived as "h?llo"), as it already does under PowerShell 7. The setting lives in an advanced script block's scope and ends with the pipeline, and every heredoc pipe runs in one, as bash runs each pipeline stage in a subshell, so a variable the pipeline sets never outlives it whatever the body holds. The block runs under the caller's $ErrorActionPreference, and since `& { }` always reports success, a failed pipeline is written back as an ignored error so `$?`, `&&`, `||` and the wrapper's exit code still see it fail. A pipeline into Python also runs with PYTHONIOENCODING set to UTF-8 unless it already names an encoding, since a script read from stdin can be reached only through the environment, and the variable is put back as it was, unset included, however the pipeline ends.
+function inUtf8PipeScope(pipeline: string, python: boolean): string {
+  const run = python ? `$TgPy = $env:PYTHONIOENCODING; if (-not $TgPy) { $env:PYTHONIOENCODING = 'utf-8' }; $TgQ = $false; try { ${pipeline}; $TgQ = $? } finally { $env:PYTHONIOENCODING = $TgPy }; if (-not $TgQ)` : `${pipeline}; if (-not $?)`
+  return `& { [CmdletBinding()] param($TgEap) $ErrorActionPreference = $TgEap; $OutputEncoding = [System.Text.UTF8Encoding]::new($false); ${run} { $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new([System.Exception]::new('pipeline failed'), 'TgPipelineFailed', [System.Management.Automation.ErrorCategory]::NotSpecified, $null)) } } $ErrorActionPreference -ErrorAction Ignore`
 }
 
 // Splits a command at its first top-level `;`, `&&` or `||`, so only the pipeline before it goes into a scope and later statements still run in the caller's.
@@ -259,7 +251,7 @@ function heredocTarget(prefix: string, suffix: string): HeredocTarget | null {
   return /^[\w.:/\\-]+(?:\s|$)/.test(target) ? { kind: 'pipe', command: target } : null
 }
 
-// The PowerShell statement that delivers a heredoc's text to its target. A file gets exactly the bytes bash writes, in UTF-8 with no BOM, through [IO.File] rather than Set-Content or Add-Content, which write the ANSI code page under Windows PowerShell 5.1 and end the file with CRLF; the path is read as the cmdlet's argument would have been and resolved against PowerShell's location, not .NET's current directory. A bare `cat` writes the same bytes to standard output, since Write-Output prints in the console code page under both shells ("é" came out as 0x82). A body piped into a command reaches a Python interpreter in UTF-8 mode under a UTF-8 $OutputEncoding, and an empty body pipes in nothing at all.
+// The PowerShell statement that delivers a heredoc's text to its target. A file gets exactly the bytes bash writes, in UTF-8 with no BOM, through [IO.File] rather than Set-Content or Add-Content, which write the ANSI code page under Windows PowerShell 5.1 and end the file with CRLF; the path is read as the cmdlet's argument would have been and resolved against PowerShell's location, not .NET's current directory. A bare `cat` writes the same bytes to standard output, since Write-Output prints in the console code page under both shells ("é" came out as 0x82). A body is piped into its command under a UTF-8 $OutputEncoding, and into Python with UTF-8 standard streams, and an empty body pipes in nothing at all.
 function heredocStatement(target: HeredocTarget, text: string): string {
   if (target.kind === 'file') {
     const path = `$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath((Write-Output ${target.path}))`
@@ -268,8 +260,8 @@ function heredocStatement(target: HeredocTarget, text: string): string {
   if (target.kind === 'stdout') return `[System.Console]::OpenStandardOutput().Write([System.Convert]::FromBase64String('${Buffer.from(text, 'utf8').toString('base64')}'), 0, ${Buffer.byteLength(text, 'utf8')})`
   // PowerShell ends each string it pipes into a native command with a line break, so the text goes in without its own last one.
   const input = text === '' ? '@()' : utf8TextExpression(text.slice(0, -1))
-  const [first, rest] = splitFirstPipeline(withPythonUtf8(target.command))
-  return `${inUtf8PipeScope(`${input} | ${first}`)}${rest}`
+  const [first, rest] = splitFirstPipeline(target.command)
+  return `${inUtf8PipeScope(`${input} | ${first}`, PYTHON_CALL_RE.test(first.trim()))}${rest}`
 }
 
 // The text bash reads from a heredoc body: each line ended by `\n`, nothing for a body with no lines, and with each line's leading tabs removed for `<<-`.
@@ -303,7 +295,7 @@ export function adaptHeredoc(command: string): string {
   return result + command.slice(lastIndex)
 }
 
-/** Adapts inline `python -c ...` commands into a base64 `-c` bootstrap in Python's UTF-8 mode, to prevent PowerShell quote stripping and `SyntaxError: unterminated string literal`. */
+/** Adapts inline `python -c ...` commands into a `-c` loader that runs the script from a hex argument with UTF-8 standard streams, to prevent PowerShell quote stripping and `SyntaxError: unterminated string literal`. */
 export function adaptInlinePython(command: string): string {
   const layout = layoutPowerShell(command)
   let result = ''
@@ -324,24 +316,23 @@ export function adaptInlinePython(command: string): string {
     const scriptEnd = layout.stringEnd.get(matchEnd)
     if (scriptEnd === undefined) continue
 
-    let bootstrap: string
+    let loaderArgs: string
     if (isQuote(SINGLE_QUOTES, command[matchEnd])) {
       // A single-quoted script is literal apart from a doubled quote, which stands for its second quote.
       const literal = command.slice(matchEnd + 1, scriptEnd - 1).replace(/['\u2018-\u201B](['\u2018-\u201B])/g, '$1')
-      const b64 = Buffer.from(literal, 'utf8').toString('base64')
-      if (b64.length > MAX_BOOTSTRAP_BASE64) continue
-      bootstrap = `"exec(__import__('base64').b64decode('${b64}').decode())"`
+      const hexArg = `x${Buffer.from(literal, 'utf8').toString('hex')}`
+      if (hexArg.length > MAX_LOADER_HEX) continue
+      loaderArgs = `${PYTHON_LOADER_ARG} ${hexArg}`
     } else {
-      // A double-quoted script is PowerShell's to expand ($variables, $(...), backtick escapes, doubled quotes), so the string itself is encoded at run time and Python gets it exactly as PowerShell would have passed it to -c.
+      // A double-quoted script is PowerShell's to expand ($variables, $(...), backtick escapes, doubled quotes), so the string itself is encoded at run time and Python gets it exactly as PowerShell would have passed it to -c. Its length is known only then, so a script too long for the loader is passed as the original would have passed it.
       const expandable = command.slice(matchEnd, scriptEnd)
-      if (Buffer.byteLength(expandable, 'utf8') * 4 / 3 > MAX_BOOTSTRAP_BASE64) continue
-      bootstrap = `('exec(__import__(''base64'').b64decode(''' + [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(${expandable})) + ''').decode())')`
+      loaderArgs = `$(& { param($TgS) $TgH = 'x' + [System.BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes($TgS)).Replace('-', ''); if ($TgH.Length -gt ${MAX_LOADER_HEX}) { $TgS } else { ${PYTHON_LOADER_ARG}; $TgH } } ${expandable})`
     }
 
-    // The script stays a `-c` argument, carried as base64 that Python decodes and runs, so no quote in it reaches PowerShell's native argument passing, sys.argv keeps `-c` and every later argument, and stdin is left to the script.
+    // The script stays a `-c` script, carried as hex (an `x` ahead of it, since Windows PowerShell 5.1 drops an empty argument) after a loader that decodes and runs it, so no quote in it reaches PowerShell's native argument passing, sys.argv keeps `-c` and every later argument, and stdin is left to the script.
     const leadMatch = command.slice(matchStart, matchEnd).match(/^\s*/)
     const leadSpace = leadMatch ? leadMatch[0] : ''
-    result += `${command.slice(lastIndex, matchStart)}${leadSpace}${pyBin}${preFlags ? ` ${preFlags}` : ''}${pythonUtf8Option(preFlags)} -c ${bootstrap}`
+    result += `${command.slice(lastIndex, matchStart)}${leadSpace}${pyBin}${preFlags ? ` ${preFlags}` : ''} -c ${loaderArgs}`
 
     lastIndex = scriptEnd
     INLINE_PYTHON_RE.lastIndex = lastIndex
