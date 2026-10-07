@@ -77,8 +77,44 @@ describe('quotedArg', () => {
   })
 })
 
-// HAND-DERIVED: the paths name the two characters a shell rewrites inside double quotes; the placeholders and key names are the ones the templates print.
-const METACHAR_PATHS = ['src/a$b.ts', 'src/a`b.ts']
+// HAND-DERIVED: the paths name what a shell rewrites inside double quotes; the placeholders and key names are the ones the templates print. A `$name` path keeps its command single-quoted; a backtick closes the fence around the command and `$(` runs a command if a retyped suggestion loses its quotes, so those two lose the command and keep the sentence.
+const METACHAR_PATHS = ['src/a$b.ts']
+const FENCE_BREAKING_PATHS = ['src/a`b.ts', 'src/a$(id).ts']
+
+/** `text` as relay.ts passes it on, checked to have lost its command but kept the sentence before it. */
+function expectCommandDropped(text: string, name: string, p: string): void {
+  const out = stripUnsafeSuggestions(text)
+  const payload = p.slice('src/a'.length, p.indexOf('.ts'))
+  expect.soft(out, name).toContain('token-goat (command omitted: the path contains shell metacharacters)')
+  expect.soft(out, name).not.toContain(payload)
+  expect.soft(out, name).toContain(text.slice(0, text.indexOf('token-goat ')))
+}
+
+describe('stripUnsafeSuggestions on single-quoted arguments', () => {
+  it('drops a fenced command whose backtick path closed the fence inside its quotes', () => {
+    expect(stripUnsafeSuggestions("Run `token-goat outline 'a`id`.ts'` to list it.")).toBe('Run `token-goat (command omitted: the path contains shell metacharacters)` to list it.')
+  })
+
+  it('drops a command holding $( however it is quoted, and keeps a $name', () => {
+    expect(stripUnsafeSuggestions("Run `token-goat outline 'a$(id).ts'` to list it.")).toBe('Run `token-goat (command omitted: the path contains shell metacharacters)` to list it.')
+    expect(stripUnsafeSuggestions("Run `token-goat outline 'a$b.ts'` to list it.")).toBe("Run `token-goat outline 'a$b.ts'` to list it.")
+  })
+
+  it('leaves no tail of the path behind when the dropped command was not fenced', () => {
+    expect(stripUnsafeSuggestions("Then extract relevant pages: token-goat pdf-extract 'src/a`b.pdf' --pages '<range>'")).toBe('Then extract relevant pages: token-goat (command omitted: the path contains shell metacharacters)')
+    expect(stripUnsafeSuggestions('Then: token-goat pdf-extract "src/a`b.pdf" --pages "<range>"')).toBe('Then: token-goat (command omitted: the path contains shell metacharacters)')
+  })
+
+  it("leaves prose holding an apostrophe alone, as the double-quote rule does (token-goat OCR'd)", () => {
+    const text = "token-goat OCR'd shot.png instead of shrinking it: `text-heavy`"
+    expect(stripUnsafeSuggestions(text)).toBe(text)
+  })
+
+  it('leaves the closing quote of a string in code alone (src/bridges/claudecode.ts)', () => {
+    const text = "const out = spawnSync('token-goat hook ' + eventName, { input: `x` })"
+    expect(stripUnsafeSuggestions(text)).toBe(text)
+  })
+})
 
 describe('quotedArgs', () => {
   it('double-quotes every argument when none needs single quotes', () => {
@@ -121,6 +157,10 @@ describe('deny and hint templates around a path holding $ or a backtick, as rela
       expect.soft(stripUnsafeSuggestions(text), name).toBe(text)
       expect.soft(text, name).not.toContain('"')
     }
+  })
+
+  it.each(FENCE_BREAKING_PATHS)('drops every command and keeps the sentence for %s', (p) => {
+    for (const [name, text] of templates(p)) expectCommandDropped(text, name, p)
   })
 
   it('names every edit route for a $ path, the placeholders quoted like the path', () => {

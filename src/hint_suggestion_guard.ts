@@ -30,10 +30,20 @@ function suggestionIsUnsafe(slice: string): boolean {
   return false
 }
 
+/** A single-quoted argument still open where the suggestion was cut, which only a backtick inside the value does: {@link quotedArg} single-quotes a value holding a backtick, both shells keep it literal there, but the backtick fencing the command closes on it, so `token-goat outline 'a`id`.ts'` reaches the model as the code span `token-goat outline 'a`, then `id` as bare text. An argument's opening quote follows whitespace and precedes its value, which neither the apostrophe in prose (`OCR'd`) nor the closing quote of a string in code (`'token-goat hook ' + event`) does. */
+function singleQuoteLeftOpen(slice: string): boolean {
+  return /\s'[^\s']/.test(slice) && (slice.split("'").length - 1) % 2 === 1
+}
+
+/** A command substitution, which neither shell runs inside single quotes, yet the suggestion is retyped by a model that may change its quoting: `$name` then only names a variable, while `$(` runs a command. So a value holding one never reaches a suggestion, however it is quoted. */
+function holdsCommandSubstitution(slice: string): boolean {
+  return slice.includes('$(')
+}
+
 /** What replaces a suggestion that broke its quoting. Names no path, so nothing is runnable. */
 const OMITTED = 'token-goat (command omitted: the path contains shell metacharacters)'
 
-/** Every `token-goat …` suggestion in `text`, with the unsafe ones replaced by {@link OMITTED}. Where a suggestion ends is decided twice, because the obvious answer is wrong in exactly the case that matters. A suggestion is fenced in backticks, so it normally ends at the first backtick after `token-goat ` -- but a path holding a backtick closes the fence early, and cutting there would leave the rest of the path (backticks and all) sitting in the message as residue. So: measure to the first backtick and check that; if it is safe, emit it and move on, which is every ordinary hint and leaves them byte-identical. Only once a break is found does the removal widen, out to the last backtick on that line, taking the residue and any further suggestion on the same line with it. Nothing ever crosses a line break. The two-step exists so the widening cannot cost anything on healthy text. Widening first would flag a hint that merely mentions another command after its suggestion (`… or \`cat\``), since the wider slice would then contain that fence. */
+/** Every `token-goat …` suggestion in `text`, with the unsafe ones replaced by {@link OMITTED}. Where a suggestion ends is decided twice, because the obvious answer is wrong in exactly the case that matters. A suggestion is fenced in backticks, so it normally ends at the first backtick after `token-goat ` -- but a path holding a backtick closes the fence early, and cutting there would leave the rest of the path (backticks and all) sitting in the message as residue. So: measure to the first backtick and check that; if it is safe, emit it and move on, which is every ordinary hint and leaves them byte-identical. Only once a break is found does the removal widen, out to the last backtick on that line when the suggestion was fenced (to the line's end when it was not), taking the residue and any further suggestion on the same line with it. Nothing ever crosses a line break. The two-step exists so the widening cannot cost anything on healthy text. Widening first would flag a hint that merely mentions another command after its suggestion (`… or \`cat\``), since the wider slice would then contain that fence. */
 export function stripUnsafeSuggestions(text: string): string {
   if (!text.includes('token-goat ')) return text
   let out = ''
@@ -48,13 +58,14 @@ export function stripUnsafeSuggestions(text: string): string {
     const firstTick = line.indexOf('`')
     const narrow = firstTick === -1 ? line : line.slice(0, firstTick)
     out += text.slice(at, start)
-    if (!looksLikeSuggestion(narrow) || !suggestionIsUnsafe(narrow)) {
+    if (!(looksLikeSuggestion(narrow) && suggestionIsUnsafe(narrow)) && !singleQuoteLeftOpen(narrow) && !holdsCommandSubstitution(narrow)) {
       out += narrow
       at = start + narrow.length
       continue
     }
+    // Only a fenced suggestion has a closing backtick to stop at; in an unfenced one the last backtick is the path's own, and stopping there left the path's tail behind.
     const lastTick = line.lastIndexOf('`')
-    const wide = lastTick === -1 ? line : line.slice(0, lastTick)
+    const wide = lastTick === -1 || text[start - 1] !== '`' ? line : line.slice(0, lastTick)
     out += OMITTED
     at = start + wide.length
   }
