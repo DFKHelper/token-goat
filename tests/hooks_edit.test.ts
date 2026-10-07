@@ -127,6 +127,16 @@ describe('postEditHandler', () => {
     }
   })
 
+  // HAND-DERIVED: the hint read "Run `token-goat section \"/project/README.md::HeadingName\"` to re-read a specific section rather than the full file. README.md was edited.", the base name repeated as loose text after the command that already names the file.
+  it('names the edited file only inside its command, and says "This file" in the sentence after it', () => {
+    const result = postEditHandler(editEvent('/project/README.md'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toMatch(/ This file was edited\.$/)
+      expect(result.context.split('README.md')).toHaveLength(2)
+    }
+  })
+
   it('returns contextOutput with markdown hint when editing .mdx files', () => {
     const result = postEditHandler(editEvent('/project/component.mdx'))
     expect(result.hookType).toBe('context')

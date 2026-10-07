@@ -191,6 +191,16 @@ export function quotedArgs(...values: string[]): string[] {
   return held.map((v) => (single ? "'" + v + "'" : '"' + v + '"'))
 }
 
+/** How a hook's sentence names the file it speaks about, given `rest`, the commands sent with it: "this file" when one of them already carries the path (`shown`, its display-safe spelling, or `raw`), so the path is not repeated as loose text beside the command (the relay drops an unsafe command, and its path then stood alone in the prose), and the quoted path when nothing else in the message names it (a surgical hint below `hints.min_file_lines_for_hint` is empty). */
+export function fileSubject(rest: string, shown: string, raw = shown): string {
+  return rest.includes(raw) || rest.includes(shown) ? 'this file' : quotedArg(shown)
+}
+
+/** {@link fileSubject} opening a sentence. */
+export function sentenceStart(subject: string): string {
+  return subject.charAt(0).toUpperCase() + subject.slice(1)
+}
+
 /** A whole suggested `token-goat …` command set in a sentence, backtick-fenced so the text after it is not read as part of it: {@link stripUnsafeSuggestions} ends a suggestion at the first backtick, while `use: token-goat symbol "x")` or `("token-goat doctor --repair" retries it too.)` ran on to the line's end and was dropped for the `)` it reached outside the quotes. */
 export function fencedCommand(command: string): string {
   return '`' + command + '`'

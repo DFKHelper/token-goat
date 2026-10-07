@@ -8,11 +8,14 @@ import { describe, expect, it } from 'vitest'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
-/** The hooks whose messages answer a read of one file. */
-const FILES = ['src/hooks_read.ts', 'src/hooks_read_policy.ts', 'src/hooks_read_post.ts']
+/** The hooks whose messages answer a read or an edit of one file. */
+const FILES = ['src/hooks_read.ts', 'src/hooks_read_policy.ts', 'src/hooks_read_post.ts', 'src/hooks_edit.ts']
 
-/** Names those hooks give the path (or base name) of the file being read. */
-const PATH_NAMES = new Set(['shown', 'safeShown', 'basename'])
+/** Names those hooks give the path (or base name) of the file being read or edited. */
+const PATH_NAMES = new Set(['shown', 'safeShown', 'basename', 'editedBasename'])
+
+/** Calls that hand back a spelling of the path they are given, so `displaySafePath(editedBasename) + ' was edited.'` is the path spliced into prose. */
+const PATH_SPELLINGS = new Set(['displaySafePath'])
 
 /** Calls whose arguments are a command's own arguments, quoted for the shells. */
 const QUOTING_CALLS = new Set(['quotedArg', 'quotedArgs'])
@@ -25,12 +28,20 @@ function proseSplices(file: string, source: string): { hits: string[]; seen: num
   const visit = (node: ts.Node): void => {
     if (ts.isIdentifier(node) && PATH_NAMES.has(node.text)) {
       seen++
-      if (isSpliced(node) && !insideQuotingCall(node)) hits.push(`${file}:${sf.getLineAndCharacterOfPosition(node.getStart()).line + 1}`)
+      const spelled = throughPathSpellings(node)
+      if (isSpliced(spelled) && !insideQuotingCall(spelled)) hits.push(`${file}:${sf.getLineAndCharacterOfPosition(node.getStart()).line + 1}`)
     }
     ts.forEachChild(node, visit)
   }
   visit(sf)
   return { hits, seen }
+}
+
+/** `node`, or the outermost call around it that only respells it ({@link PATH_SPELLINGS}). */
+function throughPathSpellings(node: ts.Node): ts.Node {
+  let at = node
+  while (ts.isCallExpression(at.parent) && ts.isIdentifier(at.parent.expression) && PATH_SPELLINGS.has(at.parent.expression.text) && at.parent.arguments.includes(at as ts.Expression)) at = at.parent
+  return at
 }
 
 /** Whether `node` is joined into a string: an operand of `+`, or the expression of a template slot, possibly through parentheses or a conditional. */
@@ -53,6 +64,12 @@ function insideQuotingCall(node: ts.Node): boolean {
 describe('read hook prose never repeats the path', () => {
   it('flags a path spliced into prose, and not one spliced into a quoted argument', () => {
     const sample = "denyOutput((hint + ' ' + shown + ' is very large (' + kb + 'KB). ').trimStart())\nquotedArg(shown + '::' + name)\n"
+    expect(proseSplices('sample.ts', sample)).toEqual({ hits: ['sample.ts:1'], seen: 2 })
+  })
+
+  // HAND-DERIVED: the shape of the pre-fix edit hint (src/hooks_edit.ts at f56b1bd7), whose base name reached the prose through displaySafePath, beside the same name respelled inside a quoted argument.
+  it('flags a path respelled by displaySafePath and spliced into prose, and not one respelled inside a quoted argument', () => {
+    const sample = "leadWithCommand(cmd, 'to re-read', displaySafePath(editedBasename) + ' was edited.')\nquotedArg(displaySafePath(editedBasename) + '::' + name)\n"
     expect(proseSplices('sample.ts', sample)).toEqual({ hits: ['sample.ts:1'], seen: 2 })
   })
 

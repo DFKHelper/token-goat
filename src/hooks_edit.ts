@@ -8,7 +8,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook, sessionStateKey } from './hook_registry.js'
 import { passOutput, contextOutput } from './hooks_common.js'
 import { applyHintTracking, classifyEditHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
-import { leadWithCommand, quotedArg } from './hint_suggestion_guard.js'
+import { fileSubject, leadWithCommand, quotedArg, sentenceStart } from './hint_suggestion_guard.js'
 import { hintTarget } from './hint_target.js'
 import { appendDirtyPath } from './hooks_index.js'
 import { recordKnownRootThrottled } from './known_roots.js'
@@ -96,8 +96,9 @@ function markdownSectionHint(event: HookEvent, normalized: string): HookOutput {
       // The index row for this file was just queued stale, so hintTarget reads the heading off the written file's first bytes. The path goes in as the correlator, so hint-stats credits a `section` on any heading of it, as it did when this printed a placeholder.
       const heading = hintTarget(normalized, 'section', { placeholder: 'HeadingName' })
       markHintShown(repeatKey)
+      const command = 'token-goat section ' + quotedArg(displaySafePath(normalized) + '::' + heading.name)
       return contextOutput(
-        leadWithCommand('token-goat section ' + quotedArg(displaySafePath(normalized) + '::' + heading.name), 'to re-read a specific section rather than the full file', displaySafePath(editedBasename) + ' was edited.'),
+        leadWithCommand(command, 'to re-read a specific section rather than the full file', sentenceStart(fileSubject(command, displaySafePath(normalized), normalized)) + ' was edited.'),
         [escapedPath],
       )
     }

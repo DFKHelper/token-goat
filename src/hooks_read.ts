@@ -10,7 +10,7 @@ import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavin
 import { preToolPathDeclined } from './vscode_path_gate.js'
 import { detectHarness } from './bridges/registry.js'
 import { readHintCrossesRule } from './rewrite_permission.js'
-import { leadWithCommand, docNavigation, fencedCommand, quotedArg, quotedArgs, configGetCommand } from './hint_suggestion_guard.js'
+import { leadWithCommand, docNavigation, fencedCommand, fileSubject, quotedArg, quotedArgs, configGetCommand, sentenceStart } from './hint_suggestion_guard.js'
 import { headingTreeParts, hintTarget, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
 import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, displaySafeText, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
@@ -111,22 +111,16 @@ const SNAPSHOT_DIFF_LEAD = 'Here is what changed:'
 
 /** The deny text for a re-read whose session snapshot shows the file unchanged, or changed by the diff it serves fenced as file content, followed by `suffix`, the narrower read to make instead. Every snapshot-backed re-read deny builds its text here, so none can drift from the shapes session_audit.ts's DENY_TEMPLATES census counts: doc_unchanged_deny and doc_diff_deny, or the session_artifact pair when `suffix` is the bash-output recall. */
 function snapshotDenyText(normalized: string, snap: Exclude<SnapshotDiffResult, { kind: 'none' }>, suffix: string): string {
-  const subject = fileSubject(normalized, suffix)
+  const subject = readSubject(normalized, suffix)
   const lead = snap.kind === 'unchanged'
     ? sentenceStart(subject) + ' is unchanged since last read. '
     : 'Content changed since last read of ' + subject + '. ' + SNAPSHOT_DIFF_LEAD + '\n\n' + fenceUntrustedFileContent('```diff\n' + snap.diff + '\n```') + '\n\n'
   return (lead + suffix).trimEnd()
 }
 
-/** How a read hook's sentence names the file it speaks about, given `rest`, the commands sent with it: "this file" when one of them already carries the path, so the path is not repeated as loose text beside the command (the relay drops an unsafe command, and its path then stood alone in the prose), and the quoted path when nothing else in the message names it (a surgical hint below `hints.min_file_lines_for_hint` is empty). */
-function fileSubject(normalized: string, rest: string): string {
-  const shown = displaySafePath(normalized)
-  return rest.includes(normalized) || rest.includes(shown) ? 'this file' : quotedArg(shown)
-}
-
-/** {@link fileSubject} opening a sentence. */
-function sentenceStart(subject: string): string {
-  return subject.charAt(0).toUpperCase() + subject.slice(1)
+/** {@link fileSubject} for the file a read hook answers, given `rest`, the commands sent with it. */
+function readSubject(normalized: string, rest: string): string {
+  return fileSubject(rest, displaySafePath(normalized), normalized)
 }
 
 /** {@link snapshotDenyText} for a document re-read, whose suffix is the surgical hint for the file as the snapshot now reads it. */
@@ -1181,7 +1175,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             ? 'For lines ' + pagingWindowSpan.start + '..' + pagingWindowSpan.end + ', run ' + realSymbolReadHint(normalized, shown, pagingWindowSpan) + '; `token-goat skeleton ' + quotedArg(shown) + '` maps the rest.'
             : surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized))
           return denyOutput(
-            'Sequential line-range paging detected on ' + fileSubject(normalized, hint) + ' (' + (prevRanges.length + 1) + ' slices read). ' + hint +
+            'Sequential line-range paging detected on ' + readSubject(normalized, hint) + ' (' + (prevRanges.length + 1) + ' slices read). ' + hint +
             ' Inspect structure directly without manual chunk paging.',
           )
         }
@@ -1222,7 +1216,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         const hint = surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized, rereadBytes))
         recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-structured-deny')
         bookDenyIdentity('structured')
-        return denyOutput((hint + ' ' + sentenceStart(fileSubject(normalized, hint)) + ' was already read this session (' + reads + ' ' + plural + ').' + priorOutputRecallHint(normalized)).trimStart())
+        return denyOutput((hint + ' ' + sentenceStart(readSubject(normalized, hint)) + ' was already read this session (' + reads + ' ' + plural + ').' + priorOutputRecallHint(normalized)).trimStart())
       }
 
       // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
@@ -1241,7 +1235,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-count-deny')
       bookDenyIdentity('count')
       // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
-      return denyOutput((hint + ' ' + sentenceStart(fileSubject(normalized, hint)) + ' was already read this session (' + reads + ' ' + plural + ').' + priorOutputRecallHint(normalized)).trimStart())
+      return denyOutput((hint + ' ' + sentenceStart(readSubject(normalized, hint)) + ' was already read this session (' + reads + ' ' + plural + ').' + priorOutputRecallHint(normalized)).trimStart())
     }
     // Only counted when the note actually reaches the caller -- quietContextOutput silently degrades to passOutput() during hints.quiet_hours, and recording unconditionally (as this used to) over-counted the ledger on every quiet-hours re-read that produced no visible output at all. Zero bytes, deliberately: this branch does NOT block the read. The note is appended and the Read still proceeds, so the file's full contents reach the model anyway and the hint text is spent on top of them -- crediting rereadCredit here booked the entire file as saved on the one path where nothing was. The event is still recorded (count, not bytes) because how often the soft note fires is worth knowing; what it is worth is separately measurable through hint-stats' acted-on tracking, which is the only thing that can tell whether the note ever changed what the model did next.
     const pagingWindow = readRequestedSliceWindow(event)
@@ -1266,7 +1260,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     }
     recordActualSlice(event, normalized)
     const sectionCommand = _isDocFile(normalized) ? 'token-goat section ' + quotedArg(shown + '::' + hintTarget(normalized, 'section', { placeholder: 'SectionName' }).name) : ''
-    const rereadNote = 'Note: ' + fileSubject(normalized, sectionCommand + pagingNote) + ' was already read this session (' + reads + ' ' + plural + ').'
+    const rereadNote = 'Note: ' + readSubject(normalized, sectionCommand + pagingNote) + ' was already read this session (' + reads + ' ' + plural + ').'
     return quietContextOutput(
       (sectionCommand !== ''
         ? leadWithCommand(sectionCommand, 'to read one section', rereadNote)
@@ -1334,7 +1328,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const denyCredit = counterfactualCredit(size)
       recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit), undefined, 'large-file-deny')
       const advice = describeSliceAdvice(slice, normalized) + ' ' + editAnywayHint(normalized)
-      return denyOutput((hint + ' ' + sentenceStart(fileSubject(normalized, hint + advice)) + ' is very large (' + kb + 'KB). ').trimStart() + advice)
+      return denyOutput((hint + ' ' + sentenceStart(readSubject(normalized, hint + advice)) + ' is very large (' + kb + 'KB). ').trimStart() + advice)
     }
     recordActualRead(event, normalized)
     recordActualSlice(event, normalized)
@@ -1350,7 +1344,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     if (!isWithinQuietHours(config.hints.quiet_hours)) {
       recordStat('session_hint', 0, 0)
     }
-    return quietContextOutput((hint + ' ' + sentenceStart(fileSubject(normalized, hint)) + ' is large (' + kb + 'KB).').trimStart() + contextPressureAdvisorySuffix(), [shown])
+    return quietContextOutput((hint + ' ' + sentenceStart(readSubject(normalized, hint)) + ' is large (' + kb + 'KB).').trimStart() + contextPressureAdvisorySuffix(), [shown])
   }
 
   // Universal file type handler (catch-all for non-code, non-markdown large files)
