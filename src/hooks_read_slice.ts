@@ -5,7 +5,7 @@ import * as fs from 'node:fs'
 import type { HookEvent } from './hook_registry.js'
 import { extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, resolveToolResponseFieldPath } from './hooks_common.js'
 import { displaySafePath, hostPathOfIndexKey } from './paths.js'
-import { leadWithCommand } from './hint_suggestion_guard.js'
+import { fencedCommand, leadWithCommand, quotedArg, quotedArgs } from './hint_suggestion_guard.js'
 import { hintTarget, sliceCommand, sliceForPath } from './hint_target.js'
 import { countNoun, decodeSource, statSize, toKB } from './util.js'
 import { load as snapshotLoad } from './snapshots.js'
@@ -380,20 +380,20 @@ export function estimateTruncatedLineCount(normalized: string): number {
 }
 
 export function editAnywayHint(rawPath: string): string {
-  const normalized = displaySafePath(rawPath)
+  const [quoted, b64, oldFile, newFile] = quotedArgs(displaySafePath(rawPath), '<base64>', '<oldfile>', '<newfile>')
   return (
-    'To edit it anyway, use `token-goat replace "' + normalized + '" --old-b64 "<base64>" --new-b64 "<base64>"` (preferred — no temp files needed) or `--old-from "<oldfile>" --new-from "<newfile>"` for a snippet edit, or `token-goat write-file "' + normalized + '" --b64 "<base64>"` (or `--from "<newfile>"`) to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.'
+    'To edit it anyway, use `token-goat replace ' + quoted + ' --old-b64 ' + b64 + ' --new-b64 ' + b64 + '` (preferred — no temp files needed) or `--old-from ' + oldFile + ' --new-from ' + newFile + '` for a snippet edit, or `token-goat write-file ' + quoted + ' --b64 ' + b64 + '` (or `--from ' + newFile + '`) to rewrite the whole file — Read/Edit\'s own precondition can\'t be satisfied after this deny.'
   )
 }
 
 export function truncatedReadDenyMessage(rawPath: string): string {
   const normalized = displaySafePath(rawPath)
   const reason = 'File was truncated on last read (>33K tokens).'
-  const skeleton = 'token-goat skeleton "' + normalized + '"'
+  const skeleton = 'token-goat skeleton ' + quotedArg(normalized)
   const target = hintTarget(rawPath, sliceForPath(rawPath))
   return target.real
-    ? leadWithCommand(sliceCommand(normalized, target), 'for one part, or `' + skeleton + '` for structure', reason)
-    : leadWithCommand(skeleton, 'for structure, or `token-goat read "' + normalized + '::SymbolName"` for one function', reason)
+    ? leadWithCommand(sliceCommand(normalized, target), 'for one part, or ' + fencedCommand(skeleton) + ' for structure', reason)
+    : leadWithCommand(skeleton, 'for structure, or ' + fencedCommand('token-goat read ' + quotedArg(normalized + '::SymbolName')) + ' for one function', reason)
 }
 
 /** Slices window text directly from disk. */

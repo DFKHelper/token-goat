@@ -10,7 +10,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { runAnswer } from '../src/answer_router.js'
 import { bodyFoldNotice } from '../src/fold_delivery.js'
-import { quotedArg } from '../src/hint_suggestion_guard.js'
+import { docSectionHint, grepLinesHint, quotedArg, quotedArgs, stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
+import { sliceCommand } from '../src/hint_target.js'
+import { editAnywayHint, truncatedReadDenyMessage } from '../src/hooks_read_slice.js'
 import { createMcpServer } from '../src/mcp_server.js'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
@@ -72,6 +74,64 @@ describe('quotedArg', () => {
 
   it.skipIf(PWSH === null)('PowerShell hands the command every value unchanged', () => {
     for (const value of ROUND_TRIP_VALUES) expect(powershellArgv(PWSH!, `token-goat semantic ${quotedArg(value)}`)).toEqual(['semantic', value])
+  })
+})
+
+// HAND-DERIVED: the paths name the two characters a shell rewrites inside double quotes; the placeholders and key names are the ones the templates print.
+const METACHAR_PATHS = ['src/a$b.ts', 'src/a`b.ts']
+
+describe('quotedArgs', () => {
+  it('double-quotes every argument when none needs single quotes', () => {
+    expect(quotedArgs('src/a.ts', '<base64>')).toEqual(['"src/a.ts"', '"<base64>"'])
+  })
+
+  it('single-quotes every argument when one needs it, so no double quote sits beside the $ or backtick', () => {
+    expect(quotedArgs('src/a$b.ts', '<base64>')).toEqual(["'src/a$b.ts'", "'<base64>'"])
+  })
+
+  it('keeps double quotes for all when one argument cannot hold single quotes', () => {
+    expect(quotedArgs('src/a$b.json', "['a.b']")).toEqual(['"src/a$b.json"', `"['a.b']"`])
+  })
+
+  it.skipIf(SH === null)('a POSIX shell hands the edit-anyway replace command its path and placeholders unchanged', () => {
+    const command = /`(token-goat replace [^\n]*?)` \(preferred/.exec(editAnywayHint('src/a$b.ts'))?.[1] ?? ''
+    expect(shArgv(SH!, command)).toEqual(['replace', 'src/a$b.ts', '--old-b64', '<base64>', '--new-b64', '<base64>'])
+  })
+
+  it.skipIf(PWSH === null)('PowerShell hands the edit-anyway replace command its path and placeholders unchanged', () => {
+    const command = /`(token-goat replace [^\n]*?)` \(preferred/.exec(editAnywayHint('src/a$b.ts'))?.[1] ?? ''
+    expect(powershellArgv(PWSH!, command)).toEqual(['replace', 'src/a$b.ts', '--old-b64', '<base64>', '--new-b64', '<base64>'])
+  })
+})
+
+describe('deny and hint templates around a path holding $ or a backtick, as relay.ts passes them on', () => {
+  const templates = (p: string): Array<[string, string]> => [
+    ['editAnywayHint', editAnywayHint(p)],
+    ['truncatedReadDenyMessage', truncatedReadDenyMessage(p)],
+    ['sliceCommand section', sliceCommand(p, { name: 'Install', real: true, slice: 'section' })],
+    ['sliceCommand symbol', sliceCommand(p, { name: 'parseFile', real: true, slice: 'symbol' })],
+    ['sliceCommand json key', sliceCommand(p + '.json', { name: 'version', real: true, slice: 'key' })],
+    ['sliceCommand config key', sliceCommand(p + '.env', { name: 'API_URL', real: true, slice: 'key' })],
+    ['grepLinesHint', grepLinesHint('<pattern>', p, 'Read loads the whole file.')],
+    ['docSectionHint', docSectionHint(p + '.md', 'Install', 'Read loads the whole file.')],
+  ]
+
+  it.each(METACHAR_PATHS)('keeps every command for %s', (p) => {
+    for (const [name, text] of templates(p)) {
+      expect.soft(stripUnsafeSuggestions(text), name).toBe(text)
+      expect.soft(text, name).not.toContain('"')
+    }
+  })
+
+  it('names every edit route for a $ path, the placeholders quoted like the path', () => {
+    expect(stripUnsafeSuggestions(editAnywayHint('src/a$b.ts'))).toBe(
+      "To edit it anyway, use `token-goat replace 'src/a$b.ts' --old-b64 '<base64>' --new-b64 '<base64>'` (preferred — no temp files needed) or `--old-from '<oldfile>' --new-from '<newfile>'` for a snippet edit, or `token-goat write-file 'src/a$b.ts' --b64 '<base64>'` (or `--from '<newfile>'`) to rewrite the whole file — Read/Edit's own precondition can't be satisfied after this deny.",
+    )
+  })
+
+  it('still drops a command whose arguments single quotes cannot all hold', () => {
+    const text = sliceCommand('src/a$b.json', { name: 'a.b', real: true, slice: 'key' })
+    expect(stripUnsafeSuggestions(text)).toBe('token-goat (command omitted: the path contains shell metacharacters)')
   })
 })
 

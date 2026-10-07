@@ -58,11 +58,20 @@ function bashEvent(command: string, session: string): Record<string, unknown> {
   return { session_id: 'ps-parse-' + session, cwd: process.cwd(), hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } }
 }
 
+/** `s` with every single-quoted argument cut out: quotedArg and quotedArgs single-quote a value holding a PowerShell double quote, and a single-quoted argument ends only at `'` or U+2018-U+201B (CharExtensions.IsSingleQuote), so a marker inside one is literal text in both shells. */
+const outsideSingleQuotes = (s: string): string => s.replace(/'[^'‘-‛]*'/g, '')
+
 describe('PowerShell double quotes in a path', () => {
-  it.each(BREAKOUT_PATHS)('removes the command when the path is %j', (p) => {
+  it.each(BREAKOUT_PATHS)('never lets the command break out when the path is %j', (p) => {
+    let kept = 0
     for (const out of guardedHints(p)) {
-      for (const s of fencedSuggestions(out)) expect(s, 'a PowerShell breakout survived the guard').not.toContain(MARKER)
+      for (const s of fencedSuggestions(out)) {
+        if (s.includes(MARKER)) kept++
+        expect(outsideSingleQuotes(s), 'a PowerShell breakout survived the guard').not.toContain(MARKER)
+      }
     }
+    // The section and grep hints keep their command, single-quoted; the hand-built double-quoted read is still dropped.
+    expect(kept).toBeGreaterThanOrEqual(2)
   })
 
   it.each(BENIGN_PATHS)('leaves the suggestion for %j byte-identical', (p) => {

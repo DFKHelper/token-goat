@@ -72,6 +72,12 @@ export function quotedArg(value: string): string {
   return '"' + value + '"'
 }
 
+/** Every argument of one suggested command, quoted with one mark: single quotes when {@link quotedArg} would single-quote any of them and all of them can hold single quotes, double quotes otherwise. A `"<base64>"` beside a single-quoted path puts a double quote into a command that holds `$` or a backtick, and {@link stripUnsafeSuggestions} then drops the whole command, path and all. */
+export function quotedArgs(...values: string[]): string[] {
+  const single = values.some((v) => REWRITTEN_IN_DOUBLE_QUOTES.test(v)) && values.every((v) => !ENDS_SINGLE_QUOTES.test(v) && !CONTROL_OR_BIDI.test(v))
+  return values.map((v) => (single ? "'" + v + "'" : '"' + v + '"'))
+}
+
 /** A whole suggested `token-goat …` command set in a sentence, backtick-fenced so the text after it is not read as part of it: {@link stripUnsafeSuggestions} ends a suggestion at the first backtick, while `use: token-goat symbol "x")` or `("token-goat doctor --repair" retries it too.)` ran on to the line's end and was dropped for the `)` it reached outside the quotes. */
 export function fencedCommand(command: string): string {
   return '`' + command + '`'
@@ -91,17 +97,18 @@ export function docNavigation(filePath: string): { section: boolean; outline: bo
 
 /** A grep over one file, the command that runs where neither `section` nor `outline` can serve it. */
 export function grepLinesHint(pattern: string, shownPath: string, reason = ''): string {
-  return leadWithCommand('token-goat grep "' + pattern + '" "' + shownPath + '" -C 3', 'to read the matching lines', reason)
+  const [quotedPattern, quotedPath] = quotedArgs(pattern, shownPath)
+  return leadWithCommand('token-goat grep ' + quotedPattern + ' ' + quotedPath + ' -C 3', 'to read the matching lines', reason)
 }
 
-/** `config-get` for one key of one file, the key double-quoted like the path, the form {@link stripUnsafeSuggestions} checks: a bare key sits outside the quotes, where the relay judges it only by its outside-quote allowlist and a shell splits it at a space. hint_target.ts refuses a key holding `"`, so these quotes always hold. */
+/** `config-get` for one key of one file, the key quoted with the path's mark ({@link quotedArgs}), the form {@link stripUnsafeSuggestions} checks: a bare key sits outside the quotes, where the relay judges it only by its outside-quote allowlist and a shell splits it at a space. hint_target.ts refuses a key holding `"`, so these quotes always hold. */
 export function configGetCommand(shownPath: string, key: string): string {
-  return 'token-goat config-get "' + shownPath + '" "' + key + '"'
+  return 'token-goat config-get ' + quotedArgs(shownPath, key).join(' ')
 }
 
 /** The hint for one section of a prose document: `section` with the `outline` alternative only where it runs, and a plain grep for a file type neither serves. */
 export function docSectionHint(shownPath: string, heading: string, reason = ''): string {
   const nav = docNavigation(shownPath)
   if (!nav.section) return grepLinesHint('<pattern>', shownPath, reason)
-  return leadWithCommand('token-goat section "' + shownPath + '::' + heading + '"', 'to read one section' + (nav.outline ? ', or `token-goat outline "' + shownPath + '"` for every heading with line ranges' : ''), reason)
+  return leadWithCommand('token-goat section ' + quotedArg(shownPath + '::' + heading), 'to read one section' + (nav.outline ? ', or ' + fencedCommand('token-goat outline ' + quotedArg(shownPath)) + ' for every heading with line ranges' : ''), reason)
 }

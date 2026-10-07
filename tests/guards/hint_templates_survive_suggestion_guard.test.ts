@@ -152,13 +152,25 @@ const QUOTING_HELPERS = new Set(['quotedArg', 'viaArg', 'skillSectionArg'])
 
 const isQuotingCall = (n: ts.Node): boolean => ts.isCallExpression(n) && ts.isIdentifier(n.expression) && QUOTING_HELPERS.has(n.expression.text)
 
-/** Whether `id` names a const that a quoting helper initialised in a block or file enclosing it (hooks_skill.ts's `nameArg`), so it reads as quoted just like the call. */
+/** quotedArgs (src/hint_suggestion_guard.ts), which quotes every argument of one command with one mark and returns them as an array. */
+const isQuotedArgsCall = (n: ts.Node): n is ts.CallExpression => ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'quotedArgs'
+
+/** The argument count of a `quotedArgs(…).join(' ')`, which lands in a template as that many quoted values separated by spaces, or null for any other expression. */
+function quotedArgsJoinCount(n: ts.Node): number | null {
+  if (!ts.isCallExpression(n) || !ts.isPropertyAccessExpression(n.expression) || n.expression.name.text !== 'join') return null
+  const sep = n.arguments[0]
+  if (!isQuotedArgsCall(n.expression.expression) || sep === undefined || !ts.isStringLiteral(sep) || sep.text !== ' ') return null
+  return n.expression.expression.arguments.length
+}
+
+/** Whether `id` names a const that a quoting helper initialised in a block or file enclosing it (hooks_skill.ts's `nameArg`), or one element of an array a quotedArgs call initialised (`const [quoted, b64] = quotedArgs(…)`), so it reads as quoted just like the call. */
 function quotedConst(id: ts.Identifier): boolean {
   for (let scope: ts.Node | undefined = id.parent; scope !== undefined; scope = scope.parent) {
     if (!ts.isBlock(scope) && !ts.isSourceFile(scope)) continue
     for (const st of scope.statements) {
       if (!ts.isVariableStatement(st) || (st.declarationList.flags & ts.NodeFlags.Const) === 0) continue
       if (st.declarationList.declarations.some((d) => ts.isIdentifier(d.name) && d.name.text === id.text && d.initializer !== undefined && isQuotingCall(d.initializer))) return true
+      if (st.declarationList.declarations.some((d) => ts.isArrayBindingPattern(d.name) && d.initializer !== undefined && isQuotedArgsCall(d.initializer) && d.name.elements.some((e) => ts.isBindingElement(e) && ts.isIdentifier(e.name) && e.name.text === id.text))) return true
     }
   }
   return false
@@ -174,7 +186,7 @@ function cross(left: string[], right: string[]): string[] {
   return left.flatMap((l) => right.map((r) => l + r)).slice(0, MAX_VARIANTS)
 }
 
-/** A string expression's texts, one per combination of its conditional branches, so each branch is checked in the sentence it lands in. An interpolated value becomes `standIn`, a value passed through a quoting helper (or held in a const one initialised) becomes the plain stand-in in double quotes, and a command passed through fencedCommand (src/hint_suggestion_guard.ts) becomes its own flattened text in backticks, so the sentence around a fenced command is checked with the command in it rather than with a bare stand-in. */
+/** A string expression's texts, one per combination of its conditional branches, so each branch is checked in the sentence it lands in. An interpolated value becomes `standIn`, a value passed through a quoting helper (or held in a const one initialised, or joined out of a quotedArgs call) becomes the stand-in in double quotes, and a command passed through fencedCommand (src/hint_suggestion_guard.ts) becomes its own flattened text in backticks, so the sentence around a fenced command is checked with the command in it rather than with a bare stand-in. */
 function flatten(node: ts.Expression, standIn: StandIn = PLAIN): string[] {
   if (ts.isParenthesizedExpression(node)) return flatten(node.expression, standIn)
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return [node.text]
@@ -182,6 +194,8 @@ function flatten(node: ts.Expression, standIn: StandIn = PLAIN): string[] {
   if (isConcat(node)) return cross(flatten(node.left, standIn), flatten(node.right, standIn))
   if (ts.isConditionalExpression(node)) return [...flatten(node.whenTrue, standIn), ...flatten(node.whenFalse, standIn)].slice(0, MAX_VARIANTS)
   if (isQuotingCall(node) || (ts.isIdentifier(node) && quotedConst(node))) return ['"' + (typeof standIn === 'string' ? standIn : PLAIN) + '"']
+  const joined = quotedArgsJoinCount(node)
+  if (joined !== null) return [Array.from({ length: joined }, () => '"' + (typeof standIn === 'string' ? standIn : PLAIN) + '"').join(' ')]
   if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'fencedCommand' && node.arguments.length === 1) return flatten(node.arguments[0] as ts.Expression, standIn).map((t) => '`' + t + '`')
   return [typeof standIn === 'string' ? standIn : standIn(node)]
 }
@@ -409,6 +423,10 @@ describe('every interpolated value in a suggested command in src', () => {
     expect(virtual("const s = 'token-goat shrank ' + subject + ': ' + kb + 'kb'")).toEqual([])
     expect(virtual("const s = 'Run token-goat worker start to ' + goal + '.'")).toEqual([])
     expect(virtual("const s = 'token-goat ' + sub + ' ' + quotedArg(p)")).toEqual(['bare sub'])
+    expect(virtual("function f(n) { const [name, b64] = quotedArgs(n, '<base64>'); return 'Run `token-goat symbol ' + name + ' ' + b64 + '`.' }")).toEqual([])
+    expect(virtual("function f(n) { const [name, b64] = splitArgs(n, '<base64>'); return 'Run `token-goat symbol ' + name + ' ' + b64 + '`.' }")).toEqual(['bare name', 'bare b64'])
+    expect(virtual("const s = 'Run `token-goat config-get ' + quotedArgs(p, key).join(' ') + '`.'")).toEqual([])
+    expect(virtual("const s = 'Run `token-goat config-get ' + splitArgs(p, key).join(' ') + '`.'")).toEqual(["bare splitArgs(p, key).join(' ')"])
   })
 })
 

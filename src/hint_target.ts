@@ -8,7 +8,7 @@ import { indexMatchesDisk } from './index_freshness.js'
 import { commandPathIsTouchable } from './vscode_path_gate.js'
 import { extractMarkdownHeadings, formatHeadingTreeParts, type MarkdownHeading } from './hints/markdown_hints.js'
 import { extractQuickSymbolSamples } from './hooks_read.js'
-import { stripUnsafeSuggestions, leadWithCommand, grepLinesHint, configGetCommand } from './hint_suggestion_guard.js'
+import { stripUnsafeSuggestions, leadWithCommand, grepLinesHint, configGetCommand, quotedArg, quotedArgs } from './hint_suggestion_guard.js'
 import { getCompactedAt, markHintShown, wasHintShown } from './session.js'
 import { shortFingerprint } from './fingerprint.js'
 import { sessionStateKey, type HookEvent } from './hook_registry.js'
@@ -253,17 +253,17 @@ export function hintTarget(filePath: string, slice: HintSlice, source: HintTarge
 export function sliceCommand(shownPath: string, target: HintTarget): string {
   switch (target.slice) {
     case 'section':
-      return 'token-goat section "' + shownPath + '::' + target.name + '"'
+      return 'token-goat section ' + quotedArg(shownPath + '::' + target.name)
     case 'key': {
       const format = structuredFormat(shownPath)
       if (format === null) return configGetCommand(shownPath, target.name)
-      if (/^[\w-]+$/.test(target.name)) return 'token-goat ' + format + '-query "' + shownPath + '" "' + target.name + '"'
-      if (!target.name.includes("'")) return 'token-goat ' + format + '-query "' + shownPath + '" "[\'' + target.name + '\']"'
-      return 'token-goat ' + format + '-outline "' + shownPath + '"'
+      if (/^[\w-]+$/.test(target.name)) return 'token-goat ' + format + '-query ' + quotedArgs(shownPath, target.name).join(' ')
+      if (!target.name.includes("'")) return 'token-goat ' + format + '-query ' + quotedArgs(shownPath, "['" + target.name + "']").join(' ')
+      return 'token-goat ' + format + '-outline ' + quotedArg(shownPath)
     }
     case 'symbol':
     case 'table':
-      return 'token-goat read "' + shownPath + '::' + target.name + '"'
+      return 'token-goat read ' + quotedArg(shownPath + '::' + target.name)
   }
 }
 
