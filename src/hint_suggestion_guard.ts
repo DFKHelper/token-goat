@@ -94,9 +94,30 @@ export function stripUnsafeSuggestions(text: string): string {
     // Only a fenced suggestion has a closing backtick to stop at; in an unfenced one the last backtick is the path's own, and stopping there left the path's tail behind.
     const lastTick = line.lastIndexOf('`')
     const wide = lastTick === -1 || text[start - 1] !== '`' ? line : line.slice(0, lastTick)
-    out += OMITTED
-    at = start + wide.length
+    const tick = line.slice(wide.length).startsWith('`') ? '`' : ''
+    const paired = pairRemovedParens(out.slice(Math.max(out.lastIndexOf('\n'), out.lastIndexOf('\r')) + 1), wide, line.slice(wide.length + tick.length))
+    out += OMITTED + tick + paired.close
+    at = start + wide.length + tick.length + paired.skip
   }
+}
+
+/** What has to follow {@link OMITTED} so the prose around a widened removal keeps its parentheses paired. The removal runs to the last backtick on the line, so it can take the `(` of a parenthetical between two fenced commands (`` `token-goat write-file 'a`b.ts'` (or `--from …`) to rewrite ``) and strand its `)` after the omission, or take the `)` closing a `(` written before the command. `before` is the line as emitted up to the command, `removed` the widened slice, `after` the rest of the line past its closing backtick. A `)` in `after` that nothing open pairs with ends a parenthetical whose `(` was removed, so the text up to and including it goes too (`skip`); a `(` in `before` still open once `after` is read, while `removed` held a `)`, gets that `)` back (`close`). Parentheses inside `removed` are never read as opening or closing anything, since a path can hold either one; they only cap how many `)` come back. */
+function pairRemovedParens(before: string, removed: string, after: string): { skip: number; close: string } {
+  let open = 0
+  for (const c of before) {
+    if (c === '(') open++
+    else if (c === ')' && open > 0) open--
+  }
+  let inner = 0
+  for (let i = 0; i < after.length; i++) {
+    const c = after[i]
+    if (c === '(') inner++
+    else if (c !== ')') continue
+    else if (inner > 0) inner--
+    else if (open > 0) open--
+    else return { skip: i + 1, close: '' }
+  }
+  return { skip: 0, close: ')'.repeat(Math.min(open, removed.split(')').length - 1)) }
 }
 
 /** What a double-quoted argument does not hold literally in bash or PowerShell: `$` and a backtick substitute inside double quotes, and `"` (or PowerShell's U+201C-U+201E) closes them. */
