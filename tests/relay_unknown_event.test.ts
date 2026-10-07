@@ -28,7 +28,7 @@ describe('token-goat hook <event> with an unknown event name', () => {
   it('says so on stderr rather than passing silently', () => {
     const { stderr } = runHook('post-edit')
     expect(stderr, `expected a stderr diagnostic naming the bad event, got: ${JSON.stringify(stderr)}`).toContain(
-      "unknown hook event 'post-edit'",
+      'unknown hook event "post-edit"',
     )
   })
 

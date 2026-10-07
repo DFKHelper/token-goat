@@ -11,6 +11,7 @@ export const MAX_ZIP_OUTPUT_BYTES = 500 * 1024 * 1024
 import type { FlateError, UnzipDecoderConstructor } from 'fflate'
 
 import { DocumentRefusedError } from './document_refusal.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 const STREAM_CHUNK_BYTES = 64 * 1024
 
@@ -42,7 +43,7 @@ export interface ZipStreamModule {
 export class ZipOutputTooLargeError extends DocumentRefusedError {
   constructor(entryName: string, limitBytes: number, decompressedSoFarBytes: number) {
     super(
-      `zip entry '${entryName}' is over the ${Math.round(limitBytes / (1024 * 1024))}MB decompressed-size limit ` +
+      `zip entry ${echoedValue(entryName)} is over the ${Math.round(limitBytes / (1024 * 1024))}MB decompressed-size limit ` +
         `(over ${Math.round(decompressedSoFarBytes / (1024 * 1024))}MB decompressed so far)`,
       'ZipOutputTooLargeError',
     )

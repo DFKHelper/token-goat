@@ -7,6 +7,7 @@ import { recordCreatedBy, removeCreatedBackups, removeCreatedTree, takeCreatedCo
 import { bundledCliPath, dropEmptyServers, hasManagedServer, managedServerEntry, noteRootKeyCreation, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { backupFile, ensureDirSync, removeFileInScope, writeConfigText } from '../util.js'
+import { echoedValue } from '../hint_suggestion_guard.js'
 
 const MCP_SERVERS_KEY = 'mcpServers'
 const TOKEN_GOAT_ENTRY_KEY = 'token-goat'
@@ -73,7 +74,7 @@ function installCursorScoped(opts: CursorScopeOptions): CursorInstallResult {
   const config = readServersJson(mcpPath, 'Cursor')
   const current = serversOf(config, mcpPath, 'Cursor', MCP_SERVERS_KEY)[TOKEN_GOAT_ENTRY_KEY]
   if (current !== undefined && !isCursorManagedServer(current)) {
-    throw new Error(`Cursor mcp.json already has a "${TOKEN_GOAT_ENTRY_KEY}" MCP server entry token-goat did not write, at ${mcpPath}; remove it manually first`)
+    throw new Error(`Cursor mcp.json already has a ${echoedValue(TOKEN_GOAT_ENTRY_KEY)} MCP server entry token-goat did not write, at ${mcpPath}; remove it manually first`)
   }
 
   const desired = cursorManagedServer()

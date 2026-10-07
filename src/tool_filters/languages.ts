@@ -20,6 +20,7 @@ import {
   positionalArgs,
   squeezeBlankLines,
 } from './helpers.js'
+import { echoedValue } from '../hint_suggestion_guard.js'
 
 // =========================================================================== NodeFilter ===========================================================================
 
@@ -1286,7 +1287,7 @@ export class PowerShellErrorFilter extends ToolFilter {
       const cmd = (categoryCmd || headerCmd || '').trim()
       const elidedLines = match.replace(/\r?\n$/, '').split(/\r?\n/).length
       return (
-        `PowerShell CommandNotFoundException: '${cmd}' not found (elided ${elidedLines} lines of stack trace). ` +
+        `PowerShell CommandNotFoundException: ${echoedValue(cmd)} not found (elided ${elidedLines} lines of stack trace). ` +
         'If invoked from Bash/Git-Bash and the command used $_, bash pre-expands it before PowerShell sees it -- ' +
         'escape as `$_` (backtick) or single-quote the whole -Command string.'
       )

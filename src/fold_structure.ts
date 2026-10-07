@@ -6,7 +6,7 @@ import { extractMarkdownHeadings, type MarkdownHeading } from './hints/markdown_
 import { fenceNumberedFileContent, fenceUntrustedFileContent } from './injection_scan.js'
 import { headingTreeParts, hintTarget } from './hint_target.js'
 import { displaySafeText } from './paths.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { isTreeSitterAvailable, parseSourceSymbolsTreeSitterOnly } from './parser.js'
 import { detectLanguage } from './parser_types.js'
 import type { SymbolEntry } from './parser_types.js'
@@ -123,7 +123,7 @@ function planOutlineAlignedRows(rows: readonly FoldRow[], headings: readonly Mar
     const under = findContainingSection(normalizedPath, firstLine, lastLine)?.heading ?? null
     const notice =
       under !== null && !/["`$\\]/.test(under) && displaySafeText(under) === under
-        ? `... ${n} line${n === 1 ? '' : 's'} (${firstLine}-${lastLine}) under "${under}" withheld -- token-goat section ${quotedArg(`${shownPath}::${under}`)}`
+        ? `... ${n} line${n === 1 ? '' : 's'} (${firstLine}-${lastLine}) under ${echoedValue(under)} withheld -- token-goat section ${quotedArg(`${shownPath}::${under}`)}`
         : null
     let runBytes = 0
     for (let k = i; k < j; k++) runBytes += Buffer.byteLength(rows[k]?.raw ?? '', 'utf-8') + 1
@@ -140,7 +140,7 @@ function planOutlineAlignedRows(rows: readonly FoldRow[], headings: readonly Mar
 /** The line standing in for a withheld run the skeleton cannot name a symbol for: the interior of a class between its methods, top-level statements between declarations, a trailing block after the last symbol. There is no `token-goat read "file::symbol"` that returns such a run, so the pointer is a ranged Read of the exact span, worded to match {@link commentFoldNotice} rather than inventing a fourth shape. A ranged read is also the one shape this fold never touches (ranged reads are declined outright by both callers), so the pointer cannot loop back into another skeleton. */
 function skeletonGapNotice(firstLine: number, lastLine: number, shownPath: string): string {
   const n = lastLine - firstLine + 1
-  return `... ${n} line${n === 1 ? '' : 's'} (${firstLine}-${lastLine}) withheld from the skeleton -- Read "${shownPath}" with offset=${firstLine}, limit=${n}`
+  return `... ${n} line${n === 1 ? '' : 's'} (${firstLine}-${lastLine}) withheld from the skeleton -- Read ${quotedArg(shownPath)} with offset=${firstLine}, limit=${n}`
 }
 
 /** A planned skeleton. `withheldLines` counts what the notices stand for, for the disclosure. */

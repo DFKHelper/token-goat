@@ -21,6 +21,7 @@ import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { forClient } from './mcp_client_text.js'
 import { buildContextWindow, renderContextWindow, type SourceContextLine } from './util_context.js'
 import { CliError, formatCommandError } from './command_error.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 export interface RefsOptions {
   spec: string
@@ -288,12 +289,12 @@ function renderRefsTargets(targets: RefsTarget[], opts: RefsOptions): number {
 export function runRefs(opts: RefsOptions): number {
   // A limit of 0 (or negative) would translate to SQL `LIMIT 0`, which always returns zero rows regardless of whether references exist -- silently reporting "no references found" for a symbol that's actually referenced. Reject it explicitly instead of querying with it. Both callers (this multi-symbol path and the single-symbol runRefsSingle it delegates to) are covered by this one check since runRefsSingle is never called from outside this file.
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(formatCommandError(`--limit must be a positive number, got: "${opts.limit}"`))
+    emitErr(formatCommandError(`--limit must be a positive number, got: ${echoedValue(String(opts.limit))}`))
     return 1
   }
   // Same reasoning: --top 0 (or negative) is never a meaningful request -- reject explicitly rather than silently rendering an empty summary.
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(formatCommandError(`--top must be a positive number, got: "${opts.top}"`))
+    emitErr(formatCommandError(`--top must be a positive number, got: ${echoedValue(String(opts.top))}`))
     return 1
   }
 
@@ -365,7 +366,7 @@ function runRefsSingle(opts: RefsOptions): number {
     }
     // "No references found" plus exit 1 for a symbol that IS referenced -- only from tests -- reads as "this symbol is unused", which invites deleting live code. Name the suppressed count so the filtered view is never mistaken for absence. Flag-absent output is untouched: suppressed is always 0 then.
     if (opts.excludeTests === true && suppressed > 0) {
-      emitErr(formatCommandError(`No non-test references found for '${symName}' (${excludeTestsHiddenNote(suppressed)})`))
+      emitErr(formatCommandError(`No non-test references found for ${echoedValue(symName)} (${excludeTestsHiddenNote(suppressed)})`))
       return 1
     }
     // Distinguish "not indexed at all" from "indexed, genuinely zero references" -- the latter keeps today's message byte-identical (see unknownSymbolSuggestion's own doc comment for why this matters). Resolved here rather than hoisted to the top of the function since it's only ever paid once the query already came back empty.
@@ -392,7 +393,7 @@ function runRefsSingle(opts: RefsOptions): number {
       emitErr(formatCommandError(refBlindKindNotice(symName, kindVerdict.blindKinds)))
       return 1
     }
-    emitErr(formatCommandError(`No references found for '${symName}'`))
+    emitErr(formatCommandError(`No references found for ${echoedValue(symName)}`))
     // A partial answer presented as a whole one is the same defect as a refusal that was not needed: the other definitions were genuinely searched, so the message above stands, but the ref-blind ones it cannot speak for are named rather than dropped.
     if (kindVerdict.blindCount > 0) emitErr(refBlindKindPartialNote(symName, kindVerdict.blindKinds, kindVerdict.blindCount, kindRows.length))
     // Only paid after the query already came back empty, and only in text mode -- this branch already emits plain prose regardless of --json (there's no separate opts.json check here), so there's no JSON envelope to protect either way.

@@ -7,9 +7,9 @@ import { CliError, err, formatCommandError, out } from './cli.js'
 import { requireNonNegativeInt } from './cli_dispatch.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG } from './injection_scan.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { noMatchMessage, queryJson } from './json_query.js'
-import { displaySafeJson, displaySafeText } from './paths.js'
+import { displaySafeJson } from './paths.js'
 import { guardJsonRows } from './read_commands.js'
 import { headElidedNotice, traversalLimitNotice } from './query_notices.js'
 import { extractTranscriptText } from './read_inspect.js'
@@ -45,10 +45,10 @@ interface RecallRow {
 /** Parse a `--lines A-B` (or single `A`) spec into a 1-based inclusive range. */
 function parseLineRange(spec: string): { from: number; to: number } {
   const m = /^(\d+)(?:-(\d+))?$/.exec(spec.trim())
-  if (m === null) throw new CliError(`--lines must be a line number or a range like 395-405, got: "${spec}"`)
+  if (m === null) throw new CliError(`--lines must be a line number or a range like 395-405, got: ${echoedValue(spec)}`)
   const from = Number(m[1])
   const to = m[2] === undefined ? from : Number(m[2])
-  if (from < 1 || to < from) throw new CliError(`--lines must start at 1 or later and not run backwards, got: "${spec}"`)
+  if (from < 1 || to < from) throw new CliError(`--lines must start at 1 or later and not run backwards, got: ${echoedValue(spec)}`)
   return { from, to }
 }
 
@@ -127,7 +127,7 @@ export function _applyFiltersAndPrint(
       if (matches(r.text)) hits.push(i)
     })
     // Said as an error, like a --section that is not found: an empty line at exit 0 reads the same as an empty cache entry or a failed recall.
-    if (hits.length === 0) throw new CliError(`--grep matched no lines of ${rows.length}: "${displaySafeText(opts.grep)}"`)
+    if (hits.length === 0) throw new CliError(`--grep matched no lines of ${rows.length}: ${echoedValue(opts.grep)}`)
     const cap = opts.maxMatches !== undefined ? requireNonNegativeInt('--max-matches', opts.maxMatches) : undefined
     const kept = cap !== undefined && hits.length > cap ? hits.slice(0, cap) : hits
     const ctx = opts.context !== undefined ? requireNonNegativeInt('--context', opts.context) : 0
@@ -208,7 +208,7 @@ function readRecallFile(file: string): { text: string; mtimeMs: number } {
   try {
     const st = fs.statSync(file)
     if (st.isFIFO() || st.isSocket()) {
-      throw new CliError(`--file '${file}' is a special file (FIFO or socket) — only regular files are supported`)
+      throw new CliError(`--file ${echoedValue(file)} is a special file (FIFO or socket) — only regular files are supported`)
     }
     return { text: redactIfDotenv(file, decodeSource(fs.readFileSync(file))), mtimeMs: st.mtimeMs }
   } catch (e) {
@@ -242,7 +242,7 @@ export function cmdBashOutput(
     if (verifyThresholdSec !== undefined) {
       const ageSec = Math.round((Date.now() - mtimeMs) / 1000)
       if (ageSec > verifyThresholdSec) {
-        const msg = `stale write: '${opts.file}' was modified ${ageSec}s ago (threshold: ${verifyThresholdSec}s). Terminal command may have silently failed or no-op'd.`
+        const msg = `stale write: ${echoedValue(opts.file)} was modified ${ageSec}s ago (threshold: ${verifyThresholdSec}s). Terminal command may have silently failed or no-op'd.`
         if (opts.strict === true) {
           throw new CliError(msg)
         }
@@ -265,7 +265,7 @@ export function cmdBashOutput(
   if (verifyThresholdSec !== undefined) {
     const ageSec = Math.round((Date.now() - entry.storedAt) / 1000)
     if (ageSec > verifyThresholdSec) {
-      const msg = `stale write: cached output '${id}' was recorded ${ageSec}s ago (threshold: ${verifyThresholdSec}s). Terminal command may have silently failed or not re-run.`
+      const msg = `stale write: cached output ${echoedValue(id)} was recorded ${ageSec}s ago (threshold: ${verifyThresholdSec}s). Terminal command may have silently failed or not re-run.`
       if (opts.strict === true) {
         throw new CliError(msg)
       }

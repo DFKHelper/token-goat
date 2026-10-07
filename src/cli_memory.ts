@@ -8,6 +8,7 @@ import { displaySafeText } from './paths.js'
 import { auditClaudeMd, findContentDuplicates, type ClaudeMdReport, type DupCluster } from './memory_prune.js'
 import { resolveProjectRoot } from './project.js'
 import { confirmAndApply, type FileChange } from './confirm_apply.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 export interface MemoryCommandOptions {
   project?: string
@@ -42,7 +43,7 @@ function printReport(reports: ClaudeMdReport[], clusters: DupCluster[]): void {
         w(`    exact-duplicate lines: ${report.exactDupLines.length}\n`)
         for (const [firstLine, dupLine, stripped] of report.exactDupLines) {
           const shown = stripped.length > 70 ? `${stripped.slice(0, 70)}…` : stripped
-          w(`      line ${dupLine + 1} duplicates line ${firstLine + 1}: "${displaySafeText(shown)}"\n`)
+          w(`      line ${dupLine + 1} duplicates line ${firstLine + 1}: ${echoedValue(shown)}\n`)
         }
       }
 
@@ -51,7 +52,7 @@ function printReport(reports: ClaudeMdReport[], clusters: DupCluster[]): void {
       } else {
         w(`    duplicate headings: ${report.dupSections.length}  [advisory only]\n`)
         for (const [heading, lnos] of report.dupSections) {
-          w(`      "${displaySafeText(heading)}" at lines ${lnos.map((n) => n + 1).join(', ')}\n`)
+          w(`      ${echoedValue(heading)} at lines ${lnos.map((n) => n + 1).join(', ')}\n`)
         }
       }
 

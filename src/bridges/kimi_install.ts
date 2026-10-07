@@ -14,6 +14,7 @@ import { KIMI_HOOK_SCRIPT } from './kimi.js'
 import { LEGACY_SHIM_FILE, SHIM_FILE, legacyShimForwarder } from './shim_common.js'
 import { buildGuidanceBlock, buildGuidanceBody, skillDescriptionLine } from './guidance_block.js'
 import { loadConfig } from '../config.js'
+import { echoedValue } from '../hint_suggestion_guard.js'
 
 /** Kimi Code event names token-goat wires, mapped to the internal event arg. Every name here is a member of `HOOK_EVENT_TYPES` in `packages/agent-core-v2/src/agent/externalHooks/types.ts`. The remaining real Kimi events (`Notification`, `Stop`, `StopFailure`, `Interrupt`, `PostToolUseFailure`, `PermissionRequest`, `PermissionResult`, `UserPromptQueued`, `TurnStarted`, `TaskStarted`, `SubagentStart`, `SessionEnd`, `SessionHeartbeat`, `PostCompact`) are left unwired: none of them has a token-goat server-side handler to dispatch to, so wiring them would spawn a process per event to do nothing. */
 const KIMI_EVENT_ARG: Readonly<Record<string, string>> = {
@@ -87,8 +88,8 @@ function readKimiConfig(p: string, opts: { strict?: boolean; command?: 'install'
   const refuse = (problem: string, detail?: string): KimiConfigParseError =>
     new KimiConfigParseError(
       (opts.command === 'uninstall'
-        ? `Kimi Code config file '${p}' is unreadable: it ${problem}. Uninstall left it untouched, along with the hook shim it may still name, the AGENTS.md block, the skill and the file's backups; fix the file and run uninstall again.`
-        : `Kimi Code config file '${p}' ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
+        ? `Kimi Code config file ${echoedValue(p)} is unreadable: it ${problem}. Uninstall left it untouched, along with the hook shim it may still name, the AGENTS.md block, the skill and the file's backups; fix the file and run uninstall again.`
+        : `Kimi Code config file ${echoedValue(p)} ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
     )
   let raw: string
   try {
@@ -188,7 +189,7 @@ function installKimiFiles(): KimiInstallResult {
   for (const { command } of process.platform === 'win32' ? desired : []) {
     const span = hookCommandRewrittenSpan(command, 'cmd')
     if (span !== undefined) {
-      throw new HookCommandRewriteError(`Kimi Code runs hook commands through cmd.exe, which replaces ${span} with the value of the environment variable of that name whenever one is set, before it reads any quotes, so the hook command token-goat would write (${command}) would not run token-goat. Nothing was written. Move the path that contains "${span}" (the Kimi Code home, token-goat's install directory, or Node's) to one without a %...% pair, then run \`token-goat install --kimi\` again.`)
+      throw new HookCommandRewriteError(`Kimi Code runs hook commands through cmd.exe, which replaces ${span} with the value of the environment variable of that name whenever one is set, before it reads any quotes, so the hook command token-goat would write (${command}) would not run token-goat. Nothing was written. Move the path that contains ${echoedValue(span)} (the Kimi Code home, token-goat's install directory, or Node's) to one without a %...% pair, then run \`token-goat install --kimi\` again.`)
     }
   }
 

@@ -169,7 +169,7 @@ export function formatBareNameSpecError(command: string, name: string, projectRo
   if (specs.length === 0) {
     return `Invalid spec - expected "file::symbol", got: ${name}`
   }
-  const lines = [`Not a file: '${displaySafeText(name)}'. Did you mean:`]
+  const lines = [`Not a file: ${echoedValue(name)}. Did you mean:`]
   for (const spec of specs.slice(0, DIDYOUMEAN_LIMIT)) {
     lines.push(`  - token-goat ${command} ${quotedArg(spec)}`)
   }

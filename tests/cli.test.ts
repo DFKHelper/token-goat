@@ -143,7 +143,7 @@ describe('token-goat CLI', () => {
         encoding: 'utf8',
       })
       expect(res.status).not.toBe(0)
-      expect(res.stderr).toContain(`--from '${srcFile}' exceeds size limit`)
+      expect(res.stderr).toContain(`--from "${srcFile}" exceeds size limit`)
     } finally {
       try { fs.unlinkSync(srcFile) } catch { /* ok */ }
       try { fs.unlinkSync(destFile) } catch { /* ok */ }
@@ -1414,7 +1414,7 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
     try {
       const r = runIsolated(['skill-compact', '--path', skillFile], dataDir)
       expect(r.status).toBe(0)
-      expect(r.stdout).toContain("Cached compact for skill 'myskill'")
+      expect(r.stdout).toContain('Cached compact for skill "myskill"')
     } finally {
       cleanup()
     }
@@ -1505,7 +1505,7 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
     try {
       const r = runIsolated(['skill-compact', '--path', dirAsPath], dataDir)
       expect(r.status).toBe(1)
-      expect(r.stderr).toContain(`failed to read skill file '${dirAsPath}'`)
+      expect(r.stderr).toContain(`failed to read skill file "${dirAsPath}"`)
     } finally {
       fs.rmSync(base, { recursive: true, force: true })
     }

@@ -8,6 +8,7 @@ import { isPrivateIpv4Octets, isPrivateIpv6Groups, parseIpv6Groups, urlPolicyDen
 import { shrinkImage } from './image_shrink.js'
 import { createLazyModuleLoader } from './lazy_module.js'
 import { atomicWriteBytes, redactUrlQuery, withExtension } from './util.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 export interface ScreenshotOptions {
   executablePath?: string
@@ -150,7 +151,7 @@ export function screenshotUrlRefusal(url: string): string | null {
   // A screenshot URL can be signed (SAS token, share signature), so error text shows only origin + pathname, never the query string -- otherwise a URL rejected for its scheme prints its own access token into stderr and from there into the model's context.
   const safeUrl = parsed.origin !== 'null' ? parsed.origin + parsed.pathname : redactUrlQuery(url)
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return `Rejected screenshot URL scheme "${parsed.protocol}" (only http:/https: are allowed): ${safeUrl}`
+    return `Rejected screenshot URL scheme ${echoedValue(parsed.protocol)} (only http:/https: are allowed): ${safeUrl}`
   }
   // The headless browser is the third way bytes leave this machine, after the WebFetch hook and performHttpFetch, and it was the one channel webfetch.allow/webfetch.deny never reached: an install configured to deny everything still rendered whatever URL it was handed. Checking here rather than at the command entry point is deliberate -- this function is re-applied by the request-interception hook to every redirect hop and every sub-resource the page loads, so an allowed page cannot pull an image, script, or iframe from a denied host either.
   const policyDenial = urlPolicyDenialReason(url, loadConfig().webfetch)
@@ -159,7 +160,7 @@ export function screenshotUrlRefusal(url: string): string | null {
   }
   if (loadConfig().screenshot.block_private_targets && isBlockedLiteralIp(parsed.hostname)) {
     return (
-      `Rejected screenshot target "${parsed.hostname}" (loopback/link-local/private IP). ` +
+      `Rejected screenshot target ${echoedValue(parsed.hostname)} (loopback/link-local/private IP). ` +
       'Set screenshot.block_private_targets = false in token-goat config to opt in for ' +
       'legitimate internal-service screenshots.'
     )
@@ -239,15 +240,15 @@ export async function resolveTargetForPolicy(
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
     // Fail closed: an unresolvable name must not be handed to the browser to resolve unchecked.
-    return { reason: `Rejected screenshot target "${host}": DNS resolution failed (${detail}). ${optIn}`, host, addresses: [] }
+    return { reason: `Rejected screenshot target ${echoedValue(host)}: DNS resolution failed (${detail}). ${optIn}`, host, addresses: [] }
   }
   if (addresses.length === 0) {
-    return { reason: `Rejected screenshot target "${host}": DNS returned no addresses. ${optIn}`, host, addresses: [] }
+    return { reason: `Rejected screenshot target ${echoedValue(host)}: DNS returned no addresses. ${optIn}`, host, addresses: [] }
   }
   const blocked = blockedAddressAmong(addresses)
   if (blocked !== null) {
     return {
-      reason: `Rejected screenshot target "${host}" (resolves to ${blocked}, a loopback/link-local/private IP). ${optIn}`,
+      reason: `Rejected screenshot target ${echoedValue(host)} (resolves to ${blocked}, a loopback/link-local/private IP). ${optIn}`,
       host,
       addresses,
     }

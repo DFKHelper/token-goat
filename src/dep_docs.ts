@@ -272,7 +272,7 @@ export function runDepDocs(opts: DepDocsOptions): DepDocsResult {
   try {
     pkgJson = JSON.parse(pkgJsonRaw) as Record<string, unknown>
   } catch (e) {
-    return { text: `Malformed package.json for '${displaySafeText(opts.packageName)}': ${displaySafeText(e instanceof Error ? e.message : String(e))}`, code: 1 }
+    return { text: `Malformed package.json for ${echoedValue(opts.packageName)}: ${displaySafeText(e instanceof Error ? e.message : String(e))}`, code: 1 }
   }
 
   const name = typeof pkgJson['name'] === 'string' ? (pkgJson['name'] as string) : opts.packageName

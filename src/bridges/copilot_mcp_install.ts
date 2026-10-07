@@ -6,6 +6,7 @@ import { recordCreatedConfig, removeCreatedBackups, takeCreatedConfig } from './
 import { bundledCliPath, dropEmptyServers, hasManagedServer, noteRootKeyCreation, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 import { copilotCliUserRoot } from '../copilot_home.js'
 import { backupFile, ensureDirSync, removeFileInScope, writeConfigText } from '../util.js'
+import { echoedValue } from '../hint_suggestion_guard.js'
 
 const MCP_SERVERS_KEY = 'mcpServers'
 const TOKEN_GOAT_ENTRY_KEY = 'token-goat'
@@ -52,7 +53,7 @@ export function installCopilotMcpServer(): boolean {
   const config = readServersJson(mcpPath, LABEL)
   const current = serversOf(config, mcpPath, LABEL, MCP_SERVERS_KEY)[TOKEN_GOAT_ENTRY_KEY]
   if (current !== undefined && !isCopilotManagedServer(current) && !isReadmeServer(current)) {
-    throw new Error(`Copilot CLI mcp-config.json already has a "${TOKEN_GOAT_ENTRY_KEY}" MCP server entry token-goat did not write, at ${mcpPath}; remove it manually first`)
+    throw new Error(`Copilot CLI mcp-config.json already has a ${echoedValue(TOKEN_GOAT_ENTRY_KEY)} MCP server entry token-goat did not write, at ${mcpPath}; remove it manually first`)
   }
   const nextText = setTokenGoatServer(config.text, copilotManagedServer(), MCP_SERVERS_KEY)
   if (nextText === config.text) return false

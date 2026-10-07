@@ -441,7 +441,7 @@ export async function describeTarget(
   const avail = SESSION_STORE_TABLES.map((t) => t.name).join(', ')
   return {
     exitCode: 1,
-    text: `Unknown table or SQLite file '${target}'. Available session store tables: ${avail}\nRun \`token-goat session-schema\` to see all tables.`,
+    text: `Unknown table or SQLite file ${echoedValue(target)}. Available session store tables: ${avail}\nRun \`token-goat session-schema\` to see all tables.`,
   }
 }
 
@@ -504,12 +504,12 @@ export function diagnoseSqlFailure(event: HookEvent, errorText: string): string 
 
   if (matchedTable) {
     const validCols = matchedTable.columns.map((c) => c.name).join(', ')
-    let advice = `[token-goat] Table '${matchedTable.name}' has columns: ${validCols}.`
+    let advice = `[token-goat] Table ${echoedValue(matchedTable.name)} has columns: ${validCols}.`
 
     if (badCol && matchedTable.commonMisnomers && matchedTable.commonMisnomers[badCol]) {
-      advice += ` (For '${badCol}', use ${matchedTable.commonMisnomers[badCol]}).`
+      advice += ` (For ${echoedValue(badCol)}, use ${matchedTable.commonMisnomers[badCol]}).`
     } else if (badCol) {
-      advice += ` (Column '${badCol}' does not exist on '${matchedTable.name}').`
+      advice += ` (Column ${echoedValue(badCol)} does not exist on ${echoedValue(matchedTable.name)}).`
     }
 
     advice += ` Run ${fencedCommand('token-goat session-schema ' + quotedArg(matchedTable.name))} to inspect full table structure.`
@@ -526,7 +526,7 @@ export function diagnoseSqlFailure(event: HookEvent, errorText: string): string 
       return null
     }
     const knownTables = SESSION_STORE_TABLES.map((t) => t.name).join(', ')
-    return `[token-goat] ${badTable ? `Table '${badTable}' does not exist.` : 'Table not found.'} Available session store tables: ${knownTables}. Run \`token-goat session-schema\` for schema details.`
+    return `[token-goat] ${badTable ? `Table ${echoedValue(badTable)} does not exist.` : 'Table not found.'} Available session store tables: ${knownTables}. Run \`token-goat session-schema\` for schema details.`
   }
 
   return null
@@ -540,7 +540,7 @@ export function runSessionSchema(opts: { table?: string | undefined; json?: bool
   const found = getSessionStoreTable(opts.table)
   if (!found) {
     const avail = SESSION_STORE_TABLES.map((t) => t.name).join(', ')
-    process.stderr.write(formatCommandError(new CliError([`Unknown session store table '${opts.table}'. Available tables: ${avail}`, "Run `token-goat session-schema` to see all tables."])) + '\n')
+    process.stderr.write(formatCommandError(new CliError([`Unknown session store table ${echoedValue(opts.table)}. Available tables: ${avail}`, "Run `token-goat session-schema` to see all tables."])) + '\n')
     return 1
   }
   process.stdout.write(formatSessionStoreTable(found, { json: opts.json }) + '\n')

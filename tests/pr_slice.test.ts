@@ -53,7 +53,7 @@ describe('runPrSlice', () => {
       code = runPrSlice({ pr: '42', slice: 'bogus' })
     })
     expect(code).toBe(1)
-    expect(stderr).toMatch(/Invalid slice 'bogus'/)
+    expect(stderr).toMatch(/Invalid slice "bogus"/)
     expect(spawnSyncMock).not.toHaveBeenCalled()
     expect(runGitMock).not.toHaveBeenCalled()
   })
@@ -233,7 +233,7 @@ describe('runPrSlice', () => {
       code = runPrSlice({ pr: '7', slice: 'diff:missing.ts', repo: 'acme/widgets' })
     })
     expect(code).toBe(1)
-    expect(stderr).toMatch(/No diff found for 'missing.ts'/)
+    expect(stderr).toMatch(/No diff found for "missing.ts"/)
   })
 
   it('comments slice: happy path', async () => {

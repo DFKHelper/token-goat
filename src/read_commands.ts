@@ -152,7 +152,7 @@ function openPinned(p: string, pinned: string): number {
     const actual = fileIdentity(fs.fstatSync(fd, { bigint: true }))
     if (actual !== pinned) {
       throw new ConfinementIdentityError(
-        `refused: "${p}" changed identity between validation and read (validated ${pinned}, opened ${actual}). ` +
+        `refused: ${echoedValue(p)} changed identity between validation and read (validated ${pinned}, opened ${actual}). ` +
           'The file was replaced or redirected after the confinement check, so the read was not performed.',
       )
     }
@@ -182,7 +182,7 @@ function verifyPinnedIdentity(p: string, pinned: string): void {
 function verifyStillAbsent(p: string): void {
   if (pathExists(p)) {
     throw new ConfinementIdentityError(
-      `refused: "${p}" was created after being validated as absent (validated missing, now present). ` +
+      `refused: ${echoedValue(p)} was created after being validated as absent (validated missing, now present). ` +
         'Something was created at this path between the confinement check and the read, so the read was not performed.',
     )
   }
@@ -221,7 +221,7 @@ export function indexFileSyncPinned(resolvedPath: string, dbPath: string): void 
     // Once a pin exists, never retry through the unpinned indexFileSync -- that would reopen `resolvedPath` itself with a fresh, unverified fs.readFileSync, exactly the bypass the pin exists to prevent. ENOENT is the one expected failure (the file was genuinely deleted since validation): return cleanly, mirroring indexFileSync's own ENOENT handling. Any other open failure (permission denied, replaced by a directory/device, etc.) is treated as a confinement refusal instead of silently falling back to an unverified raw read.
     if (err instanceof Error && (err as NodeJS.ErrnoException).code === 'ENOENT') return
     throw new ConfinementIdentityError(
-      `refused: "${resolvedPath}" could not be opened for pinned re-index (${err instanceof Error ? err.message : String(err)}). ` +
+      `refused: ${echoedValue(resolvedPath)} could not be opened for pinned re-index (${err instanceof Error ? err.message : String(err)}). ` +
         'The file may have changed since validation, so the read was not performed.',
     )
   }
@@ -700,15 +700,15 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     } else if (fs.existsSync(resolved)) {
       if (/\.(yaml|yml)$/i.test(file)) {
         messages.push(
-          `'${file}' is a YAML file -- YAML keys below top level are not symbols; inspect structure or query values with:\n  token-goat yaml-outline ${quotedArg(file)}\n  token-goat yaml-query ${quotedArg(file)} "<path>"`,
+          `${echoedValue(file)} is a YAML file -- YAML keys below top level are not symbols; inspect structure or query values with:\n  token-goat yaml-outline ${quotedArg(file)}\n  token-goat yaml-query ${quotedArg(file)} "<path>"`,
         )
       } else if (/\.xml$/i.test(file)) {
         messages.push(
-          `'${file}' is an XML file -- inspect structure or query nodes with:\n  token-goat xml-outline ${quotedArg(file)}\n  token-goat xml-query ${quotedArg(file)} "<path>"`,
+          `${echoedValue(file)} is an XML file -- inspect structure or query nodes with:\n  token-goat xml-outline ${quotedArg(file)}\n  token-goat xml-query ${quotedArg(file)} "<path>"`,
         )
       } else if (/\.json$/i.test(file)) {
         messages.push(
-          `'${file}' is a JSON file -- inspect structure or query values with:\n  token-goat json-outline ${quotedArg(file)}\n  token-goat json-query ${quotedArg(file)} "<path>"`,
+          `${echoedValue(file)} is a JSON file -- inspect structure or query values with:\n  token-goat json-outline ${quotedArg(file)}\n  token-goat json-query ${quotedArg(file)} "<path>"`,
         )
       } else {
         const gap = symbolExtractorGap(file, resolved)
@@ -819,7 +819,7 @@ export interface PrSliceCliOptions {
 export function runPrSlice(opts: PrSliceCliOptions): number {
   const parsed = parsePrSliceArg(opts.slice)
   if (parsed === null) {
-    emitErr(formatCommandError(`Invalid slice '${opts.slice}' -- expected one of: files, diff:<path>, comments, description`))
+    emitErr(formatCommandError(`Invalid slice ${echoedValue(opts.slice)} -- expected one of: files, diff:<path>, comments, description`))
     return 1
   }
 
@@ -848,11 +848,11 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
 
   // Checked after resolution rather than at argument parsing, so it covers both routes into `repo`: the `--repo` flag and the slug derived from the git remote. The remote route is the one that matters, because a repository controls its own `origin` URL and the slug lands in a `gh api` path sent with the user's token.
   if (!isSafeRepoSlug(repo)) {
-    emitErr(formatCommandError(`"${repo}" is not a plain owner/name repository slug -- pass --repo owner/repo`))
+    emitErr(formatCommandError(`${echoedValue(repo)} is not a plain owner/name repository slug -- pass --repo owner/repo`))
     return 1
   }
   if (!isSafePrNumber(opts.pr)) {
-    emitErr(formatCommandError(`"${opts.pr}" is not a pull request number`))
+    emitErr(formatCommandError(`${echoedValue(opts.pr)} is not a pull request number`))
     return 1
   }
 
@@ -884,7 +884,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
         const diffText = fetchPrDiff(opts.pr, repo)
         const rawFileDiff = extractFileDiff(diffText, parsed.path)
         if (rawFileDiff === null) {
-          emitErr(formatCommandError(`No diff found for '${parsed.path}' in PR #${opts.pr}`))
+          emitErr(formatCommandError(`No diff found for ${echoedValue(parsed.path)} in PR #${opts.pr}`))
           return 1
         }
         // A committed-then-reverted secret is a well known way one leaks: it survives in the diff even though the file on disk was cleaned up. Redact before fencing/formatting, mirroring hooks_websearch.ts's "redact once, reuse everywhere" discipline.
@@ -1264,7 +1264,7 @@ export function runGrep(opts: GrepOptions): number {
           boundaryReal = path.resolve(searchPath)
         } else {
           throw new ConfinementIdentityError(
-            `refused: "${searchPath}" could not be resolved after validation (${String(err)}). ` +
+            `refused: ${echoedValue(searchPath)} could not be resolved after validation (${String(err)}). ` +
               'The path may have been replaced or redirected after the confinement check, so the search was not performed.',
           )
         }
@@ -1279,7 +1279,7 @@ export function runGrep(opts: GrepOptions): number {
   }
 
   if (hits.length === 0) {
-    emitErr(formatCommandError(`No matches for '${opts.pattern}'`))
+    emitErr(formatCommandError(`No matches for ${echoedValue(opts.pattern)}`))
     return 1
   }
 

@@ -20,6 +20,7 @@ import { envBool } from './env.js'
 import { displaySafeText, displaySafeJson } from './paths.js'
 import { emitErr } from './emit.js'
 import { CliError } from './command_error.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 /** Cap a listing to `limit` rows and say so on stderr when rows were dropped. These listings serialize a bare JSON array under `--json`, so there is nowhere in-band to put a `truncated` flag without breaking every pipeline that consumes the array. stderr is the only channel left. A pipeline that discards stderr still cannot see the notice -- that residual risk is real, and named rather than hidden. What is not acceptable is disclosure on neither channel, which is what all three listings did: `--limit 10` against 200 cached entries printed ten rows that were byte-identical to a complete answer. Shared rather than written out three times because the three callers are the same listing with a different row shape, and a notice that exists in two of them is the failure this fixes. */
 function capAndNote<T>(rows: readonly T[], limit: number): T[] {
@@ -37,10 +38,10 @@ function parseLimitOpt(cmdName: string, limitStr: string | undefined, dflt = 30)
   try {
     n = requireNonNegativeStrictInt('--limit', limitStr)
   } catch {
-    throw new CliError(`${cmdName}: --limit must be a positive number, got: "${limitStr}"`)
+    throw new CliError(`${cmdName}: --limit must be a positive number, got: ${echoedValue(limitStr)}`)
   }
   if (n === 0) {
-    throw new CliError(`${cmdName}: --limit must be a positive number, got: "${limitStr}"`)
+    throw new CliError(`${cmdName}: --limit must be a positive number, got: ${echoedValue(limitStr)}`)
   }
   return n
 }
@@ -221,14 +222,14 @@ export function cmdPruneCache(opts: { maxCount?: string; maxAgeHours?: string; j
     try {
       maxCount = requireNonNegativeStrictInt('--maxCount', opts.maxCount)
     } catch {
-      throw new Error(`--maxCount must be a valid integer, got '${opts.maxCount}'`)
+      throw new Error(`--maxCount must be a valid integer, got ${echoedValue(opts.maxCount)}`)
     }
   }
 
   if (opts.maxAgeHours !== undefined) {
     const parsed = parseFloat(opts.maxAgeHours)
     if (Number.isNaN(parsed)) {
-      throw new Error(`--maxAgeHours must be a valid number, got '${opts.maxAgeHours}'`)
+      throw new Error(`--maxAgeHours must be a valid number, got ${echoedValue(opts.maxAgeHours)}`)
     }
     maxAgeMs = Math.max(0, parsed) * 3600 * 1000
   }
@@ -318,7 +319,7 @@ export function cmdCacheAudit(opts: { json?: boolean }): void {
 export async function cmdResume(opts: { sessionId: string; json?: boolean }): Promise<void> {
   const packet = await buildResumePacket(opts.sessionId)
   if (packet === null) {
-    throw new Error(`no session blob found for '${opts.sessionId}' — list sessions with: token-goat session-summary --json`)
+    throw new Error(`no session blob found for ${echoedValue(opts.sessionId)} — list sessions with: token-goat session-summary --json`)
   }
   if (opts.json === true) {
     process.stdout.write(displaySafeJson({ sessionId: opts.sessionId, packet }) + '\n')

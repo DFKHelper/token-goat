@@ -7,6 +7,7 @@ import { parse } from 'csv-parse/sync'
 
 import { headElidedNotice } from './query_notices.js'
 import { filtersFilteredToEmptyNotice } from './filter_notice.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 export type CsvWhereOp = '=' | '!=' | '>' | '<' | '>=' | '<=' | '~='
 
@@ -122,7 +123,7 @@ export function parseWhereSpecs(specs: string[] | undefined): CsvWhere[] | undef
     const value = m[3] as string
     // A numeric comparison with an empty right-hand side (e.g. a spec typo like "price>" with nothing after the operator) would otherwise reach matchesWhere as { op: '>', value: '' }, where Number('') === 0 silently turns it into "price > 0" instead of surfacing the typo -- the same blank-value trap matchesWhere already guards against for a blank cell.
     if ((op === '>' || op === '<' || op === '>=' || op === '<=') && value.trim() === '') {
-      throw new Error(`invalid --where spec: ${spec} (missing comparison value after '${op}')`)
+      throw new Error(`invalid --where spec: ${spec} (missing comparison value after ${echoedValue(op)})`)
     }
     // Up front, so a pattern that cannot compile or that would stall says so once with a reason, rather than silently matching no row once per row. matchesWhere re-checks because it is the only place the value is actually used, and a CsvWhere can be built without going through here.
     if (op === '~=') {

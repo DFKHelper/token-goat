@@ -54,7 +54,7 @@ describe('symbol miss on a project spanning several scan pages', () => {
       restore()
     }
     expect(r.code).toBe(1)
-    expect(r.text).toBe(`No matches for 'quokkaLandmarc'\nDid you mean:\n  - quokkaLandmark`)
+    expect(r.text).toBe(`No matches for "quokkaLandmarc"\nDid you mean:\n  - quokkaLandmark`)
     // The lookup itself, the emptiness check, the exact-name check, the names query, the one query for the files behind the top-ranked names and the structured-file query. The old walk alone was three page queries on top of the first two.
     expect(work.statements).toBeLessThanOrEqual(6)
     // No statement on the miss path fetches a body here: the exact-name check finds nothing, and the old walk fetched all 25,001.
@@ -72,7 +72,7 @@ describe('symbol miss on a project spanning several scan pages', () => {
       restore()
     }
     expect(r.code).toBe(1)
-    expect(r.text).toBe(`No matches for 'quokkaLandmark'\n'quokkaLandmark' IS indexed (function at zzz_target.ts:1) -- drop --kind to see it`)
+    expect(r.text).toBe(`No matches for "quokkaLandmark"\n"quokkaLandmark" IS indexed (function at zzz_target.ts:1) -- drop --kind to see it`)
     // One body for the one hidden row it names, where the old walk read all 25,001.
     expect(work.bodyRows).toBe(1)
     // Nothing on this branch needs the vocabulary: the exact hit settles it.
@@ -92,7 +92,7 @@ describe('symbol miss on a project spanning several scan pages', () => {
   it('offers no suggestion and points at semantic when nothing is near', () => {
     const r = runSymbol({ name: 'zzzzzzzzzz', projectRoot: root })
     expect(r.code).toBe(1)
-    expect(r.text).toBe(`No matches for 'zzzzzzzzzz'\nTry: token-goat semantic "zzzzzzzzzz"`)
+    expect(r.text).toBe(`No matches for "zzzzzzzzzz"\nTry: token-goat semantic "zzzzzzzzzz"`)
   })
 
   it('answers an exact hit unchanged', () => {

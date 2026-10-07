@@ -30,6 +30,7 @@ import { runStatuslineCommand } from './cli_statusline.js'
 import { runHintStatsCommand } from './cli_hint_stats.js'
 import { HINT_CATEGORIES, isHintCategory } from './hint_stats.js'
 import { findLatestSessionId } from './compact.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 export function cmdContextStats(opts: { project?: string; json?: boolean; fix?: boolean; yes?: boolean } = {}): Promise<void> {
   return runContextStats(opts)
@@ -103,7 +104,7 @@ export async function cmdListingSize(sessionIdOrPath: string | undefined, opts: 
   if (transcriptPath === null) {
     throw new CliError(
       sessionIdOrPath !== undefined
-        ? `no session transcript found for '${sessionIdOrPath}'`
+        ? `no session transcript found for ${echoedValue(sessionIdOrPath)}`
         : 'no session transcript found for the current project; pass a session id or path explicitly',
     )
   }
@@ -117,7 +118,7 @@ export async function cmdSessionOutline(sessionIdOrPath: string | undefined, opt
   if (transcriptPath === null) {
     throw new CliError(
       sessionIdOrPath !== undefined
-        ? `no session transcript found for '${sessionIdOrPath}'`
+        ? `no session transcript found for ${echoedValue(sessionIdOrPath)}`
         : 'no session transcript found for the current project; pass a session id or path explicitly',
     )
   }
@@ -146,7 +147,7 @@ export async function cmdSessionSlice(
   if (transcriptPath === null) {
     throw new CliError(
       sessionIdOrPath !== undefined
-        ? `no session transcript found for '${sessionIdOrPath}'`
+        ? `no session transcript found for ${echoedValue(sessionIdOrPath)}`
         : 'no session transcript found for the current project; pass a session id or path explicitly',
     )
   }

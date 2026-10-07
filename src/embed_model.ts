@@ -10,7 +10,7 @@ import { BertWordPiece } from './embed_tokenizer.js'
 import { NATIVE_RUNTIME_INSTALL, ORT_WEB_WASM, RUNTIME_UNAVAILABLE_ADVICE, activeRuntime, createInferenceSession, isRuntimeAvailable, runtimeLoadError, runtimeVersion, wasmBinaryPresent, wasmDir, type OrtSession, type RuntimeName } from './embed_runtime.js'
 import { copyFromSharedCache, downloadPinned, publishToSharedCache, sha256Of, type PinnedFile } from './pinned_file.js'
 import { registerReset } from './reset.js'
-import { fencedCommand, quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 
 /** BAAI/bge-small-en-v1.5, the smallest BGE checkpoint tuned for retrieval. The 384-dimension output is native to it: changing either of these means every stored vector has to be rebuilt, which is what the embedding_provenance stamp in db.ts detects. */
 export const DEFAULT_MODEL = 'Xenova/bge-small-en-v1.5'
@@ -83,7 +83,7 @@ export function ensureModelFiles(modelName: string = DEFAULT_MODEL): Promise<str
     return Promise.reject(
       new Error(
         `Only ${DEFAULT_MODEL} is supported: its files are pinned to a revision and to a sha256 each, ` +
-          `and "${modelName}" has neither, so there would be nothing to check the download against.`,
+          `and ${echoedValue(modelName)} has neither, so there would be nothing to check the download against.`,
       ),
     )
   }

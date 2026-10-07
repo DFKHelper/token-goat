@@ -1,4 +1,4 @@
-/** An error or notice that echoes back the value asked for (a symbol, file, heading, key) wrote it between single quotes by hand and as written: `Symbol 'it's' not found` for a name holding an apostrophe, and a typed or indexed name's control characters, forged `[tg]` marker or zero-width joiner reached the reader intact. echoedValue (src/hint_suggestion_guard.ts) escapes the value with displaySafeText and quotes it the way quotedArg quotes the retry commands beside it, and writes it bare when no quote mark can hold it, since saying which value failed is not a suggestion. The symbol header and the exports listing print an indexed name with no quotes, so they take displaySafeText alone. */
+/** An error or notice that echoes back the value asked for (a symbol, file, heading, key) wrote it between single quotes by hand and as written: `Symbol 'it's' not found` for a name holding an apostrophe, and a typed or indexed name's control characters, forged `[tg]` marker or zero-width joiner reached the reader intact. echoedValue (src/hint_suggestion_guard.ts) escapes the value with displaySafeText and quotes it the way quotedArg quotes the retry commands beside it, and writes it bare when no quote mark can hold it, since saying which value failed is not a suggestion. The symbol header, the exports listing, outline and skeleton print an indexed name with no quotes, so they take displaySafeText alone. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -9,8 +9,11 @@ import { globalDbPath } from '../src/constants.js'
 import { closeAllDbs } from '../src/db.js'
 import { echoedValue } from '../src/hint_suggestion_guard.js'
 import { indexFileSync } from '../src/parser.js'
+import { extractExportNames } from '../src/import_export_extract.js'
+import { parseJsonPath } from '../src/json_query.js'
 import { runRead } from '../src/read_commands.js'
-import { runExports } from '../src/read_inspect.js'
+import { runConfigGet, runExports } from '../src/read_inspect.js'
+import { runOutline, runSkeleton } from '../src/read_outline.js'
 import { runSection } from '../src/read_section.js'
 import { runSymbol } from '../src/read_symbol.js'
 
@@ -44,6 +47,18 @@ function stdoutOf(fn: () => unknown): string {
     fn()
   } finally {
     process.stdout.write = write
+  }
+  return out
+}
+
+function stderrOf(fn: () => unknown): string {
+  let out = ''
+  const write = process.stderr.write.bind(process.stderr)
+  process.stderr.write = ((c: string | Uint8Array) => ((out += String(c)), true)) as typeof process.stderr.write
+  try {
+    fn()
+  } finally {
+    process.stderr.write = write
   }
   return out
 }
@@ -99,5 +114,44 @@ describe('an indexed name printed without quotes is display-safe', () => {
     const out = stdoutOf(() => runExports({ file: 'zwj.ts', projectRoot: dir }))
     expect(out).not.toContain('‍')
     expect(out).toContain('tip\\u200doff')
+  })
+
+  it('outline escapes a zero-width joiner in the name', () => {
+    const r = runOutline({ file: 'zwj.ts', projectRoot: dir })
+    expect(r.code, r.text).toBe(0)
+    expect(r.text).not.toContain('‍')
+    expect(r.text).toContain('  tip\\u200doff  (3ℓ)')
+  })
+
+  it('skeleton escapes a zero-width joiner in the name column; the body line after it is the file as written', () => {
+    const r = runSkeleton({ file: 'zwj.ts', projectRoot: dir })
+    expect(r.code, r.text).toBe(0)
+    const row = r.text.split('\n').find((l) => l.includes('function ')) ?? ''
+    expect(row).toContain('  tip\\u200doff  export function ' + ZWJ_NAME + '(')
+  })
+})
+
+describe('the exports text scan reads a JavaScript name whole', () => {
+  // HAND-DERIVED: ECMAScript IdentifierPart admits ZWNJ (U+200C) and ZWJ (U+200D) after the first character, and IdentifierStart admits any ID_Start letter, so each of these names is one identifier.
+  it('keeps a zero-width joiner or non-joiner and a non-ASCII letter inside the name', () => {
+    expect(extractExportNames('export const tip‍off = 1\n', '.ts')).toEqual(['tip‍off'])
+    expect(extractExportNames('export function a‌b() {}\n', '.js')).toEqual(['a‌b'])
+    expect(extractExportNames('const été = 1\nexport default été;\n', '.mjs')).toEqual(['été'])
+    expect(extractExportNames('export class $_x {}\n', '.ts')).toEqual(['$_x'])
+  })
+})
+
+describe('config-get names the file it searched the way it names the key', () => {
+  it('quotes a file name holding an apostrophe in double quotes beside the key', () => {
+    fs.writeFileSync(path.join(dir, "it's.json"), '{"a": 1}\n')
+    const err = stderrOf(() => runConfigGet({ file: "it's.json", key: 'missing' }))
+    expect(err).toContain('Key "missing" not found in "it\'s.json"')
+  })
+})
+
+describe('a converted hand-quoted site escapes and quotes what it echoes', () => {
+  // HAND-DERIVED: the bracket text is echoed whole through echoedValue, so a control character in it is escaped where the hand-quoted form passed it on.
+  it('json-query names an invalid bracket expression escaped, in double quotes', () => {
+    expect(() => parseJsonPath('a[\u0007]')).toThrow('invalid bracket expression "[\\x07]"')
   })
 })

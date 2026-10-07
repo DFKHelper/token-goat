@@ -13,6 +13,7 @@ import { extractErrorMessage, quoteShellPath, stripOwnHooksFromMap, stripStaleGr
 import { parseJsonOrJsonc } from '../jsonc_text.js'
 import { writeSettingsKeepingComments } from './commented_settings.js'
 import { groupHasTokenGoat } from './matcher_group.js'
+import { echoedValue } from '../hint_suggestion_guard.js'
 
 /** Marker substring identifying a legacy (pre exec-path-hardening) bare `token-goat hook <event>` command -- still recognized so an older install remains detectable/removable, but no longer written by {@link geminiHookCommand}. */
 const GEMINI_LEGACY_COMMAND_MARKER = 'token-goat hook'
@@ -72,8 +73,8 @@ function readGeminiSettings(p: string, opts: { strict?: boolean; command?: 'inst
   const refuse = (problem: string, detail?: string): GeminiSettingsParseError =>
     new GeminiSettingsParseError(
       (opts.command === 'uninstall'
-        ? `Gemini settings file '${p}' is unreadable: it ${problem}. Uninstall left it and its backups untouched; fix the file and run uninstall again.`
-        : `Gemini settings file '${p}' ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
+        ? `Gemini settings file ${echoedValue(p)} is unreadable: it ${problem}. Uninstall left it and its backups untouched; fix the file and run uninstall again.`
+        : `Gemini settings file ${echoedValue(p)} ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
     )
   let raw: string
   try {

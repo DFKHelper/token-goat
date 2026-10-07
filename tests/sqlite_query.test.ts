@@ -252,17 +252,17 @@ describe('sqlite_query', () => {
     // The keyword-denylist scan is a second, independent layer: it also catches a forbidden statement smuggled in AFTER a leading WITH clause, which passes the prefix check.
     it('rejects INSERT smuggled in after a leading WITH (CTE) clause', () => {
       expect(() => validateReadOnlySelect("WITH cte AS (SELECT 1) INSERT INTO users (name) SELECT 'Eve' FROM cte")).toThrow(
-        /forbidden keyword 'INSERT'/,
+        /forbidden keyword "INSERT"/,
       )
     })
 
     it('rejects DROP smuggled in after a leading WITH clause', () => {
-      expect(() => validateReadOnlySelect('WITH cte AS (SELECT 1) DROP TABLE users')).toThrow(/forbidden keyword 'DROP'/)
+      expect(() => validateReadOnlySelect('WITH cte AS (SELECT 1) DROP TABLE users')).toThrow(/forbidden keyword "DROP"/)
     })
 
     it('rejects REPLACE INTO smuggled in after a leading WITH clause, without false-positiving on the replace() function', () => {
       expect(() => validateReadOnlySelect("WITH cte AS (SELECT 1) REPLACE INTO users (id, name) VALUES (1, 'Eve')")).toThrow(
-        /forbidden keyword 'REPLACE'/,
+        /forbidden keyword "REPLACE"/,
       )
     })
 
@@ -335,7 +335,7 @@ describe('sqlite_query', () => {
     it('rejects an INSERT smuggled in after a leading WITH clause against the real query engine', () => {
       expect(() =>
         runReadOnlySqliteQuery(dbPath, "WITH cte AS (SELECT 1) INSERT INTO users (name) SELECT 'Eve' FROM cte"),
-      ).toThrow(/forbidden keyword 'INSERT'/)
+      ).toThrow(/forbidden keyword "INSERT"/)
       const result = runReadOnlySqliteQuery(dbPath, 'SELECT COUNT(*) AS c FROM users')
       expect(result.rows[0]?.c).toBe(3)
     })

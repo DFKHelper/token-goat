@@ -2,6 +2,7 @@
 import { detectLanguage } from './parser_types.js'
 import type { Language } from './parser_types.js'
 import { languageLabel, partialRefsReason } from './language_specs.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 // Mirror of `REF_LANGUAGES` in src/parser.ts (the set gating `extractRefs`). Deliberately duplicated rather than imported: src/parser.ts is hashed into PARSER_FINGERPRINT (scripts/parser-fingerprint.mjs digests src/parser.ts plus src/languages/**), so adding an `export` keyword there would change the stamp and force every existing user to fully reindex on upgrade, for a change that alters nothing about extraction. tests/ref_blindness.test.ts parses the literal out of src/parser.ts and asserts set equality, so the two cannot drift apart silently.
 export const REF_INDEXED_LANGUAGES: ReadonlySet<Language> = new Set<Language>([
@@ -35,10 +36,10 @@ export function refBlindLanguageNotice(symbolName: string, language: Language, d
   // COBOL and Natural record some references, so "not indexed" would be false there; say which references exist and why none found still proves nothing.
   const partial = partialRefsReason(language)
   if (partial !== undefined) {
-    return `No recorded references to '${symbolName}' (${displayPath}). ${partial}, so an empty result is not evidence the name is unused. ` +
+    return `No recorded references to ${echoedValue(symbolName)} (${displayPath}). ${partial}, so an empty result is not evidence the name is unused. ` +
       `Search the source directly as well, e.g. \`rg -n -w ${symbolName}\`.`
   }
-  return `Cannot determine references for '${symbolName}': ${languageLabel(language)} call sites are not indexed (${displayPath}). ` +
+  return `Cannot determine references for ${echoedValue(symbolName)}: ${languageLabel(language)} call sites are not indexed (${displayPath}). ` +
     'This is a gap in token-goat\'s index, not evidence the symbol is unreferenced. ' +
     `Search the source directly instead, e.g. \`rg -n -w ${symbolName}\`.`
 }
@@ -58,19 +59,19 @@ function kindWithArticle(kind: string): string {
 // How the blind kinds of one name's definitions are spelled inside a sentence: a single kind reads as "'Foo' is an interface", several as a list, since a name defined once as an interface and once as a type alias is one symbol with two type-position declarations and neither is more the answer than the other.
 function refBlindKindClause(symbolName: string, kinds: ReadonlyArray<string>): string {
   const first = kinds[0]
-  if (kinds.length === 1 && first !== undefined) return `'${symbolName}' is ${kindWithArticle(first)}`
-  return `every definition of '${symbolName}' is a type declaration (${kinds.map((k) => `'${k}'`).join(', ')})`
+  if (kinds.length === 1 && first !== undefined) return `${echoedValue(symbolName)} is ${kindWithArticle(first)}`
+  return `every definition of ${echoedValue(symbolName)} is a type declaration (${kinds.map((k) => `${echoedValue(k)}`).join(', ')})`
 }
 
 /** The message a single-symbol reference lookup emits instead of a bare empty result, when every definition of the name is of a kind whose usages the index never records: the sibling of {@link refBlindLanguageNotice} for the second blind spot. Names the kind, quotes {@link REF_BLIND_KIND_REASON} for the mechanism so there is one wording rather than two, and points at a search that does answer the question. */
 export function refBlindKindNotice(symbolName: string, kinds: ReadonlyArray<string>): string {
-  return `Cannot determine references for '${symbolName}': ${refBlindKindClause(symbolName, kinds)}, and ${REF_BLIND_KIND_REASON}. ` +
+  return `Cannot determine references for ${echoedValue(symbolName)}: ${refBlindKindClause(symbolName, kinds)}, and ${REF_BLIND_KIND_REASON}. ` +
     'This is a gap in token-goat\'s index, not evidence the symbol is unreferenced. ' +
     `Search the source directly instead, e.g. \`rg -n -w ${symbolName}\`.`
 }
 
 /** The note emitted alongside an ordinary empty result when only SOME definitions of the name are of a ref-blind kind. The remaining ones were genuinely searched, so the result stands for them and is not refused, but dropping the blind ones without a word is the same defect wearing the opposite sign: it presents a partial answer as a whole one. */
 export function refBlindKindPartialNote(symbolName: string, kinds: ReadonlyArray<string>, blindCount: number, totalCount: number): string {
-  return `Note: ${blindCount} of ${totalCount} definitions of '${symbolName}' (${kinds.map((k) => `'${k}'`).join(', ')}) are not covered by this result -- ${REF_BLIND_KIND_REASON}. ` +
+  return `Note: ${blindCount} of ${totalCount} definitions of ${echoedValue(symbolName)} (${kinds.map((k) => `${echoedValue(k)}`).join(', ')}) are not covered by this result -- ${REF_BLIND_KIND_REASON}. ` +
     `The empty result above speaks only for the other ${totalCount - blindCount}; for the rest, search the source directly, e.g. \`rg -n -w ${symbolName}\`.`
 }

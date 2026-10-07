@@ -16,6 +16,7 @@ import * as path from 'node:path'
 import { displaySafeText, displaySafeJson } from './paths.js'
 import { CompressedOutput, TOOL_FILTERS, ToolFilter, combineStreams, deliverCompressed, detectFromCommand } from './tool_filters/index.js'
 import { runGit } from './util.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 /** A corpus case: one captured command output plus the lines a developer must still be able to see. */
 export interface BenchCase {
@@ -122,7 +123,7 @@ function parseCase(id: string, metaPath: string, outputPath: string): BenchCase 
   const meta = raw as Record<string, unknown>
   const str = (key: string): string => {
     const v = meta[key]
-    if (typeof v !== 'string' || v.trim() === '') throw new Error(`bench case ${id}: "${key}" must be a non-empty string`)
+    if (typeof v !== 'string' || v.trim() === '') throw new Error(`bench case ${id}: ${echoedValue(key)} must be a non-empty string`)
     return v
   }
   const mustKeep = meta['mustKeep']

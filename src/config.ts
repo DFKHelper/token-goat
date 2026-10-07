@@ -61,6 +61,7 @@ import {
   PROJECT_LOCKED_SECTIONS,
   PROJECT_LOCKED_KEYS,
 } from './config_project.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 // --------------------------------------------------------------------------- Helpers ---------------------------------------------------------------------------
 
@@ -218,7 +219,7 @@ const NUMERIC_FIELD_BOUNDS: Record<string, {min: number, max: number, clampTo?: 
 /** Look up a field's [min, max] from NUMERIC_FIELD_BOUNDS for spreading into validatedInt/ validatedFloat/envInt -- _buildConfig's single source of truth for bounds, instead of restating each field's min/max a second time at its build-time validation call site. */
 function boundsOf(key: string): [number, number] {
   const b = ownGet(NUMERIC_FIELD_BOUNDS, key)
-  if (!b) throw new Error(`token-goat: no NUMERIC_FIELD_BOUNDS entry for '${key}'`)
+  if (!b) throw new Error(`token-goat: no NUMERIC_FIELD_BOUNDS entry for ${echoedValue(key)}`)
   return [b.min, b.max]
 }
 

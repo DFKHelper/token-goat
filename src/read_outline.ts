@@ -1,7 +1,7 @@
 /** Outline and skeleton command handlers. Implements token-goat skeleton and token-goat outline, extracting symbol maps without loading full bodies, with multi-file support and filtering. */
 
 import type { SymbolEntry } from './parser_types.js'
-import { toDisplayPath, displaySafeJson } from './paths.js'
+import { toDisplayPath, displaySafeJson, displaySafeText } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
 import { querySymbols, countSymbols, queryRefCounts } from './index_reader.js'
 import { SKELETON_SYMBOL_CAP, globalDbPath } from './constants.js'
@@ -209,7 +209,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
   for (const sym of filtered) {
     const lineStr = sym.lineStart.toString().padStart(6)
     const statsStr = formatStatsSuffix(refCounts, sym)
-    lines.push(`  ${lineStr}  ${sym.kind.padEnd(10)}  ${sym.name}  ${firstBodyLine(sym.body)}${statsStr}`)
+    lines.push(`  ${lineStr}  ${sym.kind.padEnd(10)}  ${displaySafeText(sym.name)}  ${firstBodyLine(sym.body)}${statsStr}`)
   }
   const text = guardText(staleWarning(resolved, 'skeleton') + lines.join('\n'), 'symbol')
   recordReadStat('stub_view', fullSourceBytes, text, opts.file)
@@ -259,7 +259,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
     const docFirst = hasRealDocstring(sym.docstring) ? `  # ${clipDocSummary(sym.docstring)}` : ''
     const statsStr = formatStatsSuffix(refCounts, sym)
     const notebookSuffix = isVirtualIndexedPath(sym.filePath) ? NOTEBOOK_CELL_LINES_SUFFIX : ''
-    lines.push(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}${statsStr}${notebookSuffix}`)
+    lines.push(`  ${rangeStr}  ${kindStr}  ${displaySafeText(sym.name)}  (${bodyLen}ℓ)${docFirst}${statsStr}${notebookSuffix}`)
   }
   const text = guardText(staleWarning(resolved, 'outline') + lines.join('\n'), 'symbol')
   recordReadStat('outline', fullSourceBytes, text, opts.file)

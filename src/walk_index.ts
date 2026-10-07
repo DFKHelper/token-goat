@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { isDotenvPath } from './dotenv_redact.js'
 import { MAX_FILES_SCANNED, walkProject } from './baseline.js'
 import { foldPath, normalizePath } from './util.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 /** Files excluded from a non-git walk even when their extension is a known language. In git mode `.gitignore` keeps these out; the walk has no such list, so exclude the two classes that actually matter: `.env*` (secrets) and `.d.ts` (generated type-declaration noise). */
 function isWalkExcluded(file: string): boolean {
@@ -41,7 +42,7 @@ export function assertWalkableRoot(root: string): void {
     // `root` is an ancestor of home (home lives inside it) -> still too broad.
     const boundary = norm.endsWith('/') ? norm : `${norm}/`
     if (normHome.startsWith(boundary)) {
-      throw new Error(`refusing to walk-index '${resolved}' — it contains the home directory`)
+      throw new Error(`refusing to walk-index ${echoedValue(resolved)} — it contains the home directory`)
     }
   }
 }
@@ -59,7 +60,7 @@ export function collectWalkIndexFiles(root: string, opts: { force?: boolean } = 
   if (files.length >= ceiling) {
     // walkProject stops *at* the ceiling, so this count is a floor, not the true total -- say so rather than implying an exact measurement the walk never made.
     throw new Error(
-      `'${resolved}' has too many source files (walk stopped at ${ceiling}; the real total is ` +
+      `${echoedValue(resolved)} has too many source files (walk stopped at ${ceiling}; the real total is ` +
         `at least that). ` +
         (force
           ? 'Even --force-walk will not walk a tree this large — point at a narrower path.'

@@ -8,6 +8,7 @@ import { displaySafeText } from './paths.js'
 import { quoteCsvCell, queryCsv, type CsvQueryOptions, type CsvQueryResult } from './csv_query.js'
 import { readXlsxWorkbook, type ExcelCell, type ExcelWorksheet, type ExcelWorkbook } from './xlsx_reader.js'
 import { redactSecrets } from './secret_redact.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 const loadWorkbook: (filePath: string, deadline?: number) => Promise<ExcelWorkbook> = readXlsxWorkbook
 
@@ -44,7 +45,7 @@ function assertCellCount(cells: number, extent: string, hint: string): void {
 function assertScannableExtent(ws: ExcelWorksheet): void {
   assertCellCount(
     (ws.rowCount || 0) * (ws.columnCount || 0),
-    `sheet "${ws.name}" declares a used range of ${ws.rowCount} rows x ${ws.columnCount} cols`,
+    `sheet ${echoedValue(ws.name)} declares a used range of ${ws.rowCount} rows x ${ws.columnCount} cols`,
     'read a bounded range with xlsx-range --range',
   )
 }
@@ -396,7 +397,7 @@ export async function xlsxColumns(
 }
 
 export function formatXlsxColumns(result: XlsxColumnsResult, config: Config = loadConfig()): string {
-  if (result.columns.length === 0) return `Sheet "${displaySafeText(result.sheetName)}" is empty`
+  if (result.columns.length === 0) return `Sheet ${echoedValue(result.sheetName)} is empty`
   // Each sample is redacted before it is clipped: the clip can cut a credential below its pattern's minimum length, and the caller's redaction pass no longer recognises the fragment that is left.
   const clip = (v: string): string => {
     const safe = redactSecrets(v, config).text

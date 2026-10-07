@@ -8,6 +8,7 @@ import { compileGuardedRegex } from './regex_guard.js'
 import { countNoun, foldPath, isTestFile } from './util.js'
 import { emit, emitErr } from './emit.js'
 import { formatCommandError } from './command_error.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 /** Default transitive-import depth. Deep enough for realistic helper chains, bounded so a densely-connected graph cannot walk the entire project and report every test as affected. */
 export const DEFAULT_AFFECTED_DEPTH = 5
@@ -112,7 +113,7 @@ export function computeAffected(opts: AffectedOptions): AffectedResult {
 /** CLI entrypoint. Returns the process exit code. */
 export function runAffected(opts: AffectedOptions): number {
   if (opts.depth !== undefined && opts.depth <= 0) {
-    emitErr(formatCommandError(`--depth must be a positive number, got: "${opts.depth}"`))
+    emitErr(formatCommandError(`--depth must be a positive number, got: ${echoedValue(String(opts.depth))}`))
     return 1
   }
   if (opts.files.length === 0) {

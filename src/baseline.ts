@@ -14,7 +14,7 @@ import { suggestedIndexCommand } from './index_health.js'
 import { projectScopeClause } from './sql_path.js'
 import { foldPath, isCaseInsensitiveFs, isTestFile } from './util.js'
 import { displaySafeText, normalizePath, toDisplayPath, displaySafePath } from './paths.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { quotedArg, fencedCommand } from './hint_suggestion_guard.js'
 import { findClaudeMdFiles } from './cli_context_stats.js'
 import { hasSkipSegmentBelowRoot } from './skip_scope.js'
 
@@ -277,7 +277,7 @@ export function formatProjectMap(map: ProjectMap, compact = false): string {
   } else {
     // Reuses checkSymbolCount's wording (cli_doctor_index.ts) for the same empty-index condition, so a `map` against an unindexed project says so instead of silently omitting the whole section -- otherwise the missing heading reads as "this project has no notable symbols" rather than "this project has never been indexed". The command is built by suggestedIndexCommand rather than hardcoded: a bare `token-goat index .` refuses outright in a non-git folder, which is exactly the case this branch fires in most, so the hardcoded form printed a command that could not run as shown.
     lines.push('')
-    lines.push(`## Top symbols: none — no files indexed for this project; run '${suggestedIndexCommand(map.rootDir)}'`)
+    lines.push(`## Top symbols: none — no files indexed for this project; run ${fencedCommand(suggestedIndexCommand(map.rootDir))}`)
   }
 
   if (!compact && map.recentFiles.length > 0) {

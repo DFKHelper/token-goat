@@ -8,6 +8,7 @@ import { atomicWriteText, extractErrorMessage, quoteShellPath, writeJsonSettings
 
 import { ensureDirRecordingCreation, hasCreatedConfig, recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, takeCreatedConfig } from './created_configs.js'
 import { stripBom } from '../jsonc_text.js'
+import { echoedValue } from '../hint_suggestion_guard.js'
 
 /** The hook name token-goat's entries live under in its plugin's hooks.json; any other name there is left alone. */
 const HOOK_NAME = 'token-goat'
@@ -63,8 +64,8 @@ function readJsonObject(p: string, label: string, opts: { strict?: boolean; comm
   const refuse = (problem: string, detail?: string): AntigravitySettingsParseError =>
     new AntigravitySettingsParseError(
       (opts.command === 'uninstall'
-        ? `Antigravity ${label} '${p}' is unreadable: it ${problem}. Uninstall left it and its backups untouched; fix the file and run uninstall again.`
-        : `Antigravity ${label} '${p}' ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
+        ? `Antigravity ${label} ${echoedValue(p)} is unreadable: it ${problem}. Uninstall left it and its backups untouched; fix the file and run uninstall again.`
+        : `Antigravity ${label} ${echoedValue(p)} ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
     )
   let raw: string
   try {

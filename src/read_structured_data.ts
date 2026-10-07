@@ -430,7 +430,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
           emit(jsonText)
           recordReadStat('xml_query', fullSourceBytes, jsonText, detail)
         } else {
-          emitErr(formatCommandError(`No attributes matched path: '${queryPath}'`))
+          emitErr(formatCommandError(`No attributes matched path: ${echoedValue(queryPath)}`))
         }
         return 1
       }
@@ -532,7 +532,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
         emit(jsonText)
         recordReadStat('xml_query', fullSourceBytes, jsonText, detail)
       } else {
-        emitErr(formatCommandError(`No elements matched path: '${queryPath}'`))
+        emitErr(formatCommandError(`No elements matched path: ${echoedValue(queryPath)}`))
       }
       return 1
     }
@@ -668,7 +668,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
           emit(jsonText)
           recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
         } else {
-          emit(`No attributes matched selector: '${displaySafeText(opts.selector)}'`)
+          emit(`No attributes matched selector: ${echoedValue(opts.selector)}`)
         }
         return 0
       }
@@ -700,7 +700,7 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
         emit(jsonText)
         recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
       } else {
-        emit(`No elements matched selector: '${displaySafeText(opts.selector)}'`)
+        emit(`No elements matched selector: ${echoedValue(opts.selector)}`)
       }
       return 0
     }

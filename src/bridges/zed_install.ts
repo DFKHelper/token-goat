@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { recordCreatedBy, removeCreatedBackups, removeCreatedTree, takeCreatedConfig } from './created_configs.js'
 import { bundledCliPath, dropEmptyServers, hasManagedServer, managedServerEntry, noteRootKeyCreation, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 import { atomicWriteBytes, backupFile, writeConfigText, writeIfDifferent } from '../util.js'
+import { echoedValue } from '../hint_suggestion_guard.js'
 
 const CONTEXT_SERVERS_KEY = 'context_servers'
 const TOKEN_GOAT_ENTRY_KEY = 'token-goat'
@@ -77,7 +78,7 @@ function installZedFiles(): ZedInstallResult {
   const config = readServersJson(settingsPath, 'Zed')
   const current = serversOf(config, settingsPath, 'Zed', CONTEXT_SERVERS_KEY)[TOKEN_GOAT_ENTRY_KEY]
   if (current !== undefined && !isZedManagedServer(current)) {
-    throw new Error(`Zed settings.json already has a "${TOKEN_GOAT_ENTRY_KEY}" context server entry token-goat did not write, at ${settingsPath}; remove it manually first`)
+    throw new Error(`Zed settings.json already has a ${echoedValue(TOKEN_GOAT_ENTRY_KEY)} context server entry token-goat did not write, at ${settingsPath}; remove it manually first`)
   }
 
   // The shim is written only once settings.json has parsed and passed the ownership check above, so a rejected install leaves no file behind.

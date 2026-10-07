@@ -31,7 +31,7 @@ import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { detectLanguageOfFile } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { displaySafeText, hostPathOfTypedPath, resolveIndexPath, displaySafeJson } from './paths.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { isUnderSystemTemp, resolveProjectRoot } from './project.js'
 import { runParallelSearch } from './search/search_cli.js'
 import { ALL_CHANNELS, type SearchChannel } from './search/types.js'
@@ -158,7 +158,7 @@ function cmdHandoffCreate(name: string, text: string | undefined, opts: { file?:
 
 function cmdHandoffResolve(name: string, opts: { full?: boolean }): void {
   const result = resolveHandoff(name, { full: opts.full === true })
-  if (result === null) throw new CliError(`no local handoff named "${name}" in this project`)
+  if (result === null) throw new CliError(`no local handoff named ${echoedValue(name)} in this project`)
   out(typeof result === 'string' ? result : formatCompression(result, false, 'payload withheld: inlining it would cost more tokens than the original text; pass --full to get the original text back outright'))
 }
 
@@ -233,7 +233,7 @@ async function cmdSearch(
     const rawList = opts.channels.split(',').map((c) => c.trim().toLowerCase()).filter(Boolean)
     for (const c of rawList) {
       if (!ALL_CHANNELS.includes(c as SearchChannel)) {
-        throw new CliError(`Unknown search channel '${c}'. Supported channels: ${ALL_CHANNELS.join(', ')}`)
+        throw new CliError(`Unknown search channel ${echoedValue(c)}. Supported channels: ${ALL_CHANNELS.join(', ')}`)
       }
     }
     channels = Array.from(new Set(rawList)) as SearchChannel[]
@@ -243,7 +243,7 @@ async function cmdSearch(
     const rawVal = opts.minScore.trim()
     const parsed = Number(rawVal)
     if (rawVal === '' || !Number.isFinite(parsed) || parsed < 0) {
-      throw new CliError(`Invalid --min-score: '${opts.minScore}' (must be a non-negative number)`)
+      throw new CliError(`Invalid --min-score: ${echoedValue(opts.minScore)} (must be a non-negative number)`)
     }
     minScore = parsed
   }
@@ -272,7 +272,7 @@ export async function cmdIndex(
   applyIndexingPriority()
   // A typed root can be spelled at a drive mount (`/mnt/c/x` or `/c/x` reaching a Windows process unconverted, `C:\x` under WSL). hostPathOfTypedPath opens it where this host keeps it; used as typed, the mount named a folder that does not exist here and the run reported `Indexed 0 files` as a success.
   const root = pathArg === undefined ? process.cwd() : hostPathOfTypedPath(pathArg)
-  if (!fs.existsSync(root)) throw new CliError(`'${pathArg ?? root}' does not exist.`)
+  if (!fs.existsSync(root)) throw new CliError(`${echoedValue(pathArg ?? root)} does not exist.`)
   const dbPath = opts.dbPath ?? globalDbPath()
   const force = opts.force === true
   const useWalk = opts.walk === true || opts.forceWalk === true
@@ -280,7 +280,7 @@ export async function cmdIndex(
   if (files.length === 0) {
     if (!useWalk) {
       throw new CliError(
-        `no tracked files found under '${root}' (is it a git repo?). ` +
+        `no tracked files found under ${echoedValue(root)} (is it a git repo?). ` +
           `Pass --walk or --force-walk to index a non-git folder.`,
       )
     }
@@ -448,7 +448,7 @@ export async function cmdIndex(
   }
   for (const [message, group] of failureGroups) {
     err(
-      `token-goat: index: failed to index '${group.example}': ${message}` +
+      `token-goat: index: failed to index ${echoedValue(group.example)}: ${message}` +
         (group.count > 1 ? ` (and ${group.count - 1} other file(s))` : ''),
     )
   }
@@ -604,7 +604,7 @@ async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boo
     const { PROBE_COMMANDS, formatProbeReport, isProbeHarness, probePassed, runProbe } = await import('./doctor_probe.js')
     const harness = opts.probe.trim().toLowerCase()
     if (!isProbeHarness(harness)) {
-      throw new CliError(`no headless probe for '${opts.probe}'; supported: ${Object.keys(PROBE_COMMANDS).join(', ')}`)
+      throw new CliError(`no headless probe for ${echoedValue(opts.probe)}; supported: ${Object.keys(PROBE_COMMANDS).join(', ')}`)
     }
     const report = runProbe(harness)
     out(opts.json === true ? displaySafeJson(report, 0) : formatProbeReport(report))
@@ -1466,7 +1466,7 @@ export function buildProgram(): Command {
           // Resolved before parsing, because commander answers `<unknown> --help` by printing the top-level help rather than by complaining: the caller asked about one command and silently got the list of all of them. Pre-existing behaviour exited 1 without ever saying why, which is the half of it worth keeping.
           const known = program.commands.some((sub) => sub.name() === cmd || sub.aliases().includes(cmd))
           if (!known) {
-            err(formatCommandError(`unknown command '${displaySafeText(cmd)}'. Run \`token-goat commands --grep <pattern>\` to search the list.`))
+            err(formatCommandError(`unknown command ${echoedValue(cmd)}. Run \`token-goat commands --grep <pattern>\` to search the list.`))
             process.exitCode = 1
             return
           }

@@ -4,6 +4,7 @@ import * as fs from 'node:fs'
 import { displaySafeText } from './paths.js'
 import Database from './sqlite_driver.js'
 import type { SqliteDatabase } from './sqlite_driver.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 /** Hard cap on rows pulled from a query's result iterator, independent of any caller-supplied `--head`. Bounds worst-case memory/time for "return everything" queries against a huge table or join; a caller wanting a smaller slice still uses `--head` on top of this. */
 export const SQLITE_QUERY_ROW_CAP = 5000
@@ -372,12 +373,12 @@ export function validateReadOnlySelect(sql: string): void {
 
   for (const kw of FORBIDDEN_KEYWORDS) {
     if (new RegExp(`\\b${kw}\\b`).test(upper)) {
-      throw new Error(`statement contains forbidden keyword '${kw}' (sqlite-query only allows read-only SELECT queries)`)
+      throw new Error(`statement contains forbidden keyword ${echoedValue(kw)} (sqlite-query only allows read-only SELECT queries)`)
     }
   }
   // REPLACE is only forbidden as the "REPLACE INTO ..." / "INSERT OR REPLACE" statement form, not as the scalar replace(...) function -- reject a bare REPLACE keyword only when it is NOT immediately followed by '(' (a function call).
   if (/\bREPLACE\b(?!\s*\()/.test(upper)) {
-    throw new Error("statement contains forbidden keyword 'REPLACE' (sqlite-query only allows read-only SELECT queries)")
+    throw new Error('statement contains forbidden keyword "REPLACE" (sqlite-query only allows read-only SELECT queries)')
   }
 }
 

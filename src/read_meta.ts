@@ -9,6 +9,7 @@ import {
 } from './parser_types.js'
 import { countNoun } from './util.js'
 import { supportRequestLine } from './version.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 const PARENT_IDENTIFIER_RE = /^[\w$]+$/
 
@@ -20,12 +21,12 @@ export function symbolExtractorGap(displayPath: string, resolvedPath: string): s
   if (named !== undefined || language === 'unknown') {
     const what = named !== undefined ? `${named}, ${ext}` : ext !== '' ? ext : 'no extension'
     return (
-      `'${displayPath}': token-goat has no symbol extractor for this file type (${what}), so there are no symbols to list; grep, plain reads and \`token-goat tokens\` still work on it.\n` +
+      `${echoedValue(displayPath)}: token-goat has no symbol extractor for this file type (${what}), so there are no symbols to list; grep, plain reads and \`token-goat tokens\` still work on it.\n` +
       supportRequestLine(named ?? (ext !== '' ? `${ext} file` : 'this file type'))
     )
   }
   if (TREE_SITTER_LANGUAGES.includes(language) && !isTreeSitterAvailable(language)) {
-    return `No symbols found in '${displayPath}', but tree-sitter parsing for this file type (${ext}) is unavailable, so only a coarse regex fallback ran. Run \`token-goat doctor\` for the cause and the fix.`
+    return `No symbols found in ${echoedValue(displayPath)}, but tree-sitter parsing for this file type (${ext}) is unavailable, so only a coarse regex fallback ran. Run \`token-goat doctor\` for the cause and the fix.`
   }
   return undefined
 }
@@ -34,7 +35,7 @@ export function noSymbolsMessage(displayPath: string, resolvedPath: string): str
   if (!fs.existsSync(resolvedPath)) {
     return `Could not read: ${displayPath}`
   }
-  return symbolExtractorGap(displayPath, resolvedPath) ?? `No indexed symbols found in '${displayPath}'`
+  return symbolExtractorGap(displayPath, resolvedPath) ?? `No indexed symbols found in ${echoedValue(displayPath)}`
 }
 
 export function hasRealDocstring(docstring: string): boolean {

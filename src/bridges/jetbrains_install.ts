@@ -7,6 +7,7 @@ import { removeCreatedBackups } from './created_configs.js';
 import { assertProjectScopeTarget, withInstallScope } from './project_scope_guard.js';
 import { bundledCliPath } from './mcp_servers_json.js';
 import { stripBom } from '../jsonc_text.js';
+import { echoedValue } from '../hint_suggestion_guard.js'
 
 export const JETBRAINS_GUIDANCE_BEGIN = '<!-- TOKEN_GOAT_JETBRAINS_BEGIN -->';
 export const JETBRAINS_GUIDANCE_END = '<!-- TOKEN_GOAT_JETBRAINS_END -->';
@@ -182,7 +183,7 @@ function uninstallJetbrainsScoped(options: JetbrainsScopeOptions = {}): boolean 
 
   // Read as install reads it: a file that is there but cannot be read or parsed may still register token-goat's server, so uninstall stops here with it and the instructions block as they were, rather than pass over it without a word and strip the block.
   const refuse = (problem: string, detail?: string): Error =>
-    new Error(`JetBrains MCP configuration '${mcpPath}' is unreadable: it ${problem}. Uninstall left it and the Copilot instructions block untouched; fix the file and run uninstall again.${detail === undefined ? '' : ` (${detail})`}`);
+    new Error(`JetBrains MCP configuration ${echoedValue(mcpPath)} is unreadable: it ${problem}. Uninstall left it and the Copilot instructions block untouched; fix the file and run uninstall again.${detail === undefined ? '' : ` (${detail})`}`);
   let raw: string | undefined;
   try {
     raw = fs.readFileSync(mcpPath, 'utf8');

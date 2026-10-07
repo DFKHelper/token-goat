@@ -2,6 +2,7 @@
 
 import { countNoun } from './util.js'
 import { displaySafeText } from './paths.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 export interface HtmlNode {
   tag: string
@@ -459,7 +460,7 @@ export function formatHtmlOutline(summary: HtmlOutlineSummary): string {
   const lines: string[] = []
   lines.push(`HTML Document (${summary.totalElements} elements, ${summary.uniqueTags.length} unique tags, max depth ${summary.maxDepth})`)
   // Every interpolation below is a string the document's author chose, landing in a summary line token-goat speaks in its own voice, outside any fence. A page titled `[tg] ...` would otherwise put an unescaped authority marker into that line with nothing to say it came from the document.
-  if (summary.title) lines.push(`Title: "${displaySafeText(summary.title)}"`)
+  if (summary.title) lines.push(`Title: ${echoedValue(summary.title)}`)
   if (summary.doctype) lines.push(`DOCTYPE: ${displaySafeText(summary.doctype)}`)
   lines.push(`Assets: ${summary.scripts} scripts, ${summary.styles} stylesheets`)
 
@@ -494,7 +495,7 @@ export function formatHtmlOutline(summary: HtmlOutlineSummary): string {
     lines.push('', 'Forms:')
     for (const f of summary.forms) {
       const idStr = f.id ? `#${displaySafeText(f.id)}` : ''
-      lines.push(`  <form${idStr} method="${displaySafeText(f.method || 'GET')}" action="${displaySafeText(f.action || '')}"> (line ${f.line})`)
+      lines.push(`  <form${idStr} method=${echoedValue(f.method || 'GET')} action=${echoedValue(f.action || '')}> (line ${f.line})`)
     }
   }
 

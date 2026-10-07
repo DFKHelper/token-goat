@@ -212,7 +212,7 @@ describe('isOpenclawInstalled / uninstallOpenclaw', () => {
     expect(() => isOpenclawInstalled()).not.toThrow()
     expect(isOpenclawInstalled()).toBe(false)
     expect(() => uninstallOpenclaw()).toThrow(OpenclawConfigParseError)
-    expect(() => uninstallOpenclaw()).toThrow(`'${p}' is unreadable`)
+    expect(() => uninstallOpenclaw()).toThrow(`"${p}" is unreadable`)
     expect(fs.readFileSync(p, 'utf8')).toBe(malformed)
   })
 

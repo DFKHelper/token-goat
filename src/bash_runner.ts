@@ -27,6 +27,7 @@ import {
   shlexSplit,
   TOOL_FILTERS,
 } from './tool_filters/index.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 /** Default wall-clock timeout for the wrapped subprocess, in seconds. */
 export const DEFAULT_TIMEOUT_SECONDS = 600
@@ -206,7 +207,7 @@ export function unknownFilterNotice(name: string, fallback: ToolFilter | null): 
   const near = names.filter((n) => n.split('-').some((word) => word.startsWith(typed)) || typed.startsWith(n)).slice(0, 5)
   const instead = fallback === null ? 'running it uncompressed' : `auto-detected ${fallback.name}`
   const hint = near.length > 0 ? `; did you mean ${near.join(', ')}?` : ''
-  return `[token-goat: no filter named "${displaySafeText(name)}", ${instead}${hint}]\n`
+  return `[token-goat: no filter named ${echoedValue(name)}, ${instead}${hint}]\n`
 }
 
 /** Run *command* through the system shell, compress its output, and return the wrapped subprocess's exit code (124 on wrapper-induced timeout, `128 + signum` when killed by a signal). When no filter applies the command is streamed through unchanged so the cost is limited to one subprocess fork. */

@@ -437,7 +437,7 @@ function cmdLockdepsPackage(lockfile: string, format: string, deps: DepEntry[], 
   process.stdout.write(`Version: ${displaySafeText(primary.version)}${primary.kind === 'unknown' ? '' : `  (${displaySafeText(primary.kind)})`}\n`)
   if (otherVersions.length > 0) process.stdout.write(`Other versions in lockfile: ${otherVersions.map(displaySafeText).join(', ')}\n`)
   if (!graphAvailable) {
-    process.stdout.write(`\nDependency graph not available for format '${format}' (only npm package-lock.json exposes package-to-package edges).\n`)
+    process.stdout.write(`\nDependency graph not available for format ${echoedValue(format)} (only npm package-lock.json exposes package-to-package edges).\n`)
     return
   }
   process.stdout.write(`\nDepends on (${dependsOn.length}):\n`)

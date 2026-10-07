@@ -1256,7 +1256,7 @@ describe('runCallers unknown symbol vs zero-callers distinction', () => {
           const code = runCallers({ symbol: 'callersUnrefFn9k3v' })
           expect(code).toBe(1)
         })
-        expect(errCaptured).toContain("No references found for 'callersUnrefFn9k3v'")
+        expect(errCaptured).toContain('No references found for "callersUnrefFn9k3v"')
         expect(errCaptured).not.toContain('Symbol not found')
         expect(errCaptured).not.toContain('Did you mean')
       } finally {
@@ -1759,7 +1759,7 @@ describe('runDead integration', () => {
     const errCaptured = captureStderr(() => {
       expect(runDead({ kind: 'bogus\u001b[31m\nforged' })).toBe(1)
     })
-    expect(errCaptured.startsWith("token-goat: Unrecognized kind: 'bogus")).toBe(true)
+    expect(errCaptured.startsWith('token-goat: Unrecognized kind: "bogus')).toBe(true)
     expect(errCaptured).not.toContain('\u001b')
     expect(errCaptured).not.toContain('\nforged')
   })
@@ -1861,7 +1861,7 @@ describe('runDead --kind comma-separated union', () => {
     expect(errCaptured).toContain('Unrecognized kind')
     expect(errCaptured).toContain('__bogus_kind_9x2__')
     // Negative control: the VALID kind in the mix must not itself be flagged.
-    expect(errCaptured).not.toMatch(/Unrecognized kind[^\n]*'function'/)
+    expect(errCaptured).not.toMatch(/Unrecognized kind[^\n]*["']function["']/)
   })
 
   it('reports "kinds" (plural) when multiple unrecognized kinds are given', () => {
@@ -3231,7 +3231,7 @@ describe('runImpact unknown symbol vs zero-impact distinction', () => {
           const code = runImpact({ symbol: 'impactUnrefFn7q5w' })
           expect(code).toBe(1)
         })
-        expect(errCaptured).toContain("No callers found for 'impactUnrefFn7q5w'")
+        expect(errCaptured).toContain('No callers found for "impactUnrefFn7q5w"')
         expect(errCaptured).not.toContain('Symbol not found')
         expect(errCaptured).not.toContain('Did you mean')
       } finally {
@@ -3488,7 +3488,7 @@ describe('runImpact --exclude-tests', () => {
         const errCaptured = captureStderr(() => {
           expect(runImpact({ symbol: 'impactExclTargetFn4n8', excludeTests: true })).toBe(1)
         })
-        expect(errCaptured).toContain(`No non-test impact found for 'impactExclTargetFn4n8' (1 in test file hidden by --exclude-tests)`)
+        expect(errCaptured).toContain(`No non-test impact found for "impactExclTargetFn4n8" (1 in test file hidden by --exclude-tests)`)
       } finally {
         cwdSpy.mockRestore()
       }
@@ -3904,7 +3904,7 @@ describe('runSimilar', () => {
         const code = runSimilar({ spec: `${file}::dupSym` })
         expect(code).toBe(1)
       })
-      expect(errCaptured).toContain("Ambiguous symbol 'dupSym'")
+      expect(errCaptured).toContain('Ambiguous symbol "dupSym"')
       expect(errCaptured).toContain('(line 1)')
       expect(errCaptured).toContain('(line 5)')
       // Retry lines must name `similar`, not `read` -- this command's own retry, not read's.
@@ -3990,7 +3990,7 @@ describe('runTestFor', () => {
           const code = runTestFor({ file: srcFile })
           expect(code).toBe(0)
         })
-        expect(captured).toContain(`No test files found referencing symbols in '${srcFile}'`)
+        expect(captured).toContain(`No test files found referencing symbols in "${srcFile}"`)
       } finally {
         cwdSpy.mockRestore()
       }
@@ -5067,7 +5067,7 @@ describe('runBlame', () => {
       })
       process.stdout.write = origWrite
       expect(stdout).toBe('')
-      expect(errCaptured).toContain("Ambiguous symbol 'dupSym'")
+      expect(errCaptured).toContain('Ambiguous symbol "dupSym"')
       expect(errCaptured).toContain('(line 1)')
       expect(errCaptured).toContain('(line 5)')
       // Retry lines must name `blame`, not `read` -- this command's own retry, not read's.

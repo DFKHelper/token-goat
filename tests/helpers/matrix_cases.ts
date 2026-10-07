@@ -296,7 +296,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     // file::symbol@LINE anchor, round-tripped through the real built bundle. `dupfile.ts` deliberately has two definitions named 'dup' (a class method and a top-level function) -- the ambiguity error's own suggested retry is parsed out and re-run rather than hardcoding an assumed line number, since that suggestion IS the anchor form under test.
     const ambiguous = run(['read', 'dupfile.ts::dup'])
     expect(ambiguous.status).toBe(1)
-    expect(ambiguous.stderr).toContain("Ambiguous symbol 'dup'")
+    expect(ambiguous.stderr).toContain('Ambiguous symbol "dup"')
     const anchoredRetry = /token-goat read "(dupfile\.ts::dup@\d+)"/.exec(ambiguous.stderr)
     expect(anchoredRetry, ambiguous.stderr).not.toBeNull()
     const anchored = run(['read', anchoredRetry![1]!])

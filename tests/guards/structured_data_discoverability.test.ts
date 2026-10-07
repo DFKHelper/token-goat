@@ -44,7 +44,7 @@ describe('structured-data discoverability', () => {
   it('symbol miss on a real nested JSON key names the dot-path, and the suggested command works', () => {
     const r = run(['symbol', 'better-sqlite3'], projectDir, homeDir)
     expect(r.status).not.toBe(0)
-    expect(r.out).toContain("No matches for 'better-sqlite3'")
+    expect(r.out).toContain('No matches for "better-sqlite3"')
     expect(r.out).toContain('is a key in package.json at dependencies.better-sqlite3')
     expect(r.out).toContain('read it with: `token-goat json-query "package.json" "dependencies.better-sqlite3"`')
     const q = run(['json-query', 'package.json', 'dependencies.better-sqlite3'], projectDir, homeDir)
@@ -62,7 +62,7 @@ describe('structured-data discoverability', () => {
   it('symbol miss on a genuinely unknown name adds nothing', () => {
     const r = run(['symbol', 'zzzNoSuchThingAnywhere'], projectDir, homeDir)
     expect(r.status).not.toBe(0)
-    expect(r.out).toContain("No matches for 'zzzNoSuchThingAnywhere'")
+    expect(r.out).toContain('No matches for "zzzNoSuchThingAnywhere"')
     expect(r.out).not.toContain('is a key in')
     expect(r.out).not.toContain('json-query')
   })

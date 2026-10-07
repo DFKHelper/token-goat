@@ -19,6 +19,7 @@ import {
   splitBlocks,
   squeezeBlankLines,
 } from './helpers.js'
+import { echoedValue } from '../hint_suggestion_guard.js'
 
 // git flags that take a value in the following token. When scanning argv for subcommand-identifying positional tokens (matches()/compress() subcommand detection), the value token of one of these must be skipped entirely, not scanned for a word that happens to match another filter's subcommand keyword -- e.g. `git commit -m "please push and rebase"` must never be mistaken for a `push`/`rebase` command just because that word appears inside the message text.
 const _GIT_VALUE_FLAGS = new Set([
@@ -168,7 +169,7 @@ function _summariseCommitHeader(lines: string[]): string[] {
   const detailParts: string[] = []
   if (author) detailParts.push(author)
   if (dateStr) detailParts.push(dateStr)
-  if (subject) detailParts.push(`"${subject}"`)
+  if (subject) detailParts.push(`${echoedValue(subject)}`)
   if (detailParts.length) parts.push('  ' + detailParts.join(' | '))
   return parts
 }

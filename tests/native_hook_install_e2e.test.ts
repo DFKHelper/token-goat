@@ -492,7 +492,7 @@ describe.runIf(NATIVE).each(['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli
     install(sb, INSTALL_FLAG[harness], { ...execEnv, TOKEN_GOAT_NATIVE_HOOKS: '0' })
     const outdated = row(execEnv)
     expect(outdated.status, outdated.message).toBe('warn')
-    expect(outdated.message).toContain(`Node form while the native hook client is available; run '${run}' to switch`)
+    expect(outdated.message).toContain(`Node form while the native hook client is available; run \`${run}\` to switch`)
 
     const off = row({ ...execEnv, TOKEN_GOAT_NATIVE_HOOKS: '0' })
     expect(off.status, off.message).toBe('ok')
@@ -522,7 +522,7 @@ describe.runIf(NATIVE).each(['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli
     const broken = row(execEnv)
     expect(broken.status, broken.message).toBe('fail')
     expect(broken.message).toContain('which no longer exists, so those events fail instead of falling back to Node')
-    expect(broken.message).toContain(`run '${run}' to rewrite them`)
+    expect(broken.message).toContain(`run \`${run}\` to rewrite them`)
     if (harness === 'claudecode') {
       const events = doctorRows(sb, execEnv).find((x) => x.name === 'Claude Code hook events')!
       expect(events.status, events.message).toBe('fail')
@@ -565,7 +565,8 @@ describe('install refuses a hook path the harness rewrites before running it', (
     for (const native of ['1', '0']) {
       const res = cli(sb, ['install', flag], { TOKEN_GOAT_NATIVE_HOOKS: native, x: 'expanded', y: 'expanded' })
       expect(res.status, `${native}: ${res.stdout}${res.stderr}`).not.toBe(0)
-      expect(res.stderr).toContain(`Move the path that contains "${span}"`)
+      // A span holding $ is set in single quotes so a shell reading the message leaves it as written; any other span in double quotes.
+      expect(res.stderr).toContain(`Move the path that contains ${span.includes('$') ? `'${span}'` : `"${span}"`}`)
       expect(res.stderr).toContain('then run `token-goat install ' + flag + '` again')
       // The command it refused is the form that install would have written.
       expect(res.stderr.includes(WIN ? 'tg-hook.exe' : 'tg-hook')).toBe(native === '1' && NATIVE)
@@ -632,7 +633,7 @@ describe.runIf(NATIVE)('doctor on a build whose native hook client is stale, bro
       fs.appendFileSync(packaged, Buffer.from('a later build'))
       const stale = row()
       expect(stale.status, stale.message).toBe('warn')
-      expect(stale.message).toContain(`self-test passed, but the copy differs from this build's binary; run '${run}' to refresh it`)
+      expect(stale.message).toContain(`self-test passed, but the copy differs from this build's binary; run \`${run}\` to refresh it`)
       install(sb, ['--codex'])
       expect(fs.readFileSync(bin!).equals(fs.readFileSync(packaged))).toBe(true)
       expect(row().status).toBe('ok')
@@ -645,7 +646,7 @@ describe.runIf(NATIVE)('doctor on a build whose native hook client is stale, bro
     replace(bin!, FAILING_BINARY)
     const broken = row()
     expect(broken.status, broken.message).toBe('fail')
-    expect(broken.message).toContain(`the native hook client at ${bin!} fails its self-test (exit code 1); run '${run}' to rewrite the entries as Node commands`)
+    expect(broken.message).toContain(`the native hook client at ${bin!} fails its self-test (exit code 1); run \`${run}\` to rewrite the entries as Node commands`)
 
     // The binary this build ships fails its self-test: install writes the Node form and doctor says why.
     replace(packaged, FAILING_BINARY)
@@ -666,7 +667,7 @@ describe.runIf(NATIVE)('doctor on a build whose native hook client is stale, bro
     if (WIN) {
       // The entries run the data-directory copy, which still works.
       expect(absent.status, absent.message).toBe('warn')
-      expect(absent.message).toContain(`self-test passed, but this build ships no native hook client for ${TARGET}; run '${run}' to switch to the Node form`)
+      expect(absent.message).toContain(`self-test passed, but this build ships no native hook client for ${TARGET}; run \`${run}\` to switch to the Node form`)
     } else {
       // The entries ran the packaged binary itself, which has gone with it.
       expect(absent.status, absent.message).toBe('fail')

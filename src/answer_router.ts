@@ -17,7 +17,7 @@ import { runBrief } from './read_brief.js'
 import { emit, emitErr } from './emit.js'
 import { type AnswerRoute, recordStat } from './stats.js'
 import { formatCommandError } from './command_error.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 
 export interface AnswerOptions {
   question: string
@@ -260,7 +260,7 @@ function refuseAmbiguousDefs(subject: string, picks: DefinitionPick[], rootDir: 
   const specs = picks.map((p) => `${toDisplayPath(rootDir, p.file)}::${p.qualifier}`)
   const shown = specs.slice(0, 5)
   const more = specs.length - shown.length
-  return refuse('ambiguous', `'${subject}' has ${specs.length} definitions in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, `token-goat ${command} ${quotedArg(specs[0] ?? '')}`)
+  return refuse('ambiguous', `${echoedValue(subject)} has ${specs.length} definitions in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, `token-goat ${command} ${quotedArg(specs[0] ?? '')}`)
 }
 
 /** The bare name's definitions as pickable specs. */
@@ -305,11 +305,11 @@ function answerExplain(question: string, subject: string, rootDir: string): numb
     target = defs[0] !== undefined ? { name: defs[0].name, file: defs[0].filePath } : null
     if (target === null) {
       const file = resolveSubject(subject, 'file-only')
-      if (file?.kind === 'file') return refuse('file-needs-symbol', `'${subject}' is a file, and explain needs a symbol`, `token-goat outline ${viaArg(toDisplayPath(rootDir, file.path))}`)
-      if (file?.kind === 'ambiguous') return refuse('ambiguous', `'${subject}' names ${file.candidates.length} files in this project`, `token-goat outline ${viaArg(toDisplayPath(rootDir, file.candidates[0] ?? ''))}`)
+      if (file?.kind === 'file') return refuse('file-needs-symbol', `${echoedValue(subject)} is a file, and explain needs a symbol`, `token-goat outline ${viaArg(toDisplayPath(rootDir, file.path))}`)
+      if (file?.kind === 'ambiguous') return refuse('ambiguous', `${echoedValue(subject)} names ${file.candidates.length} files in this project`, `token-goat outline ${viaArg(toDisplayPath(rootDir, file.candidates[0] ?? ''))}`)
     }
   }
-  if (target === null) return refuse('unresolved', `'${subject}' is not an indexed symbol`, `token-goat semantic ${quotedArg(question)}`)
+  if (target === null) return refuse('unresolved', `${echoedValue(subject)} is not an indexed symbol`, `token-goat semantic ${quotedArg(question)}`)
   const spec = `${displaySafeText(toDisplayPath(rootDir, target.file))}::${displaySafeText(target.qualifier ?? target.name)}`
   emit(`via: token-goat brief ${quotedArg(spec)} --limit ${ANSWER_DELEGATE_LIMIT}`)
   return routed('brief', runBrief({ spec, limit: ANSWER_DELEGATE_LIMIT, projectRoot: rootDir }))
@@ -373,7 +373,7 @@ export function runAnswer(opts: AnswerOptions): number {
   if (cls.intent === 'explain') return answerExplain(question, cls.subject, resolveProjectRoot({ project: process.cwd() }))
 
   const resolved = resolveSubject(cls.subject, subjectModeFor(cls.intent))
-  if (resolved === null) return refuse('unresolved', `'${cls.subject}' is not an indexed symbol or file`, `token-goat semantic ${quotedArg(question)}`)
+  if (resolved === null) return refuse('unresolved', `${echoedValue(cls.subject)} is not an indexed symbol or file`, `token-goat semantic ${quotedArg(question)}`)
 
   const rootDir = resolveProjectRoot({ project: process.cwd() })
 
@@ -387,12 +387,12 @@ export function runAnswer(opts: AnswerOptions): number {
     const next = FILE_INTENTS.has(cls.intent)
       ? `token-goat answer ${quotedArg(`${FILE_INTENT_PHRASE[cls.intent] ?? ''} ${first}`)}`
       : `token-goat outline ${viaArg(first)}`
-    return refuse('ambiguous', `'${cls.subject}' names ${resolved.candidates.length} files in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, next)
+    return refuse('ambiguous', `${echoedValue(cls.subject)} names ${resolved.candidates.length} files in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, next)
   }
 
   if (resolved.kind === 'symbol-only') {
     const defining = toDisplayPath(rootDir, resolved.file)
-    return refuse('symbol-only', `'${cls.subject}' is a symbol; ${cls.intent === 'importers' ? 'importers are' : 'exports/imports are'} file-level`, cls.intent === 'importers' ? `token-goat deps ${viaArg(defining)} --importers` : `token-goat ${cls.intent} ${viaArg(defining)}`)
+    return refuse('symbol-only', `${echoedValue(cls.subject)} is a symbol; ${cls.intent === 'importers' ? 'importers are' : 'exports/imports are'} file-level`, cls.intent === 'importers' ? `token-goat deps ${viaArg(defining)} --importers` : `token-goat ${cls.intent} ${viaArg(defining)}`)
   }
 
   if (FILE_INTENTS.has(cls.intent)) {
@@ -415,7 +415,7 @@ export function runAnswer(opts: AnswerOptions): number {
     const display = toDisplayPath(rootDir, resolved.path)
     // "What depends on src/x.ts" asks about a file, and a file's direct dependents are the files that import it: answering that beats refusing and pointing at an outline, which does not answer the question at all.
     if (cls.intent === 'impact') return answerImporters(resolved.path, display)
-    return refuse('file-needs-symbol', `'${cls.subject}' is a file, and ${cls.intent === 'where' ? 'where' : cls.intent} needs a symbol`, `token-goat outline ${viaArg(display)}`)
+    return refuse('file-needs-symbol', `${echoedValue(cls.subject)} is a file, and ${cls.intent === 'where' ? 'where' : cls.intent} needs a symbol`, `token-goat outline ${viaArg(display)}`)
   }
 
   if (cls.intent === 'callers' || cls.intent === 'impact') return answerGraph(cls.intent, cls.subject, resolved, rootDir)

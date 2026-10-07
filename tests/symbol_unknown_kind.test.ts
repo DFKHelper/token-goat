@@ -27,7 +27,7 @@ describe('runSymbol: a --kind no indexed symbol carries is named, not hidden beh
     withIndexedProject('tg-symkind-grep-', (root) => {
       const { text, code } = runSymbol({ grep: '.', kind: 'Method', projectRoot: root })
       expect(code).toBe(1)
-      expect(text).toBe(`No matches for '.'\nno indexed symbol has kind 'Method'\nDid you mean:\n  - method`)
+      expect(text).toBe(`No matches for "."\nno indexed symbol has kind "Method"\nDid you mean:\n  - method`)
     })
   })
 
@@ -35,7 +35,7 @@ describe('runSymbol: a --kind no indexed symbol carries is named, not hidden beh
     withIndexedProject('tg-symkind-name-', (root) => {
       const { text, code } = runSymbol({ name: 'open', kind: 'Method', projectRoot: root })
       expect(code).toBe(1)
-      expect(text).toBe(`No matches for 'open'\nno indexed symbol has kind 'Method'\nDid you mean:\n  - method\n'open' IS indexed (method at kinds.ts:2) -- drop --kind to see it`)
+      expect(text).toBe(`No matches for "open"\nno indexed symbol has kind "Method"\nDid you mean:\n  - method\n"open" IS indexed (method at kinds.ts:2) -- drop --kind to see it`)
     })
   })
 
@@ -43,7 +43,7 @@ describe('runSymbol: a --kind no indexed symbol carries is named, not hidden beh
     withIndexedProject('tg-symkind-recase-', (root) => {
       const { text, code } = runSymbol({ grep: '.', kind: 'Interface', projectRoot: root })
       expect(code).toBe(1)
-      expect(text).toBe(`No matches for '.'\nno indexed symbol has kind 'Interface'\nDid you mean:\n  - interface`)
+      expect(text).toBe(`No matches for "."\nno indexed symbol has kind "Interface"\nDid you mean:\n  - interface`)
     })
   })
 
@@ -51,7 +51,7 @@ describe('runSymbol: a --kind no indexed symbol carries is named, not hidden beh
     withIndexedProject('tg-symkind-typo-', (root) => {
       const { text, code } = runSymbol({ grep: '.', kind: 'functon', projectRoot: root })
       expect(code).toBe(1)
-      expect(text).toBe(`No matches for '.'\nno indexed symbol has kind 'functon'\nDid you mean:\n  - function`)
+      expect(text).toBe(`No matches for "."\nno indexed symbol has kind "functon"\nDid you mean:\n  - function`)
     })
   })
 
@@ -60,7 +60,7 @@ describe('runSymbol: a --kind no indexed symbol carries is named, not hidden beh
     withIndexedProject('tg-symkind-known-', (root) => {
       const { text, code } = runSymbol({ grep: '.', kind: 'interface', projectRoot: root })
       expect(code).toBe(1)
-      expect(text).toBe(`No matches for '.'`)
+      expect(text).toBe(`No matches for "."`)
     })
   })
 

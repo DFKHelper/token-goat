@@ -82,7 +82,7 @@ describe('semantic --warm without a query', () => {
   it('still runs the search when a query comes with --warm', async () => {
     readinessMock.mockResolvedValue(readyResult())
     const res = await runSemantic('refresh a credential', { warm: true })
-    expect(res.text).toContain("no matches for 'refresh a credential'")
+    expect(res.text).toContain('no matches for "refresh a credential"')
     expect(res.text).not.toContain('Semantic embedding status')
   })
 })

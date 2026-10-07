@@ -117,7 +117,7 @@ describe('Session Store Schema & Discovery', () => {
     it('returns error when table is unknown', async () => {
       const res = await describeTarget('bogus_table_xyz')
       expect(res.exitCode).toBe(1)
-      expect(res.text).toContain("Unknown table or SQLite file 'bogus_table_xyz'")
+      expect(res.text).toContain('Unknown table or SQLite file "bogus_table_xyz"')
       expect(res.text).toContain('Available session store tables: sessions')
     })
 
@@ -156,8 +156,8 @@ describe('Session Store Schema & Discovery', () => {
       const errorText = 'Binder Error: Referenced column "title" not found in FROM clause! Candidate bindings: "sessions.id", "sessions.summary"'
       const diagnostic = diagnoseSqlFailure(event, errorText)
       expect(diagnostic).not.toBeNull()
-      expect(diagnostic).toContain("Table 'sessions' has columns: id, task_id")
-      expect(diagnostic).toContain("For 'title', use summary")
+      expect(diagnostic).toContain('Table "sessions" has columns: id, task_id')
+      expect(diagnostic).toContain('For "title", use summary')
       expect(diagnostic).toContain('Run `token-goat session-schema "sessions"`')
     })
 
@@ -175,7 +175,7 @@ describe('Session Store Schema & Discovery', () => {
       const errorText = 'no such column: role'
       const diagnostic = diagnoseSqlFailure(event, errorText)
       expect(diagnostic).not.toBeNull()
-      expect(diagnostic).toContain("For 'role', use agent_name or agent_description")
+      expect(diagnostic).toContain('For "role", use agent_name or agent_description')
     })
 
     it('diagnoses invalid table error', () => {
@@ -192,7 +192,7 @@ describe('Session Store Schema & Discovery', () => {
       const errorText = 'Table "past_sessions" does not exist'
       const diagnostic = diagnoseSqlFailure(event, errorText)
       expect(diagnostic).not.toBeNull()
-      expect(diagnostic).toContain("Table 'past_sessions' does not exist")
+      expect(diagnostic).toContain('Table "past_sessions" does not exist')
       expect(diagnostic).toContain('Available session store tables: sessions, turns')
     })
 
@@ -237,8 +237,8 @@ describe('Session Store Schema & Discovery', () => {
       const out = postToolUseFailureHandler(event)
       expect(out.hookType).toBe('context')
       if (out.hookType === 'context') {
-        expect(out.context).toContain("Table 'sessions' has columns")
-        expect(out.context).toContain("For 'title', use summary")
+        expect(out.context).toContain('Table "sessions" has columns')
+        expect(out.context).toContain('For "title", use summary')
       }
     })
 
@@ -259,8 +259,8 @@ describe('Session Store Schema & Discovery', () => {
       const out = postToolUseFailureHandler(event)
       expect(out.hookType).toBe('context')
       if (out.hookType === 'context') {
-        expect(out.context).toContain("Table 'sessions' has columns")
-        expect(out.context).toContain("For 'role', use agent_name or agent_description")
+        expect(out.context).toContain('Table "sessions" has columns')
+        expect(out.context).toContain('For "role", use agent_name or agent_description')
       }
     })
   })

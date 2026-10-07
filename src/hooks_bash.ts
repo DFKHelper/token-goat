@@ -311,7 +311,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       )
     }
     const fdHint = extGlob
-      ? 'Use `fd \'' + extGlob + '\'` for faster file discovery (respects .gitignore).'
+      ? 'Use `fd ' + quotedArg(extGlob) + '` for faster file discovery (respects .gitignore).'
       : 'Use `fd` for faster file discovery (respects .gitignore).'
     return contextOutput(
       '`find` is slow and ignores .gitignore. ' + fdHint +

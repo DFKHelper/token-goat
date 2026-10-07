@@ -69,7 +69,7 @@ describe('runFind fuzzy fallback', () => {
     const { stderr } = capture(() => runFind({ pattern: 'getUserr' }))
 
     expect(stderr).toContain('getUser')
-    expect(stderr).toContain("No symbol name contains 'getUserr'")
+    expect(stderr).toContain('No symbol name contains "getUserr"')
     // Singular, since exactly one name matched -- the count-dependent branch that a multi-match fixture would never exercise.
     expect(stderr).toContain('nearest indexed name:')
     expect(stderr).not.toContain('nearest indexed names:')
@@ -104,7 +104,7 @@ describe('runFind fuzzy fallback', () => {
     const { stderr, code } = capture(() => runFind({ pattern: 'zzzcompletelyunrelated' }))
 
     expect(code).toBe(1)
-    expect(stderr).toContain("No indexed files match 'zzzcompletelyunrelated'")
+    expect(stderr).toContain('No indexed files match "zzzcompletelyunrelated"')
     expect(stderr).not.toContain('nearest indexed')
   })
 

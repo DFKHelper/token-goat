@@ -87,7 +87,7 @@ describe('hook entries an older build wrote are rewritten by a reinstall', () =>
     expect(wiredCodexHookWords().map((e) => e.current)).toEqual(Array(total).fill(false))
     const before = doctorRow('Codex')
     expect(before.status).toBe('warn')
-    expect(before.message).toContain(`${total} of ${total} hook entries are not the command this build writes; run 'token-goat install --codex' to rewrite them`)
+    expect(before.message).toContain(`${total} of ${total} hook entries are not the command this build writes; run \`token-goat install --codex\` to rewrite them`)
 
     expect(installCodex().alreadyInstalled).toBe(false)
 
@@ -122,7 +122,7 @@ describe('hook entries an older build wrote are rewritten by a reinstall', () =>
     expect(wiredGrokHookWords().map((e) => e.current)).toEqual(Array(events.length).fill(false))
     const before = doctorRow('Grok CLI')
     expect(before.status).toBe('warn')
-    expect(before.message).toContain(`${events.length} of ${events.length} hook entries are not the command this build writes; run 'token-goat install --grok' to rewrite them`)
+    expect(before.message).toContain(`${events.length} of ${events.length} hook entries are not the command this build writes; run \`token-goat install --grok\` to rewrite them`)
 
     expect(installGrok().alreadyInstalled).toBe(false)
 
@@ -148,7 +148,7 @@ describe('hook entries an older build wrote are rewritten by a reinstall', () =>
     expect(wiredCopilotHookWords().map((e) => e.current)).toEqual(Array(events.length).fill(false))
     const before = doctorRow('Copilot CLI (user)')
     expect(before.status).toBe('warn')
-    expect(before.message).toContain(`${events.length} of ${events.length} hook entries are not the command this build writes; run 'token-goat install --copilot' to rewrite them`)
+    expect(before.message).toContain(`${events.length} of ${events.length} hook entries are not the command this build writes; run \`token-goat install --copilot\` to rewrite them`)
 
     expect(installCopilotCli().alreadyInstalled).toBe(false)
 

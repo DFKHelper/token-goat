@@ -5,6 +5,7 @@ import { extractErrorMessage } from './util.js'
 import { extraFileArgsNote } from './read_spec.js'
 import { out, err, CliError } from './cli.js'
 import { formatCommandError, formatFailedResultText } from './command_error.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 export function readStdinPaths(): string[] {
   if (process.stdin.isTTY) {
@@ -66,11 +67,11 @@ export function emitExtraFileArgsNote(command: string, first: string, extras: st
 export function requireInt(flag: string, raw: string): number {
   // Only accept exact integer literals (optional leading minus, followed by digits)
   if (!/^-?\d+$/.test(raw)) {
-    throw new CliError(`${flag} must be a number, got: "${raw}"`)
+    throw new CliError(`${flag} must be a number, got: ${echoedValue(raw)}`)
   }
   const n = Number.parseInt(raw, 10)
   if (!Number.isFinite(n)) {
-    throw new CliError(`${flag} must be a number, got: "${raw}"`)
+    throw new CliError(`${flag} must be a number, got: ${echoedValue(raw)}`)
   }
   return n
 }
@@ -79,7 +80,7 @@ export function requireInt(flag: string, raw: string): number {
 export function requireNonNegativeInt(flag: string, raw: string): number {
   const n = requireInt(flag, raw)
   if (n < 0) {
-    throw new CliError(`${flag} must be a non-negative number, got: "${raw}"`)
+    throw new CliError(`${flag} must be a non-negative number, got: ${echoedValue(raw)}`)
   }
   return n
 }
@@ -87,7 +88,7 @@ export function requireNonNegativeInt(flag: string, raw: string): number {
 export function requirePositiveInt(flag: string, raw: string): number {
   const n = requireInt(flag, raw)
   if (n <= 0) {
-    throw new CliError(`${flag} must be a positive number, got: "${raw}"`)
+    throw new CliError(`${flag} must be a positive number, got: ${echoedValue(raw)}`)
   }
   return n
 }

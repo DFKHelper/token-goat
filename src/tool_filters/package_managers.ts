@@ -6,6 +6,7 @@ import { countNoun } from '../util.js'
 import { ToolFilter } from './base.js'
 import { makePackageManagerFilter } from './families.js'
 import { ERROR_SIGNAL_RE, capTokens, maybeNote, pathStem, positionalArgs, squeezeBlankLines } from './helpers.js'
+import { echoedValue } from '../hint_suggestion_guard.js'
 
 // --------------------------------------------------------------------------- Internal helpers (package-manager-local; not exported to index) ---------------------------------------------------------------------------
 
@@ -1072,7 +1073,7 @@ class DepListFilter extends ToolFilter {
     const nMore = lines.length - DEP_LIST_THRESHOLD
     const shown = lines.slice(0, DEP_LIST_THRESHOLD)
     const hint = this._depCmdHint(argv)
-    const trailer = `...[${countNoun(nMore, 'more package')} — use '${hint}' to see full output]`
+    const trailer = `...[${countNoun(nMore, 'more package')} — use ${echoedValue(hint)} to see full output]`
     return shown.join('\n') + '\n' + trailer
   }
 

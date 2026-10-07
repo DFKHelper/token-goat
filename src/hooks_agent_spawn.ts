@@ -21,6 +21,7 @@ import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/i
 import { getHarnessName } from './bridges/registry.js'
 import { isInsideRoot } from './project.js'
 import { agentTypeOf, loadingHiddenRuleCheck, permissionNeutralRewrite } from './rewrite_permission.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 /** Target token budget for the entire briefing (project map + cached ids + reminder + report contract). Measured against this repo's own compact map (46 tokens) plus a realistic mid-size project's compact map (~140 tokens, e.g. "Files: 640" + 10 top symbols) combined with the imperative surgical-read reminder (136 tokens, grown from a one-liner in c574b1f6), the report contract added below (~95 tokens), and a 1-3 entry cache-ids block (26-50 tokens): worst-case realistic total lands around 400-470 tokens. 450 left too little headroom once the contract was added, so 550 leaves a real margin above that; revisit this number again if either tail block grows further. */
 const BRIEFING_TARGET_TOKENS = 550
@@ -187,7 +188,7 @@ function preAgentHandler(event: HookEvent): HookOutput {
     // Delivered by subagentStartHandler instead when that hook is wired, so it never lands in the parent's copy of the call.
     const briefing = subagentStartWired() ? '' : buildSubagentBriefing(briefingRoot(event))
     const advisory = duplicateOf
-      ? `\n\n&#91;token-goat] A similar subagent spawn already appears to be outstanding this session (prompt starts: "${neutralizeSpokenMarkers(truncateForWarning(duplicateOf, 80))}"). This is advisory only -- proceeding is fine if intentional.`
+      ? `\n\n&#91;token-goat] A similar subagent spawn already appears to be outstanding this session (prompt starts: ${echoedValue(neutralizeSpokenMarkers(truncateForWarning(duplicateOf, 80)))}). This is advisory only -- proceeding is fine if intentional.`
       : ''
 
     // If there is nothing to add (briefing failed to build and no duplicate warning), pass through unchanged

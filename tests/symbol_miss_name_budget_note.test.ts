@@ -41,14 +41,14 @@ describe('symbol miss past the near-name budget', () => {
     const { text, code } = runSymbol({ name: 'wombatDeltx', projectRoot: root })
     expect(code).toBe(1)
     expect(text).toBe(
-      `No matches for 'wombatDeltx'\nNear-name suggestions skipped: this project indexes more than 3 distinct symbol names, too many to rank on a miss.\nTry: token-goat semantic "wombatDeltx"`,
+      `No matches for "wombatDeltx"\nNear-name suggestions skipped: this project indexes more than 3 distinct symbol names, too many to rank on a miss.\nTry: token-goat semantic "wombatDeltx"`,
     )
   })
 
   it('still ranks when the project is at the budget, not past it', () => {
     seed(['wombatAlpha', 'wombatBravo', 'wombatDelta'])
     const { text } = runSymbol({ name: 'wombatDeltx', projectRoot: root })
-    expect(text).toBe(`No matches for 'wombatDeltx'\nDid you mean:\n  - wombatDelta`)
+    expect(text).toBe(`No matches for "wombatDeltx"\nDid you mean:\n  - wombatDelta`)
   })
 
   it('counts distinct names, not rows', () => {

@@ -23,6 +23,7 @@ import { emit, emitErr } from './emit.js'
 import { formatAmbiguity, parseCrossFileMultiSpec, parseReadSpec, resolveSymbolSpec, specScopeRoot } from './read_spec.js'
 import { formatBareNameSpecError, trimBlankLines } from './read_suggest.js'
 import { formatCommandError, formatFailedResultText } from './command_error.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 export interface BriefOptions {
   spec: string
@@ -228,7 +229,7 @@ export function runBriefCrossFile(pairs: { file: string; symbol: string }[], opt
 export function runBrief(opts: BriefOptions): number {
   // Same reasoning as runRefs/runFind/runTypes: a limit of 0 (or negative) would silently slice the caller list down to zero entries instead of surfacing a clear "you asked for nothing" error, consistent with every other --limit flag in this codebase. Validated once here rather than inside runBriefCore because --limit applies to the whole invocation, so a multi-symbol spec must report it once, not once per symbol.
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(formatCommandError(`--limit must be a positive number, got: "${opts.limit}"`))
+    emitErr(formatCommandError(`--limit must be a positive number, got: ${echoedValue(String(opts.limit))}`))
     return 1
   }
 

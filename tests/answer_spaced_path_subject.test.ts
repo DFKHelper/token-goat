@@ -63,6 +63,6 @@ describe('answer resolves a file path holding a space', () => {
   it('still refuses a multi-word subject that names no file', () => {
     const r = ask('what does "src dir/no such file.ts" export')
     expect(r.code).toBe(1)
-    expect(r.err).toContain("'src dir/no such file.ts' is not an indexed symbol or file")
+    expect(r.err).toContain('"src dir/no such file.ts" is not an indexed symbol or file')
   })
 })

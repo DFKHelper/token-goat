@@ -182,7 +182,7 @@ describe('formatProjectMap', () => {
     expect(map.topSymbols).toEqual([])
     const text = formatProjectMap(map, false)
     // TMP is a plain temp folder, not a git repo, so the suggested command must be the --walk form: a bare `token-goat index .` refuses outright outside a git repo, which is exactly where this branch fires.
-    expect(text).toContain("## Top symbols: none — no files indexed for this project; run 'token-goat index . --walk'")
+    expect(text).toContain('## Top symbols: none — no files indexed for this project; run `token-goat index . --walk`')
     expect(text).not.toContain('## Top symbols\n')
   })
 
@@ -191,7 +191,7 @@ describe('formatProjectMap', () => {
     write('a.ts', 'export const x = 1\n')
     execFileSync('git', ['init', '-q', '.'], { cwd: TMP })
     const text = formatProjectMap(buildProjectMap(TMP), false)
-    expect(text).toContain("## Top symbols: none — no files indexed for this project; run 'token-goat index .'")
+    expect(text).toContain('## Top symbols: none — no files indexed for this project; run `token-goat index .`')
     expect(text).not.toContain('--walk')
   })
 

@@ -36,7 +36,7 @@ import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 function atomicWriteBuffer(dest: string, data: Buffer): void {
   try {
     if (fs.statSync(dest).isDirectory()) {
-      const e = Object.assign(new Error(`EISDIR: illegal operation on a directory, open '${dest}'`), { code: 'EISDIR', path: dest }) as NodeJS.ErrnoException
+      const e = Object.assign(new Error(`EISDIR: illegal operation on a directory, open ${echoedValue(dest)}`), { code: 'EISDIR', path: dest }) as NodeJS.ErrnoException
       throw e
     }
   } catch (e) {
@@ -141,10 +141,10 @@ function validateWritablePath(dest: string, label: string): void {
     const base = path.basename(dest)
     const stem = base.replace(/\.[^.]*$/, '').toUpperCase()
     if (WIN_RESERVED.has(stem)) {
-      throw new CliError(`${label} '${base}' is a reserved Windows device name`)
+      throw new CliError(`${label} ${echoedValue(base)} is a reserved Windows device name`)
     }
     if (base.endsWith('.') || base.endsWith(' ')) {
-      throw new CliError(`${label} filename '${base}' ends with '${base.slice(-1)}' — Windows NTFS silently strips trailing dots and spaces, which would clobber a different file`)
+      throw new CliError(`${label} filename ${echoedValue(base)} ends with ${echoedValue(base.slice(-1))} — Windows NTFS silently strips trailing dots and spaces, which would clobber a different file`)
     }
   }
 }
@@ -153,7 +153,7 @@ function parseMaxStdinMB(): number {
   const raw = process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? '512'
   const maxMB = parseInt(raw, 10)
   if (!Number.isFinite(maxMB) || maxMB <= 0) {
-    throw new CliError(`TOKEN_GOAT_MAX_STDIN_MB must be a positive integer; got '${raw}'`)
+    throw new CliError(`TOKEN_GOAT_MAX_STDIN_MB must be a positive integer; got ${echoedValue(raw)}`)
   }
   return maxMB
 }
@@ -172,11 +172,11 @@ function readFileBoundedRaw(filePath: string, label: string, allowStdIn = false)
   try {
     const st = fs.statSync(filePath)
     if (st.isFIFO() || st.isSocket()) {
-      throw new CliError(`${label} '${filePath}' is a special file (FIFO or socket) — only regular files are supported`)
+      throw new CliError(`${label} ${echoedValue(filePath)} is a special file (FIFO or socket) — only regular files are supported`)
     }
     const maxBytes = parseMaxStdinMB() * 1024 * 1024
     if (st.size > maxBytes) {
-      throw new CliError(`${label} '${filePath}' exceeds size limit (${Math.round(st.size / 1024 / 1024)} MB); set TOKEN_GOAT_MAX_STDIN_MB to override`)
+      throw new CliError(`${label} ${echoedValue(filePath)} exceeds size limit (${Math.round(st.size / 1024 / 1024)} MB); set TOKEN_GOAT_MAX_STDIN_MB to override`)
     }
     return fs.readFileSync(filePath)
   } catch (e) {
@@ -211,11 +211,11 @@ function requireSymbolMatch(resolvedPath: string, file: string, name: string, fl
   if (match.kind === 'ambiguous') {
     const retry = (qualified: string): string => (flag === '--anchor' ? `--anchor ${quotedArg(`${file}::${qualified}`)}` : `--symbol ${quotedArg(qualified)}`)
     throw new CliError([
-      `Ambiguous symbol '${displaySafeText(match.symbol)}' in '${displaySafeText(file)}': ${countNoun(match.candidates.length, 'declaration')} match, and a note binds to one. Retry with its qualified name:`,
+      `Ambiguous symbol ${echoedValue(match.symbol)} in ${echoedValue(file)}: ${countNoun(match.candidates.length, 'declaration')} match, and a note binds to one. Retry with its qualified name:`,
       ...match.candidates.map((c) => `  - ${displaySafeText(c.qualifiedName)} (line ${c.entry.lineStart})  ->  ${displaySafeText(retry(c.qualifiedName))}`),
     ])
   }
-  const messages = [`No symbol named '${name}' is indexed in '${file}'`]
+  const messages = [`No symbol named ${echoedValue(name)} is indexed in ${echoedValue(file)}`]
   const allNames = symbolNamesInFile(resolvedPath)
   const available = rankSimilarNames(allNames, name)
   if (available.length > 0) messages.push(...didYouMeanLines(available))
@@ -228,18 +228,18 @@ export function resolveNoteAnchor(spec: string, root: string, base: string = pro
   const sep = findSpecSeparator(spec)
   const file = sep > 0 ? spec.slice(0, sep) : ''
   const symbol = sep > 0 ? spec.slice(sep + 2) : ''
-  if (file === '' || symbol === '') throw new CliError(`--anchor takes file::symbol, got '${spec}'`)
+  if (file === '' || symbol === '') throw new CliError(`--anchor takes file::symbol, got ${echoedValue(spec)}`)
   const resolvedPath = resolveIndexPath(file, base)
   if (!fs.existsSync(resolvedPath)) throw new CliError(`File not found: ${echoedValue(resolvedPath)}`)
   // A note belongs to one project, and session start resolves its anchor against that project's root.
-  if (!isInsideRoot(resolvedPath, root)) throw new CliError(`--anchor must name a file inside this project (${root}), got '${file}'`)
+  if (!isInsideRoot(resolvedPath, root)) throw new CliError(`--anchor must name a file inside this project (${root}), got ${echoedValue(file)}`)
   healStaleIndex(resolvedPath)
   const match = requireSymbolMatch(resolvedPath, file, symbol, '--anchor')
   let rel = path.relative(root, resolvedPath)
   // The root is canonical and the cwd-resolved path may not be (a macOS temp dir is /var through a link to /private/var); isInsideRoot already followed the links, so the real paths agree.
   if (rel.startsWith('..') || path.isAbsolute(rel)) rel = path.relative(fs.realpathSync(root), fs.realpathSync(resolvedPath))
   const anchor: NoteAnchor = { file: rel.split(path.sep).join('/'), symbol, sha: fingerprintContent(match.body) }
-  if (anchorLine(anchor) === null) throw new CliError(`Cannot anchor to '${spec}': the symbol name holds a character the notes file cannot store (':', '@' or whitespace)`)
+  if (anchorLine(anchor) === null) throw new CliError(`Cannot anchor to ${echoedValue(spec)}: the symbol name holds a character the notes file cannot store (':', '@' or whitespace)`)
   return anchor
 }
 

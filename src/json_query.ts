@@ -93,7 +93,7 @@ export function formatJsonOutline(outline: JsonOutline): string {
 
   if (outline.kind === 'object') {
     const { filter } = outline
-    const tally = filter === undefined ? '' : `(${outline.fields.length} of ${filter.total} keys contain "${displaySafeText(filter.needle)}")`
+    const tally = filter === undefined ? '' : `(${outline.fields.length} of ${filter.total} keys contain ${echoedValue(filter.needle)})`
     if (outline.fields.length === 0) return filter === undefined ? '(empty object)' : tally
     // A JSON object key may hold a newline, and this listing is one entry per line: unescaped, a key could add a line of its own that reads exactly like another field of the document.
     const lines = outline.fields.map((f) => `${displaySafeText(f.name)}: ${f.type}${f.size !== undefined ? ` (${f.size})` : ''}`)
@@ -299,12 +299,12 @@ function parseListProjectionFields(inner: string, fullSpec: string): string[] {
     if (!trimmed) continue
     const source = cleanFieldPath(trimmed)
     if (!source) {
-      throw new Error(`invalid list projection '[${inner}]' in path spec '${fullSpec}': empty field expression`)
+      throw new Error(`invalid list projection ${echoedValue('[' + inner + ']')} in path spec ${echoedValue(fullSpec)}: empty field expression`)
     }
     fields.push(source)
   }
   if (fields.length === 0) {
-    throw new Error(`invalid list projection '[${inner}]' in path spec '${fullSpec}': must specify at least one field`)
+    throw new Error(`invalid list projection ${echoedValue('[' + inner + ']')} in path spec ${echoedValue(fullSpec)}: must specify at least one field`)
   }
   return fields
 }
@@ -319,7 +319,7 @@ function parseObjectProjectionFields(inner: string, fullSpec: string): Projectio
     if (colonParts.length === 1) {
       const source = cleanFieldPath(colonParts[0]!.trim())
       if (!source) {
-        throw new Error(`invalid object projection '{${inner}}' in path spec '${fullSpec}': empty field expression`)
+        throw new Error(`invalid object projection ${echoedValue('{' + inner + '}')} in path spec ${echoedValue(fullSpec)}: empty field expression`)
       }
       const target = getLeafKeyName(colonParts[0]!.trim())
       fields.push({ targetKey: target, sourcePath: source })
@@ -329,15 +329,15 @@ function parseObjectProjectionFields(inner: string, fullSpec: string): Projectio
       const target = unquoteIfQuoted(rawTarget)
       const source = cleanFieldPath(rawSource)
       if (!target || !source) {
-        throw new Error(`invalid object projection field '${trimmed}' in '{${inner}}' of path spec '${fullSpec}'`)
+        throw new Error(`invalid object projection field ${echoedValue(trimmed)} in ${echoedValue('{' + inner + '}')} of path spec ${echoedValue(fullSpec)}`)
       }
       fields.push({ targetKey: target, sourcePath: source })
     } else {
-      throw new Error(`invalid object projection field '${trimmed}' in '{${inner}}' of path spec '${fullSpec}': multiple colons`)
+      throw new Error(`invalid object projection field ${echoedValue(trimmed)} in ${echoedValue('{' + inner + '}')} of path spec ${echoedValue(fullSpec)}: multiple colons`)
     }
   }
   if (fields.length === 0) {
-    throw new Error(`invalid object projection '{${inner}}' in path spec '${fullSpec}': must specify at least one field`)
+    throw new Error(`invalid object projection ${echoedValue('{' + inner + '}')} in path spec ${echoedValue(fullSpec)}: must specify at least one field`)
   }
   return fields
 }
@@ -353,7 +353,7 @@ export function parseJsonPath(spec: string): PathOp[] {
       while (j < n && spec[j] !== '.' && spec[j] !== '[' && spec[j] !== '{' && spec[j] !== '|') j++
       // Trailing blanks belong to the separator after the name, as for a bare key below: `..address | city` names `address`.
       const name = spec.slice(i, j).trimEnd()
-      if (name === '') throw new Error(`invalid path spec: expected property name after '..' in '${spec}'`)
+      if (name === '') throw new Error(`invalid path spec: expected property name after '..' in ${echoedValue(spec)}`)
       ops.push({ kind: 'recursive_key', name })
       i = j
       continue
@@ -399,7 +399,7 @@ export function parseJsonPath(spec: string): PathOp[] {
           }
         }
       }
-      if (close === -1) throw new Error(`invalid path spec: unterminated '{' in '${spec}'`)
+      if (close === -1) throw new Error(`invalid path spec: unterminated '{' in ${echoedValue(spec)}`)
       const inner = spec.slice(i + 1, close)
       const fields = parseObjectProjectionFields(inner, spec)
       ops.push({ kind: 'project_object', fields })
@@ -433,7 +433,7 @@ export function parseJsonPath(spec: string): PathOp[] {
           }
         }
       }
-      if (close === -1) throw new Error(`invalid path spec: unterminated '[' in '${spec}'`)
+      if (close === -1) throw new Error(`invalid path spec: unterminated '[' in ${echoedValue(spec)}`)
       const inner = spec.slice(i + 1, close)
       const trimmedInner = inner.trim()
       if (trimmedInner === '' || trimmedInner === '*') {
@@ -462,7 +462,7 @@ export function parseJsonPath(spec: string): PathOp[] {
             if (field.startsWith('@.')) field = field.slice(2).trim()
             const swallowedOperator = /[!<>]$/.exec(field)
             if (swallowedOperator !== null) {
-              throw new Error(`unsupported comparison operator '${swallowedOperator[0]}=' in '[${inner}]' of path spec '${spec}': this grammar filters by equality only ([field=value])`)
+              throw new Error(`unsupported comparison operator ${echoedValue(swallowedOperator[0] + '=')} in ${echoedValue('[' + inner + ']')} of path spec ${echoedValue(spec)}: this grammar filters by equality only ([field=value])`)
             }
             let rawVal = (m[2] as string).trim()
             if (
@@ -477,12 +477,12 @@ export function parseJsonPath(spec: string): PathOp[] {
           } else {
             const bareOperator = /[<>]/.exec(expr)
             if (bareOperator !== null) {
-              throw new Error(`unsupported comparison operator '${bareOperator[0]}' in '[${inner}]' of path spec '${spec}': this grammar filters by equality only ([field=value])`)
+              throw new Error(`unsupported comparison operator ${echoedValue(bareOperator[0])} in ${echoedValue('[' + inner + ']')} of path spec ${echoedValue(spec)}: this grammar filters by equality only ([field=value])`)
             }
             if (isDottedPrefix || expr.startsWith('.') || (i === 0 && isValidFieldPath(expr))) {
               ops.push({ kind: 'project_list', fields: [cleanFieldPath(expr)] })
             } else {
-              throw new Error(`invalid bracket expression '[${inner}]' in path spec: '${spec}' (expected [n], [*], ["key"], or [field=value])`)
+              throw new Error(`invalid bracket expression ${echoedValue('[' + inner + ']')} in path spec: ${echoedValue(spec)} (expected [n], [*], ["key"], or [field=value])`)
             }
           }
         }
@@ -494,7 +494,7 @@ export function parseJsonPath(spec: string): PathOp[] {
     while (j < n && spec[j] !== '.' && spec[j] !== '[' && spec[j] !== '{' && spec[j] !== '|') j++
     // The scan stops only at a separator, so untrimmed, the space written before a pipe (`org | {name, tier}`) would become part of the key and fail the lookup; a key that really ends in whitespace is spelled as a quoted segment, `["org "]`.
     const name = spec.slice(i, j).trimEnd()
-    if (name === '') throw new Error(`invalid path spec: '${spec}'`)
+    if (name === '') throw new Error(`invalid path spec: ${echoedValue(spec)}`)
     ops.push({ kind: 'key', name })
     i = j
   }
@@ -545,7 +545,7 @@ function describeEmptyStep(op: PathOp, inputs: readonly unknown[]): string {
     case 'key':
       return `.${op.name} found no such key: ${describeReached(inputs)}`
     case 'recursive_key':
-      return `..${op.name} found no key named '${op.name}' anywhere under ${inputs.length === 1 ? 'the value it searched' : `the ${inputs.length} values it searched`}`
+      return `..${op.name} found no key named ${echoedValue(op.name)} anywhere under ${inputs.length === 1 ? 'the value it searched' : `the ${inputs.length} values it searched`}`
     case 'index':
       // An index is only ever reached with nothing to show after a fan-out (unfanned, a miss throws), and there it applies to each item, which is the step people mistake for indexing the list of results.
       return `[${op.index}] found nothing to index: ${describeReached(inputs)}. After a fan-out an index applies to each item, not to the list of results; ${op.index === 0 ? 'to keep only the first result, drop the index and pass --head 1' : `to pick one result by position, index the array before the fan-out, as in list[${op.index}].field`}`
@@ -561,7 +561,7 @@ function describeEmptyStep(op: PathOp, inputs: readonly unknown[]): string {
 
 /** The message a front-end shows when a fanned query matched nothing, so zero matches reads as a miss, like a missing key does, rather than as an empty line. */
 export function noMatchMessage(spec: string, result: JsonQueryResult): string {
-  return `no match for '${spec}': ${result.emptiedBy ?? 'the path matched no values'}`
+  return `no match for ${echoedValue(spec)}: ${result.emptiedBy ?? 'the path matched no values'}`
 }
 
 /** Evaluates a parsed path against a JSON document. Plain key/index traversal (no wildcard or filter yet reached) throws on a missing key or out-of-range index, since there is exactly one intended target. Once fanned out by `[*]` or `[field=value]`, a per-item miss (a key absent on one of several matched objects, say) is dropped rather than failing the whole query -- projecting across a heterogeneous array is the normal case, not an error. */

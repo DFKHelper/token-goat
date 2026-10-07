@@ -105,7 +105,7 @@ export async function cmdSkillCompact(name: string | undefined, opts: { path?: s
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
         throw new CliError(`skill file not found: ${opts.path}`)
       }
-      throw new CliError(`failed to read skill file '${opts.path}': ${extractErrorMessage(e)}`)
+      throw new CliError(`failed to read skill file ${echoedValue(opts.path)}: ${extractErrorMessage(e)}`)
     }
     cacheName = name ?? path.basename(path.dirname(path.resolve(opts.path)))
     sourcePath = path.resolve(opts.path)
@@ -125,12 +125,12 @@ export async function cmdSkillCompact(name: string | undefined, opts: { path?: s
   await storeOutput(sessionId, cacheName, body, { sourcePath })
   const compact = extractCompactFromMarker(body)
   if (compact === null) {
-    out(`Skill '${cacheName}' has no COMPACT_END marker — nothing to compact.`)
+    out(`Skill ${echoedValue(cacheName)} has no COMPACT_END marker — nothing to compact.`)
     return
   }
   const sourceSha = contentHash(body)
   await storeCompact(sessionId, cacheName, compact, sourceSha)
-  out(`Cached compact for skill '${cacheName}'.`)
+  out(`Cached compact for skill ${echoedValue(cacheName)}.`)
 }
 
 async function countSkillsHiddenBySession(sessionId: string | undefined): Promise<number> {
@@ -165,7 +165,7 @@ export async function cmdSkillList(opts: { json?: boolean; sessionId?: string })
     if (skills.length === 0) {
       const hidden = await countSkillsHiddenBySession(opts.sessionId)
       if (hidden > 0) {
-        out(`No skills cached for session '${opts.sessionId}' (${hidden} cached under other sessions).`)
+        out(`No skills cached for session ${echoedValue(String(opts.sessionId))} (${hidden} cached under other sessions).`)
         return
       }
       out('No skills cached yet.')
@@ -255,11 +255,11 @@ export async function cmdSkillDiff(name: string): Promise<void> {
     .sort((a, b) => b.ts - a.ts)
 
   if (versions.length === 0) {
-    out(`no cached versions of '${name}'`)
+    out(`no cached versions of ${echoedValue(name)}`)
     return
   }
   if (versions.length < 2) {
-    out(`only one cached version of '${name}'`)
+    out(`only one cached version of ${echoedValue(name)}`)
     return
   }
 
@@ -268,7 +268,7 @@ export async function cmdSkillDiff(name: string): Promise<void> {
   const newerBody = await fs.promises.readFile(path.resolve(dir, `${newer.outputId}.txt`), 'utf-8').catch(() => null)
   const olderBody = await fs.promises.readFile(path.resolve(dir, `${older.outputId}.txt`), 'utf-8').catch(() => null)
   if (newerBody === null || olderBody === null) {
-    out(`a cached version of '${name}' was evicted while diffing -- try again`)
+    out(`a cached version of ${echoedValue(name)} was evicted while diffing -- try again`)
     return
   }
   const diff = buildLineDiff(olderBody, newerBody, name)

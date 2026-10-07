@@ -82,7 +82,7 @@ export interface CallersOptions {
 
 export function runCallers(opts: CallersOptions): number {
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(formatCommandError(`--limit must be a positive number, got: "${opts.limit}"`))
+    emitErr(formatCommandError(`--limit must be a positive number, got: ${echoedValue(String(opts.limit))}`))
     return 1
   }
 
@@ -129,7 +129,7 @@ export function runCallers(opts: CallersOptions): number {
         emit(displaySafeJson({ items: [], truncated: false, totalCount: 0, hiddenByExcludeTests: suppressed }))
         return 1
       }
-      emitErr(formatCommandError(`No non-test references found for '${opts.symbol}' (${excludeTestsHiddenNote(suppressed)})`))
+      emitErr(formatCommandError(`No non-test references found for ${echoedValue(opts.symbol)} (${excludeTestsHiddenNote(suppressed)})`))
       return 1
     }
 
@@ -153,7 +153,7 @@ export function runCallers(opts: CallersOptions): number {
       emitErr(formatCommandError(refBlindKindNotice(name, kindVerdict.blindKinds)))
       return 1
     }
-    emitErr(formatCommandError(`No references found for '${opts.symbol}'`))
+    emitErr(formatCommandError(`No references found for ${echoedValue(opts.symbol)}`))
     if (kindVerdict.blindCount > 0) emitErr(refBlindKindPartialNote(name, kindVerdict.blindKinds, kindVerdict.blindCount, kindRows.length))
     if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
     return 1
@@ -214,7 +214,7 @@ export interface CallChainOptions {
 
 export function runCallChain(opts: CallChainOptions): number {
   if (opts.depth !== undefined && opts.depth <= 0) {
-    emitErr(formatCommandError(`--depth must be a positive number, got: "${opts.depth}"`))
+    emitErr(formatCommandError(`--depth must be a positive number, got: ${echoedValue(String(opts.depth))}`))
     return 1
   }
   const maxDepth = opts.depth ?? 8
@@ -338,7 +338,7 @@ export interface ImpactOptions {
 
 export function runImpact(opts: ImpactOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(formatCommandError(`--top must be a positive number, got: "${opts.top}"`))
+    emitErr(formatCommandError(`--top must be a positive number, got: ${echoedValue(String(opts.top))}`))
     return 1
   }
   const top = opts.top ?? 20
@@ -469,7 +469,7 @@ export function runImpact(opts: ImpactOptions): number {
         emit(displaySafeJson([]))
         return 1
       }
-      emitErr(formatCommandError(`No non-test impact found for '${opts.symbol}' (${excludeTestsHiddenNote(suppressedCount)})`))
+      emitErr(formatCommandError(`No non-test impact found for ${echoedValue(opts.symbol)} (${excludeTestsHiddenNote(suppressedCount)})`))
       return 1
     }
 
@@ -492,7 +492,7 @@ export function runImpact(opts: ImpactOptions): number {
       emitErr(formatCommandError(refBlindKindNotice(rootName, kindVerdict.blindKinds)))
       return 1
     }
-    emitErr(formatCommandError(`No callers found for '${opts.symbol}'`))
+    emitErr(formatCommandError(`No callers found for ${echoedValue(opts.symbol)}`))
     if (kindVerdict.blindCount > 0) emitErr(refBlindKindPartialNote(rootName, kindVerdict.blindKinds, kindVerdict.blindCount, kindRows.length))
     return 1
   }
@@ -522,7 +522,7 @@ export interface AskOptions {
 
 export function runAsk(opts: AskOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(formatCommandError(`--top must be a positive number, got: "${opts.top}"`))
+    emitErr(formatCommandError(`--top must be a positive number, got: ${echoedValue(String(opts.top))}`))
     return 1
   }
   const top = opts.top ?? 8

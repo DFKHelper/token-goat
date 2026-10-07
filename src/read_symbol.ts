@@ -17,7 +17,7 @@ import { DIDYOUMEAN_LIMIT, didYouMean, findStructuredKeyPath, nearNamesSkippedNo
 import { confinementRefusal, resolveProjectConfinement, stripHtmlIdSpelling } from './read_spec.js'
 import { formatStatsSuffix, hasRealDocstring } from './read_meta.js'
 import { DELETED_TAG, docCommentLines, fileIsGone, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, indexFreshness, largestFileSize, recordReadStat, recordStaleServed, resolveBody, sinkGoneRows, staleWarning, truncationFooter, type TruncationTotal } from './read_commands.js'
-import { fencedCommand, quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 import { forClient } from './mcp_client_text.js'
 
 /** Body lines shown per `symbol` match before the preview is cut and the cut is announced. */
@@ -62,7 +62,7 @@ function stableSortImportBindsLast<T extends { body?: string | null }>(rows: rea
 export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   // A limit of 0 (or negative) would translate to SQL `LIMIT 0`, which always returns zero rows regardless of whether the symbol exists -- silently reporting "no matches" for a symbol that's actually indexed. Reject it explicitly instead of querying with it.
   if (opts.limit !== undefined && opts.limit <= 0) {
-    return { text: `--limit must be a positive number, got: "${opts.limit}"`, code: 1 }
+    return { text: `--limit must be a positive number, got: ${echoedValue(String(opts.limit))}`, code: 1 }
   }
   // `--grep` IS the query when there is no exact name to anchor on. Combining it with a name is near-useless -- an exact `name = ?` match is already pinned to one identifier, so regex-filtering that same fixed name either matches everything or nothing -- and more likely a caller mistake than real intent, so reject the combination outright rather than silently pick a winner.
   if (opts.name !== undefined && opts.grep !== undefined) {
@@ -188,7 +188,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   if (excludeTests && sweep.keptCount === 0 && hiddenByExcludeTests > 0) {
     // The symbol IS indexed, just only ever in test files. Saying "No matches" here would be a lie that stops the caller looking; name the filter that hid them instead.
     const label = opts.name ?? opts.grep ?? '*'
-    const notice = `no non-test matches for '${label}' (${excludeTestsHiddenNote(hiddenByExcludeTests)})`
+    const notice = `no non-test matches for ${echoedValue(label)} (${excludeTestsHiddenNote(hiddenByExcludeTests)})`
     if (opts.json === true) {
       return { text: displaySafeJson({ items: [], truncated: false, totalCount: 0 }), code: 0 }
     }
@@ -209,12 +209,12 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     if (opts.json === true) {
       return { text: displaySafeJson({ items: [], truncated: false, totalCount: 0 }), code: 0 }
     }
-    let text = `No matches for '${opts.name ?? opts.grep ?? '*'}'`
+    let text = `No matches for ${echoedValue(opts.name ?? opts.grep ?? '*')}`
     // Kinds are matched exactly and stored lower-case, so `--kind Method` empties the scope on its own; name a kind no indexed symbol carries, as `dead --kind` does, instead of letting the miss read as an empty project. A recognized kind is skipped without a query: its absence is an ordinary miss.
     if (opts.kind !== undefined && !CORE_SYMBOL_KINDS.includes(opts.kind)) {
       const storedKinds = distinctSymbolKinds(opts.projectRoot)
       if (!storedKinds.includes(opts.kind)) {
-        text += `\nno indexed symbol has kind '${opts.kind}'`
+        text += `\nno indexed symbol has kind ${echoedValue(opts.kind)}`
         // A different-case spelling of a real kind is the answer on its own; ranking it beside every kind containing it would bury it under apex_method and lwc_api_method.
         const lower = opts.kind.toLowerCase()
         const recased = [...new Set([...storedKinds, ...CORE_SYMBOL_KINDS])].filter((k) => k.toLowerCase() === lower)
@@ -237,7 +237,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
         const more = total > exactMatches.length ? ` (+${total - exactMatches.length} more)` : ''
         const flags = [opts.kind !== undefined ? '--kind' : null, opts.file !== undefined ? '--file' : null].filter((f): f is string => f !== null)
         const widen = flags.length > 0 ? `drop ${flags.join('/')} to see it` : 'widen the search scope to see it'
-        text += `\n'${opts.name}' IS indexed (${where}${more}) -- ${widen}`
+        text += `\n${echoedValue(opts.name)} IS indexed (${where}${more}) -- ${widen}`
       } else {
         const near = nearSymbolNames(opts.name, rootDir)
         // On an empty index `semantic` fails exactly as `symbol` just did, so suggesting it sends the caller into a second dead end before they ever reach the note below that names the real fix. Suppressed only in that case: with any index at all the fallback is still the right next step, and it is the one left when the ranking was skipped for size.
@@ -251,7 +251,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
       if (hit !== null) {
         const display = toDisplayPath(rootDir, hit.filePath)
         // quotedArg single-quotes a key holding `$` (a JSON Schema `$ref`), which bash and PowerShell both leave unexpanded.
-        text += `\n'${opts.name}' is a key in ${display} at ${hit.dotPath} -- JSON/YAML keys below the top level are not symbols; read it with: ${fencedCommand(`token-goat ${hit.command} ${quotedArg(display)} ${quotedArg(hit.dotPath)}`)}`
+        text += `\n${echoedValue(opts.name)} is a key in ${display} at ${hit.dotPath} -- JSON/YAML keys below the top level are not symbols; read it with: ${fencedCommand(`token-goat ${hit.command} ${quotedArg(display)} ${quotedArg(hit.dotPath)}`)}`
       }
     }
     if (indexEmpty) {

@@ -6,7 +6,7 @@ import * as path from 'node:path'
 import { extractImports, importsExtensionFor } from './import_export_extract.js'
 import { querySymbols, queryRefs, searchSymbolsFts } from './index_reader.js'
 import { displaySafeText, normalizePath, toDisplayPath, displaySafeJson } from './paths.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { resolveSpecPath } from './spec_path.js'
 import { fenceUntrusted } from './untrusted_fence.js'
 import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
@@ -44,7 +44,7 @@ export interface SimilarOptions {
 
 export function runSimilar(opts: SimilarOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(formatCommandError(`--top must be a positive number, got: "${opts.top}"`))
+    emitErr(formatCommandError(`--top must be a positive number, got: ${echoedValue(String(opts.top))}`))
     return 1
   }
   const sepIdx = opts.spec.lastIndexOf('::')
@@ -88,7 +88,7 @@ export interface ContextForOptions {
 
 export function runContextFor(opts: ContextForOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(formatCommandError(`--top must be a positive number, got: "${opts.top}"`))
+    emitErr(formatCommandError(`--top must be a positive number, got: ${echoedValue(String(opts.top))}`))
     return 1
   }
   const top = opts.top ?? 12
@@ -100,7 +100,7 @@ export function runContextFor(opts: ContextForOptions): number {
   const hits = fetched.slice(0, top)
 
   if (hits.length === 0) {
-    emitErr(formatCommandError(`No matches found for '${opts.task}'`))
+    emitErr(formatCommandError(`No matches found for ${echoedValue(opts.task)}`))
     return 1
   }
 
@@ -217,7 +217,7 @@ export function runTestFor(opts: TestForOptions): number {
     return 0
   }
   if (results.length === 0) {
-    emit(`No test files found referencing symbols in '${displaySafeText(opts.file)}'`)
+    emit(`No test files found referencing symbols in ${echoedValue(opts.file)}`)
     return 0
   }
   for (const r of results) {
@@ -237,7 +237,7 @@ export interface CoverageGapsOptions {
 
 export function runCoverageGaps(opts: CoverageGapsOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(formatCommandError(`--top must be a positive number, got: "${opts.top}"`))
+    emitErr(formatCommandError(`--top must be a positive number, got: ${echoedValue(String(opts.top))}`))
     return 1
   }
   const top = opts.top ?? 50
@@ -286,14 +286,14 @@ export interface ArchOptions {
 
 export function runArch(opts: ArchOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(formatCommandError(`--top must be a positive number, got: "${opts.top}"`))
+    emitErr(formatCommandError(`--top must be a positive number, got: ${echoedValue(String(opts.top))}`))
     return 1
   }
   const cwd = opts.cwd ?? process.cwd()
   const top = opts.top ?? 10
   const { files, graph, importedBy, resolve } = buildImportGraph(cwd)
   if (files.length === 0 && opts.json !== true) {
-    emit(`no tracked files found under '${toDisplayPath(getDisplayRoot(cwd), cwd)}' (is it a git repo?). Nothing to analyse.`)
+    emit(`no tracked files found under ${echoedValue(toDisplayPath(getDisplayRoot(cwd), cwd))} (is it a git repo?). Nothing to analyse.`)
     return 0
   }
 

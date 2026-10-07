@@ -126,8 +126,6 @@ const PLAIN = 'src/a.ts'
 /** Source files whose `token-goat …` strings are printed by the CLI, the MCP server or an installer and never pass through relayInProcess, so the hook-side guard never sees them. A hook module (hooks_*, hook_*, hints/, relay) can never be listed. */
 const NOT_RELAYED: ReadonlyArray<{ file: string; reason: string }> = [
   { file: 'bridges/copilot_cli.ts', reason: 'the generated shim script body, run by Copilot CLI, not model-facing text' },
-  { file: 'bridges/grok_install.ts', reason: 'an installer refusal printed on stderr by `install --grok`' },
-  { file: 'bridges/kimi_install.ts', reason: 'an installer refusal printed on stderr by `install --kimi`' },
   { file: 'bridges/neovim_install.ts', reason: 'Lua source written into the Neovim plugin, which shell-escapes its own arguments' },
   { file: 'bridges/opencode.ts', reason: 'the generated opencode plugin source' },
   { file: 'bridges/relay_block.ts', reason: 'a code comment inside a generated bridge script' },
@@ -557,78 +555,138 @@ describe('every whole command named in a sentence in src', () => {
 })
 
 
-/** A value interpolated between quotes written by hand: `Symbol '${symbol}' not found` read `Symbol 'it's' not found` for a name holding an apostrophe, and handed an indexed name's control characters on as written. echoedValue (src/hint_suggestion_guard.ts) escapes an echoed value and quotes it the way quotedArg quotes the retry commands beside it. */
+/** A value interpolated between quotes written by hand: `Symbol '${symbol}' not found` read `Symbol 'it's' not found` for a name holding an apostrophe, and handed an indexed name's control characters on as written. echoedValue (src/hint_suggestion_guard.ts) escapes an echoed value and quotes it the way quotedArg quotes the retry commands beside it, and fencedCommand sets a whole command in backticks. */
 const HAND_QUOTED_VALUE = new RegExp('([\'"])' + OPEN + '(\\d+)' + CLOSE + '[^\'"\\n]*\\1', 'g')
 
-/** The sentences that echo back the value asked for: a not-found error, a redirect note, the insert-section confirmation and a cross-file lead. */
-const ECHO_SENTENCE = /not found|redirected from|inserted after|is defined in/
+/** Why a hand-quoted interpolation below keeps its quotes. */
+const R = {
+  quoter: 'a quoting function: the quotes are what it exists to write, around a value it has escaped, or refused, for exactly those quotes',
+  blank: 'blanks a quoted span to spaces of the same length so the command around it can be scanned; the quotes are the span\'s own',
+  format: 'the quotes are the syntax of the format being written (CSV field, SQL identifier, FTS5 phrase, TOML string, HTML or XML attribute) and the value is escaped for that syntax in the same expression',
+  sqlConst: 'SQL text around a table name or tokenizer token-goat fixes in a constant (DERIVED_TABLES, FTS_TOKENIZER)',
+  generated: 'the source of a script or shim token-goat writes, around its own install paths or a fixed literal; never shown as a message',
+  cmdLine: 'a command line handed to cmd.exe /s /c as one quoted string, each argument already quoted by windowsCmdQuoteArg',
+  regex: 'a regex matching SQL\'s own double-quoted identifier syntax around a name escapeRegExp already escaped',
+  jsonPath: 'json-query bracket-key syntax inside a path the caller then quotes whole with quotedArg; a name holding a single quote is refused first',
+  sedRewrite: 'an internal rewrite into the `sed -n` form extractSedRange parses, never shown; a path holding a double quote is refused first',
+  compressCmd: 'the cd prefix of the command `token-goat compress -c` re-runs, quoted whole with quotedArg; a directory holding a single quote drops the suggestion',
+  duckdb: 'a SQL string literal inside a suggested duckdb query; sqlLiteralPath doubles any single quote in the path',
+  pinned: 'a value read from the sha256-pinned tokenizer.json, named in an integrity failure in its own JSON syntax',
+  render: 'a tool output line re-rendered in the tool\'s own syntax, which quotes the value the tool already printed in those quotes (Playwright aria snapshot, redis-cli key list)',
+  number: 'a document number in the XML attribute syntax of a pack',
+  base64: 'PowerShell or Python syntax around base64 text, which holds no quote mark (src/powershell_compat.ts, outside this pass\'s write scope)',
+  jsonLeaf: 'a hint inside a --json payload that displaySafeJson escapes as a leaf string, so the value goes in as typed; escaping it here as well would escape it twice',
+  mcpParam:'an MCP tool name and JSON parameter example, for a client with no shell: the value is one token-goat already quoted in its own retry command, the name is word characters, and a value holding a double quote or backtick is left out',
+} as const
 
-/** Echo sentences whose hand-quoted value is not one the caller asked for. */
-const ECHO_EXEMPT: ReadonlyArray<{ key: string; reason: string }> = [
-  { key: 'cli_upgrade.ts::MANUAL_INSTALL', reason: 'a fixed install command token-goat names, not an echoed value' },
-  { key: 'index_health.ts::suggestedIndexCommand(rootDir)', reason: 'a fixed reindex command token-goat suggests, not an echoed value' },
-  { key: 'tool_filters/languages.ts::cmd', reason: "a filter's summary of a captured PowerShell error, part of a rewritten tool output, which the relay leaves outside its guard on purpose" },
+/** The hand-quoted interpolations that stay, each keyed `file::source line` (the line the interpolated value starts on, trimmed): the quotes belong to the syntax of what the text is, or hold a value token-goat fixes or pins. A key names one line, so a new hand-quoted value elsewhere in the same file is not covered by it, and an entry whose line changes or goes away fails until it is updated or removed. */
+const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string }> = [
+  ...[
+    'bash_extractors.ts::return `\'${s.replace(/\'/g, `\'\\\\\'\'`)}\'`',
+    'bash_structural_index.ts::return `"${s}"`',
+    'hint_suggestion_guard.ts::if (unquotable(value)) return \'"\' + UNQUOTABLE + \'"\'',
+    'hint_suggestion_guard.ts::if (REWRITTEN_IN_DOUBLE_QUOTES.test(value)) return "\'" + value + "\'"',
+    'hint_suggestion_guard.ts::return \'"\' + value + \'"\'',
+    'hint_suggestion_guard.ts::return held.map((v) => (single ? "\'" + v + "\'" : \'"\' + (REWRITTEN_IN_DOUBLE_QUOTES.test(v) ? UNQUOTABLE : v) + \'"\'))',
+    'native_hook.ts::return `"${text}"`',
+    'process_util.ts::if (process.platform === \'win32\') return `"${value}"`',
+    'process_util.ts::return `"${value.replace(/[\\\\$`"]/g, \'\\\\$&\')}"`',
+    'process_util.ts::return `\'${value.replace(/\'/g, "\'\\\\\'\'")}\'`',
+    'process_util.ts::return `\'${value.replace(/\'/g, "\'\'")}\'`',
+  ].map((key) => ({ key, reason: R.quoter })),
+  ...[
+    'hooks_bash_commands.ts::.replace(/"((?:[^"\\\\]|\\\\.)*)"/g, (_m, inner: string) => \'"\' + \' \'.repeat(inner.length) + \'"\')',
+    'hooks_bash_commands.ts::.replace(/\'([^\']*)\'/g, (_m, inner: string) => "\'" + \' \'.repeat(inner.length) + "\'")',
+  ].map((key) => ({ key, reason: R.blank })),
+  ...[
+    'csv_query.ts::return `"${cell.replace(/"/g, \'""\')}"`',
+    'sqlite_query.ts::return `"${name.replace(/"/g, \'""\')}"`',
+    'sqlite_query.ts::return `"${cell.replace(/"/g, \'""\')}"`',
+    'index_reader.ts::.map((t) => \'"\' + t.replace(/"/g, \'""\') + \'"\')',
+    'html_query.ts::.map(([k, v]) => (v !== \'\' ? `${k}="${v.replace(/"/g, \'&quot;\')}"` : k))',
+    'xml_query.ts::attrParts.push(`${k}="${escapeXmlAttr(v)}"`)',
+    'project_memory.ts::lines.push(`${k} = "${escaped}"`);',
+  ].map((key) => ({ key, reason: R.format })),
+  ...[
+    'db.ts::tokenize=\'${FTS_TOKENIZER}\'',
+    'index_reclaim.ts::const before = (db.prepare(`SELECT count(*) AS c FROM "${table}"`).get() as { c: number }).c',
+    'index_reclaim.ts::db.prepare(`DELETE FROM "${table}"`).run()',
+  ].map((key) => ({ key, reason: R.sqlConst })),
+  ...[
+    'bridges/zed_install.ts::return `@echo off\\r\\n"${nodePath}" "${cliPath}" mcp-serve\\r\\n`',
+    'bridges/zed_install.ts::return `#!/bin/sh\\nexec "${nodePath}" "${cliPath}" mcp-serve\\n`',
+    'bridges/shim_common.ts::try { process.stdout.write(\'${noOp}\') } catch {}`',
+  ].map((key) => ({ key, reason: R.generated })),
+  { key: 'process_util.ts::return spawnSync(existsSync(comspec) ? comspec : \'cmd.exe\', [\'/d\', \'/s\', \'/c\', `"${line}"`], { ...options, windowsVerbatimArguments: true })', reason: R.cmdLine },
+  { key: 'languages/sql_idx.ts::return new RegExp(`(?<![\\\\w$])END\\\\s+(?:"${simple}"|${simple})\\\\s*;`, \'i\')', reason: R.regex },
+  ...[
+    'bash_extractors.ts::const path = /^[\\w-]+$/.test(target) ? target : "[\'" + target + "\']"',
+    'hint_target.ts::if (!target.name.includes("\'")) return \'token-goat \' + format + \'-query \' + quotedArgs(shownPath, "[\'" + target.name + "\']").join(\' \')',
+  ].map((key) => ({ key, reason: R.jsonPath })),
+  { key: 'bash_extractors.ts::return \'sed -n \' + m[4]! + \' "\' + filePath + \'"\'', reason: R.sedRewrite },
+  { key: 'hooks_bash_post.ts::const runCmd = cdHost === null ? bare : `cd \'${cdHost}\' && ${bare}`', reason: R.compressCmd },
+  { key: 'hints/file_type_handler.ts::`Query with DuckDB: duckdb -c "SELECT * FROM read_parquet(\'${sqlLiteralPath(filePath)}\') LIMIT 10"`,', reason: R.duckdb },
+  ...[
+    'embed_tokenizer.ts::if (template !== \'[CLS] A [SEP]\') fail(`post_processor.single is "${template}", expected "[CLS] A [SEP]"`)',
+    'embed_tokenizer.ts::if (typeof id !== \'number\' || !Number.isInteger(id)) fail(`model.vocab["${token}"] is not an integer id`)',
+  ].map((key) => ({ key, reason: R.pinned })),
+  ...[
+    'mcp_compress_packs.ts::return `${indent}${uid} ${role} "${name.slice(0, SNAPSHOT_NAME_MAX_CHARS)}  … [${elided} chars elided]"${rest}`',
+    'tool_filters/db_clients.ts::kept.push(...allKeys.slice(0, RedisCLIFilter.LIST_KEEP).map((k) => `"${k}"`))',
+    'tool_filters/db_clients.ts::kept.push(...allKeys.map((k) => `"${k}"`))',
+  ].map((key) => ({ key, reason: R.render })),
+  { key: 'pack.ts::parts.push(`<document index="${docNum}">`)', reason: R.number },
+  ...[
+    'mcp_client_text.ts::const example = /["`]/.test(value) ? \'\' : ` (e.g. "${value}")`',
+    'mcp_client_text.ts::return `the "${cmd}" tool again with a more specific ${param}${example}`',
+  ].map((key) => ({ key, reason: R.mcpParam })),
+  { key: 'read_semantic.ts::const payload = { source: \'fts\', items: [], truncated: false, totalCount: 0, excludeTestsFilteredToEmpty: true, hint: `no non-test matches for "${query}" (${hidden})` }', reason: R.jsonLeaf },
+  ...[
+    'powershell_compat.ts::return `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String(\'${Buffer.from(text, \'utf8\').toString(\'base64\')}\'))`',
+    'powershell_compat.ts::bootstrap = `"exec(__import__(\'base64\').b64decode(\'${b64}\').decode())"`',
+  ].map((key) => ({ key, reason: R.base64 })),
 ]
 
-/** Every other hand-quoted interpolation in src, counted per file when brief r23 converted the echo sentences. A count may fall and may not rise: a new one fails here, and converting one means lowering its file's count. */
-const HAND_QUOTED_LEDGER: Readonly<Record<string, number>> = {
-  'affected.ts': 1, 'answer_router.ts': 2, 'baseline.ts': 1, 'bash_extractors.ts': 3, 'bash_runner.ts': 1, 'bash_structural_index.ts': 1,
-  'bridges/antigravity_install.ts': 1, 'bridges/codex_install.ts': 1, 'bridges/copilot_mcp_install.ts': 1, 'bridges/cursor_install.ts': 1, 'bridges/gemini_install.ts': 1, 'bridges/grok_install.ts': 1,
-  'bridges/jetbrains_install.ts': 1, 'bridges/kimi_install.ts': 2, 'bridges/openclaw_install.ts': 1, 'bridges/qwen_install.ts': 1, 'bridges/shim_common.ts': 1, 'bridges/zed_install.ts': 3,
-  'cache_session_commands.ts': 4, 'cli.ts': 8, 'cli_audit.ts': 1, 'cli_bench.ts': 1, 'cli_cached_output.ts': 5, 'cli_cmd_formats.ts': 1,
-  'cli_dispatch.ts': 1, 'cli_doctor.ts': 2, 'cli_doctor_native.ts': 1, 'cli_file_ops.ts': 10, 'cli_hint_stats.ts': 2, 'cli_memory.ts': 2,
-  'cli_session.ts': 1, 'cli_skills.ts': 4, 'cli_upgrade.ts': 1, 'cli_waste.ts': 1, 'config.ts': 1, 'config_commands.ts': 6,
-  'csv_query.ts': 2, 'db.ts': 1, 'dep_docs.ts': 1, 'embed_model.ts': 1, 'embed_tokenizer.ts': 2, 'fold_delivery.ts': 1,
-  'fold_structure.ts': 2, 'graph_analysis.ts': 4, 'graph_commands.ts': 4, 'graph_inspection.ts': 5, 'hint_suggestion_guard.ts': 3, 'hint_target.ts': 1,
-  'hints/file_type_handler.ts': 2, 'hooks_agent_spawn.ts': 1, 'hooks_bash.ts': 1, 'hooks_bash_commands.ts': 1, 'hooks_bash_post.ts': 1, 'hooks_common.ts': 1,
-  'hooks_glob.ts': 1, 'html_query.ts': 4, 'index_health.ts': 1, 'index_reader.ts': 1, 'index_reclaim.ts': 1, 'install.ts': 1,
-  'json_query.ts': 7, 'languages/sql_idx.ts': 1, 'mcp_client_text.ts': 2, 'mcp_compress_packs.ts': 1, 'mcp_server.ts': 4, 'native_hook.ts': 1, 'pack.ts': 1,
-  'powershell_compat.ts': 2, 'process_util.ts': 5, 'project_memory.ts': 1, 'read_brief.ts': 1, 'read_commands.ts': 9, 'read_git.ts': 4,
-  'read_inspect.ts': 10, 'read_meta.ts': 1, 'read_refs.ts': 3, 'read_semantic.ts': 5, 'read_spec.ts': 4, 'read_structured_data.ts': 2,
-  'read_suggest.ts': 1, 'read_symbol.ts': 5, 'ref_blindness.ts': 2, 'relay.ts': 1, 'screenshot.ts': 3, 'search/search_cli.ts': 1,
-  'session_store_schema.ts': 5, 'sqlite_query.ts': 3, 'text_commands.ts': 1, 'text_trace.ts': 2, 'tool_filters/containers.ts': 1, 'tool_filters/db_clients.ts': 1,
-  'tool_filters/git.ts': 1, 'tool_filters/package_managers.ts': 1, 'util.ts': 1, 'walk_index.ts': 1, 'xlsx_extract.ts': 2, 'xml_query.ts': 2,
-  'zip_bounds.ts': 1,
-}
-
 describe('every value echoed between hand-written quotes in src', () => {
-  const exprs: string[] = []
+  const nodes: ts.Expression[] = []
   const mark = (expr: ts.Expression): string => {
-    exprs.push(expr.getText().replace(/\s+/g, ' '))
-    return OPEN + String(exprs.length - 1) + CLOSE
+    nodes.push(expr)
+    return OPEN + String(nodes.length - 1) + CLOSE
   }
-  const hits = new Map<string, { file: string; key: string; where: string; echo: boolean }>()
+  const lineOf = (expr: ts.Expression): string => {
+    const sf = expr.getSourceFile()
+    const { line } = sf.getLineAndCharacterOfPosition(expr.getStart())
+    const starts = sf.getLineStarts()
+    return sf.text.slice(starts[line], starts[line + 1] ?? sf.text.length).replace(/\r?\n$/, '').trim()
+  }
+  const hits = new Map<string, { key: string; where: string; expr: string }>()
   for (const t of [...stringTemplates(mark, "'"), ...stringTemplates(mark, '"')]) {
     for (const m of t.text.matchAll(HAND_QUOTED_VALUE)) {
-      const key = t.file + '::' + (exprs[Number(m[2])] ?? '')
-      const echo = ECHO_SENTENCE.test(t.text)
-      hits.set(key + '@' + t.line + (echo ? '!' : ''), { file: t.file, key, where: t.file + ':' + t.line, echo })
+      const expr = nodes[Number(m[2])]
+      if (expr === undefined) continue
+      const key = t.file + '::' + lineOf(expr)
+      hits.set(key + '@' + expr.getText(), { key, where: t.file + ':' + t.line, expr: expr.getText().replace(/\s+/g, ' ') })
     }
   }
   const all = [...hits.values()]
-  const exempt = new Set(ECHO_EXEMPT.map((e) => e.key))
+  const allowed = new Set(QUOTES_ARE_SYNTAX.map((e) => e.key))
 
   it('is scanned', () => {
-    pinnedPopulation({ what: 'hand-quoted interpolations in src string templates', items: [...new Set(all.map((h) => h.key))], floor: 150, mustInclude: ['json_query.ts::spec', 'cli_upgrade.ts::MANUAL_INSTALL', 'tool_filters/languages.ts::cmd'] })
+    pinnedPopulation({ what: 'hand-quoted interpolations in src string templates', items: [...new Set(all.map((h) => h.key))], floor: 30, mustInclude: [QUOTES_ARE_SYNTAX[0]!.key, 'db.ts::' + "tokenize='${FTS_TOKENIZER}'"] })
   })
 
-  it('is never the value a not-found error, redirect note or cross-file lead echoes', () => {
-    expect(all.filter((h) => h.echo && !exempt.has(h.key)).map((h) => h.where + ' ' + h.key)).toEqual([])
+  it('is echoedValue, quotedArg or fencedCommand everywhere but the lines whose quotes are syntax', () => {
+    expect(all.filter((h) => !allowed.has(h.key)).map((h) => h.where + ' ' + h.expr)).toEqual([])
   })
 
-  it('exempts no value that is no longer echoed by hand', () => {
-    expect(ECHO_EXEMPT.filter((e) => !all.some((h) => h.echo && h.key === e.key)).map((e) => e.key)).toEqual([])
+  it('allows no line that no longer quotes a value by hand', () => {
+    expect(QUOTES_ARE_SYNTAX.filter((e) => !all.some((h) => h.key === e.key)).map((e) => e.key)).toEqual([])
   })
 
-  it('rises in no file past the ledger, and the ledger follows every fall', () => {
-    const counts: Record<string, number> = {}
-    for (const key of new Set(all.filter((h) => !h.echo).map((h) => h.key))) {
-      const file = key.slice(0, key.indexOf('::'))
-      counts[file] = (counts[file] ?? 0) + 1
-    }
-    expect(counts).toEqual(HAND_QUOTED_LEDGER)
+  it('names one line per entry, with a reason', () => {
+    expect(QUOTES_ARE_SYNTAX.filter((e) => e.reason.trim() === '' || !/^[\w/.-]+\.ts::\S/.test(e.key)).map((e) => e.key)).toEqual([])
+    expect(new Set(QUOTES_ARE_SYNTAX.map((e) => e.key)).size).toBe(QUOTES_ARE_SYNTAX.length)
   })
-
   // HAND-DERIVED virtual sources: the shapes src carried (read_commands.ts `Symbol '${symbol}' not found in '${file}'`, read_section.ts ` (redirected from: '${result.redirectedFrom}')`, cli_file_ops.ts `inserted after '${result.heading}'`) beside the echoedValue form and a quoted literal.
   it('flags a value hand-quoted in either mark and passes an echoedValue one', () => {
     const virtual = (source: string): string[] => {

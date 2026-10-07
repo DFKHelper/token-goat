@@ -3,6 +3,7 @@ import type { FusedSearchResult, SearchExecutionSummary, SearchOptions } from '.
 import { displaySafeJson, displaySafeText } from '../paths.js';
 import { DELETED_TAG } from '../read_commands.js';
 import { resolveProjectConfinement } from '../read_spec.js';
+import { echoedValue } from '../hint_suggestion_guard.js'
 
 /** Formats one fused result as its location line, naming the channels that agreed on it, and a one-line preview. The fusion score stays in `--json`: it orders the list but tells a reader nothing the order does not. */
 function formatTerminalHit(hit: FusedSearchResult, rank: number): string {
@@ -33,11 +34,11 @@ export function formatSearchText(summary: SearchExecutionSummary): string {
   ].join('');
 
   if (summary.totalHits === 0) {
-    return `No results found across active channels [${summary.activeChannels.join(', ')}] for: "${displaySafeText(summary.query)}" (${summary.durationMs}ms)${notes}`;
+    return `No results found across active channels [${summary.activeChannels.join(', ')}] for: ${echoedValue(summary.query)} (${summary.durationMs}ms)${notes}`;
   }
 
   const counts = Object.entries(summary.channelCounts).map(([c, n]) => `${c}:${n}`).join(', ');
-  const header = `${summary.totalHits} result${summary.totalHits === 1 ? '' : 's'} for "${displaySafeText(summary.query)}" in ${summary.durationMs}ms [${counts}]${notes}`;
+  const header = `${summary.totalHits} result${summary.totalHits === 1 ? '' : 's'} for ${echoedValue(summary.query)} in ${summary.durationMs}ms [${counts}]${notes}`;
   return [header, ...summary.results.map((hit, idx) => formatTerminalHit(hit, idx + 1))].join('\n');
 }
 

@@ -165,6 +165,8 @@ const NEUTRALIZERS: readonly string[] = [
   'grepFilteredToEmptyNotice(',
   'filtersFilteredToEmptyNotice(',
   'filteredToEmptyNotice(',
+  // hint_suggestion_guard.ts's quoting of a value a message echoes: displaySafeText first, then quotedArg. Pinned to that shape further down.
+  'echoedValue(',
 ]
 
 /** Fences delimit a payload instead of escaping it, which is the other correct answer. */
@@ -226,14 +228,6 @@ const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
       'escaping either. Escaping it here would make one route through runSymbol render differently ' +
       "from the other. The `via: token-goat symbol <name>` line above it IS token-goat's own voice " +
       'and IS escaped, with displaySafeText applied to the index-supplied symbol name.',
-  ],
-  [
-    'read_outline.ts:sym.name',
-    'skeleton and outline listing rows: these are the payload the reader asked for, and these ' +
-      'commands hand back file structure unfenced by design. Escaping the name alone would buy ' +
-      'nothing, because the same row carries firstBodyLine(sym.body) and the docstring summary as ' +
-      'raw source bytes, which whoever wrote the file controls just as directly. The "# Skeleton:" ' +
-      'header above the rows is token-goat\'s own line. This is a deliberate scope boundary.',
   ],
   [
     'read_outline.ts:sym.kind',
@@ -775,6 +769,12 @@ describe('project-supplied text reaches no report sink unescaped', () => {
     ] as const) {
       expect(body.test(all), `${wrapper} is listed in NEUTRALIZERS as escaping the filter values it quotes, but its body no longer matches that shape.`).toBe(true)
     }
+
+    // echoedValue is listed because it escapes before it quotes, and every value a message echoes between quotes reaches its sink through it.
+    expect(
+      /function echoedValue\(value: string\): string \{\s*const safe = displaySafeText\(value\)\s*const quoted = quotedArg\(safe\)\s*return quoted\.includes\(UNQUOTABLE\) \? safe : quoted/.test(all),
+      'echoedValue is listed in NEUTRALIZERS as escaping the value it quotes, but its body no longer applies displaySafeText first.',
+    ).toBe(true)
 
     // WRAPPING_NEUTRALIZERS exempts every interpolation inside formatCommandError's parentheses, so its body must still escape both the CliError lines and the plain-message branch; a wrapper that stopped escaping would exempt over a hundred error sites while they printed raw project paths.
     expect(

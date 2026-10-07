@@ -37,6 +37,7 @@ import {
 } from './graph_traversal.js'
 import { emit, emitErr } from './emit.js'
 import { formatCommandError } from './command_error.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 // ---- dead -------------------------------------------------------------------
 
@@ -53,7 +54,7 @@ export interface DeadOptions {
 
 export function runDead(opts: DeadOptions): number {
   if (opts.top !== undefined && opts.top <= 0) {
-    emitErr(formatCommandError(`--top must be a positive number, got: "${opts.top}"`))
+    emitErr(formatCommandError(`--top must be a positive number, got: ${echoedValue(String(opts.top))}`))
     return 1
   }
   const kinds = opts.kind !== undefined
@@ -69,7 +70,7 @@ export function runDead(opts: DeadOptions): number {
   }
   if (unknownKinds.length > 0) {
     const label = unknownKinds.length === 1 ? 'kind' : 'kinds'
-    const quoted = unknownKinds.map((k) => `'${k}'`).join(', ')
+    const quoted = unknownKinds.map((k) => `${echoedValue(k)}`).join(', ')
     emitErr(formatCommandError(`Unrecognized ${label}: ${quoted}`))
     for (const k of unknownKinds) {
       const closes = rankSimilarNames(knownKinds, k)
@@ -82,12 +83,12 @@ export function runDead(opts: DeadOptions): number {
   const assessableKinds = kinds.filter((k) => !REF_BLIND_KINDS.includes(k))
   if (blindKinds.length > 0 && assessableKinds.length === 0) {
     const blindLabel = blindKinds.length === 1 ? 'kind' : 'kinds'
-    emitErr(formatCommandError(`Cannot assess deadness for ${blindLabel}: ${blindKinds.map((k) => `'${k}'`).join(', ')} -- ${REF_BLIND_KIND_REASON}.`))
+    emitErr(formatCommandError(`Cannot assess deadness for ${blindLabel}: ${blindKinds.map((k) => `${echoedValue(k)}`).join(', ')} -- ${REF_BLIND_KIND_REASON}.`))
     emitErr(`Every symbol of ${blindKinds.length === 1 ? 'this kind' : 'these kinds'} would be reported dead, so no result is emitted rather than a wrong one. To hunt unused type declarations, list them with \`token-goat types --json\` and search the source for each name directly.`)
     return 1
   }
   const blindKindNote = blindKinds.length > 0
-    ? `Note: ${blindKinds.map((k) => `'${k}'`).join(', ')} excluded -- ${REF_BLIND_KIND_REASON}.`
+    ? `Note: ${blindKinds.map((k) => `${echoedValue(k)}`).join(', ')} excluded -- ${REF_BLIND_KIND_REASON}.`
     : undefined
   if (blindKindNote !== undefined && opts.json !== true) emitErr(blindKindNote)
 
@@ -336,7 +337,7 @@ export const TYPES_SCAN_LIMIT = -1
 
 export function runTypes(opts: TypesOptions): number {
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(formatCommandError(`--limit must be a positive number, got: "${opts.limit}"`))
+    emitErr(formatCommandError(`--limit must be a positive number, got: ${echoedValue(String(opts.limit))}`))
     return 1
   }
 
@@ -379,7 +380,7 @@ export function runTypes(opts: TypesOptions): number {
       emitErr(formatCommandError(`Could not read: ${opts.file}`))
       return 1
     }
-    const ctx = opts.file !== undefined ? ` in '${opts.file}'` : ''
+    const ctx = opts.file !== undefined ? ` in ${echoedValue(opts.file)}` : ''
     if (excludeTests && suppressed > 0) {
       if (opts.json === true) {
         emit(displaySafeJson({ items: [], truncated: false, totalCount: 0, hiddenByExcludeTests: suppressed }))
@@ -488,11 +489,11 @@ export function runScope(opts: ScopeOptions): number {
       }
       emitErr(
         formatCommandError(symbolExtractorGap(file, filePath) ??
-          `No indexed symbols in '${file}' — the file exists but nothing is indexed for it, so every line looks empty`),
+          `No indexed symbols in ${echoedValue(file)} — the file exists but nothing is indexed for it, so every line looks empty`),
       )
       return 1
     }
-    emitErr(formatCommandError(`No symbols enclosing line ${line} in '${file}'`))
+    emitErr(formatCommandError(`No symbols enclosing line ${line} in ${echoedValue(file)}`))
     return 1
   }
 

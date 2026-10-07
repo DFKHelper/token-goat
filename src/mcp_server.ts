@@ -44,7 +44,7 @@ import { statThroughHandle } from './handle_stat.js'
 import { normalizePath, displaySafeJson } from './paths.js'
 import { expandSpecPath } from './spec_path.js'
 import { displaySafeFailureText } from './command_error.js'
-import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { echoedValue, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { forClient, mcpFriendlyText } from './mcp_client_text.js'
 
 // Upper bounds for the MCP tools' numeric params, matching the `.max(CONTENT_MAX_INPUT_CHARS)` convention `compress_text` already uses. The `run*` handlers apply no upper clamp of their own (`limit`/`top` go straight into a SQL LIMIT, `maxLines` into a `.slice`), so an unbounded value there is mostly a no-op cap rather than an allocation; `context` is the one that genuinely amplifies, since every extra line is emitted per match.
@@ -271,7 +271,7 @@ function assertRootAllowed(resolvedRoot: string): void {
   if (allowedRoots.some((allowed) => checkWithinProjectRoot(resolvedRoot, allowed).inside)) return
   if (getStandardAuxiliaryRoots(resolvedRoot).some((aux) => checkWithinProjectRoot(resolvedRoot, aux).inside)) return
   throw new RootNotAllowedError(
-    `refused: "${resolvedRoot}" is not inside any root listed in mcp.allowed_roots. ` +
+    `refused: ${echoedValue(resolvedRoot)} is not inside any root listed in mcp.allowed_roots. ` +
       'A caller-supplied projectRoot is untrusted input, so this deployment pins which roots may be named; ' +
       'add the root to mcp.allowed_roots (or TOKEN_GOAT_MCP_ALLOWED_ROOTS) to permit it.',
   )
@@ -366,18 +366,18 @@ const NO_PINS: ReadonlyMap<string, string> = new Map<string, string>()
 function refusalText(file: string, resolvedRoot: string, reason: ContainmentReason, projectRootWasOmitted = false): string {
   const escapeHatch = 'Set mcp.confine_reads_to_project_root = false (or TOKEN_GOAT_MCP_CONFINE_READS=0) to allow cross-root reads.'
   const omittedNote = projectRootWasOmitted
-    ? ` Note: projectRoot was omitted and defaulted to server process cwd "${resolvedRoot}". Pass projectRoot: "<workspace-path>" if your target is in another directory.`
+    ? ` Note: projectRoot was omitted and defaulted to server process cwd ${echoedValue(resolvedRoot)}. Pass projectRoot: "<workspace-path>" if your target is in another directory.`
     : ''
   if (reason === 'unresolvable-root') {
     return (
-      `refused: the project root "${resolvedRoot}" could not be resolved, so no path can be confirmed to sit inside it. ` +
+      `refused: the project root ${echoedValue(resolvedRoot)} could not be resolved, so no path can be confirmed to sit inside it. ` +
       'This is a broken workspace root -- an unmounted share, a deleted directory, or a permission change on a parent -- not a request to read outside the project.' +
       omittedNote
     )
   }
   if (reason === 'unresolvable-target') {
     return (
-      `refused: "${file}" could not be resolved to a real location, so it cannot be confirmed to sit inside the project root. ` +
+      `refused: ${echoedValue(file)} could not be resolved to a real location, so it cannot be confirmed to sit inside the project root. ` +
       'A symlink loop, a permission error on a parent directory, or a path past the operating system\'s length limit all produce this. ' +
       'The check fails closed rather than falling back to comparing the text of the path.' +
       omittedNote
@@ -388,7 +388,7 @@ function refusalText(file: string, resolvedRoot: string, reason: ContainmentReas
     loadConfig().mcp.allowed_roots.length === 0
       ? 'Each call is confined to the projectRoot it names, and that root comes from the caller: set mcp.allowed_roots (or TOKEN_GOAT_MCP_ALLOWED_ROOTS) to pin which roots may be named at all.'
       : 'Each call is confined to the projectRoot it names, which must itself sit inside mcp.allowed_roots.'
-  return `refused: "${file}" is outside the project root "${resolvedRoot}". ${rootScope} ${escapeHatch}${omittedNote}`
+  return `refused: ${echoedValue(file)} is outside the project root ${echoedValue(resolvedRoot)}. ${rootScope} ${escapeHatch}${omittedNote}`
 }
 
 function confineTargets(targets: readonly string[], resolvedRoot: string, splitCommas = true, projectRootWasOmitted = false): ConfinementResult {
@@ -453,7 +453,7 @@ function withConfinedRead(pins: ReadonlyMap<string, string>, fn: () => CallToolR
 function noteOmittedProjectRoot(result: CallToolResult, root: string, projectRootWasOmitted: boolean): CallToolResult {
   if (!projectRootWasOmitted) return result
   if (!isIndexEmptyForProject(globalDbPath(), root)) return result
-  const note = `\n(Note: projectRoot was omitted and defaulted to server cwd "${root}", which has no files indexed. Pass projectRoot: "<workspace-path>" to target your workspace.)`
+  const note = `\n(Note: projectRoot was omitted and defaulted to server cwd ${echoedValue(root)}, which has no files indexed. Pass projectRoot: "<workspace-path>" to target your workspace.)`
   const contents = result.content
   if (!Array.isArray(contents)) return result
   for (const item of contents) {
@@ -830,7 +830,7 @@ export async function createMcpServer(): Promise<McpServer> {
       if (!gate.ok) return gate.refusal
       if (projectRootWasOmitted && isIndexEmptyForProject(globalDbPath(), root)) {
         return toCallToolResult({
-          text: `Error: projectRoot was omitted and defaulted to server cwd "${root}", which has no files indexed. Pass projectRoot: "<workspace-path>" to target your workspace.`,
+          text: `Error: projectRoot was omitted and defaulted to server cwd ${echoedValue(root)}, which has no files indexed. Pass projectRoot: "<workspace-path>" to target your workspace.`,
           code: 1,
         })
       }
@@ -1100,7 +1100,7 @@ export async function createMcpServer(): Promise<McpServer> {
         ...(args.full === true ? { full: true } : {}),
       })
       return result === null
-        ? toCallToolResult({ text: `no local handoff named "${args.name}" in this project`, code: 1 })
+        ? toCallToolResult({ text: `no local handoff named ${echoedValue(args.name)} in this project`, code: 1 })
         : typeof result === 'string'
           ? toRawCallToolResult({ text: result, code: 0 })
           : toCallToolResult({ text: displaySafeJson(compressionPayload(result)), code: 0 })

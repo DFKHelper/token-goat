@@ -54,7 +54,7 @@ import { checkGlobalMcpConfig, checkVscodeUserScopeHooks, checkVscodeClaudeHooks
 import { checkInstructionGates, checkHarnessCacheEfficiency, repairInstructionGates } from './cli_doctor_guidance.js'
 import { checkSecurityPosture } from './cli_doctor_security.js'
 import { stripBom } from './jsonc_text.js'
-import { fencedCommand } from './hint_suggestion_guard.js'
+import { echoedValue, fencedCommand } from './hint_suggestion_guard.js'
 
 /** Check if token-goat binary is installed and accessible. */
 export function checkInstall(): DoctorResult {
@@ -617,7 +617,7 @@ export function checkUnmappedTools(dbPath: string, options?: { maxAgeDays?: numb
     if (nearMisses.length > 0) {
       const shown = nearMisses
         .slice(0, UNMAPPED_TOOL_SAMPLE)
-        .map((r) => `${r.harness} sent "${r.tool_name}" where "${r.near_miss}" is handled (${r.event_name}, ${r.hits}x)`)
+        .map((r) => `${r.harness} sent ${echoedValue(r.tool_name)} where ${echoedValue(String(r.near_miss))} is handled (${r.event_name}, ${r.hits}x)`)
       const more = nearMisses.length > UNMAPPED_TOOL_SAMPLE ? ` (+${nearMisses.length - UNMAPPED_TOOL_SAMPLE} more)` : ''
       return {
         name,

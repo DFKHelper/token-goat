@@ -434,7 +434,7 @@ describe('built bundle rejects ambiguous file::symbol lookups (regression)', () 
     const out = res.stdout + res.stderr
     // Must NOT silently return one body: exit 1, and the message names both parents + lines.
     expect(res.status).toBe(1)
-    expect(out).toMatch(/Ambiguous symbol 'compress'/)
+    expect(out).toMatch(/Ambiguous symbol "compress"/)
     expect(out).toContain('AlphaLinter.compress')
     expect(out).toContain('BetaLinter.compress')
     // The two bodies must never leak -- an ambiguity error is a candidate list, not a body dump.

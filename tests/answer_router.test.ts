@@ -282,7 +282,7 @@ describe('runAnswer against the real index', () => {
   it('refuses a symbol subject for importers and names the file-level command that answers it', () => {
     const r = captureErr(() => runAnswer({ question: 'importers of foldPath' }))
     expect(r.code).toBe(1)
-    expect(r.err).toContain("'foldPath' is a symbol; importers are file-level")
+    expect(r.err).toContain('"foldPath" is a symbol; importers are file-level')
     expect(r.err).toContain('try: token-goat deps src/path_containment.ts --importers')
     expect(r.out).toBe('')
   })
@@ -290,7 +290,7 @@ describe('runAnswer against the real index', () => {
   it('suggests re-asking importers about one path when the subject names several files', () => {
     const r = captureErr(() => runAnswer({ question: 'what imports registry' }))
     expect(r.code).toBe(1)
-    expect(r.err).toContain("'registry' names 2 files in this project")
+    expect(r.err).toContain('"registry" names 2 files in this project')
     expect(r.err).toMatch(/try: token-goat answer "importers of src\/(?:bridges|languages)\/registry\.ts"/)
   })
 
@@ -322,7 +322,7 @@ describe('runAnswer against the real index', () => {
 
       const r = captureErr(() => runAnswer({ question: 'who calls zzForeignOnlySymbol' }))
       expect(r.code).toBe(1)
-      expect(r.err).toContain("'zzForeignOnlySymbol' is not an indexed symbol or file")
+      expect(r.err).toContain('"zzForeignOnlySymbol" is not an indexed symbol or file')
       // Calibration, the other direction: an in-project symbol still resolves under the same scoping.
       expect(resolveSubject('foldPath')?.kind).toBe('symbol')
 
@@ -357,7 +357,7 @@ describe('runAnswer against the real index', () => {
   it('refuses when the subject is not in the index rather than guessing a near match', () => {
     const r = captureErr(() => runAnswer({ question: 'who calls notARealSymbolAnywhere' }))
     expect(r.code).toBe(1)
-    expect(r.err).toContain("'notARealSymbolAnywhere' is not an indexed symbol or file")
+    expect(r.err).toContain('"notARealSymbolAnywhere" is not an indexed symbol or file')
     expect(r.out).toBe('')
   })
 
@@ -373,7 +373,7 @@ describe('runAnswer against the real index', () => {
   it('refuses a symbol-only intent given a file subject, and names the command that does take a file', () => {
     const r = captureErr(() => runAnswer({ question: 'who calls src/paths.ts' }))
     expect(r.code).toBe(1)
-    expect(r.err).toContain("'src/paths.ts' is a file, and callers needs a symbol")
+    expect(r.err).toContain('"src/paths.ts" is a file, and callers needs a symbol')
     expect(r.err).toContain('try: token-goat outline src/paths.ts')
   })
 
@@ -394,7 +394,7 @@ describe('runAnswer against the real index', () => {
   it('refuses a symbol subject for a file-level intent instead of answering about its defining file', () => {
     const r = captureErr(() => runAnswer({ question: 'exports of foldPath' }))
     expect(r.code).toBe(1)
-    expect(r.err).toContain("'foldPath' is a symbol; exports/imports are file-level")
+    expect(r.err).toContain('"foldPath" is a symbol; exports/imports are file-level')
     expect(r.err).toContain('try: token-goat exports src/path_containment.ts')
     expect(r.out).toBe('')
   })
@@ -420,7 +420,7 @@ describe('runAnswer against the real index', () => {
   it('reports an ambiguous extensionless stem rather than picking one of the files', () => {
     const r = captureErr(() => runAnswer({ question: 'registry exports' }))
     expect(r.code).toBe(1)
-    expect(r.err).toContain("'registry' names 2 files in this project")
+    expect(r.err).toContain('"registry" names 2 files in this project')
     expect(r.err).toContain('src/bridges/registry.ts')
     expect(r.err).toContain('src/languages/registry.ts')
   })
@@ -453,7 +453,7 @@ describe('runAnswer against the real index', () => {
 
       const r = captureErr(() => runAnswer({ question: 'where is zzVendorOnlySymbol' }))
       expect(r.code).toBe(1)
-      expect(r.err).toContain("'zzVendorOnlySymbol' is not an indexed symbol or file")
+      expect(r.err).toContain('"zzVendorOnlySymbol" is not an indexed symbol or file')
       // Calibration, the other direction: an in-project source symbol still resolves under the same filter.
       expect(resolveSubject('foldPath')?.kind).toBe('symbol')
     } finally {
@@ -595,7 +595,7 @@ describe('runAnswer against the real index', () => {
         const r = captureErr(() => runAnswer({ question }))
         expect(r.code).toBe(1)
         expect(r.out).toBe('')
-        expect(r.err).toContain("'zzGraphTwice' has 2 definitions")
+        expect(r.err).toContain('"zzGraphTwice" has 2 definitions')
         expect(r.err).toContain(`try: token-goat ${command} "tests/.tg-answer-graph-a-fixture.ts::zzGraphTwice"`)
       }
 
@@ -669,7 +669,7 @@ describe('runAnswer against the real index', () => {
       const r = captureErr(() => runAnswer({ question: 'what does zzExplainTwice do' }))
       expect(r.code).toBe(1)
       expect(r.out).toBe('')
-      expect(r.err).toContain("'zzExplainTwice' has 2 definitions")
+      expect(r.err).toContain('"zzExplainTwice" has 2 definitions')
       expect(r.err).toContain('try: token-goat brief "tests/.tg-answer-explain-a-fixture.ts::zzExplainTwice"')
     } finally {
       rmSync(a, { force: true })
@@ -683,7 +683,7 @@ describe('runAnswer against the real index', () => {
     expect(judgement.err).toContain('judgement')
     const unresolved = captureErr(() => runAnswer({ question: 'what does zzNoSuchSymbolAnywhere do' }))
     expect(unresolved.code).toBe(1)
-    expect(unresolved.err).toContain("'zzNoSuchSymbolAnywhere' is not an indexed symbol")
+    expect(unresolved.err).toContain('"zzNoSuchSymbolAnywhere" is not an indexed symbol')
     const file = captureErr(() => runAnswer({ question: 'what does src/paths.ts do' }))
     expect(file.code).toBe(1)
     expect(file.out).toBe('')

@@ -20,6 +20,7 @@ import { assertWriteInScope, withInstallScope } from './bridges/project_scope_gu
 import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, extractErrorMessage, hookCommandFor, hookExecPartsFor, removeFileInScope, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
 import { commandHookFields, isOwnHookEntry } from './util_config.js'
 import { stripBom } from './jsonc_text.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 /** Where to install: the user's home `~/.claude` or the project's `.claude`. */
 export type HookScope = 'user' | 'project'
@@ -228,8 +229,8 @@ function readSettings(p: string, opts: { strict?: boolean; command?: 'install' |
   const refuse = (problem: string, detail?: string): SettingsParseError =>
     new SettingsParseError(
       (opts.command === 'uninstall'
-        ? `settings file '${p}' is unreadable: it ${problem}. Uninstall left it untouched, along with the hook shim it may still name and the file's backups; fix the file and run uninstall again.`
-        : `settings file '${p}' ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
+        ? `settings file ${echoedValue(p)} is unreadable: it ${problem}. Uninstall left it untouched, along with the hook shim it may still name and the file's backups; fix the file and run uninstall again.`
+        : `settings file ${echoedValue(p)} ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
     )
   let raw: string
   try {

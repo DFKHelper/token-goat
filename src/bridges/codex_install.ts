@@ -17,6 +17,7 @@ import { LEGACY_SHIM_FILE, SHIM_FILE, legacyShimForwarder } from './shim_common.
 import { buildGuidanceBlock } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 import { groupHasTokenGoat, findTokenGoatEntryPosition, findAnyTokenGoatEntryPosition } from './matcher_group.js'
+import { echoedValue } from '../hint_suggestion_guard.js'
 
 /** Marker substring identifying a token-goat-authored Codex hook command. */
 const CODEX_COMMAND_MARKER = 'token-goat-shim'
@@ -92,8 +93,8 @@ function readCodexConfig(p: string, opts: { strict?: boolean; command?: 'install
   const refuse = (problem: string, detail?: string): CodexConfigParseError =>
     new CodexConfigParseError(
       (opts.command === 'uninstall'
-        ? `Codex config file '${p}' is unreadable: it ${problem}. Uninstall left it untouched, along with the hook shim it may still name, the AGENTS.md block and the file's backups; fix the file and run uninstall again.`
-        : `Codex config file '${p}' ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
+        ? `Codex config file ${echoedValue(p)} is unreadable: it ${problem}. Uninstall left it untouched, along with the hook shim it may still name, the AGENTS.md block and the file's backups; fix the file and run uninstall again.`
+        : `Codex config file ${echoedValue(p)} ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
     )
   let raw: string
   try {

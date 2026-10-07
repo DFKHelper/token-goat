@@ -37,7 +37,7 @@ describe('a failing command names itself on its first stderr line', () => {
     [['section', 'nope.md::X'], 'token-goat: File not found: "nope.md"'],
     [['csv-query', 'nope.csv'], 'token-goat: Could not read: nope.csv'],
     [['semantic', '--limit', '0', 'x'], 'token-goat: --limit must be a positive number, got: "0"'],
-    [['note-get', 'nope.ts'], "token-goat: No note found for 'nope.ts' (whole-file note)"],
+    [['note-get', 'nope.ts'], 'token-goat: No note found for "nope.ts" (whole-file note)'],
     [['symbl'], "token-goat: unknown command 'symbl'"],
     [['read'], "token-goat: missing required argument 'spec'"],
   ] as const)('%j', (args, first) => {
@@ -57,13 +57,13 @@ describe('a failing command names itself on its first stderr line', () => {
 
   it('keeps the line breaks of a several-line error, prefixing only the first', () => {
     const { lines } = fail(['session-schema', 'nope_table'])
-    expect(lines[0]!.startsWith("token-goat: Unknown session store table 'nope_table'. Available tables: sessions, ")).toBe(true)
+    expect(lines[0]!.startsWith('token-goat: Unknown session store table "nope_table". Available tables: sessions, ')).toBe(true)
     expect(lines[1]).toBe('Run `token-goat session-schema` to see all tables.')
   })
 
   it('leads with the error and puts the extra-argument note after it', () => {
     const { lines } = fail(['symbol', 'zzzNope', 'extra1'])
-    expect(lines[0]).toBe("token-goat: No matches for 'zzzNope'")
+    expect(lines[0]).toBe('token-goat: No matches for "zzzNope"')
     expect(lines.at(-1)).toBe('Note: 1 extra spec argument(s) ignored (extra1). Run symbol once per spec.')
   })
 

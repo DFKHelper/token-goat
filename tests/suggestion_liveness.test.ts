@@ -106,6 +106,6 @@ describe('bare-name spec suggestions are checked against disk', () => {
   })
 
   it('suggests only the live spec of a name a deleted file also defined', () => {
-    expect(formatBareNameSpecError('read', 'sharedTwin', root)).toBe(`Not a file: 'sharedTwin'. Did you mean:\n  - token-goat read "src/twin_live.ts::sharedTwin"`)
+    expect(formatBareNameSpecError('read', 'sharedTwin', root)).toBe(`Not a file: "sharedTwin". Did you mean:\n  - token-goat read "src/twin_live.ts::sharedTwin"`)
   })
 })

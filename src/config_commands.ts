@@ -24,6 +24,7 @@ import { recordStat, savedTokensFromBytes } from './stats.js'
 import { emit, emitErr } from './emit.js'
 import { CliError } from './command_error.js'
 import { levenshteinDistance } from './util_suggest.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 /** Ensure the config parent directory exists then call saveConfig. */
 function saveConfigSafe(cfg: Parameters<typeof saveConfig>[0], explicitKeys: readonly string[] = []): void {
@@ -317,7 +318,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
         throw new Error(`key not found: ${key}${didYouMeanKeySuffix(key)}`)
       }
       if (typeof existing === 'object' && existing !== null && !Array.isArray(existing)) {
-        throw new Error(`config set: '${key}' is a section, not a settable field — set an individual key within it instead (e.g. ${key}.<field>)`)
+        throw new Error(`config set: ${echoedValue(key)} is a section, not a settable field — set an individual key within it instead (e.g. ${key}.<field>)`)
       }
       const defaultAtKey = walkGet(defaultConfig() as unknown as Record<string, unknown>, parts)
       const coercedValue = coerce(value, existing, defaultAtKey.found ? defaultAtKey.value : undefined)
@@ -333,7 +334,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
         // Symmetric with the numeric-bounds revalidation above, for the handful of string fields whose value must come from a fixed set (e.g. compression.profile). Without this, a typo like `agressive` is accepted and persisted with no error, then silently falls back to a default at runtime (dispatch.ts's PROFILE_CAPS lookup) with no signal to the user that their setting did nothing.
         const allowed = validateEnumField(key, coercedValue)
         if (allowed !== undefined) {
-          throw new Error(`config set: ${key} = '${coercedValue}' is not valid; must be one of: ${allowed.join(', ')}`)
+          throw new Error(`config set: ${key} = ${echoedValue(coercedValue)} is not valid; must be one of: ${allowed.join(', ')}`)
         }
       }
       saveConfigSafe(cfg as unknown as Parameters<typeof saveConfig>[0], [key])
@@ -456,7 +457,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     return
   }
 
-  throw new Error(`config: unknown action '${action}'. Use list, get, set, or validate.`)
+  throw new Error(`config: unknown action ${echoedValue(action)}. Use list, get, set, or validate.`)
 }
 
 // ── project ───────────────────────────────────────────────────────────────────
@@ -590,7 +591,7 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
     return
   }
 
-  throw new CliError(`project: unknown action '${action}'. Use list, exclude, or prune.`)
+  throw new CliError(`project: unknown action ${echoedValue(action)}. Use list, exclude, or prune.`)
 }
 
 // ── compact-doc ───────────────────────────────────────────────────────────────
@@ -615,7 +616,7 @@ export function cmdCompactDoc(opts: {
   if (opts.heading !== undefined) {
     const result = compactDoc(resolved, opts.heading)
     if (result === null) {
-      throw new CliError(`compact-doc: could not read or compact '${resolved}'`)
+      throw new CliError(`compact-doc: could not read or compact ${echoedValue(resolved)}`)
     }
     const legacyFullBytes = fs.statSync(resolved).size
     if (opts.json === true) {
@@ -634,7 +635,7 @@ export function cmdCompactDoc(opts: {
     try {
       sentences = requirePositiveStrictInt('--sentences', opts.sentences)
     } catch {
-      throw new CliError(`compact-doc: --sentences must be a positive number, got: "${opts.sentences}"`)
+      throw new CliError(`compact-doc: --sentences must be a positive number, got: ${echoedValue(opts.sentences)}`)
     }
   }
 
@@ -649,7 +650,7 @@ export function cmdCompactDoc(opts: {
     try {
       sourceText = fs.readFileSync(resolved, 'utf-8')
     } catch {
-      throw new CliError(`compact-doc: could not read or compact '${resolved}'`)
+      throw new CliError(`compact-doc: could not read or compact ${echoedValue(resolved)}`)
     }
     body = buildExtractiveCompact(sourceText, sentences)
     writeCompact(compactPath, resolved, body)
@@ -657,7 +658,7 @@ export function cmdCompactDoc(opts: {
   } else {
     const existing = readCompactBody(compactPath)
     if (existing === null) {
-      throw new CliError(`compact-doc: could not read or compact '${resolved}'`)
+      throw new CliError(`compact-doc: could not read or compact ${echoedValue(resolved)}`)
     }
     body = existing
   }
@@ -778,11 +779,11 @@ export function cmdHistory(opts: { limit?: string; json?: boolean }): void {
     try {
       limit = requireNonNegativeStrictInt('--limit', opts.limit)
     } catch {
-      throw new CliError(`history: --limit must be a positive number, got: "${opts.limit}"`)
+      throw new CliError(`history: --limit must be a positive number, got: ${echoedValue(opts.limit)}`)
     }
     // --limit 0 would slice the merged bash/web list down to zero entries and print "No history entries found" -- an absolute claim about the cache's contents -- even when entries genuinely exist. Reject explicitly instead of silently rendering that false-clean result, matching runFind's own --limit validation (read_commands.ts) and graph_commands.ts's --top validation for the same failure mode.
     if (limit === 0) {
-      throw new CliError(`history: --limit must be a positive number, got: "${opts.limit}"`)
+      throw new CliError(`history: --limit must be a positive number, got: ${echoedValue(opts.limit)}`)
     }
   }
 

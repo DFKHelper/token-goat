@@ -133,7 +133,7 @@ export async function runZipRead(opts: ZipReadCliOptions): Promise<number> {
 
   const matchedEntry = entries.find((e) => e.path === opts.entry)
   if (matchedEntry?.isDirectory === true) {
-    emitErr(formatCommandError(`Entry '${opts.entry}' is a directory, not a file, in '${opts.file}'`))
+    emitErr(formatCommandError(`Entry ${echoedValue(opts.entry)} is a directory, not a file, in ${echoedValue(opts.file)}`))
     return 1
   }
 
@@ -385,7 +385,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
       return 1
     }
     if (value === null) {
-      emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${opts.file}`))
+      emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${echoedValue(opts.file)}`))
       return 1
     }
     emit(value)
@@ -400,12 +400,12 @@ export function runConfigGet(opts: ConfigGetOptions): number {
       let obj: any = parseJsonOrJsonc(text)
       for (const part of opts.key.split('.')) {
         if (typeof obj !== 'object' || obj === null) {
-          emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${opts.file}`))
+          emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${echoedValue(opts.file)}`))
           return 1
         }
         obj = obj[part]
         if (obj === undefined) {
-          emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${opts.file}`))
+          emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${echoedValue(opts.file)}`))
           return 1
         }
       }
@@ -424,7 +424,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
       return 1
     }
     if (value === null) {
-      emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${opts.file}`))
+      emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${echoedValue(opts.file)}`))
       return 1
     }
     emit(value)
@@ -435,7 +435,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
     const toml = lookupToml(text, opts.key)
     if (toml !== undefined) {
       if (toml === null) {
-        emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${opts.file}`))
+        emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${echoedValue(opts.file)}`))
         return 1
       }
       emit(toml)
@@ -454,7 +454,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
     if (value !== null) {
       // A TOML file that failed to parse reaches this line scan; a value it can only see the first line of must not print as if whole.
       if (ext === '.toml' && isTomlFragment(value)) {
-        emitErr(formatCommandError(`Key '${opts.key}' in ${opts.file} spans several lines and the file is not valid TOML, so it cannot be read whole`))
+        emitErr(formatCommandError(`Key ${echoedValue(opts.key)} in ${echoedValue(opts.file)} spans several lines and the file is not valid TOML, so it cannot be read whole`))
         return 1
       }
       emit(value)
@@ -462,7 +462,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
     }
   }
 
-  emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${opts.file}`))
+  emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${echoedValue(opts.file)}`))
   return 1
 }
 
@@ -625,7 +625,7 @@ export function runExports(opts: ImportsExportsOptions): number {
   }
 
   if (names.length === 0) {
-    emit(`No exported symbols found in '${displaySafeText(opts.file)}'`)
+    emit(`No exported symbols found in ${echoedValue(opts.file)}`)
     return 0
   }
 
@@ -683,7 +683,7 @@ export function runImports(opts: ImportsExportsOptions): number {
   const imports = extractImports(text, importsExtensionFor(opts.file))
 
   if (imports.length === 0) {
-    emit(`No imports found in '${displaySafeText(opts.file)}'`)
+    emit(`No imports found in ${echoedValue(opts.file)}`)
     return 0
   }
 
@@ -768,8 +768,8 @@ export function runNoteGet(opts: NoteGetOptions): { text: string; code: number }
   const symbol = opts.symbol ?? WHOLE_FILE_NOTE_SYMBOL
   const note = getNote(resolvedPath, symbol)
   if (note === null) {
-    const where = opts.symbol !== undefined ? ` for symbol '${opts.symbol}'` : ' (whole-file note)'
-    return { text: `No note found for '${opts.file}'${where}`, code: 1 }
+    const where = opts.symbol !== undefined ? ` for symbol ${echoedValue(opts.symbol)}` : ' (whole-file note)'
+    return { text: `No note found for ${echoedValue(opts.file)}${where}`, code: 1 }
   }
 
   const stale = isNoteStale(note)
@@ -839,7 +839,7 @@ export interface FindOptions {
 
 export function runFind(opts: FindOptions): number {
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(formatCommandError(`--limit must be a positive number, got: "${opts.limit}"`))
+    emitErr(formatCommandError(`--limit must be a positive number, got: ${echoedValue(String(opts.limit))}`))
     return 1
   }
 
@@ -871,7 +871,7 @@ export function runFind(opts: FindOptions): number {
   const truncated = limitDropped > 0
 
   if (files.length === 0) {
-    emitErr(formatCommandError(`No indexed files match '${opts.pattern}'`))
+    emitErr(formatCommandError(`No indexed files match ${echoedValue(opts.pattern)}`))
     return 1
   }
 
@@ -882,7 +882,7 @@ export function runFind(opts: FindOptions): number {
   }
 
   if (fuzzyNames.length > 0) {
-    emitErr(`No symbol name contains '${displaySafeText(opts.pattern)}'; showing files for the nearest indexed ${fuzzyNames.length === 1 ? 'name' : 'names'}: ${fuzzyNames.map(displaySafeText).join(', ')}`)
+    emitErr(`No symbol name contains ${echoedValue(opts.pattern)}; showing files for the nearest indexed ${fuzzyNames.length === 1 ? 'name' : 'names'}: ${fuzzyNames.map(displaySafeText).join(', ')}`)
   }
 
   for (const f of files) {
@@ -917,7 +917,7 @@ export interface LocateHit {
 
 export function runLocate(opts: LocateOptions): number {
   if (opts.limit !== undefined && opts.limit <= 0) {
-    emitErr(formatCommandError(`--limit must be a positive number, got: "${opts.limit}"`))
+    emitErr(formatCommandError(`--limit must be a positive number, got: ${echoedValue(String(opts.limit))}`))
     return 1
   }
 
@@ -989,7 +989,7 @@ export function runLocate(opts: LocateOptions): number {
   const shown = sinkGoneRows(combined, (s) => s.filePath).slice(0, limit)
 
   if (shown.length === 0) {
-    emitErr(formatCommandError(`No landmark or symbol located for '${targetSpec}'`))
+    emitErr(formatCommandError(`No landmark or symbol located for ${echoedValue(targetSpec)}`))
     return 1
   }
 
@@ -1017,7 +1017,7 @@ export function runLocate(opts: LocateOptions): number {
   }
 
   if (fuzzyNames.length > 0) {
-    emitErr(`No exact landmark for '${displaySafeText(targetSpec)}'; nearest matches: ${fuzzyNames.map(displaySafeText).join(', ')}`)
+    emitErr(`No exact landmark for ${echoedValue(targetSpec)}; nearest matches: ${fuzzyNames.map(displaySafeText).join(', ')}`)
   }
 
   for (const hit of hits) {
@@ -1045,7 +1045,7 @@ export function runListSections(opts: ListSectionsOptions): number {
       emitErr(formatCommandError(`Could not read: ${opts.file}`))
       return 1
     }
-    emitErr(formatCommandError(`No sections found in '${opts.file}'`))
+    emitErr(formatCommandError(`No sections found in ${echoedValue(opts.file)}`))
     return 1
   }
 

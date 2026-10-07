@@ -27,7 +27,7 @@ describe('runSymbol: a scope filter that hides an indexed symbol must not read a
       const { text, code } = runSymbol({ name: 'alphaScopeFn9k', kind: 'class', projectRoot: root })
       expect(code).toBe(1)
       expect(text).toBe(
-        `No matches for 'alphaScopeFn9k'\n'alphaScopeFn9k' IS indexed (function at alpha.ts:1) -- drop --kind to see it`,
+        `No matches for "alphaScopeFn9k"\n"alphaScopeFn9k" IS indexed (function at alpha.ts:1) -- drop --kind to see it`,
       )
     })
   })
@@ -40,7 +40,7 @@ describe('runSymbol: a scope filter that hides an indexed symbol must not read a
       const { text, code } = runSymbol({ name: 'alphaScopeFn9k', file: normalizePath(other), projectRoot: root })
       expect(code).toBe(1)
       expect(text).toBe(
-        `No matches for 'alphaScopeFn9k'\n'alphaScopeFn9k' IS indexed (function at alpha.ts:1) -- drop --file to see it`,
+        `No matches for "alphaScopeFn9k"\n"alphaScopeFn9k" IS indexed (function at alpha.ts:1) -- drop --file to see it`,
       )
     })
   })
@@ -53,7 +53,7 @@ describe('runSymbol: a scope filter that hides an indexed symbol must not read a
       const { text, code } = runSymbol({ name: 'alphaScopeFn9k', kind: 'class', file: normalizePath(other), projectRoot: root })
       expect(code).toBe(1)
       expect(text).toBe(
-        `No matches for 'alphaScopeFn9k'\n'alphaScopeFn9k' IS indexed (function at alpha.ts:1) -- drop --kind/--file to see it`,
+        `No matches for "alphaScopeFn9k"\n"alphaScopeFn9k" IS indexed (function at alpha.ts:1) -- drop --kind/--file to see it`,
       )
     })
   })
@@ -63,7 +63,7 @@ describe('runSymbol: a scope filter that hides an indexed symbol must not read a
     withIndexedProject('tg-symscope-typo-', (root) => {
       const { text, code } = runSymbol({ name: 'alphaScopeFn9', projectRoot: root })
       expect(code).toBe(1)
-      expect(text).toBe(`No matches for 'alphaScopeFn9'\nDid you mean:\n  - alphaScopeFn9k`)
+      expect(text).toBe(`No matches for "alphaScopeFn9"\nDid you mean:\n  - alphaScopeFn9k`)
     })
   })
 })

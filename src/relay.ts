@@ -4,7 +4,7 @@ import { detectHarness, relaySeededSessionId, setRelaySeededSessionId } from './
 import { applyCallStreak } from './call_streak.js'
 import type { HookEvent } from './hook_registry.js'
 import { runHook, serializeOutput, sessionStateKey } from './hook_registry.js'
-import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { echoedValue, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { sharpenRepeatedDeny } from './hint_target.js'
 import { normalizePayload, type Harness } from './hooks_cli.js'
 import { commitPendingContext } from './pending_context.js'
@@ -249,7 +249,7 @@ export async function relay(eventName: string): Promise<void> {
     if (!isHookEventName(eventName)) {
       // Still a pass on stdout -- the cardinal rule above holds and a hook must never wedge the tool call. But this branch is a wiring mistake, not a runtime hazard: a settings.json left behind by an older build, a hand-edited entry, or a bridge shim passing its own spelling means every hook for that event does nothing at all. Nothing failed, nothing was logged, and the exit code stayed 0, so image shrinking, read dedup and the dirty-queue enqueue all quietly stopped while the index went stale with no way to see why. Say so on stderr, where normalizePayload already reports a bad payload and where the harness will not mistake it for the response.
       console.error(
-        `[relay] unknown hook event '${eventName}'; nothing ran. Valid events: ${HOOK_EVENTS.join(', ')}`,
+        `[relay] unknown hook event ${echoedValue(eventName)}; nothing ran. Valid events: ${HOOK_EVENTS.join(', ')}`,
       )
       process.stdout.write('{}')
       return

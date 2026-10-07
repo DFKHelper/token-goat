@@ -85,7 +85,7 @@ describe('semantic with several queries', () => {
   it('answers each query in its own headed block, in argument order', async () => {
     const { code, stdout } = await runCli(['semantic', WEAK, STRONG])
     expect(code).toBe(0)
-    expect(stdout).toBe(`'${WEAK}':\n${WEAK_BLOCK}\n\n'${STRONG}':\n${STRONG_BLOCK}\n`)
+    expect(stdout).toBe(`"${WEAK}":\n${WEAK_BLOCK}\n\n"${STRONG}":\n${STRONG_BLOCK}\n`)
     expect(searchSemanticMock.mock.calls.map((c) => c[1])).toEqual([WEAK, STRONG])
   })
 
@@ -114,7 +114,7 @@ describe('semantic says when its closest match is weak', () => {
     expect(stdout).toBe(`${WEAK_BLOCK}\n`)
     const notice = warnings.filter((w) => w.includes('found nothing close'))
     expect(notice).toHaveLength(1)
-    expect(notice[0]).toContain(`'${WEAK}'`)
+    expect(notice[0]).toContain(`"${WEAK}"`)
     expect(notice[0]).toContain('closest was 0.950')
     expect(notice[0]).toContain('token-goat symbol --grep')
   })
@@ -126,7 +126,7 @@ describe('semantic says when its closest match is weak', () => {
     const notice = warnings.filter((w) => w.includes('found nothing close'))
     expect(notice).toHaveLength(1)
     expect(notice[0]).not.toContain('\n')
-    expect(notice[0]).toContain(`'${WEAK}\\n`)
+    expect(notice[0]).toContain(`"${WEAK}\\n`)
   })
 
   it('stays silent when the best dense hit is close', async () => {

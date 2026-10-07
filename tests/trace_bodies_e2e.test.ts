@@ -90,7 +90,7 @@ describe('trace --bodies', () => {
     const out = captureStdout(() => cmdTrace(tb, { bodies: true }))
 
     // The unresolvable frame must not crash the command and must degrade to a clear miss note, mirroring `token-goat scope`'s own "No symbols enclosing line N in 'file'" miss wording (graph_commands.ts's runScope).
-    expect(out).toContain(`No symbols enclosing line 5 in '${ghostFile}'`)
+    expect(out).toContain(`No symbols enclosing line 5 in "${ghostFile}"`)
     expect(out).not.toContain('def ghost_call')
 
     // Every other (resolvable) frame still gets its body.

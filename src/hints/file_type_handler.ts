@@ -55,7 +55,7 @@ export function BYTE_RANGE_ADVICE(filePath: string): string {
   return (
     `This file is mostly one long line (e.g. base64 or minified content) — offset/limit ` +
     `line-windowing won't shrink a read here. Sample raw bytes instead, e.g.: ` +
-    `dd if="${filePath}" bs=1 skip=<N> count=<M> status=none`
+    `dd if=${quotedArg(filePath)} bs=1 skip=<N> count=<M> status=none`
   )
 }
 

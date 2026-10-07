@@ -212,7 +212,7 @@ export function runLineRegion(
   if (regions.length === 0) {
     return {
       text:
-        `No indexed symbols in '${file}', so line ${asked} cannot be resolved to a region.\n` +
+        `No indexed symbols in ${echoedValue(file)}, so line ${asked} cannot be resolved to a region.\n` +
         `Read the raw lines instead: token-goat read ${quotedArg(`${file}@${asked}`)}`,
       code: 1,
     }
@@ -305,7 +305,7 @@ export function formatAmbiguity(symbol: string, file: string, candidates: Symbol
   const multiFile = new Set(candidates.map((c) => c.filePath)).size > 1
   const displayRoot = getDisplayRoot(explicitRoot)
   const lines = [
-    `Ambiguous symbol '${displaySafeText(symbol)}' in '${displaySafeText(file)}': ${countNoun(candidates.length, 'definition')} match. ` +
+    `Ambiguous symbol ${echoedValue(symbol)} in ${echoedValue(file)}: ${countNoun(candidates.length, 'definition')} match. ` +
       `Retry with one of the qualified commands below to pick one:`,
   ]
   for (const { candidate: c, qualifier } of ambiguityPicks(symbol, candidates)) {
@@ -528,7 +528,7 @@ export function resolveSymbolSpecOrEmitError(
 ): SymbolEntry | null {
   const { file, symbol } = parseReadSpec(spec)
   if (symbol === undefined || symbol === '') {
-    emitErr(formatCommandError(`${fencedCommand('token-goat ' + commandName)} requires a 'file::symbol' spec (got '${spec}')`))
+    emitErr(formatCommandError(`${fencedCommand('token-goat ' + commandName)} requires a 'file::symbol' spec (got ${echoedValue(spec)})`))
     return null
   }
 

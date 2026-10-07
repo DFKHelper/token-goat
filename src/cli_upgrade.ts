@@ -12,6 +12,7 @@ import { displaySafeJson } from './paths.js'
 import { formatCommandError, writeCommandFailure } from './command_error.js'
 import { dataDir } from './constants.js'
 import { ensureDirSync } from './util.js'
+import { fencedCommand } from './hint_suggestion_guard.js'
 
 const require = createRequire(import.meta.url)
 
@@ -369,7 +370,7 @@ const MANUAL_INSTALL = 'npm install -g token-goat@latest'
 
 /** Installs the latest token-goat globally, then re-runs `token-goat install` from the NEW copy so hooks and bridge manifests match the code now installed. Never exits the process: `doctor --fix` calls this mid-repair. The worker and the resident hook servers are stopped first, because on Windows the native modules they hold open from the global install make npm's replace fail with EPERM; the next hook restarts both from the new copy. */
 export async function performUpgrade(onSyncHooks?: () => Promise<void>, npm: NpmInvocation | null = hostNpm()): Promise<UpgradeOutcome> {
-  if (!npm) return { ok: false, message: `npm was not found next to this Node.js, so token-goat could not upgrade itself. Run '${MANUAL_INSTALL}' yourself.` }
+  if (!npm) return { ok: false, message: `npm was not found next to this Node.js, so token-goat could not upgrade itself. Run ${fencedCommand(MANUAL_INSTALL)} yourself.` }
   try {
     const { stopWorker } = await import('./worker_lifecycle.js')
     const { queryServers } = await import('./hook_client.js')
@@ -381,7 +382,7 @@ export async function performUpgrade(onSyncHooks?: () => Promise<void>, npm: Npm
   const install = spawnSync(npm.file, [...npm.prefix, 'install', '-g', 'token-goat@latest'], { stdio: 'inherit', windowsHide: true })
   if (install.status !== 0) {
     const why = install.error ? install.error.message : `exit code ${install.status ?? 'unknown'}`
-    return { ok: false, message: `npm install failed (${why}). If npm reported EPERM or EBUSY, another program still has token-goat's files open: close running agent sessions and run '${MANUAL_INSTALL}'.` }
+    return { ok: false, message: `npm install failed (${why}). If npm reported EPERM or EBUSY, another program still has token-goat's files open: close running agent sessions and run ${fencedCommand(MANUAL_INSTALL)}.` }
   }
   console.log(`Syncing token-goat hooks and integration manifests...`)
   const launcher = installedLauncher(npm)

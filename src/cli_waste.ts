@@ -21,6 +21,7 @@ import { formatBytes, formatTokenEstimate } from './resident_context.js'
 import { estimateTokensFromLength } from './overflow_guard.js'
 import { displaySafeJson } from './paths.js'
 import { writeCommandFailure } from './command_error.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 export interface WasteCommandOptions {
   project?: string
@@ -180,7 +181,7 @@ function printReport(report: WasteReport): void {
     w('  none\n')
   } else {
     for (const cmd of report.repeatedUncompressedBash) {
-      w(`  "${cmd.normalized}": ran ${cmd.count} times, ${cmd.avgTokens} tok each, ${cmd.totalTokens} tok total, uncompressed\n`)
+      w(`  ${echoedValue(cmd.normalized)}: ran ${cmd.count} times, ${cmd.avgTokens} tok each, ${cmd.totalTokens} tok total, uncompressed\n`)
     }
   }
 

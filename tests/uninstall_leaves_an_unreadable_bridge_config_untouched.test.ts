@@ -197,7 +197,7 @@ describe('uninstall refuses a bridge config it cannot read and changes nothing',
         }
 
         expect(thrown).toBeInstanceOf(b.error)
-        expect((thrown as Error).message).toContain(`'${p}' is unreadable`)
+        expect((thrown as Error).message).toContain(`"${p}" is unreadable`)
         expect((thrown as Error).message).toContain('run uninstall again')
         expect(contentAt(p)).toBe(broken)
         expect(backupsOf(p)).toEqual(backups)
@@ -241,7 +241,7 @@ describe('install refuses a bridge config it cannot read and leaves it as it was
       }
 
       expect(thrown).toBeInstanceOf(b.error)
-      expect((thrown as Error).message).toContain(`'${p}' exists but cannot be read`)
+      expect((thrown as Error).message).toContain(`"${p}" exists but cannot be read`)
       expect(contentAt(p)).toBe('<directory>')
       expect(fs.readdirSync(p)).toEqual([])
       expect(backupsOf(p)).toEqual([])
@@ -273,7 +273,7 @@ describe('token-goat uninstall through the built bundle', () => {
       const { status, stdout, stderr } = run(['uninstall', b.flag])
 
       expect(status).toBe(1)
-      expect(stderr).toContain(`'${p}' is unreadable`)
+      expect(stderr).toContain(`"${p}" is unreadable`)
       expect(stdout).not.toContain(`Removed token-goat ${b.label}`)
       expect(contentAt(p)).toBe(broken)
       expect(backupsOf(p)).toEqual(backups)

@@ -8,6 +8,7 @@ import { loadConfig } from './config.js'
 import { neutralizeOutsideFences } from './injection_scan.js'
 import { displaySafeText, resolveToolPath } from './paths.js'
 import { detectHarness } from './bridges/registry.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 /** Return the event's tool name, or `undefined` for non-tool events. */
 export function getToolName(event: HookEvent): string | undefined {
@@ -345,7 +346,7 @@ export function makeDedupHintHandlers(opts: {
       // The model's own search string, and a model very often greps for a literal it just read out of a file, so the value is repository-influenced. The note below leaves on the context channel, which unlike the deny channel neither fences its payload nor escapes the markers token-goat speaks in. displaySafeText rather than displaySafePath because this is a pattern, not a path.
       const pattern = displaySafeText(typeof toolInput['pattern'] === 'string' ? toolInput['pattern'] : '')
       return contextOutput(
-        'Note: an identical ' + opts.toolName + ' for "' + pattern + '" already ran this session and returned ' +
+        'Note: an identical ' + opts.toolName + ' for ' + echoedValue(pattern) + ' already ran this session and returned ' +
           priorCount + (priorCount === 1 ? ' match' : ' matches') +
           '. If that result already answers this, you can skip re-running it.',
       )

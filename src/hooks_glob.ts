@@ -4,10 +4,11 @@ import { registerHook } from './hook_registry.js'
 import type { HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { contextOutput, passOutput, getCwd, getToolInput, getToolName, makeDedupHintHandlers } from './hooks_common.js'
-import { displaySafeText, normalizePath } from './paths.js'
+import { normalizePath } from './paths.js'
 import { foldPath } from './path_containment.js'
 import { recordGlobQuery, getGlobMatchCount } from './session.js'
 import { recordStat } from './stats.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 /** Whether `target` names the same directory as `cwd`, the absolute form Claude Code sends for a whole-project Glob. Compared as spelled (no disk access), folded on case-insensitive filesystems. */
 function isSameDirAsCwd(target: string, cwd: string): boolean {
@@ -60,9 +61,9 @@ function preGlobHandler(event: HookEvent): HookOutput {
     if (pattern && isBroadCatchAllGlob(pattern, pathArg, getCwd(event))) {
       recordStat('session_hint', 0, 0)
       return contextOutput(
-        'Broad recursive glob pattern "' +
-          displaySafeText(pattern) +
-          '" traverses entire directory trees and may dump thousands of paths into context. Use `token-goat map --compact` to inspect project directory structure efficiently, or narrow the glob path.',
+        'Broad recursive glob pattern ' +
+          echoedValue(pattern) +
+          ' traverses entire directory trees and may dump thousands of paths into context. Use `token-goat map --compact` to inspect project directory structure efficiently, or narrow the glob path.',
       )
     }
 

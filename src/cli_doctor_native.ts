@@ -14,6 +14,7 @@ import { wiredClaudeHookWords } from './install.js'
 import { nativeCopyCurrent, nativeCopyPath, nativeHookBinary, nativeSelftest, packagedNativeBinary, parseNativeInvocation, type NativeSelftest, type WiredHookEntry } from './native_hook.js'
 import { displaySafeText } from './paths.js'
 import { HOOK_STATS_RETENTION_DAYS } from './stats.js'
+import { fencedCommand } from './hint_suggestion_guard.js'
 
 /** One harness scope's wiring, as its installer reads it back. */
 export interface NativeWiring {
@@ -105,7 +106,7 @@ export function checkNativeHookWiring(wiring: NativeWiring, avail: NativeAvailab
   const form = nativeCount === total ? 'native' : nativeCount === 0 ? 'Node' : 'mixed'
   const wiredBins = [...new Set(bins)]
   const tail = formatNativeCounts(counts, wiring.harnesses)
-  const run = `run '${wiring.install}'`
+  const run = `run ${fencedCommand(wiring.install)}`
   const row = (status: DoctorResult['status'], text: string): DoctorResult => ({ name, status, message: `${text}; ${tail}` })
   // An entry in the right form can still be an older build's line (one without the exit suffix, or the cmd-style Node form PowerShell cannot parse), which only a rewrite fixes.
   const outdated = wiring.entries.filter((e) => e.current === false).length

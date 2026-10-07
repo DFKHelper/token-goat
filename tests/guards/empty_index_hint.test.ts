@@ -61,14 +61,14 @@ describe('empty-index hint', () => {
     const r = run(['symbol', 'noSuchSymbol'], gitProjectDir, homeDir)
     expect(r.status).not.toBe(0)
     expect(r.out).toContain(EMPTY_INDEX_SNIPPET)
-    expect(r.out).toContain("run 'token-goat index .' here")
+    expect(r.out).toContain('run `token-goat index .` here')
     expect(r.out).not.toContain('--walk')
   })
 
   it('symbol: indexed project with a genuine miss keeps the old message unchanged', () => {
     const r = run(['symbol', 'noSuchSymbol'], indexedProjectDir, homeDir)
     expect(r.status).not.toBe(0)
-    expect(r.out).toContain("No matches for 'noSuchSymbol'")
+    expect(r.out).toContain('No matches for "noSuchSymbol"')
     expect(r.out).not.toContain(EMPTY_INDEX_SNIPPET)
   })
 
@@ -106,7 +106,7 @@ describe('empty-index hint', () => {
     const r = run(['refs', 'noSuchSymbol'], indexedProjectDir, homeDir)
     expect(r.status).not.toBe(0)
     expect(r.out).toContain('Symbol not found: noSuchSymbol')
-    expect(r.out).not.toContain("No references found for 'noSuchSymbol'")
+    expect(r.out).not.toMatch(/No references found for ["']noSuchSymbol["']/)
     expect(r.out).not.toContain(EMPTY_INDEX_SNIPPET)
   })
 
@@ -114,7 +114,7 @@ describe('empty-index hint', () => {
   it('refs: a real indexed symbol with genuinely zero references keeps the old message unchanged', () => {
     const r = run(['refs', 'gamma'], indexedProjectDir, homeDir)
     expect(r.status).not.toBe(0)
-    expect(r.out).toContain("No references found for 'gamma'")
+    expect(r.out).toContain('No references found for "gamma"')
     expect(r.out).not.toContain('Symbol not found')
     expect(r.out).not.toContain(EMPTY_INDEX_SNIPPET)
   })
@@ -143,7 +143,7 @@ describe('empty-index hint', () => {
     const r = run(['callers', 'noSuchSymbol'], indexedProjectDir, homeDir)
     expect(r.status).not.toBe(0)
     expect(r.out).toContain('Symbol not found: noSuchSymbol')
-    expect(r.out).not.toContain("No references found for 'noSuchSymbol'")
+    expect(r.out).not.toMatch(/No references found for ["']noSuchSymbol["']/)
     expect(r.out).not.toContain(EMPTY_INDEX_SNIPPET)
   })
 
@@ -151,7 +151,7 @@ describe('empty-index hint', () => {
   it('callers: a real indexed symbol with genuinely zero callers keeps the old message unchanged', () => {
     const r = run(['callers', 'gamma'], indexedProjectDir, homeDir)
     expect(r.status).not.toBe(0)
-    expect(r.out).toContain("No references found for 'gamma'")
+    expect(r.out).toContain('No references found for "gamma"')
     expect(r.out).not.toContain('Symbol not found')
     expect(r.out).not.toContain(EMPTY_INDEX_SNIPPET)
   })

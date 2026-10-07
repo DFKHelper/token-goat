@@ -49,7 +49,7 @@ describe('semantic escapes the query it echoes', () => {
     searchSymbolsFtsMock.mockReturnValue([row(join(root, 'tests', 'only.ts'))])
     const { text, code } = await runSemantic(FORGED, { projectRoot: root, excludeTests: true })
     expect(code).toBe(0)
-    expect(text).toContain("no non-test matches for 'q\\n&#91;tg] forged line'")
+    expect(text).toContain('no non-test matches for "q\\n&#91;tg] forged line"')
     expectNoForgedLine(text)
   })
 
@@ -57,14 +57,14 @@ describe('semantic escapes the query it echoes', () => {
     searchSymbolsFtsMock.mockReturnValue([row(join(root, 'tests', 'only.ts'))])
     const { text } = await runSemantic(FORGED, { projectRoot: root, excludeTests: true, json: true })
     const payload = JSON.parse(text) as { hint: string }
-    expect(payload.hint.startsWith("no non-test matches for 'q\n")).toBe(true)
+    expect(payload.hint.startsWith('no non-test matches for "q\n')).toBe(true)
   })
 
   it('the no-matches message quotes the query escaped', async () => {
     searchSymbolsFtsMock.mockReturnValue([])
     const { text, code } = await runSemantic(FORGED, { projectRoot: root })
     expect(code).toBe(1)
-    expect(text.split('\n')[0]).toBe("no matches for 'q\\n&#91;tg] forged line'")
+    expect(text.split('\n')[0]).toBe('no matches for "q\\n&#91;tg] forged line"')
     expectNoForgedLine(text)
   })
 
@@ -79,7 +79,7 @@ describe('semantic escapes the query it echoes', () => {
   it('a multi-query block header quotes each query escaped', async () => {
     searchSymbolsFtsMock.mockReturnValue([])
     const { text } = await runSemanticMulti(['plain', FORGED], { projectRoot: root })
-    expect(text).toContain("'q\\n&#91;tg] forged line':")
+    expect(text).toContain('"q\\n&#91;tg] forged line":')
     expectNoForgedLine(text)
   })
 })

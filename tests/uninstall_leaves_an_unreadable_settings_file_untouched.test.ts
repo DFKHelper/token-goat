@@ -122,7 +122,7 @@ describe('uninstall refuses a settings file it cannot read and changes nothing',
         }
 
         expect(thrown).toBeInstanceOf(h.error)
-        expect((thrown as Error).message).toContain(`'${p}' is unreadable`)
+        expect((thrown as Error).message).toContain(`"${p}" is unreadable`)
         expect((thrown as Error).message).toContain('run uninstall again')
         expect(contentAt(p)).toBe(broken)
         expect(backupsOf(p)).toEqual(backups)
@@ -190,7 +190,7 @@ describe('install refuses a settings file it cannot read and writes nothing', ()
       }
 
       expect(thrown).toBeInstanceOf(h.error)
-      expect((thrown as Error).message).toContain(`'${p}' exists but cannot be read`)
+      expect((thrown as Error).message).toContain(`"${p}" exists but cannot be read`)
       expect(contentAt(p)).toBe('<directory>')
       expect(fs.readdirSync(p)).toEqual([])
       expect(backupsOf(p)).toEqual([])
@@ -220,7 +220,7 @@ describe('token-goat uninstall through the built bundle', () => {
     const { status, stdout, stderr } = run(['uninstall'])
 
     expect(status).toBe(1)
-    expect(stderr).toContain(`settings file '${p}' is unreadable`)
+    expect(stderr).toContain(`settings file "${p}" is unreadable`)
     expect(stdout).not.toContain('Removed token-goat hooks')
     expect(fs.readFileSync(p, 'utf8')).toBe(broken)
     expect(backupsOf(p)).toEqual(backups)

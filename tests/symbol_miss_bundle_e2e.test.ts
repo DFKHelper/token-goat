@@ -47,19 +47,19 @@ describe('the built bundle answers a symbol miss', () => {
   it('suggests the near name for a typo', () => {
     const r = tg(['symbol', 'renderInvoise', '-p'])
     expect(r.status).toBe(1)
-    expect(r.stderr).toContain(`No matches for 'renderInvoise'\nDid you mean:\n  - renderInvoice`)
+    expect(r.stderr).toContain(`No matches for "renderInvoise"\nDid you mean:\n  - renderInvoice`)
   })
 
   it('names the scope that hid an exact name', () => {
     const r = tg(['symbol', 'renderInvoice', '-p', '--kind', 'class'])
     expect(r.status).toBe(1)
-    expect(r.stderr).toContain(`'renderInvoice' IS indexed (function at invoice.ts:1) -- drop --kind to see it`)
+    expect(r.stderr).toContain(`"renderInvoice" IS indexed (function at invoice.ts:1) -- drop --kind to see it`)
   })
 
   it('points at the JSON key a miss names', () => {
     const r = tg(['symbol', 'portNumber', '-p'])
     expect(r.status).toBe(1)
-    expect(r.stderr).toContain(`'portNumber' is a key in settings.json at server.portNumber`)
+    expect(r.stderr).toContain(`"portNumber" is a key in settings.json at server.portNumber`)
   })
 
   it('emits a parseable JSON envelope on stdout for a --json miss, shaped like a hit', () => {

@@ -11,6 +11,7 @@ import { parseJsonOrJsonc } from '../jsonc_text.js'
 import { writeSettingsKeepingComments } from './commented_settings.js'
 
 import { groupHasTokenGoat } from './matcher_group.js'
+import { echoedValue } from '../hint_suggestion_guard.js'
 
 // Qwen Code -> token-goat internal HookEventName (src/types.ts's HOOK_EVENTS). Only these five have a token-goat handler; every other real Qwen Code event (Notification, SessionEnd, PostToolUseFailure, StopFailure, SubagentStart, PermissionRequest, TodoCreated, TodoCompleted) is left unimplemented rather than guessed at, since token-goat's own docs source (QwenLM/qwen-code's hooks.md) was not live-tested against a running install to confirm each event's payload shape.
 const QWEN_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'PreCompact', 'UserPromptSubmit', 'SubagentStop'] as const
@@ -50,8 +51,8 @@ function readQwenSettings(p: string, opts: { strict?: boolean; command?: 'instal
   const refuse = (problem: string, detail?: string): QwenSettingsParseError =>
     new QwenSettingsParseError(
       (opts.command === 'uninstall'
-        ? `Qwen Code settings file '${p}' is unreadable: it ${problem}. Uninstall left it and its backups untouched; fix the file and run uninstall again.`
-        : `Qwen Code settings file '${p}' ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
+        ? `Qwen Code settings file ${echoedValue(p)} is unreadable: it ${problem}. Uninstall left it and its backups untouched; fix the file and run uninstall again.`
+        : `Qwen Code settings file ${echoedValue(p)} ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
     )
   let raw: string
   try {

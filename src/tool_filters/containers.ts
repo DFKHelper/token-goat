@@ -15,6 +15,7 @@ import {
   positionalArgs,
   truncateTableRows,
 } from './helpers.js'
+import { echoedValue } from '../hint_suggestion_guard.js'
 
 // --------------------------------------------------------------------------- Docker regexes (BuildKit and legacy format) ---------------------------------------------------------------------------
 
@@ -289,7 +290,7 @@ function _compressKubectlEvents(text: string): string {
       const elided = rows.length - _MAX_PER_REASON
       totalElided += elided
       kept.push(...rows.slice(-_MAX_PER_REASON))
-      kept.push(`  [token-goat: ${elided} earlier '${reason}' events elided]`)
+      kept.push(`  [token-goat: ${elided} earlier ${echoedValue(reason)} events elided]`)
     }
   }
   if (totalElided) {

@@ -17,7 +17,7 @@ const MISSES: Array<[string, RegExp]> = [
   ['items[*] | [1]', /\[1\] found nothing to index: both values it reached are objects.*list\[1\]\.field/],
   ['items[*].missing', /\.missing found no such key: both values it reached are objects/],
   ['empty[*]', /\[\*\] found nothing to iterate: the value it reached is an empty array/],
-  ['..nokey', /\.\.nokey found no key named 'nokey'/],
+  ['..nokey', /\.\.nokey found no key named "nokey"/],
   ['items[name=zz]', /\[name=zz\] matched no element: the value it reached is an array of 2/],
 ]
 
@@ -38,7 +38,7 @@ describe('a fanned query that matches nothing says which step came up empty', ()
     [{ items: [null, []] }, 'both values it reached are null and an empty array'],
   ])('names what a fan-out reached in agreement with its count (%j)', (doc, reached) => {
     const res = queryJson(doc, 'items[*].nope')
-    expect(noMatchMessage('items[*].nope', res)).toBe(`no match for 'items[*].nope': .nope found no such key: ${reached}`)
+    expect(noMatchMessage('items[*].nope', res)).toBe(`no match for "items[*].nope": .nope found no such key: ${reached}`)
   })
 
   it('applies a piped index to each item, so it still reads one element of each array', () => {
@@ -86,7 +86,7 @@ describe.each(FRONT_ENDS)('%s in the built bundle', (_name, argv) => {
     const res = run(argv('items[*].name | [0]'))
     expect(res.code).toBe(1)
     expect(res.out).toBe('')
-    expect(res.err).toMatch(/no match for 'items\[\*\]\.name \| \[0\]': \[0\] found nothing to index/)
+    expect(res.err).toMatch(/no match for "items\[\*\]\.name \| \[0\]": \[0\] found nothing to index/)
   })
 
   it('exits 1 with the reason when a fan-out reaches no key', () => {

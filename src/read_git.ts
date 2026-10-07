@@ -24,6 +24,7 @@ import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { walkProject } from './baseline.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
 import { formatCommandError, formatGitFailure } from './command_error.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 export interface ConflictsCliOptions {
   path?: string
@@ -203,7 +204,7 @@ function buildChangedRefHint(cwd: string, ref: string): string | null {
     suggestedRef = EMPTY_TREE_HASH
   }
   const commitWord = commitCount === 1 ? '1 commit' : `${commitCount} commits`
-  return `Hint: this repo has only ${commitWord}; '${ref}' does not exist. Try: token-goat changed --since ${suggestedRef}`
+  return `Hint: this repo has only ${commitWord}; ${echoedValue(ref)} does not exist. Try: token-goat changed --since ${suggestedRef}`
 }
 
 function refIsSafe(ref: string): boolean {
@@ -300,7 +301,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
       .filter(Boolean)
       .map((f) => (f.startsWith('"') && f.endsWith('"') && f.length > 1 ? unquoteGitPath(f.slice(1, -1)) : f))
   } catch {
-    emitErr(formatCommandError(`Could not run git diff against '${ref}'`))
+    emitErr(formatCommandError(`Could not run git diff against ${echoedValue(ref)}`))
     return 1
   }
 
@@ -467,7 +468,7 @@ export function runDiff(opts: DiffOptions): number {
   try {
     diffResult = runGit(diffArgs, { cwd })
   } catch {
-    emitErr(formatCommandError(`Could not run git diff for '${match.filePath}'`))
+    emitErr(formatCommandError(`Could not run git diff for ${echoedValue(match.filePath)}`))
     return 1
   }
   if (diffResult.exitCode !== 0) {
@@ -476,7 +477,7 @@ export function runDiff(opts: DiffOptions): number {
   }
 
   if (diffResult.stdout.trim() === '') {
-    emit(`No changes to '${displaySafeText(match.name)}' in '${displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath))}'.`)
+    emit(`No changes to ${echoedValue(match.name)} in ${echoedValue(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath))}.`)
     return 0
   }
 
@@ -485,7 +486,7 @@ export function runDiff(opts: DiffOptions): number {
   const overlapping = diffFileScoped ? hunks : hunks.filter((h) => h.start <= match.lineEnd && h.end >= match.lineStart)
 
   if (overlapping.length === 0) {
-    emit(`No changes to '${displaySafeText(match.name)}' (lines ${match.lineStart}-${match.lineEnd}) in '${displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath))}'.`)
+    emit(`No changes to ${echoedValue(match.name)} (lines ${match.lineStart}-${match.lineEnd}) in ${echoedValue(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath))}.`)
     return 0
   }
 
@@ -593,7 +594,7 @@ export function runLog(opts: LogOptions): number {
   try {
     logResult = runGit(logArgs, { cwd })
   } catch {
-    emitErr(formatCommandError(`Could not run git log for '${match.filePath}'`))
+    emitErr(formatCommandError(`Could not run git log for ${echoedValue(match.filePath)}`))
     return 1
   }
   if (logResult.exitCode !== 0) {
@@ -602,7 +603,7 @@ export function runLog(opts: LogOptions): number {
   }
 
   if (logResult.stdout.trim() === '') {
-    emit(`No history for '${displaySafeText(match.name)}' (lines ${match.lineStart}-${match.lineEnd}) in '${displaySafeText(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath))}'.`)
+    emit(`No history for ${echoedValue(match.name)} (lines ${match.lineStart}-${match.lineEnd}) in ${echoedValue(toDisplayPath(getDisplayRoot(opts.projectRoot), match.filePath))}.`)
     return 0
   }
 

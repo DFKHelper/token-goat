@@ -724,7 +724,7 @@ describe('read_commands', () => {
         expect(code).toBe(0)
         expect(text).toContain('--grep')
         expect(text).toContain('filtered out')
-        expect(text).not.toBe('No matches for \'^run\'')
+        expect(text).not.toMatch(/^No matches for ["']\^run["']$/)
       })
 
       it('distinguishes filtered-to-empty from genuinely-empty in --json output (totalCount: 0, not the pre-filter count)', () => {
@@ -1208,7 +1208,7 @@ describe('read_commands', () => {
 
         const { text: stdout, code } = runRead({ spec: 'src/comp.ts::render' })
         expect(code).toBe(1)
-        expect(stdout).toContain("Ambiguous symbol 'render'")
+        expect(stdout).toContain('Ambiguous symbol "render"')
         expect(stdout).toContain('  - ClassA.render (line 3)')
         expect(stdout).toContain('  - ClassB.render (line 22)')
         // Same-file candidates: the label itself (before the arrow) carries no file-path prefix.
@@ -1237,7 +1237,7 @@ describe('read_commands', () => {
 
         const { text: stdout, code } = runRead({ spec: 'utils.ts::helper' })
         expect(code).toBe(1)
-        expect(stdout).toContain("Ambiguous symbol 'helper'")
+        expect(stdout).toContain('Ambiguous symbol "helper"')
         // Distinguishable: each label carries its own file path, not an identical bare "helper (line N)". fileA/fileB resolve to absolute paths inside this repo's own project root (the test process's cwd), so formatAmbiguity's toDisplayPath() shortens them to project-relative form for human output -- src/utils.ts / lib/utils.ts, not the raw absolute fileA/fileB.
         expect(stdout).toContain('  - src/utils.ts::helper (line 3)')
         expect(stdout).toContain('  - lib/utils.ts::helper (line 7)')
@@ -1271,7 +1271,7 @@ describe('read_commands', () => {
 
         const { text: stdout, code } = runRead({ spec: 'compress.ts::compress' })
         expect(code).toBe(1)
-        expect(stdout).toContain("Ambiguous symbol 'compress'")
+        expect(stdout).toContain('Ambiguous symbol "compress"')
         // Cross-file span -> every label is file-prefixed, even the ones with a same-file parent. Both fixture paths live inside this repo's own project root (the test process's cwd), so formatAmbiguity's toDisplayPath() shortens fileA/fileB to project-relative form.
         expect(stdout).toContain('  - src/compress.ts::ClassA.compress (line 3)')
         expect(stdout).toContain('  - src/compress.ts::ClassB.compress (line 22)')
@@ -1302,7 +1302,7 @@ describe('read_commands', () => {
 
         const { text: stdout, code } = runRead({ spec: 'src/cli.ts::run' })
         expect(code).toBe(1)
-        expect(stdout).toContain("Ambiguous symbol 'run'")
+        expect(stdout).toContain('Ambiguous symbol "run"')
         // Parented candidate: plain qualifier, unchanged.
         expect(stdout).toContain('  - cmdUninstall.run (line 691)  ->  token-goat read "src/cli.ts::cmdUninstall.run"')
         // Parentless candidate: anchored qualifier, not the bare (already-failed) 'run' spec.
@@ -1330,7 +1330,7 @@ describe('read_commands', () => {
 
         const { text: stdout, code } = runRead({ spec: 'src/dup.ts::bar' })
         expect(code).toBe(1)
-        expect(stdout).toContain("Ambiguous symbol 'bar'")
+        expect(stdout).toContain('Ambiguous symbol "bar"')
         expect(stdout).toContain('  - Foo.bar@3 (line 3)  ->  token-goat read "src/dup.ts::Foo.bar@3"')
         expect(stdout).toContain('  - Foo.bar@22 (line 22)  ->  token-goat read "src/dup.ts::Foo.bar@22"')
 
@@ -1352,7 +1352,7 @@ describe('read_commands', () => {
 
         const { text: stdout, code } = runRead({ spec: 'sample.html::Overview' })
         expect(code).toBe(1)
-        expect(stdout).toContain("Ambiguous symbol 'Overview'")
+        expect(stdout).toContain('Ambiguous symbol "Overview"')
         expect(stdout).toContain('  - Overview@5 (line 5)  ->  token-goat read "sample.html::Overview@5"')
         expect(stdout).toContain('  - Overview.Overview (line 12)  ->  token-goat read "sample.html::Overview.Overview"')
 
@@ -3250,7 +3250,7 @@ describe('read_commands', () => {
       const { stderr } = capture(() => {
         expect(runBrief({ spec: 'a.ts::render' })).toBe(1)
       })
-      expect(stderr).toContain("Ambiguous symbol 'render'")
+      expect(stderr).toContain('Ambiguous symbol "render"')
       expect(stderr).toContain('token-goat brief "')
       expect(stderr).not.toContain('token-goat read "')
     })
@@ -5216,7 +5216,7 @@ describe('read_commands', () => {
         const code = runLocate({ spec: 'noSuchLandmark' })
         expect(code).toBe(1)
       })
-      expect(stderr).toContain("No landmark or symbol located for 'noSuchLandmark'")
+      expect(stderr).toContain('No landmark or symbol located for "noSuchLandmark"')
     })
 
     it('locates exact and partial symbol landmarks with line spans', () => {
@@ -8195,7 +8195,7 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
         const code = await runZipRead({ file: zipPath, entry: 'sub/' })
         expect(code).toBe(1)
       })
-      expect(stderr).toContain("Entry 'sub/' is a directory, not a file")
+      expect(stderr).toContain('Entry "sub/" is a directory, not a file')
       expect(stdout).toBe('')
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
@@ -8376,7 +8376,7 @@ describe('runRefs unknown symbol vs zero-references distinction', () => {
       expect(code).toBe(1)
     })
     const all = stdout + stderr
-    expect(all).toContain("No references found for 'refsUnrefFn2p6j'")
+    expect(all).toContain('No references found for "refsUnrefFn2p6j"')
     expect(all).not.toContain('Symbol not found')
     expect(all).not.toContain('Did you mean')
   })

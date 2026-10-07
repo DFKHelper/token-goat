@@ -3,6 +3,7 @@
 import { getHintStatsSummary, getHintStatsTotals, getHintSpendTotals, resetHintStats, markCategoryEffective, markCategoryIneffective, isSuppressionCategory, type CategoryEfficacy, type HintCategory, type HintStatsTotals } from './hint_stats.js'
 import { pad } from './util.js'
 import { displaySafeJson, displaySafeText } from './paths.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 export interface HintStatsCommandOptions {
   json?: boolean
@@ -101,12 +102,12 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
   }
   if (opts.markEffective !== undefined) {
     markCategoryEffective(opts.markEffective)
-    process.stdout.write(`hint-stats: recorded a manual "effective" vote for '${opts.markEffective}'.\n`)
+    process.stdout.write(`hint-stats: recorded a manual "effective" vote for ${echoedValue(opts.markEffective)}.\n`)
     return
   }
   if (opts.markIneffective !== undefined) {
     markCategoryIneffective(opts.markIneffective)
-    process.stdout.write(`hint-stats: recorded a manual "ineffective" vote for '${opts.markIneffective}'.\n`)
+    process.stdout.write(`hint-stats: recorded a manual "ineffective" vote for ${echoedValue(opts.markIneffective)}.\n`)
     return
   }
 

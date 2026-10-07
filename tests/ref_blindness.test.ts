@@ -85,7 +85,7 @@ describe('dead: a kind whose references are never recorded is refused, not answe
     expect(r.status).toBe(0)
     // Must-not-drop: the answerable half of the request still produces its real answer.
     expect(r.stdout, 'the function half of the request must still be answered').toContain('tsUnusedZq')
-    expect(text, 'the exclusion must be disclosed').toContain("Note: 'interface' excluded")
+    expect(text, 'the exclusion must be disclosed').toContain('Note: "interface" excluded')
     expect(text, 'a silent exclusion is the same defect wearing the opposite sign').toContain('never type annotations')
     expect(r.stdout, 'the excluded kind must not contribute rows').not.toContain('UsedShapeZq')
   })
@@ -140,7 +140,7 @@ describe('refs and its siblings: a language whose call sites are never indexed s
     const r = tg('refs', 'widget.ts::tsUnusedZq')
     const text = out(r)
     expect(r.status).toBe(1)
-    expect(text).toContain("No references found for 'tsUnusedZq'")
+    expect(text).toContain('No references found for "tsUnusedZq"')
     expect(text, 'a ref-indexed language must not be reported as unindexed').not.toContain('call sites are not indexed')
   })
 
@@ -205,7 +205,7 @@ describe('refs and its siblings: a kind whose usages are never recorded says so 
     const r = tg('refs', 'widget.ts::UsedShapeZq')
     const text = out(r)
     expect(r.status, 'an unanswerable question is not a successful answer').toBe(1)
-    expect(text).toContain("'UsedShapeZq' is an interface")
+    expect(text).toContain('"UsedShapeZq" is an interface')
     expect(text).toContain('never type annotations')
     expect(text, 'the alternative must be runnable as printed').toContain('rg -n -w UsedShapeZq')
     expect(text, 'the misleading message must be replaced, not merely accompanied').not.toContain('No references found')
@@ -215,7 +215,7 @@ describe('refs and its siblings: a kind whose usages are never recorded says so 
     const r = tg('callers', 'widget.ts::UsedShapeZq')
     const text = out(r)
     expect(r.status).toBe(1)
-    expect(text).toContain("'UsedShapeZq' is an interface")
+    expect(text).toContain('"UsedShapeZq" is an interface')
     expect(text).not.toContain('No references found')
   })
 
@@ -223,14 +223,14 @@ describe('refs and its siblings: a kind whose usages are never recorded says so 
     const r = tg('impact', 'widget.ts::UsedShapeZq')
     const text = out(r)
     expect(r.status).toBe(1)
-    expect(text).toContain("'UsedShapeZq' is an interface")
+    expect(text).toContain('"UsedShapeZq" is an interface')
     expect(text, 'a BFS over empty rows must not report absence as a finding').not.toContain('No callers found')
   })
 
   it('call-chain says so, the one sibling whose empty answer exits 0 and so reads as a verdict', () => {
     const r = tg('call-chain', 'widget.ts::UsedShapeZq')
     const text = out(r)
-    expect(text).toContain("'UsedShapeZq' is an interface")
+    expect(text).toContain('"UsedShapeZq" is an interface')
     expect(r.stdout, 'the bare "(no callers)" verdict must not be presented for a symbol nobody could have looked for callers of').not.toContain('(no callers)\n')
     expect(r.stdout).toContain('(no callers recorded)')
   })
@@ -265,8 +265,8 @@ describe('refs and its siblings: a kind whose usages are never recorded says so 
     const text = out(r)
     expect(r.status).toBe(1)
     // Must-not-drop: the assessable definition was genuinely searched, so its honest empty answer survives rather than being swallowed by a wholesale refusal.
-    expect(text, 'the function definition WAS searched, so its real answer must still be given').toContain("No references found for 'MixedZq'")
-    expect(text, 'the exclusion must be counted, not dropped').toContain("Note: 1 of 2 definitions of 'MixedZq' ('interface')")
+    expect(text, 'the function definition WAS searched, so its real answer must still be given').toContain('No references found for "MixedZq"')
+    expect(text, 'the exclusion must be counted, not dropped').toContain('Note: 1 of 2 definitions of "MixedZq" ("interface")')
     expect(text).toContain('never type annotations')
     expect(text, 'a partial answer must not be refused wholesale').not.toContain('Cannot determine references')
   })
@@ -287,7 +287,7 @@ describe('refs and its siblings: a kind whose usages are never recorded says so 
     const zero = tg('refs', 'widget.ts::tsUnusedZq')
     const text = out(zero)
     expect(zero.status).toBe(1)
-    expect(text).toContain("No references found for 'tsUnusedZq'")
+    expect(text).toContain('No references found for "tsUnusedZq"')
     expect(text, 'a value-position kind must not be reported as unassessable').not.toContain('never type annotations')
     expect(text).not.toContain('Note:')
   })
@@ -325,7 +325,7 @@ describe('refs: the all-or-nothing ref-blind probe must not sample a truncated p
   it('reports the plain "No references found", not a ref-blind-language refusal, when a truncated prefix would look all-blind', () => {
     const r = spawnSync(process.execPath, [BUNDLE, 'refs', 'zzzProbeSym'], { cwd: probeProject, encoding: 'utf8' })
     const text = `${r.stdout}\n${r.stderr}`
-    expect(text, 'the real TypeScript definition WAS searched and genuinely has zero callers, so the honest verdict is a plain empty answer').toContain("No references found for 'zzzProbeSym'")
+    expect(text, 'the real TypeScript definition WAS searched and genuinely has zero callers, so the honest verdict is a plain empty answer').toContain('No references found for "zzzProbeSym"')
     expect(text, 'the pre-fix 50-row probe never saw the TypeScript definition and wrongly claimed the language is unindexed').not.toContain('call sites are not indexed')
   })
 })

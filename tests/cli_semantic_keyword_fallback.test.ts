@@ -223,7 +223,7 @@ describe('semantic with the runtime installed but its model files unobtainable',
     searchFailure = null
     const { stderr, exitCode } = await runSemanticCli('NonExistentFunctionName')
     expect(exitCode).toBe(1)
-    expect(stderr).toContain("token-goat: no matches for 'NonExistentFunctionName'")
+    expect(stderr).toContain('token-goat: no matches for "NonExistentFunctionName"')
     expect(stderr).toContain('Try: token-goat symbol "NonExistentFunctionName"')
   })
 
@@ -241,8 +241,8 @@ describe('semantic with the runtime installed but its model files unobtainable',
 
     const { stderr, exitCode } = await runSemanticCli('Resolve-EmailRecipientGroup')
     expect(exitCode).toBe(1)
-    expect(stderr).toContain("token-goat: no matches for 'Resolve-EmailRecipientGroup'")
-    expect(stderr).toContain("(note: 'Resolve-EmailRecipientGroup' is an indexed symbol name; use: `token-goat symbol \"Resolve-EmailRecipientGroup\"`)")
+    expect(stderr).toContain('token-goat: no matches for "Resolve-EmailRecipientGroup"')
+    expect(stderr).toContain("(note: \"Resolve-EmailRecipientGroup\" is an indexed symbol name; use: `token-goat symbol \"Resolve-EmailRecipientGroup\"`)")
     // Regression: unfenced, the suggestion guard read on past the closing `"` to the `)` and replaced the command with its omitted-command placeholder. HAND-DERIVED: the symbol row is constructed by this test.
     expect(stripUnsafeSuggestions(stderr)).toBe(stderr)
   })

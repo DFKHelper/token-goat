@@ -56,6 +56,7 @@ import {
   cmdZipRead,
 } from './cli_structured.js'
 import { cmdInsertSection, cmdReplace, cmdWriteFile } from './cli_file_ops.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 // Shared by csv-query, csv-profile and xlsx-query; a blank header cell is named by its position the same way, so the help says so once.
 const NO_HEADER_DESCRIPTION = 'treat the first row as data, not a header (columns become col1, col2, ...); a blank header cell is also named colN by its position'
@@ -104,7 +105,7 @@ export async function cmdImageText(file: string, opts: { json?: boolean; lang?: 
     const tokens = opts.lang.split(/[+,;\s]+/).map((s) => s.trim().toLowerCase()).filter(Boolean)
     const invalid = tokens.filter((t) => !isSupportedOcrLang(t))
     if (invalid.length > 0) {
-      throw new CliError(`unsupported OCR language(s) '${invalid.join(', ')}'; must be from: ${SUPPORTED_OCR_LANG_CODES.join(', ')}`)
+      throw new CliError(`unsupported OCR language(s) ${echoedValue(invalid.join(', '))}; must be from: ${SUPPORTED_OCR_LANG_CODES.join(', ')}`)
     }
   }
   const result = await runImageText(file, opts.lang)

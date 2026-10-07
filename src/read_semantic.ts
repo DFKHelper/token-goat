@@ -18,7 +18,7 @@ import { searchEvidenceSemantically } from './evidence_cache.js'
 import { isIndexEmptyForProject, emptyIndexMessage, getEmbeddingCoverage } from './index_health.js'
 import { querySymbols, searchSymbolsFts } from './index_reader.js'
 import type { SymbolEntry } from './parser_types.js'
-import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
+import { displaySafeJson, toDisplayPath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { recordSemanticQuery } from './semantic_distances.js'
 import { assessDenseRelevance, floorEmptiedPhrase, weakMatchPhrase } from './semantic_relevance.js'
@@ -28,7 +28,7 @@ import { resolveProjectConfinement } from './read_spec.js'
 import { ensureWorkerAlive } from './worker_lifecycle.js'
 import { compileGrepMatcher, countNoun, excludeTestsHiddenNote, extractErrorMessage, isTestFile } from './util.js'
 import { grepFilteredToEmptyNotice } from './filter_notice.js'
-import { fencedCommand, quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 import { forClient } from './mcp_client_text.js'
 
 // Resolves the enclosing symbol for a semantic chunk's line range, keyed off its `startLine`.
@@ -130,7 +130,7 @@ function semanticDegradedFields(preflight: EmbeddingPreflightResult, searchSeman
 export async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text: string; code: number }> {
   // Same reasoning as runSymbol in read_symbol.ts: a limit of 0 (or negative) would silently query for zero results instead of surfacing a clear "you asked for nothing" error.
   if (opts.limit !== undefined && opts.limit <= 0) {
-    const message = `--limit must be a positive number, got: "${opts.limit}"`
+    const message = `--limit must be a positive number, got: ${echoedValue(String(opts.limit))}`
     if (opts.json === true) {
       return { text: displaySafeJson({ error: message }), code: 1 }
     }
@@ -142,7 +142,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
   // A caller-supplied projectRoot must be an absolute, existing directory -- otherwise searchSemantic silently finds nothing under the bogus root and this function falls back to the (now project-scoped) FTS search using that same bogus root, which also finds nothing, and the caller gets a plain "no matches" instead of a clear signal that the scope they asked for doesn't exist. Fail loudly instead of silently widening/losing scope.
   if (opts.projectRoot !== undefined) {
     if (!path.isAbsolute(opts.projectRoot) || !fs.existsSync(opts.projectRoot) || !fs.statSync(opts.projectRoot).isDirectory()) {
-      const message = `projectRoot must be an absolute, existing directory, got '${opts.projectRoot}'`
+      const message = `projectRoot must be an absolute, existing directory, got ${echoedValue(opts.projectRoot)}`
       if (opts.json === true) {
         return { text: displaySafeJson({ error: message }), code: 1 }
       }
@@ -425,7 +425,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
     // Names the query because a multi-query call prints every block's stderr ahead of the blocks themselves.
     if (weakPhrase !== null) {
       console.warn(
-        `Matching on meaning found nothing close for '${displaySafeText(query)}' (${weakPhrase}); these results may be unrelated. ` +
+        `Matching on meaning found nothing close for ${echoedValue(query)} (${weakPhrase}); these results may be unrelated. ` +
           `For a known name try token-goat symbol --grep <pattern> or rg, or rephrase the query.`,
       )
     }
@@ -444,12 +444,13 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
   }
   // Same distinction one flag over: "--exclude-tests hid every hit there was" is a filtered store, not an empty one, so it exits 0 with a notice naming the count instead of the exit-1 "no matches" below -- checked after --grep so a run with both flags reports the narrower grep story first, matching runRefs's ordering.
   if (opts.excludeTests === true && suppressedTotal > 0) {
-    const notice = `no non-test matches for '${query}' (${excludeTestsHiddenNote(suppressedTotal)})`
+    const hidden = excludeTestsHiddenNote(suppressedTotal)
     if (opts.json === true) {
-      const payload = { source: 'fts', items: [], truncated: false, totalCount: 0, excludeTestsFilteredToEmpty: true, hint: notice }
+      // displaySafeJson escapes the hint as a leaf string, so the query goes in as typed rather than escaped twice.
+      const payload = { source: 'fts', items: [], truncated: false, totalCount: 0, excludeTestsFilteredToEmpty: true, hint: `no non-test matches for "${query}" (${hidden})` }
       return { text: displaySafeJson(payload), code: 0 }
     }
-    return { text: `token-goat: ${displaySafeText(notice)}`, code: 0 }
+    return { text: `token-goat: no non-test matches for ${echoedValue(query)} (${hidden})`, code: 0 }
   }
   // Evidence is a project-scoped fallback, not a replacement for source-index matches: its entries are redacted historical observations and carry no source line contract. Only consult it after both source retrieval paths miss and when no source-specific filter was requested.
   if (!anyFilter) {
@@ -523,8 +524,8 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
     return { text, code: 1 }
   }
   let text = indexEmpty
-    ? `no matches for '${displaySafeText(query)}'\n${emptyIndexMessage(rootDir)}`
-    : `no matches for '${displaySafeText(query)}'`
+    ? `no matches for ${echoedValue(query)}\n${emptyIndexMessage(rootDir)}`
+    : `no matches for ${echoedValue(query)}`
   const trimmedQuery = query.trim()
   const isIdentifier = /^[A-Za-z0-9_.:-]+$/.test(trimmedQuery)
   if (!indexEmpty && isIdentifier) {
@@ -538,7 +539,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
       // Ignore DB errors during symbol lookup fallback
     }
     if (symFound) {
-      text += forClient(`\n(note: '${trimmedQuery}' is an indexed symbol name; use: ${fencedCommand('token-goat symbol ' + quotedArg(trimmedQuery))})`)
+      text += forClient(`\n(note: ${echoedValue(trimmedQuery)} is an indexed symbol name; use: ${fencedCommand('token-goat symbol ' + quotedArg(trimmedQuery))})`)
     } else {
       text += forClient(`\nTry: token-goat symbol ${quotedArg(trimmedQuery)}`)
     }
@@ -566,7 +567,7 @@ export async function runSemanticMulti(queries: readonly string[], opts: Semanti
       entries.push({ query, ...(JSON.parse(sub.text) as Record<string, unknown>) })
       continue
     }
-    blocks.push(`'${displaySafeText(query)}':\n${sub.text}`)
+    blocks.push(`${echoedValue(query)}:\n${sub.text}`)
   }
   return { text: opts.json === true ? displaySafeJson(entries) : blocks.join('\n\n'), code: anyOk ? 0 : 1 }
 }

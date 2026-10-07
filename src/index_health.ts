@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import { getDb } from './db.js'
 import { projectScopeClause } from './sql_path.js'
 import { detectWalkMode } from './walk_mode.js'
+import { echoedValue, fencedCommand } from './hint_suggestion_guard.js'
 
 /** Raw indexed file/symbol counts for `dbPath`, scoped to `rootDir` when given. Extracted from cli_doctor_index.ts's checkSymbolCount (which still owns the human-readable message) so index_status (mcp_server.ts) can report the same numbers as structured JSON instead of duplicating the SQL. Throws on a DB error -- callers that want the doctor-style "could not query" fallback must catch it themselves, matching checkSymbolCount's own try/catch. */
 export function getProjectIndexCounts(dbPath: string, rootDir?: string): { fileCount: number; symbolCount: number } {
@@ -81,10 +82,10 @@ export function suggestedIndexCommand(rootDir: string): string {
 /** The exact doctor wording (checkSymbolCount's warn message) for an empty index, with the git-aware suggested command spliced in. Shared verbatim so every query command's empty-index hint and doctor's own Symbols warning never drift apart. */
 export function emptyIndexMessage(rootDir: string, projectRootWasOmitted = false): string {
   const omittedNote = projectRootWasOmitted
-    ? ` (projectRoot was omitted and defaulted to server process cwd "${rootDir}"; pass projectRoot: "<workspace-path>" to target your workspace)`
+    ? ` (projectRoot was omitted and defaulted to server process cwd ${echoedValue(rootDir)}; pass projectRoot: "<workspace-path>" to target your workspace)`
     : ''
   return (
     `no files indexed for this project — every read command will return empty, which looks ` +
-    `like a genuine "not found" rather than a missing index; run '${suggestedIndexCommand(rootDir)}' here${omittedNote}`
+    `like a genuine "not found" rather than a missing index; run ${fencedCommand(suggestedIndexCommand(rootDir))} here${omittedNote}`
   )
 }

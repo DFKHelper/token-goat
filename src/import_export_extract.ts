@@ -80,8 +80,9 @@ export function extractExportNames(text: string, ext: string): string[] {
   const lines = text.split(/\r?\n/)
 
   if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'].includes(e)) {
-    const declRe = /\bexport\s+(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:function\*?|class|const|let|var|interface|type|enum|namespace)\s+([A-Za-z_$][\w$]*)/g
-    const defaultRe = /\bexport\s+default\s+([A-Za-z_$][\w$]*)\s*(?:;|$)/g
+    // An ECMAScript IdentifierName: ID_Start, $ or _, then ID_Continue, $, ZWNJ or ZWJ, so a name joined by U+200D is read whole rather than cut at the joiner.
+    const declRe = /\bexport\s+(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:function\*?|class|const|let|var|interface|type|enum|namespace)\s+([\p{ID_Start}$_][\p{ID_Continue}$‌‍]*)/gu
+    const defaultRe = /\bexport\s+default\s+([\p{ID_Start}$_][\p{ID_Continue}$‌‍]*)\s*(?:;|$)/gu
     const namedRe = /\bexport\s+(?:type\s+)?\{([^}]*)\}/g
     let m: RegExpExecArray | null
     while ((m = declRe.exec(text)) !== null) push(m[1])

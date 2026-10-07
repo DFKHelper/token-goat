@@ -16,6 +16,7 @@ import {
 } from './copilot_waste.js'
 import { displaySafeJson } from './paths.js'
 import { writeCommandFailure } from './command_error.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 export interface AuditCommandOptions {
   project?: string | undefined
@@ -41,7 +42,7 @@ export function buildFeedbackCardFromClaude(report: WasteReport): MaintainerFeed
   }
 
   if (report.repeatedUncompressedBash.length > 0) {
-    const cmds = report.repeatedUncompressedBash.map((b) => `"${b.normalized.slice(0, 40)}" (${b.count}x)`).join(', ')
+    const cmds = report.repeatedUncompressedBash.map((b) => `${echoedValue(b.normalized.slice(0, 40))} (${b.count}x)`).join(', ')
     preAudit.push(`Repeated uncompressed terminal commands: ${cmds}`)
     fixes.push('Use token-goat bash-output cache or compress flags for repetitive terminal invocations.')
   }

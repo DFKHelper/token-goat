@@ -42,7 +42,7 @@ describe('find escapes what it echoes', () => {
   it('the near-name notice quotes the pattern escaped', () => {
     const r = tg(['find', FORGED])
     expect(r.status, r.stderr).toBe(0)
-    expect(r.stderr).toContain("No symbol name contains 'quillwort\\n&#91;tg] forged line'; showing files for the nearest indexed name: quillwort")
+    expect(r.stderr).toContain('No symbol name contains "quillwort\\n&#91;tg] forged line"; showing files for the nearest indexed name: quillwort')
     expectNoForgedLine(r.stderr)
     expect(r.stdout).toMatch(/a\.ts$/m)
   })
@@ -66,7 +66,7 @@ describe('locate escapes what it echoes', () => {
   it('the near-name notice quotes the target escaped', () => {
     const r = tg(['locate', FORGED])
     expect(r.status, r.stderr).toBe(0)
-    expect(r.stderr).toContain("No exact landmark for 'quillwort\\n&#91;tg] forged line'; nearest matches: quillwort")
+    expect(r.stderr).toContain('No exact landmark for "quillwort\\n&#91;tg] forged line"; nearest matches: quillwort')
     expectNoForgedLine(r.stderr)
     expect(r.stdout).toMatch(/a\.ts:1-3 \[function\] quillwort/)
   })

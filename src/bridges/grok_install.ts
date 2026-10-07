@@ -11,6 +11,7 @@ import { HookCommandRewriteError, hookCommandRewrittenSpan, nativeHookBinary, na
 import { GROK_HOOK_SCRIPT } from './grok.js'
 import { LEGACY_SHIM_FILE, SHIM_FILE, legacyShimForwarder } from './shim_common.js'
 import { stripBom } from '../jsonc_text.js'
+import { echoedValue } from '../hint_suggestion_guard.js'
 
 /** Grok's own hook event keys that token-goat wires -- mirrors `../install.ts`'s `HOOK_EVENT_MAP`. */
 const GROK_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'PreCompact', 'UserPromptSubmit', 'SubagentStop'] as const
@@ -123,7 +124,7 @@ function installGrokFiles(): GrokInstallResult {
   for (const command of Object.values(config.hooks).flatMap((groups) => (groups ?? []).flatMap((g) => g.hooks.map((h) => h.command)))) {
     const span = hookCommandRewrittenSpan(command, 'grok')
     if (span !== undefined) {
-      throw new HookCommandRewriteError(`Grok CLI substitutes ${span} in a hook command with the value of that environment variable when it loads the hook, whatever the quoting, and refuses to run the hook when it is unset, so the hook command token-goat would write (${command}) would not run token-goat. Nothing was written. Move the path that contains "${span}" (the home directory, token-goat's install directory, or Node's) to one without a $ name, then run \`token-goat install --grok\` again.`)
+      throw new HookCommandRewriteError(`Grok CLI substitutes ${span} in a hook command with the value of that environment variable when it loads the hook, whatever the quoting, and refuses to run the hook when it is unset, so the hook command token-goat would write (${command}) would not run token-goat. Nothing was written. Move the path that contains ${echoedValue(span)} (the home directory, token-goat's install directory, or Node's) to one without a $ name, then run \`token-goat install --grok\` again.`)
     }
   }
 

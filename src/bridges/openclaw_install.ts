@@ -9,6 +9,7 @@ import { atomicWriteText, ensureDirSync, extractErrorMessage, foldPath } from '.
 import { parseJsonOrJsonc } from '../jsonc_text.js'
 import { writeSettingsKeepingComments } from './commented_settings.js'
 import { OPENCLAW_PLUGIN_SCRIPT } from './openclaw.js'
+import { echoedValue } from '../hint_suggestion_guard.js'
 
 interface OpenclawPluginEntry {
   enabled?: boolean
@@ -54,8 +55,8 @@ function readOpenclawConfig(p: string, opts: { strict?: boolean; command?: 'inst
   const refuse = (problem: string, detail?: string): OpenclawConfigParseError =>
     new OpenclawConfigParseError(
       (opts.command === 'uninstall'
-        ? `OpenClaw config file '${p}' is unreadable: it ${problem}. Uninstall left it untouched, along with the plugin it may still load, the plugin's entry sidecar and the file's backups; fix the file and run uninstall again.`
-        : `OpenClaw config file '${p}' ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
+        ? `OpenClaw config file ${echoedValue(p)} is unreadable: it ${problem}. Uninstall left it untouched, along with the plugin it may still load, the plugin's entry sidecar and the file's backups; fix the file and run uninstall again.`
+        : `OpenClaw config file ${echoedValue(p)} ${problem}. Fix or back up the file before running install.`) + (detail === undefined ? '' : ` (${detail})`),
     )
   let raw: string
   try {

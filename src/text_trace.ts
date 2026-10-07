@@ -8,6 +8,7 @@ import { resolveBody, warnIfFilesStale } from './read_commands.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import { countNoun, foldPath, requireNonNegativeStrictInt } from './util.js'
 import { filteredSubject } from './filter_notice.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 
 interface TraceFrame {
   file: string
@@ -275,7 +276,7 @@ function resolveFrameSymbol(frame: TraceFrame, projectRoot: string): { key: stri
 function formatFrameBody(frame: TraceFrame, projectRoot: string, seen: Map<string, boolean>): string[] {
   const resolved = resolveFrameSymbol(frame, projectRoot)
   if (resolved === null) {
-    return [`    # body: No symbols enclosing line ${frame.lineNo} in '${frame.file}'`]
+    return [`    # body: No symbols enclosing line ${frame.lineNo} in ${echoedValue(frame.file)}`]
   }
   const header = `    # body: ${resolved.name}  ${resolved.kind}  ${formatSymbolLocation(resolved.filePath, resolved.lineStart, resolved.lineEnd)}`
   if (seen.has(resolved.key)) {
@@ -342,7 +343,7 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
       process.stdout.write(`  ...(${countNoun(droppedByKeep, 'more frame')} elided; use a higher --keep to see more)\n`)
     }
     for (const f of block.frames) {
-      process.stdout.write(`  File "${displaySafeText(f.file)}", line ${f.lineNo}, in ${displaySafeText(f.func)}\n`)
+      process.stdout.write(`  File ${echoedValue(f.file)}, line ${f.lineNo}, in ${displaySafeText(f.func)}\n`)
       if (f.context) process.stdout.write(`    ${displaySafeText(f.context)}\n`)
       if (opts.bodies === true) {
         for (const line of formatFrameBody(f, cwd, seenBodies)) process.stdout.write(`${line}\n`)
