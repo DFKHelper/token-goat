@@ -200,16 +200,16 @@ function flatten(node: ts.Expression, standIn: StandIn = PLAIN): string[] {
   return [typeof standIn === 'string' ? standIn : standIn(node)]
 }
 
-/** Every outermost string expression (literal, template, or `+` chain) in src naming `token-goat `, flattened around `standIn`, one entry per distinct text it expands to. */
-function stringTemplates(standIn: StandIn): Array<{ file: string; line: number; text: string }> {
+/** Every outermost string expression (literal, template, or `+` chain) in src naming `needle` (`token-goat ` unless given), flattened around `standIn`, one entry per distinct text it expands to. A file is skipped unless its source names `needle` too, except for a `"` needle, which a quoting helper writes into a template whose source holds none. */
+function stringTemplates(standIn: StandIn, needle = 'token-goat '): Array<{ file: string; line: number; text: string }> {
   return sourceFiles(SRC).flatMap((abs) => {
     const source = fs.readFileSync(abs, 'utf8')
-    return source.includes('token-goat ') ? templatesIn(path.relative(SRC, abs).split(path.sep).join('/'), source, standIn) : []
+    return needle === '"' || source.includes(needle) ? templatesIn(path.relative(SRC, abs).split(path.sep).join('/'), source, standIn, needle) : []
   })
 }
 
-/** The outermost string expressions of one source file naming `token-goat `, as {@link stringTemplates} reads them. */
-function templatesIn(file: string, source: string, standIn: StandIn): Array<{ file: string; line: number; text: string }> {
+/** The outermost string expressions of one source file naming `needle`, as {@link stringTemplates} reads them. */
+function templatesIn(file: string, source: string, standIn: StandIn, needle = 'token-goat '): Array<{ file: string; line: number; text: string }> {
   const found: Array<{ file: string; line: number; text: string }> = []
   const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)
   const visit = (node: ts.Node): void => {
@@ -218,7 +218,7 @@ function templatesIn(file: string, source: string, standIn: StandIn): Array<{ fi
       while (ts.isParenthesizedExpression(parent)) parent = parent.parent
       if (!isConcat(parent)) {
         const line = sf.getLineAndCharacterOfPosition(node.getStart()).line + 1
-        for (const text of new Set(flatten(node as ts.Expression, standIn))) if (text.includes('token-goat ')) found.push({ file, line, text })
+        for (const text of new Set(flatten(node as ts.Expression, standIn))) if (text.includes(needle)) found.push({ file, line, text })
       }
     }
     ts.forEachChild(node, visit)
@@ -322,9 +322,9 @@ function registeredCommands(): Set<string> {
   return names
 }
 
-/** Each interpolated value that lands outside double quotes in a `token-goat <command>` of `text`: bare (a shell splits it at a space and expands what it holds) or inside single quotes (which a value holding `'` closes), the command name slot included. A fenced command runs to its closing backtick, and a command wrapped whole in quotes to the closing quote, its values inside that quote. An unfenced one in a sentence stops at its first bare word, which is prose or a literal argument either way, and at a `.`, `,`, `;` or `)` that ends a clause. */
-function unquotedValues(text: string, commands: ReadonlySet<string>): Array<{ marker: number; how: 'bare' | 'single-quoted' }> {
-  const out: Array<{ marker: number; how: 'bare' | 'single-quoted' }> = []
+/** Each interpolated value in a `token-goat <command>` of `text` that no quoting helper quoted: bare (a shell splits it at a space and expands what it holds), inside single quotes (which a value holding `'` closes), or inside double quotes the template wrote by hand (`"${p}"`, where a `$`, backtick or `"` in the value breaks the command; quotedArg single-quotes such a value), the command name slot included. A value a quoting helper put in quotes is flattened to the plain stand-in and never reaches here. A fenced command runs to its closing backtick, and a command wrapped whole in quotes to the closing quote, its values inside that quote. An unfenced one in a sentence stops at its first bare word, which is prose or a literal argument either way, and at a `.`, `,`, `;` or `)` that ends a clause. */
+function unquotedValues(text: string, commands: ReadonlySet<string>): Array<{ marker: number; how: 'bare' | 'single-quoted' | 'hand-quoted' }> {
+  const out: Array<{ marker: number; how: 'bare' | 'single-quoted' | 'hand-quoted' }> = []
   const markerAt = (i: number): { marker: number; end: number } => {
     const end = text.indexOf(CLOSE, i)
     return { marker: Number(text.slice(i + 1, end)), end: end + 1 }
@@ -345,9 +345,9 @@ function unquotedValues(text: string, commands: ReadonlySet<string>): Array<{ ma
         if (c === '\n') break
         if (c === quote && wrap !== null) break
         if (c === quote) quote = null
-        else if (c === OPEN && quote === "'") {
+        else if (c === OPEN) {
           const at = markerAt(i)
-          out.push({ marker: at.marker, how: 'single-quoted' })
+          out.push({ marker: at.marker, how: quote === "'" ? 'single-quoted' : 'hand-quoted' })
           i = at.end
           continue
         }
@@ -386,6 +386,12 @@ const SAFE_BARE: ReadonlyArray<{ key: string; reason: string }> = [
   ...['bridges/antigravity_install.ts::eventArg', 'bridges/antigravity_install.ts::SHIM_MARKER', 'bridges/gemini_install.ts::eventArg', 'bridges/qwen_install.ts::eventArg'].map((key) => ({ key, reason: 'a hook command line written into the harness config, carrying a fixed event name and marker' })),
 ]
 
+/** Values a template puts in double quotes by hand where the text is a probe, never shown: a candidate command handed to stripUnsafeSuggestions to ask whether the guard keeps it, whose name already refused every quote, `$` and backtick. Valid for a hand-quoted value only. */
+const PROBE_HAND_QUOTED: ReadonlyArray<{ key: string; reason: string }> = [
+  { key: 'hint_target.ts::name', reason: 'quotable() asks the guard about `token-goat read "<name>"` and returns the name, never the probe' },
+  { key: 'hooks_read_policy.ts::trimmed', reason: 'safeSuggestionTarget() asks the guard about `token-goat read "test.ts::<name>"` after refusing quotes, `$` and backticks, and returns the name, never the probe' },
+]
+
 describe('every interpolated value in a suggested command in src', () => {
   const commands = registeredCommands()
   const scan = (templates: (standIn: StandIn) => Array<{ file: string; line: number; text: string }>): Array<{ where: string; key: string; how: string }> => {
@@ -398,21 +404,23 @@ describe('every interpolated value in a suggested command in src', () => {
   }
   const found = scan(stringTemplates)
   const safe = new Set(SAFE_BARE.map((e) => e.key))
+  const probes = new Set(PROBE_HAND_QUOTED.map((e) => e.key))
 
   it('is scanned', () => {
     expect(commands.size, 'the CLI command names were not found').toBeGreaterThan(100)
-    pinnedPopulation({ what: 'interpolated values outside double quotes in suggested token-goat commands in src', items: [...new Set(found.map((f) => f.key))], floor: 1, mustInclude: ['hooks_bash.ts::curlOutputId', 'answer_router.ts::ANSWER_DELEGATE_LIMIT'] })
+    pinnedPopulation({ what: 'interpolated values no quoting helper quoted in suggested token-goat commands in src', items: [...new Set(found.map((f) => f.key))], floor: 1, mustInclude: ['hooks_bash.ts::curlOutputId', 'answer_router.ts::ANSWER_DELEGATE_LIMIT', 'hint_target.ts::name'] })
   })
 
   it('is quoted unless it is a reviewed safe value', () => {
-    expect(found.filter((f) => !safe.has(f.key)).map((f) => f.where + ' ' + f.how + ' ' + f.key)).toEqual([])
+    expect(found.filter((f) => !safe.has(f.key) && !(f.how === 'hand-quoted' && probes.has(f.key))).map((f) => f.where + ' ' + f.how + ' ' + f.key)).toEqual([])
   })
 
   it('lists no safe value that no longer appears', () => {
     expect(SAFE_BARE.filter((e) => !found.some((f) => f.key === e.key)).map((e) => e.key)).toEqual([])
+    expect(PROBE_HAND_QUOTED.filter((e) => !found.some((f) => f.key === e.key && f.how === 'hand-quoted')).map((e) => e.key)).toEqual([])
   })
 
-  // HAND-DERIVED virtual sources, one per shape the check has to tell apart: the symbol hint that suggested `token-goat symbol A|B` bare, a config-get key left outside the quotes its path is in, a branch of a conditional, a quoted const, a status line that only starts with the product name, and a command named mid-sentence.
+  // HAND-DERIVED virtual sources, one per shape the check has to tell apart: the symbol hint that suggested `token-goat symbol A|B` bare, a config-get key left outside the quotes its path is in, a branch of a conditional, a quoted const, a status line that only starts with the product name, a command named mid-sentence, and the compress hint that wrote `compress -c "${cmd}"` by hand (hooks_bash_post.ts).
   it('flags a bare value in any slot and passes a quoted one', () => {
     const virtual = (source: string): string[] => scan((standIn) => templatesIn('virtual.ts', source, standIn)).map((f) => f.how + ' ' + f.key.replace('virtual.ts::', ''))
     expect(virtual("const s = 'Use `token-goat symbol ' + identifier + '` to jump.'")).toEqual(['bare identifier'])
@@ -427,6 +435,46 @@ describe('every interpolated value in a suggested command in src', () => {
     expect(virtual("function f(n) { const [name, b64] = splitArgs(n, '<base64>'); return 'Run `token-goat symbol ' + name + ' ' + b64 + '`.' }")).toEqual(['bare name', 'bare b64'])
     expect(virtual("const s = 'Run `token-goat config-get ' + quotedArgs(p, key).join(' ') + '`.'")).toEqual([])
     expect(virtual("const s = 'Run `token-goat config-get ' + splitArgs(p, key).join(' ') + '`.'")).toEqual(["bare splitArgs(p, key).join(' ')"])
+    expect(virtual('const s = `Run \\`token-goat compress -c "${cmd}"\\` next time.`')).toEqual(['hand-quoted cmd'])
+    expect(virtual('const s = `Run \\`token-goat compress -c ${quotedArg(cmd)}\\` next time.`')).toEqual([])
+  })
+})
+
+/** A `--flag "` or `run "` slot in double quotes, written by hand or by a quoting helper (which flattens to the quoted plain stand-in). */
+const QUOTED_SLOT = /(?:--[a-z][a-z0-9-]* |\b[Rr]un )"/g
+
+/** Each interpolated value `text` puts in double quotes by hand as the value of a `--flag` or as a whole command after `run`, where a `$`, backtick or `"` in it breaks the command: `--section "${heading}#2"` (cli_cached_output.ts) and `Recovery: run "${install}"` (cli_doctor.ts) carry no `token-goat ` of their own for the scan above to start from. */
+function handQuotedSlots(text: string): number[] {
+  return [...text.matchAll(new RegExp(QUOTED_SLOT.source + OPEN + '(\\d+)' + CLOSE + '[^"\\n]*"', 'g'))].map((m) => Number(m[1]))
+}
+
+describe('every value hand-quoted as a flag value or a whole command in src', () => {
+  const scan = (templates: (standIn: StandIn) => Array<{ file: string; line: number; text: string }>): string[] => {
+    const exprs: string[] = []
+    const mark = (expr: ts.Expression): string => {
+      exprs.push(expr.getText().replace(/\s+/g, ' '))
+      return OPEN + String(exprs.length - 1) + CLOSE
+    }
+    return templates(mark).flatMap((t) => handQuotedSlots(t.text).map((marker) => t.file + ':' + t.line + ' ' + exprs[marker]))
+  }
+  const slots = stringTemplates(PLAIN, '"').flatMap((t) => [...t.text.matchAll(QUOTED_SLOT)].map((m) => t.file + '::' + m[0] + t.text.slice((m.index ?? 0) + m[0].length, (m.index ?? 0) + m[0].length + PLAIN.length + 1)))
+
+  it('is scanned', () => {
+    pinnedPopulation({ what: 'double-quoted --flag values and run commands in src string templates', items: [...new Set(slots)], floor: 2, mustInclude: ['cli_cached_output.ts::--section "' + PLAIN + '"', 'cli_file_ops.ts::--after "' + PLAIN + '"'] })
+  })
+
+  it('is quoted with quotedArg or fenced with fencedCommand', () => {
+    expect(scan((standIn) => stringTemplates(standIn, '"'))).toEqual([])
+  })
+
+  // HAND-DERIVED virtual sources: the shapes src carried (cli_cached_output.ts `--section "${opts.section}#${i + 1}"`, cli_doctor.ts `run "${install}"`) beside their helper-quoted and fenced forms and a literal flag value.
+  it('flags a hand-quoted flag value or run command and passes a quoted or fenced one', () => {
+    const virtual = (source: string): string[] => scan((standIn) => templatesIn('virtual.ts', source, standIn, '"')).map((f) => f.replace('virtual.ts:1 ', ''))
+    expect(virtual('const s = `line ${n} -> --section "${heading}#${i + 1}"`')).toEqual(['heading'])
+    expect(virtual('const s = `Recovery: run "${install}", then restart.`')).toEqual(['install'])
+    expect(virtual('const s = `line ${n} -> --section ${quotedArg(`${heading}#${i + 1}`)}`')).toEqual([])
+    expect(virtual('const s = `Recovery: run ${fencedCommand(install)}, then restart.`')).toEqual([])
+    expect(virtual('const s = `Run with --format "json" to get ${what}.`')).toEqual([])
   })
 })
 

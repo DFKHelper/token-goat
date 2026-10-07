@@ -16,6 +16,7 @@ import { loadConfig } from './config.js'
 import { deliveredOutputBytes, clipToDeliveryCap } from './delivery_cap.js'
 import { foldDelivery, foldingEnabled, type FoldRow } from './fold_delivery.js'
 import { isStructuralRewriteAccepted, planMarkdownOutline, planSourceSkeleton } from './fold_structure.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 import { foldDetail, type BodyFold } from './code_fold.js'
 import { redactSecrets } from './secret_redact.js'
 import { findProject } from './project.js'
@@ -638,7 +639,7 @@ async function maybeEmitLargeUncompressedHint(
   const cdHost = cdDir === null ? null : dirAtIndexKey(cdDir)
   const runCmd = cdHost === null ? bare : `cd '${cdHost}' && ${bare}`
   const compressable = !/["`$\r\n]/.test(runCmd) && (cdDir === null || (cdHost !== null && !cdHost.includes("'")))
-  const msg = `[tg] Output was ${kb}KB uncompressed; \`token-goat bash-output ${id}\` recalls it` + (compressable ? `, and \`token-goat compress -c "${displaySafeText(runCmd)}"\` compresses the next run.` : '.')
+  const msg = `[tg] Output was ${kb}KB uncompressed; \`token-goat bash-output ${id}\` recalls it` + (compressable ? `, and \`token-goat compress -c ${quotedArg(displaySafeText(runCmd))}\` compresses the next run.` : '.')
   if (ansiResult !== null && ansiResult.hookType === 'rewriteOutput') {
     // The ansi strip already emitted through emitRewrite and booked its own saving there, so this re-emit carries the same text and books no saving of its own -- the hint is the session_hint stat recorded above, and double-booking those bytes would inflate every total that sums them. Routing through emitRewrite rather than constructing the object here is also what applies the vscode guard: that harness has no field which replaces a tool result, so a hand-built rewrite was silently dropped while still reading as an emit. maybeStripAnsiOnly may ship those bytes unfenced because it adds nothing of ours to them, but this block does add a marker, so the command output is fenced here and the marker stays outside it: otherwise the model cannot tell which of the two voices in the block is token-goat's, and output that forged the marker wording would read as ours. The marker leads rather than trails because it carries the only pointer back to the full output, and the harness truncates from the end.
     return emitRewrite(msg + '\n' + fenceUntrusted(ansiResult.updatedOutput, UNTRUSTED_TOOL_TAG), 'large uncompressed output hint', undefined, 'counted-elsewhere')

@@ -7,6 +7,7 @@ import { CliError, err, formatCommandError, out } from './cli.js'
 import { requireNonNegativeInt } from './cli_dispatch.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG } from './injection_scan.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 import { noMatchMessage, queryJson } from './json_query.js'
 import { displaySafeJson, displaySafeText } from './paths.js'
 import { guardJsonRows } from './read_commands.js'
@@ -79,7 +80,7 @@ export function _applyFiltersAndPrint(
     }
     // Said as a refusal, like `section` on a duplicated heading: printing the first match alone reads as the only one.
     if (sectionResult.occurrences !== undefined) {
-      const picks = sectionResult.occurrences.slice(0, AMBIGUOUS_HEADING_LIMIT).map((line, i) => `line ${line} -> --section "${opts.section}#${i + 1}"`)
+      const picks = sectionResult.occurrences.slice(0, AMBIGUOUS_HEADING_LIMIT).map((line, i) => `line ${line} -> --section ${quotedArg(`${opts.section}#${i + 1}`)}`)
       const more = sectionResult.occurrences.length - AMBIGUOUS_HEADING_LIMIT
       if (more > 0) picks.push(`${more} more not shown`)
       throw new CliError(`Ambiguous heading '${opts.section}': ${countNoun(sectionResult.occurrences.length, 'heading')} match. Retry with one of: ${picks.join('; ')}`)

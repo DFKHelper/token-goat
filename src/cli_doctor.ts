@@ -326,7 +326,7 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
     return {
       name,
       status: 'warn',
-      message: `hook config at ${configPath} was not written by token-goat on this machine, so doctor does not run the command it names. If these hooks are yours, run "${install}" to rewrite them here.`,
+      message: `hook config at ${configPath} was not written by token-goat on this machine, so doctor does not run the command it names. If these hooks are yours, run ${fencedCommand(install)} to rewrite them here.`,
     }
   }
   if (!fs.existsSync(scriptPath)) {
@@ -335,7 +335,7 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
     return {
       name,
       status: 'warn',
-      message: `hooks at ${path.dirname(scriptPath)} still run ${LEGACY_HOOKS_SCRIPT_FILE} from an older token-goat build, which Node loads as an ES module under any package.json that says "type": "module" and then fails every tool call. Recovery: run "${install}", then fully restart ${harness}.`,
+      message: `hooks at ${path.dirname(scriptPath)} still run ${LEGACY_HOOKS_SCRIPT_FILE} from an older token-goat build, which Node loads as an ES module under any package.json that says "type": "module" and then fails every tool call. Recovery: run ${fencedCommand(install)}, then fully restart ${harness}.`,
     }
   }
 
@@ -366,7 +366,7 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
     return {
       name,
       status: 'fail',
-      message: `hook points at a native hook client binary that no longer exists (${native.bin}), so ${harness} cannot start it. Recovery: run "${install}", then fully restart ${harness}.`,
+      message: `hook points at a native hook client binary that no longer exists (${native.bin}), so ${harness} cannot start it. Recovery: run ${fencedCommand(install)}, then fully restart ${harness}.`,
     }
   }
   const bakedExecPath = (native?.wrapped ?? words)[0]
@@ -374,7 +374,7 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
     return {
       name,
       status: 'fail',
-      message: `hook points at a node binary that no longer exists (${bakedExecPath}) -- likely stale after an nvm/fnm/volta node upgrade. Recovery: run "${install}", then fully restart ${harness} (renaming/reinstalling the hook has no effect on an already-running session -- hook configs are cached at startup).`,
+      message: `hook points at a node binary that no longer exists (${bakedExecPath}) -- likely stale after an nvm/fnm/volta node upgrade. Recovery: run ${fencedCommand(install)}, then fully restart ${harness} (renaming/reinstalling the hook has no effect on an already-running session -- hook configs are cached at startup).`,
     }
   }
 
@@ -397,14 +397,14 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
     return {
       name,
       status: 'fail',
-      message: `hook failed to launch: ${extractErrorMessage(res.error, 'unknown error')}. Recovery: run "${install}", then fully restart ${harness}.`,
+      message: `hook failed to launch: ${extractErrorMessage(res.error, 'unknown error')}. Recovery: run ${fencedCommand(install)}, then fully restart ${harness}.`,
     }
   }
   if (res.status !== 0) {
     return {
       name,
       status: 'fail',
-      message: `hook exited with status ${res.status} -- Copilot's preToolUse fails closed on a non-zero exit and denies every tool call for the rest of the session. Recovery: run "${install}", then fully restart ${harness} (a live session won't pick up the fix).`,
+      message: `hook exited with status ${res.status} -- Copilot's preToolUse fails closed on a non-zero exit and denies every tool call for the rest of the session. Recovery: run ${fencedCommand(install)}, then fully restart ${harness} (a live session won't pick up the fix).`,
     }
   }
   try {
@@ -413,7 +413,7 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
     return {
       name,
       status: 'fail',
-      message: `hook did not return valid JSON -- Copilot treats this as a hook error and denies every tool call. Recovery: run "${install}", then fully restart ${harness}.`,
+      message: `hook did not return valid JSON -- Copilot treats this as a hook error and denies every tool call. Recovery: run ${fencedCommand(install)}, then fully restart ${harness}.`,
     }
   }
 
@@ -439,7 +439,7 @@ function shimIsCurrent(scriptPath: string, expected: string): boolean {
 }
 
 function staleShimMessage(scriptPath: string, harness: string, reinstall: string): string {
-  return `hook shim at ${scriptPath} was written by an older token-goat build, so fixes to it since then are not reaching ${harness}. Recovery: run "${reinstall}"`
+  return `hook shim at ${scriptPath} was written by an older token-goat build, so fixes to it since then are not reaching ${harness}. Recovery: run ${fencedCommand(reinstall)}`
 }
 
 /** Checks one installed hook shim against the script this build would write in its place. Null when the shim is not installed, so a harness nobody uses adds no row. */
@@ -450,7 +450,7 @@ export function checkHookShim(name: string, scriptPath: string, expected: string
     return {
       name,
       status: 'warn',
-      message: `hooks at ${path.dirname(scriptPath)} still run ${LEGACY_SHIM_FILE} from an older token-goat build, which Node loads as an ES module under any package.json that says "type": "module" and then fails every tool call. Recovery: run "${reinstall}", then restart any running session.`,
+      message: `hooks at ${path.dirname(scriptPath)} still run ${LEGACY_SHIM_FILE} from an older token-goat build, which Node loads as an ES module under any package.json that says "type": "module" and then fails every tool call. Recovery: run ${fencedCommand(reinstall)}, then restart any running session.`,
     }
   }
   if (shimIsCurrent(scriptPath, expected)) return { name, status: 'ok', message: `hook shim at ${scriptPath} matches this build` }

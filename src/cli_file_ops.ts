@@ -209,7 +209,7 @@ function requireSymbolMatch(resolvedPath: string, file: string, name: string, fl
   const match = resolveSymbolMatch(resolvedPath, name)
   if (match.kind === 'ok') return match.entry
   if (match.kind === 'ambiguous') {
-    const retry = (qualified: string): string => (flag === '--anchor' ? `--anchor "${file}::${qualified}"` : `--symbol "${qualified}"`)
+    const retry = (qualified: string): string => (flag === '--anchor' ? `--anchor ${quotedArg(`${file}::${qualified}`)}` : `--symbol ${quotedArg(qualified)}`)
     throw new CliError([
       `Ambiguous symbol '${displaySafeText(match.symbol)}' in '${displaySafeText(file)}': ${countNoun(match.candidates.length, 'declaration')} match, and a note binds to one. Retry with its qualified name:`,
       ...match.candidates.map((c) => `  - ${displaySafeText(c.qualifiedName)} (line ${c.entry.lineStart})  ->  ${displaySafeText(retry(c.qualifiedName))}`),
@@ -661,7 +661,7 @@ export function cmdInsertSection(file: string, opts: { after: string; contentFro
         `Retry with one of the qualified forms below to pick one:`,
     ]
     for (const [i, line] of result.occurrences.slice(0, AMBIGUOUS_HEADING_LIMIT).entries()) {
-      lines.push(`  - line ${line}  ->  --after "${opts.after}#${i + 1}"`)
+      lines.push(`  - line ${line}  ->  --after ${quotedArg(`${opts.after}#${i + 1}`)}`)
     }
     if (result.occurrences.length > AMBIGUOUS_HEADING_LIMIT) {
       lines.push(`  (${result.occurrences.length - AMBIGUOUS_HEADING_LIMIT} more not shown)`)

@@ -1528,7 +1528,7 @@ describe('cli_doctor', () => {
       fs.writeFileSync(path.join(path.dirname(configPath), 'token-goat.owners'), 'vscode\n')
 
       const result = checkCopilotCli(configPath, scriptPath, 'project')
-      expect(result?.message).toContain('"token-goat install --vscode"')
+      expect(result?.message).toContain('`token-goat install --vscode`')
       expect(result?.message).not.toContain('--copilot')
     })
 
@@ -1544,7 +1544,7 @@ describe('cli_doctor', () => {
       const result = checkCopilotCli(configPath, path.join(hooksDir, 'token-goat-shim.cjs'))
       expect(result?.status).toBe('warn')
       expect(result?.message).toContain('token-goat-shim.js from an older token-goat build')
-      expect(result?.message).toContain('"token-goat install --copilot"')
+      expect(result?.message).toContain('`token-goat install --copilot`')
     })
   })
 
@@ -1560,7 +1560,7 @@ describe('cli_doctor', () => {
       const result = checkHookShim('Codex', path.join(tempDir, 'token-goat-shim.cjs'), CODEX_HOOK_SCRIPT, 'token-goat install --codex')
       expect(result?.status).toBe('warn')
       expect(result?.message).toContain('token-goat-shim.js from an older token-goat build')
-      expect(result?.message).toContain('"token-goat install --codex"')
+      expect(result?.message).toContain('`token-goat install --codex`')
     })
 
     it('returns ok for the shim this build writes, and warns naming the reinstall command for one it would not', () => {
@@ -1572,7 +1572,7 @@ describe('cli_doctor', () => {
       const stale = checkHookShim('Claude Code', scriptPath, CLAUDECODE_HOOK_SCRIPT, 'token-goat install')
       expect(stale?.status).toBe('warn')
       expect(stale?.message).toContain('older token-goat build')
-      expect(stale?.message).toContain('not reaching Claude Code. Recovery: run "token-goat install"')
+      expect(stale?.message).toContain('not reaching Claude Code. Recovery: run `token-goat install`')
     })
 
     it('reports a stale Codex shim from runDoctor, resolved through the real install path', () => {
