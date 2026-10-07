@@ -4122,8 +4122,7 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       }))
       expect(r2.hookType).toBe('deny')
       if (r2.hookType === 'deny') {
-        expect(r2.message).toContain('Lines 15..25 of')
-        expect(r2.message).toContain('was already read this session')
+        expect(r2.message).toContain('Lines 15..25 of this file were already read this session')
       }
     })
 
@@ -4330,8 +4329,7 @@ describe('the repeated-range deny falls back to file identity when there is no s
     const r2 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [15, 25] }, sessionId: 'test' }))
     expect(r2.hookType).toBe('deny')
     if (r2.hookType === 'deny') {
-      expect(r2.message).toContain('Lines 15..25 of')
-      expect(r2.message).toContain('was already read this session')
+      expect(r2.message).toContain('Lines 15..25 of this file were already read this session')
     }
   })
 

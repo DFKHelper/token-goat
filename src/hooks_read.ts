@@ -1128,7 +1128,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
             recordStat('session_hint', 0, 0)
             return denyOutput(
-              'Lines ' + start + '..' + end + ' of this file was already read this session. ' +
+              'Lines ' + start + '..' + end + ' of this file were already read this session. ' +
               'Pull just the part you need with ' + realSymbolReadHint(normalized, shown, { start, end }) + '.' +
               priorOutputRecallHint(normalized),
             )

@@ -371,7 +371,7 @@ const CACHE_READ_MULTIPLIER = 0.1
 
 /** Total UTF-8 bytes of every string nested anywhere inside a JSON value. */
 /** Matches token-goat's own pre-read deny/serve message templates (hooks_read.ts). A Read tool_result matching this AND smaller than READ_DIVERT_MAX_BYTES is a diverted read: token-goat replaced the file body with a pointer. Kept deliberately narrow; template drift makes this under-count, never over-count. */
-const READ_DIVERT_MARKER_RE = /(?:was already read this session|Already read |You've already read|(?:Use|Run) `token-goat (?:section|read|bash-output|config-get|skeleton|json-query|yaml-query)|token-goat bash-output --file)/
+const READ_DIVERT_MARKER_RE = /(?:(?:was|were) already read this session|Already read |You've already read|(?:Use|Run) `token-goat (?:section|read|bash-output|config-get|skeleton|json-query|yaml-query)|token-goat bash-output --file)/
 /** A divert message is a short pointer; a matching result at or above this size is a real file body that merely mentions a token-goat command, not a divert. */
 const READ_DIVERT_MAX_BYTES = 2500
 /** Non-diverted Read results at or above this size are counted as the full-serve pool surgical reads exist to shrink. */
@@ -406,7 +406,8 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp; tool: 'Read' | 'Skill' }
   { kind: 'doc_diff_deny', re: /Content changed since last read of [\s\S]*?(?:Use|Run) `token-goat (?:section|read|skeleton|json-query|yaml-query)/, tool: 'Read' },
   { kind: 'read_served_deny', re: /was already served in this session, byte for byte/, tool: 'Read' },
   // Its own kind rather than folded into read_served_deny above, whose stat name this branch shares: the wording is disjoint (a span, not a byte-for-byte whole serve) and so is the follow-up it invites, since the model still needs part of that span and has to choose a narrower call rather than recall the whole result.
-  { kind: 'range_reread_deny', re: /Lines \d+\.\.\d+ of [\s\S]*?was already read this session/, tool: 'Read' },
+  // `were` since the range deny's grammar was fixed; `was` in transcripts written before it.
+  { kind: 'range_reread_deny', re: /Lines \d+\.\.\d+ of [\s\S]*?(?:was|were) already read this session/, tool: 'Read' },
   { kind: 'markdown_already_read_deny', re: /Markdown file already read this session\./, tool: 'Read' },
   { kind: 'read_count_deny', re: /(?:Read|Tried to read) this file \d+ times already/, tool: 'Read' },
   // Shares read_count_deny's stat name and matches none of its wording: this branch fires on the SHAPE of the reads (consecutive line windows walking one file) rather than on their count, and says so.

@@ -442,7 +442,7 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
     }
     expect(parsed.hookSpecificOutput?.hookEventName).toBe('PreToolUse')
     expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny')
-    expect(parsed.hookSpecificOutput?.permissionDecisionReason ?? '').toContain('was already read this session')
+    expect(parsed.hookSpecificOutput?.permissionDecisionReason ?? '').toContain('of this file were already read this session')
     for (const key of ['decision', 'modifiedArgs', 'modifiedResult', 'permissionDecision']) expect(key in parsed, key).toBe(false)
   })
 
@@ -480,7 +480,7 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
       hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string }
     }
     expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny')
-    expect(parsed.hookSpecificOutput?.permissionDecisionReason ?? '').toContain('was already read this session')
+    expect(parsed.hookSpecificOutput?.permissionDecisionReason ?? '').toContain('of this file were already read this session')
     for (const key of ['permissionDecision', 'modifiedArgs', 'modifiedResult', 'decision']) expect(key in parsed, key).toBe(false)
   })
 

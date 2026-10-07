@@ -99,7 +99,6 @@ describe.each(['app.ts', 'server.log'])('a repeated ranged Read of %s after an o
     expect(await rangedRead(sid, file, 1, 20)).toBeNull()
     expect(await rangedRead(sid, file, 60, 20)).toBeNull()
     const reason = await rangedRead(sid, file, 1, 20)
-    expect(reason).toContain('Lines 1..20 of')
-    expect(reason).toContain('was already read this session')
+    expect(reason).toContain('Lines 1..20 of this file were already read this session')
   })
 })

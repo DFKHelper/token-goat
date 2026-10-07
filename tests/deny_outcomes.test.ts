@@ -60,8 +60,8 @@ const DENY_FIXTURES: Array<{ kind: string; text: string; expectedWithheldBytes: 
   { kind: 'doc_diff_deny', text: 'Content changed since last read of README.md. Here is what changed:\n\nDIFF BODY\n\nUse `token-goat section "README.md::HeadingName"` to extract a part.', expectedWithheldBytes: null },
   // FORMAT-DERIVED: hooks_read.ts, read_served_deny branch + editAnywayHint()
   { kind: 'read_served_deny', text: 'Every line of foo.ts this read would return was already served in this session, byte for byte. Recall it with `token-goat bash-output abc123`, or pull just the part you need with `token-goat read "foo.ts::Symbol"`. To edit it anyway, use `token-goat replace "foo.ts" --old-b64 <base64> --new-b64 <base64>`.', expectedWithheldBytes: null },
-  // CAPTURE: the literal `reason` a `token-goat hook pre_tool_use` run printed (installed 2.9.25 bundle, 2026-09-22) for a re-read of lines 548..552 of a 600-symbol file already served whole at 540..560. The path is shortened here; nothing in the classifier reads it.
-  { kind: 'range_reread_deny', text: 'Lines 548..552 of src/big.ts was already read this session. Pull just the part you need with `token-goat read "src/big.ts::tgDogIsolationProbe548"` (or: tgDogIsolationProbe549, tgDogIsolationProbe550).', expectedWithheldBytes: null },
+  // FORMAT-DERIVED: hooks_read.ts, line-range re-read branch ("of this file were already read"); the wording before it ("was") is kept in SUPERSEDED_DENY_FIXTURES.
+  { kind: 'range_reread_deny', text: 'Lines 548..552 of this file were already read this session. Pull just the part you need with `token-goat read "src/big.ts::tgDogIsolationProbe548"` (or: tgDogIsolationProbe549, tgDogIsolationProbe550).', expectedWithheldBytes: null },
   // FORMAT-DERIVED: hooks_read.ts, sequential line-range paging branch for a bounded window, with realSymbolReadHint()'s read form naming the symbol at the requested lines
   { kind: 'sequential_paging_deny', text: 'Sequential line-range paging detected on src/big.py (4 slices read). For lines 140..165, run `token-goat read "src/big.py::fn_4"` (or: fn_5); `token-goat skeleton "src/big.py"` maps the rest. Inspect structure directly without manual chunk paging.', expectedWithheldBytes: null },
   // FORMAT-DERIVED: hooks_read.ts, Item 2 (markdown already-read) branch + editAnywayHint()
@@ -225,6 +225,11 @@ const SUPERSEDED_DENY_FIXTURES: Array<{ kind: string; text: string }> = [
     kind: 'read_count_deny',
     text: 'Read this file 3 times already — use `token-goat read "foo.ts::Symbol"`, `token-goat skeleton foo.ts`, or `token-goat outline foo.ts` to pull just the part you need. To edit it anyway, use `token-goat replace "foo.ts" --old-b64 <base64> --new-b64 <base64>`.',
   },
+  // CAPTURE: the literal `reason` a `token-goat hook pre_tool_use` run printed (installed 2.9.25 bundle, 2026-09-22) for a re-read of lines 548..552 of a 600-symbol file already served whole at 540..560, before "was" became "were". The path is shortened here; nothing in the classifier reads it.
+  {
+    kind: 'range_reread_deny',
+    text: 'Lines 548..552 of src/big.ts was already read this session. Pull just the part you need with `token-goat read "src/big.ts::tgDogIsolationProbe548"` (or: tgDogIsolationProbe549, tgDogIsolationProbe550).',
+  },
 ]
 
 describe('DENY_TEMPLATES keeps classifying superseded wordings', () => {
@@ -256,6 +261,33 @@ describe('DENY_TEMPLATES keeps classifying superseded wordings', () => {
       ).toBeDefined()
       expect(row!.count).toBe(1)
     }
+  })
+})
+
+/** The line-range re-read deny said "Lines A..B of <path> was already read" until it named the file as "this file" and agreed in number ("were"). Transcripts keep the old text, so the census must count both as one kind and as diverted Reads. The texts are the two range_reread_deny fixtures above: the current one FORMAT-DERIVED, the superseded one a CAPTURE. */
+describe('range_reread_deny matches its wording before and after "were"', () => {
+  let rangeDir = ''
+  const OLD_TEXT = SUPERSEDED_DENY_FIXTURES.find((fx) => fx.kind === 'range_reread_deny')!.text
+  const NEW_TEXT = DENY_FIXTURES.find((fx) => fx.kind === 'range_reread_deny')!.text
+
+  beforeAll(() => {
+    rangeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-deny-range-wording-'))
+    const projectDir = path.join(rangeDir, 'p')
+    fs.mkdirSync(projectDir)
+    const lines = [use('o', 'Read', { file_path: 'x/old.ts', offset: 548, limit: 5 }), result('o', OLD_TEXT), use('n', 'Read', { file_path: 'x/new.ts', offset: 548, limit: 5 }), result('n', NEW_TEXT)]
+    fs.writeFileSync(path.join(projectDir, 'session.jsonl'), lines.join('\n') + '\n')
+  })
+
+  afterAll(() => {
+    fs.rmSync(rangeDir, { recursive: true, force: true })
+  })
+
+  it('classifies both wordings as range_reread_deny and counts both as diverted Reads', async () => {
+    expect(OLD_TEXT).toContain(' was already read this session')
+    expect(NEW_TEXT).toContain(' were already read this session')
+    const s = await auditSessionCorpus({ dir: rangeDir })
+    expect(s.denyOutcomes.find((r) => r.kind === 'range_reread_deny')?.count).toBe(2)
+    expect(s.readInterception.divertedByMarker).toBe(2)
   })
 })
 
