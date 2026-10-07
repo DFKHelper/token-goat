@@ -110,16 +110,28 @@ function diffHintCredit(counterfactualBytes: number, body: string): number | nul
 const SNAPSHOT_DIFF_LEAD = 'Here is what changed:'
 
 /** The deny text for a re-read whose session snapshot shows the file unchanged, or changed by the diff it serves fenced as file content, followed by `suffix`, the narrower read to make instead. Every snapshot-backed re-read deny builds its text here, so none can drift from the shapes session_audit.ts's DENY_TEMPLATES census counts: doc_unchanged_deny and doc_diff_deny, or the session_artifact pair when `suffix` is the bash-output recall. */
-function snapshotDenyText(basename: string, snap: Exclude<SnapshotDiffResult, { kind: 'none' }>, suffix: string): string {
+function snapshotDenyText(normalized: string, snap: Exclude<SnapshotDiffResult, { kind: 'none' }>, suffix: string): string {
+  const subject = fileSubject(normalized, suffix)
   const lead = snap.kind === 'unchanged'
-    ? basename + ' is unchanged since last read. '
-    : 'Content changed since last read of ' + basename + '. ' + SNAPSHOT_DIFF_LEAD + '\n\n' + fenceUntrustedFileContent('```diff\n' + snap.diff + '\n```') + '\n\n'
+    ? sentenceStart(subject) + ' is unchanged since last read. '
+    : 'Content changed since last read of ' + subject + '. ' + SNAPSHOT_DIFF_LEAD + '\n\n' + fenceUntrustedFileContent('```diff\n' + snap.diff + '\n```') + '\n\n'
   return (lead + suffix).trimEnd()
+}
+
+/** How a read hook's sentence names the file it speaks about, given `rest`, the commands sent with it: "this file" when one of them already carries the path, so the path is not repeated as loose text beside the command (the relay drops an unsafe command, and its path then stood alone in the prose), and the quoted path when nothing else in the message names it (a surgical hint below `hints.min_file_lines_for_hint` is empty). */
+function fileSubject(normalized: string, rest: string): string {
+  const shown = displaySafePath(normalized)
+  return rest.includes(normalized) || rest.includes(shown) ? 'this file' : quotedArg(shown)
+}
+
+/** {@link fileSubject} opening a sentence. */
+function sentenceStart(subject: string): string {
+  return subject.charAt(0).toUpperCase() + subject.slice(1)
 }
 
 /** {@link snapshotDenyText} for a document re-read, whose suffix is the surgical hint for the file as the snapshot now reads it. */
 function docSnapshotDenyText(normalized: string, basename: string, snap: Exclude<SnapshotDiffResult, { kind: 'none' }>): string {
-  return snapshotDenyText(basename, snap, surgicalHint(normalized, basename, countTextLines(snap.currentContent), snap.currentContent))
+  return snapshotDenyText(normalized, snap, surgicalHint(normalized, basename, countTextLines(snap.currentContent), snap.currentContent))
 }
 
 /** Forward-slashed path of `target` relative to `root`, or null when `target` is not actually inside `root`. A bare `!rel.startsWith('..')` check (the previous form of this guard, at both cross-session-manifest call sites below) is not sufficient on Windows: when `root` and `target` are on different drive letters, `path.relative` returns `target`'s own absolute path unchanged rather than a `..`-prefixed relative path (this is documented Node behavior, not a bug in path.relative), so a file on an unrelated drive silently passed the guard and got written into (or matched against) the project's cross-session read-dedup manifest as if it were a real in-project relative path -- leaking an out-of-project absolute path into a manifest meant to hold only project-relative paths. Mirrors pack.ts's `isPathWithinRoot` guard, which already includes the `!path.isAbsolute(rel)` check this lacked. */
@@ -640,7 +652,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   if (isTsConfigFile(basename) && wasFileReadThisSession(normalized)) {
     recordActualRead(event, normalized)
     return quietContextOutput(
-      leadWithCommand(configGetCommand(shown, 'compilerOptions.target'),'for a single compiler option, or `token-goat json-outline ' + quotedArg(shown) + '` for every top-level key', 'Already read ' + basename + '.'),
+      leadWithCommand(configGetCommand(shown, 'compilerOptions.target'),'for a single compiler option, or `token-goat json-outline ' + quotedArg(shown) + '` for every top-level key', 'Already read this file.'),
     )
   }
 
@@ -649,8 +661,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const field = hintTarget(normalized, sliceForPath(normalized))
     return quietContextOutput(
       field.real
-        ? leadWithCommand(sliceCommand(shown, field), 'to extract just the value you need', 'You\'ve already read ' + basename + '.')
-        : fileQueryHint(shown, 'You\'ve already read ' + basename + '.', 'field'),
+        ? leadWithCommand(sliceCommand(shown, field), 'to extract just the value you need', 'You\'ve already read this file.')
+        : fileQueryHint(shown, 'You\'ve already read this file.', 'field'),
       [shown],
     )
   }
@@ -795,7 +807,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             const safeHeading = headingTarget.name ? safeSuggestionTarget(headingTarget.name) : null
             // quotedArg keeps a `$` or backtick in the path from making the relay guard cut the commands, and the edit-anyway hint takes its own line so a cut in the explanation stops short of it.
             const explanation =
-              `${shown} is large (${formatKb(markdownSize ?? 0)}KB with ${policyHeadingCount} headings). Whole-file first read denied by first_read_symbol_policy. ` +
+              `This file is large (${formatKb(markdownSize ?? 0)}KB with ${policyHeadingCount} headings). Whole-file first read denied by first_read_symbol_policy. ` +
               `Use ${fencedCommand('token-goat outline ' + quotedArg(shown))} to map sections, or re-read with offset/limit for a specific section.`
             return denyOutput(
               (safeHeading ? leadWithCommand('token-goat section ' + quotedArg(`${shown}::${safeHeading}`), 'to read surgically', explanation) : explanation) +
@@ -876,11 +888,10 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     // No snapshot, a snapshot too large/truncated for loadSnapshotDiff to use (kind 'none'), or a diff that doesn't clear the savings floor -- fall back to the existing hard deny below, unchanged.
     recordActualRead(event, normalized)
     recordStat('session_hint', 0, 0)
-    const isMainMemory = basename.toLowerCase() === 'memory.md'
     return denyOutput(leadWithCommand(
       'token-goat section ' + quotedArg(shown + '::' + hintTarget(normalized, 'section').name),
       'to extract one section',
-      (isMainMemory ? 'MEMORY.md' : shown) + ' was already read this session. Memory files rarely change mid-session.',
+      'This file was already read this session. Memory files rarely change mid-session.',
     ))
   }
 
@@ -899,7 +910,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     const [quotedShown, quotedQuery] = quotedArgs(shown, '<path>')
     return denyOutput(
-      shown + ' was already read this session. Tool output spill files should not be re-read whole. ' +
+      'This file was already read this session. Tool output spill files should not be re-read whole. ' +
       'Use `token-goat json-query ' + quotedShown + ' ' + quotedQuery + '` or `token-goat mcp-output --file ' + quotedShown + ' --json-query ' + quotedQuery + '` to extract what you need.',
     )
   }
@@ -911,7 +922,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     return denyOutput(leadWithCommand(
       configGetCommand(shown, hintTarget(normalized, 'key').name),
       'to extract a specific variable',
-      shown + ' was already read this session. Environment files rarely change mid-session.',
+      'This file was already read this session. Environment files rarely change mid-session.',
     ))
   }
 
@@ -930,10 +941,10 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       if (snapDiff.kind === 'unchanged') {
         recordActualRead(event, normalized)
         recordStat('session_hint', 0, 0)
-        return denyOutput(snapshotDenyText(basename, snapDiff, sessionArtifactRecall(normalized)))
+        return denyOutput(snapshotDenyText(normalized, snapDiff, sessionArtifactRecall(normalized)))
       }
       if (snapDiff.kind === 'diff') {
-        const diffBody = snapshotDenyText(basename, snapDiff, sessionArtifactRecall(normalized))
+        const diffBody = snapshotDenyText(normalized, snapDiff, sessionArtifactRecall(normalized))
         const artifactDiffCredit = diffHintCredit(snapDiff.currentContent.length, diffBody)
         if (artifactDiffCredit !== null) {
           recordActualRead(event, normalized)
@@ -945,7 +956,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordActualRead(event, normalized)
       recordStat('session_hint', 0, 0)
       return denyOutput(
-        shown + ' was already read this session. ' + sessionArtifactRecall(normalized),
+        'This file was already read this session. ' + sessionArtifactRecall(normalized),
       )
     }
     // First read of tasks/*.output or tool-results/*.txt — size-gated like every other first-read intercept in this function. A small file is a cheap advisory pass; at/above TASK_OUTPUT_DENY_BYTES it's denied outright, forcing even the first read through bash-output --file/--tail instead of one free unsized full dump. Both artifact kinds share this gate -- tool-results/*.txt previously fell through to the lenient generic 100KB threshold with no advisory at all, unlike tasks/*.output.
@@ -1105,7 +1116,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordStat('session_hint', 0, 0)
         // No editAnywayHint here: this file was already read successfully this session (that's the whole premise of "already served"), so Read/Edit's precondition is already satisfied -- a plain Edit works fine without token-goat replace/write-file.
         return denyOutput(
-          'Every line of ' + shown + ' this read would return was already served in this session, byte for byte. ' +
+          'Every line of this file this read would return was already served in this session, byte for byte. ' +
           'Recall it with `token-goat bash-output ' + alreadyServed.id + '`, or pull just the part you need with ' +
           realSymbolReadHint(normalized, shown) + '.',
         )
@@ -1123,7 +1134,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
             recordStat('session_hint', 0, 0)
             return denyOutput(
-              'Lines ' + start + '..' + end + ' of ' + shown + ' was already read this session. ' +
+              'Lines ' + start + '..' + end + ' of this file was already read this session. ' +
               'Pull just the part you need with ' + realSymbolReadHint(normalized, shown, { start, end }) + '.' +
               priorOutputRecallHint(normalized),
             )
@@ -1170,7 +1181,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             ? 'For lines ' + pagingWindowSpan.start + '..' + pagingWindowSpan.end + ', run ' + realSymbolReadHint(normalized, shown, pagingWindowSpan) + '; `token-goat skeleton ' + quotedArg(shown) + '` maps the rest.'
             : surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized))
           return denyOutput(
-            'Sequential line-range paging detected on ' + shown + ' (' + (prevRanges.length + 1) + ' slices read). ' + hint +
+            'Sequential line-range paging detected on ' + fileSubject(normalized, hint) + ' (' + (prevRanges.length + 1) + ' slices read). ' + hint +
             ' Inspect structure directly without manual chunk paging.',
           )
         }
@@ -1211,7 +1222,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         const hint = surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized, rereadBytes))
         recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-structured-deny')
         bookDenyIdentity('structured')
-        return denyOutput((hint + ' ' + shown + ' was already read this session (' + reads + ' ' + plural + ').' + priorOutputRecallHint(normalized)).trimStart())
+        return denyOutput((hint + ' ' + sentenceStart(fileSubject(normalized, hint)) + ' was already read this session (' + reads + ' ' + plural + ').' + priorOutputRecallHint(normalized)).trimStart())
       }
 
       // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
@@ -1230,7 +1241,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-count-deny')
       bookDenyIdentity('count')
       // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
-      return denyOutput((hint + ' ' + shown + ' was already read this session (' + reads + ' ' + plural + ').' + priorOutputRecallHint(normalized)).trimStart())
+      return denyOutput((hint + ' ' + sentenceStart(fileSubject(normalized, hint)) + ' was already read this session (' + reads + ' ' + plural + ').' + priorOutputRecallHint(normalized)).trimStart())
     }
     // Only counted when the note actually reaches the caller -- quietContextOutput silently degrades to passOutput() during hints.quiet_hours, and recording unconditionally (as this used to) over-counted the ledger on every quiet-hours re-read that produced no visible output at all. Zero bytes, deliberately: this branch does NOT block the read. The note is appended and the Read still proceeds, so the file's full contents reach the model anyway and the hint text is spent on top of them -- crediting rereadCredit here booked the entire file as saved on the one path where nothing was. The event is still recorded (count, not bytes) because how often the soft note fires is worth knowing; what it is worth is separately measurable through hint-stats' acted-on tracking, which is the only thing that can tell whether the note ever changed what the model did next.
     const pagingWindow = readRequestedSliceWindow(event)
@@ -1254,10 +1265,11 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordStat('session_hint', 0, 0)
     }
     recordActualSlice(event, normalized)
-    const rereadNote = 'Note: ' + shown + ' was already read this session (' + reads + ' ' + plural + ').'
+    const sectionCommand = _isDocFile(normalized) ? 'token-goat section ' + quotedArg(shown + '::' + hintTarget(normalized, 'section', { placeholder: 'SectionName' }).name) : ''
+    const rereadNote = 'Note: ' + fileSubject(normalized, sectionCommand + pagingNote) + ' was already read this session (' + reads + ' ' + plural + ').'
     return quietContextOutput(
-      (_isDocFile(normalized)
-        ? leadWithCommand('token-goat section ' + quotedArg(shown + '::' + hintTarget(normalized, 'section', { placeholder: 'SectionName' }).name), 'to read one section', rereadNote)
+      (sectionCommand !== ''
+        ? leadWithCommand(sectionCommand, 'to read one section', rereadNote)
         : rereadNote + ' Use token-goat read/section/symbol to re-read surgically.') + pagingNote,
       [shown],
     )
@@ -1321,10 +1333,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // The read is blocked outright, so it never actually happened — don't record it against re-read dedup. Otherwise a retry (this hook doesn't distinguish offset/limit params from a plain re-read) hits "already read this session" instead of this same actionable deny, leaving no way to follow its own advice.
       const denyCredit = counterfactualCredit(size)
       recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit), undefined, 'large-file-deny')
-      return denyOutput(
-        (hint + ' ' + shown + ' is very large (' + kb + 'KB). ').trimStart() + describeSliceAdvice(slice, normalized) +
-        ' ' + editAnywayHint(normalized),
-      )
+      const advice = describeSliceAdvice(slice, normalized) + ' ' + editAnywayHint(normalized)
+      return denyOutput((hint + ' ' + sentenceStart(fileSubject(normalized, hint + advice)) + ' is very large (' + kb + 'KB). ').trimStart() + advice)
     }
     recordActualRead(event, normalized)
     recordActualSlice(event, normalized)
@@ -1340,7 +1350,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     if (!isWithinQuietHours(config.hints.quiet_hours)) {
       recordStat('session_hint', 0, 0)
     }
-    return quietContextOutput((hint + ' ' + shown + ' is large (' + kb + 'KB).').trimStart() + contextPressureAdvisorySuffix(), [shown])
+    return quietContextOutput((hint + ' ' + sentenceStart(fileSubject(normalized, hint)) + ' is large (' + kb + 'KB).').trimStart() + contextPressureAdvisorySuffix(), [shown])
   }
 
   // Universal file type handler (catch-all for non-code, non-markdown large files)

@@ -47,9 +47,11 @@ function doc(headings: readonly string[], pad = 1500): string {
 
 // HAND-DERIVED: six ordinary headings; the first, `Install`, is what every site should name.
 const REAL = ['Install', 'Usage', 'Configure', 'Deploy', 'Testing', 'Support'] as const
-// HAND-DERIVED: six headings, each carrying something a pasted double-quoted argument cannot hold: a command substitution, a backtick, a quote that closes the argument, the `::` spec separator, a bidi override, a shell variable.
-const HOSTILE = ['$(touch pwned)', 'a`id`b', 'x"; rm -rf ~; "y', 'bad::name', 'evil‮txt', '$HOME dir'] as const
-const HOSTILE_MARKS = ['pwned', '`id`', 'rm -rf', 'bad::name', '‮', '$HOME']
+// HAND-DERIVED: six headings (six, so the size-gated sites fire), each carrying something the relay guard drops whatever quotes it: a command substitution (refused anywhere on a suggestion's line), a backtick, which ends the fence, the `::` spec separator, a bidi override.
+const HOSTILE = ['$(touch pwned)', 'a`id`b', 'bad::name', 'evil‮txt', 'x$(id)y', 'q`w'] as const
+const HOSTILE_MARKS = ['pwned', '`id`', 'bad::name', '‮', '$(id)', 'q`w']
+// HAND-DERIVED: six headings a double-quoted argument cannot hold (a quote that closes the argument, a shell variable) and single quotes keep literal in POSIX sh and PowerShell, which is how quotedArg writes them.
+const SINGLE_QUOTED = ['x"; rm -rf ~; "y', '$HOME dir', 'Cost $5', 'say "hi"', '$PATH', 'a"b'] as const
 
 /** Every `token-goat ...` command span in `text`, up to its closing fence or the end of its line. */
 function commandSpans(text: string): string[] {
@@ -119,6 +121,11 @@ describe('hintTarget names what the file holds', () => {
   it('refuses every hostile heading and falls back rather than printing one', () => {
     const p = write('hostile.md', doc(HOSTILE, 40))
     expect(hintTarget(p, 'section')).toEqual({ name: 'SectionHeading', real: false, slice: 'section' })
+  })
+
+  it.each(SINGLE_QUOTED)('takes the heading %s, which quotedArg single-quotes', (heading) => {
+    const p = write(`single-${SINGLE_QUOTED.indexOf(heading)}.md`, doc([heading, 'Usage'], 40))
+    expect(hintTarget(p, 'section')).toEqual({ name: heading, real: true, slice: 'section' })
   })
 
   // HAND-DERIVED: YAML keeps a double quote inside a single-quoted key and the TOML index stores a quoted key with its quotes; either, set in the double-quoted key argument config-get and the query commands take, splits it (built bundle 2026-10-06: `config-get "q.toml" ""my key""` exits 1 with "too many arguments").
@@ -401,6 +408,14 @@ describe.each(SITES)('$name', (site) => {
     expect(text).toContain(site.fallback)
     for (const span of commandSpans(text)) for (const mark of HOSTILE_MARKS) expect(span).not.toContain(mark)
     if (site.guarded) expect(stripUnsafeSuggestions(text)).toBe(text)
+  })
+
+  it('names a heading quotedArg single-quotes inside single quotes, so the guard has nothing to drop', async () => {
+    const text = await site.run(SINGLE_QUOTED)
+    const spans = commandSpans(text).filter((s) => s.includes(`::${SINGLE_QUOTED[0]}'`) || s.includes(` '${SINGLE_QUOTED[0]}'`))
+    expect(spans.length, text).toBeGreaterThan(0)
+    if (site.guarded) expect(stripUnsafeSuggestions(text)).toBe(text)
+    else for (const s of spans) expect(stripUnsafeSuggestions('`' + s + '`')).toBe('`' + s + '`')
   })
 })
 

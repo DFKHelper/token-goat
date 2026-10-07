@@ -179,7 +179,7 @@ describe('evaluateFirstReadSymbolPolicy', () => {
     })
     expect(decision.action).toBe('warn')
     if (decision.action === 'warn') {
-      expect(decision.message).toContain('src/cli.ts is 100.0KB with 12 indexed symbols')
+      expect(decision.message).toContain('This file is 100.0KB with 12 indexed symbols')
       expect(decision.message).toContain('token-goat read "src/cli.ts::parseAst"')
       expect(decision.message).toContain('token-goat outline "src/cli.ts"')
     }
@@ -257,7 +257,7 @@ describe('evaluateFirstReadSymbolPolicy', () => {
       if (decision.action !== 'deny') return
       const relayed = stripUnsafeSuggestions(decision.message)
       expect(relayed).toContain(`Run \`token-goat read '${shownPath}::parseAst'\` to read surgically.`)
-      expect(relayed).toContain(`${shownPath} is large (100.0KB with 12 indexed symbols). Whole-file first read denied by first_read_symbol_policy.`)
+      expect(relayed).toContain(`This file is large (100.0KB with 12 indexed symbols). Whole-file first read denied by first_read_symbol_policy.`)
       expect(relayed).toContain(`token-goat outline '${shownPath}'`)
       expect(relayed).toContain(`token-goat skeleton '${shownPath}'`)
       expect(relayed).toContain('re-read with offset/limit for a specific line slice')
@@ -270,7 +270,7 @@ describe('evaluateFirstReadSymbolPolicy', () => {
       if (decision.action !== 'warn') return
       const relayed = stripUnsafeSuggestions(decision.message)
       expect(relayed).toContain(`Run \`token-goat read '${shownPath}::parseAst'\` to read surgically.`)
-      expect(relayed).toContain(`${shownPath} is 100.0KB with 12 indexed symbols; prefer surgical reads or \`token-goat outline '${shownPath}'\` over reading the whole file.`)
+      expect(relayed).toContain(`This file is 100.0KB with 12 indexed symbols; prefer surgical reads or \`token-goat outline '${shownPath}'\` over reading the whole file.`)
     })
 
     it.each(fenceBreakingPaths)('keeps the deny and warning for %s readable, its commands removed', (shownPath) => {
@@ -280,8 +280,8 @@ describe('evaluateFirstReadSymbolPolicy', () => {
         if (decision.action !== 'deny' && decision.action !== 'warn') return
         const relayed = stripUnsafeSuggestions(decision.message)
         expect(relayed).toContain('Run `token-goat (command omitted: the path contains shell metacharacters)` to read surgically.')
-        expect(relayed).toContain(`${shownPath} is `)
-        expect(relayed.split('\n').filter((l) => l.includes('token-goat ') && l.includes(shownPath) && !l.startsWith(shownPath))).toEqual([])
+        expect(relayed).toContain('This file is ')
+        expect(relayed).not.toContain(shownPath)
       }
       const deny = decide(shownPath, 'deny')
       if (deny.action === 'deny') expect(stripUnsafeSuggestions(deny.message)).toContain('re-read with offset/limit for a specific line slice')

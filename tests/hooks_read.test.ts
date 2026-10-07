@@ -332,6 +332,25 @@ describe('preReadHandler', () => {
       expect(afterBucket?.bytes_saved ?? 0).toBe(beforeBytes)
     })
 
+    // HAND-DERIVED: with hints.min_file_lines_for_hint above the file's line count the surgical hint before the deny is empty and no command in it names the path; the sentence then has to.
+    it('names the file in a re-read deny when no command in it carries the path', () => {
+      const cfg = defaultConfig()
+      cfg.hints.protect_recent_reads = 0
+      cfg.hints.min_file_lines_for_hint = 1_000_000
+      saveConfig(cfg)
+
+      const p = makeTmpFile('x'.repeat(60 * 1024))
+      const normalized = normalizePath(p)
+      recordFileRead(normalized)
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).not.toContain('token-goat ')
+        expect(result.message).toMatch(/^\[tg\] "[^"]+" was already read this session \(1 read\)/)
+        expect(result.message).toContain(path.basename(p))
+      }
+    })
+
     it('caps what a blocked re-read may claim against the per-file counterfactual ceiling', () => {
       const cfg = defaultConfig()
       cfg.hints.protect_recent_reads = 0
@@ -2609,7 +2628,7 @@ content here` },
     const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('MEMORY.md was already read this session')
+      expect(result.message).toContain('This file was already read this session')
       expect(result.message).toContain('token-goat section')
       expect(result.message).not.toContain('compact manifest')
     }
@@ -2683,7 +2702,7 @@ content here` },
     if (result.hookType === 'deny') {
       expect(result.message).toContain('is unchanged since last read')
       expect(result.message).toContain('token-goat section')
-      expect(result.message).not.toContain('MEMORY.md was already read this session')
+      expect(result.message).not.toContain('This file was already read this session')
       expect(result.message).not.toContain('Content changed since last read')
     }
 
@@ -2727,7 +2746,7 @@ content here` },
         expect(result.message).toContain('```diff')
         expect(result.message).toContain('New Fact')
         expect(result.message).toContain('token-goat section')
-        expect(result.message).not.toContain('MEMORY.md was already read this session')
+        expect(result.message).not.toContain('This file was already read this session')
 
         // Fence placement: the diff (file-derived, untrusted) sits between the fence tags; token-goat's own "Content changed..." guidance sits outside/before it.
         const openIdx = result.message.indexOf('<untrusted-file-content>')
@@ -2766,7 +2785,7 @@ content here` },
       expect(result.message).toBe(
         // HAND-DERIVED: the file's only heading is `# Memory`.
         '[tg] Run `token-goat section "' + normalizePath(p) + '::Memory"` to extract one section. ' +
-        'MEMORY.md was already read this session. Memory files rarely change mid-session.',
+        'This file was already read this session. Memory files rarely change mid-session.',
       )
     }
   })
@@ -2789,7 +2808,7 @@ content here` },
       expect(result.message).toBe(
         // HAND-DERIVED: the file's only heading is `# Findings`.
         '[tg] Run `token-goat section "' + shownPath + '::Findings"` to extract one section. ' +
-        shownPath + ' was already read this session. Memory files rarely change mid-session.',
+        'This file was already read this session. Memory files rarely change mid-session.',
       )
     }
   })

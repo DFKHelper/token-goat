@@ -241,7 +241,7 @@ describe('every suggestion template in src', () => {
       what: 'token-goat suggestion templates with a quoted argument in src',
       items: all.map((t) => t.file + '::' + t.text),
       floor: 220,
-      mustInclude: ['hooks_read_slice.ts::To edit it anyway', 'hooks_read.ts::' + PLAIN + ' was already read this session. Tool output spill files', 'hooks_bash.ts::token-goat available for this file type', 'hints/file_type_handler.ts::Then extract relevant pages'],
+      mustInclude: ['hooks_read_slice.ts::To edit it anyway', 'hooks_read.ts::This file was already read this session. Tool output spill files', 'hooks_bash.ts::token-goat available for this file type', 'hints/file_type_handler.ts::Then extract relevant pages'],
     })
   })
 
@@ -388,7 +388,6 @@ const SAFE_BARE: ReadonlyArray<{ key: string; reason: string }> = [
 
 /** Values a template puts in double quotes by hand where the text is a probe, never shown: a candidate command handed to stripUnsafeSuggestions to ask whether the guard keeps it, whose name already refused every quote, `$` and backtick. Valid for a hand-quoted value only. */
 const PROBE_HAND_QUOTED: ReadonlyArray<{ key: string; reason: string }> = [
-  { key: 'hint_target.ts::name', reason: 'quotable() asks the guard about `token-goat read "<name>"` and returns the name, never the probe' },
   { key: 'hooks_read_policy.ts::trimmed', reason: 'safeSuggestionTarget() asks the guard about `token-goat read "test.ts::<name>"` after refusing quotes, `$` and backticks, and returns the name, never the probe' },
 ]
 
@@ -408,7 +407,7 @@ describe('every interpolated value in a suggested command in src', () => {
 
   it('is scanned', () => {
     expect(commands.size, 'the CLI command names were not found').toBeGreaterThan(100)
-    pinnedPopulation({ what: 'interpolated values no quoting helper quoted in suggested token-goat commands in src', items: [...new Set(found.map((f) => f.key))], floor: 1, mustInclude: ['hooks_bash.ts::curlOutputId', 'answer_router.ts::ANSWER_DELEGATE_LIMIT', 'hint_target.ts::name'] })
+    pinnedPopulation({ what: 'interpolated values no quoting helper quoted in suggested token-goat commands in src', items: [...new Set(found.map((f) => f.key))], floor: 1, mustInclude: ['hooks_bash.ts::curlOutputId', 'answer_router.ts::ANSWER_DELEGATE_LIMIT', 'hooks_read_policy.ts::trimmed'] })
   })
 
   it('is quoted unless it is a reviewed safe value', () => {

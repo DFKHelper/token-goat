@@ -91,14 +91,14 @@ export function sliceForPath(filePath: string): HintSlice {
   return 'symbol'
 }
 
-/** `name` when it can be pasted into a double-quoted argument and run verbatim, else null. The relay's own guard is the test, so a name passes exactly when a command carrying it survives stripUnsafeSuggestions; a backslash (which would escape the closing quote), the `::` spec separator, and anything displaySafeText would rewrite (a token-goat marker, a control character) are refused on top, since these names also reach channels the relay does not guard. */
+/** `name` when it can be passed through quotedArg and run verbatim, else null. The relay's own guard is the test, so a name passes exactly when a command carrying it the way every caller writes it (quotedArg) survives stripUnsafeSuggestions: a `$` or `"` that quotedArg single-quotes passes, where a probe hand-written in double quotes refused it, while a backtick (which closes the command's fence) and `$(` are still refused by the guard; a backslash (which would escape the closing quote), the `::` spec separator, and anything displaySafeText would rewrite (a token-goat marker, a control character) are refused on top, since these names also reach channels the relay does not guard. */
 function quotable(raw: string, slice: HintSlice): string | null {
   const name = raw.trim()
   if (name === '' || name.length > MAX_HINT_NAME_CHARS || name.includes('\\') || name.includes('::')) return null
   // A key is the whole argument of config-get or a query command, so a `"` in it (a TOML key written `"my key" = 1` indexes with its quotes) splits that argument, and neither command redirects a near-miss name the way section and read do.
   if (slice === 'key' && name.includes('"')) return null
   if (displaySafeText(name) !== name) return null
-  const probe = 'token-goat read "' + name + '"'
+  const probe = 'token-goat read ' + quotedArg(name)
   return stripUnsafeSuggestions(probe) === probe ? name : null
 }
 

@@ -118,12 +118,12 @@ export function evaluateFirstReadSymbolPolicy(ctx: ReadPolicyContext): ReadPolic
     : `${evidence.headingCount} indexed heading${evidence.headingCount === 1 ? '' : 's'}`
 
   if (firstReadSymbolPolicy === 'deny') {
-    // The edit-anyway hint keeps its own line: the relay guard cuts a refused command to its line's last backtick, so on a shared line a refused outline command would take the rest of the explanation with it.
+    // The edit-anyway hint keeps its own line: where the quoting cannot place a refused command's end, the relay guard cuts it to its line's last backtick, so on a shared line a refused outline command would take the rest of the explanation with it.
     const message =
       leadWithCommand(
         primaryCommand,
         'to read surgically',
-        `${safeShown} is large (${kb}KB with ${symbolDetails}). Whole-file first read denied by first_read_symbol_policy. ` +
+        `This file is large (${kb}KB with ${symbolDetails}). Whole-file first read denied by first_read_symbol_policy. ` +
         `Use ${fencedCommand(outlineCommand)} or ${fencedCommand(skeletonCommand)} to map structure, or re-read with offset/limit for a specific line slice.`,
       ) +
       '\n' + editAnywayHint(normalizedPath)
@@ -141,7 +141,7 @@ export function evaluateFirstReadSymbolPolicy(ctx: ReadPolicyContext): ReadPolic
   const message = leadWithCommand(
     primaryCommand,
     'to read surgically',
-    `${safeShown} is ${kb}KB with ${symbolDetails}; prefer surgical reads or ${fencedCommand(outlineCommand)} over reading the whole file.`,
+    `This file is ${kb}KB with ${symbolDetails}; prefer surgical reads or ${fencedCommand(outlineCommand)} over reading the whole file.`,
   )
 
   return {

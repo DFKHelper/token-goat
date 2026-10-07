@@ -132,7 +132,7 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
             // A ranged read was not a full read, so there is nothing to "re-read"; it is paging that the structural commands replace.
             const instead = readRequestedSliceWindow(event).isExplicitSlice ? 'instead of paging through it' : 'instead of a future full re-read'
             return quietContextOutput(
-              shown + ' is ' + lineCount + ' lines. Use `token-goat skeleton ' + quotedArg(shown) + '` or `token-goat outline ' + quotedArg(shown) + '` for structural navigation ' + instead + '.',
+              'This file is ' + lineCount + ' lines. Use `token-goat skeleton ' + quotedArg(shown) + '` or `token-goat outline ' + quotedArg(shown) + '` for structural navigation ' + instead + '.',
             )
           }
         }

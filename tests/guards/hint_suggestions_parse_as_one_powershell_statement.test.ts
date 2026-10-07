@@ -35,6 +35,10 @@ const ASCII_PAYLOAD_PATHS: readonly string[] = [
   'a""; Write-Output ' + MARKER + '; ""b.ts',
 ]
 
+// A heading built from the same grammar: quotedArg single-quotes it, so the section hint names it instead of falling back to the next heading.
+const HOSTILE_HEADING = 'a' + cp(0x201d) + '; Write-Output ' + MARKER + '; ' + cp(0x201c) + 'b'
+const HOSTILE_HEADING_DOC = '# Title\n\n## ' + HOSTILE_HEADING + '\n\ntext\n\n## Usage\n\nmore\n'
+
 /** Every hint shape a path reaches, each passed through the guard as relayInProcess passes it. */
 function guardedHints(p: string): string[] {
   const raw = [
@@ -81,12 +85,14 @@ describe('PowerShell double quotes in a path', () => {
     expect(stripUnsafeSuggestions(section)).toBe(section)
   })
 
-  it('never picks a heading holding a PowerShell double quote as the section a hint names', () => {
-    const hostile = 'a' + cp(0x201d) + '; Write-Output ' + MARKER + '; ' + cp(0x201c) + 'b'
-    const content = '# Title\n\n## ' + hostile + '\n\ntext\n\n## Usage\n\nmore\n'
-    const target = hintTarget('d.md', 'section', { content })
-    expect(target.name).toBe('Usage')
-    expect(sliceCommand('d.md', target)).toBe('token-goat section "d.md::Usage"')
+  it('names a heading holding a PowerShell double quote only inside single quotes, where the marker is literal text', () => {
+    const target = hintTarget('d.md', 'section', { content: HOSTILE_HEADING_DOC })
+    expect(target.name).toBe(HOSTILE_HEADING)
+    const command = sliceCommand('d.md', target)
+    expect(command).toBe("token-goat section 'd.md::" + HOSTILE_HEADING + "'")
+    expect(outsideSingleQuotes(command)).not.toContain(MARKER)
+    const hint = 'Use `' + command + '` to read one section.'
+    expect(stripUnsafeSuggestions(hint)).toBe(hint)
   })
 })
 
@@ -99,6 +105,8 @@ describe.skipIf(POWERSHELL === null)('every suggestion that survives the guard i
   it('parses each fenced suggestion from the emitters and the relay as exactly one statement with no errors', async () => {
     const texts: string[] = []
     for (const p of [...BREAKOUT_PATHS, ...BENIGN_PATHS, ...ASCII_PAYLOAD_PATHS]) texts.push(...guardedHints(p))
+    const headingCommand = sliceCommand('d.md', hintTarget('d.md', 'section', { content: HOSTILE_HEADING_DOC }))
+    texts.push(stripUnsafeSuggestions('Use `' + headingCommand + '` to read one section.'))
     let relayed = 0
     for (const [i, p] of [...BREAKOUT_PATHS, ...BENIGN_PATHS, ...ASCII_PAYLOAD_PATHS].entries()) {
       const wire = await relayInProcess('pre_tool_use', bashEvent("cat '" + p.split("'").join("'\\''") + "'", String(i)))
@@ -109,6 +117,7 @@ describe.skipIf(POWERSHELL === null)('every suggestion that survives the guard i
     // Floors, so the oracle cannot pass on silence. CAPTURE on 2026-10-05: 78 distinct suggestions, and the relay hinted on 17 of the 18 cat commands.
     expect(suggestions.length).toBeGreaterThanOrEqual(60)
     expect(relayed).toBeGreaterThanOrEqual(14)
+    expect(suggestions, 'the single-quoted heading command never reached the oracle').toContain(headingCommand)
     expect(suggestions.some((s) => s.includes('John' + cp(0x2019) + 's notes.md')), 'a curly apostrophe cost a benign file its suggestion').toBe(true)
     const parsed = parseWithPowerShell(exe, suggestions)
     const broken = parsed.filter((r) => r.statements !== 1 || r.errors !== 0)

