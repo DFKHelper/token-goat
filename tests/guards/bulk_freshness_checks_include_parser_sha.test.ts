@@ -134,6 +134,19 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
+    'getReadNavigationEvidence',
+    {
+      bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
+      reason:
+        'index_reader.ts checks the one file a Read is about to load, and only when its mtime moved since ' +
+        'indexing, to tell a checkout that rewrote the mtime from a real edit. Nothing is skipped or reused: a ' +
+        'drifted file makes hints.first_read_symbol_policy stand aside rather than deny or warn. It keys on ' +
+        'files.sha alone because the names it suggests go to `token-goat read`/`section`, which heal a ' +
+        'parser-stale row before answering, the same reasoning as indexMatchesDisk above. It cannot call ' +
+        'indexMatchesDisk itself: index_freshness.ts imports index_reader.ts.',
+    },
+  ],
+  [
     'processDirtyBatch',
     {
       bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',

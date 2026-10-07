@@ -17,7 +17,8 @@ describe('First-read symbol policy guard', () => {
     expect(PROJECT_LOCKED_KEYS).toContain('hints.first_read_symbol_policy')
   })
 
-  it('evaluates sub-millisecond pure policy decisions', () => {
+  // Decision logic only: the evidence is injected. The real index path is tests/hooks_read_symbol_policy_e2e.test.ts.
+  it('reaches a warn decision from injected evidence without touching the index', () => {
     const dummyEvent: HookEvent = {
       eventName: 'pre_tool_use',
       toolName: 'view',
@@ -35,6 +36,7 @@ describe('First-read symbol policy guard', () => {
       isFirstRead: true,
       firstReadSymbolPolicy: 'warn',
       firstReadSymbolBytes: 50_000,
+      // HAND-DERIVED: invented evidence of the shape getReadNavigationEvidence returns.
       navigationEvidence: {
         filePath: 'src/cli.ts',
         indexedMtime: 1234567,

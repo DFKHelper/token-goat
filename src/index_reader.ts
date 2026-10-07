@@ -3,6 +3,7 @@
 import * as fs from 'node:fs'
 import { globalDbPath } from './constants.js'
 import { getDb, withProbeIndex } from './db.js'
+import { fingerprintFile } from './fingerprint.js'
 import { ownProjectScope } from './nested_worktrees.js'
 import type { FileIndexEntry, RefEntry, SymbolEntry } from './parser_types.js'
 import { normalizePath, hostPathOfIndexKey } from './paths.js'
@@ -416,14 +417,14 @@ export function getReadNavigationEvidence(
   return withProbeIndex((db) => {
     const key = indexKey(filePath)
     let fileRow = db
-      .prepare(`SELECT path, mtime FROM files WHERE ${pathEq('path')}`)
-      .get(foldPath(key)) as { path: string; mtime?: number } | undefined
+      .prepare(`SELECT path, mtime, sha FROM files WHERE ${pathEq('path')}`)
+      .get(foldPath(key)) as { path: string; mtime?: number | null; sha?: string | null } | undefined
 
     if (fileRow === undefined && (key.includes('/') || key.includes('\\'))) {
       const alt = key.includes('/') ? key.replace(/\//g, '\\') : key.replace(/\\/g, '/')
       fileRow = db
-        .prepare(`SELECT path, mtime FROM files WHERE ${pathEq('path')}`)
-        .get(foldPath(alt)) as { path: string; mtime?: number } | undefined
+        .prepare(`SELECT path, mtime, sha FROM files WHERE ${pathEq('path')}`)
+        .get(foldPath(alt)) as { path: string; mtime?: number | null; sha?: string | null } | undefined
     }
 
     if (!fileRow) return null
@@ -432,8 +433,9 @@ export function getReadNavigationEvidence(
     try {
       const onDisk = hostPathOfIndexKey(filePath)
       const stat = fs.statSync(onDisk)
-      if (fileRow.mtime !== undefined && Math.abs(stat.mtimeMs - fileRow.mtime) > 1000) {
-        isStale = true
+      // files.mtime is seconds (parser.ts safeMtime) and stat.mtimeMs milliseconds, so the unit is converted here, as reconcile.ts does. An unchanged mtime is fresh; a moved one is only a suspicion, settled by the content fingerprint the read commands' staleWarning compares, because a checkout rewrites mtimes over unchanged bytes and the worker never re-stamps a file whose sha still matches.
+      if (stat.mtimeMs / 1000 !== fileRow.mtime) {
+        isStale = !fileRow.sha || fingerprintFile(onDisk) !== fileRow.sha
       }
     } catch {
       // file might be removed or inaccessible

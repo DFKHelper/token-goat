@@ -1,7 +1,15 @@
-import { describe, expect, it } from 'vitest'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { afterAll, describe, expect, it } from 'vitest'
 import { evaluateFirstReadSymbolPolicy, safeSuggestionTarget } from '../src/hooks_read_policy.js'
 import type { HookEvent } from '../src/hook_registry.js'
 import type { NavigationEvidence } from '../src/index_reader.js'
+
+// These cases inject navigationEvidence to pin the evaluator's decision logic alone. The shipping path, where getReadNavigationEvidence reads a real index row, is covered by tests/hooks_read_symbol_policy_e2e.test.ts.
+
+const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-read-policy-slice-'))
+afterAll(() => fs.rmSync(fixtureDir, { recursive: true, force: true }))
 
 function makeEvent(toolName: string, input: Record<string, unknown>): HookEvent {
   return {
@@ -41,6 +49,7 @@ describe('safeSuggestionTarget', () => {
 })
 
 describe('evaluateFirstReadSymbolPolicy', () => {
+  // HAND-DERIVED: invented evidence of the shape getReadNavigationEvidence returns, not read off any index.
   const dummyEvidence: NavigationEvidence = {
     filePath: 'src/cli.ts',
     indexedMtime: 1234567,
@@ -84,20 +93,38 @@ describe('evaluateFirstReadSymbolPolicy', () => {
   })
 
   it('passes when requested slice is bounded and small', () => {
+    // HAND-DERIVED: 2,000 lines of 50 bytes, so lines 10-40 are about 1.5KB of a 100KB file.
+    const sliceFile = path.join(fixtureDir, 'sliced.ts')
+    fs.writeFileSync(sliceFile, Array.from({ length: 2000 }, (_, i) => `export const v${String(i).padStart(5, '0')} = ${'1'.repeat(30)}\n`).join(''))
+    const fileSize = fs.statSync(sliceFile).size
+    expect(fileSize).toBeGreaterThan(50_000)
     const decision = evaluateFirstReadSymbolPolicy({
-      event: makeEvent('view', { path: 'src/cli.ts', view_range: [10, 40] }),
-      normalizedPath: 'src/cli.ts',
-      shownPath: 'src/cli.ts',
-      fileSize: 100_000,
+      event: makeEvent('view', { path: sliceFile, view_range: [10, 40] }),
+      normalizedPath: sliceFile,
+      shownPath: sliceFile,
+      fileSize,
       isFirstRead: true,
       firstReadSymbolPolicy: 'deny',
       firstReadSymbolBytes: 50_000,
       navigationEvidence: dummyEvidence,
     })
     expect(decision.action).toBe('allow')
+    // Control: the same file read whole is denied, so the allow above came from the slice.
+    const whole = evaluateFirstReadSymbolPolicy({
+      event: makeEvent('view', { path: sliceFile }),
+      normalizedPath: sliceFile,
+      shownPath: sliceFile,
+      fileSize,
+      isFirstRead: true,
+      firstReadSymbolPolicy: 'deny',
+      firstReadSymbolBytes: 50_000,
+      navigationEvidence: dummyEvidence,
+    })
+    expect(whole.action).toBe('deny')
   })
 
   it('passes when evidence is marked stale (fail open)', () => {
+    // HAND-DERIVED: the evidence above with its stale flag set.
     const staleEvidence: NavigationEvidence = {
       ...dummyEvidence,
       isStale: true,
@@ -124,6 +151,7 @@ describe('evaluateFirstReadSymbolPolicy', () => {
       isFirstRead: true,
       firstReadSymbolPolicy: 'warn',
       firstReadSymbolBytes: 50_000,
+      // HAND-DERIVED: an indexed file with no symbols or headings.
       navigationEvidence: {
         filePath: 'src/empty.ts',
         indexedMtime: 1234567,
@@ -175,6 +203,7 @@ describe('evaluateFirstReadSymbolPolicy', () => {
   })
 
   it('sanitizes unsafe symbol names and safely falls back to outline', () => {
+    // HAND-DERIVED: a symbol name built to break out of a double-quoted argument.
     const unsafeEvidence: NavigationEvidence = {
       filePath: 'src/malicious.ts',
       indexedMtime: 1234567,
@@ -204,6 +233,7 @@ describe('evaluateFirstReadSymbolPolicy', () => {
   })
 
   it('tailors recommendations for markdown headings', () => {
+    // HAND-DERIVED: invented heading evidence of the shape a markdown index row yields.
     const headingEvidence: NavigationEvidence = {
       filePath: 'docs/arch.md',
       indexedMtime: 1234567,
