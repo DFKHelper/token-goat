@@ -3,14 +3,15 @@ import { spawnSync } from 'node:child_process'
 
 import { canRunPowerShell, resolvePowerShell } from '../../src/shell.js'
 
-/** What PowerShell's parser made of one command: its top-level statement count and how many parse errors it reported. */
+/** What PowerShell's parser made of one command: its top-level statement count, how many parse errors it reported, and the name of every command it would run, at any depth (empty for a script block or expression in command position). */
 export interface PowerShellParse {
   command: string
   statements: number
   errors: number
+  commands: string[]
 }
 
-// Reads a base64 UTF-8 JSON array of strings from the environment (no console code page touches it) and prints one ASCII "statements errors" line per command.
+// Reads a base64 UTF-8 JSON array of strings from the environment (no console code page touches it) and prints one ASCII "statements errors names" line per command, the names base64 and comma-joined.
 const PARSE_SCRIPT = [
   '$in = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($env:TG_PS_PARSE_INPUT))',
   // Assigned first: Windows PowerShell 5.1 emits a JSON array as one object, which @() would not unroll.
@@ -19,7 +20,8 @@ const PARSE_SCRIPT = [
   '  $t = $null; $e = $null',
   '  $a = [System.Management.Automation.Language.Parser]::ParseInput([string]$c, [ref]$t, [ref]$e)',
   '  $n = 0; foreach ($b in @($a.BeginBlock, $a.ProcessBlock, $a.EndBlock)) { if ($b) { $n += $b.Statements.Count } }',
-  "  [Console]::Out.WriteLine(('{0} {1}' -f $n, $e.Count))",
+  '  $names = @($a.FindAll({ param($x) $x -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([string]$_.GetCommandName())) })',
+  "  [Console]::Out.WriteLine(('{0} {1} {2}' -f $n, $e.Count, ($names -join ',')))",
   '}',
 ].join('\n')
 
@@ -44,8 +46,8 @@ export function parseWithPowerShell(exe: string, commands: readonly string[]): P
   const lines = res.stdout.split(/\r?\n/).filter((l) => l.trim() !== '')
   if (lines.length !== commands.length) throw new Error(`PowerShell parsed ${lines.length} of ${commands.length} commands:\n${res.stdout}\n${res.stderr}`)
   return lines.map((line, i) => {
-    const [statements, errors] = line.trim().split(' ').map(Number)
-    return { command: commands[i]!, statements: statements!, errors: errors! }
+    const [statements, errors, names] = line.trim().split(' ')
+    return { command: commands[i]!, statements: Number(statements), errors: Number(errors), commands: names ? names.split(',').map((n) => Buffer.from(n, 'base64').toString('utf8')) : [] }
   })
 }
 

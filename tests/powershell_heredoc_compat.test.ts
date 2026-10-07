@@ -10,11 +10,14 @@ import {
 } from '../src/powershell_compat.js'
 import { run, spawnTarget } from '../src/bash_runner.js'
 import { canRunPowerShell, resolvePowerShell } from '../src/shell.js'
+import { parseWithPowerShell, powershellForParsing } from './helpers/powershell_parse.js'
 
 // The texts a rewrite carries as base64 or as the `-c` loader's hex argument, decoded.
 function decodedBodies(adapted: string): string[] {
   return [...adapted.matchAll(/FromBase64String\('([^']*)'\)|'\s+x([0-9a-f]*)(?=\s|$)/g)].map((m) => m[1] !== undefined ? Buffer.from(m[1], 'base64').toString('utf8') : Buffer.from(m[2] as string, 'hex').toString('utf8'))
 }
+
+const parseShell = powershellForParsing()
 
 // A rewrite with the `-c` loader's program text replaced by LOADER, so a test can state the rest exactly.
 const withoutLoader = (adapted: string): string => adapted.replace(/'\(lambda s:.*?\.decode\(''utf-8''\)\)'/g, 'LOADER')
@@ -43,11 +46,11 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
       expect(adaptHeredoc(nodeCmd)).toContain('| node -')
     })
 
-    // HAND-DERIVED: bash writes a heredoc's lines each ended by a newline, so `cat > f` leaves "line 1\nline 2\n" in f; PowerShell's own argument parsing still reads the path word.
+    // HAND-DERIVED: bash writes a heredoc's lines each ended by a newline, so `cat > f` leaves "line 1\nline 2\n" in f; a bare path word holds nothing bash would expand, so it is the same text in PowerShell single quotes.
     it('adapts cat redirection heredocs to a UTF-8 file write of the bytes bash writes', () => {
       const input = `cat <<'EOF' > output.txt\nline 1\nline 2\nEOF`
       const adapted = adaptHeredoc(input)
-      expect(adapted).toMatch(/^\[System\.IO\.File\]::WriteAllText\(\$ExecutionContext\.SessionState\.Path\.GetUnresolvedProviderPathFromPSPath\(\(Write-Output output\.txt\)\), /)
+      expect(adapted).toMatch(/^\[System\.IO\.File\]::WriteAllText\(\$ExecutionContext\.SessionState\.Path\.GetUnresolvedProviderPathFromPSPath\('output\.txt'\), /)
       expect(adapted).toMatch(/, \[System\.Text\.UTF8Encoding\]::new\(\$false\)\)$/)
       expect(adapted).not.toContain('Set-Content')
       expect(decodedBodies(adapted)).toEqual(['line 1\nline 2\n'])
@@ -68,10 +71,24 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
 
     // HAND-DERIVED: bash's `cat >> f` appends, which is PowerShell's Add-Content, and `cat <<EOF | cmd` only feeds cmd, so the body pipes straight into it.
     it('maps an appending cat to a file append and drops a cat that only pipes', () => {
-      expect(adaptHeredoc(`cat >> 'log.txt' <<'EOF'\nsecond\nEOF`)).toMatch(/^\[System\.IO\.File\]::AppendAllText\(.*\(Write-Output 'log\.txt'\)\)/)
-      expect(adaptHeredoc(`cat <<'EOF' >> log.txt\nsecond\nEOF`)).toMatch(/^\[System\.IO\.File\]::AppendAllText\(.*\(Write-Output log\.txt\)\)/)
+      expect(adaptHeredoc(`cat >> 'log.txt' <<'EOF'\nsecond\nEOF`)).toMatch(/^\[System\.IO\.File\]::AppendAllText\(.*FromPSPath\('log\.txt'\), /)
+      expect(adaptHeredoc(`cat <<'EOF' >> log.txt\nsecond\nEOF`)).toMatch(/^\[System\.IO\.File\]::AppendAllText\(.*FromPSPath\('log\.txt'\), /)
       expect(decodedBodies(adaptHeredoc(`cat <<'EOF' >> log.txt\nsecond\nEOF`))).toEqual(['second\n'])
       expect(adaptHeredoc(`cat <<'EOF' | python -\nprint(1)\nEOF`)).toMatch(/\)\) \| python -; \$TgQ = /)
+    })
+
+    // HAND-DERIVED: each redirect word is a file name with shell characters in it, written for this test; bash reads a bare word holding none of ( ) { } $ backtick or a quote as literal text, so only those words may be rewritten, and the rewrite of a file write runs no command at all (PowerShell's own parser, parse-only, lists the commands; nothing is executed).
+    it.skipIf(parseShell === null)('names a redirect file with shell characters as one PowerShell string, or leaves the command as written', () => {
+      const rewritten = ['a,b.txt', 'a.txt', 'dir/sub.txt', "'a,(Write-Output).txt'", "'a $(x) b.txt'", '"plain name.txt"', '"C:\\temp\\x.txt"', 'C:\\temp\\x.txt']
+      const unchanged = ['$(Write-Output)', 'a,(Write-Output)', 'x)+(Write-Output', '{Write-Output}', '@(Write-Output)', '-x.txt', 'a`$(Write-Output)', '#x', 'a*.txt', "it's.txt", "'it''s.txt'", '\u2018a\u2019', "'a\u2019;(Write-Output);\u2018b'", '"a\u201d;(Write-Output);\u201cb"', '"a`";(Write-Output);`"b"', '"a\\$(Write-Output)"', "'a';(Write-Output);'b'"]
+      const commands = [...rewritten, ...unchanged].flatMap((word) => [`cat > ${word} <<'EOF'\nx\nEOF`, `cat <<'EOF' >> ${word}\nx\nEOF`])
+      const adapted = commands.map((c) => adaptHeredoc(c))
+      expect(adapted.filter((a, i) => a === commands[i])).toEqual(commands.slice(rewritten.length * 2))
+      const parsed = parseWithPowerShell(parseShell as string, adapted.slice(0, rewritten.length * 2))
+      expect(parsed.map((p) => [p.command, p.statements, p.errors, p.commands])).toEqual(parsed.map((p) => [p.command, 1, 0, []]))
+      expect(adaptHeredoc(`cat > a,b.txt <<'EOF'\nx\nEOF`)).toContain("FromPSPath('a,b.txt'), ")
+      // A double-quoted word stays the expandable PowerShell string it was written as, the way a double-quoted python -c script does, so a substitution in it runs as the one command written there.
+      expect(parseWithPowerShell(parseShell as string, [adaptHeredoc(`cat > "$(Write-Output out).txt" <<'EOF'\nx\nEOF`)])[0]?.commands).toEqual(['Write-Output'])
     })
 
     // HAND-DERIVED: bash runs each pipeline stage in a subshell, so what a heredoc pipe sets never outlives it, whatever the body holds; Windows PowerShell 5.1 pipes text into a native command in $OutputEncoding, ASCII by default, so every pipe runs in a scope with a UTF-8 one.
@@ -417,6 +434,14 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
         expect(r.stderr).toBe('')
         expect(r.status).toBe(0)
         expect(fs.readFileSync(path.join(dir, 'app.txt')).toString('hex')).toBe(hex(`first\n${TEXT}\n`))
+      })
+
+      it('writes a cat > heredoc to a file whose bare name holds a comma', () => {
+        const r = runIn(`cat > a,b.txt <<'EOF'\n${TEXT}\nEOF`)
+        expect(r.stderr).toBe('')
+        expect(r.status).toBe(0)
+        expect(fs.readFileSync(path.join(dir, 'a,b.txt')).toString('hex')).toBe(hex(`${TEXT}\n`))
+        expect(fs.existsSync(path.join(dir, 'a b.txt'))).toBe(false)
       })
 
       it('exits 1 when a cat > heredoc cannot write its file', () => {

@@ -1,5 +1,7 @@
 /** Adapts bash-style heredocs and inline Python scripts with complex quotes for reliable execution under PowerShell (both pwsh 7+ and Windows PowerShell 5.1). Windows PowerShell unescapes/strips quotes when passing arguments to native binaries (like python.exe), causing `SyntaxError: unterminated string literal`. Bash heredocs (`<<'EOF'`) also fail under PowerShell's parser. Carrying heredoc bodies as UTF-8 base64 and inline Python `-c` scripts as UTF-8 hex bypasses shell argument parsing and delivers byte-for-byte exact script text: a heredoc body is decoded and piped into its command (`[System.Text.Encoding]::UTF8.GetString(...) | <cmd>`) or written to its file, and a `-c` script goes to a `-c` loader that decodes and runs it, so its arguments and stdin stay as they were. Every rewritten Python call reads and writes its standard streams in UTF-8, and the result reads and writes the same bytes under Windows PowerShell 5.1, whose file cmdlets and $OutputEncoding otherwise use the ANSI code page and ASCII. A double-quoted `-c` script is encoded at run time from the PowerShell string it is, so PowerShell still expands it, and only top-level code is rewritten, never text inside a string, here-string or comment. */
 
+import { quotePowershellPath } from './process_util.js'
+
 /** Matches the line that opens a bash heredoc, `<cmd> <<[-]?'DELIM' [rest of line]`, preceded by start of command, newline, semicolon, &&, or ||. Its body and closing line are the ones layoutPowerShell found for that `<<`. */
 // eslint-disable-next-line regexp/no-super-linear-backtracking
 const HEREDOC_RE = /(?:^|(?<=[;\r\n]|&&|\|\|))\s*([^\r\n;&|<]+?)\s*<<(-?)[ \t]*(['"]?)([A-Za-z0-9_]+)\3([^\r\n]*?)(?=\r?\n)/g
@@ -231,6 +233,23 @@ function splitFirstPipeline(command: string): [string, string] {
 
 type HeredocTarget = { kind: 'pipe'; command: string } | { kind: 'stdout' } | { kind: 'file'; append: boolean; path: string }
 
+// A bare redirect word with no character PowerShell or bash would read as code, a quote or a pattern ($, a backtick, parentheses, braces, a quote of any kind, a glob character, a space) and no leading `-`, `@` or `#`.
+const BARE_REDIRECT_PATH_RE = /^[^\s>|;&<(){}$`'"@#*?[\u2018-\u201E-][^\s>|;&<(){}$`'"*?[\u2018-\u201E]*$/
+
+// What a quoted redirect word must not hold between its quotes, or bash and PowerShell read different text: a quote of its own kind (PowerShell also ends a string at a curly quote, and reads a doubled quote as one), and in double quotes a backtick or a backslash before a backslash or `$`, escapes the two shells read differently.
+const SINGLE_QUOTED_UNSAFE_RE = /['\u2018-\u201B]/
+const DOUBLE_QUOTED_UNSAFE_RE = /["\u201C-\u201E`]|\\[\\$]/
+
+// The PowerShell string a `cat >` redirect word names its file with, or null for a word this adapter does not read the way bash does, which is then left as written. A quoted word keeps its own quotes; a bare word goes in single quotes, so nothing in it runs as code.
+function redirectPath(word: string): string | null {
+  const quote = word[0]
+  if (quote === "'" || quote === '"') {
+    const body = word.length >= 2 && word.endsWith(quote) ? word.slice(1, -1) : null
+    return body !== null && !(quote === "'" ? SINGLE_QUOTED_UNSAFE_RE : DOUBLE_QUOTED_UNSAFE_RE).test(body) ? word : null
+  }
+  return BARE_REDIRECT_PATH_RE.test(word) ? quotePowershellPath(word) : null
+}
+
 // Where a heredoc body goes, or null for a form this adapter does not recognize, which is then left as written rather than half rewritten. `cat` writes to standard output, `cat > f` and `cat >> f` to a file, and `cat | cmd` pipes the body straight into cmd.
 function heredocTarget(prefix: string, suffix: string): HeredocTarget | null {
   const target = `${prefix.trim()} ${suffix.trim()}`.trim()
@@ -244,17 +263,17 @@ function heredocTarget(prefix: string, suffix: string): HeredocTarget | null {
       const command = rest.slice(1).trim()
       return command ? { kind: 'pipe', command } : null
     }
-    const redirect = /^(>>?)\s*("[^"]*"|'[^']*'|[^\s>|;&<'"]+)$/.exec(rest)
-    if (!redirect) return null
-    return { kind: 'file', append: redirect[1] === '>>', path: redirect[2] as string }
+    const redirect = /^(>>?)\s*([^\s>].*)$/s.exec(rest)
+    const path = redirect ? redirectPath(redirect[2] as string) : null
+    return redirect && path !== null ? { kind: 'file', append: redirect[1] === '>>', path } : null
   }
   return /^[\w.:/\\-]+(?:\s|$)/.test(target) ? { kind: 'pipe', command: target } : null
 }
 
-// The PowerShell statement that delivers a heredoc's text to its target. A file gets exactly the bytes bash writes, in UTF-8 with no BOM, through [IO.File] rather than Set-Content or Add-Content, which write the ANSI code page under Windows PowerShell 5.1 and end the file with CRLF; the path is read as the cmdlet's argument would have been and resolved against PowerShell's location, not .NET's current directory. A bare `cat` writes the same bytes to standard output, since Write-Output prints in the console code page under both shells ("é" came out as 0x82). A body is piped into its command under a UTF-8 $OutputEncoding, and into Python with UTF-8 standard streams, and an empty body pipes in nothing at all.
+// The PowerShell statement that delivers a heredoc's text to its target. A file gets exactly the bytes bash writes, in UTF-8 with no BOM, through [IO.File] rather than Set-Content or Add-Content, which write the ANSI code page under Windows PowerShell 5.1 and end the file with CRLF; the path is the string redirectPath made of the redirect word, resolved against PowerShell's location, not .NET's current directory. A bare `cat` writes the same bytes to standard output, since Write-Output prints in the console code page under both shells ("é" came out as 0x82). A body is piped into its command under a UTF-8 $OutputEncoding, and into Python with UTF-8 standard streams, and an empty body pipes in nothing at all.
 function heredocStatement(target: HeredocTarget, text: string): string {
   if (target.kind === 'file') {
-    const path = `$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath((Write-Output ${target.path}))`
+    const path = `$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(${target.path})`
     return `[System.IO.File]::${target.append ? 'AppendAllText' : 'WriteAllText'}(${path}, ${utf8TextExpression(text)}, [System.Text.UTF8Encoding]::new($false))`
   }
   if (target.kind === 'stdout') return `[System.Console]::OpenStandardOutput().Write([System.Convert]::FromBase64String('${Buffer.from(text, 'utf8').toString('base64')}'), 0, ${Buffer.byteLength(text, 'utf8')})`
