@@ -76,14 +76,14 @@ export function _applyFiltersAndPrint(
   if (opts.section !== undefined) {
     const sectionResult = extractSection(content, opts.section)
     if (sectionResult === null) {
-      throw new CliError(`section '${opts.section}' not found`)
+      throw new CliError(`section ${quotedArg(opts.section)} not found`)
     }
     // Said as a refusal, like `section` on a duplicated heading: printing the first match alone reads as the only one.
     if (sectionResult.occurrences !== undefined) {
       const picks = sectionResult.occurrences.slice(0, AMBIGUOUS_HEADING_LIMIT).map((line, i) => `line ${line} -> --section ${quotedArg(`${opts.section}#${i + 1}`)}`)
       const more = sectionResult.occurrences.length - AMBIGUOUS_HEADING_LIMIT
       if (more > 0) picks.push(`${more} more not shown`)
-      throw new CliError(`Ambiguous heading '${opts.section}': ${countNoun(sectionResult.occurrences.length, 'heading')} match. Retry with one of: ${picks.join('; ')}`)
+      throw new CliError(`Ambiguous heading ${quotedArg(opts.section)}: ${countNoun(sectionResult.occurrences.length, 'heading')} match. Retry with one of: ${picks.join('; ')}`)
     }
     content = sectionResult.content
     // -n numbers stay in the stored output's own coordinates, as they are without --section.

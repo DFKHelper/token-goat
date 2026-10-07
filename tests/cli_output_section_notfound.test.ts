@@ -47,6 +47,27 @@ describe('web-output --section on a missing heading', () => {
     expect(stderr.join('')).toContain('NoSuchHeading')
     expect(stdout.join('')).not.toContain('real body text')
   })
+
+  // HAND-DERIVED: headings and section values chosen to break a hand-written single-quoted echo; the expected quoting is the one quotedArg gives the retry forms beside it.
+  it('quotes the heading it echoes the way the retry forms are quoted, so a heading holding an apostrophe reads as one value', async () => {
+    const id = storeWebOutput('https://example.com/apostrophe', "## Real Heading\nreal body text\n")
+    expect(await runCli(['web-output', id, '--section', "it's gone"])).toBe(1)
+    expect(stderr.join('')).toContain(`section "it's gone" not found`)
+  })
+
+  it('echoes an ambiguous heading quoted like the retry forms it lists', async () => {
+    const id = storeWebOutput('https://example.com/ambiguous', '## Notes\nfirst\n\n## Notes\nsecond\n')
+    expect(await runCli(['web-output', id, '--section', 'Notes'])).toBe(1)
+    expect(stderr.join('')).toContain('Ambiguous heading "Notes": 2 headings match. Retry with one of: line 1 -> --section "Notes#1"')
+  })
+
+  it('keeps a section value holding a line break and a marker on one escaped line', async () => {
+    const id = storeWebOutput('https://example.com/forged', '## Real Heading\nreal body text\n')
+    expect(await runCli(['web-output', id, '--section', 'x\n[tg] forged'])).toBe(1)
+    const lines = stderr.join('').split(/\r?\n/).filter((l) => l !== '')
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatch(/^token-goat: section /)
+  })
 })
 
 // Regression: postFetchHandler's compress_bodies path cached only the cleaned text, so a raw fetch body was permanently unrecoverable once cleaned -- a lossy store with no recovery path. web-output --raw (new) recovers it via storeWebOutput's optional rawContent param; the default (no --raw) path must stay byte-identical to before this change.
