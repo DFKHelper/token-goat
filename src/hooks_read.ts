@@ -10,7 +10,7 @@ import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavin
 import { preToolPathDeclined } from './vscode_path_gate.js'
 import { detectHarness } from './bridges/registry.js'
 import { readHintCrossesRule } from './rewrite_permission.js'
-import { leadWithCommand, docNavigation, fencedCommand, fileSubject, quotedArg, quotedArgs, configGetCommand, sentenceStart } from './hint_suggestion_guard.js'
+import { leadWithCommand, docNavigation, fencedCommand, fileSubject, nameSubject, quotedArg, quotedArgs, configGetCommand, sentenceStart, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { headingTreeParts, hintTarget, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
 import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, displaySafeText, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
@@ -343,7 +343,7 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
       try {
         const indexed = querySymbols({ filePath, name: sym, limit: 1 })[0]
         if (indexed !== undefined && isLargeSymbolSpan(indexed.lineStart, indexed.lineEnd, filePath)) {
-          return `\`${sym}\` spans ${indexed.lineEnd - indexed.lineStart + 1} lines -- use \`token-goat grep ${quotedArgs('<pattern>', filePath).join(' ')} -C 15 --symbol\` for a slice inside it, or \`token-goat scope ${quotedArg(`${filePath}:${indexed.lineStart}`)}\` to confirm the enclosing symbol.`
+          return `${sentenceStart(nameSubject('symbol', sym))} spans ${indexed.lineEnd - indexed.lineStart + 1} lines -- use \`token-goat grep ${quotedArgs('<pattern>', filePath).join(' ')} -C 15 --symbol\` for a slice inside it, or \`token-goat scope ${quotedArg(`${filePath}:${indexed.lineStart}`)}\` to confirm the enclosing symbol.`
         }
       } catch {
         // The index is advisory; retain the plain read recommendation when it is unavailable.
@@ -355,12 +355,13 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
   }
 }
 
-// Escapes `\` and `"` first because the name is interpolated inside a double-quoted suggested command, then checks displaySafeText(quoted) against the pre-escape string: if it still differs, the name is shaped like token-goat's own voice (a `[tg]`/`[token-goat:` marker) or hides a control character, and escaping alone would trade a forged marker for a suggested command that can't run -- `token-goat section`/`token-goat read` compare names literally, without HTML-decoding, so an escaped `&#91;tg]` heading or symbol never resolves -- so such a name is dropped entirely, keeping the line both attributable and runnable; an ordinary name (a quote, a backslash) survives unchanged and displaySafeText is still applied to whatever is kept, as a defence-in-depth backstop for a future caller that bypasses this filter.
-/** Renders an indexed symbol/heading/key name safe to interpolate into a hint's own quoted argument, or '' when it cannot be: backslashes and double quotes are escaped, and anything displaySafeText would rewrite (a token-goat marker, a control character) is refused outright rather than shipped on the context channel, which does not fence its payload the way the deny channel does. */
+// A name displaySafeText would rewrite is shaped like token-goat's own voice (a `&#91;tg]`/`&#91;token-goat:` marker) or hides a control character, and escaping it would trade a forged marker for a suggested command that can't run -- `token-goat section`/`token-goat read` compare names literally, without HTML-decoding, so an escaped `&#91;tg]` heading or symbol never resolves -- so such a name is dropped entirely. Nothing is escaped by hand: quotedArg picks the quote mark, and a `"` escaped here first reached the command as a literal backslash inside the single quotes quotedArg then chose, naming a heading the file does not have.
+/** Renders an indexed symbol/heading/key name safe to name in a hint, as a command's quoted argument or in the hint's own words, or '' when it cannot be: anything displaySafeText would rewrite (a token-goat marker, a control character) is refused outright rather than shipped on the context channel, which does not fence its payload the way the deny channel does, and so is a name the relay's guard would drop from a command: a backtick (which also pairs with a command's fence when the name is listed in prose), `$(`, or a value no quote mark holds. */
 function escapeHintName(name: string): string {
-  const quoted = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-  const safe = displaySafeText(quoted)
-  return safe !== quoted ? '' : safe.trim()
+  const trimmed = name.trim()
+  if (trimmed === '' || displaySafeText(trimmed) !== trimmed) return ''
+  const probe = 'token-goat read ' + quotedArg(trimmed)
+  return stripUnsafeSuggestions(probe) === probe ? trimmed : ''
 }
 
 /** True when a symbol spanning `lineStart`-`lineEnd` is too big to recommend for a whole-body `read "file::Symbol"`: more than LARGE_SYMBOL_LINE_THRESHOLD lines, or more than half of `filePath`'s own line count. Shared by every hint site that names a real indexed symbol, so a whole-body read is never pointed at a symbol that would just hand back nearly the whole file under a symbol-shaped name. */
@@ -427,7 +428,7 @@ export function realSymbolReadHint(filePath: string, shown: string, range?: { st
   if (isLargeSymbolSpan(top.lineStart, top.lineEnd, filePath)) {
     const line = range !== undefined ? range.start : top.lineStart
     const span = top.lineEnd - top.lineStart + 1
-    return '`token-goat grep ' + quotedArgs('<pattern>', shown).join(' ') + ' -C 15 --symbol` for a slice inside `' + top.name + '` (' + span + ' lines), or `token-goat scope ' + quotedArg(shown + ':' + line) + '` to confirm the enclosing symbol'
+    return '`token-goat grep ' + quotedArgs('<pattern>', shown).join(' ') + ' -C 15 --symbol` for a slice inside ' + nameSubject('symbol', top.name) + ' (' + span + ' lines), or `token-goat scope ' + quotedArg(shown + ':' + line) + '` to confirm the enclosing symbol'
   }
   const names = candidates.map((s) => s.name).slice(0, 3)
   const rest = names.length > 1 ? ' (or: ' + names.slice(1).join(', ') + ')' : ''

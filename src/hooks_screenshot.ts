@@ -4,6 +4,7 @@ import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { getToolName, getToolInput, passOutput, denyOutput } from './hooks_common.js'
 import { loadConfig } from './config.js'
+import { nameSubject, sentenceStart } from './hint_suggestion_guard.js'
 
 /** Matches any MCP screenshot tool by name, e.g. `mcp__chrome-devtools-mcp_chrome-devtools__take_screenshot` (chrome-devtools-mcp) or `mcp__plugin_playwright_playwright__browser_take_screenshot` (Microsoft's `@playwright/mcp`), or `mcp__some-mcp-server_puppeteer__puppeteer_screenshot` (any tool ending in "screenshot"). Pattern matches any MCP tool ending in "screenshot" (case-insensitive) to catch all naming conventions. */
 const SCREENSHOT_TOOL_RE = /^mcp__.*screenshot$/i
@@ -33,7 +34,7 @@ function preScreenshotHandler(event: HookEvent): HookOutput {
 
   const paramName = PLAYWRIGHT_SCREENSHOT_RE.test(toolName) ? 'filename' : 'filePath'
   return denyOutput(
-    `${toolName} was called with no destination file, so the screenshot would land raw in context (tens of thousands of tokens). Re-issue it with \`${paramName}\` set to an absolute path, then Read the saved file — the read is automatically compressed by token-goat's image-shrink pipeline.`,
+    `${sentenceStart(nameSubject('tool', toolName))} was called with no destination file, so the screenshot would land raw in context (tens of thousands of tokens). Re-issue it with \`${paramName}\` set to an absolute path, then Read the saved file — the read is automatically compressed by token-goat's image-shrink pipeline.`,
   )
 }
 

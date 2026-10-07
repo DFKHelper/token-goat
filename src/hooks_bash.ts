@@ -2,7 +2,7 @@
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { leadWithCommand, docSectionHint, quotedArg, quotedArgs, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { leadWithCommand, docSectionHint, fileSubject, nameSubject, quotedArg, quotedArgs, sentenceStart, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { contextOutput, denyOutput, passOutput, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import type { HookOutput } from './types.js'
@@ -293,8 +293,9 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     // extractToolResultsFile only validates the trailing `tool-results/<safe-id>.txt` suffix, so everything before it is arbitrary and repository-shaped; displaySafePath at derivation matches every other path this handler puts on the context channel.
     const outPath = displaySafePath(toolResults.path)
     recordStat('session_hint', 0, 0)
+    const recall = 'token-goat bash-output --file ' + quotedArg(outPath)
     return contextOutput(
-      'Tool output ' + outPath + ' is a plain-text artifact. Use `token-goat bash-output --file ' + quotedArg(outPath) + '` to read it with surgical narrowing via `--grep PATTERN` or `--tail N`, instead of reading the whole file.',
+      sentenceStart(fileSubject(recall, outPath)) + ' is a plain-text tool-output artifact. Use `' + recall + '` to read it with surgical narrowing via `--grep PATTERN` or `--tail N`, instead of reading the whole file.',
     )
   }
 
@@ -341,7 +342,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     const target = filePath ? displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath) : '<file>'
     return pathHint(filePath ? [target] : [],
-      `token-goat available for this file type, consider \`token-goat xml-query ${quotedArgs(target, '<xpath>').join(' ')}\` or \`token-goat xml-outline ${quotedArg(target)}\` first instead of terminal XML parsing (${toolOrScript}).`,
+      `token-goat available for this file type, consider \`token-goat xml-query ${quotedArgs(target, '<xpath>').join(' ')}\` or \`token-goat xml-outline ${quotedArg(target)}\` first instead of terminal XML parsing (${nameSubject('tool', toolOrScript)}).`,
     )
   }
 
@@ -664,7 +665,10 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       clearCurlDownload(curlDl.url)
     } else if (prevPath !== null && prevOnDisk !== null && statSync(prevOnDisk).size >= loadConfig().hints.bash_dedup_min_bytes) {
       recordStat('session_hint', 0, 0)
-      return denyOutput(leadWithCommand(sliceCommand(prevPath, targetFor(prevPath)), 'to read a part of it, or `rg \'<pattern>\' ' + quotedArg(displaySafePath(prevPath)) + '` to search it', 'Already downloaded to ' + prevPath + ' earlier this session.'))
+      const shownPrev = displaySafePath(prevPath)
+      const read = sliceCommand(shownPrev, targetFor(prevPath))
+      const search = 'rg \'<pattern>\' ' + quotedArg(shownPrev)
+      return denyOutput(leadWithCommand(read, 'to read a part of it, or `' + search + '` to search it', sentenceStart(fileSubject(read + search, shownPrev, prevPath)) + ' was already downloaded earlier this session.'))
     }
   }
 
@@ -734,7 +738,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       notes.push('You already ran this exact `token-goat ' + tgRead.sub + '` query earlier this session — check your context above before re-running it.')
     }
     if (tgRead.filePath !== null && wasFileReadThisSession(tgRead.filePath)) {
-      notes.push('`' + tgRead.filePath + '` was already fully read via the Read tool this session — that content may already cover this.')
+      notes.push(sentenceStart(fileSubject('', displaySafePath(tgRead.filePath))) + ' was already fully read via the Read tool this session — that content may already cover this.')
     }
     if (notes.length > 0) {
       recordStat('session_hint', 0, 0)

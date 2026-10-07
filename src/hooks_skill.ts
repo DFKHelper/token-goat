@@ -22,7 +22,7 @@ import { OUTLINE_MIN_HEADINGS, OUTLINE_MAX_REPLACEMENT_RATIO } from './fold_stru
 import { fenceUntrustedFileContent } from './injection_scan.js';
 import { hintTarget } from './hint_target.js';
 import { displaySafeText } from './paths.js';
-import { quotedArg } from './hint_suggestion_guard.js';
+import { nameSubject, quotedArg, sentenceStart } from './hint_suggestion_guard.js';
 
 const OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES = 6000;
 
@@ -109,6 +109,7 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
     const { skillName } = ctx;
     // The name comes from the model's tool input (`skill`, or `command` when that is absent), so every suggested command carries it as one quoted argument.
     const nameArg = quotedArg(skillName);
+    const skillSubject = sentenceStart(nameSubject('skill', skillName));
 
     if (!loadConfig().hints.pre_skill_advisory) {
       return passOutput();
@@ -121,7 +122,7 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
       const denyCredit = cachedBytes !== null ? Math.min(cachedBytes, PER_FILE_COUNTERFACTUAL_CEILING) : 0;
       recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit), undefined, 'skill-reload-deny');
       return denyOutput(
-        'Skill `' + skillName + '` was already loaded this session and is cached. Use `token-goat skill-section ' +
+        skillSubject + ' was already loaded this session and is cached. Use `token-goat skill-section ' +
           nameArg + ' ' + skillSectionArg(await harnessSkillPath(event, skillName)) + '` to recall a section, `token-goat skill-body ' +
           nameArg + ' --compact` to recall the compact slice, or `token-goat skill-body ' + nameArg +
           '` for the full body instead of re-loading it.',
@@ -144,7 +145,7 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
               const savedBytes = bodyBytes - compactBytes;
               recordStat('skill_compact_inlined', savedBytes, savedTokensFromBytes(savedBytes));
               return denyOutput(
-                'Skill `' + skillName + '` is large (' + bodyBytes + ' bytes); its compact slice (' + compactBytes +
+                skillSubject + ' is large (' + bodyBytes + ' bytes); its compact slice (' + compactBytes +
                   ' bytes) is inlined below instead of the full body. For a specific section, run `token-goat skill-section ' + nameArg +
                   ' ' + skillSectionArg(sourcePath, body) + '`, or `token-goat skill-body ' + nameArg + '` if you need the full body.\n\n' + compact,
               );
@@ -159,7 +160,7 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
             // `marker=` carries the authoring signal the merge would otherwise bury: an unusable slice is a fixable marker placement, a missing one is a skill that never opted in, and both now land under the same kind.
             recordStat('skill_heading_tree_inlined', savedBytes, savedTokensFromBytes(savedBytes), undefined, 'skill=' + skillName + ' marker=' + (compact !== null ? 'unusable' : 'none'));
             return denyOutput(
-              'Skill `' + skillName + '` is large (' + bodyBytes + ' bytes)' +
+              skillSubject + ' is large (' + bodyBytes + ' bytes)' +
                 (compact !== null ? ', and its compact slice is too large to inline; ' : ' with no compact slice; ') + tree.phrase +
                 ' Use `token-goat skill-section ' + nameArg + ' ' + skillSectionArg(sourcePath, body) + '` to load a specific section' +
                 (compact !== null ? ', `token-goat skill-body ' + nameArg + ' --compact` to load the compact slice' : '') +
@@ -171,7 +172,7 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
             // Too little structure to map and a slice too large to inline: the pointer is all that is left, and it is still better than the whole body. Without a marker this falls through to the normal load instead, exactly as before -- there is nothing to point at.
             recordStat('skill_oversized_first_load');
             return denyOutput(
-              'Skill `' + skillName + '` is large (' + bodyBytes +
+              skillSubject + ' is large (' + bodyBytes +
                 ' bytes) and has a compact slice available. Use `token-goat skill-section ' + nameArg +
                 ' ' + skillSectionArg(sourcePath, body) + '` to load a specific section, `token-goat skill-body ' + nameArg +
                 ' --compact` to load the compact slice, or `token-goat skill-body ' + nameArg + '` for the full body.',

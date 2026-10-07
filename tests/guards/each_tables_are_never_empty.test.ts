@@ -60,6 +60,11 @@ const EXEMPT: readonly Exemption[] = [
     reason: 'scopes is the direct return value of pinnedPopulation(), which fails on an empty or under-10 population before this table is used.',
   },
   {
+    file: 'tests/guards/hook_prose_names_are_quoted.test.ts',
+    table: 'FILES',
+    reason: 'FILES is the direct return value of pinnedPopulation(), which fails on an empty or under-25 population, or one missing any of five named hook files, before this table is used.',
+  },
+  {
     file: 'tests/guards/installer_writes_are_always_backed_up.test.ts',
     table: 'population',
     reason: 'population is the direct return value of pinnedPopulation(), which fails on an empty or under-30 population before this table is used.',

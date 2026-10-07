@@ -4032,6 +4032,26 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       }
     })
 
+    // Regression: escapeHintName escaped `"` as `\"` before quotedArg chose single quotes for the name, so a heading holding a double quote was listed and suggested with a backslash the file does not have, and a heading holding a lone backtick was listed in the hint's prose, where it paired with the fence of the command beside it. HAND-DERIVED: the headings are built from the two characters alone.
+    it('lists a heading holding a double quote as written and leaves out one holding a backtick', () => {
+      const hintFor = (heading: string): string => {
+        const p = path.join(os.tmpdir(), `tg-indexed-quoted-heading-${process.pid}-${Math.random().toString(36).slice(2)}.md`)
+        fs.writeFileSync(p, `# ${heading}\n\n` + 'x'.repeat(150 * 1024))
+        tmpFiles.push(p)
+        indexFileSync(normalizePath(p), globalDbPath())
+        indexedFiles.push(p)
+        const result = preReadHandler(readEvent(p))
+        expect(result.hookType).toBe('context')
+        return result.hookType === 'context' ? result.context : ''
+      }
+      const quoted = hintFor('Say "hi"')
+      expect(quoted).toContain('Say "hi"')
+      expect(quoted).not.toContain('\\"')
+      const backtick = hintFor('Use `x')
+      expect(backtick).not.toContain('Use `x')
+      expect(backtick).toContain('::HeadingName')
+    })
+
     // Regression (cap-before-predicate): surgicalHint's index-backed branches queried `limit: 3` and only then dropped the names escapeHintName refuses, so the cap decided which symbols the drop could ever consider. Three unusable labels at the top of a file exhausted the window and the hint fell back to the generic `::SymbolName` placeholder even though the file went on to hold perfectly good ones. The sibling branch -- the one that runs when the file's content is already in hand -- filters first and slices to 3 after; the two are meant to produce the same hint from the same file. Terraform is the fixture for the same reason as the test below: `.tf` reaches the generic `else` branch with no outline branch ahead of it, and a resource label is a real vector for a marker character. HAND-DERIVED: three marker-bearing labels is one more than the retired cap could see past, computed from that cap's own value rather than from this fix's output.
     it('names a clean indexed symbol that sits past three unusable ones', () => {
       const p = path.join(os.tmpdir(), `tg-indexed-symbol-past-cap-${process.pid}-${Math.random().toString(36).slice(2)}.tf`)

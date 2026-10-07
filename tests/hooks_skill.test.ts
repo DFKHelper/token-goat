@@ -196,6 +196,14 @@ describe('preSkillHandler — duplicate-load advisory', () => {
     }
   });
 
+  // The deny names the skill through nameSubject, quoted as its commands quote it, rather than as 'Skill `' + skillName + '`', where a backtick in the name would close the fence. safeSkillName (src/skill_cache.ts) keeps every name that reaches a deny to [A-Za-z0-9_:-] today, so this pins the form; tests/guards/hook_prose_names_are_quoted.test.ts pins the rule. HAND-DERIVED.
+  it('names the skill in its own words the way its commands quote it', async () => {
+    await runHook(skillPostEvent('my-skill:x', 'Body.', 'sess-name'));
+    const pre = await runHook(skillPreEvent('my-skill:x', 'sess-name'));
+    expect(pre.hookType).toBe('deny');
+    if (pre.hookType === 'deny') expect(pre.message).toContain('Skill "my-skill:x" was already loaded this session');
+  });
+
   // Regression: a denied re-load genuinely blocks the cached body from reaching the model (same shape as hooks_read.ts's read_count_deny), so the session_hint stat it records should credit those bytes, not the (0, 0) default a bare `recordStat('session_hint')` call produces. Pre-fix this delta is 0; post-fix it equals the cached body's byte size.
   it('credits the blocked body bytes on the duplicate-load deny, not zero', async () => {
     const body = 'Body for ollama.';

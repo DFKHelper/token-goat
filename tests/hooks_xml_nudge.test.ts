@@ -134,7 +134,7 @@ describe('XML, DTSX, AMPKG, XAML runtime recognition & terminal XML interception
       expect(out.context).toContain('token-goat available for this file type')
       expect(out.context).toContain('token-goat xml-query "package.dtsx" "<xpath>"')
       expect(out.context).toContain('token-goat xml-outline "package.dtsx"')
-      expect(out.context).toContain('(Select-Xml)')
+      expect(out.context).toContain('(tool "Select-Xml")')
     })
 
     it('warns on scratch PowerShell inspect scripts', () => {

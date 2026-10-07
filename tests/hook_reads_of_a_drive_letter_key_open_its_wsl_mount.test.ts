@@ -160,7 +160,8 @@ describe('a hook reading the file behind a drive-letter key opens it where the h
     await asHook(sid, () => postBashHandler(bashEvent(sid, 'post_tool_use', command)))
     const again = await asHook(sid, () => preBashHandler(bashEvent(sid, 'pre_tool_use', command)))
     expect(again.hookType).toBe('deny')
-    expect(text(again)).toContain(`Already downloaded to ${HOST_PROJECT}/out.json`)
+    expect(text(again)).toContain(`rg '<pattern>' "${HOST_PROJECT}/out.json"`)
+    expect(text(again)).toContain('This file was already downloaded earlier this session.')
   })
 
   // Not a miss the fix repairs but one it could open: the gate asked about the typed `q:/outside/secret.log`, which POSIX resolves inside the workspace, while the handler now opens the mount, which is outside it. The gate may still look inside the workspace at the typed spelling, so only the mount's file counts.

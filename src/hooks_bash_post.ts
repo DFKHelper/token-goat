@@ -16,7 +16,7 @@ import { loadConfig } from './config.js'
 import { deliveredOutputBytes, clipToDeliveryCap } from './delivery_cap.js'
 import { foldDelivery, foldingEnabled, type FoldRow } from './fold_delivery.js'
 import { isStructuralRewriteAccepted, planMarkdownOutline, planSourceSkeleton } from './fold_structure.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { fileSubject, quotedArg } from './hint_suggestion_guard.js'
 import { foldDetail, type BodyFold } from './code_fold.js'
 import { redactSecrets } from './secret_redact.js'
 import { findProject } from './project.js'
@@ -269,7 +269,7 @@ async function maybeCollapseIdenticalRead(
 
   const pointer = identical
     ? '[token-goat] Identical to an earlier run of this command in this session; the file has not changed since. ' + originalBytes + ' bytes withheld -- recall them with `token-goat bash-output ' + containerId + ' --full`.'
-    : '[token-goat] These ' + originalBytes + ' bytes already appear verbatim inside a wider read of ' + filePath + ' served earlier in this session. Withheld -- recall the full earlier output with `token-goat bash-output ' + containerId + ' --full`.'
+    : '[token-goat] These ' + originalBytes + ' bytes already appear verbatim inside a wider read of ' + fileSubject('', displaySafePath(filePath)) + ' served earlier in this session. Withheld -- recall the full earlier output with `token-goat bash-output ' + containerId + ' --full`.'
   if (!isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(pointer, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })) return null
   // Deliberately NOT recordBashRerun() here, unlike the delta path below. That call marks the earlier run as safe for the compaction manifest to drop, which is right when a newer *full* copy has superseded it. Here the newer copy is a pointer, so dropping the earlier one would strand this pointer and leave the transcript with neither the body nor a duplicate of it. The earlier full copy is precisely what this rewrite is pointing at, so it must stay. Priced against the delivered size, not the original: the harness truncates a Bash result before the model sees it, so collapsing an oversized body spares at most the delivered slice. See deliveredOutputBytes in src/delivery_cap.ts. The worthwhile gate above deliberately stays on the uncapped bytes -- this is an accounting correction, not a change to which rewrites ship.
   return emitRewrite(pointer, identical ? 'identical file re-read collapsed' : 'already-served file lines collapsed', { kind: identical ? 'bash_compress:identical-reread' : 'bash_compress:contained-reread', originalBytes: deliveredOutputBytes(originalBytes) })
