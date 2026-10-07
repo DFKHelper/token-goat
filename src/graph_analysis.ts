@@ -112,7 +112,7 @@ export function runContextFor(opts: ContextForOptions): number {
     const bodyTokens = estimateTokens(h.body ?? '')
     if (budget !== undefined && tokensSoFar + bodyTokens > budget) continue
     tokensSoFar += bodyTokens
-    entries.push({ file: h.filePath, symbol: h.name, kind: h.kind, line: h.lineStart, readCmd: `token-goat read ${quotedArg(`${h.filePath}::${h.name}@${h.lineStart}`)}` })
+    entries.push({ file: h.filePath, symbol: h.name, kind: h.kind, line: h.lineStart, readCmd: `token-goat read ${quotedArg(`${displaySafeText(h.filePath)}::${displaySafeText(h.name)}@${h.lineStart}`)}` })
   }
 
   const skippedByBudget = hits.length - entries.length

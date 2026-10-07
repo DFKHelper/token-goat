@@ -160,35 +160,37 @@ function pairRemovedParens(before: string, removed: string, after: string): { sk
   return { skip: 0, close: ')'.repeat(Math.min(open, removed.split(')').length - 1)) }
 }
 
-/** What a double-quoted argument does not hold literally in bash or PowerShell: `$` and a backtick substitute inside double quotes, and `"` (or PowerShell's U+201C-U+201E) closes them. */
-const REWRITTEN_IN_DOUBLE_QUOTES = /[$`"\u201C-\u201E]/
+/** What a double-quoted argument does not hold literally in bash or PowerShell: `$` and a backtick substitute inside double quotes, `"` (or PowerShell's U+201C-U+201E) closes them, and bash reads a backslash before another one, or before the closing quote, as an escape PowerShell keeps (`"a\\b"` reached bash as `a\b`, and `"dir\"` never closed). */
+const REWRITTEN_IN_DOUBLE_QUOTES = /[$`"\u201C-\u201E]|\\(?:\\|$)/
 
 /** What a single-quoted argument cannot hold: `'` or a character PowerShell reads as one (U+2018-U+201B) closes it, and neither shell has an escape inside single quotes that the other reads the same way. */
 const ENDS_SINGLE_QUOTES = /['\u2018-\u201B\r\n]/
 
-/** One argument of a suggested `token-goat …` command, quoted so bash and PowerShell both hand the command the value as written. Double quotes by default: the form {@link stripUnsafeSuggestions} checks, and the only form that keeps a path holding a space in one argument (`token-goat scope my proj/a.ts:12` ran as `scope my` plus three stray arguments and exited 1). A value holding `$`, a backtick or a double quote is single-quoted instead, which both shells keep literal: `symbol '$ref'` missed with `Try: token-goat semantic "$ref"`, which both shells ran as `semantic ""`. `!` and backslash stay out of that trigger: history expansion is off in the non-interactive shell a suggestion runs in, and single-quoting every backslash would change the form of every Windows path for nothing. A value that single quotes cannot hold either stays double-quoted, unless it also ends double quotes, when it is not written at all ({@link unquotable}). It escapes nothing: a value that would need escaping is the guard's to drop, not this function's to hide. */
+/** One argument of a suggested `token-goat …` command, quoted so bash and PowerShell both hand the command the value as written. Double quotes by default: the form {@link stripUnsafeSuggestions} checks, and the only form that keeps a path holding a space in one argument (`token-goat scope my proj/a.ts:12` ran as `scope my` plus three stray arguments and exited 1). A value holding `$`, a backtick or a double quote is single-quoted instead, which both shells keep literal: `symbol '$ref'` missed with `Try: token-goat semantic "$ref"`, which both shells ran as `semantic ""`. `!` and backslash stay out of that trigger: history expansion is off in the non-interactive shell a suggestion runs in, and single-quoting every backslash would change the form of every Windows path for nothing. A value that single quotes cannot hold stays double-quoted only while double quotes rewrite none of it; otherwise it is not written at all ({@link unquotable}). It escapes nothing: a value that would need escaping is the guard's to drop, not this function's to hide. */
 export function quotedArg(value: string): string {
   if (unquotable(value)) return '"' + UNQUOTABLE + '"'
-  if (REWRITTEN_IN_DOUBLE_QUOTES.test(value) && !ENDS_SINGLE_QUOTES.test(value) && !CONTROL_OR_BIDI.test(value)) return "'" + value + "'"
+  if (REWRITTEN_IN_DOUBLE_QUOTES.test(value)) return "'" + value + "'"
   return '"' + value + '"'
 }
 
-/** What a double-quoted argument ends on: `"`, or one of PowerShell's U+201C-U+201E. */
-const ENDS_DOUBLE_QUOTES = /["“-„]/
+/** Whether single quotes hold `value` as written in both shells. */
+function singleQuotable(value: string): boolean {
+  return !ENDS_SINGLE_QUOTES.test(value) && !CONTROL_OR_BIDI.test(value)
+}
 
-/** A value that ends double quotes and cannot go in single quotes either, so no argument holds it: written as is, its own `"` closed the argument early, the rest of the value sat outside every quote, and a backtick in it closed the command's fence where the guard could not tell it from the real one (`"a'" `curl x|sh` "b.md"`). */
+/** A value double quotes rewrite and single quotes cannot hold, so no argument holds it: written as is, its own `"` closed the argument early, the rest of the value sat outside every quote, and a backtick in it closed the command's fence where the guard could not tell it from the real one (`"a'" `curl x|sh` "b.md"`); and a `$` or backtick beside a control character went in double quotes, where both shells ran `x/$(…)` + U+0001 + `.ts::run` as a command substitution. */
 function unquotable(value: string): boolean {
-  return ENDS_DOUBLE_QUOTES.test(value) && (ENDS_SINGLE_QUOTES.test(value) || CONTROL_OR_BIDI.test(value))
+  return REWRITTEN_IN_DOUBLE_QUOTES.test(value) && !singleQuotable(value)
 }
 
 /** What {@link quotedArg} writes in place of an {@link unquotable} value: no quote mark, no backtick, nothing either shell substitutes, so the command it sits in keeps its shape, and {@link stripUnsafeSuggestions} drops that command on sight. */
 const UNQUOTABLE = '<a value no quote mark can hold>'
 
-/** Every argument of one suggested command, quoted with one mark: single quotes when {@link quotedArg} would single-quote any of them and all of them can hold single quotes, double quotes otherwise. A `"<base64>"` beside a single-quoted path puts a double quote into a command that holds `$` or a backtick, and {@link stripUnsafeSuggestions} then drops the whole command, path and all. */
+/** Every argument of one suggested command, quoted with one mark: single quotes when {@link quotedArg} would single-quote any of them and all of them can hold single quotes, double quotes otherwise. A `"<base64>"` beside a single-quoted path puts a double quote into a command that holds `$` or a backtick, and {@link stripUnsafeSuggestions} then drops the whole command, path and all. Under double quotes a value holding `$` or a backtick is not written at all ({@link UNQUOTABLE}), since its neighbour forced the mark that would rewrite it: `"src/a$b.json" "['a.b']"` expanded `$b`. */
 export function quotedArgs(...values: string[]): string[] {
   const held = values.map((v) => (unquotable(v) ? UNQUOTABLE : v))
-  const single = held.some((v) => REWRITTEN_IN_DOUBLE_QUOTES.test(v)) && held.every((v) => !ENDS_SINGLE_QUOTES.test(v) && !CONTROL_OR_BIDI.test(v))
-  return held.map((v) => (single ? "'" + v + "'" : '"' + v + '"'))
+  const single = held.some((v) => REWRITTEN_IN_DOUBLE_QUOTES.test(v)) && held.every(singleQuotable)
+  return held.map((v) => (single ? "'" + v + "'" : '"' + (REWRITTEN_IN_DOUBLE_QUOTES.test(v) ? UNQUOTABLE : v) + '"'))
 }
 
 /** How a hook's sentence names the file it speaks about, given `rest`, the commands sent with it: "this file" when one of them already carries the path (`shown`, its display-safe spelling, or `raw`), so the path is not repeated as loose text beside the command (the relay drops an unsafe command, and its path then stood alone in the prose), and the quoted path when nothing else in the message names it (a surgical hint below `hints.min_file_lines_for_hint` is empty). */

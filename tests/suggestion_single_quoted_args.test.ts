@@ -67,10 +67,10 @@ describe('quotedArg', () => {
     expect(bodyFoldNotice('zzPlain', 4, 9, 'src/a.ts', 3)).toBe('... 6 more lines of zzPlain (4-9) folded -- token-goat read "src/a.ts::zzPlain@3"')
   })
 
-  it('keeps double quotes when single quotes could not hold the value either', () => {
-    expect(quotedArg("it's $5")).toBe(`"it's $5"`)
-    expect(quotedArg('a\u2019$b')).toBe('"a\u2019$b"')
-    expect(quotedArg('a\n$b')).toBe('"a\n$b"')
+  it('writes the placeholder when neither quote mark could hold the value, since double quotes would substitute the $', () => {
+    expect(quotedArg("it's $5")).toBe('"<a value no quote mark can hold>"')
+    expect(quotedArg('a\u2019$b')).toBe('"<a value no quote mark can hold>"')
+    expect(quotedArg('a\n$b')).toBe('"<a value no quote mark can hold>"')
   })
 
   it.skipIf(SH === null)('a POSIX shell hands the command every value unchanged', () => {
@@ -130,8 +130,8 @@ describe('quotedArgs', () => {
     expect(quotedArgs('src/a$b.ts', '<base64>')).toEqual(["'src/a$b.ts'", "'<base64>'"])
   })
 
-  it('keeps double quotes for all when one argument cannot hold single quotes', () => {
-    expect(quotedArgs('src/a$b.json', "['a.b']")).toEqual(['"src/a$b.json"', `"['a.b']"`])
+  it('keeps double quotes for all when one argument cannot hold single quotes, writing the placeholder for a $ argument', () => {
+    expect(quotedArgs('src/a$b.json', "['a.b']")).toEqual(['"<a value no quote mark can hold>"', `"['a.b']"`])
   })
 
   it.skipIf(SH === null)('a POSIX shell hands the edit-anyway replace command its path and placeholders unchanged', () => {

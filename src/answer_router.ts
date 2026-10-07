@@ -310,7 +310,7 @@ function answerExplain(question: string, subject: string, rootDir: string): numb
     }
   }
   if (target === null) return refuse('unresolved', `'${subject}' is not an indexed symbol`, `token-goat semantic ${quotedArg(question)}`)
-  const spec = `${toDisplayPath(rootDir, target.file)}::${displaySafeText(target.qualifier ?? target.name)}`
+  const spec = `${displaySafeText(toDisplayPath(rootDir, target.file))}::${displaySafeText(target.qualifier ?? target.name)}`
   emit(`via: token-goat brief ${quotedArg(spec)} --limit ${ANSWER_DELEGATE_LIMIT}`)
   return routed('brief', runBrief({ spec, limit: ANSWER_DELEGATE_LIMIT, projectRoot: rootDir }))
 }
@@ -345,7 +345,7 @@ function routed(route: Exclude<AnswerRoute, 'refused'>, code: number): number {
 }
 
 function answerImporters(file: string, display: string): number {
-  emit(`via: token-goat deps ${viaArg(display)} --importers`)
+  emit(`via: token-goat deps ${viaArg(displaySafeText(display))} --importers`)
   return routed('deps', runDeps({ file, importers: true }))
 }
 
@@ -399,15 +399,15 @@ export function runAnswer(opts: AnswerOptions): number {
     const file = resolved.kind === 'symbol' ? resolved.file : resolved.path
     const display = toDisplayPath(rootDir, file)
     if (cls.intent === 'tests') {
-      emit(`via: token-goat test-for ${viaArg(display)}`)
+      emit(`via: token-goat test-for ${viaArg(displaySafeText(display))}`)
       return routed('test-for', runTestFor({ file }))
     }
     if (cls.intent === 'exports') {
-      emit(`via: token-goat exports ${viaArg(display)}`)
+      emit(`via: token-goat exports ${viaArg(displaySafeText(display))}`)
       return routed('exports', runExports({ file }))
     }
     if (cls.intent === 'importers') return answerImporters(file, display)
-    emit(`via: token-goat imports ${viaArg(display)}`)
+    emit(`via: token-goat imports ${viaArg(displaySafeText(display))}`)
     return routed('imports', runImports({ file }))
   }
 

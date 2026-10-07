@@ -4,7 +4,7 @@ import { isIgnoredIndexPath } from './baseline.js'
 import { querySymbols, queryRefCounts, countSymbols, distinctSymbolKinds, DEFAULT_QUERY_LIMIT } from './index_reader.js'
 import { CORE_SYMBOL_KINDS } from './graph_traversal.js'
 import { formatSymbolLocation } from './indexed_source.js'
-import { toDisplayPath, displaySafeJson } from './paths.js'
+import { toDisplayPath, displaySafeJson, displaySafeText } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
 import { globalDbPath } from './constants.js'
 import { compileGrepMatcher, excludeTestsHiddenNote, countNoun, isTestFile } from './util.js'
@@ -320,7 +320,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     const dropped = bodyLines.length - SYMBOL_PREVIEW_LINES
     const elided =
       dropped > 0
-        ? `\n  ...(${countNoun(dropped, 'more line')}; full body: ${fencedCommand('token-goat read ' + quotedArg(`${toDisplayPath(symbolDisplayRoot, sym.filePath)}::${sym.name}`))})`
+        ? `\n  ...(${countNoun(dropped, 'more line')}; full body: ${fencedCommand('token-goat read ' + quotedArg(`${displaySafeText(toDisplayPath(symbolDisplayRoot, sym.filePath))}::${displaySafeText(sym.name)}`))})`
         : ''
     return preview.trim() !== '' ? `${header}\n${preview}${elided}` : header
   })

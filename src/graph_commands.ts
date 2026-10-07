@@ -539,7 +539,7 @@ export function runAsk(opts: AskOptions): number {
   const backendLabel = process.env[BACKEND_ENV] ?? ''
 
   interface AskEntry { file: string; symbol: string; kind: string; line: number; readCmd: string }
-  const entries: AskEntry[] = hits.map((h) => ({ file: h.filePath, symbol: h.name, kind: h.kind, line: h.lineStart, readCmd: `token-goat read ${quotedArg(`${h.filePath}::${h.name}@${h.lineStart}`)}` }))
+  const entries: AskEntry[] = hits.map((h) => ({ file: h.filePath, symbol: h.name, kind: h.kind, line: h.lineStart, readCmd: `token-goat read ${quotedArg(`${displaySafeText(h.filePath)}::${displaySafeText(h.name)}@${h.lineStart}`)}` }))
 
   const degrade = (reason: string, extraNote?: string): number => {
     if (opts.json === true) {
