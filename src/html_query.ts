@@ -495,7 +495,7 @@ export function formatHtmlOutline(summary: HtmlOutlineSummary): string {
     lines.push('', 'Forms:')
     for (const f of summary.forms) {
       const idStr = f.id ? `#${displaySafeText(f.id)}` : ''
-      lines.push(`  <form${idStr} method=${echoedValue(f.method || 'GET')} action=${echoedValue(f.action || '')}> (line ${f.line})`)
+      lines.push(`  <form${idStr} method="${displaySafeText(f.method || 'GET').replace(/"/g, '&quot;')}" action="${displaySafeText(f.action || '').replace(/"/g, '&quot;')}"> (line ${f.line})`)
     }
   }
 

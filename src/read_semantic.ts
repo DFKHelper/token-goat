@@ -130,11 +130,11 @@ function semanticDegradedFields(preflight: EmbeddingPreflightResult, searchSeman
 export async function runSemantic(query: string, opts: SemanticOptions): Promise<{ text: string; code: number }> {
   // Same reasoning as runSymbol in read_symbol.ts: a limit of 0 (or negative) would silently query for zero results instead of surfacing a clear "you asked for nothing" error.
   if (opts.limit !== undefined && opts.limit <= 0) {
-    const message = `--limit must be a positive number, got: ${echoedValue(String(opts.limit))}`
+    const message = (shown: string): string => `--limit must be a positive number, got: ${shown}`
     if (opts.json === true) {
-      return { text: displaySafeJson({ error: message }), code: 1 }
+      return { text: displaySafeJson({ error: message(String(opts.limit)) }), code: 1 }
     }
-    return { text: message, code: 1 }
+    return { text: message(echoedValue(String(opts.limit))), code: 1 }
   }
 
   const n = opts.limit !== undefined && Number.isFinite(opts.limit) ? opts.limit : 20
@@ -142,11 +142,11 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
   // A caller-supplied projectRoot must be an absolute, existing directory -- otherwise searchSemantic silently finds nothing under the bogus root and this function falls back to the (now project-scoped) FTS search using that same bogus root, which also finds nothing, and the caller gets a plain "no matches" instead of a clear signal that the scope they asked for doesn't exist. Fail loudly instead of silently widening/losing scope.
   if (opts.projectRoot !== undefined) {
     if (!path.isAbsolute(opts.projectRoot) || !fs.existsSync(opts.projectRoot) || !fs.statSync(opts.projectRoot).isDirectory()) {
-      const message = `projectRoot must be an absolute, existing directory, got ${echoedValue(opts.projectRoot)}`
+      const message = (shown: string): string => `projectRoot must be an absolute, existing directory, got ${shown}`
       if (opts.json === true) {
-        return { text: displaySafeJson({ error: message }), code: 1 }
+        return { text: displaySafeJson({ error: message(opts.projectRoot) }), code: 1 }
       }
-      return { text: message, code: 1 }
+      return { text: message(echoedValue(opts.projectRoot)), code: 1 }
     }
   }
   // Both halves of the search read the machine-wide index, so a caller-named root outside what indexing.cross_project_symbols = false admits is refused the way `symbol` refuses it, rather than searched.

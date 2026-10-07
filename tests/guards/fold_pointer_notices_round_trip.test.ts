@@ -28,8 +28,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
 
 // Not anchored to the literal `-- ` prefix: proseFoldNotice builds the pointer into its own variable before splicing it after `-- `, so the two substrings never sit adjacent in the raw source text even though they do in the rendered output. The marker alone is enough to identify a pointer-constructing function without the false negative that anchoring would cause.
-// A Read pointer sharing a line with a `token-goat` command goes through quotedArg too, so a `$` in the path does not take the command down with it.
-const READ_OFFSET_MARKER = ['Read "${shownPath}" with offset=', 'Read ${quotedArg(shownPath)} with offset=']
+// The Read pointer is for the harness Read tool, which takes the path literally and runs no shell, so the path sits in plain double quotes with displaySafeText inside; quotedArg is shell quoting and turns a path holding `$` and an apostrophe into a placeholder.
+const READ_OFFSET_MARKER = ['Read "${displaySafeText(shownPath)}" with offset=']
 // A pointer whose heading comes from the document goes through quotedArg (src/hint_suggestion_guard.ts), which single-quotes a heading holding `$`; one with a fixed placeholder keeps its literal double quotes.
 const SECTION_MARKER = ['token-goat section "${shownPath}::', 'token-goat section ${quotedArg(`${shownPath}::']
 

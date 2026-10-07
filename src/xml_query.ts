@@ -3,7 +3,6 @@
 import { displaySafeText } from './paths.js'
 import { countNoun, pushAll } from './util.js'
 import { evalPredicate, getAttrValue, matchTag, parseXmlPath } from './xml_selector.js'
-import { echoedValue } from './hint_suggestion_guard.js'
 
 export interface XmlNode {
   tag: string
@@ -377,7 +376,7 @@ export function formatXmlOutline(summary: XmlOutlineSummary): string {
       ) {
         // Truncate first, then escape: the cap is on what the document supplied, so measuring it after an escape would let a value shrink or grow depending on what it happened to carry.
         const valPreview = v.length > 35 ? `${v.slice(0, 32)}...` : v
-        attrParts.push(`${displaySafeText(k)}=${echoedValue(valPreview)}`)
+        attrParts.push(`${displaySafeText(k)}="${displaySafeText(escapeXmlAttr(valPreview))}"`)
       }
     }
 

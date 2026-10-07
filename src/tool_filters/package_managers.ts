@@ -6,7 +6,7 @@ import { countNoun } from '../util.js'
 import { ToolFilter } from './base.js'
 import { makePackageManagerFilter } from './families.js'
 import { ERROR_SIGNAL_RE, capTokens, maybeNote, pathStem, positionalArgs, squeezeBlankLines } from './helpers.js'
-import { echoedValue } from '../hint_suggestion_guard.js'
+import { fencedCommand } from '../hint_suggestion_guard.js'
 
 // --------------------------------------------------------------------------- Internal helpers (package-manager-local; not exported to index) ---------------------------------------------------------------------------
 
@@ -1073,7 +1073,7 @@ class DepListFilter extends ToolFilter {
     const nMore = lines.length - DEP_LIST_THRESHOLD
     const shown = lines.slice(0, DEP_LIST_THRESHOLD)
     const hint = this._depCmdHint(argv)
-    const trailer = `...[${countNoun(nMore, 'more package')} — use ${echoedValue(hint)} to see full output]`
+    const trailer = `...[${countNoun(nMore, 'more package')} — use ${hint} to see full output]`
     return shown.join('\n') + '\n' + trailer
   }
 
@@ -1081,9 +1081,9 @@ class DepListFilter extends ToolFilter {
     if (argv.length === 0) return 'the original command'
     const stem = pathStem(argv[0]!).toLowerCase()
     const pos = positionalArgs(argv.slice(1))
-    if (stem === 'uv' && pos.length >= 2) return `uv ${pos[0]} ${pos[1]}`
+    if (stem === 'uv' && pos.length >= 2) return fencedCommand(`uv ${pos[0]} ${pos[1]}`)
     const subcmd = pos[0] ?? ''
-    return `${stem} ${subcmd}`.trim()
+    return fencedCommand(`${stem} ${subcmd}`.trim())
   }
 }
 

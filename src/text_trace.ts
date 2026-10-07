@@ -343,7 +343,7 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
       process.stdout.write(`  ...(${countNoun(droppedByKeep, 'more frame')} elided; use a higher --keep to see more)\n`)
     }
     for (const f of block.frames) {
-      process.stdout.write(`  File ${echoedValue(f.file)}, line ${f.lineNo}, in ${displaySafeText(f.func)}\n`)
+      process.stdout.write(`  File "${displaySafeText(f.file)}", line ${f.lineNo}, in ${displaySafeText(f.func)}\n`)
       if (f.context) process.stdout.write(`    ${displaySafeText(f.context)}\n`)
       if (opts.bodies === true) {
         for (const line of formatFrameBody(f, cwd, seenBodies)) process.stdout.write(`${line}\n`)

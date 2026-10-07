@@ -36,7 +36,7 @@ import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 function atomicWriteBuffer(dest: string, data: Buffer): void {
   try {
     if (fs.statSync(dest).isDirectory()) {
-      const e = Object.assign(new Error(`EISDIR: illegal operation on a directory, open ${echoedValue(dest)}`), { code: 'EISDIR', path: dest }) as NodeJS.ErrnoException
+      const e = Object.assign(new Error(`EISDIR: illegal operation on a directory, open '${displaySafeText(dest)}'`), { code: 'EISDIR', path: dest }) as NodeJS.ErrnoException
       throw e
     }
   } catch (e) {
@@ -90,8 +90,8 @@ function mapFsError(e: unknown, src?: string, dest?: string, srcLabel = 'source'
   if (fe.code === 'EISDIR') {
     const errPath = fe.path ?? ''
     const isSource = src !== undefined && (errPath === '' || path.resolve(errPath) === path.resolve(src))
-    if (isSource) throw new CliError(`source is a directory, not a file: ${src}`)
-    throw new CliError(`destination is a directory, not a file: ${dest ?? (errPath || '(unknown)')}`)
+    if (isSource) throw new CliError(`source is a directory, not a file: ${echoedValue(src)}`)
+    throw new CliError(`destination is a directory, not a file: ${echoedValue(dest ?? (errPath || '(unknown)'))}`)
   }
   if (fe.code === 'EACCES' || fe.code === 'EPERM') {
     if (src !== undefined && dest === undefined) {

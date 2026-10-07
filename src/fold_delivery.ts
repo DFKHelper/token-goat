@@ -65,7 +65,7 @@ export function proseFoldNotice(keep: string, line: number, shownPath: string, n
 /** The line standing in for a folded comment block. A comment has no symbol to name, so there is no `token-goat read "file::symbol"` that returns it. What does return it is a ranged Read of the exact span. That Read cannot fold its own answer, because the span is one comment run from edge to edge and a windowed delivery drops any fold touching its first or last row ({@link strictlyInteriorOnWindow}). Nor may it be refused as lines already read: a fold from a ranged delivery takes back the line range that delivery was recorded under (hooks_read_post.ts::forgetFoldedWindow, and the shell-read fold in hooks_bash_post.ts). */
 export function commentFoldNotice(firstLine: number, lastLine: number, shownPath: string): string {
   const n = lastLine - firstLine + 1
-  return `... ${countNoun(n, 'more comment line')} (${firstLine}-${lastLine}) folded -- Read ${quotedArg(shownPath)} with offset=${firstLine}, limit=${n}`
+  return `... ${countNoun(n, 'more comment line')} (${firstLine}-${lastLine}) folded -- Read "${displaySafeText(shownPath)}" with offset=${firstLine}, limit=${n}`
 }
 
 /** One delivered line. `raw` is the form the caller has to put back on the wire (numbered, for a Read); `text` is the file's own line, which is what the served-output store compares against. On a shell read the two are the same string. */
