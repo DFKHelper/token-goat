@@ -62,7 +62,14 @@ describe('pandoc and duckdb commands in file-type hints', () => {
 
   it('embed only a plain path in the DuckDB SQL, and name <file> for any other', () => {
     for (const p of HOSTILE) expect.soft(handleParquet(p + '.parquet').message, JSON.stringify(p)).toContain("read_parquet('<file>')")
-    expect(handleParquet('C:\\p\\a.parquet').message).toContain("read_parquet('<file>')")
+    expect(handleParquet('\\\\server\\share\\a.parquet').message).toContain("read_parquet('<file>')")
+  })
+
+  it('name a Windows path with backslashes in the DuckDB SQL by its forward-slash spelling, unless it holds a hostile character', () => {
+    expect(handleParquet('C:\\Users\\me\\data\\a.parquet').message).toContain("read_parquet('C:/Users/me/data/a.parquet')")
+    expect(handleParquet("C:\\p\\a'$MARK.parquet").message).toContain("read_parquet('<file>')")
+    expect(handleParquet('C:\\p\\a"b.parquet').message).toContain("read_parquet('<file>')")
+    expect(handleParquet('C:\\p\\a\u202Eb.parquet').message).toContain("read_parquet('<file>')")
   })
 
   it.skipIf(POSIX_SH === null && POWERSHELL === null)('hand every hostile path to the program as written in both shells, or write the placeholder', () => {

@@ -381,9 +381,10 @@ export function handleSqlite(filePath: string): FileTypeResult {
   }
 }
 
-/** `p` as it can sit inside the SQL string of the DuckDB hint, which is a single-quoted SQL literal inside a double-quoted shell argument: only a path holding no quote of either kind, no `$`, backtick or backslash, and no character displaySafePath would escape is written there, and any other is `<file>`, which the reader fills in. */
+/** `p` as it can sit inside the SQL string of the DuckDB hint, which is a single-quoted SQL literal inside a double-quoted shell argument: only a path holding no quote of either kind, no `$`, backtick or backslash, and no character displaySafePath would escape is written there, and any other is `<file>`, which the reader fills in. A drive-letter path is checked with its backslashes turned to forward slashes first, the spelling DuckDB opens on Windows too, since Claude Code hands Read a Windows path as `C:\\u2026` and that would otherwise never be named. */
 function sqlLiteralPath(p: string): string {
-  return displaySafePath(p) === p && !/['"$`\\\u2018-\u201E]/.test(p) ? p : '<file>'
+  const path = /^[A-Za-z]:[\\/]/.test(p) ? p.replaceAll('\\', '/') : p
+  return displaySafePath(path) === path && !/['"$`\\\u2018-\u201E]/.test(path) ? path : '<file>'
 }
 
 /** Parquet handler — always blocks regardless of size. */
