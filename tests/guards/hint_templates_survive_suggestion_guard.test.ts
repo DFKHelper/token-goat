@@ -644,6 +644,7 @@ const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string }> = [
   ...[
     'powershell_compat.ts::return `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String(\'${Buffer.from(text, \'utf8\').toString(\'base64\')}\'))`',
     'powershell_compat.ts::bootstrap = `"exec(__import__(\'base64\').b64decode(\'${b64}\').decode())"`',
+    'powershell_compat.ts::if (target.kind === \'stdout\') return `[System.Console]::OpenStandardOutput().Write([System.Convert]::FromBase64String(\'${Buffer.from(text, \'utf8\').toString(\'base64\')}\'), 0, ${Buffer.byteLength(text, \'utf8\')})`',
   ].map((key) => ({ key, reason: R.base64 })),
 ]
 

@@ -1,12 +1,12 @@
 /** Adapts bash-style heredocs and inline Python scripts with complex quotes for reliable execution under PowerShell (both pwsh 7+ and Windows PowerShell 5.1). Windows PowerShell unescapes/strips quotes when passing arguments to native binaries (like python.exe), causing `SyntaxError: unterminated string literal`. Bash heredocs (`<<'EOF'`) also fail under PowerShell's parser. Carrying heredoc bodies and inline Python `-c` scripts as UTF-8 base64 bypasses shell argument parsing and delivers byte-for-byte exact script text: a heredoc body is decoded and piped into its command (`[System.Text.Encoding]::UTF8.GetString(...) | <cmd>`) or written to its file, and a `-c` script becomes a `-c` bootstrap that decodes and runs it, so its arguments and stdin stay as they were. Every rewritten Python call runs in UTF-8 mode, and the result reads and writes the same bytes under Windows PowerShell 5.1, whose file cmdlets and $OutputEncoding otherwise use the ANSI code page and ASCII. A double-quoted `-c` script is encoded at run time from the PowerShell string it is, so PowerShell still expands it, and only top-level code is rewritten, never text inside a string, here-string or comment. */
 
-/** Matches bash heredocs: `<cmd> <<[-]?'DELIM'\n<body>\nDELIM` Preceded by start of command, newline, semicolon, &&, or ||. */
+/** Matches the line that opens a bash heredoc, `<cmd> <<[-]?'DELIM' [rest of line]`, preceded by start of command, newline, semicolon, &&, or ||. Its body and closing line are the ones layoutPowerShell found for that `<<`. */
 // eslint-disable-next-line regexp/no-super-linear-backtracking
-const HEREDOC_RE = /(?:^|(?<=[;\r\n]|&&|\|\|))\s*([^\r\n;&|<]+?)\s*<<-?\s*(['"]?)([A-Za-z0-9_]+)\2([^\r\n]*?)(?:\r?\n)([\s\S]*?)(?:\r?\n)[ \t]*\3[ \t]*(?=$|[\r\n;&|])/g
+const HEREDOC_RE = /(?:^|(?<=[;\r\n]|&&|\|\|))\s*([^\r\n;&|<]+?)\s*<<(-?)[ \t]*(['"]?)([A-Za-z0-9_]+)\3([^\r\n]*?)(?=\r?\n)/g
 
-// A heredoc operator and its delimiter word, read at a top-level `<<`, and a line that ends the body (the delimiter, optionally followed by `;`, `&`, `|` or a CR, as HEREDOC_RE accepts).
-const HEREDOC_HEAD_RE = /<<-?[ \t]*(['"]?)([A-Za-z0-9_]+)\1/y
-const HEREDOC_TERMINATOR_RE = /^[ \t]*([A-Za-z0-9_]+)[ \t]*(?=$|[\r;&|])/
+// A heredoc operator, its `-` and its delimiter word, read at a top-level `<<`, and a line that ends the body: the delimiter at the start of the line, or after tabs for `<<-`, as bash reads it, optionally followed by blanks and `;`, `&`, `|` or a CR.
+const HEREDOC_HEAD_RE = /<<(-?)[ \t]*(['"]?)([A-Za-z0-9_]+)\2/y
+const HEREDOC_TERMINATOR_RE = /^(\t*)([A-Za-z0-9_]+)[ \t]*(?=$|[\r;&|])/
 
 // PowerShell reads the curly and low-9 quotation marks as quotes too.
 const SINGLE_QUOTES = "'\u2018\u2019\u201A\u201B"
@@ -14,11 +14,14 @@ const DOUBLE_QUOTES = '"\u201C\u201D\u201E'
 
 interface Span { end: number; closed: boolean }
 
-/** Where a command's top-level PowerShell code is: `code[i]` is 1 for a character outside every string, here-string, comment, braced variable and recognized heredoc body, `stringEnd` maps a top-level string's opening quote to the index just past its closing quote, and `heredocEnd` maps a top-level `<<` whose body was found to the index just past its terminating delimiter. */
+// A heredoc body runs from `bodyStart` to `termStart`, the start of its closing line, and `end` is the index just past the closing delimiter.
+interface HeredocSpan { bodyStart: number; termStart: number; end: number }
+
+/** Where a command's top-level PowerShell code is: `code[i]` is 1 for a character outside every string, here-string, comment, braced variable and recognized heredoc body, `stringEnd` maps a top-level string's opening quote to the index just past its closing quote, and `heredocs` maps a top-level `<<` whose body was found to that body's span. */
 interface PowerShellLayout {
   code: Uint8Array
   stringEnd: Map<number, number>
-  heredocEnd: Map<number, number>
+  heredocs: Map<number, HeredocSpan>
 }
 
 function isQuote(quotes: string, ch: string | undefined): boolean {
@@ -123,48 +126,48 @@ function scanToken(src: string, i: number): Span | null {
 }
 
 // Skips the bodies of the heredocs opened on the line that just ended, in order, returning the index past the last terminator, or `start` (recording none of them) when any body has no terminator.
-function skipHeredocBodies(src: string, start: number, pending: Array<{ op: number; delim: string }>, heredocEnd: Map<number, number>): number {
-  const found: Array<[number, number]> = []
+function skipHeredocBodies(src: string, start: number, pending: Array<{ op: number; delim: string; stripTabs: boolean }>, heredocs: Map<number, HeredocSpan>): number {
+  const found: Array<[number, HeredocSpan]> = []
   let lineStart = start
-  for (const { op, delim } of pending) {
-    let end = -1
+  for (const { op, delim, stripTabs } of pending) {
+    let span: HeredocSpan | null = null
     for (let ls = lineStart; ls <= src.length; ) {
       const nl = src.indexOf('\n', ls)
       const term = HEREDOC_TERMINATOR_RE.exec(src.slice(ls, nl === -1 ? src.length : nl))
-      if (term && term[1] === delim) {
-        end = ls + term[0].length
+      if (term && term[2] === delim && (stripTabs || term[1] === '')) {
+        span = { bodyStart: lineStart, termStart: ls, end: ls + term[0].length }
         break
       }
       if (nl === -1) break
       ls = nl + 1
     }
-    if (end === -1) return start
-    found.push([op, end])
-    const nl = src.indexOf('\n', end)
+    if (span === null) return start
+    found.push([op, span])
+    const nl = src.indexOf('\n', span.end)
     lineStart = nl === -1 ? src.length : nl + 1
   }
-  for (const [op, end] of found) heredocEnd.set(op, end)
-  return (found[found.length - 1] as [number, number])[1]
+  for (const [op, span] of found) heredocs.set(op, span)
+  return (found[found.length - 1] as [number, HeredocSpan])[1].end
 }
 
 /** Lexes just enough PowerShell to tell top-level code from strings, here-strings, comments and bash heredoc bodies, so a rewrite never reaches into text PowerShell would not run as a statement. */
 function layoutPowerShell(src: string): PowerShellLayout {
   const code = new Uint8Array(src.length)
   const stringEnd = new Map<number, number>()
-  const heredocEnd = new Map<number, number>()
-  let pending: Array<{ op: number; delim: string }> = []
+  const heredocs = new Map<number, HeredocSpan>()
+  let pending: Array<{ op: number; delim: string; stripTabs: boolean }> = []
   let i = 0
   while (i < src.length) {
     if (src[i] === '\n' && pending.length > 0) {
       code[i] = 1
-      i = skipHeredocBodies(src, i + 1, pending, heredocEnd)
+      i = skipHeredocBodies(src, i + 1, pending, heredocs)
       pending = []
       continue
     }
     HEREDOC_HEAD_RE.lastIndex = i
     const head = src[i] === '<' ? HEREDOC_HEAD_RE.exec(src) : null
     if (head) {
-      pending.push({ op: i, delim: head[2] as string })
+      pending.push({ op: i, delim: head[3] as string, stripTabs: head[1] === '-' })
       code.fill(1, i, i + 2)
       i += 2
       continue
@@ -178,7 +181,7 @@ function layoutPowerShell(src: string): PowerShellLayout {
     code[i] = 1
     i++
   }
-  return { code, stringEnd, heredocEnd }
+  return { code, stringEnd, heredocs }
 }
 
 /** Matches inline python invocations with -c: `python [preFlags] -c <quoted_script> [postArgs]` Preceded by start of command, newline, semicolon, &&, or || (not pipe |). */
@@ -220,7 +223,7 @@ function utf8TextExpression(text: string): string {
   return `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(text, 'utf8').toString('base64')}'))`
 }
 
-// Runs one pipeline with $OutputEncoding set to UTF-8 without a BOM, so text piped into a native command reaches it as UTF-8 under Windows PowerShell 5.1, whose default is ASCII ("héllo" arrived as "h?llo"), as it already does under PowerShell 7. The setting lives in an advanced script block's scope and ends with the pipeline. The block runs under the caller's $ErrorActionPreference, and since `& { }` always reports success, a failed pipeline is written back as an ignored error so `$?`, `&&`, `||` and the wrapper's exit code still see it fail.
+// Runs one pipeline with $OutputEncoding set to UTF-8 without a BOM, so text piped into a native command reaches it as UTF-8 under Windows PowerShell 5.1, whose default is ASCII ("héllo" arrived as "h?llo"), as it already does under PowerShell 7. The setting lives in an advanced script block's scope and ends with the pipeline, and every heredoc pipe runs in one, as bash runs each pipeline stage in a subshell, so a variable the pipeline sets never outlives it whatever the body holds. The block runs under the caller's $ErrorActionPreference, and since `& { }` always reports success, a failed pipeline is written back as an ignored error so `$?`, `&&`, `||` and the wrapper's exit code still see it fail.
 function inUtf8PipeScope(pipeline: string): string {
   return `& { [CmdletBinding()] param($TgEap) $ErrorActionPreference = $TgEap; $OutputEncoding = [System.Text.UTF8Encoding]::new($false); ${pipeline}; if (-not $?) { $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new([System.Exception]::new('pipeline failed'), 'TgPipelineFailed', [System.Management.Automation.ErrorCategory]::NotSpecified, $null)) } } $ErrorActionPreference -ErrorAction Ignore`
 }
@@ -234,9 +237,9 @@ function splitFirstPipeline(command: string): [string, string] {
   return [command, '']
 }
 
-type HeredocTarget = { kind: 'pipe'; command: string } | { kind: 'file'; append: boolean; path: string }
+type HeredocTarget = { kind: 'pipe'; command: string } | { kind: 'stdout' } | { kind: 'file'; append: boolean; path: string }
 
-// Where a heredoc body goes, or null for a form this adapter does not recognize, which is then left as written rather than half rewritten. `cat` maps to Write-Output, `cat > f` and `cat >> f` to a file write, and `cat | cmd` pipes the body straight into cmd.
+// Where a heredoc body goes, or null for a form this adapter does not recognize, which is then left as written rather than half rewritten. `cat` writes to standard output, `cat > f` and `cat >> f` to a file, and `cat | cmd` pipes the body straight into cmd.
 function heredocTarget(prefix: string, suffix: string): HeredocTarget | null {
   const target = `${prefix.trim()} ${suffix.trim()}`.trim()
   // Append ' -' to python/py/node when no script file or dash argument exists
@@ -244,7 +247,7 @@ function heredocTarget(prefix: string, suffix: string): HeredocTarget | null {
   const cat = /^cat(?=\s|[|>]|$)(.*)$/is.exec(target)
   if (cat) {
     const rest = (cat[1] as string).trim()
-    if (rest === '') return { kind: 'pipe', command: 'Write-Output' }
+    if (rest === '') return { kind: 'stdout' }
     if (rest.startsWith('|')) {
       const command = rest.slice(1).trim()
       return command ? { kind: 'pipe', command } : null
@@ -256,20 +259,26 @@ function heredocTarget(prefix: string, suffix: string): HeredocTarget | null {
   return /^[\w.:/\\-]+(?:\s|$)/.test(target) ? { kind: 'pipe', command: target } : null
 }
 
-// The PowerShell statement that delivers a heredoc body to its target. A file gets exactly the bytes bash writes, the body's lines each ended by `\n` in UTF-8 with no BOM, through [IO.File] rather than Set-Content or Add-Content, which write the ANSI code page under Windows PowerShell 5.1 and end the file with CRLF; the path is read as the cmdlet's argument would have been and resolved against PowerShell's location, not .NET's current directory. A body piped into a command reaches a Python interpreter in UTF-8 mode, and a body holding non-ASCII text is piped under a UTF-8 $OutputEncoding.
-function heredocStatement(target: HeredocTarget, body: string): string {
+// The PowerShell statement that delivers a heredoc's text to its target. A file gets exactly the bytes bash writes, in UTF-8 with no BOM, through [IO.File] rather than Set-Content or Add-Content, which write the ANSI code page under Windows PowerShell 5.1 and end the file with CRLF; the path is read as the cmdlet's argument would have been and resolved against PowerShell's location, not .NET's current directory. A bare `cat` writes the same bytes to standard output, since Write-Output prints in the console code page under both shells ("é" came out as 0x82). A body piped into a command reaches a Python interpreter in UTF-8 mode under a UTF-8 $OutputEncoding, and an empty body pipes in nothing at all.
+function heredocStatement(target: HeredocTarget, text: string): string {
   if (target.kind === 'file') {
     const path = `$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath((Write-Output ${target.path}))`
-    return `[System.IO.File]::${target.append ? 'AppendAllText' : 'WriteAllText'}(${path}, ${utf8TextExpression(`${body}\n`)}, [System.Text.UTF8Encoding]::new($false))`
+    return `[System.IO.File]::${target.append ? 'AppendAllText' : 'WriteAllText'}(${path}, ${utf8TextExpression(text)}, [System.Text.UTF8Encoding]::new($false))`
   }
-  const command = withPythonUtf8(target.command)
-  // eslint-disable-next-line no-control-regex
-  if (!/[^\x00-\x7F]/.test(body)) return `${utf8TextExpression(body)} | ${command}`
-  const [first, rest] = splitFirstPipeline(command)
-  return `${inUtf8PipeScope(`${utf8TextExpression(body)} | ${first}`)}${rest}`
+  if (target.kind === 'stdout') return `[System.Console]::OpenStandardOutput().Write([System.Convert]::FromBase64String('${Buffer.from(text, 'utf8').toString('base64')}'), 0, ${Buffer.byteLength(text, 'utf8')})`
+  // PowerShell ends each string it pipes into a native command with a line break, so the text goes in without its own last one.
+  const input = text === '' ? '@()' : utf8TextExpression(text.slice(0, -1))
+  const [first, rest] = splitFirstPipeline(withPythonUtf8(target.command))
+  return `${inUtf8PipeScope(`${input} | ${first}`)}${rest}`
 }
 
-/** Adapts bash heredoc syntax into PowerShell: the body is carried as base64 and piped into its command or written to its file. Only a heredoc whose `<<` is top-level code is rewritten, so `<<EOF` inside a string, here-string or comment is left alone. */
+// The text bash reads from a heredoc body: each line ended by `\n`, nothing for a body with no lines, and with each line's leading tabs removed for `<<-`.
+function heredocText(body: string, stripTabs: boolean): string {
+  const text = body.replace(/\r?\n$/, '\n')
+  return stripTabs ? text.replace(/^\t+/gm, '') : text
+}
+
+/** Adapts bash heredoc syntax into PowerShell: the body is carried as base64 and piped into its command or written to its file. Only a heredoc whose `<<` is top-level code is rewritten, so `<<EOF` inside a string, here-string or comment is left alone. A body under an unquoted delimiter that holds `$`, a backtick or a backslash, which bash would expand, is left as written rather than delivered unexpanded. */
 export function adaptHeredoc(command: string): string {
   const layout = layoutPowerShell(command)
   let result = ''
@@ -279,15 +288,17 @@ export function adaptHeredoc(command: string): string {
   while ((match = HEREDOC_RE.exec(command)) !== null) {
     const whole = match[0]
     const start = match.index + whole.length - whole.trimStart().length
-    const end = match.index + whole.length
-    const topLevel = layout.code[start] === 1 && layout.heredocEnd.get(match.index + whole.indexOf('<<')) === end
-    const target = topLevel ? heredocTarget(match[1] as string, match[4] ?? '') : null
-    if (target === null) {
+    const lineEnd = match.index + whole.length
+    const span = layout.code[start] === 1 ? layout.heredocs.get(match.index + whole.indexOf('<<')) : undefined
+    const text = span !== undefined && span.bodyStart === lineEnd + (command[lineEnd] === '\r' ? 2 : 1) ? heredocText(command.slice(span.bodyStart, span.termStart), match[2] === '-') : null
+    const target = text !== null && (match[3] !== '' || !/[$`\\]/.test(text)) ? heredocTarget(match[1] as string, match[5] ?? '') : null
+    if (span === undefined || text === null || target === null) {
       HEREDOC_RE.lastIndex = match.index + 1
       continue
     }
-    result += `${command.slice(lastIndex, start)}${heredocStatement(target, match[5] ?? '')}`
-    lastIndex = end
+    result += `${command.slice(lastIndex, start)}${heredocStatement(target, text)}`
+    lastIndex = span.end
+    HEREDOC_RE.lastIndex = span.end
   }
   return result + command.slice(lastIndex)
 }

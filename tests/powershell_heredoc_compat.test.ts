@@ -54,7 +54,8 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
       const input = `Write-Output "start"; python - <<'EOF'\nprint("middle")\nEOF; Write-Output "end"`
       const adapted = adaptHeredoc(input)
       expect(adapted).toContain('Write-Output "start";')
-      expect(adapted).toContain('| python -X utf8 -; Write-Output "end"')
+      expect(adapted).toContain('| python -X utf8 -; if (-not $?)')
+      expect(adapted).toMatch(/ -ErrorAction Ignore; Write-Output "end"$/)
     })
 
     it('leaves commands without heredocs unchanged', () => {
@@ -67,25 +68,49 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
       expect(adaptHeredoc(`cat >> 'log.txt' <<'EOF'\nsecond\nEOF`)).toMatch(/^\[System\.IO\.File\]::AppendAllText\(.*\(Write-Output 'log\.txt'\)\)/)
       expect(adaptHeredoc(`cat <<'EOF' >> log.txt\nsecond\nEOF`)).toMatch(/^\[System\.IO\.File\]::AppendAllText\(.*\(Write-Output log\.txt\)\)/)
       expect(decodedBodies(adaptHeredoc(`cat <<'EOF' >> log.txt\nsecond\nEOF`))).toEqual(['second\n'])
-      expect(adaptHeredoc(`cat <<'EOF' | python -\nprint(1)\nEOF`)).toMatch(/\)\) \| python -X utf8 -$/)
+      expect(adaptHeredoc(`cat <<'EOF' | python -\nprint(1)\nEOF`)).toMatch(/\)\) \| python -X utf8 -; if /)
     })
 
-    // HAND-DERIVED: Windows PowerShell 5.1 pipes text into a native command in $OutputEncoding, ASCII by default, so "héllo ✓" arrives as "h?llo ?"; ASCII text is the same bytes in either encoding.
-    it('pipes a non-ASCII body under a UTF-8 $OutputEncoding scoped to that one pipeline', () => {
-      const adapted = adaptHeredoc(`node - <<'EOF'\nconsole.log('héllo ✓')\nEOF`)
-      expect(adapted).toMatch(/^& \{ \[CmdletBinding\(\)\] param\(\$TgEap\) \$ErrorActionPreference = \$TgEap; \$OutputEncoding = \[System\.Text\.UTF8Encoding\]::new\(\$false\); \[System\.Text\.Encoding\]::UTF8\.GetString\(.*\) \| node -; if \(-not \$\?\) \{ \$PSCmdlet\.WriteError\(.*\) \} \} \$ErrorActionPreference -ErrorAction Ignore$/)
-      expect(decodedBodies(adapted)).toEqual(['console.log(\'héllo ✓\')'])
-      expect(adaptHeredoc(`node - <<'EOF'\nconsole.log('hello')\nEOF`)).not.toContain('$OutputEncoding')
+    // HAND-DERIVED: bash runs each pipeline stage in a subshell, so what a heredoc pipe sets never outlives it, whatever the body holds; Windows PowerShell 5.1 pipes text into a native command in $OutputEncoding, ASCII by default, so every pipe runs in a scope with a UTF-8 one.
+    it('pipes every body, ASCII or not, in the same scope', () => {
+      const ascii = adaptHeredoc(`node - <<'EOF'\nconsole.log('hello')\nEOF`)
+      const wide = adaptHeredoc(`node - <<'EOF'\nconsole.log('héllo ✓')\nEOF`)
+      expect(decodedBodies(wide)).toEqual(['console.log(\'héllo ✓\')'])
+      const shape = (s: string) => s.replace(/FromBase64String\('[^']*'\)/, 'B64')
+      expect(shape(ascii)).toBe(shape(wide))
+      expect(ascii).toMatch(/^& \{ .*\$OutputEncoding = .* \| node -; .*\} \$ErrorActionPreference -ErrorAction Ignore$/)
       // Statements after the piped command on the heredoc's line stay outside the scope, so an assignment there still reaches the caller.
-      expect(adaptHeredoc(`cat <<'EOF' | node - ; $after = 1\nconsole.log('é')\nEOF`)).toMatch(/\| node -; if .* -ErrorAction Ignore ; \$after = 1$/)
+      expect(adaptHeredoc(`cat <<'EOF' | node - ; $after = 1\nconsole.log('e')\nEOF`)).toMatch(/\| node -; if .* -ErrorAction Ignore ; \$after = 1$/)
+    })
+
+    // HAND-DERIVED from bash(1), Here Documents: with `<<-` leading tabs are stripped from the body lines and the delimiter line; without it the delimiter must start its line; a body with no lines is empty; an unquoted delimiter has the body expanded ($, backtick, backslash), so such a body is left for PowerShell to refuse rather than delivered unexpanded.
+    it('reads a heredoc body the way bash does', () => {
+      expect(decodedBodies(adaptHeredoc(`cat > f.txt <<-'EOF'\n\tone\n\t\ttwo\n  three\n\tEOF`))).toEqual(['one\ntwo\n  three\n'])
+      expect(decodedBodies(adaptHeredoc(`cat > f.txt <<'EOF'\n\tEOF\n  EOF\nlast\nEOF`))).toEqual(['\tEOF\n  EOF\nlast\n'])
+      expect(adaptHeredoc(`cat > f.txt <<'EOF'\n  EOF`)).toBe(`cat > f.txt <<'EOF'\n  EOF`)
+      expect(decodedBodies(adaptHeredoc(`cat > f.txt <<'EOF'\nEOF`))).toEqual([''])
+      expect(adaptHeredoc(`cat <<'EOF' | python -\nEOF`)).toMatch(/^& \{ .*@\(\) \| python /)
+      for (const body of ['cost: $5', 'run `date`', 'C:\\temp']) {
+        const input = `cat > f.txt <<EOF\n${body}\nEOF`
+        expect(adaptHeredoc(input)).toBe(input)
+        expect(decodedBodies(adaptHeredoc(`cat > f.txt <<'EOF'\n${body}\nEOF`))).toEqual([`${body}\n`])
+      }
+      expect(decodedBodies(adaptHeredoc(`cat > f.txt <<EOF\nplain text\nEOF`))).toEqual(['plain text\n'])
+    })
+
+    // HAND-DERIVED: bash's `cat <<EOF` writes the body's bytes to standard output; Write-Output would print them in the console code page.
+    it('writes a bare cat heredoc to standard output as bytes', () => {
+      const adapted = adaptHeredoc(`cat <<'EOF'\nh\u00e9llo\nEOF`)
+      expect(adapted).toMatch(/^\[System\.Console\]::OpenStandardOutput\(\)\.Write\(\[System\.Convert\]::FromBase64String\('[^']*'\), 0, 7\)$/)
+      expect(decodedBodies(adapted)).toEqual(['h\u00e9llo\n'])
     })
 
     // HAND-DERIVED: python --help: "-X utf8: enable UTF-8 mode", the command-line form of PYTHONUTF8=1; the py launcher reads its version switch only as its first argument.
     it('runs a Python heredoc target in UTF-8 mode, after the launcher version switch', () => {
-      expect(adaptHeredoc(`python3 <<'PY'\nprint(42)\nPY`)).toMatch(/\| python3 -X utf8 -$/)
-      expect(adaptHeredoc(`py -3 - <<'PY'\nprint(42)\nPY`)).toMatch(/\| py -3 -X utf8 -$/)
-      expect(adaptHeredoc(`python -X utf8 - <<'PY'\nprint(42)\nPY`)).toMatch(/\| python -X utf8 -$/)
-      expect(adaptHeredoc(`node - <<'EOF'\nconsole.log(1)\nEOF`)).toMatch(/\| node -$/)
+      expect(adaptHeredoc(`python3 <<'PY'\nprint(42)\nPY`)).toMatch(/\| python3 -X utf8 -; /)
+      expect(adaptHeredoc(`py -3 - <<'PY'\nprint(42)\nPY`)).toMatch(/\| py -3 -X utf8 -; /)
+      expect(adaptHeredoc(`python -X utf8 - <<'PY'\nprint(42)\nPY`)).toMatch(/\| python -X utf8 -; /)
+      expect(adaptHeredoc(`node - <<'EOF'\nconsole.log(1)\nEOF`)).toMatch(/\| node -; /)
     })
 
     // HAND-DERIVED: forms with no PowerShell mapping here (a cat option, a redirect plus a pipe, an assignment) are left whole for PowerShell to report, never half rewritten.
@@ -418,12 +443,44 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
         expect(r.status).toBe(0)
       })
 
-      it.skipIf(!hasPython)(`keeps a failing non-ASCII pipe's $? and leaves $OutputEncoding as it was${pythonSkip}`, () => {
+      it.skipIf(!hasPython)(`keeps a failing pipe's $? and $LASTEXITCODE and leaves $OutputEncoding as it was, ASCII body or not${pythonSkip}`, () => {
         const before = spawnSync(shellPath, ['-NoProfile', '-NonInteractive', '-Command', '$OutputEncoding.WebName'], { encoding: 'utf8' }).stdout.trim()
-        const r = runIn(`cat <<'EOF' | python -\nimport sys; print('${TEXT}'); sys.exit(3)\nEOF\nWrite-Output "q=$? oe=$($OutputEncoding.WebName)"`)
-        expect(r.stdout.split(/\r?\n/).filter(Boolean)).toEqual([TEXT, `q=False oe=${before}`])
+        for (const word of [TEXT, 'plain']) {
+          const r = runIn(`cat <<'EOF' | python -\nimport sys; print('${word}'); sys.exit(3)\nEOF\nWrite-Output "q=$? code=$LASTEXITCODE oe=$($OutputEncoding.WebName)"`)
+          expect(r.stdout.split(/\r?\n/).filter(Boolean)).toEqual([word, `q=False code=3 oe=${before}`])
+          expect(r.status).toBe(0)
+          expect(runIn(`cat <<'EOF' | python -\nimport sys; sys.exit(3)  # ${word}\nEOF`).status).toBe(1)
+        }
+      })
+
+      it('keeps what a heredoc pipe sets inside the pipe, ASCII body or not, as bash keeps it in a subshell', () => {
+        for (const word of [TEXT, 'plain']) {
+          const r = runIn(`cat <<'EOF' | ForEach-Object { $seen = $_ }\n${word}\nEOF\nWrite-Output "seen=[$seen]"`)
+          expect(r.stderr).toBe('')
+          expect(r.stdout.trim()).toBe('seen=[]')
+        }
+      })
+
+      it('writes a bare cat heredoc as its UTF-8 bytes, in order with the output around it', () => {
+        const r = runIn(`Write-Output before\ncat <<'EOF'\n${TEXT}\nEOF\nWrite-Output after`)
+        expect(r.stderr).toBe('')
+        expect(r.stdoutHex).toMatch(new RegExp(`^${hex('before')}(0d)?0a${hex(`${TEXT}\n`)}${hex('after')}(0d)?0a$`))
         expect(r.status).toBe(0)
-        expect(runIn(`cat <<'EOF' | python -\nimport sys; sys.exit(3)  # ${TEXT}\nEOF`).status).toBe(1)
+      })
+
+      it('writes an empty heredoc body as an empty file and a <<- body without its tabs', () => {
+        const r = runIn(`cat > empty.txt <<'EOF'\nEOF\ncat > tabs.txt <<-'EOF'\n\t${TEXT}\n\tEOF`)
+        expect(r.stderr).toBe('')
+        expect(r.status).toBe(0)
+        expect(fs.readFileSync(path.join(dir, 'empty.txt')).length).toBe(0)
+        expect(fs.readFileSync(path.join(dir, 'tabs.txt')).toString('hex')).toBe(hex(`${TEXT}\n`))
+      })
+
+      it.skipIf(!hasPython)(`pipes an empty heredoc body as empty input${pythonSkip}`, () => {
+        const r = runIn(`cat <<'EOF' | python -c "import sys; print(repr(sys.stdin.buffer.read()))"\nEOF`)
+        expect(r.stderr).toBe('')
+        expect(r.stdout.trim()).toBe(`b''`)
+        expect(r.status).toBe(0)
       })
     })
   }
