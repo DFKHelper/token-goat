@@ -68,7 +68,8 @@ export function evaluateFirstReadSymbolPolicy(ctx: ReadPolicyContext): ReadPolic
   if (!isFirstRead) return { action: 'allow' }
   if (event.toolName === 'Grep') return { action: 'allow' }
   if (fileSize < firstReadSymbolBytes) return { action: 'allow' }
-  if (isWithinQuietHours(loadConfig().hints.quiet_hours)) return { action: 'allow' }
+  // Quiet hours hold back advice, never a block: a deny stays in force, as every other deny in hooks_read.ts does.
+  if (firstReadSymbolPolicy === 'warn' && isWithinQuietHours(loadConfig().hints.quiet_hours)) return { action: 'allow' }
 
   // Check requested slice window: bounded small slices bypass warning and denial
   const window = readRequestedSliceWindow(event)

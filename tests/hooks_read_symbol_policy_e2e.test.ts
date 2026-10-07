@@ -126,6 +126,42 @@ describe('first-read symbol policy on a really indexed file', () => {
   })
 })
 
+describe('first-read symbol policy during hints.quiet_hours', () => {
+  // HAND-DERIVED: an overnight window and a clock set inside it, the same pair tests/hooks_read.test.ts uses for its quiet-hours wiring.
+  function enterQuietHours(): void {
+    vi.stubEnv('TOKEN_GOAT_QUIET_HOURS', '22:00-06:00')
+    invalidateConfigCache()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 0, 1, 23, 0))
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('still denies under policy deny, as every other deny does', () => {
+    setPolicy('deny')
+    const filePath = writeLargeModule()
+    indexFileSync(filePath, globalDbPath())
+    enterQuietHours()
+
+    const out = firstRead(filePath, `policy-quiet-deny-${process.pid}`)
+    expect(out.hookType).toBe('deny')
+    if (out.hookType !== 'deny') return
+    expect(out.message).toContain('Whole-file first read denied by first_read_symbol_policy')
+  })
+
+  it('holds back the advisory under policy warn', () => {
+    setPolicy('warn')
+    const filePath = writeLargeModule()
+    indexFileSync(filePath, globalDbPath())
+    enterQuietHours()
+
+    const out = firstRead(filePath, `policy-quiet-warn-${process.pid}`)
+    expect(out.hookType === 'context' && out.context.includes('prefer surgical reads')).toBe(false)
+  })
+})
+
 describe('first-read symbol policy on a large markdown file', () => {
   it('keeps the deny for a path holding $ readable once the relay guard has passed over it', () => {
     setPolicy('deny')
