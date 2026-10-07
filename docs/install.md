@@ -220,7 +220,7 @@ What works: a repeated read of a large file is denied, with a pointer to what th
 
 The hooks folder and files are the same ones `token-goat install --copilot` uses, and one shim serves both: it tells a VS Code payload from a Copilot CLI one and answers each in its own format. token-goat records which install owns the files (`token-goat.owners` next to them), so `token-goat uninstall --vscode` leaves the hooks in place while `--copilot` still needs them, and the other way round. To remove: `token-goat uninstall --vscode` (add `--user` for a user-scope install).
 
-If VS Code's `chat.useClaudeHooks` setting is on, VS Code also runs the Claude Code hooks in `~/.claude/settings.json`, so each token-goat hook fires twice. `token-goat install --vscode` prints a note when it sees that setting, and `token-goat doctor` reports it. Turn the setting off to keep only the VS Code hooks. token-goat never edits your VS Code settings.
+If VS Code's `chat.useClaudeHooks` setting is on and token-goat's Claude Code hooks are installed, VS Code also runs them from `~/.claude/settings.json`, so each token-goat hook fires twice. That setting is user-wide and covers every Claude hook in VS Code, not only token-goat's. A user-scope install (`token-goat install --vscode --user`) and `token-goat doctor --repair` turn it off in that case and say so, and `token-goat uninstall --vscode` turns it back on if it is still off. A project-scope install leaves it alone and prints a note instead; set `"chat.useClaudeHooks": false` in your VS Code user settings yourself if you see hooks run twice. `token-goat doctor` reports the duplicate either way. Without token-goat's Claude Code hooks there is no duplicate, and token-goat does not touch the setting.
 
 ### Visual Studio users
 

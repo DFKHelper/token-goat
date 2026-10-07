@@ -42,7 +42,7 @@ import { installOpencode, isOpencodeInstalled } from './bridges/opencode_install
 import { installOpenclaw, isOpenclawInstalled } from './bridges/openclaw_install.js'
 import { installPi, isPiInstalled } from './bridges/pi_install.js'
 import { installAntigravity, isAntigravityInstalled } from './bridges/antigravity_install.js'
-import { disableVscodeClaudeHooks, vscodeHooksInstalled, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
+import { disableVscodeClaudeHooks, vscodeHooksInstalled, vscodeRunsTokenGoatClaudeHooks } from './bridges/vscode_install.js'
 
 export function shimIsCurrent(scriptPath: string, expected: string): boolean {
   try {
@@ -247,11 +247,11 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
     errors.push(`Failed to repair Antigravity CLI integration: ${extractErrorMessage(e)}`)
   }
 
-  // 14. VS Code chat.useClaudeHooks duplicate conflict
+  // 14. VS Code chat.useClaudeHooks duplicate conflict. Same rule as install --vscode: only with token-goat's Claude Code hooks installed and a user-scope VS Code install, since the setting is user-wide and covers every Claude hook in VS Code.
   try {
-    if (vscodeUsesClaudeHooks() && (vscodeHooksInstalled() || vscodeHooksInstalled({ project: true, projectRoot }))) {
+    if (vscodeRunsTokenGoatClaudeHooks() && vscodeHooksInstalled()) {
       if (disableVscodeClaudeHooks()) {
-        repairs.push('Disabled VS Code chat.useClaudeHooks in VS Code settings to prevent duplicate hook execution')
+        repairs.push('Disabled VS Code chat.useClaudeHooks in VS Code user settings to prevent duplicate hook execution. It covers every Claude hook in VS Code, not only the token-goat ones. Set "chat.useClaudeHooks": true to turn it back on, or run `token-goat uninstall --vscode --user` to put it back')
       }
     }
   } catch (e) {

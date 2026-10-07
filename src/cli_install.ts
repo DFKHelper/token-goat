@@ -16,14 +16,14 @@ import { installOpenclaw, isOpenclawInstalled, uninstallOpenclaw } from './bridg
 import { HOOKS_SCRIPT_FILE, installCopilotCli, isCopilotCliInstalled, uninstallCopilotCli } from './bridges/copilot_cli_install.js'
 import { installGrok, isGrokInstalled, uninstallGrok } from './bridges/grok_install.js'
 import { installAntigravity, isAntigravityInstalled, uninstallAntigravity } from './bridges/antigravity_install.js'
-import { installVscode, otherScopeHasManagedServer, uninstallVscode, vscodeDecoderConfigured, vscodeScopeFromFlags, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
+import { installVscode, otherScopeHasManagedServer, restoreVscodeClaudeHooks, uninstallVscode, vscodeDecoderConfigured, vscodeHooksInstalled, vscodeRunsTokenGoatClaudeHooks, vscodeScopeFromFlags } from './bridges/vscode_install.js'
 import { installCursor, isCursorInstalled, uninstallCursor } from './bridges/cursor_install.js'
 import { installZed, isZedInstalled, uninstallZed } from './bridges/zed_install.js'
 import { installVisualStudio, isVisualStudioInstalled, uninstallVisualStudio, visualStudioDuplicateNote, visualStudioMcpStatus, visualStudioOtherScopeHasManagedServer } from './bridges/visualstudio_install.js'
 import { installJetbrains, isJetbrainsInstalled, uninstallJetbrains } from './bridges/jetbrains_install.js'
 import { installNeovim, isNeovimInstalled, uninstallNeovim } from './bridges/neovim_install.js'
 import { detectEcosystems } from './bridges/detect_ecosystems.js'
-import { VSCODE_DOUBLE_FIRE_NOTE, VSCODE_PROJECT_SCOPE_COVERAGE_NOTE, VSCODE_USER_SCOPE_MIGRATED_NOTE, VSCODE_USER_SCOPE_MULTIROOT_NOTE } from './cli_doctor_platforms.js'
+import { VSCODE_CLAUDE_HOOKS_RESTORED_NOTE, VSCODE_CLAUDE_HOOKS_TURNED_OFF_NOTE, VSCODE_DOUBLE_FIRE_NOTE, VSCODE_PROJECT_SCOPE_COVERAGE_NOTE, VSCODE_USER_SCOPE_MIGRATED_NOTE, VSCODE_USER_SCOPE_MULTIROOT_NOTE } from './cli_doctor_platforms.js'
 import { isWorkerRunning } from './worker_lifecycle.js'
 import { queryServers } from './hook_client.js'
 import { installVerificationNotice } from './bridges_status.js'
@@ -379,8 +379,8 @@ export async function cmdInstall(opts: {
       out(VSCODE_USER_SCOPE_MULTIROOT_NOTE)
     }
     if (vscodeResult.disabledClaudeHooks) {
-      out('NOTE: Turned off chat.useClaudeHooks in VS Code settings to prevent duplicate hook execution with --vscode hooks.')
-    } else if (vscodeUsesClaudeHooks()) {
+      out(VSCODE_CLAUDE_HOOKS_TURNED_OFF_NOTE)
+    } else if (vscodeRunsTokenGoatClaudeHooks()) {
       out(VSCODE_DOUBLE_FIRE_NOTE)
     }
   }
@@ -606,6 +606,8 @@ export async function cmdUninstall(opts: {
     const removed = removal.run()
     out(removed ? `Removed token-goat ${removal.label}.` : `No token-goat ${removal.label} to remove.`)
   }
+  // Only a user-scope install turns chat.useClaudeHooks off, so it comes back once no user-scope VS Code hooks are left to duplicate; a project-scope uninstall with the user-scope hooks still in place keeps it off.
+  if (opts.vscode === true && !vscodeHooksInstalled() && restoreVscodeClaudeHooks()) out(VSCODE_CLAUDE_HOOKS_RESTORED_NOTE)
   if (skippedUserOnly.length > 0) {
     out(`NOTE: ${skippedUserOnly.map((key) => `--${key}`).join(', ')} are user-scope only and were not touched by this project-scope uninstall. Run ${fencedCommand('token-goat uninstall')} with those flags (without --project) to remove them.`)
   }

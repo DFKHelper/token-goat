@@ -76,6 +76,21 @@ export function takeCreatedRootKey(filePath: string, rootKey: string): boolean {
   return takeCreatedConfig(rootKeyMarker(filePath, rootKey))
 }
 
+/** The ledger key for "token-goat changed the setting `key` in `filePath` from a literal `true` to `false`", built like {@link rootKeyMarker}. The prior value is part of the key because it is the only one ever turned off, so uninstall knows what to put back. */
+function turnedOffMarker(filePath: string, key: string): string {
+  return `${filePath}#turned-off=${key}:true`
+}
+
+/** Remember that token-goat turned the user's `key` in `filePath` from true to false. */
+export function recordTurnedOffSetting(filePath: string, key: string): void {
+  recordCreatedConfig(turnedOffMarker(filePath, key))
+}
+
+/** True when token-goat turned `key` in `filePath` from true to false, forgetting the marker in the same step. */
+export function takeTurnedOffSetting(filePath: string, key: string): boolean {
+  return takeCreatedConfig(turnedOffMarker(filePath, key))
+}
+
 /** Remember that token-goat wrote the backup at `backupPath`. Backups share the created-configs ledger because they pose the identical question. Once written, a `<config>.bak.<stamp>` token-goat made is indistinguishable on disk from one a user made by hand, so uninstall cannot tell them apart by name -- and a glob over `*.bak.*` would delete the user's. Creation is recorded instead, exactly as it is for a config file. */
 export function recordCreatedBackup(backupPath: string): void {
   recordCreatedConfig(backupPath)

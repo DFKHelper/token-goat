@@ -450,6 +450,11 @@ export function isInstalled(scope: HookScope = 'user'): boolean {
   return gaps !== null && gaps.missing.length === 0 && gaps.outdated.length === 0 && gaps.broken.length === 0
 }
 
+/** Whether token-goat's Claude Code hooks are installed in either scope: the one test doctor's VS Code chat.useClaudeHooks row, `install --vscode` and `doctor --repair` all apply before treating that setting as a duplicate of token-goat's own hooks. */
+export function claudeHooksInstalledAnyScope(): boolean {
+  return isInstalled('user') || isInstalled('project')
+}
+
 /** Claude Code event keys in `scope` that lack this build's exact hook entry, split by whether the event still reaches token-goat. */
 export interface HookEventGaps {
   /** No live token-goat hook at all (none, or only a {@link LEGACY_COMMAND_MARKERS} leftover that no longer resolves): the event never reaches token-goat. */

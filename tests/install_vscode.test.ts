@@ -440,7 +440,7 @@ describe('chat.useClaudeHooks double-fire detection', () => {
     }
   })
 
-  it('installVscode turns off chat.useClaudeHooks when enabled in user settings', () => {
+  it('installVscode leaves the user-wide chat.useClaudeHooks alone from a project-scope install', () => {
     const settings = vscodeUserSettingsPath()
     fs.mkdirSync(path.dirname(settings), { recursive: true })
     fs.writeFileSync(settings, '{\n  // custom user config\n  "chat.useClaudeHooks": true\n}\n')
@@ -448,11 +448,8 @@ describe('chat.useClaudeHooks double-fire detection', () => {
     const project = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-proj-'))
     try {
       const result = installVscode({ project: true, projectRoot: project })
-      expect(result.disabledClaudeHooks).toBe(true)
-      expect(vscodeUsesClaudeHooks(settings)).toBe(false)
-      const after = fs.readFileSync(settings, 'utf8')
-      expect(after).toContain('// custom user config')
-      expect(after).toContain('"chat.useClaudeHooks": false')
+      expect(result.disabledClaudeHooks).toBe(false)
+      expect(vscodeUsesClaudeHooks(settings)).toBe(true)
     } finally {
       fs.rmSync(project, { recursive: true, force: true })
     }

@@ -24,7 +24,7 @@ import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath, LEGACY_HOOKS_SCRIPT_FILE, readCopilotHooksOwners } from './bridges/copilot_cli_install.js'
 import { hasCreatedConfig } from './bridges/created_configs.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './bridges/copilot_cli.js'
-import { claudeHookScriptPath, hookEventGaps, isInstalled } from './install.js'
+import { claudeHookScriptPath, claudeHooksInstalledAnyScope, hookEventGaps, isInstalled } from './install.js'
 import { parseNativeInvocation, splitHookCommand } from './native_hook.js'
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from './bridges/codex.js'
@@ -733,7 +733,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   if (codexShimResult) results.push(codexShimResult)
   const vscodeHooksResult = checkVscodeClaudeHooks(
     vscodeUsesClaudeHooks(),
-    isInstalled('user') || isInstalled('project'),
+    claudeHooksInstalledAnyScope(),
     vscodeHooksInstalled() || vscodeHooksInstalled({ project: true }),
   )
   if (vscodeHooksResult) results.push(vscodeHooksResult)

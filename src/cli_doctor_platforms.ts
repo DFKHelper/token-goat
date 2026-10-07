@@ -99,9 +99,16 @@ export function checkVscodeUserScopeHooks(userScope: boolean, projectScope: bool
   }
 }
 
-/** One-line note `install --vscode` prints when VS Code will also run the Claude Code hooks. */
+/** One-line note `install --vscode` prints when VS Code will also run token-goat's Claude Code hooks and this install left chat.useClaudeHooks alone, which a project-scope install always does: the setting is user-wide. */
 export const VSCODE_DOUBLE_FIRE_NOTE =
-  'NOTE: VS Code has chat.useClaudeHooks turned on, so it also runs the token-goat hooks in ~/.claude/settings.json and each one fires twice. Turn chat.useClaudeHooks off in VS Code settings to keep only the --vscode hooks.'
+  'NOTE: VS Code has chat.useClaudeHooks turned on, so it also runs the token-goat hooks in ~/.claude/settings.json and each one fires twice. token-goat left it alone because it is a user-wide VS Code setting, and turning it off also stops every other Claude hook you have in VS Code. If you see hooks run twice, set "chat.useClaudeHooks": false in your VS Code user settings.'
+
+/** One-line note printed when `install --vscode --user` turned chat.useClaudeHooks off. */
+export const VSCODE_CLAUDE_HOOKS_TURNED_OFF_NOTE =
+  'NOTE: Turned off chat.useClaudeHooks in your VS Code user settings so token-goat hooks do not run twice. That setting covers every Claude hook in VS Code, not only the token-goat ones. To turn it back on, set "chat.useClaudeHooks": true in VS Code settings, or run `token-goat uninstall --vscode --user` to put it back.'
+
+/** One-line note `uninstall --vscode` prints when it put back the chat.useClaudeHooks value token-goat had turned off. */
+export const VSCODE_CLAUDE_HOOKS_RESTORED_NOTE = 'Turned chat.useClaudeHooks back on in your VS Code user settings, as it was before token-goat turned it off.'
 
 /** Warn when VS Code will run token-goat's Claude Code hooks as well as its own. */
 export function checkVscodeClaudeHooks(useClaudeHooks: boolean, claudeHooksInstalled: boolean, vscodeHooksInstalled: boolean): DoctorResult | null {

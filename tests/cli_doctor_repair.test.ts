@@ -246,7 +246,7 @@ describe('doctor auto-repair and embedding model checks', () => {
       expect(result.errors).toHaveLength(0)
     })
 
-    it('disables chat.useClaudeHooks in VS Code settings when VS Code hooks are installed', async () => {
+    it('disables chat.useClaudeHooks in VS Code settings when user-scope VS Code hooks and token-goat Claude Code hooks are installed', async () => {
       const mockConfig: Config = {
         mcp: { confine_reads_to_project_root: false },
         indexing: { cross_project_symbols: true, embeddings_enabled: true },
@@ -259,10 +259,14 @@ describe('doctor auto-repair and embedding model checks', () => {
       vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(true)
 
       const { installVscode, vscodeUserSettingsPath } = await import('../src/bridges/vscode_install.js')
+      const { installHooks } = await import('../src/install.js')
+      // The user-scope VS Code files land under APPDATA on Windows, so it is pointed at this test's scratch home rather than the worker-wide one later tests share.
+      vi.stubEnv('APPDATA', userHome)
+      installHooks('user')
       const settings = vscodeUserSettingsPath()
       fs.mkdirSync(path.dirname(settings), { recursive: true })
       fs.writeFileSync(settings, '{\n  // custom\n  "chat.useClaudeHooks": true\n}\n', 'utf8')
-      installVscode({ project: true, projectRoot })
+      installVscode()
       fs.writeFileSync(settings, '{\n  // custom\n  "chat.useClaudeHooks": true\n}\n', 'utf8')
 
       const result = await runDoctorRepair({ rootDir: projectRoot })

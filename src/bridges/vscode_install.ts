@@ -8,7 +8,8 @@ import { buildGuidanceBody } from './guidance_block.js'
 import { loadConfig } from '../config.js'
 import { canonicalProjectRoot, copilotHooksFilePaths, installCopilotHooksFile, readCopilotHooksOwners, releaseCopilotHooksFile } from './copilot_cli_install.js'
 import { assertProjectScopeTarget, projectPathIsConsultable, projectScopeRoot, withInstallScope } from './project_scope_guard.js'
-import { recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, takeCreatedConfig } from './created_configs.js'
+import { recordCreatedConfig, recordTurnedOffSetting, removeCreatedBackups, removeCreatedIfEmpty, takeCreatedConfig, takeTurnedOffSetting } from './created_configs.js'
+import { claudeHooksInstalledAnyScope } from '../install.js'
 import { dropEmptyServers, hasManagedServer, isManagedServer, isResidueServersJson, managedServer, noteRootKeyCreation, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
 import { writeSettingsKeepingComments } from './commented_settings.js'
 import { jsonc, parseJsonOrJsonc, stripBom } from '../jsonc_text.js'
@@ -102,6 +103,8 @@ export function vscodeHooksInstalled(opts: VscodeScopeOptions = {}): boolean {
   return readCopilotHooksOwners(vscodeHooksDir(opts)).has('vscode')
 }
 
+const CLAUDE_HOOKS_SETTING = 'chat.useClaudeHooks'
+
 export function vscodeUserSettingsPath(): string {
   return path.join(vscodeUserConfigDir(), 'settings.json')
 }
@@ -119,22 +122,52 @@ export function vscodeUsesClaudeHooks(settingsPath = vscodeUserSettingsPath()): 
   return (parsed as Record<string, unknown>)['chat.useClaudeHooks'] === true
 }
 
-/** Turns off `chat.useClaudeHooks` in VS Code's user settings if enabled, preserving all comments and other settings. Returns true if the setting was present and set to true and was updated to false; false otherwise. */
+/** True when VS Code would run token-goat's own Claude Code hooks a second time: `chat.useClaudeHooks` is on AND token-goat's Claude Code hooks are installed. Without the second half there is no duplicate, and turning the setting off would only stop the user's own Claude hooks in VS Code. */
+export function vscodeRunsTokenGoatClaudeHooks(settingsPath = vscodeUserSettingsPath()): boolean {
+  return vscodeUsesClaudeHooks(settingsPath) && claudeHooksInstalledAnyScope()
+}
+
+/** The settings file as an object, or null when it is missing, unreadable, malformed, or not an object. */
+function readSettingsObject(settingsPath: string): Record<string, unknown> | null {
+  try {
+    const prev = parseJsonOrJsonc(stripBom(fs.readFileSync(settingsPath, 'utf8')), { allowTrailingComma: true })
+    return prev === null || typeof prev !== 'object' || Array.isArray(prev) ? null : (prev as Record<string, unknown>)
+  } catch {
+    return null
+  }
+}
+
+/** Turns off `chat.useClaudeHooks` in VS Code's user settings if enabled, preserving all comments and other settings, and records in the created-configs ledger that token-goat did it so `uninstall --vscode` can turn it back on. Returns true if the setting was present and set to true and was updated to false; false otherwise. */
 export function disableVscodeClaudeHooks(settingsPath = vscodeUserSettingsPath()): boolean {
   if (!vscodeUsesClaudeHooks(settingsPath)) return false
+  const prev = readSettingsObject(settingsPath)
+  if (prev === null) return false
   try {
-    const raw = fs.readFileSync(settingsPath, 'utf8')
-    const body = stripBom(raw)
-    const prev = parseJsonOrJsonc(body, { allowTrailingComma: true })
-    if (prev === null || typeof prev !== 'object' || Array.isArray(prev)) return false
-    const next = { ...(prev as Record<string, unknown>), 'chat.useClaudeHooks': false }
     withInstallScope(undefined, () => {
-      writeSettingsKeepingComments(settingsPath, next, { allowTrailingComma: true })
+      writeSettingsKeepingComments(settingsPath, { ...prev, [CLAUDE_HOOKS_SETTING]: false }, { allowTrailingComma: true })
     })
-    return true
   } catch {
     return false
   }
+  recordTurnedOffSetting(settingsPath, CLAUDE_HOOKS_SETTING)
+  return true
+}
+
+/** Turns `chat.useClaudeHooks` back on when token-goat turned it off and it still reads false, so the user has not changed it since; the marker goes either way. Returns true when the setting was written back to true. */
+export function restoreVscodeClaudeHooks(settingsPath = vscodeUserSettingsPath()): boolean {
+  if (!takeTurnedOffSetting(settingsPath, CLAUDE_HOOKS_SETTING)) return false
+  const current = readSettingsObject(settingsPath)
+  if (current === null || current[CLAUDE_HOOKS_SETTING] !== false) return false
+  try {
+    withInstallScope(undefined, () => {
+      writeSettingsKeepingComments(settingsPath, { ...current, [CLAUDE_HOOKS_SETTING]: true }, { allowTrailingComma: true })
+    })
+  } catch (e) {
+    // Kept, so the next uninstall can still put the user's value back.
+    recordTurnedOffSetting(settingsPath, CLAUDE_HOOKS_SETTING)
+    throw e
+  }
+  return true
 }
 
 function readConfig(filePath: string): ServersJsonConfig {
@@ -153,7 +186,7 @@ export interface VscodeInstallResult {
   migratedFromUserScope: boolean
   /** Which scope was actually written: 'project' (the default) or 'user' (`--user`). */
   scope: 'project' | 'user'
-  /** True when chat.useClaudeHooks was turned off in VS Code settings to prevent duplicate hook execution. */
+  /** True when chat.useClaudeHooks was turned off in VS Code settings to prevent duplicate hook execution. Only a user-scope install does this, and only while token-goat's Claude Code hooks are installed. */
   disabledClaudeHooks?: boolean
 }
 
@@ -262,8 +295,9 @@ function installVscodeScoped(opts: VscodeScopeOptions): VscodeInstallResult {
   }
   if (scope === 'project') syncVisualStudioProjectGuidance(instructionsPath)
   const hooks = installCopilotHooksFile(vscodeHooksDir(opts), 'vscode')
+  // chat.useClaudeHooks is a user-wide setting covering every Claude hook in VS Code, so only a user-scope install, itself user-wide, changes it. A project-scope install writes only this workspace's .github/hooks and leaves it alone; install prints a note naming the setting instead.
   let disabledClaudeHooks = false
-  if (vscodeUsesClaudeHooks()) {
+  if (scope === 'user' && vscodeRunsTokenGoatClaudeHooks()) {
     disabledClaudeHooks = disableVscodeClaudeHooks()
   }
   return {
