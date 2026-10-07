@@ -39,7 +39,7 @@ import {
 import type { HookOutput } from './types.js'
 import { evaluateFirstReadSymbolPolicy, safeSuggestionTarget, formatKb } from './hooks_read_policy.js'
 import { buildPackageManifestHint } from './hints.js'
-import { querySymbols, getFileEntry } from './index_reader.js'
+import { querySymbols, getFileEntry, getReadNavigationEvidence } from './index_reader.js'
 import { extractShellBannerHeading } from './section_reader.js'
 import { isLockFile, isManifestFile, isInBuildDir, isGeneratedFile } from './hints/lang_patterns.js'
 import {
@@ -778,9 +778,15 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             : markdownSize
         const tooLargeForFirstRead = gateSize !== null && gateSize >= largeFileDenyBytes()
         const config = loadConfig()
-        const firstReadSymbolDeny = !alreadyRead && gateSize !== null &&
+        // The gate evaluateFirstReadSymbolPolicy applies to code: a positive byte threshold, and an index entry that still matches the file, so an unindexed or since-edited file keeps the heading tree. The count is the index's own, since `headings` stops at the first 40 H1-H3 lines.
+        const policyEvidence = !alreadyRead && gateSize !== null &&
           config.hints.first_read_symbol_policy === 'deny' &&
+          config.hints.first_read_symbol_bytes > 0 &&
           gateSize >= config.hints.first_read_symbol_bytes
+          ? getReadNavigationEvidence(normalized)
+          : null
+        const policyHeadingCount = policyEvidence !== null && !policyEvidence.isStale ? policyEvidence.headingCount : 0
+        const firstReadSymbolDeny = policyHeadingCount > 0
         const isSmallUnseenSlice = slice.kind === 'bytes' && markdownSize !== null &&
           slice.bytes < config.hints.reread_deny_min_bytes
         if ((alreadyRead && !isSmallUnseenSlice) || tooLargeForFirstRead || firstReadSymbolDeny) {
@@ -789,7 +795,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             const safeHeading = headingTarget.name ? safeSuggestionTarget(headingTarget.name) : null
             // quotedArg keeps a `$` or backtick in the path from making the relay guard cut the commands, and the edit-anyway hint takes its own line so a cut in the explanation stops short of it.
             const explanation =
-              `${shown} is large (${formatKb(markdownSize ?? 0)}KB with ${headings.length} headings). Whole-file first read denied by first_read_symbol_policy. ` +
+              `${shown} is large (${formatKb(markdownSize ?? 0)}KB with ${policyHeadingCount} headings). Whole-file first read denied by first_read_symbol_policy. ` +
               `Use ${fencedCommand('token-goat outline ' + quotedArg(shown))} to map sections, or re-read with offset/limit for a specific section.`
             return denyOutput(
               (safeHeading ? leadWithCommand('token-goat section ' + quotedArg(`${shown}::${safeHeading}`), 'to read surgically', explanation) : explanation) +

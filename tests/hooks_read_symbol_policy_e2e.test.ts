@@ -177,4 +177,48 @@ describe('first-read symbol policy on a large markdown file', () => {
     expect(relayed).toMatch(/Run `token-goat section '[^']*notes\$v2\.md::[^']+'` to read surgically\./)
     expect(relayed).toMatch(/Use `token-goat outline '[^']*notes\$v2\.md'` to map sections/)
   })
+
+  it('reports every heading the index holds, not a capped list', () => {
+    setPolicy('deny')
+    const filePath = writeLargeMarkdown()
+    indexFileSync(filePath, globalDbPath())
+
+    const out = firstRead(filePath, `policy-md-count-${process.pid}-${Date.now()}`)
+    expect(out.hookType).toBe('deny')
+    if (out.hookType !== 'deny') return
+    // HAND-DERIVED: writeLargeMarkdown writes one `# Guide` and 401 `##` sections.
+    expect(out.message).toContain('KB with 402 headings). Whole-file first read denied by first_read_symbol_policy.')
+  })
+
+  it('leaves an unindexed markdown file to the heading tree, as it leaves unindexed code alone', () => {
+    setPolicy('deny')
+    const filePath = writeLargeMarkdown()
+
+    const out = firstRead(filePath, `policy-md-unindexed-${process.pid}-${Date.now()}`)
+    expect(out.hookType === 'deny' && out.message.includes('first_read_symbol_policy')).toBe(false)
+  })
+
+  it('leaves a markdown file edited since indexing to the heading tree', () => {
+    setPolicy('deny')
+    const filePath = writeLargeMarkdown()
+    indexFileSync(filePath, globalDbPath())
+    // HAND-DERIVED: a later edit the index has not seen, with an mtime moved well past the indexed one.
+    fs.appendFileSync(filePath, '\n## Late addition\n\nWritten after indexing.\n')
+    const later = new Date(Date.now() + 60_000)
+    fs.utimesSync(filePath, later, later)
+
+    const out = firstRead(filePath, `policy-md-stale-${process.pid}-${Date.now()}`)
+    expect(out.hookType === 'deny' && out.message.includes('first_read_symbol_policy')).toBe(false)
+  })
+
+  it('treats first_read_symbol_bytes = 0 as off, as the code policy does', () => {
+    setPolicy('deny')
+    vi.stubEnv('TOKEN_GOAT_FIRST_READ_SYMBOL_BYTES', '0')
+    invalidateConfigCache()
+    const filePath = writeLargeMarkdown()
+    indexFileSync(filePath, globalDbPath())
+
+    const out = firstRead(filePath, `policy-md-zero-${process.pid}-${Date.now()}`)
+    expect(out.hookType === 'deny' && out.message.includes('first_read_symbol_policy')).toBe(false)
+  })
 })
