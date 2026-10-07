@@ -40,16 +40,24 @@ export function formatParseError(str: string): string {
 
 /** The stderr rendering of a `{ text, code }` handler's non-zero result: the same `token-goat:` first line a thrown error gets, each line escaped on its own. A JSON body is a `--json` caller's machine-readable answer and passes through untouched, so it still parses. */
 export function formatFailedResultText(text: string): string {
+  return isJsonBody(text) ? text : formatCommandError(new CliError(text.split('\n')))
+}
+
+/** The same failure text with each line escaped on its own and no `token-goat:` label, for a surface that is not stderr: the MCP server hands it back as a tool result. A JSON body passes through untouched. */
+export function displaySafeFailureText(text: string): string {
+  return isJsonBody(text) ? text : text.split('\n').map(displaySafeText).join('\n')
+}
+
+function isJsonBody(text: string): boolean {
   const head = text.trimStart()[0]
-  if (head === '{' || head === '[') {
-    try {
-      JSON.parse(text)
-      return text
-    } catch {
-      // Not JSON after all: an error message that happens to open with a bracket.
-    }
+  if (head !== '{' && head !== '[') return false
+  try {
+    JSON.parse(text)
+    return true
+  } catch {
+    // Not JSON after all: an error message that happens to open with a bracket.
+    return false
   }
-  return formatCommandError(new CliError(text.split('\n')))
 }
 
 /** A report command's failure, written where its caller looks: with `--json` the `body` goes to stdout, so the caller still gets a document that parses, and otherwise `message` is the one `token-goat:` error on stderr, never a report header on stdout. Sets exit code 1 either way. */

@@ -43,6 +43,8 @@ import { extractErrorMessage, foldCaseForContainment } from './util.js'
 import { statThroughHandle } from './handle_stat.js'
 import { normalizePath, displaySafeJson } from './paths.js'
 import { expandSpecPath } from './spec_path.js'
+import { displaySafeFailureText } from './command_error.js'
+import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 
 // The read_commands.ts handlers below are shared verbatim with the CLI (see the file-level doc comment), so their error/ambiguity/overflow text is written for a shell caller: literal `token-goat <cmd> "..."` retry commands and `--flag`-style CLI switches. An MCP client has no shell and no CLI flags -- only this tool's own JSON params -- so a model driving an MCP client would either try to shell out (which fails) or get stuck. Rewrite those CLI-only affordances into MCP-appropriate guidance (re-call this tool with an adjusted parameter) before wrapping the text into a CallToolResult, without touching read_commands.ts/ overflow_guard.ts's CLI-facing text at all -- the CLI's own output stays unchanged.
 const TOKEN_GOAT_RETRY_RE = /token-goat (\w[\w-]*) (?:"([^"]+)"|'([^']+)')/g
@@ -68,7 +70,10 @@ function mcpFriendlyText(text: string): string {
   // quotedArg single-quotes an argument holding `$`, a backtick or `"`, so the argument is in whichever group matched.
   let out = text.replace(TOKEN_GOAT_RETRY_RE, (_match, cmd: string, doubleQuoted: string | undefined, singleQuoted: string | undefined) => {
     const param = RETRY_PARAM_BY_COMMAND[cmd] ?? 'parameter'
-    return `the "${cmd}" tool again with a more specific ${param} (e.g. "${doubleQuoted ?? singleQuoted ?? ''}")`
+    const value = doubleQuoted ?? singleQuoted ?? ''
+    // The example sits in double quotes, often inside the backtick fence the command had, so a value holding either mark is left out rather than closing one of them early.
+    const example = /["`]/.test(value) ? '' : ` (e.g. "${value}")`
+    return `the "${cmd}" tool again with a more specific ${param}${example}`
   })
   out = out.replace(/--json\b/g, 'the json parameter')
   out = out.replace(/--limit\b/g, 'the limit parameter')
@@ -77,10 +82,11 @@ function mcpFriendlyText(text: string): string {
   return out
 }
 
-/** Wraps a `{ text, code }` result from a read_commands handler into an MCP `CallToolResult`. */
+/** Wraps a `{ text, code }` result from a read_commands handler into an MCP `CallToolResult`. A failure is token-goat's own words around names taken from the index, so it gets what the CLI's stderr and every hook's output get: each line display-safe (formatFailedResultText's escaping) and any suggested command whose quoting a name broke out of dropped (the relay's guard). A success is left as its handler built it, because it carries a file's own content, which neither treatment may rewrite. */
 function toCallToolResult(result: { text: string; code: number }): CallToolResult {
+  const text = result.code === 0 ? result.text : stripUnsafeSuggestions(displaySafeFailureText(result.text))
   return {
-    content: [{ type: 'text', text: mcpFriendlyText(result.text) }],
+    content: [{ type: 'text', text: mcpFriendlyText(text) }],
     isError: result.code !== 0,
   }
 }

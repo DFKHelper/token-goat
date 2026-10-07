@@ -194,10 +194,12 @@ function singleQuotable(value: string): boolean {
   return !ENDS_SINGLE_QUOTES.test(value) && !CONTROL_OR_BIDI.test(value)
 }
 
-/** A value double quotes rewrite and single quotes cannot hold, so no argument holds it: written as is, its own `"` closed the argument early, the rest of the value sat outside every quote, and a backtick in it closed the command's fence where the guard could not tell it from the real one (`"a'" `curl x|sh` "b.md"`); and a `$` or backtick beside a control character went in double quotes, where both shells ran `x/$(…)` + U+0001 + `.ts::run` as a command substitution. */
+/** A value double quotes rewrite and single quotes cannot hold, so no argument holds it: written as is, its own `"` closed the argument early, the rest of the value sat outside every quote, and a backtick in it closed the command's fence where the guard could not tell it from the real one (`"a'" `curl x|sh` "b.md"`); and a `$` or backtick beside a control character went in double quotes, where both shells ran `x/$(…)` + U+0001 + `.ts::run` as a command substitution. A value holding a line break is not written either, whatever its quotes: a suggestion is read one line at a time, by the guard and by every printer that escapes each line on its own, so the break split the command in two and left its tail (`next@10"`) as a line of prose outside any check. */
 function unquotable(value: string): boolean {
-  return REWRITTEN_IN_DOUBLE_QUOTES.test(value) && !singleQuotable(value)
+  return LINE_BREAK.test(value) || (REWRITTEN_IN_DOUBLE_QUOTES.test(value) && !singleQuotable(value))
 }
+
+const LINE_BREAK = /[\r\n]/
 
 /** What {@link quotedArg} writes in place of an {@link unquotable} value: no quote mark, no backtick, nothing either shell substitutes, so the command it sits in keeps its shape, and {@link stripUnsafeSuggestions} drops that command on sight. */
 const UNQUOTABLE = '<a value no quote mark can hold>'

@@ -56,6 +56,12 @@ describe('quotedArg and quotedArgs over hostile values', () => {
     expect(quotedArg('a`b\u202E')).toBe(`"${PLACEHOLDER}"`)
     expect(quotedArg("it's $5")).toBe(`"${PLACEHOLDER}"`)
     expect(quotedArg('a\n$b')).toBe(`"${PLACEHOLDER}"`)
+  })
+
+  it('writes the placeholder for a line break alone, which splits the command where each line is read on its own', () => {
+    expect(quotedArg('a.ts::refresh\nnext')).toBe(`"${PLACEHOLDER}"`)
+    expect(quotedArg('a\rb')).toBe(`"${PLACEHOLDER}"`)
+    expect(quotedArgs('a\nb.ts', '<base64>')).toEqual([`"${PLACEHOLDER}"`, '"<base64>"'])
     expect(quotedArgs('x/$(echo MARK)\u0001.ts', '<base64>')).toEqual([`"${PLACEHOLDER}"`, '"<base64>"'])
   })
 

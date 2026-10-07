@@ -311,7 +311,7 @@ export function formatAmbiguity(symbol: string, file: string, candidates: Symbol
   for (const { candidate: c, qualifier } of ambiguityPicks(symbol, candidates)) {
     const retryFile = multiFile ? toDisplayPath(displayRoot, c.filePath) : file
     const label = multiFile ? `${toDisplayPath(displayRoot, c.filePath)}::${qualifier}` : qualifier
-    lines.push(`  - ${label} (line ${c.lineStart})  ->  token-goat ${commandName} ${quotedArg(`${retryFile}::${qualifier}`)}`)
+    lines.push(`  - ${displaySafeText(label)} (line ${c.lineStart})  ->  token-goat ${commandName} ${quotedArg(`${retryFile}::${qualifier}`)}`)
   }
   return lines.join('\n')
 }
