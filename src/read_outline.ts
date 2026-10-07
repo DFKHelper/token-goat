@@ -1,6 +1,8 @@
 /** Outline and skeleton command handlers. Implements token-goat skeleton and token-goat outline, extracting symbol maps without loading full bodies, with multi-file support and filtering. */
 
+import * as fs from 'node:fs'
 import type { SymbolEntry } from './parser_types.js'
+import { indexedSourceText } from './indexed_source.js'
 import { toDisplayPath, displaySafeJson, displaySafeText } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
 import { querySymbols, countSymbols, queryRefCounts } from './index_reader.js'
@@ -47,6 +49,18 @@ function firstSentenceEnd(line: string): number | null {
     return end
   }
   return null
+}
+
+/** The line count the skeleton header names: the lines of the document the stored ranges address (a final newline ends the last line rather than starting another), never less than the last line any symbol reaches. The file's own tail after the last symbol (a closing comment, a trailing block of top-level statements) counts, which the last symbol's end does not. An unreadable file falls back to the symbol extent. */
+function fileLineCount(resolved: string, symbolExtent: number): number {
+  try {
+    const text = indexedSourceText(resolved, fs.readFileSync(resolved, 'utf8'))
+    if (text === '') return symbolExtent
+    const lines = text.split('\n')
+    return Math.max(symbolExtent, text.endsWith('\n') ? lines.length - 1 : lines.length)
+  } catch {
+    return symbolExtent
+  }
 }
 
 /** A doc comment's first line, clipped for the outline, ending in an ellipsis whenever the doc says more than the hint shows: a later sentence on that line, or a later non-blank line. */
@@ -121,7 +135,7 @@ export function prepareSymbolListing(
 
   const fullSourceBytes = sumFileSizes([resolved])
 
-  return { kind: 'ok', resolved, displayRoot: getDisplayRoot(opts.projectRoot), filtered, preFilterCount: scanned, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount, totalLines }
+  return { kind: 'ok', resolved, displayRoot: getDisplayRoot(opts.projectRoot), filtered, preFilterCount: scanned, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount, totalLines: fileLineCount(resolved, totalLines) }
 }
 
 export function runPerFileListing(
@@ -204,12 +218,12 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
     return { text, code: 0 }
   }
 
-  const lines: string[] = [`# Skeleton: ${opts.file}  (${symbolCountLabel(filtered.length, symbolsTruncated, trueSymbolCount)}, ${countNoun(totalLines, 'line')})`]
+  const lines: string[] = [`# Skeleton: ${displaySafeText(opts.file)}  (${symbolCountLabel(filtered.length, symbolsTruncated, trueSymbolCount)}, ${countNoun(totalLines, 'line')})`]
   if (filtered.length === 0 && preFilterCount > 0) lines.push(filteredToEmptyNotice(preFilterCount, opts.minLines, opts.grep))
   for (const sym of filtered) {
     const lineStr = sym.lineStart.toString().padStart(6)
     const statsStr = formatStatsSuffix(refCounts, sym)
-    lines.push(`  ${lineStr}  ${sym.kind.padEnd(10)}  ${displaySafeText(sym.name)}  ${firstBodyLine(sym.body)}${statsStr}`)
+    lines.push(`  ${lineStr}  ${sym.kind.padEnd(10)}  ${displaySafeText(sym.name)}  ${displaySafeText(firstBodyLine(sym.body))}${statsStr}`)
   }
   const text = guardText(staleWarning(resolved, 'skeleton') + lines.join('\n'), 'symbol')
   recordReadStat('stub_view', fullSourceBytes, text, opts.file)
@@ -250,13 +264,13 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
     return { text, code: 0 }
   }
 
-  const lines: string[] = [`# Outline: ${opts.file}  (${symbolCountLabel(filtered.length, symbolsTruncated, trueSymbolCount)})`]
+  const lines: string[] = [`# Outline: ${displaySafeText(opts.file)}  (${symbolCountLabel(filtered.length, symbolsTruncated, trueSymbolCount)})`]
   if (filtered.length === 0 && preFilterCount > 0) lines.push(filteredToEmptyNotice(preFilterCount, opts.minLines, opts.grep))
   for (const sym of filtered) {
     const rangeStr = `${sym.lineStart.toString().padStart(4)}-${sym.lineEnd.toString().padEnd(6)}`
     const kindStr = sym.kind.padEnd(14)
     const bodyLen = sym.lineEnd - sym.lineStart + 1
-    const docFirst = hasRealDocstring(sym.docstring) ? `  # ${clipDocSummary(sym.docstring)}` : ''
+    const docFirst = hasRealDocstring(sym.docstring) ? `  # ${displaySafeText(clipDocSummary(sym.docstring))}` : ''
     const statsStr = formatStatsSuffix(refCounts, sym)
     const notebookSuffix = isVirtualIndexedPath(sym.filePath) ? NOTEBOOK_CELL_LINES_SUFFIX : ''
     lines.push(`  ${rangeStr}  ${kindStr}  ${displaySafeText(sym.name)}  (${bodyLen}ℓ)${docFirst}${statsStr}${notebookSuffix}`)

@@ -81,8 +81,8 @@ export function extractExportNames(text: string, ext: string): string[] {
 
   if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'].includes(e)) {
     // An ECMAScript IdentifierName: ID_Start, $ or _, then ID_Continue, $, ZWNJ or ZWJ, so a name joined by U+200D is read whole rather than cut at the joiner.
-    const declRe = /\bexport\s+(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:function\*?|class|const|let|var|interface|type|enum|namespace)\s+([\p{ID_Start}$_][\p{ID_Continue}$‌‍]*)/gu
-    const defaultRe = /\bexport\s+default\s+([\p{ID_Start}$_][\p{ID_Continue}$‌‍]*)\s*(?:;|$)/gu
+    const declRe = /\bexport\s+(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:function\*?|class|const|let|var|interface|type|enum|namespace)\s+([\p{ID_Start}$_][\p{ID_Continue}$\u200C\u200D]*)/gu
+    const defaultRe = /\bexport\s+default\s+([\p{ID_Start}$_][\p{ID_Continue}$\u200C\u200D]*)\s*(?:;|$)/gmu
     const namedRe = /\bexport\s+(?:type\s+)?\{([^}]*)\}/g
     let m: RegExpExecArray | null
     while ((m = declRe.exec(text)) !== null) push(m[1])
@@ -92,17 +92,17 @@ export function extractExportNames(text: string, ext: string): string[] {
     }
   } else if (e === '.py') {
     for (const line of lines) {
-      const m = /^(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)/.exec(line)
+      const m = /^(?:async\s+)?(?:def|class)\s+([\p{XID_Start}_][\p{XID_Continue}]*)/u.exec(line)
       if (m && !(m[1] ?? '').startsWith('_')) push(m[1])
     }
   } else if (e === '.rs') {
     for (const line of lines) {
-      const m = /^\s*pub(?:\s*\([^)]*\))?\s+(?:async\s+)?(?:fn|struct|enum|trait|type|const|mod|static)\s+([A-Za-z_]\w*)/.exec(line)
+      const m = /^\s*pub(?:\s*\([^)]*\))?\s+(?:async\s+)?(?:fn|struct|enum|trait|type|const|mod|static)\s+([\p{XID_Start}_][\p{XID_Continue}]*)/u.exec(line)
       if (m) push(m[1])
     }
   } else if (e === '.java') {
     for (const line of lines) {
-      const m = /\bpublic\s+(?:static\s+|final\s+|abstract\s+)*(?:class|interface|enum|record)\s+([A-Za-z_]\w*)/.exec(line)
+      const m = /\bpublic\s+(?:static\s+|final\s+|abstract\s+)*(?:class|interface|enum|record)\s+([\p{L}$_][\p{L}\p{N}\p{M}$_]*)/u.exec(line)
       if (m) push(m[1])
     }
   }

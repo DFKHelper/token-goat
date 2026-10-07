@@ -124,11 +124,31 @@ describe('an indexed name printed without quotes is display-safe', () => {
     expect(r.text).toContain('  tip\\u200doff  (3ℓ)')
   })
 
-  it('skeleton escapes a zero-width joiner in the name column; the body line after it is the file as written', () => {
+  it('skeleton escapes a zero-width joiner in the name column and in the source line after it', () => {
     const r = runSkeleton({ file: 'zwj.ts', projectRoot: dir })
     expect(r.code, r.text).toBe(0)
     const row = r.text.split('\n').find((l) => l.includes('function ')) ?? ''
-    expect(row).toContain('  tip\\u200doff  export function ' + ZWJ_NAME + '(')
+    expect(row).toContain('  tip\\u200doff  export function tip\\u200doff(')
+    expect(r.text).not.toContain('\u200d')
+  })
+
+  // HAND-DERIVED: the file below has 8 lines (a final newline ends line 8) and its only symbol ends on line 3, so a header taken from the last symbol's end said 3 lines.
+  it('skeleton names the real line count of a file with lines after its last symbol', () => {
+    fs.writeFileSync(path.join(dir, 'tail.ts'), 'export function a(): number {\n  return 1\n}\n\nconst x = 1\nconst y = 2\n// done\nexport {}\n')
+    const r = runSkeleton({ file: 'tail.ts', projectRoot: dir })
+    expect(r.code, r.text).toBe(0)
+    expect(r.text.split('\n')[0]).toContain('8 lines)')
+  })
+
+  it('skeleton and outline escape the file name they print in their header', () => {
+    const name = 'a\u200db.ts'
+    fs.writeFileSync(path.join(dir, name), 'export function a(): number {\n  return 1\n}\n')
+    indexFileSync(path.join(dir, name), globalDbPath())
+    for (const run of [runSkeleton, runOutline]) {
+      const r = run({ file: name, projectRoot: dir })
+      expect(r.code, r.text).toBe(0)
+      expect(r.text.split('\n')[0] ?? '').toContain('a\\u200db.ts')
+    }
   })
 })
 
@@ -139,6 +159,21 @@ describe('the exports text scan reads a JavaScript name whole', () => {
     expect(extractExportNames('export function a‌b() {}\n', '.js')).toEqual(['a‌b'])
     expect(extractExportNames('const été = 1\nexport default été;\n', '.mjs')).toEqual(['été'])
     expect(extractExportNames('export class $_x {}\n', '.ts')).toEqual(['$_x'])
+  })
+})
+
+describe('the exports text scan reads a Python, Rust or Java name whole', () => {
+  // HAND-DERIVED: Python identifiers are XID_Start/XID_Continue, Rust identifiers are XID, and Java's are Unicode letters, digits, `$` and `_`, so `café`, `Café` and `été` are each one name and the old `[A-Za-z_]\w*` cut them at the accent.
+  it('keeps the accented letter in each language', () => {
+    expect(extractExportNames('def café():\n    pass\nclass Ünï:\n    pass\n', '.py')).toEqual(['café', 'Ünï'])
+    expect(extractExportNames('pub fn été() {}\npub struct Naïve;\n', '.rs')).toEqual(['été', 'Naïve'])
+    expect(extractExportNames('public class Café {}\npublic interface $Tést {}\n', '.java')).toEqual(['Café', '$Tést'])
+  })
+
+  // HAND-DERIVED: `export default été` ends at the newline with no semicolon, and ASI makes that a complete statement; without the m flag `$` matched only at the end of the text.
+  it('ends a default export at a newline when there is no semicolon', () => {
+    expect(extractExportNames('const été = 1\nexport default été\nconst x = 1\n', '.js')).toEqual(['été'])
+    expect(extractExportNames('export default foo\nconst x = 1\n', '.js')).toEqual(['foo'])
   })
 })
 
