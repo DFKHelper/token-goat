@@ -3,6 +3,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { evaluateFirstReadSymbolPolicy, safeSuggestionTarget } from '../src/hooks_read_policy.js'
+import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import type { HookEvent } from '../src/hook_registry.js'
 import type { NavigationEvidence } from '../src/index_reader.js'
 
@@ -230,6 +231,46 @@ describe('evaluateFirstReadSymbolPolicy', () => {
       expect(decision.message).not.toContain('evil"; rm -rf')
       expect(decision.message).toContain('Run `token-goat outline "src/malicious.ts"` to read surgically.')
     }
+  })
+
+  describe('a path holding a shell metacharacter, as relay.ts passes the message on', () => {
+    // HAND-DERIVED: file names legal on every filesystem token-goat runs on, one holding `$` and one holding a backtick, both of which a double-quoted argument would substitute.
+    const unsafePaths = ['src/a$b.ts', 'src/a`b.ts']
+
+    function decide(shownPath: string, policy: 'warn' | 'deny') {
+      return evaluateFirstReadSymbolPolicy({
+        event: makeEvent('view', { path: shownPath }),
+        normalizedPath: shownPath,
+        shownPath,
+        fileSize: 102_400,
+        isFirstRead: true,
+        firstReadSymbolPolicy: policy,
+        firstReadSymbolBytes: 50_000,
+        navigationEvidence: dummyEvidence,
+      })
+    }
+
+    it.each(unsafePaths)('keeps the deny for %s readable and its commands runnable', (shownPath) => {
+      const decision = decide(shownPath, 'deny')
+      expect(decision.action).toBe('deny')
+      if (decision.action !== 'deny') return
+      const relayed = stripUnsafeSuggestions(decision.message)
+      expect(relayed).toContain(`Run \`token-goat read '${shownPath}::parseAst'\` to read surgically.`)
+      expect(relayed).toContain(`${shownPath} is large (100.0KB with 12 indexed symbols). Whole-file first read denied by first_read_symbol_policy.`)
+      expect(relayed).toContain(`token-goat outline '${shownPath}'`)
+      expect(relayed).toContain(`token-goat skeleton '${shownPath}'`)
+      expect(relayed).toContain('re-read with offset/limit for a specific line slice')
+      expect(decision.suggestions).toEqual([`token-goat read '${shownPath}::parseAst'`, `token-goat outline '${shownPath}'`, `token-goat skeleton '${shownPath}'`])
+    })
+
+    it.each(unsafePaths)('keeps the warning for %s readable and its commands runnable', (shownPath) => {
+      const decision = decide(shownPath, 'warn')
+      expect(decision.action).toBe('warn')
+      if (decision.action !== 'warn') return
+      const relayed = stripUnsafeSuggestions(decision.message)
+      expect(relayed).toContain(`Run \`token-goat read '${shownPath}::parseAst'\` to read surgically.`)
+      expect(relayed).toContain(`${shownPath} is 100.0KB with 12 indexed symbols; prefer surgical reads or \`token-goat outline '${shownPath}'\` over reading the whole file.`)
+    })
   })
 
   it('tailors recommendations for markdown headings', () => {

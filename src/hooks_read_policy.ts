@@ -3,7 +3,7 @@ import type { HookEvent } from './hook_registry.js'
 import { getReadNavigationEvidence, type NavigationEvidence } from './index_reader.js'
 import { editAnywayHint, estimateRequestedSlice, readRequestedSliceWindow } from './hooks_read_slice.js'
 import { displaySafePath } from './paths.js'
-import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { fencedCommand, leadWithCommand, quotedArg, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { isWithinQuietHours } from './util.js'
 import { loadConfig } from './config.js'
 
@@ -88,7 +88,7 @@ export function evaluateFirstReadSymbolPolicy(ctx: ReadPolicyContext): ReadPolic
   const totalSymbols = evidence.symbolCount + evidence.headingCount
   if (totalSymbols === 0) return { action: 'allow' }
 
-  // Generate surgical suggestions
+  // Generate surgical suggestions. Every path goes through quotedArg: a `$` or backtick in a raw double-quoted path makes relay.ts's stripUnsafeSuggestions cut the command out, and with it everything up to the line's last backtick.
   const suggestions: string[] = []
   const safeShown = displaySafePath(shownPath)
 
@@ -96,18 +96,19 @@ export function evaluateFirstReadSymbolPolicy(ctx: ReadPolicyContext): ReadPolic
     const top = evidence.topSymbols[0]!
     const safeName = safeSuggestionTarget(top.name)
     if (safeName) {
-      suggestions.push(`token-goat read "${safeShown}::${safeName}"`)
+      suggestions.push('token-goat read ' + quotedArg(`${safeShown}::${safeName}`))
     }
   } else if (evidence.headingCount > 0 && evidence.topHeadings.length > 0) {
     const top = evidence.topHeadings[0]!
     const safeName = safeSuggestionTarget(top.name)
     if (safeName) {
-      suggestions.push(`token-goat section "${safeShown}::${safeName}"`)
+      suggestions.push('token-goat section ' + quotedArg(`${safeShown}::${safeName}`))
     }
   }
 
-  suggestions.push(`token-goat outline "${safeShown}"`)
-  suggestions.push(`token-goat skeleton "${safeShown}"`)
+  const outlineCommand = 'token-goat outline ' + quotedArg(safeShown)
+  const skeletonCommand = 'token-goat skeleton ' + quotedArg(safeShown)
+  suggestions.push(outlineCommand, skeletonCommand)
 
   const primaryCommand = suggestions[0]!
   const kb = formatKb(fileSize)
@@ -116,11 +117,15 @@ export function evaluateFirstReadSymbolPolicy(ctx: ReadPolicyContext): ReadPolic
     : `${evidence.headingCount} indexed heading${evidence.headingCount === 1 ? '' : 's'}`
 
   if (firstReadSymbolPolicy === 'deny') {
+    // The edit-anyway hint keeps its own line: the relay guard cuts a refused command to its line's last backtick, so on a shared line a refused outline command would take the rest of the explanation with it.
     const message =
-      `Run \`${primaryCommand}\` to read surgically. ` +
-      `${safeShown} is large (${kb}KB with ${symbolDetails}). Whole-file first read denied by first_read_symbol_policy. ` +
-      `Use \`token-goat outline "${safeShown}"\` or \`token-goat skeleton "${safeShown}"\` to map structure, or re-read with offset/limit for a specific line slice. ` +
-      editAnywayHint(normalizedPath)
+      leadWithCommand(
+        primaryCommand,
+        'to read surgically',
+        `${safeShown} is large (${kb}KB with ${symbolDetails}). Whole-file first read denied by first_read_symbol_policy. ` +
+        `Use ${fencedCommand(outlineCommand)} or ${fencedCommand(skeletonCommand)} to map structure, or re-read with offset/limit for a specific line slice.`,
+      ) +
+      '\n' + editAnywayHint(normalizedPath)
 
     return {
       action: 'deny',
@@ -132,9 +137,11 @@ export function evaluateFirstReadSymbolPolicy(ctx: ReadPolicyContext): ReadPolic
   }
 
   // Warn (advisory) mode
-  const message =
-    `Run \`${primaryCommand}\` to read surgically. ` +
-    `${safeShown} is ${kb}KB with ${symbolDetails}; prefer surgical reads or \`token-goat outline "${safeShown}"\` over reading the whole file.`
+  const message = leadWithCommand(
+    primaryCommand,
+    'to read surgically',
+    `${safeShown} is ${kb}KB with ${symbolDetails}; prefer surgical reads or ${fencedCommand(outlineCommand)} over reading the whole file.`,
+  )
 
   return {
     action: 'warn',

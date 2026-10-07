@@ -4,6 +4,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invalidateConfigCache } from '../src/config.js'
 import { globalDbPath } from '../src/constants.js'
+import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import { preReadHandler } from '../src/hooks_read.js'
 import { indexFileSync } from '../src/parser.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -21,6 +22,17 @@ function writeLargeModule(name = 'big.ts', count = 1200): string {
   const lines: string[] = []
   for (let i = 0; i < count; i++) lines.push(`export function alphaEntry${i}(value: number): number { return value + ${i} }`)
   fs.writeFileSync(filePath, lines.join('\n') + '\n', 'utf8')
+  return filePath
+}
+
+// HAND-DERIVED: a synthetic markdown guide of `count` `##` sections with one line of prose each, sized past the 50,000-byte default threshold.
+function writeLargeMarkdown(name = 'guide.md', count = 401): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-first-read-policy-md-'))
+  tmpDirs.push(dir)
+  const filePath = path.join(dir, name)
+  const sections: string[] = []
+  for (let i = 0; i < count; i++) sections.push(`## Section ${i}\n\nThis section describes step ${i} of the procedure in enough words to fill a line, then says why the step matters.\n`)
+  fs.writeFileSync(filePath, '# Guide\n\n' + sections.join('\n'), 'utf8')
   return filePath
 }
 
@@ -95,5 +107,38 @@ describe('first-read symbol policy on a really indexed file', () => {
 
     const out = firstRead(filePath, `policy-touched-${process.pid}-${Date.now()}`)
     expect(out.hookType).toBe('deny')
+  })
+
+  it('keeps the deny for a path holding $ readable once the relay guard has passed over it', () => {
+    setPolicy('deny')
+    // HAND-DERIVED: a legal file name holding `$`, which a double-quoted argument would expand.
+    const filePath = writeLargeModule('gen$big.ts')
+    indexFileSync(filePath, globalDbPath())
+
+    const out = firstRead(filePath, `policy-dollar-${process.pid}-${Date.now()}`)
+    expect(out.hookType).toBe('deny')
+    if (out.hookType !== 'deny') return
+    const relayed = stripUnsafeSuggestions(out.message)
+    expect(relayed).toMatch(/Run `token-goat read '[^']*gen\$big\.ts::alphaEntry0'` to read surgically\./)
+    expect(relayed).toContain('Whole-file first read denied by first_read_symbol_policy')
+    expect(relayed).toMatch(/`token-goat outline '[^']*gen\$big\.ts'`/)
+    expect(relayed).toMatch(/`token-goat skeleton '[^']*gen\$big\.ts'`/)
+  })
+})
+
+describe('first-read symbol policy on a large markdown file', () => {
+  it('keeps the deny for a path holding $ readable once the relay guard has passed over it', () => {
+    setPolicy('deny')
+    const filePath = writeLargeMarkdown('notes$v2.md')
+    expect(fs.statSync(filePath).size).toBeGreaterThan(50_000)
+    indexFileSync(filePath, globalDbPath())
+
+    const out = firstRead(filePath, `policy-md-dollar-${process.pid}-${Date.now()}`)
+    expect(out.hookType).toBe('deny')
+    if (out.hookType !== 'deny') return
+    const relayed = stripUnsafeSuggestions(out.message)
+    expect(relayed).toContain('Whole-file first read denied by first_read_symbol_policy')
+    expect(relayed).toMatch(/Run `token-goat section '[^']*notes\$v2\.md::[^']+'` to read surgically\./)
+    expect(relayed).toMatch(/Use `token-goat outline '[^']*notes\$v2\.md'` to map sections/)
   })
 })

@@ -10,7 +10,7 @@ import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavin
 import { preToolPathDeclined } from './vscode_path_gate.js'
 import { detectHarness } from './bridges/registry.js'
 import { readHintCrossesRule } from './rewrite_permission.js'
-import { leadWithCommand, docNavigation, quotedArg, configGetCommand } from './hint_suggestion_guard.js'
+import { leadWithCommand, docNavigation, fencedCommand, quotedArg, configGetCommand } from './hint_suggestion_guard.js'
 import { headingTreeParts, hintTarget, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
 import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, displaySafeText, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
@@ -787,12 +787,13 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           if (firstReadSymbolDeny) {
             recordStat('session_hint', 0, 0)
             const safeHeading = headingTarget.name ? safeSuggestionTarget(headingTarget.name) : null
-            const sectionSuggestion = safeHeading ? `Run \`token-goat section "${shown}::${safeHeading}"\` to read surgically. ` : ''
-            return denyOutput(
-              sectionSuggestion +
+            // quotedArg keeps a `$` or backtick in the path from making the relay guard cut the commands, and the edit-anyway hint takes its own line so a cut in the explanation stops short of it.
+            const explanation =
               `${shown} is large (${formatKb(markdownSize ?? 0)}KB with ${headings.length} headings). Whole-file first read denied by first_read_symbol_policy. ` +
-              `Use \`token-goat outline "${shown}"\` to map sections, or re-read with offset/limit for a specific section. ` +
-              editAnywayHint(normalized)
+              `Use ${fencedCommand('token-goat outline ' + quotedArg(shown))} to map sections, or re-read with offset/limit for a specific section.`
+            return denyOutput(
+              (safeHeading ? leadWithCommand('token-goat section ' + quotedArg(`${shown}::${safeHeading}`), 'to read surgically', explanation) : explanation) +
+              '\n' + editAnywayHint(normalized)
             )
           }
           // A genuinely-first read that's blocked outright (tooLargeForFirstRead, not alreadyRead) never actually happened, so don't record it against re-read dedup -- mirrors the generic large-file path's same rule further below. Otherwise a retry (offset/limit) on the same file hits the "already read this session" 2nd-read deny instead of this same heading-tree guidance, which a genuinely-unread file should still get. A deny that IS because of a real prior read (alreadyRead) still records, same as every other re-read-deny branch in this file, and preReadHandler takes that record back when the deny hands over neither the file nor a diff of it.
