@@ -213,7 +213,7 @@ export function runLineRegion(
     return {
       text:
         `No indexed symbols in '${file}', so line ${asked} cannot be resolved to a region.\n` +
-        `Read the raw lines instead: token-goat read "${file}@${asked}"`,
+        `Read the raw lines instead: token-goat read ${quotedArg(`${file}@${asked}`)}`,
       code: 1,
     }
   }

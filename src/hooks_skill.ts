@@ -95,7 +95,7 @@ function planHeadingTree(body: string, bodyBytes: number, skillName: string, sou
   const phrase = totalHeadings > headings.length
     ? 'its heading tree shows ' + headings.length + ' of ' + totalHeadings +
       ' headings below instead of the full body; the other ' + (totalHeadings - headings.length) +
-      ' load by name just the same, and `token-goat outline "' + displaySafeText(sourcePath) + '"` lists all ' + totalHeadings + '.'
+      ' load by name just the same, and `token-goat outline ' + quotedArg(displaySafeText(sourcePath)) + '` lists all ' + totalHeadings + '.'
     : 'its heading tree (' + headings.length + ' headings) is inlined below instead of the full body.';
   return { sectionsList, treeBytes, phrase };
 }

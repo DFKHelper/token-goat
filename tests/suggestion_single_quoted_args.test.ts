@@ -11,7 +11,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { runAnswer } from '../src/answer_router.js'
 import { bodyFoldNotice } from '../src/fold_delivery.js'
 import { docSectionHint, grepLinesHint, quotedArg, quotedArgs, stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
-import { sliceCommand } from '../src/hint_target.js'
+import { sqlTableHint, surgicalHintFor } from '../src/bash_extractors.js'
+import { fileQueryHint, sliceCommand } from '../src/hint_target.js'
+import { buildPackageManifestHint } from '../src/hints.js'
+import { handleJson, handlePdf, handlePptx, handleSqlite, handleSvg, handleTranscript, handleTxt, handleXlsx, handleYaml } from '../src/hints/file_type_handler.js'
+import { extractChangelogVersionHint, extractMarkdownHeadings, formatHeadingTreeParts } from '../src/hints/markdown_hints.js'
+import { realSymbolReadHint } from '../src/hooks_read.js'
 import { editAnywayHint, truncatedReadDenyMessage } from '../src/hooks_read_slice.js'
 import { createMcpServer } from '../src/mcp_server.js'
 import { indexFileSync } from '../src/parser.js'
@@ -172,6 +177,56 @@ describe('deny and hint templates around a path holding $ or a backtick, as rela
   it('still drops a command whose arguments single quotes cannot all hold', () => {
     const text = sliceCommand('src/a$b.json', { name: 'a.b', real: true, slice: 'key' })
     expect(stripUnsafeSuggestions(text)).toBe('token-goat (command omitted: the path contains shell metacharacters)')
+  })
+})
+
+// HAND-DERIVED: the paths are the METACHAR_PATHS and FENCE_BREAKING_PATHS above, and the expected shapes (a single-quoted path the relay guard keeps, or a dropped command with its sentence kept) follow from the quoting rule, not from the templates' output.
+describe('file-type, shell-read, grep and markdown hints around a path holding $ or a backtick', () => {
+  const BIG = 10_000_000
+  const templates = (p: string): Array<[string, string]> => {
+    const base = p.replace(/\.ts$/, '')
+    return [
+      ['handlePdf', handlePdf(base + '.pdf', 1000).message],
+      ['handleXlsx', handleXlsx(base + '.xlsx').message],
+      ['handlePptx', handlePptx(base + '.pptx').message],
+      ['handleSqlite', handleSqlite(base + '.db').message],
+      ['handleJson spill', handleJson(base + '/content.json', '', BIG).message],
+      ['handleYaml', handleYaml(base + '.yaml', '', BIG).message],
+      ['handleTxt log', handleTxt(base + '.log', '', BIG).message],
+      ['handleSvg', handleSvg(base + '.svg', '', BIG).message],
+      ['handleTranscript', handleTranscript(base + '.vtt', '', BIG).message],
+      ['surgicalHintFor json key', surgicalHintFor(base + '.json', false, true, false, false, { name: 'version', real: true, slice: 'key' })],
+      ['surgicalHintFor xml', surgicalHintFor(base + '.xml', false, false, false, true, { name: 'root', real: true, slice: 'symbol' })],
+      ['surgicalHintFor source', surgicalHintFor(p, false, false, false, false, { name: 'parseFile', real: true, slice: 'symbol' })],
+      ['sqlTableHint', sqlTableHint(base + '.sql', { name: 'users', real: true, slice: 'symbol' })],
+      ['fileQueryHint json', fileQueryHint(base + '.json')],
+      ['fileQueryHint xml', fileQueryHint(base + '.xml')],
+      ['buildPackageManifestHint', buildPackageManifestHint({ file_path: base + '/package.json', shown: base + '/package.json' })?.text ?? ''],
+      ['extractChangelogVersionHint', extractChangelogVersionHint('## [Unreleased]\n\n## [1.2.3]\n', base + '/CHANGELOG.md')],
+      ['formatHeadingTreeParts', formatHeadingTreeParts(extractMarkdownHeadings('# Intro\n\n## Usage\n'), base + '.md').guidance],
+      ['realSymbolReadHint', realSymbolReadHint(p, p)],
+      ['realSymbolReadHint range', realSymbolReadHint(p, p, { start: 3, end: 9 })],
+    ]
+  }
+
+  it.each(METACHAR_PATHS)('keeps every command, the path single-quoted, for %s', (p) => {
+    const lead = p.slice(0, 5)
+    for (const [name, text] of templates(p)) {
+      expect.soft(text, name).toContain("'" + lead)
+      expect.soft(text, name).not.toContain('"' + lead)
+      expect.soft(stripUnsafeSuggestions(text), name).toBe(text)
+    }
+  })
+
+  it.each(FENCE_BREAKING_PATHS)('drops every command and keeps the sentence for %s', (p) => {
+    for (const [name, text] of templates(p)) expectCommandDropped(text, name, p)
+  })
+
+  it('leaves a plain path double-quoted, as before', () => {
+    for (const [name, text] of templates('src/plain.ts')) {
+      expect.soft(text, name).toContain('"src/plain')
+      expect.soft(text, name).not.toContain("'src/plain")
+    }
   })
 })
 

@@ -104,11 +104,13 @@ describe('inline interpreter file reads run capped instead of refused', () => {
     expect(stripUnsafeSuggestions(hint)).toBe(hint)
   })
 
-  it('drops a cap hint suggestion whose path would expand in the shell', () => {
-    // HAND-DERIVED: inside single shell quotes `$x.json` is a literal file name, but pasted into the hint's double-quoted argument it would expand.
+  it('keeps a cap hint suggestion around a path holding $, single-quoted so the shell does not expand it', () => {
+    // HAND-DERIVED: inside single shell quotes `$x.json` is a literal file name; a double-quoted argument would expand it, so the hint single-quotes the path (and every argument beside it) rather than drop the command.
     const hint = capHint(wrapped(preBashHandler(bashEvent(`python -c 'print(open("$x.json").read())'`))))
-    expect(hint).not.toContain('$x.json')
-    expect(hint).toContain('command omitted')
+    expect(hint).toContain("`token-goat json-outline '$x.json'`")
+    expect(hint).toContain("`token-goat json-query '$x.json' 'KEY'`")
+    expect(hint).not.toContain('"$x.json"')
+    expect(hint).not.toContain('command omitted')
   })
 
   it('refuses a script too long to wrap under the command-line ceiling', () => {

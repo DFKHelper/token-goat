@@ -283,10 +283,10 @@ function structuredFormat(shownPath: string): 'json' | 'yaml' | null {
 export function fileQueryHint(shownPath: string, reason = '', grepSubject = 'pattern'): string {
   const format = structuredFormat(shownPath)
   if (format !== null) {
-    return leadWithCommand('token-goat ' + format + '-outline "' + shownPath + '"', 'to list the top-level keys, then `token-goat ' + format + '-query "' + shownPath + '" "<key>"` to read one value', reason)
+    return leadWithCommand('token-goat ' + format + '-outline ' + quotedArg(shownPath), 'to list the top-level keys, then `token-goat ' + format + '-query ' + quotedArgs(shownPath, '<key>').join(' ') + '` to read one value', reason)
   }
   if (/\.(toml|ini|cfg)$/i.test(shownPath)) return leadWithCommand(configGetCommand(shownPath, '<key>'),'to read one value', reason)
-  if (/\.(xml|csproj)$/i.test(shownPath)) return leadWithCommand('token-goat xml-outline "' + shownPath + '"', 'to see the element structure, then `token-goat xml-query "' + shownPath + '" "<path>"` to read one element', reason)
+  if (/\.(xml|csproj)$/i.test(shownPath)) return leadWithCommand('token-goat xml-outline ' + quotedArg(shownPath), 'to see the element structure, then `token-goat xml-query ' + quotedArgs(shownPath, '<path>').join(' ') + '` to read one element', reason)
   return grepLinesHint('<' + grepSubject + '>', shownPath, reason)
 }
 

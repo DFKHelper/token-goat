@@ -1,3 +1,5 @@
+import { quotedArg, quotedArgs } from "./hint_suggestion_guard.js";
+
 export interface HintItem {
   text: string;
   hint_priority: number;
@@ -15,7 +17,7 @@ export function buildPackageManifestHint(options: {
     const basenameLower = fname.toLowerCase();
 
     if (basenameLower === "package.json") {
-      const text = `\`${fname}\` is a package manifest. Run \`token-goat json-query "${options.shown}" "dependencies"\` or \`token-goat json-query "${options.shown}" "devDependencies"\` for focused reads, or \`token-goat json-outline "${options.shown}"\` for every top-level key.`;
+      const text = `\`${fname}\` is a package manifest. Run \`token-goat json-query ${quotedArgs(options.shown, "dependencies").join(" ")}\` or \`token-goat json-query ${quotedArgs(options.shown, "devDependencies").join(" ")}\` for focused reads, or \`token-goat json-outline ${quotedArg(options.shown)}\` for every top-level key.`;
       return {
         text,
         hint_priority: HINT_PRIORITY_MEDIUM,

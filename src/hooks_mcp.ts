@@ -16,6 +16,7 @@ import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/i
 import { clipToDeliveryCap } from './delivery_cap.js'
 import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
 import { hintTarget } from './hint_target.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 
 export const MCP_OVERSIZED_THRESHOLD_BYTES = 25_000
 
@@ -186,7 +187,7 @@ function postMcpHandler(event: HookEvent): HookOutput {
         `[token-goat: oversized MCP result (${rawBytes} bytes) cached as ${id}]\n` +
         `The full payload was cached to prevent harness context spill. Slicing commands:\n` +
         `  token-goat mcp-output ${id} --json-query '<path>' (e.g. 'issues[*].key', 'values[*].id')\n` +
-        `  token-goat mcp-output ${id} --section ${heading.real ? '"' + heading.name + '"' : "'<heading>'"}\n` +
+        `  token-goat mcp-output ${id} --section ${heading.real ? quotedArg(heading.name) : "'<heading>'"}\n` +
         `  token-goat mcp-output ${id} --grep '<regex>' --max-matches 20\n` +
         `  token-goat mcp-output ${id} --head 50\n\n`
       const preview = clipToDeliveryCap(redactedResult.text, Buffer.byteLength(notice, 'utf-8') + 500)

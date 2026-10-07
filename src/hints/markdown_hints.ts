@@ -4,6 +4,7 @@ import { ATX_CLASS_BREAK_RE, matchAtxHeading } from '../line_matchers.js'
 import { eachUnfencedLine } from '../markdown_lines.js'
 import { frontMatterEndIndex } from '../markdown_frontmatter.js'
 import { displaySafeText } from '../paths.js'
+import { quotedArg } from '../hint_suggestion_guard.js'
 
 /** Extract markdown headings (H1-H3 by default; H1-H6 when `limit` is Infinity) with their byte offsets */
 export interface MarkdownHeading {
@@ -110,7 +111,7 @@ export function formatHeadingTreeParts(headings: MarkdownHeading[], filePath: st
 
   const guidanceLines: string[] = []
   guidanceLines.push(`Large markdown file (${headings.length} headings). Use token-goat section to read a specific section:`)
-  guidanceLines.push(`  token-goat section "${filePath}::Heading Name"`)
+  guidanceLines.push(`  token-goat section ${quotedArg(`${filePath}::Heading Name`)}`)
   guidanceLines.push(`  Tip: an unambiguous heading prefix also resolves (e.g. "Lesson 16" instead of the full heading text) — shorter to type and avoids shell-quoting issues with punctuation in long headings.`)
   guidanceLines.push(``)
   guidanceLines.push(`Sections:`)
@@ -167,7 +168,7 @@ export function extractChangelogVersionHint(content: string, filePath: string): 
     if (m) {
       if (foundUnreleased) {
         const ver = m[1]
-        return ` | token-goat section "${filePath}::${ver}"`
+        return ` | token-goat section ${quotedArg(`${filePath}::${ver}`)}`
       }
       if (firstVersion === null) firstVersion = m[1] as string
     }
@@ -176,7 +177,7 @@ export function extractChangelogVersionHint(content: string, filePath: string): 
     }
   }
   if (!foundUnreleased && firstVersion !== null) {
-    return ` | token-goat section "${filePath}::${firstVersion}"`
+    return ` | token-goat section ${quotedArg(`${filePath}::${firstVersion}`)}`
   }
   return ''
 }

@@ -8,7 +8,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook, sessionStateKey } from './hook_registry.js'
 import { passOutput, contextOutput } from './hooks_common.js'
 import { applyHintTracking, classifyEditHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
-import { leadWithCommand } from './hint_suggestion_guard.js'
+import { leadWithCommand, quotedArg } from './hint_suggestion_guard.js'
 import { hintTarget } from './hint_target.js'
 import { appendDirtyPath } from './hooks_index.js'
 import { recordKnownRootThrottled } from './known_roots.js'
@@ -97,7 +97,7 @@ function markdownSectionHint(event: HookEvent, normalized: string): HookOutput {
       const heading = hintTarget(normalized, 'section', { placeholder: 'HeadingName' })
       markHintShown(repeatKey)
       return contextOutput(
-        leadWithCommand('token-goat section "' + escapedPath + '::' + heading.name + '"', 'to re-read a specific section rather than the full file', displaySafePath(editedBasename) + ' was edited.'),
+        leadWithCommand('token-goat section ' + quotedArg(displaySafePath(normalized) + '::' + heading.name), 'to re-read a specific section rather than the full file', displaySafePath(editedBasename) + ' was edited.'),
         [escapedPath],
       )
     }

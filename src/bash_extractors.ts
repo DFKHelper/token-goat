@@ -9,7 +9,7 @@ import { hasBareBackgroundOrNewline, hasUnquotedOperator, isRedirectAmpersand } 
 import { dropFileLineRangesIfChanged, getFileLineRanges } from './session.js'
 import { escapeRegExp } from './util.js'
 import { FALSY_ENV_VALUES } from './env.js'
-import { leadWithCommand, docSectionHint, grepLinesHint, configGetCommand } from './hint_suggestion_guard.js'
+import { leadWithCommand, docSectionHint, grepLinesHint, configGetCommand, quotedArg, quotedArgs } from './hint_suggestion_guard.js'
 import type { HintTarget } from './hint_target.js'
 
 // Defined beside preToolPathDeclined, the rule it applies, so hint_target.ts can gate a path without pulling this module into the core bundle.
@@ -17,7 +17,7 @@ export { commandPathIsTouchable }
 
 // bash_extractors.ts has no index/DB access (adding one pulled index_reader.js's chunk into the eagerly-loaded core bundle, tripping the ceiling tests/guards/core_bundle_stays_split.test.ts enforces), so every ladder below takes a `target` its hook-side caller resolved through hint_target.ts's hintTarget, which knows the index and can read the file; the type import is erased at build time.
 function outlineCommand(shown: string): string {
-  return 'token-goat outline "' + shown + '"'
+  return 'token-goat outline ' + quotedArg(shown)
 }
 
 // JSON and YAML get their own pair rather than the flat-key reader: the query command walks the parsed document and takes `['a.b']` for a key holding a dot, which config-get cannot spell, and the outline lists every top-level key with its type and size, narrowed by `--filter` when a registry holds hundreds. With no key in hand the outline leads, because it runs verbatim where the query needs a key the agent may not know yet.
@@ -25,9 +25,9 @@ function structuredDataHint(hintPath: string, target: string | null, reason = ''
   const ext = /\.(json|ya?ml)$/i.exec(hintPath)?.[1]
   if (ext === undefined) return null
   const fmt = ext.toLowerCase() === 'json' ? 'json' : 'yaml'
-  const outline = 'token-goat ' + fmt + '-outline "' + hintPath + '"'
-  // Double quotes around the key, never single: the relay's stripUnsafeSuggestions accepts only a double-quoted argument, and replaced a single-quoted one with a placeholder that took the rest of the sentence with it. A key the shell would expand or unquote inside double quotes gets the generic form instead.
-  const query = (path: string): string => 'token-goat ' + fmt + '-query "' + hintPath + '" "' + path + '"'
+  const outline = 'token-goat ' + fmt + '-outline ' + quotedArg(hintPath)
+  // The key takes the path's quote mark (quotedArgs): a double-quoted key beside a single-quoted path would leave the relay's stripUnsafeSuggestions a `"` to read as a suggestion, and it refuses the `$` inside the path. A key the shell would expand or unquote inside double quotes gets the generic form instead.
+  const query = (path: string): string => 'token-goat ' + fmt + '-query ' + quotedArgs(hintPath, path).join(' ')
   if (target === null || /["'`$\\]/.test(target)) {
     return leadWithCommand(outline, 'to list the top-level keys with their type and size (`--filter TEXT` narrows a large one), then `' + query('KEY') + '` to read one value (`"[\'a.b\']"` for a key holding a dot)', reason)
   }
@@ -37,7 +37,7 @@ function structuredDataHint(hintPath: string, target: string | null, reason = ''
 
 /** The SQL branch every whole-file read shares: `read` returns one CREATE TABLE / CREATE TYPE block by the name the SQL adapter indexes it under. It used to print `section "file::table_name"`, which cannot run at all -- `section` finds markdown/TOML/INI headers and exits 1 with "has no headings" on a .sql file (measured 2026-09-24 against the built binary). */
 export function sqlTableHint(hintPath: string, target: HintTarget, reason = ''): string {
-  return leadWithCommand('token-goat read "' + hintPath + '::' + target.name + '"', 'to pull one CREATE TABLE / CREATE TYPE block', reason)
+  return leadWithCommand('token-goat read ' + quotedArg(hintPath + '::' + target.name), 'to pull one CREATE TABLE / CREATE TYPE block', reason)
 }
 
 /** Shared non-SQL surgical-read hint ladder for whole-file dump commands (`cat`, a PowerShell `Get-Content` wrapper, `wsl cat`) -- each caller handles its own SQL branch and passes its lead-in as `reason`, which follows the command. */
@@ -47,7 +47,7 @@ export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: bool
   //
   // A config file's name goes where its format takes it: a JSON/YAML key to the query command, a TOML/INI table to `section` (measured, `config-get "cfg.toml" tool` exits 1 on a table while `section "cfg.toml::tool"` returns it), a .properties key to config-get. A JSON property is never put in a `section` slot: `token-goat section "package.json::name"` exits 1.
   const outline = outlineCommand(hintPath)
-  if (isXml) return leadWithCommand('token-goat xml-outline "' + hintPath + '"', 'to inspect structure, or `token-goat xml-query "' + hintPath + '" "<selector>"` to query specific nodes', reason)
+  if (isXml) return leadWithCommand('token-goat xml-outline ' + quotedArg(hintPath), 'to inspect structure, or `token-goat xml-query ' + quotedArgs(hintPath, '<selector>').join(' ') + '` to query specific nodes', reason)
   if (isEnv) return leadWithCommand(configGetCommand(hintPath, target.name), 'to read a specific variable', reason)
   // .properties has no outline extractor (measured 2026-10-03: `outline app.properties` exits 1), so it gets config-get for a key it holds and a grep otherwise.
   if (isConfig && /\.properties$/i.test(hintPath)) {
@@ -60,12 +60,12 @@ export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: bool
     if (structured !== null) return structured
     return target.slice === 'key'
       ? leadWithCommand(configGetCommand(hintPath, target.name), 'to read a specific value, or `' + outline + '` for every key with line ranges', reason)
-      : leadWithCommand('token-goat section "' + hintPath + '::' + target.name + '"', 'to read one table, or `' + outline + '` for every key with line ranges', reason)
+      : leadWithCommand('token-goat section ' + quotedArg(hintPath + '::' + target.name), 'to read one table, or `' + outline + '` for every key with line ranges', reason)
   }
   if (isDoc) return docSectionHint(hintPath, target.name, reason)
   // A source file with no nameable symbol leads with outline, which always runs, rather than a `read "file::SymbolName"` that never does.
   return target.real
-    ? leadWithCommand('token-goat read "' + hintPath + '::' + target.name + '"', 'to read one function or class, or `' + outline + '` for all of them', reason)
+    ? leadWithCommand('token-goat read ' + quotedArg(hintPath + '::' + target.name), 'to read one function or class, or `' + outline + '` for all of them', reason)
     : leadWithCommand(outline, 'to list every function and class with its line range', reason)
 }
 
@@ -73,7 +73,7 @@ export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: bool
 export function surgicalHintForConfigDoc(filePath: string, isConfig: boolean, isDoc: boolean, isSql: boolean, isXml: boolean, target: HintTarget, reason = ''): string {
   if (isXml || isConfig || isDoc) return surgicalHintFor(filePath, false, isConfig, isDoc, isXml, target, reason)
   if (isSql) return sqlTableHint(filePath, target, reason)
-  return leadWithCommand(outlineCommand(filePath), 'or `token-goat skeleton "' + filePath + '"` to see the file structure', reason)
+  return leadWithCommand(outlineCommand(filePath), 'or `token-goat skeleton ' + quotedArg(filePath) + '` to see the file structure', reason)
 }
 
 
@@ -814,7 +814,7 @@ export function sedOverlapHint(filePath: string, prior: readonly [number, number
   if (segments.length === 0) {
     return base + 'These lines were already served - recall them from your earlier output instead of re-reading.'
   }
-  const reads = segments.map(([s, e]) => '`token-goat read "' + filePath + '@' + s + '-' + e + '"`').join(' and ')
+  const reads = segments.map(([s, e]) => '`token-goat read ' + quotedArg(filePath + '@' + s + '-' + e) + '`').join(' and ')
   return base + 'For only the new lines, ' + reads + '.'
 }
 

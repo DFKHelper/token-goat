@@ -5,6 +5,7 @@ import { hostPathOfIndexKey, resolveIndexPath } from './paths.js'
 import { querySymbols } from './index_reader.js'
 import { indexMatchesDisk } from './index_freshness.js'
 import { resolveLineRegions } from './line_regions.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 
 /** Every symbol in one file, never a page of them: a partial answer here silently shrinks the replacement and biases the gate toward emitting. SQLite reads -1 as unlimited, the same sentinel graph_traversal.ts uses for its own whole-file lookups. */
 const ALL_SYMBOLS_IN_FILE = -1
@@ -66,8 +67,8 @@ export function rangeSubstituteFor(
     const replacementBytes = regions.reduce((t, r) => t + bytesOf(r.start, r.end) + REGION_HEADER_BYTES, 0)
     const commands = regions.map((r) =>
       r.name === null
-        ? `token-goat read "${hintPath}:${r.start}-${r.end}"`
-        : `token-goat read "${hintPath}::${r.name}"`,
+        ? `token-goat read ${quotedArg(`${hintPath}:${r.start}-${r.end}`)}`
+        : `token-goat read ${quotedArg(`${hintPath}::${r.name}`)}`,
     )
     return { requestedBytes, replacementBytes, commands }
   } catch {

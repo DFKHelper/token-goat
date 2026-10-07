@@ -3,6 +3,7 @@
 import { parse } from 'csv-parse/sync'
 import { findHtmlHeadingMatches } from '../languages/common.js'
 import { fenceUntrustedFileContent } from '../injection_scan.js'
+import { quotedArg, quotedArgs } from '../hint_suggestion_guard.js'
 
 export interface FileTypeResult {
   shouldBlock: boolean
@@ -59,12 +60,13 @@ export function BYTE_RANGE_ADVICE(filePath: string): string {
 
 /** PDF handler — always blocks regardless of size. */
 export function handlePdf(filePath: string, contentLength: number): FileTypeResult {
+  const [quoted, range] = quotedArgs(filePath, '<range>')
   return {
     shouldBlock: true,
     message: [
       `PDF file (${formatBytes(contentLength)}) — Read cannot return PDF content; this is not retryable with different Read parameters.`,
-      `Inspect first: token-goat pdf-meta "${filePath}" and token-goat pdf-outline "${filePath}"`,
-      `Then extract relevant pages: token-goat pdf-extract "${filePath}" --pages "<range>"`,
+      `Inspect first: token-goat pdf-meta ${quoted} and token-goat pdf-outline ${quoted}`,
+      `Then extract relevant pages: token-goat pdf-extract ${quoted} --pages ${range}`,
     ].join('\n'),
   }
 }
@@ -77,7 +79,7 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
   if (previewUnavailable(content, length)) {
     return {
       shouldBlock: true,
-      message: `Large HTML file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap). Use token-goat section to extract a section by heading, or convert to text: pandoc "${filePath}" -t plain`,
+      message: `Large HTML file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap). Use token-goat section to extract a section by heading, or convert to text: pandoc ${quotedArg(filePath)} -t plain`,
     }
   }
 
@@ -112,7 +114,7 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
               .join('\n'),
           )
         : '',
-      `Use token-goat section to extract a section by heading, or convert to text: pandoc "${filePath}" -t plain`,
+      `Use token-goat section to extract a section by heading, or convert to text: pandoc ${quotedArg(filePath)} -t plain`,
     ].filter(Boolean).join('\n'),
   }
 }
@@ -126,8 +128,9 @@ export function handleTxt(filePath: string, content: string, contentLengthHint?:
   if (length < threshold) return { shouldBlock: false, message: '' }
 
   // `bash-output <id>` errors for a file read directly off disk (never went through the bash-output cache, so there is no id) -- `--file "<path>"` is the working form, matching hooks_read.ts's sessionArtifactRecall for the same on-disk-but-uncached situation.
+  const [quotedLog, errorPattern] = quotedArgs(filePath, 'error|ERROR')
   const recall = isLog
-    ? `Log file — use Read with offset/limit params, or: token-goat bash-output --file "${filePath}" --tail 100 --grep "error|ERROR"`
+    ? `Log file — use Read with offset/limit params, or: token-goat bash-output --file ${quotedLog} --tail 100 --grep ${errorPattern}`
     : 'Use Read with offset and limit params to sample specific line ranges.'
 
   if (previewUnavailable(content, length)) {
@@ -171,8 +174,8 @@ export function handleSvg(filePath: string, content: string, contentLengthHint?:
       shouldBlock: true,
       message: [
         `Large SVG file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
-        `Inspect structure: token-goat xml-outline "${filePath}"`,
-        `Query layers/elements: token-goat xml-query "${filePath}" "//g[@id]"`,
+        `Inspect structure: token-goat xml-outline ${quotedArg(filePath)}`,
+        `Query layers/elements: token-goat xml-query ${quotedArgs(filePath, '//g[@id]').join(' ')}`,
       ].join('\n'),
     }
   }
@@ -192,14 +195,15 @@ export function handleSvg(filePath: string, content: string, contentLengthHint?:
     groupIds.length > 0 ? `Layer/Group IDs: ${groupIds.join(', ')}` : '',
   ].filter(Boolean).join('\n')
 
+  const [labelPattern, labelGlob] = quotedArgs('<text>', filePath)
   return {
     shouldBlock: true,
     message: [
       `Large SVG/diagram file (${formatBytes(length)}) — raw coordinate paths flood context.`,
       preview ? fenceUntrustedFileContent(preview) : '',
-      `Inspect structure: token-goat xml-outline "${filePath}"`,
-      `Query elements: token-goat xml-query "${filePath}" "//g[@id]"`,
-      `Search text labels: token-goat grep "<text>" --glob "${filePath}"`,
+      `Inspect structure: token-goat xml-outline ${quotedArg(filePath)}`,
+      `Query elements: token-goat xml-query ${quotedArgs(filePath, '//g[@id]').join(' ')}`,
+      `Search text labels: token-goat grep ${labelPattern} --glob ${labelGlob}`,
     ].filter(Boolean).join('\n'),
   }
 }
@@ -218,8 +222,8 @@ export function handleXml(filePath: string, content: string, contentLengthHint?:
       shouldBlock: true,
       message: [
         `Large ${typeLabel} file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
-        `Inspect structure: token-goat xml-outline "${filePath}"`,
-        `Query nodes: token-goat xml-query "${filePath}" "<selector>"`,
+        `Inspect structure: token-goat xml-outline ${quotedArg(filePath)}`,
+        `Query nodes: token-goat xml-query ${quotedArgs(filePath, '<selector>').join(' ')}`,
       ].join('\n'),
     }
   }
@@ -228,8 +232,8 @@ export function handleXml(filePath: string, content: string, contentLengthHint?:
     shouldBlock: true,
     message: [
       `Large ${typeLabel} file (${formatBytes(length)}).`,
-      `Inspect hierarchy: token-goat xml-outline "${filePath}"`,
-      `Query specific elements: token-goat xml-query "${filePath}" "<selector>"`,
+      `Inspect hierarchy: token-goat xml-outline ${quotedArg(filePath)}`,
+      `Query specific elements: token-goat xml-query ${quotedArgs(filePath, '<selector>').join(' ')}`,
     ].join('\n'),
   }
 }
@@ -252,24 +256,26 @@ export function handleOfficeBinary(filePath: string): FileTypeResult {
 
 /** Excel handler — always blocks, redirects to the xlsx-* command family. */
 export function handleXlsx(filePath: string): FileTypeResult {
+  const [quoted, sheet] = quotedArgs(filePath, '<name>')
   return {
     shouldBlock: true,
     message: [
       `Excel file — Read cannot return spreadsheet content; this is not retryable with different Read parameters.`,
-      `List sheets: token-goat xlsx-sheets "${filePath}"`,
-      `Then preview a sheet: token-goat xlsx-head "${filePath}" --sheet "<name>", or filter rows: token-goat xlsx-query "${filePath}" --sheet "<name>" --where col=value`,
+      `List sheets: token-goat xlsx-sheets ${quoted}`,
+      `Then preview a sheet: token-goat xlsx-head ${quoted} --sheet ${sheet}, or filter rows: token-goat xlsx-query ${quoted} --sheet ${sheet} --where col=value`,
     ].join('\n'),
   }
 }
 
 /** PowerPoint handler — always blocks, redirects to the pptx-* command family. */
 export function handlePptx(filePath: string): FileTypeResult {
+  const [quoted, slide] = quotedArgs(filePath, '<n>')
   return {
     shouldBlock: true,
     message: [
       `PowerPoint file — Read cannot return slide content; this is not retryable with different Read parameters.`,
-      `List slides: token-goat pptx-outline "${filePath}"`,
-      `Then read one slide: token-goat pptx-slide "${filePath}" --slide "<n>"`,
+      `List slides: token-goat pptx-outline ${quoted}`,
+      `Then read one slide: token-goat pptx-slide ${quoted} --slide ${slide}`,
     ].join('\n'),
   }
 }
@@ -280,9 +286,9 @@ export function handleDocx(filePath: string): FileTypeResult {
     shouldBlock: true,
     message: [
       `Word file — Read cannot return document content; this is not retryable with different Read parameters.`,
-      `See headings: token-goat docx-outline "${filePath}"`,
-      `Extract tables: token-goat docx-tables "${filePath}"`,
-      `Read full text: token-goat docx-text "${filePath}"`,
+      `See headings: token-goat docx-outline ${quotedArg(filePath)}`,
+      `Extract tables: token-goat docx-tables ${quotedArg(filePath)}`,
+      `Read full text: token-goat docx-text ${quotedArg(filePath)}`,
     ].join('\n'),
   }
 }
@@ -299,7 +305,7 @@ export function handleCsv(filePath: string, content: string, contentLengthHint?:
       shouldBlock: true,
       message: [
         `Large CSV file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
-        `Use token-goat csv-query "${filePath}" --columns a,b,c --where col=value --head N to query narrow slices.`,
+        `Use token-goat csv-query ${quotedArg(filePath)} --columns a,b,c --where col=value --head N to query narrow slices.`,
       ].join('\n'),
     }
   }
@@ -323,7 +329,7 @@ export function handleCsv(filePath: string, content: string, contentLengthHint?:
       `Large CSV file (${formatBytes(length)}, ~${lines.length.toLocaleString()} rows, ${colCount} columns).`,
       // Header row and sample rows are verbatim file bytes, so they are fenced as untrusted data.
       fenceUntrustedFileContent(`Columns: ${headers}\nSample rows:\n${sampleRows.join('\n')}`),
-      `Use token-goat csv-query "${filePath}" --columns a,b,c --where col=value --head N to query narrow slices.`,
+      `Use token-goat csv-query ${quotedArg(filePath)} --columns a,b,c --where col=value --head N to query narrow slices.`,
     ].join('\n'),
   }
 }
@@ -332,14 +338,15 @@ export function handleCsv(filePath: string, content: string, contentLengthHint?:
 export function handleTranscript(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
   const length = contentLengthHint ?? content.length
   if (length < FILE_TYPE_THRESHOLDS.transcript) return { shouldBlock: false, message: '' }
+  const [quoted, speaker] = quotedArgs(filePath, 'Name')
 
   if (previewUnavailable(content, length)) {
     return {
       shouldBlock: true,
       message: [
         `Transcript file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
-        `See structure: token-goat transcript-outline "${filePath}"`,
-        `Slice by speaker/time/pattern: token-goat transcript "${filePath}" --speaker "Name" --from 00:05:00 --to 00:10:00 --grep pattern`,
+        `See structure: token-goat transcript-outline ${quotedArg(filePath)}`,
+        `Slice by speaker/time/pattern: token-goat transcript ${quoted} --speaker ${speaker} --from 00:05:00 --to 00:10:00 --grep pattern`,
       ].join('\n'),
     }
   }
@@ -354,8 +361,8 @@ export function handleTranscript(filePath: string, content: string, contentLengt
       // Speaker names are verbatim file bytes, so they are fenced as untrusted data.
       `Transcript file (${formatBytes(length)}, ~${cueCount} cues).`,
       speakers.length > 0 ? fenceUntrustedFileContent(`Speakers: ${speakers.join(', ')}`) : '',
-      `See structure: token-goat transcript-outline "${filePath}"`,
-      `Slice by speaker/time/pattern: token-goat transcript "${filePath}" --speaker "Name" --from 00:05:00 --to 00:10:00 --grep pattern`,
+      `See structure: token-goat transcript-outline ${quotedArg(filePath)}`,
+      `Slice by speaker/time/pattern: token-goat transcript ${quoted} --speaker ${speaker} --from 00:05:00 --to 00:10:00 --grep pattern`,
     ].filter(Boolean).join('\n'),
   }
 }
@@ -366,9 +373,9 @@ export function handleSqlite(filePath: string): FileTypeResult {
     shouldBlock: true,
     message: [
       `SQLite database — Read cannot return binary database content; this is not retryable with different Read parameters.`,
-      `See tables: token-goat sqlite-tables "${filePath}"`,
-      `See schema: token-goat sqlite-schema "${filePath}"`,
-      `Query data: token-goat sqlite-query "${filePath}" "SELECT ... FROM ... LIMIT 20"`,
+      `See tables: token-goat sqlite-tables ${quotedArg(filePath)}`,
+      `See schema: token-goat sqlite-schema ${quotedArg(filePath)}`,
+      `Query data: token-goat sqlite-query ${quotedArgs(filePath, 'SELECT ... FROM ... LIMIT 20').join(' ')}`,
     ].join('\n'),
   }
 }
@@ -388,6 +395,7 @@ export function handleParquet(filePath: string): FileTypeResult {
 export function handleJson(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
   const length = contentLengthHint ?? content.length
   if (length < FILE_TYPE_THRESHOLDS.json) return { shouldBlock: false, message: '' }
+  const [quoted, query] = quotedArgs(filePath, '<path>')
 
   const isSpill = /(?:^|[/\\])content\.json$/i.test(filePath) || /[/\\](?:tmp|temp)[/\\]/i.test(filePath)
   const spillHeader = isSpill
@@ -401,9 +409,9 @@ export function handleJson(filePath: string, content: string, contentLengthHint?
         isSpill
           ? `This file appears to be an oversized tool output spill (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`
           : `Large JSON file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
-        `See structure: token-goat json-outline "${filePath}"`,
-        `Query subtree: token-goat json-query "${filePath}" "<path>"`,
-        isSpill ? `Slice spill: token-goat mcp-output --file "${filePath}" --json-query "<path>"` : '',
+        `See structure: token-goat json-outline ${quotedArg(filePath)}`,
+        `Query subtree: token-goat json-query ${quoted} ${query}`,
+        isSpill ? `Slice spill: token-goat mcp-output --file ${quoted} --json-query ${query}` : '',
       ].filter(Boolean).join('\n'),
     }
   }
@@ -430,9 +438,9 @@ export function handleJson(filePath: string, content: string, contentLengthHint?
     message: [
       spillHeader,
       summary ? fenceUntrustedFileContent(summary) : '',
-      `See structure: token-goat json-outline "${filePath}"`,
-      `Query subtree: token-goat json-query "${filePath}" "<path>"`,
-      isSpill ? `Slice spill: token-goat mcp-output --file "${filePath}" --json-query "<path>"` : '',
+      `See structure: token-goat json-outline ${quotedArg(filePath)}`,
+      `Query subtree: token-goat json-query ${quoted} ${query}`,
+      isSpill ? `Slice spill: token-goat mcp-output --file ${quoted} --json-query ${query}` : '',
     ].filter(Boolean).join('\n'),
   }
 }
@@ -446,8 +454,8 @@ export function handleYaml(filePath: string, content: string, contentLengthHint?
     shouldBlock: true,
     message: [
       `Large YAML file (${formatBytes(length)}).`,
-      `See structure: token-goat yaml-outline "${filePath}"`,
-      `Query subtree: token-goat yaml-query "${filePath}" "<path>"`,
+      `See structure: token-goat yaml-outline ${quotedArg(filePath)}`,
+      `Query subtree: token-goat yaml-query ${quotedArgs(filePath, '<path>').join(' ')}`,
     ].join('\n'),
   }
 }

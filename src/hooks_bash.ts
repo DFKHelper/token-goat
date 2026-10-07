@@ -2,7 +2,7 @@
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { leadWithCommand, docSectionHint, quotedArg, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { leadWithCommand, docSectionHint, quotedArg, quotedArgs, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { contextOutput, denyOutput, passOutput, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import type { HookOutput } from './types.js'
@@ -282,7 +282,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       const outPath = outPaths.shown
       const tail = n ?? 50
       return denyOutput(
-        'Task output ' + id + ' is a JSONL agent transcript on disk. Use `token-goat bash-output --file "' + outPath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail ' + tail + '`, or read a specific line range (the only way to reach the MIDDLE of a large artifact) with `token-goat read "' + outPath + '@START-END"`, instead of reading the whole file.',
+        'Task output ' + id + ' is a JSONL agent transcript on disk. Use `token-goat bash-output --file ' + quotedArg(outPath) + ' --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail ' + tail + '`, or read a specific line range (the only way to reach the MIDDLE of a large artifact) with `token-goat read ' + quotedArg(outPath + '@START-END') + '`, instead of reading the whole file.',
       )
     }
   }
@@ -294,7 +294,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const outPath = displaySafePath(toolResults.path)
     recordStat('session_hint', 0, 0)
     return contextOutput(
-      'Tool output ' + outPath + ' is a plain-text artifact. Use `token-goat bash-output --file "' + outPath + '"` to read it with surgical narrowing via `--grep PATTERN` or `--tail N`, instead of reading the whole file.',
+      'Tool output ' + outPath + ' is a plain-text artifact. Use `token-goat bash-output --file ' + quotedArg(outPath) + '` to read it with surgical narrowing via `--grep PATTERN` or `--tail N`, instead of reading the whole file.',
     )
   }
 
@@ -341,7 +341,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     const target = filePath ? displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath) : '<file>'
     return pathHint(filePath ? [target] : [],
-      `token-goat available for this file type, consider \`token-goat xml-query "${target}" "<xpath>"\` or \`token-goat xml-outline "${target}"\` first instead of terminal XML parsing (${toolOrScript}).`,
+      `token-goat available for this file type, consider \`token-goat xml-query ${quotedArgs(target, '<xpath>').join(' ')}\` or \`token-goat xml-outline ${quotedArg(target)}\` first instead of terminal XML parsing (${toolOrScript}).`,
     )
   }
 
@@ -439,7 +439,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     if (psJsonPipe.filePath) {
       const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, psJsonPipe.filePath, hintCwd) : psJsonPipe.filePath)
       return pathHint(hintPath,
-        'PowerShell `ConvertFrom-Json` pipeline detected. Use `token-goat json-query "' + hintPath + '" "<selector>"` to extract fields directly without shell conversion scripts.',
+        'PowerShell `ConvertFrom-Json` pipeline detected. Use `token-goat json-query ' + quotedArgs(hintPath, '<selector>').join(' ') + '` to extract fields directly without shell conversion scripts.',
       )
     }
     return contextOutput(
@@ -508,11 +508,11 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       // Same two kinds the cat/tail guard above tells apart, decided the same way. An agent transcript is JSONL worth hundreds of kilobytes and reading it whole is the mistake worth blocking; a background command's stdout is plain text the harness expects to be read, so that only gets advice about narrowing it, never a refusal.
       const outPaths = taskOutputPath(filePath)
       if (outPaths !== null && taskOutputIsJsonlTranscript(outPaths.probe)) {
-        const tHint = 'This `.output` file is a JSONL agent transcript. Use `token-goat bash-output --file "' + outPaths.shown + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail N`, instead of hand-parsing the JSONL.'
+        const tHint = 'This `.output` file is a JSONL agent transcript. Use `token-goat bash-output --file ' + quotedArg(outPaths.shown) + ' --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail N`, instead of hand-parsing the JSONL.'
         return cdStripped ? pathHint(hintPath, tHint) : denyOutput(tHint)
       }
       return pathHint(hintPath,
-        'This `.output` file is a background command\'s stdout. Use `token-goat bash-output --file "' + hintPath + '"` to narrow it with `--grep PATTERN`, `--tail N` or `--head N`, instead of reading the whole file.',
+        'This `.output` file is a background command\'s stdout. Use `token-goat bash-output --file ' + quotedArg(hintPath) + '` to narrow it with `--grep PATTERN`, `--tail N` or `--head N`, instead of reading the whole file.',
       )
     }
     const reason = 'Python `open()` file reads bypass read hooks.'
@@ -619,8 +619,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     return pathHint(hintPath,
       'Searching for code definitions with `rg`/`grep` is slower than surgical reads. ' +
-      'Use `token-goat skeleton "' + hintPath + '"` to see all symbols with line numbers, ' +
-      'or `token-goat outline "' + hintPath + '"` for symbols with docstrings and line ranges.'
+      'Use `token-goat skeleton ' + quotedArg(hintPath) + '` to see all symbols with line numbers, ' +
+      'or `token-goat outline ' + quotedArg(hintPath) + '` for symbols with docstrings and line ranges.'
     )
   }
 
@@ -684,7 +684,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       return contextOutput(
         'curl response cached (`' + curlPreview + '`).' + pipelineDivergenceNote(cmd, curlEntry.command) + ' ' +
         (curlHeading.real
-          ? leadWithCommand('token-goat bash-output ' + curlOutputId + ' --section "' + curlHeading.name + '"', 'to read one markdown section, or `token-goat bash-output ' + curlOutputId + '` to recall it all (`--grep PATTERN` filters)')
+          ? leadWithCommand('token-goat bash-output ' + curlOutputId + ' --section ' + quotedArg(curlHeading.name), 'to read one markdown section, or `token-goat bash-output ' + curlOutputId + '` to recall it all (`--grep PATTERN` filters)')
           : 'Use `token-goat bash-output ' + curlOutputId + '` to recall it. Append `--grep PATTERN` to filter or `--section HeadingName` for a markdown section.'),
       )
     }
