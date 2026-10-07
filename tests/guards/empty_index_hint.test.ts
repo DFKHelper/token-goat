@@ -105,7 +105,7 @@ describe('empty-index hint', () => {
   it('refs: an unindexed-but-nonexistent symbol name is reported as "Symbol not found", not "No references found"', () => {
     const r = run(['refs', 'noSuchSymbol'], indexedProjectDir, homeDir)
     expect(r.status).not.toBe(0)
-    expect(r.out).toContain('Symbol not found: noSuchSymbol')
+    expect(r.out).toContain('Symbol not found: "noSuchSymbol"')
     expect(r.out).not.toMatch(/No references found for ["']noSuchSymbol["']/)
     expect(r.out).not.toContain(EMPTY_INDEX_SNIPPET)
   })
@@ -142,7 +142,7 @@ describe('empty-index hint', () => {
   it('callers: an unindexed-but-nonexistent symbol name is reported as "Symbol not found", not "No references found"', () => {
     const r = run(['callers', 'noSuchSymbol'], indexedProjectDir, homeDir)
     expect(r.status).not.toBe(0)
-    expect(r.out).toContain('Symbol not found: noSuchSymbol')
+    expect(r.out).toContain('Symbol not found: "noSuchSymbol"')
     expect(r.out).not.toMatch(/No references found for ["']noSuchSymbol["']/)
     expect(r.out).not.toContain(EMPTY_INDEX_SNIPPET)
   })
@@ -165,7 +165,7 @@ describe('empty-index hint', () => {
   it('brief: indexed project with a genuine miss keeps the old message unchanged', () => {
     const r = run(['brief', 'c.ts::noSuchSymbol'], indexedProjectDir, homeDir)
     expect(r.status).not.toBe(0)
-    expect(r.out).toContain('Symbol not found: c.ts::noSuchSymbol')
+    expect(r.out).toContain('Symbol not found: "c.ts::noSuchSymbol"')
     expect(r.out).not.toContain(EMPTY_INDEX_SNIPPET)
   })
 
@@ -193,7 +193,7 @@ describe('empty-index hint', () => {
   it('call-chain: indexed project with a genuine miss keeps the old message unchanged', () => {
     const r = run(['call-chain', 'noSuchSymbol'], indexedProjectDir, homeDir)
     expect(r.status).not.toBe(0)
-    expect(r.out).toContain('Symbol not found: noSuchSymbol')
+    expect(r.out).toContain('Symbol not found: "noSuchSymbol"')
     expect(r.out).not.toContain(EMPTY_INDEX_SNIPPET)
   })
 

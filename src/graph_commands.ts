@@ -135,7 +135,7 @@ export function runCallers(opts: CallersOptions): number {
 
     const defRows = querySymbols({ name, rootDir, limit: REF_BLIND_DEF_PROBE_LIMIT })
     if (defRows.length === 0) {
-      emitErr(formatCommandError(`Symbol not found: ${opts.symbol}${unknownSymbolSuggestion(name, rootDir)}`))
+      emitErr(formatCommandError(`Symbol not found: ${echoedValue(opts.symbol)}${unknownSymbolSuggestion(name, rootDir)}`))
       if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
       return 1
     }
@@ -236,7 +236,7 @@ export function runCallChain(opts: CallChainOptions): number {
       return 1
     }
   } else if (querySymbols({ name, rootDir, limit: 1 }).length === 0) {
-    emitErr(formatCommandError(`Symbol not found: ${opts.symbol}${unknownSymbolSuggestion(name, rootDir)}`))
+    emitErr(formatCommandError(`Symbol not found: ${echoedValue(opts.symbol)}${unknownSymbolSuggestion(name, rootDir)}`))
     if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
     return 1
   }
@@ -475,7 +475,7 @@ export function runImpact(opts: ImpactOptions): number {
 
     const defRows = querySymbols({ name: rootName, rootDir, limit: REF_BLIND_DEF_PROBE_LIMIT })
     if (defRows.length === 0) {
-      emitErr(formatCommandError(`Symbol not found: ${opts.symbol}${unknownSymbolSuggestion(rootName, rootDir)}`))
+      emitErr(formatCommandError(`Symbol not found: ${echoedValue(opts.symbol)}${unknownSymbolSuggestion(rootName, rootDir)}`))
       return 1
     }
 

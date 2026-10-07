@@ -269,7 +269,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     const cfg = loadConfig() as unknown as Record<string, unknown>
     const result = walkGet(cfg, parts)
     if (!result.found) {
-      throw new Error(`key not found: ${opts.key}${didYouMeanKeySuffix(opts.key)}`)
+      throw new Error(`key not found: ${echoedValue(opts.key)}${didYouMeanKeySuffix(opts.key)}`)
     }
     // Which layer this value came from, the same question `list` answers per key, resolved by the same helper so the two commands cannot drift. Without it `get` reports a bare value that silently disagrees with config.toml whenever a project .token-goat.toml or an env var is in play, and the user has no way to tell from the output that a second layer decided it.
     const getState = resolveConfigKeyLayer(opts.key, result.value, cfg, getProjectConfigInfo())
@@ -311,11 +311,11 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       if (Number.isFinite(testDelayMs) && testDelayMs > 0) sleepSync(testDelayMs)
       const ref = walkParent(cfg, parts)
       if (!ref) {
-        throw new Error(`key not found: ${key}${didYouMeanKeySuffix(key)}`)
+        throw new Error(`key not found: ${echoedValue(key)}${didYouMeanKeySuffix(key)}`)
       }
       const existing = ref.parent[ref.leaf]
       if (existing === undefined) {
-        throw new Error(`key not found: ${key}${didYouMeanKeySuffix(key)}`)
+        throw new Error(`key not found: ${echoedValue(key)}${didYouMeanKeySuffix(key)}`)
       }
       if (typeof existing === 'object' && existing !== null && !Array.isArray(existing)) {
         throw new Error(`config set: ${echoedValue(key)} is a section, not a settable field — set an individual key within it instead (e.g. ${key}.<field>)`)

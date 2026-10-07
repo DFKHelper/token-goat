@@ -213,7 +213,7 @@ function readRecallFile(file: string): { text: string; mtimeMs: number } {
     return { text: redactIfDotenv(file, decodeSource(fs.readFileSync(file))), mtimeMs: st.mtimeMs }
   } catch (e) {
     if (e instanceof CliError) throw e
-    throw new CliError((e as NodeJS.ErrnoException).code === 'ENOENT' ? `file not found: ${file}` : `cannot read file: ${file}`)
+    throw new CliError((e as NodeJS.ErrnoException).code === 'ENOENT' ? `file not found: ${echoedValue(file)}` : `cannot read file: ${file}`)
   }
 }
 

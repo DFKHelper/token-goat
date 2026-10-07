@@ -536,7 +536,7 @@ export function cmdNote(
     const hash = resolveProjectHash()
     const entries = loadEntries(hash)
     const v = ownGet(entries, key)
-    if (v === undefined) throw new Error(`Key not found: ${key}`)
+    if (v === undefined) throw new Error(`Key not found: ${echoedValue(key)}`)
     process.stdout.write(v + '\n')
     return
   }
@@ -544,7 +544,7 @@ export function cmdNote(
   if (act === 'unset') {
     if (key === undefined) throw new Error('note unset requires a key')
     const hash = resolveProjectHash()
-    if (!unsetEntry(hash, key)) throw new Error(`Key not found: ${key}`)
+    if (!unsetEntry(hash, key)) throw new Error(`Key not found: ${echoedValue(key)}`)
     process.stdout.write(`Unset: ${key}\n`)
     return
   }

@@ -1231,7 +1231,7 @@ describe('runCallers unknown symbol vs zero-callers distinction', () => {
           const code = runCallers({ symbol: 'callersTypoCandidateFn8h2' })
           expect(code).toBe(1)
         })
-        expect(errCaptured).toContain('Symbol not found: callersTypoCandidateFn8h2')
+        expect(errCaptured).toContain('Symbol not found: "callersTypoCandidateFn8h2"')
         expect(errCaptured).toContain('Did you mean:')
         expect(errCaptured).toContain('callersTypoCandidateFn8h2q')
         expect(errCaptured).not.toContain('No references found')
@@ -2626,7 +2626,7 @@ describe('runCallChain error handling and no-callers branch', () => {
     })
     expect(code).toBe(1)
     expect(captured).toBe('')
-    expect(errCaptured).toContain('Symbol not found: zzqxNopeDoesNotExist')
+    expect(errCaptured).toContain('Symbol not found: "zzqxNopeDoesNotExist"')
   })
 
   // This task: the pre-existing "Symbol not found" message (asserted above) now carries a Did you mean suggestion when a near-name candidate is indexed, appended rather than replacing the existing wording.
@@ -2643,7 +2643,7 @@ describe('runCallChain error handling and no-callers branch', () => {
           const code = runCallChain({ symbol: 'chainTypoCandidateFn3z9' })
           expect(code).toBe(1)
         })
-        expect(errCaptured).toContain('Symbol not found: chainTypoCandidateFn3z9')
+        expect(errCaptured).toContain('Symbol not found: "chainTypoCandidateFn3z9"')
         expect(errCaptured).toContain('Did you mean:')
         expect(errCaptured).toContain('chainTypoCandidateFn3z9x')
       } finally {
@@ -3206,7 +3206,7 @@ describe('runImpact unknown symbol vs zero-impact distinction', () => {
           const code = runImpact({ symbol: 'impactTypoCandidateFn6r4' })
           expect(code).toBe(1)
         })
-        expect(errCaptured).toContain('Symbol not found: impactTypoCandidateFn6r4')
+        expect(errCaptured).toContain('Symbol not found: "impactTypoCandidateFn6r4"')
         expect(errCaptured).toContain('Did you mean:')
         expect(errCaptured).toContain('impactTypoCandidateFn6r4t')
         expect(errCaptured).not.toContain('No callers found')

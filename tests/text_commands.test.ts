@@ -1661,7 +1661,7 @@ describe('note command', () => {
     const r = await run(['note', 'get', 'constructor'], { env: noteEnv, cwd: ROOT })
     expect(r.stdout).not.toContain('function Object')
     expect(r.status).not.toBe(0)
-    expect(r.stderr).toContain('Key not found: constructor')
+    expect(r.stderr).toContain('Key not found: "constructor"')
   })
 
   it('list --json emits parseable structured output', async () => {
@@ -1683,7 +1683,7 @@ describe('note command', () => {
     // HAND-DERIVED: no note named never-set-key is created anywhere in this suite; the wording is the one `note get` already prints for a missing key.
     const r = await run(['note', 'unset', 'never-set-key'], { env: noteEnv, cwd: ROOT })
     expect(r.status).toBe(1)
-    expect(r.stderr).toContain('Key not found: never-set-key')
+    expect(r.stderr).toContain('Key not found: "never-set-key"')
     expect(r.stdout).not.toContain('Unset')
   })
 
@@ -1712,7 +1712,7 @@ describe('note command', () => {
     expect(first.stdout).toContain('Unset: twice-key')
     const second = await run(['note', 'unset', 'twice-key'], { env: noteEnv, cwd: ROOT })
     expect(second.status).toBe(1)
-    expect(second.stderr).toContain('Key not found: twice-key')
+    expect(second.stderr).toContain('Key not found: "twice-key"')
   })
 
   it('list prints a multi-line note on one line, and list --json keeps the real value', async () => {

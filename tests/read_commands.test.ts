@@ -3262,7 +3262,7 @@ describe('read_commands', () => {
         const code = runBrief({ spec: 'f.ts::missing' })
         expect(code).toBe(1)
       })
-      expect(stderr).toContain('Symbol not found: f.ts::missing')
+      expect(stderr).toContain('Symbol not found: "f.ts::missing"')
     })
 
     // Regression: a bare symbol name with no `::` used to say "Symbol not found", which is false when the name IS indexed -- an agent reads that as "does not exist" and stops looking. Point at the exact `file::symbol` spec to retry with instead.
@@ -8358,7 +8358,7 @@ describe('runRefs unknown symbol vs zero-references distinction', () => {
       expect(code).toBe(1)
     })
     const all = stdout + stderr
-    expect(all).toContain('Symbol not found: refsTypoCandidateFn4m8')
+    expect(all).toContain('Symbol not found: "refsTypoCandidateFn4m8"')
     expect(all).toContain('Did you mean:')
     expect(all).toContain('refsTypoCandidateFn4m8k')
     expect(all).not.toContain('No references found')

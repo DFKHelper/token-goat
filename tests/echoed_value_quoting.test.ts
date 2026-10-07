@@ -12,6 +12,7 @@ import { indexFileSync } from '../src/parser.js'
 import { extractExportNames } from '../src/import_export_extract.js'
 import { parseJsonPath } from '../src/json_query.js'
 import { runRead } from '../src/read_commands.js'
+import { runBriefCore } from '../src/read_brief.js'
 import { runConfigGet, runExports } from '../src/read_inspect.js'
 import { runOutline, runSkeleton } from '../src/read_outline.js'
 import { runSection } from '../src/read_section.js'
@@ -153,5 +154,37 @@ describe('a converted hand-quoted site escapes and quotes what it echoes', () =>
   // HAND-DERIVED: the bracket text is echoed whole through echoedValue, so a control character in it is escaped where the hand-quoted form passed it on.
   it('json-query names an invalid bracket expression escaped, in double quotes', () => {
     expect(() => parseJsonPath('a[\u0007]')).toThrow('invalid bracket expression "[\\x07]"')
+  })
+})
+
+describe('the not-found and unreadable-file errors that used to print the value bare', () => {
+  // HAND-DERIVED: an apostrophe and a control character in a name, which a bare echo prints as written and echoedValue quotes and escapes.
+  it('config-get quotes a file it could not read', () => {
+    const err = stderrOf(() => runConfigGet({ file: "no it's.json", key: 'a' }))
+    expect(err).toContain('Could not read: "no it\'s.json"')
+  })
+
+  it('config-get quotes a JSON file it could not parse', () => {
+    fs.writeFileSync(path.join(dir, "bad it's.json"), '{not json')
+    const err = stderrOf(() => runConfigGet({ file: "bad it's.json", key: 'a' }))
+    expect(err).toContain('Failed to parse JSON: "bad it\'s.json"')
+  })
+
+  it('config-get quotes a YAML file it could not parse', () => {
+    fs.writeFileSync(path.join(dir, "bad it's.yaml"), 'a: [unclosed\n')
+    const err = stderrOf(() => runConfigGet({ file: "bad it's.yaml", key: 'a' }))
+    expect(err).toContain('Failed to parse YAML: "bad it\'s.yaml"')
+  })
+
+  it('brief quotes a symbol spec it could not find', () => {
+    const r = runBriefCore({ spec: "zwj.ts::it's", projectRoot: dir })
+    expect(r.code).toBe(1)
+    expect(r.text).toContain('Symbol not found: "zwj.ts::it\'s"')
+  })
+
+  it('brief escapes a control character in the spec', () => {
+    const r = runBriefCore({ spec: 'zwj.ts::mi\u0007ss', projectRoot: dir })
+    expect(r.text).not.toContain('\u0007')
+    expect(r.text).toContain('Symbol not found: "zwj.ts::mi\\x07ss"')
   })
 })

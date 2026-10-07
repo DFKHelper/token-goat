@@ -4,6 +4,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { claudeConfigDir } from './claude_config_dir.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 import * as readline from 'node:readline'
 
 import { estimateTokensFromLength } from './overflow_guard.js'
@@ -1166,7 +1167,7 @@ export function checkpointAudit(summary: SessionAuditSummary, maps: Map<string, 
 export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promise<SessionAuditSummary> {
   const corpusDir = path.resolve(opts.dir ?? defaultCorpusDir())
   if (!fs.existsSync(corpusDir)) {
-    throw new Error(`session corpus directory not found: ${corpusDir}`)
+    throw new Error(`session corpus directory not found: ${echoedValue(corpusDir)}`)
   }
   const windowDays = opts.windowDays ?? 0
   const allFiles = listCorpusTranscripts(corpusDir)

@@ -237,8 +237,8 @@ export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<v
   if (opts.transcript !== undefined) {
     const resolvedPath = path.resolve(opts.transcript)
     if (!fs.existsSync(resolvedPath)) {
-      const detail = opts.copilot === true ? `Copilot session event log not found: ${resolvedPath}` : `transcript not found: ${resolvedPath}`
-      writeCommandFailure(opts.json === true, { error: detail }, detail)
+      const what = opts.copilot === true ? 'Copilot session event log' : 'transcript'
+      writeCommandFailure(opts.json === true, { error: `${what} not found: ${resolvedPath}` }, `${what} not found: ${echoedValue(resolvedPath)}`)
       return
     }
 
@@ -267,10 +267,9 @@ export async function runWasteCommand(opts: WasteCommandOptions = {}): Promise<v
       ? findLatestCopilotSession({ projectRoot })
       : (findLatestCopilotSession({ projectRoot }) ?? findLatestCopilotSession()))
     if (eventsPath === null || !fs.existsSync(eventsPath)) {
-      const detail = eventsPath === null
-        ? 'no Copilot CLI session found under <copilot-home>/session-state'
-        : `Copilot session event log not found: ${eventsPath}`
-      writeCommandFailure(opts.json === true, { error: detail }, detail)
+      const jsonDetail = eventsPath === null ? 'no Copilot CLI session found under <copilot-home>/session-state' : `Copilot session event log not found: ${eventsPath}`
+      const detail = eventsPath === null ? jsonDetail : `Copilot session event log not found: ${echoedValue(eventsPath)}`
+      writeCommandFailure(opts.json === true, { error: jsonDetail }, detail)
       return
     }
     const copilotReport = buildCopilotWasteReport(eventsPath)

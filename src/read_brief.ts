@@ -81,10 +81,10 @@ export function runBriefCore(opts: BriefOptions): { text: string; code: number }
     if (opts.json !== true) {
       const rootDir = resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() })
       if (isIndexEmptyForProject(globalDbPath(), rootDir)) {
-        return { text: `Symbol not found: ${opts.spec}\n${emptyIndexMessage(rootDir)}`, code: 1 }
+        return { text: `Symbol not found: ${echoedValue(opts.spec)}\n${emptyIndexMessage(rootDir)}`, code: 1 }
       }
     }
-    return { text: `Symbol not found: ${opts.spec}`, code: 1 }
+    return { text: `Symbol not found: ${echoedValue(opts.spec)}`, code: 1 }
   }
   const match = resolution.entry
 

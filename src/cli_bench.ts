@@ -148,7 +148,7 @@ export function loadCorpus(dir: string): BenchCase[] {
   try {
     entries = fs.readdirSync(dir)
   } catch {
-    throw new Error(`bench corpus not found: ${dir}`)
+    throw new Error(`bench corpus not found: ${echoedValue(dir)}`)
   }
   const cases: BenchCase[] = []
   for (const entry of entries.sort()) {

@@ -374,7 +374,7 @@ function runRefsSingle(opts: RefsOptions): number {
     // Fetched as rows rather than as a bare existence count, because the defining file's LANGUAGE decides whether an empty result is an answer at all: parser.ts's REF_LANGUAGES walks call sites for nine tree-sitter languages only, and for a file outside that set the refs table is empty by construction. Capped rather than unbounded -- this only needs to know whether every definition of the name sits in a ref-blind language, and a name with more definitions than this cap in a single project is not a case where one more row changes that verdict.
     const defRows = querySymbols({ name: symName, rootDir, limit: REF_BLIND_DEF_PROBE_LIMIT })
     if (defRows.length === 0) {
-      emitErr(formatCommandError(`Symbol not found: ${symName}${unknownSymbolSuggestion(symName, rootDir)}`))
+      emitErr(formatCommandError(`Symbol not found: ${echoedValue(symName)}${unknownSymbolSuggestion(symName, rootDir)}`))
       // Same empty-index note as the "No references found" branch below -- an empty project index makes EVERY symbol look unindexed, so this must still surface the real cause instead of leaving the caller staring at a suggestion-free "not found" for a project that was simply never indexed.
       if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
       return 1

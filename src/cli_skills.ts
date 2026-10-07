@@ -97,13 +97,13 @@ export async function cmdSkillCompact(name: string | undefined, opts: { path?: s
       throw new CliError('--path cannot be empty')
     }
     if (!fs.existsSync(opts.path)) {
-      throw new CliError(`skill file not found: ${opts.path}`)
+      throw new CliError(`skill file not found: ${echoedValue(opts.path)}`)
     }
     try {
       body = fs.readFileSync(opts.path, 'utf-8')
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new CliError(`skill file not found: ${opts.path}`)
+        throw new CliError(`skill file not found: ${echoedValue(opts.path)}`)
       }
       throw new CliError(`failed to read skill file ${echoedValue(opts.path)}: ${extractErrorMessage(e)}`)
     }

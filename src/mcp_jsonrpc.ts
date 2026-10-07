@@ -3,6 +3,7 @@
 import { z } from 'zod'
 
 import { answeringMcpToolCall } from './mcp_client_text.js'
+import { displaySafeText } from './paths.js'
 
 /** The version this server speaks natively. */
 export const LATEST_PROTOCOL_VERSION = '2025-11-25'
@@ -225,7 +226,7 @@ export class McpServer {
           await this.send({ jsonrpc: '2.0', id, result: (await this.callTool(params)) as unknown as Record<string, unknown> })
           return
         default:
-          await this.sendError(id, JSONRPC_METHOD_NOT_FOUND, `Method not found: ${method}`)
+          await this.sendError(id, JSONRPC_METHOD_NOT_FOUND, `Method not found: ${displaySafeText(method)}`)
           return
       }
     } catch (err) {

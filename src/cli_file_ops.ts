@@ -77,7 +77,7 @@ function mapFsError(e: unknown, src?: string, dest?: string, srcLabel = 'source'
   if (fe.code === 'ENOENT') {
     const errPath = fe.path ?? ''
     const isSource = src !== undefined && path.resolve(errPath) === path.resolve(src)
-    if (isSource) throw new CliError(`${/\bfile$/i.test(srcLabel) ? srcLabel : `${srcLabel} file`} not found: ${src}`)
+    if (isSource) throw new CliError(`${/\bfile$/i.test(srcLabel) ? srcLabel : `${srcLabel} file`} not found: ${echoedValue(src)}`)
     const destDir = dest ? path.dirname(path.resolve(dest)) : path.dirname(path.resolve(errPath || '.'))
     throw new CliError(`destination directory does not exist: ${destDir}`)
   }

@@ -1073,7 +1073,7 @@ describe('mcp read confinement -- negative pin (validated-absent race)', () => {
     cleanup = close
 
     const result = await client.callTool({ name: 'grep', arguments: { pattern: 'x', path: [notYet], projectRoot: root } })
-    expect(textOf(result)).toContain(`Path not found: ${notYet}`)
+    expect(textOf(result)).toContain(`Path not found: "${notYet}"`)
     expect(textOf(result)).not.toContain('outside the project root')
     expect(textOf(result)).not.toContain('validated as absent')
   })

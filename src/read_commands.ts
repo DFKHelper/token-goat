@@ -1246,7 +1246,7 @@ export function runGrep(opts: GrepOptions): number {
 
   for (const searchPath of searchPaths) {
     if (!pathExists(searchPath)) {
-      emitErr(formatCommandError(`Path not found: ${searchPath}`))
+      emitErr(formatCommandError(`Path not found: ${echoedValue(searchPath)}`))
       return 1
     }
 

@@ -144,7 +144,7 @@ export async function runAuditCommand(opts: AuditCommandOptions = {}): Promise<v
   if (opts.transcript !== undefined) {
     const resolved = path.resolve(opts.transcript)
     if (!fs.existsSync(resolved)) {
-      const err = `transcript not found: ${resolved}`
+      const err = `transcript not found: ${echoedValue(resolved)}`
       writeCommandFailure(opts.json === true, { error: err }, err)
       return
     }

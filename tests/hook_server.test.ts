@@ -467,7 +467,7 @@ describe('warm CLI', () => {
       [['similar', 'src/calc.ts::computeTotal'], 'reportTotal\tfunction\tsrc/calc.ts:13'],
       [['context-for', 'compute the scaled total'], 'src/calc.ts::computeTotal'],
       [['test-for', 'src/calc.ts'], 'tests/calc.test.ts'],
-      [['callers', 'noSuchSymbolAnywhere'], 'Symbol not found: noSuchSymbolAnywhere'],
+      [['callers', 'noSuchSymbolAnywhere'], 'Symbol not found: "noSuchSymbolAnywhere"'],
     ]
     let served = 0
     for (const [args, mustPrint] of cases) {

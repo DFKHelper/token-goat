@@ -555,7 +555,7 @@ describe('token-goat CLI', () => {
       try {
         const r = await run(['replace', missingTarget, '--old-from', oldFile, '--new-from', newFile])
         expect(r.status).toBe(1)
-        expect(r.stderr).toContain(`target file not found: ${missingTarget}`)
+        expect(r.stderr).toContain(`target file not found: "${missingTarget}"`)
         expect(r.stderr, 'the label already ends in "file" and must not be doubled').not.toContain('file file')
       } finally {
         fs.rmSync(oldFile, { force: true })

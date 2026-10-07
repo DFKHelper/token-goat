@@ -373,7 +373,7 @@ export interface ConfigGetOptions {
 export function runConfigGet(opts: ConfigGetOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(formatCommandError(`Could not read: ${opts.file}`))
+    emitErr(formatCommandError(`Could not read: ${echoedValue(opts.file)}`))
     return 1
   }
 
@@ -381,7 +381,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
   if (frontmatterLines !== null) {
     const value = lookupYaml(frontmatterLines.join('\n'), opts.key)
     if (value === undefined) {
-      emitErr(formatCommandError(`Failed to parse YAML frontmatter: ${opts.file}`))
+      emitErr(formatCommandError(`Failed to parse YAML frontmatter: ${echoedValue(opts.file)}`))
       return 1
     }
     if (value === null) {
@@ -412,7 +412,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
       emit(displaySafeJson(obj, 0))
       return 0
     } catch {
-      emitErr(formatCommandError(`Failed to parse JSON: ${opts.file}`))
+      emitErr(formatCommandError(`Failed to parse JSON: ${echoedValue(opts.file)}`))
       return 1
     }
   }
@@ -420,7 +420,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
   if (ext === '.yaml' || ext === '.yml') {
     const value = lookupYaml(text, opts.key)
     if (value === undefined) {
-      emitErr(formatCommandError(`Failed to parse YAML: ${opts.file}`))
+      emitErr(formatCommandError(`Failed to parse YAML: ${echoedValue(opts.file)}`))
       return 1
     }
     if (value === null) {

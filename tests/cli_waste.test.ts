@@ -214,7 +214,7 @@ describe('runWasteCommand', () => {
       out.restore()
     }
 
-    expect(err.text()).toBe(`token-goat: Copilot session event log not found: ${missing}\n`)
+    expect(err.text()).toBe(`token-goat: Copilot session event log not found: "${missing}"\n`)
     expect(out.text()).toBe('')
     expect(process.exitCode).toBe(1)
   })

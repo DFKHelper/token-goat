@@ -556,7 +556,7 @@ describe('every whole command named in a sentence in src', () => {
 
 
 /** A value interpolated between quotes written by hand: `Symbol '${symbol}' not found` read `Symbol 'it's' not found` for a name holding an apostrophe, and handed an indexed name's control characters on as written. echoedValue (src/hint_suggestion_guard.ts) escapes an echoed value and quotes it the way quotedArg quotes the retry commands beside it, and fencedCommand sets a whole command in backticks. */
-const HAND_QUOTED_VALUE = new RegExp('([\'"])' + OPEN + '(\\d+)' + CLOSE + '[^\'"\\n]*\\1', 'g')
+const HAND_QUOTED_VALUE = new RegExp('(?<!\\w)([\'"])[^\'"\\s]*' + OPEN + '(\\d+)' + CLOSE + '[^\'"\\n]*\\1', 'g')
 
 /** Why a hand-quoted interpolation below keeps its quotes. */
 const R = {
@@ -576,18 +576,20 @@ const R = {
   number: 'a document number in the XML attribute syntax of a pack',
   base64: 'PowerShell or Python syntax around base64 text, which holds no quote mark (src/powershell_compat.ts, outside this pass\'s write scope)',
   jsonLeaf: 'a hint inside a --json payload that displaySafeJson escapes as a leaf string, so the value goes in as typed; escaping it here as well would escape it twice',
+  lintSentence: 'a lint diagnostic quoting a document id, whose whole sentence is escaped once at the err.message and warn.message sink (display_safe_sink_coverage), so escaping the id here as well would escape it twice',
+  pid: 'a PowerShell WQL filter around CLAUDE_PID, which entryReason has already checked to be one to ten digits',
+  probe: 'a probe command handed to stripUnsafeSuggestions to learn whether a name survives it, never shown (safeSuggestionTarget refuses quotes, `$` and backticks first)',
   mcpParam:'an MCP tool name and JSON parameter example, for a client with no shell: the value is one token-goat already quoted in its own retry command, the name is word characters, and a value holding a double quote or backtick is left out',
 } as const
 
-/** The hand-quoted interpolations that stay, each keyed `file::source line` (the line the interpolated value starts on, trimmed): the quotes belong to the syntax of what the text is, or hold a value token-goat fixes or pins. A key names one line, so a new hand-quoted value elsewhere in the same file is not covered by it, and an entry whose line changes or goes away fails until it is updated or removed. */
-const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string }> = [
+/** The hand-quoted interpolations that stay, each keyed `file::source line` (the line the interpolated value starts on, trimmed): the quotes belong to the syntax of what the text is, or hold a value token-goat fixes or pins. A key names one line, so a new hand-quoted value elsewhere in the same file is not covered by it, and an entry whose line changes or goes away fails until it is updated or removed. An entry covers exactly `count` hand-quoted values on lines of that text in its file (default 1), so a second identical line is a new hit until the count is raised. */
+const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string; count?: number }> = [
   ...[
     'bash_extractors.ts::return `\'${s.replace(/\'/g, `\'\\\\\'\'`)}\'`',
     'bash_structural_index.ts::return `"${s}"`',
     'hint_suggestion_guard.ts::if (unquotable(value)) return \'"\' + UNQUOTABLE + \'"\'',
     'hint_suggestion_guard.ts::if (REWRITTEN_IN_DOUBLE_QUOTES.test(value)) return "\'" + value + "\'"',
     'hint_suggestion_guard.ts::return \'"\' + value + \'"\'',
-    'hint_suggestion_guard.ts::return held.map((v) => (single ? "\'" + v + "\'" : \'"\' + (REWRITTEN_IN_DOUBLE_QUOTES.test(v) ? UNQUOTABLE : v) + \'"\'))',
     'native_hook.ts::return `"${text}"`',
     'process_util.ts::if (process.platform === \'win32\') return `"${value}"`',
     'process_util.ts::return `"${value.replace(/[\\\\$`"]/g, \'\\\\$&\')}"`',
@@ -608,13 +610,10 @@ const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string }> = [
     'project_memory.ts::lines.push(`${k} = "${escaped}"`);',
   ].map((key) => ({ key, reason: R.format })),
   ...[
-    'db.ts::tokenize=\'${FTS_TOKENIZER}\'',
     'index_reclaim.ts::const before = (db.prepare(`SELECT count(*) AS c FROM "${table}"`).get() as { c: number }).c',
     'index_reclaim.ts::db.prepare(`DELETE FROM "${table}"`).run()',
   ].map((key) => ({ key, reason: R.sqlConst })),
   ...[
-    'bridges/zed_install.ts::return `@echo off\\r\\n"${nodePath}" "${cliPath}" mcp-serve\\r\\n`',
-    'bridges/zed_install.ts::return `#!/bin/sh\\nexec "${nodePath}" "${cliPath}" mcp-serve\\n`',
     'bridges/shim_common.ts::try { process.stdout.write(\'${noOp}\') } catch {}`',
   ].map((key) => ({ key, reason: R.generated })),
   { key: 'process_util.ts::return spawnSync(existsSync(comspec) ? comspec : \'cmd.exe\', [\'/d\', \'/s\', \'/c\', `"${line}"`], { ...options, windowsVerbatimArguments: true })', reason: R.cmdLine },
@@ -635,7 +634,9 @@ const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string }> = [
     'tool_filters/db_clients.ts::kept.push(...allKeys.slice(0, RedisCLIFilter.LIST_KEEP).map((k) => `"${k}"`))',
     'tool_filters/db_clients.ts::kept.push(...allKeys.map((k) => `"${k}"`))',
   ].map((key) => ({ key, reason: R.render })),
-  { key: 'pack.ts::parts.push(`<document index="${docNum}">`)', reason: R.number },
+  { key: 'html_query.ts::message: `Duplicate ID \'#${attrVal}\' previously defined on line ${prevLine}`,', reason: R.lintSentence },
+  { key: 'hooks_read_policy.ts::const probe = `token-goat read "test.ts::${trimmed}"`', reason: R.probe },
+  { key: 'pack.ts::parts.push(`<document index="${docNum}">`)', reason: R.number, count: 2 },
   ...[
     'mcp_client_text.ts::const example = /["`]/.test(value) ? \'\' : ` (e.g. "${value}")`',
     'mcp_client_text.ts::return `the "${cmd}" tool again with a more specific ${param}${example}`',
@@ -646,6 +647,11 @@ const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string }> = [
     'powershell_compat.ts::if (target.kind === \'stdout\') return `[System.Console]::OpenStandardOutput().Write([System.Convert]::FromBase64String(\'${Buffer.from(text, \'utf8\').toString(\'base64\')}\'), 0, ${Buffer.byteLength(text, \'utf8\')})`',
   ].map((key) => ({ key, reason: R.base64 })),
   { key: 'powershell_compat.ts::const PYTHON_LOADER_ARG = `\'${PYTHON_LOADER.replace(/\'/g, "\'\'")}\'`', reason: R.quoter },
+  { key: 'hint_suggestion_guard.ts::return held.map((v) => (single ? "\'" + v + "\'" : \'"\' + (REWRITTEN_IN_DOUBLE_QUOTES.test(v) ? UNQUOTABLE : v) + \'"\'))', reason: R.quoter, count: 3 },
+  { key: 'db.ts::tokenize=\'${FTS_TOKENIZER}\'', reason: R.sqlConst, count: 2 },
+  { key: 'bridges/zed_install.ts::return `@echo off\\r\\n"${nodePath}" "${cliPath}" mcp-serve\\r\\n`', reason: R.generated, count: 2 },
+  { key: 'bridges/zed_install.ts::return `#!/bin/sh\\nexec "${nodePath}" "${cliPath}" mcp-serve\\n`', reason: R.generated, count: 2 },
+  { key: 'claude_hidden_rules.ts::if (process.platform === \'win32\') return [path.join(process.env[\'SystemRoot\'] ?? \'C:\\\\Windows\', \'System32\', \'WindowsPowerShell\', \'v1.0\', \'powershell.exe\'), [\'-NoProfile\', \'-NonInteractive\', \'-Command\', `(Get-CimInstance Win32_Process -Filter \'ProcessId=${pid}\').CommandLine`]]', reason: R.pid },
 ]
 
 describe('every value echoed between hand-written quotes in src', () => {
@@ -666,18 +672,21 @@ describe('every value echoed between hand-written quotes in src', () => {
       const expr = nodes[Number(m[2])]
       if (expr === undefined) continue
       const key = t.file + '::' + lineOf(expr)
-      hits.set(key + '@' + expr.getText(), { key, where: t.file + ':' + t.line, expr: expr.getText().replace(/\s+/g, ' ') })
+      hits.set(t.file + '@' + expr.getStart(), { key, where: t.file + ':' + t.line, expr: expr.getText().replace(/\s+/g, ' ') })
     }
   }
   const all = [...hits.values()]
-  const allowed = new Set(QUOTES_ARE_SYNTAX.map((e) => e.key))
+  const allowed = new Map(QUOTES_ARE_SYNTAX.map((e) => [e.key, e.count ?? 1]))
+  const perKey = new Map<string, number>()
+  for (const h of all) perKey.set(h.key, (perKey.get(h.key) ?? 0) + 1)
 
   it('is scanned', () => {
-    pinnedPopulation({ what: 'hand-quoted interpolations in src string templates', items: [...new Set(all.map((h) => h.key))], floor: 30, mustInclude: [QUOTES_ARE_SYNTAX[0]!.key, 'db.ts::' + "tokenize='${FTS_TOKENIZER}'"] })
+    // Measured 48 distinct hand-quoted lines on 2026-10-07; the floor sits a few below so a handful can be converted before it has to move.
+    pinnedPopulation({ what: 'hand-quoted interpolations in src string templates', items: [...new Set(all.map((h) => h.key))], floor: 45, mustInclude: [QUOTES_ARE_SYNTAX[0]!.key, 'db.ts::' + "tokenize='${FTS_TOKENIZER}'"] })
   })
 
   it('is echoedValue, quotedArg or fencedCommand everywhere but the lines whose quotes are syntax', () => {
-    expect(all.filter((h) => !allowed.has(h.key)).map((h) => h.where + ' ' + h.expr)).toEqual([])
+    expect(all.filter((h) => allowed.get(h.key) !== perKey.get(h.key)).map((h) => h.where + ' ' + h.expr)).toEqual([])
   })
 
   it('allows no line that no longer quotes a value by hand', () => {
@@ -702,5 +711,55 @@ describe('every value echoed between hand-written quotes in src', () => {
     expect(virtual('const s = ` (redirected from: "${result.redirectedFrom}")`')).toEqual(['result.redirectedFrom'])
     expect(virtual('const s = `Symbol ${echoedValue(symbol)} not found in ${echoedValue(file)}`')).toEqual([])
     expect(virtual("const s = `inserted after 'Install' in ${file}`")).toEqual([])
+    expect(virtual("const s = `ran '--n=${n}' twice`")).toEqual(['n'])
+    expect(virtual("const s = `it's ${n} of their own`")).toEqual([])
+  })
+})
+
+/** A value interpolated straight after `not found:`, with no quote mark of any kind: `Symbol not found: my symbol` leaves the reader to guess where the name ends, and an indexed name's control characters reach the terminal as written. */
+const BARE_NOT_FOUND = new RegExp('not found: ' + OPEN + '(\\d+)' + CLOSE, 'g')
+
+/** The helpers that escape an echoed value and quote it. */
+const ECHO_HELPERS = /^(?:echoedValue|displaySafeText|fileSubject|quotedArg)\(/
+
+/** The values that stay bare after `not found:`, each keyed `file expression`. */
+const NOT_FOUND_BARE: ReadonlyArray<{ key: string; reason: string }> = [
+  { key: 'cli_waste.ts resolvedPath', reason: 'the --json error field, which displaySafeJson escapes as a leaf string beside the echoedValue text for the terminal' },
+  { key: 'cli_waste.ts eventsPath', reason: 'the --json error field, which displaySafeJson escapes as a leaf string beside the echoedValue text for the terminal' },
+  { key: 'ooxml_extract.ts filePath', reason: 'ooxml_extract.ts is a parser fingerprint source (scripts/parser-fingerprint.mjs): rewording its message would re-extract every indexed Office document, so the path stays as the caller passed it' },
+]
+
+describe('every value named right after "not found:" in src', () => {
+  const scan = (templates: (standIn: StandIn) => Array<{ file: string; line: number; text: string }>): string[] => {
+    const exprs: string[] = []
+    const mark = (expr: ts.Expression): string => {
+      exprs.push(expr.getText().replace(/\s+/g, ' '))
+      return OPEN + String(exprs.length - 1) + CLOSE
+    }
+    return [...new Set(templates(mark).flatMap((t) => [...t.text.matchAll(BARE_NOT_FOUND)].map((m) => ({ where: t.file + ':' + t.line, expr: exprs[Number(m[1])] ?? '' })).filter((h) => !ECHO_HELPERS.test(h.expr)).map((h) => h.where + ' ' + h.expr)))]
+  }
+  const files = [...new Set(stringTemplates(PLAIN, 'not found: ').filter((t) => t.text.includes('not found: ' + PLAIN)).map((t) => t.file))]
+
+  it('is scanned', () => {
+    pinnedPopulation({ what: 'src files naming a value right after not found:', items: files, floor: 10, mustInclude: ['graph_commands.ts', 'read_refs.ts', 'read_brief.ts'] })
+  })
+
+  const found = scan((standIn) => stringTemplates(standIn, 'not found: ')).map((h) => ({ key: h.replace(/:\d+ /, ' '), where: h }))
+
+  it('is echoed through echoedValue', () => {
+    expect(found.filter((h) => !NOT_FOUND_BARE.some((e) => e.key === h.key)).map((h) => h.where)).toEqual([])
+  })
+
+  it('exempts no value that is no longer named bare', () => {
+    expect(NOT_FOUND_BARE.filter((e) => !found.some((h) => h.key === e.key)).map((e) => e.key)).toEqual([])
+  })
+
+  // HAND-DERIVED virtual sources: the shapes src carried (graph_commands.ts `Symbol not found: ${opts.symbol}`, read_brief.ts `Symbol not found: ${opts.spec}`) beside the echoedValue form and a value that is not named after the colon.
+  it('flags a bare value after not found: and passes an echoed one', () => {
+    const virtual = (source: string): string[] => scan((standIn) => templatesIn('virtual.ts', source, standIn, 'not found: ')).map((f) => f.replace('virtual.ts:1 ', ''))
+    expect(virtual('const s = `Symbol not found: ${opts.symbol}${hint}`')).toEqual(['opts.symbol'])
+    expect(virtual('const s = `Symbol not found: ${echoedValue(opts.symbol)}${hint}`')).toEqual([])
+    expect(virtual('const s = `${what} not found: ${displaySafeText(path)}`')).toEqual([])
+    expect(virtual('const s = `Symbol ${name} not found: try again`')).toEqual([])
   })
 })
