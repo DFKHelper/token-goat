@@ -13,7 +13,8 @@ import { formatSymbolLocation } from './indexed_source.js'
 import { suggestedIndexCommand } from './index_health.js'
 import { projectScopeClause } from './sql_path.js'
 import { foldPath, isCaseInsensitiveFs, isTestFile } from './util.js'
-import { displaySafeText, normalizePath, toDisplayPath } from './paths.js'
+import { displaySafeText, normalizePath, toDisplayPath, displaySafePath } from './paths.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 import { findClaudeMdFiles } from './cli_context_stats.js'
 import { hasSkipSegmentBelowRoot } from './skip_scope.js'
 
@@ -368,7 +369,7 @@ export function formatMemSuggestions(projectRoot: string): string {
   for (const s of suggestions) {
     const basename = path.basename(s.path)
     lines.push(
-      'Consider: mem import --from-md ' + s.path + '  # migrates ' + s.count + ' preference-shaped lines from ' + basename + ' as pending facts for review',
+      'Consider: mem import --from-md ' + quotedArg(displaySafePath(s.path)) + '  # migrates ' + s.count + ' preference-shaped lines from ' + basename + ' as pending facts for review',
     )
   }
   return lines.join(String.fromCharCode(10))

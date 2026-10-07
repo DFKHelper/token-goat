@@ -4,6 +4,7 @@ import { parse } from 'csv-parse/sync'
 import { findHtmlHeadingMatches } from '../languages/common.js'
 import { fenceUntrustedFileContent } from '../injection_scan.js'
 import { quotedArg, quotedArgs } from '../hint_suggestion_guard.js'
+import { displaySafePath } from '../paths.js'
 
 export interface FileTypeResult {
   shouldBlock: boolean
@@ -79,7 +80,7 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
   if (previewUnavailable(content, length)) {
     return {
       shouldBlock: true,
-      message: `Large HTML file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap). Use token-goat section to extract a section by heading, or convert to text: pandoc ${quotedArg(filePath)} -t plain`,
+      message: `Large HTML file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap). Use token-goat section to extract a section by heading, or convert to text: pandoc ${quotedArg(displaySafePath(filePath))} -t plain`,
     }
   }
 
@@ -98,7 +99,7 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
   if (isMinified) {
     return {
       shouldBlock: true,
-      message: `HTML file appears minified (${formatBytes(length)}). Consider fetching the source or converting with: pandoc "${filePath}" -t plain`,
+      message: `HTML file appears minified (${formatBytes(length)}). Consider fetching the source or converting with: pandoc ${quotedArg(displaySafePath(filePath))} -t plain`,
     }
   }
 
@@ -114,7 +115,7 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
               .join('\n'),
           )
         : '',
-      `Use token-goat section to extract a section by heading, or convert to text: pandoc ${quotedArg(filePath)} -t plain`,
+      `Use token-goat section to extract a section by heading, or convert to text: pandoc ${quotedArg(displaySafePath(filePath))} -t plain`,
     ].filter(Boolean).join('\n'),
   }
 }
@@ -248,7 +249,7 @@ export function handleOfficeBinary(filePath: string): FileTypeResult {
     shouldBlock: true,
     message: [
       `Binary Office file (.${ext}) — cannot be read as text.`,
-      `Extract content first: pandoc "${filePath}" -t plain > "${filePath}.txt"`,
+      `Extract content first: pandoc ${quotedArg(displaySafePath(filePath))} -t plain -o ${quotedArg(displaySafePath(filePath + '.txt'))}`,
       `Then read the extracted .txt file.`,
     ].join('\n'),
   }
@@ -380,13 +381,18 @@ export function handleSqlite(filePath: string): FileTypeResult {
   }
 }
 
+/** `p` as it can sit inside the SQL string of the DuckDB hint, which is a single-quoted SQL literal inside a double-quoted shell argument: only a path holding no quote of either kind, no `$`, backtick or backslash, and no character displaySafePath would escape is written there, and any other is `<file>`, which the reader fills in. */
+function sqlLiteralPath(p: string): string {
+  return displaySafePath(p) === p && !/['"$`\\\u2018-\u201E]/.test(p) ? p : '<file>'
+}
+
 /** Parquet handler — always blocks regardless of size. */
 export function handleParquet(filePath: string): FileTypeResult {
   return {
     shouldBlock: true,
     message: [
       `Parquet file — Read cannot return binary columnar content; this is not retryable with different Read parameters.`,
-      `Query with DuckDB: duckdb -c "SELECT * FROM read_parquet('${filePath}') LIMIT 10"`,
+      `Query with DuckDB: duckdb -c "SELECT * FROM read_parquet('${sqlLiteralPath(filePath)}') LIMIT 10"`,
     ].join('\n'),
   }
 }

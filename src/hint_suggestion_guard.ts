@@ -102,16 +102,30 @@ function fencedCommandEnd(line: string): number {
   return region.includes('"') && (ENDS_SINGLE_QUOTES.test(region) || CONTROL_OR_BIDI.test(region)) ? -1 : tick
 }
 
+/** The other programs a hook suggests running on a file, besides token-goat itself: `pandoc` for HTML and Office files, `duckdb` for Parquet, `rg` for a re-downloaded file. Each takes the path as an argument, so its command is checked the way a `token-goat …` one is. They are named rather than every backtick-fenced span being read as a command, because hooks also fence config keys, flags, placeholders and file kinds (`text-heavy`), which the allowlist between quoted arguments would misread. A bare program name only counts at the start of a word, so `org ` or `--from-md ` is prose; `token-goat ` keeps matching anywhere, as it always has. */
+const SUGGESTED_PROGRAMS = ['pandoc', 'duckdb', 'rg'] as const
+
+/** Where a suggestion can start: `token-goat ` anywhere, or one of {@link SUGGESTED_PROGRAMS} at the start of a word. */
+const SUGGESTION_START = new RegExp(`token-goat |(?<![\\w./-])(?:${SUGGESTED_PROGRAMS.join('|')}) `)
+
+/** The first suggestion start in `text` at or after `from`, or -1. Searched on the whole text, so the word-start check sees the character before `from`. */
+function nextSuggestionStart(text: string, from: number): number {
+  const re = new RegExp(SUGGESTION_START.source, 'g')
+  re.lastIndex = from
+  const found = re.exec(text)
+  return found === null ? -1 : found.index
+}
+
 /** What replaces a suggestion that broke its quoting. Names no path, so nothing is runnable. */
 const OMITTED = 'token-goat (command omitted: the path contains shell metacharacters)'
 
 /** Every `token-goat …` suggestion in `text`, with the unsafe ones replaced by {@link OMITTED}. Where a suggestion ends is decided twice, because the obvious answer is wrong in exactly the case that matters. A suggestion is fenced in backticks, so it normally ends at the first backtick after `token-goat ` -- but a path holding a backtick closes the fence early, and cutting there would leave the rest of the path (backticks and all) sitting in the message as residue. So: measure to the first backtick and check that; if it is safe, emit it and move on, which is every ordinary hint and leaves them byte-identical. Only once a break is found is the end measured again, by the quoting this time: the removal runs to the first backtick outside every quoted argument ({@link fencedCommandEnd}), which takes the value's own backticks with it and leaves the prose and the commands after it on the line, each checked in turn. Cutting to the last backtick on the line instead turned a large-file deny for a path holding a backtick into one sentence, its size, its sampling advice and its edit commands all gone. Where the quoting cannot place the end, the removal still widens, out to the last backtick on that line when the suggestion was fenced (to the line's end when it was not), taking the residue and any further suggestion on the same line with it. Nothing ever crosses a line break. The two-step exists so the widening cannot cost anything on healthy text. Widening first would flag a hint that merely mentions another command after its suggestion (`… or \`cat\``), since the wider slice would then contain that fence. */
 export function stripUnsafeSuggestions(text: string): string {
-  if (!text.includes('token-goat ')) return text
+  if (!SUGGESTION_START.test(text)) return text
   let out = ''
   let at = 0
   for (;;) {
-    const start = text.indexOf('token-goat ', at)
+    const start = nextSuggestionStart(text, at)
     if (start === -1) return out + text.slice(at)
 
     const lineBreak = text.slice(start).search(/[\r\n]/)

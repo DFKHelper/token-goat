@@ -664,7 +664,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       clearCurlDownload(curlDl.url)
     } else if (prevPath !== null && prevOnDisk !== null && statSync(prevOnDisk).size >= loadConfig().hints.bash_dedup_min_bytes) {
       recordStat('session_hint', 0, 0)
-      return denyOutput(leadWithCommand(sliceCommand(prevPath, targetFor(prevPath)), 'to read a part of it, or `rg \'<pattern>\' ' + prevPath + '` to search it', 'Already downloaded to ' + prevPath + ' earlier this session.'))
+      return denyOutput(leadWithCommand(sliceCommand(prevPath, targetFor(prevPath)), 'to read a part of it, or `rg \'<pattern>\' ' + quotedArg(displaySafePath(prevPath)) + '` to search it', 'Already downloaded to ' + prevPath + ' earlier this session.'))
     }
   }
 
