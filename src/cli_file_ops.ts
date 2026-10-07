@@ -701,7 +701,11 @@ export function cmdInsertSection(file: string, opts: { after: string; contentFro
   const endsUnterminated = offset > 0 && rawText[offset - 1] !== '\n'
   // An inserted heading right under the section's last line of text read `second\n## New`: a blank line keeps the new section apart from the body it follows, as every other heading in the file is.
   const blankBefore = /^ {0,3}#{1,6}(?:[ \t]|$)/.test(insertedLines[0] ?? '') && rawText.slice(prevLineStart, offset).trim() !== '' ? eol : ''
-  const mergedText = rawText.slice(0, offset) + (endsUnterminated ? eol + blankBefore + insertedText : blankBefore + insertedText + eol) + rawText.slice(offset)
+  // The line after a section is the next heading whenever it holds text, and the section's own blank line before it stays above the insert (or, when it holds only spaces, counts as the section's last line), so inserted text ending on a text line sat directly on that heading: `new\n## Lesson 2`, or a paragraph a setext underline turned into a heading.
+  const nextLineEnd = rawText.indexOf('\n', offset)
+  const nextLine = rawText.slice(offset, nextLineEnd < 0 ? rawText.length : nextLineEnd)
+  const blankAfter = nextLine.trim() !== '' && (insertedLines[insertedLines.length - 1] ?? '').trim() !== '' ? eol : ''
+  const mergedText = rawText.slice(0, offset) + (endsUnterminated ? eol + blankBefore + insertedText : blankBefore + insertedText + eol + blankAfter) + rawText.slice(offset)
 
   if (preWriteStat !== undefined) {
     let preRenameStat: fs.Stats | undefined

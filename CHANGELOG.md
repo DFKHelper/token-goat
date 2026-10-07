@@ -6,6 +6,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **`insert-section` leaves a blank line between the inserted text and the heading below it.** When a section ran straight into the next heading, or ended on a line holding only spaces, the inserted text landed directly above the next heading (`new` followed by `## Lesson 2`), and plain text inserted above a heading underlined with `===` became part of that heading. A blank line now follows the insert whenever the next line holds text. `--content-from` and `--content-b64` behave the same way.
 - **The line-range re-read refusal reads "Lines 10..20 of this file were already read".** It said "was". `session-audit` still counts refusals recorded with the old wording.
 - **The hint after a markdown edit no longer repeats the file name.** It read "Run `token-goat section "README.md::Intro"` ... README.md was edited." and now ends "This file was edited.", the same way the read hints name the file only inside the command they suggest.
 - **Section errors quote the heading the way their retry forms do.** `section`, `insert-section --after`, `skill-section` and `gdrive-sections --heading` wrapped the heading in hand-written single quotes in their "not found", "Ambiguous heading" and "has no headings" errors, so a heading such as `it's gone` read as a value cut at the apostrophe. The heading, file and skill name are now quoted the same way as the retry forms beside them.
