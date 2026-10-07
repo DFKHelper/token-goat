@@ -18,6 +18,7 @@ import { confinementRefusal, resolveProjectConfinement, stripHtmlIdSpelling } fr
 import { formatStatsSuffix, hasRealDocstring } from './read_meta.js'
 import { DELETED_TAG, docCommentLines, fileIsGone, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, indexFreshness, largestFileSize, recordReadStat, recordStaleServed, resolveBody, sinkGoneRows, staleWarning, truncationFooter, type TruncationTotal } from './read_commands.js'
 import { fencedCommand, quotedArg } from './hint_suggestion_guard.js'
+import { forClient } from './mcp_client_text.js'
 
 /** Body lines shown per `symbol` match before the preview is cut and the cut is announced. */
 const SYMBOL_PREVIEW_LINES = 5
@@ -320,7 +321,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     const dropped = bodyLines.length - SYMBOL_PREVIEW_LINES
     const elided =
       dropped > 0
-        ? `\n  ...(${countNoun(dropped, 'more line')}; full body: ${fencedCommand('token-goat read ' + quotedArg(`${displaySafeText(toDisplayPath(symbolDisplayRoot, sym.filePath))}::${displaySafeText(sym.name)}`))})`
+        ? forClient(`\n  ...(${countNoun(dropped, 'more line')}; full body: ${fencedCommand('token-goat read ' + quotedArg(`${displaySafeText(toDisplayPath(symbolDisplayRoot, sym.filePath))}::${displaySafeText(sym.name)}`))})`)
         : ''
     return preview.trim() !== '' ? `${header}\n${preview}${elided}` : header
   })

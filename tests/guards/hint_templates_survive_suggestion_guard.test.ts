@@ -582,7 +582,7 @@ const HAND_QUOTED_LEDGER: Readonly<Record<string, number>> = {
   'fold_structure.ts': 2, 'graph_analysis.ts': 4, 'graph_commands.ts': 4, 'graph_inspection.ts': 5, 'hint_suggestion_guard.ts': 3, 'hint_target.ts': 1,
   'hints/file_type_handler.ts': 2, 'hooks_agent_spawn.ts': 1, 'hooks_bash.ts': 1, 'hooks_bash_commands.ts': 1, 'hooks_bash_post.ts': 1, 'hooks_common.ts': 1,
   'hooks_glob.ts': 1, 'html_query.ts': 4, 'index_health.ts': 1, 'index_reader.ts': 1, 'index_reclaim.ts': 1, 'install.ts': 1,
-  'json_query.ts': 7, 'languages/sql_idx.ts': 1, 'mcp_compress_packs.ts': 1, 'mcp_server.ts': 6, 'native_hook.ts': 1, 'pack.ts': 1,
+  'json_query.ts': 7, 'languages/sql_idx.ts': 1, 'mcp_client_text.ts': 2, 'mcp_compress_packs.ts': 1, 'mcp_server.ts': 4, 'native_hook.ts': 1, 'pack.ts': 1,
   'powershell_compat.ts': 2, 'process_util.ts': 5, 'project_memory.ts': 1, 'read_brief.ts': 1, 'read_commands.ts': 9, 'read_git.ts': 4,
   'read_inspect.ts': 10, 'read_meta.ts': 1, 'read_refs.ts': 3, 'read_semantic.ts': 5, 'read_spec.ts': 4, 'read_structured_data.ts': 2,
   'read_suggest.ts': 1, 'read_symbol.ts': 5, 'ref_blindness.ts': 2, 'relay.ts': 1, 'screenshot.ts': 3, 'search/search_cli.ts': 1,

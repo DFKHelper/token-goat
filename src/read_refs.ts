@@ -18,6 +18,7 @@ import { isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindK
 import { typedRefsForDef } from './graph_traversal.js'
 import { compileGrepMatcher, countNoun, excludeTestsHiddenNote, isTestFile } from './util.js'
 import { grepFilteredToEmptyNotice } from './filter_notice.js'
+import { forClient } from './mcp_client_text.js'
 import { buildContextWindow, renderContextWindow, type SourceContextLine } from './util_context.js'
 import { CliError, formatCommandError } from './command_error.js'
 
@@ -470,7 +471,7 @@ function renderTopFilesSummary(refs: RefEntry[], topN: number, suppressed?: numb
   const omittedFiles = grouped.length - shown.length
   if (omittedFiles > 0) {
     const shownRefs = shown.reduce((sum, g) => sum + g.count, 0)
-    lines.push(`  ...(${countNoun(omittedFiles, 'more file')}, ${countNoun(refs.length - shownRefs, 'more reference')} elided; use a higher --top to see more)`)
+    lines.push(forClient(`  ...(${countNoun(omittedFiles, 'more file')}, ${countNoun(refs.length - shownRefs, 'more reference')} elided; use a higher --top to see more)`))
   }
   return lines
 }

@@ -79,6 +79,7 @@ import {
 } from './read_meta.js'
 import { formatCommandError } from './command_error.js'
 import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
+import { forClient } from './mcp_client_text.js'
 
 const GREP_MAX_LINES = 200
 
@@ -584,7 +585,7 @@ export function findSpecSeparator(spec: string): number {
 /** The "you are not seeing all of it" line for a text-mode result set, or an empty string when nothing was dropped. `--json` has always carried an honest `totalCount`; text mode rendered exactly `limit` rows and stopped, which is indistinguishable from "that is all there is" -- `symbol dup` printed 20 definitions of 40 with nothing on stdout or stderr to say so. Same no-silent-caps rule the `refs --top` summary and `json-outline`'s `--head` note already follow. `total` is a thunk because computing it costs another count query, and it is only worth paying when the page came back full: a result set shorter than the limit cannot have been truncated. Appended after `guardText`, so the overflow guard cannot trim off the very line that explains the trimming. */
 export function truncationFooter(shown: number, limit: number, total: () => TruncationTotal, plural: string, flag: string): string {
   const notice = truncationNotice(shown, limit, total, plural, flag)
-  return notice === null ? '' : `\n\ntoken-goat: ${notice}`
+  return notice === null ? '' : `\n\ntoken-goat: ${forClient(notice)}`
 }
 
 /** The honest total behind a truncated page. `exact: false` means the count came from a bounded client-side scan (`--grep`, `--exclude-tests`) that itself filled up, so `count` is a floor and not a total: saying "of 20000" there would trade one silent cap for a confident wrong number. */
@@ -754,7 +755,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   const warning = staleWarning(match.filePath, 'read')
   // Appended after the overflow guard, not folded into the guarded lines, so this advisory note never shifts the "showing N of M lines" count the guard reports for the actual body.
   const narrowerSliceHint = bodyLen > LARGE_SYMBOL_LINE_THRESHOLD
-    ? `\n# for a narrower slice: token-goat grep "<pattern>" ${quotedArg(file)} -C 15 --symbol`
+    ? forClient(`\n# for a narrower slice: token-goat grep "<pattern>" ${quotedArg(file)} -C 15 --symbol`)
     : ''
   const text = guardText(warning + trimBlankLines(lines).join('\n'), 'symbol') + narrowerSliceHint
   if (opts.suppressStat !== true) recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)

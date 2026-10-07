@@ -2,6 +2,7 @@
 
 import { stripAnsiEscapes } from './render/ansi.js'
 import { safeSlice } from './util.js'
+import { forClient } from './mcp_client_text.js'
 import type { ContentClass } from './token_estimate.js'
 import { classifyContent, guardDivisor } from './token_estimate.js'
 
@@ -62,7 +63,7 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
   const hint = getHintFor(command)
   const marker = `[token-goat: output capped at ~${budgetTokens} tokens to protect context — showing ${shown} of ${totalLines} lines. ${hint}]`
 
-  return kept.join('\n') + '\n' + marker
+  return kept.join('\n') + '\n' + forClient(marker)
 }
 
 /** Result of capping a JSON-serializable array to a token budget. */

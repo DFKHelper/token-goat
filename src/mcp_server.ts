@@ -45,9 +45,7 @@ import { normalizePath, displaySafeJson } from './paths.js'
 import { expandSpecPath } from './spec_path.js'
 import { displaySafeFailureText } from './command_error.js'
 import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'
-
-// The read_commands.ts handlers below are shared verbatim with the CLI (see the file-level doc comment), so their error/ambiguity/overflow text is written for a shell caller: literal `token-goat <cmd> "..."` retry commands and `--flag`-style CLI switches. An MCP client has no shell and no CLI flags -- only this tool's own JSON params -- so a model driving an MCP client would either try to shell out (which fails) or get stuck. Rewrite those CLI-only affordances into MCP-appropriate guidance (re-call this tool with an adjusted parameter) before wrapping the text into a CallToolResult, without touching read_commands.ts/ overflow_guard.ts's CLI-facing text at all -- the CLI's own output stays unchanged.
-const TOKEN_GOAT_RETRY_RE = /token-goat (\w[\w-]*) (?:"([^"]+)"|'([^']+)')/g
+import { forClient, mcpFriendlyText } from './mcp_client_text.js'
 
 // Upper bounds for the MCP tools' numeric params, matching the `.max(CONTENT_MAX_INPUT_CHARS)` convention `compress_text` already uses. The `run*` handlers apply no upper clamp of their own (`limit`/`top` go straight into a SQL LIMIT, `maxLines` into a `.slice`), so an unbounded value there is mostly a no-op cap rather than an allocation; `context` is the one that genuinely amplifies, since every extra line is emitted per match.
 const MCP_MAX_LIMIT = 1000
@@ -56,37 +54,11 @@ const MCP_MAX_OUTPUT_LINES = 10_000
 // minLines only filters, so its bound need only exceed any real symbol's length; left unbounded, an integer field advertises plus and minus 2^53 in its schema.
 const MCP_MAX_MIN_LINES = 100_000
 
-/** cmd -> the MCP tool param name that literal retry command's quoted argument maps to. */
-const RETRY_PARAM_BY_COMMAND: Record<string, string> = {
-  read: 'spec',
-  section: 'spec',
-  symbol: 'name',
-  skeleton: 'file',
-  outline: 'file',
-}
-
-/** Rewrites CLI-only affordances (shell retry commands, `--flag` switches) in `text` into MCP tool-call guidance. No-op on text that contains neither. */
-function mcpFriendlyText(text: string): string {
-  // quotedArg single-quotes an argument holding `$`, a backtick or `"`, so the argument is in whichever group matched.
-  let out = text.replace(TOKEN_GOAT_RETRY_RE, (_match, cmd: string, doubleQuoted: string | undefined, singleQuoted: string | undefined) => {
-    const param = RETRY_PARAM_BY_COMMAND[cmd] ?? 'parameter'
-    const value = doubleQuoted ?? singleQuoted ?? ''
-    // The example sits in double quotes, often inside the backtick fence the command had, so a value holding either mark is left out rather than closing one of them early.
-    const example = /["`]/.test(value) ? '' : ` (e.g. "${value}")`
-    return `the "${cmd}" tool again with a more specific ${param}${example}`
-  })
-  out = out.replace(/--json\b/g, 'the json parameter')
-  out = out.replace(/--limit\b/g, 'the limit parameter')
-  out = out.replace(/--top\b/g, 'the top parameter')
-  out = out.replace(/--grep PATTERN, --section HEADING, or --tail N/g, 'a narrower query')
-  return out
-}
-
-/** Wraps a `{ text, code }` result from a read_commands handler into an MCP `CallToolResult`. A failure is token-goat's own words around names taken from the index, so it gets what the CLI's stderr and every hook's output get: each line display-safe (formatFailedResultText's escaping) and any suggested command whose quoting a name broke out of dropped (the relay's guard). A success is left as its handler built it, because it carries a file's own content, which neither treatment may rewrite. */
+/** Wraps a `{ text, code }` result from a read_commands handler into an MCP `CallToolResult`. A failure is token-goat's own words around names taken from the index, so it gets what the CLI's stderr and every hook's output get: each line display-safe (formatFailedResultText's escaping) and any suggested command whose quoting a name broke out of dropped (the relay's guard), and then its CLI retry commands and `--flag` switches worded as tool-call guidance. A success is left as its handler built it, because it carries a file's own content, which none of the three may rewrite: a note token-goat appends to a success is worded for MCP where it is built (mcp_client_text.ts forClient). */
 function toCallToolResult(result: { text: string; code: number }): CallToolResult {
-  const text = result.code === 0 ? result.text : stripUnsafeSuggestions(displaySafeFailureText(result.text))
+  const text = result.code === 0 ? result.text : mcpFriendlyText(stripUnsafeSuggestions(displaySafeFailureText(result.text)))
   return {
-    content: [{ type: 'text', text: mcpFriendlyText(text) }],
+    content: [{ type: 'text', text }],
     isError: result.code !== 0,
   }
 }
@@ -108,16 +80,17 @@ function toRawCallToolResult(result: { text: string; code: number }): CallToolRe
 /** Captures everything written to `process.stdout`/`process.stderr` during `fn()`, in call order, restoring the original write functions before returning (even if `fn` throws). `runRefs`/`runChanged`/`runGrep`/`runImports`/`runExports` -- unlike the `{ text, code }`- returning handlers `toCallToolResult` adapts above -- print their own output via `emit()`/`emitErr()` (raw `process.stdout`/`process.stderr` writes) and return only an exit code, matching what their CLI callers (`runExit` in cli.ts) expect. An MCP stdio server speaks JSON-RPC over that SAME stdout stream, so letting one of them write raw text straight to the real `process.stdout` here would corrupt every in-flight MCP message, not just this tool's response -- this capture is what stands in for that missing return value, without touching read_commands.ts's printing behavior (which the CLI still depends on byte-for-byte). */
 function captureOutput(fn: () => number): { code: number; text: string } {
   const chunks: string[] = []
-  const record = (chunk: unknown, encodingOrCb?: unknown, maybeCb?: unknown): boolean => {
-    chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk as Uint8Array).toString('utf-8'))
+  // stdout carries the result, which may be a file's own lines; stderr carries only token-goat's notes, so those alone are worded for the MCP client.
+  const recorder = (word: (text: string) => string) => (chunk: unknown, encodingOrCb?: unknown, maybeCb?: unknown): boolean => {
+    chunks.push(word(typeof chunk === 'string' ? chunk : Buffer.from(chunk as Uint8Array).toString('utf-8')))
     const callback = typeof encodingOrCb === 'function' ? encodingOrCb : typeof maybeCb === 'function' ? maybeCb : undefined
     if (typeof callback === 'function') callback()
     return true
   }
   const origStdoutWrite = process.stdout.write.bind(process.stdout)
   const origStderrWrite = process.stderr.write.bind(process.stderr)
-  process.stdout.write = record as typeof process.stdout.write
-  process.stderr.write = record as typeof process.stderr.write
+  process.stdout.write = recorder((text) => text) as typeof process.stdout.write
+  process.stderr.write = recorder(forClient) as typeof process.stderr.write
   try {
     const code = fn()
     return { code, text: chunks.join('') }

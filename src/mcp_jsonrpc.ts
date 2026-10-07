@@ -2,6 +2,8 @@
 
 import { z } from 'zod'
 
+import { answeringMcpToolCall } from './mcp_client_text.js'
+
 /** The version this server speaks natively. */
 export const LATEST_PROTOCOL_VERSION = '2025-11-25'
 
@@ -275,7 +277,7 @@ export class McpServer {
       )
     }
     try {
-      return await handler(parsed.data)
+      return await answeringMcpToolCall(() => handler(parsed.data))
     } catch (err) {
       return errorText(err instanceof Error ? err.message : String(err))
     }
