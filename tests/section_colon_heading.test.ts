@@ -45,7 +45,7 @@ describe('section with `::` inside the heading text', () => {
   it('still reports a missing file against the last-split file part when no split names a file', () => {
     const { text, code } = runSection({ spec: `${join(tmpDir, 'nope.md')}::Foo::bar()`, suppressStat: true })
     expect(code).toBe(1)
-    expect(text).toContain(`File not found: '${join(tmpDir, 'nope.md')}::Foo'`)
+    expect(text).toContain(`File not found: "${join(tmpDir, 'nope.md')}::Foo"`)
   })
 })
 

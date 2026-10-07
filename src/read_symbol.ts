@@ -312,7 +312,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     // The doc comment sits above lineStart, outside the body, so `symbol` printed the body alone while `read` printed both; it is shown in full and kept out of the SYMBOL_PREVIEW_LINES count, which is a budget for the body.
     const doc = docCommentLines(sym)
     const docLabel = doc.length > 0 ? ` + ${doc.length}-line doc comment` : ''
-    const header = `# ${sym.name} (${sym.kind}) — ${formatSymbolLocation(toDisplayPath(symbolDisplayRoot, sym.filePath), sym.lineStart, sym.lineEnd)}${docLabel}${statsStr}${goneTag}${staleTag}`
+    const header = `# ${displaySafeText(sym.name)} (${sym.kind}) — ${formatSymbolLocation(displaySafeText(toDisplayPath(symbolDisplayRoot, sym.filePath)), sym.lineStart, sym.lineEnd)}${docLabel}${statsStr}${goneTag}${staleTag}`
     const body = resolveBody(sym)
     const bodyLines = body.split(/\r?\n/)
     const preview = [...doc, ...bodyLines.slice(0, SYMBOL_PREVIEW_LINES)].join('\n')

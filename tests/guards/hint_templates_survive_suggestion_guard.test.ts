@@ -555,3 +555,93 @@ describe('every whole command named in a sentence in src', () => {
     expect(virtual("const s = 'Run `token-goat grep \"token-goat x\" src`.'")).toEqual([])
   })
 })
+
+
+/** A value interpolated between quotes written by hand: `Symbol '${symbol}' not found` read `Symbol 'it's' not found` for a name holding an apostrophe, and handed an indexed name's control characters on as written. echoedValue (src/hint_suggestion_guard.ts) escapes an echoed value and quotes it the way quotedArg quotes the retry commands beside it. */
+const HAND_QUOTED_VALUE = new RegExp('([\'"])' + OPEN + '(\\d+)' + CLOSE + '[^\'"\\n]*\\1', 'g')
+
+/** The sentences that echo back the value asked for: a not-found error, a redirect note, the insert-section confirmation and a cross-file lead. */
+const ECHO_SENTENCE = /not found|redirected from|inserted after|is defined in/
+
+/** Echo sentences whose hand-quoted value is not one the caller asked for. */
+const ECHO_EXEMPT: ReadonlyArray<{ key: string; reason: string }> = [
+  { key: 'cli_upgrade.ts::MANUAL_INSTALL', reason: 'a fixed install command token-goat names, not an echoed value' },
+  { key: 'index_health.ts::suggestedIndexCommand(rootDir)', reason: 'a fixed reindex command token-goat suggests, not an echoed value' },
+  { key: 'tool_filters/languages.ts::cmd', reason: "a filter's summary of a captured PowerShell error, part of a rewritten tool output, which the relay leaves outside its guard on purpose" },
+]
+
+/** Every other hand-quoted interpolation in src, counted per file when brief r23 converted the echo sentences. A count may fall and may not rise: a new one fails here, and converting one means lowering its file's count. */
+const HAND_QUOTED_LEDGER: Readonly<Record<string, number>> = {
+  'affected.ts': 1, 'answer_router.ts': 2, 'baseline.ts': 1, 'bash_extractors.ts': 3, 'bash_runner.ts': 1, 'bash_structural_index.ts': 1,
+  'bridges/antigravity_install.ts': 1, 'bridges/codex_install.ts': 1, 'bridges/copilot_mcp_install.ts': 1, 'bridges/cursor_install.ts': 1, 'bridges/gemini_install.ts': 1, 'bridges/grok_install.ts': 1,
+  'bridges/jetbrains_install.ts': 1, 'bridges/kimi_install.ts': 2, 'bridges/openclaw_install.ts': 1, 'bridges/qwen_install.ts': 1, 'bridges/shim_common.ts': 1, 'bridges/zed_install.ts': 3,
+  'cache_session_commands.ts': 4, 'cli.ts': 8, 'cli_audit.ts': 1, 'cli_bench.ts': 1, 'cli_cached_output.ts': 5, 'cli_cmd_formats.ts': 1,
+  'cli_dispatch.ts': 1, 'cli_doctor.ts': 2, 'cli_doctor_native.ts': 1, 'cli_file_ops.ts': 10, 'cli_hint_stats.ts': 2, 'cli_memory.ts': 2,
+  'cli_session.ts': 1, 'cli_skills.ts': 4, 'cli_upgrade.ts': 1, 'cli_waste.ts': 1, 'config.ts': 1, 'config_commands.ts': 6,
+  'csv_query.ts': 2, 'db.ts': 1, 'dep_docs.ts': 1, 'embed_model.ts': 1, 'embed_tokenizer.ts': 2, 'fold_delivery.ts': 1,
+  'fold_structure.ts': 2, 'graph_analysis.ts': 4, 'graph_commands.ts': 4, 'graph_inspection.ts': 5, 'hint_suggestion_guard.ts': 3, 'hint_target.ts': 1,
+  'hints/file_type_handler.ts': 2, 'hooks_agent_spawn.ts': 1, 'hooks_bash.ts': 1, 'hooks_bash_commands.ts': 1, 'hooks_bash_post.ts': 1, 'hooks_common.ts': 1,
+  'hooks_glob.ts': 1, 'html_query.ts': 4, 'index_health.ts': 1, 'index_reader.ts': 1, 'index_reclaim.ts': 1, 'install.ts': 1,
+  'json_query.ts': 7, 'languages/sql_idx.ts': 1, 'mcp_compress_packs.ts': 1, 'mcp_server.ts': 6, 'native_hook.ts': 1, 'pack.ts': 1,
+  'powershell_compat.ts': 2, 'process_util.ts': 5, 'project_memory.ts': 1, 'read_brief.ts': 1, 'read_commands.ts': 9, 'read_git.ts': 4,
+  'read_inspect.ts': 10, 'read_meta.ts': 1, 'read_refs.ts': 3, 'read_semantic.ts': 5, 'read_spec.ts': 4, 'read_structured_data.ts': 2,
+  'read_suggest.ts': 1, 'read_symbol.ts': 5, 'ref_blindness.ts': 2, 'relay.ts': 1, 'screenshot.ts': 3, 'search/search_cli.ts': 1,
+  'session_store_schema.ts': 5, 'sqlite_query.ts': 3, 'text_commands.ts': 1, 'text_trace.ts': 2, 'tool_filters/containers.ts': 1, 'tool_filters/db_clients.ts': 1,
+  'tool_filters/git.ts': 1, 'tool_filters/package_managers.ts': 1, 'util.ts': 1, 'walk_index.ts': 1, 'xlsx_extract.ts': 2, 'xml_query.ts': 2,
+  'zip_bounds.ts': 1,
+}
+
+describe('every value echoed between hand-written quotes in src', () => {
+  const exprs: string[] = []
+  const mark = (expr: ts.Expression): string => {
+    exprs.push(expr.getText().replace(/\s+/g, ' '))
+    return OPEN + String(exprs.length - 1) + CLOSE
+  }
+  const hits = new Map<string, { file: string; key: string; where: string; echo: boolean }>()
+  for (const t of [...stringTemplates(mark, "'"), ...stringTemplates(mark, '"')]) {
+    for (const m of t.text.matchAll(HAND_QUOTED_VALUE)) {
+      const key = t.file + '::' + (exprs[Number(m[2])] ?? '')
+      const echo = ECHO_SENTENCE.test(t.text)
+      hits.set(key + '@' + t.line + (echo ? '!' : ''), { file: t.file, key, where: t.file + ':' + t.line, echo })
+    }
+  }
+  const all = [...hits.values()]
+  const exempt = new Set(ECHO_EXEMPT.map((e) => e.key))
+
+  it('is scanned', () => {
+    pinnedPopulation({ what: 'hand-quoted interpolations in src string templates', items: [...new Set(all.map((h) => h.key))], floor: 150, mustInclude: ['json_query.ts::spec', 'cli_upgrade.ts::MANUAL_INSTALL', 'tool_filters/languages.ts::cmd'] })
+  })
+
+  it('is never the value a not-found error, redirect note or cross-file lead echoes', () => {
+    expect(all.filter((h) => h.echo && !exempt.has(h.key)).map((h) => h.where + ' ' + h.key)).toEqual([])
+  })
+
+  it('exempts no value that is no longer echoed by hand', () => {
+    expect(ECHO_EXEMPT.filter((e) => !all.some((h) => h.echo && h.key === e.key)).map((e) => e.key)).toEqual([])
+  })
+
+  it('rises in no file past the ledger, and the ledger follows every fall', () => {
+    const counts: Record<string, number> = {}
+    for (const key of new Set(all.filter((h) => !h.echo).map((h) => h.key))) {
+      const file = key.slice(0, key.indexOf('::'))
+      counts[file] = (counts[file] ?? 0) + 1
+    }
+    expect(counts).toEqual(HAND_QUOTED_LEDGER)
+  })
+
+  // HAND-DERIVED virtual sources: the shapes src carried (read_commands.ts `Symbol '${symbol}' not found in '${file}'`, read_section.ts ` (redirected from: '${result.redirectedFrom}')`, cli_file_ops.ts `inserted after '${result.heading}'`) beside the echoedValue form and a quoted literal.
+  it('flags a value hand-quoted in either mark and passes an echoedValue one', () => {
+    const virtual = (source: string): string[] => {
+      const seen: string[] = []
+      const standIn = (expr: ts.Expression): string => {
+        seen.push(expr.getText())
+        return OPEN + String(seen.length - 1) + CLOSE
+      }
+      return templatesIn('virtual.ts', source, standIn, "'").concat(templatesIn('virtual.ts', source, standIn, '"')).flatMap((t) => [...t.text.matchAll(HAND_QUOTED_VALUE)].map((m) => seen[Number(m[2])] ?? ''))
+    }
+    expect(virtual("const s = `Symbol '${symbol}' not found in '${file}'`")).toEqual(['symbol', 'file'])
+    expect(virtual('const s = ` (redirected from: "${result.redirectedFrom}")`')).toEqual(['result.redirectedFrom'])
+    expect(virtual('const s = `Symbol ${echoedValue(symbol)} not found in ${echoedValue(file)}`')).toEqual([])
+    expect(virtual("const s = `inserted after 'Install' in ${file}`")).toEqual([])
+  })
+})

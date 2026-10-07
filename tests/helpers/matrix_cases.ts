@@ -1941,7 +1941,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(fs.readFileSync(dest, 'utf8')).toBe(
       '# Title\n\n## Section One\nfirst body\n\n## Section 1.5\ninserted body\n\n## Section Two\nsecond body\n',
     )
-    expect(r.stdout).toContain("inserted after 'Section One'")
+    expect(r.stdout).toContain('inserted after "Section One"')
   },
   'note-add': () => {
     const dest = path.join(mkIsolated('tg-matrix-noteadd-'), 'out.ts')

@@ -222,6 +222,13 @@ export function nameSubject(noun: string, value: string): string {
   return quoted === null ? 'this ' + noun : noun + ' ' + quoted
 }
 
+/** A value echoed back in an error or notice (the symbol, key, file or heading asked for, or one the index holds), display-safe and quoted the way {@link quotedArg} quotes the retry commands beside it: hand-written quotes read `Symbol 'it's' not found` for a value holding an apostrophe. Where no quote mark can hold it, the escaped value is written bare rather than as the placeholder, since saying which value failed is not a suggestion and the caller still needs to see it. */
+export function echoedValue(value: string): string {
+  const safe = displaySafeText(value)
+  const quoted = quotedArg(safe)
+  return quoted.includes(UNQUOTABLE) ? safe : quoted
+}
+
 /** `value` quoted for a sentence, or null when the quoted form holds a backtick or {@link UNQUOTABLE}. */
 function proseQuoted(value: string): string | null {
   const quoted = quotedArg(value)

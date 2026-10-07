@@ -891,7 +891,7 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue([])
       const { text, code } = runRead({ spec: 'src/foo.ts::missingSymbol' })
       expect(code).toBe(1)
-      expect(text).toContain("Symbol 'missingSymbol' not found in 'src/foo.ts'")
+      expect(text).toContain('Symbol "missingSymbol" not found in "src/foo.ts"')
       expect(text).not.toContain('Invalid spec')
     })
 
@@ -917,8 +917,8 @@ describe('read_commands', () => {
       })
       const { text, code } = runRead({ spec: 'src/util.ts::walkProject' })
       expect(code).toBe(1)
-      expect(text).toContain("Symbol 'walkProject' not found in 'src/util.ts'")
-      expect(text).toContain("'walkProject' is defined in src/baseline.ts")
+      expect(text).toContain('Symbol "walkProject" not found in "src/util.ts"')
+      expect(text).toContain('"walkProject" is defined in src/baseline.ts')
       expect(text).toContain('token-goat read "src/baseline.ts::walkProject"')
       // Existing same-file did-you-mean list stays present and unchanged underneath.
       expect(text).toContain('Did you mean:')
@@ -944,7 +944,7 @@ describe('read_commands', () => {
       })
       const { text, code } = runRead({ spec: 'src/util.ts::totallyMissingEverywhere' })
       expect(code).toBe(1)
-      expect(text).toContain("Symbol 'totallyMissingEverywhere' not found in 'src/util.ts'")
+      expect(text).toContain('Symbol "totallyMissingEverywhere" not found in "src/util.ts"')
       expect(text).not.toContain('is defined in')
       expect(text).toContain('Did you mean:')
       expect(text).toContain('totallyMissingEverywhereToo')
@@ -1412,7 +1412,7 @@ describe('read_commands', () => {
 
         const { text: stdout, code } = runRead({ spec: 'src/cli.ts::run@1' })
         expect(code).toBe(1)
-        expect(stdout).toContain("Symbol 'run@1' not found in 'src/cli.ts'")
+        expect(stdout).toContain('Symbol "run@1" not found in "src/cli.ts"')
       })
 
       it('a real file@N-M line-range spec still parses as a range, not a symbol anchor, even though it also ends in @<digits>', () => {
@@ -2462,7 +2462,7 @@ describe('read_commands', () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockReadSection.mockReturnValue({ content: '# Business / logic\nbody', heading: 'Business / logic', lineStart: 1, lineEnd: 2, redirectedFrom: 'Business' } as any)
       const { text: stdout } = runSection({ spec: 'doc.md::Business' })
-      expect(stdout).toContain("redirected from: 'Business'")
+      expect(stdout).toContain('redirected from: "Business"')
       expect(stdout).toContain('Business / logic')
     })
 
@@ -4833,7 +4833,7 @@ describe('read_commands', () => {
       let code = -1
       const { stderr } = capture(() => { code = runYamlQuery({ file: f, path: 'a' }) })
       expect(code).toBe(1)
-      expect(stderr).toBe("token-goat: path not found: key 'a' does not exist on null value\n")
+      expect(stderr).toBe('token-goat: path not found: key "a" does not exist on null value\n')
     })
 
     it('returns 1 with a clear error for an out-of-range array index', () => {
@@ -6399,7 +6399,7 @@ describe('read_commands', () => {
       const { stderr } = capture(() => {
         expect(runDiff({ spec: 'a.ts::missingSym' })).toBe(1)
       })
-      expect(stderr).toContain("Symbol 'missingSym' not found in 'a.ts'")
+      expect(stderr).toContain('Symbol "missingSym" not found in "a.ts"')
       expect(mockRunGit).not.toHaveBeenCalled()
     })
 
@@ -6423,8 +6423,8 @@ describe('read_commands', () => {
       const { stderr } = capture(() => {
         expect(runDiff({ spec: 'src/util.ts::walkProject' })).toBe(1)
       })
-      expect(stderr).toContain("Symbol 'walkProject' not found in 'src/util.ts'")
-      expect(stderr).toContain("'walkProject' is defined in src/baseline.ts")
+      expect(stderr).toContain('Symbol "walkProject" not found in "src/util.ts"')
+      expect(stderr).toContain('"walkProject" is defined in src/baseline.ts')
       expect(stderr).toContain('token-goat diff "src/baseline.ts::walkProject"')
       expect(stderr).toContain('Did you mean:')
       expect(stderr).toContain('walkProjectSync')
@@ -6445,7 +6445,7 @@ describe('read_commands', () => {
       const { stderr } = capture(() => {
         expect(runDiff({ spec: 'src/util.ts::totallyMissingEverywhere' })).toBe(1)
       })
-      expect(stderr).toContain("Symbol 'totallyMissingEverywhere' not found in 'src/util.ts'")
+      expect(stderr).toContain('Symbol "totallyMissingEverywhere" not found in "src/util.ts"')
       expect(stderr).not.toContain('is defined in')
       expect(stderr).toContain('Did you mean:')
       expect(stderr).toContain('totallyMissingEverywhereToo')
@@ -6614,7 +6614,7 @@ describe('read_commands', () => {
       const { stderr } = capture(() => {
         expect(runLog({ spec: 'a.ts::missingSym' })).toBe(1)
       })
-      expect(stderr).toContain("Symbol 'missingSym' not found in 'a.ts'")
+      expect(stderr).toContain('Symbol "missingSym" not found in "a.ts"')
       expect(mockRunGit).not.toHaveBeenCalled()
     })
 
@@ -8239,7 +8239,7 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
         const code = await runZipRead({ file: zipPath, entry: 'sub/confi' })
         expect(code).toBe(1)
       })
-      expect(stderr).toContain("Entry 'sub/confi' not found")
+      expect(stderr).toContain('Entry "sub/confi" not found')
       expect(stderr).toContain('Did you mean:')
       expect(stderr).toContain('sub/config.json')
       expect(stderr).not.toContain('unrelated_asset')
@@ -8261,7 +8261,7 @@ describe('runZipRead — directory entry (regression: extractZipEntry decompress
         const code = await runZipRead({ file: zipPath, entry: 'zzz_totally_unrelated' })
         expect(code).toBe(1)
       })
-      expect(stderr).toContain("Entry 'zzz_totally_unrelated' not found")
+      expect(stderr).toContain('Entry "zzz_totally_unrelated" not found')
       expect(stderr).not.toContain('Did you mean:')
       expect(stderr).toContain(`token-goat zip-list "${zipPath}"`)
     } finally {

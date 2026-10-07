@@ -78,7 +78,7 @@ import {
   symbolExtractorGap,
 } from './read_meta.js'
 import { formatCommandError } from './command_error.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 
 const GREP_MAX_LINES = 200
 
@@ -676,7 +676,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     if (lineSpec !== null) {
       return runLineRange({ file, start: lineSpec.start, end: lineSpec.end }, opts)
     }
-    const messages = [`Symbol '${symbol}' not found in '${file}'`]
+    const messages = [`Symbol ${echoedValue(symbol)} not found in ${echoedValue(file)}`]
     const crossFileLead = formatCrossFileLead('read', symbol, file, opts.projectRoot)
     if (crossFileLead !== '') messages.push(crossFileLead)
     const resolved = resolveSpecPath(file, opts.projectRoot ?? process.cwd())

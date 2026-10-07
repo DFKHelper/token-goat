@@ -87,7 +87,7 @@ describe('runDepDocs — package not found', () => {
   it('exits non-zero with a clear error including a did-you-mean suggestion for a near-miss name', () => {
     const { text, code } = runDepDocs({ packageName: 'commander-lik', projectRoot: dir })
     expect(code).toBe(1)
-    expect(text).toContain("Package 'commander-lik' not found")
+    expect(text).toContain('Package "commander-lik" not found')
     expect(text).toContain('did you mean')
     expect(text).toContain('commander-like')
   })
@@ -95,7 +95,7 @@ describe('runDepDocs — package not found', () => {
   it('exits non-zero with no did-you-mean suggestion when nothing is close', () => {
     const { text, code } = runDepDocs({ packageName: 'totally-unrelated-xyz', projectRoot: dir })
     expect(code).toBe(1)
-    expect(text).toContain("Package 'totally-unrelated-xyz' not found")
+    expect(text).toContain('Package "totally-unrelated-xyz" not found')
     expect(text).not.toContain('did you mean')
   })
 
@@ -104,7 +104,7 @@ describe('runDepDocs — package not found', () => {
     try {
       const { text, code } = runDepDocs({ packageName: 'anything', projectRoot: emptyDir })
       expect(code).toBe(1)
-      expect(text).toContain("Package 'anything' not found")
+      expect(text).toContain('Package "anything" not found')
     } finally {
       fs.rmSync(emptyDir, { recursive: true, force: true })
     }

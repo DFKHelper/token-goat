@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 
 import { querySymbols, queryRefs, countRefs, searchSymbolsFts } from './index_reader.js'
 import { toDisplayPath, displaySafeJson, displaySafeText } from './paths.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { resolveSpecPath } from './spec_path.js'
 import { resolveProjectRoot } from './project.js'
 import { specScopeRoot } from './read_spec.js'
@@ -97,7 +97,7 @@ export function runCallers(opts: CallersOptions): number {
   if (ambiguous !== undefined) return refuseAmbiguousSpec('callers', ambiguous, rootDir)
   const fileHint = file !== undefined ? resolveSpecPath(file, cwdRoot) : undefined
   if (fileHint !== undefined && querySymbols({ name, filePath: fileHint, limit: 1 }).length === 0) {
-    emitErr(formatCommandError(`Symbol '${name}' not found in '${file}'`))
+    emitErr(formatCommandError(`Symbol ${echoedValue(name)} not found in ${echoedValue(file ?? '')}`))
     return 1
   }
 
@@ -231,7 +231,7 @@ export function runCallChain(opts: CallChainOptions): number {
 
   if (fileHint !== undefined) {
     if (querySymbols({ name, filePath: fileHint, limit: 1 }).length === 0) {
-      emitErr(formatCommandError(`Symbol '${name}' not found in '${file}'`))
+      emitErr(formatCommandError(`Symbol ${echoedValue(name)} not found in ${echoedValue(file ?? '')}`))
       if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
       return 1
     }
@@ -354,7 +354,7 @@ export function runImpact(opts: ImpactOptions): number {
   if (ambiguous !== undefined) return refuseAmbiguousSpec('impact', ambiguous, rootDir)
   const fileHint = file !== undefined ? resolveSpecPath(file, cwdRoot) : undefined
   if (fileHint !== undefined && querySymbols({ name: rootName, filePath: fileHint, limit: 1 }).length === 0) {
-    emitErr(formatCommandError(`Symbol '${rootName}' not found in '${file}'`))
+    emitErr(formatCommandError(`Symbol ${echoedValue(rootName)} not found in ${echoedValue(file ?? '')}`))
     return 1
   }
 
@@ -561,7 +561,7 @@ export function runAsk(opts: AskOptions): number {
 
   const backendPath = resolveOnPath(backendLabel)
 
-  if (!backendPath) return degrade(`${BACKEND_ENV}=${backendLabel} is set, but '${backendLabel}' was not found on PATH`)
+  if (!backendPath) return degrade(`${BACKEND_ENV}=${backendLabel} is set, but ${echoedValue(backendLabel)} was not found on PATH`)
 
   const rawContext = hits.map((h, i) => `[${i + 1}] ${h.filePath}\n${h.body ?? ''}`).join('\n\n')
   const context = fenceUntrustedFileContent(redactSecrets(rawContext).text)

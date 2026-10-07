@@ -23,12 +23,12 @@ import {
 } from './skill_cache.js'
 import { formatLocalTimestamp, recordStat, savedTokensFromBytes } from './stats.js'
 import { decodeSource, extractErrorMessage, stripLower } from './util.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 
 export async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<void> {
   const filePath = await getSkillFilePath(name)
   if (filePath === null) {
-    throw new CliError(`skill '${name}' not found`)
+    throw new CliError(`skill ${echoedValue(name)} not found`)
   }
 
   const body = decodeSource(fs.readFileSync(filePath))
@@ -115,7 +115,7 @@ export async function cmdSkillCompact(name: string | undefined, opts: { path?: s
     }
     const filePath = await getSkillFilePath(name)
     if (filePath === null) {
-      throw new CliError(`skill '${name}' not found`)
+      throw new CliError(`skill ${echoedValue(name)} not found`)
     }
     body = fs.readFileSync(filePath, 'utf-8')
     cacheName = name
@@ -305,7 +305,7 @@ export async function cmdSkillSection(nameHeading: string, headingArg?: string):
     }
   }
   if (!filePath) {
-    throw new CliError(`skill '${skillName}' not found`)
+    throw new CliError(`skill ${echoedValue(skillName)} not found`)
   }
   const body = decodeSource(fs.readFileSync(filePath))
   const extracted = extractNamedSection(body, heading)

@@ -1347,7 +1347,7 @@ describe('runCallers file::symbol spec', () => {
     }
   })
 
-  it('reports "Symbol \'X\' not found in \'Y\'" (matching refs/brief wording verbatim) when the named file does not define that symbol', () => {
+  it('reports `Symbol "X" not found in "Y"` (matching refs/brief wording verbatim) when the named file does not define that symbol', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-callers-missing-'))
     try {
       const defFile = normalizePath(join(root, 'gspec-missing.ts'))
@@ -1359,7 +1359,7 @@ describe('runCallers file::symbol spec', () => {
         const errCaptured = captureStderr(() => {
           expect(runCallers({ symbol: `${defFile}::noSuchSymbolXyz9` })).toBe(1)
         })
-        expect(errCaptured).toContain(`Symbol 'noSuchSymbolXyz9' not found in '${defFile}'`)
+        expect(errCaptured).toContain(`Symbol "noSuchSymbolXyz9" not found in "${defFile}"`)
       } finally {
         cwdSpy.mockRestore()
       }
@@ -2797,7 +2797,7 @@ describe('runCallChain file::symbol spec', () => {
     }
   })
 
-  it('reports "Symbol \'X\' not found in \'Y\'" (matching refs/brief wording verbatim) when the named file does not define that symbol', () => {
+  it('reports `Symbol "X" not found in "Y"` (matching refs/brief wording verbatim) when the named file does not define that symbol', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-chain-missing-'))
     try {
       const defFile = normalizePath(join(root, 'chain-missing.ts'))
@@ -2809,7 +2809,7 @@ describe('runCallChain file::symbol spec', () => {
         const errCaptured = captureStderr(() => {
           expect(runCallChain({ symbol: `${defFile}::noSuchSymbolAbc3` })).toBe(1)
         })
-        expect(errCaptured).toContain(`Symbol 'noSuchSymbolAbc3' not found in '${defFile}'`)
+        expect(errCaptured).toContain(`Symbol "noSuchSymbolAbc3" not found in "${defFile}"`)
         expect(errCaptured).not.toContain('Symbol not found:') // the generic bare-name wording must not leak onto the file::symbol path.
       } finally {
         cwdSpy.mockRestore()
@@ -3321,7 +3321,7 @@ describe('runImpact file::symbol spec', () => {
     }
   })
 
-  it('reports "Symbol \'X\' not found in \'Y\'" (matching refs/brief wording verbatim) when the named file does not define that symbol', () => {
+  it('reports `Symbol "X" not found in "Y"` (matching refs/brief wording verbatim) when the named file does not define that symbol', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-impact-missing-'))
     try {
       const defFile = normalizePath(join(root, 'impact-missing.ts'))
@@ -3333,7 +3333,7 @@ describe('runImpact file::symbol spec', () => {
         const errCaptured = captureStderr(() => {
           expect(runImpact({ symbol: `${defFile}::noSuchSymbolDef7` })).toBe(1)
         })
-        expect(errCaptured).toContain(`Symbol 'noSuchSymbolDef7' not found in '${defFile}'`)
+        expect(errCaptured).toContain(`Symbol "noSuchSymbolDef7" not found in "${defFile}"`)
       } finally {
         cwdSpy.mockRestore()
       }
@@ -5171,7 +5171,7 @@ describe('runAsk', () => {
         indexFileSync(normalizePath(file))
         withBackend('__nonexistent_backend_xyzzy__', root, () => {
           const captured = captureStdout(() => { expect(runAsk({ question: 'askPathAnchor7q4' })).toBe(0) })
-          expect(captured).toContain("[degraded mode - TOKEN_GOAT_ASK_BACKEND=__nonexistent_backend_xyzzy__ is set, but '__nonexistent_backend_xyzzy__' was not found on PATH]")
+          expect(captured).toContain('[degraded mode - TOKEN_GOAT_ASK_BACKEND=__nonexistent_backend_xyzzy__ is set, but "__nonexistent_backend_xyzzy__" was not found on PATH]')
         })
       } finally {
         rmSync(root, { recursive: true, force: true })

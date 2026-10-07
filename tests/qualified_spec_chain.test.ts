@@ -85,7 +85,7 @@ describe('a wrong class qualifier is a miss, not another class method', () => {
   it('read misses and suggests the real spelling', () => {
     const r = runRead({ spec: 'qual.ts::Square.area', projectRoot: dir })
     expect(r.code).toBe(1)
-    expect(r.text).toContain("Symbol 'Square.area' not found in 'qual.ts'")
+    expect(r.text).toContain('Symbol "Square.area" not found in "qual.ts"')
     expect(r.text).toContain('Circle.area')
     expect(r.text).not.toContain('return 3')
   })

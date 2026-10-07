@@ -32,9 +32,9 @@ function fail(args: string[]): { lines: string[]; stderr: string; stdout: string
 
 describe('a failing command names itself on its first stderr line', () => {
   it.each([
-    [['read', 'nope.ts::foo'], "token-goat: Symbol 'foo' not found in 'nope.ts'"],
+    [['read', 'nope.ts::foo'], 'token-goat: Symbol "foo" not found in "nope.ts"'],
     [['outline', 'nope.ts'], 'token-goat: Could not read: nope.ts'],
-    [['section', 'nope.md::X'], "token-goat: File not found: 'nope.md'"],
+    [['section', 'nope.md::X'], 'token-goat: File not found: "nope.md"'],
     [['csv-query', 'nope.csv'], 'token-goat: Could not read: nope.csv'],
     [['semantic', '--limit', '0', 'x'], 'token-goat: --limit must be a positive number, got: "0"'],
     [['note-get', 'nope.ts'], "token-goat: No note found for 'nope.ts' (whole-file note)"],

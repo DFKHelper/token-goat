@@ -48,7 +48,7 @@ import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { fenceFileFieldIfMatched, fenceFileText, fenceJsonStrings } from './untrusted_fence.js'
 import { ZipInputTooLargeError, ZipOutputTooLargeError } from './zip_bounds.js'
 import { CliError, formatCommandError } from './command_error.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 
 export interface ZipListCliOptions {
   file: string
@@ -138,7 +138,7 @@ export async function runZipRead(opts: ZipReadCliOptions): Promise<number> {
   }
 
   if (content === undefined) {
-    const messages = [`Entry '${opts.entry}' not found in '${opts.file}'`]
+    const messages = [`Entry ${echoedValue(opts.entry)} not found in ${echoedValue(opts.file)}`]
     const closes = rankSimilarNames(entries.map((e) => e.path), opts.entry)
     if (closes.length > 0) messages.push(didYouMean(closes))
     else if (entries.length > 0) messages.push(`Try: token-goat zip-list ${quotedArg(opts.file)}`)
@@ -385,7 +385,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
       return 1
     }
     if (value === null) {
-      emitErr(formatCommandError(`Key '${opts.key}' not found in ${opts.file}`))
+      emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${opts.file}`))
       return 1
     }
     emit(value)
@@ -400,12 +400,12 @@ export function runConfigGet(opts: ConfigGetOptions): number {
       let obj: any = parseJsonOrJsonc(text)
       for (const part of opts.key.split('.')) {
         if (typeof obj !== 'object' || obj === null) {
-          emitErr(formatCommandError(`Key '${opts.key}' not found in ${opts.file}`))
+          emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${opts.file}`))
           return 1
         }
         obj = obj[part]
         if (obj === undefined) {
-          emitErr(formatCommandError(`Key '${opts.key}' not found in ${opts.file}`))
+          emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${opts.file}`))
           return 1
         }
       }
@@ -424,7 +424,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
       return 1
     }
     if (value === null) {
-      emitErr(formatCommandError(`Key '${opts.key}' not found in ${opts.file}`))
+      emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${opts.file}`))
       return 1
     }
     emit(value)
@@ -435,7 +435,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
     const toml = lookupToml(text, opts.key)
     if (toml !== undefined) {
       if (toml === null) {
-        emitErr(formatCommandError(`Key '${opts.key}' not found in ${opts.file}`))
+        emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${opts.file}`))
         return 1
       }
       emit(toml)
@@ -462,7 +462,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
     }
   }
 
-  emitErr(formatCommandError(`Key '${opts.key}' not found in ${opts.file}`))
+  emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${opts.file}`))
   return 1
 }
 
@@ -661,7 +661,7 @@ export function runExports(opts: ImportsExportsOptions): number {
   const outLines = filteredNames.map((n) => {
     const loc = locOf(n)
     const locSuffix = loc === null ? '' : ` (${loc.lineStart}-${loc.lineEnd})`
-    return `${kindOf(n).padEnd(10)} ${n}${locSuffix}`
+    return `${kindOf(n).padEnd(10)} ${displaySafeText(n)}${locSuffix}`
   })
   for (const line of outLines) {
     emit(line)

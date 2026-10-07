@@ -11,7 +11,7 @@ import { didYouMean, filterSimilarHeadings } from './read_suggest.js'
 import { listSections, readSection, type SectionResult } from './section_reader.js'
 import { compileGrepMatcher, countNoun } from './util.js'
 import { grepFilteredToEmptyNotice } from './filter_notice.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 
 // `readSection` only ever resolves headings from the file's own text; a non-heading html element (`<section id="chart1-panel">`) is invisible to it even after the extractor spans its whole element (html.ts::extractHtml), because that span lives in the symbols table, not in the file's heading list. Fall back to an html_id symbol lookup for html files only, so `section "file.html::chart1-panel"` (or the `#chart1-panel` spelling) resolves the same element `read`/`symbol` already do.
 function htmlIdSectionFallback(filePath: string, heading: string): SectionResult | null {
@@ -108,7 +108,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
   const result = readSection(filePath, heading, readFileText) ?? htmlIdSectionFallback(filePath, heading)
   if (result === null) {
     if (!fs.existsSync(filePath)) {
-      return { text: `File not found: '${filePath}'`, code: 1 }
+      return { text: `File not found: ${echoedValue(filePath)}`, code: 1 }
     }
     const ordSpec = /^(.*?)#(\d+)$/.exec(heading)
     const ordBase = ordSpec?.[1]?.trim()
@@ -195,7 +195,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
   }
 
   const redirectNote =
-    result.redirectedFrom !== undefined ? ` (redirected from: '${result.redirectedFrom}')` : ''
+    result.redirectedFrom !== undefined ? ` (redirected from: ${echoedValue(result.redirectedFrom)})` : ''
   const text = guardText(
     `# ${result.heading} — ${filePath}:${result.lineStart}-${lineEnd}${redirectNote}${content.length > 0 ? `\n${content}` : ''}${truncatedNotice}${grepNote}`,
     'heading',

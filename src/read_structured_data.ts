@@ -38,7 +38,7 @@ import {
   xmlNodeToJson,
   type XmlOutlineSummary,
 } from './xml_query.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 
 /** {@link fenceFieldIfMatched} under the HTML tag, for one string of an html-query or html-outline `--json` envelope. */
 function fenceHtmlFieldIfMatched(text: string): string {
@@ -850,7 +850,7 @@ export function runOpenApiOp(opts: OpenApiOpCliOptions): number {
   const match = findOperation(operations, opts.operation)
 
   if (match === undefined) {
-    const messages = [`Operation '${opts.operation}' not found in '${opts.file}'`]
+    const messages = [`Operation ${echoedValue(opts.operation)} not found in ${echoedValue(opts.file)}`]
     const closes = rankSimilarNames(operations.map(operationLabel), opts.operation)
     if (closes.length > 0) messages.push(didYouMean(closes))
     else if (operations.length > 0) messages.push(`Try: token-goat openapi-outline ${quotedArg(opts.file)}`)

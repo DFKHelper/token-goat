@@ -404,7 +404,7 @@ describe('runOpenApiOutline / runOpenApiOp', () => {
       // 'getUserById' genuinely contains the query as a substring -- an unrelated query ('nonExistentOp') no longer surfaces it, see the next test.
       const { stderr } = capture(() => { code = runOpenApiOp({ file: f, operation: 'getUserBy' }) })
       expect(code).toBe(1)
-      expect(stderr).toContain("Operation 'getUserBy' not found")
+      expect(stderr).toContain('Operation "getUserBy" not found')
       expect(stderr).toContain('Did you mean:')
       expect(stderr).toContain('getUserById')
     })
@@ -416,7 +416,7 @@ describe('runOpenApiOutline / runOpenApiOp', () => {
       let code = -1
       const { stderr } = capture(() => { code = runOpenApiOp({ file: f, operation: 'nonExistentOp' }) })
       expect(code).toBe(1)
-      expect(stderr).toContain("Operation 'nonExistentOp' not found")
+      expect(stderr).toContain('Operation "nonExistentOp" not found')
       expect(stderr).not.toContain('Did you mean:')
       expect(stderr).toContain(`token-goat openapi-outline "${f}"`)
     })

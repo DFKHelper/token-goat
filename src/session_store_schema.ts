@@ -7,7 +7,7 @@ import { getToolName } from './hooks_common.js'
 import { displaySafeJson } from './paths.js'
 import { fenceFileFieldIfMatched, fenceFileText, fenceJsonStrings } from './untrusted_fence.js'
 import { CliError, formatCommandError, formatFailedResultText } from './command_error.js'
-import { fencedCommand, quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 
 export interface SessionStoreColumn {
   readonly name: string
@@ -408,7 +408,7 @@ export async function describeTarget(
           const found = schema.tables.find((t) => t.name.toLowerCase() === table.toLowerCase())
           if (!found) {
             const avail = schema.tables.map((t) => t.name).join(', ')
-            return { exitCode: 1, text: `Table '${table}' not found in SQLite database ${target}. Available tables: ${avail}` }
+            return { exitCode: 1, text: `Table ${echoedValue(table)} not found in SQLite database ${target}. Available tables: ${avail}` }
           }
           if (opts?.json === true) {
             return { exitCode: 0, text: displaySafeJson(fenceJsonStrings(found, fenceFileFieldIfMatched)) }

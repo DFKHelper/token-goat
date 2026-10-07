@@ -88,11 +88,11 @@ describe('cross-file leads are checked against disk', () => {
   })
 
   it('names only the live file of a name a deleted file also defined', () => {
-    expect(formatCrossFileLead('read', 'sharedTwin', 'src/b.ts', root)).toBe(`'sharedTwin' is defined in src/twin_live.ts\n  - token-goat read "src/twin_live.ts::sharedTwin"`)
+    expect(formatCrossFileLead('read', 'sharedTwin', 'src/b.ts', root)).toBe(`"sharedTwin" is defined in src/twin_live.ts\n  - token-goat read "src/twin_live.ts::sharedTwin"`)
   })
 
   it('still leads to a live file', () => {
-    expect(formatCrossFileLead('read', 'liveHelperName', 'src/b.ts', root)).toBe(`'liveHelperName' is defined in src/live.ts\n  - token-goat read "src/live.ts::liveHelperName"`)
+    expect(formatCrossFileLead('read', 'liveHelperName', 'src/b.ts', root)).toBe(`"liveHelperName" is defined in src/live.ts\n  - token-goat read "src/live.ts::liveHelperName"`)
   })
 })
 

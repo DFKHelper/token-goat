@@ -15,6 +15,7 @@ import { anchorStatus } from './note_anchor.js'
 import { findProject, getDisplayRoot, type Project } from './project.js'
 import { anchorLabel, clearAll, loadDatedEntries, loadEntries, MAX_ENTRIES as MAX_NOTE_ENTRIES, noteAgeLabel, oneLineNoteValue, setEntry, unsetEntry } from './project_memory.js'
 import { getSessionFiles } from './session.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 import { foldPath, requirePositiveStrictInt } from './util.js'
 import { suggestPackageNames } from './util_suggest.js'
 import { detectWalkMode } from './walk_mode.js'
@@ -411,7 +412,7 @@ function cmdLockdepsPackage(lockfile: string, format: string, deps: DepEntry[], 
   if (matches.length === 0) {
     const suggestions = suggestPackageNames(query, deps.map((d) => d.name))
     const hint = suggestions.length > 0 ? ` (did you mean: ${suggestions.join(', ')}?)` : ''
-    throw new Error(`Package '${query}' not found in ${lockfile}${hint}`)
+    throw new Error(`Package ${echoedValue(query)} not found in ${lockfile}${hint}`)
   }
 
   // A package can resolve to more than one version across a lockfile's nested node_modules tree; prefer the top-level/direct pin as "the" version and surface the rest via otherVersions rather than silently picking an arbitrary transitive copy.

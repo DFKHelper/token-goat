@@ -1,5 +1,6 @@
 /** Narrow structural summary + path-based extraction for `token-goat json-outline` / `json-query`, so a multi-thousand-line JSON document never needs a full `Read` just to answer "what does this contain" or "what's at path X". Deliberately no JSONPath/jq compatibility -- a dot-path with `[n]` index, `[*]` wildcard, and `[field=value]` filter segments covers the common case, matching the project's "no premature abstraction" bar (see csv_query.ts for the same philosophy applied to CSV). `json-query` is the general-purpose sibling of `config-get`'s JSON branch: config-get only resolves a single dotted key to a scalar (no array indexing/wildcard/filter), which is enough for flat config lookups. json-query adds array navigation and filtering on top, for querying JSON data files rather than config. */
 
+import { echoedValue } from './hint_suggestion_guard.js'
 import { displaySafeText } from './paths.js'
 import { countNoun, pushAll } from './util.js'
 
@@ -583,7 +584,7 @@ export function evalJsonPath(data: unknown, ops: readonly PathOp[]): JsonQueryRe
         ) {
           next.push((item as Record<string, unknown>)[op.name])
         } else if (!fanned) {
-          throw new Error(`path not found: key '${op.name}' does not exist on ${jsonType(item)} value`)
+          throw new Error(`path not found: key ${echoedValue(op.name)} does not exist on ${jsonType(item)} value`)
         }
       } else if (op.kind === 'recursive_key') {
         fanned = true

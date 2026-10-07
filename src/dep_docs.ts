@@ -11,6 +11,7 @@ import { recordStat, savedTokensFromBytes } from './stats.js'
 import { suggestPackageNames } from './util_suggest.js'
 import { loadTs } from './ts_compiler.js'
 import { fileExists, guardAndFenceFileText } from './read_commands.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 import { redactSecrets } from './secret_redact.js'
 import { fenceFileFieldIfMatched, fenceJsonStrings } from './untrusted_fence.js'
 
@@ -263,7 +264,7 @@ export function runDepDocs(opts: DepDocsOptions): DepDocsResult {
     const suggestions = suggestPackageNames(opts.packageName, known)
     // Package names come from node_modules, which is third-party by definition, and the requested name is echoed back in token-goat's own sentence.
     const hint = suggestions.length > 0 ? ` (did you mean: ${suggestions.map(displaySafeText).join(', ')}?)` : ''
-    return { text: `Package '${displaySafeText(opts.packageName)}' not found under ${displaySafeText(nodeModulesDir)}${hint}`, code: 1 }
+    return { text: `Package ${echoedValue(opts.packageName)} not found under ${displaySafeText(nodeModulesDir)}${hint}`, code: 1 }
   }
 
   const pkgJsonRaw = fs.readFileSync(pkgJsonPath, 'utf8')

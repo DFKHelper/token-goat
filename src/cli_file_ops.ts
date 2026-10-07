@@ -31,7 +31,7 @@ import {
   sleepSync,
   withRetryOnLock,
 } from './util.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 
 function atomicWriteBuffer(dest: string, data: Buffer): void {
   try {
@@ -230,7 +230,7 @@ export function resolveNoteAnchor(spec: string, root: string, base: string = pro
   const symbol = sep > 0 ? spec.slice(sep + 2) : ''
   if (file === '' || symbol === '') throw new CliError(`--anchor takes file::symbol, got '${spec}'`)
   const resolvedPath = resolveIndexPath(file, base)
-  if (!fs.existsSync(resolvedPath)) throw new CliError(`File not found: '${resolvedPath}'`)
+  if (!fs.existsSync(resolvedPath)) throw new CliError(`File not found: ${echoedValue(resolvedPath)}`)
   // A note belongs to one project, and session start resolves its anchor against that project's root.
   if (!isInsideRoot(resolvedPath, root)) throw new CliError(`--anchor must name a file inside this project (${root}), got '${file}'`)
   healStaleIndex(resolvedPath)
@@ -286,7 +286,7 @@ export function cmdNoteAdd(file: string, opts: { symbol?: string; contentFrom?: 
 
   const resolvedPath = resolveIndexPath(file)
   if (!fs.existsSync(resolvedPath)) {
-    throw new CliError(`File not found: '${resolvedPath}'`)
+    throw new CliError(`File not found: ${echoedValue(resolvedPath)}`)
   }
   healStaleIndex(resolvedPath)
 
@@ -725,6 +725,6 @@ export function cmdInsertSection(file: string, opts: { after: string; contentFro
     mapFsError(e, undefined, file)
   }
   enqueueDirtyPathSafe(file)
-  const redirectNote = result.redirectedFrom !== undefined ? ` (redirected from: '${result.redirectedFrom}')` : ''
-  out(`inserted after '${result.heading}'${redirectNote} in ${file}`)
+  const redirectNote = result.redirectedFrom !== undefined ? ` (redirected from: ${echoedValue(result.redirectedFrom)})` : ''
+  out(`inserted after ${echoedValue(result.heading)}${redirectNote} in ${file}`)
 }

@@ -1502,7 +1502,7 @@ describe('lockdeps command', () => {
       const lockPath = writeGraphFixture(dir)
       const r = await run(['lockdeps', lockPath, '--package', 'chil'])
       expect(r.status).toBe(1)
-      expect(r.stderr).toContain("Package 'chil' not found")
+      expect(r.stderr).toContain('Package "chil" not found')
       expect(r.stderr).toContain('did you mean')
       expect(r.stderr).toContain('child')
       fs.rmSync(dir, { recursive: true, force: true })

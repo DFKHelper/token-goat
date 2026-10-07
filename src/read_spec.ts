@@ -21,7 +21,7 @@ import {
 } from './read_suggest.js'
 import { countNoun, foldPath } from './util.js'
 import { CliError, formatCommandError } from './command_error.js'
-import { fencedCommand, quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 
 const PARENT_IDENTIFIER_RE = /^[\w$]+$/
 
@@ -546,7 +546,7 @@ export function resolveSymbolSpecOrEmitError(
   }
 
   if (resolution.kind === 'none') {
-    const messages = [`Symbol '${symbol}' not found in '${file}'`]
+    const messages = [`Symbol ${echoedValue(symbol)} not found in ${echoedValue(file)}`]
     const crossFileLead = formatCrossFileLead(commandName, symbol, file, projectRoot)
     if (crossFileLead !== '') messages.push(crossFileLead)
     const resolved = resolveSpecPath(file, projectRoot ?? process.cwd())

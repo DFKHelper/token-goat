@@ -956,7 +956,7 @@ describe('token-goat CLI', () => {
         expect(fs.readFileSync(tmp, 'utf8')).toBe(
           '# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 1.5\nnew content\n\n## Lesson 2\nsecond\n',
         )
-        expect(r.stdout).toContain("inserted after 'Lesson 1'")
+        expect(r.stdout).toContain('inserted after "Lesson 1"')
       } finally {
         fs.rmSync(tmp, { force: true })
       }
