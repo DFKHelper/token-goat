@@ -192,14 +192,15 @@ describe('postEditHandler', () => {
     }
   })
 
-  it('escapes double quotes in the file path within the markdown hint (in addition to backticks)', () => {
+  it('single-quotes a file path holding double quotes within the markdown hint', () => {
     const rawPath = '/project/say "hi"/README.md'
     const result = postEditHandler(editEvent(rawPath))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      // Quotes inside the path must be escaped the same way backticks already are, so the emitted `token-goat section "..."` command stays well-formed instead of the raw quote breaking out of the surrounding quoted argument.
-      expect(result.context).toContain('say \\"hi\\"')
-      expect(result.context).not.toContain('say "hi"')
+      // HAND-DERIVED: single quotes hold a `"` literally in bash and PowerShell, so the emitted `token-goat section` command stays one argument instead of the raw quote breaking out of a double-quoted one; a backslash escape is not one PowerShell reads.
+      expect(result.context).toContain(`token-goat section '/project/say "hi"/README.md::`)
+      expect(result.context).not.toContain('"/project/say')
+      expect(result.context).not.toContain('\\"')
     }
   })
 

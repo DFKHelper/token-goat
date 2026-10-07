@@ -234,8 +234,9 @@ describe('evaluateFirstReadSymbolPolicy', () => {
   })
 
   describe('a path holding a shell metacharacter, as relay.ts passes the message on', () => {
-    // HAND-DERIVED: file names legal on every filesystem token-goat runs on, one holding `$` and one holding a backtick, both of which a double-quoted argument would substitute.
-    const unsafePaths = ['src/a$b.ts', 'src/a`b.ts']
+    // HAND-DERIVED: file names legal on every filesystem token-goat runs on. `$` keeps its commands single-quoted; a backtick closes the fence around a command and `$(` runs a command if a retyped suggestion loses its quotes, so those lose the commands and keep the sentence.
+    const unsafePaths = ['src/a$b.ts']
+    const fenceBreakingPaths = ['src/a`b.ts', 'src/a$(id).ts']
 
     function decide(shownPath: string, policy: 'warn' | 'deny') {
       return evaluateFirstReadSymbolPolicy({
@@ -270,6 +271,20 @@ describe('evaluateFirstReadSymbolPolicy', () => {
       const relayed = stripUnsafeSuggestions(decision.message)
       expect(relayed).toContain(`Run \`token-goat read '${shownPath}::parseAst'\` to read surgically.`)
       expect(relayed).toContain(`${shownPath} is 100.0KB with 12 indexed symbols; prefer surgical reads or \`token-goat outline '${shownPath}'\` over reading the whole file.`)
+    })
+
+    it.each(fenceBreakingPaths)('keeps the deny and warning for %s readable, its commands removed', (shownPath) => {
+      for (const policy of ['deny', 'warn'] as const) {
+        const decision = decide(shownPath, policy)
+        expect(decision.action).toBe(policy)
+        if (decision.action !== 'deny' && decision.action !== 'warn') return
+        const relayed = stripUnsafeSuggestions(decision.message)
+        expect(relayed).toContain('Run `token-goat (command omitted: the path contains shell metacharacters)` to read surgically.')
+        expect(relayed).toContain(`${shownPath} is `)
+        expect(relayed.split('\n').filter((l) => l.includes('token-goat ') && l.includes(shownPath) && !l.startsWith(shownPath))).toEqual([])
+      }
+      const deny = decide(shownPath, 'deny')
+      if (deny.action === 'deny') expect(stripUnsafeSuggestions(deny.message)).toContain('re-read with offset/limit for a specific line slice')
     })
   })
 
