@@ -2396,7 +2396,7 @@ describe('read_commands', () => {
       const { text: stderr, code } = runSection({ spec: 'nonexistent-file-xyz/SKILL.md::Some Heading' })
       expect(code).toBe(1)
       expect(stderr).toContain('File not found')
-      expect(stderr).not.toContain("Section 'Some Heading' not found")
+      expect(stderr).not.toContain('Section "Some Heading" not found')
     })
 
     // Updated for the similarity filter (defect-1 fix): every listed heading now shares the query word "Setup" so all 7 pass the filter and the DIDYOUMEAN_LIMIT cap is still the thing under test, instead of an unrelated query ('Nonexistent') that the filter would now correctly drop to zero candidates.

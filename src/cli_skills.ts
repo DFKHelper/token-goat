@@ -313,12 +313,12 @@ export async function cmdSkillSection(nameHeading: string, headingArg?: string):
     const allHeadings = listSections(filePath)
     const wanted = stripLower(heading)
     if (allHeadings.some((h) => stripLower(h) === wanted)) {
-      throw new CliError(`Section '${heading}' in skill '${skillName}' is present but empty`)
+      throw new CliError(`Section ${quotedArg(heading)} in skill ${quotedArg(skillName)} is present but empty`)
     }
-    const messages = [`Section '${heading}' not found in skill '${skillName}'`]
+    const messages = [`Section ${quotedArg(heading)} not found in skill ${quotedArg(skillName)}`]
     const available = filterSimilarHeadings(allHeadings, heading)
     if (available.length > 0) messages.push(...didYouMeanLines(available))
-    else if (allHeadings.length === 0) messages.push(`skill '${skillName}' has no headings`)
+    else if (allHeadings.length === 0) messages.push(`skill ${quotedArg(skillName)} has no headings`)
     else messages.push(`Try: token-goat outline ${quotedArg(filePath)}`)
     throw new CliError(messages)
   }

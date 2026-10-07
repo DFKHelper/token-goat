@@ -92,7 +92,7 @@ describe('cached-output --section with --lines', () => {
   it('refuses a range that falls outside the section', async () => {
     const id = storeWebOutput('https://example.com/out', BODY)
     expect(await runCli(['web-output', id, '--section', 'Usage', '--lines', '1-2'])).toBe(1)
-    expect(stderr.join('')).toContain("is outside section 'Usage', which covers lines 6-")
+    expect(stderr.join('')).toContain('is outside section "Usage", which covers lines 6-')
     expect(stdout.join('')).not.toContain('# Doc')
   })
 })

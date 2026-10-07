@@ -88,8 +88,8 @@ describe('skill-section exit code on a missing heading', () => {
     }
     const msg = stderr.join('')
     expect(code).toBe(1)
-    expect(msg, 'must name the missing heading').toContain("Section 'Usague' not found")
-    expect(msg, 'must name the skill it looked in').toContain("skill 'myskill-msg'")
+    expect(msg, 'must name the missing heading').toContain('Section "Usague" not found')
+    expect(msg, 'must name the skill it looked in').toContain('skill "myskill-msg"')
     expect(msg, 'must suggest the nearest real heading').toContain('Usage')
     // CAPTURE: the built bundle printed `Did you mean:\n  - Headline Rule\n  - ...` for `skill-section image-to-code "Ne"`, the break before each candidate as a literal backslash and n, because the suggestion reached the error printer as one line and the printer escapes a newline inside a line.
     expect(msg, 'each suggestion must be on a line of its own').toContain("\nDid you mean:\n  - Usage")
@@ -112,7 +112,7 @@ describe('skill-section on a heading that exists but has an empty body', () => {
     }
     const msg = stderr.join('')
     expect(code).toBe(1)
-    expect(msg, 'must say the section is empty, not absent').toContain("Section 'Changelog' in skill 'myskill-empty' is present but empty")
+    expect(msg, 'must say the section is empty, not absent').toContain('Section "Changelog" in skill "myskill-empty" is present but empty')
     expect(msg, 'must not point the caller back at the heading they asked for').not.toContain('Did you mean')
   })
 })

@@ -51,7 +51,7 @@ describe('section with a heading that occurs more than once', () => {
     const { text, code } = runSection({ spec: `${mdFile}::Fixed`, suppressStat: true })
     expect(code, text).toBe(1)
     expect(text, 'the ambiguity was resolved silently to the first match').toContain(
-      "Ambiguous heading 'Fixed'",
+      'Ambiguous heading "Fixed"',
     )
     expect(text).toContain('3 headings match')
     // Every occurrence gets a runnable retry, so the caller never has to know the `#N` grammar.
@@ -128,13 +128,13 @@ describe('section ambiguity through the multi-heading and json forms', () => {
     // `Added` resolved, so the call succeeds -- but `Fixed` must still say why it did not.
     expect(code, text).toBe(0)
     expect(text).toContain('a new thing')
-    expect(text).toContain("Ambiguous heading 'Fixed'")
+    expect(text).toContain('Ambiguous heading "Fixed"')
   })
 
   it('refuses an ambiguous heading under --json rather than emitting one arbitrary section', () => {
     const { text, code } = runSection({ spec: `${mdFile}::Fixed`, json: true, suppressStat: true })
     expect(code, text).toBe(1)
-    expect(text).toContain("Ambiguous heading 'Fixed'")
+    expect(text).toContain('Ambiguous heading "Fixed"')
     expect(text, 'a json caller was handed a section it never disambiguated').not.toContain(
       'two point oh',
     )

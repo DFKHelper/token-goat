@@ -102,7 +102,7 @@ export function _applyFiltersAndPrint(
     // The range is in the same numbering -n prints, so after --section it counts from the stored text's first line, not the section's.
     const last = firstLine + total - 1
     if (opts.section !== undefined && (from > last || to < firstLine)) {
-      throw new CliError(`--lines ${opts.lines} is outside section '${opts.section}', which covers lines ${firstLine}-${last}`)
+      throw new CliError(`--lines ${opts.lines} is outside section ${quotedArg(opts.section)}, which covers lines ${firstLine}-${last}`)
     }
     if (from > last) throw new CliError(`--lines ${opts.lines} is past the end: the text has ${total} lines`)
     rows = rows.slice(Math.max(from, firstLine) - firstLine, Math.min(to, last) - firstLine + 1)

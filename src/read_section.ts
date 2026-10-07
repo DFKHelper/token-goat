@@ -118,24 +118,24 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
         const total = baseResult.occurrences?.length ?? 1
         return {
           text:
-            `Heading '${ordBase}' has ${countNoun(total, 'occurrence')} in '${specFilePath}'; ` +
+            `Heading ${quotedArg(ordBase)} has ${countNoun(total, 'occurrence')} in ${quotedArg(specFilePath)}; ` +
             `valid ordinals are #1 to #${total}`,
           code: 1,
         }
       }
     }
-    const messages = [`Section '${heading}' not found in '${filePath}'`]
+    const messages = [`Section ${quotedArg(heading)} not found in ${quotedArg(filePath)}`]
     const allHeadings = listSections(filePath, readFileText)
     const available = filterSimilarHeadings(allHeadings, heading)
     if (available.length > 0) messages.push(didYouMean(available))
-    else if (allHeadings.length === 0) messages.push(`'${specFilePath}' has no headings`)
+    else if (allHeadings.length === 0) messages.push(`${quotedArg(specFilePath)} has no headings`)
     else messages.push(`Try: token-goat outline ${quotedArg(specFilePath)}`)
     return { text: messages.join('\n'), code: 1 }
   }
 
   if (result.occurrences !== undefined) {
     const lines = [
-      `Ambiguous heading '${heading}' in '${specFilePath}': ` +
+      `Ambiguous heading ${quotedArg(heading)} in ${quotedArg(specFilePath)}: ` +
         `${countNoun(result.occurrences.length, 'heading')} match. ` +
         `Retry with one of the qualified commands below to pick one:`,
     ]
@@ -223,7 +223,7 @@ export function runSectionMulti(
       )
       if (parent !== undefined) {
         anyFound = true
-        const notice = `(already included in section '${parent.heading}', lines ${sectionResult.lineStart}-${sectionResult.lineEnd})`
+        const notice = `(already included in section ${quotedArg(parent.heading)}, lines ${sectionResult.lineStart}-${sectionResult.lineEnd})`
         if (opts.json === true) {
           jsonOut[heading] = {
             heading: sectionResult.heading,
@@ -283,7 +283,7 @@ export function runSectionCrossFile(pairs: { file: string; symbol: string }[], o
       )
       if (parent !== undefined) {
         anyFound = true
-        const notice = `(already included in section '${parent.heading}', lines ${sectionResult.lineStart}-${sectionResult.lineEnd})`
+        const notice = `(already included in section ${quotedArg(parent.heading)}, lines ${sectionResult.lineStart}-${sectionResult.lineEnd})`
         if (opts.json === true) {
           jsonOut[key] = {
             heading: sectionResult.heading,

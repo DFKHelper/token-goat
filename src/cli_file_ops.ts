@@ -648,7 +648,7 @@ export function cmdInsertSection(file: string, opts: { after: string; contentFro
   const result = readSection(file, opts.after, undefined, false)
   if (result === null) {
     const allHeadings = listSections(file)
-    const messages = [`Section '${opts.after}' not found in '${file}'`]
+    const messages = [`Section ${quotedArg(opts.after)} not found in ${quotedArg(file)}`]
     const available = filterSimilarHeadings(allHeadings, opts.after)
     if (available.length > 0) messages.push(...didYouMeanLines(available))
     else if (allHeadings.length > 0) messages.push(`Try: token-goat outline ${quotedArg(file)}`)
@@ -657,7 +657,7 @@ export function cmdInsertSection(file: string, opts: { after: string; contentFro
 
   if (result.occurrences !== undefined) {
     const lines = [
-      `Ambiguous heading '${opts.after}' in '${file}': ${countNoun(result.occurrences.length, 'heading')} match. ` +
+      `Ambiguous heading ${quotedArg(opts.after)} in ${quotedArg(file)}: ${countNoun(result.occurrences.length, 'heading')} match. ` +
         `Retry with one of the qualified forms below to pick one:`,
     ]
     for (const [i, line] of result.occurrences.slice(0, AMBIGUOUS_HEADING_LIMIT).entries()) {

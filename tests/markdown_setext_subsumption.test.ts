@@ -84,7 +84,7 @@ describe('Markdown Setext Headings and Subsumption Deduplication', () => {
       expect(result.code).toBe(0)
       expect(result.text).toContain('# Main Architecture Title')
       expect(result.text).toContain('# Data Flow Section')
-      expect(result.text).toContain('(already included in section \'Main Architecture Title\', lines 6-13)')
+      expect(result.text).toContain('(already included in section "Main Architecture Title", lines 6-13)')
 
       // In JSON mode
       const jsonResult = runSectionMulti(docPath, docPath, ['Main Architecture Title', 'Data Flow Section'], { spec: 'Main Architecture Title', json: true })
@@ -95,7 +95,7 @@ describe('Markdown Setext Headings and Subsumption Deduplication', () => {
       expect(parsed['Data Flow Section']).toMatchObject({
         subsumedBy: 'Main Architecture Title',
       })
-      expect(parsed['Data Flow Section'].notice).toBe('(already included in section \'Main Architecture Title\', lines 6-13)')
+      expect(parsed['Data Flow Section'].notice).toBe('(already included in section "Main Architecture Title", lines 6-13)')
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }

@@ -990,7 +990,7 @@ describe('token-goat CLI', () => {
         expect(r.stderr).not.toContain('Did you mean')
         expect(r.stderr).toContain('outline')
         // Two lines, not one line holding an escaped `\n`: the error printer escapes control characters, and it used to escape the break token-goat itself put between the two.
-        expect(r.stderr.trimEnd().split(/\r?\n/).slice(-2)).toEqual([`token-goat: Section 'Nonexistent Heading' not found in '${tmp}'`, `Try: token-goat outline "${tmp}"`])
+        expect(r.stderr.trimEnd().split(/\r?\n/).slice(-2)).toEqual([`token-goat: Section "Nonexistent Heading" not found in "${tmp}"`, `Try: token-goat outline "${tmp}"`])
         expect(fs.readFileSync(tmp, 'utf8')).toBe('# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 2\nsecond\n')
       } finally {
         fs.rmSync(tmp, { force: true })
@@ -1024,7 +1024,7 @@ describe('token-goat CLI', () => {
       try {
         const r = await run(['insert-section', tmp, '--after', 'Notes', '--content-b64', contentB64])
         expect(r.status).toBe(1)
-        expect(r.stderr).toContain("Ambiguous heading 'Notes'")
+        expect(r.stderr).toContain('Ambiguous heading "Notes"')
         expect(r.stderr, 'must offer the qualified retry for the first match').toContain('--after "Notes#1"')
         expect(r.stderr, 'must offer the qualified retry for the second match').toContain('--after "Notes#2"')
         expect(fs.readFileSync(tmp, 'utf8'), 'an ambiguous insert must be a no-op on disk').toBe(original)

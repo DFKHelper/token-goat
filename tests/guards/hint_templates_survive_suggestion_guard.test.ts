@@ -477,6 +477,45 @@ describe('every value hand-quoted as a flag value or a whole command in src', ()
   })
 })
 
+/** A heading echoed in quotes written by hand after the word section or heading: `Section '${heading}' not found` read `Section 'it's gone' not found` for a heading holding an apostrophe, beside retry forms quotedArg had already quoted. */
+const HAND_QUOTED_HEADING = new RegExp('\\b(?:[Ss]ection|[Hh]eading) ([\'"])' + OPEN + '(\\d+)' + CLOSE + '[^\'"\\n]*\\1', 'g')
+
+/** Each interpolated value `text` echoes as a heading in quotes written by hand. */
+function handQuotedHeadings(text: string): number[] {
+  return [...text.matchAll(HAND_QUOTED_HEADING)].map((m) => Number(m[2]))
+}
+
+describe('every heading echoed in an error or notice in src', () => {
+  const scan = (templates: (standIn: StandIn) => Array<{ file: string; line: number; text: string }>): string[] => {
+    const exprs: string[] = []
+    const mark = (expr: ts.Expression): string => {
+      exprs.push(expr.getText().replace(/\s+/g, ' '))
+      return OPEN + String(exprs.length - 1) + CLOSE
+    }
+    return [...new Set(templates(mark).flatMap((t) => handQuotedHeadings(t.text).map((marker) => t.file + ':' + t.line + ' ' + exprs[marker])))]
+  }
+  const echoes = [...new Set(['ection ', 'eading '].flatMap((needle) => stringTemplates(PLAIN, needle)).filter((t) => /\b(?:[Ss]ection|[Hh]eading) "/.test(t.text)).map((t) => t.file))]
+
+  it('is scanned', () => {
+    pinnedPopulation({ what: 'src files echoing a quoted value after the word section or heading', items: echoes, floor: 5, mustInclude: ['read_section.ts', 'cli_file_ops.ts', 'cli_skills.ts', 'cli.ts', 'cli_cached_output.ts'] })
+  })
+
+  it('is quoted with quotedArg', () => {
+    expect(scan((standIn) => [...stringTemplates(standIn, 'ection '), ...stringTemplates(standIn, 'eading ')])).toEqual([])
+  })
+
+  // HAND-DERIVED virtual sources: the shapes src carried (read_section.ts `Section '${heading}' not found in '${filePath}'`, cli_skills.ts `Section '${heading}' in skill`, read_section.ts `Ambiguous heading '${heading}' in`) beside a double-quoted hand form, the quotedArg form, and a heading word with no echo after it.
+  it('flags a heading hand-quoted in either mark and passes a quotedArg one', () => {
+    const virtual = (source: string): string[] => scan((standIn) => templatesIn('virtual.ts', source, standIn, 'ection ')).map((f) => f.replace('virtual.ts:1 ', ''))
+    const virtualHeading = (source: string): string[] => scan((standIn) => templatesIn('virtual.ts', source, standIn, 'eading ')).map((f) => f.replace('virtual.ts:1 ', ''))
+    expect(virtual("const s = `Section '${heading}' not found in '${filePath}'`")).toEqual(['heading'])
+    expect(virtual('const s = `section "${opts.heading}" not found in document ${fileId}`')).toEqual(['opts.heading'])
+    expect(virtualHeading("const s = `Ambiguous heading '${heading}' in ${quotedArg(file)}: `")).toEqual(['heading'])
+    expect(virtual('const s = `Section ${quotedArg(heading)} not found in ${quotedArg(filePath)}`')).toEqual([])
+    expect(virtual("const s = `the section 'Install' covers lines ${a}-${b}`")).toEqual([])
+  })
+})
+
 /** Source files whose `'token-goat …'` or `"token-goat …"` text is code rather than a sentence: the quote is a delimiter of the generated script, Lua or SQL it sits in. */
 const CODE_STRINGS: ReadonlyArray<{ file: string; reason: string }> = [
   ...['bridges/claudecode.ts', 'bridges/codex.ts', 'bridges/copilot_cli.ts', 'bridges/grok.ts', 'bridges/kimi.ts', 'bridges/pi.ts', 'bridges/relay_block.ts'].map((file) => ({ file, reason: 'the JavaScript source of a generated hook bridge script, whose string literals and comments build the hook command' })),

@@ -31,6 +31,7 @@ import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { detectLanguageOfFile } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { displaySafeText, hostPathOfTypedPath, resolveIndexPath, displaySafeJson } from './paths.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 import { isUnderSystemTemp, resolveProjectRoot } from './project.js'
 import { runParallelSearch } from './search/search_cli.js'
 import { ALL_CHANNELS, type SearchChannel } from './search/types.js'
@@ -829,7 +830,7 @@ async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh
   if (opts.heading !== undefined) {
     const content = await getSectionContent(fileId, opts.heading, { fresh: false })
     if (content === null) {
-      throw new CliError(`section '${opts.heading}' not found in document ${fileId}`)
+      throw new CliError(`section ${quotedArg(opts.heading)} not found in document ${fileId}`)
     }
     emitted = `# ${opts.heading}\n${content}`
   } else {
