@@ -699,7 +699,9 @@ export function cmdInsertSection(file: string, opts: { after: string; contentFro
   const insertedText = insertedLines.join(eol)
   // A final line with no terminator gets one before the insert and none after, so the file still ends the way it did.
   const endsUnterminated = offset > 0 && rawText[offset - 1] !== '\n'
-  const mergedText = rawText.slice(0, offset) + (endsUnterminated ? eol + insertedText : insertedText + eol) + rawText.slice(offset)
+  // An inserted heading right under the section's last line of text read `second\n## New`: a blank line keeps the new section apart from the body it follows, as every other heading in the file is.
+  const blankBefore = /^ {0,3}#{1,6}(?:[ \t]|$)/.test(insertedLines[0] ?? '') && rawText.slice(prevLineStart, offset).trim() !== '' ? eol : ''
+  const mergedText = rawText.slice(0, offset) + (endsUnterminated ? eol + blankBefore + insertedText : blankBefore + insertedText + eol) + rawText.slice(offset)
 
   if (preWriteStat !== undefined) {
     let preRenameStat: fs.Stats | undefined

@@ -954,7 +954,7 @@ describe('token-goat CLI', () => {
         const r = await run(['insert-section', tmp, '--after', 'Lesson 1', '--content-b64', contentB64])
         expect(r.status, r.stderr).toBe(0)
         expect(fs.readFileSync(tmp, 'utf8')).toBe(
-          '# Doc\n\n## Lesson 1\nfirst\n## Lesson 1.5\nnew content\n\n## Lesson 2\nsecond\n',
+          '# Doc\n\n## Lesson 1\nfirst\n\n## Lesson 1.5\nnew content\n\n## Lesson 2\nsecond\n',
         )
         expect(r.stdout).toContain("inserted after 'Lesson 1'")
       } finally {
@@ -970,7 +970,7 @@ describe('token-goat CLI', () => {
         const r = await run(['insert-section', tmp, '--after', 'Lesson 16', '--content-b64', contentB64])
         expect(r.status, r.stderr).toBe(0)
         expect(fs.readFileSync(tmp, 'utf8')).toBe(
-          '# Doc\n\n## Lesson 16: a long heading with detail\nbody\n## Lesson 16.5\nnew\n\n## Lesson 17\nother\n',
+          '# Doc\n\n## Lesson 16: a long heading with detail\nbody\n\n## Lesson 16.5\nnew\n\n## Lesson 17\nother\n',
         )
         expect(r.stdout).toContain('redirected from')
       } finally {
@@ -1041,7 +1041,7 @@ describe('token-goat CLI', () => {
         const r = await run(['insert-section', tmp, '--after', 'Notes#2', '--content-b64', contentB64])
         expect(r.status, r.stderr).toBe(0)
         // Landed under the SECOND Notes (after beta), not the first.
-        expect(fs.readFileSync(tmp, 'utf8')).toBe('# Doc\n\n## Notes\nalpha\n\n## Notes\nbeta\n## Inserted\nx\n')
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('# Doc\n\n## Notes\nalpha\n\n## Notes\nbeta\n\n## Inserted\nx\n')
       } finally {
         fs.rmSync(tmp, { force: true })
       }
@@ -1055,7 +1055,7 @@ describe('token-goat CLI', () => {
       try {
         const r = await run(['insert-section', tmp, '--after', 'Lesson 1', '--content-from', contentFile])
         expect(r.status, r.stderr).toBe(0)
-        expect(fs.readFileSync(tmp, 'utf8')).toBe('## Lesson 1\nfirst\n## Lesson 2\nsecond\n')
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('## Lesson 1\nfirst\n\n## Lesson 2\nsecond\n')
       } finally {
         fs.rmSync(tmp, { force: true })
         fs.rmSync(contentFile, { force: true })

@@ -50,3 +50,34 @@ describe('insert-section keeps untouched line endings', () => {
     expect(fs.readFileSync(file, 'latin1')).toBe('# Doc\r\n## Last\r\nend\r\ntail')
   })
 })
+
+// Provenance: HAND-DERIVED, each expected file written out by hand from the input: an inserted heading sits apart from the text above it by one blank line in that line's own ending, as the file's other headings do (`second\n## New` was the dogfood output before the fix).
+describe('insert-section separates an inserted heading from the section above it', () => {
+  it('puts one blank line in the splice line ending between the section text and an inserted heading', () => {
+    const file = path.join(dir, 'heading.md')
+    fs.writeFileSync(file, MIXED)
+    insert(file, 'One', '## New\nx\n')
+    expect(fs.readFileSync(file, 'latin1')).toBe('# Doc\r\n\r\n## One\r\nalpha\r\n\r\n## New\r\nx\r\n\r\n## Two\nbeta\ngamma\n\n## Three\r\ndelta\r\n')
+  })
+
+  it('separates a heading appended after a last line with no trailing newline, and keeps that shape', () => {
+    const file = path.join(dir, 'tail-heading.md')
+    fs.writeFileSync(file, '# Doc\r\n## Last\r\nend')
+    insert(file, 'Last', '## New\nx\n')
+    expect(fs.readFileSync(file, 'latin1')).toBe('# Doc\r\n## Last\r\nend\r\n\r\n## New\r\nx')
+  })
+
+  it('separates it from a heading with no body as well, whose own line is the one above', () => {
+    const file = path.join(dir, 'empty-section.md')
+    fs.writeFileSync(file, '# Doc\n\n## Empty\n\n## Next\nz\n')
+    insert(file, 'Empty', '## New\nx\n')
+    expect(fs.readFileSync(file, 'utf8')).toBe('# Doc\n\n## Empty\n\n## New\nx\n\n## Next\nz\n')
+  })
+
+  it('adds no second blank line where the section already ends on a line holding only spaces', () => {
+    const file = path.join(dir, 'blank-above.md')
+    fs.writeFileSync(file, '# Doc\n\n## A\nx\n   \n## B\ny\n')
+    insert(file, 'A', '## New\nz\n')
+    expect(fs.readFileSync(file, 'utf8')).toContain('\nx\n   \n## New\nz\n')
+  })
+})
