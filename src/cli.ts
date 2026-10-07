@@ -717,10 +717,12 @@ async function cmdCompress(
   } = {},
 ): Promise<void> {
   const usedBase64 = opts.cmdB64 !== undefined
+  let payloadDamaged = false
   try {
     let command: string | undefined
     for (let depth = 0; depth < 5; depth++) {
       if (opts.cmdB64 !== undefined) {
+        payloadDamaged ||= base64PayloadDamaged(opts.cmdB64)
         command = Buffer.from(opts.cmdB64, 'base64').toString('utf8')
         delete opts.cmdB64
       } else {
@@ -783,9 +785,22 @@ async function cmdCompress(
     err(formatCommandError(e))
     process.exitCode = 1
   } finally {
-    if (usedBase64 && process.exitCode !== undefined && process.exitCode !== 0) {
-      err('[tg: note] Command failed when invoked via --cmd-b64. If an LLM generated this base64 string, tokenization bit-drift may have corrupted characters or file paths. Always pass plain shell commands directly.')
+    if (payloadDamaged && process.exitCode !== undefined && process.exitCode !== 0) {
+      err('[tg: note] Command failed when invoked via --cmd-b64, and the payload did not decode cleanly (characters outside base64, a cut-off length, or bytes that are not UTF-8). If an LLM generated this base64 string, tokenization bit-drift may have corrupted characters or file paths. Always pass plain shell commands directly.')
     }
+  }
+}
+
+// Whether a --cmd-b64 payload carries the marks of a typed string gone wrong: characters outside base64 or a length that does not re-encode to itself, or bytes that are not UTF-8. A payload the hooks encoded never does, so a failure behind one is the command's own and gets no bit-drift note.
+function base64PayloadDamaged(payload: string): boolean {
+  const canonical = (s: string): string => s.replace(/\s|=+$/g, '').replace(/-/g, '+').replace(/_/g, '/')
+  const bytes = Buffer.from(payload, 'base64')
+  if (canonical(bytes.toString('base64')) !== canonical(payload)) return true
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    return false
+  } catch {
+    return true
   }
 }
 
