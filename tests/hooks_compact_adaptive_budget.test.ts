@@ -34,6 +34,15 @@ function resetSessionState(): void {
   importSessionState({ files: [], hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] })
 }
 
+/** The manifest spawns `mem epoch` when a `mem` launcher is on PATH, and on this machine one is: its latency is a property of the machine's load, so a call that stalls past MEM_EPOCH_TIMEOUT_MS drops the epoch section from that manifest only, and two manifests this suite compares then differ by that section (987 characters against 1016 was observed under a full-suite run). The suite is about the git-driven budget, so it runs with no `mem` on PATH. */
+function pathWithoutMem(pathValue: string): string {
+  const launchers = ['mem', 'mem.cmd', 'mem.exe', 'mem.bat', 'mem.ps1']
+  return pathValue
+    .split(path.delimiter)
+    .filter((dir) => dir !== '' && !launchers.some((name) => fs.existsSync(path.join(dir, name))))
+    .join(path.delimiter)
+}
+
 function initRepo(dir: string): void {
   fs.mkdirSync(dir, { recursive: true })
   runGit(['init'], { cwd: dir })
@@ -72,8 +81,12 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
   let repoDir: string
   let tgHome: string
   let prevHome: string | undefined
+  let prevPath: string | undefined
+  const pathKey = Object.keys(process.env).find((k) => k.toLowerCase() === 'path') ?? 'PATH'
 
   beforeEach(() => {
+    prevPath = process.env[pathKey]
+    process.env[pathKey] = pathWithoutMem(prevPath ?? '')
     resetSessionState()
     repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-adaptive-budget-repo-'))
     tgHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-adaptive-budget-home-'))
@@ -96,6 +109,8 @@ describe('PreCompact adaptive manifest budget (real relay dispatch + real git st
   })
 
   afterEach(() => {
+    if (prevPath === undefined) delete process.env[pathKey]
+    else process.env[pathKey] = prevPath
     resetSessionState()
     invalidateConfigCache()
     if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
