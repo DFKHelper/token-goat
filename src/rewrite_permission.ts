@@ -5,11 +5,13 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { detectHarness } from './bridges/registry.js'
 import type { HarnessName } from './bridges/types.js'
 import { claudeConfigDir } from './claude_config_dir.js'
 import { commonGitDir } from './nested_worktrees.js'
 import { foldPathForContainment, isInsideRoot } from './path_containment.js'
 import { isUncOrDevicePath } from './paths.js'
+import type * as HiddenRules from './claude_hidden_rules.js'
 import type { HookOutput } from './types.js'
 import { runGit } from './util.js'
 
@@ -338,12 +340,16 @@ function decideAgent(snapshot: PermissionSnapshot): RewriteVerdict {
   return 'rewrite'
 }
 
-let hiddenCheck: ((req: RewriteRequest) => boolean) | undefined
-let primeHiddenCheck: ((env: NodeJS.ProcessEnv) => Promise<void>) | undefined
+/** Whether an entry point names a host other than the terminal CLI: a value that is set and is not cli or sdk-cli. */
+function isOtherHostEntry(entrypoint: string | undefined): boolean {
+  return entrypoint !== undefined && entrypoint !== '' && !/^(sdk-)?cli$/.test(entrypoint)
+}
+
+let unseenRules: ReturnType<typeof HiddenRules.hiddenRules> | undefined
 let primeAhead = false
 
-/** The pure decision, given the merged settings (null when any source could not be read). In auto and bypassPermissions no rewrite may ever add a prompt, so a verdict there is only `skip` or `approve`: auto mode always skips, since its classifier reviews the call a hook allow would wave through and a deferred wrapper is a call it may stop to ask about; bypassPermissions approves a rewrite only when no rule source the hook cannot read could apply (`hidden`, which is true until loadHiddenRuleCheck has run), and skips otherwise. */
-export function decideRewrite(snapshot: PermissionSnapshot | null, req: RewriteRequest, hidden: (req: RewriteRequest) => boolean = (r) => hiddenCheck?.(r) ?? true): RewriteVerdict {
+/** The pure decision, given the merged settings (null when any source could not be read). In auto and bypassPermissions no rewrite may ever add a prompt, so a verdict there is only `skip` or `approve`: auto mode always skips, since its classifier reviews the call a hook allow would wave through and a deferred wrapper is a call it may stop to ask about; bypassPermissions approves a rewrite only when no rule source the hook cannot read could apply (`hidden`, which is true until loadHiddenRuleCheck has run), and skips otherwise; every other mode on Claude Code withholds an `approve` when `lineRules` says the claude command line could add a rule (a CLI session that names a flag not known to be harmless or whose command line cannot be read), and leaves a host's session alone; until the check is loaded every session counts but one whose CLAUDE_CODE_ENTRYPOINT names a host other than the terminal CLI, as the loaded check does, so an unset entry point takes the strict path either way. */
+export function decideRewrite(snapshot: PermissionSnapshot | null, req: RewriteRequest, hidden: (req: RewriteRequest) => boolean = (r) => unseenRules?.hidden(r.cwd, r.agentType) ?? true, lineRules: (req: RewriteRequest) => boolean = () => unseenRules?.lineRules() ?? !isOtherHostEntry(process.env['CLAUDE_CODE_ENTRYPOINT'])): RewriteVerdict {
   if (snapshot === null) return 'skip'
   const mode = req.harness === 'claudecode' ? normalizedMode(req.mode) : 'default'
   if (mode === null || mode === 'auto') return 'skip'
@@ -359,7 +365,9 @@ export function decideRewrite(snapshot: PermissionSnapshot | null, req: RewriteR
     case 'agent':
       verdict = decideAgent(snapshot)
   }
-  if (mode !== 'bypassPermissions' || verdict === 'skip') return verdict
+  // Any other mode approves too (a proven allow, a read in the working directory), and rules the claude command line adds (--disallowedTools, --settings) are in no file: a call they could refuse is left to Claude Code to judge as it stands.
+  if (mode !== 'bypassPermissions') return verdict === 'approve' && req.harness === 'claudecode' && lineRules(req) ? 'skip' : verdict
+  if (verdict === 'skip') return verdict
   return snapshot.permissionHooks || hidden(req) ? 'skip' : 'approve'
 }
 
@@ -445,6 +453,10 @@ function readSettingsFile(file: string): Record<string, unknown> | undefined {
 /** The `Settings` value of a Windows policy key: undefined when the key or value is absent, throws when it cannot be queried or is not a JSON object. */
 function readRegistrySettings(key: string): Record<string, unknown> | undefined {
   if (!sourceAllowed(`registry:${key}`)) return undefined
+  return queryRegistry(key)
+}
+
+function queryRegistry(key: string): Record<string, unknown> | undefined {
   const res = spawnSync('reg', ['query', key, '/v', 'Settings'], { encoding: 'utf8', windowsHide: true, timeout: 5000 })
   if (res.error !== undefined) throw res.error
   if (res.status === 1) return undefined
@@ -504,9 +516,10 @@ function managedDocs(): SettingsDoc[] {
 const MANAGED_CACHE_MS = 30_000
 let managedCache: { readonly at: number; readonly docs: SettingsDoc[] } | undefined
 
-/** Drop the cached managed sources, for a test that changes them. */
+/** Drop the cached managed sources and the loaded hidden-rule check, for a test that changes them. */
 export function resetPermissionSourceCache(): void {
   managedCache = undefined
+  unseenRules = undefined
 }
 
 /** Whether Claude Code trusts the allow rules of this `settings.local.json`: not when the file is tracked by git or its `.claude` directory is a symlink. Any doubt reads as untrusted. */
@@ -600,13 +613,8 @@ export async function loadCodexRules(): Promise<void> {
 
 /** Load the check for Claude Code rule sources no settings file shows (claude_hidden_rules.ts); a dynamic import with this module's helpers injected, so it stays off every hook's eager path. */
 export async function loadHiddenRuleCheck(): Promise<void> {
-  if (hiddenCheck === undefined) {
-    const { hiddenRuleSource, primeProcessReason } = await import('./claude_hidden_rules.js')
-    const helpers = { configDir: claudeConfigDir, managedDirs, runGit, selfAndAncestors, sourceAllowed }
-    hiddenCheck = (req) => hiddenRuleSource(req.cwd, process.env['CLAUDE_PROJECT_DIR'], process.env, helpers, { agentType: req.agentType }) !== null
-    primeHiddenCheck = primeProcessReason
-  }
-  if (primeAhead) await primeHiddenCheck?.(process.env)
+  unseenRules ??= (await import('./claude_hidden_rules.js')).hiddenRules({ configDir: claudeConfigDir, managedDirs, runGit, selfAndAncestors, sourceAllowed })
+  if (primeAhead) await unseenRules.prime(process.env)
 }
 
 /** From now on read the claude process's command line before a bypassPermissions handler runs rather than inside it. Called by the resident hook server, whose event loop would otherwise stop for that read (about a second on Windows) and which keeps the answer for every later call of the session; a one-shot hook process does not, since it would pay the read on every call whether or not it rewrites anything. */
@@ -614,9 +622,14 @@ export function primeHiddenRulesAhead(): void {
   primeAhead = true
 }
 
-/** Wrap a PreToolUse handler that may rewrite its call so that, on a bypassPermissions call, the hidden rule check is loaded (and in the hook server, the claude process read) before it runs: until then decideRewrite skips every rewrite there. */
+/** Wrap a PreToolUse handler that may rewrite its call so that, on a Claude Code or VS Code call in any mode but auto (an absent mode counts, as it decides like default), the hidden rule check is loaded (and in the hook server, the claude process read) before it runs: until then decideRewrite skips every rewrite there. No other harness reads Claude Code's rules, so for them nothing is loaded; a load that fails leaves the check unloaded, which skips, and the handler still runs. */
 export function loadingHiddenRuleCheck<E extends { readonly raw: Record<string, unknown> }, R>(handler: (event: E) => R | Promise<R>): (event: E) => R | Promise<R> {
-  return (event) => ((hiddenCheck === undefined || primeAhead) && event.raw['permission_mode'] === 'bypassPermissions' ? loadHiddenRuleCheck().then(() => handler(event)) : handler(event))
+  return (event) => {
+    if ((unseenRules !== undefined && !primeAhead) || event.raw['permission_mode'] === 'auto') return handler(event)
+    const harness = detectHarness()
+    if (harness !== 'claudecode' && harness !== 'vscode') return handler(event)
+    return loadHiddenRuleCheck().then(() => handler(event), () => handler(event))
+  }
 }
 
 /** Harnesses whose shell permission rules no hook can read, so a wrapped command would be matched against rules token-goat never saw: Copilot CLI takes `--allow-tool`/`--deny-tool` on its command line and runs its hooks from compiled code whose order against them is undocumented; opencode merges permission rules from an organization account and a well-known URL, and its check for directories outside the project reads the paths the wrapper hides; Grok runs Claude Code's hook settings and applies `updatedInput` before its own policy and prompt see the call. */

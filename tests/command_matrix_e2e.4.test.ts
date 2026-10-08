@@ -54,7 +54,7 @@ describe('built bundle image shrink (real sharp dlopen through the full CLI impo
     expect(context).toMatch(/data:image\/(jpeg|webp);base64,/)
   }, 30000)
 
-  // FORMAT-DERIVED from https://code.claude.com/docs/en/hooks: Claude Code caps additionalContext at 10,000 characters, so the shrunk copy reaches it only as an updatedInput file_path, which the shipped bundle must write and point the Read at.
+  // FORMAT-DERIVED from https://code.claude.com/docs/en/hooks: Claude Code caps additionalContext at 10,000 characters, so the shrunk copy reaches it only as an updatedInput file_path, which the shipped bundle must write and point the Read at. The entry point names a host because the hook withholds its allow from a terminal session whose claude command line it cannot read, and this scrubbed environment has no claude process.
   it('rewrites a Claude Code Read inside its working directory to a shrunk copy through the built bundle', async () => {
     const side = 700
     const noise = Buffer.allocUnsafe(side * side * 3)
@@ -64,7 +64,7 @@ describe('built bundle image shrink (real sharp dlopen through the full CLI impo
     const imgPath = path.join(imgDir, 'big.jpg')
     fs.writeFileSync(imgPath, jpegBuf)
     const payload = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: imgPath }, session_id: 'matrix-image-shrink-cc', cwd: imgDir })
-    const r = run(['hook', 'pre_tool_use'], { cwd: imgDir, input: payload, env: { ...tgEnv(dataBase), TOKEN_GOAT_OCR_ENABLED: 'false', TOKEN_GOAT_HARNESS_OVERRIDE: 'claudecode' } })
+    const r = run(['hook', 'pre_tool_use'], { cwd: imgDir, input: payload, env: { ...tgEnv(dataBase), TOKEN_GOAT_OCR_ENABLED: 'false', TOKEN_GOAT_HARNESS_OVERRIDE: 'claudecode', CLAUDE_CODE_ENTRYPOINT: 'claude-vscode' } })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout.length, 'the hook reply must fit Claude Code\'s 10,000-character field cap').toBeLessThan(10_000)
     const hso = (JSON.parse(r.stdout) as { hookSpecificOutput?: { permissionDecision?: string; additionalContext?: string; updatedInput?: { file_path?: string } } }).hookSpecificOutput

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { readWindowsProcesses } from '../src/cli_doctor_process.js'
 
 describe('readWindowsProcesses on the real PowerShell launcher', () => {
-  // CAPTURE: on a Windows machine this very test process is in the table Get-CimInstance prints; a loaded machine may instead time out, which the result marks transient. Any other failure (powershell.exe not found, a bad argument list) is the launcher broken.
+  // HAND-DERIVED (a live smoke of the real launcher, not a regression pin; tests/windows_powershell.test.ts pins the executable choice and the fallback to bare powershell.exe): on a Windows machine this very test process is in the table Get-CimInstance prints; a loaded machine may instead time out, which the result marks transient. Any other failure (powershell.exe not found, a bad argument list) is the launcher broken.
   it.runIf(process.platform === 'win32')('lists this process, or fails only by timing out', () => {
     const processes = readWindowsProcesses()
     if (Array.isArray(processes)) expect(processes.some((p) => p.processId === process.pid)).toBe(true)

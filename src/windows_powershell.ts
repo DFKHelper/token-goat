@@ -1,4 +1,4 @@
-/** How token-goat starts Windows PowerShell to ask about processes: one place for the executable and its arguments, shared by doctor's process list and the hidden-rule scan's command-line read. Imports only Node built-ins, so claude_hidden_rules.ts can keep off every hook's eager path. */
+/** How token-goat starts Windows PowerShell to ask about processes: one place for the executable and its arguments, shared by doctor and the hidden-rule scan. Imports only Node built-ins and shell.ts, which imports only built-ins, so claude_hidden_rules.ts stays off every hook's eager path. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -10,7 +10,4 @@ export function windowsPowerShellPath(): string {
   return fs.existsSync(shell) ? shell : 'powershell.exe'
 }
 
-/** The arguments that run `command` without a profile and without waiting on input. */
-export function powerShellCommandArgs(command: string): string[] {
-  return ['-NoProfile', '-NonInteractive', '-Command', command]
-}
+export { powerShellCommandArgs } from './shell.js'

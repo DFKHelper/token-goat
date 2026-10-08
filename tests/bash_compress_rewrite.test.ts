@@ -365,10 +365,10 @@ describe('compression rewrite (built-bundle e2e)', () => {
     }
   })
 
-  function runHook(payload: unknown): { stdout: string; status: number | null } {
+  function runHook(payload: unknown, extraEnv: NodeJS.ProcessEnv = {}): { stdout: string; status: number | null } {
     const res = spawnSync(process.execPath, [BUNDLE, 'hook', 'pre_tool_use'], {
       // Fresh isolated home → empty session store → no cache → the rewrite fires.
-      env: { ...process.env, TOKEN_GOAT_HOME: tgHome, LOCALAPPDATA: tgHome, XDG_DATA_HOME: tgHome },
+      env: { ...process.env, TOKEN_GOAT_HOME: tgHome, LOCALAPPDATA: tgHome, XDG_DATA_HOME: tgHome, ...extraEnv },
       input: JSON.stringify(payload),
       encoding: 'utf8',
       cwd: tgHome,
@@ -500,12 +500,12 @@ describe('compression rewrite (built-bundle e2e)', () => {
   })
 
   it('rewrites git diff to the git-diff filter (batch D vcs filter)', () => {
-    // Verifies the batch-D vcs git filters survive esbuild: GitDiffFilter is registered in GIT_FILTERS -> spread into TOOL_FILTERS.
+    // Verifies the batch-D vcs git filters survive esbuild: GitDiffFilter is registered in GIT_FILTERS -> spread into TOOL_FILTERS. git diff is a read-only command Claude Code runs without asking, so the hook would approve its rewrite and withholds that from a terminal session whose claude command line it cannot read; the entry point names a host, whose command line is none of its business.
     const out = runHook({
       session_id: 'e2e-compress-git-diff',
       tool_name: 'Bash',
       tool_input: { command: 'git diff HEAD' },
-    })
+    }, { CLAUDE_CODE_ENTRYPOINT: 'claude-vscode' })
     expect(out.status).toBe(0)
     const parsed = JSON.parse(out.stdout) as {
       hookSpecificOutput?: { updatedInput?: { command?: string } }

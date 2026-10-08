@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { frontmatterAddsRule, hiddenRuleSource, primeProcessReason, resetHiddenRuleCache, type HiddenRuleHelpers, type HiddenRuleQuery } from '../src/claude_hidden_rules.js'
+import { commandLineRuleSource, frontmatterAddsRule, hiddenRuleSource, primeProcessReason, resetHiddenRuleCache, type HiddenRuleHelpers, type HiddenRuleQuery } from '../src/claude_hidden_rules.js'
 import { selfAndAncestors } from '../src/rewrite_permission.js'
 import { runGit } from '../src/util.js'
 
@@ -130,6 +130,61 @@ describe('hiddenRuleSource: the claude process', () => {
   }, 30_000)
 })
 
+// HAND-DERIVED from the rule that a CLI session's command line is the only place --disallowedTools, --settings and unknown flags live, and that a host is told apart only by an entry point that is set and not the CLI's (claude.exe 2.1.292 names claude-vscode, claude-desktop, local-agent and remote*).
+describe('commandLineRuleSource: the claude command line outside bypassPermissions', () => {
+  const lineRules = (b: Box, env: NodeJS.ProcessEnv = {}): string | null =>
+    commandLineRuleSource({ CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_PID: plainPid, CLAUDE_CODE_SESSION_ID: 's', ...env })
+
+  it('a CLI session with harmless flags adds none, one with a rule flag or an unknown flag adds some', () => {
+    expect(lineRules(box('cl-plain'))).toBeNull()
+    expect(lineRules(box('cl-disallow'), { CLAUDE_PID: disallowPid })).toBe('claude started with --disallowedtools')
+    expect(lineRules(box('cl-settings'), { CLAUDE_PID: settingsPid })).toBe('claude started with --settings')
+  }, 30_000)
+
+  it('a CLI session whose command line cannot be read, or whose pid is unknown, takes the strict path', () => {
+    expect(lineRules(box('cl-nopid'), { CLAUDE_PID: undefined })).toBe('claude process unknown')
+    expect(lineRules(box('cl-dead'), { CLAUDE_PID: '2147483646' })).toBe('claude command line unreadable')
+  }, 30_000)
+
+  it('a missing or empty entry point is no evidence of a host, so it takes the strict path', () => {
+    expect(lineRules(box('cl-noentry'), { CLAUDE_CODE_ENTRYPOINT: undefined })).toBe('entry point unknown')
+    expect(lineRules(box('cl-emptyentry'), { CLAUDE_CODE_ENTRYPOINT: '' })).toBe('entry point unknown')
+  })
+
+  it('an entry point that is set and is not the CLI is a host: today\'s behaviour, no command line rule', () => {
+    for (const entry of ['claude-vscode', 'claude-desktop', 'local-agent', 'remote', 'sdk-ts']) {
+      expect(lineRules(box(`cl-host-${entry}`), { CLAUDE_CODE_ENTRYPOINT: entry, CLAUDE_PID: disallowPid })).toBeNull()
+    }
+  })
+
+  // HAND-DERIVED from the threat: a record in a file the same user can write is a record the agent can write, so a planted "no flags" for a claude started with --disallowedTools must not be believed. The planted record has the shape the first version of this check wrote (pid, procStart from Claude Code's own session registry, flags), which is what made it trusted there.
+  it('a planted record of no flags for a claude started with --disallowedTools is never believed', () => {
+    const home = fs.mkdtempSync(path.join(root, 'home-'))
+    const saved = process.env['TOKEN_GOAT_HOME']
+    process.env['TOKEN_GOAT_HOME'] = home
+    try {
+      const b = box('cl-forged')
+      write(path.join(b.config, 'sessions', `${disallowPid}.json`), JSON.stringify({ pid: Number(disallowPid), procStart: '111' }))
+      write(path.join(home, 'claude_procs', `${disallowPid}.json`), JSON.stringify({ pid: disallowPid, procStart: '111', flags: [] }))
+      expect(lineRules(b, { CLAUDE_PID: disallowPid })).toBe('claude started with --disallowedtools')
+    } finally {
+      if (saved === undefined) delete process.env['TOKEN_GOAT_HOME']
+      else process.env['TOKEN_GOAT_HOME'] = saved
+    }
+  }, 60_000)
+
+  // HAND-DERIVED from observation: on Linux, Node's process.title overwrites the arguments in /proc/<pid>/cmdline and pads the area with NULs (WSL Ubuntu, node 22.11: "claude" followed by NULs, ps shows "claude"); Claude Code sets process.title = "claude" itself (strings in claude.exe 2.1.292). A command line that says nothing of the flags is not a command line with none, so it must read as unreadable; on Windows and macOS the title leaves the command line alone, so the flags are still seen. Either way the session is not approved.
+  it('a claude that retitled itself with --disallowedTools is never read as having no flags', async () => {
+    fs.writeFileSync(path.join(root, 'retitle.js'), "process.title = 'claude'\nsetInterval(() => {}, 1 << 30)\n")
+    const child = spawn(process.execPath, [path.join(root, 'retitle.js'), '--disallowedTools', 'Bash(curl *)'], { stdio: 'ignore', windowsHide: true })
+    idle.push(child)
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    const reason = lineRules(box('cl-retitled'), { CLAUDE_PID: String(child.pid) })
+    expect(reason).not.toBeNull()
+    if (process.platform === 'linux') expect(reason).toBe('claude command line unreadable')
+  }, 30_000)
+})
+
 describe('hiddenRuleSource: rule files', () => {
   it('a user skill removing a tool by pattern hides a rule; one with bare names does not', () => {
     const b = box('user-skill')
@@ -176,8 +231,8 @@ describe('hiddenRuleSource: rule files', () => {
     expect(check(b)).toContain(path.join('pkg', '.claude', 'skills', 's', 'SKILL.md'))
   }, 30_000)
 
-  // HAND-DERIVED: git lists a tracked file in its index whether or not it is still on disk, and a tracked path replaced by a directory cannot be opened as a file (EISDIR, not ENOENT).
-  it('a tracked skill file that is gone reads as missing, and one that cannot be opened as unreadable', () => {
+  // HAND-DERIVED: git lists a tracked file in its index whether or not it is still on disk; Claude Code reads skills from disk, so a gone file adds no rule. A tracked path replaced by a directory cannot be opened as a file (EISDIR, not ENOENT) and stays hidden; one whose parent became a file is gone too, which the OS reports as ENOTDIR on Linux and macOS and as ENOENT on Windows (open(2) and CreateFile name those errors for a path component that is not a directory and for one that does not exist), so the test holds on every platform because the scan reads both as missing.
+  it('a tracked skill file that is gone adds no rule, and one that cannot be opened stays hidden', () => {
     const b = box('missing-file')
     expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
     const gone = path.join(b.project, '.claude', 'skills', 'gone.md')
@@ -186,13 +241,20 @@ describe('hiddenRuleSource: rule files', () => {
     write(blocked, '---\nname: blocked\n---\n')
     expect(runGit(['add', '-f', '.claude'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
     fs.rmSync(gone)
-    expect(check(b)).toBe(`${path.join(b.project, '.claude', 'skills', 'gone.md')} is missing`)
-    fs.rmSync(gone, { force: true })
+    expect(check(b)).toBeNull()
     fs.rmSync(blocked)
     fs.mkdirSync(blocked)
     resetHiddenRuleCache()
     expect(check(b)).toBe(`cannot read ${blocked}`)
-  }, 30_000)
+    fs.rmSync(blocked, { recursive: true })
+    const below = path.join(b.project, '.claude', 'skills', 'sub', 'deep.md')
+    write(below, '---\nname: deep\n---\n')
+    expect(runGit(['add', '-f', '.claude/skills/sub/deep.md'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    fs.rmSync(path.dirname(below), { recursive: true })
+    fs.writeFileSync(path.dirname(below), 'a file where the folder was')
+    resetHiddenRuleCache()
+    expect(check(b)).toBeNull()
+  }, 120_000)
 
   it('a skill tree too large to finish checking counts as hidden', () => {
     const b = box('huge')
@@ -346,13 +408,13 @@ describe('primeProcessReason', () => {
     const pid = fakeClaude(['--resume', 'abc'])
     await new Promise((resolve) => setTimeout(resolve, 300))
     const env = { CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_PID: pid, CLAUDE_CODE_SESSION_ID: 'prime' }
+    const b = box('prime')
     await primeProcessReason(env)
     const child = idle.find((c) => String(c.pid) === pid) as ChildProcess
     await new Promise((resolve) => {
       child.once('exit', resolve)
       child.kill()
     })
-    const b = box('prime')
     expect(hiddenRuleSource(b.project, b.project, env, b.helpers)).toBeNull()
     resetHiddenRuleCache()
     expect(hiddenRuleSource(b.project, b.project, env, b.helpers)).toBe('claude command line unreadable')

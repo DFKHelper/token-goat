@@ -36,6 +36,10 @@ The permanent defense is architectural, not per-language: every parsed symbol re
 
 If you add a language extractor, you do not need a new fixture — the choke point bounds you by construction. If you touch `writeParseResult`, `boundSymbolBody`, or `resolveBody`, assume you are touching this invariant.
 
+## Linked worktrees that share `node_modules`
+
+If a linked worktree's `node_modules` or `vscode-extension/node_modules` is a junction or symlink into another checkout, delete that link (`[System.IO.Directory]::Delete(path, $false)` in PowerShell) before `git worktree remove`: git follows the link and empties the other checkout's `node_modules`, which then looks like an empty directory from every worktree that links to it.
+
 ## Git Bash / MSYS path mangling
 
 Git Bash (the shell that ships with Git for Windows) rewrites POSIX-looking paths that start with `/` into Windows paths, so a call like `gh api /repos/DFKHelper/token-goat/...` becomes `gh api C:/Program Files/Git/repos/DFKHelper/...` and fails with `invalid API endpoint`. Two ways around it:

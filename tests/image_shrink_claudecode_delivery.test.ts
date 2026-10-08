@@ -14,7 +14,7 @@ import { summarize } from '../src/stats.js'
 /** Claude Code's documented per-field cap on `additionalContext`. */
 const CLAUDE_CODE_CONTEXT_CAP = 10_000
 
-const ENV_KEYS = ['TOKEN_GOAT_HARNESS_OVERRIDE', 'TOKEN_GOAT_OFFLINE', 'TOKEN_GOAT_OCR_ENABLED', 'TEMP', 'TMP', 'TMPDIR'] as const
+const ENV_KEYS = ['TOKEN_GOAT_HARNESS_OVERRIDE', 'TOKEN_GOAT_OFFLINE', 'TOKEN_GOAT_OCR_ENABLED', 'TEMP', 'TMP', 'TMPDIR', 'CLAUDE_CODE_ENTRYPOINT'] as const
 const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
 const savedCwd = process.cwd()
 
@@ -59,6 +59,8 @@ function shrinkRow(): { events: number; bytes: number } {
 
 async function claudeCodeRead(filePath: string, toolUseId: string): Promise<{ wire: string; parsed: Record<string, unknown> }> {
   process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'claudecode'
+  // A host that passes its own flags where token-goat cannot see them (the accepted limit in docs/security.md); a terminal session would need a readable claude process, which a shrink test has no use for.
+  process.env['CLAUDE_CODE_ENTRYPOINT'] = 'claude-vscode'
   // OCR declines before spawning tesseract, so no language data is fetched; noise has no text anyway.
   process.env['TOKEN_GOAT_OFFLINE'] = '1'
   for (const k of ['TEMP', 'TMP', 'TMPDIR']) process.env[k] = shrinkTemp

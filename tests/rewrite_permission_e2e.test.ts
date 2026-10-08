@@ -10,12 +10,18 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { BUNDLE } from './helpers/bundle.js'
 
 let root: string
+let sessionClaude: ChildProcess
 
-beforeAll(() => {
+// FORMAT-DERIVED from claude.exe 2.1.x, which gives its hooks CLAUDE_PID and CLAUDE_CODE_ENTRYPOINT: every hook here is a call from a terminal Claude Code session, so each sandbox names an idle process with no flags as that session (a hook that cannot read a claude command line no longer approves).
+beforeAll(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-perm-e2e-'))
+  fs.writeFileSync(path.join(root, 'session.js'), 'setInterval(() => {}, 1 << 30)\n')
+  sessionClaude = spawn(process.execPath, [path.join(root, 'session.js'), '--resume', 'abc'], { stdio: 'ignore', windowsHide: true })
+  await new Promise((resolve) => setTimeout(resolve, 300))
 })
 
 afterAll(() => {
+  sessionClaude.kill()
   fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -53,6 +59,8 @@ function sandbox(name: string, userSettings?: unknown, projectSettings?: unknown
     TOKEN_GOAT_HARNESS_OVERRIDE: 'claudecode',
     TOKEN_GOAT_OCR_ENABLED: 'false',
     TOKEN_GOAT_OFFLINE: '1',
+    CLAUDE_PID: String(sessionClaude.pid),
+    CLAUDE_CODE_ENTRYPOINT: 'cli',
   }
   delete env['TOKEN_GOAT_BASH_COMPRESS']
   return { home, project, temp, env }

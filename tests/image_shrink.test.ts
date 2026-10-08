@@ -53,6 +53,8 @@ const priorTemp = TEMP_KEYS.map((k) => process.env[k])
 // A rewritten Read of a copy this process wrote is the only delivery that books a saving (deliveryReplacesRead in src/image_shrink.ts), so the booking cases run as Claude Code; the copy goes to a scratch directory rather than the real tmpdir.
 function deliverOnClaudeCode(): void {
   process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'claudecode'
+  // A host that passes its own flags where token-goat cannot see them (the accepted limit in docs/security.md); a terminal session would need a readable claude process, which a shrink test has no use for.
+  process.env['CLAUDE_CODE_ENTRYPOINT'] = 'claude-vscode'
   const copies = fs.mkdtempSync(path.join(TMP, 'copies-'))
   for (const k of TEMP_KEYS) process.env[k] = copies
 }
@@ -101,6 +103,7 @@ afterAll(() => {
 
 // This suite predates OCR and asserts on the pixel-shrink path specifically (data URLs, jpeg_quality wiring, etc). Forcing tesseract.js "unavailable" keeps every existing assertion here exercising exactly the path it always has -- OCR's own success/fallback behavior gets its dedicated coverage in image_ocr.test.ts and the OCR-specific cases in this file's own describe block below. Pinned to a harness that takes the shrink as a context payload, so the data URL these cases decode is what the handler returns. Claude Code (the suite-wide default) and VS Code get a rewritten Read path instead: tests/image_shrink_claudecode_delivery.test.ts and tests/image_shrink_saving_follows_delivery.test.ts.
 const priorHarness = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+const priorEntrypoint = process.env['CLAUDE_CODE_ENTRYPOINT']
 beforeEach(() => {
   process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'generic'
   try {
@@ -116,6 +119,8 @@ beforeEach(() => {
 afterEach(() => {
   if (priorHarness === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
   else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = priorHarness
+  if (priorEntrypoint === undefined) delete process.env['CLAUDE_CODE_ENTRYPOINT']
+  else process.env['CLAUDE_CODE_ENTRYPOINT'] = priorEntrypoint
   TEMP_KEYS.forEach((k, i) => {
     const v = priorTemp[i]
     if (v === undefined) delete process.env[k]

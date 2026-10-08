@@ -2569,6 +2569,18 @@ describe('preBashHandler — rg indented def patterns', () => {
   })
 })
 
+// A read-only command is one Claude Code runs without asking, so the hook would approve its rewrite, and it withholds that approval from a terminal session whose claude command line it cannot read; the scrubbed test environment names no claude process, so these tests name a host whose command line is no business of the hook.
+function asHostSession<T>(run: () => T): T {
+  const prev = process.env['CLAUDE_CODE_ENTRYPOINT']
+  process.env['CLAUDE_CODE_ENTRYPOINT'] = 'claude-vscode'
+  try {
+    return run()
+  } finally {
+    if (prev === undefined) delete process.env['CLAUDE_CODE_ENTRYPOINT']
+    else process.env['CLAUDE_CODE_ENTRYPOINT'] = prev
+  }
+}
+
 describe('preBashHandler — directory listing map hint', () => {
   beforeEach(() => {
     clearModuleCaches()
@@ -2663,7 +2675,7 @@ describe('preBashHandler — directory listing map hint', () => {
   })
 
   it('wraps ls without a pipe (LsFilter registered in SHELL_FILE_FILTERS)', () => {
-    const result = preBashHandler(makeBashEvent('ls -la src/'))
+    const result = asHostSession(() => preBashHandler(makeBashEvent('ls -la src/')))
     // LsFilter is now registered; pre-Bash wraps ls for output compression.
     expect(result.hookType).toBe('rewriteInput')
   })
@@ -3527,7 +3539,7 @@ describe('preBashHandler — markdown heading grep hint', () => {
   })
 
   it('wraps grep (RgFilter registered in SHELL_FILE_FILTERS matches grep)', () => {
-    const result = preBashHandler(makeBashEvent('grep -n "^#" script.sh'))
+    const result = asHostSession(() => preBashHandler(makeBashEvent('grep -n "^#" script.sh')))
     // RgFilter now matches grep; pre-Bash wraps it for output compression. The markdown-heading hint no longer fires because wrapping takes precedence.
     expect(result.hookType).toBe('rewriteInput')
   })

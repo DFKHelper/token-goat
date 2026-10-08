@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { decideRewrite, loadCodexRules, loadPermissionSnapshot, permissionNeutralRewrite, resetPermissionSourceCache, snapshotFromDocs, type RewriteRequest, type SettingsDoc } from '../src/rewrite_permission.js'
+import { decideRewrite, loadCodexRules, loadHiddenRuleCheck, loadPermissionSnapshot, permissionNeutralRewrite, resetPermissionSourceCache, snapshotFromDocs, type RewriteRequest, type SettingsDoc } from '../src/rewrite_permission.js'
 import { CAN_JUNCTION } from './helpers/can-symlink.js'
 import { shortNameOf } from './helpers/short-name.js'
 
@@ -26,6 +26,17 @@ function snap(perms: { allow?: string[]; deny?: string[]; ask?: string[] }, role
 }
 
 const NONE = snapshotFromDocs([])
+
+// The tests below decide settings, not command lines: they name a host whose command line the hook does not read, so the strict path an unnamed session takes does not hold every approval back. The tests of that path set the variable themselves.
+let savedEntrypoint: string | undefined
+beforeEach(() => {
+  savedEntrypoint = process.env['CLAUDE_CODE_ENTRYPOINT']
+  process.env['CLAUDE_CODE_ENTRYPOINT'] = 'claude-vscode'
+})
+afterEach(() => {
+  if (savedEntrypoint === undefined) delete process.env['CLAUDE_CODE_ENTRYPOINT']
+  else process.env['CLAUDE_CODE_ENTRYPOINT'] = savedEntrypoint
+})
 
 describe('decideRewrite: shell wrap', () => {
   it.each(MODES)('a matching Bash deny rule keeps the original call in %s mode', (mode) => {
@@ -80,6 +91,52 @@ describe('decideRewrite: shell wrap', () => {
     expect(decideRewrite(NONE, shell('go build ./...', 'bypassPermissions'), hidden)).toBe('skip')
     expect(decideRewrite(snap({ deny: ['Bash(curl:*)'] }), shell('curl https://example.com', 'bypassPermissions'), open)).toBe('skip')
     expect(decideRewrite(snap({ ask: ['Bash(curl *)'] }), shell('curl https://example.com', 'bypassPermissions'), open)).toBe('skip')
+  })
+
+  // HAND-DERIVED: a rule on the claude command line (--disallowedTools, --settings, an unknown flag) is invisible to the settings walk and Claude Code matches it against the wrapper, so any mode that would approve must skip while the command line carries rules or cannot be read; a mode that only rewrites (no allow) is unchanged.
+  const allowGo = snap({ allow: ['Bash(go build *)'] })
+  const lineRules = (): boolean => true
+  const noLineRules = (): boolean => false
+  it.each(['default', 'acceptEdits', 'dontAsk'] as const)('%s mode skips an approval when the claude command line carries rules, and keeps it when it does not', (mode) => {
+    expect(decideRewrite(allowGo, shell('go build ./...', mode), undefined, noLineRules)).toBe('approve')
+    expect(decideRewrite(allowGo, shell('go build ./...', mode), undefined, lineRules)).toBe('skip')
+  })
+
+  it.each(['default', 'acceptEdits'] as const)('%s mode approves a read-only command only while the claude command line carries no rules', (mode) => {
+    expect(decideRewrite(NONE, shell('ls -la src', mode), undefined, noLineRules)).toBe('approve')
+    expect(decideRewrite(NONE, shell('ls -la src', mode), undefined, lineRules)).toBe('skip')
+  })
+
+  it('a rewrite that carries no decision is not held back by command line rules', () => {
+    expect(decideRewrite(NONE, shell('go build ./...', 'default'), undefined, lineRules)).toBe('rewrite')
+  })
+
+  it('bypassPermissions leaves command line rules to the hidden rule check, which covers them', () => {
+    expect(decideRewrite(NONE, shell('go build ./...', 'bypassPermissions'), () => false, lineRules)).toBe('approve')
+    expect(decideRewrite(NONE, shell('go build ./...', 'bypassPermissions'), () => true, noLineRules)).toBe('skip')
+  })
+
+  it('a harness other than Claude Code has no claude command line to consult', () => {
+    expect(decideRewrite(allowGo, shell('go build ./...', 'default', { harness: 'codex' }), undefined, lineRules)).toBe(decideRewrite(allowGo, shell('go build ./...', 'default', { harness: 'codex' }), undefined, noLineRules))
+  })
+
+  // HAND-DERIVED from the loaded path (commandLineRuleSource: a missing or empty entry point takes the strict path), which the unloaded default must agree with: a payload with no permission_mode and an env with no entry point once approved here and skipped there.
+  it('without the loaded check, only a session naming a host other than the CLI is let through, an unnamed one is held back as the loaded check holds it', () => {
+    const saved = process.env['CLAUDE_CODE_ENTRYPOINT']
+    try {
+      process.env['CLAUDE_CODE_ENTRYPOINT'] = 'cli'
+      expect(decideRewrite(allowGo, shell('go build ./...', 'default'))).toBe('skip')
+      process.env['CLAUDE_CODE_ENTRYPOINT'] = 'claude-vscode'
+      expect(decideRewrite(allowGo, shell('go build ./...', 'default'))).toBe('approve')
+      delete process.env['CLAUDE_CODE_ENTRYPOINT']
+      expect(decideRewrite(allowGo, shell('go build ./...', 'default'))).toBe('skip')
+      expect(decideRewrite(allowGo, shell('go build ./...', undefined))).toBe('skip')
+      process.env['CLAUDE_CODE_ENTRYPOINT'] = ''
+      expect(decideRewrite(allowGo, shell('go build ./...', 'default'))).toBe('skip')
+    } finally {
+      if (saved === undefined) delete process.env['CLAUDE_CODE_ENTRYPOINT']
+      else process.env['CLAUDE_CODE_ENTRYPOINT'] = saved
+    }
   })
 
   it('bypassPermissions skips every rewrite until the hidden rule check is loaded', () => {
@@ -343,6 +400,28 @@ describe('loadPermissionSnapshot and permissionNeutralRewrite read the real sett
     writeJson(path.join(configDir, 'settings.json'), { permissions: { deny: ['Bash(curl:*)'] } })
     expect(permissionNeutralRewrite({ command: wrap('curl https://example.com') }, curl(project))).toBeNull()
   })
+
+  // HAND-DERIVED from the threat: a file the same user can write is a file the agent can write, so a planted policy entry (a deny rule here, stamped now so the old 30-second memory would have believed it) must not decide what the machine registry holds. The registry is asked every time, so the planted file changes nothing, and nothing of the answer is stored beside it.
+  it.runIf(process.platform === 'win32')('a planted policy memory is not read, and no registry answer is stored', async () => {
+    await loadHiddenRuleCheck()
+    const slot = Symbol.for('token-goat.permission-source-filter')
+    const globals = globalThis as unknown as Record<symbol, unknown>
+    const previous = globals[slot]
+    globals[slot] = (source: string): boolean => source.startsWith('registry:') || (typeof previous !== 'function' || (previous as (s: string) => unknown)(source) === true)
+    const dir = path.join(process.env['TOKEN_GOAT_HOME'] as string, 'policy_cache')
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+      for (const key of ['HKLM\\SOFTWARE\\Policies\\ClaudeCode', 'HKCU\\SOFTWARE\\Policies\\ClaudeCode']) {
+        writeJson(path.join(dir, `${key.replace(/\W+/g, '_')}.json`), { key, at: Date.now(), settings: { permissions: { deny: ['Bash(curl:*)'] } } })
+      }
+      const before = fs.readdirSync(dir).sort()
+      expect(permissionNeutralRewrite({ command: wrap('curl https://example.com') }, curl(project))).not.toBeNull()
+      expect(fs.readdirSync(dir).sort()).toEqual(before)
+    } finally {
+      globals[slot] = previous
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }, 60_000)
 
   it('a project deny rule applies from a subdirectory the session moved into', () => {
     writeJson(path.join(project, '.claude', 'settings.json'), { permissions: { deny: ['Bash(curl:*)'] } })

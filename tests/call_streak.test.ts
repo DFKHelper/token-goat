@@ -113,8 +113,10 @@ function emissions(ctx: Ctx, category: string): Array<{ acted_on: number | null;
 
 beforeEach(() => {
   // No clearModuleCaches here: it empties the hook registry that relay.ts's imports filled once, and every handler (the deny, the failure handler, the dedup note) would silently stop running. The wire forms asserted here are Claude Code's; the relay also seeds CLAUDE_CODE_SESSION_ID, which is put back afterwards.
-  for (const key of ['TOKEN_GOAT_HARNESS_OVERRIDE', 'CLAUDE_CODE_SESSION_ID']) savedEnv[key] = process.env[key]
+  for (const key of ['TOKEN_GOAT_HARNESS_OVERRIDE', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_ENTRYPOINT']) savedEnv[key] = process.env[key]
   process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'claudecode'
+  // A host that passes its own flags where token-goat cannot see them (the accepted limit in docs/security.md); a terminal session would need a readable claude process, which a streak test has no use for.
+  process.env['CLAUDE_CODE_ENTRYPOINT'] = 'claude-vscode'
   project = mkdtempSync(join(tmpdir(), 'tg-call-streak-'))
   mkdirSync(join(project, 'src'))
   writeFileSync(join(project, 'src', 'a.ts'), 'export const alpha = 1\n')

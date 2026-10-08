@@ -127,3 +127,8 @@ export function canRunPowerShell(
   }
 }
 
+
+/** The arguments that run a PowerShell command without a profile and without waiting on input. */
+export function powerShellCommandArgs(command: string): string[] {
+  return ['-NoProfile', '-NonInteractive', '-Command', command]
+}
