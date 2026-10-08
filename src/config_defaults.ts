@@ -52,7 +52,8 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
     cache_min_bytes: 512,
     cache_max_file_count: 4096,
     cache_max_bytes: 16 * 1024 * 1024,
-    cache_max_bytes_per_output: 50 * 1024 * 1024,
+    // A quarter of cache_max_bytes: the loader caps the per-output value at the total, so a larger default (it was 50 MiB against a 16 MiB total) was never in effect.
+    cache_max_bytes_per_output: 4 * 1024 * 1024,
     // Measured against the filter test-fixture corpus (424 apply() calls, 298 with bytesSaved > 0): net-of-marker savings (bytesSaved - ~70-79B marker cost) is <= 0 for 130/298 (44%) of "compressed" results and <= 100 for 170/298 (57%), while the real-win half sits at p75=393B / p90=952B net. 100 kills the marker-doesn't-even-pay-for-itself tier without touching genuine wins.
     min_net_savings_bytes: 100,
     // Extends the per-file already-served elision (which only reaches cat/head/tail/sed/awk-shaped reads) to every other Bash command's output -- npm test, git, rg, build runs -- matched against a session-wide served-output list instead of a per-file one. On by default: it goes through the same isRewriteWorthwhile net-benefit gate as every other rewrite here, so it never ships a notice that costs more than the lines it withholds.

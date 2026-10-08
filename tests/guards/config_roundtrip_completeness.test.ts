@@ -28,7 +28,7 @@ describe('config round-trip completeness (every scalar key survives saveConfig -
     }
   })
 
-  // Nudging by one keeps every key inside its own per-key bounds, which is all this can guarantee: a key clamped against a SIBLING can still be rewritten by the loader no matter which direction it moves (bash_compress.cache_max_bytes_per_output defaults ABOVE its own cache_max_bytes ceiling, so every value it can take is clamped). Those keys are listed in CLAMPED_BY_DESIGN with their invariant rather than being papered over by a cleverer perturbation, so the exemption stays visible and gets staleness-checked.
+  // Nudging by one keeps every key inside its own per-key bounds, which is all this can guarantee: a key clamped against a SIBLING can still be rewritten by the loader no matter which direction it moves (bash_compress.cache_max_bytes_per_output used to default above its cache_max_bytes ceiling, so every value it could take was clamped). Those keys are listed in CLAMPED_BY_DESIGN with their invariant rather than being papered over by a cleverer perturbation, so the exemption stays visible and gets staleness-checked.
   function perturb(value: number | boolean): number | boolean {
     if (typeof value === 'boolean') return !value
     if (!Number.isFinite(value)) return value
@@ -62,10 +62,7 @@ describe('config round-trip completeness (every scalar key survives saveConfig -
   }
 
   // Keys the loader deliberately rewrites to satisfy a cross-key invariant, so a perturbed value legitimately does not survive verbatim. Each entry must state the invariant; anything else failing the round-trip is a real dropped key, not a clamp.
-  const CLAMPED_BY_DESIGN: Record<string, string> = {
-    'bash_compress.cache_max_bytes_per_output':
-      'clamped to bash_compress.cache_max_bytes by _buildConfig -- a per-item cap above the whole-directory budget would let pruneBlobs() evict a just-written item',
-  }
+  const CLAMPED_BY_DESIGN: Record<string, string> = {}
 
   it('finds a substantial number of scalar config keys (sanity check that the walk is not silently matching nothing)', () => {
     expect(scalarLeaves(defaultConfig()).length).toBeGreaterThan(30)

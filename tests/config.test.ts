@@ -617,7 +617,13 @@ describe('defaultConfig field spot-checks', () => {
     expect(cfg.bash_compress.enabled).toBe(true)
     expect(cfg.bash_compress.max_lines).toBe(1000)
     expect(cfg.bash_compress.cache_max_bytes).toBe(16 * 1024 * 1024)
-    expect(cfg.bash_compress.cache_max_bytes_per_output).toBe(50 * 1024 * 1024)
+    expect(cfg.bash_compress.cache_max_bytes_per_output).toBe(4 * 1024 * 1024)
+  })
+
+  // The loader caps the per-output limit at the total, so a default above the total is a value nobody ever gets.
+  it('the per-output cache default is one the loader leaves in effect', () => {
+    const d = defaultConfig().bash_compress
+    expect(d.cache_max_bytes_per_output).toBeLessThanOrEqual(d.cache_max_bytes)
   })
 
   it('SkillPreservationConfig defaults', () => {

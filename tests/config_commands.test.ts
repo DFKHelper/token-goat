@@ -1224,6 +1224,19 @@ describe('cmdConfig validate', () => {
       expect(parsed.findings).toEqual([{ kind: 'value_ignored', key: 'overflow_guard.max_tokens', suggestion: '500 is outside the allowed range 1000-1000000; in effect: 5000' }])
     })
 
+    // HAND-DERIVED: 20 MiB per output against the default 16 MiB total; the loader caps the per-output value at the total.
+    it('reports a per-output cache limit above the total as capped by it', () => {
+      fs.writeFileSync(_testConfigPath, '[bash_compress]\ncache_max_bytes_per_output = 20971520\n', 'utf8')
+      invalidateConfigCache()
+      expect(loadConfig().bash_compress.cache_max_bytes_per_output).toBe(16 * 1024 * 1024)
+      cmdConfig({ action: 'validate', json: true })
+      const parsed = JSON.parse(captured()) as { findings: Array<{ kind: string; key: string; suggestion?: string }> }
+      expect(parsed.findings).toHaveLength(1)
+      expect(parsed.findings[0]?.kind).toBe('value_ignored')
+      expect(parsed.findings[0]?.key).toBe('bash_compress.cache_max_bytes_per_output')
+      expect(parsed.findings[0]?.suggestion).toContain('above bash_compress.cache_max_bytes, which caps it')
+    })
+
     it('names a value of the wrong type', () => {
       fs.writeFileSync(_testConfigPath, '[overflow_guard]\nmax_tokens = "lots"\n', 'utf8')
       invalidateConfigCache()
