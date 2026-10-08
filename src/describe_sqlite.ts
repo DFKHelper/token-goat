@@ -32,7 +32,7 @@ export async function describeSqliteFile(target: string, absPath: string, table:
           lines.push(`| \`${displaySafeText(col.name)}\` | \`${col.type}\` | ${col.notNull ? 'NO' : 'YES'} | ${col.defaultValue ?? 'NULL'} | ${col.primaryKey ? 'YES' : 'NO'} |`)
         }
         // A virtual table whose module is not loaded has no columns to list: the CREATE statement is its schema.
-        if (found.createSql !== undefined) lines.push('', `Module ${found.module ?? '?'} is not loaded here, so columns are not available. Declared as:`, found.createSql)
+        if (found.createSql !== undefined) lines.push('', `Module ${displaySafeText(found.module ?? '?')} is not loaded here, so columns are not available. Declared as:`, displaySafeText(found.createSql))
         return { exitCode: 0, text: capAndFence(lines.join('\n')) }
       }
       if (json === true) {

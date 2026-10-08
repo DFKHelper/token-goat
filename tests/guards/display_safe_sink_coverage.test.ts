@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 
 import { pinnedPopulation } from './population.js'
 import { stripComments } from './reachability.js'
+import { assignedFrom, rawBuilders, sinkArguments } from './sink_scan.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
@@ -124,6 +125,8 @@ const TRUSTED_RECEIVERS: ReadonlySet<string> = new Set([
   'Array',
   'Date',
   'console',
+  // A HintTarget from hintTarget(): it drops every name displaySafeText would rewrite, so what is left prints as written (hooks_bash.ts offers it to `bash-output --section`).
+  'curlHeading',
 ])
 
 /** A fresh matcher each call: a `/g` regex carries lastIndex, and a shared one silently skips hits. */
@@ -154,6 +157,8 @@ const SINKS: readonly string[] = [
 /** The only things that make an interpolated value safe to speak in token-goat's voice. `renderValue(` earns its place by being a one-line wrapper whose whole body is `displaySafeText(JSON.stringify(v))`; if that ever stops being true, this entry is wrong. */
 const NEUTRALIZERS: readonly string[] = [
   'displaySafeText(',
+  // `values.map(displaySafeText)` hands the escaper over as a callback, so the call paren the entry above looks for never appears.
+  'map(displaySafeText)',
   'displaySafePath(',
   'renderValue(',
   // The `--json` counterpart: it walks the value and neutralizes the leaf strings and keys BEFORE serializing, so the escape lands inside a JSON string where it survives a round-trip intact. Escaping the serialized text instead would corrupt the document, which is why the rule is stated as "serialize through this helper" rather than "escape the output of JSON.stringify".
@@ -264,6 +269,18 @@ const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
 /** Sites where the matched value is token-goat's OWN vocabulary rather than anything the project supplied, so there is nothing to neutralize. This is a separate map from ESCAPING_NOT_OWED on purpose. That map says "untrusted, but handled another way"; this one says "not untrusted in the first place". Collapsing them would let the weaker claim borrow the stronger one's reason, which is exactly how a false exemption reads as a decision somebody made. The bar for an entry here is that the value is a literal in token-goat's own source or an enum it defines, and that a reader can confirm it without leaving the file. */
 const NOT_PROJECT_TEXT: ReadonlyMap<string, string> = new Map([
   [
+    'read_outline.ts:kindStr was assigned from sym.kind and reaches a sink',
+    "token-goat's own kind vocabulary: sym.kind is one of the fixed kind strings the language adapters " +
+      'assign (function, class, method, interface and siblings), never text read from the file. ' +
+      'kindStr is only that word padded to a column.',
+  ],
+  [
+    'session_store_schema.ts:cols was assigned from c.name and reaches a sink',
+    "token-goat's own column names: SESSION_STORE_TABLES is a constant table declared in this " +
+      'file, so c.name is a literal written in token-goat source and no session database, ' +
+      'project file or config value can change what it says.',
+  ],
+  [
     'cli_install.ts:removal.label',
     "token-goat's own integration names ('Codex CLI integration', 'pi extension' and siblings), " +
       'string literals in the `removals` array declared a few lines above the print in this same ' +
@@ -350,6 +367,36 @@ const NOT_PROJECT_TEXT: ReadonlyMap<string, string> = new Map([
 
 /** Matches that are not an output sink at all, or not text. Kept apart from both maps above so that a false positive can never be mistaken for a security decision. An entry here is a statement about the SCAN being wrong, not about the value being safe, and it is the one category whose growth means this guard needs sharpening rather than the code needing a fix. */
 const NOT_AN_OUTPUT_SINK: ReadonlyMap<string, string> = new Map([
+  [
+    'languages/salesforce_metadata.ts:block.text',
+    'not an output sink: `emit` in this file is a module-local function that pushes a symbol ' +
+      'onto the indexer result array (declared as `function emit(symbols, seen, symbol)`). ' +
+      'It shares its name with the report writer the scan watches and prints nothing.',
+  ],
+  [
+    'languages/salesforce_metadata.ts:target.text',
+    'not an output sink: `emit` in this file is a module-local function that pushes a symbol ' +
+      'onto the indexer result array, and the name it is handed is stored as a symbol name ' +
+      'that the read commands escape when they print it. Nothing here is written out.',
+  ],
+  [
+    'languages/salesforce_metadata.ts:property.name',
+    'not an output sink: `emit` in this file is a module-local function that pushes a symbol ' +
+      'onto the indexer result array, and the name it is handed is stored as a symbol name ' +
+      'that the read commands escape when they print it. Nothing here is written out.',
+  ],
+  [
+    'languages/salesforce_metadata.ts:property.text',
+    'not an output sink: `emit` in this file is a module-local function that pushes a symbol ' +
+      'onto the indexer result array, and the name it is handed is stored as a symbol name ' +
+      'that the read commands escape when they print it. Nothing here is written out.',
+  ],
+  [
+    'code_fold.ts:foldDetail() interpolates its string parameter path raw and its result reaches a sink',
+    'not an output sink: foldDetail builds the `detail` column of a stats ledger row, which is ' +
+      'stored and joined on, not spoken. Every command that prints a ledger detail escapes it ' +
+      'first (cache_session_commands.ts prints f.detail through displaySafeText).',
+  ],
   [
     'cli.ts:opts.file',
     'not an output sink: `opts.file` is the --file path handed to readBoundedText as the source ' +
@@ -468,7 +515,7 @@ function enclosingExpression(text: string, idx: number): string {
 }
 
 /** Calls that escape the WHOLE text they are handed, so every interpolation inside their parentheses is covered without its own wrap. Kept apart from NEUTRALIZERS because the scope test there only sees the innermost `${...}`, which never contains the outer call: `emitErr(formatCommandError(\`Could not read: ${opts.file}\`))` is escaped yet read as raw. Each entry is pinned to its escaping body by an assertion further down. */
-const WRAPPING_NEUTRALIZERS: readonly string[] = ['formatCommandError(']
+const WRAPPING_NEUTRALIZERS: readonly string[] = ['formatCommandError(', 'displaySafeText(', 'displaySafePath(', 'pipelineDivergenceNote(']
 
 /** Whether `idx` in `arg` falls inside the parentheses of a WRAPPING_NEUTRALIZERS call on the same line. An unclosed call (one continuing onto the next line) covers nothing, so a multi-line call is flagged rather than trusted. */
 function insideWrappingNeutralizer(arg: string, idx: number): boolean {
@@ -499,56 +546,127 @@ function sinkIndex(line: string, sink: string): number {
   }
 }
 
-/** `file.ts:accessor` for every sink interpolation carrying an accessor with nothing neutralizing it. */
-function unescapedSites(): string[] {
+/** Whether `scope` (the innermost interpolation, or the whole argument) holds a neutralizer or a fence. */
+function covered(scope: string): boolean {
+  return NEUTRALIZERS.some((n) => scope.includes(n)) || FENCES.some((f) => scope.includes(f))
+}
+
+/** What in `arg`, the text a sink is handed, carries project text with nothing neutralizing it: `receiver.property` spellings first, then the UNTRUSTED_CALLS helpers. Labels only; the caller decides which key each becomes. */
+function unescapedIn(arg: string): string[] {
   const out: string[] = []
-  for (const { rel, code } of srcFiles()) {
-    // A one-line variable hop used to defeat this entire scan. `runXmlOutline` wrote `const jsonText = JSON.stringify(summary, null, 2)` and then `emit(jsonText)`: the sink line's argument is a bare identifier with no property access in it, so the matcher below found nothing to check and `xml-outline --json` shipped a forged `[tg] ...` marker verbatim. The assignment is therefore tracked to the sink, which is the smallest dataflow step that makes the rule mean what it says.
+  for (const m of arg.matchAll(propertyRe())) {
+    const receiver = m[1] ?? ''
+    // Only the leaf receiver is allowlisted, so `path.sep` is trusted while a project-derived `entry.path.name` is not quietly trusted by sharing a segment with it.
+    if (TRUSTED_RECEIVERS.has(receiver.slice(receiver.lastIndexOf('.') + 1))) continue
+    // A strict comparison yields a boolean, not the value's text: `emit(x + (opts.grep === undefined ? '\n' : ''))` prints no part of the pattern.
+    if (/^\s*[!=]==/.test(arg.slice((m.index ?? 0) + m[0].length))) continue
+    if (!covered(enclosingExpression(arg, m.index)) && !insideWrappingNeutralizer(arg, m.index)) out.push(`${receiver}.${m[2] ?? ''}`)
+  }
+  // Second matcher, keyed on the CALL name. See UNTRUSTED_CALLS: these helpers return a bare string, so the property scan above cannot see them however the expression is spelled.
+  for (const call of UNTRUSTED_CALLS) {
+    const at = sinkIndex(arg, call)
+    if (at < 0) continue
+    if (!covered(enclosingExpression(arg, at)) && !insideWrappingNeutralizer(arg, at)) out.push(`${call}) returns document bytes`)
+  }
+  return out
+}
+
+/** Whether `name` is interpolated into `arg` as text, outside a neutralizer: inside a `${...}` or as the whole argument, and not as a property (`x.name`), a comparison, a measurement or a ternary condition. A bare mention among call arguments is not counted, since a local named `text` or `row` is an argument far more often than it is the printed sentence. */
+function printsName(arg: string, name: string): boolean {
+  for (const m of arg.matchAll(new RegExp(String.raw`(?<![\w$.])${name.replace(/\$/g, String.raw`\$`)}(?![\w$])`, 'g'))) {
+    const at = m.index ?? 0
+    const after = arg.slice(at + name.length)
+    if (/^\s*([!=]==|\.(?:length|size)\b|\?|:)/.test(after)) continue
+    const interpolated = at >= 2 && arg.slice(0, at).trimEnd().endsWith('${')
+    if (!interpolated && arg.trim() !== name) continue
+    if (covered(enclosingExpression(arg, at)) || insideWrappingNeutralizer(arg, at)) continue
+    return true
+  }
+  return false
+}
+
+/** How many lines before a sink a local may be assigned and still be taken for the value it prints. A local is matched by name across the whole file, so without a bound a `text` assigned in one function would be blamed for every `text` printed in another. */
+const HOP_WINDOW_LINES = 25
+
+interface SinkCall {
+  /** The text the sink is handed: its whole call when that spans lines, else the rest of its line (the form the single-line scan has always judged). */
+  readonly arg: string
+  readonly line: number
+}
+
+function sinkCalls(code: string): SinkCall[] {
+  const out: SinkCall[] = []
+  let offset = 0
+  let line = 0
+  for (const rawLine of code.split('\n')) {
+    line++
+    const sink = SINKS.find((s) => sinkIndex(rawLine, s) >= 0)
+    if (sink !== undefined) {
+      const at = offset + sinkIndex(rawLine, sink)
+      const { text, multiline } = sinkArguments(code, at, sink.length)
+      out.push({ arg: multiline ? text : rawLine.slice(sinkIndex(rawLine, sink) + sink.length), line })
+    }
+    offset += rawLine.length + 1
+  }
+  return out
+}
+
+/** Parameter names that, on a text-building helper, say the caller hands it a path or a symbol. A helper whose string parameter is interpolated raw is only a finding when what it is handed came from the project, and that is known at the call site only when the argument is an accessor; these names stand in for the cases where the argument is a plain local. */
+const PROJECT_PARAM = /^(?:sym(?:bol)?Name|(?:file|path|display)(?:Path|Name|File)?|displayPath|displayFile|path)$/
+
+/** `file.ts:accessor` for every sink interpolation carrying project text with nothing neutralizing it, over the given sources. */
+function scanFiles(files: readonly SrcFile[]): string[] {
+  const out: string[] = []
+  // A helper that returns a sentence with a string parameter spliced in raw. The sink only sees `helper(x)`, so the raw interpolation is invisible at the sink and has to be found at the definition.
+  const builders = new Map<string, { rel: string; param: string }>()
+  for (const { rel, code } of files) {
+    for (const b of rawBuilders(code, covered, enclosingExpression)) builders.set(b.name, { rel, param: b.param })
+  }
+  const reachedBuilders = new Set<string>()
+  for (const { rel, code } of files) {
+    // A one-line variable hop used to defeat this entire scan. `runXmlOutline` wrote `const jsonText = JSON.stringify(summary, null, 2)` and then `emit(jsonText)`: the sink line's argument is a bare identifier with no property access in it, so the matcher below found nothing to check and `xml-outli
     const rawJsonNames = new Set<string>()
     for (const m of code.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)[^=\n]*=[^=\n]*?JSON\.stringify\(/g)) {
       const name = m[1]
       if (name !== undefined) rawJsonNames.add(name)
     }
+    // The same hop for any other project text: a local assigned from an unneutralized accessor, then printed by name.
+    const carriers = assignedFrom(code, (rhs) => unescapedIn(rhs).find((label) => !label.startsWith('JSON.stringify')) ?? null)
 
     // The sibling shape, which reaches no sink in its own file at all: a command helper that returns `{ text: JSON.stringify(payload), code }` and leaves the printing to its caller.
     for (const m of code.matchAll(/\btext:\s*JSON\.stringify\(/g)) {
       if (m.index !== undefined) out.push(`${rel}:{ text: JSON.stringify(...) } returned for printing`)
     }
 
-    for (const rawLine of code.split('\n')) {
-      const sink = SINKS.find((s) => sinkIndex(rawLine, s) >= 0)
-      if (sink === undefined) continue
-      const arg = rawLine.slice(sinkIndex(rawLine, sink) + sink.length)
-      for (const m of arg.matchAll(propertyRe())) {
-        const receiver = m[1] ?? ''
-        // Only the leaf receiver is allowlisted, so `path.sep` is trusted while a project-derived `entry.path.name` is not quietly trusted by sharing a segment with it.
-        if (TRUSTED_RECEIVERS.has(receiver.slice(receiver.lastIndexOf('.') + 1))) continue
-        // A strict comparison yields a boolean, not the value's text: `emit(x + (opts.grep === undefined ? '\n' : ''))` prints no part of the pattern.
-        if (/^\s*[!=]==/.test(arg.slice((m.index ?? 0) + m[0].length))) continue
-        const scope = enclosingExpression(arg, m.index)
-        const safe =
-          NEUTRALIZERS.some((n) => scope.includes(n)) || FENCES.some((f) => scope.includes(f)) || insideWrappingNeutralizer(arg, m.index)
-        if (!safe) out.push(`${rel}:${receiver}.${m[2] ?? ''}`)
-      }
-      // Second matcher, keyed on the CALL name. See UNTRUSTED_CALLS: these helpers return a bare string, so the property scan above cannot see them however the expression is spelled.
-      for (const call of UNTRUSTED_CALLS) {
-        const at = sinkIndex(arg, call)
-        if (at < 0) continue
-        const scope = enclosingExpression(arg, at)
-        const safe =
-          NEUTRALIZERS.some((n) => scope.includes(n)) || FENCES.some((f) => scope.includes(f)) || insideWrappingNeutralizer(arg, at)
-        if (!safe) out.push(`${rel}:${call}) returns document bytes`)
-      }
+    for (const { arg, line } of sinkCalls(code)) {
+      for (const label of unescapedIn(arg)) out.push(`${rel}:${label}`)
       // Third matcher: a name this file assigned from a raw JSON.stringify, now reaching a sink.
       for (const name of rawJsonNames) {
-        if (!new RegExp(String.raw`\b${name}\b`).test(arg)) continue
-        const scope = enclosingExpression(arg, arg.indexOf(name))
-        if (NEUTRALIZERS.some((n) => scope.includes(n)) || FENCES.some((f) => scope.includes(f)) || insideWrappingNeutralizer(arg, arg.indexOf(name))) continue
-        out.push(`${rel}:${name} was built by JSON.stringify and reaches a sink`)
+        if (printsName(arg, name)) out.push(`${rel}:${name} was built by JSON.stringify and reaches a sink`)
+      }
+      for (const { name, via, line: assignedAt } of carriers) {
+        if (line > assignedAt && line - assignedAt <= HOP_WINDOW_LINES && printsName(arg, name)) {
+          out.push(`${rel}:${name} was assigned from ${via} and reaches a sink`)
+        }
+      }
+      for (const [name, b] of builders) {
+        const at = sinkIndex(arg, `${name}(`)
+        if (at < 0 || covered(enclosingExpression(arg, at)) || insideWrappingNeutralizer(arg, at)) continue
+        const close = arg.indexOf(')', at)
+        const handed = close < 0 ? arg.slice(at) : arg.slice(at, close + 1)
+        if (PROJECT_PARAM.test(b.param) || unescapedIn(handed).length > 0 || carriers.some((c) => printsName(handed, c.name))) reachedBuilders.add(name)
       }
     }
   }
+  for (const name of reachedBuilders) {
+    const b = builders.get(name)!
+    out.push(`${b.rel}:${name}() interpolates its string parameter ${b.param} raw and its result reaches a sink`)
+  }
   return [...new Set(out)]
+}
+
+function unescapedSites(): string[] {
+  return scanFiles(srcFiles())
 }
 
 describe('project-supplied text reaches no report sink unescaped', () => {
@@ -697,6 +815,55 @@ describe('project-supplied text reaches no report sink unescaped', () => {
     }
   })
 
+  // HAND-DERIVED: each source below is a minimal program written from the shape it names, not copied from src/. A shape the scan cannot see reads as green, so every one is paired with its escaped twin: the hostile form must be reported and the twin must not, which proves the scan is keyed on the missing neutralizer and not on the shape alone.
+  describe('scanFiles on virtual sources', () => {
+    const scan = (code: string): string[] => scanFiles([{ rel: 'virtual.ts', code }])
+    const cases: ReadonlyArray<readonly [string, string, string]> = [
+      [
+        'a sink call that spans several lines',
+        ['emit(', '  `at ${hit.filePath}`,', ')'].join('\n'),
+        ['emit(', '  `at ${displaySafeText(hit.filePath)}`,', ')'].join('\n'),
+      ],
+      [
+        'a value held in a local and printed by name',
+        ['const where = hit.filePath', 'emit(`at ${where}`)'].join('\n'),
+        ['const where = displaySafeText(hit.filePath)', 'emit(`at ${where}`)'].join('\n'),
+      ],
+      [
+        'a receiver nobody has listed',
+        'emit(`at ${someBrandNewShape.filePath}`)',
+        'emit(`at ${displaySafeText(someBrandNewShape.filePath)}`)',
+      ],
+      [
+        'a helper that splices its string parameter into the sentence',
+        ['function describeHit(path: string): string {', '  return `hit in ${path}`', '}', 'emit(describeHit(label))'].join('\n'),
+        ['function describeHit(path: string): string {', '  return `hit in ${displaySafeText(path)}`', '}', 'emit(describeHit(label))'].join('\n'),
+      ],
+      [
+        'a nested template handed to a wrapping escaper',
+        ['const shown = hit.filePath', 'emit(`at ${shown}::${hit.name}`)'].join('\n'),
+        ['const shown = hit.filePath', 'emit(displaySafeText(`at ${shown}::${hit.name}`))'].join('\n'),
+      ],
+    ]
+    for (const [shape, hostile, twin] of cases) {
+      it(`reports ${shape} and not its escaped twin`, () => {
+        expect(scan(hostile), `${shape}: the hostile form was not reported`).not.toEqual([])
+        expect(scan(twin), `${shape}: the escaped twin was reported`).toEqual([])
+      })
+    }
+
+    it('judges a ternary by its branches and a callback escaper as an escaper', () => {
+      expect(scan(['const tail = isVirtual(hit.filePath) ? SUFFIX : ""', 'emit(`row${tail}`)'].join('\n'))).toEqual([])
+      expect(scan('emit(`all: ${hits.map(displaySafeText).join(", ")}`)')).toEqual([])
+      expect(scan(['const tail = ok ? hit.filePath : ""', 'emit(`row${tail}`)'].join('\n'))).not.toEqual([])
+    })
+
+    it('stops blaming a local once it is further away than the hop window', () => {
+      const far = ['const where = hit.filePath', ...Array.from({ length: HOP_WINDOW_LINES + 2 }, () => '// unrelated'), 'emit(`at ${where}`)'].join('\n')
+      expect(scan(far)).toEqual([])
+    })
+  })
+
   it('bites when an accessor reaches a sink unescaped', () => {
     // The mutation proof. Without it, every assertion above is consistent with a predicate that can never fire at all.
     //
@@ -774,6 +941,12 @@ describe('project-supplied text reaches no report sink unescaped', () => {
     expect(
       /function echoedValue\(value: string\): string \{\s*const safe = displaySafeText\(value\)\s*const quoted = quotedArg\(safe\)\s*return quoted\.includes\(UNQUOTABLE\) \? safe : quoted/.test(all),
       'echoedValue is listed in NEUTRALIZERS as escaping the value it quotes, but its body no longer applies displaySafeText first.',
+    ).toBe(true)
+
+    // pipelineDivergenceNote is listed in WRAPPING_NEUTRALIZERS because it prints the cached command it is handed inside a backtick span, so its body must still escape that preview.
+    expect(
+      /function pipelineDivergenceNote\(cmd: string, entryCommand: string\): string \{[\s\S]{0,400}?displaySafeText\(preview\)/.test(all),
+      'pipelineDivergenceNote is listed in WRAPPING_NEUTRALIZERS as escaping the cached command it prints, but its body no longer applies displaySafeText to the preview. Every hint that names a cached command would now print it raw.',
     ).toBe(true)
 
     // WRAPPING_NEUTRALIZERS exempts every interpolation inside formatCommandError's parentheses, so its body must still escape both the CliError lines and the plain-message branch; a wrapper that stopped escaping would exempt over a hundred error sites while they printed raw project paths.
