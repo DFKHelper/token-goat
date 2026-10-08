@@ -16,8 +16,8 @@ import { projectNotesFor } from './project_memory.js'
 import { fitSections } from './manifest_fit.js'
 import type { FitSection } from './manifest_fit.js'
 
-/** Bound on how long we'll wait for `mem epoch` before giving up -- see {@link buildMemEpochSection}. The launcher is a `.cmd` file on Windows, so each call pays a cmd.exe start: 20 calls to an echo-only one took 93-213 ms with 3 stalls of 729-1043 ms on a loaded machine, and the earlier 800 ms cap dropped the epoch on those. 2000 ms clears the worst stall about twice over and, added to the rest of the hook, still ends inside the 3000 ms the Claude Code shim gives its spawned fallback (src/bridges/shim_common.ts). */
-const MEM_EPOCH_TIMEOUT_MS = 2000
+/** Bound on how long we'll wait for `mem epoch` before giving up -- see {@link buildMemEpochSection}. The launcher is a `.cmd` file on Windows, so each call pays a cmd.exe start: 20 calls to an echo-only one took 93-213 ms with 3 stalls of 729-1043 ms on a loaded machine, and the earlier 800 ms cap dropped the epoch on those. 2000 ms clears the worst stall about twice over and stays a small share of SHIM_FALLBACK_TIMEOUT_MS.claudecode (src/bridges/shim_common.ts), the whole budget the Claude Code shim gives a spawned hook; tests/manifest_mem_epoch_shim.test.ts fails if the two drift apart. */
+export const MEM_EPOCH_TIMEOUT_MS = 2000
 
 /** Cap on read/edit/web rows so a huge session can't blow the token budget. */
 const MAX_ROWS = 40
@@ -304,14 +304,14 @@ function buildSafeToDiscardSection(files: FileEntry[]): FitSection[] {
   return sections
 }
 /** Fold `mem epoch` (token-goat-mem's monotonic counter, when the `mem` binary is on PATH) into the compaction manifest, so a resumed session can tell whether mem's fact store has advanced since this transcript was captured. FINDING (searched for at implementation time): this codebase has no existing tracking of a "current live TGMEM block" anywhere -- no `TGMEM` marker, no in-session summary of facts mem currently holds. `hooks_compact.ts`'s manifest tracks only file reads/edits/web fetches/bash-output caching (see {@link buildManifest}); nothing here shadows mem's own state. Per spec, that gap is reported rather than papered over with a fabricated block-tracking mechanism: this section folds in `mem epoch`'s bare integer alone, with an explicit note that no live TGMEM block is tracked in this session. Must fail open: `mem` may be absent from PATH, may error, or may hang. `mem` is resolved on PATH and launched through `spawnResolvedSync`, because an npm or cargo install leaves a `.cmd` shim on Windows that a bare `spawnSync('mem')` cannot start; the timeout bounds the wait to {@link MEM_EPOCH_TIMEOUT_MS} and any failure -- not on PATH, non-zero exit, timeout kill, unparsable stdout -- silently omits the section. No error is ever surfaced and compaction never blocks or fails because of this. */
-function buildMemEpochSection(): FitSection[] {
+export function buildMemEpochSection(timeoutMs: number = MEM_EPOCH_TIMEOUT_MS): FitSection[] {
   let result: ReturnType<typeof spawnResolvedSync>
   try {
     const resolved = resolveOnPath('mem')
     if (resolved === null) return []
     result = spawnResolvedSync(resolved, ['epoch'], {
       encoding: 'utf-8',
-      timeout: MEM_EPOCH_TIMEOUT_MS,
+      timeout: timeoutMs,
       windowsHide: true,
     })
   } catch {
