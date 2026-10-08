@@ -51,8 +51,13 @@ const XML_NAME_START = 'A-Za-z_:\u00C0-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C\u2
 const XML_NAME_REST = 'A-Za-z_:\u00C0-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uD800-\uDFFF\uF900-\uFDCF\uFDF0-\uFFFD0-9.\u00B7\u0300-\u036F\u203F-\u2040-'
 const XML_NAME = `[${XML_NAME_START}][${XML_NAME_REST}]*`
 
-// The region between a tag name and its closing `>`. A `>` is legal inside a quoted attribute value -- only `<` and `&` are forbidden there -- so a scan that stops at the first `>` ends the start tag in the middle of a value. Quoted spans are consumed whole; the bare-quote alternative is last so an unpaired quote in a malformed document still parses rather than dropping the element silently.
-const XML_ATTR_REGION = `(?:[^>"']|"[^"]*"|'[^']*'|["'])*?`
+// The region between a tag name and its closing `>`. A `>` is legal inside a quoted attribute value -- only `<` and `&` are forbidden there -- so a scan that stops at the first `>` ends the start tag in the middle of a value. Quoted spans are consumed whole; the bare-quote alternative is last so an unpaired quote in a malformed document still parses rather than dropping the element silently. An unpaired quote is consumed bare only when no closing quote of its kind follows, so at every position exactly one alternative applies. The earlier bare-quote alternative `["']` overlapped the paired ones, and a document of unclosed quotes (`<a b="` repeated, no `>`) made the engine try every way of pairing them, doubling the time with each quote. Inside {@link xmlTokenScanText} a `>` always follows a closing quote, so a pair is never a dead end and the bare alternative is reached only by a quote that has no partner: the match is the one the overlapping form settled on.
+export const XML_ATTR_REGION = `(?:[^>"']|"[^"]*"|'[^']*'|"(?![^"]*")|'(?![^']*'))*?`
+
+/** The part of `text` a markup token can occupy: every token ends in `>`, so what follows the last one is never matched, and cutting it off spares each failed token start from scanning to the end of an unterminated document. */
+export function xmlTokenScanText(text: string): string {
+  return text.slice(0, text.lastIndexOf('>') + 1)
+}
 
 // Same rule for a doctype: a SystemLiteral is quoted and may contain `>`, and stopping at the first one let a document hide an element inside one and have it read as the root.
 const XML_DOCTYPE_TOKEN = `<!DOCTYPE(?:[^>"']|"[^"]*"|'[^']*')*>`
@@ -129,12 +134,14 @@ export function parseXmlTree(xmlText: string): {
   const namespaces: Record<string, string> = {}
   let totalElements = 0
 
+  const scanText = xmlTokenScanText(text)
+
   // Match DOCTYPE if present
   const doctypeMatch = new RegExp(
     // eslint-disable-next-line regexp/no-super-linear-backtracking
     `<!DOCTYPE\\s+((?:[^>[\\]"']|"[^"]*"|'[^']*'|\\[[\\s\\S]*?\\])*)\\s*>`,
     'i',
-  ).exec(text)
+  ).exec(scanText)
   if (doctypeMatch) {
     doctype = doctypeMatch[1]?.trim() ?? null
   }
@@ -174,7 +181,7 @@ export function parseXmlTree(xmlText: string): {
   let lastIndex = 0
   let lineScan = 0
 
-  while ((match = tagRegex.exec(text)) !== null) {
+  while ((match = tagRegex.exec(scanText)) !== null) {
     const fullMatch = match[0]!
     const isClosing = match[1] === '/'
     const tagName = match[2]

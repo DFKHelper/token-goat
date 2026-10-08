@@ -6,7 +6,7 @@ import { join } from 'node:path'
 
 import { beforeAll, describe, expect, it } from 'vitest'
 
-import { outlineXml, parseXml, parseXmlTree, queryXml, serializeXmlNode } from '../../src/xml_query.js'
+import { outlineXml, parseXml, parseXmlTree, queryXml, serializeXmlNode, XML_ATTR_REGION, xmlTokenScanText } from '../../src/xml_query.js'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 
@@ -157,7 +157,7 @@ describe('line numbers', () => {
     expect(parseXml('<r>\n<a/>\n<b/>\n</r>').children.map((c) => c.line)).toEqual([2, 3])
   })
 
-  // Rescanning preceding text for every tag was quadratic. Measured by counting the string work the parser does, not by timing it: a wall-clock ratio is inflated by whatever else the machine is running (a busy host read 7.3x for a linear parser), while the count of characters touched is the same on every host. The count covers charCodeAt calls and the length of every slice, substring, split and match input, which is how a line number is derived from the text before a tag; work done inside a single regex is not seen by it.
+  // Rescanning preceding text for every tag was quadratic. Measured by counting the string work the parser does, not by timing it: a wall-clock ratio is inflated by whatever else the machine is running (a busy host read 7.3x for a linear parser), while the count of characters touched is the same on every host. The count covers charCodeAt calls and the length of every slice, substring, split and match input, which is how a line number is derived from the text before a tag. Work done inside a single regex is not seen by the count, so the 'a tag with unpaired quotes' tests below measure growth in time for the shapes that make a pattern backtrack.
   it('does not do quadratically more string work as the document grows', () => {
     const proto = String.prototype as unknown as Record<string, (...args: unknown[]) => unknown>
     let touched = 0
@@ -208,6 +208,92 @@ describe('serialized attribute values', () => {
   it('leaves an ordinary attribute value alone', () => {
     expect(serializeXmlNode(parseXml('<r a="plain value"/>'))).toContain('a="plain value"')
   })
+})
+
+describe('a tag with unpaired quotes', () => {
+  // The region between a tag name and its `>` used to carry a bare-quote alternative that overlapped the paired-quote ones, so a document of unclosed quotes made the engine try every way of pairing them and the time doubled with each quote. The earlier form is kept here as the reference the new one must agree with.
+  const OLD_REGION = `(?:[^>"']|"[^"]*"|'[^']*'|["'])*?`
+  const tagSource = (region: string): string => `<(\\/)?([A-Za-z]+)(${region})(\\/)?>`
+  const tokens = (source: string, text: string): string[] => [...text.matchAll(new RegExp(source, 'g'))].map((m) => JSON.stringify([m.index, m[0], m[1], m[2], m[3], m[4]]))
+
+  it('matches the same tokens as the overlapping form on generated inputs', () => {
+    // A seeded generator over the characters that decide where a tag ends: quotes of both kinds, `>`, `/`, and the pieces of a tag. Short enough that the old form finishes on every one.
+    let state = 12345
+    const next = (): number => {
+      state = (Math.imul(state, 1103515245) + 12345) & 0x7fffffff
+      return state >>> 8
+    }
+    const alphabet = ['<', 'a', 'b', ' ', '"', "'", '>', '/', '=', '>', '"', "'"]
+    let withUnpaired = 0
+    for (let i = 0; i < 20000; i++) {
+      const length = 3 + (next() % 14)
+      let text = ''
+      for (let k = 0; k < length; k++) text += alphabet[next() % alphabet.length]
+      const expected = tokens(tagSource(OLD_REGION), text)
+      const actual = tokens(tagSource(XML_ATTR_REGION), xmlTokenScanText(text))
+      expect(actual, `diverged on ${JSON.stringify(text)}`).toEqual(expected)
+      if ((text.match(/"/g) ?? []).length % 2 === 1 || (text.match(/'/g) ?? []).length % 2 === 1) withUnpaired++
+    }
+    expect(withUnpaired, 'the generator produced too few inputs with an unpaired quote to mean anything').toBeGreaterThan(5000)
+  })
+
+  it('still reads a tag whose quote never closes', () => {
+    expect(parseXml('<r><a b="1>text</a></r>').children[0]?.tag).toBe('a')
+    expect(parseXml("<r><a b='1>text</a></r>").children[0]?.tag).toBe('a')
+  })
+
+  // The shapes that hung or doubled per quote before. Measured as growth, not duration: each size is timed five times interleaved with the other and the minimum kept, since load only ever adds time, and the later size may take at most 3.5x the earlier one for twice the input. The small pair is first because a pattern that is exponential in the number of quotes finishes there in a second and would never finish at the large one; the floor keeps a sub-millisecond baseline from turning timer noise into a ratio.
+  const SHAPES: Record<string, (n: number) => string> = {
+    'unclosed quotes': (n) => '<r>' + '<a b="'.repeat(n),
+    'paired quotes, no >': (n) => '<r><a ' + '"x"'.repeat(n),
+    'lone double quotes': (n) => '<r><a ' + '"'.repeat(n),
+    'attributes, no >': (n) => '<r><a ' + 'b="1" '.repeat(n),
+    'tag starts, no >': (n) => '<r>' + '<a b '.repeat(n),
+    'unterminated comment': (n) => '<r>' + '<!--'.repeat(n),
+    'unterminated CDATA': (n) => '<r>' + '<![CDATA['.repeat(n),
+    'unterminated instruction': (n) => '<r>' + '<?x '.repeat(n),
+    'unterminated doctype': (n) => '<r>' + '<!DOCTYPE a '.repeat(n),
+  }
+  const minOfFive = (small: string, large: string): { a: number; b: number } => {
+    let a = Infinity
+    let b = Infinity
+    for (let rep = 0; rep < 5; rep++) {
+      let t = performance.now()
+      parseXmlTree(small)
+      a = Math.min(a, performance.now() - t)
+      t = performance.now()
+      parseXmlTree(large)
+      b = Math.min(b, performance.now() - t)
+    }
+    return { a, b }
+  }
+
+  // The region on its own, without the cut-off parseXmlTree applies first: that cut-off already keeps these documents away from the pattern, so a parser-level test cannot tell an ambiguous region from an unambiguous one. Exponential in the number of quotes is what is being ruled out, so the pair is small and the bound is the same 3.5.
+  it('has a region that does not slow down exponentially with the number of quotes', () => {
+    const source = tagSource(XML_ATTR_REGION)
+    const time = (n: number): number => {
+      const text = '<a b="'.repeat(n)
+      let best = Infinity
+      for (let rep = 0; rep < 5; rep++) {
+        const t = performance.now()
+        new RegExp(source).exec(text)
+        best = Math.min(best, performance.now() - t)
+      }
+      return best
+    }
+    const small = time(14)
+    const large = time(28)
+    expect(large / Math.max(small, 0.25), `14 quotes took ${small.toFixed(2)} ms, 28 took ${large.toFixed(2)} ms`).toBeLessThan(3.5)
+  })
+
+  for (const [name, build] of Object.entries(SHAPES)) {
+    it(`does not slow down faster than its input grows: ${name}`, () => {
+      for (const [n, label] of [[16, 'small'], [1500, 'large']] as const) {
+        const { a, b } = minOfFive(build(n), build(2 * n))
+        expect(b / Math.max(a, 0.25), `${name}, ${label} pair (${n} then ${2 * n}): ${a.toFixed(2)} ms then ${b.toFixed(2)} ms`).toBeLessThan(3.5)
+      }
+    })
+  }
 })
 
 describe('through the built binary', () => {
