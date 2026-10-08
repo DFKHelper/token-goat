@@ -12,6 +12,12 @@ import { querySymbols } from '../../src/index_reader.js'
 import { drainOnce, pendingEmbeddings } from '../../src/worker.js'
 import { extractLwcTemplate, extractSalesforceMarkup } from '../../src/languages/salesforce_frontend.js'
 import { normalizePath } from '../../src/paths.js'
+import type { SymbolEntry } from '../../src/parser_types.js'
+import { escapeRegExp } from '../../src/util.js'
+import { buildLineIndex, offsetToLine } from '../../src/languages/common.js'
+import { extractHtml, makeTagScanner } from '../../src/languages/html.js'
+import { addFlowElements, directChildText, elementBlocks, extractSalesforceMetadata, propertyElements, rootElement, xmlText } from '../../src/languages/salesforce_metadata.js'
+import { extractTagBlocks, extractVue } from '../../src/languages/sfc_idx.js'
 
 import { runBundle, tgIsolatedEnv } from '../helpers/bundle.js'
 
@@ -191,4 +197,253 @@ describe('critical path: a component with the pathological shape still indexes',
     expect(found.stdout).toContain('realAttr')
     expect(elapsed, `index took ${elapsed.toFixed(0)} ms`).toBeLessThan(10000)
   })
+})
+
+// ---- Family A: the language-file scanners (salesforce_metadata, sfc_idx, html) ----
+// The patterns below are the ones those files used before the hand-written scans, kept verbatim as the reference for the differential fuzz and as the negative control.
+function oldDecode(value: string): string {
+  return value.replace(/&apos;/g, "'").replace(/&quot;/g, '"').replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&')
+}
+
+function oldXmlText(content: string, tag: string): string | null {
+  const re = new RegExp(`<(?:[A-Za-z_][\\w.-]*:)?${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[A-Za-z_][\\w.-]*:)?${tag}\\s*>`, 'i')
+  const match = re.exec(content)
+  if (match?.[1] === undefined) return null
+  return oldDecode(match[1].trim())
+}
+
+function oldDirectChildText(content: string, tag: string): string | null {
+  const candidateRe = new RegExp(`<(?:[A-Za-z_][\\w.-]*:)?${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[A-Za-z_][\\w.-]*:)?${tag}\\s*>`, 'gi')
+  const tagRe = /<(\/?)([A-Za-z_:][\w.:-]*)\b[^>]*?(\/?)>/g
+  for (const cand of content.matchAll(candidateRe)) {
+    const idx = cand.index ?? 0
+    let depth = 0
+    tagRe.lastIndex = 0
+    let t: RegExpExecArray | null
+    while ((t = tagRe.exec(content)) !== null) {
+      if (t.index >= idx) break
+      if (t[3] === '/') continue
+      depth += t[1] === '/' ? -1 : 1
+    }
+    if (depth === 0) return oldDecode((cand[1] ?? '').trim())
+  }
+  return null
+}
+
+function oldRootElement(content: string): string | null {
+  const match = /<(?!\?|!)(?:[A-Za-z_][\w.-]*:)?([A-Za-z_][\w.-]*)\b[^>]*>/.exec(content)
+  if (match === null) return null
+  const root = match[1]
+  if (root === undefined) return null
+  if (match[0].endsWith('/>')) return root
+  const close = new RegExp(`</(?:[A-Za-z_][\\w.-]*:)?${escapeRegExp(root)}\\s*>`, 'i')
+  return close.test(content) ? root : null
+}
+
+function oldElementBlocks(content: string, tag: string): Array<{ inner: string; offset: number; text: string }> {
+  const re = new RegExp(`<(?:[A-Za-z_][\\w.-]*:)?${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[A-Za-z_][\\w.-]*:)?${tag}\\s*>`, 'gi')
+  return [...content.matchAll(re)].map((match) => ({ inner: match[1] ?? '', offset: match.index ?? 0, text: match[0] }))
+}
+
+function oldPropertyElements(content: string): Array<{ name: string; offset: number; text: string }> {
+  const re = /<(?:[A-Za-z_][\w.-]*:)?property\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?property\s*>)/gi
+  const out: Array<{ name: string; offset: number; text: string }> = []
+  for (const match of content.matchAll(re)) {
+    const named = /\bname\s*=\s*(["'])(.*?)\1/i.exec(match[1] ?? '')
+    const name = named?.[2] === undefined ? null : oldDecode(named[2])
+    if (name !== null && name !== '') out.push({ name, offset: match.index ?? 0, text: match[0] })
+  }
+  return out
+}
+
+const FLOW_TAGS = ['actionCalls', 'assignments', 'choices', 'collectionProcessors', 'constants', 'decisions', 'dynamicChoiceSets', 'formulas', 'loops', 'recordCreates', 'recordDeletes', 'recordLookups', 'recordUpdates', 'screens', 'subflows', 'textTemplates', 'transforms', 'variables']
+
+// What addFlowElements emitted before the hand-written scan: one entry per element with a direct-child name, deduped the way emit() dedupes (same name, kind and start line, and the kind is a function of the tag).
+function oldFlowElements(content: string): Array<{ name: string; body: string; lineStart: number; lineEnd: number }> {
+  const re = new RegExp(`<(?:[A-Za-z_][\\w.-]*:)?(${FLOW_TAGS.join('|')})(?:\\s[^>]*)?>\\s*([\\s\\S]*?)\\s*</(?:[A-Za-z_][\\w.-]*:)?\\1\\s*>`, 'g')
+  const lineIndex = buildLineIndex(content)
+  const seen = new Set<string>()
+  const out: Array<{ name: string; body: string; lineStart: number; lineEnd: number }> = []
+  for (const match of content.matchAll(re)) {
+    const name = oldDirectChildText(match[2] ?? '', 'name')
+    if (name === null || name === '') continue
+    const start = match.index ?? 0
+    const lineStart = offsetToLine(lineIndex, start)
+    const lineEnd = offsetToLine(lineIndex, Math.max(start, start + match[0].length - 1))
+    const key = `${name}\0${match[1] ?? ''}\0${lineStart}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ name, body: content.slice(start, start + match[0].length).trimEnd(), lineStart, lineEnd })
+  }
+  return out
+}
+
+const OLD_HTML_TAG_SOURCE = /<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)(?:\s(?:"[^"]*"|'[^']*'|[^'">])*)?>/g.source
+
+type HtmlTagRow = { start: number; end: number; isClose: boolean; name: string; selfClosing: boolean }
+
+function oldHtmlTags(code: string): HtmlTagRow[] {
+  const re = new RegExp(OLD_HTML_TAG_SOURCE, 'g')
+  const out: HtmlTagRow[] = []
+  let m: RegExpExecArray | null
+  while ((m = re.exec(code)) !== null) {
+    out.push({ start: m.index, end: m.index + m[0].length, isClose: m[1] === '/', name: (m[2] ?? '').toLowerCase(), selfClosing: m[0][m[0].length - 2] === '/' })
+  }
+  return out
+}
+
+function newHtmlTags(code: string): HtmlTagRow[] {
+  const next = makeTagScanner(code)
+  const out: HtmlTagRow[] = []
+  let from = 0
+  for (let t = next(from); t !== null; t = next(from)) {
+    out.push({ start: t.start, end: t.end, isClose: t.isClose, name: t.name, selfClosing: t.selfClosing })
+    from = t.end
+  }
+  return out
+}
+
+function oldTagBlocks(content: string, tag: string): Array<{ content: string; matchStart: number; matchEnd: number }> {
+  const re = new RegExp(`<${tag}\\b([^>]*)>([\\s\\S]*?)<\\/${tag}\\s*>`, 'gi')
+  const blocks: Array<{ content: string; matchStart: number; matchEnd: number }> = []
+  for (const m of content.matchAll(re)) {
+    const matchStart = m.index ?? 0
+    const innerStart = matchStart + 1 + tag.length + (m[1] ?? '').length + 1
+    blocks.push({ content: content.slice(innerStart, innerStart + (m[2] ?? '').length), matchStart, matchEnd: matchStart + m[0].length })
+  }
+  return blocks
+}
+
+// A small seeded generator, so a failing case is reproducible from its index alone.
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0
+    let t = a
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+function fuzzStrings(tokens: readonly string[], seed: number, count: number, maxTokens: number): string[] {
+  const rand = mulberry32(seed)
+  const out: string[] = []
+  for (let i = 0; i < count; i++) {
+    const len = 1 + Math.floor(rand() * maxTokens)
+    let s = ''
+    for (let j = 0; j < len; j++) s += tokens[Math.floor(rand() * tokens.length)] as string
+    out.push(s)
+  }
+  return out
+}
+
+describe('differential: the hand-written scans return what the old patterns returned', () => {
+  // Provenance: HAND-DERIVED. The inputs are random sequences of markup fragments from a fixed seed; the expected value is the old pattern's own answer, kept verbatim above, which predates the change.
+  it('xmlText, elementBlocks and rootElement', () => {
+    const tokens = ['<fullName>', '</fullName>', '<fullName a="1">', '<md:fullName>', '</md:fullName >', '<fullName', '<fullNameX>', 'x', ' ', '\n', '<', '>', '/', '&amp;', '<?xml v="1"?>', '<!-- c -->', '<a', '<b:c', ' x="1"', '/>', '</a>', '</c>', '<labels>', '</labels>']
+    for (const s of fuzzStrings(tokens, 1, 3000, 24)) {
+      expect(xmlText(s, 'fullName'), JSON.stringify(s)).toEqual(oldXmlText(s, 'fullName'))
+      expect(elementBlocks(s, 'fullName'), JSON.stringify(s)).toEqual(oldElementBlocks(s, 'fullName'))
+      expect(elementBlocks(s, 'labels'), JSON.stringify(s)).toEqual(oldElementBlocks(s, 'labels'))
+      expect(rootElement(s), JSON.stringify(s)).toEqual(oldRootElement(s))
+    }
+  })
+
+  it('propertyElements, including a self-closing property after one that never closes', () => {
+    const tokens = ['<property', '<property name="p"', ' name="q"', " name='r'", '/>', '>', '</property>', '</md:property >', '<md:property', '<propertyX>', '<property-x name="d">', ' ', '\n', '"', '<', '/', 'x']
+    for (const s of fuzzStrings(tokens, 2, 4000, 22)) {
+      expect(propertyElements(s), JSON.stringify(s)).toEqual(oldPropertyElements(s))
+    }
+  })
+
+  it('directChildText', () => {
+    const tokens = ['<name>', '</name>', '<name a="1">', '<md:name>', '</md:name >', '<b>', '</b>', '<c/>', '<c />', '<d x=">">', '<_e>', '</_e>', '<f.g-h>', '<i-/>', 'x', ' ', '\n', '<', '>', '/', '&lt;']
+    for (const s of fuzzStrings(tokens, 3, 4000, 26)) {
+      expect(directChildText(s, 'name'), JSON.stringify(s)).toEqual(oldDirectChildText(s, 'name'))
+    }
+  })
+
+  it('the Flow elements addFlowElements emits', () => {
+    const tokens = ['<variables>', '</variables>', '<variables a="1">', '<md:variables>', '</md:variables >', '<variables', '<loops>', '</loops>', '<screens>', '</screens>', '<name>n</name>', '<name>m</name>', '<name>', '</name>', '<fields>', '</fields>', '<a/>', ' ', '\n', '<', '>', '/', 'x']
+    for (const s of fuzzStrings(tokens, 4, 3000, 26)) {
+      const emitted: SymbolEntry[] = []
+      addFlowElements(emitted, new Set<string>(), s, 'f.flow-meta.xml', 'F')
+      const got = emitted.map((e) => ({ name: e.name, body: e.body, lineStart: e.lineStart, lineEnd: e.lineEnd }))
+      expect(got, JSON.stringify(s)).toEqual(oldFlowElements(s))
+    }
+  })
+
+  it('extractTagBlocks (the string masker is the identity on input with no quote characters)', () => {
+    const tokens = ['<script', '<script lang=ts', '<Script>', '>', '</script>', '</script >', '</SCRIPT>', '<template>', '</template>', '<scripts>', 'x', ' ', '\n', '<', '/']
+    for (const s of fuzzStrings(tokens, 5, 4000, 22)) {
+      const got = extractTagBlocks(s, buildLineIndex(s), 'script').map((b) => ({ content: b.content, matchStart: b.matchStart, matchEnd: b.matchEnd }))
+      expect(got, JSON.stringify(s)).toEqual(oldTagBlocks(s, 'script'))
+    }
+  })
+
+  it('the html tag grammar: every tag, end and flag, with quotes that pair and quotes that do not', () => {
+    const tokens = ['<a', '<b', '<br', '<A-b:c', '</a>', '</b', '>', ' ', 'x', '"', "'", '/', '=', '\n', '<', 'x="y"', "'z'", '<style>', '</style>', '<a x', '<a "', "<a '", '>>']
+    for (const s of fuzzStrings(tokens, 6, 6000, 30)) {
+      expect(newHtmlTags(s), JSON.stringify(s)).toEqual(oldHtmlTags(s))
+    }
+  })
+})
+
+// Padding between starts, so the quadratic term (each start re-reading the rest) outweighs the linear per-start cost and a quadratic scan lands near 4 rather than 3.
+const PAD = ' '.repeat(60)
+const FLOW_PATH = 'force-app/main/default/flows/F.flow-meta.xml'
+const OBJECT_PATH = 'force-app/main/default/objects/O/O.object-meta.xml'
+const LWC_META_PATH = 'force-app/main/default/lwc/x/x.js-meta.xml'
+
+type Shape = { make: (n: number) => string; run: (text: string) => unknown; n?: number }
+
+const FAMILY_A: Record<string, Shape> = {
+  'flow: <variables> starts with no close': { make: (n) => '<Flow xmlns="x">' + ('<variables>' + PAD).repeat(n) + '</Flow>', run: (s) => extractSalesforceMetadata(s, FLOW_PATH) },
+  // These two call addFlowElements directly: a flow with no closing root tag is rejected by rootElement before it is reached.
+  'flow: <variables a starts with no >': { make: (n) => '<Flow xmlns="x">' + '<variables a'.repeat(n), run: (s) => addFlowElements([], new Set<string>(), s, FLOW_PATH, 'F') },
+  'flow: <variables a starts and one distant >': { make: (n) => '<Flow xmlns="x">' + ('<variables a' + PAD.repeat(10)).repeat(n) + '>', run: (s) => addFlowElements([], new Set<string>(), s, FLOW_PATH, 'F') },
+  'flow: one element holding n nested names': { make: (n) => '<Flow xmlns="x"><variables>' + '<f><name>a</name>'.repeat(n) + '</variables></Flow>', run: (s) => extractSalesforceMetadata(s, FLOW_PATH) },
+  'object: <a starts with no >': { make: (n) => '<a'.repeat(n), run: (s) => extractSalesforceMetadata(s, OBJECT_PATH) },
+  'object: <fields> starts with no close': { make: (n) => '<CustomObject xmlns="x">' + ('<fields>' + PAD).repeat(n) + '</CustomObject>', run: (s) => extractSalesforceMetadata(s, OBJECT_PATH) },
+  'object: <fullName> starts with no close': { make: (n) => '<CustomObject xmlns="x">' + ('<fullName>' + PAD).repeat(n) + '</CustomObject>', run: (s) => extractSalesforceMetadata(s, OBJECT_PATH) },
+  'lwc meta: <property> starts with no close, then a self-closing one': {
+    make: (n) => '<LightningComponentBundle xmlns="x"><targetConfigs>' + ('<property name="p">' + PAD).repeat(n) + '<property name="z"/></targetConfigs></LightningComponentBundle>',
+    run: (s) => extractSalesforceMetadata(s, LWC_META_PATH),
+  },
+  'vue: <script starts with no close': { make: (n) => '<script lang="ts">'.repeat(n), run: (s) => extractVue(s, 'a.vue') },
+  'vue: <script a starts with no >': { make: (n) => '<script a'.repeat(n), run: (s) => extractVue(s, 'a.vue') },
+  'html: <a x starts with no >': { make: (n) => '<a x'.repeat(n), run: (s) => extractHtml(s, 'a.html') },
+  'html: <a "x starts with an unpaired quote': { make: (n) => '<a "x'.repeat(n), run: (s) => extractHtml(s, 'a.html') },
+  "html: <a 'x starts with an unpaired quote": { make: (n) => "<a 'x".repeat(n), run: (s) => extractHtml(s, 'a.html') },
+  'html: <a x=" starts then one >': { make: (n) => '<a x="'.repeat(n) + '>', run: (s) => extractHtml(s, 'a.html') },
+  'html: <a "x\' mixed quotes': { make: (n) => '<a "x\''.repeat(n), run: (s) => extractHtml(s, 'a.html') },
+  'html: <style> starts with no close': { make: (n) => '<style>'.repeat(n), run: (s) => extractHtml(s, 'a.html') },
+}
+
+describe('the language-file scanners grow linearly on malformed markup', () => {
+  for (const [label, { make, run }] of Object.entries(FAMILY_A)) {
+    it(label, () => {
+      const canary = growth(make, run, 300)
+      expect(canary.ratio, `canary n=300 -> 600: ${canary.small.toFixed(2)} ms -> ${canary.large.toFixed(2)} ms`).toBeLessThan(BOUND * 1.5)
+      const g = growth(make, run, 3000)
+      expect(g.ratio, `n=3000 -> 6000: ${g.small.toFixed(2)} ms -> ${g.large.toFixed(2)} ms`).toBeLessThan(BOUND)
+    })
+  }
+
+  // Negative control: each old pattern is flagged by the same measurement on the shape that breaks it, so the bound above is shown able to fail.
+  const OLD: Record<string, Shape> = {
+    'old rootElement on <a starts': { make: (n) => '<a'.repeat(n), run: oldRootElement },
+    'old xmlText on <fullName starts': { make: (n) => ('<fullName>' + PAD).repeat(n), run: (s) => oldXmlText(s, 'fullName') },
+    'old propertyElements on <property> starts': { make: (n) => ('<property name="p">' + PAD).repeat(n), run: oldPropertyElements },
+    'old directChildText on n nested names': { make: (n) => '<f><name>a</name>'.repeat(n), run: (s) => oldDirectChildText(s, 'name'), n: 1000 },
+    'old html tag grammar on <a x starts': { make: (n) => '<a x'.repeat(n), run: oldHtmlTags },
+    'old tag-block pattern on <script starts': { make: (n) => '<script a'.repeat(n), run: (s) => oldTagBlocks(s, 'script') },
+  }
+  for (const [label, { make, run, n = 2000 }] of Object.entries(OLD)) {
+    it(`negative control: ${label} fails the bound`, () => {
+      const g = growth(make, run, n)
+      expect(g.ratio, `old pattern n=${n} -> ${2 * n}: ${g.small.toFixed(2)} ms -> ${g.large.toFixed(2)} ms`).toBeGreaterThan(BOUND)
+    })
+  }
 })

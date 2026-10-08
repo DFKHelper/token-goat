@@ -242,6 +242,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/languages/liquid.ts`](src/languages/liquid.ts) | Liquid template extractor (`extractLiquid`) |
 | [`src/languages/lua.ts`](src/languages/lua.ts) | Lua symbol extractor — regex-based (no tree-sitter grammar needed). |
 | [`src/languages/makefile_idx.ts`](src/languages/makefile_idx.ts) | Makefile extractor (`extractMakefile`) |
+| [`src/languages/markup_scan.ts`](src/languages/markup_scan.ts) | Linear replacements for the "tag start, anything up to `>`, lazy body, close tag" regexes that re-read the rest of a file from every start that never closes. |
 | [`src/languages/matlab.ts`](src/languages/matlab.ts) | MATLAB and Octave adapter: functions (nested and local ones too), classdef classes with their properties, methods, events and enumeration members. |
 | [`src/languages/natural.ts`](src/languages/natural.ts) | Software AG Natural adapter: the object itself (named by its file stem, kind by extension), inline `DEFINE SUBROUTINE` blocks, the `DEFINE DATA` block and its level-1 fields (also |
 | [`src/languages/nginx.ts`](src/languages/nginx.ts) | Nginx configuration language extractor and symbol parser. |

@@ -4,6 +4,7 @@ import type { RefEntry, SymbolEntry } from '../parser_types.js'
 import { escapeRegExp } from '../util.js'
 
 import { buildLineIndex, offsetToLine, stripXmlComments, type AdapterSpan, makeSpanSymbol } from './common.js'
+import { findElements, gtFinder } from './markup_scan.js'
 
 const MAX_SYMBOLS = 10_000 // raised from 1000: matches every sibling language adapter's cap, see makeSymbolEmitter's own comment in common.ts for the measurement; a large org's CustomLabels.labels-meta.xml or a complex Flow can hold well over 1000 entries
 const MAX_REFS = 10_000 // raised from 1000: see MAX_SYMBOLS above
@@ -29,15 +30,21 @@ const FLOW_TAG_KIND: Readonly<Record<string, string>> = {
   variables: 'sf_flow_variable',
 }
 
-function xmlText(content: string, tag: string): string | null {
+export function xmlText(content: string, tag: string): string | null {
   // XML 1.0 section 3.1 spells an end tag as `'</' Name S? '>'`, so whitespace before the `>` is legal: without the `\s*` a `</fullName >` never closes here and the lazy body runs on into the NEXT element's close tag, swallowing it.
-  const re = new RegExp(
-    `<(?:[A-Za-z_][\\w.-]*:)?${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[A-Za-z_][\\w.-]*:)?${tag}\\s*>`,
-    'i',
-  )
-  const match = re.exec(content)
-  if (match?.[1] === undefined) return null
-  return decodeXml(match[1].trim())
+  const first = findElements(content, tagOpenRe(tag, 'gi'), tagCloseRe(tag, 'gi'), 1)[0]
+  if (first === undefined) return null
+  return decodeXml(first.body.trim())
+}
+
+/** The open tag `<[prefix:]tag` up to a following whitespace or `>`, which is where the old `(?:\s[^>]*)?>` tail began. */
+function tagOpenRe(tag: string, flags: string): RegExp {
+  return new RegExp(`<(?:[A-Za-z_][\\w.-]*:)?${tag}(?=[\\s>])`, flags)
+}
+
+/** The whole close tag `</[prefix:]tag\s*>`. */
+function tagCloseRe(tag: string, flags: string): RegExp {
+  return new RegExp(`</(?:[A-Za-z_][\\w.-]*:)?${tag}\\s*>`, flags)
 }
 
 // Like xmlText, but only returns a match that is a DIRECT child of `content` (nesting depth 0),
@@ -47,28 +54,37 @@ function xmlText(content: string, tag: string): string | null {
 // <inputParameters> (each named too) - ends up BEFORE the element's own <name> in raw XML text.
 // A first-match-anywhere search like xmlText would then return the wrong, deeply-nested name
 // instead of the flow element's own.
-function directChildText(content: string, tag: string): string | null {
-  const candidateRe = new RegExp(
-    `<(?:[A-Za-z_][\\w.-]*:)?${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[A-Za-z_][\\w.-]*:)?${tag}\\s*>`,
-    'gi',
-  )
+export function directChildText(content: string, tag: string): string | null {
   // The depth walk has to see EVERY element, so its name pattern is the XML 1.0 Name production (leading `_` or `:`, and `.`/`-` inside), not just `[A-Za-z][A-Za-z0-9_]*`: a tag this misses is never counted and the depth reading goes wrong for every candidate after it.
-  const tagRe = /<(\/?)([A-Za-z_:][\w.:-]*)\b[^>]*?(\/?)>/g
-  for (const cand of content.matchAll(candidateRe)) {
-    const idx = cand.index ?? 0
-    let depth = 0
-    tagRe.lastIndex = 0
-    let t: RegExpExecArray | null
-    while ((t = tagRe.exec(content)) !== null) {
-      if (t.index >= idx) break
-      const closing = t[1] === '/'
-      const selfClosing = t[3] === '/'
-      if (selfClosing) continue
-      depth += closing ? -1 : 1
+  // The tags are listed once and the candidates, which come in increasing order, advance one depth pointer through them: re-walking the document from its start for every candidate made a document of n same-named elements cost n squared.
+  let tags: Array<{ start: number; delta: number }> | null = null
+  let next = 0
+  let depth = 0
+  for (const cand of findElements(content, tagOpenRe(tag, 'gi'), tagCloseRe(tag, 'gi'))) {
+    tags ??= listTagDeltas(content)
+    while (next < tags.length && (tags[next] as { start: number }).start < cand.start) {
+      depth += (tags[next] as { delta: number }).delta
+      next++
     }
-    if (depth === 0) return decodeXml((cand[1] ?? '').trim())
+    if (depth === 0) return decodeXml(cand.body.trim())
   }
   return null
+}
+
+/** Every tag of the document in order with its effect on nesting depth: +1 for an open tag, -1 for a close tag, 0 for a self-closing one. A tag runs to the first `>` after its name; a start with no `>` after it ends the list, since no later start has one either. */
+function listTagDeltas(content: string): Array<{ start: number; delta: number }> {
+  const re = /<(\/?)([A-Za-z_:][\w.:-]*)\b/g
+  const out: Array<{ start: number; delta: number }> = []
+  let m: RegExpExecArray | null
+  while ((m = re.exec(content)) !== null) {
+    const nameEnd = m.index + m[0].length
+    const gt = content.indexOf('>', nameEnd)
+    if (gt < 0) break
+    const selfClosing = content[gt - 1] === '/' && gt - 1 >= nameEnd
+    out.push({ start: m.index, delta: selfClosing ? 0 : m[1] === '/' ? -1 : 1 })
+    re.lastIndex = gt + 1
+  }
+  return out
 }
 
 function decodeXml(value: string): string {
@@ -122,13 +138,16 @@ function spanFromOffsets(
   }
 }
 
-function rootElement(content: string): string | null {
-  const match = /<(?!\?|!)(?:[A-Za-z_][\w.-]*:)?([A-Za-z_][\w.-]*)\b[^>]*>/.exec(content)
+export function rootElement(content: string): string | null {
+  // The first start with a `>` after its name is the root, and when the first start has none no later one does: the old `[^>]*>` tail re-read to the end of the document from each of n unclosed `<a` starts.
+  const match = /<(?!\?|!)(?:[A-Za-z_][\w.-]*:)?([A-Za-z_][\w.-]*)\b/.exec(content)
   if (match === null) return null
   const root = match[1]
   if (root === undefined) return null
+  const gt = content.indexOf('>', match.index + match[0].length)
+  if (gt < 0) return null
   // A self-closing root (e.g. `<CustomObjectTranslation xmlns="..."/>`) has no separate close tag to find.
-  if (match[0].endsWith('/>')) return root
+  if (content[gt - 1] === '/') return root
   // `escapeRegExp`, because an XML name may legally contain `.` -- the capture above admits one --
   // and an unescaped one compiles as a wildcard. A root of `Custom.Object` then matched the close
   // tag `</CustomXObject>`, so a document that is not well formed was accepted and indexed. Nothing
@@ -159,16 +178,12 @@ function metadataArtifactName(filePath: string): string {
   return match?.[1] ?? basenameWithout(filePath, '-meta.xml')
 }
 
-function elementBlocks(content: string, tag: string): Array<{ inner: string; offset: number; text: string }> {
+export function elementBlocks(content: string, tag: string): Array<{ inner: string; offset: number; text: string }> {
   // Same XML 1.0 `'</' Name S? '>'` allowance as xmlText: without it one unclosed block merges with the next and both elements collapse into one symbol.
-  const re = new RegExp(
-    `<(?:[A-Za-z_][\\w.-]*:)?${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[A-Za-z_][\\w.-]*:)?${tag}\\s*>`,
-    'gi',
-  )
-  return [...content.matchAll(re)].map((match) => ({
-    inner: match[1] ?? '',
-    offset: match.index ?? 0,
-    text: match[0],
+  return findElements(content, tagOpenRe(tag, 'gi'), tagCloseRe(tag, 'gi')).map((el) => ({
+    inner: el.body,
+    offset: el.start,
+    text: content.slice(el.start, el.end),
   }))
 }
 
@@ -177,13 +192,35 @@ function attributeValue(attributes: string, name: string): string | null {
   return match?.[2] === undefined ? null : decodeXml(match[2])
 }
 
-function propertyElements(content: string): Array<{ name: string; offset: number; text: string }> {
-  const re =
-    /<(?:[A-Za-z_][\w.-]*:)?property\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?property\s*>)/gi
+export function propertyElements(content: string): Array<{ name: string; offset: number; text: string }> {
+  // A start that fails must not end the scan here, unlike the single-tag scanners: a self-closing `<property/>` needs no close tag, so one can still match after a `<property>` that never closes. What a miss does settle is every later non-self-closing start whose `>` is no earlier, since its close search is a part of the one that just failed.
+  const open = /<(?:[A-Za-z_][\w.-]*:)?property\b/gi
+  const close = /<\/(?:[A-Za-z_][\w.-]*:)?property\s*>/gi
+  const nextGt = gtFinder(content)
   const out: Array<{ name: string; offset: number; text: string }> = []
-  for (const match of content.matchAll(re)) {
-    const name = attributeValue(match[1] ?? '', 'name')
-    if (name !== null && name !== '') out.push({ name, offset: match.index ?? 0, text: match[0] })
+  let deadFrom = Infinity
+  let m: RegExpExecArray | null
+  while ((m = open.exec(content)) !== null) {
+    const nameEnd = m.index + m[0].length
+    const gt = nextGt(nameEnd)
+    if (gt < 0) break
+    let end = gt + 1
+    let attrs = content.slice(nameEnd, gt)
+    if (content[gt - 1] === '/' && gt - 1 >= nameEnd) {
+      attrs = content.slice(nameEnd, gt - 1)
+    } else {
+      if (gt >= deadFrom) continue
+      close.lastIndex = gt + 1
+      const c = close.exec(content)
+      if (c === null) {
+        deadFrom = gt
+        continue
+      }
+      end = c.index + c[0].length
+    }
+    const name = attributeValue(attrs, 'name')
+    if (name !== null && name !== '') out.push({ name, offset: m.index, text: content.slice(m.index, end) })
+    open.lastIndex = end
   }
   return out
 }
@@ -226,7 +263,7 @@ function metadataName(filePath: string, content: string, suffix: string): string
   return xmlText(content, 'fullName') ?? basenameWithout(filePath, suffix)
 }
 
-function addFlowElements(
+export function addFlowElements(
   symbols: SymbolEntry[],
   seen: Set<string>,
   content: string,
@@ -237,16 +274,36 @@ function addFlowElements(
   const tagAlternation = Object.keys(FLOW_TAG_KIND).join('|')
   // `\s*>` on the close for the same XML 1.0 reason as xmlText: a `</variables >` that failed to close here merged this flow element with the next one of the same tag, so the second element lost its symbol and the first's span swallowed it.
   // The opening tag carries the same namespace prefix and attribute allowance as the close, and as both sibling matchers (xmlText, elementBlocks) already did. Without them this one required a bare `<variables>`: measured, a flow whose element was written `<variables xsi:type="VariableDef">` or `<md:variables>` indexed the flow itself and not one of its elements, so every `symbol`, `read` and `refs` against those elements answered as if the flow were empty. The backreference is to group 1, which is still the bare tag name, so a prefixed open must be closed by a tag with the same local name -- prefix mismatches are a well-formedness error the indexer does not need to adjudicate.
-  const re = new RegExp(`<(?:[A-Za-z_][\\w.-]*:)?(${tagAlternation})(?:\\s[^>]*)?>\\s*([\\s\\S]*?)\\s*</(?:[A-Za-z_][\\w.-]*:)?\\1\\s*>`, 'g')
-
-  for (const match of content.matchAll(re)) {
+  // Scanned by hand rather than by one regex with a lazy body: that body re-read the rest of the file from every element start that never closed. Elements of different tags are independent here, so a missing close only settles later starts of the SAME tag (their close search is a part of the one that failed), and a start with no `>` after it ends the scan for all of them.
+  const open = new RegExp(`<(?:[A-Za-z_][\\w.-]*:)?(${tagAlternation})(?=[\\s>])`, 'g')
+  const closeByTag = new Map<string, RegExp>()
+  const deadFromByTag = new Map<string, number>()
+  const nextGt = gtFinder(content)
+  let m: RegExpExecArray | null
+  while ((m = open.exec(content)) !== null) {
     if (symbols.length >= MAX_SYMBOLS) return
-    const tag = match[1] ?? ''
-    const inner = match[2] ?? ''
+    const tag = m[1] ?? ''
+    const nameEnd = m.index + m[0].length
+    const gt = nextGt(nameEnd)
+    if (gt < 0) break
+    if (gt >= (deadFromByTag.get(tag) ?? Infinity)) continue
+    let close = closeByTag.get(tag)
+    if (close === undefined) {
+      close = tagCloseRe(tag, 'g')
+      closeByTag.set(tag, close)
+    }
+    close.lastIndex = gt + 1
+    const c = close.exec(content)
+    if (c === null) {
+      deadFromByTag.set(tag, gt)
+      continue
+    }
+    const startOffset = m.index
+    const endOffset = c.index + c[0].length
+    open.lastIndex = endOffset
+    const inner = content.slice(gt + 1, c.index).trim()
     const name = directChildText(inner, 'name')
     if (name === null || name === '') continue
-    const startOffset = match.index ?? 0
-    const endOffset = startOffset + match[0].length
     const span = spanFromOffsets(content, lineIndex, startOffset, endOffset)
     const kind = FLOW_TAG_KIND[tag] ?? 'sf_flow_element'
     emit(symbols, seen, makeSpanSymbol(filePath, name, kind, span, flowName))

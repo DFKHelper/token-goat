@@ -61,7 +61,64 @@ const MAX_SYMBOLS = 10_000 // raised from 500: see makeSymbolEmitter's own comme
 const VOID_ELEMENTS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'])
 
 // Matches one open/close/self-closing tag, consuming quoted attribute values as a unit so an embedded `>` inside an attribute (`title="a > b"`) can't end the match early. The attribute section is gated behind a mandatory leading `\s`, so it can never overlap with the preceding tag-name quantifier -- self-closing is read off the raw match text afterward rather than a trailing `(\/?)` capture, which would otherwise be ambiguous with the same attribute section swallowing that `/` first.
-const TAG_RE = /<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)(?:\s(?:"[^"]*"|'[^']*'|[^'">])*)?>/g
+// It is no longer run as a regex: a start whose attribute section never reaches its `>` (an unpaired quote, or the end of the text) read on to the end of the file and then the engine tried the next `<`, so n such starts cost n squared. {@link makeTagScanner} walks the same grammar by hand and remembers where a failed walk was outside a quote.
+export interface HtmlTag {
+  readonly start: number
+  readonly end: number
+  readonly isClose: boolean
+  readonly name: string
+  readonly selfClosing: boolean
+}
+
+/**
+ * A scanner over `code` that returns the next tag at or after `from` under the grammar `<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)(?:\s(?:"[^"]*"|'[^']*'|[^'">])*)?>`, or null when none remains; call it again with the previous tag's `end` for the one after.
+ * The attribute section is deterministic: outside a quote it runs to the first `>`, and a quote must be paired with the next like quote, else the start fails. Two starts whose walks are outside a quote at the same offset therefore end alike, so when a walk fails, every offset it was outside a quote at is recorded as dead and a later walk that reaches one of them fails at once. A later start inside one of the failed walk's quoted stretches is not cut, because its own walk begins outside a quote and can still succeed.
+ */
+export function makeTagScanner(code: string): (from: number) => HtmlTag | null {
+  const head = /<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)/g
+  const stop = /[>"']/g
+  let dead: Uint8Array | null = null
+  return (from) => {
+    head.lastIndex = from
+    let m: RegExpExecArray | null
+    while ((m = head.exec(code)) !== null) {
+      const nameEnd = m.index + m[0].length
+      let end = -1
+      if (code[nameEnd] === '>') {
+        end = nameEnd + 1
+      } else if (nameEnd < code.length && /\s/.test(code[nameEnd] as string)) {
+        let i = nameEnd + 1
+        const outside: number[] = []
+        for (;;) {
+          if (dead !== null && dead[i] === 1) break
+          stop.lastIndex = i
+          const h = stop.exec(code)
+          if (h === null) {
+            outside.push(i, code.length + 1)
+            break
+          }
+          if (h[0] === '>') {
+            end = h.index + 1
+            break
+          }
+          outside.push(i, h.index + 1)
+          const closeQuote = code.indexOf(h[0], h.index + 1)
+          if (closeQuote < 0) break
+          i = closeQuote + 1
+        }
+        if (end < 0 && outside.length > 0) {
+          dead ??= new Uint8Array(code.length + 2)
+          for (let k = 0; k < outside.length; k += 2) dead.fill(1, outside[k], outside[k + 1])
+        }
+      }
+      if (end >= 0) {
+        return { start: m.index, end, isClose: m[1] === '/', name: (m[2] ?? '').toLowerCase(), selfClosing: code[end - 2] === '/' }
+      }
+      head.lastIndex = m.index + 1
+    }
+    return null
+  }
+}
 
 // Total bytes of `code` a single extractHtml call will spend computing element spans, bounding the cost on a pathological file (deeply malformed or enormous markup) the same way MAX_SYMBOLS bounds the id/class loops below.
 const ELEMENT_SPAN_SCAN_CAP = 2_000_000
@@ -73,14 +130,16 @@ function buildElementSpans(code: string): { spans: Map<number, number>; openTagR
   const spans = new Map<number, number>()
   const openTagRanges: { start: number; end: number }[] = []
   const stack: { name: string; start: number }[] = []
-  TAG_RE.lastIndex = 0
-  let m: RegExpExecArray | null
-  while ((m = TAG_RE.exec(code)) !== null) {
-    if (m.index > ELEMENT_SPAN_SCAN_CAP) break
-    const isClose = m[1] === '/'
-    const name = (m[2] ?? '').toLowerCase()
-    const selfClosing = m[0][m[0].length - 2] === '/'
-    const tagEnd = m.index + m[0].length
+  const nextTag = makeTagScanner(code)
+  const styleClose = /<\/style\s*>/gi
+  let styleCloseMissing = false
+  let from = 0
+  let m: HtmlTag | null
+  while ((m = nextTag(from)) !== null) {
+    if (m.start > ELEMENT_SPAN_SCAN_CAP) break
+    const { isClose, name, selfClosing } = m
+    const tagEnd = m.end
+    from = tagEnd
     if (isClose) {
       for (let i = stack.length - 1; i >= 0; i--) {
         if (stack[i]!.name === name) {
@@ -91,14 +150,18 @@ function buildElementSpans(code: string): { spans: Map<number, number>; openTagR
       }
       continue
     }
-    openTagRanges.push({ start: m.index, end: tagEnd })
+    openTagRanges.push({ start: m.start, end: tagEnd })
     if (selfClosing || VOID_ELEMENTS.has(name)) continue
     if (name === 'style') {
-      const closeMatch = /<\/style\s*>/gi.exec(code.slice(tagEnd))
-      if (closeMatch !== null) TAG_RE.lastIndex = tagEnd + closeMatch.index + closeMatch[0].length
+      // One miss settles every later `<style`: a close tag is searched for from a later offset, so none is found either. Copying `code.slice(tagEnd)` per style tag was a second quadratic.
+      if (styleCloseMissing) continue
+      styleClose.lastIndex = tagEnd
+      const closeMatch = styleClose.exec(code)
+      if (closeMatch === null) styleCloseMissing = true
+      else from = closeMatch.index + closeMatch[0].length
       continue
     }
-    stack.push({ name, start: m.index })
+    stack.push({ name, start: m.start })
   }
   return { spans, openTagRanges }
 }

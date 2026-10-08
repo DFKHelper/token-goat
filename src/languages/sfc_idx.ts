@@ -53,6 +53,8 @@ import {
 } from './common.js'
 import { pushAll, countContentLines } from '../util.js'
 
+import { findElements } from './markup_scan.js'
+
 export interface SfcResult {
   readonly symbols: SymbolEntry[]
   readonly refs: RefEntry[]
@@ -223,22 +225,18 @@ interface TagBlock {
  * limitation here. `lineIndex` must be built from the same `content` this runs against so
  * `contentStartLine` lines up.
  */
-function extractTagBlocks(content: string, lineIndex: readonly number[], tag: string): TagBlock[] {
+export function extractTagBlocks(content: string, lineIndex: readonly number[], tag: string): TagBlock[] {
   // Match against a string-blanked view so a literal closing tag inside a JS/TS string or template literal in the block's own body (e.g. `document.write('</script>')`) cannot end the match early; blanking preserves length and newlines, so every offset below still applies unchanged to the real `content`.
   const masked = blankJsStringLiterals(content)
-  const re = new RegExp(`<${tag}\\b([^>]*)>([\\s\\S]*?)<\\/${tag}\\s*>`, 'gi')
+  // Scanned for a close tag once per block, not by one regex with a lazy body: that body re-read the rest of the file from every open tag that never closed, so a file of n unclosed `<script` starts cost n squared. The scan stops at the first open tag with no close, since no later one has a close either.
   const blocks: TagBlock[] = []
-  for (const m of masked.matchAll(re)) {
-    const matchStart = m.index ?? 0
-    const attrs = m[1] ?? ''
-    const innerLen = (m[2] ?? '').length
-    const openTagLen = 1 + tag.length + attrs.length + 1
-    const innerStart = matchStart + openTagLen
+  for (const el of findElements(masked, new RegExp(`<${tag}\\b`, 'gi'), new RegExp(`<\\/${tag}\\s*>`, 'gi'))) {
+    const innerStart = el.bodyEnd - el.body.length
     blocks.push({
-      content: content.slice(innerStart, innerStart + innerLen),
+      content: content.slice(innerStart, el.bodyEnd),
       contentStartLine: offsetToLine(lineIndex, innerStart),
-      matchStart,
-      matchEnd: matchStart + m[0].length,
+      matchStart: el.start,
+      matchEnd: el.end,
     })
   }
   return blocks

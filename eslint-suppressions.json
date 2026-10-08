@@ -77,11 +77,6 @@
       "count": 1
     }
   },
-  "src/languages/salesforce_metadata.ts": {
-    "regexp/no-super-linear-backtracking": {
-      "count": 3
-    }
-  },
   "src/languages/scala.ts": {
     "regexp/no-super-linear-backtracking": {
       "count": 1
