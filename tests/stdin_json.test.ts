@@ -1,5 +1,5 @@
 /** `readStdinJson`'s timeout is an IDLE timeout, not a deadline on the whole read. It used to be armed once in the promise constructor and never rescheduled, so it was an absolute deadline: a payload that streamed steadily for longer than the timeout was thrown away mid-delivery even though stdin was never idle. That capped the accepted payload at whatever fits through the pipe in five seconds rather than at MAX_STDIN_BYTES, the 64 MB the module deliberately allows -- and `relay` turns the rejection into an empty payload, so the hook exited 0 with valid `{}` on stdout and read-dedup, image shrinking and the dirty-queue enqueue all silently stopped for that call. */
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { pathToFileURL } from 'node:url'
@@ -63,6 +63,37 @@ describe('readStdinJson on a stream that is slow but never idle', () => {
 
     await expect(readStdinJson(120)).rejects.toThrow(/timed out waiting for stdin/)
   })
+})
+
+describe('readStdinJson before the first byte', () => {
+  it('waits past one idle window for a first chunk that arrives late', async () => {
+    // HAND-DERIVED: the 100 ms idle window elapses twice over before the first chunk; the pre-first-byte window is wider (4x), so a late first delivery from a starved process still parses.
+    const fake = useFakeStdin()
+    const pending = readStdinJson(100)
+    await wait(250)
+    fake.end('{"late":true}')
+    await expect(pending).resolves.toEqual({ late: true })
+  })
+
+  it('gives up on a pipe that stays open and silent, so a hook with no payload does not hang', async () => {
+    // HAND-DERIVED: the parent holds the child's stdin open and writes nothing; the child must reject within its widened first-byte window (4 x 100 ms), far inside the 30 s cap below.
+    const moduleUrl = pathToFileURL(join(process.cwd(), 'src', 'stdin_json.ts')).href
+    const child = [
+      `const { readStdinJson } = await import(${JSON.stringify(moduleUrl)})`,
+      "readStdinJson(100).then(() => console.log('resolved'), (e) => console.log('rejected', e.message))",
+    ].join('\n')
+    const proc = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', child], { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] })
+    let out = ''
+    // The child's own stdin stays open, so it would idle until the cap; the verdict line is the evidence, so stop it as soon as it is printed.
+    proc.stdout.on('data', (d: Buffer) => {
+      out += d.toString()
+      if (out.includes('\n')) proc.kill()
+    })
+    const cap = setTimeout(() => proc.kill(), 30_000)
+    await new Promise((r) => proc.on('close', r))
+    clearTimeout(cap)
+    expect(out.trim()).toMatch(/^rejected .*timed out waiting for stdin/)
+  }, 60_000)
 })
 
 describe('readStdinJson in a process starved past its idle window', () => {

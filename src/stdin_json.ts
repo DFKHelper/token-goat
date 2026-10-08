@@ -3,6 +3,9 @@
 /** Default stdin IDLE timeout: long enough for a piped payload, short enough that a hung upstream never stalls the tool call. Measured between chunks, not from the start of the read -- see readStdinJson. */
 const DEFAULT_STDIN_TIMEOUT_MS = 5000
 
+/** How many idle windows a stdin may stay silent before its FIRST byte; see armIdle in readStdinJson. */
+const FIRST_BYTE_GRACE_FACTOR = 4
+
 /** Absolute ceiling on one stdin read, however busy the stream stays. The idle timeout alone cannot bound total duration: a sender that trickles one byte every four seconds resets it forever. This is the backstop for that, set far above the idle timeout so it is only ever reached by a stream that really is pathological -- a payload arriving steadily takes seconds, not a minute (a 50 MB payload delivered in one write completes in well under a second). */
 const MAX_STDIN_WALL_MS = 60_000
 
@@ -31,14 +34,15 @@ export function readStdinJson(
     }
 
     // A fired timer is not yet proof the sender went quiet: each event-loop turn runs its timers before the poll that delivers I/O, so a process starved of CPU past the window wakes to its own timeout with the payload already in the pipe, and relay then passes `{}` for a hook the harness did send. setImmediate runs after that poll, so a chunk it delivers still counts.
-    const armIdle = (): ReturnType<typeof setTimeout> =>
+    const armIdle = (ms: number = timeoutMs): ReturnType<typeof setTimeout> =>
       setTimeout(() => {
         const seen = totalBytes
         setImmediate(() => {
           if (totalBytes === seen) finish(() => reject(new Error('readStdinJson: timed out waiting for stdin')))
         })
-      }, timeoutMs)
-    let idleTimer = armIdle()
+      }, ms)
+    // Before the first byte the window is FIRST_BYTE_GRACE_FACTOR times wider: a starved process can see its timer fire several loop turns before the pipe's first read completes (measured: a hook whose idle timer fired at 5.3 s with the payload written at spawn, under 50 busy processes), so silence at that point is not yet evidence of a dead sender. A stdin that never delivers still gives up, just later.
+    let idleTimer = armIdle(timeoutMs * FIRST_BYTE_GRACE_FACTOR)
     // Unbounded-duration backstop, never rescheduled -- see MAX_STDIN_WALL_MS.
     const wallTimer = setTimeout(() => {
       finish(() => {
