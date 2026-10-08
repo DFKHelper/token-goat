@@ -4,6 +4,8 @@ import { execFile, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import { powerShellCommandArgs, windowsPowerShellPath } from './windows_powershell.js'
+
 export interface HiddenRuleHelpers {
   readonly configDir: () => string
   readonly managedDirs: () => string[]
@@ -59,7 +61,7 @@ function procCommandLine(pid: string): string | undefined {
 
 /** The command that prints process `pid`'s command line, where /proc cannot be read. */
 function commandLineQuery(pid: string): readonly [string, string[]] {
-  if (process.platform === 'win32') return [path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`]]
+  if (process.platform === 'win32') return [windowsPowerShellPath(), powerShellCommandArgs(`(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`)]
   return ['ps', ['-ww', '-o', 'args=', '-p', pid]]
 }
 
@@ -90,6 +92,7 @@ async function commandLineAsync(pid: string): Promise<string | null> {
   }
 }
 
+/** What identifies the claude process a cached command-line answer was read for: its session, pid and entry point, so a new session (or a pid reused by another) reads the command line afresh. */
 function processKeyOf(env: NodeJS.ProcessEnv): string {
   return `${env['CLAUDE_CODE_SESSION_ID'] ?? ''}:${env['CLAUDE_PID'] ?? ''}:${env['CLAUDE_CODE_ENTRYPOINT'] ?? ''}`
 }
@@ -185,15 +188,15 @@ function stillCurrent(stamps: ReadonlyMap<string, string>): boolean {
   return true
 }
 
-/** The first bytes of a file, or null when it cannot be read. */
-function head(file: string): string | null {
+/** The first bytes of a file, or why there are none: `missing` when there is no such file (or a link to nothing), `unreadable` when it exists but cannot be read. */
+function head(file: string): { readonly text: string } | { readonly failure: 'missing' | 'unreadable' } {
   let fd: number | undefined
   try {
     fd = fs.openSync(file, 'r')
     const buf = Buffer.alloc(FILE_HEAD_BYTES)
-    return buf.subarray(0, fs.readSync(fd, buf, 0, FILE_HEAD_BYTES, 0)).toString('utf8')
-  } catch {
-    return null
+    return { text: buf.subarray(0, fs.readSync(fd, buf, 0, FILE_HEAD_BYTES, 0)).toString('utf8') }
+  } catch (err) {
+    return { failure: (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'unreadable' }
   } finally {
     if (fd !== undefined) fs.closeSync(fd)
   }
@@ -204,11 +207,12 @@ function checkFile(file: string, scan: Scan, place: Place): void {
   const json = lower.endsWith('.json')
   if (!json && !lower.endsWith('.md')) return
   scan.stamps?.set(file, stamp(file))
-  const text = head(file)
-  if (text === null) {
-    scan.reason = `cannot read ${file}`
+  const read = head(file)
+  if ('failure' in read) {
+    scan.reason = read.failure === 'missing' ? `${file} is missing` : `cannot read ${file}`
     return
   }
+  const text = read.text
   const front = json ? undefined : (frontmatter(text) ?? '')
   if (front === undefined ? text.includes('PermissionRequest') : frontmatterAddsRule(front)) scan.reason = `rule source ${file}`
   else if (front !== undefined && place.agents) {

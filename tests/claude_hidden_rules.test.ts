@@ -176,6 +176,24 @@ describe('hiddenRuleSource: rule files', () => {
     expect(check(b)).toContain(path.join('pkg', '.claude', 'skills', 's', 'SKILL.md'))
   }, 30_000)
 
+  // HAND-DERIVED: git lists a tracked file in its index whether or not it is still on disk, and a tracked path replaced by a directory cannot be opened as a file (EISDIR, not ENOENT).
+  it('a tracked skill file that is gone reads as missing, and one that cannot be opened as unreadable', () => {
+    const b = box('missing-file')
+    expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    const gone = path.join(b.project, '.claude', 'skills', 'gone.md')
+    const blocked = path.join(b.project, '.claude', 'skills', 'blocked.md')
+    write(gone, '---\nname: gone\n---\n')
+    write(blocked, '---\nname: blocked\n---\n')
+    expect(runGit(['add', '-f', '.claude'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    fs.rmSync(gone)
+    expect(check(b)).toBe(`${path.join(b.project, '.claude', 'skills', 'gone.md')} is missing`)
+    fs.rmSync(gone, { force: true })
+    fs.rmSync(blocked)
+    fs.mkdirSync(blocked)
+    resetHiddenRuleCache()
+    expect(check(b)).toBe(`cannot read ${blocked}`)
+  }, 30_000)
+
   it('a skill tree too large to finish checking counts as hidden', () => {
     const b = box('huge')
     const dir = path.join(b.config, 'skills', 'many')

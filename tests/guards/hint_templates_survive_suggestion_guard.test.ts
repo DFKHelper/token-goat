@@ -653,7 +653,7 @@ const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string; count?: nu
   { key: 'db.ts::tokenize=\'${FTS_TOKENIZER}\'', reason: R.sqlConst, count: 2 },
   { key: 'bridges/zed_install.ts::return `@echo off\\r\\n"${nodePath}" "${cliPath}" mcp-serve\\r\\n`', reason: R.generated, count: 2 },
   { key: 'bridges/zed_install.ts::return `#!/bin/sh\\nexec "${nodePath}" "${cliPath}" mcp-serve\\n`', reason: R.generated, count: 2 },
-  { key: 'claude_hidden_rules.ts::if (process.platform === \'win32\') return [path.join(process.env[\'SystemRoot\'] ?? \'C:\\\\Windows\', \'System32\', \'WindowsPowerShell\', \'v1.0\', \'powershell.exe\'), [\'-NoProfile\', \'-NonInteractive\', \'-Command\', `(Get-CimInstance Win32_Process -Filter \'ProcessId=${pid}\').CommandLine`]]', reason: R.pid },
+  { key: 'claude_hidden_rules.ts::if (process.platform === \'win32\') return [windowsPowerShellPath(), powerShellCommandArgs(`(Get-CimInstance Win32_Process -Filter \'ProcessId=${pid}\').CommandLine`)]', reason: R.pid },
 ]
 
 describe('every value echoed between hand-written quotes in src', () => {

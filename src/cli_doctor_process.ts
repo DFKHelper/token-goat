@@ -1,11 +1,10 @@
 /** Process table and MCP process health diagnostics for token-goat doctor. Checks running Windows processes, orphan Node processes, duplicate MCP launchers, and the worker daemon state. */
 
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
 
 import type { DoctorResult } from './doctor_result.js'
 import { displaySafeText } from './paths.js'
+import { powerShellCommandArgs, windowsPowerShellPath } from './windows_powershell.js'
 import { isWorkerRunning } from './worker_lifecycle.js'
 
 export interface ProcessInfo {
@@ -85,9 +84,7 @@ export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | Proces
 
 function runProcessListCommand(): string {
   const command = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress'
-  const systemRoot = process.env['SystemRoot'] ?? process.env['windir'] ?? 'C:\\Windows'
-  const shell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-  const result = spawnSync(fs.existsSync(shell) ? shell : 'powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+  const result = spawnSync(windowsPowerShellPath(), powerShellCommandArgs(command), {
     encoding: 'utf8',
     timeout: PROCESS_LIST_TIMEOUT_MS,
     maxBuffer: 10 * 1024 * 1024,
