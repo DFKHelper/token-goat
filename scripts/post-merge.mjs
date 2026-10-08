@@ -60,13 +60,43 @@ function isLinkedWorktree(cwd) {
   return Boolean(gitDir && commonDir) && path.resolve(gitDir) !== path.resolve(commonDir)
 }
 
+/** Where `node_modules` really lives when it is a symlink or junction resolving outside this checkout (a linked worktree sharing the main checkout's install), else null. lstat sees the link itself and realpath follows it; Node reports a Windows junction as a symbolic link to lstat, which `tests/post_merge_lock_and_links.test.ts` pins. */
+function externalNodeModules() {
+  const modules = path.join(projectRoot, 'node_modules')
+  try {
+    if (!fs.lstatSync(modules).isSymbolicLink()) return null
+    const target = fs.realpathSync(modules)
+    const rel = path.relative(fs.realpathSync(projectRoot), target)
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel)) ? null : target
+  } catch {
+    return null
+  }
+}
+
+/** `npm install` on npm 11.6.2 rewrites package-lock.json without its `libc` arrays, so the committed bytes (or the user's own uncommitted edit) are snapshotted before it and written back after it; not `git checkout`, which would discard an uncommitted edit. */
+function installKeepingLock() {
+  const lockPath = path.join(projectRoot, 'package-lock.json')
+  const before = fs.readFileSync(lockPath)
+  runStep('Updating dependencies (package-lock.json changed)', npmCmd, ['install', '--prefer-offline'])
+  const after = fs.existsSync(lockPath) ? fs.readFileSync(lockPath) : null
+  if (after === null || !before.equals(after)) {
+    fs.writeFileSync(lockPath, before)
+    console.log('[token-goat post-merge] npm install rewrote package-lock.json; restored the bytes it had before the install.')
+  }
+}
+
 function main() {
   const changed = gitChangedFiles()
   console.log('[token-goat post-merge] Synchronizing token-goat after git pull/merge...')
 
   // 1. Dependency update if lockfile changed
   if (changed.includes('package-lock.json')) {
-    runStep('Updating dependencies (package-lock.json changed)', npmCmd, ['install', '--prefer-offline'])
+    const shared = externalNodeModules()
+    if (shared !== null) {
+      console.log(`[token-goat post-merge] Skipping npm install: node_modules is a link to ${shared}, outside this checkout, and an install here would change it for every checkout sharing it.`)
+    } else {
+      installKeepingLock()
+    }
   }
 
   // 2. Build dist/token-goat.mjs
