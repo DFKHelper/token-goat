@@ -6,7 +6,7 @@
  */
 
 import type { RefEntry, SymbolEntry } from '../parser_types.js'
-import { bodyBraceAt, bodySegments, endOpenMember, type BodySegment, type OpenMember } from './body_segments.js'
+import { bodyBraceAt, bodyResumeAt, bodySegments, endOpenMembers, openMembersOf, type BodySegment, type OpenBlock, type OpenMember } from './body_segments.js'
 import {
   stripBlockCommentSpan,
   stripLineComment,
@@ -230,28 +230,33 @@ function memberDecls(decl: string, parent: string): Array<[string, string]> {
 }
 
 /** The members the {@link bodySegments} slices `segs` of `line` declare directly in the type named `parent`, in source order, with a nested class, struct, interface, enum or record whose body closes inside its slice followed by that body's own members. extractCsharp's member branches only ever see the first declaration on a line, so a member written after a type header's `{` or after another member on the same line was dropped. `code` is `line` with its string literals blanked; each member's body is its slice. `open` is the member whose block is still open at the end of the line. */
-function inlineCsharpMembers(line: string, code: string, segs: readonly BodySegment[], parent: string, filePath: string, lineNum: number): { members: SymbolEntry[]; open: SymbolEntry | null } {
+function inlineCsharpMembers(line: string, code: string, segs: readonly BodySegment[], parent: string, filePath: string, lineNum: number, level = 0): { members: SymbolEntry[]; opens: OpenBlock[] } {
   const members: SymbolEntry[] = []
-  let open: SymbolEntry | null = null
+  const opens: OpenBlock[] = []
   for (const seg of segs) {
     const text = line.slice(seg.start, seg.end).trim()
     const decl = stripLeadingAttributes(text)
     const classM = CLASS_HEADER_RE.exec(decl)
     if (classM) {
-      if (seg.open) continue
-      const name = stripVerbatim(classM[2] ?? '')
-      members.push(makeLineSymbol(filePath, name, typeKind(classM[1] ?? 'class'), lineNum, text, parent))
       const brace = bodyBraceAt(code, seg.start, seg.end)
-      if (brace !== -1) members.push(...inlineCsharpMembers(line, code, bodySegments(code, brace + 1), name, filePath, lineNum).members)
+      if (seg.open && brace === -1) continue
+      const name = stripVerbatim(classM[2] ?? '')
+      const typeSym = makeLineSymbol(filePath, name, typeKind(classM[1] ?? 'class'), lineNum, text, parent)
+      members.push(typeSym)
+      if (brace !== -1) {
+        const inner = inlineCsharpMembers(line, code, bodySegments(code, brace + 1), name, filePath, lineNum, level + 1)
+        members.push(...inner.members)
+        if (seg.open) opens.push({ sym: typeSym, level, isType: true }, ...inner.opens)
+      }
       continue
     }
     for (const [name, kind] of memberDecls(decl, parent)) {
       const sym = makeLineSymbol(filePath, name, kind, lineNum, text, parent)
       members.push(sym)
-      if (seg.open) open = sym
+      if (seg.open) opens.push({ sym, level, isType: false })
     }
   }
-  return { members, open }
+  return { members, opens }
 }
 
 const CS_REF_NOISE: ReadonlySet<string> = new Set([
@@ -369,7 +374,7 @@ export function extractCsharp(
   let memberBodyEntered = false
   // Members found on a line after its first declaration already carry their real span, so the brace-span pass leaves them alone (see spanUnsettled).
   const settled = new Set<SymbolEntry>()
-  let openMember: OpenMember | null = null
+  let openMembers: OpenMember[] = []
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
@@ -571,19 +576,30 @@ export function extractCsharp(
 
     // A line can hold several declarations of one type body: the members after a type header's `{` (`class Two { int A() => 1; int B() => 2; }`), and those after the first on a body line (`int C() => 3; int D() => 4;`). The branches above index only the first declaration on the line; the rest are found here, the header's own body first so the rows keep source order. The segments are cut on `line` itself, since braceLine can be built from rawLine and its offsets would not match.
     const segCode = stripStringLiterals(line, { tripleQuotes: true })
-    let lineOpen: OpenMember | null = null
-    const queueMembers = (segs: readonly BodySegment[], parent: string, bodyDepth: number): OpenMember | null => {
-      const { members, open } = inlineCsharpMembers(line, segCode, segs, parent, filePath, lineNum)
+    const lineOpens: OpenMember[] = []
+    const queueMembers = (segs: readonly BodySegment[], parent: string, bodyDepth: number): void => {
+      const { members, opens } = inlineCsharpMembers(line, segCode, segs, parent, filePath, lineNum)
       symbols.push(...members)
       for (const m of members) settled.add(m)
-      return open === null ? null : { sym: open, depth: bodyDepth + 1 }
+      lineOpens.push(...openMembersOf(opens, bodyDepth))
+      for (const o of opens) {
+        if (!o.isType) continue
+        const enclosing = classStack[classStack.length - 1]
+        if (enclosing !== undefined) enclosing.bodyEntered = true
+        classStack.push({ name: o.sym.name, startDepth: bodyDepth + o.level, bodyEntered: true })
+      }
     }
     const lineSegs = bodySegments(segCode, 0)
     if (frame !== null && frame !== outerFrame && lineSegs[0] !== undefined) {
       const brace = bodyBraceAt(segCode, lineSegs[0].start, lineSegs[0].end)
-      if (brace !== -1) lineOpen = queueMembers(bodySegments(segCode, brace + 1), frame.name, braceDepth + 1)
+      if (brace !== -1) queueMembers(bodySegments(segCode, brace + 1), frame.name, braceDepth + 1)
     }
-    if (outerFrame !== null && braceDepth - outerFrame.startDepth === 1) lineOpen = queueMembers(lineSegs.slice(1), outerFrame.name, braceDepth) ?? lineOpen
+    // A line that starts inside the block of a member opened on an earlier line can close it and go on to declare more (`} void Next() {}`): those are members too, found past the closing brace.
+    const insideMember = outerFrame === null ? -1 : braceDepth - outerFrame.startDepth - 1
+    if (outerFrame !== null && insideMember >= 0) {
+      const resume = bodyResumeAt(segCode, insideMember)
+      if (resume >= 0) queueMembers(insideMember === 0 ? lineSegs.slice(1) : bodySegments(segCode, resume), outerFrame.name, outerFrame.startDepth + 1)
+    }
 
     if (!inFalseBlock && !stripped.startsWith('#')) {
       const declSpans: Array<{ name: string; col: number }> = []
@@ -700,11 +716,8 @@ export function extractCsharp(
     const openBraces = (braceLine.match(/\{/g) ?? []).length
     const closeBraces = (braceLine.match(/\}/g) ?? []).length
     braceDepth += openBraces - closeBraces
-    if (openMember !== null && braceDepth < openMember.depth) {
-      endOpenMember(symbols, settled, openMember, lineNum, lines)
-      openMember = null
-    }
-    if (lineOpen !== null) openMember = lineOpen
+    openMembers = endOpenMembers(symbols, settled, openMembers, braceDepth, lineNum, lines)
+    openMembers.push(...lineOpens)
 
     if (currentMember !== undefined) {
       if (!memberBodyEntered) {

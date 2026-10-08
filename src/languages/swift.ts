@@ -18,7 +18,7 @@ import {
   type AdapterImport,
   makeLineSymbol,
 } from './common.js'
-import { bodyBraceAt, bodySegments, endOpenMember, type BodySegment, type OpenMember } from './body_segments.js'
+import { bodyBraceAt, bodyResumeAt, bodySegments, endOpenMembers, openMembersOf, type BodySegment, type OpenBlock, type OpenMember } from './body_segments.js'
 
 const SWIFT_STRIP: StripStringOpts = { swiftInterpolation: true }
 
@@ -122,6 +122,12 @@ const PROPERTY_RE = new RegExp(
   '(?:var|let)\\s+(' + `${IDENT}` + '[^\\n]*)',
 )
 
+// An enum case declaration (The Swift Programming Language, "Enumerations" > "Enumeration Syntax"): `case north`, and one `case` keyword may list several cases, each with its own associated values or raw value (`case a(Int), b`, `case c = 1, d = 2`). `indirect` may precede the keyword.
+const ENUM_CASE_RE = new RegExp(
+  '^\\s*(?:' + MODIFIER_ALT + '\\s+)*' +
+  '(?:@[A-Za-z_][A-Za-z0-9_.]*\\s+)*case\\s+(' + `${IDENT}` + '[^\\n]*)',
+)
+
 /**
  * Names declared by one `var`/`let` declarator list.
  *
@@ -217,23 +223,30 @@ function memberSymbols(text: string, parent: string | undefined, sig: string, si
   if (fm) return [makeLineSymbol(filePath, unquoteIdent(fm[1] ?? ''), parent === undefined ? 'function' : 'method', lineNum, sig, parent, lines, style)]
   const propM = PROPERTY_RE.exec(noAttr)
   if (propM) return splitDeclaratorNames(propM[1] ?? '').map((name) => makeLineSymbol(filePath, name, 'var', lineNum, sig, parent, lines, style))
+  const caseM = parent === undefined ? null : ENUM_CASE_RE.exec(noAttr)
+  if (caseM) return splitDeclaratorNames(caseM[1] ?? '').map((name) => makeLineSymbol(filePath, name, 'enum_member', lineNum, sig, parent, lines, style))
   return []
 }
 
 /** The members the {@link bodySegments} slices `segs` of `line` declare directly in the type named `parent`, in source order: an initializer, deinitializer, subscript, function, property, type alias or associated type, or a nested class, struct, enum, protocol, extension or actor whose body closes inside its slice, followed by that body's own members. extractSwift's line branches only ever see the first declaration on a line, so a member written after a type header's `{` or after another member on the same line was dropped. `code` is `line` with its string and regex literals blanked; each member's body is its slice. `open` is the member whose block is still open at the end of the line. */
-function inlineSwiftMembers(line: string, code: string, segs: readonly BodySegment[], parent: string, filePath: string, lineNum: number): { members: SymbolEntry[]; open: SymbolEntry | null } {
+function inlineSwiftMembers(line: string, code: string, segs: readonly BodySegment[], parent: string | undefined, filePath: string, lineNum: number, level = 0): { members: SymbolEntry[]; opens: OpenBlock[] } {
   const members: SymbolEntry[] = []
-  let open: SymbolEntry | null = null
+  const opens: OpenBlock[] = []
   for (const seg of segs) {
     const text = line.slice(seg.start, seg.end).trim()
     const noAttr = stripLeadingAttributes(text)
     const tm = TYPE_HEADER_RE.exec(noAttr)
     if (tm) {
-      if (seg.open) continue
-      const name = unquoteIdent(tm[2] ?? '')
-      members.push(makeLineSymbol(filePath, name, typeKindFor(tm[1] ?? 'class'), lineNum, text, parent))
       const brace = bodyBraceAt(code, seg.start, seg.end)
-      if (brace !== -1) members.push(...inlineSwiftMembers(line, code, bodySegments(code, brace + 1), name, filePath, lineNum).members)
+      if (seg.open && brace === -1) continue
+      const name = unquoteIdent(tm[2] ?? '')
+      const typeSym = makeLineSymbol(filePath, name, typeKindFor(tm[1] ?? 'class'), lineNum, text, parent)
+      members.push(typeSym)
+      if (brace !== -1) {
+        const inner = inlineSwiftMembers(line, code, bodySegments(code, brace + 1), name, filePath, lineNum, level + 1)
+        members.push(...inner.members)
+        if (seg.open) opens.push({ sym: typeSym, level, isType: true }, ...inner.opens)
+      }
       continue
     }
     const am = ALIAS_RE.exec(noAttr)
@@ -241,9 +254,9 @@ function inlineSwiftMembers(line: string, code: string, segs: readonly BodySegme
       ? [makeLineSymbol(filePath, unquoteIdent(am[2] ?? ''), am[1] === 'macro' ? 'macro' : 'type', lineNum, text, parent)]
       : memberSymbols(text, parent, text, { filePath, lineNum })
     members.push(...found)
-    if (seg.open && found.length > 0) open = found[found.length - 1]!
+    if (seg.open && found.length > 0) opens.push({ sym: found[found.length - 1]!, level, isType: false })
   }
-  return { members, open }
+  return { members, opens }
 }
 
 export function extractSwift(
@@ -260,8 +273,8 @@ export function extractSwift(
   let mlState: MultilineStringState | null = null
   // Members found on a line after its first declaration already carry their real span, so the brace-span pass leaves them alone (see spanUnsettled).
   const settled = new Set<SymbolEntry>()
-  // The last such member whose block was still open at the end of its line.
-  let openMember: OpenMember | null = null
+  // Such members, and the nested types, whose block was still open at the end of their line.
+  let openMembers: OpenMember[] = []
 
   /** Emit whichever member declaration `text` holds, if any, as the first declaration on line `lineNum`. */
   function pushMembers(text: string, parent: string | undefined, lineNum: number, sig: string): void {
@@ -359,19 +372,29 @@ export function extractSwift(
     const braceLine = stripRegexLiterals(stripStringLiterals(line, SWIFT_STRIP))
 
     // A line can hold several declarations of one type body: the members after a type header's `{` (`struct S { var a = 0; func f() {} }`), and those after the first on a body line (`func c() {}; func d() {}`). The branches above index only the first declaration on the line; the rest are found here, the header's own body first so the rows keep source order.
-    let lineOpen: OpenMember | null = null
-    const queueMembers = (segs: readonly BodySegment[], parent: string, bodyDepth: number): OpenMember | null => {
-      const { members, open } = inlineSwiftMembers(line, braceLine, segs, parent, filePath, lineNum)
+    const lineOpens: OpenMember[] = []
+    const queueMembers = (segs: readonly BodySegment[], parent: string | undefined, bodyDepth: number): void => {
+      const { members, opens } = inlineSwiftMembers(line, braceLine, segs, parent, filePath, lineNum)
       symbols.push(...members)
       for (const m of members) settled.add(m)
-      return open === null ? null : { sym: open, depth: bodyDepth + 1 }
+      lineOpens.push(...openMembersOf(opens, bodyDepth))
+      for (const o of opens) {
+        if (!o.isType) continue
+        const enclosing = typeStack[typeStack.length - 1]
+        if (enclosing !== undefined) enclosing.bodyEntered = true
+        typeStack.push({ name: o.sym.name, startDepth: bodyDepth + o.level, bodyEntered: true })
+      }
     }
     const lineSegs = bodySegments(braceLine, 0)
     if (tm !== null && frame !== null && lineSegs[0] !== undefined) {
       const brace = bodyBraceAt(braceLine, lineSegs[0].start, lineSegs[0].end)
-      if (brace !== -1) lineOpen = queueMembers(bodySegments(braceLine, brace + 1), frame.name, braceDepth + 1)
+      if (brace !== -1) queueMembers(bodySegments(braceLine, brace + 1), frame.name, braceDepth + 1)
     }
-    if (outerFrame !== null && outerDepthInType === 1) lineOpen = queueMembers(lineSegs.slice(1), outerFrame.name, braceDepth) ?? lineOpen
+    // A line that starts inside the block of a member opened on an earlier line can close it and go on to declare more (`} func next() {}`): those are members too, found past the closing brace.
+    if (outerFrame !== null && outerDepthInType >= 1) {
+      const resume = bodyResumeAt(braceLine, outerDepthInType - 1)
+      if (resume >= 0) queueMembers(outerDepthInType === 1 ? lineSegs.slice(1) : bodySegments(braceLine, resume), outerFrame.name, outerFrame.startDepth + 1)
+    } else if (outerFrame === null && braceDepth === 0) queueMembers(lineSegs.slice(1), undefined, braceDepth)
 
     for (const ch of braceLine) {
       if (ch === '{') {
@@ -384,11 +407,8 @@ export function extractSwift(
         braceDepth--
       }
     }
-    if (openMember !== null && braceDepth < openMember.depth) {
-      endOpenMember(symbols, settled, openMember, lineNum, lines)
-      openMember = null
-    }
-    if (lineOpen !== null) openMember = lineOpen
+    openMembers = endOpenMembers(symbols, settled, openMembers, braceDepth, lineNum, lines)
+    openMembers.push(...lineOpens)
     // Pop finished type frames. A frame only pops once its own opening brace has actually been
     // entered (bodyEntered) -- this guards a type whose header spans multiple lines (Allman-
     // style `struct Foo` / `{`, or a multi-line `where` clause), where braceDepth still equals

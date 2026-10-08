@@ -10,13 +10,14 @@ const COMMON_SRC = readFileSync(path.join(ROOT, 'src', 'languages', 'common.ts')
 // The adapter dispatch table moved out of parser.ts when it went behind a dynamic import, so hooks stop compiling every adapter.
 const REGISTRY_SRC = readFileSync(path.join(ROOT, 'src', 'languages', 'registry.ts'), 'utf8')
 const R_SRC = readFileSync(path.join(ROOT, 'src', 'languages', 'r.ts'), 'utf8')
+const PARSER_SRC = readFileSync(path.join(ROOT, 'src', 'parser.ts'), 'utf8')
 
 /** Why a language that declares a multi-line string form still does not pass `multilineLang` to `assignBraceBlockSpans`. `marker` is the source text that has to be present for the reason to still hold, and `where` says which file it has to be present in. */
 const EXEMPT: Record<string, { reason: string; where: 'entry' | 'r.ts'; markers: readonly string[] }> = {
   csharp: {
     reason: 'C# has two multi-line forms and the brace scanner expresses both directly: `stringEscapes: csharp` makes a verbatim `@"..."` opaque (doubled `""` is the escaped quote), and `rawStringQuotes` measures a variable-length `"""` run. A pre-pass mask adds nothing the scanner does not already do.',
     where: 'entry',
-    markers: ["stringEscapes: 'csharp'", 'rawStringQuotes: true'],
+    markers: ['CSHARP_SPAN_OPTS'],
   },
   kotlin: {
     reason: 'Kotlin\'s only multi-line form is the fixed `"""` raw string, which `tripleQuote` jumps over whole inside the brace scan.',
@@ -125,5 +126,34 @@ describe('MultilineStringLang dispatch coverage', () => {
     for (const lang of ['elixir', 'r']) {
       expect(tableEntry(lang), `${lang} now calls assignBraceBlockSpans, so its EXEMPT reason no longer holds`).not.toContain('assignBraceBlockSpans')
     }
+  })
+})
+
+/** Every third argument handed to assignBraceBlockSpans(rest, content, ...) that is C#'s: a bare identifier is the shared constant, an object literal is a second copy. */
+function csharpOptionArgs(src: string): string[] {
+  const out: string[] = []
+  for (const m of src.matchAll(/assignBraceBlockSpans\(rest, content, (\{[^}]*\}|[A-Za-z_.]+)\)/g)) {
+    const arg = m[1] as string
+    if (/csharp|CSHARP/.test(arg)) out.push(arg)
+  }
+  return out
+}
+
+describe('the C# brace-scan options have one source', () => {
+  it('registry.ts defines them once and both call sites pass that constant', () => {
+    const def = /export const CSHARP_SPAN_OPTS[^=]*= (\{[^}]*\})/.exec(REGISTRY_SRC)
+    expect(def, 'CSHARP_SPAN_OPTS is not defined in src/languages/registry.ts').not.toBeNull()
+    for (const marker of ["stringEscapes: 'csharp'", 'rawStringQuotes: true', "interpolation: 'csharp'"]) {
+      expect(def?.[1], `CSHARP_SPAN_OPTS lost ${marker}`).toContain(marker)
+    }
+    expect(csharpOptionArgs(REGISTRY_SRC)).toEqual(['CSHARP_SPAN_OPTS'])
+    expect(csharpOptionArgs(PARSER_SRC)).toEqual(['adapters.CSHARP_SPAN_OPTS'])
+    expect(PARSER_SRC).not.toContain("stringEscapes: 'csharp'")
+  })
+
+  it('negative control: a second inline copy is recognised as one', () => {
+    const copy = "assignBraceBlockSpans(rest, content, { lineComment: '//', stringEscapes: 'csharp', rawStringQuotes: true })"
+    expect(csharpOptionArgs(copy)).toEqual(["{ lineComment: '//', stringEscapes: 'csharp', rawStringQuotes: true }"])
+    expect(csharpOptionArgs('assignBraceBlockSpans(rest, content, CSHARP_SPAN_OPTS)')).toEqual(['CSHARP_SPAN_OPTS'])
   })
 })

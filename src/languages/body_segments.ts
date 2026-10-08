@@ -73,3 +73,37 @@ export function spanUnsettled(symbols: readonly SymbolEntry[], settled: Readonly
   let next = 0
   return symbols.map((s) => (settled.has(s) ? s : spanned[next++]!))
 }
+
+/** The offset in `code`, a string-blanked line, just past the `}` that closes the last of the `depthInside` blocks the line starts inside a type body (0 when it starts at the body's own level, -1 when the line never gets back out): where {@link bodySegments} resumes for a line like `return 1; } function g() {}`, whose first half belongs to a member opened on an earlier line. */
+export function bodyResumeAt(code: string, depthInside: number): number {
+  if (depthInside <= 0) return 0
+  let depth = depthInside
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i]
+    if (ch === '{') depth++
+    else if (ch === '}' && --depth === 0) return i + 1
+  }
+  return -1
+}
+
+/** A block a line leaves open, found by a one-line-body adapter: `sym` is its row, `level` how many type bodies deeper than the slices scanned it sits (0 for a slice of the line's own body), and `isType` whether it is a nested class, struct or the like, whose later lines hold members of their own. */
+export interface OpenBlock {
+  readonly sym: SymbolEntry
+  readonly level: number
+  readonly isType: boolean
+}
+
+/** `blocks` as the {@link OpenMember}s that end them, given the brace depth `bodyDepth` of the body the scanned slices sit in. */
+export function openMembersOf(blocks: readonly OpenBlock[], bodyDepth: number): OpenMember[] {
+  return blocks.map((b) => ({ sym: b.sym, depth: bodyDepth + b.level + 1 }))
+}
+
+/** Ends each member of `open` whose block the brace depth `braceDepth` has left, on line `lineNum`, and returns the ones still open. */
+export function endOpenMembers(symbols: SymbolEntry[], settled: Set<SymbolEntry>, open: readonly OpenMember[], braceDepth: number, lineNum: number, lines: readonly string[]): OpenMember[] {
+  const still: OpenMember[] = []
+  for (const m of open) {
+    if (braceDepth < m.depth) endOpenMember(symbols, settled, m, lineNum, lines)
+    else still.push(m)
+  }
+  return still
+}

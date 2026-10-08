@@ -18,7 +18,7 @@ import {
   type AdapterImport,
   makeLineSymbol,
 } from './common.js'
-import { bodyBraceAt, bodySegments, endOpenMember, type BodySegment, type OpenMember } from './body_segments.js'
+import { bodyBraceAt, bodyResumeAt, bodySegments, endOpenMembers, openMembersOf, type BodySegment, type OpenBlock, type OpenMember } from './body_segments.js'
 
 interface ClassFrame {
   name: string
@@ -110,32 +110,38 @@ const TOP_FUN_RE = new RegExp(
 )
 
 /** The members the {@link bodySegments} slices `segs` of `line` declare directly in the type named `parent`, in source order: a method, a SCREAMING_SNAKE const, or a nested class, interface, object or companion object whose body closes inside its slice, followed by that body's own members. extractKotlin's line branches only ever see the first declaration on a line, so a member written after a type header's `{` or after another member on the same line was dropped. `code` is `line` with its string literals blanked; each member's body is its slice. `open` is the member whose block is still open at the end of the line. */
-function inlineKotlinMembers(line: string, code: string, segs: readonly BodySegment[], parent: string, filePath: string, lineNum: number): { members: SymbolEntry[]; open: SymbolEntry | null } {
+function inlineKotlinMembers(line: string, code: string, segs: readonly BodySegment[], parent: string | undefined, filePath: string, lineNum: number, level = 0): { members: SymbolEntry[]; opens: OpenBlock[] } {
   const members: SymbolEntry[] = []
-  let open: SymbolEntry | null = null
+  const opens: OpenBlock[] = []
   for (const seg of segs) {
     const text = line.slice(seg.start, seg.end).trim()
     const noAnn = stripLeadingAnnotations(text)
-    const fm = FUN_RE.exec(noAnn)
+    const fm = (parent === undefined ? TOP_FUN_RE : FUN_RE).exec(noAnn)
     const constM = fm === null ? CONST_RE.exec(noAnn) : null
-    const companionM = fm === null && constM === null ? COMPANION_RE.exec(noAnn) : null
+    const companionM = fm === null && constM === null && parent !== undefined ? COMPANION_RE.exec(noAnn) : null
     const classM = fm === null && constM === null && companionM === null ? CLASS_HEADER_RE.exec(noAnn) : null
     let sym: SymbolEntry | null = null
-    if (fm) sym = makeLineSymbol(filePath, unquoteName(fm[1] ?? ''), 'method', lineNum, text, parent)
+    if (fm) sym = makeLineSymbol(filePath, unquoteName(fm[1] ?? ''), parent === undefined ? 'function' : 'method', lineNum, text, parent)
     else if (constM) sym = makeLineSymbol(filePath, constM[1] ?? '', 'const', lineNum, text, parent)
-    else if ((companionM !== null || classM !== null) && !seg.open) {
+    else if (companionM !== null || classM !== null) {
+      const brace = bodyBraceAt(code, seg.start, seg.end)
+      if (seg.open && brace === -1) continue
       const name = unquoteName((companionM !== null ? companionM[1] : classM?.[2]) ?? 'Companion')
       const keyword = companionM !== null ? 'object' : (classM?.[1] ?? 'class')
-      members.push(makeLineSymbol(filePath, name, keyword === 'interface' ? 'interface' : keyword === 'object' ? 'object' : 'class', lineNum, text, parent))
-      const brace = bodyBraceAt(code, seg.start, seg.end)
-      if (brace !== -1) members.push(...inlineKotlinMembers(line, code, bodySegments(code, brace + 1), name, filePath, lineNum).members)
+      const typeSym = makeLineSymbol(filePath, name, keyword === 'interface' ? 'interface' : keyword === 'object' ? 'object' : 'class', lineNum, text, parent)
+      members.push(typeSym)
+      if (brace !== -1) {
+        const inner = inlineKotlinMembers(line, code, bodySegments(code, brace + 1), name, filePath, lineNum, level + 1)
+        members.push(...inner.members)
+        if (seg.open) opens.push({ sym: typeSym, level, isType: true }, ...inner.opens)
+      }
       continue
     }
     if (sym === null) continue
     members.push(sym)
-    if (seg.open) open = sym
+    if (seg.open) opens.push({ sym, level, isType: false })
   }
-  return { members, open }
+  return { members, opens }
 }
 
 export function extractKotlin(
@@ -150,8 +156,8 @@ export function extractKotlin(
   let braceDepth = 0
   // Members found on a line after its first declaration already carry their real span, so the brace-span pass leaves them alone (see spanUnsettled).
   const settled = new Set<SymbolEntry>()
-  // The last such member whose block was still open at the end of its line.
-  let openMember: OpenMember | null = null
+  // Such members, and the nested types, whose block was still open at the end of their line.
+  let openMembers: OpenMember[] = []
   let inComment = false
   let mlState: MultilineStringState | null = null
 
@@ -308,19 +314,24 @@ export function extractKotlin(
     const braceLine = stripStringLiterals(line)
 
     // A line can hold several declarations of one type body: the members after a type header's `{` (`class Two { fun a() = 1; fun b() = 2 }`), and those after the first on a body line (`fun c() = 1; fun d() = 2`). The branches above index only the first declaration on the line; the rest are found here, the header's own body first so the rows keep source order.
-    let lineOpen: OpenMember | null = null
-    const queueMembers = (segs: readonly BodySegment[], parent: string, bodyDepth: number): OpenMember | null => {
-      const { members, open } = inlineKotlinMembers(line, braceLine, segs, parent, filePath, lineNum)
+    const lineOpens: OpenMember[] = []
+    const queueMembers = (segs: readonly BodySegment[], parent: string | undefined, bodyDepth: number): void => {
+      const { members, opens } = inlineKotlinMembers(line, braceLine, segs, parent, filePath, lineNum)
       symbols.push(...members)
       for (const m of members) settled.add(m)
-      return open === null ? null : { sym: open, depth: bodyDepth + 1 }
+      lineOpens.push(...openMembersOf(opens, bodyDepth))
+      for (const o of opens) if (o.isType) classStack.push({ name: o.sym.name, braceDepth: bodyDepth + o.level, bodyEntered: true, parenBalance: 0, pendingPop: false })
     }
     const lineSegs = bodySegments(braceLine, 0)
     if (frame !== null && frame !== outerFrame && lineSegs[0] !== undefined) {
       const brace = bodyBraceAt(braceLine, lineSegs[0].start, lineSegs[0].end)
-      if (brace !== -1) lineOpen = queueMembers(bodySegments(braceLine, brace + 1), frame.name, braceDepth + 1)
+      if (brace !== -1) queueMembers(bodySegments(braceLine, brace + 1), frame.name, braceDepth + 1)
     }
-    if (outerFrame !== null && outerDepthInClass === 1) lineOpen = queueMembers(lineSegs.slice(1), outerFrame.name, braceDepth) ?? lineOpen
+    // A line that starts inside the block of a member opened on an earlier line can close it and go on to declare more (`} fun next() {}`): those are members too, found past the closing brace.
+    if (outerFrame !== null && outerDepthInClass >= 1) {
+      const resume = bodyResumeAt(braceLine, outerDepthInClass - 1)
+      if (resume >= 0) queueMembers(outerDepthInClass === 1 ? lineSegs.slice(1) : bodySegments(braceLine, resume), outerFrame.name, outerFrame.braceDepth + 1)
+    } else if (outerFrame === null && !isIndented) queueMembers(lineSegs.slice(1), undefined, braceDepth)
 
     for (const ch of braceLine) {
       if (ch === '{') {
@@ -336,11 +347,8 @@ export function extractKotlin(
         frame.parenBalance--
       }
     }
-    if (openMember !== null && braceDepth < openMember.depth) {
-      endOpenMember(symbols, settled, openMember, lineNum, lines)
-      openMember = null
-    }
-    if (lineOpen !== null) openMember = lineOpen
+    openMembers = endOpenMembers(symbols, settled, openMembers, braceDepth, lineNum, lines)
+    openMembers.push(...lineOpens)
     // A body-less class/interface/object header (`data class Point(val x: Int, val y: Int)`,
     // no trailing `{`) never flips bodyEntered, so the bodyEntered-gated pop below would leave
     // it on the stack forever, silently misattributing every later top-level declaration as one

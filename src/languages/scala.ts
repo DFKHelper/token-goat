@@ -11,7 +11,7 @@ import {
   type StripStringOpts,
   makeLineSymbol,
 } from './common.js'
-import { bodyBraceAt, bodySegments, endOpenMember, type BodySegment, type OpenMember } from './body_segments.js'
+import { bodyBraceAt, bodyResumeAt, bodySegments, endOpenMembers, openMembersOf, type BodySegment, type OpenBlock, type OpenMember } from './body_segments.js'
 
 /** Scala spells a character literal `'a'`, but a `'` that opens none is a symbol literal or a Scala 3 quoted block and never closes. Every read of a Scala line -- blanking its strings and finding its `//` -- has to apply that same rule, or the two disagree about where the line's code ends. */
 const SCALA_STRIP: StripStringOpts = { symbolLiterals: true, interpolatorPrefix: true }
@@ -93,7 +93,7 @@ const ENUM_RE = new RegExp('^\\s*(?:private|protected)?\\s*enum\\s+(' + NAME + '
 const DEF_NAME = '(?:`[^`\\r\\n]+`|[A-Za-z_][A-Za-z0-9_]*_[+\\-*/%=!<>&|^~:]+|[+\\-*/%=!<>&|^~:]+|[A-Za-z_][A-Za-z0-9_]*)'
 
 // Scala function/method: `def foo()`, `def bar[T]()`, `def baz: Int` (no-arg form), infix operators like `def +(other: Int)`. Generics come between name and params.
-const FUNC_RE = new RegExp('^\\s*' + MODS + 'def\\s+(' + DEF_NAME + ')(?:\\s*\\[|\\s*\\(|\\s*:)')
+const FUNC_RE = new RegExp('^\\s*' + MODS + 'def\\s+(' + DEF_NAME + ')(?:\\s*\\[|\\s*\\(|\\s*:|\\s*=(?!=))')
 
 // `val x: Int = 5`, `val y = "hello"`, `lazy val config = ...`, `private final val MAX = 5` Scala allows `val` to bind multiple names in pattern-match style (`val (a, b) = tuple`), but for simplicity we extract only the first word-boundary identifier after `val`.
 const VAL_RE = new RegExp('^\\s*' + MODS + 'val\\s+(' + NAME + ')')
@@ -239,9 +239,9 @@ function extensionClauseTail(stripped: string): string | null {
 const INLINE_TYPES: ReadonlyArray<readonly [RegExp, string]> = [[CLASS_RE, 'class'], [OBJECT_RE, 'object'], [TRAIT_RE, 'trait'], [ENUM_RE, 'enum']]
 
 /** The members the {@link bodySegments} slices `segs` of `line` declare directly in the type named `parent`, in source order: a def, val or var, or a nested class, object, trait or enum whose body closes inside its slice, followed by that body's own members. extractScala's line branches only ever see the first declaration on a line, so a member written after a type header's `{` or after another member on the same line was dropped. `code` is `line` with its string literals blanked; each member's body is its slice. `open` is the member whose block is still open at the end of the line. */
-function inlineScalaMembers(line: string, code: string, segs: readonly BodySegment[], parent: string, filePath: string, lineNum: number): { members: SymbolEntry[]; open: SymbolEntry | null } {
+function inlineScalaMembers(line: string, code: string, segs: readonly BodySegment[], parent: string | undefined, filePath: string, lineNum: number, level = 0): { members: SymbolEntry[]; opens: OpenBlock[] } {
   const members: SymbolEntry[] = []
-  let open: SymbolEntry | null = null
+  const opens: OpenBlock[] = []
   for (const seg of segs) {
     const text = line.slice(seg.start, seg.end).trim()
     const fm = FUNC_RE.exec(text)
@@ -251,21 +251,26 @@ function inlineScalaMembers(line: string, code: string, segs: readonly BodySegme
     if (member !== null) {
       const sym = makeLineSymbol(filePath, unquoteName(member[0][1] ?? ''), member[1], lineNum, text, parent)
       members.push(sym)
-      if (seg.open) open = sym
+      if (seg.open) opens.push({ sym, level, isType: false })
       continue
     }
-    if (seg.open) continue
     for (const [re, kind] of INLINE_TYPES) {
       const tm = re.exec(text)
       if (tm === null) continue
-      const name = unquoteName(tm[1] ?? '')
-      members.push(makeLineSymbol(filePath, name, kind, lineNum, text, parent))
       const brace = bodyBraceAt(code, seg.start, seg.end)
-      if (brace !== -1) members.push(...inlineScalaMembers(line, code, bodySegments(code, brace + 1), name, filePath, lineNum).members)
+      if (seg.open && brace === -1) break
+      const name = unquoteName(tm[1] ?? '')
+      const typeSym = makeLineSymbol(filePath, name, kind, lineNum, text, parent)
+      members.push(typeSym)
+      if (brace !== -1) {
+        const inner = inlineScalaMembers(line, code, bodySegments(code, brace + 1), name, filePath, lineNum, level + 1)
+        members.push(...inner.members)
+        if (seg.open) opens.push({ sym: typeSym, level, isType: true }, ...inner.opens)
+      }
       break
     }
   }
-  return { members, open }
+  return { members, opens }
 }
 
 export function extractScala(
@@ -281,7 +286,7 @@ export function extractScala(
   // Members found on a line after its first declaration already carry their real span, so the brace-span pass leaves them alone (see spanUnsettled).
   const settled = new Set<SymbolEntry>()
   // The last such member whose block was still open at the end of its line.
-  let openMember: OpenMember | null = null
+  let openMembers: OpenMember[] = []
   let inComment = false
   let mlState: MultilineStringState | null = null
   // Last line that held code, which is where an indentation-syntax body ends once a dedent (or the end of the file) closes it.
@@ -505,19 +510,30 @@ export function extractScala(
     const braceLine = stripStringLiterals(line, SCALA_STRIP)
 
     // A line can hold several declarations of one type body: the members after a type header's `{` (`object Two { def a(): Int = 1; val b = 2 }`), and those after the first on a body line (`def c(): Int = 1; def d(): Int = 2`). The branches above index only the first declaration on the line; the rest are found here, the header's own body first so the rows keep source order.
-    let lineOpen: OpenMember | null = null
-    const queueMembers = (segs: readonly BodySegment[], parent: string, bodyDepth: number): OpenMember | null => {
-      const { members, open } = inlineScalaMembers(line, braceLine, segs, parent, filePath, lineNum)
+    const lineOpens: OpenMember[] = []
+    const queueMembers = (segs: readonly BodySegment[], parent: string | undefined, bodyDepth: number): void => {
+      const { members, opens } = inlineScalaMembers(line, braceLine, segs, parent, filePath, lineNum)
       symbols.push(...members)
       for (const m of members) settled.add(m)
-      return open === null ? null : { sym: open, depth: bodyDepth + 1 }
+      lineOpens.push(...openMembersOf(opens, bodyDepth))
+      for (const o of opens) {
+        if (!o.isType) continue
+        const enclosing = typeStack[typeStack.length - 1]
+        if (enclosing !== undefined) enclosing.bodyEntered = true
+        typeStack.push({ name: o.sym.name, startDepth: bodyDepth + o.level, bodyEntered: true, openParens: 0, declIndent: indent, colonBody: false, bodyIndent: null, symbolIndex: symbols.indexOf(o.sym) })
+      }
     }
     const lineSegs = bodySegments(braceLine, 0)
     if (frame !== null && frame !== outerFrame && lineSegs[0] !== undefined) {
       const brace = bodyBraceAt(braceLine, lineSegs[0].start, lineSegs[0].end)
-      if (brace !== -1) lineOpen = queueMembers(bodySegments(braceLine, brace + 1), frame.name, braceDepth + 1)
+      if (brace !== -1) queueMembers(bodySegments(braceLine, brace + 1), frame.name, braceDepth + 1)
     }
-    if (outerFrame !== null && (outerDepthInType === 1 || (inColonBody && outerFrame === colonTop))) lineOpen = queueMembers(lineSegs.slice(1), outerFrame.name, braceDepth) ?? lineOpen
+    // A line that starts inside the block of a member opened on an earlier line can close it and go on to declare more (`} ; def next = 2`): those are members too, found past the closing brace.
+    if (outerFrame !== null && (outerDepthInType === 1 || (inColonBody && outerFrame === colonTop))) queueMembers(lineSegs.slice(1), outerFrame.name, braceDepth)
+    else if (outerFrame !== null && !outerFrame.colonBody && outerDepthInType > 1) {
+      const resume = bodyResumeAt(braceLine, outerDepthInType - 1)
+      if (resume >= 0) queueMembers(bodySegments(braceLine, resume), outerFrame.name, outerFrame.startDepth + 1)
+    } else if (outerFrame === null && !isIndented) queueMembers(lineSegs.slice(1), undefined, braceDepth)
 
     // Track the innermost frame's unclosed parentheses until its body opens, so the stale-frame sweep above can tell a finished bodyless declaration from one whose parameter list is still open across several lines.
     if (frame !== null && !frame.bodyEntered) {
@@ -535,11 +551,8 @@ export function extractScala(
         braceDepth--
       }
     }
-    if (openMember !== null && braceDepth < openMember.depth) {
-      endOpenMember(symbols, settled, openMember, lineNum, lines)
-      openMember = null
-    }
-    if (lineOpen !== null) openMember = lineOpen
+    openMembers = endOpenMembers(symbols, settled, openMembers, braceDepth, lineNum, lines)
+    openMembers.push(...lineOpens)
 
     // Pop finished type frames
     while (typeStack.length > 0) {

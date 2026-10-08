@@ -451,13 +451,7 @@ function extractNoTreeSitter(
   }
   if (language === 'csharp') {
     const r = adapters.extractCsharp(content, filePath)
-    const symbols = adapters.spanUnsettled(r.symbols, r.settled, (rest) => adapters.assignBraceBlockSpans(rest, content, {
-      lineComment: '//',
-      stringEscapes: 'csharp',
-      rawStringQuotes: true,
-      expressionBodies: true,
-      interpolation: 'csharp',
-    }))
+    const symbols = adapters.spanUnsettled(r.symbols, r.settled, (rest) => adapters.assignBraceBlockSpans(rest, content, adapters.CSHARP_SPAN_OPTS))
     return { symbols, refs: r.refs }
   }
 

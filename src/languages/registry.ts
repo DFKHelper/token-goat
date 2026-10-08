@@ -8,7 +8,7 @@
 
 import type { RegexLanguage } from '../language_specs.js'
 import type { SymbolEntry } from '../parser_types.js'
-import { assignBraceBlockSpans } from './common.js'
+import { assignBraceBlockSpans, type BraceSpanOpts } from './common.js'
 import { spanUnsettled } from './body_segments.js'
 import { extractCsharp } from './csharp.js'
 import { extractPhp, maskPhpInlineHtml } from './php.js'
@@ -100,11 +100,14 @@ function sectionsToHeadingSymbols(
   }))
 }
 
+// The one copy of the C# brace-scan options: registry.ts's ADAPTER_EXTRACTORS and parser.ts's sync csharp branch both read it, so a fix to how C# strings are skipped lands in both.
+export const CSHARP_SPAN_OPTS: BraceSpanOpts = { lineComment: '//', stringEscapes: 'csharp', rawStringQuotes: true, expressionBodies: true, interpolation: 'csharp' }
+
 // One entry per adapter-backed `regex` row of src/language_specs.ts, required by the type: a new row without an extractor fails the type check. html/liquid keep their extra sectionsToHeadingSymbols composition inline.
 export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLanguage>, SymbolExtractor> = {
   csharp: (content, filePath) => {
     const { symbols, settled } = extractCsharp(content, filePath)
-    return spanUnsettled(symbols, settled, (rest) => assignBraceBlockSpans(rest, content, { lineComment: '//', stringEscapes: 'csharp', rawStringQuotes: true, expressionBodies: true, interpolation: 'csharp' }))
+    return spanUnsettled(symbols, settled, (rest) => assignBraceBlockSpans(rest, content, CSHARP_SPAN_OPTS))
   },
   // Both halves walk the SAME masked text: the brace pass used to span raw file content, so it nested on braces in the inline HTML the extractor is no longer reading.
   php: (content, filePath) => {

@@ -15,7 +15,7 @@ import {
   type AdapterImport,
   makeLineSymbol,
 } from './common.js'
-import { bodySegments, endOpenMember, type BodySegment, type OpenMember } from './body_segments.js'
+import { bodyResumeAt, bodySegments, endOpenMember, type BodySegment, type OpenMember } from './body_segments.js'
 
 // PHP keywords are case-insensitive (PHP Manual, "Language Reference" > "Classes and Objects" > "The Basics", and "Functions" > "User-defined functions"), so `Class Repo`, `Public Function run()` and `Var $x` are legal and still turn up in older code. Matching them case-sensitively dropped the entire declaration, and with it every member the class context would have scoped. Each matcher below therefore carries `i`, which changes only the literal keywords: every capture here is `[A-Za-z_]`/`[\w\\]`/`[^'"]`, already case-agnostic, so a name is still indexed with the exact case the source wrote it in.
 const NAMESPACE_RE = /^namespace\s+([\w\\]+)\s*;/i
@@ -57,13 +57,13 @@ const REQUIRE_RE = /^(?:require|include)(?:_once)?\s+['"]([^'"]+)['"]/i
 const ENUM_CASE_RE = /^case\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;)/i
 
 /** The member one {@link bodySegments} slice declares directly in the body of the `kind` named `parent`, or null. Runs the matchers of extractPhp's line branches, which only ever see the first declaration on a line, so a member written after a class header's `{` or after another member on the same line was dropped. The body is the slice itself, which is the whole member when it closes on this line. */
-function inlinePhpMember(text: string, kind: string, parent: string, filePath: string, lineNum: number): SymbolEntry | null {
-  const enumCaseM = kind === 'enum' ? ENUM_CASE_RE.exec(text) : null
+function inlinePhpMember(text: string, kind: string, parent: string | undefined, filePath: string, lineNum: number): SymbolEntry | null {
+  const enumCaseM = kind === 'enum' && parent !== undefined ? ENUM_CASE_RE.exec(text) : null
   if (enumCaseM) return makeLineSymbol(filePath, enumCaseM[1] ?? '', 'const', lineNum, text, parent)
   if (ANON_FN_RE.test(text)) return null
   const methM = METHOD_RE.exec(text)
-  if (methM) return makeLineSymbol(filePath, methM[1] ?? '', 'method', lineNum, text, parent)
-  const propM = PROP_RE.exec(text)
+  if (methM) return makeLineSymbol(filePath, methM[1] ?? '', parent === undefined ? 'function' : 'method', lineNum, text, parent)
+  const propM = parent === undefined ? null : PROP_RE.exec(text)
   if (propM) return makeLineSymbol(filePath, propM[1] ?? '', 'var', lineNum, text, parent)
   const constM = CONST_RE.exec(text)
   if (constM) return makeLineSymbol(filePath, constM[1] ?? '', 'const', lineNum, text, parent)
@@ -120,15 +120,19 @@ export function extractPhp(
   let lineMembers: SymbolEntry[] = []
   // The last member on a line whose block was still open at the end of it.
   let openMember: OpenMember | null = null
+  // The last member on a line whose signature ended it with no `{` yet (`public function m()`), and the brace depth inside its block: when the next line opens with `{` the member's block starts there.
+  let pendingBrace: OpenMember | null = null
   // Returns the member left open at the end of the line, if any.
-  const queueMembers = (segs: readonly BodySegment[], line: string, kind: string, parent: string, lineNum: number, bodyDepth: number): OpenMember | null => {
+  const queueMembers = (segs: readonly BodySegment[], line: string, kind: string, parent: string | undefined, lineNum: number, bodyDepth: number): OpenMember | null => {
     let open: OpenMember | null = null
     for (const seg of segs) {
-      const sym = inlinePhpMember(line.slice(seg.start, seg.end).trim(), kind, parent, filePath, lineNum)
+      const text = line.slice(seg.start, seg.end).trim()
+      const sym = inlinePhpMember(text, kind, parent, filePath, lineNum)
       if (sym === null) continue
       lineMembers.push(sym)
       settled.add(sym)
       if (seg.open) open = { sym, depth: bodyDepth + 1 }
+      else if (seg === segs[segs.length - 1] && sym.kind !== 'const' && sym.kind !== 'var' && !/[;}]$/.test(text) && stripStringLiterals(text).split('(').length === stripStringLiterals(text).split(')').length) pendingBrace = { sym, depth: bodyDepth + 1 }
     }
     return open
   }
@@ -185,14 +189,26 @@ export function extractPhp(
       topFrame[2] = true
     }
 
+    if (pendingBrace !== null) {
+      if (stripped.startsWith('{')) openMember = pendingBrace
+      pendingBrace = null
+    }
+
     if (openMember !== null && braceDepth < openMember.depth) {
       endOpenMember(symbols, settled, openMember, lineNum, lines)
       openMember = null
     }
 
     // A line directly in a type's body can hold several members (`public $a; public $b;`). The branches below index the first; the rest are queued here.
-    if (topFrame !== undefined && topFrame[2] && braceDepth - openB + closeB === topFrame[1] + 1 && preLineParenDepth === 0) {
-      openMember = queueMembers(bodySegments(braceLine, 0).slice(1), line, topFrame[3], topFrame[0], lineNum, topFrame[1] + 1) ?? openMember
+    // A line that begins inside the block of a member opened on an earlier line can close it and go on to declare more (`return 1; } function g() {}`): those are members too, found past the closing brace.
+    const bodyBase = topFrame === undefined ? 0 : topFrame[1] + 1
+    const preDepth = braceDepth - openB + closeB
+    if ((topFrame === undefined || topFrame[2]) && preDepth >= bodyBase && preLineParenDepth === 0) {
+      const resume = bodyResumeAt(braceLine, preDepth - bodyBase)
+      if (resume >= 0 && (preDepth > bodyBase || topFrame !== undefined)) {
+        const segs = bodySegments(braceLine, resume)
+        openMember = queueMembers(preDepth === bodyBase ? segs.slice(1) : segs, line, topFrame?.[3] ?? 'file', topFrame?.[0], lineNum, bodyBase) ?? openMember
+      }
     }
 
     // Pop context when we close the class brace. Only pop once bodyEntered is true - this guards multi-line class headers (`class Foo`, `implements Bar, Baz`, `{` each on their own line), where brace depth still equals the frame's start depth on the header line.

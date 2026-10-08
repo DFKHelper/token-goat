@@ -322,6 +322,7 @@ describe('Swift one-line type bodies', () => {
       'actor A1  10-10',
       'class SThree  2-6',
       'enum E1  8-8',
+      'enum_member x E1 8-8',
       'extension STwo  9-9',
       'method a SThree 2-2',
       'method b SThree 2-4',
