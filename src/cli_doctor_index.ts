@@ -216,7 +216,7 @@ export function checkSymbolCount(dbPath: string, rootDir?: string): DoctorResult
       return {
         name: 'Symbols',
         status: 'warn',
-        message: `${fileCount} file(s) indexed but 0 symbols extracted — the parser may not be running (check the worker log); try \`token-goat index --force\``,
+        message: `${countNoun(fileCount, 'file')} indexed but 0 symbols extracted — the parser may not be running (check the worker log); try \`token-goat index --force\``,
       }
     }
     // An existing-but-empty index is not healthy, it is unindexed: every surgical-read command (symbol, read, skeleton, semantic) returns nothing, which reads as a real "not found" answer rather than as missing data. This is the failure mode a scratch/isolated TOKEN_GOAT_HOME hits, so say so instead of reporting 0 of everything as ok.
@@ -230,7 +230,7 @@ export function checkSymbolCount(dbPath: string, rootDir?: string): DoctorResult
     return {
       name: 'Symbols',
       status: 'ok',
-      message: `${symbolCount} symbol(s) across ${fileCount} indexed file(s)`,
+      message: `${countNoun(symbolCount, 'symbol')} across ${countNoun(fileCount, 'indexed file')}`,
     }
   } catch (err) {
     return {
@@ -295,13 +295,13 @@ export function checkEmbeddingCoverage(dbPath: string, rootDir?: string): Doctor
     if (embeddedFiles / indexedFiles < EMBED_COVERAGE_WARN_FRACTION) {
       // Without the model nothing can be embedded, and the Embedding model check already warns about exactly that; a second warning here would count one fault twice.
       if (!modelFilesPresent()) {
-        return { name: 'Embedding coverage', status: 'ok', message: `${embeddedFiles} of ${indexedFiles} indexed file(s) (${pct}%) have embeddings; model not installed, see Embedding model` }
+        return { name: 'Embedding coverage', status: 'ok', message: `${embeddedFiles} of ${countNoun(indexedFiles, 'indexed file')} (${pct}%) have embeddings; model not installed, see Embedding model` }
       }
       return {
         name: 'Embedding coverage',
         status: 'warn',
         message:
-          `only ${embeddedFiles} of ${indexedFiles} indexed file(s) (${pct}%) have embeddings, so 'semantic' searches ` +
+          `only ${embeddedFiles} of ${countNoun(indexedFiles, 'indexed file')} (${pct}%) have embeddings, so 'semantic' searches ` +
           `those files only, and reports finding nothing in the same words it uses after searching everything.` +
           unembeddedReasonText(unembeddedReasons(dbPath, rootDir, sizeKb, cfg.indexing.max_chunks_per_file), sizeKb) +
           ` Exact symbol lookups are unaffected`,
@@ -310,7 +310,7 @@ export function checkEmbeddingCoverage(dbPath: string, rootDir?: string): Doctor
     return {
       name: 'Embedding coverage',
       status: 'ok',
-      message: `${embeddedFiles} of ${indexedFiles} indexed file(s) (${pct}%) have embeddings`,
+      message: `${embeddedFiles} of ${countNoun(indexedFiles, 'indexed file')} (${pct}%) have embeddings`,
     }
   } catch (err) {
     return {
@@ -342,7 +342,7 @@ export function checkParserFreshness(dbPath: string, rootDir?: string): DoctorRe
         name: 'Parser freshness',
         status: 'warn',
         message:
-          `${stale} of ${indexedFiles} indexed file(s) (${pct}%) were parsed by a different build of the ` +
+          `${stale} of ${countNoun(indexedFiles, 'indexed file')} (${pct}%) were parsed by a different build of the ` +
           `extraction logic, so their symbols are whatever that build extracted — 'symbol', 'read', 'outline' and ` +
           `'skeleton' answer from those rows, and the read-hook body fold declines on them. Run \`token-goat index\` ` +
           `in this project to reparse them; --force is not needed, a parser mismatch reindexes on its own`,
@@ -351,7 +351,7 @@ export function checkParserFreshness(dbPath: string, rootDir?: string): DoctorRe
     return {
       name: 'Parser freshness',
       status: 'ok',
-      message: `${currentFiles} of ${indexedFiles} indexed file(s) match the running parser`,
+      message: `${currentFiles} of ${countNoun(indexedFiles, 'indexed file')} match the running parser`,
     }
   } catch (err) {
     return {
@@ -373,12 +373,12 @@ export function checkDirtyQueueHealth(dataDir: string): DoctorResult {
     return {
       name: 'Dirty queue',
       status: 'warn',
-      message: `${pendingCount} file(s) pending reindex -- the worker may be falling behind or stalled; check \`token-goat worker status\``,
+      message: `${countNoun(pendingCount, 'file')} pending reindex -- the worker may be falling behind or stalled; check \`token-goat worker status\``,
     }
   }
 
   if (!isWorkerRunning(dataDir)) {
-    return { name: 'Dirty queue', status: 'ok', message: `${pendingCount} file(s) pending (worker not running)` }
+    return { name: 'Dirty queue', status: 'ok', message: `${countNoun(pendingCount, 'file')} pending (worker not running)` }
   }
-  return { name: 'Dirty queue', status: 'ok', message: `${pendingCount} file(s) pending, worker actively draining` }
+  return { name: 'Dirty queue', status: 'ok', message: `${countNoun(pendingCount, 'file')} pending, worker actively draining` }
 }

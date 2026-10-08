@@ -64,7 +64,7 @@ describe('a failing command names itself on its first stderr line', () => {
   it('leads with the error and puts the extra-argument note after it', () => {
     const { lines } = fail(['symbol', 'zzzNope', 'extra1'])
     expect(lines[0]).toBe('token-goat: No matches for "zzzNope"')
-    expect(lines.at(-1)).toBe('Note: 1 extra spec argument(s) ignored (extra1). Run symbol once per spec.')
+    expect(lines.at(-1)).toBe('Note: 1 extra spec argument ignored (extra1). Run symbol once per spec.')
   })
 
   it('leaves a --json failure body unprefixed so it still parses', () => {

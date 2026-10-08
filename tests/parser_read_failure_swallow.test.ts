@@ -233,7 +233,7 @@ describe('cmdIndex per-file failure handling (regression)', () => {
 
     const output = stderrChunks.join('')
     expect(output.match(/failed to index/g)).toHaveLength(1)
-    expect(output).toContain('and 1 other file(s)')
+    expect(output).toContain('and 1 other file')
   })
 
   // Regression: cmdIndex's per-file loop counted failures but never set process.exitCode, so a run where every single file failed (indexed: 0, failed: N -- a completely broken index) still exited 0. Any script gating on `$?` after `token-goat index` had no way to detect a total failure. Forces the only file in the walk to throw on read and asserts a nonzero exit code is set; the control test below confirms a normal successful run still exits 0.

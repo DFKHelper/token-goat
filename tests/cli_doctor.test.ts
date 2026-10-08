@@ -973,7 +973,7 @@ describe('cli_doctor', () => {
     it('returns ok with zero pending when the queue file does not exist', () => {
       const result = checkDirtyQueueHealth(tempDir)
       expect(result.status).toBe('ok')
-      expect(result.message).toContain('0 file(s) pending')
+      expect(result.message).toContain('0 files pending')
     })
 
     it('returns ok (worker not running) when the queue has entries but no worker process is alive', () => {
@@ -983,7 +983,7 @@ describe('cli_doctor', () => {
 
       const result = checkDirtyQueueHealth(tempDir)
       expect(result.status).toBe('ok')
-      expect(result.message).toContain('2 file(s) pending')
+      expect(result.message).toContain('2 files pending')
       expect(result.message).toContain('worker not running')
     })
 
@@ -994,7 +994,7 @@ describe('cli_doctor', () => {
       fs.writeFileSync(queuePath, 'a.ts\na.ts\nb.ts\n')
 
       const result = checkDirtyQueueHealth(tempDir)
-      expect(result.message).toContain('2 file(s) pending')
+      expect(result.message).toContain('2 files pending')
     })
 
     it('warns when the backlog exceeds the threshold, even with the worker running', () => {
@@ -1004,7 +1004,7 @@ describe('cli_doctor', () => {
 
       const result = checkDirtyQueueHealth(tempDir)
       expect(result.status).toBe('warn')
-      expect(result.message).toContain('501 file(s) pending')
+      expect(result.message).toContain('501 files pending')
     })
 
     it('returns ok when the worker is running and its heartbeat is fresh', () => {

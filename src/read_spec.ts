@@ -84,7 +84,7 @@ export function extraFileArgsNote(
   opts: { noun?: 'file' | 'spec'; mergeable?: boolean } = {},
 ): string {
   const noun = opts.noun ?? 'file'
-  const head = `Note: ${extras.length} extra ${noun} argument(s) ignored (${extras.join(', ')}).`
+  const head = `Note: ${countNoun(extras.length, `extra ${noun} argument`)} ignored (${extras.join(', ')}).`
   // An unquoted path holding spaces reaches the CLI split into words; when the words rejoined with spaces name a real file, that path is what was meant, so suggest it quoted rather than a comma list of its fragments.
   const spaced = [first, ...extras].join(' ')
   if (fileExists(expandSpecPath(noun === 'spec' ? specFilePart(spaced) : spaced))) return `${head} Together they make one ${noun === 'spec' ? 'spec' : 'path'} holding spaces, which a shell splits unless it is quoted: token-goat ${command} ${quotedArg(spaced)}`

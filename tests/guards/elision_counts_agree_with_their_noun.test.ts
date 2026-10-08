@@ -64,3 +64,26 @@ describe('elision counts agree with their noun', () => {
     expect(flagged("`[... ${countNoun(extra, 'more item')} not shown]`")).toBe(false)
   })
 })
+
+/** A count printed as `3 file(s)` reads wrong at 1 and at 0 alike; the same counts go through countNoun. Checked on the files whose messages were cleaned of the spelling, so a new one cannot slip back in; the rest of src (tool_filters excepted, which match other tools' own text) still carries some. */
+const PARENTHESIZED_PLURAL_RE = /^[^'`"]*['`"].*\b[a-z]{3,}\((?:s|es)\)(?=[ .,:;'`]|$)/
+const PLURAL_CLEAN_FILES = ['cli.ts', 'cli_audit.ts', 'cli_doctor_index.ts', 'read_spec.ts']
+
+function parenthesizedPlurals(text: string): string[] {
+  return text.split('\n').filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line) && PARENTHESIZED_PLURAL_RE.test(line))
+}
+
+describe('counts are not spelled with a parenthesized plural', () => {
+  it.each(PLURAL_CLEAN_FILES)('%s has no "word(s)" in its messages', (name) => {
+    expect(parenthesizedPlurals(fs.readFileSync(path.join(SRC_DIR, name), 'utf8'))).toEqual([])
+  })
+
+  it('flags the shapes the defect takes and passes the fixed and the unrelated', () => {
+    // HAND-DERIVED: the spellings removed from cli.ts, cli_audit.ts and cli_doctor_index.ts, the countNoun form that replaces them, and a call named like a noun.
+    expect(parenthesizedPlurals('const m = `${n} file(s) pending`')).toHaveLength(1)
+    expect(parenthesizedPlurals("fixes.push('Disable the server(s) you do not use')")).toHaveLength(1)
+    expect(parenthesizedPlurals("const m = `${countNoun(n, 'file')} pending`")).toHaveLength(0)
+    expect(parenthesizedPlurals('process.stdout.write(s)')).toHaveLength(0)
+    expect(parenthesizedPlurals('// the old spelling was file(s)')).toHaveLength(0)
+  })
+})

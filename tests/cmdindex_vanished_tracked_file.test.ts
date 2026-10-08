@@ -65,7 +65,7 @@ describe('cmdIndex and a tracked file that is gone from the worktree', () => {
     // The run that notices the deletion. One file is unchanged and one is gone, so nothing at all was indexed: the count must say so rather than crediting the file it could not read.
     const first = await captureIndex({ dbPath })
     expect(first, 'nothing was indexed on this run').toContain('Indexed 0 files into the symbol index.')
-    expect(first).toContain('Pruned 1 deleted file(s).')
+    expect(first).toContain('Pruned 1 deleted file.')
     expect(first, 'the vanished file must not be counted as indexed').not.toContain('Indexed 1 file ')
     expect(querySymbols({ name: 'zqGone', limit: 10 }, dbPath).length).toBe(0)
     expect(querySymbols({ name: 'zqStays', limit: 10 }, dbPath).length).toBe(1)
@@ -77,7 +77,7 @@ describe('cmdIndex and a tracked file that is gone from the worktree', () => {
     // The run after. Its rows are already pruned, so there is no longer even a prune to explain a non-zero number -- this is the run where the old count was purely phantom, and it repeated forever, because a deleted file stays tracked and absent indefinitely.
     const second = await captureIndex({ dbPath })
     expect(second).toContain('Indexed 0 files into the symbol index.')
-    expect(second).toContain('Skipped 1 unchanged file(s).')
+    expect(second).toContain('Skipped 1 unchanged file.')
     expect(second).not.toContain('Pruned')
   })
 

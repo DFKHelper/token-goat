@@ -449,7 +449,7 @@ export async function cmdIndex(
   for (const [message, group] of failureGroups) {
     err(
       `token-goat: index: failed to index ${echoedValue(group.example)}: ${message}` +
-        (group.count > 1 ? ` (and ${group.count - 1} other file(s))` : ''),
+        (group.count > 1 ? ` (and ${countNoun(group.count - 1, 'other file')})` : ''),
     )
   }
   const pruned = pruneDeletedFiles(resolveIndexPath(root), dbPath)
@@ -457,9 +457,9 @@ export async function cmdIndex(
   recordIndexedRoot(root, dbPath)
   out(
     `Indexed ${countNoun(indexed, 'file')} into the symbol index.` +
-      `${skipped > 0 ? ` Skipped ${skipped} unchanged file(s).` : ''}` +
-      `${pruned > 0 ? ` Pruned ${pruned} deleted file(s).` : ''}` +
-      `${failed > 0 ? ` Failed to index ${failed} file(s) (see stderr).` : ''}`,
+      `${skipped > 0 ? ` Skipped ${countNoun(skipped, 'unchanged file')}.` : ''}` +
+      `${pruned > 0 ? ` Pruned ${countNoun(pruned, 'deleted file')}.` : ''}` +
+      `${failed > 0 ? ` Failed to index ${countNoun(failed, 'file')} (see stderr).` : ''}`,
   )
   // The files left without an embed go on the worker's dirty queue, which wakes a worker that is running and starts one that is not; the worker is also the process whose downloads go through the proxy. Leaving them to its backlog sweep was not enough: the sweep walks the index once per worker start, so a worker an earlier hook started had finished that walk before this run began, and the files stayed out of `semantic` until it next restarted.
   if (leftForWorker.length > 0) enqueueDirtyPathsSafe(leftForWorker, { alreadyResolved: true })

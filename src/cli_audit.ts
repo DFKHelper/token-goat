@@ -17,6 +17,7 @@ import {
 import { displaySafeJson } from './paths.js'
 import { writeCommandFailure } from './command_error.js'
 import { echoedValue } from './hint_suggestion_guard.js'
+import { countNoun } from './util.js'
 
 export interface AuditCommandOptions {
   project?: string | undefined
@@ -37,7 +38,7 @@ export function buildFeedbackCardFromClaude(report: WasteReport): MaintainerFeed
 
   if (report.neverTouchedAgain.length > 0) {
     const files = report.neverTouchedAgain.map((f) => path.basename(f.filePath)).join(', ')
-    preAudit.push(`Whole-file reads without reuse: ${files} (${report.neverTouchedAgain.length} file(s) read once via Read)`)
+    preAudit.push(`Whole-file reads without reuse: ${files} (${countNoun(report.neverTouchedAgain.length, 'file')} read once via Read)`)
     fixes.push('Prefer `token-goat symbol` or `read "file::symbol"` instead of reading whole files.')
   }
 
@@ -79,22 +80,22 @@ export function buildFeedbackCardFromCopilot(report: CopilotWasteReport): Mainta
     const heavy = report.mcpTools.servers.filter((s) => s.estimatedTokens > 1000)
     if (heavy.length > 0 || totalMcpTokens > 1500) {
       const details = report.mcpTools.servers
-        .map((s) => `${s.serverName} (${s.toolCount} tool(s), ~${s.estimatedTokens.toLocaleString()} tok/turn)`)
+        .map((s) => `${s.serverName} (${countNoun(s.toolCount, 'tool')}, ~${s.estimatedTokens.toLocaleString()} tok/turn)`)
         .join(', ')
       const turns = Math.max(1, report.turns)
       const cumulative = totalMcpTokens * turns
       preAudit.push(
-        `High fixed MCP tool definition overhead: ${details}; total ~${totalMcpTokens.toLocaleString()} tok/turn re-sent across ${turns} turn(s) (~${cumulative.toLocaleString()} cumulative tokens).`
+        `High fixed MCP tool definition overhead: ${details}; total ~${totalMcpTokens.toLocaleString()} tok/turn re-sent across ${countNoun(turns, 'turn')} (~${cumulative.toLocaleString()} cumulative tokens).`
       )
       const unused = unusedMcpServers(report)
       if (unused === null) {
         const heavyNames = (heavy.length > 0 ? heavy : report.mcpTools.servers).map((s) => s.serverName).join(', ')
         fixes.push(
-          `Disable the MCP server(s) you do not use among ${heavyNames} with 'copilot mcp disable <name>', or exclude individual tools with '--excluded-tools'. This session's log records no tool calls, so it cannot say which went unused.`
+          `Disable any MCP server you do not use among ${heavyNames} with 'copilot mcp disable <name>', or exclude individual tools with '--excluded-tools'. This session's log records no tool calls, so it cannot say which went unused.`
         )
       } else if (unused.length > 0) {
         const commands = unused.map((s) => `'copilot mcp disable ${s.serverName}' (~${s.estimatedTokens.toLocaleString()} tok/turn)`).join(', ')
-        fixes.push(`Disable the MCP server(s) this session never called: ${commands}. ${MCP_DISABLE_NOTE}`)
+        fixes.push(`Disable ${unused.length === 1 ? 'the MCP server' : 'the MCP servers'} this session never called: ${commands}. ${MCP_DISABLE_NOTE}`)
       }
     }
   }
@@ -108,7 +109,7 @@ export function buildFeedbackCardFromCopilot(report: CopilotWasteReport): Mainta
   }
 
   return {
-    taskSummary: `Copilot CLI session (${report.turns} turn(s) recorded in ${report.sessionId}).`,
+    taskSummary: `Copilot CLI session (${countNoun(report.turns, 'turn')} recorded in ${report.sessionId}).`,
     preAuditFindings: preAudit,
     auditExecutionFindings: [],
     recommendedFix: fixes,

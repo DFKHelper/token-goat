@@ -129,7 +129,7 @@ describe('buildFeedbackCardFromCopilot', () => {
     const card = buildFeedbackCardFromCopilot(mockReport(null))
     expect(card.preAuditFindings[0]).toContain('Repeated prompt blocks across turns: custom_instruction')
     expect(card.preAuditFindings[1]).toContain('High fixed MCP tool definition overhead: heavy-mcp')
-    expect(card.preAuditFindings[1]).toContain('10 tool(s), ~3,000 tok/turn')
+    expect(card.preAuditFindings[1]).toContain('10 tools, ~3,000 tok/turn')
     expect(card.preAuditFindings[1]).toContain('~15,000 cumulative tokens')
     // With no tool events in the log, the card must not claim the server went unused.
     expect(card.recommendedFix[1]).toContain('cannot say which went unused')

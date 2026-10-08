@@ -97,7 +97,7 @@ describe('extra positional arguments are reported, never dropped in silence', ()
   for (const c of CASES) {
     it(`${c.name} names the dropped argument`, async () => {
       const output = await runCli(c.argv())
-      expect(output).toContain(`1 extra ${c.noun} argument(s) ignored`)
+      expect(output).toContain(`1 extra ${c.noun} argument ignored`)
       // The dropped value itself, not just a count: a bare count leaves the caller guessing which of the arguments it typed was the one that never ran.
       expect(output).toContain(c.dropped())
     })
@@ -185,17 +185,17 @@ describe('extra positional arguments are reported, never dropped in silence', ()
 
   it('prints no note when a single argument was given', async () => {
     const output = await runCli(['read', `${fileA}::alpha`])
-    expect(output).not.toContain('argument(s) ignored')
+    expect(output).not.toContain(' ignored (')
   })
 
   it('prints no note for the comma form these commands point at', async () => {
     const output = await runCli(['read', `${fileA}::alpha,${fileB}::beta`])
-    expect(output).not.toContain('argument(s) ignored')
+    expect(output).not.toContain(' ignored (')
   })
 
   it('counts and lists every dropped argument, not just the first', async () => {
     const output = await runCli(['outline', fileA, fileB, docA])
-    expect(output).toContain('2 extra file argument(s) ignored')
+    expect(output).toContain('2 extra file arguments ignored')
     expect(output).toContain(fileB)
     expect(output).toContain(docA)
   })
