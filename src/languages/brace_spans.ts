@@ -28,6 +28,8 @@ export interface BraceSpanOpts {
   rRawStrings?: boolean
   /** See {@link BraceScanOpts.lineStringPrefix}. */
   lineStringPrefix?: string
+  /** See {@link BraceScanOpts.symbolLiterals}. */
+  symbolLiterals?: boolean
   /** Blank this language's multi-line-capable string literals before walking braces, via {@link maskMultilineStrings}. The per-literal {@link BraceScanOpts} flags cover the forms whose delimiters are fixed; this covers the ones whose closer is decided by the opener, which a character-at-a-time walk cannot recognise: a PHP heredoc (`<<<EOT`) and a Swift raw string (`#"..."#`). A `}` inside either is text, and without this it decrements the brace depth and ends the enclosing function at that line. The extractors for those languages already mask with the same function to find declarations, so this makes the span walk read the same text they did. */
   multilineLang?: MultilineStringLang
   /** See {@link BraceScanOpts.interpolation}. */
@@ -52,6 +54,8 @@ export interface BraceScanOpts {
   nestedBlockComments?: boolean
   /** Whether `"""` opens a triple-quoted string that runs, verbatim, to the next `"""`. Kotlin, Scala, Swift and Dart all have one; C, C++, C#, Java, PHP and PowerShell do not, and for those three adjacent quotes mean something else entirely. Without this the scan reads `"""` as three ordinary quotes, so a lone `"` inside the literal (`"""5" wide"""`) flips the walk's idea of what is code, and a trailing backslash (`"""C:\Users\"""`, legal because these literals take no escapes) reads as an escaped quote and swallows the rest of the file -- either way the enclosing symbol never gets its block span. */
   tripleQuote?: boolean
+  /** Scala: a `'` that does not open a character literal (`'sym`) is an ordinary character, not a string opener, and a character literal (`'"'`, `'{'`) is skipped whole. Without it a lone symbol literal opens a quote that swallows the rest of the file. */
+  symbolLiterals?: boolean
   /** A prefix that opens a string literal running to the end of the line, with no escape sequences and no closing delimiter. Zig's multi-line string is written as a `\\` at the start of each line; its content is arbitrary text, so a `}` inside one is not a brace. Without this the scan reads that content as code and the enclosing symbol's span ends at the first `}` the text happens to contain. */
   lineStringPrefix?: string
   /** Literals that begin with a line-comment prefix but are not a comment, checked first so the prefix does not match them. PHP 8 spells an attribute `#[Attr]`, which starts with its `#` comment prefix; treating it as a comment skips to end of line and loses an opening brace that shares the line, as in `function f(#[SensitiveParameter] string $p) {`. */
@@ -220,6 +224,11 @@ export function findMatchingBraceEndLine(
       i = end === -1 ? content.length : end - 1
       continue
     }
+    if (ch === "'" && opts?.symbolLiterals === true) {
+      const charLen = scalaCharLiteralLength(content, i)
+      if (charLen > 0) i += charLen - 1
+      continue
+    }
     if (ch === '"' || ch === "'" || (backtick && ch === '`')) {
       quote = ch
       verbatim = escapes === 'csharp' && ch === '"' && opensCsharpVerbatimString(content, i)
@@ -272,6 +281,7 @@ export function assignBraceBlockSpans(
     ...(opts.interpolation === undefined ? {} : { interpolation: opts.interpolation }),
     ...(blockComment === undefined ? {} : { blockComment, nestedBlockComments }),
     ...(lineStringPrefix === undefined ? {} : { lineStringPrefix }),
+    ...(opts.symbolLiterals === true ? { symbolLiterals: true } : {}),
     ...(opts.lineCommentExceptions === undefined ? {} : { lineCommentExceptions: opts.lineCommentExceptions }),
   }
   return symbols.map((sym) => {
@@ -713,6 +723,11 @@ function findBlockOpenBrace(
       const end = closingQuoteRunEnd(content, i + 3, tripleAt[0] ?? '"', 3, opts?.tripleQuoteRunClose ?? 'last')
       if (end === -1) return null
       i = end - 1
+      continue
+    }
+    if (ch === "'" && opts?.symbolLiterals === true) {
+      const charLen = scalaCharLiteralLength(content, i)
+      if (charLen > 0) i += charLen - 1
       continue
     }
     if (ch === '"' || ch === "'") {

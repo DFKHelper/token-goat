@@ -313,7 +313,7 @@ export function extractScala(
     }
 
     // Strip /* */ block-comment spans (state carried across lines via inComment) so braces inside commented-out code are not counted toward braceDepth.
-    const { code: blockStripped, inComment: nextInComment } = stripBlockCommentSpan(mlLine, inComment)
+    const { code: blockStripped, inComment: nextInComment } = stripBlockCommentSpan(mlLine, inComment, SCALA_STRIP)
     inComment = nextInComment
 
     // Strip a trailing `//` line comment so braces/text after it are ignored.

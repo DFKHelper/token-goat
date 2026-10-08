@@ -368,25 +368,25 @@ export function isInsideStringLiteral(line: string, index: number, from = 0, opt
  * inside a string literal or after a `//`, for the reasons the two span strippers below spell out.
  * Shared by both so they can never disagree about what counts as an opener.
  */
-function nextBlockCommentOpen(line: string, from: number): number {
+function nextBlockCommentOpen(line: string, from: number, opts: StripStringOpts = {}): number {
   const lineCommentIdx = lineCommentStartIndex(line, ['//'], from)
   let open = line.indexOf('/*', from)
   while (
     open !== -1 &&
-    (isInsideStringLiteral(line, open, from) || (lineCommentIdx !== -1 && open >= lineCommentIdx))
+    (isInsideStringLiteral(line, open, from, opts) || (lineCommentIdx !== -1 && open >= lineCommentIdx))
   ) {
     open = line.indexOf('/*', open + 1)
   }
   return open
 }
 
-export function stripBlockCommentSpan(line: string, inComment: boolean): { code: string; inComment: boolean } {
+export function stripBlockCommentSpan(line: string, inComment: boolean, opts: StripStringOpts = {}): { code: string; inComment: boolean } {
   let code = ''
   let j = 0
   let comment = inComment
   while (j < line.length) {
     if (!comment) {
-      const open = nextBlockCommentOpen(line, j)
+      const open = nextBlockCommentOpen(line, j, opts)
       if (open === -1) {
         code += line.slice(j)
         break
@@ -426,13 +426,13 @@ export function stripBlockCommentSpan(line: string, inComment: boolean): { code:
  * Callers in non-nesting languages must keep using `stripBlockCommentSpan`: there, a `/*` inside a
  * comment is ordinary comment text and counting it would leave the span open forever.
  */
-export function stripNestedBlockCommentSpan(line: string, depth: number): { code: string; depth: number } {
+export function stripNestedBlockCommentSpan(line: string, depth: number, opts: StripStringOpts = {}): { code: string; depth: number } {
   let code = ''
   let j = 0
   let d = depth
   while (j < line.length) {
     if (d === 0) {
-      const open = nextBlockCommentOpen(line, j)
+      const open = nextBlockCommentOpen(line, j, opts)
       if (open === -1) {
         code += line.slice(j)
         break
