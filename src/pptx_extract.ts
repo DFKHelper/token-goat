@@ -1,6 +1,7 @@
 /** PowerPoint (.pptx) narrow-slice reader. Slide XML lives at `ppt/slides/slideN.xml`, one file per slide, each a `p:sld > p:cSld > p:spTree` tree of shapes (`p:sp`); each shape has an optional `p:txBody` of paragraphs (`a:p`) of runs (`a:r`) of text (`a:t`). A slide's title placeholder is the shape whose `p:nvSpPr.p:nvPr.p:ph.@_type` is `title`/`ctrTitle`. Speaker notes live in a sibling `ppt/notesSlides/notesSlideN.xml` part, in the shape whose `p:ph.@_type` is `body` (the other notes-slide shape is a non-text slide-image placeholder). */
 
 import { loadConfig } from './config.js'
+import { findOpenTags } from './languages/markup_scan.js'
 import { assertOoxmlWithinDeadline, collectElements, collectParagraphTexts, decodeZipEntry, inlineMathRuns, NotAnOfficeDocumentError, ooxmlPartBudget, ooxmlWorkDeadline, parseOoxmlPart, readOoxmlZip, sortNumberedParts, type OoxmlPartBudget } from './ooxml_extract.js'
 import { compileGuardedRegex } from './regex_guard.js'
 import { redactSecrets } from './secret_redact.js'
@@ -137,8 +138,15 @@ async function notesPathFor(entries: Record<string, Uint8Array>, slidePath: stri
 }
 
 /** PowerPoint keeps an equation in an `a14:m` (Math) element inside an `mc:Choice Requires="a14"` branch, holding an OMML `m:oMathPara` ([MS-ODRAWXML]). Rewriting the math into an `a:r` run leaves that run under `a14:m`, one level below the `a:p` that owns the surrounding runs, which puts it back out of document order against any sibling `a:r`; dropping the wrapper makes it a direct paragraph child. */
-function inlineSlideMath(xml: string): string {
-  return inlineMathRuns(xml, '<a:r><a:t xml:space="preserve">', '</a:t></a:r>').replace(/<a14:m(?:\s[^>]*)?>/g, '').replace(/<\/a14:m>/g, '')
+export function inlineSlideMath(xml: string): string {
+  const withRuns = inlineMathRuns(xml, '<a:r><a:t xml:space="preserve">', '</a:t></a:r>')
+  let bare = ''
+  let pos = 0
+  for (const tag of findOpenTags(withRuns, /<a14:m(?=[\s>])/g)) {
+    bare += withRuns.slice(pos, tag.start)
+    pos = tag.end
+  }
+  return (bare + withRuns.slice(pos)).replace(/<\/a14:m>/g, '')
 }
 
 async function parseSlide(entries: Record<string, Uint8Array>, path: string, budget: OoxmlPartBudget): Promise<unknown> {

@@ -18,6 +18,10 @@ import { buildLineIndex, offsetToLine } from '../../src/languages/common.js'
 import { extractHtml, makeTagScanner } from '../../src/languages/html.js'
 import { addFlowElements, directChildText, elementBlocks, extractSalesforceMetadata, propertyElements, rootElement, xmlText } from '../../src/languages/salesforce_metadata.js'
 import { extractTagBlocks, extractVue } from '../../src/languages/sfc_idx.js'
+import { stripMarkupForText } from '../../src/html_query.js'
+import { inlineMathRuns } from '../../src/ooxml_extract.js'
+import { inlineSlideMath } from '../../src/pptx_extract.js'
+import { parseXmlTree, xmlTokens, xmlTokenSource } from '../../src/xml_query.js'
 
 import { runBundle, tgIsolatedEnv } from '../helpers/bundle.js'
 
@@ -391,6 +395,16 @@ describe('differential: the hand-written scans return what the old patterns retu
 })
 
 // Padding between starts, so the quadratic term (each start re-reading the rest) outweighs the linear per-start cost and a quadratic scan lands near 4 rather than 3.
+/** The largest growth ratio over up to three measurements: a negative control asks whether the old pattern CAN exceed the bound, and load on the machine only ever lowers a quadratic ratio below its true value, so one slow neighbour must not turn a control red. */
+function worstGrowth(make: (n: number) => string, run: (text: string) => unknown, n: number): { ratio: number; small: number; large: number } {
+  let worst = growth(make, run, n)
+  for (let attempt = 1; attempt < 3 && worst.ratio <= BOUND; attempt++) {
+    const g = growth(make, run, n)
+    if (g.ratio > worst.ratio) worst = g
+  }
+  return worst
+}
+
 const PAD = ' '.repeat(60)
 const FLOW_PATH = 'force-app/main/default/flows/F.flow-meta.xml'
 const OBJECT_PATH = 'force-app/main/default/objects/O/O.object-meta.xml'
@@ -433,17 +447,141 @@ describe('the language-file scanners grow linearly on malformed markup', () => {
 
   // Negative control: each old pattern is flagged by the same measurement on the shape that breaks it, so the bound above is shown able to fail.
   const OLD: Record<string, Shape> = {
-    'old rootElement on <a starts': { make: (n) => '<a'.repeat(n), run: oldRootElement },
+    'old rootElement on <a starts': { make: (n) => '<a'.repeat(n), run: oldRootElement, n: 6000 },
     'old xmlText on <fullName starts': { make: (n) => ('<fullName>' + PAD).repeat(n), run: (s) => oldXmlText(s, 'fullName') },
     'old propertyElements on <property> starts': { make: (n) => ('<property name="p">' + PAD).repeat(n), run: oldPropertyElements },
     'old directChildText on n nested names': { make: (n) => '<f><name>a</name>'.repeat(n), run: (s) => oldDirectChildText(s, 'name'), n: 1000 },
     'old html tag grammar on <a x starts': { make: (n) => '<a x'.repeat(n), run: oldHtmlTags },
-    'old tag-block pattern on <script starts': { make: (n) => '<script a'.repeat(n), run: (s) => oldTagBlocks(s, 'script') },
+    'old tag-block pattern on <script starts': { make: (n) => '<script a'.repeat(n), run: (s) => oldTagBlocks(s, 'script'), n: 5000 },
   }
   for (const [label, { make, run, n = 2000 }] of Object.entries(OLD)) {
     it(`negative control: ${label} fails the bound`, () => {
-      const g = growth(make, run, n)
+      const g = worstGrowth(make, run, n)
       expect(g.ratio, `old pattern n=${n} -> ${2 * n}: ${g.small.toFixed(2)} ms -> ${g.large.toFixed(2)} ms`).toBeGreaterThan(BOUND)
+    })
+  }
+})
+
+// ---- Family B: the query commands (html-query, docx/pptx math, xml-query) ----
+function oldNodeTextStrip(raw: string): string {
+  return raw
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+}
+
+const OLD_MATH_PARA_RE = /<m:oMathPara(?:\s[^>]*)?>([\s\S]*?)<\/m:oMathPara>/g
+const OLD_MATH_RE = /<m:oMath(?:\s[^>]*)?>([\s\S]*?)<\/m:oMath>/g
+const OLD_MATH_TEXT_RE = /<m:t(?:\s[^>]*)?>([^<]*)<\/m:t>/g
+
+function oldInlineMathRuns(xml: string, openRun: string, closeRun: string): string {
+  const mathRunText = (fragment: string): string => {
+    let out = ''
+    for (const m of fragment.matchAll(OLD_MATH_TEXT_RE)) out += m[1] as string
+    return out
+  }
+  const asRun = (text: string): string => (text.length > 0 ? `${openRun}${text}${closeRun}` : '')
+  const withParas = xml.replace(OLD_MATH_PARA_RE, (_whole, inner: string) => {
+    const lines: string[] = []
+    for (const m of inner.matchAll(OLD_MATH_RE)) {
+      const text = mathRunText(m[1] as string)
+      if (text.length > 0) lines.push(text)
+    }
+    return asRun(lines.length > 0 ? lines.join(' ') : mathRunText(inner))
+  })
+  return withParas.replace(OLD_MATH_RE, (_whole, inner: string) => asRun(mathRunText(inner)))
+}
+
+function oldInlineSlideMath(xml: string): string {
+  return oldInlineMathRuns(xml, '<a:r><a:t xml:space="preserve">', '</a:t></a:r>').replace(/<a14:m(?:\s[^>]*)?>/g, '').replace(/<\/a14:m>/g, '')
+}
+
+function oldXmlTokens(scanText: string): Array<{ index: number; end: number; groups: Array<string | undefined> }> {
+  const re = new RegExp(xmlTokenSource(), 'gi')
+  const out: Array<{ index: number; end: number; groups: Array<string | undefined> }> = []
+  let m: RegExpExecArray | null
+  while ((m = re.exec(scanText)) !== null) out.push({ index: m.index, end: re.lastIndex, groups: [...m] })
+  return out
+}
+
+function newXmlTokens(scanText: string): ReturnType<typeof oldXmlTokens> {
+  return [...xmlTokens(scanText)].map((t) => ({ index: t.match.index, end: t.end, groups: [...t.match] }))
+}
+
+describe('differential: the query-command scans return what the old patterns returned', () => {
+  // Provenance: HAND-DERIVED. Random sequences of markup fragments from a fixed seed; the expected value is the old pattern's own answer, kept verbatim above, which predates the change.
+  it('the text an html node yields once comments, script, style and tags are stripped', () => {
+    const tokens = ['<!--', '-->', '<!-->', '<script', '</script>', '</SCRIPT>', '<style', '</style>', '<p>', '</p>', '<b ', '<>', '<', '>', 'x', ' ', '\n', '&amp;', '<scripts>', '<Style x>']
+    for (const s of fuzzStrings(tokens, 11, 6000, 24)) {
+      expect(stripMarkupForText(s), JSON.stringify(s)).toEqual(oldNodeTextStrip(s))
+    }
+  })
+
+  it('inlineMathRuns', () => {
+    const tokens = ['<m:oMathPara>', '</m:oMathPara>', '<m:oMathPara a="1">', '<m:oMath>', '</m:oMath>', '<m:oMath b="2">', '<m:t>', '</m:t>', '<m:t x="1">', 'E', '=mc2', ' ', '<w:r>', '</w:r>', '<', '>', '<m:oMathParaX>', '<m:tt>']
+    for (const s of fuzzStrings(tokens, 12, 6000, 26)) {
+      expect(inlineMathRuns(s, '<w:r>', '</w:r>'), JSON.stringify(s)).toEqual(oldInlineMathRuns(s, '<w:r>', '</w:r>'))
+    }
+  })
+
+  it('inlineSlideMath, including the a14:m wrapper', () => {
+    const tokens = ['<a14:m>', '</a14:m>', '<a14:m x="1">', '<a14:mm>', '<m:oMathPara>', '</m:oMathPara>', '<m:oMath>', '</m:oMath>', '<m:t>', '</m:t>', 'x', ' ', '<', '>']
+    for (const s of fuzzStrings(tokens, 13, 6000, 24)) {
+      expect(inlineSlideMath(s), JSON.stringify(s)).toEqual(oldInlineSlideMath(s))
+    }
+  })
+
+  it('the xml tokens: comments, CDATA, processing instructions, doctype and tags, in order', () => {
+    const tokens = ['<!--', '-->', '<![CDATA[', ']]>', '<?', '?>', '<?xml v="1"?>', '<!DOCTYPE a>', '<!DOCTYPE a [', ']>', '<a', '<b:c', '</a>', '</b:c>', '>', '/>', ' x="1"', " y='2'", '"', "'", '<', ' ', 'x', '\n']
+    for (const s of fuzzStrings(tokens, 14, 6000, 26)) {
+      expect(newXmlTokens(s), JSON.stringify(s)).toEqual(oldXmlTokens(s))
+    }
+  })
+})
+
+const FAMILY_B: Record<string, Shape> = {
+  'html-query: <!-- starts with no close': { make: (n) => ('<!--' + PAD).repeat(n), run: stripMarkupForText },
+  'html-query: <script starts with no close': { make: (n) => ('<script>' + PAD).repeat(n), run: stripMarkupForText },
+  'html-query: <style starts with no close': { make: (n) => ('<style>' + PAD).repeat(n), run: stripMarkupForText },
+  'html-query: < starts with no >': { make: (n) => ('<b ' + PAD).repeat(n), run: stripMarkupForText },
+  'html-query: <> starts': { make: (n) => ('<>' + PAD).repeat(n), run: stripMarkupForText },
+  'docx: <m:oMathPara starts with no close': { make: (n) => ('<m:oMathPara>' + PAD).repeat(n), run: (s) => inlineMathRuns(s, '<w:r>', '</w:r>') },
+  'docx: <m:oMathPara a starts with no >': { make: (n) => ('<m:oMathPara a' + PAD).repeat(n), run: (s) => inlineMathRuns(s, '<w:r>', '</w:r>') },
+  'docx: <m:oMath starts with no close': { make: (n) => ('<m:oMath>' + PAD).repeat(n), run: (s) => inlineMathRuns(s, '<w:r>', '</w:r>') },
+  'docx: <m:t a starts inside one equation, one distant > and <': { make: (n) => '<m:oMath>' + ('<m:t a' + PAD).repeat(n) + '><x/></m:oMath>', run: (s) => inlineMathRuns(s, '<w:r>', '</w:r>') },
+  'docx: <m:t> starts inside one equation, no close': { make: (n) => '<m:oMath>' + ('<m:t>x' + PAD).repeat(n) + '</m:oMath>', run: (s) => inlineMathRuns(s, '<w:r>', '</w:r>') },
+  'pptx: <a14:m a starts with no >': { make: (n) => ('<a14:m a' + PAD).repeat(n), run: inlineSlideMath },
+  'xml: <!-- starts with no close': { make: (n) => '<r>' + ('<!--' + PAD).repeat(n) + '</r>', run: (s) => parseXmlTree(s) },
+  'xml: <![CDATA[ starts with no close': { make: (n) => '<r>' + ('<![CDATA[' + PAD).repeat(n) + '</r>', run: (s) => parseXmlTree(s) },
+  'xml: <? starts with no close': { make: (n) => '<r>' + ('<?p ' + PAD).repeat(n) + '</r>', run: (s) => parseXmlTree(s) },
+  'xml: <a " starts with an unpaired quote': { make: (n) => '<r>' + ('<a b="' + PAD).repeat(n) + '</r>', run: (s) => parseXmlTree(s) },
+  'xml: <!DOCTYPE " starts': { make: (n) => ('<!DOCTYPE "' + PAD).repeat(n) + '<r/>', run: (s) => parseXmlTree(s) },
+}
+
+describe('the query-command scanners grow linearly on malformed markup', () => {
+  for (const [label, { make, run }] of Object.entries(FAMILY_B)) {
+    it(label, () => {
+      const canary = growth(make, run, 300)
+      expect(canary.ratio, `canary n=300 -> 600: ${canary.small.toFixed(2)} ms -> ${canary.large.toFixed(2)} ms`).toBeLessThan(BOUND * 1.5)
+      const g = growth(make, run, 3000)
+      expect(g.ratio, `n=3000 -> 6000: ${g.small.toFixed(2)} ms -> ${g.large.toFixed(2)} ms`).toBeLessThan(BOUND)
+    })
+  }
+
+  // Negative control: the old patterns, run through the same measurement on the shape that breaks each.
+  const OLD_B: Record<string, Shape> = {
+    'old html text strip on <!-- starts': { make: (n) => ('<!--' + PAD).repeat(n), run: oldNodeTextStrip },
+    'old html text strip on < starts with no >': { make: (n) => ('<b ' + PAD).repeat(n), run: oldNodeTextStrip },
+    'old math pattern on <m:oMathPara starts': { make: (n) => ('<m:oMathPara>' + PAD).repeat(n), run: (s) => oldInlineMathRuns(s, '<w:r>', '</w:r>') },
+    'old a14:m pattern on starts with no >': { make: (n) => ('<a14:m a' + PAD).repeat(n), run: oldInlineSlideMath },
+    'old xml token pattern on <!-- starts': { make: (n) => ('<!--' + PAD).repeat(n), run: oldXmlTokens },
+    'old xml token pattern on <![CDATA[ starts': { make: (n) => ('<![CDATA[' + PAD).repeat(n), run: oldXmlTokens },
+  }
+  for (const [label, { make, run }] of Object.entries(OLD_B)) {
+    it(`negative control: ${label} fails the bound`, () => {
+      const g = worstGrowth(make, run, 2000)
+      expect(g.ratio, `old pattern n=2000 -> 4000: ${g.small.toFixed(2)} ms -> ${g.large.toFixed(2)} ms`).toBeGreaterThan(BOUND)
     })
   }
 })

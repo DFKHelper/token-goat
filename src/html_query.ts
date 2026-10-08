@@ -826,17 +826,50 @@ export function queryHtml(
   return { elements, fanned: elements.length > 1, sourceHtml: htmlText }
 }
 
+/** `text` without its `open`...`close` blocks. A block whose close never comes ends the scan: no later start has a close either, and the lazy pattern this replaces re-read the rest of the text from every such start. */
+function dropBlocks(text: string, open: RegExp, close: RegExp): string {
+  let out = ''
+  let pos = 0
+  open.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = open.exec(text)) !== null) {
+    close.lastIndex = m.index + m[0].length
+    const c = close.exec(text)
+    if (c === null) break
+    out += text.slice(pos, m.index)
+    pos = c.index + c[0].length
+    open.lastIndex = pos
+  }
+  return out + text.slice(pos)
+}
+
+/** `raw` with its comments, script and style blocks removed and every remaining tag replaced by a space, as the node text is read. */
+export function stripMarkupForText(raw: string): string {
+  const blocks = dropBlocks(dropBlocks(dropBlocks(raw, /<!--/g, /-->/g), /<script/gi, /<\/script>/gi), /<style/gi, /<\/style>/gi)
+  let out = ''
+  let pos = 0
+  let lt = blocks.indexOf('<')
+  while (lt >= 0) {
+    const gt = blocks.indexOf('>', lt + 1)
+    if (gt < 0) break
+    if (gt === lt + 1) {
+      lt = blocks.indexOf('<', lt + 1)
+      continue
+    }
+    out += blocks.slice(pos, lt) + ' '
+    pos = gt + 1
+    lt = blocks.indexOf('<', pos)
+  }
+  return out + blocks.slice(pos)
+}
+
 /** Extract clean, readable in-order text from an HtmlNode. Strips script/style blocks, comments, and tags, decoding standard HTML entities. */
 export function extractNodeText(node: HtmlNode, sourceHtml?: string): string {
   if (RAW_TEXT_TAGS.has(node.tag.toLowerCase())) return ''
 
   if (sourceHtml && node.startOffset !== undefined && node.endOffset !== undefined) {
     const raw = sourceHtml.slice(node.startOffset, node.endOffset)
-    const clean = raw
-      .replace(/<!--[\s\S]*?-->/g, '')
-      .replace(/<script[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
+    const clean = stripMarkupForText(raw)
       .replace(/&nbsp;/g, ' ')
       .replace(/&amp;/g, '&')
       .replace(/&lt;/g, '<')

@@ -14,15 +14,20 @@ export interface Element extends OpenTag {
   readonly bodyEnd: number
 }
 
-/** A `text.indexOf('>', from)` that remembers its last answer, for callers that must keep scanning past a start that failed. Calls must pass non-decreasing `from`: the first `>` at or after a later position is then the remembered one whenever it is still ahead, and a remembered "none" stays none. Without it every failed start re-reads the stretch up to the same distant `>`. */
-export function gtFinder(text: string): (from: number) => number {
+/** A `text.indexOf(ch, from)` that remembers its last answer, for callers that must keep scanning past a start that failed. Calls must pass non-decreasing `from`: the first `ch` at or after a later position is then the remembered one whenever it is still ahead, and a remembered "none" stays none. Without it every failed start re-reads the stretch up to the same distant `ch`. */
+export function charFinder(text: string, ch: string): (from: number) => number {
   let cached = -2
   return (from) => {
     if (cached === -1) return -1
     if (cached >= from) return cached
-    cached = text.indexOf('>', from)
+    cached = text.indexOf(ch, from)
     return cached
   }
+}
+
+/** {@link charFinder} for `>`. */
+export function gtFinder(text: string): (from: number) => number {
+  return charFinder(text, '>')
 }
 
 /**

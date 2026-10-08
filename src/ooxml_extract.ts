@@ -4,6 +4,7 @@ import * as fs from 'node:fs'
 
 import { DocumentRefusedError, MAX_DOCUMENT_WORK_MILLIS } from './document_refusal.js'
 import { echoedValue } from './hint_suggestion_guard.js'
+import { charFinder, findElements } from './languages/markup_scan.js'
 import { createLazyModuleLoader } from './lazy_module.js'
 import { pushAll } from './util.js'
 import { parseXml } from './xml_parser.js'
@@ -143,28 +144,54 @@ function pushTextValue(runs: string[], val: unknown): void {
   }
 }
 
-const MATH_PARA_RE = /<m:oMathPara(?:\s[^>]*)?>([\s\S]*?)<\/m:oMathPara>/g
-const MATH_RE = /<m:oMath(?:\s[^>]*)?>([\s\S]*?)<\/m:oMath>/g
-const MATH_TEXT_RE = /<m:t(?:\s[^>]*)?>([^<]*)<\/m:t>/g
+// The patterns are scanned by hand rather than as one regular expression each: `<tag(?:\s[^>]*)?>(...)</tag>` re-reads the rest of the part from every start that never closes, so a part of n unclosed starts cost n squared. See languages/markup_scan.ts for the rule they follow.
+const MATH_PARA_OPEN = /<m:oMathPara(?=[\s>])/g
+const MATH_PARA_CLOSE = /<\/m:oMathPara>/g
+const MATH_OPEN = /<m:oMath(?=[\s>])/g
+const MATH_CLOSE = /<\/m:oMath>/g
 
+/** The text of every `<m:t ...>text</m:t>` in `fragment`, concatenated. A start whose text is not followed directly by `</m:t>` is skipped without ending the scan, because a later start can still close; the finders keep each skip from re-reading the stretch up to the same `>` or `<`. */
 function mathRunText(fragment: string): string {
   let out = ''
-  for (const m of fragment.matchAll(MATH_TEXT_RE)) out += m[1] as string
+  const nextGt = charFinder(fragment, '>')
+  const nextLt = charFinder(fragment, '<')
+  const open = /<m:t(?=[\s>])/g
+  let m: RegExpExecArray | null
+  while ((m = open.exec(fragment)) !== null) {
+    const gt = nextGt(m.index + m[0].length)
+    if (gt < 0) break
+    const lt = nextLt(gt + 1)
+    if (lt < 0) break
+    if (!fragment.startsWith('</m:t>', lt)) continue
+    out += fragment.slice(gt + 1, lt)
+    open.lastIndex = lt + 6
+  }
   return out
+}
+
+/** `xml` with every `open`...`close` element replaced by `fn(body)`. */
+function replaceElements(xml: string, open: RegExp, close: RegExp, fn: (inner: string) => string): string {
+  let out = ''
+  let pos = 0
+  for (const el of findElements(xml, open, close)) {
+    out += xml.slice(pos, el.start) + fn(el.body)
+    pos = el.end
+  }
+  return out + xml.slice(pos)
 }
 
 /** Rewrites Office Math (OMML, ECMA-376-1 §22.1) into an ordinary same-named text run, at the XML-string level and before the tree is parsed. An equation is a direct sibling of the surrounding `w:r`/`a:r` runs, so its text belongs between them; but fast-xml-parser folds consecutive same-name elements into one array keyed at the position of the first, which destroys the interleaving of `w:r` and `m:oMath` the moment the part is parsed. Matching `m:t` on the parsed tree therefore appends the equation after the paragraph's tail instead of placing it inline -- the same failure already fixed for `<w:tab/>` in the docx reader. Emitting the equation as a run of the host namespace before parsing keeps it in document order. Text is copied still XML-escaped, since the parser decodes it. Word's linear view of `E=mc²` is `E=mc2`, so plain concatenation of the `m:t` runs is the faithful reading; multiple `m:oMath` under one `m:oMathPara` are separate display lines and are joined with a space. */
 export function inlineMathRuns(xml: string, openRun: string, closeRun: string): string {
   const asRun = (text: string): string => (text.length > 0 ? `${openRun}${text}${closeRun}` : '')
-  const withParas = xml.replace(MATH_PARA_RE, (_whole, inner: string) => {
+  const withParas = replaceElements(xml, MATH_PARA_OPEN, MATH_PARA_CLOSE, (inner) => {
     const lines: string[] = []
-    for (const m of inner.matchAll(MATH_RE)) {
-      const text = mathRunText(m[1] as string)
+    for (const el of findElements(inner, MATH_OPEN, MATH_CLOSE)) {
+      const text = mathRunText(el.body)
       if (text.length > 0) lines.push(text)
     }
     return asRun(lines.length > 0 ? lines.join(' ') : mathRunText(inner))
   })
-  return withParas.replace(MATH_RE, (_whole, inner: string) => asRun(mathRunText(inner)))
+  return replaceElements(withParas, MATH_OPEN, MATH_CLOSE, (inner) => asRun(mathRunText(inner)))
 }
 
 /** Collects every text-run value under `tag` (e.g. `a:t` for pptx, `w:t` for docx) anywhere in the parsed XML tree, in document order. Handles both a single run (`{tag: "text"}`) and repeated sibling runs (`{tag: ["a", "b"]}`, how fast-xml-parser folds consecutive same-name elements) since OOXML text is split across many short runs by most editors/exporters. */

@@ -62,6 +62,44 @@ export function xmlTokenScanText(text: string): string {
 // Same rule for a doctype: a SystemLiteral is quoted and may contain `>`, and stopping at the first one let a document hide an element inside one and have it read as the root.
 const XML_DOCTYPE_TOKEN = `<!DOCTYPE(?:[^>"']|"[^"]*"|'[^']*')*>`
 
+/** The source of the one pattern that tokenizes a document into tags, comments, CDATA sections, processing instructions and a doctype. The five alternatives begin with different characters after the `<`, so at any `<` at most one of them applies. The rule below guards against a class that can match half a grapheme, which is exactly what an XML name class must do: the NameChar production lists the combining marks U+0300-U+036F and the zero-width joiner U+200D as name characters in their own right, and an astral name matches as its two code units. Matching per code unit is the intent, not an oversight. */
+export function xmlTokenSource(): string {
+  return (
+    `<(\\/)?(${XML_NAME})(${XML_ATTR_REGION})(\\/)?>` +
+    `|<!--[\\s\\S]*?-->` +
+    `|<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>` +
+    `|<\\?[\\s\\S]*?\\?>` +
+    `|${XML_DOCTYPE_TOKEN}`
+  )
+}
+
+/** Every token of `scanText` in order, as the global pattern would find them, without its cost on a malformed document. A comment, CDATA section or processing instruction whose end never comes fails by reading to the end of the text, and the global pattern then tried every later start of the same kind and failed the same way: n unclosed starts cost n squared. A failed search is final (when nothing closes after one start, nothing closes after a later one), so the first miss of a kind rules out the rest of that kind. Tags and doctypes are not final in that way and are tried at every `<`. */
+export function* xmlTokens(scanText: string): Generator<{ match: RegExpExecArray; end: number }> {
+  const token = new RegExp(xmlTokenSource(), 'giy')
+  const dead = { comment: false, cdata: false, pi: false }
+  let pos = 0
+  for (;;) {
+    const lt = scanText.indexOf('<', pos)
+    if (lt < 0) return
+    pos = lt + 1
+    const next = scanText.charCodeAt(lt + 1)
+    let kind: keyof typeof dead | null = null
+    if (next === 33) {
+      if (scanText.startsWith('--', lt + 2)) kind = 'comment'
+      else if (scanText.slice(lt + 2, lt + 9).toLowerCase() === '[cdata[') kind = 'cdata'
+    } else if (next === 63) kind = 'pi'
+    if (kind !== null && dead[kind]) continue
+    token.lastIndex = lt
+    const match = token.exec(scanText)
+    if (match === null) {
+      if (kind !== null) dead[kind] = true
+      continue
+    }
+    pos = token.lastIndex
+    yield { match, end: token.lastIndex }
+  }
+}
+
 /** Decodes standard XML entities and numeric character references. */
 export function decodeXmlEntities(text: string): string {
   return text.replace(/&(?:quot|apos|lt|gt|amp|#x([0-9a-fA-F]+)|#([0-9]+));/g, (match, hex, dec) => {
@@ -164,24 +202,14 @@ export function parseXmlTree(xmlText: string): {
     return attrs
   }
 
-  // Tokenize elements, comments, CDATA, and processing instructions. The rule below guards against a class that can match half a grapheme, which is exactly what an XML name class must do: the NameChar production lists the combining marks U+0300-U+036F and the zero-width joiner U+200D as name characters in their own right, and an astral name matches as its two code units. Matching per code unit is the intent, not an oversight.
-  const tagRegex = new RegExp(
-    // eslint-disable-next-line no-misleading-character-class, regexp/no-super-linear-backtracking
-    `<(\\/)?(${XML_NAME})(${XML_ATTR_REGION})(\\/)?>` +
-      `|<!--[\\s\\S]*?-->` +
-      `|<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>` +
-      `|<\\?[\\s\\S]*?\\?>` +
-      `|${XML_DOCTYPE_TOKEN}`,
-    'gi',
-  )
+  // Tokenize elements, comments, CDATA, and processing instructions.
 
   const stack: XmlNode[] = []
   let rootNode: XmlNode | null = null
-  let match: RegExpExecArray | null
   let lastIndex = 0
   let lineScan = 0
 
-  while ((match = tagRegex.exec(scanText)) !== null) {
+  for (const { match, end: tokenEnd } of xmlTokens(scanText)) {
     const fullMatch = match[0]!
     const isClosing = match[1] === '/'
     const tagName = match[2]
@@ -202,13 +230,13 @@ export function parseXmlTree(xmlText: string): {
       if (stack.length > 0) {
         appendNodeText(stack[stack.length - 1]!, cdataContent)
       }
-      lastIndex = tagRegex.lastIndex
+      lastIndex = tokenEnd
       continue
     }
 
     if (!tagName) {
       // Comment, PI, or DOCTYPE
-      lastIndex = tagRegex.lastIndex
+      lastIndex = tokenEnd
       continue
     }
 
@@ -221,7 +249,7 @@ export function parseXmlTree(xmlText: string): {
 
     let endScan = match.index
     let endLineOffset = lineOffset
-    while (endScan < tagRegex.lastIndex) {
+    while (endScan < tokenEnd) {
       if (text.charCodeAt(endScan) === 10) endLineOffset++
       endScan++
     }
@@ -265,7 +293,7 @@ export function parseXmlTree(xmlText: string): {
       }
     }
 
-    lastIndex = tagRegex.lastIndex
+    lastIndex = tokenEnd
   }
 
   while (stack.length > 0) {
