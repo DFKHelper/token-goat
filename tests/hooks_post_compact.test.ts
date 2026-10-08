@@ -1,4 +1,5 @@
 /** post_compact measurement handler (src/hooks_compact.ts postCompactHandler). Compaction summaries were the one large thing token-goat could not see: every other number in `stats` came from a tool call a hook intercepted, and a summary arrives through none of them. Claude Code's PostCompact event hands the finished summary to a hook verbatim -- confirmed by reading the installed binary, whose hook-input schema declares `{hook_event_name: "PostCompact", trigger, compact_summary}` -- so this handler counts it. It also doubles as the canary for the undocumented channel preCompactHandler depends on. The manifest reaches the summarizing model as a PreCompact hook's raw stdout, which Claude Code's own hooks reference describes as going to a debug log. If that stops working it stops silently: the hook still succeeds, the manifest is still built, nothing fails. Counting how many manifest paths survive into the summary is what makes the failure visible. The assertions below therefore pin three separate things, because each has its own way of going quietly wrong: that a row is recorded at all, that it is recorded at ZERO savings (a measurement credited as a saving is this project's most-repeated accounting bug), and that the survival count actually discriminates -- a counter that always reports 0/0, or always reports every path as surviving, would pass a test that only checked the row exists. */
+import { mkdtempSync, rmSync } from 'node:fs'
 import { join, parse, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -42,11 +43,20 @@ function latestCompactSummaryRow(): { bytes_saved: number; tokens_saved: number;
   return rows[0]
 }
 
+// The manifest appends a reserved mem-epoch section when a `mem` binary is on PATH, and whether that spawn answers inside its limit depends on machine load. The section spends part of the character budget, so with a real `mem` the rows printed by two builds of one session differ from run to run; an empty PATH removes the host from the measurement.
+const realPath = process.env['PATH']
+let emptyPathDir = ''
+
 beforeEach(() => {
   clearModuleCaches()
+  emptyPathDir = mkdtempSync(join(tmpdir(), 'tg-postcompact-path-'))
+  process.env['PATH'] = emptyPathDir
 })
 
 afterEach(() => {
+  if (realPath === undefined) delete process.env['PATH']
+  else process.env['PATH'] = realPath
+  rmSync(emptyPathDir, { recursive: true, force: true })
   clearModuleCaches()
 })
 

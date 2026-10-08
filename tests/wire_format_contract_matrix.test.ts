@@ -23,6 +23,9 @@ function mkIsolated(prefix: string): string {
   return dir
 }
 
+// Only a bound on a hung child: one bundle spawn measured 0.9 s to 8.7 s (median 1.7 s) over 40 runs on a machine shared with other test runs, so the old 15 s could be crossed by a slow spawn alone; 60 s is seven times the slowest, and a hang still fails.
+const SPAWN_TIMEOUT_MS = 60_000
+
 interface RunResult {
   status: number | null
   stdout: string
@@ -46,7 +49,7 @@ function run(args: string[], env: NodeJS.ProcessEnv, input: string): RunResult {
     cwd: ROOT,
     env,
     encoding: 'utf8',
-    timeout: 15000,
+    timeout: SPAWN_TIMEOUT_MS,
     input,
   })
   return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
@@ -60,7 +63,7 @@ function runShim(script: string, cwd: string, eventArg: string, payload: unknown
     cwd,
     input: JSON.stringify(payload),
     encoding: 'utf8',
-    timeout: 15000,
+    timeout: SPAWN_TIMEOUT_MS,
     env,
   })
   return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }

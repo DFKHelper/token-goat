@@ -203,12 +203,14 @@ function outcome(hso: Record<string, unknown> | undefined): Outcome {
 // HAND-DERIVED from the bypass rule (in bypassPermissions the user is never prompted, and auto mode follows the same rule) and from https://code.claude.com/docs/en/permission-modes for the other modes: default, acceptEdits and plan may defer to Claude Code's own prompt, dontAsk turns that prompt into a denial, and nothing ever answers ask. The claude process is stood in for by an idle node process, whose command line the hook reads through CLAUDE_PID (FORMAT-DERIVED from claude.exe 2.1.x, which gives hooks CLAUDE_PID and CLAUDE_CODE_ENTRYPOINT).
 describe('rewrites in every permission mode (built bundle)', () => {
   const idle: ChildProcess[] = []
+  const spawned: Array<Promise<void>> = []
   let plainPid = ''
   let disallowPid = ''
 
   function fakeClaude(args: string[]): string {
     const child = spawn(process.execPath, [path.join(root, 'idle.js'), ...args], { stdio: 'ignore', windowsHide: true })
     idle.push(child)
+    spawned.push(new Promise<void>((resolve, reject) => { child.once('spawn', () => resolve()); child.once('error', reject) }))
     return String(child.pid)
   }
 
@@ -216,7 +218,8 @@ describe('rewrites in every permission mode (built bundle)', () => {
     fs.writeFileSync(path.join(root, 'idle.js'), 'setInterval(() => {}, 1 << 30)\n')
     plainPid = fakeClaude(['--resume', 'abc'])
     disallowPid = fakeClaude(['--resume', 'abc', '--disallowedTools', 'Bash(curl *)'])
-    await new Promise((resolve) => setTimeout(resolve, 300))
+    // The process has to exist, with its command line readable, before a test asks the hook to inspect it; the child's own spawn event says so, where a fixed sleep guessed.
+    await Promise.all(spawned)
   })
 
   afterAll(() => {

@@ -75,6 +75,7 @@ describe('quotedArg and quotedArgs over hostile values', () => {
     expect(quotedArg('C:\\Users\\a.ts')).toBe('"C:\\Users\\a.ts"')
   })
 
+  // Two shell runs of several hundred commands, each capped at 120 s by tests/helpers/shell_argv.ts: the budget is both caps, since the test's 60 s default was crossed at about 50 s of work on a machine under load.
   it.skipIf(POSIX_SH === null && POWERSHELL === null)('every value reaches the command as written in both shells, or is the placeholder', () => {
     const commands = VALUES.flatMap((v) => [`token-goat read ${quotedArg(v)}`, `token-goat replace ${quotedArgs(v, '<base64>').join(' ')}`])
     expect(commands.filter((c) => !c.includes(PLACEHOLDER)).length).toBeGreaterThan(100)
@@ -83,7 +84,7 @@ describe('quotedArg and quotedArgs over hostile values', () => {
       const q = quotedArg(v)
       if (!q.includes(PLACEHOLDER)) expect.soft(literalArgv(`token-goat read ${q}`), JSON.stringify(v)).toEqual(['read', v])
     }
-  })
+  }, 240_000)
 })
 
 /** Stdout and stderr written while `fn` runs. */

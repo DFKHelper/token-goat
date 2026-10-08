@@ -44,6 +44,8 @@ interface Sandbox {
   pids: Set<number>
   children: ChildProcess[]
   cleanup: Array<() => void>
+  /** Lets go of every request {@link occupy} is holding open; run before the servers are stopped so none waits on its own hold. */
+  releases: Array<() => void>
 }
 
 const sandboxes: Sandbox[] = []
@@ -79,7 +81,7 @@ function sandbox(opts: { bundle?: string; serverEnv?: 'on' | 'unset' } = {}): Sa
     TOKEN_GOAT_HOOK_SERVER: '1',
   }
   if (opts.serverEnv === 'unset') delete env['TOKEN_GOAT_HOOK_SERVER']
-  const sb: Sandbox = { base, dataDir, home, proj, env, bundle, pids: new Set(), children: [], cleanup: [] }
+  const sb: Sandbox = { base, dataDir, home, proj, env, bundle, pids: new Set(), children: [], cleanup: [], releases: [] }
   sandboxes.push(sb)
   return sb
 }
@@ -96,6 +98,7 @@ function pidAlive(pid: number): boolean {
 afterEach(async () => {
   while (sandboxes.length > 0) {
     const sb = sandboxes.pop() as Sandbox
+    for (const release of sb.releases) release()
     try {
       cli(sb, ['hook-server', 'stop'])
     } catch {
@@ -169,6 +172,19 @@ function statuses(sb: Sandbox): ServerStatus[] {
   return list
 }
 
+// Holds slot 0 inside a real request until `release()`: `compress` runs a child that writes a marker once it is running and then waits for a release file, and a server serves one request at a time. Waiting on the marker, not a fixed sleep, is what says the server is mid-request, and holding until released rather than for a fixed time keeps a slow machine from letting the request finish before the concurrent call arrives. The child gives up on its own after `holdMs`, which a test sets short when the server is blocked in the request and the test needs it to finish by itself: the server runs the child synchronously, so it answers nothing, not even `status`, until the child is gone.
+function occupy(sb: Sandbox, key: Buffer, holdMs = 60_000, env: Env = sb.env): { dispatched: Promise<void>; reply: Promise<ServerReply>; running: () => Promise<void>; release: () => void } {
+  const fwd = (p: string): string => p.split(path.sep).join('/')
+  const hold = fwd(path.join(sb.base, 'hold.cjs'))
+  const started = fwd(path.join(sb.base, 'hold-started'))
+  const released = fwd(path.join(sb.base, 'hold-release'))
+  fs.writeFileSync(hold, `const fs = require('fs')\nconst [started, released] = process.argv.slice(2)\nfs.writeFileSync(started, '1')\nconst end = Date.now() + ${holdMs}\nconst timer = setInterval(() => { if (fs.existsSync(released) || Date.now() > end) clearInterval(timer) }, 50)\n`)
+  const release = (): void => fs.writeFileSync(released, '1')
+  sb.releases.push(release)
+  const req = rawRequest(distEndpoint(sb, 0), key, { kind: 'cli', argv: ['compress', '--shell', 'native', '-c', `node "${hold}" "${started}" "${released}"`], env, cwd: sb.proj })
+  return { dispatched: req.dispatched, reply: req.reply, running: () => until('the held request to be running', () => (fs.existsSync(started) ? true : undefined), 30_000).then(() => undefined), release }
+}
+
 function servedBySlot(sb: Sandbox): Record<number, number> {
   return Object.fromEntries(statuses(sb).map((s) => [s.slot, s.served]))
 }
@@ -176,6 +192,18 @@ function servedBySlot(sb: Sandbox): Record<number, number> {
 /** Calls served across every slot. Which slot answers is timing, not behavior: a slot 0 held past HEDGE_MS (src/hook_client.ts) has the client ask slot 1 beside it and start it when absent, and a loaded machine's pre-push once failed on `{ 0: 5, 1: 0 }` for exactly that. That each call was served is what these tests are about. */
 function servedTotal(sb: Sandbox): number {
   return statuses(sb).reduce((sum, s) => sum + s.served, 0)
+}
+
+/** Waits for the served count to reach `n`, then asserts it exactly. The stats row is written after the caller has its answer (src/hook_server.ts handle), so a status read straight after a call can precede the row; polling for the real count, and asserting it once it arrives, keeps a slow machine from reading the moment before while still failing on a count that is wrong. */
+async function expectServedTotal(sb: Sandbox, n: number, label?: string): Promise<void> {
+  await until(`${n} served calls`, () => (servedTotal(sb) === n ? true : undefined)).catch(() => undefined)
+  expect(servedTotal(sb), label).toBe(n)
+}
+
+/** {@link expectServedTotal} per slot. */
+async function expectServedBySlot(sb: Sandbox, expected: Record<number, number>): Promise<void> {
+  await until('the expected per-slot served counts', () => (JSON.stringify(servedBySlot(sb)) === JSON.stringify(expected) ? true : undefined)).catch(() => undefined)
+  expect(servedBySlot(sb)).toEqual(expected)
 }
 
 async function until<T>(label: string, probe: () => T | undefined, timeoutMs = 15_000): Promise<T> {
@@ -348,7 +376,7 @@ describe('serving hook calls', () => {
     expect(started?.served).toBe(0)
 
     expect(relay(sb, 'pre_tool_use', bashDenyPayload('hs-serve-warm'))).toBe(baseline.stdout)
-    expect(servedTotal(sb)).toBe(1)
+    await expectServedTotal(sb, 1)
   })
 
   // HAND-DERIVED: a hook payload past MAX_FRAME_BYTES (64 MiB, src/hook_ipc.ts) was handed over, the server dropped the connection on reading its length, and the client counted that as a lost request and failed it open, so the hook ran nowhere.
@@ -372,7 +400,7 @@ describe('serving hook calls', () => {
     expect(relayResult(runNode(sb, argv, { input: bashDenyPayload('hs-cjs-first') }))).toBeNull()
     await waitForSlots(sb, [0])
     expect(relayResult(runNode(sb, argv, { input: bashDenyPayload('hs-cjs-warm') }))).toBe(baseline.stdout)
-    expect(servedTotal(sb)).toBe(1)
+    await expectServedTotal(sb, 1)
   })
 
   it('runs each request under its caller environment and working directory, so session state lands in each caller own home', async () => {
@@ -395,7 +423,7 @@ describe('serving hook calls', () => {
     const b1 = relay(sb, 'pre_tool_use', read, { env: { TOKEN_GOAT_HOME: homeB } })
     expect(b1).toBe(a1)
     const a2 = relay(sb, 'pre_tool_use', read, { env: { TOKEN_GOAT_HOME: homeA } })
-    expect(decision(a2)).toBe('block')
+    expect(decision(a2), `second read answered ${String(a2)}`).toBe('block')
     expect(fs.existsSync(path.join(homeA, 'sessions', 'hs-shared-session.json'))).toBe(true)
     expect(fs.existsSync(path.join(homeB, 'sessions', 'hs-shared-session.json'))).toBe(true)
     expect(fs.existsSync(path.join(sb.home, 'sessions', 'hs-shared-session.json'))).toBe(false)
@@ -409,7 +437,7 @@ describe('serving hook calls', () => {
     fs.writeFileSync(path.join(dirB, 'doc.md'), '# B\n\n## Part\n\nfrom directory B\n')
     expect(cli(sb, ['section', 'doc.md::Part'], { cwd: dirA }).stdout).toContain('from directory A')
     expect(cli(sb, ['section', 'doc.md::Part'], { cwd: dirB }).stdout).toContain('from directory B')
-    expect(servedTotal(sb)).toBe(5)
+    await expectServedTotal(sb, 5)
   })
 })
 
@@ -429,7 +457,7 @@ describe('warm CLI', () => {
       const actual = cli(sb, args)
       expectSameRun(actual, expected)
       served++
-      expect(servedTotal(sb), args.join(' ')).toBe(served)
+      await expectServedTotal(sb, served, args.join(' '))
     }
     // HAND-DERIVED guard on the fixture itself: the failing case really fails, and the others really print the file.
     expect(cold(sb, ['section', 'missing.md::Alpha']).status).toBe(1)
@@ -492,11 +520,6 @@ describe('warm CLI', () => {
 })
 
 describe('busy servers', () => {
-  // Holds slot 0 inside a real request for a few seconds: `compress` runs a child that sleeps, and a server serves one request at a time.
-  function occupy(sb: Sandbox, key: Buffer): { dispatched: Promise<void>; reply: Promise<ServerReply> } {
-    return rawRequest(distEndpoint(sb, 0), key, { kind: 'cli', argv: ['compress', '--shell', 'native', '-c', 'node -e "setTimeout(function(){},3000)"'], env: sb.env, cwd: sb.proj })
-  }
-
   it('sends a second concurrent call to the next slot while slot 0 is busy, and both answer correctly', async () => {
     const sb = sandbox()
     startServer(sb, 0)
@@ -505,12 +528,16 @@ describe('busy servers', () => {
     const expected = cold(sb, ['section', 'notes.md::Beta'])
     const held = occupy(sb, readServerKey(sb.dataDir) as Buffer)
     await held.dispatched
-    await sleep(300)
+    await held.running()
     expectSameRun(cli(sb, ['section', 'notes.md::Beta']), expected)
+    held.release()
     const reply = await held.reply
     expect(reply.ok).toBe(true)
     expect('status' in reply ? reply.status : undefined).toBe(0)
-    expect(servedBySlot(sb)).toEqual({ 0: 1, 1: 1 })
+    // Slot 0 served only the request holding it, and the concurrent call was served once somewhere else; a third slot may have been started beside them (hedging on a loaded machine) but serves nothing.
+    const served = servedBySlot(sb)
+    expect(served[0]).toBe(1)
+    expect(Object.values(served).reduce((sum, n) => sum + n, 0)).toBe(2)
   })
 
   it('falls back to a local run when every running slot is busy, and starts the next slot for later calls', async () => {
@@ -520,9 +547,10 @@ describe('busy servers', () => {
     const expected = cold(sb, ['section', 'notes.md::Beta'])
     const held = occupy(sb, readServerKey(sb.dataDir) as Buffer)
     await held.dispatched
-    await sleep(300)
+    await held.running()
     expectSameRun(cli(sb, ['section', 'notes.md::Beta']), expected)
     expect(fs.existsSync(markerPath('spawn-1', sb.dataDir))).toBe(true)
+    held.release()
     expect((await held.reply).ok).toBe(true)
     // Slot 0 served only the request holding it: the concurrent call ran locally rather than queueing behind it.
     const list = await waitForSlots(sb, [0, 1])
@@ -538,9 +566,9 @@ describe('busy servers', () => {
     blockAutostart(sb, [1])
     const server = startServer(sb, 0)
     await waitForSlots(sb, [0])
-    const held = occupy(sb, readServerKey(sb.dataDir) as Buffer)
+    const held = occupy(sb, readServerKey(sb.dataDir) as Buffer, 3000)
     await held.dispatched
-    await sleep(300)
+    await held.running()
     const status = cli(sb, ['hook-server', 'status'])
     expect(status.stdout).toContain('slot 0: pid')
     const stop = cli(sb, ['hook-server', 'stop'])
@@ -582,7 +610,7 @@ describe('busy servers', () => {
     expect(run.status, run.stderr).toBe(0)
     // Every call reached slot 0. One told it was busy would have gone to slot 1, found nothing there, and run locally.
     expect(run.stdout, run.stderr).toBe(String(calls))
-    expect(servedBySlot(sb)).toEqual({ 0: calls })
+    await expectServedBySlot(sb, { 0: calls })
     // The server answers before it writes the row, so a row missing here is one that was deferred and never written.
     const db = new Database(path.join(sb.dataDir, 'global.db'), { readonly: true })
     try {
@@ -632,7 +660,7 @@ describe('busy servers', () => {
     expect(reply.ok).toBe(true)
     // The answer drained whole once its caller read it: every key is there.
     expect('stdout' in reply ? Object.keys(JSON.parse(reply.stdout) as object).length : undefined).toBe(keys)
-    expect(servedBySlot(sb)).toEqual({ 0: 2 })
+    await expectServedBySlot(sb, { 0: 2 })
   })
 })
 
@@ -807,7 +835,7 @@ describe('retirement', () => {
     const [fresh] = await waitForSlots(sb, [0])
     expect(fresh?.pid).not.toBe(first?.pid)
     expectSameRun(cli(sb, ['section', 'notes.md::Alpha']), expected)
-    expect(servedTotal(sb)).toBe(1)
+    await expectServedTotal(sb, 1)
   })
 
   it('starts the new build on the next call even when the retired server was itself started moments before', async () => {
@@ -886,17 +914,17 @@ describe('retirement', () => {
     await waitForSlots(sb, [0])
     const callerEnv: Env = { ...sb.env }
     delete callerEnv['TOKEN_GOAT_HOOK_SERVER']
-    // `compress` runs a child that sleeps, which holds the server inside the request, under callerEnv, while the next contact arrives.
-    const held = rawRequest(distEndpoint(sb, 0), readServerKey(sb.dataDir) as Buffer, { kind: 'cli', argv: ['compress', '--shell', 'native', '-c', 'node -e "setTimeout(function(){},3000)"'], env: callerEnv, cwd: sb.proj })
+    // `compress` runs a child that holds the server inside the request, under callerEnv, while the next contact arrives; the child's own marker says it is running.
+    const held = occupy(sb, readServerKey(sb.dataDir) as Buffer, 3000, callerEnv)
     await held.dispatched
-    await sleep(300)
+    await held.running()
     expect(cli(sb, ['hook-server', 'status']).stdout).toContain('slot 0: pid')
     const reply = await held.reply
     expect('status' in reply ? reply.status : reply).toBe(0)
     expect(readMarker('disabled', sb.dataDir)).toBeUndefined()
     expect(await exitsWithin(server.exit, 500)).toBe('still running')
     expectSameRun(cli(sb, ['section', 'notes.md::Alpha']), cold(sb, ['section', 'notes.md::Alpha']))
-    expect(servedBySlot(sb)).toEqual({ 0: 2 })
+    await expectServedBySlot(sb, { 0: 2 })
   })
 
   it('records why a start failed in the failed marker, and clears it once a server is listening', async () => {
@@ -1016,7 +1044,7 @@ describe('through a real shim', () => {
 
     const claudeServed = runShim(sb, claude, 'pre_tool_use', claudePayload('served'))
     expectSameRun(claudeServed, claudeCold)
-    expect(servedTotal(sb)).toBe(1)
+    await expectServedTotal(sb, 1)
     const claudeRow = latestHookRow(sb)
     expect(claudeRow?.kind).toBe('hook:pre_tool_use')
     expect(claudeRow?.harness).toBe('claudecode')
@@ -1026,7 +1054,7 @@ describe('through a real shim', () => {
 
     const copilotServed = runShim(sb, copilot, 'preToolUse', copilotPayload('served'))
     expectSameRun(copilotServed, copilotCold)
-    expect(servedTotal(sb)).toBe(2)
+    await expectServedTotal(sb, 2)
     const copilotRow = latestHookRow(sb)
     expect(copilotRow?.seq).toBeGreaterThan(claudeRow?.seq as number)
     expect(copilotRow?.kind).toBe('hook:pre_tool_use')

@@ -10,6 +10,9 @@ import { displaySafePath } from '../../src/paths.js'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 
+// A bundle hook spawn took 0.9 to 8.7 s (median 1.7 s) over 40 runs on this shared machine, so the old 20 s cap was about twice the slowest unloaded spawn and a loaded run crossed it; 60 s matches the per-test timeout.
+const SPAWN_TIMEOUT_MS = 60_000
+
 let homeDir: string
 let projectDir: string
 
@@ -17,7 +20,7 @@ function hook(event: string, payload: unknown): { status: number; stdout: string
   const res = spawnSync(process.execPath, [BUNDLE, 'hook', event], {
     cwd: projectDir,
     encoding: 'utf-8',
-    timeout: 20000,
+    timeout: SPAWN_TIMEOUT_MS,
     input: JSON.stringify(payload),
     env: {
       ...process.env,
