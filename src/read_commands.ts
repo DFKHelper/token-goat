@@ -23,10 +23,12 @@ import { emit, emitErr } from './emit.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
 import { resolveProjectRoot } from './project.js'
 import { loadConfig } from './config.js'
-import { scanForInjectionPatterns, UNTRUSTED_FILE_TAG, UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
+import { UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
 import { redactSecrets } from './secret_redact.js'
-import { fenceIfScanMatched, fenceUntrusted, fenceWithMatches } from './untrusted_fence.js'
-import { trimToBudget, capJsonRows, estimateTokens, type JsonRowCapResult } from './overflow_guard.js'
+import { fenceIfScanMatched } from './untrusted_fence.js'
+import { guardAndFenceFileText, guardRedactAndFence, guardThenFence } from './fence_cap.js'
+export { guardAndFenceFileText, guardRedactAndFence, guardThenFence }
+import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
 import { enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT } from './graph_commands.js'
 import { MAX_ZIP_INPUT_BYTES, ZipInputTooLargeError } from './zip_bounds.js'
 import {
@@ -482,49 +484,6 @@ export function emitGuarded(text: string, command: string): void {
 export function guardText(text: string, command: string): string {
   const cfg = loadConfig()
   return cfg.overflow_guard.enabled ? trimToBudget(text, cfg.overflow_guard.max_tokens, command) : text
-}
-
-/** {@link guardText}, then a fence under `tag` around what the cap kept, with the cap's marker below the closing tag. The cap keeps leading lines only, so fencing first lets it cut the closing tag off and leaves token-goat's marker inside the fence. */
-export function guardThenFence(text: string, command: string, tag: string): string {
-  const cfg = loadConfig()
-  if (!cfg.overflow_guard.enabled) return fenceUntrusted(text, tag)
-  const budget = cfg.overflow_guard.max_tokens
-  // The fence's tags, its notice and the escapes it writes into the body come out of the same max_tokens as the body, so the cap is re-run with what the assembled output overshot held back, until it fits. A fixed margin would not do: the escapes grow with how many markers the body carries.
-  let capped = trimToBudget(text, budget, command)
-  let reserve = 0
-  for (let pass = 0; pass < 8; pass++) {
-    const excess = estimateTokens(fenceThenMarker(capped, text, (body) => fenceWithMatches(body, scanUnrecorded(body), tag))) - budget
-    if (excess <= 0) break
-    reserve += excess
-    capped = trimToBudget(text, budget, command, { reserveTokens: reserve })
-  }
-  return fenceThenMarker(capped, text, (body) => fenceUntrusted(body, tag))
-}
-
-/** `capped` fenced by `fence`, with the cap's marker line, when the cap cut anything, below the closing tag rather than inside the fence. */
-function fenceThenMarker(capped: string, text: string, fence: (body: string) => string): string {
-  if (capped === text) return fence(text)
-  const markerAt = capped.lastIndexOf('\n')
-  return `${fence(capped.slice(0, markerAt))}\n${capped.slice(markerAt + 1)}`
-}
-
-/** The pattern names a fence's notice would carry for `text`, without booking the injection_detected stat: {@link guardThenFence} measures candidate outputs it does not print, and only the one it prints should count. */
-function scanUnrecorded(text: string): string[] {
-  try {
-    return scanForInjectionPatterns(text)
-  } catch {
-    return []
-  }
-}
-
-/** {@link guardThenFence} for text the user named rather than wrote, redacted before the cap can cut a secret short of its pattern: capping unredacted text first can leave a fragment the redactor no longer recognises. */
-export function guardRedactAndFence(text: string, command: string, tag: string): string {
-  return guardThenFence(redactSecrets(text).text, command, tag)
-}
-
-/** {@link guardRedactAndFence} under the file tag, for a document, a spreadsheet, an archive member or a database row. */
-export function guardAndFenceFileText(text: string, command: string): string {
-  return guardRedactAndFence(text, command, UNTRUSTED_FILE_TAG)
 }
 
 /** Cap `text` and fence it under {@link UNTRUSTED_GITHUB_TAG}. A PR's title, description, review comments, and diff are all authorable by anyone who opened the PR or left the comment, so the fence follows that provenance and not the scan result. The scan still runs, purely to name matched pattern(s) in the notice and record the stat. Used by every printed `pr-slice` emit site, each of which has already redacted its text. The `--json` sites use {@link fenceGithubFieldIfMatched} instead -- see the note there. */

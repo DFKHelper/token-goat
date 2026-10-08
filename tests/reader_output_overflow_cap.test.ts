@@ -148,6 +148,7 @@ const CASES: ReadonlyArray<readonly [string, (p: (name: string) => string) => st
   ['csv-query', (p) => ['csv-query', p('big.csv'), '--head', '1000']],
   ['csv-profile', (p) => ['csv-profile', p('wide.csv')]],
   ['sqlite-schema', (p) => ['sqlite-schema', p('big.db')]],
+  ['describe', (p) => ['describe', p('big.db')]],
   ['sqlite-tables', (p) => ['sqlite-tables', p('big.db')]],
   ['sqlite-query', (p) => ['sqlite-query', p('big.db'), 'SELECT body FROM notes', '--head', '1000']],
   ['xlsx-sheets', (p) => ['xlsx-sheets', p('big.xlsx')]],

@@ -458,6 +458,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/evidence_cache.ts`](src/evidence_cache.ts) | Exports: `EvidenceRepresentation`, `EvidenceEntry`, `recordEvidence`, `findVerifiedFileEvidence` |
 | [`src/failures_state.ts`](src/failures_state.ts) | Cross-invocation state for `token-goat failures --delta` -- persists the failure-signature set (test names / summary lines, see `failures.ts::failureSignatures`) from the last `fai |
 | [`src/failures.ts`](src/failures.ts) | Extract failing test blocks from test runner output. |
+| [`src/fence_cap.ts`](src/fence_cap.ts) | Exports: `guardThenFence`, `guardRedactAndFence`, `guardAndFenceFileText` |
 | [`src/filter_counts.ts`](src/filter_counts.ts) | Aggregated filter/rule counts for all hook types. |
 | [`src/filter_notice.ts`](src/filter_notice.ts) | The notices a listing command prints when a filter left nothing of what the store holds, so a filtered view never reads as a definitive "nothing here". |
 | [`src/fold_delivery.ts`](src/fold_delivery.ts) | Turning a delivered slice of a source file into a folded one: pick the spans, render the notices. |

@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 import type { HookEvent } from './hook_registry.js'
 import { getToolName } from './hooks_common.js'
 import { displaySafeJson } from './paths.js'
-import { fenceFileFieldIfMatched, fenceFileText, fenceJsonStrings } from './untrusted_fence.js'
+import { fenceFileFieldIfMatched, fenceJsonStrings } from './untrusted_fence.js'
 import { CliError, formatCommandError, formatFailedResultText } from './command_error.js'
 import { echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 
@@ -425,12 +425,12 @@ export async function describeTarget(
           }
           // A virtual table whose module is not loaded has no columns to list: the CREATE statement is its schema.
           if (found.createSql !== undefined) lines.push('', `Module ${found.module ?? '?'} is not loaded here, so columns are not available. Declared as:`, found.createSql)
-          return { exitCode: 0, text: fenceFileText(lines.join('\n')) }
+          return { exitCode: 0, text: (await import('./fence_cap.js')).guardAndFenceFileText(lines.join('\n'), 'describe') }
         }
         if (opts?.json === true) {
           return { exitCode: 0, text: displaySafeJson(fenceJsonStrings(schema, fenceFileFieldIfMatched)) }
         }
-        return { exitCode: 0, text: fenceFileText(formatSqliteSchema(schema)) }
+        return { exitCode: 0, text: (await import('./fence_cap.js')).guardAndFenceFileText(formatSqliteSchema(schema), 'describe') }
       }
     } catch (err: unknown) {
       return { exitCode: 1, text: `Error reading SQLite database ${target}: ${err instanceof Error ? err.message : String(err)}` }
