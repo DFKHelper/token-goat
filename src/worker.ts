@@ -12,7 +12,7 @@ import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenanc
 import { pruneUnembeddableChunks } from './embed_backfill.js'
 import { getFileEntry } from './index_reader.js'
 import { normalizePath } from './paths.js'
-import { foldPath, isUnderBlockedRoot, extractErrorMessage } from './util.js'
+import { countNoun, foldPath, isUnderBlockedRoot, extractErrorMessage } from './util.js'
 import { configProjectRootFor, loadConfig, withConfigProjectRoot } from './config.js'
 import { getDb } from './db.js'
 import { pathEqClause } from './sql_path.js'
@@ -711,6 +711,11 @@ export function pidFileIsAbsent(dir: string): boolean {
 }
 
 /** When a daemon retires on its own, beyond a stop request: `pidFileGraceMs` is how long its pid file may be missing, or may not yet name it, before it leaves (default {@link WORKER_STARTUP_GRACE_MS}); `idleExitMs` is how long it may run with an empty queue and nothing to embed (default {@link resolveIdleExitMs}). */
+/** The error-log line for a known-roots sweep that skipped roots whose dead-row ratio looked like a mount outage; the noun agrees with the count. */
+export function flaggedRootsLogLine(flaggedRoots: readonly string[], isoTime: string): string {
+  return `${isoTime} sweepKnownRoots flagged ${countNoun(flaggedRoots.length, 'root')} for anomalously large dead-row ratio (skipped, not pruned): ${flaggedRoots.join(', ')}\n`
+}
+
 export interface WorkerRetirePolicy {
   pidFileGraceMs?: number
   idleExitMs?: number
@@ -815,10 +820,7 @@ export async function runWorkerLoop(
       try {
         const result = sweepKnownRoots(path.join(dir, 'global.db'))
         if (result.flaggedRoots.length > 0) {
-          appendWorkerErrorLog(
-            dir,
-            `${new Date().toISOString()} sweepKnownRoots flagged ${result.flaggedRoots.length} root(s) for anomalously large dead-row ratio (skipped, not pruned): ${result.flaggedRoots.join(', ')}\n`,
-          )
+          appendWorkerErrorLog(dir, flaggedRootsLogLine(result.flaggedRoots, new Date().toISOString()))
         }
       } catch {
         // Best-effort housekeeping; a sweep failure must not kill the daemon either.
