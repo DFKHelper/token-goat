@@ -241,38 +241,51 @@ function literalPathspec(file: string): string {
   return `:(literal)${file}`
 }
 
+// `git diff --name-status` (no `-M`, so the user's diff.renames setting decides, as it did for `--name-only`) is the one listing `changed` takes: the path each row ends in is what `--name-only` printed, and a rename row, which exists only when renames are on, also names the old path the zero-context diff needs and would otherwise cost a second `--name-status` call to learn.
+interface NameStatusListing {
+  files: string[]
+  renamedFrom: Map<string, string>
+}
+
+function parseNameStatus(stdout: string): NameStatusListing {
+  const unquote = (f: string): string => (f.startsWith('"') && f.endsWith('"') && f.length > 1 ? unquoteGitPath(f.slice(1, -1)) : f)
+  const files: string[] = []
+  const renamedFrom = new Map<string, string>()
+  for (const row of stdout.split(/\r?\n/)) {
+    if (row === '') continue
+    const cols = row.split('\t')
+    const last = cols[cols.length - 1]
+    if (cols.length < 2 || last === undefined || last === '') continue
+    files.push(unquote(last))
+    const from = cols[1]
+    if (cols[0]?.startsWith('R') === true && cols.length === 3 && from !== undefined) renamedFrom.set(unquote(last), unquote(from))
+  }
+  return { files, renamedFrom }
+}
+
 // A pathspec of only a renamed file's new name hides the old path from git, which then diffs the file as wholly added and every symbol in it reads as changed. Adding each rename's old path lets `-M` pair them, so the diff carries only the real edits.
-function withRenameSources(cwd: string, ref: string, files: readonly string[]): string[] {
-  const wanted = new Set(files)
+function withRenameSources(files: readonly string[], renamedFrom: ReadonlyMap<string, string>): string[] {
   const paths = [...files]
-  try {
-    const result = runGit(['diff', ref, '--name-status', '-M'], { cwd })
-    if (result.exitCode !== 0) return paths
-    const unquote = (f: string): string => (f.startsWith('"') && f.endsWith('"') && f.length > 1 ? unquoteGitPath(f.slice(1, -1)) : f)
-    for (const row of result.stdout.split(/\r?\n/)) {
-      const [status, from, to] = row.split('\t')
-      if (status?.startsWith('R') !== true || from === undefined || to === undefined) continue
-      if (wanted.has(unquote(to))) paths.push(unquote(from))
-    }
-  } catch {
-    // Without the rename sources the diff degrades to the new-name-only view.
+  for (const file of files) {
+    const from = renamedFrom.get(file)
+    if (from !== undefined) paths.push(from)
   }
   return paths
 }
 
-// The zero-context diff of `files`; a wholly-added file in it (`--- /dev/null`) may be a rename whose old path the pathspec hid, so only then are the rename sources looked up and the diff taken again with them.
-function unifiedDiffOf(cwd: string, ref: string, files: readonly string[], extraArgs: readonly string[] = []): GitResult {
+// The zero-context diff of `files`; a wholly-added file in it (`--- /dev/null`) may be a rename whose old path the pathspec hid, so only then is the diff taken again with the rename sources the file listing already carried.
+function unifiedDiffOf(cwd: string, ref: string, files: readonly string[], renamedFrom: ReadonlyMap<string, string>, extraArgs: readonly string[] = []): GitResult {
   const run = (paths: readonly string[]): GitResult => runGit(['diff', ref, '-M', '--unified=0', ...extraArgs, '--', ...paths.map(literalPathspec)], { cwd })
   const first = run(files)
   if (first.exitCode !== 0 || !first.stdout.includes('--- /dev/null')) return first
-  const paths = withRenameSources(cwd, ref, files)
+  const paths = withRenameSources(files, renamedFrom)
   return paths.length > files.length ? run(paths) : first
 }
 
-function changedDiffBaselineBytes(cwd: string, ref: string, files: readonly string[]): number {
+function changedDiffBaselineBytes(cwd: string, ref: string, files: readonly string[], renamedFrom: ReadonlyMap<string, string>): number {
   if (files.length === 0) return 0
   try {
-    const result = unifiedDiffOf(cwd, ref, files)
+    const result = unifiedDiffOf(cwd, ref, files, renamedFrom)
     if (result.exitCode === 0) return deliveredOutputBytes(Buffer.byteLength(result.stdout, 'utf8'))
   } catch {
     // Fall through to the 0 baseline below.
@@ -306,8 +319,9 @@ export function runChanged(opts: ChangedOptions = {}): number {
   const cwd = opts.projectRoot ?? process.cwd()
 
   let changedFiles: string[]
+  let renamedFrom: Map<string, string>
   try {
-    const result = runGit(['diff', ref, '--name-only'], { cwd })
+    const result = runGit(['diff', ref, '--name-status'], { cwd })
     if (result.exitCode !== 0) {
       emitErr(formatGitFailure('diff', result.stderr))
       const hint = buildChangedRefHint(cwd, ref)
@@ -317,11 +331,9 @@ export function runChanged(opts: ChangedOptions = {}): number {
       return 1
     }
     // A name with a quote, backslash or control character comes back C-quoted even with core.quotePath off.
-    changedFiles = result.stdout
-      .trim()
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((f) => (f.startsWith('"') && f.endsWith('"') && f.length > 1 ? unquoteGitPath(f.slice(1, -1)) : f))
+    const listing = parseNameStatus(result.stdout)
+    changedFiles = listing.files
+    renamedFrom = listing.renamedFrom
   } catch {
     emitErr(formatCommandError(`Could not run git diff against ${echoedValue(ref)}`))
     return 1
@@ -375,7 +387,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
     let hunklessFiles = new Set<string>()
     let symbolDiffBaselineBytes = 0
     try {
-      const diffResult = unifiedDiffOf(projectRoot, ref, changedFiles, ['--src-prefix=a/', '--dst-prefix=b/'])
+      const diffResult = unifiedDiffOf(projectRoot, ref, changedFiles, renamedFrom, ['--src-prefix=a/', '--dst-prefix=b/'])
       if (diffResult.exitCode === 0) {
         hunksByFile = parseDiffHunks(diffResult.stdout)
         hunklessFiles = parseHunklessFiles(diffResult.stdout)
@@ -417,7 +429,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
     return 0
   }
 
-  const fullBytes = changedDiffBaselineBytes(projectRoot, ref, changedFiles)
+  const fullBytes = changedDiffBaselineBytes(projectRoot, ref, changedFiles, renamedFrom)
   if (opts.json === true) {
     const capped = guardJsonRows(changedFiles)
     const text = displaySafeJson({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount })

@@ -49,6 +49,31 @@ const merged = repo('merged', (d) => {
   git(d, 'merge', '-q', '--no-ff', '-m', 'merge side', 'side')
 })
 
+// A rename with an edit, a binary file, a deleted file, a path with a space and a wholly new file, all in one commit on top of a base commit.
+function buildMixed(d: string): void {
+  const body = (n: number): string => `export function one() {\n  return ${String(n)}\n}\nexport function two() {\n  return 2\n}\n`
+  fs.writeFileSync(path.join(d, 'old_name.ts'), body(1))
+  fs.writeFileSync(path.join(d, 'deleted.ts'), 'export function gone() { return 0 }\n')
+  fs.writeFileSync(path.join(d, 'sp ace.ts'), 'export function sp() { return 1 }\n')
+  fs.writeFileSync(path.join(d, 'bin.dat'), Buffer.from([0, 1, 2, 98]))
+  git(d, 'add', '-A')
+  git(d, 'commit', '-q', '-m', 'base')
+  git(d, 'mv', 'old_name.ts', 'new_name.ts')
+  fs.writeFileSync(path.join(d, 'new_name.ts'), body(11))
+  git(d, 'rm', '-q', 'deleted.ts')
+  fs.writeFileSync(path.join(d, 'sp ace.ts'), 'export function sp() { return 2 }\n')
+  fs.writeFileSync(path.join(d, 'bin.dat'), Buffer.from([0, 1, 2, 99, 99]))
+  fs.writeFileSync(path.join(d, 'fresh.ts'), 'export function fresh() { return 5 }\n')
+  git(d, 'add', '-A')
+  git(d, 'commit', '-q', '-m', 'change')
+}
+const mixed = repo('mixed', buildMixed)
+// The same commit in a repo whose config turns rename detection off: `--name-only` then lists the old path too, and the file list `changed` takes has to keep doing so.
+const mixedNoRenames = repo('mixed-norenames', (d) => {
+  git(d, 'config', 'diff.renames', 'false')
+  buildMixed(d)
+})
+
 function envFor(name: string, extra: Record<string, string> = {}): { env: NodeJS.ProcessEnv; log: string } {
   const home = path.join(scratch, `home-${name}`)
   fs.mkdirSync(home, { recursive: true })
@@ -84,6 +109,13 @@ function cliChanged(dir: string, name: string, extra: Record<string, string> = {
   const res = spawnSync(process.execPath, [bundle, 'changed'], { cwd: dir, encoding: 'utf8', env, timeout: 120_000 })
   expect(res.status, res.stderr).toBe(1)
   return { stderr: res.stderr, git: spawned(log) }
+}
+
+function cliOk(dir: string, name: string, args: string[]): { stdout: string; git: string[][] } {
+  const { env, log } = envFor(name)
+  const res = spawnSync(process.execPath, [bundle, 'changed', ...args], { cwd: dir, encoding: 'utf8', env, timeout: 120_000 })
+  expect(res.status, res.stderr).toBe(0)
+  return { stdout: res.stdout, git: spawned(log) }
 }
 
 async function mcpChanged(dir: string, name: string, args: Record<string, unknown> = {}): Promise<{ text: string; git: string[][] }> {
@@ -154,7 +186,49 @@ describe('changed on a repo shorter than HEAD~5: git spawn counts through the bu
   it('MCP tool, a ref that exists: the root the tool already resolved is not resolved a second time', async () => {
     const { text, git: rows } = await mcpChanged(linear, 'mcp-success', { ref: 'HEAD~1' })
     expect(text).toBe('a3.ts\n')
+    expect(subcommands(rows)).toEqual(['rev-parse', 'diff', 'diff'])
+  }, 120_000)
+
+  // CAPTURE: the stdout is what the built bundle printed for this commit before the file list and the rename lookup were folded into one `--name-status` call.
+  it('CLI, a commit with a rename, a binary, a delete and a spaced path: same listing, the root lookup and one extra diff for the rename are the only other calls', () => {
+    const { stdout, git: rows } = cliOk(mixed, 'cli-mixed', ['--since', 'HEAD~1'])
+    expect(stdout).toBe('bin.dat\ndeleted.ts\nfresh.ts\nnew_name.ts\nsp ace.ts\n')
+    expect(rows[0]).toEqual(expect.arrayContaining(['HEAD~1', '--name-status']))
+    expect(rows[0]).not.toContain('-M')
+    expect(subcommands(rows)).toEqual(['diff', 'rev-parse', 'diff', 'diff'])
+    expect(rows[3]?.join(' ')).toContain('old_name.ts')
+  }, 120_000)
+
+  it('CLI, a plain success: the file list, the root lookup and the one zero-context diff', () => {
+    const { stdout, git: rows } = cliOk(linear, 'cli-success', ['--since', 'HEAD~1'])
+    expect(stdout).toBe('a3.ts\n')
+    expect(subcommands(rows)).toEqual(['diff', 'rev-parse', 'diff'])
+  }, 120_000)
+
+  it('MCP tool, the same mixed commit: same listing, one extra diff for the rename', async () => {
+    const { text, git: rows } = await mcpChanged(mixed, 'mcp-mixed', { ref: 'HEAD~1' })
+    expect(text).toBe('bin.dat\ndeleted.ts\nfresh.ts\nnew_name.ts\nsp ace.ts\n')
     expect(subcommands(rows)).toEqual(['rev-parse', 'diff', 'diff', 'diff'])
+  }, 120_000)
+
+  // CAPTURE: the expected listing is what the old file-list call, `git diff HEAD~1 --name-only`, prints in each repo, read from git itself here rather than typed in, so the config-dependent shape (old path listed too when renames are off) cannot drift from it.
+  it.each([
+    ['rename detection on', () => mixed],
+    ['diff.renames = false', () => mixedNoRenames],
+  ])('CLI and MCP list exactly what --name-only listed with %s', async (_label, pick) => {
+    const dir = pick()
+    const old = spawnSync('git', ['diff', 'HEAD~1', '--name-only'], { cwd: dir, encoding: 'utf8' }).stdout
+    expect(old).toContain('new_name.ts')
+    const cli = cliOk(dir, `cli-oldlist-${_label.length}`, ['--since', 'HEAD~1'])
+    expect(cli.stdout).toBe(old)
+    const mcp = await mcpChanged(dir, `mcp-oldlist-${_label.length}`, { ref: 'HEAD~1' })
+    expect(mcp.text).toBe(old)
+  }, 120_000)
+
+  it('diff.renames = false: the old path is listed too and no extra diff is spent looking for a rename', () => {
+    const { stdout, git: rows } = cliOk(mixedNoRenames, 'cli-norenames', ['--since', 'HEAD~1'])
+    expect(stdout.split('\n')).toContain('old_name.ts')
+    expect(subcommands(rows)).toEqual(['diff', 'rev-parse', 'diff'])
   }, 120_000)
 
   // CAPTURE: `token-goat: git diff failed: not a git repository` is what the built bundle returned for a directory outside any repo before the change.

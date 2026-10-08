@@ -5938,10 +5938,18 @@ describe('read_commands', () => {
   describe('runChanged', () => {
     const mockRunGit = vi.mocked(runGit)
 
+    // CAPTURE: `git diff HEAD~1 --name-status -M` in a scratch repo (git for Windows) printed `M<TAB>bin.dat`, `D<TAB>deleted.ts`, `A<TAB>fresh.ts`, `R089<TAB>old_name.ts<TAB>new_name.ts` and `M<TAB>sp ace.ts` for a modified binary, a delete, an add, an edited rename and a spaced path; the file-list replies below are those rows, a path per modified row.
+    const asNameStatus = (paths: string): string =>
+      paths
+        .split('\n')
+        .filter(Boolean)
+        .map((p) => `M\t${p}\n`)
+        .join('')
+
     function gitOk(stdout: string): void {
       //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mockRunGit.mockReturnValue({ exitCode: 0, stdout, stderr: '' } as any)
+      mockRunGit.mockReturnValue({ exitCode: 0, stdout: asNameStatus(stdout), stderr: '' } as any)
     }
 
     it('lists changed files in plain mode', () => {
@@ -5949,6 +5957,26 @@ describe('read_commands', () => {
       const { stdout } = capture(() => { runChanged({ ref: 'HEAD~1' }) })
       expect(stdout).toContain('a.ts')
       expect(stdout).toContain('b.ts')
+    })
+
+    // CAPTURE: the five rows are the literal output of `git diff HEAD~1 --name-status -M` described above; the diff reply is one that adds the renamed file whole (`--- /dev/null`), which is what sends `changed` back for the old path.
+    it('lists a rename by its new name and retries the diff with the old path from the same listing', () => {
+      const listing = 'M\tbin.dat\nD\tdeleted.ts\nA\tfresh.ts\nR089\told_name.ts\tnew_name.ts\nM\tsp ace.ts\n'
+      const wholeAdd = '--- /dev/null\n+++ b/new_name.ts\n@@ -0,0 +1 @@\n+x\n'
+      mockRunGit
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValueOnce({ exitCode: 0, stdout: listing, stderr: '' } as any)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValueOnce({ exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' } as any)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValue({ exitCode: 0, stdout: wholeAdd, stderr: '' } as any)
+      const { stdout } = capture(() => { runChanged({ ref: 'HEAD~1' }) })
+      expect(stdout.split('\n').filter(Boolean)).toEqual(['bin.dat', 'deleted.ts', 'fresh.ts', 'new_name.ts', 'sp ace.ts'])
+      const diffCalls = mockRunGit.mock.calls.map((c) => c[0] as string[]).filter((a) => a.includes('--unified=0'))
+      expect(diffCalls.length).toBe(2)
+      expect(diffCalls[0]).not.toContain(':(literal)old_name.ts')
+      expect(diffCalls[1]).toContain(':(literal)old_name.ts')
+      expect(mockRunGit.mock.calls.some((c) => (c[0] as string[]).includes('--name-only'))).toBe(false)
     })
 
     it('reports when nothing changed', () => {
@@ -6011,15 +6039,15 @@ describe('read_commands', () => {
     it('lists changed symbols with kind and location in symbol mode', () => {
       // Distinguish the rev-parse (project root) call from git diff --name-only -- gitOk's single canned response for every runGit call would otherwise make resolveProjectRoot's toplevel resolve to the literal string 'a.ts', which then collides with the symbol's own indexed filePath ('a.ts') and toDisplayPath prints '.' instead of the real relative path.
       const toplevel = { exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' }
-      const nameOnly = { exitCode: 0, stdout: 'a.ts\n', stderr: '' }
+      const nameOnly = { exitCode: 0, stdout: asNameStatus('a.ts\n'), stderr: '' }
       const noHunkDiff = { exitCode: 0, stdout: '', stderr: '' }
       mockRunGit
         //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .mockReturnValueOnce(toplevel as any)
+        .mockReturnValueOnce(nameOnly as any)
         //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .mockReturnValueOnce(nameOnly as any)
+        .mockReturnValueOnce(toplevel as any)
         //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(noHunkDiff as any)
@@ -6046,7 +6074,7 @@ describe('read_commands', () => {
 
     it('scopes symbolMode to symbols overlapping the changed diff hunks, not every symbol in the file (item2)', () => {
       const toplevel = { exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' }
-      const nameOnly = { exitCode: 0, stdout: 'a.ts\n', stderr: '' }
+      const nameOnly = { exitCode: 0, stdout: asNameStatus('a.ts\n'), stderr: '' }
       const unifiedDiff = {
         exitCode: 0,
         stdout: [
@@ -6062,10 +6090,10 @@ describe('read_commands', () => {
       mockRunGit
         //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .mockReturnValueOnce(toplevel as any)
+        .mockReturnValueOnce(nameOnly as any)
         //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .mockReturnValueOnce(nameOnly as any)
+        .mockReturnValueOnce(toplevel as any)
         //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(unifiedDiff as any)
@@ -6083,15 +6111,15 @@ describe('read_commands', () => {
 
     it('falls back to every symbol in the file when the hunk-diff git call fails (item2)', () => {
       const toplevel = { exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' }
-      const nameOnly = { exitCode: 0, stdout: 'a.ts\n', stderr: '' }
+      const nameOnly = { exitCode: 0, stdout: asNameStatus('a.ts\n'), stderr: '' }
       const diffFail = { exitCode: 128, stdout: '', stderr: 'boom' }
       mockRunGit
         //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .mockReturnValueOnce(toplevel as any)
+        .mockReturnValueOnce(nameOnly as any)
         //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .mockReturnValueOnce(nameOnly as any)
+        .mockReturnValueOnce(toplevel as any)
         //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(diffFail as any)
@@ -6111,15 +6139,15 @@ describe('read_commands', () => {
       const subdir = path.join(repoRoot, 'subdir')
       const toplevel = { exitCode: 0, stdout: `${repoRoot}\n`, stderr: '' }
       // git always reports diff paths relative to the repo top-level, regardless of cwd.
-      const nameOnly = { exitCode: 0, stdout: 'subdir/touched.ts\n', stderr: '' }
+      const nameOnly = { exitCode: 0, stdout: asNameStatus('subdir/touched.ts\n'), stderr: '' }
       const diffFail = { exitCode: 128, stdout: '', stderr: 'boom' }
       mockRunGit
         //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .mockReturnValueOnce(toplevel as any)
+        .mockReturnValueOnce(nameOnly as any)
         //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .mockReturnValueOnce(nameOnly as any)
+        .mockReturnValueOnce(toplevel as any)
         //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .mockReturnValueOnce(diffFail as any)
@@ -6166,11 +6194,11 @@ describe('read_commands', () => {
 
       it('emits an empty envelope when the changed files carry no indexed symbols', () => {
         const toplevel = { exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' }
-        const nameOnly = { exitCode: 0, stdout: 'a.ts\n', stderr: '' }
+        const nameOnly = { exitCode: 0, stdout: asNameStatus('a.ts\n'), stderr: '' }
         const noHunkDiff = { exitCode: 0, stdout: '', stderr: '' }
         //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        mockRunGit.mockReturnValueOnce(toplevel as any).mockReturnValueOnce(nameOnly as any).mockReturnValueOnce(noHunkDiff as any)
+        mockRunGit.mockReturnValueOnce(nameOnly as any).mockReturnValueOnce(toplevel as any).mockReturnValueOnce(noHunkDiff as any)
         mockQuerySymbols.mockReturnValue([])
         const { stdout } = capture(() => { expect(runChanged({ json: true, symbolMode: true })).toBe(0) })
         expect(() => parse(stdout)).not.toThrow()
@@ -6272,11 +6300,11 @@ describe('read_commands', () => {
       // Found in review: --symbol capped each file's symbol query at a bare 1000. A changed symbol past that cutoff read as absent -- "No symbols changed." in text, and an empty envelope with `truncated: false` under --json, which asserts nothing was cut. Asserted on the query argument rather than via a 1000-symbol fixture, which would be slow to build and would pin the old cap's exact value rather than the intent.
       it('does not silently cap each file\'s symbol query, which would hide a changed symbol past the cutoff', () => {
         const toplevel = { exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' }
-        const nameOnly = { exitCode: 0, stdout: 'a.ts\n', stderr: '' }
+        const nameOnly = { exitCode: 0, stdout: asNameStatus('a.ts\n'), stderr: '' }
         const noHunkDiff = { exitCode: 0, stdout: '', stderr: '' }
         //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        mockRunGit.mockReturnValueOnce(toplevel as any).mockReturnValueOnce(nameOnly as any).mockReturnValueOnce(noHunkDiff as any)
+        mockRunGit.mockReturnValueOnce(nameOnly as any).mockReturnValueOnce(toplevel as any).mockReturnValueOnce(noHunkDiff as any)
         mockQuerySymbols.mockReturnValue([])
         capture(() => { runChanged({ symbolMode: true }) })
         const limits = mockQuerySymbols.mock.calls.map((c) => (c[0] as { limit?: number }).limit ?? 0)
@@ -6286,11 +6314,11 @@ describe('read_commands', () => {
 
       it('applies in --symbol mode, where it filters the file path', () => {
         const toplevel = { exitCode: 0, stdout: `${process.cwd()}\n`, stderr: '' }
-        const nameOnly = { exitCode: 0, stdout: 'a.ts\ntests/a.test.ts\n', stderr: '' }
+        const nameOnly = { exitCode: 0, stdout: asNameStatus('a.ts\ntests/a.test.ts\n'), stderr: '' }
         const noHunkDiff = { exitCode: 0, stdout: '', stderr: '' }
         //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        mockRunGit.mockReturnValueOnce(toplevel as any).mockReturnValueOnce(nameOnly as any).mockReturnValueOnce(noHunkDiff as any)
+        mockRunGit.mockReturnValueOnce(nameOnly as any).mockReturnValueOnce(toplevel as any).mockReturnValueOnce(noHunkDiff as any)
         mockQuerySymbols.mockReturnValue([])
         capture(() => { runChanged({ symbolMode: true, excludeTests: true }) })
         // The test file must never reach the index query at all -- filtering the rendered output instead would still pay the lookup and still leak via any file-level side effect.
