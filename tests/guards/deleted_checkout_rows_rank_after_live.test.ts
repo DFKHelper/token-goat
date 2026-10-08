@@ -7,6 +7,10 @@ import { join } from 'node:path'
 
 import { beforeAll, describe, expect, it } from 'vitest'
 
+import { _resetDataDirCacheForTesting, globalDbPath } from '../../src/constants.js'
+import { closeAllDbs } from '../../src/db.js'
+import { recordIndexedRoot } from '../../src/indexed_roots.js'
+import { indexFileSync } from '../../src/parser.js'
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 const DELETED_MARKER = '⚠ DELETED'
 
@@ -32,11 +36,28 @@ beforeAll(() => {
   homeDir = mkdtempSync(join(tmpdir(), 'tg-dead-checkout-home-'))
   liveDir = join(base, 'proj')
   const deadDir = join(base, 'proj-wt')
-  for (const dir of [liveDir, deadDir]) {
-    mkdirSync(join(dir, 'src'), { recursive: true })
-    writeFileSync(join(dir, 'src', 'lib.ts'), LIB)
-    writeFileSync(join(dir, 'src', 'use.ts'), USE)
-    run(['index', '.', '--walk'], dir)
+  // The fixture is indexed in this process rather than by two `index` runs of the bundle. Each spawn pays a cold start and then runs at the lowered indexing priority, which on a busy machine took longer than the hook's 60 s; what this file tests is how the read commands rank the rows, not how they got there. The rows are written through the same indexFileSync the command calls, into the database the bundle opens below (its data directory is derived from the same variables), and the data directory is pointed back afterwards.
+  const pinned = ['LOCALAPPDATA', 'XDG_DATA_HOME', 'USERPROFILE', 'HOME'] as const
+  const before = pinned.map((k) => process.env[k])
+  for (const k of pinned) process.env[k] = homeDir
+  _resetDataDirCacheForTesting()
+  try {
+    const dbPath = globalDbPath()
+    for (const dir of [liveDir, deadDir]) {
+      mkdirSync(join(dir, 'src'), { recursive: true })
+      writeFileSync(join(dir, 'src', 'lib.ts'), LIB)
+      writeFileSync(join(dir, 'src', 'use.ts'), USE)
+      indexFileSync(join(dir, 'src', 'lib.ts'), dbPath)
+      indexFileSync(join(dir, 'src', 'use.ts'), dbPath)
+      recordIndexedRoot(dir, dbPath)
+    }
+  } finally {
+    closeAllDbs()
+    pinned.forEach((k, i) => {
+      if (before[i] === undefined) delete process.env[k]
+      else process.env[k] = before[i]
+    })
+    _resetDataDirCacheForTesting()
   }
   rmSync(deadDir, { recursive: true, force: true })
 })

@@ -157,23 +157,41 @@ describe('line numbers', () => {
     expect(parseXml('<r>\n<a/>\n<b/>\n</r>').children.map((c) => c.line)).toEqual([2, 3])
   })
 
-  // Rescanning preceding text for every tag was quadratic; this measures growth ratio rather than absolute speed.
-  it('does not take quadratically longer as the document grows', () => {
-    // Warm up the parser so JIT compilation does not skew the small-run timing
-    parseXmlTree('<r>' + '<a/>'.repeat(10000) + '</r>')
-    const best = (n: number): number => {
-      const doc = '<r>' + '<a/>'.repeat(n) + '</r>'
-      let ms = Infinity
-      for (let i = 0; i < 5; i++) {
-        const t0 = performance.now()
-        parseXmlTree(doc)
-        ms = Math.min(ms, performance.now() - t0)
+  // Rescanning preceding text for every tag was quadratic. Measured by counting the string work the parser does, not by timing it: a wall-clock ratio is inflated by whatever else the machine is running (a busy host read 7.3x for a linear parser), while the count of characters touched is the same on every host. The count covers charCodeAt calls and the length of every slice, substring, split and match input, which is how a line number is derived from the text before a tag; work done inside a single regex is not seen by it.
+  it('does not do quadratically more string work as the document grows', () => {
+    const proto = String.prototype as unknown as Record<string, (...args: unknown[]) => unknown>
+    let touched = 0
+    const originals = new Map<string, (...args: unknown[]) => unknown>()
+    const wrap = (name: string, size: (self: string, result: unknown) => number): void => {
+      const original = proto[name]!
+      originals.set(name, original)
+      proto[name] = function (this: string, ...args: unknown[]): unknown {
+        const result = original.apply(this, args)
+        touched += size(String(this), result)
+        return result
       }
-      return Math.max(ms, 1)
     }
-    const small = best(30000)
-    const large = best(60000)
-    expect(large / small, `doubling the element count took ${(large / small).toFixed(1)}x longer`).toBeLessThan(3.5)
+    const resultLength = (_self: string, result: unknown): number => (typeof result === 'string' ? result.length : 0)
+    const work = (elements: number): number => {
+      const doc = '<r>' + '<a/>'.repeat(elements) + '</r>'
+      touched = 0
+      wrap('charCodeAt', () => 1)
+      wrap('slice', resultLength)
+      wrap('substring', resultLength)
+      wrap('split', (self) => self.length)
+      wrap('match', (self) => self.length)
+      try {
+        parseXmlTree(doc)
+      } finally {
+        for (const [name, original] of originals) proto[name] = original
+        originals.clear()
+      }
+      return touched
+    }
+    const small = work(10000)
+    const large = work(20000)
+    expect(small, 'the counter saw no string work, so it is not measuring the parser').toBeGreaterThan(10000)
+    expect(large / small, `doubling the element count did ${(large / small).toFixed(2)}x the string work`).toBeLessThan(2.5)
   })
 })
 
