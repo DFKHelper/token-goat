@@ -102,6 +102,19 @@ describe('auditLockChange', () => {
     expect(result.violations.map((v: { kind: string }) => v.kind)).toEqual(['integrity-same-version'])
   })
 
+  it('refuses a package that gains an install script, whether it is new or an existing one that started running code, and not one that always had it', async () => {
+    // HAND-DERIVED: hasInstallScript is the lock's own marker for a preinstall, install or postinstall script.
+    const ok = registryOf({ 'a@1.1.0': { integrity: 'sha512-a2' }, 'n@1.0.0': { integrity: 'sha512-n' } })
+    const gained = lock({ 'node_modules/a': pkg('1.1.0', 'sha512-a2', { hasInstallScript: true }) })
+    const result = await audit(before, gained, ok)
+    expect(result.violations.map((v: { kind: string }) => v.kind)).toEqual(['install-script'])
+    expect(result.violations[0].path).toBe('node_modules/a')
+    const arrived = await audit(lock({}), lock({ 'node_modules/n': pkg('1.0.0', 'sha512-n', { hasInstallScript: true }) }), ok)
+    expect(arrived.violations.map((v: { kind: string }) => v.kind)).toEqual(['install-script'])
+    const always = await audit(lock({ 'node_modules/a': pkg('1.0.0', 'sha512-a1', { hasInstallScript: true }) }), gained, ok)
+    expect(always.violations).toEqual([])
+  })
+
   it('refuses a package that stopped being optional, and a root optionalDependencies entry that moved', async () => {
     const o = lock({ 'node_modules/a': pkg('1.0.0', 'sha512-a', { optional: true }) })
     const r = lock({ 'node_modules/a': pkg('1.0.0', 'sha512-a') })

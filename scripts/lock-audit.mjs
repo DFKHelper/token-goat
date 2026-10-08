@@ -77,7 +77,7 @@ async function inPool(items, limit, fn) {
   await Promise.all(workers)
 }
 
-/** `at` is the moment the commit was made: a package published inside `cooldownDays` of it was not yet cooled down. Returns `{ diff, violations }`, each violation `{ kind, path, message }` with kind `cooldown`, `integrity`, `lookup`, `optional-lost`, `reclassified`, `integrity-same-version` or `inconsistent`. */
+/** `at` is the moment the commit was made: a package published inside `cooldownDays` of it was not yet cooled down. Returns `{ diff, violations }`, each violation `{ kind, path, message }` with kind `cooldown`, `integrity`, `lookup`, `optional-lost`, `reclassified`, `install-script`, `integrity-same-version` or `inconsistent`. */
 export async function auditLockChange({ oldLock, newLock, overrides, cooldownDays, at, lookup }) {
   const diff = diffLocks(oldLock, newLock)
   const violations = []
@@ -89,6 +89,9 @@ export async function auditLockChange({ oldLock, newLock, overrides, cooldownDay
   }
   for (const item of diff.rootReclassified) {
     violations.push({ kind: 'reclassified', path: '', message: `the root package declares ${item.name} under dependencies now, where it was under optionalDependencies` })
+  }
+  for (const lockPath of diff.newInstallScripts) {
+    violations.push({ kind: 'install-script', path: lockPath, message: `${lockPath} now runs an install script (preinstall, install or postinstall), which executes on every machine that installs it` })
   }
   for (const item of diff.changed) {
     if (item.integrityChanged && item.from === item.to) {
