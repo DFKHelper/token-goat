@@ -440,6 +440,67 @@ describe('a bodiless declaration ends on its own line, not at the next block', (
     ])).toEqual(['class A  1-7', 'method f A 2-2', 'method g A 6-6'])
   })
 
+  it('a class header that continues on a `constructor(` line still owns the constructor block', async () => {
+    expect(await rowsFor('h.kt', [
+      'class A', // 1
+      '    constructor(x: Int) {', // 2
+      '        println(x)', // 3
+      '    }', // 4
+    ])).toEqual(['class A  1-4'])
+  })
+
+  it('a call or identifier named like a member-start word does not end the member before its body', async () => {
+    expect(await rowsFor('n1.kt', [
+      'class A {', // 1
+      '    val static = 1', // 2
+      '    fun g() {', // 3
+      '        init(3)', // 4
+      '        locally()', // 5
+      '    }', // 6
+      '    fun h() = 2', // 7
+      '}', // 8
+    ])).toEqual(['class A  1-8', 'method g A 3-6', 'method h A 7-7'])
+    expect(await rowsFor('n2.kt', [
+      'class A {', // 1
+      '    fun f() =', // 2
+      '        init(3)', // 3
+      '    fun g() {', // 4
+      '    }', // 5
+      '}', // 6
+    ])).toEqual(['class A  1-6', 'method f A 2-3', 'method g A 4-5'])
+    expect(await rowsFor('n3.scala', [
+      'class A {', // 1
+      '  def f(x: Int): Int =', // 2
+      '    locally(x)', // 3
+      '  def g() = 1', // 4
+      '  val static = 1', // 5
+      '  def h(): Int =', // 6
+      '    init { 3 }', // 7
+      '}', // 8
+    ])).toEqual(['class A  1-8', 'function f A 2-3', 'function g A 4-4', 'function h A 6-7', 'val static A 5-5'])
+    expect(await rowsFor('n4.groovy', [
+      'class A {', // 1
+      '    int f()', // 2
+      '    {', // 3
+      '        static_x()', // 4
+      '    }', // 5
+      '    int g() { return 1 }', // 6
+      '}', // 7
+    ])).toEqual(['class A  1-7', 'method f A 2-5', 'method g A 6-6'])
+  })
+
+  it('Scala: an abstract val followed by a bare block ends on its own line', async () => {
+    expect(await rowsFor('v.scala', [
+      'class A {', // 1
+      '  val x: Int', // 2
+      '  {', // 3
+      '    println(1)', // 4
+      '  }', // 5
+      '  def g() = 1', // 6
+      '}', // 7
+    ])).toEqual(['class A  1-7', 'function g A 6-6', 'val x A 2-2'])
+  })
+
   it('Java, C# and Swift already end a bodiless member at its own line', async () => {
     expect(await rowsFor('A.java', [
       'abstract class A {', // 1

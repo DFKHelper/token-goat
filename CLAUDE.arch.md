@@ -215,6 +215,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/languages/batch.ts`](src/languages/batch.ts) | Windows batch adapter for `.bat` and `.cmd` files: the labels cmd.exe jumps to, each running to the line before the next label or to the end of the file, with the batch files a `ca |
 | [`src/languages/body_segments.ts`](src/languages/body_segments.ts) | Splitting one source line into the declarations a type body written on that line holds, for the line-at-a-time adapters whose member matchers anchor at the start of a line: `class |
 | [`src/languages/brace_engine.ts`](src/languages/brace_engine.ts) | Shared scanner for the brace-language adapters (Objective-C, Groovy, Solidity, Thrift, GLSL, HLSL, WGSL, Metal). |
+| [`src/languages/brace_spans.ts`](src/languages/brace_spans.ts) | Brace-span pass shared by the regex language adapters: finds the block a declaration opens and the line that closes it. |
 | [`src/languages/caddy.ts`](src/languages/caddy.ts) | Extracts symbols from Caddyfile configurations (global options, snippets, site blocks, directives). |
 | [`src/languages/clojure.ts`](src/languages/clojure.ts) | Clojure adapter: `defn`, `defn-`, `def`, `defmacro`, `defprotocol`, `defrecord`, `deftype`, `defmulti`, `defmethod`, `definterface`, `ns`. |
 | [`src/languages/cmake.ts`](src/languages/cmake.ts) | CMake adapter for `CMakeLists.txt` and `.cmake` files: `function` and `macro` definitions (closed by `endfunction` and `endmacro`), the targets `add_library`, `add_executable` and |

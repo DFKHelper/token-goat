@@ -12,7 +12,6 @@ import type { MiniSection, MultilineStringState, AdapterImport } from './common.
 import {
   assignFlatEndLines,
   buildLineIndex,
-  findMatchingBraceEndLine,
   isInsideStringLiteral,
   makeSymbolEmitter,
   offsetToLine,
@@ -21,6 +20,7 @@ import {
   stripMultilineStringSpan,
   stripStringLiterals,
 } from './common.js'
+import { findMatchingBraceEndLine } from './brace_spans.js'
 import { countContentLines } from '../util.js'
 
 // Finds the index of the first `#` on `line` that isn't sitting inside an open single- or

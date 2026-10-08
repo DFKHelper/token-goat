@@ -11,13 +11,13 @@ import type { MiniSection, AdapterImport } from './common.js'
 import {
   assignFlatEndLines,
   buildLineIndex,
-  findMatchingBraceEndLine,
   makeSymbolEmitter,
   offsetToLine,
   propagateEndLinesToSymbols,
   stripCstyleComments,
   stripLineComment,
 } from './common.js'
+import { findMatchingBraceEndLine } from './brace_spans.js'
 import { countContentLines } from '../util.js'
 
 const MAX_SYMBOLS = 10_000 // raised from 500: see makeSymbolEmitter's own comment in common.ts for the measurement

@@ -15,7 +15,6 @@
 import type { SymbolEntry } from '../parser_types.js'
 import {
   buildLineIndex,
-  findMatchingBraceEndLine,
   matchRRawOpener,
   offsetToLine,
   stripLineComment,
@@ -24,6 +23,7 @@ import {
   type MultilineStringState,
   makeSpanSymbol,
 } from './common.js'
+import { findMatchingBraceEndLine } from './brace_spans.js'
 import { countContentLines } from '../util.js'
 
 // `foo <- function(...)`, `bar = function(...)` (R uses both <- and = for assignment),

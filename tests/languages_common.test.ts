@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { buildLineIndex, findMatchingBraceEndLine, lineTextAt, stripBlockCommentSpan, stripCstyleComments, stripNestedBlockCommentSpan, stripSqlLineComments } from '../src/languages/common.js'
+import { buildLineIndex, lineTextAt, stripBlockCommentSpan, stripCstyleComments, stripNestedBlockCommentSpan, stripSqlLineComments } from '../src/languages/common.js'
+import { findMatchingBraceEndLine } from '../src/languages/brace_spans.js'
 import { countContentLines } from '../src/util.js'
 import { extractR } from '../src/languages/r.js'
 import { extractLwcJavaScript } from '../src/languages/salesforce_frontend.js'

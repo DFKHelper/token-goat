@@ -8,7 +8,7 @@
 
 import type { RegexLanguage } from '../language_specs.js'
 import type { SymbolEntry } from '../parser_types.js'
-import { assignBraceBlockSpans, type BraceSpanOpts } from './common.js'
+import { assignBraceBlockSpans, type BraceSpanOpts } from './brace_spans.js'
 import { spanUnsettled } from './body_segments.js'
 import { extractCsharp } from './csharp.js'
 import { extractPhp, maskPhpInlineHtml } from './php.js'
