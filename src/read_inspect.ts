@@ -199,11 +199,12 @@ export function runSqliteTables(opts: SqliteTablesCliOptions): number {
     const tables = getSqliteTables(opts.file)
     const fullSourceBytes = sumFileSizes([opts.file])
     if (opts.json === true) {
-      const cappedTables = guardJsonRows(tables)
-      if (cappedTables.truncated) emitErr(`token-goat: sqlite-tables --json shows ${cappedTables.items.length} of ${cappedTables.totalCount} tables, the most that fit overflow_guard.max_tokens; list fewer with sqlite-query.`)
-      // A bare array has no room to say it was cut, so a cut listing becomes the {items, truncated, totalCount} envelope every other capped --json listing uses; an uncut one stays the array it always was.
-      const listing = cappedTables.truncated ? { items: cappedTables.items, truncated: true, totalCount: cappedTables.totalCount } : cappedTables.items
-      const jsonText = displaySafeJson(fenceJsonStrings(listing, fenceFileFieldIfMatched), 0)
+      // A bare array has no room to say it was cut, so a cut listing becomes the {items, truncated, totalCount} envelope every other capped --json listing uses; an uncut one stays the array it always was. The cap is measured on the text as printed, envelope included.
+      const jsonText = capListField({ items: tables }, 'items', (o) => displaySafeJson(fenceJsonStrings(o.truncated === true ? o : o.items, fenceFileFieldIfMatched), 0))
+      if (jsonText.startsWith('{')) {
+        const cut = JSON.parse(jsonText) as { items: unknown[]; totalCount: number }
+        emitErr(`token-goat: sqlite-tables --json shows ${cut.items.length} of ${cut.totalCount} tables, the most that fit overflow_guard.max_tokens; list fewer with sqlite-query.`)
+      }
       emit(jsonText)
       recordReadStat('sqlite_tables', fullSourceBytes, jsonText, opts.file)
     } else {

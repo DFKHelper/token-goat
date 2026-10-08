@@ -90,6 +90,9 @@ beforeAll(async () => {
   for (let i = 0; i < COUNT; i++) db.exec(`CREATE TABLE table_with_a_long_name_${i} (id INTEGER PRIMARY KEY, value_${i} TEXT)`)
   db.exec(`INSERT INTO notes (body) VALUES ${Array.from({ length: COUNT }, (_, i) => `('${WIDE}${i}')`).join(',')}`)
   db.close()
+  const tinyDb = new Database(join(root, 'tiny.db'))
+  for (let i = 0; i < 1300; i++) tinyDb.exec(`CREATE TABLE t${i} (a)`)
+  tinyDb.close()
   const wideDb = new Database(join(root, 'wide.db'))
   wideDb.exec(`CREATE TABLE wide_table (${Array.from({ length: COUNT }, (_, i) => `column_with_a_long_name_${i} TEXT`).join(', ')})`)
   wideDb.close()
@@ -214,6 +217,13 @@ describe('database listings in --json hold the cap and stay valid JSON', () => {
     expect(stderr.join('')).toContain(`of ${TOTAL} tables`)
     const small = JSON.parse(await printed(['sqlite-tables', join(root, 'small.db'), '--json'])) as unknown
     expect(Array.isArray(small)).toBe(true)
+  })
+
+  // HAND-DERIVED: the budget is max_tokens * guardDivisor() chars by definition, and what the user sees is the printed text, envelope included.
+  it('sqlite-tables --json prints a cut listing, envelope included, within the budget', async () => {
+    const text = await printed(['sqlite-tables', join(root, 'tiny.db'), '--json'])
+    expect(JSON.parse(text)).toHaveProperty('truncated', true)
+    expect(text.length).toBeLessThanOrEqual(BUDGET_CHARS)
   })
 
   it('describe <table> --json caps a table with hundreds of columns', async () => {
