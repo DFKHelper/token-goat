@@ -48,19 +48,21 @@ export function guardAndFenceFileText(text: string, command: string): string {
   return guardRedactAndFence(text, command, UNTRUSTED_FILE_TAG)
 }
 
-/** `obj` with its `key` list held to the cap by dropping trailing whole items, so a `--json` listing stays valid JSON, each item measured as the `indent` spaces the caller serializes with would print it; `truncated` and `totalCount` are added only when something was dropped, which leaves the shape of an uncapped result unchanged. */
-export function capListField<K extends string, T extends Record<K, unknown[]>>(obj: T, key: K, indent = 0): T & { truncated?: true; totalCount?: number } {
+/** The text a `--json` listing prints, with its `key` list held to the cap by dropping trailing whole items, so it stays valid JSON. `render` is the caller's own serializer (fence, escape, indent), and the cap is measured on what it returns, so the printed text is what is held to the budget, not an estimate of it; a cut result carries `truncated` and `totalCount`, and an uncut one is rendered unchanged. */
+export function capListField<K extends string, T extends Record<K, unknown[]>>(obj: T, key: K, render: (o: T & { truncated?: true; totalCount?: number }) => string): string {
+  const full = render(obj)
   const cfg = loadConfig()
-  if (!cfg.overflow_guard.enabled) return obj
-  const items = obj[key]
+  if (!cfg.overflow_guard.enabled) return full
   const charBudget = Math.max(1, cfg.overflow_guard.max_tokens * guardDivisor())
-  let kept = 0
-  let used = 0
-  for (const item of items) {
-    const cost = JSON.stringify(item, null, indent).length + 2
-    if (kept > 0 && used + cost > charBudget) break
-    kept++
-    used += cost
+  const items = obj[key]
+  if (full.length <= charBudget || items.length <= 1) return full
+  const cut = (kept: number): string => render({ ...obj, [key]: items.slice(0, kept), truncated: true, totalCount: items.length })
+  let lo = 1
+  let hi = items.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (cut(mid).length <= charBudget) lo = mid
+    else hi = mid - 1
   }
-  return kept < items.length ? { ...obj, [key]: items.slice(0, kept), truncated: true, totalCount: items.length } : obj
+  return cut(lo)
 }

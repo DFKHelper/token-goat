@@ -174,7 +174,7 @@ export function runSqliteSchema(opts: SqliteSchemaCliOptions): number {
     const schema = getSqliteSchema(opts.file)
     const fullSourceBytes = sumFileSizes([opts.file])
     if (opts.json === true) {
-      const jsonText = displaySafeJson(fenceJsonStrings(capListField(schema, 'tables'), fenceFileFieldIfMatched), 0)
+      const jsonText = capListField(schema, 'tables', (o) => displaySafeJson(fenceJsonStrings(o, fenceFileFieldIfMatched), 0))
       emit(jsonText)
       recordReadStat('sqlite_schema', fullSourceBytes, jsonText, opts.file)
     } else {
@@ -201,7 +201,9 @@ export function runSqliteTables(opts: SqliteTablesCliOptions): number {
     if (opts.json === true) {
       const cappedTables = guardJsonRows(tables)
       if (cappedTables.truncated) emitErr(`token-goat: sqlite-tables --json shows ${cappedTables.items.length} of ${cappedTables.totalCount} tables, the most that fit overflow_guard.max_tokens; list fewer with sqlite-query.`)
-      const jsonText = displaySafeJson(fenceJsonStrings(cappedTables.items, fenceFileFieldIfMatched), 0)
+      // A bare array has no room to say it was cut, so a cut listing becomes the {items, truncated, totalCount} envelope every other capped --json listing uses; an uncut one stays the array it always was.
+      const listing = cappedTables.truncated ? { items: cappedTables.items, truncated: true, totalCount: cappedTables.totalCount } : cappedTables.items
+      const jsonText = displaySafeJson(fenceJsonStrings(listing, fenceFileFieldIfMatched), 0)
       emit(jsonText)
       recordReadStat('sqlite_tables', fullSourceBytes, jsonText, opts.file)
     } else {

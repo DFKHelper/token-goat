@@ -11,6 +11,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { run } from '../src/cli.js'
 import { invalidateConfigCache } from '../src/config.js'
 import Database from '../src/sqlite_driver.js'
+import { guardDivisor } from '../src/token_estimate.js'
 import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 import { buildDocxFixture, buildDocxWithTableFixture, buildPptxFixture } from './helpers/ooxml_fixtures.js'
 
@@ -19,6 +20,8 @@ const CLOSE_TAG = '</untrusted-file-content>'
 const MARKER = '[token-goat: output capped'
 /** Well past the 1000-token floor (about 4000 characters) and well under what an uncapped COUNT-entry listing prints. */
 const CEILING_CHARS = 12_000
+/** The budget the tests set (overflow_guard.max_tokens = 1000) in characters: a --json listing is measured on the text it prints, so it must fit this, not only the looser ceiling above. HAND-DERIVED: 1000 tokens times the guard's own characters-per-token divisor. */
+const BUDGET_CHARS = 1000 * guardDivisor()
 
 let root: string
 let stdout: string[]
@@ -192,7 +195,7 @@ describe('database listings in --json hold the cap and stay valid JSON', () => {
   for (const command of ['sqlite-schema', 'describe']) {
     it(`${command} --json drops trailing tables and says so`, async () => {
       const text = await printed([command, join(root, 'big.db'), '--json'])
-      expect(text.length).toBeLessThan(CEILING_CHARS)
+      expect(text.length).toBeLessThanOrEqual(BUDGET_CHARS)
       const parsed = JSON.parse(text) as { tables: unknown[]; truncated?: boolean; totalCount?: number }
       expect(parsed.truncated).toBe(true)
       expect(parsed.totalCount).toBe(TOTAL)
@@ -201,18 +204,21 @@ describe('database listings in --json hold the cap and stay valid JSON', () => {
     })
   }
 
-  it('sqlite-tables --json stays a bare array and names the cut on stderr', async () => {
+  it('sqlite-tables --json names the cut inside the JSON, and stays a bare array when nothing was cut', async () => {
     const text = await printed(['sqlite-tables', join(root, 'big.db'), '--json'])
     expect(text.length).toBeLessThan(CEILING_CHARS)
-    const parsed = JSON.parse(text) as unknown[]
-    expect(Array.isArray(parsed)).toBe(true)
-    expect(parsed.length).toBeLessThan(TOTAL)
+    const parsed = JSON.parse(text) as { items: unknown[]; truncated?: boolean; totalCount?: number }
+    expect(parsed.truncated).toBe(true)
+    expect(parsed.totalCount).toBe(TOTAL)
+    expect(parsed.items.length).toBeLessThan(TOTAL)
     expect(stderr.join('')).toContain(`of ${TOTAL} tables`)
+    const small = JSON.parse(await printed(['sqlite-tables', join(root, 'small.db'), '--json'])) as unknown
+    expect(Array.isArray(small)).toBe(true)
   })
 
   it('describe <table> --json caps a table with hundreds of columns', async () => {
     const text = await printed(['describe', join(root, 'wide.db'), 'wide_table', '--json'])
-    expect(text.length).toBeLessThan(CEILING_CHARS)
+    expect(text.length).toBeLessThanOrEqual(BUDGET_CHARS)
     const parsed = JSON.parse(text) as { columns: unknown[]; truncated?: boolean; totalCount?: number }
     expect(parsed.truncated).toBe(true)
     expect(parsed.totalCount).toBe(COUNT)
