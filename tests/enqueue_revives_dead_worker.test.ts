@@ -78,15 +78,17 @@ describe('a CLI enqueue path revives a dead worker (not just the edit hook)', ()
     const started = Date.now()
     const dataDir = effectiveDataDir(dataBase)
     const queueDir = path.join(dataDir, 'queue')
+    const pidFile = path.join(dataDir, 'worker.pid')
     const pendingState = (): string => {
-      const pid = readPid(path.join(queueDir, 'worker.pid'))
+      const pid = readPid(pidFile)
       const beat = readPid(path.join(queueDir, 'drain-heartbeat'))
       return `worker.pid=${String(pid)} alive=${pid === null ? 'n/a' : String(pidAlive(pid))} heartbeat=${String(beat)} alive=${beat === null ? 'n/a' : String(pidAlive(beat))} after ${Date.now() - started}ms`
     }
     fs.mkdirSync(queueDir, { recursive: true })
     // A stale pid file naming a pid that is certainly not running: isWorkerRunning must see this as dead, not accidentally alive (a real running pid would make ensureWorkerAlive correctly no-op, and this test would then prove nothing).
     const deadPid = 999999
-    fs.writeFileSync(path.join(queueDir, 'worker.pid'), `${deadPid}\n`)
+    // PROVENANCE: FORMAT-DERIVED from src/worker_lifecycle.ts::workerPidPath, which is `<data dir>/worker.pid`, not under queue/. This test once seeded queue/worker.pid, a file nothing reads: the product saw no pid file at all, so the dead-pid reclaim path was never exercised, and the failure message printed the decoy as if it were the daemon's record.
+    fs.writeFileSync(pidFile, `${deadPid}\n`)
 
     const target = path.join(repo, 'sample.ts')
     fs.writeFileSync(target, 'export const before = 1\n')
@@ -116,6 +118,8 @@ describe('a CLI enqueue path revives a dead worker (not just the edit hook)', ()
 
       const status = runBundle(['worker', 'status'], env, repo)
       expect(status.stdout).toContain('Worker is running.')
+      // The record `worker stop` and `doctor` act on must name the daemon that is draining, not the dead pid it replaced.
+      expect(readPid(pidFile), pendingState()).toBe(readPid(heartbeat))
     } finally {
       runBundle(['worker', 'stop'], env, repo)
     }
@@ -129,7 +133,7 @@ describe('a CLI enqueue path revives a dead worker (not just the edit hook)', ()
     const dataDir = effectiveDataDir(dataBase)
     const queueDir = path.join(dataDir, 'queue')
     fs.mkdirSync(queueDir, { recursive: true })
-    fs.writeFileSync(path.join(queueDir, 'worker.pid'), '999999\n')
+    fs.writeFileSync(path.join(dataDir, 'worker.pid'), '999999\n')
 
     // Give it the same window the real test waits up to, doing nothing in between: if a worker came alive here, something ELSE in this environment spawns it and the test above would prove nothing.
     await sleep(500)
