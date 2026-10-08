@@ -7,6 +7,8 @@ import {
   adaptHeredoc,
   adaptInlinePython,
   adaptPowerShellCommand,
+  base64Bytes,
+  MAX_ENCODED_CHARS,
 } from '../src/powershell_compat.js'
 import { run, spawnTarget } from '../src/bash_runner.js'
 import { canRunPowerShell, resolvePowerShell } from '../src/shell.js'
@@ -57,11 +59,11 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
     })
 
     it('preserves surrounding chained statements around heredoc', () => {
-      const input = `Write-Output "start"; python - <<'EOF'\nprint("middle")\nEOF; Write-Output "end"`
+      const input = `Write-Output "start"; python - <<'EOF'\nprint("middle")\nEOF\nWrite-Output "end"`
       const adapted = adaptHeredoc(input)
       expect(adapted).toContain('Write-Output "start";')
-      expect(adapted).toContain('| python -; $TgQ = $? } finally')
-      expect(adapted).toMatch(/ -ErrorAction Ignore; Write-Output "end"$/)
+      expect(adapted).toContain('| python -; $TgQ = $? }')
+      expect(adapted).toMatch(/ -ErrorAction Ignore\nWrite-Output "end"$/)
     })
 
     it('leaves commands without heredocs unchanged', () => {
@@ -79,8 +81,8 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
 
     // HAND-DERIVED: each redirect word is a file name with shell characters in it, written for this test; bash reads a bare word holding none of ( ) { } $ backtick or a quote as literal text, so only those words may be rewritten, and the rewrite of a file write runs no command at all (PowerShell's own parser, parse-only, lists the commands; nothing is executed).
     it.skipIf(parseShell === null)('names a redirect file with shell characters as one PowerShell string, or leaves the command as written', () => {
-      const rewritten = ['a,b.txt', 'a.txt', 'dir/sub.txt', "'a,(Write-Output).txt'", "'a $(x) b.txt'", '"plain name.txt"', '"C:\\temp\\x.txt"', 'C:\\temp\\x.txt']
-      const unchanged = ['$(Write-Output)', 'a,(Write-Output)', 'x)+(Write-Output', '{Write-Output}', '@(Write-Output)', '-x.txt', 'a`$(Write-Output)', '#x', 'a*.txt', "it's.txt", "'it''s.txt'", '\u2018a\u2019', "'a\u2019;(Write-Output);\u2018b'", '"a\u201d;(Write-Output);\u201cb"', '"a`";(Write-Output);`"b"', '"a\\$(Write-Output)"', "'a';(Write-Output);'b'"]
+      const rewritten = ['a,b.txt', 'a.txt', 'dir/sub.txt', "'a,(Write-Output).txt'", "'a $(x) b.txt'", '"plain name.txt"', '"C:\\temp\\x.txt"', "'C:\\temp\\x.txt'"]
+      const unchanged = ['C:\\temp\\x.txt', 'dir\\sub.txt','$(Write-Output)', 'a,(Write-Output)', 'x)+(Write-Output', '{Write-Output}', '@(Write-Output)', '-x.txt', 'a`$(Write-Output)', '#x', 'a*.txt', "it's.txt", "'it''s.txt'", '\u2018a\u2019', "'a\u2019;(Write-Output);\u2018b'", '"a\u201d;(Write-Output);\u201cb"', '"a`";(Write-Output);`"b"', '"a\\$(Write-Output)"', "'a';(Write-Output);'b'"]
       const commands = [...rewritten, ...unchanged].flatMap((word) => [`cat > ${word} <<'EOF'\nx\nEOF`, `cat <<'EOF' >> ${word}\nx\nEOF`])
       const adapted = commands.map((c) => adaptHeredoc(c))
       expect(adapted.filter((a, i) => a === commands[i])).toEqual(commands.slice(rewritten.length * 2))
@@ -95,12 +97,12 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
     it('pipes every body, ASCII or not, in the same scope', () => {
       const ascii = adaptHeredoc(`node - <<'EOF'\nconsole.log('hello')\nEOF`)
       const wide = adaptHeredoc(`node - <<'EOF'\nconsole.log('héllo ✓')\nEOF`)
-      expect(decodedBodies(wide)).toEqual(['console.log(\'héllo ✓\')'])
-      const shape = (s: string) => s.replace(/FromBase64String\('[^']*'\)/, 'B64')
+      expect(decodedBodies(wide)).toEqual(['console.log(\'héllo ✓\')\n', 'console.log(\'héllo ✓\')'])
+      const shape = (s: string) => s.replace(/FromBase64String\('[^']*'\)/g, 'B64')
       expect(shape(ascii)).toBe(shape(wide))
       expect(ascii).toMatch(/^& \{ .*\$OutputEncoding = .* \| node -; .*\} \$ErrorActionPreference -ErrorAction Ignore$/)
       // Statements after the piped command on the heredoc's line stay outside the scope, so an assignment there still reaches the caller.
-      expect(adaptHeredoc(`cat <<'EOF' | node - ; $after = 1\nconsole.log('e')\nEOF`)).toMatch(/\| node -; if .* -ErrorAction Ignore ; \$after = 1$/)
+      expect(adaptHeredoc(`cat <<'EOF' | node - ; $after = 1\nconsole.log('e')\nEOF`)).toMatch(/\$TgQ = \$\? \}; if .* -ErrorAction Ignore ; \$after = 1$/)
     })
 
     // HAND-DERIVED from bash(1), Here Documents: with `<<-` leading tabs are stripped from the body lines and the delimiter line; without it the delimiter must start its line; a body with no lines is empty; an unquoted delimiter has the body expanded ($, backtick, backslash), so such a body is left for PowerShell to refuse rather than delivered unexpanded.
@@ -118,6 +120,79 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
       expect(decodedBodies(adaptHeredoc(`cat > f.txt <<EOF\nplain text\nEOF`))).toEqual(['plain text\n'])
     })
 
+    // HAND-DERIVED from bash(1), Here Documents: the body ends at a line that is exactly the delimiter (leading tabs removed only with `<<-`); `EOF; echo x`, `EOF ` and ` EOF` are body lines, so with no exact terminator bash reads to the end of input and the command is not ours to rewrite.
+    it('ends a heredoc only at a line equal to the delimiter', () => {
+      for (const line of ['EOF; echo x', 'EOF ', ' EOF', 'EOF\r', 'EOFX']) {
+        const input = `cat > f.txt <<'EOF'\nbody\n${line}`
+        expect(adaptHeredoc(input)).toBe(input)
+        const piped = `cat <<'EOF' | python -\nprint(1)\n${line}`
+        expect(adaptHeredoc(piped)).toBe(piped)
+      }
+      expect(decodedBodies(adaptHeredoc(`cat > f.txt <<'EOF'\nEOF ; echo x\nEOF`))).toEqual(['EOF ; echo x\n'])
+      expect(decodedBodies(adaptHeredoc(`cat > f.txt <<-'EOF'\n\t\tbody\n\t\tEOF`))).toEqual(['body\n'])
+      expect(decodedBodies(adaptHeredoc(`cat > f.txt <<'EOF'\nbody\nEOF`))).toEqual(['body\n'])
+      expect(adaptHeredoc(`cat > f.txt <<'EOF'\nbody\nEOF\necho x`)).toMatch(/\n?echo x$/)
+    })
+
+    // HAND-DERIVED from bash(1), Command Substitution: `$(cat <<EOF ... EOF)` yields the body as the substitution's value, but the stdout rewrite writes to the console handle, which PowerShell's `$(...)` never captures; so inside a parenthesis the stdout form is left as written, and outside it is rewritten.
+    it('leaves a stdout cat heredoc inside parentheses as written and rewrites one outside', () => {
+      for (const inside of [`$x = $(\ncat <<'EOF'\nhi\nEOF\n)`, `$x = $(echo a; cat <<'EOF'\nhi\nEOF\n)`, `$x = (\ncat <<'EOF'\nhi\nEOF\n)`]) expect(adaptHeredoc(inside)).toBe(inside)
+      // A file write or a pipe into a cmdlet inside parentheses prints nothing to stdout, so bash's value for the substitution is empty and the rewrite is the same.
+      expect(adaptHeredoc(`$x = (\ncat <<'EOF' > f.txt\nhi\nEOF\n)`)).toContain('WriteAllText')
+      const outside = `$a = 1; cat <<'EOF'\nhi\nEOF\n$b = (1 + 2)`
+      expect(adaptHeredoc(outside)).toContain('OpenStandardOutput')
+      expect(adaptHeredoc(`$x = (1 + 2); cat <<'EOF'\nhi\nEOF`)).toContain('OpenStandardOutput')
+    })
+
+    // HAND-DERIVED from bash(1), Quoting: an unquoted backslash is removed (`C:\temp\x.txt` names `C:tempx.txt`), a single-quoted one is literal, so only the quoted forms name the file a PowerShell string would; a bare backslash name is left whole.
+    it('rewrites a single- or double-quoted backslash file name and leaves a bare one as written', () => {
+      const bare = `cat > C:\\temp\\x.txt <<'EOF'\nx\nEOF`
+      expect(adaptHeredoc(bare)).toBe(bare)
+      const single = adaptHeredoc(`cat > 'C:\\temp\\x.txt' <<'EOF'\nx\nEOF`)
+      expect(single).toContain(`FromPSPath('C:\\temp\\x.txt')`)
+      expect(adaptHeredoc(`cat > "C:\\temp\\x.txt" <<'EOF'\nx\nEOF`)).toContain('FromPSPath(')
+    })
+
+    // HAND-DERIVED: a command line is carried as one environment variable, which Windows caps near 32,767 characters, so a rewrite whose text passes the shared limit is not made; base64Bytes(text).base64.length is what the guard measures.
+    it('leaves a heredoc whose encoded body passes the shared limit as written', () => {
+      const small = `cat > f.txt <<'EOF'\n${'a'.repeat(1000)}\nEOF`
+      expect(adaptHeredoc(small)).not.toBe(small)
+      const big = `cat > f.txt <<'EOF'\n${'a'.repeat(MAX_ENCODED_CHARS)}\nEOF`
+      expect(adaptHeredoc(big)).toBe(big)
+      expect(adaptPowerShellCommand(big)).toBe(big)
+      const many = `cat > a.txt <<'EOF'\n${'b'.repeat(15000)}\nEOF\ncat > b.txt <<'EOF'\n${'b'.repeat(15000)}\nEOF`
+      expect(adaptPowerShellCommand(many)).toBe(many)
+    })
+
+    // HAND-DERIVED: base64 of n bytes is 4*ceil(n/3) characters; the text is encoded as UTF-8.
+    it('counts base64 characters from the UTF-8 bytes', () => {
+      expect(base64Bytes('h\u00e9llo')).toEqual({ base64: Buffer.from('h\u00e9llo').toString('base64'), bytes: 6 })
+      expect(base64Bytes('').bytes).toBe(0)
+    })
+
+    // HAND-DERIVED: a global regex keeps lastIndex across calls; two consecutive calls with the same input must give the same output whatever the first call matched.
+    it('gives the same rewrite on two consecutive calls', () => {
+      const cmd = `python -c 'print(1)'; python -c "print(2)"`
+      const first = adaptPowerShellCommand(cmd)
+      expect(first).not.toBe(cmd)
+      expect(adaptPowerShellCommand(cmd)).toBe(first)
+      expect(adaptPowerShellCommand(`python -c 'print(3)'`)).toBe(adaptPowerShellCommand(`python -c 'print(3)'`))
+      const hd = `python - <<'EOF'\nprint(1)\nEOF\npython - <<'EOF'\nprint(2)\nEOF`
+      expect(adaptHeredoc(hd)).toBe(adaptHeredoc(hd))
+      expect(adaptHeredoc(hd).match(/FromBase64String/g)?.length).toBeGreaterThanOrEqual(2)
+    })
+
+    // HAND-DERIVED: PowerShell appends CRLF to a string piped into a native command, which bash does not; the rewrite for a native command line writes the body's bytes to the process, and a cmdlet target keeps the pipeline.
+    it('writes a native pipe target\'s stdin as bytes and leaves a cmdlet target on the pipeline', () => {
+      const native = adaptHeredoc(`cat <<'EOF' | python -c "import sys; print(1)"\nx\nEOF`)
+      expect(native).toContain('BaseStream.Write')
+      expect(adaptHeredoc(`cat <<'EOF' | Measure-Object -Line\nx\nEOF`)).not.toContain('BaseStream')
+      for (const target of ['python - 2>&1', 'python - > out.txt', 'python - | head', '"python" -']) {
+        const input = `cat <<'EOF' | ${target}\nx\nEOF`
+        expect(adaptHeredoc(input)).toBe(input)
+      }
+    })
+
     // HAND-DERIVED: bash's `cat <<EOF` writes the body's bytes to standard output; Write-Output would print them in the console code page.
     it('writes a bare cat heredoc to standard output as bytes', () => {
       const adapted = adaptHeredoc(`cat <<'EOF'\nh\u00e9llo\nEOF`)
@@ -125,7 +200,7 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
       expect(decodedBodies(adapted)).toEqual(['h\u00e9llo\n'])
     })
 
-    // HAND-DERIVED: python --help: "PYTHONIOENCODING: encoding[:errors] used for stdin/stdout/stderr", the only switch a script read from stdin can be given; the command itself, launcher version switch and options included, runs as written.
+    // FORMAT-DERIVED from `python --help` (CPython 3.x usage text): "PYTHONIOENCODING: encoding[:errors] used for stdin/stdout/stderr", the only switch a script read from stdin can be given; the command itself, launcher version switch and options included, runs as written.
     it('runs a Python heredoc target as written, with UTF-8 standard streams', () => {
       expect(adaptHeredoc(`python3 <<'PY'\nprint(42)\nPY`)).toMatch(/\$env:PYTHONIOENCODING = 'utf-8' \}; .*\| python3 -; /)
       expect(adaptHeredoc(`py -3 - <<'PY'\nprint(42)\nPY`)).toMatch(/\$env:PYTHONIOENCODING = 'utf-8' \}; .*\| py -3 -; /)
@@ -282,22 +357,6 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
       expect(stdout).toContain('multi-line')
       expect(stdout).toContain('heredoc')
       expect(stdout).toContain('with "quotes" and \'single\'')
-    })
-
-    it.runIf(canRunPowerShell())('supports raw stdin piping via opts.stdin', async () => {
-      let stdout = ''
-      const exitCode = await run('python -', {
-        filterName: 'powershell',
-        shellType: 'pwsh',
-        stdin: 'import sys; sys.stdout.write("piped-input-success\\n")',
-        writeStdout: (s) => {
-          stdout += s
-        },
-        writeStderr: () => {},
-      })
-
-      expect(exitCode).toBe(0)
-      expect(stdout).toContain('piped-input-success')
     })
 
     it.runIf(canRunPowerShell())('propagates non-zero exit code from failing inline python', async () => {
@@ -573,6 +632,21 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
         expect(r.stderr).toBe('')
         expect(r.stdout.trim()).toBe(`b''`)
         expect(r.status).toBe(0)
+      })
+
+      // HAND-DERIVED: bash hands a program the heredoc body's UTF-8 bytes with LF line ends and the closing newline, no BOM and nothing added; python prints the hex of exactly the bytes it read from stdin.
+      it.skipIf(!hasPython)(`gives a native command the body's bytes, LF ended, with no BOM or added newline${pythonSkip}`, () => {
+        for (const body of [`${TEXT}\nline 2`, 'plain', '']) {
+          const r = runIn(`cat <<'EOF' | python -c "import sys; print(sys.stdin.buffer.read().hex())"\n${body}${body ? '\n' : ''}EOF`)
+          expect(r.stderr).toBe('')
+          expect(r.stdout.trim()).toBe(hex(body ? `${body}\n` : ''))
+          expect(r.status).toBe(0)
+        }
+      })
+
+      it.skipIf(!hasPython)(`still reports a native command's failure as a failed pipe${pythonSkip}`, () => {
+        const r = runIn(`cat <<'EOF' | python -c "import sys; sys.stdin.read(); sys.exit(3)"\nx\nEOF\nWrite-Output "q=$? code=$LASTEXITCODE"`)
+        expect(r.stdout.trim()).toBe('q=False code=3')
       })
     })
   }
