@@ -7,6 +7,13 @@ import { pathToFileURL } from 'node:url'
 /** The subjects this repository's own history uses: `chore(deps): ...` and Dependabot's `chore(deps-dev): ...`, `release: 2.9.30`, and the older `chore(release): 2.9.19`. */
 const DEPENDENCY_OR_RELEASE = /^(?:chore\(deps[a-z-]*\)|chore\(release\)|release)!?:/
 
+/** `git revert` words its subject `Revert "<reverted subject>"`, and undoing a dependency commit is a dependency change, so a revert is allowed exactly when the subject it reverts is (a revert of a revert unwraps twice). A revert of a `fix: ...` is not. */
+function isAllowedSubject(subject) {
+  if (DEPENDENCY_OR_RELEASE.test(subject) || /^Merge /.test(subject)) return true
+  const reverted = /^Revert "(.+)"$/.exec(subject)
+  return reverted !== null && isAllowedSubject(reverted[1])
+}
+
 export function isLockFile(file) {
   return file === 'package-lock.json' || file.endsWith('/package-lock.json')
 }
@@ -15,7 +22,7 @@ export function isLockFile(file) {
 export function lockSubjectProblem(subject, changedFiles) {
   const locks = changedFiles.filter(isLockFile)
   if (locks.length === 0) return null
-  if (DEPENDENCY_OR_RELEASE.test(subject) || /^Merge /.test(subject)) return null
+  if (isAllowedSubject(subject)) return null
   return `this commit changes ${locks.join(', ')}, so its subject must start with chore(deps), chore(release) or release; got: ${subject}`
 }
 

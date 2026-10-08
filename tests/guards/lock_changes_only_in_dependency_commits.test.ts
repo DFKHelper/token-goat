@@ -54,6 +54,15 @@ describe('lockSubjectProblem', () => {
     expect(lockSubjectProblem(subject, ['src/a.ts', 'package-lock.json'])).toMatch(/package-lock\.json/)
   })
 
+  // HAND-DERIVED: git revert words a subject Revert "<subject>", and a revert of a revert nests that once more.
+  it.each(['Revert "chore(deps): update lefthook to 2.1.15"', 'Revert "release: 2.9.30"', 'Revert "Revert "chore(deps): bump a""'])('lets %s change a lock file', (subject) => {
+    expect(lockSubjectProblem(subject, ['package-lock.json'])).toBeNull()
+  })
+
+  it.each(['Revert "fix: resync the lock file"', 'Revert "feat(x): a thing"', 'Revert "Revert "fix: x""', 'Revert "chore(deps): bump a', 'Revert ""', 'revert: chore(deps): bump a'])('still refuses %s changing a lock file', (subject) => {
+    expect(lockSubjectProblem(subject, ['package-lock.json'])).toMatch(/package-lock\.json/)
+  })
+
   it('also covers a lock file in a subdirectory, and ignores commits that touch none', () => {
     expect(lockSubjectProblem('fix: x', ['vscode-extension/package-lock.json'])).not.toBeNull()
     expect(lockSubjectProblem('fix: x', ['src/package-lock.json.ts', 'docs/package-lock.json.md'])).toBeNull()
