@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url'
 import * as esbuild from 'esbuild'
 import { describe, expect, it } from 'vitest'
 
+import { dependencyRelative } from '../helpers/junction_paths.js'
+
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO = path.join(HERE, '..', '..')
 
@@ -45,7 +47,7 @@ async function staticGraph(entry: string): Promise<Set<string>> {
       queue.push(imp.path)
     }
   }
-  return seen
+  return new Set([...seen].map(dependencyRelative))
 }
 
 describe('hook bundle static graph', () => {

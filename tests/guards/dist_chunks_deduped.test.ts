@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest'
 import { pinnedPopulation } from './population.js'
 
 import { CORE_BUNDLE, HOOK_BUNDLE, ROOT } from '../helpers/bundle.js'
+import { withClonePaths } from '../helpers/junction_paths.js'
 
 const DIST = path.join(ROOT, 'dist')
 /** The named outputs. Everything else in dist/ is a content-hashed chunk. */
@@ -112,8 +113,10 @@ describe('dist chunks are shared, not duplicated', () => {
 
   it('keeps the hook entry eager set under the regression ceiling', () => {
     const eager = closure(HOOK_BUNDLE, 'static')
-    let bytes = fs.statSync(HOOK_BUNDLE).size
-    for (const chunk of eager) bytes += fs.statSync(path.join(DIST, chunk)).size
+    // Measured as an ordinary clone would build it: in a worktree with a junctioned node_modules every dependency module marker is a longer `../../<elsewhere>/node_modules/...` path, which would otherwise add a few KB to a figure that has nothing to do with what ships.
+    const sizeOf = (file: string): number => Buffer.byteLength(withClonePaths(fs.readFileSync(file, 'utf8')))
+    let bytes = sizeOf(HOOK_BUNDLE)
+    for (const chunk of eager) bytes += sizeOf(path.join(DIST, chunk))
     expect(
       bytes,
       `hook eager set is ${(bytes / 1024 / 1024).toFixed(3)} MB across ${eager.size} chunks`,
