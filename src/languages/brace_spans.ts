@@ -538,6 +538,9 @@ function kotlinBodyContinues(content: string, lastSig: number, ifParenClosedAt: 
   return next !== null
 }
 
+/** The next code line (blank and `//` lines skipped) opens with `=`: an expression body whose `=` sits on its own continuation line, as in `fun f(): Int` then `    = init(3)`. */
+const NEXT_LINE_STARTS_WITH_EQUALS = /^(?:[ \t\r]*(?:\/\/[^\n]*)?\n)*[ \t]*=(?!=)/
+
 /** Last line of a Kotlin expression-bodied declaration (`fun f(x: Int) = expr`) that starts on `startLine`, or null when there is none: a `{` before the `=` is a block body, and a line that ends with no `=` and no open bracket is a bodiless declaration, for the brace walk or nothing to own. The `=` must sit at bracket depth 0, so a default argument (`fun f(x: Int = 0)`) is not one. Kotlin has no terminator, so the body ends at the first line break at depth 0 that the expression cannot cross: see {@link kotlinBodyContinues}. */
 function findKotlinEqualsBodyEndLine(content: string, lineIndex: readonly number[], startLine: number, lastLine: number): number | null {
   const from = lineIndex[startLine - 1]
@@ -554,8 +557,8 @@ function findKotlinEqualsBodyEndLine(content: string, lineIndex: readonly number
     if (ch === undefined) break
     if (ch === '\n') {
       if (depth === 0) {
-        if (!seenEq) return null
-        if (!kotlinBodyContinues(content, lastSig, ifParenClosedAt, i + 1)) return line
+        if (!seenEq && !NEXT_LINE_STARTS_WITH_EQUALS.test(content.slice(i + 1, to))) return null
+        if (seenEq && !kotlinBodyContinues(content, lastSig, ifParenClosedAt, i + 1)) return line
       }
       line++
       continue

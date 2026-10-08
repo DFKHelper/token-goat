@@ -598,3 +598,39 @@ describe('Scala 3 indentation (braceless) bodies nest types and keep their membe
     ])).toEqual(['class C  1-6', 'function m C 2-5', 'function next C 6-6'])
   })
 })
+
+describe('a Kotlin or Scala expression body whose `=` starts on the next line', () => {
+  it('ends an expression body whose `=` starts the next line at the end of that expression', async () => {
+    expect(await rowsFor('n1.kt', [
+      'class A {', // 1
+      '    fun f(): Int', // 2
+      '        = init(3)', // 3
+      '    fun g(): Int', // 4
+      '        // why', // 5
+      '', // 6
+      '        = compute(', // 7
+      '            4)', // 8
+      '    fun h() = 1', // 9
+      '}', // 10
+    ])).toEqual(['class A  1-10', 'method f A 2-3', 'method g A 4-8', 'method h A 9-9'])
+    expect(await rowsFor('n2.scala', [
+      'class A {', // 1
+      '  def f(): Int', // 2
+      '    = init(3)', // 3
+      '  def g(): Int', // 4
+      '    = compute(', // 5
+      '      4)', // 6
+      '  def h = 1', // 7
+      '}', // 8
+    ])).toEqual(['class A  1-8', 'function f A 2-3', 'function g A 4-6', 'function h A 7-7'])
+  })
+
+  it('leaves an abstract member next to an expression-bodied one on their own lines', async () => {
+    expect(await rowsFor('n3.kt', [
+      'abstract class A {', // 1
+      '    abstract fun f(): Int', // 2
+      '    fun g() = 1', // 3
+      '}', // 4
+    ])).toEqual(['class A  1-4', 'method f A 2-2', 'method g A 3-3'])
+  })
+})

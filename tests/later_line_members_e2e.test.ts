@@ -158,4 +158,22 @@ describe('members past a block or nested type opened on an earlier line reach th
     expect(g).toContain('val q = 2')
     expect(g).not.toContain('def after')
   }, 60_000)
+
+  it('Kotlin: an expression body whose `=` starts the next line spans to the end of the expression', async () => {
+    expect(await drain({
+      'eq.kt': [
+        'class A {', // 1
+        '    fun f(): Int', // 2
+        '        = init(3)', // 3
+        '    fun g(): Int', // 4
+        '        = compute(', // 5
+        '            4)', // 6
+        '    fun h() = 1', // 7
+        '}', // 8
+      ],
+    })).toEqual(['class A  1-8', 'method f A 2-3', 'method g A 4-6', 'method h A 7-7'])
+    const f = read('eq.kt::f')
+    expect(f).toContain('= init(3)')
+    expect(f).not.toContain('fun g')
+  }, 60_000)
 })
