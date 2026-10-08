@@ -45,6 +45,7 @@ describe('the embed fingerprint partition', () => {
       'src/markdown_frontmatter.ts',
       'src/markdown_lines.ts',
       'src/parser_types.ts',
+      'src/source_text.ts',
     ])
     const owned = kindOwned()
     // markdown_frontmatter.ts is shared with the parser only because both read where front matter ends; it takes a line array and returns an index, so it cannot send a file to a different chunker and may sit in the markdown kind's digest.

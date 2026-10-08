@@ -16,6 +16,7 @@ import { activeRuntime, isRuntimeAvailable, runtimeLoadError, runtimeVersion } f
 import { ownProjectScope } from './nested_worktrees.js'
 import { pathEqClause } from './sql_path.js'
 import { foldPath } from './util.js'
+import { normalizeSourceText } from './source_text.js'
 import { registerReset } from './reset.js'
 import { EMBED_FINGERPRINT, EMBED_KIND_FINGERPRINTS, PRE_KIND_EMBED_FINGERPRINT, SPLIT_EMBED_FINGERPRINT } from './embed_fingerprint.js'
 import { embedKindForPath } from './embed_stamp.js'
@@ -455,7 +456,8 @@ export function chunkFile(
   boundaries: ChunkBoundary[] = [],
   countTokens?: (text: string) => number,
 ): Chunk[] {
-  const lines = content.split(/\r?\n/)
+  // The parser counts lines on normalizeSourceText, so a lone-CR file must be cut into the same lines here or every chunk label disagrees with read.
+  const lines = normalizeSourceText(content).split(/\r?\n/)
   // splitlines() parity: a trailing newline must not introduce a phantom empty final line (it would inflate endLine by one and append a stray blank line).
   if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
   const totalLines = lines.length

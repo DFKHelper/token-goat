@@ -198,6 +198,7 @@ export function embedFingerprintSources() {
     path.join(ROOT, 'src', 'zip_bounds.ts'),
     path.join(ROOT, 'src', 'lazy_module.ts'),
     path.join(ROOT, 'src', 'sql_path.ts'),
+    path.join(ROOT, 'src', 'source_text.ts'),
   ].sort()
 }
 
