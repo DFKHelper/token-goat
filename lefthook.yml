@@ -40,6 +40,9 @@ commit-msg:
     no-tool-attribution:
       # Runs on the message, not on files, so it has no glob: every commit is checked. See the script's header for why this cannot be left to memory.
       run: bash .lefthook-scripts/check-commit-msg.sh {1}
+    lock-commit-subject:
+      # Reads the staged file list, not just the message: a package-lock.json change belongs in a chore(deps) or release commit. See the script's header.
+      run: node scripts/lock-commit-subject.mjs {1}
     no-hard-wrap:
       # One line per paragraph and per list item, and no verification checklist. See the script's header.
       run: bash .lefthook-scripts/check-commit-style.sh {1}
