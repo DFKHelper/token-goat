@@ -16,8 +16,8 @@ import { projectNotesFor } from './project_memory.js'
 import { fitSections } from './manifest_fit.js'
 import type { FitSection } from './manifest_fit.js'
 
-/** Bound on how long we'll wait for `mem epoch` before giving up -- see {@link buildMemEpochSection}. */
-const MEM_EPOCH_TIMEOUT_MS = 800
+/** Bound on how long we'll wait for `mem epoch` before giving up -- see {@link buildMemEpochSection}. The launcher is a `.cmd` file on Windows, so each call pays a cmd.exe start: 20 calls to an echo-only one took 93-213 ms with 3 stalls of 729-1043 ms on a loaded machine, and the earlier 800 ms cap dropped the epoch on those. 2000 ms clears the worst stall about twice over and, added to the rest of the hook, still ends inside the 3000 ms the Claude Code shim gives its spawned fallback (src/bridges/shim_common.ts). */
+const MEM_EPOCH_TIMEOUT_MS = 2000
 
 /** Cap on read/edit/web rows so a huge session can't blow the token budget. */
 const MAX_ROWS = 40
