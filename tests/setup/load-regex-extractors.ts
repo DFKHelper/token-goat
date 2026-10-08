@@ -4,4 +4,5 @@ import { beforeAll } from 'vitest'
 beforeAll(async () => {
   const slot = globalThis as unknown as Record<symbol, unknown>
   slot[Symbol.for('token-goat.regex-adapters')] ??= await import('../../src/languages/registry.js')
+  slot[Symbol.for('token-goat.salesforce-frontend')] ??= await import('../../src/languages/salesforce_frontend.js')
 })

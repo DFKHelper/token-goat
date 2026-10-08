@@ -24,11 +24,7 @@ import { detectLanguage, refineLanguageByContent, TREE_SITTER_LANGUAGES } from '
 import type { Language, RefEntry, SymbolEntry } from './parser_types.js'
 import type { RegexLanguage } from './language_specs.js'
 import type * as RegexAdapters from './languages/registry.js'
-import {
-  extractLwcJavaScript,
-  extractLwcTemplate,
-  extractSalesforceMarkup,
-} from './languages/salesforce_frontend.js'
+import type * as SalesforceFrontend from './languages/salesforce_frontend.js'
 import { ipynbToVirtualSource } from './languages/ipynb_idx.js'
 import { decodeSource, foldPath, isCaseInsensitiveFs } from './util.js'
 import { normalizePath } from './paths.js'
@@ -376,7 +372,7 @@ function parseWithTreeSitter(content: string, filePath: string, language: Langua
     const refs = REF_LANGUAGES.has(language) ? extractRefs(root, filePath, language) : []
     const parsed = { symbols, refs }
     return language === 'javascript' && isLwcFile(filePath, '.js')
-      ? mergeParseResults(parsed, extractLwcJavaScript(content, filePath))
+      ? mergeParseResults(parsed, salesforceFrontend().extractLwcJavaScript(content, filePath))
       : parsed
   } catch {
     // Parser threw on this input: the caller decides whether a regex pass is an acceptable substitute for what it could not produce.
@@ -396,10 +392,20 @@ type SymbolExtractor = (content: string, filePath: string) => SymbolEntry[]
 // In the global symbol registry so a module reset (vi.resetModules) or a second copy of this module in one process still finds the adapters loaded.
 const REGEX_ADAPTERS_SLOT = Symbol.for('token-goat.regex-adapters')
 const adapterSlot = globalThis as unknown as Record<symbol, typeof RegexAdapters | undefined>
+const SALESFORCE_FRONTEND_SLOT = Symbol.for('token-goat.salesforce-frontend')
+const salesforceSlot = globalThis as unknown as Record<symbol, typeof SalesforceFrontend | undefined>
 
 /** Load the regex language adapters (src/languages/registry.ts), once per process. They sit behind a dynamic import because parser.ts is on the hook path, where none of them is ever called: imported statically, every adapter was compiled on every hook invocation. Each entry point that parses awaits this first (the CLI's run(), runWorkerLoop, parseFile); a sync parse without it throws rather than quietly indexing a file to nothing. */
 export async function loadRegexExtractors(): Promise<void> {
   adapterSlot[REGEX_ADAPTERS_SLOT] ??= await import('./languages/registry.js')
+  salesforceSlot[SALESFORCE_FRONTEND_SLOT] ??= await import('./languages/salesforce_frontend.js')
+}
+
+// The Salesforce LWC/Aura extractors load with the regex adapters, so the hook path never compiles them.
+function salesforceFrontend(): typeof SalesforceFrontend {
+  const loaded = salesforceSlot[SALESFORCE_FRONTEND_SLOT]
+  if (loaded === undefined) throw new Error('token-goat: the Salesforce frontend adapters are not loaded; await loadRegexExtractors() before parsing')
+  return loaded
 }
 
 function regexAdapters(): typeof RegexAdapters {
@@ -431,10 +437,10 @@ function extractNoTreeSitter(
 ): ParseContentResult {
   const adapters = regexAdapters()
   if (language === 'salesforce_metadata') return adapters.extractSalesforceMetadata(content, filePath)
-  if (language === 'salesforce_markup') return extractSalesforceMarkup(content, filePath)
+  if (language === 'salesforce_markup') return salesforceFrontend().extractSalesforceMarkup(content, filePath)
   if (language === 'html' && isLwcFile(filePath, '.html')) {
     const base: ParseContentResult = { symbols: adapters.ADAPTER_EXTRACTORS.html(content, filePath), refs: [] }
-    return mergeParseResults(base, extractLwcTemplate(content, filePath))
+    return mergeParseResults(base, salesforceFrontend().extractLwcTemplate(content, filePath))
   }
   // Vue/Svelte/Astro adapters emit both symbols and refs (template component-tag references), same shape as extractSalesforceMarkup above -- returned directly rather than forced through the symbols-only noTreeSitterExtractors table.
   if (language === 'vue') return adapters.extractVue(content, filePath)
@@ -460,7 +466,7 @@ function extractNoTreeSitter(
     refs: [],
   }
   return language === 'javascript' && isLwcFile(filePath, '.js')
-    ? mergeParseResults(parsed, extractLwcJavaScript(content, filePath))
+    ? mergeParseResults(parsed, salesforceFrontend().extractLwcJavaScript(content, filePath))
     : parsed
 }
 

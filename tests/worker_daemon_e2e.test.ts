@@ -122,7 +122,9 @@ describe('detached worker daemon (built bundle)', () => {
 
         const queueDir = path.join(effectiveDataDir(dataBase), 'queue')
         fs.mkdirSync(queueDir, { recursive: true })
-        fs.writeFileSync(path.join(queueDir, 'dirty.txt'), `${srcFile}\n${fortranFile}\n`)
+        const auraFile = path.join(repo, 'daemon_e2e_sample.cmp')
+        fs.writeFileSync(auraFile, '<aura:component>\n  <aura:attribute name="daemonDrainedAttr" type="String"/>\n</aura:component>\n')
+        fs.writeFileSync(path.join(queueDir, 'dirty.txt'), `${srcFile}\n${fortranFile}\n${auraFile}\n`)
 
         let sym: RunResult | undefined
         const drainMs = await waitFor('the running daemon to drain the seeded queue entry', 20000, () => {
@@ -137,6 +139,14 @@ describe('detached worker daemon (built bundle)', () => {
           return fortranSym.status === 0 && fortranSym.stdout.includes('daemon_drained_fortran')
         })
         expect(fortranSym?.stdout).toContain('daemon_drained_fortran')
+
+        // The Salesforce frontend adapters load through the same lazy path as the registry; an Aura attribute resolving proves the daemon awaited that load too.
+        let auraSym: RunResult | undefined
+        await waitFor('the running daemon to index the Aura component through the lazily loaded frontend adapter', 20000, () => {
+          auraSym = runBundle(['symbol', 'daemonDrainedAttr'], env, repo)
+          return auraSym.status === 0 && auraSym.stdout.includes('daemonDrainedAttr')
+        })
+        expect(auraSym?.stdout).toContain('daemonDrainedAttr')
 
         // The drain landing this fast is itself the assertion that TG_WORKER_POLL_MS reached the daemon. `worker start` used to hardcode the 2000ms default into the child's env regardless of what it inherited, so the variable the daemon reads was a no-op on the only path that actually starts one. With that bug back, the first poll cycle alone puts this past the bound; DAEMON_POLL_MS is an order of magnitude under it.
         expect(

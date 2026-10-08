@@ -149,10 +149,34 @@ function addAttributeSymbols(
   tag: string,
   kind: string,
 ): void {
-  const tagRe = new RegExp(`<\\s*${tag}\\b[^>]*\\bname\\s*=\\s*["']([^"']+)["'][^>]*>`, 'gi')
-  for (const match of content.matchAll(tagRe)) {
-    symbols.push(symbol(filePath, match[1] ?? '', kind, offsetToLine(lineIndex, match.index ?? 0)))
+  const tagStart = new RegExp(`<\\s*${tag}\\b`, 'gi')
+  for (let found = tagStart.exec(content); found !== null; found = tagStart.exec(content)) {
+    const scanned = scanTagForName(content, tagStart.lastIndex)
+    if (scanned.end < 0) return
+    if (scanned.name !== undefined) symbols.push(symbol(filePath, scanned.name, kind, offsetToLine(lineIndex, found.index)))
+    tagStart.lastIndex = scanned.end + 1
   }
+}
+
+const NAME_ATTRIBUTE = /name\s*=\s*["']([^"']+)["']/iy
+
+// One left-to-right pass over a start tag: quoted values are skipped whole, the last name="..." outside them wins, and end is the closing > or -1.
+function scanTagForName(content: string, from: number): { name: string | undefined; end: number } {
+  let name: string | undefined
+  const unpaired: Record<string, boolean> = {}
+  for (let i = from; i < content.length; i++) {
+    const ch = content[i] ?? ''
+    if (ch === '>') return { name, end: i }
+    if (ch === '"' || ch === "'") {
+      const close = unpaired[ch] ? -1 : content.indexOf(ch, i + 1)
+      if (close < 0) unpaired[ch] = true
+      else i = close
+    } else if ((ch === 'n' || ch === 'N') && !/\w/.test(content[i - 1] ?? '')) {
+      NAME_ATTRIBUTE.lastIndex = i
+      name = NAME_ATTRIBUTE.exec(content)?.[1] ?? name
+    }
+  }
+  return { name, end: -1 }
 }
 
 function attributeRefs(
