@@ -615,6 +615,10 @@ async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boo
   if (opts.context === true) {
     doctorOpts.context = true
   }
+  if (opts.json === true && (opts.repair === true || opts.fix === true)) {
+    // The JSON output is a bare array of checks with no place for what a repair did, so asking for both used to run the checks and silently skip the repair.
+    throw new CliError('doctor --json cannot repair: run `token-goat doctor --fix`, then `token-goat doctor --json` to read the result')
+  }
   if (opts.repair === true || opts.fix === true) {
     // A repair downloads what is missing, now, so it runs again through the machine's proxy as `semantic --warm` does.
     const code = rerunWithEnvProxy(spawnSync)
