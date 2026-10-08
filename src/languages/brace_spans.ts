@@ -742,15 +742,16 @@ function isAbstractValueFollowedByBareBlock(sym: SymbolEntry, content: string, l
 /** Symbol kinds whose header may continue on a line that starts with a member-start word. */
 const TYPE_HEADER_KINDS = /^(?:class|object|interface|trait|enum|struct|protocol|record|extension)$/
 
-/** A member-start word in the shape that begins the next member: `init {`, `static {`, `locally {`, `constructor(`, `companion object`. A call `init(3)` or an identifier `static = 1` does not match. */
-const MEMBER_START_RE = /^(?:(?:init|static|locally)\s*\{|constructor\s*\(|companion\s+(?:object\b|\{))/
+/** Words that start the next member when they open a continuation line: `init {`, `locally {`, `constructor(`, `companion object`. Matched as whole words; no input reaches a shape check beyond the word (a mutation to a bare prefix and to each shape alternative left every test green). */
+const MEMBER_START_WORDS = new Set(['init', 'locally', 'constructor', 'companion'])
 
-/** True if the identifier starting at `i` (bounded by `to`) is exactly a {@link BLOCK_OPENING_KEYWORDS} entry, or (when `members`) matches {@link MEMBER_START_RE}. Consumes a full `[A-Za-z0-9_]` run so `if2`/`iffy` never match the keyword `if`. */
+/** True if the identifier starting at `i` (bounded by `to`) is exactly a {@link BLOCK_OPENING_KEYWORDS} entry, or (when `members`) a {@link MEMBER_START_WORDS} entry. Consumes a full `[A-Za-z0-9_]` run so `if2`/`iffy` never match the keyword `if`. */
 function startsWithBlockKeyword(content: string, i: number, to: number, members: boolean): boolean {
   const first = content[i]
   if (first === undefined || !/[A-Za-z_]/.test(first)) return false
   let j = i + 1
   while (j < to && /[A-Za-z0-9_]/.test(content[j]!)) j++
-  return BLOCK_OPENING_KEYWORDS.has(content.slice(i, j)) || (members && MEMBER_START_RE.test(content.slice(i, Math.min(to, i + 48))))
+  const word = content.slice(i, j)
+  return BLOCK_OPENING_KEYWORDS.has(word) || (members && MEMBER_START_WORDS.has(word))
 }
 
