@@ -12,7 +12,7 @@ import { recordCreatedConfig, recordTurnedOffSetting, removeCreatedBackups, remo
 import { claudeHooksInstalledAnyScope } from '../install.js'
 import { dropEmptyServers, hasManagedServer, isManagedServer, isResidueServersJson, managedServer, noteRootKeyCreation, readServersJson, setTokenGoatServer, type ServersJsonConfig } from './mcp_servers_json.js'
 import { writeSettingsKeepingComments } from './commented_settings.js'
-import { jsonc, parseJsonOrJsonc, stripBom } from '../jsonc_text.js'
+import { parseJsonOrJsonc, stripBom } from '../jsonc_text.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
 
 /** Markers of the VS Code guidance block; exported so the Visual Studio block can tell when it shares a file with this one. */
@@ -31,7 +31,7 @@ export interface VscodeScopeOptions {
   keepBackups?: boolean
 }
 
-/** VS Code's user-profile config directory, mirroring how VS Code itself resolves it (confirmed against VS Code's own docs, not assumed by analogy with another bridge): `%APPDATA%\Code\User` on Windows, `~/Library/Application Support/Code/User` on macOS, `~/.config/Code/User` on Linux. `mcp.json` lives directly inside it, using the same `servers` root key as the project-local file. Like `zedConfigDir` in `./zed_install.js`, the Windows branch reads `process.env['APPDATA']` directly (falling back to `~/AppData/Roaming` if unset or blank) rather than hardcoding a path, so tests and dogfooding can isolate it the same way they already isolate `HOME`/`USERPROFILE`/`LOCALAPPDATA`. */
+/** VS Code's user-profile config directory, mirroring how VS Code itself resolves it (confirmed against VS Code's own docs, not assumed by analogy with another bridge): `%APPDATA%\Code\User` on Windows, `~/Library/Application Support/Code/User` on macOS, `$XDG_CONFIG_HOME/Code/User` on Linux (an absolute value, as the XDG spec requires; otherwise `~/.config/Code/User`). `mcp.json` lives directly inside it, using the same `servers` root key as the project-local file. Like `zedConfigDir` in `./zed_install.js`, the Windows branch reads `process.env['APPDATA']` directly (falling back to `~/AppData/Roaming` if unset or blank) rather than hardcoding a path, so tests and dogfooding can isolate it the same way they already isolate `HOME`/`USERPROFILE`/`LOCALAPPDATA`. */
 function vscodeUserConfigDir(): string {
   if (process.platform === 'win32') {
     const appData = process.env['APPDATA']
@@ -41,7 +41,8 @@ function vscodeUserConfigDir(): string {
   if (process.platform === 'darwin') {
     return path.join(os.homedir(), 'Library', 'Application Support', 'Code', 'User')
   }
-  return path.join(os.homedir(), '.config', 'Code', 'User')
+  const xdg = process.env['XDG_CONFIG_HOME']
+  return path.join(xdg !== undefined && path.isAbsolute(xdg) ? xdg : path.join(os.homedir(), '.config'), 'Code', 'User')
 }
 
 export function vscodeUserMcpPath(): string {
@@ -111,15 +112,7 @@ export function vscodeUserSettingsPath(): string {
 
 /** True when VS Code's user settings turn on `chat.useClaudeHooks`, which makes VS Code also run the hooks in `~/.claude/settings.json`. It defaults to false (its configuration entry in workbench.desktop.main.js, 1.136.0). Read only; an unreadable or malformed file reads as false. */
 export function vscodeUsesClaudeHooks(settingsPath = vscodeUserSettingsPath()): boolean {
-  let text: string
-  try {
-    text = fs.readFileSync(settingsPath, 'utf8')
-  } catch {
-    return false
-  }
-  const parsed: unknown = jsonc().parse(stripBom(text), [], { allowTrailingComma: true, disallowComments: false })
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false
-  return (parsed as Record<string, unknown>)['chat.useClaudeHooks'] === true
+  return readSettingsObject(settingsPath)?.[CLAUDE_HOOKS_SETTING] === true
 }
 
 /** True when VS Code would run token-goat's own Claude Code hooks a second time: `chat.useClaudeHooks` is on AND token-goat's Claude Code hooks are installed. Without the second half there is no duplicate, and turning the setting off would only stop the user's own Claude hooks in VS Code. */
@@ -137,18 +130,13 @@ function readSettingsObject(settingsPath: string): Record<string, unknown> | nul
   }
 }
 
-/** Turns off `chat.useClaudeHooks` in VS Code's user settings if enabled, preserving all comments and other settings, and records in the created-configs ledger that token-goat did it so `uninstall --vscode` can turn it back on. Returns true if the setting was present and set to true and was updated to false; false otherwise. */
+/** Turns off `chat.useClaudeHooks` in VS Code's user settings if enabled, preserving all comments and other settings, and records in the created-configs ledger that token-goat did it so `uninstall --vscode` can turn it back on. Returns true if the setting was present and set to true and was updated to false; false when there was nothing to turn off. A settings file that cannot be written throws, so the caller reports a setting still on rather than one left alone. */
 export function disableVscodeClaudeHooks(settingsPath = vscodeUserSettingsPath()): boolean {
-  if (!vscodeUsesClaudeHooks(settingsPath)) return false
   const prev = readSettingsObject(settingsPath)
-  if (prev === null) return false
-  try {
-    withInstallScope(undefined, () => {
-      writeSettingsKeepingComments(settingsPath, { ...prev, [CLAUDE_HOOKS_SETTING]: false }, { allowTrailingComma: true })
-    })
-  } catch {
-    return false
-  }
+  if (prev?.[CLAUDE_HOOKS_SETTING] !== true) return false
+  withInstallScope(undefined, () => {
+    writeSettingsKeepingComments(settingsPath, { ...prev, [CLAUDE_HOOKS_SETTING]: false }, { allowTrailingComma: true })
+  })
   recordTurnedOffSetting(settingsPath, CLAUDE_HOOKS_SETTING)
   return true
 }

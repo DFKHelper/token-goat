@@ -13,6 +13,7 @@ import { MODEL_DOWNLOAD_HOST, clearDownloadFailure, isExplicitDownload, recordDo
 import { INSTRUCTION_GATE_BEGIN, INSTRUCTION_GATE_END } from '../src/cli_doctor_guidance.js'
 import { DEV_CHECKOUT_ADVICE } from '../src/cli_upgrade.js'
 import { clearUpdateCheck, seedUpdateCheck } from './helpers/update-check.js'
+import { allowWrites, denyWrites } from './helpers/seal-directory.js'
 import { CliError, formatCommandError } from '../src/command_error.js'
 
 describe('doctor auto-repair and embedding model checks', () => {
@@ -246,6 +247,7 @@ describe('doctor auto-repair and embedding model checks', () => {
       expect(result.errors).toHaveLength(0)
     })
 
+    // Provenance: FORMAT-DERIVED. The key name and its default of false come from the `chat.useClaudeHooks` configuration entry in VS Code 1.136.0's workbench.desktop.main.js (cited at vscodeUsesClaudeHooks); the JSONC comment is a HAND-DERIVED stand-in for a user's own settings.
     it('disables chat.useClaudeHooks in VS Code settings when user-scope VS Code hooks and token-goat Claude Code hooks are installed', async () => {
       const mockConfig: Config = {
         mcp: { confine_reads_to_project_root: false },
@@ -270,10 +272,44 @@ describe('doctor auto-repair and embedding model checks', () => {
       fs.writeFileSync(settings, '{\n  // custom\n  "chat.useClaudeHooks": true\n}\n', 'utf8')
 
       const result = await runDoctorRepair({ rootDir: projectRoot })
-      expect(result.repairs.some((r) => r.includes('Disabled VS Code chat.useClaudeHooks'))).toBe(true)
+      expect(result.repairs.some((r) => r.includes('Turned off chat.useClaudeHooks'))).toBe(true)
       const after = fs.readFileSync(settings, 'utf8')
       expect(after).toContain('// custom')
       expect(after).toContain('"chat.useClaudeHooks": false')
+    })
+
+    // Provenance: same as the test above; the unwritable settings directory is HAND-DERIVED.
+    it('reports an error, not a repair or silence, when chat.useClaudeHooks cannot be turned off', async ({ skip }) => {
+      vi.spyOn(configModule, 'loadConfig').mockReturnValue({
+        mcp: { confine_reads_to_project_root: false },
+        indexing: { cross_project_symbols: true, embeddings_enabled: true },
+        network: { offline: false },
+        gdrive: { enabled: false },
+      } as unknown as Config)
+      vi.spyOn(configModule, 'saveConfig').mockImplementation(() => undefined)
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(true)
+
+      const { installVscode, vscodeUserSettingsPath } = await import('../src/bridges/vscode_install.js')
+      const { installHooks } = await import('../src/install.js')
+      vi.stubEnv('APPDATA', userHome)
+      installHooks('user')
+      const settings = vscodeUserSettingsPath()
+      fs.mkdirSync(path.dirname(settings), { recursive: true })
+      installVscode()
+      fs.writeFileSync(settings, '{\n  "chat.useClaudeHooks": true\n}\n', 'utf8')
+      expect(fs.readFileSync(settings, 'utf8')).toContain('"chat.useClaudeHooks": true')
+      if (!denyWrites(path.dirname(settings))) {
+        skip('this runner can still write a directory denied to it')
+        return
+      }
+      try {
+        const result = await runDoctorRepair({ rootDir: projectRoot })
+        expect(result.errors.some((e) => e.includes('Failed to repair VS Code chat.useClaudeHooks'))).toBe(true)
+        expect(result.repairs.some((r) => r.includes('Turned off chat.useClaudeHooks'))).toBe(false)
+        expect(fs.readFileSync(settings, 'utf8')).toContain('"chat.useClaudeHooks": true')
+      } finally {
+        allowWrites(path.dirname(settings))
+      }
     })
 
     describe('deprecated .vscode/mcp.json residue cleanup', () => {

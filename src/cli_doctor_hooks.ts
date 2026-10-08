@@ -43,6 +43,7 @@ import { installOpenclaw, isOpenclawInstalled } from './bridges/openclaw_install
 import { installPi, isPiInstalled } from './bridges/pi_install.js'
 import { installAntigravity, isAntigravityInstalled } from './bridges/antigravity_install.js'
 import { disableVscodeClaudeHooks, vscodeHooksInstalled, vscodeRunsTokenGoatClaudeHooks } from './bridges/vscode_install.js'
+import { VSCODE_CLAUDE_HOOKS_TURNED_OFF_TEXT } from './cli_doctor_platforms.js'
 
 export function shimIsCurrent(scriptPath: string, expected: string): boolean {
   try {
@@ -251,7 +252,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
   try {
     if (vscodeRunsTokenGoatClaudeHooks() && vscodeHooksInstalled()) {
       if (disableVscodeClaudeHooks()) {
-        repairs.push('Disabled VS Code chat.useClaudeHooks in VS Code user settings to prevent duplicate hook execution. It covers every Claude hook in VS Code, not only the token-goat ones. Set "chat.useClaudeHooks": true to turn it back on, or run `token-goat uninstall --vscode --user` to put it back')
+        repairs.push(VSCODE_CLAUDE_HOOKS_TURNED_OFF_TEXT)
       }
     }
   } catch (e) {

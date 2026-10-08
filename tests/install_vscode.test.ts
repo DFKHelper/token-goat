@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { copilotHooksOwnersPath, installCopilotCli, isCopilotCliInstalled, readCopilotHooksOwners, uninstallCopilotCli } from '../src/bridges/copilot_cli_install.js'
 import { disableVscodeClaudeHooks, installVscode, uninstallVscode, VSCODE_HOOK_FILE_EVENT_KEYS, vscodeDecoderConfigured, vscodeHooksInstalled, vscodeUserMcpPath, vscodeUserSettingsPath, vscodeUsesClaudeHooks } from '../src/bridges/vscode_install.js'
 import { checkVscodeClaudeHooks, checkVscodeProjectMcp, checkVscodeUserScopeHooks } from '../src/cli_doctor_platforms.js'
+import { allowWrites, denyWrites } from './helpers/seal-directory.js'
 
 const savedAppData = process.env['APPDATA']
 const savedHome = process.env['HOME']
@@ -421,6 +422,7 @@ describe('chat.useClaudeHooks double-fire detection', () => {
     expect(claudeOnly?.message).toContain('install --vscode')
   })
 
+  // Provenance: FORMAT-DERIVED. The key name and its default of false come from the `chat.useClaudeHooks` configuration entry in VS Code 1.136.0's workbench.desktop.main.js (cited at vscodeUsesClaudeHooks); the JSONC comment and the neighbouring `editor.fontSize` key are HAND-DERIVED stand-ins for a user's own settings.
   it('disableVscodeClaudeHooks turns off chat.useClaudeHooks, preserves comments and other settings, and is idempotent', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-settings-'))
     try {
@@ -440,6 +442,64 @@ describe('chat.useClaudeHooks double-fire detection', () => {
     }
   })
 
+  // HAND-DERIVED: a settings file with a syntax error after the key. The tolerant parser the reader used to call still returned the key, so the reader said the setting was on while the writer, which refuses a malformed file, could not turn it off.
+  it('vscodeUsesClaudeHooks reads a malformed settings file as off, the way disableVscodeClaudeHooks does', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-settings-'))
+    try {
+      const settings = path.join(dir, 'settings.json')
+      const malformed = '{\n  "chat.useClaudeHooks": true,\n  "editor.fontSize": \n}\n'
+      fs.writeFileSync(settings, malformed)
+      expect(vscodeUsesClaudeHooks(settings)).toBe(false)
+      expect(disableVscodeClaudeHooks(settings)).toBe(false)
+      expect(fs.readFileSync(settings, 'utf8')).toBe(malformed)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // HAND-DERIVED: the settings file sits in a directory this process can read but not write, so the update cannot be made.
+  it('disableVscodeClaudeHooks throws, and leaves the setting on, when the settings file cannot be updated', ({ skip }) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-settings-'))
+    try {
+      const settings = path.join(dir, 'settings.json')
+      fs.writeFileSync(settings, '{\n  "chat.useClaudeHooks": true\n}\n')
+      expect(vscodeUsesClaudeHooks(settings)).toBe(true)
+      if (!denyWrites(dir)) {
+        skip('this runner can still write a directory denied to it')
+        return
+      }
+      try {
+        expect(() => disableVscodeClaudeHooks(settings)).toThrow()
+        expect(vscodeUsesClaudeHooks(settings)).toBe(true)
+      } finally {
+        allowWrites(dir)
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // FORMAT-DERIVED: Electron resolves the Linux config root from XDG_CONFIG_HOME when it is an absolute path, else ~/.config (XDG Base Directory Specification, which says a relative value is invalid and must be ignored).
+  it('puts the Linux user settings under XDG_CONFIG_HOME when it is absolute, and under ~/.config otherwise', () => {
+    const savedPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+    const savedXdg = process.env['XDG_CONFIG_HOME']
+    Object.defineProperty(process, 'platform', { value: 'linux' })
+    try {
+      const xdg = path.join(defaultUserDir, 'xdg')
+      process.env['XDG_CONFIG_HOME'] = xdg
+      expect(vscodeUserSettingsPath()).toBe(path.join(xdg, 'Code', 'User', 'settings.json'))
+      process.env['XDG_CONFIG_HOME'] = 'relative/config'
+      expect(vscodeUserSettingsPath()).toBe(path.join(os.homedir(), '.config', 'Code', 'User', 'settings.json'))
+      delete process.env['XDG_CONFIG_HOME']
+      expect(vscodeUserSettingsPath()).toBe(path.join(os.homedir(), '.config', 'Code', 'User', 'settings.json'))
+    } finally {
+      if (savedPlatform !== undefined) Object.defineProperty(process, 'platform', savedPlatform)
+      if (savedXdg === undefined) delete process.env['XDG_CONFIG_HOME']
+      else process.env['XDG_CONFIG_HOME'] = savedXdg
+    }
+  })
+
+  // Provenance: FORMAT-DERIVED. The key name and its default of false come from the `chat.useClaudeHooks` configuration entry in VS Code 1.136.0's workbench.desktop.main.js (cited at vscodeUsesClaudeHooks); the JSONC comment and the neighbouring `editor.fontSize` key are HAND-DERIVED stand-ins for a user's own settings.
   it('installVscode leaves the user-wide chat.useClaudeHooks alone from a project-scope install', () => {
     const settings = vscodeUserSettingsPath()
     fs.mkdirSync(path.dirname(settings), { recursive: true })

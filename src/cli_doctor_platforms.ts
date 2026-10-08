@@ -103,9 +103,12 @@ export function checkVscodeUserScopeHooks(userScope: boolean, projectScope: bool
 export const VSCODE_DOUBLE_FIRE_NOTE =
   'NOTE: VS Code has chat.useClaudeHooks turned on, so it also runs the token-goat hooks in ~/.claude/settings.json and each one fires twice. token-goat left it alone because it is a user-wide VS Code setting, and turning it off also stops every other Claude hook you have in VS Code. If you see hooks run twice, set "chat.useClaudeHooks": false in your VS Code user settings.'
 
+/** What turning chat.useClaudeHooks off did and how to undo it, worded once for `install --vscode --user` (which prefixes NOTE) and `doctor --repair` (which lists it as a repair). */
+export const VSCODE_CLAUDE_HOOKS_TURNED_OFF_TEXT =
+  'Turned off chat.useClaudeHooks in your VS Code user settings so token-goat hooks do not run twice. That setting covers every Claude hook in VS Code, not only the token-goat ones. To turn it back on, set "chat.useClaudeHooks": true in VS Code settings, or run `token-goat uninstall --vscode --user` to put it back.'
+
 /** One-line note printed when `install --vscode --user` turned chat.useClaudeHooks off. */
-export const VSCODE_CLAUDE_HOOKS_TURNED_OFF_NOTE =
-  'NOTE: Turned off chat.useClaudeHooks in your VS Code user settings so token-goat hooks do not run twice. That setting covers every Claude hook in VS Code, not only the token-goat ones. To turn it back on, set "chat.useClaudeHooks": true in VS Code settings, or run `token-goat uninstall --vscode --user` to put it back.'
+export const VSCODE_CLAUDE_HOOKS_TURNED_OFF_NOTE = `NOTE: ${VSCODE_CLAUDE_HOOKS_TURNED_OFF_TEXT}`
 
 /** One-line note `uninstall --vscode` prints when it put back the chat.useClaudeHooks value token-goat had turned off. */
 export const VSCODE_CLAUDE_HOOKS_RESTORED_NOTE = 'Turned chat.useClaudeHooks back on in your VS Code user settings, as it was before token-goat turned it off.'
