@@ -74,10 +74,18 @@ export const SHIM_SPAWN_LADDER = `    const res = entryPath
       ? spawnSync(process.execPath, [entryPath, 'hook', eventName], {
           input,
           encoding: 'utf8',
-          timeout: 3000,
+          timeout: SHIM_FALLBACK_TIMEOUT_MS,
           killSignal: 'SIGKILL',
           maxBuffer: SHIM_MAX_BUFFER_BYTES,
         })`
+
+// FORMAT-DERIVED per harness from the hook timeout its docs or install writer names: Claude Code 30 s for UserPromptSubmit and 600 s elsewhere (https://code.claude.com/docs/en/hooks, the timeout field; token-goat writes no timeout on its entries), Codex 600 s (codex_install.ts), Copilot 60 s (HOOK_TIMEOUT_SEC in copilot_cli_install.ts), Grok 5 s default (its hooks doc, cited in grok.ts), Kimi 30 s default (docs/en/customization/hooks.md, cited in kimi.ts). Each cap is the fallback's whole budget, so it sits under the smallest timeout the harness applies to any event token-goat registers, and well over the cold start of a loaded machine.
+export const SHIM_FALLBACK_TIMEOUT_MS = { claudecode: 20_000, codex: 45_000, copilot: 45_000, grok: 3_000, kimi: 20_000 } as const
+
+/** The `const` line each shim declares for {@link SHIM_FALLBACK_TIMEOUT_MS}, so every spawn site in the script reads one name and the number lives only above. */
+export function shimFallbackTimeoutConst(harness: keyof typeof SHIM_FALLBACK_TIMEOUT_MS): string {
+  return `const SHIM_FALLBACK_TIMEOUT_MS = ${SHIM_FALLBACK_TIMEOUT_MS[harness]}`
+}
 
 /** 32 MiB, matching `MAX_CAPTURE_BYTES` in bash_runner.ts: the largest payload a hook response is allowed to reach without Node's `spawnSync` truncating it via its 1 MB default. */
 export const SHIM_MAX_BUFFER_CONST = `const SHIM_MAX_BUFFER_BYTES = 32 * 1024 * 1024`

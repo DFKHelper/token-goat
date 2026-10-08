@@ -2,6 +2,7 @@
 import { COPILOT_CLI_TOOL_NAME_MAP } from '../copilot_tool_names.js'
 import { ownGet } from '../own_lookup.js'
 import { foldToolName } from '../tool_name_fold.js'
+import { shimFallbackTimeoutConst } from './shim_common.js'
 import { SHIM_TRY_SERVER } from './shim_try_server.js'
 import { MATERIALIZE_SHRUNK_IMAGE_JS } from './shrink_block.js'
 
@@ -16,8 +17,8 @@ const os = require('node:os')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 
-// How long the fallback spawn of the real hook may run before the shim answers an empty fail-open '{}' for it. The hook entries token-goat installs give Copilot 60 s (HOOK_TIMEOUT_SEC in copilot_cli_install.ts), and a hook Copilot kills fails open the same way, so a cap of a few seconds only discarded the verdict of a cold start that was merely slow (bundle load, DB open, a loaded machine). Kept under that 60 s so the shim, not Copilot, ends a hook that really is stuck.
-const INNER_HOOK_TIMEOUT_MS = 45000
+// How long the fallback spawn of the real hook may run before the shim answers an empty fail-open '{}' for it. The hook entries token-goat installs give Copilot 60 s (HOOK_TIMEOUT_SEC in copilot_cli_install.ts); the number is SHIM_FALLBACK_TIMEOUT_MS.copilot in shim_common.ts, and a hook Copilot kills fails open the same way, so a cap of a few seconds only discarded the verdict of a cold start that was merely slow (bundle load, DB open, a loaded machine). Kept under that 60 s so the shim, not Copilot, ends a hook that really is stuck.
+${shimFallbackTimeoutConst('copilot')}
 
 // Copilot event name -> token-goat internal HookEventName (src/types.ts's
 // HOOK_EVENTS). Only these nine have a token-goat handler; every other real
@@ -326,7 +327,7 @@ async function relayVscode(entryPath, tgEvent, payload) {
       input: JSON.stringify(input),
       encoding: 'utf8',
       windowsHide: true,
-      timeout: INNER_HOOK_TIMEOUT_MS,
+      timeout: SHIM_FALLBACK_TIMEOUT_MS,
       killSignal: 'SIGKILL',
       maxBuffer: 32 * 1024 * 1024,
       env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'vscode', TOKEN_GOAT_VSCODE_HOOKS_DIR: __dirname }),
@@ -470,7 +471,7 @@ async function main() {
   // second node process altogether. If that's unavailable, invoking the entry directly
   // via process.execPath sidesteps PATH/cmd.exe resolution for this inner call, per the
   // note above this function's original single-spawn form documented. The
-  // INNER_HOOK_TIMEOUT_MS timeout/killSignal on both spawnSync fallbacks keeps them under
+  // SHIM_FALLBACK_TIMEOUT_MS timeout/killSignal on both spawnSync fallbacks keeps them under
   // the 60 s Copilot CLI is given, so token-goat degrades to its own fail-open '{}' rather
   // than being force-killed by Copilot first.
   let stdout = await tryInProcess(entryPath, tgEvent, canonical, 'copilot_cli')
@@ -480,7 +481,7 @@ async function main() {
           input: JSON.stringify(canonical),
           encoding: 'utf8',
           windowsHide: true,
-          timeout: INNER_HOOK_TIMEOUT_MS,
+          timeout: SHIM_FALLBACK_TIMEOUT_MS,
           killSignal: 'SIGKILL',
           maxBuffer: 32 * 1024 * 1024,
           env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli', TOKEN_GOAT_COPILOT_HOOKS_DIR: __dirname }),
@@ -490,7 +491,7 @@ async function main() {
           encoding: 'utf8',
           shell: true,
           windowsHide: true,
-          timeout: INNER_HOOK_TIMEOUT_MS,
+          timeout: SHIM_FALLBACK_TIMEOUT_MS,
           killSignal: 'SIGKILL',
           maxBuffer: 32 * 1024 * 1024,
           env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli', TOKEN_GOAT_COPILOT_HOOKS_DIR: __dirname }),

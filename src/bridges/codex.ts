@@ -2,7 +2,7 @@
 
 
 /** Node source for the Codex hook shim. Behavior matches the Claude Code shim (validate `eventName` against the closed set of known hook events, then stdin → `token-goat hook <event>` → stdout) with two Codex-specific fixups applied to the child's JSON output: 1. strip top-level and nested `_tg_*` keys (additionalProperties: false), and 2. ensure `hookSpecificOutput.hookEventName` is set, defaulting to the PascalCase-mapped event name (HOOK_EVENT_NAME_MAP below, kept in sync with CLAUDE_CODE_EVENT_NAMES in src/hook_registry.ts) when the handler omitted it -- never the raw snake_case argv event name. `eventName` is concatenated into a shell command string below (`shell: true` is required on Windows to resolve the token-goat `.cmd`/`.bat` shim), so it is validated against `VALID_HOOK_EVENTS` first — a closed set that must be kept in sync with `HOOK_EVENTS` in src/types.ts. On any error the shim prints `{}` so the tool call proceeds unchanged. The shim also injects `TOKEN_GOAT_HARNESS_OVERRIDE=codex` before dispatching, the way kimi.ts and pi.ts do. Codex publishes no ambient per-session env var identifying its own hook subprocesses, so detectHarness() (./registry.ts) could only reach the codex branch through CODEX_SESSION_ID/CODEX_SESSION, which codex-cli 0.155.0 does not set, or through an OPENAI_API_KEY with no ANTHROPIC_API_KEY beside it. Absent would be survivable; the real hazard is the mis-hit. Two branches sit ahead of the codex one and both test variables a parent shell hands down, so a Codex launched from a Claude Code terminal (TERM_PROGRAM=claude-code, or CLAUDE_CODE_VERSION set) resolved 'claudecode', and every harness-scoped decision -- wire-format translation, PRE_COMPACT_CONTEXT_DROPPED -- was then taken for the wrong harness with nothing failing. The override is consulted before any sniffing, so injecting it settles the question rather than biasing it. This comment lives here rather than beside that line because everything inside CODEX_HOOK_SCRIPT is a template string: esbuild strips comments from module source, but shim comments are payload, and the bundle-size guard in tests/guards/dist_chunks_deduped.test.ts measures them. */
-import { SHIM_MAX_BUFFER_CONST, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_TRY_SERVER, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
+import { shimFallbackTimeoutConst, SHIM_MAX_BUFFER_CONST, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_TRY_SERVER, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
 
 // A second copy of this logic lives in src/hook_adapters.ts, which the resident hook server runs for a harness-aware (v2) client; tests/native_hook_adapter_equivalence.test.ts drives this installed shim and a server request with the same payloads and fails unless both print the same bytes and exit code.
 export const CODEX_HOOK_SCRIPT = `#!/usr/bin/env node
@@ -51,6 +51,7 @@ ${SHIM_TRY_SERVER}
 ${SHIM_TRY_IN_PROCESS}
 
 ${SHIM_MAX_BUFFER_CONST}
+${shimFallbackTimeoutConst('codex')}
 
 async function main() {
   const eventName = process.argv[2] || ''
@@ -74,7 +75,7 @@ async function main() {
   // CLI bridge's inner hook call (a bare 'token-goat' on PATH failing to resolve
   // crashes this call, and Codex -- like Copilot -- fails closed on a non-zero-exit
   // hook). Falls back further to the old PATH-based shell:true invocation when argv[3]
-  // is absent (an older cached hook config). A 3000ms timeout/killSignal on both
+  // is absent (an older cached hook config). A SHIM_FALLBACK_TIMEOUT_MS timeout/killSignal on both
   // spawnSync fallbacks bounds them well under Codex's own hook timeout budget, so
   // token-goat degrades to its own fail-open '{}' rather than being force-killed by
   // Codex first.
@@ -86,7 +87,7 @@ ${SHIM_SPAWN_LADDER}
           input,
           encoding: 'utf8',
           shell: true,
-          timeout: 3000,
+          timeout: SHIM_FALLBACK_TIMEOUT_MS,
           killSignal: 'SIGKILL',
           maxBuffer: SHIM_MAX_BUFFER_BYTES,
         })

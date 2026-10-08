@@ -2,7 +2,7 @@
 
 
 /** Node source for the Claude Code hook shim. Behavior: 1. Validate `eventName` (argv[2]) against the closed set of known hook events; if it doesn't match, print `{}` immediately without ever building a shell command from it. 2. Read the full hook payload from stdin (JSON). 3. Spawn `token-goat hook <eventName>`, feeding it that payload on stdin. 4. Print the child's stdout verbatim to this process's stdout. 5. On any error (spawn failure, non-JSON, missing binary) print `{}` so the tool call proceeds unchanged instead of the hook hard-failing. `eventName` is taken from `process.argv[2]`, mirroring how the installed settings.json command appends the event name as the last argument. It is concatenated into a shell command string below (`shell: true` is required on Windows to resolve the token-goat `.cmd`/`.bat` shim), so it is validated against `VALID_HOOK_EVENTS` first — a closed set that must be kept in sync with `HOOK_EVENTS` in src/types.ts. */
-import { SHIM_ASYNC_DETACH, SHIM_MAX_BUFFER_CONST, SHIM_OWN_COMMAND_BYPASS, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_TRY_SERVER, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
+import { shimFallbackTimeoutConst, SHIM_ASYNC_DETACH, SHIM_MAX_BUFFER_CONST, SHIM_OWN_COMMAND_BYPASS, SHIM_REQUIRES, SHIM_SPAWN_LADDER, SHIM_TRY_IN_PROCESS, SHIM_TRY_SERVER, SHIM_VALID_HOOK_EVENTS } from './shim_common.js'
 
 // A second copy of this logic lives in src/hook_adapters.ts, which the resident hook server runs for a harness-aware (v2) client; tests/native_hook_adapter_equivalence.test.ts drives this installed shim and a server request with the same payloads and fails unless both print the same bytes and exit code.
 export const CLAUDECODE_HOOK_SCRIPT = `#!/usr/bin/env node
@@ -33,6 +33,7 @@ ${SHIM_TRY_SERVER}
 ${SHIM_TRY_IN_PROCESS}
 
 ${SHIM_MAX_BUFFER_CONST}
+${shimFallbackTimeoutConst('claudecode')}
 
 ${SHIM_ASYNC_DETACH}
 
@@ -83,9 +84,9 @@ async function main() {
   // spawning a second node process altogether; fall back to the entry path directly via
   // process.execPath, then finally to the old PATH-based shell:true invocation (an
   // older cached hook config with no argv[3], or a config wired directly to
-  // \`token-goat hook <event>\` rather than through this shim). A 3000ms
-  // timeout/killSignal on both spawnSync fallbacks means token-goat degrades to its own
-  // fail-open '{}' rather than being force-killed by Claude Code's own hook timeout.
+  // \`token-goat hook <event>\` rather than through this shim). A
+  // SHIM_FALLBACK_TIMEOUT_MS timeout/killSignal on both spawnSync fallbacks means token-goat degrades to its own
+  // fail-open '{}' rather than being force-killed by Claude Code's own hook timeout (30 s on UserPromptSubmit).
   const entryPath = process.argv[3]
   let stdout = await tryInProcess(entryPath, eventName, input, asyncDetachAtMs)
   if (stdout === undefined) {
@@ -101,7 +102,7 @@ ${SHIM_SPAWN_LADDER}
           input,
           encoding: 'utf8',
           shell: true,
-          timeout: 3000,
+          timeout: SHIM_FALLBACK_TIMEOUT_MS,
           killSignal: 'SIGKILL',
           maxBuffer: SHIM_MAX_BUFFER_BYTES,
         })
