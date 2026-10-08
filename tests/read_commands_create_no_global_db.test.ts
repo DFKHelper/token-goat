@@ -61,7 +61,7 @@ describe('read commands on a fresh data dir', () => {
     [['callers', 'foo'], 1, 'Symbol not found: "foo"'],
     [['dead'], 0, 'No dead symbols found'],
     [['brief', 'a.ts::foo'], 1, 'Symbol not found: "a.ts::foo"'],
-    [['types', 'a.ts'], 1, 'Could not read: a.ts'],
+    [['types', 'a.ts'], 1, 'Could not read: "a.ts"'],
   ] as Array<[string[], number, string]>)('%j answers as before and creates no global.db', (args, status, fragment) => {
     const r = run(args)
     expect(r.out).toContain(fragment)
