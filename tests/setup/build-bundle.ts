@@ -51,6 +51,45 @@ function buildNativeOnce(): void {
 // isolate-home.ts creates two temp directories per test file and removes them from a process.on("exit") handler. Vitest kills its workers rather than letting them exit, so that handler almost never runs and both directories survive the run: 431 files x 2 x every run since the setup was written left 478,005 tg-test-data-* and 468,096 tg-test-home-* directories in this machine's %TEMP% (67% of all 1,407,592 entries in it). Parenting them under one per-run root fixes that at the source, because globalSetup teardown runs in the main vitest process, which does exit normally -- one directory per run to clean up instead of 862 to abandon. The teardown below only runs when the main vitest process exits normally, so every interrupted run (Ctrl-C, a killed agent, a crash) abandons its root: measured 65 abandoned tg-run-* roots totalling 127 MB, all under two days old, 55 of them from a single day. sweepStaleRunRoots() reclaims them on the next run. Age gate for an abandoned run root. The root's own mtime is the liveness signal: isolate-home creates a tg-test-data-*/tg-test-home-* pair directly inside it for every test file, so a live run bumps it continuously. 6h against a ~110s full suite is ~200x headroom, and it also clears the one false-positive shape a tighter gate would hit: a `vitest` watcher left open and idle, whose root goes untouched between saves.
 const STALE_RUN_ROOT_MS = 6 * 60 * 60 * 1000
 
+// A detached `--worker-daemon` started by a test lives in a data dir under a run root, and on Windows it holds global.db there, so the rmSync below leaves the folder behind and the daemon runs on. Each daemon names itself in queue/drain-heartbeat; stop exactly the pids named by a heartbeat that is still being refreshed (a stale one may name a pid that something else has since reused) and nothing else.
+const DAEMON_HEARTBEAT_FRESH_MS = 60_000
+const DAEMON_SEARCH_DEPTH = 6
+
+function heartbeatFiles(dir: string, depth: number, found: string[]): void {
+  if (depth > DAEMON_SEARCH_DEPTH) return
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === 'node_modules') continue
+    const full = path.join(dir, entry.name)
+    if (entry.name === 'queue') {
+      const beat = path.join(full, 'drain-heartbeat')
+      if (fs.existsSync(beat)) found.push(beat)
+      continue
+    }
+    heartbeatFiles(full, depth + 1, found)
+  }
+}
+
+export function killDaemonsUnder(root: string): void {
+  const beats: string[] = []
+  heartbeatFiles(root, 0, beats)
+  for (const beat of beats) {
+    try {
+      if (Date.now() - fs.statSync(beat).mtimeMs > DAEMON_HEARTBEAT_FRESH_MS) continue
+      const pid = parseInt(fs.readFileSync(beat, 'utf8').trim(), 10)
+      if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue
+      process.kill(pid, 'SIGKILL')
+    } catch {
+      // best-effort: already gone, not ours to signal, or unreadable
+    }
+  }
+}
+
 // Best-effort removal of run roots abandoned by earlier interrupted runs. Only `tg-run-` prefixed directories are considered, so the deliberately shared tg-test-v8-compile-cache survives. Any failure (a permission error, a root another process holds open) is skipped: this must never fail the run.
 export function sweepStaleRunRoots(dir: string = os.tmpdir(), prefixes: readonly string[] = ['tg-run-']): void {
   try {
@@ -61,6 +100,7 @@ export function sweepStaleRunRoots(dir: string = os.tmpdir(), prefixes: readonly
       try {
         const st = fs.statSync(full)
         if (!st.isDirectory() || st.mtimeMs >= cutoff) continue
+        killDaemonsUnder(full)
         fs.rmSync(full, { recursive: true, force: true, maxRetries: 1 })
       } catch {
         // best-effort: skip this root
@@ -92,6 +132,7 @@ export function createRunRoot(): (() => void) | void {
   }
   return () => {
     for (const root of created) {
+      killDaemonsUnder(root)
       try {
         fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 })
       } catch {

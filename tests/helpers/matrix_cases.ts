@@ -2059,12 +2059,37 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toMatch(/Worker stopped\.|No running worker\./)
   },
   'worker start': () => {
-    const env = tgEnv(mkIsolated('tg-matrix-wstart-'))
+    const dataBase = mkIsolated('tg-matrix-wstart-')
+    const env = tgEnv(dataBase)
     const r = run(['worker', 'start'], { env })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/Worker started \(pid \d+\)\.|Worker already running\./)
-    // Stop the detached worker so it does not outlive the test.
-    run(['worker', 'stop'], { env })
+    const pid = parseInt(r.stdout.match(/Worker started \(pid (\d+)\)/)?.[1] ?? '', 10)
+    try {
+      // A stop that lands before the daemon's first heartbeat is the state a loaded machine produces; wait for the heartbeat naming this pid so the stop below takes the ordinary path and is asserted, not assumed.
+      if (Number.isInteger(pid)) {
+        const beat = path.join(dataBase, process.platform === 'win32' ? path.join('dfk-helper', 'token-goat') : 'token-goat', 'queue', 'drain-heartbeat')
+        const deadline = Date.now() + 20000
+        while (Date.now() < deadline) {
+          try {
+            if (fs.readFileSync(beat, 'utf8').trim() === String(pid)) break
+          } catch {
+            // not written yet
+          }
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+        }
+      }
+      const stopped = run(['worker', 'stop'], { env })
+      expect(stopped.stdout).toContain('Worker stopped.')
+    } finally {
+      if (Number.isInteger(pid)) {
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {
+          // already stopped
+        }
+      }
+    }
   },
   'hook-server': () => {
     // Parent command with subcommands and no own action; `run` is hidden, so usage lists status and stop.

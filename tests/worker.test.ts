@@ -317,14 +317,17 @@ describe('stopWorker', () => {
     expect(fs.existsSync(workerPidPath(DIR))).toBe(false)
   })
 
-  it('does not signal a live unrelated process with no worker heartbeat lease', () => {
+  it('does not signal a live unrelated process with no worker heartbeat lease, and leaves the pid file naming it', () => {
     fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
+    // Older than the startup grace: a pid file written just now is indistinguishable from a daemon that is still booting, which stopWorker does kill (tests/worker_retire.test.ts).
+    const old = new Date(Date.now() - 5 * 60_000)
+    fs.utimesSync(workerPidPath(DIR), old, old)
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
     try {
       expect(stopWorker(DIR)).toBe(false)
       expect(killSpy).toHaveBeenCalledWith(process.pid, 0)
       expect(killSpy).not.toHaveBeenCalledWith(process.pid)
-      expect(fs.existsSync(workerPidPath(DIR))).toBe(false)
+      expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe(String(process.pid))
     } finally {
       killSpy.mockRestore()
     }

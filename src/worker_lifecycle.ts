@@ -33,7 +33,8 @@ const WORKER_HEARTBEAT_STALE_MS = 60_000
 
 const WORKER_HEARTBEAT_REFRESH_MS = 5_000
 
-const WORKER_STARTUP_GRACE_MS = 10_000
+/** How long after its pid file is written a daemon that has not yet written a heartbeat still counts as a live worker: the window in which it is spawned, lowered in priority and not yet through its first cycle. Also the time a running daemon allows its own pid file to be missing, or to name another process, before it retires (see worker.ts::runWorkerLoop). */
+export const WORKER_STARTUP_GRACE_MS = 10_000
 
 const heartbeatWriteTimes = new Map<string, number>()
 
@@ -181,13 +182,17 @@ export function ensureWorkerAlive(dir: string = dataDir()): void {
   }
 }
 
-/** Kill the detached worker for this project, if one is running. Returns true when a live worker was found and signalled; false when no pid file existed or the recorded pid was already dead. The pid file is removed in both the killed and stale cases so the slate is clean afterwards. */
+/** Kill the detached worker for this project, if one is running. Returns true when a live worker was found and signalled; false when no pid file existed, the recorded pid was already dead, or it is alive but proves no worker lease (see {@link holdsWorkerLease}). The pid file is removed in the killed and dead cases so the slate is clean afterwards, and left in place in the last. */
 export function stopWorker(dir: string = dataDir(), expectedPid?: number): boolean {
   const pid = readPidFile(dir)
   if (pid === null) return false
   // If the caller judged a specific pid mismatched/stale earlier and the pid file now names someone else, another hook already raced ahead of us (stopped it and spawned a replacement); do nothing rather than tearing down that replacement's pid file before it can prove itself alive.
   if (expectedPid !== undefined && pid !== expectedPid) return false
-  const running = isWorkerRunning(dir)
+  // A daemon still inside its startup grace has written no heartbeat yet, so it is alive but not "running" by heartbeat alone; stop used to skip the kill and then remove its pid file anyway, which stranded it: running, invisible, and with nothing left naming it. The same two proofs reclaimStalePidFile trusts decide who is ours. A live pid with neither proof (a stale heartbeat, a reused pid) is left alone and so is its pid file: it retires itself once reclaimed, and removing the file here would only strand it.
+  const alive = pidAlive(pid)
+  // A live pid that proves no lease (no fresh heartbeat naming it, pid file older than the grace) may be an unrelated process that reused the number: neither signalled nor unnamed.
+  const running = alive && (hasFreshWorkerHeartbeat(dir, pid) || pidFileIsWithinStartupGrace(dir))
+  if (alive && !running) return false
   if (running) {
     try {
       process.kill(pid)

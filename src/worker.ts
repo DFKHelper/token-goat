@@ -29,7 +29,7 @@ import { modelDownloadHeld } from './embed_preflight.js'
 import { failedAtOf } from './model_download_gate.js'
 import { appendDirtyQueueFile, appendDirtyQueuePaths, dirtyQueuePathFor, parseDirtyQueueLines } from './dirty_queue.js'
 import { createQueueWaker, noteOwnQueueWrite } from './queue_waker.js'
-import { appendWorkerErrorLog, readPidFile, resolvePollIntervalMs, workerErrorLogPath, workerPidPath, writeDrainHeartbeat } from './worker_lifecycle.js'
+import { appendWorkerErrorLog, readPidFile, resolvePollIntervalMs, WORKER_STARTUP_GRACE_MS, workerErrorLogPath, workerPidPath, writeDrainHeartbeat } from './worker_lifecycle.js'
 
 // Stale session-snapshot sweep runs on the same loop as the dirty-queue drain (see runWorkerLoop) but throttled to this interval -- cleanup_stale's own default 24h staleness window doesn't need finer-grained sweeping than hourly, and a full directory scan on every 2s poll tick would be wasteful.
 const SNAPSHOT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
@@ -691,11 +691,39 @@ function embeddingsReady(dir: string): boolean {
   return fs.existsSync(dbPath) && loadConfig().indexing?.embeddings_enabled !== false && embeddingsDepsAvailable(getDb(dbPath)) && !modelDownloadHeld()
 }
 
+/** How long a daemon runs with an empty queue and nothing left to embed before it exits on its own; ensureWorkerAlive starts a new one on the next enqueue, so an unused data dir costs nothing but its hourly housekeeping. */
+const DEFAULT_IDLE_EXIT_MS = 6 * 60 * 60 * 1000
+
+/** The idle period after which a daemon exits: a positive-integer `TG_WORKER_IDLE_EXIT_MS`, else six hours. Anything else in the variable (empty, non-numeric, zero, negative) is ignored, as `TG_WORKER_POLL_MS` is. */
+export function resolveIdleExitMs(): number {
+  const parsed = parseInt(process.env['TG_WORKER_IDLE_EXIT_MS'] ?? '', 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_IDLE_EXIT_MS
+}
+
+/** True only when the pid file is definitely not there (ENOENT), as opposed to empty, mid-replacement or unreadable, which {@link readPidFile} also reports as null. A daemon retires on the first, never on the others. */
+export function pidFileIsAbsent(dir: string): boolean {
+  try {
+    fs.statSync(workerPidPath(dir))
+    return false
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ENOENT'
+  }
+}
+
+/** When a daemon retires on its own, beyond a stop request: `pidFileGraceMs` is how long its pid file may be missing, or may not yet name it, before it leaves (default {@link WORKER_STARTUP_GRACE_MS}); `idleExitMs` is how long it may run with an empty queue and nothing to embed (default {@link resolveIdleExitMs}). */
+export interface WorkerRetirePolicy {
+  pidFileGraceMs?: number
+  idleExitMs?: number
+}
+
 export async function runWorkerLoop(
   dir: string,
   pollIntervalMs: number,
   shouldStop: () => boolean = () => false,
+  retire?: WorkerRetirePolicy,
 ): Promise<void> {
+  const pidFileGraceMs = retire?.pidFileGraceMs ?? WORKER_STARTUP_GRACE_MS
+  const idleExitMs = retire?.idleExitMs ?? resolveIdleExitMs()
   // The drain indexes files, and the regex language adapters it needs are behind a dynamic import (see loadRegexExtractors): load them before the first cycle, since drainOnce and the index callback under it are synchronous.
   await loadRegexExtractors()
   // Local to this loop invocation (not module-level) so each call starts its own fresh throttle window instead of sharing state across unrelated runWorkerLoop calls (e.g. across tests in the same process).
@@ -708,6 +736,12 @@ export async function runWorkerLoop(
   let disabledStampsSeen = disabledStampCount()
   // Flips true the first time we see the pid file naming our own pid (the parent claims it shortly after spawning us, so early polls may see it empty). Once set, losing ownership means another daemon took over -- see the self-terminate check below.
   let ownedPidFile = false
+  // When this loop started, for the grace a daemon gets to see its own pid before a pid file naming someone else retires it.
+  const startedMs = Date.now()
+  // Since when the pid file has been definitely absent (ENOENT), or null while it is there.
+  let pidFileAbsentSinceMs: number | null = null
+  // The last time a cycle had anything to do: a drained batch, an embed in flight, or a backlog walk still going. Idle exit counts from here.
+  let lastBusyMs = Date.now()
   // Ends each cycle's sleep early when a hook or command appends to the queue, so an edit is indexed within milliseconds rather than up to a poll interval later; the interval stays the fallback wherever the watch cannot run. See createQueueWaker. Every step of a cycle catches its own errors, so the loop leaves only through its exits below, each of which reaches the close.
   const waker = createQueueWaker(dir)
   while (!shouldStop()) {
@@ -717,6 +751,15 @@ export async function runWorkerLoop(
     const pidOwner = readPidFile(dir)
     if (pidOwner === process.pid) ownedPidFile = true
     else if (ownedPidFile && pidOwner !== null) break
+    // The two cases the takeover check above cannot see, both of which strand a daemon that nothing can then find or stop. A pid file that is gone for longer than the grace: `stopWorker` and a `rm -rf` of the data dir both remove it, and on Windows the second cannot remove the rest (this daemon holds global.db and a watch on queue/ open), so the directory-gone exit never fires; a single missing read is still ignored, since a successor claiming the slot removes and recreates the file. And a pid file naming another process after a whole grace in which it never named us: the daemon it was handed to lost the slot before it ever owned it.
+    const loopNowMs = Date.now()
+    if (pidFileIsAbsent(dir)) {
+      pidFileAbsentSinceMs ??= loopNowMs
+      if (loopNowMs - pidFileAbsentSinceMs >= pidFileGraceMs) break
+    } else {
+      pidFileAbsentSinceMs = null
+      if (!ownedPidFile && pidOwner !== null && pidOwner !== process.pid && loopNowMs - startedMs >= pidFileGraceMs) break
+    }
     let processed = 0
     try {
       processed = drainOnce(dir)
@@ -725,6 +768,7 @@ export async function runWorkerLoop(
     }
     if (processed > 0) {
       lastActiveMs = Date.now()
+      lastBusyMs = lastActiveMs
     } else if (inFlightEmbeddings.size === 0) {
       // Only with the queue drained and every embed settled, so the backlog never competes with an edit. See requeueStaleEmbeddings.
       try {
@@ -734,7 +778,11 @@ export async function runWorkerLoop(
         if (ready && (!embeddingsWereReady || stamps !== disabledStampsSeen)) embedBacklogCursor = ''
         embeddingsWereReady = ready
         if (ready) disabledStampsSeen = stamps
-        if (ready && embedBacklogCursor !== null) embedBacklogCursor = requeueStaleEmbeddings(dir, embedBacklogCursor)
+        if (ready && embedBacklogCursor !== null) {
+          embedBacklogCursor = requeueStaleEmbeddings(dir, embedBacklogCursor)
+          // A walk that has not reached its end is work the next cycle continues.
+          if (embedBacklogCursor !== null) lastBusyMs = Date.now()
+        }
       } catch {
         // An unreadable index this cycle: the cursor stays put and the next idle cycle tries again.
       }
@@ -793,6 +841,9 @@ export async function runWorkerLoop(
       }
     }
     if (shouldStop()) break
+    if (inFlightEmbeddings.size > 0) lastBusyMs = Date.now()
+    // Nothing to drain, nothing to embed, for the whole idle period: leave. The exit handler removes the pid file, and the next enqueue's ensureWorkerAlive starts a fresh daemon, so an abandoned data dir stops costing a process while a live one loses nothing but its housekeeping.
+    if (Date.now() - lastBusyMs >= idleExitMs) break
     await waker.sleep(pollIntervalMs)
   }
   waker.close()
@@ -842,5 +893,6 @@ export function runDetachedWorkerDaemon(): void {
     }
   })
   writeDrainHeartbeat(dir, true)
-  void runWorkerLoop(dir, safeInterval)
+  // The loop returning is the daemon retiring (data dir gone, pid file lost, idle). Leave the way a SIGTERM does -- after in-flight embeds settle, bounded -- rather than trusting the event loop to empty: on Windows an open handle left by the sweeps would keep a retired daemon alive, invisible.
+  void runWorkerLoop(dir, safeInterval).finally(() => void sigtermDrainDeadline().finally(() => process.exit(0)))
 }
