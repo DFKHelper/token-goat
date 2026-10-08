@@ -115,6 +115,17 @@ describe('auditLockChange', () => {
     expect(always.violations).toEqual([])
   })
 
+  it('refuses a new Linux platform package that lacks the libc its registry manifest declares', async () => {
+    // HAND-DERIVED from the real lock's shape: a Linux platform package with os ["linux"] and no libc key, against a registry answer that declares libc.
+    const platform = lock({ 'node_modules/p-linux': pkg('1.0.0', 'sha512-p', { os: ['linux'], cpu: ['x64'], optional: true }) })
+    const declared = (libc: string[] | null) => () => ({ publishedAt: OLD_ENOUGH, integrity: 'sha512-p', libc })
+    const bare = await audit(lock({}), platform, declared(['glibc']))
+    expect(bare.violations.map((v: { kind: string }) => v.kind)).toEqual(['libc-missing'])
+    expect((await audit(lock({}), platform, declared(null))).violations).toEqual([])
+    const carried = lock({ 'node_modules/p-linux': pkg('1.0.0', 'sha512-p', { os: ['linux'], cpu: ['x64'], optional: true, libc: ['glibc'] }) })
+    expect((await audit(lock({}), carried, declared(['glibc']))).violations).toEqual([])
+  })
+
   it('refuses a package that stopped being optional, and a root optionalDependencies entry that moved', async () => {
     const o = lock({ 'node_modules/a': pkg('1.0.0', 'sha512-a', { optional: true }) })
     const r = lock({ 'node_modules/a': pkg('1.0.0', 'sha512-a') })
@@ -151,8 +162,14 @@ describe('parseNpmView', () => {
   // CAPTURE: `npm view lefthook@2.1.15 dist.integrity time --json` (npm 11.6.2), trimmed to the keys read.
   const captured = '{"dist.integrity":"sha512-l/BSlOZBou3zLDuSIV8V+kbNyC6UiFCACVHu8dVUCDxH5+8qZXmJr8iROruI/7hv6W7c3sVlVT+6+BpVhGZRmA==","time":{"created":"2020-01-01T00:00:00.000Z","2.1.14":"2026-09-20T10:00:00.000Z","2.1.15":"2026-09-29T19:51:53.849Z"}}'
 
-  it('reads the integrity and the publish time of the version asked for', () => {
-    expect(parseNpmView(captured, '2.1.15')).toEqual({ integrity: 'sha512-l/BSlOZBou3zLDuSIV8V+kbNyC6UiFCACVHu8dVUCDxH5+8qZXmJr8iROruI/7hv6W7c3sVlVT+6+BpVhGZRmA==', publishedAt: '2026-09-29T19:51:53.849Z' })
+  it('reads the integrity and the publish time of the version asked for, and no libc when the manifest declares none', () => {
+    expect(parseNpmView(captured, '2.1.15')).toEqual({ integrity: 'sha512-l/BSlOZBou3zLDuSIV8V+kbNyC6UiFCACVHu8dVUCDxH5+8qZXmJr8iROruI/7hv6W7c3sVlVT+6+BpVhGZRmA==', publishedAt: '2026-09-29T19:51:53.849Z', libc: null })
+  })
+
+  it('reads the libc array of a manifest that declares one', () => {
+    // CAPTURE: `npm view @img/sharp-libvips-linux-arm64@1.3.4 dist.integrity time libc --json` ends with `"libc": ["glibc"]` after the time map.
+    const withLibc = '{"dist.integrity":"sha512-Y3dg","time":{"1.3.4":"2026-09-27T12:10:53.588Z"},"libc":["glibc"]}'
+    expect(parseNpmView(withLibc, '1.3.4')).toEqual({ integrity: 'sha512-Y3dg', publishedAt: '2026-09-27T12:10:53.588Z', libc: ['glibc'] })
   })
 
   it('answers null for a version the time map lacks, and reads the last object of an array answer', () => {

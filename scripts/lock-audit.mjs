@@ -1,5 +1,6 @@
 /** Reads the change a commit makes to package-lock.json the way a reviewer needs it read, and judges it. `diffLocks` is the structural diff (packages added, removed, moved to another version, reclassified between optional, dev and peer, newly carrying an install script); `auditLockChange` adds the checks that a green suite cannot make: every package that arrived or moved must have been published before the cooldown window in `.github/dependabot.yml` closed, its integrity must be the one the registry serves for that exact version, and the resulting lock must agree with itself (`scripts/lock-consistency.mjs`). The registry is injected as `lookup(name, version) -> { publishedAt, integrity }`, so tests run with no network; `scripts/refresh-dependabot-lock.mjs --audit-commit` supplies `npm view`. A package the lookup cannot answer for is a violation, never a pass. */
 import { checkLockConsistency, formatProblem } from './lock-consistency.mjs'
+import { bareLinuxPackages, inPool } from './lock-libc.mjs'
 
 const FLAGS = ['optional', 'dev', 'peer', 'devOptional']
 const DEPENDENCY_FIELDS = ['dependencies', 'optionalDependencies', 'peerDependencies']
@@ -68,16 +69,7 @@ export function formatDiff(diff) {
   return lines
 }
 
-/** Runs `fn` over `items` with at most `limit` in flight. */
-async function inPool(items, limit, fn) {
-  const queue = [...items]
-  const workers = Array.from({ length: Math.min(limit, queue.length) }, async () => {
-    for (let item = queue.shift(); item !== undefined; item = queue.shift()) await fn(item)
-  })
-  await Promise.all(workers)
-}
-
-/** `at` is the moment the commit was made: a package published inside `cooldownDays` of it was not yet cooled down. Returns `{ diff, violations }`, each violation `{ kind, path, message }` with kind `cooldown`, `integrity`, `lookup`, `optional-lost`, `reclassified`, `install-script`, `integrity-same-version` or `inconsistent`. */
+/** `at` is the moment the commit was made: a package published inside `cooldownDays` of it was not yet cooled down. Returns `{ diff, violations }`, each violation `{ kind, path, message }` with kind `cooldown`, `integrity`, `lookup`, `optional-lost`, `reclassified`, `install-script`, `libc-missing`, `integrity-same-version` or `inconsistent`. */
 export async function auditLockChange({ oldLock, newLock, overrides, cooldownDays, at, lookup }) {
   const diff = diffLocks(oldLock, newLock)
   const violations = []
@@ -99,6 +91,7 @@ export async function auditLockChange({ oldLock, newLock, overrides, cooldownDay
     }
   }
 
+  const bare = new Set(bareLinuxPackages(newLock))
   const arrivals = [...diff.added, ...diff.changed.filter((item) => item.from !== item.to).map((item) => ({ path: item.path, name: item.name, version: item.to }))]
   const cache = new Map()
   const cutoff = at.getTime() - cooldownDays * DAY_MS
@@ -114,7 +107,10 @@ export async function auditLockChange({ oldLock, newLock, overrides, cooldownDay
       violations.push({ kind: 'lookup', path: arrival.path, message: `${key} could not be checked against the registry (${outcome.error?.message ?? 'no answer'})` })
       return
     }
-    const { publishedAt, integrity } = outcome.info
+    const { publishedAt, integrity, libc } = outcome.info
+    if (bare.has(arrival.path) && Array.isArray(libc) && libc.length > 0) {
+      violations.push({ kind: 'libc-missing', path: arrival.path, message: `${key} has no libc in the lock, but the registry declares libc ${JSON.stringify(libc)} for it` })
+    }
     const published = Date.parse(publishedAt ?? '')
     if (Number.isNaN(published)) {
       violations.push({ kind: 'lookup', path: arrival.path, message: `${key} has no publish time in the registry's answer, so the cooldown cannot be checked` })
@@ -132,9 +128,9 @@ export async function auditLockChange({ oldLock, newLock, overrides, cooldownDay
   return { diff, violations }
 }
 
-/** Reads `npm view <name>@<version> dist.integrity time --json` output; `tests/lock_audit.test.ts` carries a CAPTURE of it. */
+/** Reads `npm view <name>@<version> dist.integrity time libc --json` output; `tests/lock_audit.test.ts` carries a CAPTURE of it. */
 export function parseNpmView(stdout, version) {
   let parsed = JSON.parse(stdout)
   if (Array.isArray(parsed)) parsed = parsed[parsed.length - 1]
-  return { integrity: parsed?.['dist.integrity'] ?? null, publishedAt: parsed?.time?.[version] ?? null }
+  return { integrity: parsed?.['dist.integrity'] ?? null, publishedAt: parsed?.time?.[version] ?? null, libc: Array.isArray(parsed?.libc) ? parsed.libc : null }
 }

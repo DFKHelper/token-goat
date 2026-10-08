@@ -44,7 +44,7 @@ function commitLock(lock: unknown, message: string, date: string): string {
   return git(['rev-parse', 'HEAD']).trim()
 }
 
-/** The key is filtered out in every case before the stub's is set: with a plain spread the script was observed running the real npm-cli.js (and asking the real registry) under this runner on Windows, and the assertions on the stub's call log are what show the stub ran. */
+/** Under vitest on Windows process.env carries the key as NPM_EXECPATH (measured: Object.keys(process.env) lists only that spelling), and a spread copy is a case-sensitive object, so adding npm_execpath beside it hands the child both; the child's case-insensitive lookup of npm_execpath then finds NPM_EXECPATH first and runs the real npm. The key is therefore removed in every case before the stub's is set, and the assertions on the stub's call log show the stub ran. */
 function stubEnv(): NodeJS.ProcessEnv {
   const env = Object.fromEntries(Object.entries(gitEnv()).filter(([key]) => key.toLowerCase() !== 'npm_execpath'))
   return { ...env, npm_execpath: path.join(sandbox, 'stub', 'npm-cli.js'), STUB_REGISTRY: path.join(sandbox, 'registry.json'), STUB_LOG: path.join(sandbox, 'npm-calls.log') }
@@ -64,7 +64,7 @@ beforeEach(() => {
   fs.mkdirSync(home)
   fs.writeFileSync(path.join(home, 'gitconfig'), '')
   fs.mkdirSync(path.join(sandbox, 'scripts'))
-  for (const name of ['refresh-dependabot-lock.mjs', 'dependabot-body.mjs', 'lock-consistency.mjs', 'lock-audit.mjs']) fs.copyFileSync(path.join(repoRoot, 'scripts', name), path.join(sandbox, 'scripts', name))
+  for (const name of ['refresh-dependabot-lock.mjs', 'dependabot-body.mjs', 'lock-consistency.mjs', 'lock-audit.mjs', 'lock-libc.mjs']) fs.copyFileSync(path.join(repoRoot, 'scripts', name), path.join(sandbox, 'scripts', name))
   fs.mkdirSync(path.join(sandbox, 'node_modules', 'js-yaml'), { recursive: true })
   fs.writeFileSync(path.join(sandbox, 'node_modules', 'js-yaml', 'package.json'), JSON.stringify({ name: 'js-yaml', type: 'module', main: 'index.js' }))
   fs.writeFileSync(path.join(sandbox, 'node_modules', 'js-yaml', 'index.js'), "export function load() { return { updates: [{ 'package-ecosystem': 'npm', cooldown: { 'default-days': 7 } }] } }\n")

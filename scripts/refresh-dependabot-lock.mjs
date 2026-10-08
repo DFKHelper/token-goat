@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { load as loadYaml } from 'js-yaml'
 import { auditLockChange, formatDiff, parseNpmView } from './lock-audit.mjs'
 import { checkLockFiles, formatProblem } from './lock-consistency.mjs'
+import { findMissingLibc, restoreLibc } from './lock-libc.mjs'
 import { isDependabotPullRequest, isValidPackageName, npmCommand, packageNamesFromBody, summarizeGuardFailure } from './dependabot-body.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -87,7 +88,20 @@ const check = argv.includes('--check')
 function registryLookup(npm) {
   return (name, version) => {
     if (!isValidPackageName(name) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) throw new Error('not a registry package name and version')
-    return parseNpmView(run(npm.file, [...npm.prefix, 'view', `${name}@${version}`, 'dist.integrity', 'time', '--json'], { stdio: ['ignore', 'pipe', 'pipe'] }), version)
+    return parseNpmView(run(npm.file, [...npm.prefix, 'view', `${name}@${version}`, 'dist.integrity', 'time', 'libc', '--json'], { stdio: ['ignore', 'pipe', 'pipe'] }), version)
+  }
+}
+
+/** The registry lookup with npm resolved on first use, so a lock with nothing to ask the registry about runs without finding one. */
+function lazyRegistryLookup() {
+  let lookup = null
+  return (name, version) => {
+    if (lookup === null) {
+      const npm = npmCommand({ platform: process.platform, env: process.env, execPath: process.execPath, exists: fs.existsSync })
+      if (npm === null) throw new Error('cannot find npm-cli.js beside this Node or in npm_execpath')
+      lookup = registryLookup(npm)
+    }
+    return lookup(name, version)
   }
 }
 
@@ -130,7 +144,9 @@ if (argv.includes('--verify')) {
   if (failure) fail(`the disclosure guard rejects the current lock file:\n${failure}`)
   const inconsistent = consistencyFailure()
   if (inconsistent) fail(`the lock file disagrees with itself:\n${inconsistent}`)
-  process.stdout.write('the disclosure guard accepts the current lock file, and every dependency spec in it is met\n')
+  const bare = await findMissingLibc({ lock: JSON.parse(fs.readFileSync(path.join(repoRoot, 'package-lock.json'), 'utf8')), lookup: lazyRegistryLookup() })
+  if (bare.length > 0) fail(`the lock file has platform packages without the libc their registry manifest declares (npm 11.6.2 drops it; \`npm run deps:refresh\` restores it):\n${bare.map((problem) => `  ${problem.message}`).join('\n')}`)
+  process.stdout.write('the disclosure guard accepts the current lock file, every dependency spec in it is met, and no platform package lacks its libc\n')
   process.exit(0)
 }
 
@@ -159,6 +175,8 @@ if (npm === null) fail('cannot find npm-cli.js beside this Node or in npm_execpa
 const days = cooldownDays()
 const cutoff = cutoffDate(days)
 const before = lockVersions(names)
+const lockFile = path.join(repoRoot, 'package-lock.json')
+const lockBefore = fs.readFileSync(lockFile, 'utf8')
 
 process.stdout.write(`${pullRequest ? `#${pullRequest}` : 'named set'}: ${names.length} package(s), cooldown ${days} days, resolving as of ${cutoff}\n`)
 if (check) {
@@ -173,6 +191,19 @@ try {
   run(npm.file, [...npm.prefix, 'update', `--before=${cutoff}`, '--', ...names], { stdio: ['ignore', 'inherit', 'inherit'] })
 } catch (error) {
   fail(`\`npm update\` exited ${error.status ?? 'abnormally'}. package-lock.json may be half-resolved: restore it with \`git checkout -- package-lock.json\` before running anything else.`)
+}
+
+// npm 11.6.2 writes the lock without the `libc` of the optional platform packages, so it is put back here rather than by hand: from the lock as it was for an entry that did not move, from the registry manifest for one that did.
+const lockAfter = fs.readFileSync(lockFile, 'utf8')
+const newLock = JSON.parse(lockAfter)
+const libc = await restoreLibc({ oldLock: JSON.parse(lockBefore), newLock, lookup: lazyRegistryLookup() })
+if (libc.unresolved.length > 0) {
+  fail(`could not restore libc on every platform package, so the lock would be rewritten by the next \`npm install\`:\n${libc.unresolved.map((problem) => `  ${problem.message}`).join('\n')}\nRestore package-lock.json and run again with the registry reachable.`)
+}
+if (libc.restored.length > 0) {
+  const eol = lockAfter.includes('\r\n') ? '\r\n' : '\n'
+  fs.writeFileSync(lockFile, `${JSON.stringify(newLock, null, 2).replace(/\n/g, eol)}${/\n$/.test(lockAfter) ? eol : ''}`)
+  process.stdout.write(`restored libc on ${libc.restored.length} platform package(s) npm had stripped it from\n`)
 }
 
 const after = lockVersions(names)

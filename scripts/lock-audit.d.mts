@@ -8,12 +8,13 @@ export interface LockDiff {
   rootReclassified: { name: string; from: string; to: string }[]
 }
 export interface Violation {
-  kind: 'cooldown' | 'integrity' | 'lookup' | 'optional-lost' | 'reclassified' | 'integrity-same-version' | 'inconsistent'
+  kind: 'cooldown' | 'integrity' | 'lookup' | 'optional-lost' | 'reclassified' | 'install-script' | 'libc-missing' | 'integrity-same-version' | 'inconsistent'
   path: string
   message: string
 }
 export interface RegistryAnswer {
   publishedAt: string | null
+  libc?: string[] | null
   integrity: string | null
 }
 export function packageName(lockPath: string, entry: { name?: string } | undefined): string
