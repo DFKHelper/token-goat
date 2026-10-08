@@ -67,8 +67,7 @@ describe('a CLI enqueue path revives a dead worker (not just the edit hook)', ()
     const target = path.join(repo, 'sample.ts')
     fs.writeFileSync(target, 'export const before = 1\n')
 
-    const indexed = runBundle(['index', '.', '--walk'], env, repo)
-    expect(indexed.status, `index failed: ${indexed.stderr.slice(0, 400)}`).toBe(0)
+    // No `index` step: the replace below queues the file for the worker whether or not the project was ever indexed, and an index run would only add parse work that the lowered indexing priority makes slow on a busy machine, which is not what this test measures.
 
     const oldFrom = path.join(repo, 'old.txt')
     const newFrom = path.join(repo, 'new.txt')
