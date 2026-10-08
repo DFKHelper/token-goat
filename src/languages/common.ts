@@ -2634,6 +2634,8 @@ function findBlockOpenBrace(
  *  these has ended; the brace after belongs to the statement, not the declaration. */
 const BLOCK_OPENING_KEYWORDS = new Set([
   'if', 'for', 'while', 'do', 'switch', 'when', 'match', 'try', 'foreach', 'loop', 'guard', 'repeat', 'unless', 'until',
+  // Member-boundary words: an initializer block or secondary constructor after a bodiless Kotlin/Scala/Groovy member is the next member, not that member's body.
+  'init', 'constructor', 'companion', 'static', 'locally',
 ])
 
 /** True if the identifier starting at `i` (bounded by `to`) is exactly a {@link BLOCK_OPENING_KEYWORDS}

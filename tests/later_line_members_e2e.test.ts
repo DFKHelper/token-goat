@@ -123,4 +123,39 @@ describe('members past a block or nested type opened on an earlier line reach th
     expect(b).toContain('1 + 2')
     expect(b).not.toContain('def c')
   }, 60_000)
+
+  it('Kotlin: an abstract member followed by an init block keeps its own one-line span', async () => {
+    expect(await drain({
+      'k.kt': [
+        'abstract class A {', // 1
+        '    abstract fun f(): Int', // 2
+        '    init {', // 3
+        '        println(1)', // 4
+        '    }', // 5
+        '    fun g() = 2', // 6
+        '}', // 7
+      ],
+    })).toEqual(['class A  1-7', 'method f A 2-2', 'method g A 6-6'])
+    const f = read('k.kt::f')
+    expect(f).toContain('abstract fun f(): Int')
+    expect(f).not.toContain('println')
+  }, 60_000)
+
+  it('Scala 3: a braceless class nested in a braceless class keeps both and their members', async () => {
+    expect(await drain({
+      's3.scala': [
+        'class C(x: Int):', // 1
+        '  class B(y: Int):', // 2
+        '    def f = 1', // 3
+        '    def g(): Int =', // 4
+        '      val q = 2', // 5
+        '      q', // 6
+        '  def after = 3', // 7
+        'end C', // 8
+      ],
+    })).toEqual(['class C  1-8', 'class B C 2-6', 'function f B 3-3', 'function g B 4-6', 'function after C 7-7'])
+    const g = read('s3.scala::g')
+    expect(g).toContain('val q = 2')
+    expect(g).not.toContain('def after')
+  }, 60_000)
 })

@@ -373,3 +373,167 @@ describe('Scala nested types, members past a closed block, and parameterless def
     ])).toEqual(['class C  1-1', 'function a C 1-1', 'function b C 1-1'])
   })
 })
+
+describe('a bodiless declaration ends on its own line, not at the next block', () => {
+  it('Kotlin: an abstract or interface member followed by an init block, a secondary constructor or a companion', async () => {
+    expect(await rowsFor('a.kt', [
+      'abstract class A {', // 1
+      '    abstract fun f(): Int', // 2
+      '    init {', // 3
+      '        println(1)', // 4
+      '    }', // 5
+      '    fun g() = 1', // 6
+      '}', // 7
+    ])).toEqual(['class A  1-7', 'method f A 2-2', 'method g A 6-6'])
+    expect(await rowsFor('b.kt', [
+      'abstract class A {', // 1
+      '    abstract fun f(): Int', // 2
+      '    // a comment between the two', // 3
+      '    constructor(x: Int) : this() {', // 4
+      '        println(1)', // 5
+      '    }', // 6
+      '    fun g() = 1', // 7
+      '}', // 8
+    ])).toEqual(['class A  1-8', 'method f A 2-2', 'method g A 7-7'])
+    expect(await rowsFor('c.kt', [
+      'interface I {', // 1
+      '    fun f(): Int', // 2
+      '    fun h(): Int {', // 3
+      '        return 1', // 4
+      '    }', // 5
+      '}', // 6
+    ])).toEqual(['interface I  1-6', 'method f I 2-2', 'method h I 3-5'])
+  })
+
+  it('Kotlin: a one-line expression body ends on its line even when an init block follows, and a multi-line one ends with its expression', async () => {
+    expect(await rowsFor('d.kt', [
+      'class K {', // 1
+      '    fun one() = 1', // 2
+      '    init {', // 3
+      '    }', // 4
+      '    fun two() = listOf(1,', // 5
+      '        2)', // 6
+      '    fun three() {', // 7
+      '    }', // 8
+      '}', // 9
+    ])).toEqual(['class K  1-9', 'method one K 2-2', 'method three K 7-8', 'method two K 5-6'])
+  })
+
+  it('Scala: an abstract def followed by a `locally` block, and Groovy: an abstract method followed by a static initializer', async () => {
+    expect(await rowsFor('f.scala', [
+      'abstract class A {', // 1
+      '  def f(): Int', // 2
+      '  locally {', // 3
+      '    println(1)', // 4
+      '  }', // 5
+      '  def g() = 1', // 6
+      '}', // 7
+    ])).toEqual(['class A  1-7', 'function f A 2-2', 'function g A 6-6'])
+    expect(await rowsFor('g.groovy', [
+      'abstract class A {', // 1
+      '    abstract int f()', // 2
+      '    static {', // 3
+      '        x()', // 4
+      '    }', // 5
+      '    int g() { return 1 }', // 6
+      '}', // 7
+    ])).toEqual(['class A  1-7', 'method f A 2-2', 'method g A 6-6'])
+  })
+
+  it('Java, C# and Swift already end a bodiless member at its own line', async () => {
+    expect(await rowsFor('A.java', [
+      'abstract class A {', // 1
+      '    abstract int f();', // 2
+      '    static {', // 3
+      '        x();', // 4
+      '    }', // 5
+      '    int g() { return 1; }', // 6
+      '}', // 7
+    ])).toEqual(['class A  1-7', 'method f  2-2', 'method g  6-6'])
+    expect(await rowsFor('A.cs', [
+      'abstract class A {', // 1
+      '    public abstract int F();', // 2
+      '    static A() {', // 3
+      '        X();', // 4
+      '    }', // 5
+      '    int G() { return 1; }', // 6
+      '}', // 7
+    ])).toEqual(['class A  1-7', 'method A A 3-5', 'method F A 2-2', 'method G A 6-6'])
+    expect(await rowsFor('P.swift', [
+      'protocol P {', // 1
+      '    func f() -> Int', // 2
+      '    init(x: Int)', // 3
+      '}', // 4
+    ])).toEqual(['method f P 2-2', 'method init P 3-3', 'protocol P  1-4'])
+  })
+})
+
+// PROVENANCE: HAND-DERIVED from the Scala 3 reference, "Optional Braces": https://docs.scala-lang.org/scala3/reference/other-new-features/indentation.html (a template body after a trailing `:` is the indented block that follows, closed by a dedent or an `end` marker).
+describe('Scala 3 indentation (braceless) bodies nest types and keep their members', () => {
+  it('indexes a nested braceless class and object, with the members of each and an `end` marker', async () => {
+    expect(await rowsFor('a3.scala', [
+      'class C(x: Int):', // 1
+      '  class B(y: Int):', // 2
+      '    def f = 1', // 3
+      '    def g(): Int =', // 4
+      '      val q = 2', // 5
+      '      q', // 6
+      '  object Inner:', // 7
+      '    val v = 1', // 8
+      '    def h = 2', // 9
+      '  def after = 3', // 10
+      'end C', // 11
+      'def top = 9', // 12
+    ])).toEqual([
+      'class B C 2-6',
+      'class C  1-11',
+      'function after C 10-10',
+      'function f B 3-3',
+      'function g B 4-6',
+      'function h Inner 9-9',
+      'function top  12-12',
+      'object Inner C 7-9',
+      'val v Inner 8-8',
+    ])
+  })
+
+  it('nests three deep, across blank and comment lines, and inside a braced parent', async () => {
+    expect(await rowsFor('c3.scala', [
+      'class C:', // 1
+      '  class B:', // 2
+      '    class A:', // 3
+      '      def deep = 1', // 4
+      '    def mid = 2', // 5
+      '  def top = 3', // 6
+    ])).toEqual(['class A B 3-4', 'class B C 2-5', 'class C  1-6', 'function deep A 4-4', 'function mid B 5-5', 'function top C 6-6'])
+    expect(await rowsFor('f3.scala', [
+      'class C:', // 1
+      '  def one = 1', // 2
+      '', // 3
+      '  // comment', // 4
+      '  class B:', // 5
+      '', // 6
+      '    def two = 2', // 7
+      '', // 8
+      '  def three = 3', // 9
+    ])).toEqual(['class B C 5-7', 'class C  1-9', 'function one C 2-2', 'function three C 9-9', 'function two B 7-7'])
+    expect(await rowsFor('e3.scala', [
+      'class C {', // 1
+      '  class B:', // 2
+      '    def x = 1', // 3
+      '  def y = 2', // 4
+      '}', // 5
+    ])).toEqual(['class B C 2-3', 'class C  1-5', 'function x B 3-3', 'function y C 4-4'])
+  })
+
+  it('leaves a class declared inside a method body out', async () => {
+    expect(await rowsFor('d3.scala', [
+      'class C:', // 1
+      '  def m(): Unit =', // 2
+      '    class Local:', // 3
+      '      def hidden = 1', // 4
+      '    println(1)', // 5
+      '  def next = 2', // 6
+    ])).toEqual(['class C  1-6', 'function m C 2-5', 'function next C 6-6'])
+  })
+})

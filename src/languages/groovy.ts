@@ -72,6 +72,7 @@ function matchGroovy(code: string, ctx: DeclContext): Decl | null {
 const GROOVY: BraceLanguage = {
   lex: { lineComments: ['//'], blockComment: ['/*', '*/'], quotes: '"\'', tripleQuotes: true, shebang: true, slashyStrings: true },
   match: matchGroovy,
+  memberStart: /^static\s*\{/,
   importOf: (code) => /^import\s+(?:static\s+)?([\w.]+(?:\.\*)?)/.exec(code)?.[1] ?? null,
   docComments: true,
 }

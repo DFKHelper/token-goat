@@ -61,6 +61,8 @@ export interface BraceLanguage {
   readonly match: (code: string, ctx: DeclContext) => Decl | null
   /** A trimmed line this matches closes the innermost `keyword` declaration. */
   readonly keywordClose?: RegExp
+  /** A trimmed line this matches starts a new member, so a bodiless declaration still pending on an earlier line has ended. */
+  readonly memberStart?: RegExp
   /** Lines starting with `#` are preprocessor directives: never declarations, and their braces are not counted. */
   readonly preprocessor?: boolean
   /** Reads an import from a trimmed, blanked line; `raw` is the untouched line, for a quoted target the blanking emptied. */
@@ -329,6 +331,7 @@ export function scanBraceLanguage(content: string, filePath: string, lang: Brace
         codeOffset: code.length - code.trimStart().length,
         header: () => headerFrom(masked, i),
       }
+      if (pending !== null && pending.parens === 0 && pending.line < i && lang.memberStart?.test(trimmed) === true) pending = null
       const inHeader: boolean = pending !== null && pending.parens > 0
       const d: Decl | null = items.length < MAX_SYMBOLS && !inHeader ? lang.match(trimmed, ctx) : null
       if (d !== null && d.name.length <= MAX_NAME_LENGTH && (d.name !== '' || d.nameAfterClose === true)) {
