@@ -1057,7 +1057,7 @@ export function buildProgram(): Command {
   program
     .command('semantic [query] [more...]')
     .description('semantic search (falls back to full-text search); several queries run in one call, one headed block per query')
-    .option('-l, --limit <n>', 'max results')
+    .option('-l, --limit <n>', 'max results (default: 20; 0 or less is refused)')
     .option('-j, --json', 'output as JSON')
     .option('--grep <pattern>', 'filter to hits whose file path matches this regex (literal substring if it is not valid regex); matched against the path as rendered')
     .option('--exclude-tests', 'hide hits whose file is a test file (opt-in; default output is unchanged)')
