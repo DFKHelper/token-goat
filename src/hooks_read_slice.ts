@@ -211,6 +211,7 @@ function scanRequestedSlice(absPath: string, offset: number, limit: number): Sli
     let lineNumber = 1
     let sliceBytes = 0
     let totalScanned = 0
+    let afterCr = false
     for (;;) {
       if (totalScanned >= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
         const nearSingleLine = lineNumber < NEAR_SINGLE_LINE_SCAN_THRESHOLD
@@ -227,7 +228,14 @@ function scanRequestedSlice(absPath: string, offset: number, limit: number): Sli
       totalScanned += bytesRead
       for (let i = 0; i < bytesRead; i++) {
         if (lineNumber >= offset && lineNumber < windowEnd) sliceBytes++
-        if (buf[i] === 0x0a) {
+        const byte = buf[i]
+        // A lone CR ends a line, as the indexer counts it (source_text.ts); the LF of a CRLF pair ends nothing the CR did not.
+        if (byte === 0x0a && afterCr) {
+          afterCr = false
+          continue
+        }
+        afterCr = byte === 0x0d
+        if (byte === 0x0a || byte === 0x0d) {
           lineNumber++
           if (lineNumber >= windowEnd) return { bytes: sliceBytes, trustworthy: true, nearSingleLine: false }
         }
@@ -258,6 +266,19 @@ export function estimateRequestedSlice(event: HookEvent, absPath: string): Reque
   if (scan.nearSingleLine) return { kind: 'nearSingleLine' }
   if (scan.trustworthy) return { kind: 'bytes', bytes: scan.bytes }
   return { kind: 'unbounded' }
+}
+
+/** Whether a sized offset/limit window is under `thresholdBytes`: a small slice a size gate lets through. Only a window the scan could bound counts, never an unbounded or single-line one. */
+export function isSmallSlice(slice: RequestedSlice, thresholdBytes: number): boolean {
+  return slice.kind === 'bytes' && slice.bytes < thresholdBytes
+}
+
+/** Whether a bounded offset/limit Read names only lines this session never served: no whole-file read behind it, and no recorded line range touching the window. Such a read hands over text the model has not seen, so a re-read note or count-based deny about it would be false. */
+export function isUnseenWindow(window: RequestedSliceWindow, servedRanges: ReadonlyArray<readonly [number, number]>, fullReads: number): boolean {
+  if (!window.isExplicitSlice || fullReads !== 0 || window.offset === undefined || window.limit === undefined) return false
+  const start = window.offset
+  const end = window.offset + window.limit - 1
+  return !servedRanges.some(([s, e]) => s <= end && e >= start)
 }
 
 /** Phrases retry advice for a large-file deny based on offset/limit. */

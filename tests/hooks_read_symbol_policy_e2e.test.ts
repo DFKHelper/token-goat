@@ -2,12 +2,21 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('../src/stats.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>()
+  const real = original['recordStat'] as (...args: unknown[]) => void
+  return { ...original, recordStat: vi.fn((...args: unknown[]) => real(...args)) }
+})
+
 import { invalidateConfigCache } from '../src/config.js'
 import { globalDbPath } from '../src/constants.js'
 import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import { preReadHandler } from '../src/hooks_read.js'
 import { indexFileSync } from '../src/parser.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { takePendingLargeFileHint } from '../src/session.js'
+import { recordStat } from '../src/stats.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 // The first-read symbol policy end to end, on the shipping path: a real file indexed by the real parser into the isolated global.db (tests/setup/isolate-home.ts pins TOKEN_GOAT_HOME and LOCALAPPDATA/XDG_DATA_HOME), then a Read driven through preReadHandler with no navigationEvidence injected, so getReadNavigationEvidence runs against the row indexFileSync wrote. Every evaluator test injects that evidence, which is how a seconds-vs-milliseconds mtime comparison that marked every indexed file stale shipped behind a green suite.
@@ -36,12 +45,18 @@ function writeLargeMarkdown(name = 'guide.md', count = 401, headingFor: (i: numb
   return filePath
 }
 
-function firstRead(filePath: string, sessionId: string) {
-  return preReadHandler(makeHookEvent({ toolName: 'Read', toolInput: { file_path: filePath }, sessionId }))
+function firstRead(filePath: string, sessionId: string, extraInput: Record<string, unknown> = {}) {
+  return preReadHandler(makeHookEvent({ toolName: 'Read', toolInput: { file_path: filePath, ...extraInput }, sessionId }))
+}
+
+/** The arguments of every recordStat call that booked a first-read-symbol deny since the spy was last cleared. */
+function firstReadDenyStats(): unknown[][] {
+  return vi.mocked(recordStat).mock.calls.filter((args) => args[4] === 'first-read-symbol-deny')
 }
 
 beforeEach(() => {
   clearModuleCaches()
+  vi.mocked(recordStat).mockClear()
 })
 
 afterEach(() => {
@@ -51,7 +66,7 @@ afterEach(() => {
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
-function setPolicy(policy: 'warn' | 'deny'): void {
+function setPolicy(policy: 'warn' | 'deny' | 'off'): void {
   vi.stubEnv('TOKEN_GOAT_FIRST_READ_SYMBOL_POLICY', policy)
   invalidateConfigCache()
 }
@@ -233,5 +248,113 @@ describe('first-read symbol policy on a large markdown file', () => {
 
     const out = firstRead(filePath, `policy-md-zero-${process.pid}-${Date.now()}`)
     expect(out.hookType === 'deny' && out.message.includes('first_read_symbol_policy')).toBe(false)
+  })
+})
+
+describe('first-read symbol policy on a whole read that follows slice reads', () => {
+  const session = (tag: string) => `policy-slice-${tag}-${process.pid}-${Date.now()}`
+
+  it('denies a whole read after a slice read and books it as the first-read deny does', () => {
+    setPolicy('deny')
+    const direct = writeLargeModule()
+    indexFileSync(direct, globalDbPath())
+    expect(firstRead(direct, session('direct')).hookType).toBe('deny')
+    const booked = firstReadDenyStats()
+    expect(booked).toHaveLength(1)
+    expect(booked[0]![1]).toBeGreaterThan(0)
+
+    vi.mocked(recordStat).mockClear()
+    const sliced = writeLargeModule()
+    indexFileSync(sliced, globalDbPath())
+    const sliceSession = session('sliced')
+    expect(firstRead(sliced, sliceSession, { offset: 1, limit: 10 }).hookType).not.toBe('deny')
+    const out = firstRead(sliced, sliceSession)
+    expect(out.hookType).toBe('deny')
+    if (out.hookType !== 'deny') return
+    expect(out.message).toContain('Whole-file first read denied by first_read_symbol_policy')
+    expect(firstReadDenyStats()).toEqual(booked)
+  })
+
+  it('records the pending large-file hint on a warning, whether or not a slice came first', () => {
+    setPolicy('warn')
+    vi.stubEnv('TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES', '1')
+    invalidateConfigCache()
+    const direct = writeLargeModule()
+    indexFileSync(direct, globalDbPath())
+    expect(firstRead(direct, session('warn-direct')).hookType).toBe('context')
+    expect(takePendingLargeFileHint(direct)).toBe(fs.statSync(direct).size)
+
+    const sliced = writeLargeModule()
+    indexFileSync(sliced, globalDbPath())
+    const sliceSession = session('warn-sliced')
+    firstRead(sliced, sliceSession, { offset: 1, limit: 10 })
+    expect(takePendingLargeFileHint(sliced)).toBeNull()
+    const out = firstRead(sliced, sliceSession)
+    expect(out.hookType).toBe('context')
+    expect(takePendingLargeFileHint(sliced)).toBe(fs.statSync(sliced).size)
+  })
+
+  it('treats the first whole read of a file read only in slices as a first read, with the large-file hint', () => {
+    setPolicy('warn')
+    // HAND-DERIVED: 2,000 one-line functions, about 150KB, past the 100,000-byte generic large-file gate.
+    const filePath = writeLargeModule('huge.ts', 2000)
+    expect(fs.statSync(filePath).size).toBeGreaterThan(100_000)
+    indexFileSync(filePath, globalDbPath())
+    const id = session('large')
+    expect(firstRead(filePath, id, { offset: 1, limit: 10 }).hookType).toBe('pass')
+
+    const out = firstRead(filePath, id)
+    expect(out.hookType).toBe('context')
+    if (out.hookType !== 'context') return
+    expect(out.context).toContain(' is large (')
+    expect(out.context).not.toContain('already read this session')
+  })
+
+  it('lets a slice of lines the session never served through without a note', () => {
+    setPolicy('off')
+    const filePath = writeLargeModule()
+    indexFileSync(filePath, globalDbPath())
+    const id = session('unseen')
+    expect(firstRead(filePath, id, { offset: 1, limit: 10 }).hookType).toBe('pass')
+    expect(firstRead(filePath, id, { offset: 500, limit: 10 }).hookType).toBe('pass')
+  })
+
+  it('denies a small slice of a file already read in full, since every line was served', () => {
+    setPolicy('off')
+    // The four most recent reads are protected from the count-based deny; switch that window off so the deny is what is under test.
+    vi.stubEnv('TOKEN_GOAT_PROTECT_RECENT_READS', '0')
+    invalidateConfigCache()
+    const filePath = writeLargeModule()
+    indexFileSync(filePath, globalDbPath())
+    const id = session('after-whole')
+    firstRead(filePath, id)
+    expect(firstRead(filePath, id, { offset: 500, limit: 10 }).hookType).toBe('deny')
+  })
+
+  it('falls through to the large-file hint for a file of 100KB or more under policy warn', () => {
+    setPolicy('warn')
+    const filePath = writeLargeModule('huge.ts', 2000)
+    indexFileSync(filePath, globalDbPath())
+
+    const out = firstRead(filePath, session('large-first'))
+    expect(out.hookType).toBe('context')
+    if (out.hookType !== 'context') return
+    expect(out.context).toContain(' is large (')
+    expect(out.context).not.toContain('prefer surgical reads')
+  })
+})
+
+describe('first-read symbol policy and a markdown file already read in full', () => {
+  it('denies a small slice of it, since the whole file was already served', () => {
+    setPolicy('off')
+    const filePath = writeLargeMarkdown()
+    indexFileSync(filePath, globalDbPath())
+    const id = `policy-md-reread-${process.pid}-${Date.now()}`
+    expect(firstRead(filePath, id).hookType).toBe('context')
+
+    for (const offset of [1, 40]) {
+      const out = firstRead(filePath, id, { offset, limit: 5 })
+      expect(out.hookType).toBe('deny')
+    }
   })
 })

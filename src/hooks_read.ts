@@ -4,6 +4,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { getCwd, getFilePath, resolveEventPath } from './hooks_common.js'
+import type { HintsConfig } from './config_types.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
@@ -34,10 +35,19 @@ import {
   truncatedReadDenyMessage,
   readWindowFromDisk,
   SLICE_ESTIMATE_SCAN_CAP_BYTES,
+  isSmallSlice,
+  isUnseenWindow,
 } from './hooks_read_slice.js'
 
 import type { HookOutput } from './types.js'
-import { evaluateFirstReadSymbolPolicy, formatKb } from './hooks_read_policy.js'
+import {
+  buildReadPolicyContext,
+  evaluateFirstReadSymbolPolicy,
+  formatKb,
+  meetsFirstReadSymbolThreshold,
+  type ReadPolicyContext,
+  type ReadPolicyDecision,
+} from './hooks_read_policy.js'
 import { buildPackageManifestHint } from './hints.js'
 import { querySymbols, getFileEntry, getReadNavigationEvidence } from './index_reader.js'
 import { extractShellBannerHeading } from './section_reader.js'
@@ -490,9 +500,38 @@ function scanCrossSessionManifests(
 
 
 // Grep's cost/relevance depends on its search pattern, not the file's total size or content — re-scoping several Greps at the same path is a legitimate workflow, so Grep must never feed the Read-specific read-count that the count-based deny check (and every "already read X" hint below) relies on. Route every recordFileRead call in this handler through here so a Grep on a file can never poison a subsequent single Read's count.
+const recordedReadEvents = new WeakSet<HookEvent>()
+
 function recordActualRead(event: HookEvent, filePath: string): void {
   if (event.toolName === 'Grep') return
+  // One Read is one read: a path that records it and then falls through to a later gate that records it again would count a single whole read twice.
+  if (recordedReadEvents.has(event)) return
+  recordedReadEvents.add(event)
   recordFileRead(filePath, !readRequestedSliceWindow(event).isExplicitSlice)
+}
+
+/** Turns the first-read policy's decision into hook output, booking the same stats at both call sites. A deny withholds a whole-file read, so it books the counterfactual credit the large-file deny books for the same withheld read. A warn on a file under LARGE_FILE_BYTES lets the read proceed and leaves the pending large-file hint for hint-stats; a bigger file returns null so the large-file gate below advises on it. */
+function firstReadSymbolOutput(decision: ReadPolicyDecision, policyContext: ReadPolicyContext, hints: HintsConfig, recordRead: boolean): HookOutput | null {
+  const { event, normalizedPath, fileSize } = policyContext
+  if (decision.action === 'deny') {
+    const denyCredit = counterfactualCredit(fileSize)
+    recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit), undefined, 'first-read-symbol-deny')
+    return denyOutput(decision.message)
+  }
+  if (decision.action === 'warn' && fileSize < LARGE_FILE_BYTES) {
+    if (recordRead) {
+      recordActualRead(event, normalizedPath)
+      recordActualSlice(event, normalizedPath)
+    }
+    if (hints.log_large_file_hint_outcomes) {
+      recordLargeFileHintPending(normalizedPath, fileSize)
+    }
+    if (!policyContext.quiet) {
+      recordStat('session_hint', 0, 0)
+    }
+    return quietContextOutput(decision.message + contextPressureAdvisorySuffix(), [policyContext.shownPath])
+  }
+  return null
 }
 
 export function recordActualSlice(event: HookEvent, filePath: string): void {
@@ -779,15 +818,13 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         // The gate evaluateFirstReadSymbolPolicy applies to code: a positive byte threshold, and an index entry that still matches the file, so an unindexed or since-edited file keeps the heading tree. The count is the index's own, since `headings` stops at the first 40 H1-H3 lines.
         const policyEvidence = !alreadyRead && gateSize !== null &&
           config.hints.first_read_symbol_policy === 'deny' &&
-          config.hints.first_read_symbol_bytes > 0 &&
-          gateSize >= config.hints.first_read_symbol_bytes
+          meetsFirstReadSymbolThreshold(config.hints.first_read_symbol_policy, config.hints.first_read_symbol_bytes, gateSize)
           ? getReadNavigationEvidence(normalized)
           : null
         const policyHeadingCount = policyEvidence !== null && !policyEvidence.isStale ? policyEvidence.headingCount : 0
         const firstReadSymbolDeny = policyHeadingCount > 0
-        const isSmallUnseenSlice = slice.kind === 'bytes' && markdownSize !== null &&
-          slice.bytes < config.hints.reread_deny_min_bytes
-        if ((alreadyRead && !isSmallUnseenSlice) || tooLargeForFirstRead || firstReadSymbolDeny) {
+        // A file read in full this session has served every line, so no slice of it is unseen: a re-read is denied whatever its size.
+        if (alreadyRead || tooLargeForFirstRead || firstReadSymbolDeny) {
           if (firstReadSymbolDeny) {
             recordStat('session_hint', 0, 0)
             const safeHeading = headingTarget.real ? headingTarget.name : null
@@ -1061,29 +1098,13 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
     const config = loadConfig()
     const window = readRequestedSliceWindow(event)
-    const isSmallUnseenSlice = window.isExplicitSlice && window.limit !== undefined &&
-      requestedSlice.kind === 'bytes' && requestedSlice.bytes < config.hints.reread_deny_min_bytes
+    const isSmallUnseenSlice = isSmallSlice(requestedSlice, config.hints.reread_deny_min_bytes) && isUnseenWindow(window, getFileLineRanges(normalized), fullReads)
 
-    if (fullReads === 0 && !window.isExplicitSlice && rereadBytes >= config.hints.first_read_symbol_bytes && !isDispatchedFileType(normalized)) {
-      const policyDecision = evaluateFirstReadSymbolPolicy({
-        event,
-        normalizedPath: normalized,
-        shownPath: shown,
-        fileSize: rereadBytes,
-        isFirstRead: true,
-        firstReadSymbolBytes: config.hints.first_read_symbol_bytes,
-        firstReadSymbolPolicy: config.hints.first_read_symbol_policy,
-      })
-      if (policyDecision.action === 'deny') {
-        recordStat('session_hint', 0, 0)
-        return denyOutput(policyDecision.message)
-      }
-      if (policyDecision.action === 'warn' && rereadBytes < LARGE_FILE_BYTES) {
-        if (!isWithinQuietHours(config.hints.quiet_hours)) {
-          recordStat('session_hint', 0, 0)
-        }
-        return quietContextOutput(policyDecision.message + contextPressureAdvisorySuffix(), [shown])
-      }
+    if (fullReads === 0 && !window.isExplicitSlice && !isDispatchedFileType(normalized) &&
+      meetsFirstReadSymbolThreshold(config.hints.first_read_symbol_policy, config.hints.first_read_symbol_bytes, rereadBytes)) {
+      const policyContext = buildReadPolicyContext({ event, normalizedPath: normalized, shownPath: shown, fileSize: rereadBytes, hints: config.hints, window, slice: requestedSlice })
+      const policyOutput = firstReadSymbolOutput(evaluateFirstReadSymbolPolicy(policyContext), policyContext, config.hints, false)
+      if (policyOutput !== null) return policyOutput
     }
     if (config.hints.log_large_file_hint_outcomes) {
       const pendingSize = takePendingLargeFileHint(normalized)
@@ -1237,8 +1258,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         realSymbolReadHint(normalized, shown, pagingWindow.offset !== undefined && pagingWindow.limit !== undefined ? { start: pagingWindow.offset, end: pagingWindow.offset + pagingWindow.limit - 1 } : undefined) + '.'
       : ''
     // A ranged Read whose window touches no line served before, with no whole-file read behind it, hands over lines the model has never seen: the already-read note would be false.
-    const windowIsNew = pagingWindow.isExplicitSlice && fullReads === 0 && pagingWindow.offset !== undefined && pagingWindow.limit !== undefined &&
-      !activeRanges.some(([s, e]) => s <= pagingWindow.offset! + pagingWindow.limit! - 1 && e >= pagingWindow.offset!)
+    const windowIsNew = isUnseenWindow(pagingWindow, activeRanges, fullReads)
     if (windowIsNew) {
       recordActualSlice(event, normalized)
       if (pagingNote === '') return passOutput()
@@ -1247,18 +1267,21 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
       return quietContextOutput(pagingNote.trimStart(), [shown])
     }
-    if (!isWithinQuietHours(config.hints.quiet_hours)) {
-      recordStat('session_hint', 0, 0)
+    // A whole Read when only slices were read before (or the last whole read predates a compaction) hands over text the model does not hold: it is a first read, so it falls through to the first-read gates below instead of drawing a note that says it was read already.
+    if (fullReads !== 0 || pagingWindow.isExplicitSlice) {
+      if (!isWithinQuietHours(config.hints.quiet_hours)) {
+        recordStat('session_hint', 0, 0)
+      }
+      recordActualSlice(event, normalized)
+      const sectionCommand = _isDocFile(normalized) ? 'token-goat section ' + quotedArg(shown + '::' + hintTarget(normalized, 'section', { placeholder: 'SectionName' }).name) : ''
+      const rereadNote = 'Note: ' + readSubject(normalized, sectionCommand + pagingNote) + ' was already read this session (' + reads + ' ' + plural + ').'
+      return quietContextOutput(
+        (sectionCommand !== ''
+          ? leadWithCommand(sectionCommand, 'to read one section', rereadNote)
+          : rereadNote + ' Use token-goat read/section/symbol to re-read surgically.') + pagingNote,
+        [shown],
+      )
     }
-    recordActualSlice(event, normalized)
-    const sectionCommand = _isDocFile(normalized) ? 'token-goat section ' + quotedArg(shown + '::' + hintTarget(normalized, 'section', { placeholder: 'SectionName' }).name) : ''
-    const rereadNote = 'Note: ' + readSubject(normalized, sectionCommand + pagingNote) + ' was already read this session (' + reads + ' ' + plural + ').'
-    return quietContextOutput(
-      (sectionCommand !== ''
-        ? leadWithCommand(sectionCommand, 'to read one section', rereadNote)
-        : rereadNote + ' Use token-goat read/section/symbol to re-read surgically.') + pagingNote,
-      [shown],
-    )
   }
 
   const size = statSize(onDisk)
@@ -1271,33 +1294,10 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     !isImagePath(normalized) &&
     !isDispatchedFileType(normalized)
   ) {
-    const policyDecision = evaluateFirstReadSymbolPolicy({
-      event,
-      normalizedPath: normalized,
-      shownPath: shown,
-      fileSize: size,
-      isFirstRead: true,
-      firstReadSymbolBytes: loadConfig().hints.first_read_symbol_bytes,
-      firstReadSymbolPolicy: loadConfig().hints.first_read_symbol_policy,
-    })
-
-    if (policyDecision.action === 'deny') {
-      const denyCredit = counterfactualCredit(size)
-      recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit), undefined, 'first-read-symbol-deny')
-      return denyOutput(policyDecision.message)
-    }
-
-    if (policyDecision.action === 'warn' && size < LARGE_FILE_BYTES) {
-      recordActualRead(event, normalized)
-      recordActualSlice(event, normalized)
-      if (loadConfig().hints.log_large_file_hint_outcomes) {
-        recordLargeFileHintPending(normalized, size)
-      }
-      if (!isWithinQuietHours(loadConfig().hints.quiet_hours)) {
-        recordStat('session_hint', 0, 0)
-      }
-      return quietContextOutput(policyDecision.message + contextPressureAdvisorySuffix(), [shown])
-    }
+    const hints = loadConfig().hints
+    const policyContext = buildReadPolicyContext({ event, normalizedPath: normalized, shownPath: shown, fileSize: size, hints })
+    const policyOutput = firstReadSymbolOutput(evaluateFirstReadSymbolPolicy(policyContext), policyContext, hints, true)
+    if (policyOutput !== null) return policyOutput
   }
 
   // Grep never reads/returns the whole file — its cost is the search pattern's match count, not the file's total size (same rationale as the re-read dedup exemption above), and estimateRequestedSlice() always reports 'unbounded' for it (no offset/limit on its schema), which would otherwise gate it on the full file size and hard-deny it with an "edit it anyway" message that makes no sense for a search operation.
