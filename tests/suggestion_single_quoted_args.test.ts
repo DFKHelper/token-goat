@@ -284,7 +284,7 @@ describe('suggestions built from the caller text', () => {
     try {
       const result = await client.callTool({ name: 'symbol', arguments: { name: '$zzMcpNope', projectRoot: project } })
       const text = (result.content as { type: string; text: string }[])[0]?.text ?? ''
-      expect(text).toContain('the "semantic" tool again with a more specific parameter (e.g. "$zzMcpNope")')
+      expect(text).toContain('the "semantic" tool again with a more specific query (e.g. "$zzMcpNope")')
       expect(text).not.toContain("semantic '$zzMcpNope'")
     } finally {
       await client.close()

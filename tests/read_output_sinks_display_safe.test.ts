@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { runBundle, tgIsolatedEnv } from './helpers/bundle.js'
 
 const RLO = '\u202e'
-const ZWJ = '‍'
+const ZWJ = '\u200d'
 const FORMAT_CHARS = /\p{Cf}/u
 
 let home: string

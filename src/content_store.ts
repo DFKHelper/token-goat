@@ -4,6 +4,7 @@ import * as path from 'node:path'
 
 import { isBlobStale, loadBlob, storeBlob } from './disk_cache.js'
 import { shortFingerprint } from './fingerprint.js'
+import { quotedArg } from './hint_suggestion_guard.js'
 import { findProject } from './project.js'
 import { redactSecrets } from './secret_redact.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
@@ -165,7 +166,7 @@ export function createHandoff(name: string, text: string, projectRoot?: string):
   })
   if (!ok) throw new Error('unable to persist handoff within the local cache bounds')
   recordStat('handoff_create')
-  return { id, name, contentId: contentIdValue, projectRoot: root, recovery: `token-goat handoff-resolve ${name}` }
+  return { id, name, contentId: contentIdValue, projectRoot: root, recovery: `token-goat handoff-resolve -- ${quotedArg(name)}` }
 }
 
 export function resolveHandoff(name: string, opts: { projectRoot?: string; full?: boolean } = {}): CompressionResult | string | null {

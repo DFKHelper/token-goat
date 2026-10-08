@@ -14,6 +14,7 @@ const RETRY_PARAM_BY_COMMAND: Record<string, string> = {
   symbol: 'name',
   skeleton: 'file',
   outline: 'file',
+  semantic: 'query',
 }
 
 /** Runs `fn` as the answer to an MCP tool call, so every {@link forClient} note built inside it is worded for an MCP client. */
