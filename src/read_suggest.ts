@@ -111,8 +111,11 @@ export function didYouMeanLines(candidates: string[]): string[] {
   return lines
 }
 
-/** How many of a miss's top-ranked near names are checked against disk before they are offered: the first screen of suggestions and well past it, without turning one miss into a check of every file a broad ranking touches. Names ranked below it are offered unchecked. */
+/** How many of a miss's top-ranked near names are checked against disk in one window: the first screen of suggestions and well past it, without turning one miss into a check of every file a broad ranking touches. */
 export const NEAR_NAME_LIVE_CHECK = 50
+
+/** The most names a miss checks against disk in all, window after window. A window whose names were all renamed or deleted since the last index does not decide what is offered: the next one is checked, up to this cap, and a name past the cap is dropped rather than offered unchecked. */
+export const NEAR_NAME_LIVE_CHECK_MAX = 250
 
 /** The rows `query` returns once the files behind them are healed, without the rows whose file is gone from disk. A suggestion is a command the reader is invited to run, so one drawn from an outdated row leads to a second miss: a name since renamed in a file that was edited outside the index, or a file since deleted. A heal that reindexed anything means the first answer was read from old rows, so the query runs once more. */
 function liveRows<T extends { filePath: string }>(query: () => T[]): T[] {
@@ -127,21 +130,41 @@ export function nearSymbolNames(name: string, rootDir: string): { skipped: false
     const names = projectSymbolNames(rootDir, SUGGEST_NAME_BUDGET)
     return names === null ? null : rankSimilarNames(names, name)
   }
-  const sitesOf = (ranked: string[]): Array<{ name: string; filePath: string }> => {
-    const order = new Map(ranked.slice(0, NEAR_NAME_LIVE_CHECK).map((n, i) => [n, i]))
-    // In rank order, so the heal's file cap is spent on the names a reader sees first.
-    return symbolNameFiles(rootDir, [...order.keys()]).sort((a, b) => (order.get(a.name) ?? 0) - (order.get(b.name) ?? 0))
-  }
   let ranked = rank()
   if (ranked === null) return { skipped: true }
-  let sites = sitesOf(ranked)
-  if (healStaleResultFiles(sites.map((s) => s.filePath)).healed) {
-    ranked = rank()
-    if (ranked === null) return { skipped: true }
-    sites = sitesOf(ranked)
+  // Files whose rows are known to match disk (fresh, or reindexed by the heal), and files the heal tried and could not refresh. A row from a file in neither set is unchecked, and an unchecked row is not evidence that its name exists.
+  const verified = new Set<string>()
+  const unrefreshable = new Set<string>()
+  let examined = Math.min(NEAR_NAME_LIVE_CHECK, ranked.length)
+  for (;;) {
+    // A round heals at most one window of files, so a window of renamed names can need several rounds before every name in it is judged against current rows.
+    for (;;) {
+      const order = new Map(ranked.slice(0, examined).map((n, i) => [n, i]))
+      // In rank order, so the heal's file cap is spent on the names a reader sees first.
+      const sites = symbolNameFiles(rootDir, [...order.keys()]).sort((x, y) => (order.get(x.name) ?? 0) - (order.get(y.name) ?? 0))
+      const unchecked = [...new Set(sites.map((x) => x.filePath))].filter((f) => !fileIsGone(f) && !verified.has(f) && !unrefreshable.has(f))
+      if (unchecked.length === 0) break
+      let healed = false
+      for (const f of unchecked.slice(0, NEAR_NAME_LIVE_CHECK)) {
+        const result = healStaleResultFiles([f])
+        healed ||= result.healed
+        ;(result.stillStale.has(f) ? unrefreshable : verified).add(f)
+      }
+      if (healed) {
+        ranked = rank()
+        if (ranked === null) return { skipped: true }
+        examined = Math.min(examined, ranked.length)
+      }
+    }
+    const order = new Map(ranked.slice(0, examined).map((n, i) => [n, i]))
+    const live = new Set(symbolNameFiles(rootDir, [...order.keys()]).filter((x) => verified.has(x.filePath)).map((x) => x.name))
+    const enough = live.size >= DIDYOUMEAN_LIMIT
+    if (enough || examined >= ranked.length || examined >= NEAR_NAME_LIVE_CHECK_MAX) {
+      // Past the cap with too few live names, the unchecked tail is left out; with enough live names it only feeds the "N more not shown" count.
+      return { skipped: false, candidates: ranked.filter((n, i) => (i < examined ? live.has(n) : enough)) }
+    }
+    examined = Math.min(examined + NEAR_NAME_LIVE_CHECK, ranked.length, NEAR_NAME_LIVE_CHECK_MAX)
   }
-  const live = new Set(sites.filter((s) => !fileIsGone(s.filePath)).map((s) => s.name))
-  return { skipped: false, candidates: ranked.filter((n, i) => i >= NEAR_NAME_LIVE_CHECK || live.has(n)) }
 }
 
 /** What a miss prints in place of "Did you mean" when {@link nearSymbolNames} skipped the ranking, so the absence of a suggestion is not read as "nothing is close". */
