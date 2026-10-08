@@ -5,6 +5,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { load as loadYaml } from 'js-yaml'
+import { checkLockFiles, formatProblem } from './lock-consistency.mjs'
 import { isDependabotPullRequest, isValidPackageName, npmCommand, packageNamesFromBody, summarizeGuardFailure } from './dependabot-body.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -72,6 +73,12 @@ function guardPasses() {
   }
 }
 
+/** The lock file must agree with itself, which the disclosure guard does not measure: it counts what installs, not whether each package's declared dependency versions are the ones that got installed. A lock that fails this is rewritten by the next `npm install`, as b479903b's was. */
+function consistencyFailure() {
+  const problems = checkLockFiles(repoRoot)
+  return problems.length === 0 ? null : problems.map((problem) => `  ${formatProblem(problem)}`).join('\n')
+}
+
 const argv = process.argv.slice(2)
 const check = argv.includes('--check')
 
@@ -79,7 +86,9 @@ const check = argv.includes('--check')
 if (argv.includes('--verify')) {
   const failure = guardPasses()
   if (failure) fail(`the disclosure guard rejects the current lock file:\n${failure}`)
-  process.stdout.write('the disclosure guard accepts the current lock file\n')
+  const inconsistent = consistencyFailure()
+  if (inconsistent) fail(`the lock file disagrees with itself:\n${inconsistent}`)
+  process.stdout.write('the disclosure guard accepts the current lock file, and every dependency spec in it is met\n')
   process.exit(0)
 }
 
@@ -139,4 +148,9 @@ if (failure) {
   fail(`the disclosure guard rejects the resolved lock file, which is the defect this script exists to avoid:\n${failure}\nRestore package-lock.json and investigate before committing.`)
 }
 
-process.stdout.write(`${moved} package(s) moved; the disclosure guard accepts the result. Run \`npm test\` before committing.\n`)
+const inconsistent = consistencyFailure()
+if (inconsistent) {
+  fail(`the resolved lock file disagrees with itself, so the next \`npm install\` would rewrite it:\n${inconsistent}\nRestore package-lock.json and investigate before committing.`)
+}
+
+process.stdout.write(`${moved} package(s) moved; the disclosure guard accepts the result and every dependency spec in the lock is met. Run \`npm test\` before committing.\n`)
