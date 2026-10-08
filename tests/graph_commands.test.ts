@@ -3960,7 +3960,7 @@ describe('runTestFor', () => {
       const code = runTestFor({ file: 'src/__nonexistent_file_xyz__.ts' })
       expect(code).toBe(1)
     })
-    expect(errCaptured).toContain('Could not read: src/__nonexistent_file_xyz__.ts')
+    expect(errCaptured).toContain('Could not read: "src/__nonexistent_file_xyz__.ts"')
   })
 
   it('exits 0 and lists test files covering a well-tested source file', () => {

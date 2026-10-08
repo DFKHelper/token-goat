@@ -46,7 +46,7 @@ describe('missing path vs empty result', () => {
     it(`${cmd} reports a nonexistent path as unreadable`, () => {
       const r = run([cmd, 'nope.ts'])
       expect(r.status).not.toBe(0)
-      expect(r.out).toContain('Could not read: nope.ts')
+      expect(r.out).toContain('Could not read: "nope.ts"')
       expect(r.out).not.toContain('No indexed symbols found')
       expect(r.out).not.toContain('No type declarations found')
     })
@@ -74,7 +74,7 @@ describe('missing path vs empty result', () => {
   it('section --list reports a nonexistent path as unreadable', () => {
     const r = run(['section', 'nope.md', '--list'])
     expect(r.status).not.toBe(0)
-    expect(r.out).toContain('Could not read: nope.md')
+    expect(r.out).toContain('Could not read: "nope.md"')
     expect(r.out).not.toContain('No sections found')
   })
 
@@ -117,7 +117,7 @@ describe('missing path vs empty result', () => {
     it(`${cmd} still reports a nonexistent path as unreadable`, () => {
       const r = run([cmd, 'nope.ts'])
       expect(r.status).not.toBe(0)
-      expect(r.out).toContain('Could not read: nope.ts')
+      expect(r.out).toContain('Could not read: "nope.ts"')
     })
   }
 })

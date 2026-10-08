@@ -6,7 +6,7 @@ import * as path from 'node:path'
 import { extractImports, importsExtensionFor } from './import_export_extract.js'
 import { querySymbols, queryRefs, searchSymbolsFts } from './index_reader.js'
 import { displaySafeText, normalizePath, toDisplayPath, displaySafeJson } from './paths.js'
-import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
+import { couldNotRead, echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { resolveSpecPath } from './spec_path.js'
 import { fenceUntrusted } from './untrusted_fence.js'
 import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
@@ -167,7 +167,7 @@ export function runTestFor(opts: TestForOptions): number {
   const symbols = querySymbols({ filePath, limit: ALL_SYMBOLS_IN_FILE_LIMIT })
 
   if (!fs.existsSync(opts.file) && symbols.length === 0) {
-    emitErr(formatCommandError(`Could not read: ${opts.file}`))
+    emitErr(formatCommandError(couldNotRead(opts.file)))
     return 1
   }
 

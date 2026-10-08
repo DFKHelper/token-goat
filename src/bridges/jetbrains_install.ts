@@ -96,7 +96,7 @@ function installJetbrainsScoped(options: JetbrainsScopeOptions = {}): JetbrainsI
     try {
       raw = fs.readFileSync(mcpPath, 'utf8');
     } catch (err: unknown) {
-      throw new Error(`Failed to read JetBrains MCP configuration at ${mcpPath}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+      throw new Error(`Failed to read JetBrains MCP configuration at ${echoedValue(mcpPath)}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
     let parsed: unknown;
     try {

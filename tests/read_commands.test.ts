@@ -5290,7 +5290,7 @@ describe('read_commands', () => {
         const code = runExports({ file: 'src/__nonexistent_exports_target__.ts' })
         expect(code).toBe(1)
       })
-      expect(stderr).toContain('Could not read: src/__nonexistent_exports_target__.ts')
+      expect(stderr).toContain('Could not read: "src/__nonexistent_exports_target__.ts"')
       expect(stdout).not.toContain('No exported')
     })
 

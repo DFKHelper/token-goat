@@ -78,7 +78,7 @@ import {
   symbolExtractorGap,
 } from './read_meta.js'
 import { formatCommandError } from './command_error.js'
-import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
+import { couldNotRead, echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { forClient } from './mcp_client_text.js'
 
 const GREP_MAX_LINES = 200
@@ -649,7 +649,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
       if (findSpecSeparator(opts.spec) === -1) {
         return { text: formatBareNameSpecError('read', file, opts.projectRoot), code: 1 }
       }
-      return { text: `Could not read: ${file}`, code: 1 }
+      return { text: couldNotRead(file), code: 1 }
     }
     return { text: guardText(text, 'symbol'), code: 0 }
   }
@@ -967,7 +967,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
 /** The bytes of a PDF the caller named, refused when the file alone is past the input bound. */
 async function readPdfBytes(file: string): Promise<Uint8Array> {
   if (!pathExists(file)) {
-    throw new Error(`Could not read: ${file}`)
+    throw new Error(couldNotRead(file))
   }
   return readPdfFileWithinBounds(file)
 }
@@ -1014,7 +1014,7 @@ export interface ImageMeta {
 /** Thin async wrapper (same rationale as runPdfExtractText above): sharp metadata only -- never runs OCR, a cheap "should I even look at this" probe. `wouldShrink`/`shrunkBytes` reuse shrinkImage (forcing sizeThresholdBytes 0) to report what a real shrink would cost without actually re-encoding for the caller. */
 export async function runImageMeta(file: string): Promise<ImageMeta> {
   if (!fileExists(file)) {
-    throw new Error(`Could not read: ${file}`)
+    throw new Error(couldNotRead(file))
   }
   if (!isImagePath(file)) {
     throw new Error(`Not an image file: ${file}`)
@@ -1064,7 +1064,7 @@ export interface ImageTextResult {
 /** Thin async wrapper (same rationale as runPdfExtractText above): runs OCR via image_ocr.ts's isolated-child-process ocrImage. Honest about low-confidence results -- `text` stays null below isTextHeavy's threshold rather than surfacing noise as content; `confidence`/`chars` are always reported so the caller can see why. */
 export async function runImageText(file: string, lang?: string): Promise<ImageTextResult> {
   if (!fileExists(file)) {
-    throw new Error(`Could not read: ${file}`)
+    throw new Error(couldNotRead(file))
   }
   if (!isImagePath(file)) {
     throw new Error(`Not an image file: ${file}`)

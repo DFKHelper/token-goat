@@ -114,7 +114,7 @@ describe('file-content readers fence what they print', () => {
   })
 
   it('zip-read under the overflow cap keeps the closing tag and puts the cap marker after it', async () => {
-    process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS'] = '200'
+    process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS'] = '1000'
     invalidateConfigCache()
     const body = Array.from({ length: 400 }, (_, i) => `line ${i} ${ATTACK}`).join('\n')
     const file = zipFile({ 'big.txt': strToU8(`${SECRET}\n${body}\n`) })

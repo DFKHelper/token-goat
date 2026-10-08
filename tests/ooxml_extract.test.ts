@@ -236,7 +236,7 @@ describe('readOoxmlZip failure messages', () => {
     )
 
     expect(err).not.toBeNull()
-    expect(err?.message).toBe(`File not found: ${missing}`)
+    expect(err?.message).toBe(`File not found: "${missing}"`)
     expect(err?.message, 'the raw errno from Node must not reach the caller').not.toMatch(/ENOENT/)
     expect(err?.message).not.toMatch(/no such file or directory/)
   })
@@ -248,7 +248,7 @@ describe('readOoxmlZip failure messages', () => {
       (e: unknown) => e as Error,
     )
 
-    expect(err?.message).toBe('File not found: nope-relative.docx')
+    expect(err?.message).toBe('File not found: "nope-relative.docx"')
     expect(err?.message).not.toContain(process.cwd())
   })
 
@@ -305,14 +305,14 @@ describe('accessFailureMessage', () => {
   it('calls only a genuinely absent file missing', () => {
     const err = Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' })
 
-    expect(accessFailureMessage(err, 'a.docx')).toBe('File not found: a.docx')
+    expect(accessFailureMessage(err, 'a.docx')).toBe('File not found: "a.docx"')
   })
 
   it('does not call a permission error a missing file, since the file is right there', () => {
     const err = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
 
     expect(accessFailureMessage(err, 'a.docx')).not.toContain('File not found')
-    expect(accessFailureMessage(err, 'a.docx')).toBe('could not read a.docx (EACCES)')
+    expect(accessFailureMessage(err, 'a.docx')).toBe('could not read "a.docx" (EACCES)')
   })
 
   it.each([['EISDIR'], ['ENOTDIR'], ['EPERM'], ['EMFILE']])('reports %s as itself', (code) => {

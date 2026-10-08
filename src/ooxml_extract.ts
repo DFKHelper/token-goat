@@ -3,6 +3,7 @@
 import * as fs from 'node:fs'
 
 import { DocumentRefusedError, MAX_DOCUMENT_WORK_MILLIS } from './document_refusal.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 import { createLazyModuleLoader } from './lazy_module.js'
 import { pushAll } from './util.js'
 import { parseXml } from './xml_parser.js'
@@ -49,8 +50,8 @@ const loadFflate = createLazyModuleLoader(
 /** Which of the two answers a failed open deserves. Only a genuinely absent file is "not found": mapping every errno to that message told someone hitting a permission error to go looking for a file that was sitting right where they left it. Kept as a function because the alternative is untestable: node:fs is a frozen namespace, so the non-ENOENT branch cannot be reached by mocking, and no real probe produces the same errno on every platform (a path leading through a regular file is ENOTDIR on Linux and ENOENT on Windows; chmod does not deny the owner on Windows at all). */
 export function accessFailureMessage(err: unknown, filePath: string): string {
   const code = (err as NodeJS.ErrnoException | undefined)?.code
-  if (code === 'ENOENT') return `File not found: ${filePath}`
-  return `could not read ${filePath} (${code ?? 'unknown error'})`
+  if (code === 'ENOENT') return `File not found: ${echoedValue(filePath)}`
+  return `could not read ${echoedValue(filePath)} (${code ?? 'unknown error'})`
 }
 
 export async function readOoxmlZip(filePath: string, kind: '.docx' | '.pptx' | '.xlsx'): Promise<Record<string, Uint8Array>> {

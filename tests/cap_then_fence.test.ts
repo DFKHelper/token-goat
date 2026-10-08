@@ -20,7 +20,7 @@ const LINES = 400
 const dirs: string[] = []
 beforeEach(() => {
   spawnSyncMock.mockReset()
-  process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS'] = '200'
+  process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS'] = '1000'
   invalidateConfigCache()
 })
 afterEach(() => {

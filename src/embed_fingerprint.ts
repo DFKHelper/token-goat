@@ -5,11 +5,11 @@ export const EMBED_FINGERPRINT = 'df1341496fa3b841'
 
 // Per-kind digests, each over the global sources above plus that extraction kind's own. Keyed by the kind embedKindForPath() in src/embed_stamp.ts resolves a file to, which is what ensureEmbeddingProvenance scopes a re-embed by. A change to one document extractor moves one entry here, so only that format's already-embedded files are re-embedded; before this was per-kind, an edit to pdf_extract.ts re-embedded every file on the machine -- 243,238 chunks across 17,876 files on one real index.
 export const EMBED_KIND_FINGERPRINTS: ReadonlyMap<string, string> = new Map([
-  ['docx', 'f7f88b4af2b660ba'],
+  ['docx', '57cf995bf540d0e4'],
   ['markdown', 'd5c3c86c7316f748'],
   ['pdf', '056f90a2bdf049aa'],
-  ['pptx', '2fb7d7cc036c4c2f'],
-  ['xlsx', 'd7884c90464d2640'],
+  ['pptx', 'ff486f789192f9f6'],
+  ['xlsx', '49728dc7f20b555f'],
 ])
 
 // The single whole-set digest EMBED_FINGERPRINT carried before the split above, shipped by v2.9.18 and every release before it. Frozen as a literal in scripts/parser-fingerprint.mjs rather than computed, because the split edited embeddings.ts, one of the sources that digest hashed. ensureEmbeddingProvenance treats a database stamped with exactly this value, in the same vector space, as already agreeing with every stamp above, so the upgrade re-embeds nothing; any other stored digest is re-embedded as before.

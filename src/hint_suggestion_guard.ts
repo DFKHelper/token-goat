@@ -237,6 +237,11 @@ export function echoedValue(value: string): string {
   return quoted.includes(UNQUOTABLE) ? safe : quoted
 }
 
+/** The failure for a file no command could open: `Could not read: "<path>"`, the path display-safe and quoted by {@link echoedValue}, so a path holding a space, an apostrophe or a control character still reads as one name. */
+export function couldNotRead(file: string): string {
+  return `Could not read: ${echoedValue(file)}`
+}
+
 /** `value` quoted for a sentence, or null when the quoted form holds a backtick or {@link UNQUOTABLE}. */
 function proseQuoted(value: string): string | null {
   const quoted = quotedArg(value)

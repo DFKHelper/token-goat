@@ -24,7 +24,7 @@ import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { walkProject } from './baseline.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
 import { formatCommandError, formatGitFailure } from './command_error.js'
-import { echoedValue } from './hint_suggestion_guard.js'
+import { couldNotRead, echoedValue } from './hint_suggestion_guard.js'
 
 export interface ConflictsCliOptions {
   path?: string
@@ -43,7 +43,7 @@ export function runConflicts(opts: ConflictsCliOptions): number {
     try {
       stat = fs.statSync(abs)
     } catch {
-      emitErr(formatCommandError(`Could not read: ${opts.path}`))
+      emitErr(formatCommandError(couldNotRead(opts.path)))
       return 1
     }
     files = stat.isDirectory() ? walkProject(abs).files : [abs]

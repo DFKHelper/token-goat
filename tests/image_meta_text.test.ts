@@ -133,7 +133,7 @@ describe('runImageMeta', () => {
   })
 
   it('rejects a nonexistent file with the same wording as the pdf family', async () => {
-    await expect(runImageMeta(path.join(TMP, 'nope.png'))).rejects.toThrow(`Could not read: ${path.join(TMP, 'nope.png')}`)
+    await expect(runImageMeta(path.join(TMP, 'nope.png'))).rejects.toThrow(`Could not read: "${path.join(TMP, 'nope.png')}"`)
   })
 
   it('rejects a non-image file clearly instead of producing garbage', async () => {
@@ -196,7 +196,7 @@ describe('runImageMeta', () => {
 
 describe('runImageText', () => {
   it('rejects a nonexistent file with the same wording as the pdf family', async () => {
-    await expect(runImageText(path.join(TMP, 'nope.png'))).rejects.toThrow(`Could not read: ${path.join(TMP, 'nope.png')}`)
+    await expect(runImageText(path.join(TMP, 'nope.png'))).rejects.toThrow(`Could not read: "${path.join(TMP, 'nope.png')}"`)
   })
 
   it('rejects a non-image file clearly instead of producing garbage', async () => {

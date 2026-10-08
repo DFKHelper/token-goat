@@ -53,7 +53,7 @@ describe('a directory named as a document reads as unreadable', () => {
     const code = await runCli(['section', p, '--list'])
 
     expect(code).toBe(1)
-    expect(stderr.join('')).toContain(`Could not read: ${p}`)
+    expect(stderr.join('')).toContain(`Could not read: "${p}"`)
     expect(stderr.join('')).not.toContain('No sections found')
   })
 
@@ -65,7 +65,7 @@ describe('a directory named as a document reads as unreadable', () => {
       const code = await runCli([cmd, p])
 
       expect(code).toBe(1)
-      expect(stderr.join('')).toContain(`Could not read: ${p}`)
+      expect(stderr.join('')).toContain(`Could not read: "${p}"`)
       expect(stderr.join('')).not.toContain('EISDIR')
     })
   }

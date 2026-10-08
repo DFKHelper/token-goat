@@ -48,7 +48,7 @@ import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { fenceFileFieldIfMatched, fenceFileText, fenceJsonStrings } from './untrusted_fence.js'
 import { ZipInputTooLargeError, ZipOutputTooLargeError } from './zip_bounds.js'
 import { CliError, formatCommandError } from './command_error.js'
-import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
+import { couldNotRead, echoedValue, quotedArg } from './hint_suggestion_guard.js'
 
 export interface ZipListCliOptions {
   file: string
@@ -59,7 +59,7 @@ const BINARY_ENTRY_ELIDED = '[binary content elided by token-goat]'
 
 function archiveReadFailure(err: unknown, file: string): string {
   if (err instanceof ArchiveDependencyMissingError || err instanceof ZipOutputTooLargeError) return err.message
-  return `Failed to read archive (not a valid zip-format file): ${file}`
+  return `Failed to read archive (not a valid zip-format file): ${echoedValue(file)}`
 }
 
 export async function runZipList(opts: ZipListCliOptions): Promise<number> {
@@ -74,7 +74,7 @@ export async function runZipList(opts: ZipListCliOptions): Promise<number> {
     throw err
   }
   if (data === null) {
-    emitErr(formatCommandError(`Could not read: ${opts.file}`))
+    emitErr(formatCommandError(couldNotRead(opts.file)))
     return 1
   }
 
@@ -117,7 +117,7 @@ export async function runZipRead(opts: ZipReadCliOptions): Promise<number> {
     throw err
   }
   if (data === null) {
-    emitErr(formatCommandError(`Could not read: ${opts.file}`))
+    emitErr(formatCommandError(couldNotRead(opts.file)))
     return 1
   }
 
@@ -276,7 +276,7 @@ export interface CoverageReportGapsCliOptions {
 export function runCoverageReportGaps(opts: CoverageReportGapsCliOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(formatCommandError(`Could not read: ${opts.file}`))
+    emitErr(formatCommandError(couldNotRead(opts.file)))
     return 1
   }
 
@@ -373,7 +373,7 @@ export interface ConfigGetOptions {
 export function runConfigGet(opts: ConfigGetOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(formatCommandError(`Could not read: ${echoedValue(opts.file)}`))
+    emitErr(formatCommandError(couldNotRead(opts.file)))
     return 1
   }
 
@@ -614,7 +614,7 @@ export function runExports(opts: ImportsExportsOptions): number {
   const ext = path.extname(opts.file).toLowerCase()
   const text = readFileText(diskPath)
   if (text === null && symbols.length === 0) {
-    emitErr(formatCommandError(`Could not read: ${opts.file}`))
+    emitErr(formatCommandError(couldNotRead(opts.file)))
     return 1
   }
   if (text !== null) {
@@ -677,7 +677,7 @@ export function runImports(opts: ImportsExportsOptions): number {
   const diskPath = resolveAgainstProjectRoot(opts.file, opts.projectRoot)
   const text = readFileText(diskPath)
   if (text === null) {
-    emitErr(formatCommandError(`Could not read: ${opts.file}`))
+    emitErr(formatCommandError(couldNotRead(opts.file)))
     return 1
   }
   const imports = extractImports(text, importsExtensionFor(opts.file))
@@ -1042,7 +1042,7 @@ export function runListSections(opts: ListSectionsOptions): number {
 
   if (sections.length === 0) {
     if (!fileExists(opts.file)) {
-      emitErr(formatCommandError(`Could not read: ${opts.file}`))
+      emitErr(formatCommandError(couldNotRead(opts.file)))
       return 1
     }
     emitErr(formatCommandError(`No sections found in ${echoedValue(opts.file)}`))

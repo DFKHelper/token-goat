@@ -725,22 +725,24 @@ const BARE_NOT_FOUND = new RegExp('not found: ' + OPEN + '(\\d+)' + CLOSE, 'g')
 /** The helpers that escape an echoed value and quote it. */
 const ECHO_HELPERS = /^(?:echoedValue|displaySafeText|fileSubject|quotedArg)\(/
 
+/** Each `file:line expression` whose value follows the text `re` matches with no helper escaping and quoting it, `re` capturing the stand-in's index. */
+function bareEchoes(re: RegExp, templates: (standIn: StandIn) => Array<{ file: string; line: number; text: string }>): string[] {
+  const exprs: string[] = []
+  const mark = (expr: ts.Expression): string => {
+    exprs.push(expr.getText().replace(/\s+/g, ' '))
+    return OPEN + String(exprs.length - 1) + CLOSE
+  }
+  return [...new Set(templates(mark).flatMap((t) => [...t.text.matchAll(re)].map((m) => ({ where: t.file + ':' + t.line, expr: exprs[Number(m[1])] ?? '' })).filter((h) => !ECHO_HELPERS.test(h.expr)).map((h) => h.where + ' ' + h.expr)))]
+}
+
 /** The values that stay bare after `not found:`, each keyed `file expression`. */
 const NOT_FOUND_BARE: ReadonlyArray<{ key: string; reason: string }> = [
   { key: 'cli_waste.ts resolvedPath', reason: 'the --json error field, which displaySafeJson escapes as a leaf string beside the echoedValue text for the terminal' },
   { key: 'cli_waste.ts eventsPath', reason: 'the --json error field, which displaySafeJson escapes as a leaf string beside the echoedValue text for the terminal' },
-  { key: 'ooxml_extract.ts filePath', reason: 'ooxml_extract.ts is a parser fingerprint source (scripts/parser-fingerprint.mjs): rewording its message would re-extract every indexed Office document, so the path stays as the caller passed it' },
 ]
 
 describe('every value named right after "not found:" in src', () => {
-  const scan = (templates: (standIn: StandIn) => Array<{ file: string; line: number; text: string }>): string[] => {
-    const exprs: string[] = []
-    const mark = (expr: ts.Expression): string => {
-      exprs.push(expr.getText().replace(/\s+/g, ' '))
-      return OPEN + String(exprs.length - 1) + CLOSE
-    }
-    return [...new Set(templates(mark).flatMap((t) => [...t.text.matchAll(BARE_NOT_FOUND)].map((m) => ({ where: t.file + ':' + t.line, expr: exprs[Number(m[1])] ?? '' })).filter((h) => !ECHO_HELPERS.test(h.expr)).map((h) => h.where + ' ' + h.expr)))]
-  }
+  const scan = (templates: (standIn: StandIn) => Array<{ file: string; line: number; text: string }>): string[] => bareEchoes(BARE_NOT_FOUND, templates)
   const files = [...new Set(stringTemplates(PLAIN, 'not found: ').filter((t) => t.text.includes('not found: ' + PLAIN)).map((t) => t.file))]
 
   it('is scanned', () => {
@@ -764,5 +766,45 @@ describe('every value named right after "not found:" in src', () => {
     expect(virtual('const s = `Symbol not found: ${echoedValue(opts.symbol)}${hint}`')).toEqual([])
     expect(virtual('const s = `${what} not found: ${displaySafeText(path)}`')).toEqual([])
     expect(virtual('const s = `Symbol ${name} not found: try again`')).toEqual([])
+  })
+})
+
+/** The first value interpolated into a read failure's sentence (before or after its colon), with no quote mark of any kind: `Could not read: my file.json` leaves the reader to guess where the name ends, and a path's control characters reach the terminal as written. */
+const BARE_READ_FAILURE = new RegExp('(?:Could not read|Cannot read|Failed to read)[^:]*?(?:: )?' + OPEN + '(\\d+)' + CLOSE, 'g')
+
+/** The read failures whose first interpolated value is not a path, each keyed `file expression`. */
+const READ_FAILURE_BARE: ReadonlyArray<{ key: string; reason: string }> = [
+  { key: 'read_structured_data.ts e.message', reason: 'the reason stdin could not be read, an operating-system message and not a path' },
+  { key: 'read_structured_data.ts String(e)', reason: 'the reason stdin could not be read, an operating-system message and not a path' },
+]
+
+describe('every value named in a "Could not read" style failure in src', () => {
+  const needles = ['Could not read', 'Cannot read', 'Failed to read']
+  const scan = (templates: (standIn: StandIn, needle: string) => Array<{ file: string; line: number; text: string }>): string[] => needles.flatMap((needle) => bareEchoes(BARE_READ_FAILURE, (standIn) => templates(standIn, needle)))
+  const found = scan((standIn, needle) => stringTemplates(standIn, needle)).map((h) => ({ key: h.replace(/:\d+ /, ' '), where: h }))
+
+  it('is scanned', () => {
+    const files = [...new Set(needles.flatMap((needle) => stringTemplates(PLAIN, needle).filter((t) => t.text.includes(needle)).map((t) => t.file)))]
+    pinnedPopulation({ what: 'src files with a read failure sentence', items: files, floor: 3, mustInclude: ['hint_suggestion_guard.ts', 'read_structured_data.ts', 'read_inspect.ts'] })
+  })
+
+  it('is echoed through echoedValue', () => {
+    expect(found.filter((h) => !READ_FAILURE_BARE.some((e) => e.key === h.key)).map((h) => h.where)).toEqual([])
+  })
+
+  it('exempts no value that is no longer named bare', () => {
+    expect(READ_FAILURE_BARE.filter((e) => !found.some((h) => h.key === e.key)).map((e) => e.key)).toEqual([])
+  })
+
+  // HAND-DERIVED virtual sources: the shapes src carried (read_inspect.ts `Could not read: ${opts.file}`, read_inspect.ts `Failed to read archive (not a valid zip-format file): ${file}`) beside the echoedValue form, a value not named after the colon, and a wording that is not a read failure.
+  it('flags a bare value after a read failure and passes an echoed one', () => {
+    const virtual = (source: string): string[] => scan((standIn, needle) => templatesIn('virtual.ts', source, standIn, needle)).map((f) => f.replace('virtual.ts:1 ', ''))
+    expect(virtual('const s = `Could not read: ${opts.file}`')).toEqual(['opts.file'])
+    expect(virtual('const s = `Failed to read archive (not a valid zip-format file): ${file}`')).toEqual(['file'])
+    expect(virtual('const s = `Cannot read: ${path}`')).toEqual(['path'])
+    expect(virtual('const s = `Could not read: ${echoedValue(opts.file)}`')).toEqual([])
+    expect(virtual('const s = `Could not read: ${displaySafeText(opts.file)}`')).toEqual([])
+    expect(virtual('const s = `Could not read the file twice`')).toEqual([])
+    expect(virtual('const s = `Did not read: ${file}`')).toEqual([])
   })
 })
