@@ -172,6 +172,18 @@ describe('formatDistanceReport', () => {
     expect(text).not.toMatch(/consider|suggest|recommend/i)
   })
 
+  it('words one recorded query in the singular and none as "None"', () => {
+    const thresholds = { weakDistance: 0.85, maxDistance: 1.2 }
+    const one = formatDistanceReport(summarizeDistances([{ closest_distance: 0.5 }], 0.85), thresholds)
+    expect(one).toContain('): 1 query\n')
+    expect(one).not.toContain('1 queries')
+    expect(one).toContain('Only 1 recorded')
+    const none = formatDistanceReport(summarizeDistances([], 0.85), thresholds)
+    expect(none).toContain('): 0 queries\n')
+    expect(none).toContain('None recorded')
+    expect(none).not.toContain('Only 0')
+  })
+
   it('prints the percentiles, the band table and both thresholds from 20 queries up', () => {
     const many = Array.from({ length: 20 }, (_, i) => ({ closest_distance: 0.5 + i * 0.01 }))
     const text = formatDistanceReport(summarizeDistances(many, 0.85), { weakDistance: 0.85, maxDistance: 1.2 })

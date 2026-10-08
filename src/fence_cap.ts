@@ -1,6 +1,7 @@
 import { loadConfig } from './config.js'
 import { scanForInjectionPatterns, UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { estimateTokens, trimToBudget } from './overflow_guard.js'
+import { guardDivisor } from './token_estimate.js'
 import { redactSecrets } from './secret_redact.js'
 import { fenceUntrusted, fenceWithMatches } from './untrusted_fence.js'
 
@@ -45,4 +46,21 @@ export function guardRedactAndFence(text: string, command: string, tag: string):
 /** {@link guardRedactAndFence} under the file tag, for a document, a spreadsheet, an archive member or a database row. */
 export function guardAndFenceFileText(text: string, command: string): string {
   return guardRedactAndFence(text, command, UNTRUSTED_FILE_TAG)
+}
+
+/** `obj` with its `key` list held to the cap by dropping trailing whole items, so a `--json` listing stays valid JSON, each item measured as the `indent` spaces the caller serializes with would print it; `truncated` and `totalCount` are added only when something was dropped, which leaves the shape of an uncapped result unchanged. */
+export function capListField<K extends string, T extends Record<K, unknown[]>>(obj: T, key: K, indent = 0): T & { truncated?: true; totalCount?: number } {
+  const cfg = loadConfig()
+  if (!cfg.overflow_guard.enabled) return obj
+  const items = obj[key]
+  const charBudget = Math.max(1, cfg.overflow_guard.max_tokens * guardDivisor())
+  let kept = 0
+  let used = 0
+  for (const item of items) {
+    const cost = JSON.stringify(item, null, indent).length + 2
+    if (kept > 0 && used + cost > charBudget) break
+    kept++
+    used += cost
+  }
+  return kept < items.length ? { ...obj, [key]: items.slice(0, kept), truncated: true, totalCount: items.length } : obj
 }

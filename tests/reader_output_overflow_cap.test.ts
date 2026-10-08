@@ -87,6 +87,12 @@ beforeAll(async () => {
   for (let i = 0; i < COUNT; i++) db.exec(`CREATE TABLE table_with_a_long_name_${i} (id INTEGER PRIMARY KEY, value_${i} TEXT)`)
   db.exec(`INSERT INTO notes (body) VALUES ${Array.from({ length: COUNT }, (_, i) => `('${WIDE}${i}')`).join(',')}`)
   db.close()
+  const wideDb = new Database(join(root, 'wide.db'))
+  wideDb.exec(`CREATE TABLE wide_table (${Array.from({ length: COUNT }, (_, i) => `column_with_a_long_name_${i} TEXT`).join(', ')})`)
+  wideDb.close()
+  const smallDb = new Database(join(root, 'small.db'))
+  smallDb.exec('CREATE TABLE one (id INTEGER PRIMARY KEY)')
+  smallDb.close()
 
   const book = new ExcelJS.Workbook()
   for (let s = 0; s < 60; s++) book.addWorksheet(`sheet_with_a_long_name_${s}`.slice(0, 31))
@@ -177,4 +183,46 @@ describe('readers hold their output to the overflow cap', () => {
       expect(text.indexOf(CLOSE_TAG)).toBeLessThan(text.indexOf(MARKER))
     })
   }
+})
+
+describe('database listings in --json hold the cap and stay valid JSON', () => {
+  // 400 tables plus `notes`, each far past the 1000-token floor together; HAND-DERIVED: the expected total is the 401 tables the beforeAll creates.
+  const TOTAL = COUNT + 1
+
+  for (const command of ['sqlite-schema', 'describe']) {
+    it(`${command} --json drops trailing tables and says so`, async () => {
+      const text = await printed([command, join(root, 'big.db'), '--json'])
+      expect(text.length).toBeLessThan(CEILING_CHARS)
+      const parsed = JSON.parse(text) as { tables: unknown[]; truncated?: boolean; totalCount?: number }
+      expect(parsed.truncated).toBe(true)
+      expect(parsed.totalCount).toBe(TOTAL)
+      expect(parsed.tables.length).toBeGreaterThan(0)
+      expect(parsed.tables.length).toBeLessThan(TOTAL)
+    })
+  }
+
+  it('sqlite-tables --json stays a bare array and names the cut on stderr', async () => {
+    const text = await printed(['sqlite-tables', join(root, 'big.db'), '--json'])
+    expect(text.length).toBeLessThan(CEILING_CHARS)
+    const parsed = JSON.parse(text) as unknown[]
+    expect(Array.isArray(parsed)).toBe(true)
+    expect(parsed.length).toBeLessThan(TOTAL)
+    expect(stderr.join('')).toContain(`of ${TOTAL} tables`)
+  })
+
+  it('describe <table> --json caps a table with hundreds of columns', async () => {
+    const text = await printed(['describe', join(root, 'wide.db'), 'wide_table', '--json'])
+    expect(text.length).toBeLessThan(CEILING_CHARS)
+    const parsed = JSON.parse(text) as { columns: unknown[]; truncated?: boolean; totalCount?: number }
+    expect(parsed.truncated).toBe(true)
+    expect(parsed.totalCount).toBe(COUNT)
+    expect(parsed.columns.length).toBeLessThan(COUNT)
+  })
+
+  it('leaves a small schema exactly as before', async () => {
+    const text = await printed(['describe', join(root, 'small.db'), '--json'])
+    const parsed = JSON.parse(text) as { tables: unknown[]; truncated?: boolean }
+    expect(parsed.tables).toHaveLength(1)
+    expect('truncated' in parsed).toBe(false)
+  })
 })

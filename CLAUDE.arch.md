@@ -442,6 +442,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/delivering_deny.ts`](src/delivering_deny.ts) | The wording that marks a token-goat deny as the delivery of content rather than a refusal. |
 | [`src/delivery_cap.ts`](src/delivery_cap.ts) | Exports: `CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES`, `bashOutputCapBytes`, `clipToDeliveryCap`, `deliveredOutputBytes` |
 | [`src/dep_docs.ts`](src/dep_docs.ts) | `token-goat dep-docs <package>` — surgical read for an installed npm dependency. |
+| [`src/describe_sqlite.ts`](src/describe_sqlite.ts) | Exports: `describeSqliteFile` |
 | [`src/dirty_queue.ts`](src/dirty_queue.ts) | `queue/dirty.txt` itself: `dirtyQueuePathFor()`, the line codec, `parseDirtyQueueLines()` and `getDirtyPathsFor()` for readers, and `appendDirtyQueuePaths()`, the one append every producer goes through |
 | [`src/doc_comment.ts`](src/doc_comment.ts) | Shared doc-comment recovery, used by both the tree-sitter parser (`parser.ts`) and the regex-based language adapters (`languages/common.ts`). |
 | [`src/doc_compact.ts`](src/doc_compact.ts) | Stable-doc compact serving for large reference docs. |

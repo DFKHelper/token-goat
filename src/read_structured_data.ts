@@ -22,7 +22,8 @@ import {
   operationLabel,
   parseOpenApiSpec,
 } from './openapi_query.js'
-import { emitGuarded, guardAndFenceFileText, guardJsonRows, guardRedactAndFence, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
+import { emitGuarded, guardJsonRows, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
+import { guardAndFenceFileText, guardRedactAndFence } from './fence_cap.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
 import { CliError, formatCommandError } from './command_error.js'
 import { emit, emitErr } from './emit.js'

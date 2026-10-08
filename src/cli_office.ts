@@ -9,13 +9,13 @@ import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { displaySafeJson, displaySafePath, displaySafeText } from './paths.js'
 import { pptxNotesText, pptxOutline, pptxSlideText, pptxTextGrep } from './pptx_extract.js'
 import {
-  guardAndFenceFileText,
   guardJsonRows,
   runPdfExtractText,
   runPdfLocate,
   runPdfMeta,
   runPdfOutline,
 } from './read_commands.js'
+import { guardAndFenceFileText } from './fence_cap.js'
 import { redactSecrets } from './secret_redact.js'
 import { parseShareUrl, resolveLocalPath } from './sharepoint_resolve.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'

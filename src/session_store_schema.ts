@@ -5,7 +5,6 @@ import { resolve } from 'node:path'
 import type { HookEvent } from './hook_registry.js'
 import { getToolName } from './hooks_common.js'
 import { displaySafeJson } from './paths.js'
-import { fenceFileFieldIfMatched, fenceJsonStrings } from './untrusted_fence.js'
 import { CliError, formatCommandError, formatFailedResultText } from './command_error.js'
 import { echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 
@@ -400,41 +399,8 @@ export async function describeTarget(
   // 2. Check if target is a SQLite file
   const absPath = resolve(process.cwd(), target)
   if (existsSync(absPath)) {
-    try {
-      const { isSqliteFile, getSqliteSchema, formatSqliteSchema } = await import('./sqlite_query.js')
-      if (isSqliteFile(absPath)) {
-        const schema = getSqliteSchema(absPath)
-        if (table) {
-          const found = schema.tables.find((t) => t.name.toLowerCase() === table.toLowerCase())
-          if (!found) {
-            const avail = schema.tables.map((t) => t.name).join(', ')
-            return { exitCode: 1, text: `Table ${echoedValue(table)} not found in SQLite database ${target}. Available tables: ${avail}` }
-          }
-          if (opts?.json === true) {
-            return { exitCode: 0, text: displaySafeJson(fenceJsonStrings(found, fenceFileFieldIfMatched)) }
-          }
-          const lines = [
-            `# SQLite Table: ${found.name} (${found.kind}) in ${target}`,
-            `Row Count: ${found.rowCount ?? 'unknown'}`,
-            '',
-            '| Column | Type | Nullable | Default | PK |',
-            '| :--- | :--- | :--- | :--- | :--- |',
-          ]
-          for (const col of found.columns) {
-            lines.push(`| \`${col.name}\` | \`${col.type}\` | ${col.notNull ? 'NO' : 'YES'} | ${col.defaultValue ?? 'NULL'} | ${col.primaryKey ? 'YES' : 'NO'} |`)
-          }
-          // A virtual table whose module is not loaded has no columns to list: the CREATE statement is its schema.
-          if (found.createSql !== undefined) lines.push('', `Module ${found.module ?? '?'} is not loaded here, so columns are not available. Declared as:`, found.createSql)
-          return { exitCode: 0, text: (await import('./fence_cap.js')).guardAndFenceFileText(lines.join('\n'), 'describe') }
-        }
-        if (opts?.json === true) {
-          return { exitCode: 0, text: displaySafeJson(fenceJsonStrings(schema, fenceFileFieldIfMatched)) }
-        }
-        return { exitCode: 0, text: (await import('./fence_cap.js')).guardAndFenceFileText(formatSqliteSchema(schema), 'describe') }
-      }
-    } catch (err: unknown) {
-      return { exitCode: 1, text: `Error reading SQLite database ${target}: ${err instanceof Error ? err.message : String(err)}` }
-    }
+    const sqliteResult = await (await import('./describe_sqlite.js')).describeSqliteFile(target, absPath, table, opts?.json === true)
+    if (sqliteResult !== undefined) return sqliteResult
   }
 
   // Target not recognized as file or table

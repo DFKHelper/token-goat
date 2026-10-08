@@ -3,6 +3,7 @@
 import { loadConfig } from './config.js'
 import { projectHash, resolveProjectRoot } from './project.js'
 import { getGlobalDb, withTelemetryWriteDb } from './stats.js'
+import { countNoun } from './util.js'
 
 /** Below this many recorded queries the percentiles are noise, so the report says so instead of suggesting a value. */
 export const MIN_QUERIES_FOR_ADVICE = 20
@@ -56,9 +57,9 @@ export function summarizeDistances(rows: readonly SemanticQueryRow[], weakDistan
 }
 
 export function formatDistanceReport(summary: DistanceSummary, thresholds: { weakDistance: number; maxDistance: number }, scope = 'this project'): string {
-  const lines = [`Recorded semantic queries (${scope}): ${summary.total} queries`, `Current semantic.weak_distance: ${thresholds.weakDistance}   semantic.max_distance: ${thresholds.maxDistance}`]
+  const lines = [`Recorded semantic queries (${scope}): ${countNoun(summary.total, 'query', 'queries')}`, `Current semantic.weak_distance: ${thresholds.weakDistance}   semantic.max_distance: ${thresholds.maxDistance}`]
   if (summary.total < MIN_QUERIES_FOR_ADVICE) {
-    lines.push(`Only ${summary.total} recorded, which is fewer than ${MIN_QUERIES_FOR_ADVICE}: too few to judge a threshold from. Run more semantic queries and check again.`)
+    lines.push(`${summary.total === 0 ? 'None' : `Only ${summary.total}`} recorded, which is fewer than ${MIN_QUERIES_FOR_ADVICE}: too few to judge a threshold from. Run more semantic queries and check again.`)
     return lines.join('\n')
   }
   if (summary.percentiles !== null) {

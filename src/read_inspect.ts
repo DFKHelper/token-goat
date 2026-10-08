@@ -23,7 +23,8 @@ import { resolveSpecPath } from './spec_path.js'
 import { parseJsonOrJsonc } from './jsonc_text.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { parseYamlDocument, parseYamlDocumentAsWritten } from './read_structured_data.js'
-import { DELETED_TAG, emitGuarded, fileExists, fileIsGone, guardAndFenceFileText, guardJsonRows, healStaleIndex, isValidUtf8, readFileBytes, readFileText, recordReadStat, resolveAgainstProjectRoot, sinkGoneRows, sumFileSizes, healStaleResultFiles, warnIfFilesStale } from './read_commands.js'
+import { DELETED_TAG, emitGuarded, fileExists, fileIsGone, guardJsonRows, healStaleIndex, isValidUtf8, readFileBytes, readFileText, recordReadStat, resolveAgainstProjectRoot, sinkGoneRows, sumFileSizes, healStaleResultFiles, warnIfFilesStale } from './read_commands.js'
+import { capListField, guardAndFenceFileText } from './fence_cap.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
 import { emit, emitErr } from './emit.js'
 import { fileConfinementRefusal } from './read_spec.js'
@@ -173,7 +174,7 @@ export function runSqliteSchema(opts: SqliteSchemaCliOptions): number {
     const schema = getSqliteSchema(opts.file)
     const fullSourceBytes = sumFileSizes([opts.file])
     if (opts.json === true) {
-      const jsonText = displaySafeJson(fenceJsonStrings(schema, fenceFileFieldIfMatched), 0)
+      const jsonText = displaySafeJson(fenceJsonStrings(capListField(schema, 'tables'), fenceFileFieldIfMatched), 0)
       emit(jsonText)
       recordReadStat('sqlite_schema', fullSourceBytes, jsonText, opts.file)
     } else {
@@ -198,7 +199,9 @@ export function runSqliteTables(opts: SqliteTablesCliOptions): number {
     const tables = getSqliteTables(opts.file)
     const fullSourceBytes = sumFileSizes([opts.file])
     if (opts.json === true) {
-      const jsonText = displaySafeJson(fenceJsonStrings(tables, fenceFileFieldIfMatched), 0)
+      const cappedTables = guardJsonRows(tables)
+      if (cappedTables.truncated) emitErr(`token-goat: sqlite-tables --json shows ${cappedTables.items.length} of ${cappedTables.totalCount} tables, the most that fit overflow_guard.max_tokens; list fewer with sqlite-query.`)
+      const jsonText = displaySafeJson(fenceJsonStrings(cappedTables.items, fenceFileFieldIfMatched), 0)
       emit(jsonText)
       recordReadStat('sqlite_tables', fullSourceBytes, jsonText, opts.file)
     } else {
