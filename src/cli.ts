@@ -268,8 +268,6 @@ export async function cmdIndex(
   pathArg?: string,
   opts: { walk?: boolean; dbPath?: string; force?: boolean; forceWalk?: boolean; embed?: boolean; embedBudgetMs?: number } = {},
 ): Promise<void> {
-  // A bulk walk is long-running background work even though the user typed it: they start it and go back to their editor. The daemon lowers its own priority for the same reason; doing it here too is what makes "both indexing paths" true rather than only the invisible one.
-  applyIndexingPriority()
   // A typed root can be spelled at a drive mount (`/mnt/c/x` or `/c/x` reaching a Windows process unconverted, `C:\x` under WSL). hostPathOfTypedPath opens it where this host keeps it; used as typed, the mount named a folder that does not exist here and the run reported `Indexed 0 files` as a success.
   const root = pathArg === undefined ? process.cwd() : hostPathOfTypedPath(pathArg)
   if (!fs.existsSync(root)) throw new CliError(`${echoedValue(pathArg ?? root)} does not exist.`)
@@ -294,6 +292,8 @@ export async function cmdIndex(
       )
     }
   }
+  // A bulk walk is long-running background work even though the user typed it: they start it and go back to their editor. The daemon lowers its own priority for the same reason; doing it here too is what makes "both indexing paths" true rather than only the invisible one. It happens only now, after the file list exists, and not on entry: `git ls-files` is a child that inherits the priority of the process that spawns it, and it does nothing but wait on the disk, so demoting first made it queue behind every busy process on the machine (1.6 s became 11.3 s under load, minutes on a real install) without sparing the user any CPU. The parse and embed work below is what the demotion is for.
+  applyIndexingPriority()
   const blockedRoots = loadConfig().worker.blocked_roots
   const ixCfg = loadConfig().indexing
   // The root whose segments indexing.skip_dirs is tested against: a project kept under an ancestor named `build` must not read as vendored. Spelled like the keys it is compared with.
