@@ -129,6 +129,8 @@ function argsFor(name: string): Record<string, unknown> | undefined {
   return table[name]
 }
 
+const TOOL_NAMES = ['symbol', 'read', 'section', 'skeleton', 'outline', 'semantic', 'index_status', 'refs', 'brief', 'map', 'changed', 'grep', 'imports', 'exports', 'compress_text', 'retrieve_text', 'handoff_create', 'handoff_resolve'] as const
+
 describe('MCP tool annotations match tool behavior', () => {
   it('advertises a real, uniquely named tool population, so the checks below measure something', async () => {
     // Calibration, mirroring tests/mcp_tool_allowlist.test.ts: if the unfiltered server advertised one tool or none, every assertion below would pass without cutting or checking anything real.
@@ -147,33 +149,36 @@ describe('MCP tool annotations match tool behavior', () => {
     expect(missing, `these tools advertise no readOnlyHint: ${missing.join(', ')}`).toEqual([])
   })
 
-  it('writes to the content store from exactly the tools that declare readOnlyHint: false', async () => {
+  it('has a fixture for exactly the tools the server advertises, so the per-tool cases below cover every one', async () => {
     const client = await buildClient()
     const listed = await client.listTools()
-    const names = listed.tools.map((t) => t.name)
-    const annotationsByName = new Map(listed.tools.map((t) => [t.name, t.annotations]))
-    const declaredReadOnly = names.filter((n) => annotationsByName.get(n)?.['readOnlyHint'] === true)
-    const declaredWriting = names.filter((n) => annotationsByName.get(n)?.['readOnlyHint'] === false)
-
-    // Discover, per tool, whether calling it actually changed the content store -- independent of what its annotation claims, so this is a discriminating oracle rather than the annotation grouping testing itself. A tool call returning an error result is fine here; only a write is being measured.
-    const wroteToContentStore: string[] = []
-    for (const name of names) {
-      const args = argsFor(name)
-      if (args === undefined) {
-        throw new Error(`no fixture arguments for tool "${name}" in argsFor(); add one so this guard keeps exercising every registered tool`)
-      }
-      const before = snapshotContentDir()
-      await client.callTool({ name, arguments: args })
-      const after = snapshotContentDir()
-      if (before.length !== after.length || before.some((p, i) => p !== after[i])) wroteToContentStore.push(name)
+    const advertised = listed.tools.map((t) => t.name).sort()
+    expect(advertised, 'tools/list and the TOOL_NAMES fixture list differ: add or remove the fixture entry').toEqual([...TOOL_NAMES].sort())
+    for (const name of TOOL_NAMES) {
+      expect(argsFor(name), `no fixture arguments for tool "${name}" in argsFor(); add one so this guard keeps exercising every registered tool`).toBeDefined()
     }
+    // Calibration: the oracle below only discriminates if some tool is declared a writer and some a reader.
+    const declaredWriting = listed.tools.filter((t) => t.annotations?.['readOnlyHint'] === false).map((t) => t.name)
+    expect(declaredWriting, 'the tools declared readOnlyHint: false').toEqual(expect.arrayContaining(['compress_text', 'handoff_create']))
+    expect(declaredWriting.length).toBeLessThan(advertised.length)
+  })
 
-    // The two halves this task calls out explicitly: the read-only-annotated tools, called, produced no write; and the writing tools did.
-    const readOnlyThatWrote = declaredReadOnly.filter((n) => wroteToContentStore.includes(n))
-    expect(readOnlyThatWrote, `these readOnlyHint:true tools wrote to the content store: ${readOnlyThatWrote.join(', ')}`).toEqual([])
-    expect(wroteToContentStore.length, 'no tool call changed the content store at all -- the snapshot is not a discriminating oracle here').toBeGreaterThan(0)
+  // One case per tool, each with its own server, project and store: the calls used to run in series inside one case, so the slowest (`changed` shells out to git several times) and the sum of all eighteen shared a single 60 s budget that a loaded machine exhausted.
+  it.each(TOOL_NAMES)('%s writes to the content store exactly when it declares readOnlyHint: false', async (name) => {
+    const client = await buildClient()
+    const listed = await client.listTools()
+    const declared = listed.tools.find((t) => t.name === name)?.annotations?.['readOnlyHint']
+    expect(declared === true || declared === false, `tool "${name}" advertises no readOnlyHint`).toBe(true)
 
-    // check 4: the observed writers are exactly the declared writers, by set equality against behavior -- not against a hardcoded list of names.
-    expect([...wroteToContentStore].sort()).toEqual([...declaredWriting].sort())
+    // handoff_resolve re-stores a handoff that has to exist first, so it is created outside the measured window, as the old serial order did.
+    if (name === 'handoff_resolve') await client.callTool({ name: 'handoff_create', arguments: argsFor('handoff_create') ?? {} })
+
+    // Discover whether calling the tool actually changed the content store, independent of what its annotation claims, so this is a discriminating oracle rather than the annotation testing itself. A tool call returning an error result is fine here; only a write is being measured.
+    const before = snapshotContentDir()
+    await client.callTool({ name, arguments: argsFor(name) ?? {} })
+    const after = snapshotContentDir()
+    const wrote = before.length !== after.length || before.some((p, i) => p !== after[i])
+
+    expect(wrote, wrote ? `"${name}" wrote to the content store but declares readOnlyHint: ${String(declared)}` : `"${name}" declares readOnlyHint: false but wrote nothing to the content store`).toBe(declared === false)
   })
 })
