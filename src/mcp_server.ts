@@ -939,6 +939,7 @@ export async function createMcpServer(): Promise<McpServer> {
           ...(symbolMode === true ? { symbolMode: true } : {}),
           ...(json === true ? { json: true } : {}),
           projectRoot: resolveToolRoot(projectRoot),
+          projectRootResolved: true,
         }),
       )
     },

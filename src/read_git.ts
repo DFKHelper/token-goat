@@ -285,6 +285,8 @@ export interface ChangedOptions {
   symbolMode?: boolean
   json?: boolean
   projectRoot?: string
+  /** The caller already ran `projectRoot` through resolveProjectRoot (the MCP tool does, to check it against the allowlist), so `changed` does not resolve it again; a CLI caller leaves this off and gets its root resolved here. */
+  projectRootResolved?: boolean
   grep?: string
   excludeTests?: boolean
 }
@@ -367,7 +369,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
   }
 
   // Resolved here, after every early return, so a failed diff or an empty change list never pays the `git rev-parse --show-toplevel` spawn.
-  const projectRoot = resolveProjectRoot({ project: cwd })
+  const projectRoot = opts.projectRootResolved === true ? cwd : resolveProjectRoot({ project: cwd })
   if (opts.symbolMode === true) {
     let hunksByFile = new Map<string, Array<{ start: number; end: number }>>()
     let hunklessFiles = new Set<string>()

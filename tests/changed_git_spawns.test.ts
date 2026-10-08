@@ -86,7 +86,7 @@ function cliChanged(dir: string, name: string, extra: Record<string, string> = {
   return { stderr: res.stderr, git: spawned(log) }
 }
 
-async function mcpChanged(dir: string, name: string): Promise<{ text: string; git: string[][] }> {
+async function mcpChanged(dir: string, name: string, args: Record<string, unknown> = {}): Promise<{ text: string; git: string[][] }> {
   const { env, log } = envFor(name)
   const child = spawn(process.execPath, [bundle, 'mcp-serve'], { cwd: dir, env, stdio: ['pipe', 'pipe', 'ignore'] })
   child.stdin.on('error', () => undefined)
@@ -115,7 +115,7 @@ async function mcpChanged(dir: string, name: string): Promise<{ text: string; gi
   try {
     await send(1, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'spawn-count', version: '0' } })
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`)
-    const reply = await send(2, 'tools/call', { name: 'changed', arguments: { projectRoot: dir } })
+    const reply = await send(2, 'tools/call', { name: 'changed', arguments: { projectRoot: dir, ...args } })
     return { text: reply.result?.content?.[0]?.text ?? '', git: spawned(log) }
   } finally {
     child.kill()
@@ -148,5 +148,21 @@ describe('changed on a repo shorter than HEAD~5: git spawn counts through the bu
     const { text, git: rows } = await mcpChanged(linear, 'mcp-linear')
     expect(text).toContain('Try: token-goat changed --since HEAD~2')
     expect(subcommands(rows)).toEqual(['rev-parse', 'diff', 'rev-list', 'cat-file'])
+  }, 120_000)
+
+  // CAPTURE: the text and the (before) five-spawn sequence come from the built bundle run on this repo shape before the change: `{"content":[{"type":"text","text":"a3.ts\n"}],"isError":false}` with rev-parse, rev-parse, diff, diff, diff.
+  it('MCP tool, a ref that exists: the root the tool already resolved is not resolved a second time', async () => {
+    const { text, git: rows } = await mcpChanged(linear, 'mcp-success', { ref: 'HEAD~1' })
+    expect(text).toBe('a3.ts\n')
+    expect(subcommands(rows)).toEqual(['rev-parse', 'diff', 'diff', 'diff'])
+  }, 120_000)
+
+  // CAPTURE: `token-goat: git diff failed: not a git repository` is what the built bundle returned for a directory outside any repo before the change.
+  it('MCP tool, a directory outside any repo: the same error text as before', async () => {
+    const outside = path.join(scratch, 'not-a-repo')
+    fs.mkdirSync(outside)
+    const { text, git: rows } = await mcpChanged(outside, 'mcp-outside', { ref: 'HEAD~1' })
+    expect(text).toBe('token-goat: git diff failed: not a git repository\n')
+    expect(subcommands(rows)).toEqual(['rev-parse', 'diff', 'rev-list'])
   }, 120_000)
 })
