@@ -310,8 +310,8 @@ function answerExplain(question: string, subject: string, rootDir: string): numb
     }
   }
   if (target === null) return refuse('unresolved', `${echoedValue(subject)} is not an indexed symbol`, `token-goat semantic ${quotedArg(question)}`)
-  const spec = `${displaySafeText(toDisplayPath(rootDir, target.file))}::${displaySafeText(target.qualifier ?? target.name)}`
-  emit(`via: token-goat brief ${quotedArg(spec)} --limit ${ANSWER_DELEGATE_LIMIT}`)
+  const spec = `${toDisplayPath(rootDir, target.file)}::${target.qualifier ?? target.name}`
+  emit(`via: token-goat brief ${viaArg(displaySafeText(spec))} --limit ${ANSWER_DELEGATE_LIMIT}`)
   return routed('brief', runBrief({ spec, limit: ANSWER_DELEGATE_LIMIT, projectRoot: rootDir }))
 }
 

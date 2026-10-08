@@ -2,7 +2,8 @@
 import { detectLanguage } from './parser_types.js'
 import type { Language } from './parser_types.js'
 import { languageLabel, partialRefsReason } from './language_specs.js'
-import { echoedValue } from './hint_suggestion_guard.js'
+import { echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
+import { displaySafeText } from './paths.js'
 
 // Mirror of `REF_LANGUAGES` in src/parser.ts (the set gating `extractRefs`). Deliberately duplicated rather than imported: src/parser.ts is hashed into PARSER_FINGERPRINT (scripts/parser-fingerprint.mjs digests src/parser.ts plus src/languages/**), so adding an `export` keyword there would change the stamp and force every existing user to fully reindex on upgrade, for a change that alters nothing about extraction. tests/ref_blindness.test.ts parses the literal out of src/parser.ts and asserts set equality, so the two cannot drift apart silently.
 export const REF_INDEXED_LANGUAGES: ReadonlySet<Language> = new Set<Language>([
@@ -31,17 +32,22 @@ export function isRefIndexedFile(filePath: string): boolean {
 // Display spellings live in the `label` column of src/language_specs.ts; re-exported for the callers that import them from here.
 export { languageLabel }
 
+/** The plain-text search a ref-blind notice points at, the symbol display-safe and quoted the way every suggested command's argument is: a bare `$el` expanded to nothing in the shell, and a name holding a space ran as two arguments. */
+function rgWordSearch(symbolName: string): string {
+  return fencedCommand('rg -n -w ' + quotedArg(displaySafeText(symbolName)))
+}
+
 /** The message a single-symbol reference lookup emits instead of a bare empty result, when the symbol's own defining file is in a language the reference index never records call sites for. Names the language and says the absence is the index's, so it cannot be read as "this symbol is unused". */
 export function refBlindLanguageNotice(symbolName: string, language: Language, displayPath: string): string {
   // COBOL and Natural record some references, so "not indexed" would be false there; say which references exist and why none found still proves nothing.
   const partial = partialRefsReason(language)
   if (partial !== undefined) {
-    return `No recorded references to ${echoedValue(symbolName)} (${displayPath}). ${partial}, so an empty result is not evidence the name is unused. ` +
-      `Search the source directly as well, e.g. \`rg -n -w ${symbolName}\`.`
+    return `No recorded references to ${echoedValue(symbolName)} (${displaySafeText(displayPath)}). ${partial}, so an empty result is not evidence the name is unused. ` +
+      `Search the source directly as well, e.g. ${rgWordSearch(symbolName)}.`
   }
-  return `Cannot determine references for ${echoedValue(symbolName)}: ${languageLabel(language)} call sites are not indexed (${displayPath}). ` +
+  return `Cannot determine references for ${echoedValue(symbolName)}: ${languageLabel(language)} call sites are not indexed (${displaySafeText(displayPath)}). ` +
     'This is a gap in token-goat\'s index, not evidence the symbol is unreferenced. ' +
-    `Search the source directly instead, e.g. \`rg -n -w ${symbolName}\`.`
+    `Search the source directly instead, e.g. ${rgWordSearch(symbolName)}.`
 }
 
 // Why the type-declaration kinds below cannot be assessed for deadness, quoted verbatim into every message that reports the exclusion so the caller is told the mechanism rather than just the verdict.
@@ -67,11 +73,11 @@ function refBlindKindClause(symbolName: string, kinds: ReadonlyArray<string>): s
 export function refBlindKindNotice(symbolName: string, kinds: ReadonlyArray<string>): string {
   return `Cannot determine references for ${echoedValue(symbolName)}: ${refBlindKindClause(symbolName, kinds)}, and ${REF_BLIND_KIND_REASON}. ` +
     'This is a gap in token-goat\'s index, not evidence the symbol is unreferenced. ' +
-    `Search the source directly instead, e.g. \`rg -n -w ${symbolName}\`.`
+    `Search the source directly instead, e.g. ${rgWordSearch(symbolName)}.`
 }
 
 /** The note emitted alongside an ordinary empty result when only SOME definitions of the name are of a ref-blind kind. The remaining ones were genuinely searched, so the result stands for them and is not refused, but dropping the blind ones without a word is the same defect wearing the opposite sign: it presents a partial answer as a whole one. */
 export function refBlindKindPartialNote(symbolName: string, kinds: ReadonlyArray<string>, blindCount: number, totalCount: number): string {
   return `Note: ${blindCount} of ${totalCount} definitions of ${echoedValue(symbolName)} (${kinds.map((k) => `${echoedValue(k)}`).join(', ')}) are not covered by this result -- ${REF_BLIND_KIND_REASON}. ` +
-    `The empty result above speaks only for the other ${totalCount - blindCount}; for the rest, search the source directly, e.g. \`rg -n -w ${symbolName}\`.`
+    `The empty result above speaks only for the other ${totalCount - blindCount}; for the rest, search the source directly, e.g. ${rgWordSearch(symbolName)}.`
 }

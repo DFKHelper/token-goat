@@ -188,8 +188,8 @@ describe('refs and its siblings: a language whose call sites are never indexed s
   it.each([['callers'], ['impact']])('%s suggests a runnable search when given a file::symbol spec, not the spec itself', (cmd) => {
     const text = out(tg(cmd, 'Widget.php::ComputeZq'))
     expect(text).toContain('PHP call sites are not indexed')
-    expect(text, 'the suggested command must be runnable').toContain('rg -n -w ComputeZq')
-    expect(text, 'rg takes a pattern, and `Widget.php::ComputeZq` matches no line in any file').not.toContain('rg -n -w Widget.php::ComputeZq')
+    expect(text, 'the suggested command must be runnable').toContain('rg -n -w "ComputeZq"')
+    expect(text, 'rg takes a pattern, and `Widget.php::ComputeZq` matches no line in any file').not.toContain('rg -n -w "Widget.php::ComputeZq"')
   })
 
   it('emits no control characters, which a bare \\b inside a template literal would silently produce', () => {
@@ -207,7 +207,7 @@ describe('refs and its siblings: a kind whose usages are never recorded says so 
     expect(r.status, 'an unanswerable question is not a successful answer').toBe(1)
     expect(text).toContain('"UsedShapeZq" is an interface')
     expect(text).toContain('never type annotations')
-    expect(text, 'the alternative must be runnable as printed').toContain('rg -n -w UsedShapeZq')
+    expect(text, 'the alternative must be runnable as printed').toContain('rg -n -w "UsedShapeZq"')
     expect(text, 'the misleading message must be replaced, not merely accompanied').not.toContain('No references found')
   })
 
