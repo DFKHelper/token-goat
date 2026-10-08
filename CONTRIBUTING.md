@@ -17,6 +17,8 @@ Lefthook runs lint, the typechecks (source, tests, VS Code extension), `npm audi
 
 `lefthook` is a devDependency and `npm install` runs `prepare` → `lefthook install`, so a fresh clone gets the hooks automatically. If `.git/hooks/pre-commit` is missing, run `npx lefthook install` — the guards below only protect you if the hook actually exists.
 
+A commit that changes a `package-lock.json` needs a subject starting `chore(deps)`, `chore(release)` or `release`; the `commit-msg` hook refuses anything else, and `tests/guards/lock_changes_only_in_dependency_commits.test.ts` checks every unpushed commit. Do not merge a Dependabot lock pull request: close it and run `npm run deps:refresh`, which resolves the same packages locally behind the cooldown. `npm run deps:refresh -- --verify` checks that the lock agrees with its own dependency specs, and `npm run deps:refresh -- --audit-commit <sha>` prints what a commit changed in the lock and exits 1 for each package published inside the cooldown, each integrity the registry does not serve, and each inconsistency (it asks the registry for package metadata, so it needs network access).
+
 The `commit-msg` hook checks the message itself. It refuses AI attribution trailers, any name on the confidential denylist, and a hard-wrapped body: write each paragraph and each list item on one line and let the viewer wrap it, because GitHub and `git log` show a message exactly as written. It also refuses a verification checklist ("Why didn't a test catch this?", "Mutation check:", "Dogfood:") in place of a description; what was tested belongs in the tests. `tests/commit_msg_style.test.ts` and `tests/commit_msg_hook_denylist.test.ts` run the real scripts.
 
 The pre-commit guards (`tests/guards/`) are pure-introspection invariants with no I/O: no bundle build, no SQLite DB, no git fixtures. They run in ~2s and exist to catch the *implemented-but-unregistered / unfunctional command* class before a commit lands, rather than discovering it later at push or in CI. Keep them fast — do not move the full suite, the built-bundle smoke tests, or the command matrix into pre-commit.
@@ -50,7 +52,7 @@ The same trick applies to any tool that takes URL-style paths on the command lin
 
 ## Release flow
 
-1. Bump `version` in `package.json` and run `npm install` to update `package-lock.json`.
+1. Bump `version` in `package.json` and run `npm install` to update `package-lock.json`. That lock change goes in a commit whose subject starts `release` or `chore(release)`.
 2. Fold `[Unreleased]` CHANGELOG entries into the new `[X.Y.Z] - YYYY-MM-DD` heading.
 3. Commit, push `main`, create the GitHub release (`gh release create vX.Y.Z`).
 4. The release event triggers `.github/workflows/publish.yml` which runs `npm publish`.
