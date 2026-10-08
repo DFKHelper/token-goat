@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { runAnswer } from '../src/answer_router.js'
 import { bodyFoldNotice } from '../src/fold_delivery.js'
-import { docSectionHint, grepLinesHint, quotedArg, quotedArgs, stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
+import { canQuoteArg, docSectionHint, grepLinesHint, quotedArg, quotedArgs, stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import { sqlTableHint, surgicalHintFor } from '../src/bash_extractors.js'
 import { fileQueryHint, sliceCommand } from '../src/hint_target.js'
 import { buildPackageManifestHint } from '../src/hints.js'
@@ -27,7 +27,7 @@ import { captureStdout } from './helpers/capture-stdout.js'
 import { powershellForParsing } from './helpers/powershell_parse.js'
 
 /** Values a suggestion carries: a plain path, a spaced path, and the ones a shell would rewrite inside double quotes. */
-const ROUND_TRIP_VALUES = ['src/a.ts', 'my dir/big file.ts::Sym', '$zzRef', '$(whoami)', '${HOME}', 'a`b', 'what does "src dir/x.ts" export', 'it"s', 'a\u201Db']
+const ROUND_TRIP_VALUES = ['src/a.ts', 'my dir/big file.ts::Sym', '$zzRef', '$(whoami)', '${HOME}', 'a`b', 'what does "src dir/x.ts" export', 'it"s', 'a\u201Db', 'C:\\dir\\', 'a\\\\b', 'C:\\x\\y.ts']
 
 /** The POSIX shell and the PowerShell to run suggestions through, each null when it is not available here (PowerShell throws instead on CI). */
 const SH = process.platform === 'win32' ? resolveWindowsBash() : '/bin/sh'
@@ -60,6 +60,19 @@ describe('quotedArg', () => {
     expect(quotedArg('$zzRef')).toBe("'$zzRef'")
     expect(quotedArg('a`b')).toBe("'a`b'")
     expect(quotedArg('what does "src dir/x.ts" export')).toBe(`'what does "src dir/x.ts" export'`)
+  })
+
+  // CAPTURE: bash 5.2.37, PowerShell 7.6.4 and Windows PowerShell 5.1 run on 2026-10-08 (lab outputs): `"C:\dir\"` was a bash syntax error, `"a\\b"` reached PowerShell as `a\\b`, `'C:\dir\'` reached both as `C:\dir\`, and `"C:\x\y.ts"` reached both unchanged. HAND-DERIVED: a value holding both ' and $ fits neither quote mark.
+  it('single-quotes a value ending in a backslash or holding a doubled one, and keeps double quotes for an ordinary Windows path', () => {
+    expect(quotedArg('C:\\dir\\')).toBe("'C:\\dir\\'")
+    expect(quotedArg('a\\\\b')).toBe("'a\\\\b'")
+    expect(quotedArg('C:\\x\\y.ts')).toBe('"C:\\x\\y.ts"')
+  })
+
+  it('says a value holding both an apostrophe and a $ cannot be quoted, and every other value can', () => {
+    expect(canQuoteArg("it's $5")).toBe(false)
+    expect(quotedArg("it's $5")).toContain('<a value no quote mark can hold>')
+    for (const value of ROUND_TRIP_VALUES) expect(canQuoteArg(value), value).toBe(true)
   })
 
   it('quotes a symbol name holding $ in the folded-body notice a read prints', () => {
@@ -255,6 +268,13 @@ describe('suggestions built from the caller text', () => {
     expect(r.code).toBe(1)
     expect(r.text).toContain("Try: token-goat semantic '$zzRefNope'")
     expect(r.text).not.toContain('"$zzRefNope"')
+  })
+
+  it('a symbol miss for a name no quote mark can hold prints no semantic suggestion, since CLI stdout is not read by the guard', () => {
+    const r = runSymbol({ name: "zz'$Nope" })
+    expect(r.code).toBe(1)
+    expect(r.text).not.toContain('Try: token-goat semantic')
+    expect(r.text).not.toContain('no quote mark can hold')
   })
 
   it('an answer refusal over a question holding a quoted path suggests semantic with no nested quotes', () => {

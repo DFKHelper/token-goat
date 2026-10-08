@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest'
 
 import { docSectionHint, grepLinesHint, stripUnsafeSuggestions } from '../../src/hint_suggestion_guard.js'
 import { fileQueryHint, hintTarget, sliceCommand } from '../../src/hint_target.js'
+import { handleCsv, handleXlsx } from '../../src/hints/file_type_handler.js'
 import { relayInProcess } from '../../src/relay.js'
-import { fencedSuggestions, parseWithPowerShell, powershellForParsing } from '../helpers/powershell_parse.js'
+import { POSIX_SH, POWERSHELL, powershellRunAll, shRunAll } from '../helpers/shell_argv.js'
+import { fencedSuggestions, parseWithPowerShell } from '../helpers/powershell_parse.js'
 
 const cp = (code: number): string => String.fromCodePoint(code)
 const DOUBLE_QUOTES = [0x201c, 0x201d, 0x201e]
@@ -97,7 +99,6 @@ describe('PowerShell double quotes in a path', () => {
 })
 
 // Resolved at collection, so a CI runner without PowerShell fails the file instead of skipping it.
-const POWERSHELL = powershellForParsing()
 
 describe.skipIf(POWERSHELL === null)('every suggestion that survives the guard is one PowerShell statement', () => {
   const exe = POWERSHELL ?? ''
@@ -128,4 +129,35 @@ describe.skipIf(POWERSHELL === null)('every suggestion that survives the guard i
     const commands = BREAKOUT_PATHS.slice(0, DOUBLE_QUOTES.length).map((p) => 'token-goat read "' + p + '::SymbolName"')
     expect(parseWithPowerShell(exe, commands).map((r) => r.statements)).toEqual(DOUBLE_QUOTES.map(() => 3))
   }, 60_000)
+})
+
+// CAPTURE: PowerShell 7.6.4 and Windows PowerShell 5.1 (real shells, a `token-goat` function printing its argv), 2026-10-08 lab run: `token-goat refs a,b` handed the command one argument `a b`, `token-goat read "a","b.ts::Sym"` one argument `a b.ts::Sym`, and bash handed `a,b` unchanged. HAND-DERIVED: a comma outside quotes builds an array in PowerShell, and `@name` splats a variable (`@PWD`, `@env:USERNAME`), neither of which bash does.
+describe('a comma or @ outside the quotes of a suggestion', () => {
+  const PROSE_COMMA = 'Use `token-goat read "a.ts::X"`, then `token-goat read "b.ts::Y"` for the rest.'
+  it('is refused by the guard, because PowerShell reads it as an array or a splat', () => {
+    for (const bad of ['Use `token-goat read "a","b.ts::Sym"` now.', 'Use `token-goat read "a" --json, "b"` now.', 'Use `token-goat read "a" @PWD "b"` now.', 'Use `token-goat read "a" @env:USERNAME "b"` now.']) {
+      expect(stripUnsafeSuggestions(bad), bad).not.toBe(bad)
+    }
+  })
+
+  it('leaves a comma in the prose between two fenced suggestions alone', () => {
+    expect(stripUnsafeSuggestions(PROSE_COMMA)).toBe(PROSE_COMMA)
+  })
+
+  it.skipIf(POWERSHELL === null)('keeps a comma list inside quotes one argument in bash and in PowerShell', () => {
+    const exe = POWERSHELL ?? ''
+    const quoted = 'token-goat csv-query "f.csv" --columns "a,b,c" --head 3'
+    expect(powershellRunAll(exe, [quoted])[0]?.calls).toEqual([['csv-query', 'f.csv', '--columns', 'a,b,c', '--head', '3']])
+    const bare = 'token-goat csv-query "f.csv" --columns a,b,c --head 3'
+    expect(powershellRunAll(exe, [bare])[0]?.calls, 'the oracle must see the bare list change the argument').toEqual([['csv-query', 'f.csv', '--columns', 'a b c', '--head', '3']])
+    if (POSIX_SH !== null) expect(shRunAll(POSIX_SH, [quoted])[0]?.calls).toEqual([['csv-query', 'f.csv', '--columns', 'a,b,c', '--head', '3']])
+  })
+
+  it('is written inside quotes by the csv and xlsx hints, which PowerShell then reads as the argument they name', () => {
+    const csv = handleCsv('data.csv', 'a,b,c\n' + '1,2,3\n'.repeat(60_000), 400_000).message
+    expect(csv).toContain('--columns "a,b,c"')
+    expect(stripUnsafeSuggestions(csv)).toBe(csv)
+    const xlsx = handleXlsx('book.xlsx').message
+    expect(stripUnsafeSuggestions(xlsx)).toBe(xlsx)
+  })
 })

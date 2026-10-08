@@ -8,7 +8,7 @@ function looksLikeSuggestion(slice: string): boolean {
 }
 
 /** What is allowed to appear outside the quotes of a suggestion we emitted. This started as a list of the separators that turn one command into two, `;`, `|` and `&`, and an adversarial review walked through it with `>`: a path named `a" > ~/.bashrc "b.ts` contains none of the three, keeps the quote count odd, and truncates a file. Redirection is not the last member of that list either, since `<`, `2>`, `(`, `)` and `#` all do something, so the list is inverted rather than extended. Our own templates only ever put command words, flags and separators between quoted arguments, and every one of those is spelled with the characters below. Anything else outside a quote did not come from us. An allowlist closes the class; a denylist closes whichever member of it was most recently noticed. */
-const SAFE_OUTSIDE_QUOTES = /^[A-Za-z0-9 \t_./=:,@+-]*$/
+const SAFE_OUTSIDE_QUOTES = /^[A-Za-z0-9 \t_./=:+-]*$/
 
 /** Characters that reverse how text reads, or that are invisible in one channel and present in another. These are here for a different reason from the allowlist above: this text is read by a model, not only by a shell, so a right-to-left override can make the suggestion display as something other than what it says, and a zero-width or tag character can carry text that a diff and a terminal both render as nothing while the model reads it literally. The Unicode Tag block is the one worth naming out loud: it exists in order to be invisible, and no real path uses it. */
 // eslint-disable-next-line no-control-regex, no-misleading-character-class
@@ -190,7 +190,7 @@ const REWRITTEN_IN_DOUBLE_QUOTES = /[$`"\u201C-\u201E]|\\(?:\\|$)/
 /** What a single-quoted argument cannot hold: `'` or a character PowerShell reads as one (U+2018-U+201B) closes it, and neither shell has an escape inside single quotes that the other reads the same way. */
 const ENDS_SINGLE_QUOTES = /['\u2018-\u201B\r\n]/
 
-/** One argument of a suggested `token-goat …` command, quoted so bash and PowerShell both hand the command the value as written. Double quotes by default: the form {@link stripUnsafeSuggestions} checks, and the only form that keeps a path holding a space in one argument (`token-goat scope my proj/a.ts:12` ran as `scope my` plus three stray arguments and exited 1). A value holding `$`, a backtick or a double quote is single-quoted instead, which both shells keep literal: `symbol '$ref'` missed with `Try: token-goat semantic "$ref"`, which both shells ran as `semantic ""`. `!` and backslash stay out of that trigger: history expansion is off in the non-interactive shell a suggestion runs in, and single-quoting every backslash would change the form of every Windows path for nothing. A value that single quotes cannot hold stays double-quoted only while double quotes rewrite none of it; otherwise it is not written at all ({@link unquotable}). It escapes nothing: a value that would need escaping is the guard's to drop, not this function's to hide. */
+/** One argument of a suggested `token-goat …` command, quoted so bash and PowerShell both hand the command the value as written. Double quotes by default: the form {@link stripUnsafeSuggestions} checks, and the only form that keeps a path holding a space in one argument (`token-goat scope my proj/a.ts:12` ran as `scope my` plus three stray arguments and exited 1). A value holding `$`, a backtick or a double quote is single-quoted instead, which both shells keep literal: `symbol '$ref'` missed with `Try: token-goat semantic "$ref"`, which both shells ran as `semantic ""`. `!` stays out of that trigger: it is literal in both shells, so history expansion never reads it. A backslash stays out unless it ends the value or follows another one (`"C:\dir\"` never closes in bash, and `"a\\b"` reaches PowerShell as `a\\b`), which is single-quoted; an ordinary Windows path keeps its double quotes. A value that single quotes cannot hold stays double-quoted only while double quotes rewrite none of it; otherwise it is not written at all ({@link unquotable}): a value holding both `'` and `$` has no spelling that works in both shells. A caller whose output no guard reads ({@link stripUnsafeSuggestions} only sees hook text) asks {@link canQuoteArg} and leaves the suggestion out. It escapes nothing: a value that would need escaping is the guard's to drop, not this function's to hide. */
 export function quotedArg(value: string): string {
   if (unquotable(value)) return '"' + UNQUOTABLE + '"'
   if (REWRITTEN_IN_DOUBLE_QUOTES.test(value)) return "'" + value + "'"
@@ -208,6 +208,11 @@ function unquotable(value: string): boolean {
 }
 
 const LINE_BREAK = /[\r\n]/
+
+/** Whether {@link quotedArg} can write `value` at all: false for a value no quote mark holds in both shells, where it writes {@link UNQUOTABLE} in its place. */
+export function canQuoteArg(value: string): boolean {
+  return !unquotable(value)
+}
 
 /** What {@link quotedArg} writes in place of an {@link unquotable} value: no quote mark, no backtick, nothing either shell substitutes, so the command it sits in keeps its shape, and {@link stripUnsafeSuggestions} drops that command on sight. */
 const UNQUOTABLE = '<a value no quote mark can hold>'

@@ -6,7 +6,7 @@ import { extractMarkdownHeadings, type MarkdownHeading } from './hints/markdown_
 import { fenceNumberedFileContent, fenceUntrustedFileContent } from './injection_scan.js'
 import { headingTreeParts, hintTarget } from './hint_target.js'
 import { displaySafeText } from './paths.js'
-import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 import { isTreeSitterAvailable, parseSourceSymbolsTreeSitterOnly } from './parser.js'
 import { detectLanguage } from './parser_types.js'
 import type { SymbolEntry } from './parser_types.js'
@@ -224,7 +224,7 @@ export function planSourceSkeleton(rows: readonly FoldRow[], normalizedPath: str
   if (plan === null) return null
 
   // "at least", never an exact count: these are the declarations tree-sitter surfaces as symbols, which is not every name in the file (a local, a nested closure, a declaration inside a body the extractors deliberately skip), so the number is a floor on what the file holds and the wording has to say so. The withheld-line count IS exact, being what the notices below it stand for, and no claim is made about how much of the file a reader recovers.
-  const notice = `Partial view: this ${originalBytes.toLocaleString('en-US')} B source file was replaced with its structural skeleton, its preamble and one line per declaration, with ${plan.withheldLines.toLocaleString('en-US')} line${plan.withheldLines === 1 ? '' : 's'} of bodies withheld (at least ${symbols.length} declaration${symbols.length === 1 ? '' : 's'} found). Run token-goat read ${quotedArg(`${shownPath}::SymbolName`)} for one body verbatim, or Read "${displaySafeText(shownPath)}" with offset=1, limit=${rows.length} for the whole file.`
+  const notice = `Partial view: this ${originalBytes.toLocaleString('en-US')} B source file was replaced with its structural skeleton, its preamble and one line per declaration, with ${plan.withheldLines.toLocaleString('en-US')} line${plan.withheldLines === 1 ? '' : 's'} of bodies withheld (at least ${symbols.length} declaration${symbols.length === 1 ? '' : 's'} found). Run ${fencedCommand(`token-goat read ${quotedArg(`${shownPath}::SymbolName`)}`)} for one body verbatim, or Read "${displaySafeText(shownPath)}" with offset=1, limit=${rows.length} for the whole file.`
 
   // The notice leads so token-goat speaks first, and everything after it is fenced: `plan.numbered` is file bytes -- the preamble verbatim, one declaration line per symbol -- interleaved with this rewrite's own `... N more lines ... folded` pointers. It shipped unfenced, which let a source file's first line arrive as an unlabelled `[tg]`-prefixed instruction wearing token-goat's voice, and let a planted `</untrusted-file-content>` close a fence it was never inside. Fencing the interleaved block escapes nothing token-goat authored: the pointers spell `token-goat read "..."` with no bracket, and neutralizeSpokenMarkers only matches the bracketed forms.
   if (layout === 'aligned') {

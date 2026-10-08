@@ -105,7 +105,7 @@ export const VSCODE_DOUBLE_FIRE_NOTE =
 
 /** What turning chat.useClaudeHooks off did and how to undo it, worded once for `install --vscode --user` (which prefixes NOTE) and `doctor --repair` (which lists it as a repair). */
 export const VSCODE_CLAUDE_HOOKS_TURNED_OFF_TEXT =
-  'Turned off chat.useClaudeHooks in your VS Code user settings so token-goat hooks do not run twice. That setting covers every Claude hook in VS Code, not only the token-goat ones. To turn it back on, set "chat.useClaudeHooks": true in VS Code settings, or run `token-goat uninstall --vscode --user` to put it back.'
+  'Turned off chat.useClaudeHooks in your VS Code user settings so token-goat hooks do not run twice. That setting covers every Claude hook in VS Code, not only the token-goat ones. To turn it back on, set ' + fencedCommand('"chat.useClaudeHooks": true') + ' in VS Code settings, or run ' + fencedCommand('token-goat uninstall --vscode --user') + ' to put it back.'
 
 /** One-line note printed when `install --vscode --user` turned chat.useClaudeHooks off. */
 export const VSCODE_CLAUDE_HOOKS_TURNED_OFF_NOTE = `NOTE: ${VSCODE_CLAUDE_HOOKS_TURNED_OFF_TEXT}`

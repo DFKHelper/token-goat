@@ -17,7 +17,7 @@ import { DIDYOUMEAN_LIMIT, didYouMean, findStructuredKeyPath, nearNamesSkippedNo
 import { confinementRefusal, resolveProjectConfinement, stripHtmlIdSpelling } from './read_spec.js'
 import { formatStatsSuffix, hasRealDocstring } from './read_meta.js'
 import { DELETED_TAG, docCommentLines, fileIsGone, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, indexFreshness, largestFileSize, recordReadStat, recordStaleServed, resolveBody, sinkGoneRows, staleWarning, truncationFooter, type TruncationTotal } from './read_commands.js'
-import { echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
+import { canQuoteArg, echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 import { forClient } from './mcp_client_text.js'
 
 /** Body lines shown per `symbol` match before the preview is cut and the cut is announced. */
@@ -241,7 +241,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
       } else {
         const near = nearSymbolNames(opts.name, rootDir)
         // On an empty index `semantic` fails exactly as `symbol` just did, so suggesting it sends the caller into a second dead end before they ever reach the note below that names the real fix. Suppressed only in that case: with any index at all the fallback is still the right next step, and it is the one left when the ranking was skipped for size.
-        const semanticHint = indexEmpty ? '' : `\nTry: token-goat semantic ${quotedArg(opts.name)}`
+        const semanticHint = indexEmpty || !canQuoteArg(opts.name) ? '' : `\nTry: token-goat semantic ${quotedArg(opts.name)}`
         if (near.skipped) text += `\n${nearNamesSkippedNote()}${semanticHint}`
         else text += near.candidates.length > 0 ? `\n${didYouMean(near.candidates)}` : semanticHint
       }

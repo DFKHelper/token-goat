@@ -3,7 +3,7 @@
 import { parse } from 'csv-parse/sync'
 import { findHtmlHeadingMatches } from '../languages/common.js'
 import { fenceUntrustedFileContent } from '../injection_scan.js'
-import { quotedArg, quotedArgs } from '../hint_suggestion_guard.js'
+import { fencedCommand, quotedArg, quotedArgs } from '../hint_suggestion_guard.js'
 import { displaySafePath } from '../paths.js'
 
 export interface FileTypeResult {
@@ -263,7 +263,7 @@ export function handleXlsx(filePath: string): FileTypeResult {
     message: [
       `Excel file — Read cannot return spreadsheet content; this is not retryable with different Read parameters.`,
       `List sheets: token-goat xlsx-sheets ${quoted}`,
-      `Then preview a sheet: token-goat xlsx-head ${quoted} --sheet ${sheet}, or filter rows: token-goat xlsx-query ${quoted} --sheet ${sheet} --where col=value`,
+      `Then preview a sheet: ${fencedCommand(`token-goat xlsx-head ${quoted} --sheet ${sheet}`)}, or filter rows: ${fencedCommand(`token-goat xlsx-query ${quoted} --sheet ${sheet} --where col=value`)}`,
     ].join('\n'),
   }
 }
@@ -306,7 +306,7 @@ export function handleCsv(filePath: string, content: string, contentLengthHint?:
       shouldBlock: true,
       message: [
         `Large CSV file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
-        `Use token-goat csv-query ${quotedArg(filePath)} --columns a,b,c --where col=value --head N to query narrow slices.`,
+        `Use token-goat csv-query ${quotedArg(filePath)} --columns "a,b,c" --where col=value --head N to query narrow slices.`,
       ].join('\n'),
     }
   }
@@ -330,7 +330,7 @@ export function handleCsv(filePath: string, content: string, contentLengthHint?:
       `Large CSV file (${formatBytes(length)}, ~${lines.length.toLocaleString()} rows, ${colCount} columns).`,
       // Header row and sample rows are verbatim file bytes, so they are fenced as untrusted data.
       fenceUntrustedFileContent(`Columns: ${headers}\nSample rows:\n${sampleRows.join('\n')}`),
-      `Use token-goat csv-query ${quotedArg(filePath)} --columns a,b,c --where col=value --head N to query narrow slices.`,
+      `Use token-goat csv-query ${quotedArg(filePath)} --columns "a,b,c" --where col=value --head N to query narrow slices.`,
     ].join('\n'),
   }
 }
