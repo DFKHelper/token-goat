@@ -178,6 +178,26 @@ export function parseHunklessFiles(diffText: string): Set<string> {
 
 const EMPTY_TREE_HASH = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 
+// Bounds the stdin batch of HEAD~n candidates in buildChangedRefHint.
+const CHANGED_HINT_BATCH = 512
+
+// `git cat-file --batch-check` answers `<oid> <type> <size>` for an object it found and `<query> missing` or `<query> ambiguous` otherwise.
+function batchRowResolved(row: string | undefined): boolean {
+  return row !== undefined && /^[0-9a-f]{40,64} /.test(row)
+}
+
+// Whether `ref` resolves and the first (deepest) candidate that does, from one `cat-file --batch-check` spawn. A batch git refused or cut short falls back to one `rev-parse --verify` per name, the behaviour before the batch existed, so a git that lacks the batch mode still gets its hint.
+function resolveHintRefs(cwd: string, ref: string, candidates: readonly string[]): { refResolves: boolean; suggestedRef: string | null } {
+  const batch = runGit(['cat-file', '--batch-check'], { cwd, input: `${[ref, ...candidates].join('\n')}\n` })
+  const rows = batch.stdout.split(/\r?\n/)
+  if (batch.exitCode === 0 && rows.length >= candidates.length + 1) {
+    return { refResolves: batchRowResolved(rows[0]), suggestedRef: candidates.find((_, i) => batchRowResolved(rows[i + 1])) ?? null }
+  }
+  const resolves = (name: string): boolean => runGit(['rev-parse', '--verify', '--quiet', name], { cwd }).exitCode === 0
+  if (resolves(ref)) return { refResolves: true, suggestedRef: null }
+  return { refResolves: false, suggestedRef: candidates.find((c) => resolves(c)) ?? null }
+}
+
 function buildChangedRefHint(cwd: string, ref: string): string | null {
   const countResult = runGit(['rev-list', '--count', 'HEAD'], { cwd })
   if (countResult.exitCode !== 0) {
@@ -187,19 +207,20 @@ function buildChangedRefHint(cwd: string, ref: string): string | null {
   if (!Number.isFinite(commitCount) || commitCount < 1) {
     return null
   }
-  const refResolves = runGit(['rev-parse', '--verify', '--quiet', ref], { cwd })
-  if (refResolves.exitCode === 0) {
+  // A ref with a line break would split into two queries and misalign the answers; git would refuse it as an argument anyway.
+  if (/[\r\n]/.test(ref)) {
     return null
   }
-  let suggestedRef: string | null = null
-  for (let n = commitCount - 1; n >= 1; n--) {
-    const candidate = `HEAD~${n}`
-    const candidateResolves = runGit(['rev-parse', '--verify', '--quiet', candidate], { cwd })
-    if (candidateResolves.exitCode === 0) {
-      suggestedRef = candidate
-      break
-    }
+  // One spawn answers whether the ref resolves and which HEAD~n is the oldest that does: HEAD~n follows first parents, so on a linear history the deepest candidate resolves first and a merge-heavy one is bounded by the batch, not by a spawn per candidate.
+  const candidates: string[] = []
+  for (let n = commitCount - 1; n >= 1 && candidates.length < CHANGED_HINT_BATCH; n--) {
+    candidates.push(`HEAD~${n}`)
   }
+  const answer = resolveHintRefs(cwd, ref, candidates)
+  if (answer.refResolves) {
+    return null
+  }
+  let suggestedRef = answer.suggestedRef
   if (suggestedRef === null) {
     suggestedRef = EMPTY_TREE_HASH
   }
@@ -281,7 +302,6 @@ export function runChanged(opts: ChangedOptions = {}): number {
     return 1
   }
   const cwd = opts.projectRoot ?? process.cwd()
-  const projectRoot = resolveProjectRoot({ project: cwd })
 
   let changedFiles: string[]
   try {
@@ -346,6 +366,8 @@ export function runChanged(opts: ChangedOptions = {}): number {
     return 0
   }
 
+  // Resolved here, after every early return, so a failed diff or an empty change list never pays the `git rev-parse --show-toplevel` spawn.
+  const projectRoot = resolveProjectRoot({ project: cwd })
   if (opts.symbolMode === true) {
     let hunksByFile = new Map<string, Array<{ start: number; end: number }>>()
     let hunklessFiles = new Set<string>()

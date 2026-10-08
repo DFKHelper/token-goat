@@ -64,6 +64,7 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
   const result = spawnSync('git', fullArgs, {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     ...(opts.timeoutMs !== undefined ? { timeout: opts.timeoutMs } : {}),
+    ...(opts.input !== undefined ? { input: opts.input } : {}),
     encoding: 'utf-8',
     windowsHide: true,
     maxBuffer: 200 * 1024 * 1024,
