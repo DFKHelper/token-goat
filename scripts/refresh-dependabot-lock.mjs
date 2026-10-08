@@ -5,6 +5,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { load as loadYaml } from 'js-yaml'
+import { auditLockChange, formatDiff, parseNpmView } from './lock-audit.mjs'
 import { checkLockFiles, formatProblem } from './lock-consistency.mjs'
 import { isDependabotPullRequest, isValidPackageName, npmCommand, packageNamesFromBody, summarizeGuardFailure } from './dependabot-body.mjs'
 
@@ -81,6 +82,47 @@ function consistencyFailure() {
 
 const argv = process.argv.slice(2)
 const check = argv.includes('--check')
+
+/** The registry's answer for one exact version, through the same shell-free npm the refresh uses. A name or version that is not a plain package name or semver never reaches npm's argument vector. */
+function registryLookup(npm) {
+  return (name, version) => {
+    if (!isValidPackageName(name) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) throw new Error('not a registry package name and version')
+    return parseNpmView(run(npm.file, [...npm.prefix, 'view', `${name}@${version}`, 'dist.integrity', 'time', '--json'], { stdio: ['ignore', 'pipe', 'pipe'] }), version)
+  }
+}
+
+/** Prints what a commit changed in package-lock.json and judges it: cooldown, registry integrity, reclassification, and the lock's own consistency. Meant to be run on a dependency commit before it is pushed. */
+async function auditCommit(revision) {
+  if (typeof revision !== 'string' || !/^[0-9A-Za-z][0-9A-Za-z._/~^@-]*$/.test(revision)) fail('--audit-commit needs a commit, such as a sha or HEAD')
+  const git = (args) => run('git', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+  let oldText
+  let newText
+  let manifestText
+  let committedAt
+  try {
+    git(['rev-parse', '--verify', '--quiet', `${revision}^{commit}`])
+    committedAt = new Date(git(['show', '-s', '--format=%cI', revision]).trim())
+    manifestText = git(['show', `${revision}:package.json`])
+    newText = git(['show', `${revision}:package-lock.json`])
+    oldText = git(['show', `${revision}^:package-lock.json`])
+  } catch (error) {
+    fail(`cannot read package-lock.json at ${revision} and its parent (${String(error.stderr ?? error.message).trim()})`)
+  }
+  const npm = npmCommand({ platform: process.platform, env: process.env, execPath: process.execPath, exists: fs.existsSync })
+  if (npm === null) fail('cannot find npm-cli.js beside this Node or in npm_execpath; run this through `npm run deps:refresh`')
+  const days = cooldownDays()
+  const { diff, violations } = await auditLockChange({ oldLock: JSON.parse(oldText), newLock: JSON.parse(newText), overrides: JSON.parse(manifestText).overrides, cooldownDays: days, at: committedAt, lookup: registryLookup(npm) })
+  const lines = formatDiff(diff)
+  process.stdout.write(`${revision}: ${lines.length === 0 ? 'package-lock.json is unchanged' : `${lines.length} change(s) to package-lock.json`}, cooldown ${days} days as of ${committedAt.toISOString()}\n${lines.map((line) => `  ${line}\n`).join('')}`)
+  if (violations.length > 0) {
+    fail(`${violations.length} violation(s):\n${violations.map((violation) => `  ${violation.kind}: ${violation.message}`).join('\n')}`)
+  }
+  process.stdout.write('no violations\n')
+  process.exit(0)
+}
+
+const auditIndex = argv.indexOf('--audit-commit')
+if (auditIndex !== -1) await auditCommit(argv[auditIndex + 1])
 
 // Separated from the resolve so the current lock file can be checked on its own, without waiting for a full suite run.
 if (argv.includes('--verify')) {
