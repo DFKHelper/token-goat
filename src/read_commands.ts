@@ -1312,10 +1312,10 @@ export function runGrep(opts: GrepOptions): number {
   }
 
   for (const hit of truncated) {
-    const symbolTag = opts.symbol === true && hit.symbol != null ? ` [${hit.symbol.name} (${hit.symbol.kind})]` : ''
+    const symbolTag = opts.symbol === true && hit.symbol != null ? ` [${displaySafeText(hit.symbol.name)} (${displaySafeText(hit.symbol.kind)})]` : ''
     if (hit.context !== undefined) {
       // Same renderer `refs`/`callers` `-C` use, so the three cannot drift into different dialects.
-      for (const line of renderContextWindow(hit.file, hit.line, hit.context, symbolTag)) emit(line)
+      for (const line of renderContextWindow(displaySafeText(hit.file), hit.line, hit.context, symbolTag)) emit(line)
     } else {
       // The path is token-goat's own row framing and is escaped. `hit.text` is the matched source line, the payload the reader asked for, and stays byte-for-byte.
       emit(`${displaySafeText(hit.file)}:${hit.line}: ${hit.text}${symbolTag}`)

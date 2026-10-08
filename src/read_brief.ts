@@ -155,8 +155,8 @@ export function runBriefCore(opts: BriefOptions): { text: string; code: number }
       : `Callers (${totalCallers}):${hiddenNote}`)
   }
   for (const c of shown) {
-    const callerDisplayPath = toDisplayPath(rootDir, c.file)
-    lines.push(`  ${c.caller}\t${callerDisplayPath}:${c.line}`)
+    const callerDisplayPath = displaySafeText(toDisplayPath(rootDir, c.file))
+    lines.push(`  ${displaySafeText(c.caller)}\t${callerDisplayPath}:${c.line}`)
     // brief's caller block is its OWN rendering site, not a call into runCallers -- `-C` has to be threaded here separately or the flag would silently do nothing for `brief`.
     const window = buildContextWindow(c.file, c.line, opts.context ?? 0)
     if (window !== null) lines.push(...renderContextWindow(callerDisplayPath, c.line, window, '', '    '))

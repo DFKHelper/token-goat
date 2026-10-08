@@ -68,7 +68,7 @@ function renderRefLines(ref: RefEntry, contextLines: number, indent = '  '): str
   const base = `${indent}${displaySafeText(displayPath)}:${ref.line}: ${displaySafeText(ref.context)}${goneSuffix(ref.filePath)}`
   const window = buildContextWindow(ref.filePath, ref.line, contextLines)
   if (window === null) return [base]
-  return [base, ...renderContextWindow(displayPath, ref.line, window, '', `${indent}  `)]
+  return [base, ...renderContextWindow(displaySafeText(displayPath), ref.line, window, '', `${indent}  `)]
 }
 
 /** Attaches a `contextLines` array to each JSON reference item when `-C` was requested. The pre-existing `context` field (the enclosing symbol NAME) is left untouched -- these are different things and consumers already depend on the old one. */
@@ -511,7 +511,7 @@ function renderCallerGroups(refs: RefEntry[], contextLines = 0): string[] {
     for (const ref of fileRefs) {
       lines.push(`  :${ref.line}  ${ref.context !== '' ? displaySafeText(ref.context) : '(module scope)'}`)
       const window = buildContextWindow(file, ref.line, contextLines)
-      if (window !== null) lines.push(...renderContextWindow(displayPath, ref.line, window, '', '    '))
+      if (window !== null) lines.push(...renderContextWindow(displaySafeText(displayPath), ref.line, window, '', '    '))
     }
   }
   return lines
