@@ -412,12 +412,13 @@ describe('chat.useClaudeHooks double-fire detection', () => {
   })
 
   it('checkVscodeClaudeHooks warns only when the setting is on and Claude Code hooks are installed', () => {
-    expect(checkVscodeClaudeHooks(false, true, true)).toBeNull()
-    expect(checkVscodeClaudeHooks(true, false, true)).toBeNull()
-    const both = checkVscodeClaudeHooks(true, true, true)
+    const userHooks = { user: true, project: false }
+    expect(checkVscodeClaudeHooks(false, true, userHooks)).toBeNull()
+    expect(checkVscodeClaudeHooks(true, false, userHooks)).toBeNull()
+    const both = checkVscodeClaudeHooks(true, true, userHooks)
     expect(both?.status).toBe('warn')
     expect(both?.message).toContain('fires twice')
-    const claudeOnly = checkVscodeClaudeHooks(true, true, false)
+    const claudeOnly = checkVscodeClaudeHooks(true, true, { user: false, project: false })
     expect(claudeOnly?.status).toBe('warn')
     expect(claudeOnly?.message).toContain('install --vscode')
   })

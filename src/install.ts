@@ -451,9 +451,15 @@ export function isInstalled(scope: HookScope = 'user'): boolean {
   return gaps !== null && gaps.missing.length === 0 && gaps.outdated.length === 0 && gaps.broken.length === 0
 }
 
-/** Whether token-goat's Claude Code hooks are installed in either scope: the one test doctor's VS Code chat.useClaudeHooks row, `install --vscode` and `doctor --repair` all apply before treating that setting as a duplicate of token-goat's own hooks. */
+/** Does `scope` wire at least one token-goat hook that still fires? A partial install counts (a wired event runs whatever the others lack), where {@link isInstalled} wants every event; a hook whose shim or native client is gone cannot fire and does not. */
+function hasFiringHook(scope: HookScope): boolean {
+  const gaps = hookEventGaps(scope)
+  return gaps !== null && gaps.missing.length + gaps.broken.length < HOOK_EVENT_MAP.length
+}
+
+/** Whether token-goat's Claude Code hooks fire from either scope, even a partial install: the one test doctor's VS Code chat.useClaudeHooks row and Cursor row, `install --vscode` and `doctor --repair` all apply before treating Claude's hooks as a duplicate of token-goat's own. VS Code and Cursor run every wired event, so one event left over from an older release still doubles up; waiting for a complete install would leave the setting on and the duplicate firing. The project scope is the working directory's, as for every other scope-aware row doctor prints: a workspace elsewhere cannot be enumerated from here. */
 export function claudeHooksInstalledAnyScope(): boolean {
-  return isInstalled('user') || isInstalled('project')
+  return hasFiringHook('user') || hasFiringHook('project')
 }
 
 /** Claude Code event keys in `scope` that lack this build's exact hook entry, split by whether the event still reaches token-goat. */

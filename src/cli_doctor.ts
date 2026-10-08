@@ -734,7 +734,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   const vscodeHooksResult = checkVscodeClaudeHooks(
     vscodeUsesClaudeHooks(),
     claudeHooksInstalledAnyScope(),
-    vscodeHooksInstalled() || vscodeHooksInstalled({ project: true }),
+    { user: vscodeHooksInstalled(), project: vscodeHooksInstalled({ project: true }) },
   )
   if (vscodeHooksResult) results.push(vscodeHooksResult)
   const vscodeScopeResult = checkVscodeUserScopeHooks(vscodeHooksInstalled(), vscodeHooksInstalled({ project: true }))
@@ -745,7 +745,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   if (visualStudioResult) results.push(visualStudioResult)
   const zedResult = checkZed(zedSettingsPath())
   if (zedResult) results.push(zedResult)
-  const cursorResult = checkCursor(cursorMcpPath(), isInstalled('user') || isInstalled('project'))
+  const cursorResult = checkCursor(cursorMcpPath(), claudeHooksInstalledAnyScope())
   if (cursorResult) results.push(cursorResult)
   const harnessCacheResult = checkHarnessCacheEfficiency(rootDir)
   if (harnessCacheResult) results.push(harnessCacheResult)

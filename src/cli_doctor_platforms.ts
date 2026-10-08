@@ -113,14 +113,22 @@ export const VSCODE_CLAUDE_HOOKS_TURNED_OFF_NOTE = `NOTE: ${VSCODE_CLAUDE_HOOKS_
 /** One-line note `uninstall --vscode` prints when it put back the chat.useClaudeHooks value token-goat had turned off. */
 export const VSCODE_CLAUDE_HOOKS_RESTORED_NOTE = 'Turned chat.useClaudeHooks back on in your VS Code user settings, as it was before token-goat turned it off.'
 
-/** Warn when VS Code will run token-goat's Claude Code hooks as well as its own. */
-export function checkVscodeClaudeHooks(useClaudeHooks: boolean, claudeHooksInstalled: boolean, vscodeHooksInstalled: boolean): DoctorResult | null {
+/** Warn when VS Code will run token-goat's Claude Code hooks as well as its own, unless only a project-scope VS Code install is involved: `doctor --repair` and a project-scope install never change the user-wide setting for one, so that case is a note saying why it is left alone, not a warning no command can clear. */
+export function checkVscodeClaudeHooks(useClaudeHooks: boolean, claudeHooksInstalled: boolean, vscodeHooks: { readonly user: boolean; readonly project: boolean }): DoctorResult | null {
   if (!useClaudeHooks || !claudeHooksInstalled) return null
+  const vscodeHooksInstalled = vscodeHooks.user || vscodeHooks.project
+  if (vscodeHooks.project && !vscodeHooks.user) {
+    return {
+      name: 'VS Code hooks',
+      status: 'ok',
+      message: `VS Code has chat.useClaudeHooks on and token-goat hooks are in both ~/.claude/settings.json and this project's .github/hooks, so each hook fires twice in VS Code. token-goat leaves the setting alone for a project-scope install because it is user-wide and also stops every other Claude hook you have in VS Code. If you see hooks run twice, set "chat.useClaudeHooks": false in your VS Code user settings.`,
+    }
+  }
   return {
     name: 'VS Code hooks',
     status: 'warn',
     message: vscodeHooksInstalled
-      ? 'VS Code has chat.useClaudeHooks on and token-goat hooks are in both ~/.claude/settings.json and the Copilot hooks file, so each hook fires twice in VS Code. Turn chat.useClaudeHooks off in VS Code settings.'
+      ? 'VS Code has chat.useClaudeHooks on and token-goat hooks are in both ~/.claude/settings.json and the Copilot hooks file, so each hook fires twice in VS Code. Turn chat.useClaudeHooks off in VS Code settings, or run `token-goat doctor --repair` to do it.'
       : 'VS Code has chat.useClaudeHooks on, so it runs the token-goat hooks from ~/.claude/settings.json in Claude Code wire format, which VS Code reads only in part. Run `token-goat install --vscode` and turn chat.useClaudeHooks off in VS Code settings.',
   }
 }
