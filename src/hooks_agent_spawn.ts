@@ -177,19 +177,42 @@ function subagentStartHandler(event: HookEvent): HookOutput {
   }
 }
 
+/** Every tool that spawns a subagent, with the input field that carries its brief. Claude Code's Agent (and its older name Task) and Copilot CLI's task take `prompt`; Codex's `spawn_agent` takes `message` or `items` (codex-rs/core/src/tools/handlers/multi_agents_spec.rs::spawn_agent_common_properties_v1) and reaches the hook under that name, with `Agent` only a matcher alias (codex-rs/core/src/tools/hook_names.rs, registry.rs::function_hook_tool_name). The one table the handlers and the registrations at the foot of this file both read. */
+const SPAWN_TOOL_BRIEF_FIELD: Readonly<Record<string, string>> = { Agent: 'prompt', task: 'prompt', Task: 'prompt', spawn_agent: 'message' }
+
 function isAgentTool(toolName: string | undefined): boolean {
-  return toolName === 'Agent' || toolName === 'task' || toolName === 'Task'
+  return toolName !== undefined && Object.hasOwn(SPAWN_TOOL_BRIEF_FIELD, toolName)
+}
+
+/** A spawn's brief as written, and how to add text after it. */
+interface SpawnBrief {
+  readonly text: string
+  readonly withSuffix: (suffix: string) => Record<string, unknown>
+}
+
+/** The brief a spawn call carries, or null when it carries none. A Codex spawn that sends `items` instead of `message` has its text items joined, and the suffix is added as one more text item so the structured items before it are left alone. */
+function readSpawnBrief(toolName: string | undefined, toolInput: Record<string, unknown>): SpawnBrief | null {
+  const field = SPAWN_TOOL_BRIEF_FIELD[toolName ?? '']
+  if (field === undefined) return null
+  const written = toolInput[field]
+  if (typeof written === 'string' && written.trim()) return { text: written, withSuffix: (suffix) => ({ ...toolInput, [field]: written + suffix }) }
+  const items = toolInput['items']
+  if (toolName !== 'spawn_agent' || !Array.isArray(items)) return null
+  const joined = items.flatMap((item: { type?: unknown; text?: unknown } | null) => (item?.type === 'text' && typeof item.text === 'string' ? [item.text] : [])).join(' ')
+  if (!joined.trim()) return null
+  return { text: joined, withSuffix: (suffix) => ({ ...toolInput, items: [...items, { type: 'text', text: suffix }] }) }
 }
 
 function preAgentHandler(event: HookEvent): HookOutput {
-  // Only fire on Agent or Copilot task tool
+  // Only fire on a subagent spawn tool
   if (!isAgentTool(event.toolName)) return passOutput()
 
   const toolInput = event.toolInput
-  const prompt = toolInput['prompt']
+  const brief = readSpawnBrief(event.toolName, toolInput)
 
-  // Skip if prompt is missing or empty
-  if (typeof prompt !== 'string' || prompt.trim() === '') return passOutput()
+  // Skip if the brief is missing or empty
+  if (brief === null) return passOutput()
+  const prompt = brief.text
 
   try {
     // Ahead of the outstanding-spawn registration: a denied call never runs, so registering it would flag its own retry as a near-duplicate.
@@ -209,9 +232,9 @@ function preAgentHandler(event: HookEvent): HookOutput {
     // If there is nothing to add (briefing failed to build and no duplicate warning), pass through unchanged
     if (!briefing && !advisory) return passOutput()
 
-    // Append briefing and/or duplicate-spawn advisory to the prompt
+    // Append briefing and/or duplicate-spawn advisory to the brief
     const updatedPrompt = prompt + briefing + advisory
-    const updatedInput = { ...toolInput, prompt: updatedPrompt }
+    const updatedInput = brief.withSuffix(briefing + advisory)
 
     // The prompt is all that changes and Agent rules match the subagent type, so the rewrite carries no permission decision; rewrite_permission.ts declines it only when a rule could look further.
     return permissionNeutralRewrite(updatedInput, { kind: 'agent', harness: getHarnessName(), mode: event.raw['permission_mode'], cwd: getCwd(event) ?? process.cwd(), original: prompt, rewritten: updatedPrompt, agentType: agentTypeOf(event.raw) }) ?? passOutput()
@@ -579,10 +602,10 @@ function postAgentHandler(event: HookEvent): HookOutput {
     if (!isAgentTool(event.toolName) || !event.sessionId) return passOutput()
 
     // Clear this spawn's outstanding-prompt entry so a later, unrelated Agent spawn with similar wording is not incorrectly flagged as a duplicate of a call that has already finished.
-    const finishedPrompt = event.toolInput['prompt']
-    if (typeof finishedPrompt === 'string' && finishedPrompt !== '') {
-      removeOutstandingAgentSpawn(finishedPrompt)
-    }
+    const finished = readSpawnBrief(event.toolName, event.toolInput)
+    if (finished !== null) removeOutstandingAgentSpawn(finished.text)
+    // Codex's spawn_agent returns the new agent's handle (multi_agents_spec.rs::spawn_agent_output_schema_v1), not the subagent's report, which arrives later through another tool, so there is nothing here to compact or cache.
+    if (event.toolName === 'spawn_agent') return passOutput()
 
     // Redact BEFORE anything downstream reads the report, so the compacted envelope this handler hands the model and the blob storeMcpOutput() writes to disk are the same sanitized text. They were not: storeMcpOutput redacts its own copy (see mcp_cache.ts), while the rewriteOutput branch below built `updatedOutput` from the raw result -- so a credential a subagent pasted into its report was redacted on disk and raw in the model's context, in text token-goat itself authored. Redacting at the single point the report enters this handler is what keeps every consumer below on one sanitized source instead of each having to remember.
     const redactedReport = redactSecrets(extractToolResultText(event.raw))
@@ -627,9 +650,12 @@ function postAgentHandler(event: HookEvent): HookOutput {
 registerHook('subagent_start', subagentStartHandler)
 // advisory: hooks_session.ts's subagentStopHandler shares this event and must still run, whichever module registered first.
 registerHook('subagent_stop', subagentReportRewriteHandler, { advisory: true })
+// Written out one per line, not looped over SPAWN_TOOL_BRIEF_FIELD: tests/hooks_cli.test.ts scans this source for literal registerHook toolName arguments to prove every name a harness maps to has a handler. A test here pins these lines to the table's keys.
 registerHook('pre_tool_use', loadingHiddenRuleCheck(preAgentHandler), { toolName: 'Agent' })
 registerHook('pre_tool_use', loadingHiddenRuleCheck(preAgentHandler), { toolName: 'task' })
 registerHook('pre_tool_use', loadingHiddenRuleCheck(preAgentHandler), { toolName: 'Task' })
+registerHook('pre_tool_use', loadingHiddenRuleCheck(preAgentHandler), { toolName: 'spawn_agent' })
 registerHook('post_tool_use', postAgentHandler, { toolName: 'Agent' })
 registerHook('post_tool_use', postAgentHandler, { toolName: 'task' })
 registerHook('post_tool_use', postAgentHandler, { toolName: 'Task' })
+registerHook('post_tool_use', postAgentHandler, { toolName: 'spawn_agent' })

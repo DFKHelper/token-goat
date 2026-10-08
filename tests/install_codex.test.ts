@@ -165,6 +165,8 @@ describe('installCodex', () => {
       expect(matchers).toContain('view_image|Bash|exec|shell|bash')
       expect(matchers).toContain('apply_patch')
       expect(matchers).toContain('web_search')
+      // FORMAT-DERIVED: Codex's hook tool name for a subagent spawn is spawn_agent (openai/codex codex-rs/core/src/tools/hook_names.rs), so a matcher naming it is what routes the spawn to the hook.
+      expect(matchers).toContain('spawn_agent')
       for (const command of commandsFor(config, event)) {
         expect(command).toContain('token-goat-shim')
       }

@@ -447,7 +447,7 @@ Three things follow, and they are worth knowing before you decide. It never leav
 
 | Path | What |
 |------|------|
-| `~/.codex/config.toml` | Hooks block with Codex-specific matchers (`view_image|Bash`, `apply_patch`, `web_search`) plus `PreCompact`/`UserPromptSubmit`/`SubagentStop` global hooks. Existing hooks preserved. |
+| `~/.codex/config.toml` | Hooks block with Codex-specific matchers (`view_image|Bash`, `apply_patch`, `web_search`, `spawn_agent`) plus `PreCompact`/`UserPromptSubmit`/`SubagentStop` global hooks. Existing hooks preserved. |
 | `~/.codex/AGENTS.md` | A delimited block (`<!-- token-goat-codex-begin -->` … `<!-- token-goat-codex-end -->`) with the same routing guidance, adapted for Codex tool names. |
 | `~/.codex/hooks/token-goat-shim.cjs` | The hook script `config.toml`'s hook commands invoke (`node "<path>" <event>`). Strips internal `_tg_*` keys and injects `hookSpecificOutput.hookEventName` to satisfy Codex's strict schemas. Regenerated on every `install --codex` run. The `.cjs` extension keeps Node from loading it as an ES module when a package.json above it says `"type": "module"`. A small `token-goat-shim.js` beside it hands off to the `.cjs` file, for sessions started before the rename that still run the old path. |
 

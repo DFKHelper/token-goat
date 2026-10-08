@@ -270,6 +270,77 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
     }
   })
 
+  // FORMAT-DERIVED: Codex fires PreToolUse for its subagent spawn under tool_name `spawn_agent` (`Agent` is only a matcher alias), and the call carries `message` or `items` with no `prompt`. Sources, all in github.com/openai/codex at main 3b6ab3471a2d4d994c9fad322fca749564bc05e0 (release rust-v0.162.0 is the latest tag): codex-rs/core/src/tools/hook_names.rs (HookToolName::spawn_agent), codex-rs/core/src/tools/registry.rs::function_hook_tool_name, codex-rs/core/src/tools/handlers/multi_agents_spec.rs::spawn_agent_common_properties_v1 and create_collab_input_items_schema (item `{type: 'text', text}`). Proves agreement with that source, not with a shipped Codex build.
+  it('briefs a Codex spawn_agent through its message field, with the live cached ids', async () => {
+    _realisticProjectMapOverride = true
+    try {
+      const liveId = await storeBashOutput('echo codex-marker', 'live output', 0)
+      recordBashOutput('hash-live', liveId, 11)
+      recordBashOutput('hash-dead', '0123456789abcdef', 100)
+
+      const result = await runHook(buildEvent('pre_tool_use', { tool_name: 'spawn_agent', tool_input: { message: 'Look at the build.', agent_type: 'worker' }, session_id: sessionId }))
+      expect(result.hookType).toBe('rewriteInput')
+      if (result.hookType === 'rewriteInput') {
+        const message = result.updatedInput['message'] as string
+        expect(message.startsWith('Look at the build.')).toBe(true)
+        expect(message).toContain('token-goat bash-output ' + liveId)
+        expect(message).not.toContain('0123456789abcdef')
+        expect(result.updatedInput['agent_type']).toBe('worker')
+        expect(result.updatedInput).not.toHaveProperty('prompt')
+      }
+    } finally {
+      _realisticProjectMapOverride = false
+    }
+  })
+
+  it('briefs a Codex spawn_agent that sends text items instead of a message, leaving the items it was given alone', async () => {
+    _realisticProjectMapOverride = true
+    try {
+      const liveId = await storeBashOutput('echo codex-items', 'live output', 0)
+      recordBashOutput('hash-live', liveId, 11)
+      const items = [{ type: 'text', text: 'Look at the build.' }, { type: 'mention', name: 'docs', path: 'app://docs' }]
+
+      const result = await runHook(buildEvent('pre_tool_use', { tool_name: 'spawn_agent', tool_input: { items }, session_id: sessionId }))
+      expect(result.hookType).toBe('rewriteInput')
+      if (result.hookType === 'rewriteInput') {
+        const sent = result.updatedInput['items'] as Array<Record<string, unknown>>
+        expect(sent.slice(0, 2)).toEqual(items)
+        expect(sent).toHaveLength(3)
+        expect(sent[2]?.['type']).toBe('text')
+        expect(sent[2]?.['text']).toContain('token-goat bash-output ' + liveId)
+        expect(result.updatedInput).not.toHaveProperty('message')
+      }
+    } finally {
+      _realisticProjectMapOverride = false
+    }
+  })
+
+  it('briefs every spawn tool through the field that tool carries its brief in', async () => {
+    // HAND-DERIVED: one row per tool the spawn table names, each paired with the field its schema documents (Claude Code and Copilot CLI: prompt; Codex: message, per the FORMAT-DERIVED sources above).
+    for (const [toolName, field] of [['Agent', 'prompt'], ['task', 'prompt'], ['Task', 'prompt'], ['spawn_agent', 'message']] as const) {
+      const result = await runHook(buildEvent('pre_tool_use', { tool_name: toolName, tool_input: { [field]: 'Check the build.' }, session_id: sessionId }))
+      expect(result.hookType, toolName).toBe('rewriteInput')
+      if (result.hookType === 'rewriteInput') expect((result.updatedInput[field] as string).startsWith('Check the build.'), toolName).toBe(true)
+    }
+  })
+
+  it('leaves a Codex spawn_agent with no text to brief alone', async () => {
+    for (const toolInput of [{}, { message: '   ' }, { items: [{ type: 'image', image_url: 'https://example.invalid/a.png' }] }]) {
+      const result = await runHook(buildEvent('pre_tool_use', { tool_name: 'spawn_agent', tool_input: toolInput, session_id: sessionId }))
+      expect(result.hookType).toBe('pass')
+    }
+  })
+
+  it('clears a Codex spawn_agent from the outstanding list when the call finishes, and leaves its handle result uncompacted', async () => {
+    const message = 'Investigate the flaky shard thoroughly and report back.'
+    await runHook(buildEvent('pre_tool_use', { tool_name: 'spawn_agent', tool_input: { message }, session_id: sessionId }))
+    expect(getOutstandingAgentSpawns().some((e) => e.prompt.startsWith(message))).toBe(true)
+    const handle = JSON.stringify({ agent_id: 'a1b2', nickname: null }).repeat(400)
+    const post = await runHook(buildEvent('post_tool_use', { tool_name: 'spawn_agent', tool_input: { message }, tool_response: handle, session_id: sessionId }))
+    expect(post.hookType).toBe('pass')
+    expect(getOutstandingAgentSpawns().some((e) => e.prompt.startsWith(message))).toBe(false)
+  })
+
   it('omits the cached-outputs line when no recorded id resolves', async () => {
     _realisticProjectMapOverride = true
     try {
