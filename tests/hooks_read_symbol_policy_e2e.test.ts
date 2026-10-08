@@ -26,13 +26,13 @@ function writeLargeModule(name = 'big.ts', count = 1200): string {
 }
 
 // HAND-DERIVED: a synthetic markdown guide of `count` `##` sections with one line of prose each, sized past the 50,000-byte default threshold.
-function writeLargeMarkdown(name = 'guide.md', count = 401): string {
+function writeLargeMarkdown(name = 'guide.md', count = 401, headingFor: (i: number) => string = (i) => `Section ${i}`, title = 'Guide'): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-first-read-policy-md-'))
   tmpDirs.push(dir)
   const filePath = path.join(dir, name)
   const sections: string[] = []
-  for (let i = 0; i < count; i++) sections.push(`## Section ${i}\n\nThis section describes step ${i} of the procedure in enough words to fill a line, then says why the step matters.\n`)
-  fs.writeFileSync(filePath, '# Guide\n\n' + sections.join('\n'), 'utf8')
+  for (let i = 0; i < count; i++) sections.push(`## ${headingFor(i)}\n\nThis section describes step ${i} of the procedure in enough words to fill a line, then says why the step matters.\n`)
+  fs.writeFileSync(filePath, `# ${title}\n\n` + sections.join('\n'), 'utf8')
   return filePath
 }
 
@@ -176,6 +176,19 @@ describe('first-read symbol policy on a large markdown file', () => {
     expect(relayed).toContain('Whole-file first read denied by first_read_symbol_policy')
     expect(relayed).toMatch(/Run `token-goat section '[^']*notes\$v2\.md::[^']+'` to read surgically\./)
     expect(relayed).toMatch(/Use `token-goat outline '[^']*notes\$v2\.md'` to map sections/)
+  })
+
+  it('names no section when every heading holds a backtick, rather than a placeholder that does not exist', () => {
+    setPolicy('deny')
+    // HAND-DERIVED: a backtick closes a suggested command's fence, so no such heading can be named in a command and the deny has no real section to point at.
+    const filePath = writeLargeMarkdown('api.md', 401, (i) => `The \`call${i}\` method`, 'The `api` module')
+    indexFileSync(filePath, globalDbPath())
+
+    const out = firstRead(filePath, `policy-md-backticks-${process.pid}-${Date.now()}`)
+    expect(out.hookType).toBe('deny')
+    if (out.hookType !== 'deny') return
+    expect(out.message).toContain('Whole-file first read denied by first_read_symbol_policy')
+    expect(out.message).not.toContain('SectionHeading')
   })
 
   it('reports every heading the index holds, not a capped list', () => {

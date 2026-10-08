@@ -91,15 +91,22 @@ export function sliceForPath(filePath: string): HintSlice {
   return 'symbol'
 }
 
+// A name displaySafeText would rewrite is shaped like token-goat's own voice (a `&#91;tg]`/`&#91;token-goat:` marker) or hides a control character, and escaping it would trade a forged marker for a suggested command that can't run -- `token-goat section`/`token-goat read` compare names literally, without HTML-decoding, so an escaped `&#91;tg]` heading or symbol never resolves -- so such a name is dropped entirely. Nothing is escaped by hand: quotedArg picks the quote mark, and a `"` escaped here first reached the command as a literal backslash inside the single quotes quotedArg then chose, naming a heading the file does not have.
+/** Renders an indexed symbol/heading/key name safe to name in a hint, as a command's quoted argument or in the hint's own words, or '' when it cannot be: anything displaySafeText would rewrite (a token-goat marker, a control character) is refused outright rather than shipped on the context channel, which does not fence its payload the way the deny channel does, and so is a name the relay's guard would drop from a command: a backtick (which also pairs with a command's fence when the name is listed in prose), `$(`, or a value no quote mark holds. */
+export function escapeHintName(name: string): string {
+  const trimmed = name.trim()
+  if (trimmed === '' || displaySafeText(trimmed) !== trimmed) return ''
+  const probe = 'token-goat read ' + quotedArg(trimmed)
+  return stripUnsafeSuggestions(probe) === probe ? trimmed : ''
+}
+
 /** `name` when it can be passed through quotedArg and run verbatim, else null. The relay's own guard is the test, so a name passes exactly when a command carrying it the way every caller writes it (quotedArg) survives stripUnsafeSuggestions: a `$` or `"` that quotedArg single-quotes passes, where a probe hand-written in double quotes refused it, while a backtick (which closes the command's fence) and `$(` are still refused by the guard; a backslash (which would escape the closing quote), the `::` spec separator, and anything displaySafeText would rewrite (a token-goat marker, a control character) are refused on top, since these names also reach channels the relay does not guard. */
 function quotable(raw: string, slice: HintSlice): string | null {
   const name = raw.trim()
   if (name === '' || name.length > MAX_HINT_NAME_CHARS || name.includes('\\') || name.includes('::')) return null
   // A key is the whole argument of config-get or a query command, so a `"` in it (a TOML key written `"my key" = 1` indexes with its quotes) splits that argument, and neither command redirects a near-miss name the way section and read do.
   if (slice === 'key' && name.includes('"')) return null
-  if (displaySafeText(name) !== name) return null
-  const probe = 'token-goat read ' + quotedArg(name)
-  return stripUnsafeSuggestions(probe) === probe ? name : null
+  return escapeHintName(name) === '' ? null : name
 }
 
 /** True when the character at `i` of `text` would run on into a name written next to it: a word character, or a hyphen or dollar sign joining it to another word character (`Get-Thing`, `a$b`), where a bare `$` is the regex end anchor. `step` is the direction the name would grow, so a name ending at a boundary is tested forward and one starting there backward. */
@@ -219,6 +226,12 @@ export function headingTreeParts(headings: MarkdownHeading[], filePath: string, 
   const lines = parts.sectionsList.split('\n')
   const kept = lines.filter((l) => !MORE_HEADINGS_LINE_RE.test(l))
   return { guidance, sectionsList: [...kept, `  ... (${countNoun(total - kept.length, 'more heading')})`].join('\n') }
+}
+
+/** A real name for `slice` out of names a caller already read off the index, else the slice's placeholder. The names are walked the way hintTarget walks its own, so an unusable first one falls through to the next safe one; a name with whitespace around it is passed over, never trimmed into a different name than the index holds. */
+export function hintTargetFromNames(names: readonly string[], slice: HintSlice): HintTarget {
+  const found = pick(names.filter((name) => name === name.trim()).map((name) => ({ name, level: 0 })), slice)
+  return found === null ? { name: HINT_PLACEHOLDERS[slice], real: false, slice } : { name: found, real: true, slice }
 }
 
 /** A real name for `slice` inside `filePath`, else the slice's placeholder. Looks, in order, at what the caller already holds (a heading tree, the text), then the index, then the first HINT_TARGET_SCAN_BYTES of the file. A path as written in a command (`source.cwd` set) is gated with commandPathIsTouchable before resolveIndexPath, which is itself an fs call on Windows (an 8.3 segment expands through realpathSync.native), so a UNC path is refused before anything dials it. */

@@ -3,7 +3,8 @@ import type { HookEvent } from './hook_registry.js'
 import { getReadNavigationEvidence, type NavigationEvidence } from './index_reader.js'
 import { editAnywayHint, estimateRequestedSlice, readRequestedSliceWindow } from './hooks_read_slice.js'
 import { displaySafePath } from './paths.js'
-import { fencedCommand, leadWithCommand, quotedArg, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { fencedCommand, leadWithCommand, quotedArg } from './hint_suggestion_guard.js'
+import { hintTargetFromNames } from './hint_target.js'
 import { isWithinQuietHours } from './util.js'
 import { loadConfig } from './config.js'
 
@@ -37,18 +38,6 @@ export type ReadPolicyDecision =
 
 export function formatKb(bytes: number): string {
   return (bytes / 1024).toFixed(1)
-}
-
-/** Validates and sanitizes a candidate symbol or heading name for safe inclusion in an executable CLI suggestion string. Rejects symbols with shell-metacharacters, newlines, quotes, or suspicious length. */
-export function safeSuggestionTarget(raw: string): string | null {
-  if (!raw || typeof raw !== 'string') return null
-  const trimmed = raw.trim()
-  if (!trimmed || trimmed.length > 80) return null
-  if (/[\r\n\t`"';\\${}|&<>*?~]/.test(trimmed)) return null
-  if (trimmed.includes('::')) return null
-  const probe = `token-goat read "test.ts::${trimmed}"`
-  if (stripUnsafeSuggestions(probe) !== probe) return null
-  return trimmed
 }
 
 /** Pure decision evaluator for first-read symbol policy. Identifies broad/whole-file reads on large indexed files with symbols or headings, while allowing small bounded slices (e.g. view_range: [1, 50] or small offset/limit). */
@@ -94,16 +83,14 @@ export function evaluateFirstReadSymbolPolicy(ctx: ReadPolicyContext): ReadPolic
   const safeShown = displaySafePath(shownPath)
 
   if (evidence.symbolCount > 0 && evidence.topSymbols.length > 0) {
-    const top = evidence.topSymbols[0]!
-    const safeName = safeSuggestionTarget(top.name)
-    if (safeName) {
-      suggestions.push('token-goat read ' + quotedArg(`${safeShown}::${safeName}`))
+    const target = hintTargetFromNames(evidence.topSymbols.map((s) => s.name), 'symbol')
+    if (target.real) {
+      suggestions.push('token-goat read ' + quotedArg(`${safeShown}::${target.name}`))
     }
   } else if (evidence.headingCount > 0 && evidence.topHeadings.length > 0) {
-    const top = evidence.topHeadings[0]!
-    const safeName = safeSuggestionTarget(top.name)
-    if (safeName) {
-      suggestions.push('token-goat section ' + quotedArg(`${safeShown}::${safeName}`))
+    const target = hintTargetFromNames(evidence.topHeadings.map((h) => h.name), 'section')
+    if (target.real) {
+      suggestions.push('token-goat section ' + quotedArg(`${safeShown}::${target.name}`))
     }
   }
 

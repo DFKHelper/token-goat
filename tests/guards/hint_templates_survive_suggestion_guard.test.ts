@@ -384,11 +384,6 @@ const SAFE_BARE: ReadonlyArray<{ key: string; reason: string }> = [
   ...['bridges/antigravity_install.ts::eventArg', 'bridges/antigravity_install.ts::SHIM_MARKER', 'bridges/gemini_install.ts::eventArg', 'bridges/qwen_install.ts::eventArg'].map((key) => ({ key, reason: 'a hook command line written into the harness config, carrying a fixed event name and marker' })),
 ]
 
-/** Values a template puts in double quotes by hand where the text is a probe, never shown: a candidate command handed to stripUnsafeSuggestions to ask whether the guard keeps it, whose name already refused every quote, `$` and backtick. Valid for a hand-quoted value only. */
-const PROBE_HAND_QUOTED: ReadonlyArray<{ key: string; reason: string }> = [
-  { key: 'hooks_read_policy.ts::trimmed', reason: 'safeSuggestionTarget() asks the guard about `token-goat read "test.ts::<name>"` after refusing quotes, `$` and backticks, and returns the name, never the probe' },
-]
-
 describe('every interpolated value in a suggested command in src', () => {
   const commands = registeredCommands()
   const scan = (templates: (standIn: StandIn) => Array<{ file: string; line: number; text: string }>): Array<{ where: string; key: string; how: string }> => {
@@ -401,20 +396,18 @@ describe('every interpolated value in a suggested command in src', () => {
   }
   const found = scan(stringTemplates)
   const safe = new Set(SAFE_BARE.map((e) => e.key))
-  const probes = new Set(PROBE_HAND_QUOTED.map((e) => e.key))
 
   it('is scanned', () => {
     expect(commands.size, 'the CLI command names were not found').toBeGreaterThan(100)
-    pinnedPopulation({ what: 'interpolated values no quoting helper quoted in suggested token-goat commands in src', items: [...new Set(found.map((f) => f.key))], floor: 1, mustInclude: ['hooks_bash.ts::curlOutputId', 'answer_router.ts::ANSWER_DELEGATE_LIMIT', 'hooks_read_policy.ts::trimmed'] })
+    pinnedPopulation({ what: 'interpolated values no quoting helper quoted in suggested token-goat commands in src', items: [...new Set(found.map((f) => f.key))], floor: 1, mustInclude: ['hooks_bash.ts::curlOutputId', 'answer_router.ts::ANSWER_DELEGATE_LIMIT'] })
   })
 
   it('is quoted unless it is a reviewed safe value', () => {
-    expect(found.filter((f) => !safe.has(f.key) && !(f.how === 'hand-quoted' && probes.has(f.key))).map((f) => f.where + ' ' + f.how + ' ' + f.key)).toEqual([])
+    expect(found.filter((f) => !safe.has(f.key)).map((f) => f.where + ' ' + f.how + ' ' + f.key)).toEqual([])
   })
 
   it('lists no safe value that no longer appears', () => {
     expect(SAFE_BARE.filter((e) => !found.some((f) => f.key === e.key)).map((e) => e.key)).toEqual([])
-    expect(PROBE_HAND_QUOTED.filter((e) => !found.some((f) => f.key === e.key && f.how === 'hand-quoted')).map((e) => e.key)).toEqual([])
   })
 
   // HAND-DERIVED virtual sources, one per shape the check has to tell apart: the symbol hint that suggested `token-goat symbol A|B` bare, a config-get key left outside the quotes its path is in, a branch of a conditional, a quoted const, a status line that only starts with the product name, a command named mid-sentence, and the compress hint that wrote `compress -c "${cmd}"` by hand (hooks_bash_post.ts).
@@ -578,7 +571,6 @@ const R = {
   jsonLeaf: 'a hint inside a --json payload that displaySafeJson escapes as a leaf string, so the value goes in as typed; escaping it here as well would escape it twice',
   lintSentence: 'a lint diagnostic quoting a document id, whose whole sentence is escaped once at the err.message and warn.message sink (display_safe_sink_coverage), so escaping the id here as well would escape it twice',
   pid: 'a PowerShell WQL filter around CLAUDE_PID, which entryReason has already checked to be one to ten digits',
-  probe: 'a probe command handed to stripUnsafeSuggestions to learn whether a name survives it, never shown (safeSuggestionTarget refuses quotes, `$` and backticks first)',
   mcpParam:'an MCP tool name and JSON parameter example, for a client with no shell: the value is one token-goat already quoted in its own retry command, the name is word characters, and a value holding a double quote or backtick is left out',
 } as const
 
@@ -644,7 +636,6 @@ const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string; count?: nu
   ].map((key) => ({ key, reason: R.render })),
   { key: 'html_query.ts::lines.push(`  <form${idStr} method="${displaySafeText(f.method || \'GET\').replace(/"/g, \'&quot;\')}" action="${displaySafeText(f.action || \'\').replace(/"/g, \'&quot;\')}"> (line ${f.line})`)', reason: R.render, count: 2 },
   { key: 'html_query.ts::message: `Duplicate ID \'#${attrVal}\' previously defined on line ${prevLine}`,', reason: R.lintSentence },
-  { key: 'hooks_read_policy.ts::const probe = `token-goat read "test.ts::${trimmed}"`', reason: R.probe },
   { key: 'pack.ts::parts.push(`<document index="${docNum}">`)', reason: R.number, count: 2 },
   ...[
     'mcp_client_text.ts::const example = /["`]/.test(value) ? \'\' : ` (e.g. "${value}")`',

@@ -10,11 +10,11 @@ import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavin
 import { preToolPathDeclined } from './vscode_path_gate.js'
 import { detectHarness } from './bridges/registry.js'
 import { readHintCrossesRule } from './rewrite_permission.js'
-import { leadWithCommand, docNavigation, fencedCommand, fileSubject, nameSubject, quotedArg, quotedArgs, configGetCommand, sentenceStart, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
-import { headingTreeParts, hintTarget, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
+import { leadWithCommand, docNavigation, fencedCommand, fileSubject, nameSubject, quotedArg, quotedArgs, configGetCommand, sentenceStart } from './hint_suggestion_guard.js'
+import { escapeHintName, headingTreeParts, hintTarget, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
 import { isNodeModulesPath } from './path_containment.js'
-import { displaySafePath, displaySafeText, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
-import { foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
+import { displaySafePath, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
+import { countNoun, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { loadConfig } from './config.js'
 import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
 import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges } from './session.js'
@@ -37,7 +37,7 @@ import {
 } from './hooks_read_slice.js'
 
 import type { HookOutput } from './types.js'
-import { evaluateFirstReadSymbolPolicy, safeSuggestionTarget, formatKb } from './hooks_read_policy.js'
+import { evaluateFirstReadSymbolPolicy, formatKb } from './hooks_read_policy.js'
 import { buildPackageManifestHint } from './hints.js'
 import { querySymbols, getFileEntry, getReadNavigationEvidence } from './index_reader.js'
 import { extractShellBannerHeading } from './section_reader.js'
@@ -353,15 +353,6 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
     if (fallback?.real === false) return leadWithCommand(`token-goat skeleton ${quotedArg(filePath)}`, `or \`token-goat outline ${quotedArg(filePath)}\` for structure, then \`token-goat read ${quotedArg(`${filePath}::${sym}`)}\` for one function`)
     return leadWithCommand(`token-goat read ${quotedArg(`${filePath}::${sym}`)}`, `${avail}for one function, or \`token-goat skeleton ${quotedArg(filePath)}\` / \`token-goat outline ${quotedArg(filePath)}\` for structure`)
   }
-}
-
-// A name displaySafeText would rewrite is shaped like token-goat's own voice (a `&#91;tg]`/`&#91;token-goat:` marker) or hides a control character, and escaping it would trade a forged marker for a suggested command that can't run -- `token-goat section`/`token-goat read` compare names literally, without HTML-decoding, so an escaped `&#91;tg]` heading or symbol never resolves -- so such a name is dropped entirely. Nothing is escaped by hand: quotedArg picks the quote mark, and a `"` escaped here first reached the command as a literal backslash inside the single quotes quotedArg then chose, naming a heading the file does not have.
-/** Renders an indexed symbol/heading/key name safe to name in a hint, as a command's quoted argument or in the hint's own words, or '' when it cannot be: anything displaySafeText would rewrite (a token-goat marker, a control character) is refused outright rather than shipped on the context channel, which does not fence its payload the way the deny channel does, and so is a name the relay's guard would drop from a command: a backtick (which also pairs with a command's fence when the name is listed in prose), `$(`, or a value no quote mark holds. */
-function escapeHintName(name: string): string {
-  const trimmed = name.trim()
-  if (trimmed === '' || displaySafeText(trimmed) !== trimmed) return ''
-  const probe = 'token-goat read ' + quotedArg(trimmed)
-  return stripUnsafeSuggestions(probe) === probe ? trimmed : ''
 }
 
 /** True when a symbol spanning `lineStart`-`lineEnd` is too big to recommend for a whole-body `read "file::Symbol"`: more than LARGE_SYMBOL_LINE_THRESHOLD lines, or more than half of `filePath`'s own line count. Shared by every hint site that names a real indexed symbol, so a whole-body read is never pointed at a symbol that would just hand back nearly the whole file under a symbol-shaped name. */
@@ -799,10 +790,10 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         if ((alreadyRead && !isSmallUnseenSlice) || tooLargeForFirstRead || firstReadSymbolDeny) {
           if (firstReadSymbolDeny) {
             recordStat('session_hint', 0, 0)
-            const safeHeading = headingTarget.name ? safeSuggestionTarget(headingTarget.name) : null
+            const safeHeading = headingTarget.real ? headingTarget.name : null
             // quotedArg keeps a `$` or backtick in the path from making the relay guard cut the commands, and the edit-anyway hint takes its own line so a cut in the explanation stops short of it.
             const explanation =
-              `This file is large (${formatKb(markdownSize ?? 0)}KB with ${policyHeadingCount} headings). Whole-file first read denied by first_read_symbol_policy. ` +
+              `This file is large (${formatKb(markdownSize ?? 0)}KB with ${countNoun(policyHeadingCount, 'heading')}). Whole-file first read denied by first_read_symbol_policy. ` +
               `Use ${fencedCommand('token-goat outline ' + quotedArg(shown))} to map sections, or re-read with offset/limit for a specific section.`
             return denyOutput(
               (safeHeading ? leadWithCommand('token-goat section ' + quotedArg(`${shown}::${safeHeading}`), 'to read surgically', explanation) : explanation) +
