@@ -26,6 +26,21 @@ import { echoedValue } from './hint_suggestion_guard.js'
 /** Target token budget for the entire briefing (project map + cached ids + reminder + report contract). Measured against this repo's own compact map (46 tokens) plus a realistic mid-size project's compact map (~140 tokens, e.g. "Files: 640" + 10 top symbols) combined with the imperative surgical-read reminder (136 tokens, grown from a one-liner in c574b1f6), the report contract added below (~95 tokens), and a 1-3 entry cache-ids block (26-50 tokens): worst-case realistic total lands around 400-470 tokens. 450 left too little headroom once the contract was added, so 550 leaves a real margin above that; revisit this number again if either tail block grows further. */
 const BRIEFING_TARGET_TOKENS = 550
 
+/** How many cached outputs the briefing names. */
+const CACHED_IDS_LISTED = 3
+
+/** Longest command text shown beside a cached id; the full command is one recall away. */
+const CACHED_COMMAND_PREVIEW_CHARS = 60
+
+/** " (~2KB, 12m ago, `git status`)": size, age and a one-line preview of the command, so a subagent can tell which id answers its question. The command was redacted when it was stored (bash_output_cache.ts); it is flattened to one line and defanged here because it lands in a prompt. */
+function describeCachedOutput(entry: { command: string; output: string; storedAt: number }): string {
+  const ageMin = Math.max(0, Math.round((Date.now() - entry.storedAt) / 60_000))
+  const age = ageMin < 60 ? `${ageMin}m` : ageMin < 60 * 48 ? `${Math.round(ageMin / 60)}h` : `${Math.round(ageMin / 1440)}d`
+  const flat = neutralizeSpokenMarkers(entry.command.replace(/\s+/g, ' ').trim())
+  const preview = flat.length > CACHED_COMMAND_PREVIEW_CHARS ? flat.slice(0, CACHED_COMMAND_PREVIEW_CHARS) + '...' : flat
+  return ` (~${toKB(entry.output.length)}KB, ${age} ago, ${'`'}${preview.replace(/`/g, "'")}${'`'})`
+}
+
 /** Build a compact subagent briefing block. Returns a brief formatted string with: 1. One-line project-map summary (top-level structure only) 2. 2-3 recent cached output IDs as re-use hints 3. One-line surgical-read reminder Returns empty string if the briefing cannot be built (project unavailable, etc.). Estimated length is kept under BRIEFING_TARGET_TOKENS for efficient context usage. `projectRoot` is the directory the map summary walks, and null skips the map. See {@link briefingRoot} for why that is not always process.cwd(). */
 function buildSubagentBriefing(projectRoot: string | null): string {
   try {
@@ -48,15 +63,15 @@ function buildSubagentBriefing(projectRoot: string | null): string {
     try {
       const outputs = getSessionBashOutputs()
       if (outputs.length > 0) {
-        const recent = outputs.slice(-3).reverse()
-        const idsList = recent
-          .map(([_hash, id]) => {
-            const entry = getBashOutput(id)
-            const label = entry ? ` (~${toKB(entry.output.length)}KB)` : ''
-            return '`token-goat bash-output ' + id + '`' + label
-          })
-          .join(', ')
-        cacheIdsBlock = '\n\nCached outputs this session: ' + idsList
+        // Newest first, and only ids that still resolve: the session remembers an id after its blob has aged out or been evicted, and a briefing that hands a subagent a dead id costs it a failed recall.
+        const live: string[] = []
+        for (const [, id] of [...outputs].reverse()) {
+          const entry = getBashOutput(id)
+          if (entry === null) continue
+          live.push('`token-goat bash-output ' + id + '`' + describeCachedOutput(entry))
+          if (live.length === CACHED_IDS_LISTED) break
+        }
+        if (live.length > 0) cacheIdsBlock = '\n\nCached outputs this session: ' + live.join(', ')
       }
     } catch {
       // Bash output unavailable — skip and continue with reminder

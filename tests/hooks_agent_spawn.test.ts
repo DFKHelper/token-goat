@@ -3,7 +3,8 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 // Importing relay registers EVERY hook module (including hooks_agent_spawn) for its side-effects, so runHook dispatches through the real production registry. buildEvent maps a Claude Code payload onto a HookEvent exactly as relay() does.
-import { buildEvent } from '../src/relay.js'
+import { buildEvent, relayInProcess } from '../src/relay.js'
+import { runAdapter } from '../src/hook_adapters.js'
 import { runHook } from '../src/hook_registry.js'
 import { recordBashOutput, MAX_OUTSTANDING_AGENT_SPAWNS, getOutstandingAgentSpawns, importSessionState } from '../src/session.js'
 import { storeBashOutput, getBashOutput } from '../src/bash_output_cache.js'
@@ -221,6 +222,61 @@ describe('Agent spawn briefing hook (real runHook dispatch)', () => {
         // At a realistic mid-size project's map, there is still enough headroom for the report contract to survive alongside the cache-ids block -- it is not the first thing dropped.
         expect(updatedPrompt).toContain('Report contract')
       }
+    } finally {
+      _realisticProjectMapOverride = false
+    }
+  })
+
+  it('lists only cached ids that still resolve, newest first, with age and the command', async () => {
+    // HAND-DERIVED: the dead id is a 16-hex string recorded in the session with no blob behind it, the shape a session holds after its output aged out or was evicted; the live id is a real stored entry. The expected text follows from those two facts, not from the briefing code.
+    _realisticProjectMapOverride = true
+    try {
+      const liveId = await storeBashOutput('echo live-marker', 'live output', 0)
+      recordBashOutput('hash-live', liveId, Buffer.byteLength('live output', 'utf-8'))
+      const deadId = '0123456789abcdef'
+      recordBashOutput('hash-dead', deadId, 100)
+
+      const result = await runHook(buildEvent('pre_tool_use', { tool_name: 'Agent', tool_input: { prompt: 'Look at the build.' }, session_id: sessionId }))
+      expect(result.hookType).toBe('rewriteInput')
+      if (result.hookType === 'rewriteInput') {
+        const updatedPrompt = result.updatedInput['prompt'] as string
+        expect(updatedPrompt).toContain('token-goat bash-output ' + liveId)
+        expect(updatedPrompt).not.toContain(deadId)
+        expect(updatedPrompt).toMatch(/0m ago, `echo live-marker`/)
+      }
+    } finally {
+      _realisticProjectMapOverride = false
+    }
+  })
+
+  it('reaches Copilot CLI\'s task tool with the same live-only list', async () => {
+    // FORMAT-DERIVED: Copilot CLI's preToolUse payload (sessionId, workingDirectory, toolName, toolArgs as a JSON string) per GitHub's hooks reference, cited in src/bridges/copilot_cli.ts; 'task' is a built-in tool name that shim forwards unmapped. The prompt argument name is HAND-DERIVED from the briefing reading `prompt`. Ids are as in the test above.
+    _realisticProjectMapOverride = true
+    try {
+      const liveId = await storeBashOutput('echo copilot-marker', 'live output', 0)
+      recordBashOutput('hash-live', liveId, 11)
+      recordBashOutput('hash-dead', '0123456789abcdef', 100)
+      // relayInProcess reloads the named session from disk, so the records have to be persisted first.
+      saveSessionState(sessionId)
+      const input = JSON.stringify({ sessionId, workingDirectory: process.cwd(), toolName: 'task', toolArgs: JSON.stringify({ prompt: 'Look at the build.' }) })
+      const result = await runAdapter('copilot_cli', { event: 'preToolUse', input }, { early: () => 0, relay: (event, payload, wait) => relayInProcess(event, payload, wait) })
+      expect(result.exit).toBe(0)
+      const modified = (JSON.parse(result.stdout) as { modifiedArgs?: { prompt?: string } }).modifiedArgs?.prompt ?? ''
+      expect(modified).toContain('token-goat bash-output ' + liveId)
+      expect(modified).toContain('`echo copilot-marker`')
+      expect(modified).not.toContain('0123456789abcdef')
+    } finally {
+      _realisticProjectMapOverride = false
+    }
+  })
+
+  it('omits the cached-outputs line when no recorded id resolves', async () => {
+    _realisticProjectMapOverride = true
+    try {
+      recordBashOutput('hash-dead', '0123456789abcdef', 100)
+      const result = await runHook(buildEvent('pre_tool_use', { tool_name: 'Agent', tool_input: { prompt: 'Look at the build.' }, session_id: sessionId }))
+      expect(result.hookType).toBe('rewriteInput')
+      if (result.hookType === 'rewriteInput') expect(result.updatedInput['prompt']).not.toContain('Cached outputs this session')
     } finally {
       _realisticProjectMapOverride = false
     }
