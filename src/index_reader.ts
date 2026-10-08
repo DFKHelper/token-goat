@@ -1,7 +1,7 @@
 /** Read side of the symbol index. Queries the `symbols`, `refs`, and `files` tables (schema in `db.ts`) that the `token-goat symbol`, `token-goat refs`, and related CLI commands surface. Mapping from snake_case DB columns to the camelCase {@link SymbolEntry} / {@link RefEntry} / {@link FileIndexEntry} shapes lives here so callers never touch raw rows. Each query accepts an optional `dbPath` (defaulting to the global index DB) so tests can point at a throwaway database. The path is passed straight to {@link getDb}, which caches one connection per resolved path. */
 
 import { globalDbPath } from './constants.js'
-import { getDb } from './db.js'
+import { getReadDb } from './db.js'
 import { ownProjectScope } from './nested_worktrees.js'
 import type { FileIndexEntry, RefEntry, SymbolEntry } from './parser_types.js'
 import { normalizePath } from './paths.js'
@@ -139,7 +139,7 @@ export function querySymbols(
     // `rowid` is the tie-break, not decoration: two symbols can share a `line_start` (a class and its first method on one line, an overload pair, anything in a minified file), and SQLite's sort is not stable, so without it two `OFFSET` pages of the same query can order a tied group differently and drop or repeat a row across the page boundary. That is invisible in a single unpaged query, which is why it only became a correctness issue once a caller started paging.
     `FROM symbols ${clause} ORDER BY file_path, line_start, rowid LIMIT ? OFFSET ?`
 
-  const db = getDb(dbPath)
+  const db = getReadDb(dbPath)
   const rows = db.prepare(sql).all(...params, limit, offset) as SymbolRow[]
   return rows.map(toSymbolEntry)
 }
@@ -150,7 +150,7 @@ export function distinctSymbolKinds(rootDir?: string, dbPath: string = globalDbP
   const params: (string | number)[] = []
   applyRootDirScope(rootDir, 'file_path', where, params)
   const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
-  const db = getDb(dbPath)
+  const db = getReadDb(dbPath)
   const rows = db.prepare(`SELECT DISTINCT kind FROM symbols ${clause} ORDER BY kind`).all(...params) as Array<{ kind: string }>
   return rows.map((r) => r.kind)
 }
@@ -159,7 +159,7 @@ export function distinctSymbolKinds(rootDir?: string, dbPath: string = globalDbP
 export function countSymbols(opts: SymbolQueryOpts = {}, dbPath: string = globalDbPath()): number {
   const { clause, params } = buildSymbolWhere(opts)
   const sql = `SELECT COUNT(*) as cnt FROM symbols ${clause}`
-  const db = getDb(dbPath)
+  const db = getReadDb(dbPath)
   const row = db.prepare(sql).get(...params) as { cnt: number }
   return row.cnt
 }
@@ -195,7 +195,7 @@ export function queryRefs(
   const limit = opts.limit ?? DEFAULT_QUERY_LIMIT
   const sql = `SELECT file_path, name, line, col, context FROM refs ${clause} ORDER BY file_path, line LIMIT ?`
 
-  const db = getDb(dbPath)
+  const db = getReadDb(dbPath)
   const rows = db.prepare(sql).all(...params, limit) as RefRow[]
   return rows.map(toRefEntry)
 }
@@ -204,7 +204,7 @@ export function queryRefs(
 export function countRefs(opts: { name: string; filePath?: string; rootDir?: string }, dbPath: string = globalDbPath()): number {
   const { clause, params } = buildRefsWhere(opts)
   const sql = `SELECT COUNT(*) as cnt FROM refs ${clause}`
-  const db = getDb(dbPath)
+  const db = getReadDb(dbPath)
   const row = db.prepare(sql).get(...params) as { cnt: number }
   return row.cnt
 }
@@ -212,7 +212,7 @@ export function countRefs(opts: { name: string; filePath?: string; rootDir?: str
 /** Refs recorded with a given enclosing `context` (the class/function name the ref's line falls inside) in one specific file. Used to resolve a class's extends-clause target: an `extends_clause` ref's `context` is set to the extending class's own name (see the extends-clause parser fix), so `queryRefsByContext(className, classFile)` returns the ref(s) recorded at that class's declaration -- among which the base class name can be picked out. Narrower than {@link queryRefs} (which requires a `name` filter) for exactly this "what did this file/context reference" direction. */
 export function queryRefsByContext(context: string, filePath: string, dbPath: string = globalDbPath()): RefEntry[] {
   const sql = `SELECT file_path, name, line, col, context FROM refs WHERE context = ? AND ${pathEq('file_path')} ORDER BY line LIMIT 20`
-  const db = getDb(dbPath)
+  const db = getReadDb(dbPath)
   const rows = db.prepare(sql).all(context, foldPath(indexKey(filePath))) as RefRow[]
   return rows.map(toRefEntry)
 }
@@ -229,7 +229,7 @@ export function queryRefCounts(
   const counts = new Map<string, number>()
   if (names.length === 0) return counts
 
-  const db = getDb(dbPath)
+  const db = getReadDb(dbPath)
   const scopeWhere: string[] = []
   const scopeParams: (string | number)[] = []
   applyRootDirScope(rootDir, 'file_path', scopeWhere, scopeParams)
@@ -273,7 +273,7 @@ export function getOwnProjectFileEntries(
 }
 
 function fileEntriesWhere(clause: string, params: readonly string[], dbPath: string): Map<string, FileIndexEntry> {
-  const rows = getDb(dbPath)
+  const rows = getReadDb(dbPath)
     .prepare(`SELECT path, sha, mtime, language, indexed_at, embed_sha, parser_sha FROM files WHERE ${clause}`)
     .all(...params) as FileRow[]
 
@@ -297,7 +297,7 @@ export function getFileEntry(
   filePath: string,
   dbPath: string = globalDbPath(),
 ): FileIndexEntry | null {
-  const db = getDb(dbPath)
+  const db = getReadDb(dbPath)
   const row = fileRowByIndexKey<FileRow>(db, filePath, 'path, sha, mtime, language, indexed_at, embed_sha, parser_sha')
 
   if (row === undefined) return null
@@ -323,7 +323,7 @@ export function sanitizeFtsQuery(query: string, join: 'AND' | 'OR' = 'AND'): str
 
 /** Runs one FTS5 MATCH query and maps rows to {@link SymbolEntry}. Shared by both the strict AND-joined attempt and the OR-joined widen-on-empty retry in {@link searchSymbolsFts}. */
 function runFtsQuery(
-  db: ReturnType<typeof getDb>,
+  db: ReturnType<typeof getReadDb>,
   match: string,
   limit: number,
   scope: ReturnType<typeof ownProjectScope> | undefined,
@@ -350,7 +350,7 @@ export function searchSymbolsFts(
   const andMatch = sanitizeFtsQuery(query, 'AND')
   if (andMatch === '') return []
 
-  const db = getDb(dbPath)
+  const db = getReadDb(dbPath)
   const scope = rootDir !== undefined ? ownProjectScope('s.file_path', indexKey(rootDir)) : undefined
   try {
     const andResults = runFtsQuery(db, andMatch, limit, scope)

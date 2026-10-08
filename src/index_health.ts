@@ -1,13 +1,13 @@
 /** Shared "this project has zero indexed files" diagnosis, reused by doctor's Symbols check (cli_doctor_index.ts's checkSymbolCount) and by every query command that can dead-end on an empty index (symbol/semantic/refs/types/callers/brief/dead/call-chain). A zero-result query against an unindexed project reads exactly like a genuine "not found" answer -- this module is the one place that tells the two apart and phrases the fix, so the wording never drifts between call sites (see the CLAUDE.md task note this shipped under). */
 import * as fs from 'fs'
-import { getDb } from './db.js'
+import { getReadDb } from './db.js'
 import { projectScopeClause } from './sql_path.js'
 import { detectWalkMode } from './walk_mode.js'
 import { echoedValue, fencedCommand } from './hint_suggestion_guard.js'
 
 /** Raw indexed file/symbol counts for `dbPath`, scoped to `rootDir` when given. Extracted from cli_doctor_index.ts's checkSymbolCount (which still owns the human-readable message) so index_status (mcp_server.ts) can report the same numbers as structured JSON instead of duplicating the SQL. Throws on a DB error -- callers that want the doctor-style "could not query" fallback must catch it themselves, matching checkSymbolCount's own try/catch. */
 export function getProjectIndexCounts(dbPath: string, rootDir?: string): { fileCount: number; symbolCount: number } {
-  const db = getDb(dbPath)
+  const db = getReadDb(dbPath)
   const countScoped = (table: string, column: string): number => {
     if (rootDir === undefined) {
       return (db.prepare(`SELECT COUNT(*) as c FROM ${table}`).get() as { c: number }).c
@@ -22,7 +22,7 @@ export function getProjectIndexCounts(dbPath: string, rootDir?: string): { fileC
 
 /** How much of the indexed corpus actually has embeddings, scoped exactly like getProjectIndexCounts above. Symbol coverage and embedding coverage fail independently, and only the first was ever reported. A file can be fully parsed -- present in `files`, its symbols in `symbols` -- while contributing no chunks at all, because indexFileEmbeddings (parser.ts) has several deliberate terminal skips that stamp a real embed_sha without embedding anything: a file over `indexing.large_file_symbol_only_kb`, a .profile-meta.xml, oversized Salesforce metadata, a document with no extractable text. Each is correct on its own, and the stamp is what stops the worker re-reading the file every drain. The consequence nobody could see is in aggregate: `semantic` then searches only the files that survived those skips, and a search over 3% of a corpus returns "no matches" in exactly the words it uses for a corpus it searched entirely. Counting distinct chunk paths against indexed files is the one cheap query that tells those apart, so it lives here beside its symbol-side twin rather than being restated at each caller. Throws on a DB error, matching getProjectIndexCounts -- callers own their own fallback. */
 export function getEmbeddingCoverage(dbPath: string, rootDir?: string): { indexedFiles: number; embeddedFiles: number } {
-  const db = getDb(dbPath)
+  const db = getReadDb(dbPath)
   const countScoped = (sql: string, column: string): number => {
     if (rootDir === undefined) {
       return (db.prepare(sql).get() as { c: number }).c
@@ -43,7 +43,7 @@ export function getParserFreshness(
   expectedFor: (language: string) => string,
   rootDir?: string,
 ): { indexedFiles: number; currentFiles: number } {
-  const db = getDb(dbPath)
+  const db = getReadDb(dbPath)
   const scope = rootDir === undefined ? undefined : projectScopeClause('path')
   const rows = db
     .prepare(`SELECT language, parser_sha, COUNT(*) as c FROM files${scope === undefined ? '' : ` WHERE ${scope.clause}`} GROUP BY language, parser_sha`)

@@ -1,6 +1,6 @@
 /** Full-text symbol search split by kind, for the `search` command's symbol and heading channels. Headings and code symbols share one `symbols_fts` table, so an unfiltered query capped at `limit` can come back all headings and leave the symbol channel empty, or the reverse; filtering on `kind` inside the SQL, before the LIMIT, gives each channel its own `limit` rows. This lives here rather than as a parameter on index_reader.ts::searchSymbolsFts because index_reader.ts is an embedding-fingerprint source (scripts/parser-fingerprint.mjs::embedFingerprintSources): any edit to it moves EMBED_FINGERPRINT and makes every user re-embed their whole index, which a search-only filter has no reason to cost. */
 
-import { getDb } from '../db.js'
+import { getReadDb } from '../db.js'
 import { sanitizeFtsQuery } from '../index_reader.js'
 import type { SymbolEntry } from '../parser_types.js'
 import { ownProjectScope } from '../nested_worktrees.js'
@@ -30,7 +30,7 @@ function runKindFtsQuery(dbPath: string, match: string, limit: number, rootDir: 
   const params: (string | number)[] = [match]
   if (scope !== undefined) params.push(...scope.params)
   params.push('equals' in kind ? kind.equals : kind.notEquals, limit)
-  const rows = getDb(dbPath).prepare(sql).all(...params) as SymbolRow[]
+  const rows = getReadDb(dbPath).prepare(sql).all(...params) as SymbolRow[]
   return rows.map((row) => ({
     filePath: row.file_path,
     name: row.name,

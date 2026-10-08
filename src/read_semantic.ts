@@ -5,7 +5,7 @@ import * as path from 'node:path'
 
 import { loadConfig } from './config.js'
 import { globalDbPath } from './constants.js'
-import { getDb } from './db.js'
+import { getReadDb } from './db.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
 import { emitErr } from './emit.js'
 import { ORT_WEB_WASM, RUNTIME_UNAVAILABLE_ADVICE } from './embed_runtime.js'
@@ -229,7 +229,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
   if (embeddingsEnabled && !deferred) {
     try {
       rawHits = await searchSemantic(
-        getDb(globalDbPath()),
+        getReadDb(globalDbPath()),
         query,
         overFetchForMerge,
         undefined,

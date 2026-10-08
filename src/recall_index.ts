@@ -2,7 +2,7 @@
 
 import * as fs from 'node:fs'
 
-import { getDb } from './db.js'
+import { getDb, getReadDb } from './db.js'
 import { globalDbPath } from './constants.js'
 import { sanitizeFtsQuery } from './index_reader.js'
 import { stripAnsiEscapes } from './render/ansi.js'
@@ -82,7 +82,7 @@ let _ftsAvailable: boolean | null = null
 function hasFtsTable(): boolean {
   if (_ftsAvailable !== null) return _ftsAvailable
   try {
-    const db = getDb(globalDbPath())
+    const db = getReadDb(globalDbPath())
     const row = db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cache_recall_fts'`).get()
     _ftsAvailable = row !== undefined
   } catch {
@@ -150,7 +150,7 @@ function mapRowsToHits(
 function ftsSearch(query: string, type: RecallCacheType | undefined, limit: number): RecallHit[] {
   const matchExpr = toFtsMatchExpr(query)
   if (matchExpr === null) return []
-  const db = getDb(globalDbPath())
+  const db = getReadDb(globalDbPath())
   // No alias on cache_recall_fts: aliasing an FTS5 virtual table on the left side of `MATCH` (e.g. `... FROM cache_recall_fts f WHERE f MATCH ?`) throws `no such column: f` in the SQLite build Node bundles (re-confirmed after the move off better-sqlite3) -- a MATCH clause against an FTS5 table must reference the table by its real name. Only the content table (cache_recall) is aliased.
   const rows = (
     type !== undefined
@@ -183,7 +183,7 @@ function ftsSearch(query: string, type: RecallCacheType | undefined, limit: numb
 function likeSearch(query: string, type: RecallCacheType | undefined, limit: number): RecallHit[] {
   const trimmed = query.trim()
   if (!trimmed) return []
-  const db = getDb(globalDbPath())
+  const db = getReadDb(globalDbPath())
   // Backslash must be escaped first -- ESCAPE '\' means an unescaped literal `\` in the pattern (e.g. from a Windows path like `C:\Users`) is otherwise consumed as an escape marker and silently stripped, so the pattern never matches the real backslash in the text.
   const needle = `%${trimmed.replace(/\\/g, '\\\\').replace(/[%_]/g, (c) => `\\${c}`)}%`
   const rows = (
@@ -221,7 +221,7 @@ export function listRecentRecall(opts: RecallSearchOptions = {}): RecallHit[] {
   const limit = opts.limit ?? RECALL_DEFAULT_LIMIT
   const columns = `SELECT entry_id AS id, cache_type AS cacheType, label, content, stored_at AS storedAt FROM cache_recall`
   try {
-    const db = getDb(globalDbPath())
+    const db = getReadDb(globalDbPath())
     const rows = (
       opts.type !== undefined
         ? db.prepare(`${columns} WHERE cache_type = ? ORDER BY stored_at DESC LIMIT ?`).all(opts.type, limit)

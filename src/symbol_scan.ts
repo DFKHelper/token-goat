@@ -1,7 +1,7 @@
 /** Full-scope symbol scanning for the commands that filter symbol names client-side. `querySymbols` applies its `limit` in SQL, so a caller that asks for one capped page and then narrows it with a JavaScript predicate only ever sees matches that sorted inside that page. Several commands papered over this by passing a deliberately large cap (20,000) and treating it as "everything" -- but three indexed projects on the machine this was measured on exceed it, one of them by 11.7x (234,675 symbols), so `find` and `locate` answered from the alphabetically first 8.5% of that project and reported the other 91.5% as absent. Worse than absent: both fall back to near-name matching when nothing matched, so a symbol that is indexed came back as a confident list of unrelated files. Paging the whole scope removes the window instead of widening it. The pages are keyset pages over the file-path index rather than `querySymbols` `OFFSET` pages, which the first version of this walk used and which made it cost minutes on a large project: see {@link forEachSymbol}. This lives here rather than as a new `querySymbols` option because src/index_reader.ts is hashed into EMBED_FINGERPRINT: editing it would re-embed every already-indexed file on every machine. `querySymbols({ limit: -1 })` does already mean "no limit" -- SQLite reads a negative LIMIT as unbounded, and the kind-scoped callers in graph_analysis.ts and graph_inspection.ts use it. It is not the fix here because these callers scan a whole project rather than one `kind`: a single unbounded array would hold every row at once, where paging holds one page and lets the caller keep only the names, paths or display rows it will actually use. src/answer_router.ts::resolveSymbolHit pages `querySymbols` by `OFFSET` and deliberately does not use this: it asks for one name, so each of its pages sorts only that name's rows, and it stops on the first acceptable row, on its first page in the common case. */
 
 import { globalDbPath } from './constants.js'
-import { getDb } from './db.js'
+import { getReadDb } from './db.js'
 import type { querySymbols } from './index_reader.js'
 import { nestedWorktreeExclusions, ownProjectScope } from './nested_worktrees.js'
 import type { SymbolEntry } from './parser_types.js'
@@ -60,7 +60,7 @@ export function forEachSymbol(scope: SymbolScanScope, visit: (symbol: SymbolHead
     where.push(...excluded.clauses)
     params.push(...excluded.params)
   }
-  const db = getDb(globalDbPath())
+  const db = getReadDb(globalDbPath())
   let last: ScanRow | undefined
   for (;;) {
     const clauses = [...where]
@@ -100,7 +100,7 @@ interface FullRow {
 
 /** Full rows for `ids`, in the order given. A row deleted since it was scanned (the worker reindexed its file in between) is left out rather than invented. */
 export function symbolsById(ids: readonly number[]): SymbolEntry[] {
-  const db = getDb(globalDbPath())
+  const db = getReadDb(globalDbPath())
   const byId = new Map<number, SymbolEntry>()
   // SQLite caps the parameters one statement binds, and a caller's --limit decides how many ids arrive here.
   for (let i = 0; i < ids.length; i += 500) {
@@ -165,7 +165,7 @@ export const SUGGEST_NAME_BUDGET = 500_000
 export function projectSymbolNames(rootDir: string, budget: number = SUGGEST_NAME_BUDGET): string[] | null {
   const { clause, params } = ownProjectScope('file_path', rootDir)
   const sql = `SELECT DISTINCT name FROM symbols WHERE ${clause} AND name IS NOT NULL LIMIT ?`
-  const names = getDb(globalDbPath()).prepare(sql).pluck().all(...params, budget + 1) as string[]
+  const names = getReadDb(globalDbPath()).prepare(sql).pluck().all(...params, budget + 1) as string[]
   return names.length > budget ? null : names
 }
 
@@ -174,7 +174,7 @@ export function symbolNameFiles(rootDir: string, names: readonly string[]): Arra
   if (names.length === 0) return []
   const { clause, params } = ownProjectScope('file_path', rootDir)
   const sql = `SELECT DISTINCT name, file_path AS filePath FROM symbols WHERE ${clause} AND name IN (${names.map(() => '?').join(', ')})`
-  return getDb(globalDbPath()).prepare(sql).all(...params, ...names) as Array<{ name: string; filePath: string }>
+  return getReadDb(globalDbPath()).prepare(sql).all(...params, ...names) as Array<{ name: string; filePath: string }>
 }
 
 /** Every JSON or YAML file under `rootDir` that has at least one indexed symbol, sorted: the candidate list a miss hands to findStructuredKeyPath (read_suggest.ts). Walks `files`, one row per file, and asks `symbols` only whether each candidate has a row, instead of reading the file path of every symbol in scope: about 170 ms against 1.7 s on a 546k-symbol project, for the identical set of 15,272 files. The path returned is the one stored on the symbol row, so a caller displays the same spelling it did when it collected these from a full-row scan. LIKE folds ASCII case, so `.JSON` and `.Yml` qualify exactly as they did under the old `toLowerCase().endsWith(...)` test. */
@@ -184,6 +184,6 @@ export function projectStructuredFiles(rootDir: string): string[] {
   const sql =
     `SELECT (SELECT s.file_path FROM symbols s WHERE ${sameFile} LIMIT 1) AS fp FROM files f ` +
     `WHERE ${clause} AND (f.path LIKE '%.json' OR f.path LIKE '%.yaml' OR f.path LIKE '%.yml') AND fp IS NOT NULL`
-  const files = getDb(globalDbPath()).prepare(sql).pluck().all(...params) as string[]
+  const files = getReadDb(globalDbPath()).prepare(sql).pluck().all(...params) as string[]
   return [...new Set(files)].sort()
 }

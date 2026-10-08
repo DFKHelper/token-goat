@@ -585,7 +585,7 @@ export function isReadOnlyDb(dbPath: string): boolean {
   // The opt-in check comes first: every read-path caller asks this on each call, and without it no read-only connection can exist, while connectionKey resolves the path on disk (and refuses a `:memory:` path outright).
   if (_readOnlyFallback === undefined) return false
   try {
-    getDb(dbPath)
+    getDb(dbPath, { create: false })
   } catch {
     // Not read-only, just unopenable: the caller's own getDb reports why.
     return false
@@ -713,12 +713,33 @@ export function withProbeIndex<T>(
   }
 }
 
+// What a read-only caller sees in place of a database file that does not exist yet: the index tables, empty. Shared, never written, closed with the rest.
+let _emptyIndex: SqliteDatabase | undefined
+
+/** {@link getDb} for a caller that only reads: when the file does not exist yet it answers from an empty index instead of creating the file, so a query on a fresh data directory finds nothing and leaves nothing behind (an empty `global.db` would also make `doctor` report an index that was never built). Writers keep using {@link getDb}. */
+export function getReadDb(dbPath: string): SqliteDatabase {
+  return getDb(dbPath, { create: false })
+}
+
 /** Return the cached {@link SqliteDatabase} for `dbPath`, opening and initializing it on first access. The connection is opened with the schema applied, WAL enabled, and the optional FTS5 / sqlite-vec tables created when available. Subsequent calls with the same resolved path return the same handle. In a process that called {@link allowReadOnlyIndex}, a database it may not write is served through a read-only connection instead (see {@link openIndexReadOnly}); in every other process that refusal propagates. */
-export function getDb(dbPath: string): SqliteDatabase {
+export function getDb(dbPath: string, opts: { create?: boolean } = {}): SqliteDatabase {
   // Fold only the cache key, not `resolved` itself -- the real-case path is still what gets passed to fs/Database below, so the file is created/opened with whatever casing the caller (or an existing file on disk) actually used.
   const { resolved, key } = connectionKey(dbPath)
   const existing = _connections.get(key)
   if (existing !== undefined) return existing
+  if (opts.create === false && !fs.existsSync(resolved)) {
+    if (_emptyIndex === undefined) {
+      _emptyIndex = new Database(':memory:')
+      registerTgLower(_emptyIndex)
+      _emptyIndex.exec(SCHEMA_SQL)
+      try {
+        _emptyIndex.exec(FTS_SQL)
+      } catch {
+        // FTS5 unavailable, as in initConnection: readers fall back to LIKE.
+      }
+    }
+    return _emptyIndex
+  }
   const fallback = _readOnlyFallback
   if (fallback !== undefined) {
     const readOnly = _readOnlyConnections.get(key)
@@ -786,6 +807,12 @@ export function closeDb(dbPath: string): void {
 
 /** Close every open connection and clear the cache. Registered with {@link registerReset} so tests start from a clean slate, and usable directly for process shutdown. */
 export function closeAllDbs(): void {
+  try {
+    _emptyIndex?.close()
+  } catch {
+    // Best-effort, like the handles below.
+  }
+  _emptyIndex = undefined
   for (const cache of [_connections, _readOnlyConnections]) {
     for (const conn of cache.values()) {
       try {

@@ -1,5 +1,5 @@
 import * as fs from 'node:fs';
-import { getDb } from '../db.js';
+import { getReadDb } from '../db.js';
 import { globalDbPath } from '../constants.js';
 import { searchSemantic, DEFAULT_MODEL, DEFAULT_DISTANCE_THRESHOLD } from '../embeddings.js';
 import { mergeNearbyHits } from '../semantic_merge.js';
@@ -163,7 +163,7 @@ async function searchSemanticChannel(query: string, limit: number, rootDir?: str
     if (preflight.status !== 'ready') {
       return { hits: [], degradedReason: `Semantic indexing not ready: ${preflight.summary}` };
     }
-    const db = getDb(globalDbPath());
+    const db = getReadDb(globalDbPath());
     const relevance = assessDenseRelevance(await searchSemantic(db, query, limit * 2, DEFAULT_MODEL, DEFAULT_DISTANCE_THRESHOLD, rootDir));
     const merged = mergeNearbyHits(relevance.kept);
     const floorEmptied = floorEmptiedPhrase(relevance);
