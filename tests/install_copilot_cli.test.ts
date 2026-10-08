@@ -818,6 +818,29 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(parsed.permissionDecisionReason).toBe('already read this session')
   })
 
+  // HAND-DERIVED: the hook is made slower than the 3000 ms the shim used to allow it by spinning 4.5 s before it answers, so the outcome cannot depend on how fast the machine is; a faster machine changes nothing and a slower one only adds time.
+  it('waits for a hook that takes longer than the old 3 s cap and relays its deny, instead of answering an empty allow', () => {
+    const cwd = mkIsolated()
+    const entryPath = path.join(cwd, 'slow-entry.js')
+    fs.writeFileSync(
+      entryPath,
+      `const until = Date.now() + 4500\nwhile (Date.now() < until) { /* hold the hook open */ }\nprocess.stdout.write(JSON.stringify({ decision: 'block', reason: 'slow but decided' }))\n`,
+      'utf8',
+    )
+    const scriptPath = path.join(cwd, 'shim.js')
+    fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT, 'utf8')
+    const res = spawnSync(process.execPath, [scriptPath, 'preToolUse', entryPath], {
+      cwd,
+      input: JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: 'read', toolArgs: { path: '/f.txt' } }),
+      encoding: 'utf8',
+      timeout: 60000,
+      env: process.env,
+    })
+    const parsed = JSON.parse(res.stdout) as { permissionDecision?: string; permissionDecisionReason?: string }
+    expect(parsed.permissionDecision).toBe('deny')
+    expect(parsed.permissionDecisionReason).toBe('slow but decided')
+  }, 60000)
+
   it('translates a preToolUse rewriteInput (hookSpecificOutput.updatedInput) into modifiedArgs', () => {
     const cwd = mkIsolated()
     const env = withFakeTokenGoat(
