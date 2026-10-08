@@ -58,6 +58,21 @@ export function typoBudget(queryLen: number): number {
   return queryLen >= TYPO_TWO_EDIT_MIN_LEN ? 2 : 1
 }
 
+/** Lower is a closer match: the query itself ignoring case, then a name that begins with the query (or that the query begins with), then any other name sharing the query's first character, then the rest. Length closeness only breaks ties inside a tier, so `renderAll` outranks `prerender` for `render` instead of losing an alphabetical tie to it. */
+function similarityTier(candidate: string, queryLower: string): number {
+  const c = candidate.toLowerCase()
+  if (c === queryLower) return 0
+  if (c.startsWith(queryLower) || queryLower.startsWith(c)) return 1
+  if (c[0] === queryLower[0]) return 2
+  return 3
+}
+
+function sortByTierThenLength(items: string[], query: string): string[] {
+  const queryLower = query.toLowerCase()
+  const tiers = new Map(items.map((c) => [c, similarityTier(c, queryLower)]))
+  return sortByLengthCloseness(items, query).sort((a, b) => (tiers.get(a) ?? 3) - (tiers.get(b) ?? 3))
+}
+
 export function rankSimilarNames(candidates: string[], query: string): string[] {
   const queryLower = query.toLowerCase()
   const filtered = candidates.filter((c) => {
@@ -67,9 +82,9 @@ export function rankSimilarNames(candidates: string[], query: string): string[] 
   if (filtered.length === 0 && queryLower.length <= TYPO_MAX_QUERY_LEN) {
     const budget = typoBudget(queryLower.length)
     const near = candidates.filter((c) => withinEditDistance(c.toLowerCase(), queryLower, budget))
-    return sortByLengthCloseness([...new Set(near)], query)
+    return sortByTierThenLength([...new Set(near)], query)
   }
-  return sortByLengthCloseness([...new Set(filtered)], query)
+  return sortByTierThenLength([...new Set(filtered)], query)
 }
 
 export function filterSimilarHeadings(available: string[], query: string): string[] {
