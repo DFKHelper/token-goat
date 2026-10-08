@@ -660,7 +660,7 @@ export function checkWorker(dir: string): DoctorResult {
   if (refusal !== undefined) {
     return { name: 'Worker', status: 'fail', message: `not running, and cannot start: ${displaySafeText(dir)} cannot be written (${displaySafeText(extractErrorMessage(refusal))}); make it writable, then run \`token-goat worker start\`` }
   }
-  return { name: 'Worker', status: 'warn', message: 'not running; run `token-goat worker start` (the next hook that fires also starts it)' }
+  return { name: 'Worker', status: 'warn', message: 'not running; run `token-goat worker start` (the next file edit also starts it, as does reading a code file the index has not caught up with; checked at most every 5 minutes)' }
 }
 
 /** The Hook server line. A server that is not running is normal (the next hook call starts one); one whose last background start failed is worth a warning, because nothing else ever shows that error. */
@@ -695,7 +695,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
 
   // File checks
   const cfg = loadConfig(rootDir)
-  results.push(checkDbExists(actualDataDir, cfg.indexing.max_db_size_mb))
+  results.push(checkDbExists(actualDataDir, cfg.indexing.max_db_size_mb, rootDir))
   results.push(checkSymbolBodySize(path.join(actualDataDir, 'global.db')))
   results.push(checkSymbolCount(path.join(actualDataDir, 'global.db'), rootDir))
   results.push(checkDirtyQueueHealth(actualDataDir))

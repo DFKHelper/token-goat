@@ -5,7 +5,8 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { getHintStatsSummary, logHintEmission, resetHintStats, resolvePendingHintsForEvent } from '../src/hint_stats.js'
+import { logHintEmission, resetHintStats, resolvePendingHintsForEvent } from '../src/hint_stats.js'
+import { getHintStatsSummary } from '../src/hint_stats_read.js'
 import { getHarnessName } from '../src/bridges/registry.js'
 import { configPath, globalDbPath } from '../src/constants.js'
 import { getDb } from '../src/db.js'

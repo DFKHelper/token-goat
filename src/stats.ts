@@ -564,6 +564,14 @@ export function getGlobalDb(homeDir?: string): SqliteDatabase {
   return db
 }
 
+/** {@link getGlobalDb} for a report that only reads: when global.db does not exist yet it answers from an empty in-memory database with the same tables instead of creating the file, so `doctor`, `stats` and the other read commands on a fresh data dir report "no data" and leave nothing behind. Writers keep using getGlobalDb. */
+export function readGlobalDb(homeDir?: string): SqliteDatabase {
+  if (fs.existsSync(path.join(homeDir ? dataDirForHome(homeDir) : dataDir(), 'global.db'))) return getGlobalDb(homeDir)
+  const d = new Database(':memory:')
+  d.exec(GLOBAL_SCHEMA_SQL)
+  return d
+}
+
 /** Raw `stats` rows older than this are aggregated into `stats_daily_rollup` and deleted -- `stats` accumulates for the life of the install with no size cap of its own (411,208 rows / ~54 MB with indexes measured on one real install), and every actual consumer of raw rows either only needs day/kind/harness/tg_version totals (summarize(), which folds the rollup back in below) or only ever reads the newest few thousand rows by rowid regardless of calendar age (checkCompactionChannel in cli_doctor.ts, COMPACTION_STATS_SCAN_CEILING). `token-goat stats` defaults to --window-days 30; 180 days is 6x that default window, generous headroom for anyone who types a larger --window-days without keeping the table unbounded. Exported so a guard/test can assert against the same number the rollup actually runs with instead of a restated literal. */
 export const STATS_RETENTION_DAYS = 180
 /** How long an unrecognized tool-name row is kept before the rollup prunes it. Longer than doctor's near-miss window (7 days in cli_doctor.ts) so a row doctor has already dismissed as resolved residue is not deleted out from under it mid-report. */
@@ -668,7 +676,7 @@ function maybeRunStatsMaintenance(db: SqliteDatabase): void {
 /** The line a stats report prints when no event falls in its window: "No stats recorded yet." when none was ever recorded, else how many were recorded outside the last `windowDays` days. */
 export function noStatsMessage(windowDays: number, homeDir?: string): string {
   if (windowDays <= 0) return 'No stats recorded yet.'
-  const db = getGlobalDb(homeDir)
+  const db = readGlobalDb(homeDir)
   let total = (db.prepare('SELECT COUNT(*) as c FROM stats').get() as { c: number }).c
   // Events rollupAndPruneStats already aggregated-and-deleted still happened -- omitting them here would silently shrink this count every time the rollup runs, which is exactly the kind of drift a self-measurement surface must not show.
   try {
@@ -826,7 +834,7 @@ export function recordUnmappedTool(
 /** Read the unrecognized-tool histogram back, busiest first. Returns `[]` when the table is absent. */
 export function readUnmappedTools(dbPath?: string, homeDir?: string): UnmappedToolRow[] {
   try {
-    const db = dbPath ? getDb(dbPath) : getGlobalDb(homeDir)
+    const db = dbPath ? getDb(dbPath) : readGlobalDb(homeDir)
     return db
       .prepare(
         'SELECT harness, tool_name, event_name, near_miss, hits, last_seen FROM unmapped_tools ORDER BY hits DESC, tool_name ASC',
@@ -882,7 +890,7 @@ export function claimFirstSavingsReceipt(testDb?: SqliteDatabase, homeDir?: stri
 /** When the savings receipt was shown, in epoch milliseconds, or null when it has not been (or the flag cannot be read). */
 export function firstReceiptShownAt(testDb?: SqliteDatabase, homeDir?: string): number | null {
   try {
-    const db = testDb ?? getGlobalDb(homeDir)
+    const db = testDb ?? readGlobalDb(homeDir)
     const row = db.prepare('SELECT set_ts FROM stats_flags WHERE name = ?').get(FIRST_RECEIPT_FLAG) as { set_ts: number } | undefined
     return row === undefined ? null : row.set_ts * 1000
   } catch {
@@ -903,7 +911,7 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
   let totalBytes = 0
   let totalTokens = 0
 
-  const db = testDb ?? getGlobalDb(homeDir)
+  const db = testDb ?? readGlobalDb(homeDir)
   // Selected only when the column is actually there: an injected `testDb` may carry a table this module never migrated, and naming a missing column would throw out of summarize() entirely rather than degrading to "harness not recorded".
   const hasHarness = statsHasHarnessColumn(db)
   const hasVersion = statsHasVersionColumn(db)

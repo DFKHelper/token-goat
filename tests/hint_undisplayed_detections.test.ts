@@ -6,13 +6,8 @@ import * as path from 'node:path'
 
 import { beforeEach, afterEach, describe, expect, it } from 'vitest'
 
-import {
-  logHintEmission,
-  logSuppressedDetection,
-  getHintStatsSummary,
-  resetHintStats,
-  shouldSuppress,
-} from '../src/hint_stats.js'
+import { logHintEmission, logSuppressedDetection, resetHintStats, shouldSuppress } from '../src/hint_stats.js'
+import { getHintStatsSummary } from '../src/hint_stats_read.js'
 import { preBashHandler } from '../src/hooks_bash.js'
 import { postEditHandler } from '../src/hooks_edit.js'
 import { postReadHandler } from '../src/hooks_read_post.js'

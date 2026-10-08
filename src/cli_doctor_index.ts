@@ -9,7 +9,7 @@ import { isUnderSystemTemp } from './project.js'
 import { projectScopeClause } from './sql_path.js'
 import { getDirtyPathsFor } from './dirty_queue.js'
 import { isWorkerRunning } from './worker_lifecycle.js'
-import { emptyIndexMessage, getProjectIndexCounts, getEmbeddingCoverage, getParserFreshness } from './index_health.js'
+import { emptyIndexMessage, suggestedIndexCommand, getProjectIndexCounts, getEmbeddingCoverage, getParserFreshness } from './index_health.js'
 import { loadConfig } from './config.js'
 import { modelFilesPresent } from './embed_model.js'
 import { isEmbedFresh, oversizeEmbedSha } from './parser.js'
@@ -113,14 +113,14 @@ export function oversizeDbMessage(
   return `${base} If this size is expected, raise indexing.max_db_size_mb above ${Math.ceil(sizeBytes / (1024 * 1024))}.`
 }
 
-/** Check if the data directory and database files exist. */
-export function checkDbExists(dataDir: string, maxDbSizeMb?: number): DoctorResult {
+/** Check if the data directory and database files exist. A missing global.db means no index command has run yet (install does not create it), so the warning names the git-aware index command, like the Symbols row. */
+export function checkDbExists(dataDir: string, maxDbSizeMb?: number, rootDir?: string): DoctorResult {
   const dbPath = path.join(dataDir, 'global.db')
   if (!fs.existsSync(dbPath)) {
     return {
       name: 'Database',
       status: 'warn',
-      message: `global.db not found at ${dbPath}`,
+      message: `global.db not found at ${dbPath}; nothing has been indexed yet, so run ${fencedCommand(suggestedIndexCommand(rootDir ?? process.cwd()))} in a project to create it`,
     }
   }
   const sizeBytes = indexSizeBytes(dbPath)

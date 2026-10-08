@@ -3,26 +3,8 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import {
-  applyHintTracking,
-  classifyBashHint,
-  classifyEditHint,
-  classifyReadHint,
-  extractPathCorrelator,
-  getHintStatsSummary,
-  getHintStatsTotals,
-  isHintCategory,
-  isProbeOccasion,
-  logHintEmission,
-  markCategoryEffective,
-  markCategoryIneffective,
-  meetsSavingsFloor,
-  resetHintStats,
-  resolvePendingHintsForEvent,
-  shouldSuppress,
-  HINT_CATEGORIES,
-  type HintCategory,
-} from '../src/hint_stats.js'
+import { applyHintTracking, classifyBashHint, classifyEditHint, classifyReadHint, extractPathCorrelator, isHintCategory, isProbeOccasion, logHintEmission, markCategoryEffective, markCategoryIneffective, meetsSavingsFloor, resetHintStats, resolvePendingHintsForEvent, shouldSuppress, HINT_CATEGORIES, type HintCategory } from '../src/hint_stats.js'
+import { getHintStatsSummary, getHintStatsTotals } from '../src/hint_stats_read.js'
 import { recordStat, GLOBAL_SCHEMA_SQL, pruneHintEmissions } from '../src/stats.js'
 import { getDb } from '../src/db.js'
 import { globalDbPath, configPath } from '../src/constants.js'

@@ -1,7 +1,7 @@
 /** Read/render side of Batch S's hook wall-clock timing: `token-goat stats --hooks` and `doctor`'s Hook latency check both go through hookLatencyBreakdown(). Kept out of stats.ts on purpose. relay.ts's relayInProcess imports recordStat from stats.ts on every hook invocation, which the hook entry bundle's regression-ceiling guard (tests/guards/dist_chunks_deduped.test.ts) therefore loads eagerly for every hook call. This module is CLI/doctor-only -- nothing on the hook path calls it -- so a separate chunk keeps it out of that eager set instead of riding along with stats.ts just because it happens to read the same table. */
 
 import type { SqliteDatabase } from './sqlite_driver.js'
-import { getGlobalDb, statsHasDurationColumn, statsHasHarnessColumn, HOOK_STATS_RETENTION_DAYS } from './stats.js'
+import { readGlobalDb, statsHasDurationColumn, statsHasHarnessColumn, HOOK_STATS_RETENTION_DAYS } from './stats.js'
 
 /** Nearest-rank percentile of an ascending-sorted array. 0 for an empty array. */
 function percentile(sorted: readonly number[], p: number): number {
@@ -32,7 +32,7 @@ export interface HookLatencyRow {
 /** Per-(event, harness) hook latency breakdown: how many invocations, the median/p95/slowest duration, and how recently one was recorded -- the "how many, median, p95, slowest, how recent" surface Batch S asks for. Reads raw `stats` rows directly rather than through summarize()'s byte/token aggregation, since `duration_ms` is a distribution summarize() has no notion of. Bounded by stats.ts's pruneHookStats retention window, so this never scans more than a few days of hook traffic regardless of how long the install has run. Sorted worst-p95-first so a bad tail is the first thing a reader sees. Returns `[]` on any error (including a database that predates the `duration_ms` column), never throws -- this is a diagnostic view, not a path anything else depends on. */
 export function hookLatencyBreakdown(testDb?: SqliteDatabase, homeDir?: string): HookLatencyRow[] {
   try {
-    const db = testDb ?? getGlobalDb(homeDir)
+    const db = testDb ?? readGlobalDb(homeDir)
     if (!statsHasDurationColumn(db)) return []
     const harnessExpr = statsHasHarnessColumn(db) ? "COALESCE(harness, '')" : "''"
     const rows = db
@@ -100,7 +100,7 @@ export interface NativeHookCounts {
 export function nativeHookCounts(testDb?: SqliteDatabase, homeDir?: string, nowTs: number = Math.floor(Date.now() / 1000)): Map<string, NativeHookCounts> {
   const out = new Map<string, NativeHookCounts>()
   try {
-    const db = testDb ?? getGlobalDb(homeDir)
+    const db = testDb ?? readGlobalDb(homeDir)
     if (!statsHasHarnessColumn(db)) return out
     const rows = db
       .prepare(`SELECT COALESCE(harness, '') AS harness, detail, COUNT(*) AS n FROM stats WHERE kind LIKE 'hook:%' AND ts >= ? GROUP BY 1, 2`)
@@ -129,7 +129,7 @@ export const CLAUDE_HOOKS_UNINSTALLED_KIND = 'claude_hooks_uninstalled'
 /** How many token-goat hooks Claude Code ran inside the hook-stats retention window and when the last one ran, plus the time of the newest recorded `token-goat uninstall` of those hooks. Null when the database cannot say: no harness column, or any read error. */
 export function claudeHookActivity(testDb?: SqliteDatabase, homeDir?: string, nowTs: number = Math.floor(Date.now() / 1000)): { count: number; lastTs: number | null; uninstalledTs: number | null } | null {
   try {
-    const db = testDb ?? getGlobalDb(homeDir)
+    const db = testDb ?? readGlobalDb(homeDir)
     if (!statsHasHarnessColumn(db)) return null
     const hooks = db.prepare(`SELECT COUNT(*) AS n, MAX(ts) AS last FROM stats WHERE kind LIKE 'hook:%' AND harness = 'claudecode' AND ts >= ?`).get(nowTs - HOOK_STATS_RETENTION_DAYS * 86400) as { n: number; last: number | null }
     const uninstall = db.prepare('SELECT MAX(ts) AS last FROM stats WHERE kind = ?').get(CLAUDE_HOOKS_UNINSTALLED_KIND) as { last: number | null }

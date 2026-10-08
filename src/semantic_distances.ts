@@ -2,7 +2,7 @@
 
 import { loadConfig } from './config.js'
 import { projectHash, resolveProjectRoot } from './project.js'
-import { getGlobalDb, withTelemetryWriteDb } from './stats.js'
+import { readGlobalDb, withTelemetryWriteDb } from './stats.js'
 import { countNoun } from './util.js'
 
 /** Below this many recorded queries the percentiles are noise, so the report says so instead of suggesting a value. */
@@ -87,7 +87,7 @@ export function recordSemanticQuery(row: { projectRoot: string; closestDistance:
 /** `semantic --distances`: the report for the current project, or every project with `all`. */
 export function runSemanticDistances(opts: { all?: boolean }): { text: string; code: number } {
   const { weak_distance: weakDistance, max_distance: maxDistance } = loadConfig().semantic
-  const db = getGlobalDb()
+  const db = readGlobalDb()
   const rows = (
     opts.all === true
       ? db.prepare('SELECT closest_distance FROM semantic_queries').all()

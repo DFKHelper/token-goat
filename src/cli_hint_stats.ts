@@ -1,6 +1,7 @@
 /** CLI handler for `token-goat hint-stats`. Presentation only — efficacy tracking, suppression, and the manual-mark ledger all live in hint_stats.ts; see that module's doc comment for what is measured automatically vs. approximated per category, and why "harness" stands in for "model" here. */
 
-import { getHintStatsSummary, getHintStatsTotals, getHintSpendTotals, resetHintStats, markCategoryEffective, markCategoryIneffective, isSuppressionCategory, type CategoryEfficacy, type HintCategory, type HintStatsTotals } from './hint_stats.js'
+import { getHintStatsSummary, getHintStatsTotals, getHintSpendTotals } from './hint_stats_read.js'
+import { resetHintStats, markCategoryEffective, markCategoryIneffective, isSuppressionCategory, type CategoryEfficacy, type HintCategory, type HintStatsTotals } from './hint_stats.js'
 import { pad } from './util.js'
 import { displaySafeJson, displaySafeText } from './paths.js'
 import { echoedValue } from './hint_suggestion_guard.js'

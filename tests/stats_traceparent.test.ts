@@ -7,7 +7,7 @@ import Database from '../src/sqlite_driver.js'
 import { closeAllDbs } from '../src/db.js'
 import { dataDirForHome } from '../src/constants.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { summarize, recordStat } from '../src/stats.js'
+import { recordStat, getGlobalDb, summarize } from '../src/stats.js'
 
 const LEGACY_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS stats (
@@ -83,7 +83,7 @@ describe('stats traceparent column and telemetry correlation', () => {
     const { customHome, dbPath } = makeHome('tg-trace-explicit-')
     homes.push(customHome)
 
-    summarize(0, undefined, customHome)
+    getGlobalDb(customHome)
 
     const testDb = new Database(dbPath)
     const tp = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
@@ -102,7 +102,7 @@ describe('stats traceparent column and telemetry correlation', () => {
     const { customHome, dbPath } = makeHome('tg-trace-env-')
     homes.push(customHome)
 
-    summarize(0, undefined, customHome)
+    getGlobalDb(customHome)
 
     const testDb = new Database(dbPath)
     const tp = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01'
