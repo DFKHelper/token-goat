@@ -12,7 +12,7 @@ import { preToolPathDeclined } from './vscode_path_gate.js'
 import { detectHarness } from './bridges/registry.js'
 import { readHintCrossesRule } from './rewrite_permission.js'
 import { leadWithCommand, docNavigation, fencedCommand, fileSubject, nameSubject, quotedArg, quotedArgs, configGetCommand, sentenceStart } from './hint_suggestion_guard.js'
-import { escapeHintName, headingTreeParts, hintTarget, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
+import { escapeHintName, headingTreeParts, hintTarget, sectionOrRangeCommand, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
 import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import { countNoun, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
@@ -307,8 +307,8 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
         // The index is advisory; retain the clean fallback when it is unavailable.
       }
     }
-    const heading = hintTarget(filePath, 'section', { content: fileContent, placeholder: 'HeadingName' })
-    return leadWithCommand(`token-goat section ${quotedArg(`${filePath}::${heading.name}`)}`, (top.length > 0 ? `(or sections: ${top.join(', ')}) ` : '') + 'to extract a part')
+    const heading = hintTarget(filePath, 'section', { content: fileContent })
+    return leadWithCommand(sectionOrRangeCommand(filePath, heading), (top.length > 0 ? `(or sections: ${top.join(', ')}) ` : '') + 'to extract a part')
   } else if (isJsonFile || isYamlFile) {
     const fmt = isJsonFile ? 'json' : 'yaml'
     const key = hintTarget(filePath, 'key', { content: fileContent })
@@ -317,7 +317,7 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
       ? leadWithCommand(`token-goat json-query ${quotedArgs(filePath, '<key>').join(' ')}`, `(or \`token-goat json-outline ${quotedArg(filePath)}\`) to slice one value`)
       : leadWithCommand(`token-goat section ${quotedArg(`${filePath}::name`)}`, `or \`token-goat yaml-query ${quotedArgs(filePath, '<key>').join(' ')}\` to extract a part`)
   } else if (isHtmlFile) {
-    return leadWithCommand(`token-goat section ${quotedArg(`${filePath}::${hintTarget(filePath, 'section', { content: fileContent, placeholder: 'HeadingName' }).name}`)}`, `or \`token-goat outline ${quotedArg(filePath)}\` to navigate HTML structure`)
+    return leadWithCommand(sectionOrRangeCommand(filePath, hintTarget(filePath, 'section', { content: fileContent })), `or \`token-goat outline ${quotedArg(filePath)}\` to navigate HTML structure`)
   } else if (isSectionFile) {
     // A stylesheet has no headings (`section` exits 1 on it), but `outline` lists its selectors and `read` returns one rule.
     if (!/\.toml$/i.test(basename)) return leadWithCommand(`token-goat outline ${quotedArg(filePath)}`, 'to list every selector')
@@ -1219,7 +1219,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         bookDenyIdentity('doc')
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
         return denyOutput(leadWithCommand(
-          'token-goat section ' + quotedArg(shown + '::' + hintTarget(normalized, 'section', { placeholder: 'HeadingName' }).name),
+          sectionOrRangeCommand(shown, hintTarget(normalized, 'section')),
           'to read one section',
           'Markdown file already read this session.' + priorOutputRecallHint(normalized),
         ))
@@ -1416,7 +1416,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const nudge = isXmlNudge
         ? `Note: token-goat available for this file type, consider xml-query/xml-outline first: \`token-goat xml-outline ${quotedArg(shown)}\` or \`token-goat xml-query ${quotedArgs(shown, '<selector>').join(' ')}\``
         : isDocNudge
-        ? `Note: token-goat available for this file type, consider section first: \`token-goat section ${quotedArg(`${shown}::${hintTarget(normalized, 'section', { placeholder: 'HeadingName' }).name}`)}\``
+        ? `Note: token-goat available for this file type, consider section first: \`${sectionOrRangeCommand(shown, hintTarget(normalized, 'section'))}\``
         : isTestFile
         ? `Note: token-goat available for this test file, consider surgical read first: \`token-goat read ${quotedArg(`${shown}::${hintTarget(normalized, 'symbol', { placeholder: 'DescribeBlockName' }).name}`)}\` or \`token-goat skeleton ${quotedArg(shown)}\``
         : isScriptNudge

@@ -8,8 +8,8 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook, sessionStateKey } from './hook_registry.js'
 import { passOutput, contextOutput } from './hooks_common.js'
 import { applyHintTracking, classifyEditHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
-import { fileSubject, leadWithCommand, quotedArg, sentenceStart } from './hint_suggestion_guard.js'
-import { hintTarget } from './hint_target.js'
+import { fileSubject, leadWithCommand, sentenceStart } from './hint_suggestion_guard.js'
+import { hintTarget, sectionOrRangeCommand } from './hint_target.js'
 import { appendDirtyPath } from './hooks_index.js'
 import { recordKnownRootThrottled } from './known_roots.js'
 import { displaySafePath, hostPathOfIndexKey, normalizePath, resolveIndexPath } from './paths.js'
@@ -94,9 +94,9 @@ function markdownSectionHint(event: HookEvent, normalized: string): HookOutput {
       // displaySafePath first: the backtick/quote escaping below is about not breaking the markdown span, and does nothing about a newline in the file name, which would end the hint line and let the rest of the name read as a note of token-goat's own.
       const escapedPath = displaySafePath(normalized).replace(/`/g, '\\`').replace(/"/g, '\\"')
       // The index row for this file was just queued stale, so hintTarget reads the heading off the written file's first bytes. The path goes in as the correlator, so hint-stats credits a `section` on any heading of it, as it did when this printed a placeholder.
-      const heading = hintTarget(normalized, 'section', { placeholder: 'HeadingName' })
+      const heading = hintTarget(normalized, 'section')
       markHintShown(repeatKey)
-      const command = 'token-goat section ' + quotedArg(displaySafePath(normalized) + '::' + heading.name)
+      const command = sectionOrRangeCommand(displaySafePath(normalized), heading)
       return contextOutput(
         leadWithCommand(command, 'to re-read a specific section rather than the full file', sentenceStart(fileSubject(command, displaySafePath(normalized), normalized)) + ' was edited.'),
         [escapedPath],

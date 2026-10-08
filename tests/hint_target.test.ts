@@ -325,7 +325,7 @@ const SITES: Site[] = [
   {
     name: 'hooks_edit.ts post-edit hint',
     real: (h) => '::' + h + '"` to re-read a specific section',
-    fallback: '::HeadingName"` to re-read a specific section',
+    fallback: '::1-80"` to re-read a specific section',
     guarded: true,
     fallbackHeadings: [],
     run: async (headings) => {
