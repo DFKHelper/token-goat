@@ -1,7 +1,9 @@
 /** Global test setup: redirect token-goat's cross-process home AND platform data dir to per-worker temp dirs, so tests never touch — or contend on — the developer's real filesystem. Two separate stores must be isolated: - TOKEN_GOAT_HOME (else `~/.token-goat`) backs the bash-output, web-output, and session JSON caches. - LOCALAPPDATA (Windows) / XDG_DATA_HOME (Linux) resolve DATA_DIR, which holds global.db (the symbol index) and config.toml. Without isolating it, any test that indexes writes token-goat's own symbols into the developer's real global.db AND races the live worker daemon writing to that same file every 2 s — a nondeterministic "database is locked" failure that passes on CI (no daemon, fresh checkout) but flakes locally. Per-worker isolation makes every local run match CI's fresh-data-dir condition. Both are pinned to this worker's PID so parallel test forks never share a DB. A test that sets TOKEN_GOAT_HOME in its own beforeEach still wins; subprocess tests that pass an explicit LOCALAPPDATA/XDG_DATA_HOME in the child env also win, because that key overrides the inherited one. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
+import { createRequire } from 'node:module'
 import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { scrubRepoLocalGitEnv } from '../helpers/git-env.js'
 import { scrubClaudeSessionEnv } from '../helpers/harness-env.js'
@@ -121,7 +123,12 @@ if (!process.env['TOKEN_GOAT_NATIVE_HOOKS']) {
 }
 // src/rewrite_permission.ts reads Claude Code's settings from the machine's managed policy and from every `.claude` directory above a hook's cwd, which for an event with no cwd is this repository. A developer's own untracked `.claude/settings.local.json` here then decided whether an in-process test saw a rewrite. In-process reads are confined to the run root, where every fixture lives; spawned bundles do not inherit this and pass their own cwd.
 const permissionRoot = path.resolve(runRoot())
-;(globalThis as unknown as Record<symbol, unknown>)[Symbol.for('token-goat.permission-source-filter')] = (source: string): boolean => {
-  const rel = path.relative(permissionRoot, path.resolve(source))
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)
+// The predicate lives in permission-source-filter.cjs so the in-process hook and the preload given to spawned node processes cannot diverge (tests/guards/permission_filter_single_predicate.test.ts).
+const permissionFilter = createRequire(import.meta.url)('./permission-source-filter.cjs') as { install: (root: string) => void }
+permissionFilter.install(permissionRoot)
+// A spawned bundle reads the machine policy through two serial reg.exe calls that fail closed after 5 s, which a loaded machine crosses and then drops the hint the test expects; the preload gives it the same filter, which skips the registry. Existing NODE_OPTIONS are kept, and the path is quoted for a run root with spaces.
+process.env['TG_TEST_PERMISSION_ROOT'] = permissionRoot
+const preload = `--require "${fileURLToPath(new URL('./permission-source-filter.cjs', import.meta.url)).replaceAll('\\', '/')}"`
+if (!(process.env['NODE_OPTIONS'] ?? '').includes(preload)) {
+  process.env['NODE_OPTIONS'] = [process.env['NODE_OPTIONS'], preload].filter(Boolean).join(' ')
 }
