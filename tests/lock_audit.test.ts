@@ -126,6 +126,37 @@ describe('auditLockChange', () => {
     expect((await audit(lock({}), carried, declared(['glibc']))).violations).toEqual([])
   })
 
+  describe('a libc-only change to an entry that did not move', () => {
+    // HAND-DERIVED: same entry in both locks, differing only in libc, which is what npm 11.6.2's rewrite and its restoration do to package-lock.json (b479903b, ab6545a34).
+    const withLibc = lock({ 'node_modules/p-linux': pkg('1.0.0', 'sha512-p', { os: ['linux'], cpu: ['x64'], optional: true, libc: ['glibc'] }) })
+    const bareLock = lock({ 'node_modules/p-linux': pkg('1.0.0', 'sha512-p', { os: ['linux'], cpu: ['x64'], optional: true }) })
+    const declared = (libc: string[] | null) => () => ({ publishedAt: OLD_ENOUGH, integrity: 'sha512-p', libc })
+
+    it('refuses a commit that strips libc the registry declares, and reports the change', async () => {
+      const result = await audit(withLibc, bareLock, declared(['glibc']))
+      expect(result.violations.map((v: { kind: string }) => v.kind)).toEqual(['libc-missing'])
+      expect(formatDiff(result.diff)).toEqual(['libc     node_modules/p-linux 1.0.0: ["glibc"] -> (none)'])
+    })
+
+    it('accepts a commit that restores libc, and reports it as a change rather than as nothing', async () => {
+      const result = await audit(bareLock, withLibc, declared(['glibc']))
+      expect(result.violations).toEqual([])
+      expect(formatDiff(result.diff)).toEqual(['libc     node_modules/p-linux 1.0.0: (none) -> ["glibc"]'])
+    })
+
+    it('reports nothing for a no-op, and does not ask the registry', async () => {
+      const result = await audit(withLibc, withLibc, () => { throw new Error('must not be asked') })
+      expect(result.violations).toEqual([])
+      expect(formatDiff(result.diff)).toEqual([])
+    })
+
+    it('accepts a strip the registry does not declare libc for, and names a strip it cannot check', async () => {
+      expect((await audit(withLibc, bareLock, declared(null))).violations).toEqual([])
+      const unchecked = await audit(withLibc, bareLock, () => { throw new Error('offline') })
+      expect(unchecked.violations.map((v: { kind: string }) => v.kind)).toEqual(['lookup'])
+    })
+  })
+
   it('refuses a package that stopped being optional, and a root optionalDependencies entry that moved', async () => {
     const o = lock({ 'node_modules/a': pkg('1.0.0', 'sha512-a', { optional: true }) })
     const r = lock({ 'node_modules/a': pkg('1.0.0', 'sha512-a') })

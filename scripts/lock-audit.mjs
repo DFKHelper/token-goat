@@ -25,7 +25,7 @@ function rootReclassifications(oldRoot, newRoot) {
 export function diffLocks(oldLock, newLock) {
   const before = oldLock?.packages ?? {}
   const after = newLock?.packages ?? {}
-  const diff = { added: [], removed: [], changed: [], flagChanges: [], dependencyChanges: [], newInstallScripts: [], rootReclassified: rootReclassifications(before[''], after['']) }
+  const diff = { added: [], removed: [], changed: [], flagChanges: [], dependencyChanges: [], newInstallScripts: [], libcChanges: [], rootReclassified: rootReclassifications(before[''], after['']) }
   for (const [lockPath, entry] of Object.entries(after)) {
     if (lockPath === '') continue
     const old = before[lockPath]
@@ -50,6 +50,11 @@ export function diffLocks(oldLock, newLock) {
       }
     }
     if (entry.hasInstallScript && !old.hasInstallScript) diff.newInstallScripts.push(lockPath)
+    const libcBefore = Array.isArray(old.libc) && old.libc.length > 0 ? old.libc : null
+    const libcAfter = Array.isArray(entry.libc) && entry.libc.length > 0 ? entry.libc : null
+    if (JSON.stringify(libcBefore) !== JSON.stringify(libcAfter)) {
+      diff.libcChanges.push({ path: lockPath, name: packageName(lockPath, entry), version: entry.version, from: libcBefore, to: libcAfter })
+    }
   }
   for (const [lockPath, old] of Object.entries(before)) {
     if (lockPath !== '' && !after[lockPath]) diff.removed.push({ path: lockPath, name: packageName(lockPath, old), version: old.version })
@@ -66,6 +71,7 @@ export function formatDiff(diff) {
   for (const item of diff.dependencyChanges) lines.push(`deps     ${item.path} ${item.field} ${item.name}: ${item.from ?? '(none)'} -> ${item.to ?? '(none)'}`)
   for (const item of diff.rootReclassified) lines.push(`root     ${item.name} moved from ${item.from} to ${item.to}`)
   for (const item of diff.newInstallScripts) lines.push(`note     ${item} now has an install script`)
+  for (const item of diff.libcChanges) lines.push(`libc     ${item.path} ${item.version}: ${item.from ? JSON.stringify(item.from) : '(none)'} -> ${item.to ? JSON.stringify(item.to) : '(none)'}`)
   return lines
 }
 
@@ -119,6 +125,21 @@ export async function auditLockChange({ oldLock, newLock, overrides, cooldownDay
     }
     if (integrity !== entry.integrity) {
       violations.push({ kind: 'integrity', path: arrival.path, message: `${key} has integrity ${entry.integrity} in the lock but the registry serves ${integrity}` })
+    }
+  })
+
+  const arrivalPaths = new Set(arrivals.map((arrival) => arrival.path))
+  const stripped = diff.libcChanges.filter((item) => item.from && !item.to && !arrivalPaths.has(item.path))
+  await inPool(stripped, 6, async (item) => {
+    const key = `${item.name}@${item.version}`
+    if (!cache.has(key)) {
+      cache.set(key, Promise.resolve().then(() => lookup(item.name, item.version)).then((info) => ({ info }), (error) => ({ error })))
+    }
+    const outcome = await cache.get(key)
+    if (outcome.error || !outcome.info) {
+      violations.push({ kind: 'lookup', path: item.path, message: `${key} lost its libc ${JSON.stringify(item.from)} and could not be checked against the registry (${outcome.error?.message ?? 'no answer'})` })
+    } else if (Array.isArray(outcome.info.libc) && outcome.info.libc.length > 0) {
+      violations.push({ kind: 'libc-missing', path: item.path, message: `${key} lost its libc ${JSON.stringify(item.from)} in this change, but the registry declares libc ${JSON.stringify(outcome.info.libc)} for it` })
     }
   })
 

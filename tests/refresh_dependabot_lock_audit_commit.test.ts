@@ -19,7 +19,9 @@ const version = spec.slice(cut + 1)
 fs.appendFileSync(process.env.STUB_LOG, spec + '\\n')
 const hit = table[spec]
 if (process.argv[2] !== 'view' || !hit) { process.stderr.write('npm error code E404\\n'); process.exit(1) }
-process.stdout.write(JSON.stringify({ 'dist.integrity': hit.integrity, time: { [version]: hit.publishedAt } }))
+const out = { 'dist.integrity': hit.integrity, time: { [version]: hit.publishedAt } }
+if (hit.libc) out.libc = hit.libc
+process.stdout.write(JSON.stringify(out))
 `
 
 let sandbox: string
@@ -82,7 +84,7 @@ afterEach(() => {
 })
 
 /** A base lock with one package, then a commit on 2026-10-07 bumping it to 1.1.0. */
-function bump(registry: Record<string, { integrity: string; publishedAt: string }>, newLock = lockOf({ 'node_modules/a': entry('1.1.0', 'sha512-new') })): string {
+function bump(registry: Record<string, { integrity: string; publishedAt: string; libc?: string[] }>, newLock = lockOf({ 'node_modules/a': entry('1.1.0', 'sha512-new') })): string {
   fs.writeFileSync(path.join(sandbox, 'registry.json'), JSON.stringify(registry))
   commitLock(lockOf({ 'node_modules/a': entry('1.0.0', 'sha512-old') }), 'base', '2026-09-01T00:00:00Z')
   return commitLock(newLock, 'chore(deps): bump a', '2026-10-07T00:00:00Z')
@@ -128,6 +130,42 @@ describe('refresh-dependabot-lock --audit-commit', () => {
     const r = audit(['--audit-commit', sha])
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('inconsistent: node_modules/p declares optionalDependencies c@1.0.0')
+  })
+
+  describe('a commit that only touches libc', () => {
+    // FORMAT-DERIVED from the b479903b/ab6545a34 pair in this repo's history: a Linux platform package whose entry differs between parent and commit only by the libc key.
+    const linux = (extra: Record<string, unknown>) => lockOf({ 'node_modules/p': entry('1.0.0', 'sha512-p', { cpu: ['x64'], optional: true, os: ['linux'], ...extra }) })
+    const registry = { 'p@1.0.0': { integrity: 'sha512-p', publishedAt: '2026-09-01T00:00:00.000Z', libc: ['glibc'] } }
+    const commitPair = (before: unknown, after: unknown): string => {
+      fs.writeFileSync(path.join(sandbox, 'registry.json'), JSON.stringify(registry))
+      commitLock(before, 'base', '2026-09-01T00:00:00Z')
+      return commitLock(after, 'chore(deps): touch libc', '2026-10-07T00:00:00Z')
+    }
+
+    it('exits 1 for a strip of libc the registry declares, naming it', () => {
+      const r = audit(['--audit-commit', commitPair(linux({ libc: ['glibc'] }), linux({}))])
+      expect(r.status).toBe(1)
+      expect(r.stdout).toContain('1 change(s) to package-lock.json')
+      expect(r.stdout).toContain('libc     node_modules/p 1.0.0: ["glibc"] -> (none)')
+      expect(r.stderr).toContain('libc-missing: p@1.0.0 lost its libc ["glibc"]')
+    })
+
+    it('exits 0 for a restore and does not call it unchanged', () => {
+      const r = audit(['--audit-commit', commitPair(linux({}), linux({ libc: ['glibc'] }))])
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain('1 change(s) to package-lock.json')
+      expect(r.stdout).not.toContain('unchanged')
+      expect(r.stdout).toContain('libc     node_modules/p 1.0.0: (none) -> ["glibc"]')
+    })
+
+    it('says unchanged only for a commit that changed nothing', () => {
+      fs.writeFileSync(path.join(sandbox, 'registry.json'), JSON.stringify(registry))
+      commitLock(linux({ libc: ['glibc'] }), 'base', '2026-09-01T00:00:00Z')
+      fs.writeFileSync(path.join(sandbox, 'package.json'), JSON.stringify({ name: 'sandbox', version: '1.0.1' }))
+      const r = audit(['--audit-commit', commitLock(linux({ libc: ['glibc'] }), 'chore(deps): bump the root version', '2026-10-07T00:00:00Z')])
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain('package-lock.json is unchanged')
+    })
   })
 
   it('refuses a missing revision and an option-shaped one without running anything', () => {

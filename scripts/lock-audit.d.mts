@@ -5,6 +5,7 @@ export interface LockDiff {
   flagChanges: { path: string; flag: string; from: boolean; to: boolean }[]
   dependencyChanges: { path: string; field: string; name: string; from: string | null; to: string | null }[]
   newInstallScripts: string[]
+  libcChanges: { path: string; name: string; version: string; from: string[] | null; to: string[] | null }[]
   rootReclassified: { name: string; from: string; to: string }[]
 }
 export interface Violation {
