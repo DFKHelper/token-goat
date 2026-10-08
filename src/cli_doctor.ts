@@ -653,14 +653,14 @@ export function checkSavingsReceipt(dbPath: string): DoctorResult {
   }
 }
 
-/** The Worker line. A worker stopped because its data directory refuses writes does not come back on its own, since every hook's auto-restart is refused the same way, so that case says why instead of the bare "not running" a stopped worker gets. A directory that does not exist yet is not probed: `worker start` creates it. */
+/** The Worker line. A worker stopped because its data directory refuses writes does not come back on its own, since every hook's auto-restart is refused the same way, so that case says why instead of the "not running" a stopped worker gets, which names `worker start`. A directory that does not exist yet is not probed: `worker start` creates it. */
 export function checkWorker(dir: string): DoctorResult {
   if (checkWorkerRunning(dir)) return { name: 'Worker', status: 'ok', message: 'running' }
   const refusal = fs.existsSync(dir) ? dataDirWriteRefusal(dir) : undefined
   if (refusal !== undefined) {
     return { name: 'Worker', status: 'fail', message: `not running, and cannot start: ${displaySafeText(dir)} cannot be written (${displaySafeText(extractErrorMessage(refusal))}); make it writable, then run \`token-goat worker start\`` }
   }
-  return { name: 'Worker', status: 'warn', message: 'not running' }
+  return { name: 'Worker', status: 'warn', message: 'not running; run `token-goat worker start` (the next hook that fires also starts it)' }
 }
 
 /** The Hook server line. A server that is not running is normal (the next hook call starts one); one whose last background start failed is worth a warning, because nothing else ever shows that error. */

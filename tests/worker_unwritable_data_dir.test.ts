@@ -101,6 +101,8 @@ describe('a worker whose data directory refuses writes', () => {
   })
 
   it('is reported by doctor as merely stopped when the directory takes writes', () => {
-    expect(checkWorker(dir)).toEqual({ name: 'Worker', status: 'warn', message: 'not running' })
+    const result = checkWorker(dir)
+    expect(result.status).toBe('warn')
+    expect(result.message).toContain('token-goat worker start')
   })
 })
