@@ -757,6 +757,8 @@ export function recordStat(
   traceparent?: string,
   durationMs?: number,
 ): void {
+  // A diagnostic's own hook call (doctor's preToolUse check, the headless probe) is not one the harness made: it leaves no row, and on a machine nothing was indexed on it must not create the ledger either.
+  if (_testDb === undefined && process.env[HOOK_PROBE_ENV] === '1') return
   const write = (db: SqliteDatabase): void => {
     const ts = Math.floor(Date.now() / 1000)
     const tp = traceparent ?? process.env['TRACEPARENT'] ?? process.env['traceparent'] ?? null

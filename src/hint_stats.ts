@@ -7,6 +7,7 @@ import { loadConfig } from './config.js'
 import type { HintStatsConfig } from './config_types.js'
 import { registerHook, sessionStateKey, type HookEvent } from './hook_registry.js'
 import { passOutput } from './hooks_common.js'
+import { HOOK_PROBE_ENV } from './stats.js'
 import type { HookOutput } from './types.js'
 
 export const HINT_CATEGORIES = [
@@ -159,6 +160,8 @@ function resetSuppressionStreak(category: HintCategory): void {
 /** Wrap a hook handler's already-computed {@link HookOutput}: non-`context` outputs pass through untouched (deny/pass/rewrite* are not hints in this module's sense -- see the module doc comment). A `context` output is classified via `classify`, checked against {@link shouldSuppress}. When suppressed, this occasion's streak is bumped and checked against `hints.backoff_thresholds` via {@link isProbeOccasion}: a matching occasion is let through and logged as a genuine probe (see the module doc comment's "Probe recovery" section); any other suppressed occasion is swapped for a silent `passOutput()`, same as before probing existed. When not suppressed, the streak is reset (a fresh suppression episode later starts its backoff schedule over from occasion 1) and the emission is logged via {@link logHintEmission} as always. Called from each instrumented hook file's thin public wrapper (e.g. hooks_bash.ts's `preBashHandler` calling into the renamed `preBashHandlerInner`) rather than from inside the ~30-branch handler bodies themselves, so none of those branches' own logic needed touching -- every `context` output they can possibly produce is intercepted at the one return boundary. */
 export function applyHintTracking(event: HookEvent, output: HookOutput, classify: (text: string) => Classification): HookOutput {
   if (output.hookType !== 'context') return output
+  // A diagnostic's own hook call (doctor's preToolUse check) is not one an agent saw, so it counts toward no hint's emission, suppression or backoff, and on a machine nothing was indexed on it creates no ledger.
+  if (process.env[HOOK_PROBE_ENV] === '1') return output
   const classified = classify(output.context)
   const { category } = classified
   // A builder that supplied its own correlators wins outright over classify's regex scrape, including when it supplied an empty list: an empty list is the builder saying "this hint names no file", which is a truthful null, where the scrape on that same text returns whatever path-shaped run of characters the prose happens to contain. See extractPathCorrelator's doc comment for the measured damage the scrape did.
