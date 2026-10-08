@@ -23,12 +23,30 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function waitFor(label: string, timeoutMs: number, check: () => boolean): Promise<void> {
-  const start = Date.now()
+/** Polls until `check` is true. `deadline` is an absolute time and only a backstop: a check that can tell the thing it waits for will never happen throws at once instead. */
+async function waitFor(label: string, deadline: number, check: () => boolean, state: () => string = () => ''): Promise<void> {
   for (;;) {
     if (check()) return
-    if (Date.now() - start > timeoutMs) throw new Error(`timed out after ${timeoutMs}ms waiting for: ${label}`)
+    if (Date.now() > deadline) throw new Error(`gave up waiting for ${label}; ${state()}`)
     await sleep(50)
+  }
+}
+
+function readPid(file: string): number | null {
+  try {
+    const pid = parseInt(fs.readFileSync(file, 'utf8').trim(), 10)
+    return Number.isFinite(pid) ? pid : null
+  } catch {
+    return null
+  }
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM'
   }
 }
 
@@ -57,8 +75,14 @@ describe('a CLI enqueue path revives a dead worker (not just the edit hook)', ()
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: dataBase, USERPROFILE: dataBase, LOCALAPPDATA: dataBase, XDG_DATA_HOME: dataBase }
     delete env['TOKEN_GOAT_NO_WORKER_SPAWN']
 
+    const started = Date.now()
     const dataDir = effectiveDataDir(dataBase)
     const queueDir = path.join(dataDir, 'queue')
+    const pendingState = (): string => {
+      const pid = readPid(path.join(queueDir, 'worker.pid'))
+      const beat = readPid(path.join(queueDir, 'drain-heartbeat'))
+      return `worker.pid=${String(pid)} alive=${pid === null ? 'n/a' : String(pidAlive(pid))} heartbeat=${String(beat)} alive=${beat === null ? 'n/a' : String(pidAlive(beat))} after ${Date.now() - started}ms`
+    }
     fs.mkdirSync(queueDir, { recursive: true })
     // A stale pid file naming a pid that is certainly not running: isWorkerRunning must see this as dead, not accidentally alive (a real running pid would make ensureWorkerAlive correctly no-op, and this test would then prove nothing).
     const deadPid = 999999
@@ -83,16 +107,12 @@ describe('a CLI enqueue path revives a dead worker (not just the edit hook)', ()
       expect(replaced.status, `replace failed: ${replaced.stderr.slice(0, 400)}`).toBe(0)
       expect(fs.readFileSync(target, 'utf8')).toContain('before = 2')
 
-      // The actual point of the fix: a heartbeat only a freshly spawned daemon writes.
+      // What takes time is the spawned daemon's cold start to its first drain cycle, which on a busy machine runs at the lowered priority for tens of seconds, so the wait is on the heartbeat a fresh daemon writes. The deadline is a backstop just under the test's own 30 s limit, so that a real failure to revive reports the pending state instead of a bare vitest timeout; a worker that was never spawned leaves no heartbeat and still fails there.
       const heartbeat = path.join(queueDir, 'drain-heartbeat')
-      await waitFor('a fresh worker (spawned by the replace call, not by hand) to write its heartbeat', 15000, () => {
-        try {
-          const pid = parseInt(fs.readFileSync(heartbeat, 'utf8').trim(), 10)
-          return Number.isFinite(pid) && pid !== deadPid
-        } catch {
-          return false
-        }
-      })
+      await waitFor('a fresh worker (spawned by the replace call, not by hand) to write its heartbeat', started + 27000, () => {
+        const pid = readPid(heartbeat)
+        return pid !== null && pid !== deadPid
+      }, pendingState)
 
       const status = runBundle(['worker', 'status'], env, repo)
       expect(status.stdout).toContain('Worker is running.')
