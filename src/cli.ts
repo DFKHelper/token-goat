@@ -762,6 +762,7 @@ async function cmdCompress(
         parseTimeout(opts.timeout, bashRunner.DEFAULT_TIMEOUT_SECONDS),
         opts.native,
         opts.shell,
+        ...(opts.stdin === true ? [true] : []),
       )
       return
     }
@@ -1426,7 +1427,7 @@ export function buildProgram(): Command {
     .option('--cap-hint-b64 <payload>', 'base64 text printed after the output when --max-tokens cut it (the Bash hook sets it to the narrower read command)')
     .option('-q, --quiet-success', 'on exit code 0, emit only [tg: ok] summary and store full output for recall via bash-output')
     .option('--native', 'use native platform shell (e.g. cmd.exe on Windows) instead of bash, preserving Windows path backslashes')
-    .option('--stdin', 'pipe standard input to the wrapped command')
+    .option('--stdin', 'give the wrapped command the standard input of this process (it gets none by default, on every path)')
     .action(cmdCompress)
 
   program

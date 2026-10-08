@@ -322,6 +322,8 @@ Agents and interactive users must pass ordinary plain shell commands directly: a
 
 `-q` / `--quiet-success` trades a clean run's output for one line. On exit code 0 the full output is stored for recall and only the summary prints; on any other exit code the compressed output is delivered as usual.
 
+The wrapped command gets no standard input by default, on every path (plain, `--max-tokens`, `-q`, a filter, `--no-compress`), so a hook-wrapped command can never wait on input the harness will not send. `--stdin` hands it the caller's standard input instead, byte for byte: `printf 'héllo' | token-goat compress --stdin -c cat`.
+
 ```
 $ token-goat compress -q --cmd "npm run lint"
 [tg: ok] npm run lint (22.2s, recall: token-goat bash-output 326d9800e732eb9d)

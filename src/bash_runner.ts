@@ -57,7 +57,7 @@ export interface RunOptions {
   nativeShell?: boolean | undefined
   shellType?: 'bash' | 'pwsh' | 'powershell' | 'native' | string | undefined
   heartbeatIntervalMs?: number
-  stdin?: string | Buffer | undefined
+  /** Hand the wrapped command the caller's standard input; without it the command gets none, on every path. */
   rawStdin?: boolean | undefined
 }
 
@@ -220,22 +220,28 @@ export async function run(command: string, opts: RunOptions = {}): Promise<numbe
     if ((opts.maxTokens ?? 0) > 0 || opts.quietSuccess) {
       return wrapAndCompress(command, argv, new PassthroughFilter(), timeout, resolveProfile(opts.compressionProfile), opts)
     }
-    return passthrough(command, timeout, opts.cwd, opts.env, opts.nativeShell, opts.shellType)
+    return passthrough(command, timeout, opts.cwd, opts.env, opts.nativeShell, opts.shellType, opts.rawStdin)
   }
   return wrapAndCompress(command, argv, filter, timeout, resolveProfile(opts.compressionProfile), opts)
 }
 
-/** Run *command* raw with no compression, inheriting the parent's stdio and returning its exit code. Used by `compress --no-compress` to debug the wrapper by streaming output straight through. */
+/** The child's stdin on every run path: none, unless the caller asked for its own (`compress --stdin`), then `forward` (inherit for a streamed run, a pipe for a captured one). A hook-wrapped command must never wait on input the harness will not send, which is why 'ignore' is the default. */
+function childStdin(rawStdin: boolean | undefined, forward: 'inherit' | 'pipe'): 'ignore' | 'inherit' | 'pipe' {
+  return rawStdin === true ? forward : 'ignore'
+}
+
+/** Run *command* raw with no compression, inheriting the parent's stdout and stderr and returning its exit code. Used by `compress --no-compress` to debug the wrapper by streaming output straight through. */
 export function runRaw(
   command: string,
   timeout: number = DEFAULT_TIMEOUT_SECONDS,
   nativeShell?: boolean,
   shellType?: string,
+  rawStdin?: boolean,
 ): number {
-  return passthrough(command, timeout, undefined, undefined, nativeShell, shellType)
+  return passthrough(command, timeout, undefined, undefined, nativeShell, shellType, rawStdin)
 }
 
-/** Run *command* with no compression, inheriting the parent's stdio. */
+/** Run *command* with no compression, inheriting the parent's stdout and stderr. */
 function passthrough(
   command: string,
   timeout: number,
@@ -243,13 +249,14 @@ function passthrough(
   env: NodeJS.ProcessEnv | undefined,
   nativeShell?: boolean,
   shellType?: string,
+  rawStdin?: boolean,
 ): number {
   const { file, args, shell, cmdEnv } = spawnTarget(command, nativeShell, shellType)
   const result = spawnSync(file, args, {
     ...baseSpawnOptions(timeout, cwd),
     shell,
     env: mergeSpawnEnv(env, cmdEnv),
-    stdio: 'inherit',
+    stdio: [childStdin(rawStdin, 'inherit'), 'inherit', 'inherit'],
   })
   if (isTimeout(result.error)) return 124
   // A spawn failure (ENOENT) leaves status null; exit 127 like a shell's "command not found" instead of reporting success.
@@ -292,18 +299,11 @@ async function wrapAndCompress(
   let overflowed = false
 
   // Async spawn (not spawnSync) is required for the heartbeat below: a blocking spawnSync call never lets the event loop tick, so no timer could ever fire while the child is still running -- this is the actual root cause of `token-goat compress` looking hung on a long, quiet command, not just a missing print statement.
-  const hasStdinData = opts.stdin !== undefined
-  const shouldPipeStdin = opts.rawStdin === true || hasStdinData
-  const stdioIn = shouldPipeStdin ? 'pipe' : 'ignore'
-  const child = spawn(file, args, { cwd: opts.cwd, shell, env: mergeSpawnEnv(opts.env, cmdEnv), stdio: [stdioIn, 'pipe', 'pipe'] })
+  const child = spawn(file, args, { cwd: opts.cwd, shell, env: mergeSpawnEnv(opts.env, cmdEnv), stdio: [childStdin(opts.rawStdin, 'pipe'), 'pipe', 'pipe'] })
   if (child.stdin) {
     child.stdin.on('error', () => {})
-    if (hasStdinData) {
-      child.stdin.end(opts.stdin)
-    } else if (opts.rawStdin) {
-      process.stdin.on('error', () => {})
-      process.stdin.pipe(child.stdin)
-    }
+    process.stdin.on('error', () => {})
+    process.stdin.pipe(child.stdin)
   }
   const heartbeat = scheduleHeartbeat(startTime, opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS, (elapsed) => {
     writeStderr(`[token-goat compress] still running, ${elapsed}s elapsed\n`)
@@ -335,6 +335,11 @@ async function wrapAndCompress(
   })
   heartbeat.stop()
   clearTimeout(timeoutHandle)
+  // Release the caller's stdin explicitly instead of relying on the pipe's own cleanup, so a library caller's event loop is never held open by it.
+  if (child.stdin) {
+    process.stdin.unpipe(child.stdin)
+    process.stdin.pause()
+  }
 
   let stdoutText = stdoutSink.text()
   let stderrText = stderrSink.text()
