@@ -45,7 +45,7 @@ import {
   requireNonNegativeStrictInt,
 } from './util.js'
 import { grepFilteredToEmptyNotice } from './filter_notice.js'
-import { fenceFileFieldIfMatched, fenceFileText, fenceJsonStrings } from './untrusted_fence.js'
+import { fenceFileFieldIfMatched, fenceJsonStrings } from './untrusted_fence.js'
 import { ZipInputTooLargeError, ZipOutputTooLargeError } from './zip_bounds.js'
 import { CliError, formatCommandError } from './command_error.js'
 import { couldNotRead, echoedValue, quotedArg } from './hint_suggestion_guard.js'
@@ -177,7 +177,7 @@ export function runSqliteSchema(opts: SqliteSchemaCliOptions): number {
       emit(jsonText)
       recordReadStat('sqlite_schema', fullSourceBytes, jsonText, opts.file)
     } else {
-      const text = fenceFileText(formatSqliteSchema(schema))
+      const text = guardAndFenceFileText(formatSqliteSchema(schema), 'sqlite-schema')
       emit(text)
       recordReadStat('sqlite_schema', fullSourceBytes, text, opts.file)
     }
@@ -202,7 +202,7 @@ export function runSqliteTables(opts: SqliteTablesCliOptions): number {
       emit(jsonText)
       recordReadStat('sqlite_tables', fullSourceBytes, jsonText, opts.file)
     } else {
-      const text = fenceFileText(formatSqliteTables(tables))
+      const text = guardAndFenceFileText(formatSqliteTables(tables), 'sqlite-tables')
       emit(text)
       recordReadStat('sqlite_tables', fullSourceBytes, text, opts.file)
     }
@@ -255,7 +255,7 @@ export function runSqliteQuery(opts: SqliteQueryCliOptions): number {
       }, 0)
       recordReadStat('sqlite_query', Buffer.byteLength(baselineJsonText, 'utf8'), jsonText, opts.file)
     } else {
-      const text = fenceFileText(formatSqliteQueryTable({ ...result, rows }, { headTruncated }))
+      const text = guardAndFenceFileText(formatSqliteQueryTable({ ...result, rows }, { headTruncated }), 'sqlite-query')
       emit(text)
       const baselineText = formatSqliteQueryTable({ ...result, rows: result.rows }, { headTruncated: false })
       recordReadStat('sqlite_query', Buffer.byteLength(baselineText, 'utf8'), text, opts.file)

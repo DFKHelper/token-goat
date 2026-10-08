@@ -9,6 +9,7 @@ import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { displaySafeJson, displaySafePath, displaySafeText } from './paths.js'
 import { pptxNotesText, pptxOutline, pptxSlideText, pptxTextGrep } from './pptx_extract.js'
 import {
+  guardAndFenceFileText,
   guardJsonRows,
   runPdfExtractText,
   runPdfLocate,
@@ -26,7 +27,7 @@ import {
   readTranscript,
   sliceTranscript,
 } from './transcript_extract.js'
-import { fenceFileFieldIfMatched, fenceFileText } from './untrusted_fence.js'
+import { fenceFileFieldIfMatched } from './untrusted_fence.js'
 import { cappedSourceBytesSaved, countNoun, redactUrlQuery } from './util.js'
 import { extractVideoChapters } from './video_chapters.js'
 import {
@@ -100,7 +101,7 @@ export async function cmdPdfLocate(
     const summary = truncated
       ? `at least ${countNoun(matches.length, 'match', 'matches')} across at least ${countNoun(pages.length, 'page')}; scan stopped at --max-matches, raise it for more`
       : `${countNoun(matches.length, 'match', 'matches')} across ${countNoun(pages.length, 'page')}`
-    printed = fenceFileText(`${lines.join('\n')}\n\n${summary}`)
+    printed = guardAndFenceFileText(`${lines.join('\n')}\n\n${summary}`, 'pdf-locate')
     out(printed)
   }
   if (pagesNote !== undefined) emitErr(pagesNote)
@@ -122,7 +123,7 @@ export async function cmdPdfOutline(file: string, opts: { json?: boolean }): Pro
   const text =
     opts.json === true
       ? displaySafeJson(entries.map((e) => ({ ...e, title: fenceFileFieldIfMatched(e.title) })))
-      : fenceFileText(entries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n'))
+      : guardAndFenceFileText(entries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n'), 'pdf-outline')
   out(text)
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
@@ -202,7 +203,7 @@ export function cmdSharepointResolve(url: string): void {
 
 export async function cmdXlsxSheets(file: string, opts: { json?: boolean } = {}): Promise<void> {
   const sheets = await xlsxListSheets(file)
-  const text = opts.json === true ? displaySafeJson(sheets.map((s) => ({ name: fenceFileFieldIfMatched(s.name), ref: s.ref, rows: s.rows, cols: s.cols }))) : fenceFileText(sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n'))
+  const text = opts.json === true ? displaySafeJson(sheets.map((s) => ({ name: fenceFileFieldIfMatched(s.name), ref: s.ref, rows: s.rows, cols: s.cols }))) : guardAndFenceFileText(sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n'), 'xlsx-sheets')
   out(text)
   recordXlsxStat('xlsx_sheets', file, text)
 }
@@ -212,7 +213,7 @@ export async function cmdXlsxHead(file: string, opts: { sheet?: string; rows?: s
   const columns = opts.columns
     ? opts.columns.split(',').map((c) => c.trim()).filter(Boolean)
     : undefined
-  const text = fenceFileText(await xlsxHeadSheet(file, opts.sheet, rows, columns))
+  const text = guardAndFenceFileText(await xlsxHeadSheet(file, opts.sheet, rows, columns), 'xlsx-head')
   out(text)
   recordXlsxStat('xlsx_head', file, text)
 }
@@ -229,7 +230,7 @@ export async function cmdXlsxColumns(file: string, opts: { sheet?: string; head?
     out(text)
     recordXlsxStat('xlsx_columns', file, text)
   } else {
-    const text = fenceFileText(formatXlsxColumns(result))
+    const text = guardAndFenceFileText(formatXlsxColumns(result), 'xlsx-columns')
     out(text)
     recordXlsxStat('xlsx_columns', file, text)
   }
@@ -237,7 +238,7 @@ export async function cmdXlsxColumns(file: string, opts: { sheet?: string; head?
 
 export async function cmdXlsxRange(file: string, opts: { sheet?: string; range: string; formulas?: boolean }): Promise<void> {
   const result = await xlsxRangeSheet(file, opts.sheet, opts.range, opts.formulas === true)
-  const text = fenceFileText(formatXlsxRange(result))
+  const text = guardAndFenceFileText(formatXlsxRange(result), 'xlsx-range')
   out(text)
   recordXlsxStat('xlsx_range', file, text)
 }
@@ -274,7 +275,7 @@ export async function cmdXlsxQuery(file: string, opts: { sheet?: string; columns
     out(text)
     recordXlsxStat('xlsx_query', file, text)
   } else {
-    const text = fenceFileText(formatCsvTable(result, (opts.where ?? []).map((w) => `--where ${w}`)))
+    const text = guardAndFenceFileText(formatCsvTable(result, (opts.where ?? []).map((w) => `--where ${w}`)), 'xlsx-query')
     out(text)
     recordXlsxStat('xlsx_query', file, text)
   }
@@ -285,10 +286,11 @@ export async function cmdPptxOutline(file: string, opts: { json?: boolean }): Pr
   const text =
     opts.json === true
       ? displaySafeJson(slides.map((s) => ({ ...s, title: fenceFileFieldIfMatched(s.title) })))
-      : fenceFileText(
+      : guardAndFenceFileText(
           slides
             .map((s) => `${s.slide}. ${s.title || '(untitled)'}  [${s.bodyChars} body chars${s.hasNotes ? ', has notes' : ''}]`)
             .join('\n'),
+          'pptx-outline',
         )
   out(text)
   recordDocStat('pptx_outline', file, text)
@@ -296,7 +298,7 @@ export async function cmdPptxOutline(file: string, opts: { json?: boolean }): Pr
 
 export async function cmdPptxSlide(file: string, opts: { slide: string; notes?: boolean }): Promise<void> {
   const n = requireNonNegativeInt('--slide', opts.slide)
-  const text = fenceFileText(await pptxSlideText(file, n, opts.notes === true))
+  const text = guardAndFenceFileText(await pptxSlideText(file, n, opts.notes === true), 'pptx-slide')
   out(text)
   recordDocStat('pptx_slide', file, text)
 }
@@ -304,7 +306,7 @@ export async function cmdPptxSlide(file: string, opts: { slide: string; notes?: 
 export async function cmdPptxNotes(file: string, opts: { slide?: string }): Promise<void> {
   const n = opts.slide !== undefined ? requireNonNegativeInt('--slide', opts.slide) : undefined
   const text = await pptxNotesText(file, n)
-  const printed = text.length > 0 ? fenceFileText(text) : 'no speaker notes found'
+  const printed = text.length > 0 ? guardAndFenceFileText(text, 'pptx-notes') : 'no speaker notes found'
   out(printed)
   recordDocStat('pptx_notes', file, printed)
 }
@@ -315,7 +317,7 @@ export async function cmdPptxText(file: string, opts: { grep: string }): Promise
     out('no matches')
     return
   }
-  const text = fenceFileText(matches.map((m) => `Slide ${m.slide}: ...${m.snippet}...`).join('\n'))
+  const text = guardAndFenceFileText(matches.map((m) => `Slide ${m.slide}: ...${m.snippet}...`).join('\n'), 'pptx-text')
   out(text)
   recordDocStat('pptx_text', file, text)
 }
@@ -333,7 +335,7 @@ export async function cmdDocxOutline(file: string, opts: { json?: boolean }): Pr
   const text =
     opts.json === true
       ? displaySafeJson(headings.map((h) => ({ ...h, text: fenceFileFieldIfMatched(h.text) })))
-      : fenceFileText(headings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n'))
+      : guardAndFenceFileText(headings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n'), 'docx-outline')
   out(text)
   recordDocStat('docx_outline', file, text)
 }
@@ -366,7 +368,7 @@ export async function cmdDocxTables(file: string, opts: { table?: string; json?:
     return
   }
 
-  const text = fenceFileText(formatDocxTables(tables, tableIdx !== undefined ? { tableIndex: tableIdx } : undefined))
+  const text = guardAndFenceFileText(formatDocxTables(tables, tableIdx !== undefined ? { tableIndex: tableIdx } : undefined), 'docx-tables')
   out(text)
   recordDocStat('docx_tables', file, text)
 }
@@ -414,7 +416,7 @@ export function cmdTranscript(file: string, opts: { speaker?: string; from?: str
     out('no cues match')
     return
   }
-  const text = fenceFileText(formatCues(sliced))
+  const text = guardAndFenceFileText(formatCues(sliced), 'transcript')
   out(text)
   recordDocStat('transcript', file, text)
 }

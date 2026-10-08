@@ -22,12 +22,12 @@ import {
   operationLabel,
   parseOpenApiSpec,
 } from './openapi_query.js'
-import { emitGuarded, guardJsonRows, guardRedactAndFence, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
+import { emitGuarded, guardAndFenceFileText, guardJsonRows, guardRedactAndFence, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
 import { CliError, formatCommandError } from './command_error.js'
 import { emit, emitErr } from './emit.js'
 import { headElidedNotice, traversalLimitNotice } from './query_notices.js'
-import { fenceFieldIfMatched, fenceFileFieldIfMatched, fenceFileText, fenceJsonStrings } from './untrusted_fence.js'
+import { fenceFieldIfMatched, fenceFileFieldIfMatched, fenceJsonStrings } from './untrusted_fence.js'
 import { extractErrorMessage, requireNonNegativeStrictInt } from './util.js'
 import {
   formatXmlOutline,
@@ -100,7 +100,7 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
       emit(jsonText)
       recordReadStat('csv_query', fullSourceBytes, jsonText, opts.file)
     } else {
-      const tableText = fenceFileText(formatCsvTable(result, (opts.where ?? []).map((w) => `--where ${w}`)))
+      const tableText = guardAndFenceFileText(formatCsvTable(result, (opts.where ?? []).map((w) => `--where ${w}`)), 'csv-query')
       emit(tableText)
       recordReadStat('csv_query', fullSourceBytes, tableText, opts.file)
     }
@@ -133,7 +133,7 @@ export function runCsvProfile(opts: CsvProfileCliOptions): number {
       return 0
     }
     const fullSourceBytes = sumFileSizes([opts.file])
-    const profileText = fenceFileText(formatCsvProfile(profiles))
+    const profileText = guardAndFenceFileText(formatCsvProfile(profiles), 'csv-profile')
     emit(profileText)
     recordReadStat('csv_profile', fullSourceBytes, profileText, opts.file)
     return 0
