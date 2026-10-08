@@ -230,15 +230,15 @@ export async function cmdInstall(opts: {
     // Report alreadyInstalled like every other harness branch below does. installHooks has always computed it; the base Claude Code path was the one caller that discarded it and claimed a fresh install on every run.
     out(
       result.alreadyInstalled
-        ? `token-goat hooks (${scope}) already up to date → ${result.settingsPath}`
-        : `Installed token-goat hooks (${scope}) → ${result.settingsPath}`,
+        ? `token-goat hooks (${scope}) already up to date → ${displaySafePath(result.settingsPath)}`
+        : `Installed token-goat hooks (${scope}) → ${displaySafePath(result.settingsPath)}`,
     )
 
     const claudeMdResult = installClaudeMd(scope)
     out(
       claudeMdResult.alreadyInstalled
-        ? `CLAUDE.md block already up to date → ${claudeMdResult.path}`
-        : `Updated CLAUDE.md → ${claudeMdResult.path}`,
+        ? `CLAUDE.md block already up to date → ${displaySafePath(claudeMdResult.path)}`
+        : `Updated CLAUDE.md → ${displaySafePath(claudeMdResult.path)}`,
     )
 
     // A block relocated into some other markdown file is invisible to install/uninstall, so the write above just created a second copy. Say so rather than leaving a silent duplicate.
@@ -249,17 +249,17 @@ export async function cmdInstall(opts: {
     const skillResult = installSkill(scope)
     out(
       skillResult.alreadyInstalled
-        ? `token-goat skill already up to date → ${skillResult.path}`
-        : `Installed token-goat skill → ${skillResult.path}`,
+        ? `token-goat skill already up to date → ${displaySafePath(skillResult.path)}`
+        : `Installed token-goat skill → ${displaySafePath(skillResult.path)}`,
     )
   }
 
   if (opts.codex === true) {
     const codexResult = installCodex()
     if (codexResult.alreadyInstalled) {
-      out(`Codex CLI integration already installed → ${codexResult.configPath}`)
+      out(`Codex CLI integration already installed → ${displaySafePath(codexResult.configPath)}`)
     } else {
-      out(`Installed token-goat Codex CLI integration → ${codexResult.configPath}, ${codexResult.agentsPath}`)
+      out(`Installed token-goat Codex CLI integration → ${displaySafePath(codexResult.configPath)}, ${displaySafePath(codexResult.agentsPath)}`)
     }
     printBridgeVerificationNotice('codex')
   }
@@ -268,9 +268,9 @@ export async function cmdInstall(opts: {
   if (opts.gemini === true) {
     const geminiResult = installGemini()
     if (geminiResult.alreadyInstalled) {
-      out(`Gemini CLI integration already installed → ${geminiResult.settingsPath}`)
+      out(`Gemini CLI integration already installed → ${displaySafePath(geminiResult.settingsPath)}`)
     } else {
-      out(`Installed token-goat Gemini CLI integration → ${geminiResult.settingsPath}`)
+      out(`Installed token-goat Gemini CLI integration → ${displaySafePath(geminiResult.settingsPath)}`)
     }
     printBridgeVerificationNotice('gemini')
   }
@@ -279,9 +279,9 @@ export async function cmdInstall(opts: {
   if (opts.qwen === true) {
     const qwenResult = installQwen()
     if (qwenResult.alreadyInstalled) {
-      out(`Qwen Code integration already installed → ${qwenResult.settingsPath}`)
+      out(`Qwen Code integration already installed → ${displaySafePath(qwenResult.settingsPath)}`)
     } else {
-      out(`Installed token-goat Qwen Code integration → ${qwenResult.settingsPath}`)
+      out(`Installed token-goat Qwen Code integration → ${displaySafePath(qwenResult.settingsPath)}`)
     }
     printBridgeVerificationNotice('qwen')
   }
@@ -290,9 +290,9 @@ export async function cmdInstall(opts: {
   if (opts.kimi === true) {
     const kimiResult = installKimi()
     if (kimiResult.alreadyInstalled) {
-      out(`Kimi Code integration already installed → ${kimiResult.configPath}`)
+      out(`Kimi Code integration already installed → ${displaySafePath(kimiResult.configPath)}`)
     } else {
-      out(`Installed token-goat Kimi Code integration → ${kimiResult.configPath}, ${kimiResult.hookScriptPath}, ${kimiResult.agentsPath}, ${kimiResult.skillPath}`)
+      out(`Installed token-goat Kimi Code integration → ${displaySafePath(kimiResult.configPath)}, ${displaySafePath(kimiResult.hookScriptPath)}, ${displaySafePath(kimiResult.agentsPath)}, ${displaySafePath(kimiResult.skillPath)}`)
     }
     printBridgeVerificationNotice('kimi')
   }
@@ -301,9 +301,9 @@ export async function cmdInstall(opts: {
   if (opts.pi === true) {
     const piResult = installPi({ local: opts.local === true || opts.project === true })
     if (piResult.alreadyInstalled) {
-      out(`pi extension already installed → ${piResult.extensionPath}`)
+      out(`pi extension already installed → ${displaySafePath(piResult.extensionPath)}`)
     } else {
-      out(`Installed token-goat pi extension → ${piResult.extensionPath}`)
+      out(`Installed token-goat pi extension → ${displaySafePath(piResult.extensionPath)}`)
     }
     printBridgeVerificationNotice('pi')
   }
@@ -312,9 +312,9 @@ export async function cmdInstall(opts: {
   if (opts.openclaw === true) {
     const openclawResult = installOpenclaw()
     if (openclawResult.alreadyInstalled) {
-      out(`OpenClaw integration already installed → ${openclawResult.configPath}`)
+      out(`OpenClaw integration already installed → ${displaySafePath(openclawResult.configPath)}`)
     } else {
-      out(`Installed token-goat OpenClaw integration → ${openclawResult.configPath}, ${openclawResult.pluginPath}`)
+      out(`Installed token-goat OpenClaw integration → ${displaySafePath(openclawResult.configPath)}, ${displaySafePath(openclawResult.pluginPath)}`)
     }
     printBridgeVerificationNotice('openclaw')
   }
@@ -323,7 +323,7 @@ export async function cmdInstall(opts: {
   if (opts.copilot === true) {
     const copilotResult = installCopilotCli({ local: opts.local === true || opts.project === true })
     if (copilotResult.alreadyInstalled) {
-      out(`Copilot CLI integration already installed → ${copilotResult.configPath}`)
+      out(`Copilot CLI integration already installed → ${displaySafePath(copilotResult.configPath)}`)
     } else {
       out(`Installed token-goat Copilot CLI integration → ${[copilotResult.configPath, copilotResult.scriptPath, copilotResult.instructionsPath, ...(copilotResult.mcpConfigPath !== undefined ? [copilotResult.mcpConfigPath] : [])].join(', ')}`)
     }
@@ -335,9 +335,9 @@ export async function cmdInstall(opts: {
   if (opts.opencode === true) {
     const opencodeResult = installOpencode()
     if (opencodeResult.alreadyInstalled) {
-      out(`opencode plugin already installed → ${opencodeResult.pluginPath}`)
+      out(`opencode plugin already installed → ${displaySafePath(opencodeResult.pluginPath)}`)
     } else {
-      out(`Installed token-goat opencode plugin → ${opencodeResult.pluginPath}`)
+      out(`Installed token-goat opencode plugin → ${displaySafePath(opencodeResult.pluginPath)}`)
     }
     printBridgeVerificationNotice('opencode')
   }
@@ -346,9 +346,9 @@ export async function cmdInstall(opts: {
   if (opts.grok === true) {
     const grokResult = installGrok()
     if (grokResult.alreadyInstalled) {
-      out(`Grok CLI integration already installed → ${grokResult.configPath}`)
+      out(`Grok CLI integration already installed → ${displaySafePath(grokResult.configPath)}`)
     } else {
-      out(`Installed token-goat Grok CLI integration → ${grokResult.configPath}, ${grokResult.hookScriptPath}`)
+      out(`Installed token-goat Grok CLI integration → ${displaySafePath(grokResult.configPath)}, ${displaySafePath(grokResult.hookScriptPath)}`)
     }
     printBridgeVerificationNotice('grok')
   }

@@ -195,7 +195,7 @@ export function runCallers(opts: CallersOptions): number {
 
   for (const e of entries) {
     const displayPath = toDisplayPath(rootDir, e.file)
-    emit(`${e.caller}\t${displayPath}:${e.line}`)
+    emit(`${displaySafeText(e.caller)}\t${displaySafeText(displayPath)}:${e.line}`)
     const window = buildContextWindow(e.file, e.line, contextLines)
     if (window !== null) for (const l of renderContextWindow(displayPath, e.line, window, '', '    ')) emit(l)
   }

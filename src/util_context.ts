@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs'
 
 import { indexedSourceText } from './indexed_source.js'
+import { displaySafeText } from './paths.js'
 
 /** One line of a source-context window: its 1-indexed line number and verbatim text. */
 export interface SourceContextLine {
@@ -37,9 +38,10 @@ export function renderContextWindow(
   matchSuffix = '',
   indent = '',
 ): string[] {
+  const shown = displaySafeText(displayFile)
   return window.map((c) =>
     c.line === matchLine
-      ? `${indent}${displayFile}:${c.line}: ${c.text}${matchSuffix}`
-      : `${indent}${displayFile}-${c.line}- ${c.text}`,
+      ? `${indent}${shown}:${c.line}: ${c.text}${matchSuffix}`
+      : `${indent}${shown}-${c.line}- ${c.text}`,
   )
 }
