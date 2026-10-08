@@ -1,13 +1,11 @@
 /** Read side of the symbol index. Queries the `symbols`, `refs`, and `files` tables (schema in `db.ts`) that the `token-goat symbol`, `token-goat refs`, and related CLI commands surface. Mapping from snake_case DB columns to the camelCase {@link SymbolEntry} / {@link RefEntry} / {@link FileIndexEntry} shapes lives here so callers never touch raw rows. Each query accepts an optional `dbPath` (defaulting to the global index DB) so tests can point at a throwaway database. The path is passed straight to {@link getDb}, which caches one connection per resolved path. */
 
-import * as fs from 'node:fs'
 import { globalDbPath } from './constants.js'
-import { getDb, withProbeIndex } from './db.js'
-import { fingerprintFile } from './fingerprint.js'
+import { getDb } from './db.js'
 import { ownProjectScope } from './nested_worktrees.js'
 import type { FileIndexEntry, RefEntry, SymbolEntry } from './parser_types.js'
-import { normalizePath, hostPathOfIndexKey } from './paths.js'
-import { pathEqClause as pathEq, pathSuffixClause, projectScopeClause } from './sql_path.js'
+import { normalizePath } from './paths.js'
+import { fileRowByIndexKey, filePathSpellingsClause, pathEqClause as pathEq, pathSuffixClause, projectScopeClause } from './sql_path.js'
 import { foldPath } from './util.js'
 
 /** A caller's spelling of a path, rewritten to the one the index is keyed on. Rows are written under `canonicalizeIndexPath`, which mints the key with `normalizePath`, so a query has to arrive through the same function or it compares two different names for one file. Folding case and trying both separators, which is all this layer used to do, bridges neither of the two rewrites `normalizePath` applies to a directory: a Windows 8.3 segment and the macOS `/var` link are different names, not different spellings of one. `getFileEntry` already normalized and these did not, so the same file answered found through one reader and missing through another. Costs nothing where the path is already canonical: the only filesystem call is inside the 8.3 branch, which a path with no short-name segment never enters. */
@@ -103,15 +101,9 @@ function buildSymbolWhere(opts: SymbolQueryOpts): { clause: string; params: (str
     params.push(opts.name)
   }
   if (opts.filePath !== undefined) {
-    const key = indexKey(opts.filePath)
-    if (key.includes('/') || key.includes('\\')) {
-      const alt = key.includes('/') ? key.replace(/\//g, '\\') : key.replace(/\\/g, '/')
-      where.push(`(${pathEq('file_path')} OR ${pathEq('file_path')})`)
-      params.push(foldPath(key), foldPath(alt))
-    } else {
-      where.push(pathEq('file_path'))
-      params.push(foldPath(key))
-    }
+    const spellings = filePathSpellingsClause('file_path', opts.filePath)
+    where.push(spellings.clause)
+    params.push(...spellings.params)
   }
   if (opts.kind !== undefined) {
     where.push('kind = ?')
@@ -306,21 +298,7 @@ export function getFileEntry(
   dbPath: string = globalDbPath(),
 ): FileIndexEntry | null {
   const db = getDb(dbPath)
-  const key = indexKey(filePath)
-  let row = db
-    .prepare(
-      `SELECT path, sha, mtime, language, indexed_at, embed_sha, parser_sha FROM files WHERE ${pathEq('path')}`,
-    )
-    .get(foldPath(key)) as FileRow | undefined
-
-  if (row === undefined && (key.includes('/') || key.includes('\\'))) {
-    const altPath = key.includes('/') ? key.replace(/\//g, '\\') : key.replace(/\\/g, '/')
-    row = db
-      .prepare(
-        `SELECT path, sha, mtime, language, indexed_at, embed_sha, parser_sha FROM files WHERE ${pathEq('path')}`,
-      )
-      .get(foldPath(altPath)) as FileRow | undefined
-  }
+  const row = fileRowByIndexKey<FileRow>(db, filePath, 'path, sha, mtime, language, indexed_at, embed_sha, parser_sha')
 
   if (row === undefined) return null
   return {
@@ -386,107 +364,3 @@ export function searchSymbolsFts(
     return []
   }
 }
-
-
-export interface NavigationSymbol {
-  readonly name: string
-  readonly kind: string
-  readonly lineStart: number
-  readonly lineEnd: number
-}
-
-export interface NavigationEvidence {
-  readonly filePath: string
-  readonly symbolCount: number
-  readonly headingCount: number
-  readonly topSymbols: readonly NavigationSymbol[]
-  readonly topHeadings: readonly NavigationSymbol[]
-  readonly indexedMtime: number
-  readonly isStale: boolean
-}
-
-/**
- * Fast, fail-open navigation probe for pre-read tool interception.
- * Uses a non-blocking read-only connection without schema migrations or lock contention.
- * Returns null if the file is not indexed or has no symbols/headings.
- */
-export function getReadNavigationEvidence(
-  filePath: string,
-  dbPath?: string,
-): NavigationEvidence | null {
-  return withProbeIndex((db) => {
-    const key = indexKey(filePath)
-    let fileRow = db
-      .prepare(`SELECT path, mtime, sha FROM files WHERE ${pathEq('path')}`)
-      .get(foldPath(key)) as { path: string; mtime?: number | null; sha?: string | null } | undefined
-
-    if (fileRow === undefined && (key.includes('/') || key.includes('\\'))) {
-      const alt = key.includes('/') ? key.replace(/\//g, '\\') : key.replace(/\\/g, '/')
-      fileRow = db
-        .prepare(`SELECT path, mtime, sha FROM files WHERE ${pathEq('path')}`)
-        .get(foldPath(alt)) as { path: string; mtime?: number | null; sha?: string | null } | undefined
-    }
-
-    if (!fileRow) return null
-
-    let isStale = false
-    try {
-      const onDisk = hostPathOfIndexKey(filePath)
-      const stat = fs.statSync(onDisk)
-      // files.mtime is seconds (parser.ts safeMtime) and stat.mtimeMs milliseconds, so the unit is converted here, as reconcile.ts does. An unchanged mtime is fresh; a moved one is only a suspicion, settled by the content fingerprint the read commands' staleWarning compares, because a checkout rewrites mtimes over unchanged bytes and the worker never re-stamps a file whose sha still matches.
-      if (stat.mtimeMs / 1000 !== fileRow.mtime) {
-        isStale = !fileRow.sha || fingerprintFile(onDisk) !== fileRow.sha
-      }
-    } catch {
-      // file might be removed or inaccessible
-      isStale = true
-    }
-
-    const { clause, params } = buildSymbolWhere({ filePath: fileRow.path })
-    const rows = db
-      .prepare(
-        `SELECT name, kind, line_start, line_end FROM symbols ${clause} ORDER BY line_start ASC, rowid LIMIT 60`,
-      )
-      .all(...params) as Array<{ name: string; kind: string; line_start: number; line_end: number }>
-
-    if (!rows || rows.length === 0) return null
-
-    const countRow = db
-      .prepare(
-        `SELECT COUNT(*) as total, SUM(CASE WHEN kind = 'heading' THEN 1 ELSE 0 END) as headings FROM symbols ${clause}`,
-      )
-      .get(...params) as { total: number; headings: number | null } | undefined
-
-    const totalCount = countRow?.total ?? rows.length
-    const headingTotal = Number(countRow?.headings ?? 0)
-    const symbolTotal = Math.max(0, totalCount - headingTotal)
-
-    const topSymbols: NavigationSymbol[] = []
-    const topHeadings: NavigationSymbol[] = []
-
-    for (const r of rows) {
-      const item: NavigationSymbol = {
-        name: r.name,
-        kind: r.kind,
-        lineStart: r.line_start,
-        lineEnd: r.line_end,
-      }
-      if (r.kind === 'heading') {
-        if (topHeadings.length < 8) topHeadings.push(item)
-      } else {
-        if (topSymbols.length < 8) topSymbols.push(item)
-      }
-    }
-
-    return {
-      filePath: fileRow.path,
-      symbolCount: symbolTotal,
-      headingCount: headingTotal,
-      topSymbols,
-      topHeadings,
-      indexedMtime: fileRow.mtime ?? 0,
-      isStale,
-    }
-  }, dbPath)
-}
-

@@ -1,3 +1,4 @@
+import type { SqliteDatabase } from './sqlite_driver.js'
 import { foldPath, isCaseInsensitiveFs, normalizePath } from './util.js'
 
 // Build a `<column> = ?` SQL comparison for path equality. Callers MUST fold the path parameter using foldPath() before binding (see parser.ts, embeddings.ts, index_reader.ts). On case-insensitive filesystems, we fold the column value using TG_LOWER() -- a custom SQL scalar function registered on every connection in db.ts's initConnection() that wraps the exact same foldCase() primitive foldPath() uses on the JS side. SQLite's built-in LOWER() only folds ASCII A-Z (confirmed no custom LOWER override exists), so it would silently diverge from foldPath() for non-ASCII casing (e.g. `Ä` vs `ä`); TG_LOWER keeps SQL-side and JS-side folding byte-for-byte consistent across parser.ts, embeddings.ts, index_reader.ts, worker.ts, and index_prune.ts.
@@ -63,4 +64,29 @@ export function projectScopeClause(column: string): {
       return [lower, upper]
     },
   }
+}
+
+/** Both spellings an index may have stored a path under: the index key, and on a path with a separator the other separator too, since not every writer stored a forward-slash path. */
+function pathSpellings(filePath: string): string[] {
+  const key = normalizePath(filePath)
+  if (!key.includes('/') && !key.includes('\\')) return [key]
+  const alt = key.includes('/') ? key.replace(/\//g, '\\') : key.replace(/\\/g, '/')
+  return [key, alt]
+}
+
+/** A comparison of `column` against every spelling of `filePath`, plus the params it binds. For the `symbols` and `refs` tables, which are filtered by file rather than fetched by it. */
+export function filePathSpellingsClause(column: string, filePath: string): { clause: string; params: string[] } {
+  const params = pathSpellings(filePath).map(foldPath)
+  const clause = params.map(() => pathEqClause(column)).join(' OR ')
+  return { clause: params.length > 1 ? `(${clause})` : clause, params }
+}
+
+/** The `files` row for a path, found under the index key first and then under the other separator's spelling. `columns` is the SELECT list and must include `path`. */
+export function fileRowByIndexKey<Row>(db: SqliteDatabase, filePath: string, columns: string): Row | undefined {
+  const statement = db.prepare(`SELECT ${columns} FROM files WHERE ${pathEqClause('path')}`)
+  for (const spelling of pathSpellings(filePath)) {
+    const row = statement.get(foldPath(spelling)) as Row | undefined
+    if (row !== undefined) return row
+  }
+  return undefined
 }

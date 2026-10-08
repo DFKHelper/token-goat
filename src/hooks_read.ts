@@ -49,7 +49,8 @@ import {
   type ReadPolicyDecision,
 } from './hooks_read_policy.js'
 import { buildPackageManifestHint } from './hints.js'
-import { querySymbols, getFileEntry, getReadNavigationEvidence } from './index_reader.js'
+import { querySymbols, getFileEntry } from './index_reader.js'
+import { getReadNavigationEvidence } from './read_navigation_evidence.js'
 import { extractShellBannerHeading } from './section_reader.js'
 import { isLockFile, isManifestFile, isInBuildDir, isGeneratedFile } from './hints/lang_patterns.js'
 import {

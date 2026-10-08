@@ -1,6 +1,6 @@
 import type { FirstReadSymbolPolicy, HintsConfig } from './config_types.js'
 import type { HookEvent } from './hook_registry.js'
-import { getReadNavigationEvidence, type NavigationEvidence } from './index_reader.js'
+import { getReadNavigationEvidence, type NavigationEvidence } from './read_navigation_evidence.js'
 import {
   describeSliceAdvice,
   editAnywayHint,

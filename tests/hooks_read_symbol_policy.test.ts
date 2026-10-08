@@ -7,7 +7,7 @@ import type { FirstReadSymbolPolicy, HintsConfig } from '../src/config_types.js'
 import { evaluateFirstReadSymbolPolicy, meetsFirstReadSymbolThreshold, type ReadPolicyContext } from '../src/hooks_read_policy.js'
 import { estimateRequestedSlice, isSmallSlice, isUnseenWindow, readRequestedSliceWindow } from '../src/hooks_read_slice.js'
 import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
-import type { NavigationEvidence } from '../src/index_reader.js'
+import type { NavigationEvidence } from '../src/read_navigation_evidence.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 // These cases inject navigationEvidence to pin the evaluator's decision logic alone. The shipping path, where getReadNavigationEvidence reads a real index row, is covered by tests/hooks_read_symbol_policy_e2e.test.ts.

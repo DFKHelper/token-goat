@@ -351,6 +351,8 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
         !spellingStale
       if (!parseUnchanged) {
         indexFileSync(absPath, dbPath)
+      } else if (entry !== null) {
+        restampMovedMtime(dbPath, entry.filePath, entry.mtime, entry.sha, absPath)
       }
       // Embedding freshness is gated INDEPENDENTLY of parse freshness (files.embed_sha, set only after indexFileEmbeddings actually commits -- see its doc comment in parser.ts). If a prior embedding attempt crashed or threw before stamping embed_sha, the parse-sha gate above would otherwise mask that forever: identical content would keep skipping the reparse AND skip re-embedding, leaving chunks permanently stale/missing. Re-check embed_sha against the current sha every time, even when the parse gate above skipped. While embeddings are currently disabled, indexFileEmbeddings stamps embed_sha with disabledEmbedSha(sha) instead of the bare sha (see its doc comment) so this gate can still hold and avoid re-entering indexFileEmbeddings on every drain of an unchanged file -- but a bare-sha match must never satisfy the gate while disabled, or a file that was only ever marker-stamped (never actually embedded) would look "unchanged" the instant embeddings are re-enabled, permanently skipping its real first embed. Optional chaining/fallback here is a defensive test-mock safety net, not a real production path: loadConfig() always returns a fully-populated, schema-validated config object in production. Several existing tests in this file mock loadConfig() with only a partial `{ worker: {...} }` shape (they exercise unrelated gates), so a bare `.indexing.embeddings_enabled` here would throw for those. Default to enabled (true), matching config.ts's own default, so this new gate check is a no-op for tests that never cared about embeddings. embeddingsEnabled and depsAvailable are computed above, before getFileEntry. depsAvailable lets isEmbedFresh distinguish a file that was skipped only because the optional embedding deps were absent (stamped an `unavailable:` marker) from one that was really embedded: the marker stays "fresh" while deps are still missing, but forces a re-embed the moment the model + sqlite-vec become usable. That independence covers files.parser_sha too: it answers which extractor wrote the symbol rows, never whether the stored vectors match this content, so a stale parser stamp must not drag this gate to false (it did, which re-embedded the whole index on every parser bump and made writeParseResult's embedShaToCarry dead for the waste it exists to prevent). spellingStale is the one parse-side condition that does belong here: a case-only rename leaves the content byte-identical, so isEmbedFresh would say fresh, but `chunks` rows are keyed by file_path and would keep the old spelling forever. Read the stamp the reparse above just wrote, not the one `entry` captured before it: writeParseResult clears the carried embed_sha when the reparse moved this file's embedding boundaries (see embeddingBoundariesMoved in parser.ts), and consulting the pre-parse row would defer that re-embed to some later drain -- which for a file nobody edits again is never.
       const embedEntry = parseUnchanged ? entry : getFileEntry(absPath, dbPath)
@@ -398,6 +400,17 @@ function pruneDirtyPath(p: string, remove: (absPath: string) => void, dir: strin
     appendWorkerErrorLog(dir, `${new Date().toISOString()} removeFileFromIndex failed for ${p}: ${extractErrorMessage(err)}\n`)
     requeue(dir, p)
     return false
+  }
+}
+
+/** Record the on-disk mtime of a file whose content is unchanged. A checkout or a touch moves the mtime over identical bytes, and nothing else re-stamps the row, so the cheap mtime gate in the pre-read probe (read_navigation_evidence.ts) and in reconcile.ts would otherwise miss and hash the whole file on every call. Guarded on the sha so a file edited since the drain fingerprinted it keeps its old stamp and is still seen as changed. Best-effort: a stat or database error leaves the row as it was. */
+function restampMovedMtime(dbPath: string, indexedPath: string, indexedMtime: number, sha: string, absPath: string): void {
+  try {
+    const mtime = fs.statSync(absPath).mtimeMs / 1000
+    if (mtime === indexedMtime) return
+    getDb(dbPath).prepare('UPDATE files SET mtime = ? WHERE path = ? AND sha = ?').run(mtime, indexedPath, sha)
+  } catch {
+    // Best-effort: the next drain tries again.
   }
 }
 

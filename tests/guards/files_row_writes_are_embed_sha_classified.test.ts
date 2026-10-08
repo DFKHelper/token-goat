@@ -54,7 +54,7 @@ type Bucket =
   | 'writes-a-freshly-computed-embed-sha'
   /** Deliberately invalidates embed_sha (sets it NULL) because the chunks/vectors it described were just removed or are about to be recomputed -- an intentional reset, not an accidental drop. */
   | 'deliberately-clears-embed-sha'
-  /** Touches only unrelated columns (mtime or other bookkeeping); embed_sha is not part of this statement's column list at all, so there is nothing to carry forward or drop. No write site is in this bucket today -- the retry counters that used to be were moved out of `files` into `index_retries`, so a `files` row again means "this file is indexed". */
+  /** Touches only unrelated columns (mtime or other bookkeeping); embed_sha is not part of this statement's column list at all, so there is nothing to carry forward or drop. The only write site in this bucket is the worker's mtime re-stamp; the retry counters that used to be here were moved out of `files` into `index_retries`, so a `files` row again means "this file is indexed". */
   | 'does-not-touch-the-embed-sha-column'
 
 interface Classification {
@@ -111,6 +111,13 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     {
       bucket: 'deliberately-clears-embed-sha',
       reason: 'Reclaim pass purges embedding vectors for unreferenced or over-budget projects and explicitly resets embed_sha to NULL so files are marked un-embedded.',
+    },
+  ],
+  [
+    'worker.ts::UPDATE files SET mtime = ? WHERE path = ? AND sha ',
+    {
+      bucket: 'does-not-touch-the-embed-sha-column',
+      reason: 'restampMovedMtime records the on-disk mtime of a file whose sha the drain just found unchanged, guarded on that sha. The column list is the mtime alone, so the row\'s embed_sha, parser_sha and sha stay exactly as they were.',
     },
   ],
 ])

@@ -68,7 +68,7 @@ function callSites(): Site[] {
     floor: 10, // measured 21 live across 6 files (raise this to 9999 and read the count out of the failure)
     ceiling: 40,
     // One anchor per file that holds sites today: a bare count cannot tell a collapse from a substitution, and losing a whole file's worth of sites is the shape that matters here.
-    mustInclude: ['src/embeddings.ts:', 'src/embed_backfill.ts:', 'src/index_prune.ts:', 'src/parser.ts:', 'src/symbol_scan.ts:', 'src/worker.ts:'],
+    mustInclude: ['src/embeddings.ts:', 'src/embed_backfill.ts:', 'src/index_prune.ts:', 'src/parser.ts:', 'src/sql_path.ts:', 'src/worker.ts:'],
   })
   return sites
 }

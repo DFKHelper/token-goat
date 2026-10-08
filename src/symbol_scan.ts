@@ -6,8 +6,8 @@ import type { querySymbols } from './index_reader.js'
 import { nestedWorktreeExclusions, ownProjectScope } from './nested_worktrees.js'
 import type { SymbolEntry } from './parser_types.js'
 import { normalizePath } from './paths.js'
-import { pathEqClause, projectScopeClause } from './sql_path.js'
-import { foldPath, isCaseInsensitiveFs } from './util.js'
+import { filePathSpellingsClause, projectScopeClause } from './sql_path.js'
+import { isCaseInsensitiveFs } from './util.js'
 
 /** Rows fetched per page. Each page is one index seek that reads about as many rows as it returns, so the size only trades statement count against the memory one page holds. */
 const SYMBOL_SCAN_PAGE = 10_000
@@ -45,16 +45,9 @@ export function forEachSymbol(scope: SymbolScanScope, visit: (symbol: SymbolHead
     params.push(scope.name)
   }
   if (scope.filePath !== undefined) {
-    // The spellings querySymbols matches: the index key, and on a path with a separator the other separator too, since not every writer stored a forward-slash path.
-    const fileKey = normalizePath(scope.filePath)
-    if (fileKey.includes('/') || fileKey.includes('\\')) {
-      const alt = fileKey.includes('/') ? fileKey.replace(/\//g, '\\') : fileKey.replace(/\\/g, '/')
-      where.push(`(${pathEqClause('file_path')} OR ${pathEqClause('file_path')})`)
-      params.push(foldPath(fileKey), foldPath(alt))
-    } else {
-      where.push(`(${pathEqClause('file_path')})`)
-      params.push(foldPath(fileKey))
-    }
+    const spellings = filePathSpellingsClause('file_path', scope.filePath)
+    where.push(`(${spellings.clause})`)
+    params.push(...spellings.params)
   }
   if (scope.kind !== undefined) {
     where.push('kind = ?')

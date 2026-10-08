@@ -617,11 +617,11 @@ function writeRefusal(resolved: string): unknown {
   return undefined
 }
 
-/** Open `resolved` read-only and read its schema version, closing the handle if the read fails. */
-function openReadOnlyAt(resolved: string, immutable: boolean): { conn: SqliteDatabase; storedVersion: number } {
+/** Open `resolved` read-only and read its schema version, closing the handle if the read fails. `busyTimeoutMs` is how long a read waits on a writer's lock. */
+function openReadOnlyAt(resolved: string, immutable: boolean, busyTimeoutMs = 15000): { conn: SqliteDatabase; storedVersion: number } {
   const conn = new Database(resolved, { readonly: true, fileMustExist: true, immutable })
   try {
-    conn.pragma('busy_timeout = 15000')
+    conn.pragma(`busy_timeout = ${busyTimeoutMs}`)
     return { conn, storedVersion: Number(conn.pragma('user_version', { simple: true })) }
   } catch (e) {
     try {
@@ -679,7 +679,9 @@ function connectionKey(dbPath: string): { resolved: string; key: string } {
 
 /** Return the cached {@link SqliteDatabase} for `dbPath`, opening and initializing it on first access. The connection is opened with the schema applied, WAL enabled, and the optional FTS5 / sqlite-vec tables created when available. Subsequent calls with the same resolved path return the same handle. In a process that called {@link allowReadOnlyIndex}, a database it may not write is served through a read-only connection instead (see {@link openIndexReadOnly}); in every other process that refusal propagates. */
 
-/** Run a short, bounded read-only callback on the index database if it exists and is ready. Never runs migrations or DDL, sets busy_timeout to 250ms, and catches all errors (returning null). Ensures fail-open zero-contention behavior for pre-tool-use hooks. */
+const PROBE_BUSY_TIMEOUT_MS = 250
+
+/** Run a short, bounded read-only callback on the index database if it exists and is ready. Never runs migrations or DDL, waits at most {@link PROBE_BUSY_TIMEOUT_MS} on a writer, and catches all errors (returning null). A data directory this process may not write is read through the same immutable retry {@link openIndexReadOnly} makes, so the probe still answers there. A schema version other than this build's is null, not an error. Ensures fail-open zero-contention behavior for pre-tool-use hooks. */
 export function withProbeIndex<T>(
   fn: (db: SqliteDatabase) => T,
   dbPath?: string,
@@ -688,12 +690,15 @@ export function withProbeIndex<T>(
   if (!fs.existsSync(resolved)) return null
   let conn: SqliteDatabase | null = null
   try {
-    conn = new Database(resolved, { readonly: true, fileMustExist: true })
-    conn.pragma('busy_timeout = 250')
-    const storedVersion = Number(conn.pragma('user_version', { simple: true }))
-    if (storedVersion !== SCHEMA_VERSION) {
-      return null
+    let opened: { conn: SqliteDatabase; storedVersion: number }
+    try {
+      opened = openReadOnlyAt(resolved, false, PROBE_BUSY_TIMEOUT_MS)
+    } catch (e) {
+      if (!isWriteAccessError(e)) throw e
+      opened = openReadOnlyAt(resolved, true, PROBE_BUSY_TIMEOUT_MS)
     }
+    conn = opened.conn
+    if (opened.storedVersion !== SCHEMA_VERSION) return null
     registerTgLower(conn)
     return fn(conn)
   } catch {
