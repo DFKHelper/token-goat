@@ -118,10 +118,17 @@ function nextSuggestionStart(text: string, from: number): number {
   return found === null ? -1 : found.index
 }
 
-/** What replaces a suggestion that broke its quoting. Names no path, so nothing is runnable. */
-const OMITTED = 'token-goat (command omitted: the path contains shell metacharacters)'
+/** What replaces a suggestion that broke its quoting, naming the program the suggestion was for so an `rg` or `pandoc` command does not read as a token-goat one. Names no path, so nothing is runnable. */
+function omitted(program: string): string {
+  return program + ' (command omitted: the path contains shell metacharacters)'
+}
 
-/** Every `token-goat …` suggestion in `text`, with the unsafe ones replaced by {@link OMITTED}. Where a suggestion ends is decided twice, because the obvious answer is wrong in exactly the case that matters. A suggestion is fenced in backticks, so it normally ends at the first backtick after `token-goat ` -- but a path holding a backtick closes the fence early, and cutting there would leave the rest of the path (backticks and all) sitting in the message as residue. So: measure to the first backtick and check that; if it is safe, emit it and move on, which is every ordinary hint and leaves them byte-identical. Only once a break is found is the end measured again, by the quoting this time: the removal runs to the first backtick outside every quoted argument ({@link fencedCommandEnd}), which takes the value's own backticks with it and leaves the prose and the commands after it on the line, each checked in turn. Cutting to the last backtick on the line instead turned a large-file deny for a path holding a backtick into one sentence, its size, its sampling advice and its edit commands all gone. Where the quoting cannot place the end, the removal still widens, out to the last backtick on that line when the suggestion was fenced (to the line's end when it was not), taking the residue and any further suggestion on the same line with it. Nothing ever crosses a line break. The two-step exists so the widening cannot cost anything on healthy text. Widening first would flag a hint that merely mentions another command after its suggestion (`… or \`cat\``), since the wider slice would then contain that fence. */
+/** The program a suggestion starting at `start` runs: token-goat, or the {@link SUGGESTED_PROGRAMS} word there. */
+function suggestionProgram(text: string, start: number): string {
+  return SUGGESTED_PROGRAMS.find((p) => text.startsWith(p + ' ', start)) ?? 'token-goat'
+}
+
+/** Every `token-goat …` suggestion in `text`, with the unsafe ones replaced by {@link omitted}. Where a suggestion ends is decided twice, because the obvious answer is wrong in exactly the case that matters. A suggestion is fenced in backticks, so it normally ends at the first backtick after `token-goat ` -- but a path holding a backtick closes the fence early, and cutting there would leave the rest of the path (backticks and all) sitting in the message as residue. So: measure to the first backtick and check that; if it is safe, emit it and move on, which is every ordinary hint and leaves them byte-identical. Only once a break is found is the end measured again, by the quoting this time: the removal runs to the first backtick outside every quoted argument ({@link fencedCommandEnd}), which takes the value's own backticks with it and leaves the prose and the commands after it on the line, each checked in turn. Cutting to the last backtick on the line instead turned a large-file deny for a path holding a backtick into one sentence, its size, its sampling advice and its edit commands all gone. Where the quoting cannot place the end, the removal still widens, out to the last backtick on that line when the suggestion was fenced (to the line's end when it was not), taking the residue and any further suggestion on the same line with it. Nothing ever crosses a line break. The two-step exists so the widening cannot cost anything on healthy text. Widening first would flag a hint that merely mentions another command after its suggestion (`… or \`cat\``), since the wider slice would then contain that fence. */
 export function stripUnsafeSuggestions(text: string): string {
   if (!SUGGESTION_START.test(text)) return text
   let out = ''
@@ -136,6 +143,7 @@ export function stripUnsafeSuggestions(text: string): string {
     const firstTick = line.indexOf('`')
     const narrow = firstTick === -1 ? line : line.slice(0, firstTick)
     out += text.slice(at, start)
+    const placeholder = omitted(suggestionProgram(text, start))
     if (!(looksLikeSuggestion(narrow) && suggestionIsUnsafe(narrow)) && !singleQuoteLeftOpen(narrow, text[start - 1] === "'") && !holdsCommandSubstitution(line)) {
       out += narrow
       at = start + narrow.length
@@ -143,7 +151,7 @@ export function stripUnsafeSuggestions(text: string): string {
     }
     const end = text[start - 1] === '`' ? fencedCommandEnd(line) : -1
     if (end !== -1) {
-      out += OMITTED + '`'
+      out += placeholder + '`'
       at = start + end + 1
       continue
     }
@@ -152,12 +160,12 @@ export function stripUnsafeSuggestions(text: string): string {
     const wide = lastTick === -1 || text[start - 1] !== '`' ? line : line.slice(0, lastTick)
     const tick = line.slice(wide.length).startsWith('`') ? '`' : ''
     const paired = pairRemovedParens(out.slice(Math.max(out.lastIndexOf('\n'), out.lastIndexOf('\r')) + 1), wide, line.slice(wide.length + tick.length))
-    out += OMITTED + tick + paired.close
+    out += placeholder + tick + paired.close
     at = start + wide.length + tick.length + paired.skip
   }
 }
 
-/** What has to follow {@link OMITTED} so the prose around a widened removal keeps its parentheses paired. The removal runs to the last backtick on the line, so it can take the `(` of a parenthetical between two fenced commands (`` `token-goat write-file 'a`b.ts'` (or `--from …`) to rewrite ``) and strand its `)` after the omission, or take the `)` closing a `(` written before the command. `before` is the line as emitted up to the command, `removed` the widened slice, `after` the rest of the line past its closing backtick. A `)` in `after` that nothing open pairs with ends a parenthetical whose `(` was removed, so the text up to and including it goes too (`skip`); a `(` in `before` still open once `after` is read, while `removed` held a `)`, gets that `)` back (`close`). Parentheses inside `removed` are never read as opening or closing anything, since a path can hold either one; they only cap how many `)` come back. */
+/** What has to follow {@link omitted} so the prose around a widened removal keeps its parentheses paired. The removal runs to the last backtick on the line, so it can take the `(` of a parenthetical between two fenced commands (`` `token-goat write-file 'a`b.ts'` (or `--from …`) to rewrite ``) and strand its `)` after the omission, or take the `)` closing a `(` written before the command. `before` is the line as emitted up to the command, `removed` the widened slice, `after` the rest of the line past its closing backtick. A `)` in `after` that nothing open pairs with ends a parenthetical whose `(` was removed, so the text up to and including it goes too (`skip`); a `(` in `before` still open once `after` is read, while `removed` held a `)`, gets that `)` back (`close`). Parentheses inside `removed` are never read as opening or closing anything, since a path can hold either one; they only cap how many `)` come back. */
 function pairRemovedParens(before: string, removed: string, after: string): { skip: number; close: string } {
   let open = 0
   for (const c of before) {

@@ -2725,6 +2725,15 @@ describe('preBashHandler — find command interception', () => {
     }
   })
 
+  // FORMAT-DERIVED: fd reads its pattern as a regex unless -g/--glob is given (fd --help: "-g, --glob  Perform a glob-based search instead of a regular expression search"), and the name given to find -name is a glob, so `fd '*.ts'` is a regex that starts with a quantifier.
+  it('names fd with -g so the find -name glob is read as a glob', () => {
+    const result = preBashHandler(makeBashEvent('find src/ -name "*.ts"'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('`fd -g "*.ts"`')
+    }
+  })
+
   it('emits fd hint for find without -name', () => {
     const result = preBashHandler(makeBashEvent('find . -type f'))
     expect(result.hookType).toBe('context')

@@ -574,7 +574,7 @@ const R = {
   pinned: 'a value read from the sha256-pinned tokenizer.json, named in an integrity failure in its own JSON syntax',
   render: 'a line written in the syntax of whatever reads it, which is not a shell: a tool output line re-rendered in the tool\'s own quotes (Playwright aria snapshot, redis-cli key list), the harness Read pointer, a Python traceback frame, a markup attribute, Node\'s EISDIR message; the value goes through displaySafeText because echoedValue is shell quoting',
   number: 'a document number in the XML attribute syntax of a pack',
-  base64: 'PowerShell or Python syntax around base64 text, which holds no quote mark (src/powershell_compat.ts, outside this pass\'s write scope)',
+  base64: 'PowerShell or Python syntax around base64 text, which holds no quote mark (src/powershell_compat.ts: the FromBase64String argument and the write-to-stdout call)',
   jsonLeaf: 'a hint inside a --json payload that displaySafeJson escapes as a leaf string, so the value goes in as typed; escaping it here as well would escape it twice',
   lintSentence: 'a lint diagnostic quoting a document id, whose whole sentence is escaped once at the err.message and warn.message sink (display_safe_sink_coverage), so escaping the id here as well would escape it twice',
   pid: 'a PowerShell WQL filter around CLAUDE_PID, which entryReason has already checked to be one to ten digits',

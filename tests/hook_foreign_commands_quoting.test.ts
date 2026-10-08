@@ -83,9 +83,15 @@ describe('pandoc and duckdb commands in file-type hints', () => {
 describe('the suggestion guard on commands for other programs', () => {
   it('drops a pandoc or duckdb command a path broke out of, and keeps the sentence', () => {
     const pandoc = 'Extract content first: pandoc "C:/p/a"; echo MARK; ".doc" -t plain'
-    expect(stripUnsafeSuggestions(pandoc)).toBe('Extract content first: token-goat (command omitted: the path contains shell metacharacters)')
+    // HAND-DERIVED: the placeholder names the program whose command it replaced, so an rg or pandoc suggestion is not reported as a token-goat command that was omitted.
+    expect(stripUnsafeSuggestions(pandoc)).toBe('Extract content first: pandoc (command omitted: the path contains shell metacharacters)')
     const duckdb = `Query with DuckDB: duckdb -c "SELECT * FROM read_parquet('C:/p/$(echo MARK).parquet') LIMIT 10"`
     expect(stripUnsafeSuggestions(duckdb)).not.toContain('echo MARK')
+    expect(stripUnsafeSuggestions(duckdb)).toContain('duckdb (command omitted')
+    const rg = 'Search it with rg "a$(echo MARK)" src'
+    expect(stripUnsafeSuggestions(rg)).not.toContain('echo MARK')
+    expect(stripUnsafeSuggestions(rg)).toContain('rg (command omitted')
+    expect(stripUnsafeSuggestions(rg)).not.toContain('token-goat')
   })
 
   it('leaves prose and fenced commands with nothing quoted alone', () => {
