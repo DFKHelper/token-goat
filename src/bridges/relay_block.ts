@@ -1,4 +1,6 @@
 // Shared in-process/spawn hook-relay block used verbatim inside the generated plugin scripts for opencode (opencode.ts) and OpenClaw (openclaw.ts). Both hosts load their generated plugin file as a long-lived module (never a per-invocation subprocess), so this logic -- resolving the install-time entry path, relaying hook calls in-process via the sibling token-goat-hook.mjs, and falling back to a spawned "token-goat" subprocess when that's unavailable -- is identical between them. pi.ts has its own typed copy of the same logic and is intentionally NOT wired to this constant (pi's extension host is a real TypeScript compile target, and this block is plain untyped JS meant to be dropped verbatim into a generated file).
+import { shimFallbackTimeoutConst } from './shim_common.js'
+
 export const BRIDGE_RELAY_JS = `// resolveEntryPath reads a sidecar JSON file (token-goat-entry.json, written by
 // the install step next to this plugin file) containing the absolute path to
 // the token-goat CLI entry that was running at install time. Unlike
@@ -53,6 +55,8 @@ async function resolveRelayInProcess() {
   }
 }
 
+${shimFallbackTimeoutConst('relay')}
+
 function callHookViaSpawn(event, payload) {
   try {
     // Invoking "token-goat" as a bare command here depends on PATH resolution
@@ -68,7 +72,7 @@ function callHookViaSpawn(event, payload) {
       ? spawnSync(process.execPath, [entryPath, "hook", event], {
           input: JSON.stringify(payload),
           encoding: "utf8",
-          timeout: 3000,
+          timeout: SHIM_FALLBACK_TIMEOUT_MS,
           killSignal: "SIGKILL",
           windowsHide: true,
           maxBuffer: 32 * 1024 * 1024,
@@ -76,7 +80,7 @@ function callHookViaSpawn(event, payload) {
       : spawnSync("token-goat hook " + event, {
           input: JSON.stringify(payload),
           encoding: "utf8",
-          timeout: 3000,
+          timeout: SHIM_FALLBACK_TIMEOUT_MS,
           killSignal: "SIGKILL",
           shell: true,
           windowsHide: true,
@@ -94,9 +98,9 @@ function callHookViaSpawn(event, payload) {
 // Tries the in-process hook call first (resolveRelayInProcess above), which avoids
 // spawning a second node process altogether for every single tool call in this
 // long-lived host process. Falls back to callHookViaSpawn (the original
-// spawnSync-based path, now with a 3000ms timeout/killSignal so token-goat degrades to
+// spawnSync-based path, now bounded by SHIM_FALLBACK_TIMEOUT_MS and a killSignal so token-goat degrades to
 // its own fail-open null rather than being force-killed by the host's own hook timeout
-// budget, ~5000ms) when the in-process path is unavailable or throws.
+// budget, 15000ms for OpenClaw's before_tool_call) when the in-process path is unavailable or throws.
 async function callHook(event, payload) {
   // Timed from here, not from process start: this host lives far longer than one call, so the hook library's default clock (process age) would record the host's uptime as this call's duration.
   const start = performance.now();

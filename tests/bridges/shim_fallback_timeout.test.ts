@@ -11,6 +11,9 @@ import { CODEX_HOOK_SCRIPT } from '../../src/bridges/codex.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../../src/bridges/copilot_cli.js'
 import { GROK_HOOK_SCRIPT } from '../../src/bridges/grok.js'
 import { KIMI_HOOK_SCRIPT } from '../../src/bridges/kimi.js'
+import { OPENCLAW_PLUGIN_SCRIPT } from '../../src/bridges/openclaw.js'
+import { OPENCODE_PLUGIN_SCRIPT } from '../../src/bridges/opencode.js'
+import { PI_EXTENSION_SCRIPT } from '../../src/bridges/pi.js'
 import { SHIM_FALLBACK_TIMEOUT_MS } from '../../src/bridges/shim_common.js'
 
 const tempDirs: string[] = []
@@ -59,16 +62,28 @@ describe('shim fallback spawn cap', () => {
     expect(out.hookSpecificOutput?.permissionDecisionReason).toBe('slow but decided')
   }, 60_000)
 
-  // FORMAT-DERIVED: each harness's hook timeout is cited beside SHIM_FALLBACK_TIMEOUT_MS; Claude Code's is 30 s for UserPromptSubmit and Kimi's 30 s, Copilot's 60 s as written by token-goat, Grok's 5 s default.
+  // FORMAT-DERIVED: each harness's hook timeout is cited beside SHIM_FALLBACK_TIMEOUT_MS; Claude Code's is 30 s for UserPromptSubmit and Kimi's 30 s, Copilot's 60 s as written by token-goat, Grok's 5 s default, OpenClaw's 15 s for before_tool_call (openclaw/openclaw src/plugins/hooks.ts); pi and opencode apply none, so any finite cap is under it.
   it('declares each shim cap from the one table, under the smallest timeout its harness applies', () => {
-    const scripts = { claudecode: CLAUDECODE_HOOK_SCRIPT, codex: CODEX_HOOK_SCRIPT, copilot: COPILOT_CLI_HOOK_SCRIPT, grok: GROK_HOOK_SCRIPT, kimi: KIMI_HOOK_SCRIPT }
-    const harnessTimeoutMs = { claudecode: 30_000, codex: 600_000, copilot: 60_000, grok: 5_000, kimi: 30_000 }
-    for (const [name, script] of Object.entries(scripts) as Array<[keyof typeof scripts, string]>) {
+    const none = Number.POSITIVE_INFINITY
+    const scripts: Array<{ name: keyof typeof SHIM_FALLBACK_TIMEOUT_MS; label: string; script: string; harnessTimeoutMs: number }> = [
+      { name: 'claudecode', label: 'claudecode', script: CLAUDECODE_HOOK_SCRIPT, harnessTimeoutMs: 30_000 },
+      { name: 'codex', label: 'codex', script: CODEX_HOOK_SCRIPT, harnessTimeoutMs: 600_000 },
+      { name: 'copilot', label: 'copilot', script: COPILOT_CLI_HOOK_SCRIPT, harnessTimeoutMs: 60_000 },
+      { name: 'grok', label: 'grok', script: GROK_HOOK_SCRIPT, harnessTimeoutMs: 5_000 },
+      { name: 'kimi', label: 'kimi', script: KIMI_HOOK_SCRIPT, harnessTimeoutMs: 30_000 },
+      { name: 'pi', label: 'pi', script: PI_EXTENSION_SCRIPT, harnessTimeoutMs: none },
+      { name: 'relay', label: 'opencode', script: OPENCODE_PLUGIN_SCRIPT, harnessTimeoutMs: none },
+      { name: 'relay', label: 'openclaw', script: OPENCLAW_PLUGIN_SCRIPT, harnessTimeoutMs: 15_000 },
+    ]
+    for (const { name, label, script, harnessTimeoutMs } of scripts) {
       const cap = SHIM_FALLBACK_TIMEOUT_MS[name]
-      expect(script, name).toContain(`const SHIM_FALLBACK_TIMEOUT_MS = ${cap}\n`)
-      expect(script.match(/timeout: \d+/g), `${name} spawn sites read the named cap, not a number`).toBeNull()
-      expect(cap, name).toBeLessThan(harnessTimeoutMs[name])
+      expect(script, label).toContain(`const SHIM_FALLBACK_TIMEOUT_MS = ${cap}\n`)
+      expect(script.match(/timeout: \d+/g), `${label} spawn sites read the named cap, not a number`).toBeNull()
+      expect((script.match(/timeout: SHIM_FALLBACK_TIMEOUT_MS/g) ?? []).length, `${label} spawns through the named cap`).toBeGreaterThanOrEqual(2)
+      expect(cap, label).toBeLessThan(harnessTimeoutMs)
     }
     expect(SHIM_FALLBACK_TIMEOUT_MS.claudecode).toBeGreaterThan(3000)
+    expect(SHIM_FALLBACK_TIMEOUT_MS.relay).toBeGreaterThan(3000)
+    expect(SHIM_FALLBACK_TIMEOUT_MS.pi).toBeGreaterThan(3000)
   })
 })

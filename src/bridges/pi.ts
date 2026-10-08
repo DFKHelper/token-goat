@@ -1,4 +1,6 @@
 /** pi (pi-coding-agent) extension bridge. This file's content is the canonical source for the pi extension token-goat installs at `~/.pi/agent/extensions/token-goat.ts` (global) or `<project>/.pi/extensions/token-goat.ts` (`--local` -- README's "pi users" section and "What gets installed?" table both agree on this project-local path -- no `agent/` segment, unlike the global path). {@link installPi} in `./pi_install.js` writes {@link PI_EXTENSION_SCRIPT} to disk verbatim; there is no per-entry merge like Codex's TOML hooks block, since pi loads one whole file as a normal extension module. Origin: this was first authored directly at the repo-root path `.pi/extensions/token-goat.ts` (commit 9a85f780, "feat(pi): add pi-coding-agent extension bridge"), then embedded here verbatim when wired into `token-goat install`. That original template called `token-goat hook <event>` with invented per-tool-type event names (`pre-read`, `post-bash`, `session-start`, `pre-compact`) that don't exist in the real HOOK_EVENTS vocabulary (`src/types.ts`) under any spelling; `relay()` (`src/relay.ts`) silently returns `{}` for any unrecognized event name via `isHookEventName()`, so every hook call the original template made was a complete no-op. The script below has been corrected to speak the real generic `pre_tool_use`/`post_tool_use` protocol (tool name carried in the payload, not baked into the event name) instead, matching how `codex.ts`, `gemini_install.ts`, and `opencode.ts` already bridge the same protocol. pi's extension API: a default-exported factory `(pi: ExtensionAPI) => void` that subscribes to `session_start`, `tool_call`, `tool_result`, `session_before_compact`, and `session_compact`. `token-goat hook <event>` only accepts the exact snake_case event names in HOOK_EVENTS: `pre_tool_use`, `post_tool_use`, `pre_compact`, `notification`, `stop`, `user_prompt_submit`, `subagent_stop`. Response contract from `token-goat hook <event>` (`src/hook_registry.ts` `serializeOutput`), mirrored by `opencode.ts`'s plugin: - deny:   `{"decision":"block","reason":"..."}` - context (pre_compact): `{"systemMessage":"..."}` - context (other events): `{"hookSpecificOutput":{"hookEventName":"...","additionalContext":"..."}}` - rewriteInput (pre_tool_use only, e.g. Bash command compression): `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{...}}}` - rewriteOutput (post_tool_use only, e.g. WebFetch fencing/redaction, output compression): `{"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput":"..."}}` - pass: `{}` That list is the complete producer set from `serializeOutput`, on purpose: an earlier revision enumerated only four of the five shapes and the missing one (rewriteOutput) shipped dead, the same whitelist-shaped drop fixed for the opencode plugin. pi's `tool_call` handler bridges this into pi's own `{block, reason}` / in-place `input` mutation contract. What works, matching README's "pi users" section: bash output compression and confirmed re-read denial (both reach pi's existing `{block, reason}` / arg-rewrite contract directly), image shrinking (the `additionalContext` data-URL payload is decoded and materialized to a temp file, then the read path is rewritten to point at it, mirroring `openclaw.ts`), post-edit indexing and output caching (plain `post_tool_use` calls), and the compaction manifest. A plain `additionalContext` hint with no `updatedInput` and no image payload (e.g. a first-read large-file nudge) has no surfacing channel in pi's extension API and is silently dropped -- pi has no equivalent of Claude Code's non-blocking `additionalContext` injection outside a tool-arg rewrite. */
+import { shimFallbackTimeoutConst } from './shim_common.js'
+
 export const PI_EXTENSION_SCRIPT = `// token-goat bridge extension for pi (pi-coding-agent)
 // Bridges pi's extension events to token-goat's subprocess hook protocol.
 // https://github.com/DFKHelper/token-goat
@@ -87,6 +89,8 @@ async function resolveRelayInProcess(): Promise<RelayInProcessFn | undefined> {
   }
 }
 
+${shimFallbackTimeoutConst('pi')}
+
 function callHookViaSpawn(event: string, payload: Record<string, unknown>): Record<string, unknown> | null {
   try {
     // TOKEN_GOAT_HARNESS_OVERRIDE=pi guarantees detectHarness() resolves to
@@ -105,7 +109,7 @@ function callHookViaSpawn(event: string, payload: Record<string, unknown>): Reco
       ? spawnSync(process.execPath, [entryPath, "hook", event], {
           input: JSON.stringify(payload),
           encoding: "utf8",
-          timeout: 3000,
+          timeout: SHIM_FALLBACK_TIMEOUT_MS,
           killSignal: "SIGKILL",
           windowsHide: true,
           maxBuffer: 32 * 1024 * 1024,
@@ -114,7 +118,7 @@ function callHookViaSpawn(event: string, payload: Record<string, unknown>): Reco
       : spawnSync('token-goat hook ' + event, {
           input: JSON.stringify(payload),
           encoding: "utf8",
-          timeout: 3000,
+          timeout: SHIM_FALLBACK_TIMEOUT_MS,
           killSignal: "SIGKILL",
           shell: true,
           windowsHide: true,
@@ -133,9 +137,8 @@ function callHookViaSpawn(event: string, payload: Record<string, unknown>): Reco
 // Tries the in-process hook call first (resolveRelayInProcess above), which avoids
 // spawning a second node process altogether for every single tool call in this
 // long-lived agent process. Falls back to callHookViaSpawn (the original
-// spawnSync-based path, now with a 3000ms timeout/killSignal so token-goat degrades to
-// its own fail-open null rather than being force-killed by pi's own hook timeout
-// budget, ~5000ms) when the in-process path is unavailable or throws.
+// spawnSync-based path, now bounded by SHIM_FALLBACK_TIMEOUT_MS and a killSignal so token-goat degrades to
+// its own fail-open null rather than hanging pi, which applies no hook timeout of its own) when the in-process path is unavailable or throws.
 async function callHook(event: string, payload: Record<string, unknown>): Promise<Record<string, unknown> | null> {
   // Timed from here, not from process start: this host lives far longer than one call, so the hook library's default clock (process age) would record the host's uptime as this call's duration.
   const start = performance.now();
