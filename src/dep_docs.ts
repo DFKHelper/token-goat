@@ -14,7 +14,8 @@ import { guardAndFenceFileText } from './fence_cap.js'
 import { fileExists } from './read_commands.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 import { redactSecrets } from './secret_redact.js'
-import { fenceFileFieldIfMatched, fenceJsonStrings } from './untrusted_fence.js'
+import { fenceFileFieldIfMatched, fenceJsonStrings, fenceWithMatches } from './untrusted_fence.js'
+import { scanForInjectionPatterns, UNTRUSTED_FILE_TAG } from './injection_scan.js'
 
 // ---- filesystem helpers -------------------------------------------------------
 
@@ -221,11 +222,23 @@ export function extractDtsOutline(filePath: string, content: string): Declaratio
 
 // ---- overflow guarding ------------------------------------------------------------
 
-function guardReadmeField(text: string, budgetTokens: number): { text: string; truncated: boolean } {
+function guardReadmeField(text: string, budgetTokens: number, reserveTokens: number): { text: string; truncated: boolean } {
   const cfg = loadConfig()
   if (!cfg.overflow_guard.enabled) return { text, truncated: false }
-  const trimmed = trimToBudget(text, budgetTokens, 'dep-docs')
+  const trimmed = trimToBudget(text, budgetTokens, 'dep-docs', { reserveTokens })
   return { text: trimmed, truncated: trimmed !== text }
+}
+
+/** {@link fenceFileFieldIfMatched} without the `injection_detected` stat, for sizing a candidate output that is not the one printed. */
+function measureFileField(text: string): string {
+  const redacted = redactSecrets(text).text
+  let matches: string[]
+  try {
+    matches = scanForInjectionPatterns(redacted)
+  } catch {
+    matches = []
+  }
+  return matches.length > 0 ? fenceWithMatches(redacted, matches, UNTRUSTED_FILE_TAG) : displaySafeText(redacted)
 }
 
 function guardDeclarationRows(rows: readonly DeclarationRow[], budgetTokens: number): JsonRowCapResult<DeclarationRow> {
@@ -300,28 +313,41 @@ export function runDepDocs(opts: DepDocsOptions): DepDocsResult {
     // README and declarations share ONE overflow_guard.max_tokens budget for the combined JSON payload (matching the text path's single trimToBudget() pass over the whole assembled string, src/dep_docs.ts below). Budgeting each field against the full max_tokens independently would let their combined output run up to ~2x the configured ceiling.
     const cfg = loadConfig()
     const maxTokens = cfg.overflow_guard.max_tokens
-    const readmeField = readmeFile !== null ? guardReadmeField(readme, maxTokens) : null
-    const readmeTokensUsed = readmeField !== null ? estimateTokens(readmeField.text) : 0
-    const remainingBudget = Math.max(0, maxTokens - readmeTokensUsed)
-    const declCap = declarations !== null ? guardDeclarationRows(declarations, remainingBudget) : null
-    const payload = {
-      package: name,
-      version,
-      description,
-      main,
-      packageJsonPath: pkgJsonPath,
-      readme:
-        readmeField !== null
-          ? { file: readmeFile as string, text: readmeField.text, truncated: readmeField.truncated }
-          : null,
-      types:
-        typesLocation !== null ? { entry: typesLocation.path, source: typesLocation.source } : null,
-      typescriptAvailable,
-      declarations:
-        declCap !== null ? { items: declCap.items, truncated: declCap.truncated, totalCount: declCap.totalCount } : null,
+    // `shrink` is the tokens the serialized envelope (JSON escaping, the keys, a fence's notice) spent beyond the raw fields, held back from both fields' budgets.
+    const build = (shrink: number, field: (text: string) => string): string => {
+      const readmeField = readmeFile !== null ? guardReadmeField(readme, maxTokens, shrink) : null
+      const readmeTokensUsed = readmeField !== null ? estimateTokens(readmeField.text) : 0
+      const remainingBudget = Math.max(0, maxTokens - shrink - readmeTokensUsed)
+      const declCap = declarations !== null ? guardDeclarationRows(declarations, remainingBudget) : null
+      const payload = {
+        package: name,
+        version,
+        description,
+        main,
+        packageJsonPath: pkgJsonPath,
+        readme:
+          readmeField !== null
+            ? { file: readmeFile as string, text: readmeField.text, truncated: readmeField.truncated }
+            : null,
+        types:
+          typesLocation !== null ? { entry: typesLocation.path, source: typesLocation.source } : null,
+        typescriptAvailable,
+        declarations:
+          declCap !== null ? { items: declCap.items, truncated: declCap.truncated, totalCount: declCap.totalCount } : null,
+      }
+      // Every string here is the publisher's (package.json fields, README, declaration signatures) or a path, so each is fenced where the scan flags it.
+      return displaySafeJson(fenceJsonStrings(payload, field))
     }
-    // Every string here is the publisher's (package.json fields, README, declaration signatures) or a path, so each is fenced where the scan flags it.
-    const text = displaySafeJson(fenceJsonStrings(payload, fenceFileFieldIfMatched))
+    // The cap bounds the raw fields, but the output is the serialized envelope, which escaping and a fence grow. Measure what would print, re-cap with the overshoot held back, and stop when it fits, as guardThenFence does for text.
+    let shrink = 0
+    if (cfg.overflow_guard.enabled) {
+      for (let pass = 0; pass < 8; pass++) {
+        const excess = estimateTokens(build(shrink, measureFileField)) - maxTokens
+        if (excess <= 0) break
+        shrink += excess
+      }
+    }
+    const text = build(shrink, fenceFileFieldIfMatched)
     recordDepDocsStat(fullSourceBytes, text, opts.packageName)
     return { text, code: 0 }
   }
