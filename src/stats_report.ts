@@ -2,6 +2,7 @@
 
 import { renderStats as richRenderStats } from './render/stats_renderer.js'
 import { fmtBytes } from './render/ansi.js'
+import { displaySafeText } from './paths.js'
 import type { StatsData } from './render/types.js'
 import { PRICING_VERSION_UNRECORDED, SOURCE_HINT, hasMixedPricingEras, noStatsMessage, summarize, type StatsSummary } from './stats.js'
 import { countNoun } from './util.js'
@@ -91,7 +92,7 @@ function _plainTextStats(summary: StatsSummary): void {
     lines.push('', '## By Command')
     for (const row of summary.by_command) {
       lines.push(
-        `  ${row.command.padEnd(12)} ${row.events.toString().padStart(6)} events  ${fmtBytes(row.bytes_saved).padStart(8)}  ${row.tokens_saved.toString().padStart(8)} tokens`,
+        `  ${displaySafeText(row.command).padEnd(12)} ${row.events.toString().padStart(6)} events  ${fmtBytes(row.bytes_saved).padStart(8)}  ${row.tokens_saved.toString().padStart(8)} tokens`,
       )
     }
   } else {

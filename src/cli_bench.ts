@@ -213,7 +213,7 @@ const pct = (n: number): string => `${n.toFixed(1)}%`
 
 function renderTable(report: BenchReport, floorPercent: number): string {
   const rows = [...report.cases].sort((a, b) => b.originalBytes - a.originalBytes)
-  const idWidth = Math.max(4, ...rows.map((r) => r.id.length))
+  const idWidth = Math.max(4, ...rows.map((r) => displaySafeText(r.id).length))
   const filterWidth = Math.max(6, ...rows.map((r) => (r.filter ?? '-').length))
   const lines: string[] = []
   const header = `${'case'.padEnd(idWidth)}  ${'filter'.padEnd(filterWidth)}  ${'in'.padStart(9)}  ${'out'.padStart(9)}  ${'saved'.padStart(7)}  fidelity`
@@ -223,7 +223,7 @@ function renderTable(report: BenchReport, floorPercent: number): string {
     const saved = r.applied ? pct(r.savedPercent) : '-'
     const fidelity = `${r.kept}/${r.mustKeepTotal}${r.missing.length ? ' FAIL' : ''}`
     lines.push(
-      `${r.id.padEnd(idWidth)}  ${(r.filter ?? '-').padEnd(filterWidth)}  ${String(r.originalBytes).padStart(9)}  ${String(r.deliveredBytes).padStart(9)}  ${saved.padStart(7)}  ${fidelity}`,
+      `${displaySafeText(r.id).padEnd(idWidth)}  ${(r.filter ?? '-').padEnd(filterWidth)}  ${String(r.originalBytes).padStart(9)}  ${String(r.deliveredBytes).padStart(9)}  ${saved.padStart(7)}  ${fidelity}`,
     )
   }
   lines.push('-'.repeat(header.length))

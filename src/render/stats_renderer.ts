@@ -677,7 +677,7 @@ function _renderByKindSection(stats: StatsData): string[] {
       const s = share(k)
       lines.push(
         _tableRow({
-          name: k.kind,
+          name: displaySafeText(k.kind),
           fraction: _barFraction(k.bytes, grossBytes),
           bytes: k.bytes,
           tokens: k.tokens,
@@ -770,7 +770,7 @@ function _renderByCommandSection(stats: StatsData): string[] {
     const s_val = share(c)
     lines.push(
       _tableRow({
-        name: c.command,
+        name: displaySafeText(c.command),
         fraction: _barFraction(c.bytes, grossBytes),
         bytes: c.bytes,
         tokens: c.tokens,
@@ -908,7 +908,7 @@ function _renderInsightsSection(stats: StatsData): string[] {
   if (topKind) {
     const share = stats.totals.bytes > 0 ? topKind.bytes / stats.totals.bytes : 0
     lines.push(
-      `${_M}${bullet} ${dim(_STATS_MESSAGES.insights.biggestSaver)}${fg(...C.TEXT_PRIMARY)}${topKind.kind}${RESET}` +
+      `${_M}${bullet} ${dim(_STATS_MESSAGES.insights.biggestSaver)}${fg(...C.TEXT_PRIMARY)}${displaySafeText(topKind.kind)}${RESET}` +
         `${dim(' — ')}${fg(...C.GREEN5)}${_fmtPct(share)}${RESET}` +
         `${dim(` of saved data across ${topKind.events.toLocaleString()} events`)}`,
     )
@@ -926,7 +926,7 @@ function _renderInsightsSection(stats: StatsData): string[] {
   const topToken = tokenKinds.reduce((max, k) => (k.tokens > (max?.tokens || -Infinity) ? k : max), tokenKinds[0])
   if (topToken) {
     lines.push(
-      `${_M}${bullet} ${dim(_STATS_MESSAGES.insights.tokenLeader)}${fg(...C.TEXT_PRIMARY)}${topToken.kind}${RESET}` +
+      `${_M}${bullet} ${dim(_STATS_MESSAGES.insights.tokenLeader)}${fg(...C.TEXT_PRIMARY)}${displaySafeText(topToken.kind)}${RESET}` +
         `${dim(' — ')}${_fmtTokens(topToken.tokens)}` +
         `${dim(` saved in ${topToken.events.toLocaleString()} events`)}`,
     )

@@ -4,7 +4,7 @@ import { statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import * as path from 'node:path'
 
-import { normalizePath, resolveIndexPath } from './paths.js'
+import { displaySafeText, normalizePath, resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { runGit } from './util.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
@@ -176,7 +176,7 @@ function firstTopLevelPipe(cmd: string): number {
 export function pipelineDivergenceNote(cmd: string, entryCommand: string): string {
   if (entryCommand === cmd) return ''
   const preview = entryCommand.length > 60 ? entryCommand.slice(0, 57).trimEnd() + '...' : entryCommand
-  return ' (cached from a differently-piped run, `' + preview + '` — verify it covers what you need before trusting it)'
+  return ' (cached from a differently-piped run, `' + displaySafeText(preview) + '` — verify it covers what you need before trusting it)'
 }
 
 type OutputSlice = { kind: 'none' } | { kind: 'head'; n: number } | { kind: 'tail'; n: number } | { kind: 'sed'; from: number; to: number } | { kind: 'unknown' }

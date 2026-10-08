@@ -433,7 +433,7 @@ describe('redactSecrets — mixed and multi-secret content', () => {
 
 describe('redactSecrets — performance', () => {
   it('completes quickly over a large blob near the realistic cache size cap', () => {
-    // bash_compress.cache_max_bytes_per_output defaults to 50 MiB (the largest per-item cap of any storeBlob() caller); mcp_cache's MCP_MAX_CACHE_BYTES is a much smaller 2 MiB. Exercise a few MiB of realistic log-shaped text with a handful of secrets sprinkled in, well above MCP's cap and a meaningful fraction of bash's, without making the test itself slow.
+    // bash_compress.cache_max_bytes_per_output defaults to 4 MiB; mcp_cache's MCP_MAX_CACHE_BYTES is a much smaller 2 MiB. Exercise a few MiB of realistic log-shaped text with a handful of secrets sprinkled in, well above MCP's cap and a meaningful fraction of bash's, without making the test itself slow.
     const line = 'INFO 2026-07-18T00:00:00Z request completed in 42ms status=200\n'
     const chunks: string[] = []
     let size = 0
