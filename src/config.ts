@@ -18,7 +18,6 @@ import type {
   Config,
   VisionTier,
   NativeHooksMode,
-  FirstReadSymbolPolicy,
   ProjectConfigInfo,
   ConfigKeyLayer,
   CompactAssistConfig,
@@ -87,16 +86,17 @@ function validatedVisionTier(raw: unknown, def: VisionTier): VisionTier {
   return raw === 'standard' || raw === 'high' ? raw : def
 }
 
+/** Accept only a value listed for `key` in {@link ENUM_FIELD_VALUES}, exactly as written, falling back to the default for anything else, as {@link validatedVisionTier} does. The one table `config set` checks, so the loader, `config validate` and `config get` agree on what a value means. */
+function validatedEnum<T extends string>(key: string, raw: unknown, def: T): T {
+  return typeof raw === 'string' && (ENUM_FIELD_VALUES[key] ?? []).includes(raw) ? (raw as T) : def
+}
+
+/** The environment's reading of an enum key: the variable's exact value if {@link validatedEnum} accepts it, else `def`. */
+function envEnum<T extends string>(key: string, name: string, def: T): T {
+  return validatedEnum(key, process.env[name], def)
+}
+
 /** Accept only the two modes, falling back to the default for anything else, as {@link validatedVisionTier} does. */
-
-function validatedFirstReadSymbolPolicy(raw: unknown, def: FirstReadSymbolPolicy): FirstReadSymbolPolicy {
-  return raw === 'warn' || raw === 'deny' || raw === 'off' ? raw : def
-}
-
-function envFirstReadSymbolPolicy(name: string, def: FirstReadSymbolPolicy): FirstReadSymbolPolicy {
-  const val = process.env[name]?.trim().toLowerCase()
-  return val === 'warn' || val === 'deny' || val === 'off' ? (val as FirstReadSymbolPolicy) : def
-}
 function validatedNativeHooksMode(raw: unknown, def: NativeHooksMode): NativeHooksMode {
   return raw === 'auto' || raw === 'off' ? raw : def
 }
@@ -742,7 +742,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all round trip (see saveConfig), so any pre-4b6f30dc user who ran `config set` for an unrelated key got the then-in-memory default large_read_redirect_bytes (45_000) permanently persisted, even though the field had zero consumers at the time and nobody could have deliberately chosen it. 4b6f30dc wired this key up as the real pressure-scaled first-read deny gate and bumped the in-code default to 512_000 -- but those stale 45_000s now load back in and silently make the gate ~11.4x more aggressive than intended. Treat an exactly-persisted 45_000 as that stale default and fall through to the current default instead of trusting it; any other persisted value (including a deliberate 45_000 set after upgrading) is respected as-is.
   hi.large_read_redirect_bytes = validatedIntWithLegacySentinel(hi_raw['large_read_redirect_bytes'], hi.large_read_redirect_bytes, 45_000, ...boundsOf('hints.large_read_redirect_bytes'))
   hi.first_read_symbol_bytes = validatedInt(hi_raw['first_read_symbol_bytes'], hi.first_read_symbol_bytes, ...boundsOf('hints.first_read_symbol_bytes'))
-  hi.first_read_symbol_policy = validatedFirstReadSymbolPolicy(hi_raw['first_read_symbol_policy'], hi.first_read_symbol_policy)
+  hi.first_read_symbol_policy = validatedEnum('hints.first_read_symbol_policy', hi_raw['first_read_symbol_policy'], hi.first_read_symbol_policy)
   hi.reread_deny = validatedBool(hi_raw['reread_deny'], hi.reread_deny)
   // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all round trip (see saveConfig), so any pre-a1fad4c6 user who ran `config set` for an unrelated key got the then-in-memory default reread_deny_min_bytes (2048) permanently persisted, even though the field had zero consumers at the time and nobody could have deliberately chosen it. a1fad4c6 wired this key up as the real re-read-deny gate and bumped the in-code default to 51_200 -- but those stale 2048s now load back in and silently make the gate 25x more aggressive than intended. Treat an exactly-persisted 2048 as that stale default and fall through to the current default instead of trusting it; any other persisted value (including a deliberate 2048 set after upgrading) is respected as-is.
   hi.reread_deny_min_bytes = validatedIntWithLegacySentinel(hi_raw['reread_deny_min_bytes'], hi.reread_deny_min_bytes, 2048, ...boundsOf('hints.reread_deny_min_bytes'))
@@ -779,7 +779,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hi.reread_deny = envBool('TOKEN_GOAT_REREAD_DENY', hi.reread_deny)
   hi.reread_deny_min_bytes = envInt('TOKEN_GOAT_REREAD_DENY_MIN_BYTES', hi.reread_deny_min_bytes, ...boundsOf('hints.reread_deny_min_bytes'))
   hi.first_read_symbol_bytes = envInt('TOKEN_GOAT_FIRST_READ_SYMBOL_BYTES', hi.first_read_symbol_bytes, ...boundsOf('hints.first_read_symbol_bytes'))
-  hi.first_read_symbol_policy = envFirstReadSymbolPolicy('TOKEN_GOAT_FIRST_READ_SYMBOL_POLICY', hi.first_read_symbol_policy)
+  hi.first_read_symbol_policy = envEnum('hints.first_read_symbol_policy', 'TOKEN_GOAT_FIRST_READ_SYMBOL_POLICY', hi.first_read_symbol_policy)
   hi.protect_recent_reads = envInt('TOKEN_GOAT_PROTECT_RECENT_READS', hi.protect_recent_reads, ...boundsOf('hints.protect_recent_reads'))
   hi.truncated_read_min_lines = envInt('TOKEN_GOAT_TRUNCATED_READ_MIN_LINES', hi.truncated_read_min_lines, ...boundsOf('hints.truncated_read_min_lines'))
   hi.diff_hint_min_tokens_saved = envInt('TOKEN_GOAT_DIFF_HINT_MIN_TOKENS_SAVED', hi.diff_hint_min_tokens_saved, ...boundsOf('hints.diff_hint_min_tokens_saved'))

@@ -138,7 +138,9 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
     diff_hint_min_tokens_saved: 1000,
     // Base for the pressure-scaled first-read deny gate in hooks_read.ts (large file, never read before). Matches that gate's long-tuned 500KB threshold at 'cool' context pressure; warm/hot/ critical scale it down from there so the same read gets redirected to a surgical read sooner once the context window is nearly full.
     large_read_redirect_bytes: 512_000,
+    // Smallest whole-file first read of an indexed file that draws the symbol-aware advice; 0 turns the check off.
     first_read_symbol_bytes: 50_000,
+    // Advice, not refusal: `warn` notes the file's size and symbols, `deny` refuses the whole-file read, `off` says nothing.
     first_read_symbol_policy: 'warn',
     reread_deny: true,
     // Matches hooks_read.ts's previously-hardcoded REREAD_DENY_BYTES (50 * 1024) so wiring this key up as the real gate for that logic does not silently change default behavior for existing users -- see the reread_deny/reread_deny_min_bytes fix's commit message.

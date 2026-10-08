@@ -366,6 +366,21 @@ describe('cmdConfig layer attribution', () => {
     }
   }
 
+  // HAND-DERIVED: `DENY` is not in the table of values `config set` accepts. The loader used to lower-case it into `deny` while validate and get both called it ignored.
+  it('an env enum value spelled in capitals is ignored by the loader, validate and get alike', () => {
+    withEnv({ TOKEN_GOAT_FIRST_READ_SYMBOL_POLICY: 'DENY' }, () => {
+      expect(loadConfig().hints.first_read_symbol_policy).toBe('warn')
+      const get = bothText('hints.first_read_symbol_policy').get
+      expect(get).toContain('$TOKEN_GOAT_FIRST_READ_SYMBOL_POLICY sets "DENY" (not one of: warn, deny, off)')
+      expect(get).toContain('not in effect; using "warn"')
+      stdoutLines.length = 0
+      cmdConfig({ action: 'validate', json: true })
+      const findings = (JSON.parse(captured()) as { findings: Array<{ kind: string; key: string }> }).findings
+      expect(findings.some((x) => x.kind === 'env_value_ignored' && x.key === 'hints.first_read_symbol_policy')).toBe(true)
+      process.exitCode = 0
+    })
+  })
+
   it('state env-invalid: an out-of-range env var is reported as clamped, not as being in effect', () => {
     // The exact asymmetry this pair closes: an env var and a project file that both supply an out-of-range value are the same situation, and reading back "# from $VAR" tells someone who set 99999999 that 99999999 is what they got.
     withEnv({ TOKEN_GOAT_MIN_FILE_LINES_FOR_HINT: '99999999' }, () => {

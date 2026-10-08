@@ -677,8 +677,7 @@ function connectionKey(dbPath: string): { resolved: string; key: string } {
   return { resolved, key: foldPath(resolved) }
 }
 
-/** Return the cached {@link SqliteDatabase} for `dbPath`, opening and initializing it on first access. The connection is opened with the schema applied, WAL enabled, and the optional FTS5 / sqlite-vec tables created when available. Subsequent calls with the same resolved path return the same handle. In a process that called {@link allowReadOnlyIndex}, a database it may not write is served through a read-only connection instead (see {@link openIndexReadOnly}); in every other process that refusal propagates. */
-
+/** How long the pre-read probe waits on a writer, in milliseconds, before answering nothing. */
 const PROBE_BUSY_TIMEOUT_MS = 250
 
 /** Run a short, bounded read-only callback on the index database if it exists and is ready. Never runs migrations or DDL, waits at most {@link PROBE_BUSY_TIMEOUT_MS} on a writer, and catches all errors (returning null). A data directory this process may not write is read through the same immutable retry {@link openIndexReadOnly} makes, so the probe still answers there. A schema version other than this build's is null, not an error. Ensures fail-open zero-contention behavior for pre-tool-use hooks. */
@@ -714,6 +713,7 @@ export function withProbeIndex<T>(
   }
 }
 
+/** Return the cached {@link SqliteDatabase} for `dbPath`, opening and initializing it on first access. The connection is opened with the schema applied, WAL enabled, and the optional FTS5 / sqlite-vec tables created when available. Subsequent calls with the same resolved path return the same handle. In a process that called {@link allowReadOnlyIndex}, a database it may not write is served through a read-only connection instead (see {@link openIndexReadOnly}); in every other process that refusal propagates. */
 export function getDb(dbPath: string): SqliteDatabase {
   // Fold only the cache key, not `resolved` itself -- the real-case path is still what gets passed to fs/Database below, so the file is created/opened with whatever casing the caller (or an existing file on disk) actually used.
   const { resolved, key } = connectionKey(dbPath)

@@ -237,7 +237,7 @@ describe('an environment variable that reopens a project-locked security setting
     ['screenshot.block_private_targets', 'TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS', 'false', 'weakened'],
     ['network.offline', 'TOKEN_GOAT_OFFLINE', 'false', 'weakened'],
     ['indexing.cross_project_symbols', 'TOKEN_GOAT_CROSS_PROJECT_SYMBOLS', 'true', 'weakened'],
-    // Same reasoning as the folds below: this one ships on now too, so neither direction is a weakening. See LOCKED_BOOLEAN_SAFE_VALUE's note in src/cli_doctor.ts.
+    // An enum and a size, not a boolean, so there is no safe direction: any value an environment sets is reported as replacing the default.
     ['hints.first_read_symbol_bytes', 'TOKEN_GOAT_FIRST_READ_SYMBOL_BYTES', '25000', 'replaced'],
     ['hints.first_read_symbol_policy', 'TOKEN_GOAT_FIRST_READ_SYMBOL_POLICY', 'deny', 'replaced'],
     ['hints.fold_code_bodies', 'TOKEN_GOAT_FOLD_CODE_BODIES', 'true', 'replaced'],

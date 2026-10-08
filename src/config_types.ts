@@ -130,7 +130,9 @@ export interface HintsConfig {
   context_threshold_advisory: boolean
   diff_hint_min_tokens_saved: number
   large_read_redirect_bytes: number
+  /** Smallest whole-file first read of an indexed file that draws the symbol-aware advice; 0 turns the check off. Project-locked: a repository must not decide how much of its own code an agent is shown. */
   first_read_symbol_bytes: number
+  /** What that advice does: `warn` adds a note naming the file's size and symbols, `deny` refuses the whole-file read, `off` does nothing. Project-locked for the same reason as the size. */
   first_read_symbol_policy: FirstReadSymbolPolicy
   reread_deny: boolean
   reread_deny_min_bytes: number

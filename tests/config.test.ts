@@ -88,6 +88,16 @@ describe('loadConfig', () => {
     vi.unstubAllEnvs()
   })
 
+  // HAND-DERIVED: the spellings are the exact value, the same value in capitals, and the same value padded with spaces; only the exact one is a member of the table `config set` checks.
+  it('reads TOKEN_GOAT_FIRST_READ_SYMBOL_POLICY exactly, as it reads TOKEN_GOAT_VISION_TIER', () => {
+    for (const [value, expected] of [['deny', 'deny'], ['off', 'off'], ['DENY', 'warn'], [' deny ', 'warn'], ['nonsense', 'warn']] as const) {
+      invalidateConfigCache()
+      vi.stubEnv('TOKEN_GOAT_FIRST_READ_SYMBOL_POLICY', value)
+      expect(loadConfig().hints.first_read_symbol_policy, JSON.stringify(value)).toBe(expected)
+    }
+    vi.unstubAllEnvs()
+  })
+
   it('returns all defaults when config file is absent', () => {
     const cfg = loadConfig()
     const def = defaultConfig()
