@@ -59,6 +59,7 @@ describe('post-merge sync in a linked worktree', () => {
       'install',
       'install --copilot',
       'install --copilot --local',
+      'install --codex',
       'doctor --repair',
       'project prune',
       'index',
