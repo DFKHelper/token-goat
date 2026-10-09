@@ -93,7 +93,7 @@ describe('filter input cap keeps both ends', () => {
     // The same filter over an input that fits must keep saying the count flat, or the honest case has been made to lie too.
     const small = Array.from({ length: 200 }, (_, i) => `src/file${i % 4}.ts:${i}:  const value = someCall(${i})`).join('\n')
     const whole = filter?.apply(small, '', 0, ['grep', '-rn', 'value', 'src']).text as string
-    expect(whole).toContain('grep: 200 matches across 4 file(s)')
+    expect(whole).toContain('grep: 200 matches across 4 files')
     expect(whole).not.toContain('at least')
   })
 

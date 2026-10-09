@@ -505,7 +505,7 @@ export function truncateTableRows(text: string, maxRows: number, hint: string): 
   const kept = [...wanted].sort((a, b) => a - b)
   const elided = rows.length - kept.length
   const note = anomalies
-    ? `[token-goat: ${countNoun(elided, 'more row')}; ${anomalies} row(s) kept for a not-ready status, the rest from the top; ${hint}]`
+    ? `[token-goat: ${countNoun(elided, 'more row')}; ${countNoun(anomalies, 'row')} kept for a not-ready status, the rest from the top; ${hint}]`
     : `[token-goat: ${countNoun(elided, 'more row')}; ${hint}]`
   return `${[header, ...kept.map((i) => rows[i] as string)].join('\n')}\n${note}`
 }

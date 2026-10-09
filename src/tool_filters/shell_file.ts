@@ -133,19 +133,19 @@ export class GrepFilter extends ToolFilter {
     const numFiles = fileCounts.size
     // These counts are the answer the caller wanted, not a description of what this filter did, so when the clamp dropped part of the input they are a floor and have to say so. Stated flat, a 985,533-byte search of 9,000 matching lines reported `grep: 4685 matches across 40 file(s)`, and the per-file counts below are understated the same way.
     const outLines: string[] = ctx.inputTruncated
-      ? [`grep: at least ${totalMatches} matches across ${numFiles} file(s) (counted over a truncated input; per-file counts below are lower bounds)`]
-      : [`grep: ${totalMatches} matches across ${numFiles} file(s)`]
+      ? [`grep: at least ${countNoun(totalMatches, 'match', 'matches')} across ${countNoun(numFiles, 'file')} (counted over a truncated input; per-file counts below are lower bounds)`]
+      : [`grep: ${countNoun(totalMatches, 'match', 'matches')} across ${countNoun(numFiles, 'file')}`]
 
     const sorted = [...fileCounts.entries()].sort((a, b) => b[1] - a[1])
     const shown = sorted.slice(0, _GREP_MAX_FILE_LINES)
     for (const [fname, count] of shown) {
-      outLines.push(`  ${fname}: ${count} match(es)`)
+      outLines.push(`  ${fname}: ${countNoun(count, 'match', 'matches')}`)
     }
     if (sorted.length > _GREP_MAX_FILE_LINES) {
       const remaining = sorted.length - _GREP_MAX_FILE_LINES
       // `-C`/`--context` prints more surrounding lines per match -- it has nothing to do with narrowing which FILES a search touches, so telling the user to reach for it here (the too-many-distinct-files case) never actually helped. A more specific pattern or a path/glob restriction (--include, or a narrower search root) is what actually reduces the file count this elision message is reporting.
       outLines.push(
-        `  [token-goat: +${remaining} more file(s) elided; use a more specific pattern or --include=<glob> to narrow]`,
+        `  [token-goat: +${countNoun(remaining, 'more file')} elided; use a more specific pattern or --include=<glob> to narrow]`,
       )
     }
     if (unattributed) {

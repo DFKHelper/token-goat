@@ -601,7 +601,7 @@ class BiomeFilter extends ToolFilter {
     if (ruleCollapsed.size) {
       for (const [rule, cnt] of [...ruleCollapsed.entries()].sort()) {
         kept.push(
-          `[token-goat: +${cnt} more ${rule} diagnostic(s) elided; run \`biome check\` for full output]`,
+          `[token-goat: +${cnt} more ${rule} ${cnt === 1 ? 'diagnostic' : 'diagnostics'} elided; run \`biome check\` for full output]`,
         )
       }
     }

@@ -85,8 +85,8 @@ describe('rcmd on documented R CMD check output', () => {
     const out = compress(rCmdFilter, R_CMD_CHECK_FORMAT, ['R', 'CMD', 'check', 'pkg'])
     // Must-not-drop: a skipped check is a result, not a pass. It is the only line saying the package's tests never ran, so folding it into the OK tally both deletes it and makes the note an untrue claim about how many checks passed.
     expect(out).toContain('* checking tests ... SKIPPED')
-    expect(out).toContain('collapsed 6 R CMD check-OK line(s)')
-    expect(out).not.toContain('collapsed 7 R CMD check-OK line(s)')
+    expect(out).toContain('collapsed 6 R CMD check-OK lines')
+    expect(out).not.toContain('collapsed 7 R CMD check-OK lines')
     // Must-not-drop: the failing check, its explanation, and the closing status summary.
     expect(out).toContain('* checking PDF version of manual ... WARNING')
     expect(out).toContain('LaTeX errors when creating PDF version.')
@@ -135,7 +135,7 @@ describe('haskell on documented cabal/GHC output', () => {
     expect(out).toContain('   |        ^^^^^^^^^^')
     expect(out).toContain('cabal: Failed to build mypkg-0.1.0.0.')
     // Still a real collapse: the per-module progress is replaced by a count.
-    expect(out).toContain('collapsed 4 module compilation(s)')
+    expect(out).toContain('collapsed 4 module compilations')
     expect(out).not.toContain('[2 of 4] Compiling Mypkg.B')
   })
 })

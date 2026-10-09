@@ -14,6 +14,7 @@ import {
   squeezeBlankLines,
   stripTimestamps,
 } from './helpers.js'
+import { countNoun } from '../util.js'
 
 // --------------------------------------------------------------------------- GhFilter regexes ---------------------------------------------------------------------------
 
@@ -420,14 +421,14 @@ export class GhRunLogFilter extends ToolFilter {
 
     // Setup actions summary
     if (setupActions.length) {
-      kept.push(`[token-goat: Setup: ${setupActions.length} action(s) collapsed]`)
+      kept.push(`[token-goat: Setup: ${countNoun(setupActions.length, 'action')} collapsed]`)
     }
 
     const notes: string[] = []
     maybeNote(notes, droppedBoilerplate, `dropped ${droppedBoilerplate} boilerplate lines`)
     maybeNote(notes, droppedCommands, `dropped ${droppedCommands} ##[command] echo lines`)
     maybeNote(notes, droppedCleanup, `dropped ${droppedCleanup} cleanup lines`)
-    maybeNote(notes, collapsedGroups, `collapsed ${collapsedGroups} log group(s)`)
+    maybeNote(notes, collapsedGroups, `collapsed ${countNoun(collapsedGroups, 'log group')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -581,7 +582,7 @@ export class PreCommitFilter extends ToolFilter {
         const status = m.groups?.['status'] ?? ''
         if (status === 'Failed' || status === 'Pre-commit hook failed') {
           if (passed || skipped) {
-            kept.push(`[token-goat: collapsed ${passed} Passed, ${skipped} Skipped hook(s)]`)
+            kept.push(`[token-goat: collapsed ${passed} Passed, ${countNoun(skipped, 'Skipped hook')}]`)
             passed = 0
             skipped = 0
           }
@@ -613,7 +614,7 @@ export class PreCommitFilter extends ToolFilter {
     }
 
     if (passed || skipped) {
-      kept.push(`[token-goat: collapsed ${passed} Passed, ${skipped} Skipped hook(s)]`)
+      kept.push(`[token-goat: collapsed ${passed} Passed, ${countNoun(skipped, 'Skipped hook')}]`)
     }
     if (infoDropped) {
       kept.push(`[token-goat: dropped ${infoDropped} pre-commit [INFO] env-setup lines]`)
@@ -729,7 +730,7 @@ export class BanditFilter extends ToolFilter {
     if (inIssue) flushIssue()
 
     const notes: string[] = []
-    maybeNote(notes, lowDropped, `collapsed ${lowDropped} LOW severity issue block(s)`)
+    maybeNote(notes, lowDropped, `collapsed ${countNoun(lowDropped, 'LOW severity issue block')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -898,7 +899,7 @@ export class SnykFilter extends ToolFilter {
       if (_SNYK_LICENSE_RE.test(line) && !_SNYK_TREE_LINE_RE.test(line)) {
         if (inMoreAbout) {
           if (moreAboutDropped) {
-            kept.push(`[token-goat: collapsed ${moreAboutDropped} 'More about' URL line(s)]`)
+            kept.push(`[token-goat: collapsed ${countNoun(moreAboutDropped, "'More about' URL line")}]`)
             moreAboutDropped = 0
           }
           inMoreAbout = false
@@ -917,7 +918,7 @@ export class SnykFilter extends ToolFilter {
         if (line.trim() && !line.trim().startsWith('http')) {
           inMoreAbout = false
           if (moreAboutDropped) {
-            kept.push(`[token-goat: collapsed ${moreAboutDropped} 'More about' URL line(s)]`)
+            kept.push(`[token-goat: collapsed ${countNoun(moreAboutDropped, "'More about' URL line")}]`)
             moreAboutDropped = 0
           }
           // Fall through to normal handling
@@ -954,7 +955,7 @@ export class SnykFilter extends ToolFilter {
         treeHidden = 0
       }
       if (moreAboutDropped) {
-        kept.push(`[token-goat: collapsed ${moreAboutDropped} 'More about' URL line(s)]`)
+        kept.push(`[token-goat: collapsed ${countNoun(moreAboutDropped, "'More about' URL line")}]`)
         moreAboutDropped = 0
       }
       kept.push(line)
@@ -963,7 +964,7 @@ export class SnykFilter extends ToolFilter {
     // Flush trailing counts
     if (treeHidden) kept.push(`[token-goat: +${treeHidden} dependency tree lines collapsed]`)
     if (moreAboutDropped) {
-      kept.push(`[token-goat: collapsed ${moreAboutDropped} 'More about' URL line(s)]`)
+      kept.push(`[token-goat: collapsed ${countNoun(moreAboutDropped, "'More about' URL line")}]`)
     }
     return this.finalize(kept)
   }
@@ -1010,7 +1011,7 @@ export class SemgrepFilter extends ToolFilter {
           }
         }
         if (localDropped) {
-          blockOut.push(`  [token-goat: collapsed ${localDropped} Details/annotation URL line(s)]`)
+          blockOut.push(`  [token-goat: collapsed ${countNoun(localDropped, 'Details/annotation URL line')}]`)
           }
         kept.push(...blockOut)
         ruleCounts.set(currentRule, count + 1)
@@ -1040,7 +1041,7 @@ export class SemgrepFilter extends ToolFilter {
         // Emit suppression notes before summary
         for (const [ruleId, supCnt] of [...ruleSuppressed.entries()].sort()) {
           kept.push(
-            `[token-goat: ${ruleId} — ${supCnt} additional match(es) collapsed (kept first ${this._maxPerRule})]`,
+            `[token-goat: ${ruleId} — ${countNoun(supCnt, 'additional match', 'additional matches')} collapsed (kept first ${this._maxPerRule})]`,
           )
         }
         ruleSuppressed.clear()
@@ -1074,7 +1075,7 @@ export class SemgrepFilter extends ToolFilter {
     // Emit any unseen suppression notes at end
     for (const [ruleId, supCnt] of [...ruleSuppressed.entries()].sort()) {
       kept.push(
-        `[token-goat: ${ruleId} — ${supCnt} additional match(es) collapsed (kept first ${this._maxPerRule})]`,
+        `[token-goat: ${ruleId} — ${countNoun(supCnt, 'additional match', 'additional matches')} collapsed (kept first ${this._maxPerRule})]`,
       )
     }
 

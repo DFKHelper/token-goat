@@ -313,7 +313,7 @@ describe('AwsCliFilter', () => {
     expect(result).toContain('upload failed: ./secret.txt to s3://mybucket/secret.txt Could not connect to the endpoint URL: "http://localhost:1/mybucket/secret.txt"')
     expect(result).toContain('uploaded 2')
     // the summary must say a transfer failed rather than only counting the ones that worked -- the success count alone reads as a clean run, and a failure folded into the dropped-progress count read as one too
-    expect(result).toContain('1 transfer(s) failed')
+    expect(result).toContain('1 transfer failed')
     expect(result).not.toMatch(/uploaded 3\b/)
     expect(result).not.toMatch(/dropped 1 progress/)
   })
@@ -325,7 +325,7 @@ describe('AwsCliFilter', () => {
       'copy failed: s3://src/b.txt to s3://dst/b.txt An error occurred (AccessDenied) when calling the CopyObject operation: Access Denied\n'
     const { text: result } = apply(f, text, '', 1, ['aws', 's3', 'cp', '--recursive', 's3://src', 's3://dst'])
     expect(result).toContain('copy failed: s3://src/b.txt to s3://dst/b.txt An error occurred (AccessDenied) when calling the CopyObject operation: Access Denied')
-    expect(result).toContain('1 transfer(s) failed')
+    expect(result).toContain('1 transfer failed')
   })
 
   // FORMAT-DERIVED: the same FAILURE_FORMAT again, with `delete` as the transfer_type -- the type `aws s3 rm` reports, per the one format string in aws-cli's `awscli/customizations/s3/results.py`. Kept separate from the `copy` case above because `rm` also has to be routed to this compressor at all; matching `delete failed:` while `rm` fell through to the generic path left the pattern unreachable.
@@ -335,7 +335,7 @@ describe('AwsCliFilter', () => {
       'delete failed: s3://mybucket/b.txt An error occurred (AccessDenied) when calling the DeleteObject operation: Access Denied\n'
     const { text: result } = apply(f, text, '', 1, ['aws', 's3', 'rm', '--recursive', 's3://mybucket'])
     expect(result).toContain('delete failed: s3://mybucket/b.txt An error occurred (AccessDenied) when calling the DeleteObject operation: Access Denied')
-    expect(result).toContain('1 transfer(s) failed')
+    expect(result).toContain('1 transfer failed')
     // the successful delete is never folded into a count: only upload and download lines are, so routing `rm` here cannot cost it a line it used to keep
     expect(result).toContain('delete: s3://mybucket/a.txt')
   })
@@ -348,7 +348,7 @@ describe('AwsCliFilter', () => {
     const { text: result } = apply(f, stdout, stderr, 1, ['aws', 's3', 'sync', '.', 's3://mybucket'])
     expect(result).toContain(stderr)
     // Only the absence of the success note can show compression never ran: asserting the failure note is absent passes either way, since the failure line rides on stderr, which _compressS3Transfer never sees.
-    expect(result).not.toContain('uploaded 12 file(s)')
+    expect(result).not.toContain('uploaded 12 files')
     expect(result).toContain('upload: ./file11.txt to s3://mybucket/file11.txt')
   })
 

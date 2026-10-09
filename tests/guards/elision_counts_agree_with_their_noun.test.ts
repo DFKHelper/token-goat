@@ -65,17 +65,17 @@ describe('elision counts agree with their noun', () => {
   })
 })
 
-/** A count printed as `3 file(s)` reads wrong at 1 and at 0 alike; the same counts go through countNoun. Checked on every file under src/ except `tool_filters/`, whose compressed-output footers (about a hundred `line(s)` notes) are matched verbatim by the filter tests and fixtures and are left for a pass of their own. The `(?<!\.)` stops a call such as `.exec(s)` reading as a plural noun. */
+/** A count printed as `3 file(s)` reads wrong at 1 and at 0 alike; the same counts go through countNoun. Checked on every file under src/, tool filters included. The `(?<!\.)` stops a call such as `.exec(s)` reading as a plural noun. */
 const PARENTHESIZED_PLURAL_RE = /^[^'`"]*['`"].*(?<!\.)\b[a-z]{3,}\((?:s|es)\)(?=[ .,:;'`]|$)/
-const PLURAL_EXCLUDED_DIRS = ['tool_filters']
 
 function sourceFiles(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
     const full = path.join(dir, e.name)
-    if (e.isDirectory()) return PLURAL_EXCLUDED_DIRS.includes(e.name) ? [] : sourceFiles(full)
+    if (e.isDirectory()) return sourceFiles(full)
     return e.name.endsWith('.ts') ? [full] : []
   })
 }
+
 function parenthesizedPlurals(text: string): string[] {
   return text.split('\n').filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line) && PARENTHESIZED_PLURAL_RE.test(line))
 }

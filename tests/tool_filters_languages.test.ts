@@ -68,7 +68,7 @@ describe('NodeFilter compress', () => {
     const out = compress(nodeFilter, stdout, ['node', '-e', 'x'], { exitCode: 1 })
     expect(out).toContain('TypeError')
     expect(out).toContain('script.js')
-    expect(out).toContain('collapsed 3 node: internal frame(s)')
+    expect(out).toContain('collapsed 3 node: internal frames')
     expect(out).not.toContain('node:internal/modules/cjs/loader')
   })
 })
@@ -175,7 +175,7 @@ describe('PythonFilter compress: repeated-line dedup', () => {
     const line = 'some output line'
     const stdout = Array(8).fill(line).join('\n')
     const out = compress(pythonFilter, stdout, ['python', 'x.py'])
-    expect(out).toContain('repeated 7 more time(s)')
+    expect(out).toContain('repeated 7 more times')
     expect(out.split(line).length - 1).toBe(1)
   })
 })
@@ -186,7 +186,7 @@ describe('PythonFilter compress: warning dedup', () => {
     const suffix = ': UserWarning: deprecated API call'
     const lines = [1, 2, 3, 4, 5, 6].map((n) => `/some/file.py:${n}${suffix}`)
     const out = compress(pythonFilter, lines.join('\n'), ['python', 'x.py'])
-    expect(out).toContain('3 repeated warning(s) suppressed')
+    expect(out).toContain('3 repeated warnings suppressed')
   })
 
   it('keeps a distinct warning that shares a long leading substring with another', () => {
@@ -249,7 +249,7 @@ describe('BunFilter compress: install', () => {
     ].join('\n')
     const out = compress(bunFilter, stdout, ['bun', 'install'])
     expect(out).toContain('Saved lockfile')
-    expect(out).toContain('collapsed 3 package download/install line(s)')
+    expect(out).toContain('collapsed 3 package download/install lines')
   })
 })
 
@@ -257,7 +257,7 @@ describe('BunFilter compress: build assets', () => {
   it('truncates > 10 asset lines with a note', () => {
     const assets = Array.from({ length: 15 }, (_, i) => `  chunk/file${i}.js  12.3 kB`)
     const out = compress(bunFilter, assets.join('\n'), ['bun', 'build', 'src/'])
-    expect(out).toContain('5 more asset/chunk line(s) elided')
+    expect(out).toContain('5 more asset/chunk lines elided')
   })
 })
 
@@ -279,7 +279,7 @@ describe('DenoFilter compress: compile', () => {
       'Compile file:///main.ts',
     ].join('\n')
     const out = compress(denoFilter, stdout, ['deno', 'compile', 'main.ts'])
-    expect(out).toContain('collapsed 2 download line(s)')
+    expect(out).toContain('collapsed 2 download lines')
     expect(out).toContain('Compile file:///main.ts')
   })
 })
@@ -300,7 +300,7 @@ describe('FlutterFilter compress: build', () => {
       .concat(['✓ Built build/app/outputs/apk/release/app-release.apk'])
       .join('\n')
     const out = compress(flutterFilter, stdout, ['flutter', 'build', 'apk'])
-    expect(out).toContain('collapsed 5 Dart source compilation(s)')
+    expect(out).toContain('collapsed 5 Dart source compilations')
     expect(out).toContain('Built build/')
   })
 })
@@ -324,7 +324,7 @@ describe('DartFilter compress: pub', () => {
     ].join('\n')
     const out = compress(dartFilter, stdout, ['dart', 'pub', 'get'])
     expect(out).toContain('Got dependencies')
-    expect(out).toContain('collapsed 2 package line(s)')
+    expect(out).toContain('collapsed 2 package lines')
   })
 })
 
@@ -337,7 +337,7 @@ describe('DartFilter compress: generic (run/compile)', () => {
     ].join('\n')
     const out = compress(dartFilter, stdout, ['dart', 'compile', 'exe', 'lib/main.dart'])
     expect(out).toContain('Generated: build/main.exe')
-    expect(out).toContain('collapsed 2 compilation step(s)')
+    expect(out).toContain('collapsed 2 compilation steps')
     expect(out).not.toContain('Compiling lib/main.dart')
   })
 })
@@ -361,7 +361,7 @@ describe('SwiftFilter compress: build', () => {
     ].join('\n')
     const out = compress(swiftFilter, stdout, ['swift', 'build'])
     expect(out).toContain('** BUILD SUCCEEDED **')
-    expect(out).toContain('collapsed 2 compile/link step(s)')
+    expect(out).toContain('collapsed 2 compile/link steps')
   })
 })
 
@@ -384,7 +384,7 @@ describe('XcodeFilter compress', () => {
     ].join('\n')
     const out = compress(xcodeFilter, stdout, ['xcodebuild'])
     expect(out).toContain('** BUILD SUCCEEDED **')
-    expect(out).toContain('collapsed 2 compile/link step(s)')
+    expect(out).toContain('collapsed 2 compile/link steps')
   })
 })
 
@@ -423,7 +423,7 @@ describe('MixFilter compress: compile', () => {
     ].join('\n')
     const out = compress(mixFilter, stdout, ['mix', 'compile'])
     expect(out).toContain('Generated my_app app')
-    expect(out).toContain('collapsed 2 compilation batch(es)')
+    expect(out).toContain('collapsed 2 compilation batches')
   })
 })
 
@@ -459,7 +459,7 @@ describe('ZigFilter compress', () => {
     expect(out).toContain('[5/12]')
     // Step 6 onward should be collapsed
     expect(out).not.toContain('[6/12]')
-    expect(out).toContain('+7 more build step(s)')
+    expect(out).toContain('+7 more build steps')
     expect(out).toContain('Build Summary')
   })
 })
@@ -484,7 +484,7 @@ describe('RCmdFilter compress', () => {
       'Status: 1 NOTE',
     ].join('\n')
     const out = compress(rCmdFilter, stdout, ['R', 'CMD', 'check', 'pkg/'])
-    expect(out).toContain('collapsed 2 R CMD check-OK line(s)')
+    expect(out).toContain('collapsed 2 R CMD check-OK lines')
     expect(out).toContain('NOTE')
     expect(out).toContain('Status: 1 NOTE')
   })
@@ -506,7 +506,7 @@ describe('erlangFilter compress', () => {
       '==> Done.',
     ].join('\n')
     const out = compress(erlangFilter, lines, ['rebar3', 'compile'])
-    expect(out).toContain('collapsed 2 Erlang module compilation(s)')
+    expect(out).toContain('collapsed 2 Erlang module compilations')
     expect(out).toContain('==> Done.')
   })
 })
@@ -523,7 +523,7 @@ describe('crystalFilter compress', () => {
       '3 examples, 0 failures',
     ].join('\n')
     const out = compress(crystalFilter, lines, ['crystal', 'spec'])
-    expect(out).toContain('collapsed 2 Crystal compiling/linking step(s)')
+    expect(out).toContain('collapsed 2 Crystal compiling/linking steps')
     expect(out).toContain('3 examples, 0 failures')
   })
 })
@@ -542,7 +542,7 @@ describe('haskellFilter compress', () => {
       'Build completed',
     ].join('\n')
     const out = compress(haskellFilter, lines, ['cabal', 'build'])
-    expect(out).toContain('collapsed 3 module compilation(s)')
+    expect(out).toContain('collapsed 3 module compilations')
     expect(out).toContain('Build completed')
   })
 
@@ -578,7 +578,7 @@ describe('elmFilter compress', () => {
     const out = compress(elmFilter, lines, ['elm', 'make', 'src/Main.elm'])
     expect(out).toContain('Success!')
     expect(out).toContain('Downloaded')
-    expect(out).toContain('collapsed 2 Elm source file compilation(s)')
+    expect(out).toContain('collapsed 2 Elm source file compilations')
   })
 })
 
@@ -596,7 +596,7 @@ describe('juliaFilter compress', () => {
     ].join('\n')
     const out = compress(juliaFilter, lines, ['julia', '-e', 'using Pkg; Pkg.test()'])
     expect(out).toContain('Testing MyPkg')
-    expect(out).toContain('package operation(s)')
+    expect(out).toContain('package operation')
   })
 })
 

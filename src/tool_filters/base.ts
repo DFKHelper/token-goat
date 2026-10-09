@@ -32,6 +32,7 @@ import { stripAnsiEscapes } from '../render/ansi.js'
 import { redactSecrets } from '../secret_redact.js'
 import { loadConfig } from '../config.js'
 import { savedTokensFromBytes } from '../stats.js'
+import { countNoun } from '../util.js'
 
 /** Default `bash_compress.min_net_savings_bytes` floor, used when config fails to load. Mirrored here (not just in config.ts's own default) because {@link resolveMinNetSavingsBytes} must still return a sane value when `loadConfig()` itself throws. */
 const DEFAULT_MIN_NET_SAVINGS_BYTES = 100
@@ -260,7 +261,7 @@ export abstract class ToolFilter {
     if (soClipped !== so || seClipped !== se) {
       so = soClipped
       se = seClipped
-      notes.push(`clipped line(s) wider than ${INPUT_MAX_LINE_CHARS} chars`)
+      notes.push(`clipped lines wider than ${INPUT_MAX_LINE_CHARS} chars`)
     }
 
     // Step 3: original byte count from pre-truncation byte arrays.
@@ -314,7 +315,7 @@ export abstract class ToolFilter {
     const redacted = redactSecrets(body)
     body = redacted.text
     redactedCount += redacted.count
-    if (redactedCount > 0) notes.push(`redacted ${redactedCount} secret-shaped value(s)`)
+    if (redactedCount > 0) notes.push(`redacted ${countNoun(redactedCount, 'secret-shaped value')}`)
     // Step 10: prepend the notes the model can act on. Which branch compressed the output is not one of them, and it rode on 773 outputs across 159 recorded sessions; it stays in `notes` for callers and tests.
     const shown = notes.filter((n) => n !== EARLY_EXIT_NOTE)
     if (shown.length) body = `[${shown.join('; ')}]\n${body}`

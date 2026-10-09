@@ -7,6 +7,7 @@ import { ERROR_SIGNAL_RE, maybeNote, pathStem, pathName, positionalArgs, squeeze
 import { antFilter, gradleFilter, javacFilter, mavenFilter, sbtFilter } from './build_jvm.js'
 import { dotnetFilter, msbuildFilter } from './build_dotnet.js'
 import { lernaFilter, nxFilter, turboFilter, webpackFilter } from './build_js.js'
+import { countNoun } from '../util.js'
 
 // --------------------------------------------------------------------------- MakeFilter ---------------------------------------------------------------------------
 
@@ -603,7 +604,7 @@ export class CargoFilter extends ToolFilter {
     // A failed build keeps each error whole and collapses the located warning blocks: left in, they crowd the budget and the later middle truncation elides an error's source line and label while keeping a warning's help text.
     const failed = exitCode !== 0 || kept.some((l) => CARGO_ERROR_HEADER_RE.test(l))
     const collapsedWarnings = failed ? collapseCargoWarnings(kept) : 0
-    maybeNote(notes, collapsedWarnings, `collapsed ${collapsedWarnings} warning block(s) because the build failed`)
+    maybeNote(notes, collapsedWarnings, `collapsed ${countNoun(collapsedWarnings, 'warning block')} because the build failed`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }

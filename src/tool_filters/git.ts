@@ -665,7 +665,7 @@ function _compressGitDiffBody(stdout: string, stderr: string, maxHunksPerFile = 
         if (nTrimmed > 0) {
           compressedHunks.push(
             trimmedLines.join('\n') +
-              `\n[token-goat: ${nTrimmed} trailing context line(s) trimmed]`,
+              `\n[token-goat: ${countNoun(nTrimmed, 'trailing context line')} trimmed]`,
           )
         } else {
           compressedHunks.push(hunk)

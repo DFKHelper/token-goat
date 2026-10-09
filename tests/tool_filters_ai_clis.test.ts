@@ -249,7 +249,7 @@ describe('AiderFilter compression', () => {
 
   it('prepends applying-edits collapse notice', () => {
     const out = apply(aiderFilter, _AIDER_VERBOSE, argv)
-    expect(out).toContain("[token-goat: 4 'applying edits' progress line(s) collapsed")
+    expect(out).toContain("[token-goat: 4 'applying edits' progress lines collapsed")
     // The prepended line comes before the kept body
     const prepIdx = out.indexOf('[token-goat:')
     const bodyIdx = out.indexOf('Your fix looks correct.')
@@ -315,12 +315,12 @@ describe('GeminiCliFilter compression', () => {
 
   it('prepends startup status collapse notice', () => {
     const out = apply(geminiCliFilter, _GEMINI_VERBOSE, argv)
-    expect(out).toContain('[token-goat: 3 Gemini CLI startup status line(s) collapsed')
+    expect(out).toContain('[token-goat: 3 Gemini CLI startup status lines collapsed')
   })
 
   it('prepends tool-call spinner collapse notice', () => {
     const out = apply(geminiCliFilter, _GEMINI_VERBOSE, argv)
-    expect(out).toContain('[token-goat: 2 tool-call spinner line(s) collapsed]')
+    expect(out).toContain('[token-goat: 2 tool-call spinner lines collapsed]')
   })
 
   it('keeps the response body', () => {
@@ -576,7 +576,7 @@ describe('OpenCodeFilter compression', () => {
 
   it('appends tool call/result collapse notice', () => {
     const out = apply(openCodeFilter, _OPENCODE_VERBOSE, argv)
-    expect(out).toContain('[token-goat: 4 tool call/result line(s) collapsed')
+    expect(out).toContain('[token-goat: 4 tool call/result lines collapsed')
     // appended after kept body
     const noteIdx = out.lastIndexOf('[token-goat: 4 tool call')
     const bodyIdx = out.indexOf('The code has been updated successfully.')
@@ -633,7 +633,7 @@ describe('ContinueFilter compression', () => {
 
   it('appends indexing collapse notice with last line', () => {
     const out = apply(continueFilter, _CONTINUE_VERBOSE, argv)
-    expect(out).toContain('[token-goat: 3 indexing progress line(s) collapsed')
+    expect(out).toContain('[token-goat: 3 indexing progress lines collapsed')
     expect(out).toContain('last: Indexing: 100/100 files')
   })
 
@@ -699,7 +699,7 @@ describe('ClineFilter compression', () => {
 
   it('appends file-read collapse notice', () => {
     const out = apply(clineFilter, _CLINE_SESSION, argv)
-    expect(out).toContain('[token-goat: 3 file-read progress line(s) collapsed')
+    expect(out).toContain('[token-goat: 3 file-read progress lines collapsed')
   })
 
   it('emits tokens, cost, and context notes', () => {
@@ -809,7 +809,7 @@ describe('CodexExecFilter compression', () => {
       '42',
     ].join('\n')
     const out = apply(codexExecFilter, multiTurn, argv)
-    expect(out).toContain('[codex: model=gpt-4o, tokens=42, 1 earlier turn(s) dropped]')
+    expect(out).toContain('[codex: model=gpt-4o, tokens=42, 1 earlier turn dropped]')
     expect(out).toContain('Answer 2 — this is the final answer')
     expect(out).not.toContain('Answer 1')
   })
@@ -902,7 +902,7 @@ describe('CodexExecFilter compression on real codex-cli 0.148.0 output', () => {
     ].join('\n')
     const out = apply(codexExecFilter, transcript, argv)
     expect(out.trimEnd().split('\n')).toEqual([
-      '[codex: model=gpt-5.6-terra, tokens=4,096, 1 earlier turn(s) dropped]',
+      '[codex: model=gpt-5.6-terra, tokens=4,096, 1 earlier turn dropped]',
       'Answer 2 is the final one.',
     ])
   })
@@ -947,7 +947,7 @@ describe('AI-CLI footer rules do not eat answer prose', () => {
     for (const line of ['The config lives in settings.json.', 'Note: the change takes effect on restart.', 'Tip: use --dry-run first.', 'Done.']) {
       expect(out, `the filter deleted a line of the model's own answer: ${line}`).toContain(line)
     }
-    expect(out, 'nothing in this capture is droppable, so the filter must not claim it dropped anything').not.toMatch(/noise line\(s\)/)
+    expect(out, 'nothing in this capture is droppable, so the filter must not claim it dropped anything').not.toMatch(/dropped \d+ noise lines?/)
   })
 
   // The same two tokens sat in three sibling footer rules. They are English, not interface chrome: no rule keyed on a word a model writes in prose can tell an answer from a banner, so none of these filters may drop a line for beginning with one.

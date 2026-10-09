@@ -56,8 +56,8 @@ export class NodeFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, collapsedInternal, `collapsed ${collapsedInternal} node: internal frame(s)`)
-    maybeNote(notes, collapsedModules, `collapsed ${collapsedModules} node_modules frame(s)`)
+    maybeNote(notes, collapsedInternal, `collapsed ${countNoun(collapsedInternal, 'node: internal frame')}`)
+    maybeNote(notes, collapsedModules, `collapsed ${countNoun(collapsedModules, 'node_modules frame')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -157,7 +157,7 @@ export class PythonFilter extends ToolFilter {
       const count = j - i
       if (count >= 5) {
         out.push(line)
-        out.push(`[token-goat: previous line repeated ${count - 1} more time(s)]`)
+        out.push(`[token-goat: previous line repeated ${countNoun(count - 1, 'more time')}]`)
       } else {
         for (let k = i; k < j; k++) out.push(lines[k]!)
       }
@@ -187,7 +187,7 @@ export class PythonFilter extends ToolFilter {
     }
     if (totalSuppressed > 0) {
       out.push(
-        `[token-goat: ${totalSuppressed} repeated warning(s) suppressed; run without TOKEN_GOAT_BASH_COMPRESS for full list]`,
+        `[token-goat: ${countNoun(totalSuppressed, 'repeated warning')} suppressed; run without TOKEN_GOAT_BASH_COMPRESS for full list]`,
       )
     }
     return out
@@ -240,7 +240,7 @@ export class RubyFilter extends ToolFilter {
     }
 
     const notes: string[] = []
-    maybeNote(notes, dotCount, `collapsed ${dotCount} passing test dot(s)`)
+    maybeNote(notes, dotCount, `collapsed ${countNoun(dotCount, 'passing test dot')}`)
     if (summaryLine) kept.push(summaryLine)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
@@ -294,7 +294,7 @@ export class BunFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, downloadCount, `collapsed ${downloadCount} package download/install line(s)`)
+    maybeNote(notes, downloadCount, `collapsed ${countNoun(downloadCount, 'package download/install line')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -311,7 +311,7 @@ export class BunFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, passCount, `collapsed ${passCount} passing test(s)`)
+    maybeNote(notes, passCount, `collapsed ${countNoun(passCount, 'passing test')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -333,7 +333,7 @@ export class BunFilter extends ToolFilter {
     const extra = assets.length - 10
     return [
       ...assets.slice(0, 10),
-      `[token-goat: ${extra} more asset/chunk line(s) elided; run 'bun build' for full output]`,
+      `[token-goat: ${countNoun(extra, 'more asset/chunk line')} elided; run 'bun build' for full output]`,
     ]
   }
 }
@@ -384,7 +384,7 @@ export class DenoFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, passCount, `collapsed ${passCount} passing test(s)`)
+    maybeNote(notes, passCount, `collapsed ${countNoun(passCount, 'passing test')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -398,7 +398,7 @@ export class DenoFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, downloadCount, `collapsed ${downloadCount} download line(s)`)
+    maybeNote(notes, downloadCount, `collapsed ${countNoun(downloadCount, 'download line')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -416,8 +416,8 @@ export class DenoFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, progressCount, `collapsed ${progressCount} check-progress line(s)`)
-    maybeNote(notes, permWarnCount, `collapsed ${permWarnCount} permission warning(s)`)
+    maybeNote(notes, progressCount, `collapsed ${countNoun(progressCount, 'check-progress line')}`)
+    maybeNote(notes, permWarnCount, `collapsed ${countNoun(permWarnCount, 'permission warning')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -474,8 +474,8 @@ export class FlutterFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, compilingCount, `collapsed ${compilingCount} Dart source compilation(s)`)
-    maybeNote(notes, fontAssetCount, `collapsed ${fontAssetCount} font asset line(s)`)
+    maybeNote(notes, compilingCount, `collapsed ${countNoun(compilingCount, 'Dart source compilation')}`)
+    maybeNote(notes, fontAssetCount, `collapsed ${countNoun(fontAssetCount, 'font asset line')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -489,7 +489,7 @@ export class FlutterFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, progressCount, `collapsed ${progressCount} test-progress line(s)`)
+    maybeNote(notes, progressCount, `collapsed ${countNoun(progressCount, 'test-progress line')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -503,7 +503,7 @@ export class FlutterFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, pkgCount, `collapsed ${pkgCount} package line(s)`)
+    maybeNote(notes, pkgCount, `collapsed ${countNoun(pkgCount, 'package line')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -549,7 +549,7 @@ export class DartFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, analyzingCount, `collapsed ${analyzingCount} analysis-progress line(s)`)
+    maybeNote(notes, analyzingCount, `collapsed ${countNoun(analyzingCount, 'analysis-progress line')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -563,7 +563,7 @@ export class DartFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, progressCount, `collapsed ${progressCount} test-progress line(s)`)
+    maybeNote(notes, progressCount, `collapsed ${countNoun(progressCount, 'test-progress line')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -579,8 +579,8 @@ export class DartFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, pkgCount, `collapsed ${pkgCount} package line(s)`)
-    maybeNote(notes, downloadCount, `collapsed ${downloadCount} download line(s)`)
+    maybeNote(notes, pkgCount, `collapsed ${countNoun(pkgCount, 'package line')}`)
+    maybeNote(notes, downloadCount, `collapsed ${countNoun(downloadCount, 'download line')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -594,7 +594,7 @@ export class DartFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, compileCount, `collapsed ${compileCount} compilation step(s)`)
+    maybeNote(notes, compileCount, `collapsed ${countNoun(compileCount, 'compilation step')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -642,7 +642,7 @@ export class SwiftFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, compileCount, `collapsed ${compileCount} compile/link step(s)`)
+    maybeNote(notes, compileCount, `collapsed ${countNoun(compileCount, 'compile/link step')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -667,7 +667,7 @@ export class SwiftFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, passCount + startCount, `collapsed ${passCount + startCount} test-pass/start line(s)`)
+    maybeNote(notes, passCount + startCount, `collapsed ${countNoun(passCount + startCount, 'test-pass/start line')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -713,8 +713,8 @@ export class XcodeFilter extends ToolFilter {
     }
 
     const notes: string[] = []
-    maybeNote(notes, compileCount, `collapsed ${compileCount} compile/link step(s)`)
-    maybeNote(notes, taskBodyCount, `collapsed ${taskBodyCount} task-body line(s)`)
+    maybeNote(notes, compileCount, `collapsed ${countNoun(compileCount, 'compile/link step')}`)
+    maybeNote(notes, taskBodyCount, `collapsed ${countNoun(taskBodyCount, 'task-body line')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -773,7 +773,7 @@ export class MixFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, depCount, `collapsed ${depCount} dependency fetch line(s)`)
+    maybeNote(notes, depCount, `collapsed ${countNoun(depCount, 'dependency fetch line')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -790,7 +790,7 @@ export class MixFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, compilingCount, `collapsed ${compilingCount} compilation batch(es)`)
+    maybeNote(notes, compilingCount, `collapsed ${countNoun(compilingCount, 'compilation batch', 'compilation batches')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -817,7 +817,7 @@ export class MixFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, dotCount, `collapsed ${dotCount} passing test dot(s)`)
+    maybeNote(notes, dotCount, `collapsed ${countNoun(dotCount, 'passing test dot')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -886,14 +886,14 @@ export class ZigFilter extends ToolFilter {
     // Output: step_sample first, then "+N more" note, then kept body
     const out: string[] = [...stepSample]
     if (stepCount > ZIG_STEP_SAMPLE) {
-      out.push(`[token-goat: +${stepCount - ZIG_STEP_SAMPLE} more build step(s)...]`)
+      out.push(`[token-goat: +${countNoun(stepCount - ZIG_STEP_SAMPLE, 'more build step')}...]`)
     }
     out.push(...kept)
 
     const notes: string[] = []
-    maybeNote(notes, testPassCount, `collapsed ${testPassCount} passing test(s)`)
-    maybeNote(notes, fetchCount, `collapsed ${fetchCount} fetch line(s)`)
-    maybeNote(notes, infoNoiseCount, `dropped ${infoNoiseCount} info-noise line(s)`)
+    maybeNote(notes, testPassCount, `collapsed ${countNoun(testPassCount, 'passing test')}`)
+    maybeNote(notes, fetchCount, `collapsed ${countNoun(fetchCount, 'fetch line')}`)
+    maybeNote(notes, infoNoiseCount, `dropped ${countNoun(infoNoiseCount, 'info-noise line')}`)
     this.emitNotes(out, notes)
     return this.finalize(out)
   }
@@ -957,8 +957,8 @@ export class RCmdFilter extends ToolFilter {
     }
 
     const prepend: string[] = []
-    if (okCount) prepend.push(`[token-goat: collapsed ${okCount} R CMD check-OK line(s)]`)
-    if (installSectionCount) prepend.push(`[token-goat: collapsed ${installSectionCount} package installation/loading line(s)]`)
+    if (okCount) prepend.push(`[token-goat: collapsed ${countNoun(okCount, 'R CMD check-OK line')}]`)
+    if (installSectionCount) prepend.push(`[token-goat: collapsed ${countNoun(installSectionCount, 'package installation/loading line')}]`)
     return this.finalize([...prepend, ...kept])
   }
 }
@@ -998,22 +998,22 @@ export const erlangFilter = makeLanguageFilter({
     {
       re: REBAR3_COMPILING_RE,
       position: 'prepend',
-      note: (n) => `[token-goat: collapsed ${n} Erlang module compilation(s)]`,
+      note: (n) => `[token-goat: collapsed ${countNoun(n, 'Erlang module compilation')}]`,
     },
     {
       re: REBAR3_FETCH_RE,
       position: 'prepend',
-      note: (n) => `[token-goat: collapsed ${n} dependency fetch/resolve line(s)]`,
+      note: (n) => `[token-goat: collapsed ${countNoun(n, 'dependency fetch/resolve line')}]`,
     },
     {
       re: REBAR3_STEP_NOISE_RE,
       position: 'note',
-      note: (n) => `dropped ${n} rebar3 build-step line(s)`,
+      note: (n) => `dropped ${countNoun(n, 'rebar3 build-step line')}`,
     },
     {
       res: [REBAR3_EUNIT_PASS_RE, REBAR3_CT_PASS_RE],
       position: 'note',
-      note: (n) => `collapsed ${n} test-pass line(s)`,
+      note: (n) => `collapsed ${countNoun(n, 'test-pass line')}`,
     },
   ] as AiCliCountedRule[],
 })
@@ -1049,22 +1049,22 @@ export const crystalFilter = makeLanguageFilter({
     {
       re: CRYSTAL_COMPILING_RE,
       position: 'prepend',
-      note: (n) => `[token-goat: collapsed ${n} Crystal compiling/linking step(s)]`,
+      note: (n) => `[token-goat: collapsed ${countNoun(n, 'Crystal compiling/linking step')}]`,
     },
     {
       re: CRYSTAL_SHARDS_PROGRESS_RE,
       position: 'prepend',
-      note: (n) => `[token-goat: collapsed ${n} shards dependency operation(s)]`,
+      note: (n) => `[token-goat: collapsed ${countNoun(n, 'shards dependency operation')}]`,
     },
     {
       re: CRYSTAL_SPEC_PASS_RE,
       position: 'note',
-      note: (n) => `collapsed ${n} spec-pass line(s)`,
+      note: (n) => `collapsed ${countNoun(n, 'spec-pass line')}`,
     },
     {
       re: CRYSTAL_DOT_PROGRESS_RE,
       position: 'note',
-      note: (n) => `collapsed ${n} progress dot(s)`,
+      note: (n) => `collapsed ${countNoun(n, 'progress dot')}`,
     },
   ] as AiCliCountedRule[],
 })
@@ -1104,24 +1104,24 @@ export const haskellFilter = makeLanguageFilter({
     {
       re: HASKELL_RESOLVING_RE,
       position: 'prepend',
-      note: (n) => `[token-goat: collapsed ${n} dependency resolve/download line(s)]`,
+      note: (n) => `[token-goat: collapsed ${countNoun(n, 'dependency resolve/download line')}]`,
     },
     {
       re: HASKELL_COMPILING_RE,
       position: 'prepend',
-      note: (n) => `[token-goat: collapsed ${n} module compilation(s)]`,
+      note: (n) => `[token-goat: collapsed ${countNoun(n, 'module compilation')}]`,
     },
     {
       re: HASKELL_LINKING_RE,
       position: 'prepend',
-      note: (n) => `[token-goat: collapsed ${n} linking/building step(s)]`,
+      note: (n) => `[token-goat: collapsed ${countNoun(n, 'linking/building step')}]`,
     },
   ] as AiCliCountedRule[],
   dedupeRules: [
     {
       re: HASKELL_WARNING_RE,
       maxPerKey: 3,
-      note: (n) => `deduplicated ${n} repeated warning(s)`,
+      note: (n) => `deduplicated ${countNoun(n, 'repeated warning')}`,
     },
   ],
 })
@@ -1161,16 +1161,16 @@ export const elmFilter = makeLanguageFilter({
       re: ELM_DOWNLOADING_RE,
       position: 'prepend',
       note: (n) =>
-        `[token-goat: Downloaded ${n} Elm package(s); disable via TOKEN_GOAT_BASH_COMPRESS for full list]`,
+        `[token-goat: Downloaded ${countNoun(n, 'Elm package')}; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`,
     },
     {
       re: ELM_COMPILING_RE,
       position: 'prepend',
-      note: (n) => `[token-goat: collapsed ${n} Elm source file compilation(s)]`,
+      note: (n) => `[token-goat: collapsed ${countNoun(n, 'Elm source file compilation')}]`,
     },
   ] as AiCliCountedRule[],
   dropRules: [ELM_DOT_PROGRESS_RE, ELM_DEPS_PROGRESS_RE],
-  droppedNoiseNote: (n) => `dropped ${n} dependency-progress line(s)`,
+  droppedNoiseNote: (n) => `dropped ${countNoun(n, 'dependency-progress line')}`,
 })
 
 // --------------------------------------------------------------------------- JuliaFilter ---------------------------------------------------------------------------
@@ -1210,17 +1210,17 @@ export const juliaFilter = makeLanguageFilter({
       res: [JULIA_PKG_DEP_LINE_RE, JULIA_PKG_STATUS_RE],
       position: 'prepend',
       note: (n) =>
-        `[token-goat: ${n} Julia package operation(s); disable via TOKEN_GOAT_BASH_COMPRESS for full list]`,
+        `[token-goat: ${countNoun(n, 'Julia package operation')}; disable via TOKEN_GOAT_BASH_COMPRESS for full list]`,
     },
     {
       res: [JULIA_PKG_RESOLVING_RE, JULIA_PKG_INSTALLED_RE, JULIA_PKG_BUILDING_RE, JULIA_PRECOMPILE_RE],
       position: 'prepend',
-      note: (n) => `[token-goat: collapsed ${n} Pkg progress banner(s)]`,
+      note: (n) => `[token-goat: collapsed ${countNoun(n, 'Pkg progress banner')}]`,
     },
     {
       re: JULIA_TEST_PASS_RE,
       position: 'note',
-      note: (n) => `collapsed ${n} test-pass line(s)`,
+      note: (n) => `collapsed ${countNoun(n, 'test-pass line')}`,
     },
   ] as AiCliCountedRule[],
 })
@@ -1275,8 +1275,8 @@ export class PowerShellErrorFilter extends ToolFilter {
     }
 
     const notes: string[] = []
-    if (noiseCount > 0) notes.push(`collapsed ${noiseCount} verbose/debug/install-progress line(s)`)
-    if (warnElided > 0) notes.push(`deduplicated ${warnElided} repeated WARNING(s)`)
+    if (noiseCount > 0) notes.push(`collapsed ${countNoun(noiseCount, 'verbose/debug/install-progress line')}`)
+    if (warnElided > 0) notes.push(`deduplicated ${countNoun(warnElided, 'repeated WARNING')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }

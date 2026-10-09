@@ -1,3 +1,4 @@
+import { countNoun } from '../util.js'
 // Shared unified-diff block handling for the git filter and the plain-diff branch of the shell-file filter. Both grew the same budgeted collapse independently -- the plain-diff copy carried a comment naming git's as its source -- and the two differed only in which regexes decide what a file block and a hunk header are. Parameterising those two decisions leaves one implementation, so a fix to the budget arithmetic cannot land in one filter and miss the other.
 
 /** A diff line adding content. `+++` is the new-file header, not an addition. */
@@ -26,7 +27,7 @@ export function collapseDiffBlocksToCap(outBlocks: string[], maxLines: number, s
     const hunkCount = lines.filter((ln) => shape.isHunkHeader(ln)).length
     const added = lines.filter(isDiffAdd).length
     const removed = lines.filter(isDiffRemove).length
-    const summary = `[token-goat: ${hunkCount} hunk(s), +${added} -${removed} lines collapsed to fit the line cap]`
+    const summary = `[token-goat: ${countNoun(hunkCount, 'hunk')}, +${added} -${removed} lines collapsed to fit the line cap]`
     return { headerLines, summary, size: headerLines.length + 1 }
   }
 

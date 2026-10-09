@@ -12,6 +12,7 @@ import {
   pathStem,
   positionalArgs,
 } from './helpers.js'
+import { countNoun } from '../util.js'
 
 // --------------------------------------------------------------------------- Terraform regexes ---------------------------------------------------------------------------
 
@@ -218,7 +219,7 @@ export class TerraformFilter extends ToolFilter {
 
     const notes: string[] = []
     maybeNote(notes, droppedRefresh, `dropped ${droppedRefresh} terraform refresh/read lines`)
-    maybeNote(notes, droppedNoChange, `collapsed ${droppedNoChange} unchanged/read-only block(s)`)
+    maybeNote(notes, droppedNoChange, `collapsed ${countNoun(droppedNoChange, 'unchanged/read-only block')}`)
     maybeNote(notes, droppedKaa, `collapsed ${droppedKaa} (known after apply) attribute lines`)
     this.emitNotes(finalKept, notes)
     return this.finalize(finalKept)
@@ -265,7 +266,7 @@ export class TerraformFilter extends ToolFilter {
 
     const notes: string[] = []
     maybeNote(notes, droppedRefresh, `dropped ${droppedRefresh} terraform refresh/read lines`)
-    maybeNote(notes, stillDropped, `collapsed ${stillDropped} Still creating/modifying line(s)`)
+    maybeNote(notes, stillDropped, `collapsed ${countNoun(stillDropped, 'Still creating/modifying line')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -736,15 +737,15 @@ export class VaultFilter extends ToolFilter {
       } else {
         kept.push(...listItems.slice(0, 5))
         kept.push(
-          `[token-goat: ${listItems.length - 5} more secret path(s) omitted; ` +
+          `[token-goat: ${countNoun(listItems.length - 5, 'more secret path')} omitted; ` +
           `disable via TOKEN_GOAT_BASH_COMPRESS for full list]`,
         )
       }
     }
 
     const notes: string[] = []
-    maybeNote(notes, metaCount, `collapsed ${metaCount} Vault lease/token metadata line(s)`)
-    maybeNote(notes, dividerCount, `dropped ${dividerCount} table divider line(s)`)
+    maybeNote(notes, metaCount, `collapsed ${countNoun(metaCount, 'Vault lease/token metadata line')}`)
+    maybeNote(notes, dividerCount, `dropped ${countNoun(dividerCount, 'table divider line')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -804,17 +805,17 @@ export class PackerFilter extends ToolFilter {
     const out: string[] = []
     if (waitingCount) {
       out.push(
-        `[token-goat: ${waitingCount} SSH/WinRM connection-wait poll line(s) collapsed; ` +
+        `[token-goat: ${countNoun(waitingCount, 'SSH/WinRM connection-wait poll line')} collapsed; ` +
         `disable via TOKEN_GOAT_BASH_COMPRESS for full output]`,
       )
     }
     if (provisionerCount) {
-      out.push(`[token-goat: collapsed ${provisionerCount} provisioner step announcement(s)]`)
+      out.push(`[token-goat: collapsed ${countNoun(provisionerCount, 'provisioner step announcement')}]`)
     }
     out.push(...kept)
 
     const notes: string[] = []
-    maybeNote(notes, noiseCount, `dropped ${noiseCount} network/heartbeat/pause noise line(s)`)
+    maybeNote(notes, noiseCount, `dropped ${countNoun(noiseCount, 'network/heartbeat/pause noise line')}`)
     this.emitNotes(out, notes)
     return this.finalize(out)
   }
@@ -880,20 +881,20 @@ export class NixFilter extends ToolFilter {
     const out: string[] = []
     if (fetchCount) {
       out.push(
-        `[token-goat: fetched/substituted ${fetchCount} store path(s) from binary cache; ` +
+        `[token-goat: fetched/substituted ${countNoun(fetchCount, 'store path')} from binary cache; ` +
         `disable via TOKEN_GOAT_BASH_COMPRESS for full list]`,
       )
     }
     if (buildCount) {
-      out.push(`[token-goat: built ${buildCount} Nix derivation(s)]`)
+      out.push(`[token-goat: built ${countNoun(buildCount, 'Nix derivation')}]`)
     }
     if (flakeUpdateCount) {
-      out.push(`[token-goat: collapsed ${flakeUpdateCount} flake lock update line(s)]`)
+      out.push(`[token-goat: collapsed ${countNoun(flakeUpdateCount, 'flake lock update line')}]`)
     }
     out.push(...kept)
 
     const notes: string[] = []
-    maybeNote(notes, droppedNoise, `dropped ${droppedNoise} Nix scheduler/sandbox noise line(s)`)
+    maybeNote(notes, droppedNoise, `dropped ${countNoun(droppedNoise, 'Nix scheduler/sandbox noise line')}`)
     this.emitNotes(out, notes)
     return this.finalize(out)
   }
@@ -952,21 +953,21 @@ export class WranglerFilter extends ToolFilter {
     const out: string[] = []
     if (uploadCount) {
       out.push(
-        `[token-goat: ${uploadCount} asset upload line(s) collapsed; ` +
+        `[token-goat: ${countNoun(uploadCount, 'asset upload line')} collapsed; ` +
         `disable via TOKEN_GOAT_BASH_COMPRESS for full list]`,
       )
     }
     if (skipCount) {
-      out.push(`[token-goat: ${skipCount} asset-skip line(s) collapsed]`)
+      out.push(`[token-goat: ${countNoun(skipCount, 'asset-skip line')} collapsed]`)
     }
     if (bulkCount) {
-      out.push(`[token-goat: ${bulkCount} bulk-operation progress line(s) collapsed]`)
+      out.push(`[token-goat: ${countNoun(bulkCount, 'bulk-operation progress line')} collapsed]`)
     }
     out.push(...kept)
 
     const notes: string[] = []
-    maybeNote(notes, droppedBuild, `dropped ${droppedBuild} build-step noise line(s)`)
-    maybeNote(notes, droppedDev, `dropped ${droppedDev} dev-mode noise line(s)`)
+    maybeNote(notes, droppedBuild, `dropped ${countNoun(droppedBuild, 'build-step noise line')}`)
+    maybeNote(notes, droppedDev, `dropped ${countNoun(droppedDev, 'dev-mode noise line')}`)
     this.emitNotes(out, notes)
     return this.finalize(out)
   }
@@ -1038,18 +1039,18 @@ export class HardhatFilter extends ToolFilter {
     const out: string[] = []
     if (compilingCount) {
       out.push(
-        `[token-goat: collapsed ${compilingCount} Solidity compilation step line(s); ` +
+        `[token-goat: collapsed ${countNoun(compilingCount, 'Solidity compilation step line')}; ` +
         `disable via TOKEN_GOAT_BASH_COMPRESS for full output]`,
       )
     }
     if (solcTimingCount) {
-      out.push(`[token-goat: collapsed ${solcTimingCount} Solc per-version timing line(s)]`)
+      out.push(`[token-goat: collapsed ${countNoun(solcTimingCount, 'Solc per-version timing line')}]`)
     }
     out.push(...kept)
 
     const notes: string[] = []
-    maybeNote(notes, passCount, `collapsed ${passCount} passing test line(s)`)
-    maybeNote(notes, txNoiseCount, `dropped ${txNoiseCount} transaction receipt noise line(s)`)
+    maybeNote(notes, passCount, `collapsed ${countNoun(passCount, 'passing test line')}`)
+    maybeNote(notes, txNoiseCount, `dropped ${countNoun(txNoiseCount, 'transaction receipt noise line')}`)
     this.emitNotes(out, notes)
     return this.finalize(out)
   }
@@ -1113,15 +1114,15 @@ export class ServerlessFilter extends ToolFilter {
     const out: string[] = []
     if (stepCount) {
       out.push(
-        `[token-goat: collapsed ${stepCount} Serverless deploy step line(s); ` +
+        `[token-goat: collapsed ${countNoun(stepCount, 'Serverless deploy step line')}; ` +
         `disable via TOKEN_GOAT_BASH_COMPRESS for full output]`,
       )
     }
     out.push(...kept)
 
     const notes: string[] = []
-    maybeNote(notes, inProgressCount, `dropped ${inProgressCount} CF _IN_PROGRESS event line(s)`)
-    maybeNote(notes, dotCount, `dropped ${dotCount} polling dot line(s)`)
+    maybeNote(notes, inProgressCount, `dropped ${countNoun(inProgressCount, 'CF _IN_PROGRESS event line')}`)
+    maybeNote(notes, dotCount, `dropped ${countNoun(dotCount, 'polling dot line')}`)
     this.emitNotes(out, notes)
     return this.finalize(out)
   }
@@ -1198,17 +1199,17 @@ export class FlyFilter extends ToolFilter {
     const out: string[] = []
     if (buildStepCount) {
       out.push(
-        `[token-goat: ${buildStepCount} Docker build step line(s) collapsed; ` +
+        `[token-goat: ${countNoun(buildStepCount, 'Docker build step line')} collapsed; ` +
         `disable via TOKEN_GOAT_BASH_COMPRESS for full output]`,
       )
     }
     if (machineWaitCount) {
-      out.push(`[token-goat: ${machineWaitCount} per-machine wait line(s) collapsed]`)
+      out.push(`[token-goat: ${countNoun(machineWaitCount, 'per-machine wait line')} collapsed]`)
     }
     out.push(...kept)
 
     const notes: string[] = []
-    maybeNote(notes, droppedNoise, `dropped ${droppedNoise} DNS/polling noise line(s)`)
+    maybeNote(notes, droppedNoise, `dropped ${countNoun(droppedNoise, 'DNS/polling noise line')}`)
     this.emitNotes(out, notes)
     return this.finalize(out)
   }
@@ -1287,15 +1288,15 @@ export class ForgeFilter extends ToolFilter {
     const out: string[] = []
     if (compilingCount) {
       out.push(
-        `[token-goat: ${compilingCount} Solidity compilation step line(s) collapsed; ` +
+        `[token-goat: ${countNoun(compilingCount, 'Solidity compilation step line')} collapsed; ` +
         `disable via TOKEN_GOAT_BASH_COMPRESS for full output]`,
       )
     }
     out.push(...kept)
 
     const notes: string[] = []
-    maybeNote(notes, passCount, `collapsed ${passCount} passing test line(s)`)
-    maybeNote(notes, droppedGasSep, `dropped ${droppedGasSep} gas-report table separator row(s)`)
+    maybeNote(notes, passCount, `collapsed ${countNoun(passCount, 'passing test line')}`)
+    maybeNote(notes, droppedGasSep, `dropped ${countNoun(droppedGasSep, 'gas-report table separator row')}`)
     this.emitNotes(out, notes)
     return this.finalize(out)
   }

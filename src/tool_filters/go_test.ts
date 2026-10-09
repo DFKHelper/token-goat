@@ -6,6 +6,7 @@
 
 import { ToolFilter } from './base.js'
 import { maybeNote, positionalArgs } from './helpers.js'
+import { countNoun } from '../util.js'
 
 const TEST_RUN_RE = /^=== (RUN|PAUSE|CONT|NAME)\s/
 const RACE_FENCE_RE = /^={10,}\s*$/
@@ -273,7 +274,7 @@ export class GoTestFilter extends ToolFilter {
     maybeNote(
       notes,
       raceCount,
-      `kept ${raceCount} DATA RACE block(s) verbatim (goroutine stacks collapsed)`,
+      `kept ${countNoun(raceCount, 'DATA RACE block')} verbatim (goroutine stacks collapsed)`,
     )
     maybeNote(notes, passCount, `collapsed ${passCount} PASS testcases`)
     maybeNote(notes, skipCount, `collapsed ${skipCount} SKIP testcases`)

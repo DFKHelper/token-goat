@@ -52,13 +52,13 @@ describe('aws and az keep a JSON document with a wide string value parseable', (
   it('aws text output that is not JSON still has its wide lines clipped', () => {
     const stdout = ['RESERVATIONS\t123', `INSTANCES\t${WIDE}`, 'TAGS\tName\tweb'].join('\n') + '\n'
     const out = new AwsCliFilter().apply(stdout, '', 0, ['aws', 'ec2', 'describe-instances', '--output', 'text'])
-    expect(out.notes).toContain(`clipped line(s) wider than ${INPUT_MAX_LINE_CHARS} chars`)
+    expect(out.notes).toContain(`clipped lines wider than ${INPUT_MAX_LINE_CHARS} chars`)
   })
 
   it('az text that is not JSON still has its wide lines clipped', () => {
     const stdout = ['Name    State', `vm1     ${WIDE}`].join('\n') + '\n'
     const out = new AzureCliFilter().apply(stdout, '', 0, ['az', 'vm', 'list', '-o', 'table'])
-    expect(out.notes).toContain(`clipped line(s) wider than ${INPUT_MAX_LINE_CHARS} chars`)
+    expect(out.notes).toContain(`clipped lines wider than ${INPUT_MAX_LINE_CHARS} chars`)
   })
 
   it('`--filter aws` picks the plain aws filter, which truncates the same wide document', () => {
@@ -90,7 +90,7 @@ describe('aws and az keep a JSON document with a wide string value parseable', (
 
   it('the JSON documents skip the input clip', () => {
     const out = new AzureCliFilter().apply(JSON.stringify(items(30), null, 2), '', 0, ['az', 'vm', 'list'])
-    expect(out.notes).not.toContain(`clipped line(s) wider than ${INPUT_MAX_LINE_CHARS} chars`)
+    expect(out.notes).not.toContain(`clipped lines wider than ${INPUT_MAX_LINE_CHARS} chars`)
   })
 })
 

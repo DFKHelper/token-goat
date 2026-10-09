@@ -78,7 +78,7 @@ describe('post-hook filter selection for a piped command', () => {
     // The count survived the old defect -- what did not was any route back to the matches. A summary naming zero files is strictly worse than the raw output it replaced.
     expect(body, 'must name the file argv searched').toContain('tests/tool_filters_git.test.ts')
     expect(body, 'must not report every line as unattributable').not.toContain('unattributed lines')
-    expect(body, 'must not report zero files for a search that matched').not.toContain('0 file(s)')
+    expect(body, 'must not report zero files for a search that matched').not.toContain('0 files')
   })
 
   it('selects the family filter through a `2>&1 | tail` pipeline rather than shearing on the redirect', async () => {

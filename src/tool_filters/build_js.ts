@@ -201,7 +201,7 @@ export class TurboFilter extends ToolFilter {
     }
 
     const notes: string[] = []
-    maybeNote(notes, cacheHitTasks.size, `collapsed ${cacheHitTasks.size} cache-hit task(s)`)
+    maybeNote(notes, cacheHitTasks.size, `collapsed ${countNoun(cacheHitTasks.size, 'cache-hit task')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }

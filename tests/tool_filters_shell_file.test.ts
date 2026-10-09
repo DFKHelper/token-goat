@@ -84,7 +84,7 @@ describe('GrepFilter compression', () => {
     ]) {
       const got = compress(f, out, argv)
       expect(got, argv.join(' ')).toBe(out.trimEnd())
-      expect(got, argv.join(' ')).not.toContain('match(es)')
+      expect(got, argv.join(' ')).not.toMatch(/matches? across/)
     }
   })
 
@@ -104,7 +104,7 @@ describe('GrepFilter compression', () => {
       const got = compress(filter, out, ['rg', '--json', '-n', 'padding', 'big.ts'])
       expect(got, filter.constructor.name).toBe(out.trimEnd())
       // The two tells of the old behavior, asserted separately: the fabricated header, and the loss of the payload the caller asked for by name.
-      expect(got, filter.constructor.name).not.toContain('file(s)')
+      expect(got, filter.constructor.name).not.toMatch(/matches? across \d+ files?/)
       expect(got, filter.constructor.name).toContain('"line_number":40')
     }
   })
@@ -152,7 +152,7 @@ describe('GrepFilter compression', () => {
       ['rg', '-Tclojure', 'export', 'src/'],
       ['grep', '-eclass', 'src/'],
     ]) {
-      expect(compress(f, lines.join('\n'), argv), argv.join(' ')).toContain('match(es)')
+      expect(compress(f, lines.join('\n'), argv), argv.join(' ')).toContain('matches across')
     }
   })
 
@@ -169,7 +169,7 @@ describe('GrepFilter compression', () => {
   it('still summarises when only an uppercase -C is present, since that is context and not count', () => {
     const lines = Array.from({ length: 50 }, (_, i) => `src/file_${i}.ts:1: match`)
     const out = compress(f, lines.join('\n'), ['grep', '-C', '2', 'TODO', '.'])
-    expect(out).toContain('match(es)')
+    expect(out).toContain('matches across')
   })
 
   it('summarises large grep output with file grouping', () => {
@@ -182,14 +182,14 @@ describe('GrepFilter compression', () => {
     // Regression: this hint used to read "use --context or -C flags to narrow" -- -C/--context controls how many surrounding lines are printed per match, which has nothing to do with the number of distinct files listed here, so the advice never actually helped a user facing this exact elision.
     const lines = Array.from({ length: 50 }, (_, i) => `src/file_${i}.ts:1: match`)
     const out = compress(f, lines.join('\n'), argv)
-    expect(out).toContain('more file(s) elided; use a more specific pattern or --include=<glob> to narrow')
+    expect(out).toContain('more files elided; use a more specific pattern or --include=<glob> to narrow')
     expect(out).not.toContain('-C flags')
   })
 
   it('attributes matches on a Windows absolute path to its file instead of "unattributed" (regression: line.indexOf(\':\') picked up the drive-letter colon in "C:\\foo\\bar.py:12:text", leaving candidate as just "C")', () => {
     const lines = Array.from({ length: 35 }, (_, i) => `C:\\Users\\foo\\bar.py:${i + 1}: match`)
     const out = compress(f, lines.join('\n'), argv)
-    expect(out).toContain('C:\\Users\\foo\\bar.py: 35 match(es)')
+    expect(out).toContain('C:\\Users\\foo\\bar.py: 35 matches')
     expect(out).not.toContain('unattributed')
   })
 
@@ -198,7 +198,7 @@ describe('GrepFilter compression', () => {
     const singleFileArgv = ['grep', '-n', 'alpha', 'b1.txt']
     const lines = Array.from({ length: 40 }, (_, i) => `${i + 1}:alpha match`)
     const out = compress(f, lines.join('\n'), singleFileArgv)
-    expect(out).toContain('b1.txt: 40 match(es)')
+    expect(out).toContain('b1.txt: 40 matches')
     expect(out).not.toContain('unattributed')
   })
 

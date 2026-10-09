@@ -237,7 +237,7 @@ const swiftlintFilter = makeLinterFilter({
     return { severity: m[3]!.toLowerCase(), ruleId: m[5]!.toLowerCase() }
   },
   alwaysKeepSeverities: ['error', 'serious'],
-  collapseNote: (ruleId, extra) => `[token-goat: +${extra} more ${ruleId} warning(s) elided]`,
+  collapseNote: (ruleId, extra) => `[token-goat: +${extra} more ${ruleId} ${extra === 1 ? 'warning' : 'warnings'} elided]`,
 })
 
 // --------------------------------------------------------------------------- PhpStanFilter ---------------------------------------------------------------------------
@@ -283,7 +283,7 @@ class PhpStanFilter extends ToolFilter {
       const msgs = fileMsgs.get(file)
       if (!msgs) return
       const extraCount = [...msgs.values()].reduce((a, c) => a + Math.max(0, c - 3), 0)
-      if (extraCount) kept.push(`  [token-goat: +${extraCount} more duplicate error(s) in ${file}]`)
+      if (extraCount) kept.push(`  [token-goat: +${countNoun(extraCount, 'more duplicate error')} in ${file}]`)
     }
 
     for (const line of lines) {
@@ -350,7 +350,7 @@ class PhpStanFilter extends ToolFilter {
     maybeNote(notes, droppedProgress, `dropped ${droppedProgress} progress/info lines`)
     const collapsed = [...errorTypeCounts.entries()].filter(([, v]) => v > 3)
     for (const [etype, extra] of collapsed.sort()) {
-      notes.push(`collapsed +${extra - 3} more ${etype} occurrence(s)`)
+      notes.push(`collapsed +${extra - 3} more ${etype} ${extra - 3 === 1 ? 'occurrence' : 'occurrences'}`)
     }
     this.emitNotes(kept, notes)
     return this.finalize(kept)

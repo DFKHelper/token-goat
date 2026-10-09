@@ -39,6 +39,6 @@ describe('clipWideLines', () => {
     const out = new GenericFilter().apply(oneLine, '', 0, ['somecmd'])
     const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6
     expect(elapsedMs).toBeLessThan(5000)
-    expect(out.notes.join('; ')).toContain('clipped line(s) wider than')
+    expect(out.notes.join('; ')).toContain('clipped lines wider than')
   })
 })

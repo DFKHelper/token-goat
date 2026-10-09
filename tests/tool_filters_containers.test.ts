@@ -791,7 +791,7 @@ describe('HelmFilter', () => {
     expect(result).toContain('release-22\tdefault\t1\tfailed')
     expect(result).toContain('release-23\tdefault\t1\tpending-upgrade')
     expect(result).toContain('NAME\tNAMESPACE\tREVISION\tSTATUS\tCHART')
-    expect(result).toContain('2 row(s) kept for a not-ready status')
+    expect(result).toContain('2 rows kept for a not-ready status')
   })
 
   // The two bare words in the shared anomaly pattern had no boundaries on them, so they matched inside any longer word: a chart or release name merely CONTAINING "failed" or "unknown" pinned a perfectly healthy row, spending the row budget on rows nothing is wrong with and pushing out the ones that are. HAND-DERIVED: the status values are helm 3's own release.Status constants, and the chart names below are ordinary naming, not shapes read off the matcher.
@@ -805,7 +805,7 @@ describe('HelmFilter', () => {
     const result = apply(f, rows.join('\n'), '', 0, ['helm', 'list'])
     // Survival anchor: the genuinely failed release is still kept, so this cannot pass by the anomaly rule having stopped firing altogether.
     expect(result).toContain('release-22\tdefault\t1\tfailed')
-    expect(result).toContain('1 row(s) kept for a not-ready status')
+    expect(result).toContain('1 row kept for a not-ready status')
     // Both healthy rows sort past the cap and must not be rescued by their chart names.
     expect(result).not.toContain('failed-login-handler')
     expect(result).not.toContain('unknown-device-api')

@@ -176,7 +176,7 @@ describe('doctor reads the histogram', () => {
     const { message } = checkUnmappedTools(dbPath)
 
     expect(message.split('tgtest_dual_event_tool').length - 1).toBe(1)
-    expect(message).toContain('1 tool name(s)')
+    expect(message).toContain('1 tool name')
     expect(message).toContain('(244x)')
   })
 

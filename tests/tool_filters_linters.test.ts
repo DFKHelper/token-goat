@@ -896,7 +896,7 @@ describe('PhpStanFilter', () => {
     expect(lines.filter((l) => l.includes('method.notFound'))).toHaveLength(3)
     // Must not drop: the identifier still has to follow every row that was kept.
     expect(lines.filter((l) => l.includes('Call to an undefined method'))).toHaveLength(3)
-    expect(result.text).toContain('duplicate error(s) in src/foo.php')
+    expect(result.text).toContain('duplicate errors in src/foo.php')
   })
 
   it('phpstan: keeps the warnings table that follows a deduplicated last row', () => {
@@ -939,7 +939,7 @@ describe('PhpStanFilter', () => {
     const input = [header, ...rows, summary].join('\n')
     const result = phpstanFilter.apply(input, '', 1, ['phpstan', 'analyse'])
     // A naive split(' ', 2) on the header would truncate the path at the first space, reporting "src/my" instead of the full path.
-    expect(result.text).toContain('duplicate error(s) in src/my project/foo.php')
+    expect(result.text).toContain('duplicate errors in src/my project/foo.php')
   })
 })
 
@@ -970,7 +970,7 @@ describe('SwiftLintFilter (factory)', () => {
     expect(result.text).toContain('src/foo.swift:1:')
     expect(result.text).toContain('src/foo.swift:3:')
     expect(result.text).not.toContain('src/foo.swift:4:')
-    expect(result.text).toMatch(/\+2 more trailing_whitespace warning\(s\) elided/)
+    expect(result.text).toMatch(/\+2 more trailing_whitespace warnings elided/)
     // Summary line emitted last
     const lines2 = result.text.split('\n').filter((ln) => ln.trim())
     const lastLine = lines2[lines2.length - 1]!

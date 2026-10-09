@@ -42,7 +42,7 @@ describe('per-family truncation keeps the part that carries the answer', () => {
     rows[35] = 'billing-worker      0/1     Evicted   0          2m'
     const out = truncateTableRows([header, ...rows].join('\n'), 5, 'use -l to select')
     expect(out).toContain('billing-worker')
-    expect(out).toContain('1 row(s) kept for a not-ready status')
+    expect(out).toContain('1 row kept for a not-ready status')
   })
 
   it('keeps the end of a kubectl diff, not only its first resource', () => {

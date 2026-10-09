@@ -113,7 +113,7 @@ describe('GhRunLogFilter setup action collapsing', () => {
     ].join('\n')
     const out = f.compress(lines, '', 0, argv)
     expect(out).not.toContain('Run actions/checkout@v4')
-    expect(out).toContain('3 action(s) collapsed')
+    expect(out).toContain('3 actions collapsed')
   })
 })
 
@@ -301,7 +301,7 @@ describe('GhRunLogFilter step-name TAB prefix stripping', () => {
     )
     expect(out).toContain('Syncing repository: myorg/myrepo')
     expect(out).toContain('Checking out ref refs/heads/main')
-    expect(out).not.toContain('action(s) collapsed')
+    expect(out).not.toMatch(/actions? collapsed/)
   })
 })
 
@@ -804,7 +804,7 @@ describe('PreCommitFilter passing hooks collapsed', () => {
       'check yaml.....Passed\ncheck json.....Passed\ncheck toml.....Passed\nAll checks passed.\n',
       PC_ARGV,
     )
-    expect(out).toContain('collapsed 3 Passed, 0 Skipped hook(s)')
+    expect(out).toContain('collapsed 3 Passed, 0 Skipped hooks')
     expect(out).not.toContain('check yaml.....Passed')
     expect(out).toContain('All checks passed.')
   })
@@ -825,7 +825,7 @@ describe('PreCommitFilter passing hooks collapsed', () => {
 
   it('single passing hook produces collapsed sentinel with count 1', () => {
     const out = apply(f, 'check yaml.....Passed\nAll checks passed.\n', PC_ARGV)
-    expect(out).toContain('collapsed 1 Passed, 0 Skipped hook(s)')
+    expect(out).toContain('collapsed 1 Passed, 0 Skipped hooks')
   })
 
   it('Skipped hooks are counted separately', () => {
@@ -834,7 +834,7 @@ describe('PreCommitFilter passing hooks collapsed', () => {
       'check yaml.....Passed\ncheck json.....(no files to check)Skipped\ncheck toml.....Passed\nAll checks passed.\n',
       PC_ARGV,
     )
-    expect(out).toContain('collapsed 2 Passed, 1 Skipped hook(s)')
+    expect(out).toContain('collapsed 2 Passed, 1 Skipped hook')
   })
 
   it('mixed pass and fail: pass count before failure is correct', () => {
@@ -1233,7 +1233,7 @@ describe('SnykFilter output', () => {
       'License information for foo-pkg: MIT\n' +
       'Some trailing context line\n'
     const out = apply(f, input, argv)
-    expect(out).toContain("collapsed 2 'More about' URL line(s)")
+    expect(out).toContain("collapsed 2 'More about' URL lines")
     expect(out).toContain('License information for foo-pkg: MIT')
     const collapsedIdx = out.indexOf("collapsed 2 'More about'")
     const licenseIdx = out.indexOf('License information for foo-pkg: MIT')
@@ -1483,7 +1483,7 @@ describe('BanditFilter separator hygiene, driven from the real 1.9.4 capture', (
   it('collapses exactly the four LOW blocks the capture contains', () => {
     // Derived from the fixture: `grep -c 'Severity: Low'` is 4 (B404 and B101, once per module).
     expect(raw.split('\n').filter((l) => /Severity:\s+Low/.test(l)).length).toBe(4)
-    expect(body).toContain('collapsed 4 LOW severity issue block(s)')
+    expect(body).toContain('collapsed 4 LOW severity issue blocks')
   })
 
   it('leaves no two dashed rules adjacent', () => {

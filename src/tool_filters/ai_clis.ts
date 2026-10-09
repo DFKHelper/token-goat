@@ -7,6 +7,7 @@
 import { ToolFilter } from './base.js'
 import { makeAiCliFilter } from './families.js'
 import { ERROR_SIGNAL_RE, pathStem, pathName, positionalArgs } from './helpers.js'
+import { countNoun } from '../util.js'
 
 // --------------------------------------------------------------------------- Shared regex constants — GhCopilot / Copilot (standalone) ---------------------------------------------------------------------------
 const _GH_COPILOT_SPINNER_RE = /^\s*(?:Asking GitHub Copilot|Generating|Thinking|Fetching)\s*(?:\.{1,3}\s*)?$/i
@@ -108,7 +109,7 @@ export const ghCopilotFilter = makeAiCliFilter({
   name: 'gh-copilot',
   binaries: ['gh'],
   dropRules: [_GH_COPILOT_SPINNER_RE, _GH_COPILOT_BANNER_RE, _GH_COPILOT_DISCLAIMER_RE],
-  droppedNoiseNote: (n) => `dropped ${n} boilerplate/disclaimer line(s)`,
+  droppedNoiseNote: (n) => `dropped ${countNoun(n, 'boilerplate/disclaimer line')}`,
   // GhCopilotFilter only fires for `gh copilot explain/suggest`; the broader GhFilter in CI_FILTERS claims all other `gh` commands.
   customMatches: (argv: string[]): boolean => {
     if (!argv.length) return false
@@ -126,7 +127,7 @@ export const copilotFilter = makeAiCliFilter({
   binaries: ['copilot'],
   dropRules: [_COPILOT_WORKSPACE_NOISE_RE, _GH_COPILOT_SPINNER_RE, _GH_COPILOT_BANNER_RE, _GH_COPILOT_DISCLAIMER_RE],
   keepLastRules: [{ re: _COPILOT_COMPLETION_STATS_RE, note: (v) => `stats: ${v}` }],
-  droppedNoiseNote: (n) => `dropped ${n} boilerplate/disclaimer line(s)`,
+  droppedNoiseNote: (n) => `dropped ${countNoun(n, 'boilerplate/disclaimer line')}`,
 })
 
 export const aiderFilter = makeAiCliFilter({
@@ -138,14 +139,14 @@ export const aiderFilter = makeAiCliFilter({
       re: _AIDER_APPLYING_RE,
       position: 'prepend',
       note: (n) =>
-        `[token-goat: ${n} 'applying edits' progress line(s) collapsed; disable via TOKEN_GOAT_BASH_COMPRESS for full output]`,
+        `[token-goat: ${countNoun(n, "'applying edits' progress line")} collapsed; disable via TOKEN_GOAT_BASH_COMPRESS for full output]`,
     },
   ],
   keepLastRules: [
     { re: _AIDER_TOKENS_RE, note: (v) => `token usage: ${v}` },
     { re: _AIDER_COST_RE, note: (v) => `cost: ${v}` },
   ],
-  droppedNoiseNote: (n) => `dropped ${n} noise line(s)`,
+  droppedNoiseNote: (n) => `dropped ${countNoun(n, 'noise line')}`,
 })
 
 export const geminiCliFilter = makeAiCliFilter({
@@ -157,16 +158,16 @@ export const geminiCliFilter = makeAiCliFilter({
       re: _GEMINI_STARTUP_RE,
       position: 'prepend',
       note: (n) =>
-        `[token-goat: ${n} Gemini CLI startup status line(s) collapsed; disable via TOKEN_GOAT_BASH_COMPRESS for full output]`,
+        `[token-goat: ${countNoun(n, 'Gemini CLI startup status line')} collapsed; disable via TOKEN_GOAT_BASH_COMPRESS for full output]`,
     },
     {
       re: _GEMINI_TOOL_SPINNER_RE,
       position: 'prepend',
-      note: (n) => `[token-goat: ${n} tool-call spinner line(s) collapsed]`,
+      note: (n) => `[token-goat: ${countNoun(n, 'tool-call spinner line')} collapsed]`,
     },
   ],
   keepLastRules: [{ re: _GEMINI_TOKEN_METER_RE, note: (v) => `context: ${v}` }],
-  droppedNoiseNote: (n) => `dropped ${n} noise line(s)`,
+  droppedNoiseNote: (n) => `dropped ${countNoun(n, 'noise line')}`,
 })
 
 export const claudeCliFilter = makeAiCliFilter({
@@ -177,14 +178,14 @@ export const claudeCliFilter = makeAiCliFilter({
     {
       re: _CLAUDE_CLI_TOOL_LOG_RE,
       position: 'note',
-      note: (n) => `collapsed ${n} tool-call log line(s)`,
+      note: (n) => `collapsed ${countNoun(n, 'tool-call log line')}`,
     },
   ],
   keepLastRules: [
     { re: _CLAUDE_CLI_STATS_RE, note: (v) => `stats: ${v}` },
     { re: _CLAUDE_CLI_CONTEXT_RE, note: (v) => `context: ${v}` },
   ],
-  droppedNoiseNote: (n) => `dropped ${n} noise line(s)`,
+  droppedNoiseNote: (n) => `dropped ${countNoun(n, 'noise line')}`,
   // Exact 'claude' stem only; skip management subcommands (install, update, etc.)
   customMatches: (argv: string[]): boolean => {
     if (!argv.length) return false
@@ -198,7 +199,7 @@ export const cursorFilter = makeAiCliFilter({
   name: 'cursor',
   binaries: ['cursor'],
   dropRules: [_CURSOR_BANNER_RE, _CURSOR_STARTUP_RE, _CURSOR_TELEMETRY_RE],
-  droppedNoiseNote: (n) => `dropped ${n} startup/telemetry noise line(s)`,
+  droppedNoiseNote: (n) => `dropped ${countNoun(n, 'startup/telemetry noise line')}`,
 })
 
 export const windsurfFilter = makeAiCliFilter({
@@ -218,11 +219,11 @@ export const windsurfFilter = makeAiCliFilter({
       re: _WINDSURF_CASCADE_TOOL_RE,
       position: 'note',
       note: (n) =>
-        `collapsed ${n} Cascade tool-call line(s); disable via TOKEN_GOAT_BASH_COMPRESS for full output`,
+        `collapsed ${countNoun(n, 'Cascade tool-call line')}; disable via TOKEN_GOAT_BASH_COMPRESS for full output`,
     },
   ],
   keepLastRules: [{ re: _WINDSURF_CONTEXT_RE, note: (v) => `context: ${v}` }],
-  droppedNoiseNote: (n) => `dropped ${n} startup/activation noise line(s)`,
+  droppedNoiseNote: (n) => `dropped ${countNoun(n, 'startup/activation noise line')}`,
 })
 
 export const openCodeFilter = makeAiCliFilter({
@@ -235,7 +236,7 @@ export const openCodeFilter = makeAiCliFilter({
       res: [_OPENCODE_TOOL_CALL_RE, _OPENCODE_TOOL_RESULT_RE],
       position: 'append',
       note: (n) =>
-        `[token-goat: ${n} tool call/result line(s) collapsed; disable via TOKEN_GOAT_BASH_COMPRESS for full output]`,
+        `[token-goat: ${countNoun(n, 'tool call/result line')} collapsed; disable via TOKEN_GOAT_BASH_COMPRESS for full output]`,
     },
   ],
   keepLastRules: [
@@ -243,7 +244,7 @@ export const openCodeFilter = makeAiCliFilter({
     { re: _OPENCODE_MODEL_RE_KL, note: (v) => `model: ${v}` },
     { re: _OPENCODE_CONTEXT_RE, note: (v) => `context: ${v}` },
   ],
-  droppedNoiseNote: (n) => `dropped ${n} noise line(s)`,
+  droppedNoiseNote: (n) => `dropped ${countNoun(n, 'noise line')}`,
 })
 
 export const continueFilter = makeAiCliFilter({
@@ -256,13 +257,13 @@ export const continueFilter = makeAiCliFilter({
       position: 'append',
       keepLast: true,
       note: (n, last) => {
-        const summary = last ?? `${n} indexing progress line(s)`
-        return `[token-goat: ${n} indexing progress line(s) collapsed; last: ${summary}; disable via TOKEN_GOAT_BASH_COMPRESS for full output]`
+        const summary = last ?? `${countNoun(n, 'indexing progress line')}`
+        return `[token-goat: ${countNoun(n, 'indexing progress line')} collapsed; last: ${summary}; disable via TOKEN_GOAT_BASH_COMPRESS for full output]`
       },
     },
   ],
   keepLastRules: [{ re: _CONTINUE_TOKENS_RE, note: (v) => `tokens: ${v}` }],
-  droppedNoiseNote: (n) => `dropped ${n} noise line(s)`,
+  droppedNoiseNote: (n) => `dropped ${countNoun(n, 'noise line')}`,
 })
 
 export const clineFilter = makeAiCliFilter({
@@ -275,7 +276,7 @@ export const clineFilter = makeAiCliFilter({
       re: _CLINE_FILE_READ_RE,
       position: 'append',
       note: (n) =>
-        `[token-goat: ${n} file-read progress line(s) collapsed; disable via TOKEN_GOAT_BASH_COMPRESS for full output]`,
+        `[token-goat: ${countNoun(n, 'file-read progress line')} collapsed; disable via TOKEN_GOAT_BASH_COMPRESS for full output]`,
     },
   ],
   keepLastRules: [
@@ -283,7 +284,7 @@ export const clineFilter = makeAiCliFilter({
     { re: _CLINE_COST_RE, note: (v) => `cost: ${v}` },
     { re: _CLINE_CONTEXT_RE, note: (v) => `context: ${v}` },
   ],
-  droppedNoiseNote: (n) => `dropped ${n} noise line(s)`,
+  droppedNoiseNote: (n) => `dropped ${countNoun(n, 'noise line')}`,
 })
 
 // --------------------------------------------------------------------------- CodexExecFilter — bespoke structural algorithm
@@ -365,7 +366,7 @@ export class CodexExecFilter extends ToolFilter {
       answerLines = _trimBlankEdges(lines.slice(lastCodexIdx + 1, scanEnd))
     }
 
-    const dropped = droppedTurns > 0 ? `, ${droppedTurns} earlier turn(s) dropped` : ''
+    const dropped = droppedTurns > 0 ? `, ${countNoun(droppedTurns, 'earlier turn')} dropped` : ''
     const summary = `[codex: model=${model}, tokens=${tokensCount}${dropped}]`
     return this.finalize([summary, ...answerLines])
   }

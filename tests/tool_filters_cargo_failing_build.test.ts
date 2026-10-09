@@ -26,7 +26,7 @@ describe('CargoFilter on a failing build', () => {
     for (const line of MUST_KEEP) expect(out).toContain(line)
     expect(out).not.toContain('unused variable')
     expect(out).not.toContain('_v39')
-    expect(out).toContain('collapsed 38 warning block(s)')
+    expect(out).toContain('collapsed 38 warning blocks')
     expect(out.length).toBeLessThan(FIXTURE.length * 0.4)
   })
 

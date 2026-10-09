@@ -2,6 +2,7 @@
 
 import { ToolFilter } from './base.js'
 import { clipWideLines, maybeNote, positionalArgs, truncateTableRows } from './helpers.js'
+import { countNoun } from '../util.js'
 
 // --------------------------------------------------------------------------- JSON array helpers shared by AwsCliFilter and AzureCliFilter ---------------------------------------------------------------------------
 
@@ -182,10 +183,10 @@ export class AwsCliFilter extends ToolFilter {
       kept.push(line)
     }
     const notes: string[] = []
-    maybeNote(notes, uploadCount, `uploaded ${uploadCount} file(s)`)
-    maybeNote(notes, downloadCount, `downloaded ${downloadCount} file(s)`)
-    maybeNote(notes, failedCount, `${failedCount} transfer(s) failed`)
-    maybeNote(notes, progressDropped, `dropped ${progressDropped} progress line(s)`)
+    maybeNote(notes, uploadCount, `uploaded ${countNoun(uploadCount, 'file')}`)
+    maybeNote(notes, downloadCount, `downloaded ${countNoun(downloadCount, 'file')}`)
+    maybeNote(notes, failedCount, `${countNoun(failedCount, 'transfer')} failed`)
+    maybeNote(notes, progressDropped, `dropped ${countNoun(progressDropped, 'progress line')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -227,7 +228,7 @@ export class AwsCliFilter extends ToolFilter {
         inProgressRun.delete(resourceId)
         if (prevCount) {
           keptEvents.push({
-            __token_goat__: `${prevCount} repeated ${prevStatus} event(s) for ${resourceId} collapsed`,
+            __token_goat__: `${prevCount} repeated ${prevStatus} ${prevCount === 1 ? 'event' : 'events'} for ${resourceId} collapsed`,
           })
         }
         keptEvents.push(event)
@@ -237,7 +238,7 @@ export class AwsCliFilter extends ToolFilter {
         if (prevCount) {
           const prevStatus = lastResourceStatus.get(resourceId) ?? 'IN_PROGRESS'
           keptEvents.push({
-            __token_goat__: `${prevCount} repeated ${prevStatus} event(s) for ${resourceId} collapsed`,
+            __token_goat__: `${prevCount} repeated ${prevStatus} ${prevCount === 1 ? 'event' : 'events'} for ${resourceId} collapsed`,
           })
         }
         keptEvents.push(event)
@@ -250,7 +251,7 @@ export class AwsCliFilter extends ToolFilter {
       if (count) {
         const prevStatus = lastResourceStatus.get(resourceId) ?? 'IN_PROGRESS'
         keptEvents.push({
-          __token_goat__: `${count} repeated ${prevStatus} event(s) for ${resourceId} collapsed`,
+          __token_goat__: `${count} repeated ${prevStatus} ${count === 1 ? 'event' : 'events'} for ${resourceId} collapsed`,
         })
       }
     }
@@ -317,8 +318,8 @@ export class GcloudFilter extends ToolFilter {
     kept = this._maybeCollapseStructured(kept)
 
     const notes: string[] = []
-    maybeNote(notes, spinnersDropped, `dropped ${spinnersDropped} spinner line(s)`)
-    maybeNote(notes, apiEnableDropped, `collapsed ${apiEnableDropped} API enablement line(s)`)
+    maybeNote(notes, spinnersDropped, `dropped ${countNoun(spinnersDropped, 'spinner line')}`)
+    maybeNote(notes, apiEnableDropped, `collapsed ${countNoun(apiEnableDropped, 'API enablement line')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
@@ -418,7 +419,7 @@ export class AzureCliFilter extends ToolFilter {
     if (inProgressRun && lastProgressStatus) kept.push(lastProgressStatus)
 
     const notes: string[] = []
-    maybeNote(notes, previewDropped, `collapsed ${previewDropped} preview warning(s)`)
+    maybeNote(notes, previewDropped, `collapsed ${countNoun(previewDropped, 'preview warning')}`)
     this.emitNotes(kept, notes)
     return this.finalize(kept)
   }
