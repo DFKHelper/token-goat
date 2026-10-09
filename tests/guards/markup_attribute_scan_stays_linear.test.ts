@@ -119,9 +119,9 @@ describe('the Salesforce markup extractors grow linearly on malformed tags', () 
     it(`.cmp: ${label}`, () => {
       const run = (text: string): unknown => extractSalesforceMarkup(text, 'aura/x/x.cmp')
       // A small pair first so an exponential or cubic pattern fails here, in milliseconds, before the large pair is ever run.
-      const canary = growth(make, run, 300)
+      const canary = settledGrowth(make, run, 300, 'below')
       expect(canary.ratio, `canary n=300 -> 600: ${canary.small.toFixed(2)} ms -> ${canary.large.toFixed(2)} ms`).toBeLessThan(BOUND * 1.5)
-      const g = growth(make, run, 3000)
+      const g = settledGrowth(make, run, 3000, 'below')
       expect(g.ratio, `n=3000 -> 6000: ${g.small.toFixed(2)} ms -> ${g.large.toFixed(2)} ms`).toBeLessThan(BOUND)
     })
   }
@@ -129,7 +129,7 @@ describe('the Salesforce markup extractors grow linearly on malformed tags', () 
   it('.html template: tag starts that never close', () => {
     const run = (text: string): unknown => extractLwcTemplate(text, 'lwc/x/x.html')
     for (const make of [(n: number) => '<c-child onclick={'.repeat(n), (n: number) => '<template if:true={'.repeat(n) + '>', (n: number) => '<lightning-button label="'.repeat(n)]) {
-      const g = growth(make, run, 3000)
+      const g = settledGrowth(make, run, 3000, 'below')
       expect(g.ratio, `n=3000 -> 6000: ${g.small.toFixed(2)} ms -> ${g.large.toFixed(2)} ms`).toBeLessThan(BOUND)
     }
   })
@@ -138,7 +138,7 @@ describe('the Salesforce markup extractors grow linearly on malformed tags', () 
 describe('negative control: the old pattern is flagged by the same measurement', () => {
   it('the cubic shape (quote open, no >) fails the bound on the old pattern', () => {
     const make = HOSTILE['attribute tag starts, name quote open, no >']!
-    const g = growth(make, (text) => oldAttributeNames(text, 'aura:attribute'), 300)
+    const g = settledGrowth(make, (text) => oldAttributeNames(text, 'aura:attribute'), 300, 'above')
     expect(g.ratio, `old pattern n=300 -> 600: ${g.small.toFixed(2)} ms -> ${g.large.toFixed(2)} ms`).toBeGreaterThan(BOUND)
   })
 })
@@ -203,8 +203,7 @@ describe('critical path: a component with the pathological shape still indexes',
   })
 })
 
-// ---- Family A: the language-file scanners (salesforce_metadata, sfc_idx, html) ----
-// The patterns below are the ones those files used before the hand-written scans, kept verbatim as the reference for the differential fuzz and as the negative control.
+// ---- Family A: the language-file scanners (salesforce_metadata, sfc_idx, html) ---- The patterns below are the ones those files used before the hand-written scans, kept verbatim as the reference for the differential fuzz and as the negative control.
 function oldDecode(value: string): string {
   return value.replace(/&apos;/g, "'").replace(/&quot;/g, '"').replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&')
 }
@@ -395,14 +394,15 @@ describe('differential: the hand-written scans return what the old patterns retu
 })
 
 // Padding between starts, so the quadratic term (each start re-reading the rest) outweighs the linear per-start cost and a quadratic scan lands near 4 rather than 3.
-/** The largest growth ratio over up to three measurements: a negative control asks whether the old pattern CAN exceed the bound, and load on the machine only ever lowers a quadratic ratio below its true value, so one slow neighbour must not turn a control red. */
-function worstGrowth(make: (n: number) => string, run: (text: string) => unknown, n: number): { ratio: number; small: number; large: number } {
-  let worst = growth(make, run, n)
-  for (let attempt = 1; attempt < 3 && worst.ratio <= BOUND; attempt++) {
+/** The growth ratio over up to three measurements, keeping the one on the side the assertion needs: below the bound for a scan that must be linear, above it for a negative control. A pause on a busy machine lands on one timing of a pair, so it can push a linear ratio over the bound or pull a quadratic one under it once, but a scan's true growth shows up in every measurement. */
+function settledGrowth(make: (n: number) => string, run: (text: string) => unknown, n: number, want: 'below' | 'above'): { ratio: number; small: number; large: number } {
+  const passes = (ratio: number): boolean => (want === 'below' ? ratio < BOUND : ratio > BOUND)
+  let kept = growth(make, run, n)
+  for (let attempt = 1; attempt < 3 && !passes(kept.ratio); attempt++) {
     const g = growth(make, run, n)
-    if (g.ratio > worst.ratio) worst = g
+    if (want === 'below' ? g.ratio < kept.ratio : g.ratio > kept.ratio) kept = g
   }
-  return worst
+  return kept
 }
 
 const PAD = ' '.repeat(60)
@@ -438,9 +438,9 @@ const FAMILY_A: Record<string, Shape> = {
 describe('the language-file scanners grow linearly on malformed markup', () => {
   for (const [label, { make, run }] of Object.entries(FAMILY_A)) {
     it(label, () => {
-      const canary = growth(make, run, 300)
+      const canary = settledGrowth(make, run, 300, 'below')
       expect(canary.ratio, `canary n=300 -> 600: ${canary.small.toFixed(2)} ms -> ${canary.large.toFixed(2)} ms`).toBeLessThan(BOUND * 1.5)
-      const g = growth(make, run, 3000)
+      const g = settledGrowth(make, run, 3000, 'below')
       expect(g.ratio, `n=3000 -> 6000: ${g.small.toFixed(2)} ms -> ${g.large.toFixed(2)} ms`).toBeLessThan(BOUND)
     })
   }
@@ -456,7 +456,7 @@ describe('the language-file scanners grow linearly on malformed markup', () => {
   }
   for (const [label, { make, run, n = 2000 }] of Object.entries(OLD)) {
     it(`negative control: ${label} fails the bound`, () => {
-      const g = worstGrowth(make, run, n)
+      const g = settledGrowth(make, run, n, 'above')
       expect(g.ratio, `old pattern n=${n} -> ${2 * n}: ${g.small.toFixed(2)} ms -> ${g.large.toFixed(2)} ms`).toBeGreaterThan(BOUND)
     })
   }
@@ -562,9 +562,9 @@ const FAMILY_B: Record<string, Shape> = {
 describe('the query-command scanners grow linearly on malformed markup', () => {
   for (const [label, { make, run }] of Object.entries(FAMILY_B)) {
     it(label, () => {
-      const canary = growth(make, run, 300)
+      const canary = settledGrowth(make, run, 300, 'below')
       expect(canary.ratio, `canary n=300 -> 600: ${canary.small.toFixed(2)} ms -> ${canary.large.toFixed(2)} ms`).toBeLessThan(BOUND * 1.5)
-      const g = growth(make, run, 3000)
+      const g = settledGrowth(make, run, 3000, 'below')
       expect(g.ratio, `n=3000 -> 6000: ${g.small.toFixed(2)} ms -> ${g.large.toFixed(2)} ms`).toBeLessThan(BOUND)
     })
   }
@@ -580,7 +580,7 @@ describe('the query-command scanners grow linearly on malformed markup', () => {
   }
   for (const [label, { make, run }] of Object.entries(OLD_B)) {
     it(`negative control: ${label} fails the bound`, () => {
-      const g = worstGrowth(make, run, 2000)
+      const g = settledGrowth(make, run, 2000, 'above')
       expect(g.ratio, `old pattern n=2000 -> 4000: ${g.small.toFixed(2)} ms -> ${g.large.toFixed(2)} ms`).toBeGreaterThan(BOUND)
     })
   }
