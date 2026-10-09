@@ -1,5 +1,5 @@
 // Run suggested `token-goat …` commands through a real POSIX shell and a real PowerShell, each with a `token-goat` function standing in for the binary, and return the argv each shell handed it. An oracle independent of quotedArg: a value reaches the command as written only if both shells agree with the literal reading of its quotes.
-import { spawnSync } from 'node:child_process'
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 
 import { resolveWindowsBash } from '../../src/shell.js'
 import { powershellForParsing } from './powershell_parse.js'
@@ -33,42 +33,79 @@ function splitRuns(stdout: string, decode: (payload: string) => string[], count:
   return runs
 }
 
-/** Builtins only, since a process per argument made a few hundred commands take minutes under Git Bash: a call is `C<argc>` then each argument, every field NUL-terminated (no value holds NUL), and `E` ends a command's run. Each command runs in a subshell, so one that fails to parse cannot end the others. */
+/** Why a shell run stopped short, so a timeout or a kill reads as one instead of as an empty stderr. */
+function spawnFailure(res: SpawnSyncReturns<string>): string {
+  const parts = [(res.stderr ?? '').trim(), res.error ? `spawn error: ${res.error.message}` : '', res.signal ? `killed by ${res.signal}` : '']
+  return parts.filter((p) => p !== '').join('; ') || `exit status ${res.status}`
+}
+
+/** Commands sharing one subshell: a fork per command cost Git Bash about 34 ms idle and enough under full-suite load to cross the 120 s cap partway through 184 commands. */
+const SH_CHUNK = 16
+
+/** Builtins only, since a process per argument made a few hundred commands take minutes under Git Bash: a call is `C<argc>` then each argument, every field NUL-terminated (no value holds NUL), `E<n>` ends command n's run, and `X` ends a chunk. Each chunk runs in a subshell, so a command that ends it cannot end the other chunks; a command can only change what its chunk mates see by smuggling in a statement, which already changes its own argv. */
 const SH_SCRIPT = [
   "token-goat() { printf '\\0C%d\\0' \"$#\"; printf '%s\\0' \"$@\"; }",
-  'i=0',
-  'while [ "$i" -lt "$TG_N" ]; do',
-  '  eval "c=\\"\\$TG_CMD_$i\\""',
-  '  ( eval "$c" ) 2>/dev/null',
-  "  printf '\\0E\\0'",
-  '  i=$((i+1))',
+  'tg_i=0',
+  'while [ "$tg_i" -lt "$TG_N" ]; do',
+  '  (',
+  '    tg_end=$((tg_i + TG_CHUNK))',
+  '    while [ "$tg_i" -lt "$TG_N" ] && [ "$tg_i" -lt "$tg_end" ]; do',
+  '      tg_k=$tg_i',
+  '      eval "tg_c=\\"\\$TG_CMD_$tg_k\\""',
+  '      eval "$tg_c"',
+  "      printf '\\0E%d\\0' \"$tg_k\"",
+  '      tg_i=$((tg_k + 1))',
+  '    done',
+  '  ) 2>/dev/null',
+  "  printf '\\0X\\0'",
+  '  tg_i=$((tg_i + TG_CHUNK))',
   'done',
 ].join('\n')
 
-/** Each command run by a POSIX shell, its `token-goat` calls decoded. Git Bash drops a carriage return from the text it evaluates, quoted or not, so on Windows no quoting carries one: callers compare without it there. */
-export function shRunAll(sh: string, commands: readonly string[]): ShellRun[] {
-  const env: NodeJS.ProcessEnv = { ...process.env, TG_N: String(commands.length) }
-  commands.forEach((c, i) => {
-    env[`TG_CMD_${i}`] = c
-  })
-  const res = spawnSync(sh, ['-c', SH_SCRIPT], { encoding: 'utf8', env, windowsHide: true, timeout: 120_000 })
-  const fields = res.stdout.split('\0')
-  const runs: ShellRun[] = []
-  let cur: ShellRun = { calls: [], stray: [] }
-  for (let i = 0; i < fields.length; i++) {
-    const f = fields[i]!
-    const argc = /^C(\d+)$/.exec(f)
-    if (argc !== null) {
-      const n = Number(argc[1])
-      cur.calls.push(fields.slice(i + 1, i + 1 + n))
-      i += n
-    } else if (f === 'E') {
-      runs.push(cur)
-      cur = { calls: [], stray: [] }
-    } else if (f !== '') cur.stray.push(f)
+/** Each command run by a POSIX shell, its `token-goat` calls decoded. A command that ends its chunk's subshell keeps what it printed as its run, and the chunk mates after it run again in a later pass. Git Bash drops a carriage return from the text it evaluates, quoted or not, so on Windows no quoting carries one: callers compare without it there. */
+export function shRunAll(sh: string, commands: readonly string[], opts: { timeoutMs?: number } = {}): ShellRun[] {
+  const runs: (ShellRun | undefined)[] = new Array<ShellRun | undefined>(commands.length)
+  let pending = commands.map((_, i) => i)
+  while (pending.length > 0) {
+    const env: NodeJS.ProcessEnv = { ...process.env, TG_N: String(pending.length), TG_CHUNK: String(SH_CHUNK) }
+    pending.forEach((ci, j) => {
+      env[`TG_CMD_${j}`] = commands[ci]
+    })
+    const res = spawnSync(sh, ['-c', SH_SCRIPT], { encoding: 'utf8', env, windowsHide: true, timeout: opts.timeoutMs ?? 120_000 })
+    const fields = (res.stdout ?? '').split('\0')
+    const rerun: number[] = []
+    let chunkEnd = Math.min(SH_CHUNK, pending.length)
+    let next = 0
+    let cur: ShellRun = { calls: [], stray: [] }
+    for (let i = 0; i < fields.length; i++) {
+      const f = fields[i]!
+      const argc = /^C(\d+)$/.exec(f)
+      const end = /^E(\d+)$/.exec(f)
+      if (argc !== null) {
+        const n = Number(argc[1])
+        cur.calls.push(fields.slice(i + 1, i + 1 + n))
+        i += n
+      } else if (end !== null && Number(end[1]) === next && next < chunkEnd) {
+        runs[pending[next]!] = cur
+        next++
+        cur = { calls: [], stray: [] }
+      } else if (f === 'X' && next <= chunkEnd) {
+        if (next < chunkEnd) {
+          runs[pending[next]!] = cur
+          rerun.push(...pending.slice(next + 1, chunkEnd))
+        }
+        next = chunkEnd
+        chunkEnd = Math.min(chunkEnd + SH_CHUNK, pending.length)
+        cur = { calls: [], stray: [] }
+      } else if (f !== '') cur.stray.push(f)
+    }
+    if (next < pending.length) {
+      const ran = runs.filter((r) => r !== undefined).length
+      throw new Error(`shell ran ${ran} of ${commands.length} commands: ${spawnFailure(res)}`)
+    }
+    pending = rerun
   }
-  if (runs.length !== commands.length) throw new Error(`shell ran ${runs.length} of ${commands.length} commands: ${res.stderr}`)
-  return runs
+  return runs as ShellRun[]
 }
 
 /** Each command run by PowerShell through Invoke-Expression, its `token-goat` calls decoded. */
@@ -80,7 +117,7 @@ export function powershellRunAll(exe: string, commands: readonly string[]): Shel
   ].join('\n')
   const res = spawnSync(exe, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', env: { ...process.env, TG_CMDS: Buffer.from(JSON.stringify(commands), 'utf8').toString('base64') }, timeout: 120_000, windowsHide: true })
   const decode = (payload: string): string[] => JSON.parse(Buffer.from(payload, 'base64').toString('utf8')) as string[]
-  return splitRuns(res.stdout, decode, commands.length, res.stderr)
+  return splitRuns(res.stdout ?? '', decode, commands.length, spawnFailure(res))
 }
 
 /** The argv `command` means when its quotes are read literally, which is how quotedArg writes them: it escapes nothing, so `'…'` and `"…"` each hold their body as is. */
