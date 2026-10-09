@@ -11,6 +11,8 @@ import { displaySafeJson } from './paths.js'
 /** Stdin read timeout for statusline specifically. Claude Code refreshes the status line at most every ~300ms, so this needs to resolve fast on the "no payload arrives" path -- relay.ts's 5s default (tuned for a one-shot hook dispatch) would make a statusline with no stdin visibly hang the UI for up to 5 seconds on every refresh. */
 const STDIN_TIMEOUT_MS = 1500
 
+/** The first-byte grace readStdinJson gives a hook (four idle windows) is not given here: a starved render that misses the payload falls back to the cwd-derived line, while four windows would hold the status line for 6 s on a pipe that never writes. */
+
 /** The subset of Claude Code's documented statusline payload this command reads. All fields optional -- see module doc comment for confidence level per field. */
 export interface StatuslinePayload {
   cwd?: string
@@ -35,7 +37,7 @@ function releaseStdin(): void {
 /** Read and loosely validate the stdin payload. Never throws -- any failure (no stdin, timeout, non-JSON, non-object JSON) yields `{}`. */
 async function readPayload(): Promise<StatuslinePayload> {
   try {
-    const raw = await readStdinJson(STDIN_TIMEOUT_MS)
+    const raw = await readStdinJson(STDIN_TIMEOUT_MS, undefined, 1)
     return isPlainObject(raw) ? (raw as StatuslinePayload) : {}
   } catch {
     return {}

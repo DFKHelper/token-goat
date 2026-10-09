@@ -16,6 +16,7 @@ const MAX_STDIN_BYTES = 64 * 1024 * 1024
 export function readStdinJson(
   timeoutMs: number = DEFAULT_STDIN_TIMEOUT_MS,
   maxBytes: number = MAX_STDIN_BYTES,
+  firstByteGraceFactor: number = FIRST_BYTE_GRACE_FACTOR,
 ): Promise<unknown> {
   return new Promise<unknown>((resolve, reject) => {
     const chunks: Buffer[] = []
@@ -42,7 +43,7 @@ export function readStdinJson(
         })
       }, ms)
     // Before the first byte the window is FIRST_BYTE_GRACE_FACTOR times wider: a starved process can see its timer fire several loop turns before the pipe's first read completes (measured: a hook whose idle timer fired at 5.3 s with the payload written at spawn, under 50 busy processes), so silence at that point is not yet evidence of a dead sender. A stdin that never delivers still gives up, just later.
-    let idleTimer = armIdle(timeoutMs * FIRST_BYTE_GRACE_FACTOR)
+    let idleTimer = armIdle(timeoutMs * firstByteGraceFactor)
     // Unbounded-duration backstop, never rescheduled -- see MAX_STDIN_WALL_MS.
     const wallTimer = setTimeout(() => {
       finish(() => {
