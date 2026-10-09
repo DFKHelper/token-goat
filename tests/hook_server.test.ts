@@ -479,8 +479,6 @@ describe('warm CLI', () => {
     for (const args of [['init', '-q'], ['add', '-A']]) expect(spawnSync('git', args, { cwd: sb.proj }).status).toBe(0)
     const indexed = cold(sb, ['index', '.'])
     expect(indexed.status, indexed.stderr).toBe(0)
-    startServer(sb, 0)
-    await waitForSlots(sb, [0])
     // Each case with a line its cold run must print, so a pair of empty answers cannot pass as equal.
     const cases: Array<[string[], string]> = [
       [['find', 'compute'], 'src/calc.ts'],
@@ -497,17 +495,16 @@ describe('warm CLI', () => {
       [['test-for', 'src/calc.ts'], 'tests/calc.test.ts'],
       [['callers', 'noSuchSymbolAnywhere'], 'Symbol not found: "noSuchSymbolAnywhere"'],
     ]
-    let served = 0
-    for (const [args, mustPrint] of cases) {
-      const expected = cold(sb, args)
-      expect(expected.stdout + expected.stderr, args.join(' ')).toContain(mustPrint)
-      const actual = cli(sb, args)
-      expectSameRun(actual, expected)
-      served++
-      expect(servedTotal(sb), args.join(' ')).toBe(served)
-    }
+    // The cold runs only read the index, so they start together before the server does: one after another they were 13 Node starts in a row, and with a status call per case the test took 45 s alone and passed its 120 s limit under full-suite load.
+    const expected = await Promise.all(cases.map(([args]) => cliAsync(sb, args, { env: { TOKEN_GOAT_HOOK_SERVER: '0' } })))
+    cases.forEach(([args, mustPrint], i) => expect(expected[i]!.stdout + expected[i]!.stderr, args.join(' ')).toContain(mustPrint))
     // The failing case really fails, so the exit code is compared on a non-zero one too.
-    expect(cold(sb, ['callers', 'noSuchSymbolAnywhere']).status).toBe(1)
+    expect(expected[cases.length - 1]!.status).toBe(1)
+    startServer(sb, 0)
+    await waitForSlots(sb, [0])
+    cases.forEach(([args], i) => expectSameRun(cli(sb, args), expected[i]!))
+    // One call at a time, so the total reaches the case count only if every call was served.
+    await expectServedTotal(sb, cases.length)
   }, 120_000)
 
   it('leaves --help to the local CLI', async () => {
