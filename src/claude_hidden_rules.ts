@@ -33,6 +33,9 @@ const RULE_PATH = /(?:^|\/)\.claude\/(?:skills|commands|agents)(?:\/|$)/
 const AGENT_PATH = /(?:^|\/)\.claude\/agents(?:\/|$)/
 const CLAUDE_INSIDE = /(?:^|\/)\.claude\//
 const SCAN_BUDGET = 20_000
+/** How many folder levels below the project the git path stamps, and at most how many folders. */
+const NESTED_STAMP_DEPTH = 3
+const NESTED_STAMP_DIRS = 2_000
 const SCAN_TTL_MS = 60_000
 const FILE_HEAD_BYTES = 256 * 1024
 
@@ -447,6 +450,7 @@ function scanGitCheckout(project: string, scan: Scan): void {
     scan.reason = 'cannot list nested skills'
     return
   }
+  stampShallowDirs(project, [...tracked.map((record) => record.slice(record.indexOf('\t') + 1)), ...untracked, ...ignored], scan)
   // Claude Code asks check-ignore about the folder holding `.claude`, never the skill itself, so an ignored file git lists on its own is still loaded: its folder would have been listed whole had it been ignored.
   const candidates: string[] = [...untracked, ...ignored.filter((rel) => !rel.endsWith('/'))]
   const objects = new Map<string, string>()
@@ -501,11 +505,44 @@ function scanFixed(cwd: string, project: string, helpers: HiddenRuleHelpers): Sc
   return result(scan)
 }
 
+/** The git directory of the checkout rooted at `root`: `.git` itself, or the directory a linked worktree's `.git` file names. */
+function gitDirOf(root: string): string {
+  const dot = path.join(root, '.git')
+  try {
+    if (fs.statSync(dot).isDirectory()) return dot
+    const line = fs.readFileSync(dot, 'utf8').split('\n').find((l) => l.startsWith('gitdir:'))
+    const named = line?.slice('gitdir:'.length).trim()
+    return named === undefined || named === '' ? dot : path.resolve(root, named)
+  } catch {
+    return dot
+  }
+}
+
+/** Stamp the checkout's index and HEAD, which a pull, checkout, merge, reset or `git add` rewrites, so a skill file that arrives that way drops a clean nested answer at once instead of after the minute. */
+function stampGitState(root: string, scan: Scan): void {
+  const gitDir = gitDirOf(root)
+  for (const name of ['index', 'HEAD']) scan.stamps?.set(path.join(gitDir, name), stamp(path.join(gitDir, name)))
+}
+
+/** The directories down to {@link NESTED_STAMP_DEPTH} levels below `project` that hold something git lists, stamped so an untracked skill or `.claude` folder added in one of them drops a clean nested answer at once. Deeper folders keep the minute. */
+function stampShallowDirs(project: string, listed: readonly string[], scan: Scan): void {
+  const dirs = new Set<string>([project])
+  for (const rel of listed) {
+    const parts = rel.split('/').filter((part) => part !== '')
+    for (let n = 1; n <= Math.min(parts.length - 1, NESTED_STAMP_DEPTH); n++) dirs.add(path.join(project, ...parts.slice(0, n)))
+    if (dirs.size >= NESTED_STAMP_DIRS) break
+  }
+  for (const dir of dirs) scan.stamps?.set(dir, stamp(dir))
+}
+
 /** Nested skill directories anywhere under `project`: listed by git inside a checkout, walked outside one. The directories and files it read are stamped like the fixed folders', so a clean answer is dropped the moment one changed, and kept for a minute otherwise (a file git has never listed leaves no stamp). */
 function scanNested(project: string, helpers: HiddenRuleHelpers): ScanResult {
   const scan = newScan(helpers, true)
-  if (helpers.selfAndAncestors(project).some((d) => fs.existsSync(path.join(d, '.git')))) scanGitCheckout(project, scan)
-  else walkForClaudeDirs(project, scan)
+  const root = helpers.selfAndAncestors(project).find((d) => fs.existsSync(path.join(d, '.git')))
+  if (root !== undefined) {
+    stampGitState(root, scan)
+    scanGitCheckout(project, scan)
+  } else walkForClaudeDirs(project, scan)
   return result(scan)
 }
 

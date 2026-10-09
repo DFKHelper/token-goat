@@ -317,6 +317,40 @@ describe('hiddenRuleSource: rule files', () => {
     expect(check(b)).toContain('SKILL.md')
   }, 60_000)
 
+  // HAND-DERIVED from the threat: a clean nested answer was kept for the whole minute, so a skill that arrives by untracked add, pull or checkout inside it went unseen. The clock is held at one instant so only the stamps can drop the answer.
+  it('a nested scan that was clean sees a skill added to a listed folder, or a new .claude folder, at once', () => {
+    const b = box('nested-added')
+    expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    write(path.join(b.project, 'pkg', '.claude', 'skills', 'a', 'SKILL.md'), '---\nname: a\n---\n')
+    expect(runGit(['add', '-f', '.'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    expect(check(b, {}, { now: 1_000 })).toBeNull()
+    write(path.join(b.project, 'pkg', '.claude', 'skills', 'new', 'SKILL.md'), PATTERN_SKILL)
+    expect(check(b, {}, { now: 1_000 })).toContain(path.join('new', 'SKILL.md'))
+  }, 60_000)
+
+  it('a nested scan that was clean sees a new .claude folder in a folder it listed at once', () => {
+    const b = box('nested-added-folder')
+    expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    write(path.join(b.project, 'other', 'readme.txt'), 'x\n')
+    expect(runGit(['add', '-f', '.'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    expect(check(b, {}, { now: 1_000 })).toBeNull()
+    write(path.join(b.project, 'other', '.claude', 'agents', 'x.md'), '---\nname: x\ndisallowedTools: Bash(curl *)\n---\n')
+    expect(check(b, {}, { now: 1_000 })).toContain('x.md')
+  }, 60_000)
+
+  it.for(['plain', 'separate'] as const)('a nested scan that was clean sees a skill that git add or a checkout brings in below the folders it stamps (%s git dir)', { timeout: 60_000 }, (kind) => {
+    const b = box(`nested-index-${kind}`)
+    const init = kind === 'plain' ? ['init', '-q'] : ['init', '-q', '--separate-git-dir', path.join(root, 'nested-index-gitdir')]
+    expect(runGit(init, { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    write(path.join(b.project, 'a', 'b', 'c', 'd', 'e', 'x.txt'), 'x\n')
+    expect(runGit(['add', '-f', '.'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    expect(check(b, {}, { now: 1_000 })).toBeNull()
+    const skill = path.join(b.project, 'a', 'b', 'c', 'd', 'e', '.claude', 'skills', 's', 'SKILL.md')
+    write(skill, PATTERN_SKILL)
+    expect(runGit(['add', '-f', 'a'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    expect(check(b, {}, { now: 1_000 })).toContain('SKILL.md')
+  })
+
   it('a skill tree too large to finish checking counts as hidden', () => {
     const b = box('huge')
     const dir = path.join(b.config, 'skills', 'many')
