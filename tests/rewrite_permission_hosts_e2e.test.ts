@@ -75,10 +75,20 @@ describe('Codex through the built bundle, with no claude process at all', () => 
     }
   })
 
+  it('the bundle entry answers the same bytes with a claude terminal\'s environment inherited as with none', () => {
+    fs.rmSync(rules(), { force: true })
+    const clean = bundleHook(codexPayload('go vet ./...'), envFor({ TOKEN_GOAT_HARNESS_OVERRIDE: 'codex' }))
+    const inherited = bundleHook(codexPayload('go vet ./...'), envFor({ ...INHERITED_CLAUDE_ENV, TOKEN_GOAT_HARNESS_OVERRIDE: 'codex' }))
+    expect(JSON.parse(clean).hookSpecificOutput.permissionDecision).toBe('allow')
+    expect(inherited).toBe(clean)
+  })
+
   it('the installed Codex shim answers the same bytes with a claude terminal\'s environment inherited as with none', () => {
     fs.rmSync(rules(), { force: true })
     const clean = shimHook(CODEX_HOOK_SCRIPT, 'pre_tool_use', codexPayload('go vet ./...'), envFor())
     const inherited = shimHook(CODEX_HOOK_SCRIPT, 'pre_tool_use', codexPayload('go vet ./...'), envFor(INHERITED_CLAUDE_ENV))
+    // The Codex branch approves a build command no Codex rule names; the Claude branch the bundle would fall to without the shim's override answers a rewrite with no decision.
+    expect(JSON.parse(clean).hookSpecificOutput.permissionDecision).toBe('allow')
     expect(JSON.parse(clean).hookSpecificOutput.updatedInput.command).toContain('token-goat compress')
     expect(inherited).toBe(clean)
   })
@@ -89,6 +99,7 @@ describe('Copilot CLI through the built bundle and its installed shim', () => {
     const clean = shimHook(COPILOT_CLI_HOOK_SCRIPT, 'preToolUse', copilotPayload('go build ./...'), envFor())
     const inherited = shimHook(COPILOT_CLI_HOOK_SCRIPT, 'preToolUse', copilotPayload('go build ./...'), envFor(INHERITED_CLAUDE_ENV))
     expect(inherited).toBe(clean)
+    expect(clean).toBe('{}')
     expect(clean).not.toContain('updatedInput')
     expect(clean).not.toContain('"allow"')
   })
