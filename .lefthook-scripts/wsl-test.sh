@@ -120,9 +120,68 @@ else
     echo "wsl-test: node_modules is current, skipping npm ci"
 fi
 
+# Tests spawn `python` inside shell commands; Ubuntu ships only python3, so give the run a `python` that is first on PATH, but only when none exists.
+if ! command -v python &>/dev/null && command -v python3 &>/dev/null; then
+    mkdir -p "$ROOT/bin"
+    ln -sf -- "$(command -v python3)" "$ROOT/bin/python"
+    export PATH="$ROOT/bin:$PATH"
+fi
+
+# The native hook client tests build Rust with the toolchain pinned in the repo, provisioned once per user into the cache (never the user's own ~/.cargo).
+export RUSTUP_HOME="$ROOT/rustup"
+export CARGO_HOME="$ROOT/cargo"
+export PATH="$CARGO_HOME/bin:$PATH"
+rust_channel="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' native/tg-hook/rust-toolchain.toml)"
+NATIVE_EXCLUDES=()
+provision_rust() {
+    [[ -n "$rust_channel" ]] || { echo "no channel in native/tg-hook/rust-toolchain.toml"; return 1; }
+    if [[ -x "$CARGO_HOME/bin/rustup" ]] && rustup toolchain list 2>/dev/null | grep -q "^$rust_channel-"; then
+        return 0
+    fi
+    command -v cc &>/dev/null || { echo "no C linker (cc) in this distro; install build-essential"; return 1; }
+    case "$(uname -m)" in
+        x86_64) triple=x86_64-unknown-linux-gnu ;;
+        aarch64) triple=aarch64-unknown-linux-gnu ;;
+        *) echo "unsupported CPU $(uname -m) for rustup-init"; return 1 ;;
+    esac
+    local rdl
+    rdl="$(mktemp -d "$ROOT/download.XXXXXX")"
+    local base="https://static.rust-lang.org/rustup/dist/$triple"
+    if ! curl -fsSL --retry 2 --connect-timeout 15 -o "$rdl/rustup-init" "$base/rustup-init" || ! curl -fsSL --retry 2 --connect-timeout 15 -o "$rdl/rustup-init.sha256" "$base/rustup-init.sha256"; then
+        rm -rf -- "$rdl"
+        echo "could not download rustup-init from $base"
+        return 1
+    fi
+    # The published file names it ./rustup-init, so verify from inside the download dir.
+    if ! (cd "$rdl" && sha256sum -c rustup-init.sha256 >/dev/null); then
+        rm -rf -- "$rdl"
+        echo "checksum mismatch for rustup-init"
+        return 1
+    fi
+    chmod +x "$rdl/rustup-init"
+    "$rdl/rustup-init" -y --profile minimal --no-modify-path --default-toolchain "$rust_channel" >&2 || { rm -rf -- "$rdl"; echo "rustup-init failed to install $rust_channel"; return 1; }
+    rm -rf -- "$rdl"
+}
+if rust_why="$(provision_rust)"; then
+    echo "wsl-test: rust $(rustc --version) from $CARGO_HOME"
+else
+    # Without a toolchain the native build cannot run. Name that to the test setup, and leave out only the files that need the native client so the rest of the Linux suite still gates the push.
+    export TG_TEST_NATIVE_BUILD_ERROR="rust toolchain unavailable in WSL: $rust_why"
+    echo "wsl-test: ################################################################"
+    echo "wsl-test: WARNING: $TG_TEST_NATIVE_BUILD_ERROR"
+    echo "wsl-test: the native hook client tests are NOT run on this push"
+    echo "wsl-test: ################################################################"
+    mapfile -t native_files < <(grep -lE "buildNative\(" tests/*.test.ts)
+    for f in "${native_files[@]}"; do NATIVE_EXCLUDES+=(--exclude "$f"); done
+fi
+
 echo "wsl-test: running npm test in $WORK"
 # TOKEN_GOAT_NO_WORKER_SPAWN and TOKEN_GOAT_HARNESS_OVERRIDE are pinned by tests/setup/isolate-home.ts (vitest setupFiles) so local pre-push and CI run under the same defaults. Don't re-export them here.
-npm test
+if [[ "${#NATIVE_EXCLUDES[@]}" -gt 0 ]]; then
+    npm test -- "${NATIVE_EXCLUDES[@]}"
+else
+    npm test
+fi
 INNER
 } >"$TMPD/inner.sh"
 
