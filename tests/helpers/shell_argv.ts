@@ -1,11 +1,19 @@
 // Run suggested `token-goat …` commands through a real POSIX shell and a real PowerShell, each with a `token-goat` function standing in for the binary, and return the argv each shell handed it. An oracle independent of quotedArg: a value reaches the command as written only if both shells agree with the literal reading of its quotes.
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import * as fs from 'node:fs'
 
 import { resolveWindowsBash } from '../../src/shell.js'
 import { powershellForParsing } from './powershell_parse.js'
 
+/** bash rather than /bin/sh, since the stand-in function is named `token-goat`: bash accepts that name, while Ubuntu's dash ("Bad function name") and macOS's POSIX-mode bash ("not a valid identifier") refuse it and fail every command. Null when no bash is available here; on CI that throws instead, as a missing PowerShell does, because a silent skip would hide the oracle being gone. */
+function posixShell(): string | null {
+  const sh = process.platform === 'win32' ? resolveWindowsBash() : fs.existsSync('/bin/bash') ? '/bin/bash' : null
+  if (sh === null && process.env['CI']) throw new Error('bash is required on CI to run token-goat suggestions through a POSIX shell, but none was found')
+  return sh
+}
+
 /** The POSIX shell to run suggestions through, or null when none is available here. */
-export const POSIX_SH: string | null = process.platform === 'win32' ? resolveWindowsBash() : '/bin/sh'
+export const POSIX_SH: string | null = posixShell()
 
 /** The PowerShell to run suggestions through, or null when none can run here (it throws on CI instead, see powershellForParsing). */
 export const POWERSHELL: string | null = powershellForParsing()
@@ -118,6 +126,22 @@ export function powershellRunAll(exe: string, commands: readonly string[]): Shel
   const res = spawnSync(exe, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', env: { ...process.env, TG_CMDS: Buffer.from(JSON.stringify(commands), 'utf8').toString('base64') }, timeout: 120_000, windowsHide: true })
   const decode = (payload: string): string[] => JSON.parse(Buffer.from(payload, 'base64').toString('utf8')) as string[]
   return splitRuns(res.stdout ?? '', decode, commands.length, spawnFailure(res))
+}
+
+/** The argv of the one `token-goat` call `command` made; throws when it made none or several, or printed anything else. */
+function onlyCall(run: ShellRun, command: string): string[] {
+  if (run.calls.length !== 1 || run.stray.length > 0) throw new Error(`expected one token-goat call from ${command}, got ${JSON.stringify(run)}`)
+  return run.calls[0]!
+}
+
+/** The argv a POSIX shell hands the `token-goat` function when it runs `command`. */
+export function shArgv(sh: string, command: string): string[] {
+  return onlyCall(shRunAll(sh, [command])[0]!, command)
+}
+
+/** The argv PowerShell hands the `token-goat` function when it runs `command`. */
+export function powershellArgv(exe: string, command: string): string[] {
+  return onlyCall(powershellRunAll(exe, [command])[0]!, command)
 }
 
 /** The argv `command` means when its quotes are read literally, which is how quotedArg writes them: it escapes nothing, so `'…'` and `"…"` each hold their body as is. */

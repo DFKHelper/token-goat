@@ -1,5 +1,4 @@
 /** The relay's suggestion guard (stripUnsafeSuggestions in src/hint_suggestion_guard.ts) must read a suggestion's quoting the way bash and PowerShell read it. Two breaks, both found by probing the 2.9.30 source. A path holding `"` is single-quoted by quotedArg, which both shells keep literal, yet the guard split the suggestion on `"` alone, read `'a"b.md'` as an unclosed argument and dropped the command. And a single-quoted path opening on a space and holding a backtick slipped past the open-quote check, which wanted a non-space after the opening quote: the relay passed `Run \`token-goat outline ' a\`$(MARKER).ts'\` for every heading.` with the fence cut inside the path and `$(MARKER)` left as bare text. Provenance: every path is HAND-DERIVED from shell grammar (what closes or opens a quote in POSIX sh and PowerShell), independent of the guard's matcher; the argv each shell hands the command comes from a real POSIX sh, not from the guard. */
-import { spawnSync } from 'node:child_process'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -8,18 +7,11 @@ import { describe, expect, it } from 'vitest'
 import { docSectionHint, quotedArg, stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import { hintTarget } from '../src/hint_target.js'
 import { relayInProcess } from '../src/relay.js'
-import { resolveWindowsBash } from '../src/shell.js'
+import { POSIX_SH, shArgv } from './helpers/shell_argv.js'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const OMITTED = 'token-goat (command omitted: the path contains shell metacharacters)'
-const SH = process.platform === 'win32' ? resolveWindowsBash() : '/bin/sh'
-
-/** The argv a POSIX sh hands a `token-goat` function when it runs `command`. */
-function shArgv(sh: string, command: string): string[] {
-  const res = spawnSync(sh, ['-c', 'token-goat() { for a in "$@"; do printf "%s|" "$a"; done; }; eval "$TG_CMD"'], { encoding: 'utf8', env: { ...process.env, TG_CMD: command }, windowsHide: true })
-  if (res.status !== 0) throw new Error(`sh failed: ${res.stderr}`)
-  return res.stdout.split('|').slice(0, -1)
-}
+const SH = POSIX_SH
 
 /** The deny reason the relay hands the model for a Bash `cat` of `p`, the shipping path every hook's output takes. */
 async function relayedCatReason(p: string, session: string): Promise<string> {

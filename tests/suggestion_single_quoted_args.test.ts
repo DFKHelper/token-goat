@@ -1,5 +1,4 @@
 /** A suggested command's argument must reach the command as the value it names. quotedArg always wrapped a value in double quotes, so `symbol '$zzRef'` missed and printed `Try: token-goat semantic "$zzRef"`, which bash and PowerShell both run as `semantic ""` after expanding `$zzRef`; and `answer` refused a question holding a quoted path with `try: token-goat semantic "what does "src dir/x.ts" export"`, quotes nested inside quotes. Provenance: HAND-DERIVED for the values and the argv each shell should hand the command (read off the question and symbol name alone); the two refusal lines were CAPTURED from the 2.9.30 bundle in C:/tgdog-pass2/q1b and C:/tgdog-pass2/q11. Two shells act as the oracle, independent of quotedArg: a POSIX sh and PowerShell each define a `token-goat` function that prints its argv, and run the suggested command through it. */
-import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -22,33 +21,14 @@ import { createMcpServer } from '../src/mcp_server.js'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import { runSymbol } from '../src/read_symbol.js'
-import { resolveWindowsBash } from '../src/shell.js'
 import { captureStdout } from './helpers/capture-stdout.js'
-import { powershellForParsing } from './helpers/powershell_parse.js'
+import { POSIX_SH, POWERSHELL, powershellArgv, shArgv } from './helpers/shell_argv.js'
 
 /** Values a suggestion carries: a plain path, a spaced path, and the ones a shell would rewrite inside double quotes. */
 const ROUND_TRIP_VALUES = ['src/a.ts', 'my dir/big file.ts::Sym', '$zzRef', '$(whoami)', '${HOME}', 'a`b', 'what does "src dir/x.ts" export', 'it"s', 'a\u201Db', 'C:\\dir\\', 'a\\\\b', 'C:\\x\\y.ts']
 
-/** The POSIX shell and the PowerShell to run suggestions through, each null when it is not available here (PowerShell throws instead on CI). */
-const SH = process.platform === 'win32' ? resolveWindowsBash() : '/bin/sh'
-const PWSH = powershellForParsing()
-
-/** The argv each shell hands a `token-goat` function when it runs `command`. */
-function shArgv(sh: string, command: string): string[] {
-  const res = spawnSync(sh, ['-c', 'token-goat() { for a in "$@"; do printf "%s|" "$a"; done; }; eval "$TG_CMD"'], { encoding: 'utf8', env: { ...process.env, TG_CMD: command }, windowsHide: true })
-  if (res.status !== 0) throw new Error(`sh failed: ${res.stderr}`)
-  return res.stdout.split('|').slice(0, -1)
-}
-
-function powershellArgv(exe: string, command: string): string[] {
-  const script = [
-    'function token-goat { $j = ConvertTo-Json -InputObject @($args | ForEach-Object { [string]$_ }) -Compress; [Console]::Out.WriteLine([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($j))) }',
-    'Invoke-Expression ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:TG_CMD)))',
-  ].join('\n')
-  const res = spawnSync(exe, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', env: { ...process.env, TG_CMD: Buffer.from(command, 'utf8').toString('base64') }, timeout: 60_000, windowsHide: true })
-  if (res.status !== 0) throw new Error(`PowerShell failed: ${res.stderr}`)
-  return JSON.parse(Buffer.from(res.stdout.trim(), 'base64').toString('utf8')) as string[]
-}
+const SH = POSIX_SH
+const PWSH = POWERSHELL
 
 describe('quotedArg', () => {
   it('double-quotes a value no shell rewrites, so every existing suggestion keeps its form', () => {
