@@ -6,6 +6,7 @@ import * as path from 'node:path'
 
 import { nativeHooksEnabled } from './config.js'
 import { dataDir } from './constants.js'
+import { emitErr } from './emit.js'
 import { powershellHookLine, quotePowershellPath, quotePosixShellWord } from './process_util.js'
 import { registerReset } from './reset.js'
 import { withRetryOnLock } from './util.js'
@@ -173,6 +174,11 @@ export function nativeSelftest(bin: string): NativeSelftest {
 /** Decisions by `sync` flag and entry path. A `sync: true` decision also replaces the `sync: false` one for its entry, since it has just brought the copy up to date. */
 const _decisions = new Map<string, string | null>()
 
+const COPY_FAILED = 'its copy could not be put in place in the data directory (a scanner or another process held the file)'
+const COPY_STALE = 'the data-directory copy is missing or differs from the packaged binary'
+/** Failures worth one more try: a held copy, or a self-test that got no answer. An exit code or signal is the binary itself failing, which a second run repeats. */
+const TRANSIENT_WHY = /could not be put in place|no answer within/
+
 registerReset(() => {
   _selftests.clear()
   _decisions.clear()
@@ -186,13 +192,34 @@ export function nativeHookBinary(entryPath: string | undefined = process.argv[1]
   const cached = _decisions.get(key)
   if (cached !== undefined) return cached ?? undefined
   const packaged = packagedNativeBinary(entryPath)
-  let bin: string | undefined = packaged
-  if (packaged !== undefined && process.platform === 'win32') {
-    const copy = nativeCopyPath(entryPath)
-    const current = sync ? syncNativeCopy(packaged, copy) : nativeCopyCurrent(packaged, copy)
-    bin = current ? copy : undefined
+  let bin: string | undefined
+  let why: string | undefined
+  if (packaged !== undefined) {
+    // A first failure that looks transient (the copy could not be put in place, or the self-test got no answer on a starved machine) is tried once more before the install settles for the Node form; a binary that ran and failed stays failed.
+    for (let attempt = 1; attempt <= 2 && bin === undefined; attempt++) {
+      if (attempt === 2) {
+        if (why === undefined || !TRANSIENT_WHY.test(why)) break
+        _selftests.clear()
+      }
+      why = undefined
+      let candidate: string | undefined = packaged
+      if (process.platform === 'win32') {
+        const copy = nativeCopyPath(entryPath)
+        const current = sync ? syncNativeCopy(packaged, copy) : nativeCopyCurrent(packaged, copy)
+        if (current) candidate = copy
+        else {
+          candidate = undefined
+          why = sync ? COPY_FAILED : COPY_STALE
+        }
+      }
+      if (candidate !== undefined) {
+        const test = nativeSelftest(candidate)
+        if (test.ok) bin = candidate
+        else why = `its self-test failed: ${test.reason ?? 'no reason given'}`
+      }
+    }
   }
-  if (bin !== undefined && !nativeSelftest(bin).ok) bin = undefined
+  if (bin === undefined && sync && why !== undefined && why !== COPY_STALE) emitErr(`token-goat: wrote the Node form of the hooks, not the native hook client, because ${why}. Run token-goat doctor --repair (or install again) to retry.`)
   _decisions.set(key, bin ?? null)
   if (sync) _decisions.set(`false\0${entryPath}`, bin ?? null)
   return bin

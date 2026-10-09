@@ -621,12 +621,16 @@ describe.runIf(NATIVE)('doctor on a build whose native hook client is stale, bro
       expect(r, 'no Native hooks (Codex) row').toBeDefined()
       return r!
     }
+    const expectOk = (): void => {
+      const r = row()
+      expect(r.status, r.message).toBe('ok')
+    }
     const wiredBin = (): string | undefined => parseNativeInvocation(wordsOf(tokenGoatEntries(CONFIG_FILE.codex(sb))[0]!, SPLIT.codex))?.bin
 
     install(sb, ['--codex'])
     const bin = wiredBin()
-    expect(bin, 'the native form was not written').toBeDefined()
-    expect(row().status).toBe('ok')
+    expect(bin, `the native form was not written; doctor says: ${row().message}`).toBeDefined()
+    expectOk()
 
     if (WIN) {
       // An upgrade ships different bytes, and the entries still run the data-directory copy of the old ones.
@@ -636,10 +640,10 @@ describe.runIf(NATIVE)('doctor on a build whose native hook client is stale, bro
       expect(stale.message).toContain(`self-test passed, but the copy differs from this build's binary; run \`${run}\` to refresh it`)
       install(sb, ['--codex'])
       expect(fs.readFileSync(bin!).equals(fs.readFileSync(packaged))).toBe(true)
-      expect(row().status).toBe('ok')
+      expectOk()
       replace(packaged, good)
       install(sb, ['--codex'])
-      expect(row().status).toBe('ok')
+      expectOk()
     }
 
     // The binary the entries run fails its self-test.
@@ -657,8 +661,8 @@ describe.runIf(NATIVE)('doctor on a build whose native hook client is stale, bro
     expect(failing.message).toMatch(/^Node form; this build's native hook client fails its self-test \(exit code 1\); last 7 days/)
     replace(packaged, good)
     install(sb, ['--codex'])
-    expect(wiredBin()).toBe(bin)
-    expect(row().status).toBe('ok')
+    expect(wiredBin(), `the native form was not restored; doctor says: ${row().message}`).toBe(bin)
+    expectOk()
 
     // A build that ships no native binary for this machine.
     const nativeDir = path.dirname(path.dirname(packaged))
