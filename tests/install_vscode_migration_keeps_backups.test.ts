@@ -16,7 +16,7 @@ let project: string
 let home: string
 let saved: Record<string, string | undefined>
 
-const ENV_KEYS = ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'XDG_DATA_HOME']
+const ENV_KEYS = ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME']
 
 beforeEach(() => {
   saved = {}
@@ -31,6 +31,8 @@ beforeEach(() => {
   process.env['APPDATA'] = path.join(home, 'AppData', 'Roaming')
   process.env['LOCALAPPDATA'] = path.join(root, 'data')
   process.env['XDG_DATA_HOME'] = path.join(root, 'data')
+  // An absolute XDG_CONFIG_HOME (the global test setup sets one) beats ~/.config on Linux, so pin it under the fake home.
+  process.env['XDG_CONFIG_HOME'] = path.join(home, '.config')
   _resetDataDirCacheForTesting()
 })
 

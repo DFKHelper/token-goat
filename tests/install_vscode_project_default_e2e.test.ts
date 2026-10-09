@@ -84,6 +84,8 @@ beforeEach(() => {
     HOME: home,
     USERPROFILE: home,
     APPDATA: path.join(home, 'AppData', 'Roaming'),
+    // The inherited XDG_CONFIG_HOME (set by the global test setup) beats ~/.config on Linux, so pin it under the fake home.
+    XDG_CONFIG_HOME: path.join(home, '.config'),
     TOKEN_GOAT_EMBEDDINGS_ENABLED: '0',
   }
 })

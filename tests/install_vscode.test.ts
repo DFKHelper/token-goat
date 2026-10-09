@@ -10,6 +10,7 @@ import { allowWrites, denyWrites } from './helpers/seal-directory.js'
 
 const savedAppData = process.env['APPDATA']
 const savedHome = process.env['HOME']
+const savedXdgConfig = process.env['XDG_CONFIG_HOME']
 const savedUserProfile = process.env['USERPROFILE']
 let defaultUserDir: string
 
@@ -21,6 +22,8 @@ beforeEach(() => {
 afterEach(() => {
   if (savedAppData === undefined) delete process.env['APPDATA']
   else process.env['APPDATA'] = savedAppData
+  if (savedXdgConfig === undefined) delete process.env['XDG_CONFIG_HOME']
+  else process.env['XDG_CONFIG_HOME'] = savedXdgConfig
   if (savedHome === undefined) delete process.env['HOME']
   else process.env['HOME'] = savedHome
   if (savedUserProfile === undefined) delete process.env['USERPROFILE']
@@ -35,6 +38,8 @@ function isolateVscodeUserDir(userDir: string): void {
   process.env['APPDATA'] = userDir
   process.env['HOME'] = userDir
   process.env['USERPROFILE'] = userDir
+  // The global test setup points XDG_CONFIG_HOME at a shared per-worker dir, and an absolute XDG_CONFIG_HOME wins over ~/.config on Linux, so it has to follow HOME or the user-scope file lands outside the isolated dir.
+  process.env['XDG_CONFIG_HOME'] = path.join(userDir, '.config')
 }
 
 describe('VS Code uninstall leaves no residue, and never deletes a file it did not create', () => {
