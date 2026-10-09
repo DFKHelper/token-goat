@@ -1,4 +1,4 @@
-/** Whether a Claude Code session could be under permission rules no settings file shows, so that rewrite_permission.ts must not answer a bypassPermissions rewrite with `allow`: a host that answers prompts itself (an SDK `canUseTool`, any entry point but the terminal CLI), a command-line flag that adds or relays rules (`--disallowedTools`, `--settings`, `--permission-prompt-tool`, any flag not known to be harmless), a PermissionRequest hook in a skill or plugin (whose answers add session rules), a skill, command, agent or plugin whose frontmatter removes a tool by pattern (`disallowed-tools: Bash(curl *)`), and a subagent whose definition the scan did not read. The settings files themselves are read by rewrite_permission.ts. Every doubt (an unreadable process command line or directory, a scan too large to finish) reads as hidden. Imported dynamically by rewrite_permission.ts's loadHiddenRuleCheck with its helpers injected, so it stays off every hook's eager path; it imports only Node built-ins and the two small modules for the PowerShell launcher and the cross-process flag cache. The command-line half is also asked of every other approval (commandLineRuleSource), except in a host whose CLAUDE_CODE_ENTRYPOINT is set and is not the CLI's own (claude.exe 2.1.292 names `claude-vscode`, `claude-desktop`, `local-agent` and `remote*`). Claude Code facts are from claude.exe 2.1.x: hook processes get CLAUDE_PID (the claude process) and inherit CLAUDE_CODE_ENTRYPOINT, which Claude Code sets to `cli`, or `sdk-cli` under `-p`, and which every SDK, IDE and remote host sets to its own value; nested `.claude/skills` directories git ignores are skipped ("[skills] Skipped gitignored skills dir"), judged by `git check-ignore`, which exits 128 for a path past a symbolic link, so a linked directory is never skipped; a hook fired inside a subagent carries `agent_type`, the agent's frontmatter `name` (`plugin:name` for a plugin's agent) or a built-in's. */
+/** Whether a Claude Code session could be under permission rules no settings file shows, so that rewrite_permission.ts must not answer a rewrite with `allow` (in bypassPermissions for all of the sources below, in every other mode for the skill and plugin files alone): a host that answers prompts itself (an SDK `canUseTool`, any entry point but the terminal CLI), a command-line flag that adds or relays rules (`--disallowedTools`, `--settings`, `--permission-prompt-tool`, any flag not known to be harmless), a PermissionRequest hook in a skill or plugin (whose answers add session rules), a skill, command, agent or plugin whose frontmatter removes a tool by pattern (`disallowed-tools: Bash(curl *)`), and a subagent whose definition the scan did not read. The settings files themselves are read by rewrite_permission.ts. Every doubt (an unreadable process command line or directory, a scan too large to finish) reads as hidden. Imported dynamically by rewrite_permission.ts's loadHiddenRuleCheck with its helpers injected, so it stays off every hook's eager path; it imports only Node built-ins and the two small modules for the PowerShell launcher and the cross-process flag cache. The command-line half is also asked of every other approval (commandLineRuleSource), except in a host whose CLAUDE_CODE_ENTRYPOINT is set and is not the CLI's own (claude.exe 2.1.292 names `claude-vscode`, `claude-desktop`, `local-agent` and `remote*`). Claude Code facts are from claude.exe 2.1.x: hook processes get CLAUDE_PID (the claude process) and inherit CLAUDE_CODE_ENTRYPOINT, which Claude Code sets to `cli`, or `sdk-cli` under `-p`, and which every SDK, IDE and remote host sets to its own value; nested `.claude/skills` directories git ignores are skipped ("[skills] Skipped gitignored skills dir"), judged by `git check-ignore`, which exits 128 for a path past a symbolic link, so a linked directory is never skipped; a hook fired inside a subagent carries `agent_type`, the agent's frontmatter `name` (`plugin:name` for a plugin's agent) or a built-in's. */
 
 import { execFile, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -18,10 +18,12 @@ export interface HiddenRuleHelpers {
 export interface HiddenRuleQuery {
   readonly now?: number
   readonly agentType?: string | undefined
+  /** Skip the claude process and its command line: asked of a call outside bypassPermissions, where {@link commandLineRuleSource} answers for them. */
+  readonly filesOnly?: boolean
 }
 
 // Claude Code flags that add no permission rule and hand no prompt to anyone else; any other flag on the claude command line reads as a hidden rule source.
-const HARMLESS_FLAGS: ReadonlySet<string> = new Set(['--resume', '-r', '--continue', '-c', '--fork-session', '--session-id', '--name', '-n', '--model', '--fallback-model', '--effort', '--thinking', '--max-thinking-tokens', '--dangerously-skip-permissions', '--allow-dangerously-skip-permissions', '--permission-mode', '--enable-auto-mode', '--verbose', '--debug', '-d', '--debug-file', '--print', '-p', '--output-format', '--include-partial-messages', '--ide', '--chrome', '--no-chrome', '--mcp-config', '--strict-mcp-config', '--append-system-prompt', '--append-system-prompt-file', '--system-prompt', '--system-prompt-file', '--max-turns', '--max-budget-usd', '--worktree', '-w', '--tmux', '--version', '-v', '--allowedtools', '--allowed-tools', '--tools', '--setting-sources', '--disable-slash-commands', '--no-session-persistence'])
+const HARMLESS_FLAGS: ReadonlySet<string> = new Set(['--resume', '-r', '--continue', '-c', '--fork-session', '--session-id', '--name', '-n', '--model', '--fallback-model', '--effort', '--thinking', '--max-thinking-tokens', '--dangerously-skip-permissions', '--allow-dangerously-skip-permissions', '--permission-mode', '--enable-auto-mode', '--verbose', '--debug', '-d', '--debug-file', '--print', '-p', '--output-format', '--include-partial-messages', '--ide', '--chrome', '--no-chrome', '--mcp-config', '--strict-mcp-config', '--append-system-prompt', '--append-system-prompt-file', '--system-prompt', '--system-prompt-file', '--max-turns', '--max-budget-usd', '--worktree', '-w', '--tmux', '--version', '-v', '--allowedtools', '--allowed-tools', '--tools', '--disable-slash-commands', '--no-session-persistence'])
 const CLI_ENTRYPOINTS: ReadonlySet<string> = new Set(['cli', 'sdk-cli'])
 // The agent types claude.exe 2.1.291 defines itself, none of which removes a tool by pattern: Explore, Plan and workflow-subagent remove whole tools only. `teammate` is not one of them: it runs another agent's definition, tools included, under its own name.
 const BUILTIN_AGENTS: ReadonlySet<string> = new Set(['Explore', 'Plan', 'general-purpose', 'statusline-setup', 'claude-code-guide', 'web-fetch', 'fork', 'claude', 'worker', 'workflow-subagent', 'comment-thread-analyst'])
@@ -70,6 +72,40 @@ function commandLineQuery(pid: string): readonly [string, string[]] {
   return ['ps', ['-ww', '-o', 'args=', '-p', pid]]
 }
 
+/** The command that prints the path of the executable process `pid` runs, which no retitling changes. */
+function executableQuery(pid: string): readonly [string, string[]] {
+  return ['ps', ['-ww', '-o', 'comm=', '-p', pid]]
+}
+
+/** The real path of a command word the way the shell finds it: as given when it holds a slash, else the first match on PATH. Null when nothing is found. */
+function resolveCommand(word: string): string | null {
+  const candidates = word.includes('/') ? [path.resolve(word)] : (process.env['PATH'] ?? '').split(path.delimiter).filter((d) => d !== '').map((d) => path.join(d, word))
+  for (const candidate of candidates) {
+    try {
+      return fs.realpathSync(candidate)
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
+/** The command line `ps` printed for a process, or null when it shows signs of a retitled process. libuv's process.title overwrites the arguments in place on macOS as on Linux, and what `ps` then prints is a bare title with no flags, which would read as a claude started with none: output padded with blanks (the NUL-filled rest of the area), or a first word that is not the executable the process runs (the kernel's path, from `ps -o comm=`) reads as retitled. Anything that cannot be matched to the executable is doubt, and doubt is strict. A title that resolves to the same executable and leaves no padding cannot be told apart from a plain start; the CI runner on macOS is where this is observed. */
+function untitledLine(printed: string, executable: string | null): string | null {
+  const line = printed.replace(/\r?\n$/, '')
+  if (/\s$/.test(line) || executable === null) return null
+  const first = line.trim().split(/\s+/)[0] ?? ''
+  const real = first === '' ? null : resolveCommand(first)
+  const exec = executable.trim()
+  let execReal: string | null
+  try {
+    execReal = exec === '' ? null : fs.realpathSync(exec)
+  } catch {
+    execReal = null
+  }
+  return real !== null && real === execReal ? line.trim() : null
+}
+
 /** The command line of process `pid`, or null when it cannot be read. */
 function commandLine(pid: string): string | null {
   try {
@@ -77,10 +113,21 @@ function commandLine(pid: string): string | null {
     if (proc !== undefined) return proc
     const [file, args] = commandLineQuery(pid)
     const res = spawnSync(file, args, { encoding: 'utf8', windowsHide: true, timeout: 15_000 })
-    return res.error === undefined && res.status === 0 ? res.stdout.trim() : null
+    if (res.error !== undefined || res.status !== 0) return null
+    if (process.platform === 'win32') return res.stdout.trim()
+    const [exeFile, exeArgs] = executableQuery(pid)
+    const exe = spawnSync(exeFile, exeArgs, { encoding: 'utf8', windowsHide: true, timeout: 15_000 })
+    return untitledLine(res.stdout, exe.error === undefined && exe.status === 0 ? exe.stdout : null)
   } catch {
     return null
   }
+}
+
+/** Run a query without blocking the event loop: its stdout, or null when it failed. */
+function queryAsync(file: string, args: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(file, args, { encoding: 'utf8', windowsHide: true, timeout: 15_000 }, (err, stdout) => resolve(err === null ? stdout : null))
+  })
 }
 
 /** {@link commandLine} without blocking the event loop while the query runs. */
@@ -89,9 +136,11 @@ async function commandLineAsync(pid: string): Promise<string | null> {
     const proc = procCommandLine(pid)
     if (proc !== undefined) return proc
     const [file, args] = commandLineQuery(pid)
-    return await new Promise((resolve) => {
-      execFile(file, args, { encoding: 'utf8', windowsHide: true, timeout: 15_000 }, (err, stdout) => resolve(err === null ? stdout.trim() : null))
-    })
+    const printed = await queryAsync(file, args)
+    if (printed === null) return null
+    if (process.platform === 'win32') return printed.trim()
+    const [exeFile, exeArgs] = executableQuery(pid)
+    return untitledLine(printed, await queryAsync(exeFile, exeArgs))
   } catch {
     return null
   }
@@ -110,21 +159,39 @@ function entryReason(env: NodeJS.ProcessEnv): string | null {
   return null
 }
 
-/** The names of the flags on a claude command line, lower-cased and without their values. */
-function flagsOf(line: string): string[] {
-  const flags: string[] = []
-  for (const raw of line.match(/"[^"]*"?|\S+/g) ?? []) {
-    const token = raw.replace(/^"/, '')
+/** A flag on a claude command line: its name lower-cased, and its value (after `=`, or the next word when that is not a flag). */
+interface Flag {
+  readonly name: string
+  readonly value: string | undefined
+}
+
+function flagsOf(line: string): Flag[] {
+  const flags: Flag[] = []
+  const words = (line.match(/"[^"]*"?|\S+/g) ?? []).map((raw) => raw.replace(/^"/, '').replace(/"$/, ''))
+  for (let i = 0; i < words.length; i++) {
+    const token = words[i] as string
     if (token === '--') break
-    if (token.startsWith('-')) flags.push((token.split('=')[0] as string).toLowerCase())
+    if (!token.startsWith('-')) continue
+    const eq = token.indexOf('=')
+    const next = words[i + 1]
+    flags.push({ name: (eq < 0 ? token : token.slice(0, eq)).toLowerCase(), value: eq >= 0 ? token.slice(eq + 1) : next !== undefined && !next.startsWith('-') ? next : undefined })
   }
   return flags
 }
 
-/** Why a set of claude flags could carry rules no file shows: the first one not known to be harmless. */
-function flagsReason(flags: readonly string[]): string | null {
-  const flag = flags.find((f) => !HARMLESS_FLAGS.has(f))
-  return flag === undefined ? null : `claude started with ${flag}`
+/** The settings sources token-goat's allow proof reads; a `--setting-sources` that leaves one out would drop a deny or ask rule from a file token-goat read. */
+const PROOF_SOURCES: readonly string[] = ['user', 'project', 'local']
+
+/** Why a set of claude flags could carry rules no file shows: the first one not known to be harmless, or a `--setting-sources` that names fewer sources than the settings token-goat read. */
+function flagsReason(flags: readonly Flag[]): string | null {
+  for (const { name, value } of flags) {
+    if (name === '--setting-sources') {
+      const given = new Set((value ?? '').toLowerCase().split(',').map((v) => v.trim()))
+      const dropped = PROOF_SOURCES.find((source) => !given.has(source))
+      if (dropped !== undefined) return `claude started with --setting-sources without ${dropped}`
+    } else if (!HARMLESS_FLAGS.has(name)) return `claude started with ${name}`
+  }
+  return null
 }
 
 /** Why the claude command line could carry rules no file shows: any flag not known to be harmless. */
@@ -132,21 +199,15 @@ function commandLineReason(line: string | null): string | null {
   return line === null || line === '' ? 'claude command line unreadable' : flagsReason(flagsOf(line))
 }
 
-/** Why the claude command line of process `pid` could carry rules, read now. Nothing is remembered between processes: a record a hook left in a file the same user can write is a record the agent can write, and a forged "no flags" would approve what `--disallowedTools` refuses. */
-function processCommandLineReason(pid: string): string | null {
-  return commandLineReason(commandLine(pid))
-}
-
-/** {@link processCommandLineReason} without blocking the event loop while the query runs. */
-async function processCommandLineReasonAsync(pid: string): Promise<string | null> {
-  return commandLineReason(await commandLineAsync(pid))
-}
-
-/** Why the claude process behind this hook could be under rules its command line adds, or null when it cannot be: the cached answer for this session, else the entry point and command line read now. */
+/** Why the claude process behind this hook could be under rules its command line adds, or null when it cannot be: the cached answer for this session, else the entry point and command line read now. Nothing is remembered between processes (a record a hook left in a file the same user can write is a record the agent can write, and a forged "no flags" would approve what `--disallowedTools` refuses). Only a definitive answer is kept in memory (the entry point alone, or a command line that was read): a read that timed out or failed is strict for this call and read again on the next, so one slow query does not end approvals for the session. */
 function processReason(env: NodeJS.ProcessEnv): string | null {
   const key = processKeyOf(env)
-  if (processCache?.key !== key) processCache = { key, reason: entryReason(env) ?? processCommandLineReason(env['CLAUDE_PID'] as string) }
-  return processCache.reason
+  if (processCache?.key === key) return processCache.reason
+  const entry = entryReason(env)
+  const line = entry === null ? commandLine(env['CLAUDE_PID'] as string) : null
+  const reason = entry ?? commandLineReason(line)
+  if (entry !== null || line !== null) processCache = { key, reason }
+  return reason
 }
 
 /** Whether `env` names a host other than the terminal CLI, on the evidence of its entry point alone: a value that is set and is not one of the CLI's own. A missing or empty value is no evidence, so it takes the strict path. */
@@ -160,12 +221,13 @@ export function commandLineRuleSource(env: NodeJS.ProcessEnv): string | null {
   return isOtherHost(env) ? null : processReason(env)
 }
 
-/** Read the claude process's command line for this session ahead of {@link hiddenRuleSource}, without blocking: the resident hook server awaits this before a call that may be approved, so its event loop keeps answering while the query runs (about a second on Windows) and the check then finds the answer cached. */
+/** Read the claude process's command line for this session ahead of {@link hiddenRuleSource}, without blocking: the resident hook server awaits this before a call that may be approved, so its event loop keeps answering while the query runs (about a second on Windows) and the check then finds the answer cached. A read that timed out or failed is not kept, so the next call reads again. */
 export async function primeProcessReason(env: NodeJS.ProcessEnv): Promise<void> {
   const key = processKeyOf(env)
   if (processCache?.key === key) return
-  const reason = entryReason(env) ?? (await processCommandLineReasonAsync(env['CLAUDE_PID'] as string))
-  processCache = { key, reason }
+  const entry = entryReason(env)
+  const line = entry === null ? await commandLineAsync(env['CLAUDE_PID'] as string) : null
+  if (entry !== null || line !== null) processCache = { key, reason: entry ?? commandLineReason(line) }
 }
 
 /** The frontmatter block of a markdown file, or undefined when it has none. */
@@ -191,12 +253,14 @@ interface Scan {
   readonly helpers: HiddenRuleHelpers
   budget: number
   reason: string | null
-  /** Set for the scan of the fixed folders, whose clean answer is re-checked against these stamps on every call. */
+  /** Set for the scans whose clean answer is re-checked against these stamps on every call: the fixed folders and the nested search. */
   readonly stamps: Map<string, string> | undefined
   readonly agents: Set<string>
   readonly pluginAgents: Set<string>
   /** Real paths of the directories already walked, so a link back up the tree is walked once. */
   readonly walked: Set<string>
+  /** Set inside a git checkout: the text of a tracked file as the index holds it, undefined for a path git does not track, null when git could not print it. */
+  indexedText?: (file: string) => string | null | undefined
 }
 
 /** Where a directory or file sits: how deep below its scan root, inside an agents directory, and inside the plugin cache. */
@@ -251,12 +315,23 @@ function checkFile(file: string, scan: Scan, place: Place): void {
   if (!json && !lower.endsWith('.md')) return
   scan.stamps?.set(file, stamp(file))
   const read = head(file)
+  let text: string
   if ('failure' in read) {
-    // Claude Code reads skills from disk, not from git: a file that is not there adds no rule, while one that exists and cannot be read might.
-    if (read.failure === 'unreadable') scan.reason = `cannot read ${file}`
-    return
+    // A file that exists and cannot be read might add a rule. One that is not there adds none unless git tracks it: Claude Code reads skills from disk, but a skill moved away and back between two calls is the same skill, so the index copy answers for it.
+    if (read.failure === 'unreadable') {
+      scan.reason = `cannot read ${file}`
+      return
+    }
+    const indexed = scan.indexedText?.(file)
+    if (indexed === undefined) return
+    if (indexed === null) {
+      scan.reason = `cannot read ${file} from the index`
+      return
+    }
+    text = indexed.slice(0, FILE_HEAD_BYTES)
+  } else {
+    text = read.text
   }
-  const text = read.text
   const front = json ? undefined : (frontmatter(text) ?? '')
   if (front === undefined ? text.includes('PermissionRequest') : frontmatterAddsRule(front)) scan.reason = `rule source ${file}`
   else if (front !== undefined && place.agents) {
@@ -374,10 +449,19 @@ function scanGitCheckout(project: string, scan: Scan): void {
   }
   // Claude Code asks check-ignore about the folder holding `.claude`, never the skill itself, so an ignored file git lists on its own is still loaded: its folder would have been listed whole had it been ignored.
   const candidates: string[] = [...untracked, ...ignored.filter((rel) => !rel.endsWith('/'))]
+  const objects = new Map<string, string>()
   for (const record of tracked) {
     // `<mode> <object> <stage>\t<path>`; mode 120000 is a link.
-    const rel = record.slice(record.indexOf('\t') + 1)
+    const tab = record.indexOf('\t')
+    const rel = record.slice(tab + 1)
     if (record.startsWith('120000 ') || RULE_PATH.test(rel)) candidates.push(rel)
+    if (RULE_PATH.test(rel)) objects.set(path.join(project, rel), record.slice(0, tab).split(' ')[1] as string)
+  }
+  scan.indexedText = (file) => {
+    const object = objects.get(file)
+    if (object === undefined) return undefined
+    const res = scan.helpers.runGit(['cat-file', 'blob', object], { cwd: project, timeoutMs: 15_000 })
+    return res.exitCode === 0 ? res.stdout : null
   }
   // A path ending in `/` with nothing listed beneath it is a folder git did not look inside; git also lists the folders above an ignored file. Only one at or inside a `.claude` can be loaded, since the folder holding that `.claude` is not ignored.
   const sorted = [...ignored].sort()
@@ -417,9 +501,9 @@ function scanFixed(cwd: string, project: string, helpers: HiddenRuleHelpers): Sc
   return result(scan)
 }
 
-/** Nested skill directories anywhere under `project`: listed by git inside a checkout, walked outside one. Too many places to stamp, so the answer is kept for a minute. */
+/** Nested skill directories anywhere under `project`: listed by git inside a checkout, walked outside one. The directories and files it read are stamped like the fixed folders', so a clean answer is dropped the moment one changed, and kept for a minute otherwise (a file git has never listed leaves no stamp). */
 function scanNested(project: string, helpers: HiddenRuleHelpers): ScanResult {
-  const scan = newScan(helpers, false)
+  const scan = newScan(helpers, true)
   if (helpers.selfAndAncestors(project).some((d) => fs.existsSync(path.join(d, '.git')))) scanGitCheckout(project, scan)
   else walkForClaudeDirs(project, scan)
   return result(scan)
@@ -437,7 +521,7 @@ function agentReason(agentType: string | undefined, scans: readonly ScanResult[]
 export function hiddenRuleSource(cwd: string, projectDir: string | undefined, env: NodeJS.ProcessEnv, helpers: HiddenRuleHelpers, query: HiddenRuleQuery = {}): string | null {
   const now = query.now ?? Date.now()
   const processKey = processKeyOf(env)
-  const processReasonNow = processReason(env)
+  const processReasonNow = query.filesOnly === true ? null : processReason(env)
   if (processReasonNow !== null) return processReasonNow
   const here = path.resolve(cwd)
   const project = projectDir !== undefined && path.isAbsolute(projectDir) ? path.resolve(projectDir) : here
@@ -445,18 +529,18 @@ export function hiddenRuleSource(cwd: string, projectDir: string | undefined, en
   // A stale "hidden" only skips a rewrite, so a found reason keeps its minute; a clean answer is trusted only while nothing it read has changed.
   if (fixedCache?.key !== scanKey || (fixedCache.reason !== null ? now - fixedCache.at > SCAN_TTL_MS : !stillCurrent(fixedCache.stamps))) fixedCache = { key: scanKey, at: now, ...scanFixed(here, project, helpers) }
   if (fixedCache.reason !== null) return fixedCache.reason
-  if (nestedCache?.key !== scanKey || now - nestedCache.at > SCAN_TTL_MS) nestedCache = { key: scanKey, at: now, ...scanNested(project, helpers) }
+  if (nestedCache?.key !== scanKey || now - nestedCache.at > SCAN_TTL_MS || (nestedCache.reason === null && !stillCurrent(nestedCache.stamps))) nestedCache = { key: scanKey, at: now, ...scanNested(project, helpers) }
   return nestedCache.reason ?? agentReason(query.agentType, [fixedCache, nestedCache])
 }
 
 /** The three questions the rewrite decision asks of the unseen rule sources, bound to the caller's helpers: whether a rule source the hook cannot read could apply to a call in `cwd` for `agentType`, whether the claude command line could, and a read of the claude process ahead of both. */
 export function hiddenRules(helpers: HiddenRuleHelpers): {
-  readonly hidden: (cwd: string, agentType: string | undefined) => boolean
+  readonly hidden: (cwd: string, agentType: string | undefined, filesOnly: boolean) => boolean
   readonly lineRules: () => boolean
   readonly prime: (env: NodeJS.ProcessEnv) => Promise<void>
 } {
   return {
-    hidden: (cwd, agentType) => hiddenRuleSource(cwd, process.env['CLAUDE_PROJECT_DIR'], process.env, helpers, { agentType }) !== null,
+    hidden: (cwd, agentType, filesOnly) => hiddenRuleSource(cwd, process.env['CLAUDE_PROJECT_DIR'], process.env, helpers, { agentType, filesOnly }) !== null,
     lineRules: () => commandLineRuleSource(process.env) !== null,
     prime: (env) => primeProcessReason(env),
   }

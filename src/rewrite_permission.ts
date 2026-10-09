@@ -348,8 +348,8 @@ function isOtherHostEntry(entrypoint: string | undefined): boolean {
 let unseenRules: ReturnType<typeof HiddenRules.hiddenRules> | undefined
 let primeAhead = false
 
-/** The pure decision, given the merged settings (null when any source could not be read). In auto and bypassPermissions no rewrite may ever add a prompt, so a verdict there is only `skip` or `approve`: auto mode always skips, since its classifier reviews the call a hook allow would wave through and a deferred wrapper is a call it may stop to ask about; bypassPermissions approves a rewrite only when no rule source the hook cannot read could apply (`hidden`, which is true until loadHiddenRuleCheck has run), and skips otherwise; every other mode on Claude Code withholds an `approve` when `lineRules` says the claude command line could add a rule (a CLI session that names a flag not known to be harmless or whose command line cannot be read), and leaves a host's session alone; until the check is loaded every session counts but one whose CLAUDE_CODE_ENTRYPOINT names a host other than the terminal CLI, as the loaded check does, so an unset entry point takes the strict path either way. */
-export function decideRewrite(snapshot: PermissionSnapshot | null, req: RewriteRequest, hidden: (req: RewriteRequest) => boolean = (r) => unseenRules?.hidden(r.cwd, r.agentType) ?? true, lineRules: (req: RewriteRequest) => boolean = () => unseenRules?.lineRules() ?? !isOtherHostEntry(process.env['CLAUDE_CODE_ENTRYPOINT'])): RewriteVerdict {
+/** The pure decision, given the merged settings (null when any source could not be read). In auto and bypassPermissions no rewrite may ever add a prompt, so a verdict there is only `skip` or `approve`: auto mode always skips, since its classifier reviews the call a hook allow would wave through and a deferred wrapper is a call it may stop to ask about; bypassPermissions approves a rewrite only when no rule source the hook cannot read could apply (`hidden`, which is true until loadHiddenRuleCheck has run), and skips otherwise; every other mode withholds an `approve` when a PermissionRequest hook or `hidden` (asked for the files only) says a skill or plugin could add a rule, and on Claude Code also when `lineRules` says the claude command line could (a CLI session that names a flag not known to be harmless or whose command line cannot be read), leaving a host's session to the files alone; until the check is loaded every session counts but one whose CLAUDE_CODE_ENTRYPOINT names a host other than the terminal CLI, as the loaded check does, so an unset entry point takes the strict path either way. */
+export function decideRewrite(snapshot: PermissionSnapshot | null, req: RewriteRequest, hidden: (req: RewriteRequest, filesOnly: boolean) => boolean = (r, filesOnly) => unseenRules?.hidden(r.cwd, r.agentType, filesOnly) ?? true, lineRules: (req: RewriteRequest) => boolean = () => unseenRules?.lineRules() ?? !isOtherHostEntry(process.env['CLAUDE_CODE_ENTRYPOINT'])): RewriteVerdict {
   if (snapshot === null) return 'skip'
   const mode = req.harness === 'claudecode' ? normalizedMode(req.mode) : 'default'
   if (mode === null || mode === 'auto') return 'skip'
@@ -365,10 +365,10 @@ export function decideRewrite(snapshot: PermissionSnapshot | null, req: RewriteR
     case 'agent':
       verdict = decideAgent(snapshot)
   }
-  // Any other mode approves too (a proven allow, a read in the working directory), and rules the claude command line adds (--disallowedTools, --settings) are in no file: a call they could refuse is left to Claude Code to judge as it stands.
-  if (mode !== 'bypassPermissions') return verdict === 'approve' && req.harness === 'claudecode' && lineRules(req) ? 'skip' : verdict
   if (verdict === 'skip') return verdict
-  return snapshot.permissionHooks || hidden(req) ? 'skip' : 'approve'
+  // Any other mode approves too (a proven allow, a read in the working directory), and the rules in no settings file are the same ones: the claude command line adds some (--disallowedTools, --settings), and a skill's `disallowed-tools` or a PermissionRequest hook adds others. A call they could refuse is left to Claude Code to judge as it stands. The command line is asked of the terminal CLI only, and the files of Claude Code and VS Code alike.
+  if (mode !== 'bypassPermissions') return verdict === 'approve' && ((req.harness === 'claudecode' && lineRules(req)) || snapshot.permissionHooks || hidden(req, true)) ? 'skip' : verdict
+  return snapshot.permissionHooks || hidden(req, false) ? 'skip' : 'approve'
 }
 
 function asObject(value: unknown): Record<string, unknown> | null {

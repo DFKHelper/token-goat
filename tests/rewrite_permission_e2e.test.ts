@@ -261,6 +261,24 @@ describe('rewrites in every permission mode (built bundle)', () => {
     expect(outcome(hook(hooked, 'Bash', { command: 'go build ./...' }, 'bypassPermissions', claudeEnv(hooked)))).toBe('skip')
   }, 120_000)
 
+  // HAND-DERIVED from the bypass case above: a skill's `disallowed-tools` pattern or a PermissionRequest hook adds session rules in every mode, so an approval the hook would emit in default, acceptEdits or dontAsk is withheld while one applies, for the terminal CLI and for VS Code alike. The same project without the skill still approves, which shows the skip is the skill's doing.
+  it('outside bypassPermissions a skill or hook rule the hook cannot read withholds the approval, for the CLI and for VS Code', () => {
+    const allow = { permissions: { allow: ['Bash(go build:*)'] } }
+    const clean = sandbox('files-clean', allow)
+    const skill = sandbox('files-skill', allow)
+    fs.mkdirSync(path.join(skill.project, '.claude', 'skills', 'net'), { recursive: true })
+    fs.writeFileSync(path.join(skill.project, '.claude', 'skills', 'net', 'SKILL.md'), '---\nname: net\ndisallowed-tools: Bash(go build *)\n---\nbody\n')
+    const hooked = sandbox('files-hook', { ...allow, hooks: { PermissionRequest: [{ hooks: [{ type: 'command', command: 'node x.js' }] }] } })
+    for (const entry of ['cli', 'claude-vscode']) {
+      for (const mode of ['default', 'acceptEdits', 'dontAsk']) {
+        const run = (box: Sandbox): Outcome => outcome(hook(box, 'Bash', { command: 'go build ./...' }, mode, claudeEnv(box, { CLAUDE_CODE_ENTRYPOINT: entry })))
+        expect(run(clean), `${entry} ${mode} clean`).toBe('approve')
+        expect(run(skill), `${entry} ${mode} skill`).toBe('skip')
+        expect(run(hooked), `${entry} ${mode} hook`).toBe('skip')
+      }
+    }
+  }, 240_000)
+
   it('the image Read rewrite is approved in bypassPermissions only with no hidden rule source, and skipped in auto', async () => {
     const box = sandbox('matrix-image')
     const image = path.join(box.project, 'shot.jpg')

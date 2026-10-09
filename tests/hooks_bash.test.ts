@@ -23,6 +23,7 @@ const _testConfigPath = tempConfigPath('tg-hooks-bash-config-test.toml')
 const _testDataDir = mkdtempSync(join(tmpdir(), 'tg-hooks-bash-data-'))
 
 import { preBashHandler } from '../src/hooks_bash.js'
+import { loadHiddenRuleCheck, resetPermissionSourceCache } from '../src/rewrite_permission.js'
 import { postBashHandler } from '../src/hooks_bash_post.js'
 import {
   extractLineRangeRead,
@@ -2569,13 +2570,15 @@ describe('preBashHandler — rg indented def patterns', () => {
   })
 })
 
-// A read-only command is one Claude Code runs without asking, so the hook would approve its rewrite, and it withholds that approval from a terminal session whose claude command line it cannot read; the scrubbed test environment names no claude process, so these tests name a host whose command line is no business of the hook.
-function asHostSession<T>(run: () => T): T {
+// A read-only command is one Claude Code runs without asking, so the hook would approve its rewrite, and it withholds that approval from a terminal session whose claude command line it cannot read; the scrubbed test environment names no claude process, so these tests name a host whose command line is no business of the hook. Nor does the hook approve before the check for skill and plugin rules is loaded, which a Claude Code handler does ahead of every call, so the check is loaded here too.
+async function asHostSession<T>(run: () => T): Promise<T> {
   const prev = process.env['CLAUDE_CODE_ENTRYPOINT']
   process.env['CLAUDE_CODE_ENTRYPOINT'] = 'claude-vscode'
   try {
+    await loadHiddenRuleCheck()
     return run()
   } finally {
+    resetPermissionSourceCache()
     if (prev === undefined) delete process.env['CLAUDE_CODE_ENTRYPOINT']
     else process.env['CLAUDE_CODE_ENTRYPOINT'] = prev
   }
@@ -2674,8 +2677,8 @@ describe('preBashHandler — directory listing map hint', () => {
     expect(result.hookType).toBe('context')
   })
 
-  it('wraps ls without a pipe (LsFilter registered in SHELL_FILE_FILTERS)', () => {
-    const result = asHostSession(() => preBashHandler(makeBashEvent('ls -la src/')))
+  it('wraps ls without a pipe (LsFilter registered in SHELL_FILE_FILTERS)', async () => {
+    const result = await asHostSession(() => preBashHandler(makeBashEvent('ls -la src/')))
     // LsFilter is now registered; pre-Bash wraps ls for output compression.
     expect(result.hookType).toBe('rewriteInput')
   })
@@ -3538,8 +3541,8 @@ describe('preBashHandler — markdown heading grep hint', () => {
     expect(result.hookType).not.toBe('pass')
   })
 
-  it('wraps grep (RgFilter registered in SHELL_FILE_FILTERS matches grep)', () => {
-    const result = asHostSession(() => preBashHandler(makeBashEvent('grep -n "^#" script.sh')))
+  it('wraps grep (RgFilter registered in SHELL_FILE_FILTERS matches grep)', async () => {
+    const result = await asHostSession(() => preBashHandler(makeBashEvent('grep -n "^#" script.sh')))
     // RgFilter now matches grep; pre-Bash wraps it for output compression. The markdown-heading hint no longer fires because wrapping takes precedence.
     expect(result.hookType).toBe('rewriteInput')
   })

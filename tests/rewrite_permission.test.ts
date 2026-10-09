@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { decideRewrite, loadCodexRules, loadHiddenRuleCheck, loadPermissionSnapshot, permissionNeutralRewrite, resetPermissionSourceCache, snapshotFromDocs, type RewriteRequest, type SettingsDoc } from '../src/rewrite_permission.js'
+import { decideRewrite as decideRewriteLoaded, loadCodexRules, loadHiddenRuleCheck, loadPermissionSnapshot, permissionNeutralRewrite, resetPermissionSourceCache, snapshotFromDocs, type RewriteRequest, type SettingsDoc } from '../src/rewrite_permission.js'
 import { CAN_JUNCTION } from './helpers/can-symlink.js'
 import { shortNameOf } from './helpers/short-name.js'
 
@@ -26,6 +26,11 @@ function snap(perms: { allow?: string[]; deny?: string[]; ask?: string[] }, role
 }
 
 const NONE = snapshotFromDocs([])
+
+type Decide = typeof decideRewriteLoaded
+
+// The tests below decide settings, so they stand for a hidden rule check that is loaded and finds no skill or hook rule in the files; its default is true until loadHiddenRuleCheck has run, which is the case the unloaded test below pins. A bypassPermissions call keeps the unloaded default, as it always has.
+const decideRewrite: Decide = (snapshot, req, hidden = (_req, filesOnly) => !filesOnly, lineRules) => decideRewriteLoaded(snapshot, req, hidden, lineRules)
 
 // The tests below decide settings, not command lines: they name a host whose command line the hook does not read, so the strict path an unnamed session takes does not hold every approval back. The tests of that path set the variable themselves.
 let savedEntrypoint: string | undefined
@@ -120,23 +125,52 @@ describe('decideRewrite: shell wrap', () => {
     expect(decideRewrite(allowGo, shell('go build ./...', 'default', { harness: 'codex' }), undefined, lineRules)).toBe(decideRewrite(allowGo, shell('go build ./...', 'default', { harness: 'codex' }), undefined, noLineRules))
   })
 
-  // HAND-DERIVED from the loaded path (commandLineRuleSource: a missing or empty entry point takes the strict path), which the unloaded default must agree with: a payload with no permission_mode and an env with no entry point once approved here and skipped there.
-  it('without the loaded check, only a session naming a host other than the CLI is let through, an unnamed one is held back as the loaded check holds it', () => {
+  // HAND-DERIVED from the threat: a skill's disallowed-tools or a PermissionRequest hook adds a rule to the session in every mode, and only the check that reads those files can say none applies. Until it is loaded no non-bypass mode approves; a host's entry point only removes the command line question, not the files one.
+  it('without the loaded check no mode approves, whatever the entry point names, because the files it reads were not read', () => {
     const saved = process.env['CLAUDE_CODE_ENTRYPOINT']
     try {
-      process.env['CLAUDE_CODE_ENTRYPOINT'] = 'cli'
-      expect(decideRewrite(allowGo, shell('go build ./...', 'default'))).toBe('skip')
-      process.env['CLAUDE_CODE_ENTRYPOINT'] = 'claude-vscode'
-      expect(decideRewrite(allowGo, shell('go build ./...', 'default'))).toBe('approve')
-      delete process.env['CLAUDE_CODE_ENTRYPOINT']
-      expect(decideRewrite(allowGo, shell('go build ./...', 'default'))).toBe('skip')
-      expect(decideRewrite(allowGo, shell('go build ./...', undefined))).toBe('skip')
-      process.env['CLAUDE_CODE_ENTRYPOINT'] = ''
-      expect(decideRewrite(allowGo, shell('go build ./...', 'default'))).toBe('skip')
+      for (const entry of ['cli', 'claude-vscode', '', undefined]) {
+        if (entry === undefined) delete process.env['CLAUDE_CODE_ENTRYPOINT']
+        else process.env['CLAUDE_CODE_ENTRYPOINT'] = entry
+        for (const mode of ['default', 'acceptEdits', 'dontAsk', undefined]) expect(decideRewriteLoaded(allowGo, shell('go build ./...', mode))).toBe('skip')
+        expect(decideRewriteLoaded(allowGo, shell('go build ./...', 'default'), () => false)).toBe(entry === 'claude-vscode' ? 'approve' : 'skip')
+      }
     } finally {
       if (saved === undefined) delete process.env['CLAUDE_CODE_ENTRYPOINT']
       else process.env['CLAUDE_CODE_ENTRYPOINT'] = saved
     }
+  })
+
+  // HAND-DERIVED from the same threat as the bypass rule: Claude Code and VS Code both read skills and plugin hooks, so a skill or hook rule that could refuse the wrapper withholds the approval in every mode that approves, for either host; the check is asked for the files only, since the command line question is lineRules'. Auto still skips whole.
+  it.each(['default', 'acceptEdits', 'dontAsk'] as const)('%s mode skips an approval a skill or plugin rule could refuse, for Claude Code and VS Code, and keeps it otherwise', (mode) => {
+    const asked: boolean[] = []
+    const hidden = (_req: RewriteRequest, filesOnly: boolean): boolean => {
+      asked.push(filesOnly)
+      return true
+    }
+    for (const harness of ['claudecode', 'vscode'] as const) {
+      expect(decideRewriteLoaded(allowGo, shell('go build ./...', mode, { harness }), hidden, noLineRules)).toBe('skip')
+      expect(decideRewriteLoaded(allowGo, shell('go build ./...', mode, { harness }), () => false, noLineRules)).toBe('approve')
+    }
+    expect(asked.every((filesOnly) => filesOnly)).toBe(true)
+    expect(decideRewriteLoaded(NONE, shell('go build ./...', mode), hidden, noLineRules)).toBe(mode === 'dontAsk' ? 'skip' : 'rewrite')
+  })
+
+  it('a PermissionRequest hook withholds an approval in every mode, not only bypassPermissions', () => {
+    const hooked = snapshotFromDocs([{ role: 'user', json: { permissions: { allow: ['Bash(go build *)'] }, hooks: { PermissionRequest: [{ hooks: [{ type: 'command', command: 'x' }] }] } } }])
+    for (const mode of ['default', 'acceptEdits', 'dontAsk'] as const) expect(decideRewriteLoaded(hooked, shell('go build ./...', mode), () => false, noLineRules)).toBe('skip')
+    expect(decideRewriteLoaded(hooked, shell('go build ./...', 'auto'), () => false, noLineRules)).toBe('skip')
+  })
+
+  it('bypassPermissions asks the check for the process too, and the other modes do not', () => {
+    const seen: boolean[] = []
+    const hidden = (_req: RewriteRequest, filesOnly: boolean): boolean => {
+      seen.push(filesOnly)
+      return false
+    }
+    decideRewriteLoaded(NONE, shell('go build ./...', 'bypassPermissions'), hidden)
+    decideRewriteLoaded(allowGo, shell('go build ./...', 'default'), hidden, noLineRules)
+    expect(seen).toEqual([false, true])
   })
 
   it('bypassPermissions skips every rewrite until the hidden rule check is loaded', () => {
@@ -376,7 +410,8 @@ describe('loadPermissionSnapshot and permissionNeutralRewrite read the real sett
   let configDir: string
   const savedConfigDir = process.env['CLAUDE_CONFIG_DIR']
 
-  beforeEach(() => {
+  // The hidden rule check is loaded (after the cache reset, which unloads it), as it is before a Claude Code or VS Code handler runs; the setup file's source filter keeps the developer's own .claude out of what it scans.
+  beforeEach(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-perm-load-'))
     project = path.join(root, 'proj')
     configDir = path.join(root, 'config')
@@ -385,6 +420,7 @@ describe('loadPermissionSnapshot and permissionNeutralRewrite read the real sett
     fs.mkdirSync(configDir, { recursive: true })
     process.env['CLAUDE_CONFIG_DIR'] = configDir
     resetPermissionSourceCache()
+    await loadHiddenRuleCheck()
   })
 
   afterEach(() => {

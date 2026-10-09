@@ -183,6 +183,34 @@ describe('commandLineRuleSource: the claude command line outside bypassPermissio
     expect(reason).not.toBeNull()
     if (process.platform === 'linux') expect(reason).toBe('claude command line unreadable')
   }, 30_000)
+
+  // FORMAT-DERIVED from `claude --help` 2.1.294: "--setting-sources <sources>  Comma-separated list of setting sources to load (user, project, local)". A list that leaves one out drops a settings file from what Claude Code reads, so a deny rule this hook does read may not be one it enforces the same way; only the full list, in either spelling, is harmless.
+  it('--setting-sources is harmless only when it names user, project and local', async () => {
+    const full = fakeClaude(['--setting-sources', 'local,user,project'])
+    const fullEq = fakeClaude(['--setting-sources=user,project,local'])
+    const noLocal = fakeClaude(['--setting-sources', 'user,project'])
+    const noValue = fakeClaude(['--setting-sources'])
+    const noValueEq = fakeClaude(['--setting-sources='])
+    const next = fakeClaude(['--setting-sources', '--model', 'opus'])
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(lineRules(box('ss-full'), { CLAUDE_PID: full })).toBeNull()
+    expect(lineRules(box('ss-full-eq'), { CLAUDE_PID: fullEq })).toBeNull()
+    expect(lineRules(box('ss-no-local'), { CLAUDE_PID: noLocal })).toBe('claude started with --setting-sources without local')
+    expect(lineRules(box('ss-no-value'), { CLAUDE_PID: noValue })).toContain('--setting-sources')
+    expect(lineRules(box('ss-no-value-eq'), { CLAUDE_PID: noValueEq })).toContain('--setting-sources')
+    expect(lineRules(box('ss-next-flag'), { CLAUDE_PID: next })).toContain('--setting-sources')
+  }, 60_000)
+
+  // HAND-DERIVED from the same observation as the test above, with a flag that is harmless: a retitled process hides every flag, the harmless ones too, so a command line that was overwritten must read as unreadable wherever the title overwrites it (Linux; macOS ps prints the title in place of the arguments, which the comm check catches). Windows keeps the flags visible. The child is a real node process, so this runs on all three CI platforms.
+  it('a claude that retitled itself with only a harmless flag is not read as having no flags where the title hides them', async () => {
+    fs.writeFileSync(path.join(root, 'retitle2.js'), "process.title = 'claude'\nsetInterval(() => {}, 1 << 30)\n")
+    const child = spawn(process.execPath, [path.join(root, 'retitle2.js'), '--model', 'x'], { stdio: 'ignore', windowsHide: true })
+    idle.push(child)
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    const reason = lineRules(box('cl-retitled-harmless'), { CLAUDE_PID: String(child.pid) })
+    if (process.platform === 'win32') expect(reason).toBeNull()
+    else expect(reason).toBe('claude command line unreadable')
+  }, 30_000)
 })
 
 describe('hiddenRuleSource: rule files', () => {
@@ -255,6 +283,39 @@ describe('hiddenRuleSource: rule files', () => {
     resetHiddenRuleCache()
     expect(check(b)).toBeNull()
   }, 120_000)
+
+  // HAND-DERIVED from the threat: a tracked skill moved away and back between two calls is the same skill, so while it is away the index copy answers for it. A pattern rule in the blob is a reason, bare tool names are none, a path git never listed is none, and a blob git cannot print is strict.
+  it('a tracked skill file that is gone is read from the index, and an untracked one adds no rule', () => {
+    const b = box('missing-indexed')
+    expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    const ruled = path.join(b.project, '.claude', 'skills', 'ruled.md')
+    const bare = path.join(b.project, '.claude', 'skills', 'bare.md')
+    write(ruled, PATTERN_SKILL)
+    write(bare, '---\nname: bare\ndisallowed-tools: Bash, WebFetch\n---\n')
+    expect(runGit(['add', '-f', '.claude'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    expect(check(b)).toContain('ruled.md')
+    fs.rmSync(bare)
+    fs.renameSync(ruled, `${ruled}.away`)
+    resetHiddenRuleCache()
+    expect(check(b)).toContain('ruled.md')
+    fs.rmSync(`${ruled}.away`)
+    expect(runGit(['rm', '-q', '--cached', '.claude/skills/ruled.md'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    resetHiddenRuleCache()
+    expect(check(b)).toBeNull()
+  }, 120_000)
+
+  it('a nested scan that was clean is dropped when a file it read changes, so a rename away and back is not trusted', () => {
+    const b = box('nested-rename')
+    expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    const skill = path.join(b.project, 'pkg', '.claude', 'skills', 's', 'SKILL.md')
+    write(skill, '---\nname: s\n---\n')
+    expect(runGit(['add', '-f', 'pkg'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    expect(check(b)).toBeNull()
+    fs.renameSync(skill, `${skill}.away`)
+    fs.renameSync(`${skill}.away`, skill)
+    write(skill, PATTERN_SKILL)
+    expect(check(b)).toContain('SKILL.md')
+  }, 60_000)
 
   it('a skill tree too large to finish checking counts as hidden', () => {
     const b = box('huge')
