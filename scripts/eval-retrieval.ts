@@ -1,9 +1,10 @@
-/** Golden retrieval eval: runs the real `search`, `semantic` and `answer` commands over the labelled queries in evals/retrieval and reports hit@k, MRR@10 and bytes per correct hit, each with a bootstrap interval, separately for the train and test splits. Usage: npx tsx scripts/eval-retrieval.ts --home <dir> [--bin token-goat] [--root .] [--reindex] [--out report.json] [--baseline old.json] [--arms fused,semantic,...] `--home` is required and every child runs with HOME, USERPROFILE, TOKEN_GOAT_HOME, LOCALAPPDATA, APPDATA and XDG_DATA_HOME pointed inside it, because `answer` and the search commands write to the savings ledger and an eval run must never land in the user's real one. `--reindex` builds that home's index first. `--baseline` takes an earlier report and prints the paired per-query delta for each arm, which is how a change is judged: keep it only when both splits improve past the interval. Queries of kind `absent` have no answer in the repo. They are left out of every hit-rate line and scored instead on whether each arm abstains: `search` by returning nothing, `semantic` by flagging its closest match as weak. For `semantic` the report also fits the weak-match line on the train split and scores it on the test split beside the line the eval home has configured, read back with `config get` rather than assumed to be the default. Every run excludes evals/retrieval from that home's index and refuses to score a hit inside it, because the golden file holds every query's own text. */
+/** Golden retrieval eval: runs the real `search`, `semantic` and `answer` commands over the labelled queries in evals/retrieval and reports hit@k, MRR@10 and bytes per correct hit, each with a bootstrap interval, separately for the train and test splits. Usage: npx tsx scripts/eval-retrieval.ts --home <dir> [--bin token-goat] [--root .] [--reindex] [--out report.json] [--baseline old.json] [--arms fused,semantic,...] [--distractors N] [--limit N] `--home` is required and every child runs with HOME, USERPROFILE, TOKEN_GOAT_HOME, LOCALAPPDATA, APPDATA and XDG_DATA_HOME pointed inside it, because `answer` and the search commands write to the savings ledger and an eval run must never land in the user's real one. `--reindex` builds that home's index first. `--baseline` takes an earlier report and prints the paired per-query delta for each arm, which is how a change is judged: keep it only when both splits improve past the interval. Queries of kind `absent` have no answer in the repo. They are left out of every hit-rate line and scored instead on whether each arm abstains: `search` by returning nothing, `semantic` by flagging its closest match as weak. For `semantic` the report also fits the weak-match line on the train split and scores it on the test split beside the line the eval home has configured, read back with `config get` rather than assumed to be the default. `--distractors N` swaps the repo for a scratch project under `<home>/corpus` holding only the files the golden set labels plus N seeded distractor files (placeholder stubs, near-duplicate names, boilerplate; see evals/retrieval/distractors.ts), so `--distractors 0` is the control and any N is the same labelled files drowned in noise; the `answer` arm is skipped there because its expectations are repo-wide. Every run excludes evals/retrieval from that home's index and refuses to score a hit inside it, because the golden file holds every query's own text. */
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { summarizeDistances } from '../src/semantic_distances.js'
 import type { DistanceRow } from '../evals/retrieval/calibration.js'
+import { DISTRACTOR_SEED, generateDistractors } from '../evals/retrieval/distractors.js'
 import { resolveLabel, type GoldenLabel } from '../evals/retrieval/labels.js'
 import { num, pct, qualityLines, weakFitLines } from '../evals/retrieval/quality.js'
 import {
@@ -92,8 +93,38 @@ export function parseSemantic(s: string): Parsed {
   return { hits: items.map((r) => ({ file: r.filePath, lineStart: r.startLine, lineEnd: r.endLine })), abstained: j.lowConfidence !== undefined || closest === null, closest }
 }
 
+/** The count `--distractors` asked for, null when the flag is absent. Anything that is not a whole number of zero or more is a typo to stop on, not a corpus size to guess at. */
+export function parseDistractorCount(raw: string | undefined): number | null {
+  if (raw === undefined) return null
+  if (!/^[0-9]+$/.test(raw)) throw new Error(`--distractors takes a whole number of files, got ${JSON.stringify(raw)}`)
+  return Number(raw)
+}
+
+/** Builds the distractor arm's project: the labelled files copied from `repoRoot` at the same relative paths, `count` seeded distractors beside them, committed to a fresh git repo so `index .` tracks them. Replaces whatever `dest` held; `dest` lives under the eval home and holds no links. */
+export function materializeCorpus(repoRoot: string, golden: readonly GoldenQuery[], dest: string, count: number): void {
+  rmSync(dest, { recursive: true, force: true })
+  const labelled = [...new Set(golden.flatMap((g) => g.relevant.map((l) => l.file)))]
+  const write = (rel: string, from: string | null, content = ''): void => {
+    const to = path.join(dest, rel)
+    mkdirSync(path.dirname(to), { recursive: true })
+    if (from === null) writeFileSync(to, content)
+    else copyFileSync(from, to)
+  }
+  for (const f of labelled) write(f, path.join(repoRoot, f))
+  const names = [...new Set(golden.flatMap((g) => g.relevant.flatMap((l) => (l.symbol === undefined ? [] : [l.symbol]))))]
+  for (const d of generateDistractors(count, names, DISTRACTOR_SEED)) write(d.path, null, d.content)
+  const ident = ['-c', 'user.name=eval', '-c', 'user.email=eval@example.invalid', '-c', 'commit.gpgsign=false']
+  for (const args of [['init', '-q'], ['add', '-A'], [...ident, 'commit', '-q', '-m', 'eval corpus']]) {
+    const g = spawnSync('git', args, { cwd: dest, encoding: 'utf8', windowsHide: true })
+    if (g.error !== undefined || g.status !== 0) throw new Error(`git ${args.join(' ')} failed in ${dest}: ${g.error?.message ?? g.stderr}`)
+  }
+}
+
+/** How many hits each arm asks for. K stays the scoring cutoff; a deeper list only lets a rank past K be recorded, which is how the hit-rate-versus-depth table is made (`--limit`). */
+let listDepth = K
+
 const searchArm = (name: string, channel?: string): Arm => {
-  const base = (q: string): string[] => ['search', '-l', String(K), ...(channel !== undefined ? ['-c', channel] : []), q]
+  const base = (q: string): string[] => ['search', '-l', String(listDepth), ...(channel !== undefined ? ['-c', channel] : []), q]
   return { name, json: (q) => [...base(q), '-j'], text: base, parse: parseSearch }
 }
 
@@ -103,7 +134,7 @@ export const ARMS: readonly Arm[] = [
   searchArm('heading', 'heading'),
   searchArm('text', 'text'),
   searchArm('search-semantic', 'semantic'),
-  { name: 'semantic', json: (q) => ['semantic', '-l', String(K), '-j', q], text: (q) => ['semantic', '-l', String(K), q], parse: parseSemantic },
+  { name: 'semantic', json: (q) => ['semantic', '-l', String(listDepth), '-j', q], text: (q) => ['semantic', '-l', String(listDepth), q], parse: parseSemantic },
 ]
 
 const REFUSAL = 'cannot answer deterministically:'
@@ -257,18 +288,26 @@ function main(): void {
     process.stderr.write('eval-retrieval: --home <dir> is required; the commands write to the savings ledger and must not touch your real one.\n')
     process.exit(2)
   }
-  const root = path.resolve(arg('root') ?? '.')
+  const repoRoot = path.resolve(arg('root') ?? '.')
   const bin = arg('bin') ?? 'token-goat'
+  const golden = readJsonl<GoldenQuery>(path.join(repoRoot, FIXTURE_DIR, 'golden.jsonl'))
+  const distractors = parseDistractorCount(arg('distractors'))
+  const limitArg = arg('limit')
+  if (limitArg !== undefined) {
+    if (!/^[1-9][0-9]*$/.test(limitArg)) throw new Error(`--limit takes a whole number of hits, one or more, got ${JSON.stringify(limitArg)}`)
+    listDepth = Math.max(K, Number(limitArg))
+  }
+  const root = distractors === null ? repoRoot : path.join(path.resolve(home), 'corpus')
+  if (distractors !== null) materializeCorpus(repoRoot, golden, root, distractors)
   const env = isolatedEnv(home)
   const exec = runner(bin, root, env)
   const armFilter = arg('arms')?.split(',')
   const arms = ARMS.filter((a) => armFilter === undefined || armFilter.includes(a.name))
 
   // Before the reindex so `index .` never reads the fixtures, and on every run so rows the worker indexed earlier are removed too.
-  exec(['project', 'exclude', path.join(root, FIXTURE_DIR)])
-  if (process.argv.includes('--reindex')) exec(['index', '.'])
+  if (distractors === null) exec(['project', 'exclude', path.join(root, FIXTURE_DIR)])
+  if (process.argv.includes('--reindex')) exec(['index', '.', '--embed'])
 
-  const golden = readJsonl<GoldenQuery>(path.join(root, FIXTURE_DIR, 'golden.jsonl'))
   const labels = new Map<string, RelevantSpan[]>(golden.map((g) => [g.id, g.relevant.flatMap((l) => resolveLabel(l, readFileSync(path.join(root, l.file), 'utf8')))]))
 
   const report: Report = { arms: {}, answer: [] }
@@ -302,8 +341,8 @@ function main(): void {
     process.stderr.write(`eval-retrieval: ${arm.name} done\n`)
   }
 
-  if (armFilter === undefined || armFilter.includes('answer')) {
-    for (const a of readJsonl<AnswerQuery>(path.join(root, FIXTURE_DIR, 'answer.jsonl'))) {
+  if (distractors === null && (armFilter === undefined || armFilter.includes('answer'))) {
+    for (const a of readJsonl<AnswerQuery>(path.join(repoRoot, FIXTURE_DIR, 'answer.jsonl'))) {
       const r = exec(['answer', a.question], true)
       const got = parseAnswer(r.stdout, r.stderr)
       const found = a.expectFiles.filter((f) => got.files.some((p) => answerFileMatches(f, p, root))).length
