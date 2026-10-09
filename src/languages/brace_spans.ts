@@ -294,7 +294,7 @@ export function assignBraceBlockSpans(
         return arrowEnd <= sym.lineStart ? withWholeLineBody(sym, lines) : { ...sym, lineEnd: arrowEnd, body: lines.slice(sym.lineStart - 1, arrowEnd).join('\n') }
       }
     } else if (opts.expressionBodies === 'kotlin') {
-      const eqEnd = findKotlinEqualsBodyEndLine(scanContent, lineIndex, sym.lineStart, nextStart !== undefined ? nextStart - 1 : totalLines)
+      const eqEnd = findKotlinEqualsBodyEndLine(scanContent, lineIndex, sym.lineStart, nextStart !== undefined ? nextStart - 1 : totalLines, opts.symbolLiterals === true)
       if (eqEnd !== null) {
         return eqEnd <= sym.lineStart ? withWholeLineBody(sym, lines) : { ...sym, lineEnd: eqEnd, body: lines.slice(sym.lineStart - 1, eqEnd).join('\n') }
       }
@@ -422,10 +422,10 @@ function findArrowBodyEndLine(content: string, lineIndex: readonly number[], sta
 }
 
 /** Index just past the `${ ... }` hole that opens at `i` inside a Kotlin string template, skipping any literal nested in it. */
-function skipKotlinTemplateHole(content: string, i: number, to: number): number {
+function skipKotlinTemplateHole(content: string, i: number, to: number, symbolLiterals = false): number {
   let depth = 0
   for (let k = i; k < to; k++) {
-    const lit = skipKotlinLiteral(content, k, to)
+    const lit = skipKotlinLiteral(content, k, to, symbolLiterals)
     if (lit !== null) { k = lit - 1; continue }
     const ch = content[k]
     if (ch === '{') depth++
@@ -435,8 +435,12 @@ function skipKotlinTemplateHole(content: string, i: number, to: number): number 
 }
 
 /** Index just past the Kotlin string or char literal that starts at `i`, or null when `i` does not start one. Template holes are walked as code, so a quote inside one does not end the string early. */
-function skipKotlinLiteral(content: string, i: number, to: number): number | null {
+function skipKotlinLiteral(content: string, i: number, to: number, symbolLiterals = false): number | null {
   const first = content[i]
+  if (first === "'" && symbolLiterals) {
+    const len = scalaCharLiteralLength(content, i)
+    return len > 0 ? i + len : null
+  }
   if (first === "'") {
     for (let k = i + 1; k < to && content[k] !== '\n'; k++) {
       if (content[k] === '\\') { k++; continue }
@@ -457,7 +461,7 @@ function skipKotlinLiteral(content: string, i: number, to: number): number | nul
     } else if (ch === '\\') { k++; continue }
     else if (ch === '"') return k + 1
     else if (ch === '\n') return k
-    if (ch === '$' && content[k + 1] === '{') k = skipKotlinTemplateHole(content, k + 1, to) - 1
+    if (ch === '$' && content[k + 1] === '{') k = skipKotlinTemplateHole(content, k + 1, to, symbolLiterals) - 1
   }
   return to
 }
@@ -552,7 +556,7 @@ function kotlinBodyContinues(content: string, lastSig: number, ifParenClosedAt: 
 const NEXT_LINE_STARTS_WITH_EQUALS = /^(?:[ \t\r]*(?:\/\/[^\n]*)?\n)*[ \t]*=(?!=)/
 
 /** Last line of a Kotlin expression-bodied declaration (`fun f(x: Int) = expr`) that starts on `startLine`, or null when there is none: a `{` before the `=` is a block body, and a line that ends with no `=` and no open bracket is a bodiless declaration, for the brace walk or nothing to own. The `=` must sit at bracket depth 0, so a default argument (`fun f(x: Int = 0)`) is not one. Kotlin has no terminator, so the body ends at the first line break at depth 0 that the expression cannot cross: see {@link kotlinBodyContinues}. */
-function findKotlinEqualsBodyEndLine(content: string, lineIndex: readonly number[], startLine: number, lastLine: number): number | null {
+function findKotlinEqualsBodyEndLine(content: string, lineIndex: readonly number[], startLine: number, lastLine: number, symbolLiterals = false): number | null {
   const from = lineIndex[startLine - 1]
   if (from === undefined) return null
   const to = lineIndex[lastLine] ?? content.length
@@ -585,7 +589,7 @@ function findKotlinEqualsBodyEndLine(content: string, lineIndex: readonly number
       i = end + 1
       continue
     }
-    const lit = skipKotlinLiteral(content, i, to)
+    const lit = skipKotlinLiteral(content, i, to, symbolLiterals)
     if (lit !== null) {
       for (let k = i; k < lit; k++) if (content[k] === '\n') line++
       lastSig = lit - 1

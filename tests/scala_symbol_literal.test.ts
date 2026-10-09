@@ -38,3 +38,20 @@ describe('parseFile: an odd quote inside a mid-line block comment does not flip 
     expect(symbols.map((s) => s.name)).toContain('b')
   })
 })
+
+// The symbol/character-literal rule runs ahead of the generic quote handler, so it must never see an apostrophe that sits inside a string, a comment or an interpolation text: there it is ordinary text.
+describe('parseFile on Scala: an apostrophe inside a string, a comment or an interpolation is text', () => {
+  // HAND-DERIVED: each fixture is a class A with one or two members and a closing brace on its own line; the span of every line is read off the fixture by hand.
+  const cases: [string, string[], string[]][] = [
+    ['a string', ['class A {', '  val s = "it\'s {"', '  def b = 2', '}', ''], ['A 1-4', 's 2-2', 'b 3-3']],
+    ['a string with an escaped quote', ['class A {', '  val s = "say \\"it\'s\\" {"', '  def b = 2', '}', ''], ['A 1-4', 's 2-2', 'b 3-3']],
+    ['a triple-quoted string', ['class A {', '  val s = """it\'s }', '  more {"""', '  def b = 2', '}', ''], ['A 1-5', 's 2-3', 'b 4-4']],
+    ['interpolation text and a character literal in the hole', ['class A {', "  val s = s\"it's ${'}'} ${x}\"", '  def b = 2', '}', ''], ['A 1-4', 's 2-2', 'b 3-3']],
+    ['a symbol literal inside an interpolation hole', ['class A {', "  val s = s\"a ${ 'sym.name } it's\"", '  def b = 2', '}', ''], ['A 1-4', 's 2-2', 'b 3-3']],
+    ['a line comment', ['class A {', "  // don't {", '  def b = 2', '}', ''], ['A 1-4', 'b 3-3']],
+    ['a multi-line block comment', ['class A {', "  /* it's", '     a " { */', '  def b = 2', '}', ''], ['A 1-5', 'b 4-4']],
+  ]
+  it.each(cases)('%s', async (_what, lines, expected) => {
+    expect(await spans(lines.join('\n'))).toEqual(expected)
+  })
+})
