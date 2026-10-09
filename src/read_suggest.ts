@@ -152,11 +152,12 @@ export function nearSymbolNames(name: string, rootDir: string): { skipped: false
   const unrefreshable = new Set<string>()
   let examined = Math.min(NEAR_NAME_LIVE_CHECK, ranked.length)
   for (;;) {
+    let sites: Array<{ name: string; filePath: string }>
     // A round heals at most one window of files, so a window of renamed names can need several rounds before every name in it is judged against current rows.
     for (;;) {
       const order = new Map(ranked.slice(0, examined).map((n, i) => [n, i]))
       // In rank order, so the heal's file cap is spent on the names a reader sees first.
-      const sites = symbolNameFiles(rootDir, [...order.keys()]).sort((x, y) => (order.get(x.name) ?? 0) - (order.get(y.name) ?? 0))
+      sites = symbolNameFiles(rootDir, [...order.keys()]).sort((x, y) => (order.get(x.name) ?? 0) - (order.get(y.name) ?? 0))
       const unchecked = [...new Set(sites.map((x) => x.filePath))].filter((f) => !fileIsGone(f) && !verified.has(f) && !unrefreshable.has(f))
       if (unchecked.length === 0) break
       let healed = false
@@ -165,14 +166,13 @@ export function nearSymbolNames(name: string, rootDir: string): { skipped: false
         healed ||= result.healed
         ;(result.stillStale.has(f) ? unrefreshable : verified).add(f)
       }
-      if (healed) {
-        ranked = rank()
-        if (ranked === null) return { skipped: true }
-        examined = Math.min(examined, ranked.length)
-      }
+      if (!healed) break
+      ranked = rank()
+      if (ranked === null) return { skipped: true }
+      examined = Math.min(examined, ranked.length)
     }
-    const order = new Map(ranked.slice(0, examined).map((n, i) => [n, i]))
-    const live = new Set(symbolNameFiles(rootDir, [...order.keys()]).filter((x) => verified.has(x.filePath)).map((x) => x.name))
+    // Rows are unchanged since the last fetch unless a heal re-ranked, and a heal loops back to fetch again, so the window's rows are already in hand.
+    const live = new Set(sites.filter((x) => verified.has(x.filePath)).map((x) => x.name))
     const enough = live.size >= DIDYOUMEAN_LIMIT
     if (enough || examined >= ranked.length || examined >= NEAR_NAME_LIVE_CHECK_MAX) {
       // Past the cap with too few live names, the unchecked tail is left out; with enough live names it only feeds the "N more not shown" count.
