@@ -37,6 +37,8 @@ const SCAN_BUDGET = 20_000
 const NESTED_STAMP_DEPTH = 3
 const NESTED_STAMP_DIRS = 2_000
 const SCAN_TTL_MS = 60_000
+/** A stamp whose modification time is this close to the scan, or later, was written while the scan could still have been reading: the clean answer is not kept. */
+const RACY_MS = 2_000
 const FILE_HEAD_BYTES = 256 * 1024
 
 /** One scan's answer: the reason it found, the stamp of every directory and file it read (for {@link stillCurrent}), and the agent names it read definitions for. */
@@ -45,6 +47,8 @@ interface ScanResult {
   readonly stamps: ReadonlyMap<string, string>
   readonly agents: ReadonlySet<string>
   readonly pluginAgents: ReadonlySet<string>
+  /** Set when the stamps cannot vouch for the answer (a stamp too fresh to trust, one that could not be read, or more folders than the cap), so a clean answer is not reused. */
+  readonly volatile: boolean
 }
 
 let processCache: { readonly key: string; readonly reason: string | null } | undefined
@@ -260,6 +264,10 @@ interface Scan {
   readonly stamps: Map<string, string> | undefined
   readonly agents: Set<string>
   readonly pluginAgents: Set<string>
+  /** When the scan began, for the too-fresh test on each stamp. */
+  readonly startedAt: number
+  /** See {@link ScanResult.volatile}. */
+  volatile: boolean
   /** Real paths of the directories already walked, so a link back up the tree is walked once. */
   readonly walked: Set<string>
   /** Set inside a git checkout: the text of a tracked file as the index holds it, undefined for a path git does not track, null when git could not print it. */
@@ -274,21 +282,30 @@ interface Place {
 }
 
 function newScan(helpers: HiddenRuleHelpers, stamped: boolean): Scan {
-  return { helpers, budget: SCAN_BUDGET, reason: null, stamps: stamped ? new Map() : undefined, agents: new Set(), pluginAgents: new Set(), walked: new Set() }
+  return { helpers, budget: SCAN_BUDGET, reason: null, stamps: stamped ? new Map() : undefined, agents: new Set(), pluginAgents: new Set(), startedAt: Date.now(), volatile: false, walked: new Set() }
 }
 
 function result(scan: Scan): ScanResult {
-  return { reason: scan.reason, stamps: scan.stamps ?? new Map(), agents: scan.agents, pluginAgents: scan.pluginAgents }
+  return { reason: scan.reason, stamps: scan.stamps ?? new Map(), agents: scan.agents, pluginAgents: scan.pluginAgents, volatile: scan.volatile }
 }
 
-/** What a later call compares to tell whether `file` changed: its modification time, and its size for a file. */
+/** What a later call compares to tell whether `file` changed: its modification time, and its size for a file. Only a missing entry (or a parent that is not a directory) is `absent`; any other failure is `unreadable`, which {@link record} refuses to trust. */
 function stamp(file: string): string {
   try {
     const st = fs.statSync(file)
     return `${st.mtimeMs}:${st.isDirectory() ? 'dir' : st.size}`
-  } catch {
-    return 'absent'
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'absent' : 'unreadable'
   }
+}
+
+/** Stamp `file` into the scan, and mark the scan volatile when the stamp cannot be trusted: unreadable, or modified within {@link RACY_MS} of the scan's start (or later), as git treats an index entry newer than the index itself. */
+function record(scan: Scan, file: string): void {
+  if (scan.stamps === undefined) return
+  const was = stamp(file)
+  scan.stamps.set(file, was)
+  if (was === 'unreadable' || Number(was.slice(0, was.indexOf(':'))) > scan.startedAt - RACY_MS) scan.volatile = true
 }
 
 /** Whether every directory and file a scan read still carries the stamp it had then. */
@@ -316,7 +333,7 @@ function checkFile(file: string, scan: Scan, place: Place): void {
   const lower = file.toLowerCase()
   const json = lower.endsWith('.json')
   if (!json && !lower.endsWith('.md')) return
-  scan.stamps?.set(file, stamp(file))
+  record(scan, file)
   const read = head(file)
   let text: string
   if ('failure' in read) {
@@ -356,7 +373,7 @@ function linksToDir(full: string): boolean {
 /** Check every markdown and JSON file under `dir`, following links, within the scan's budget. */
 function scanDir(dir: string, scan: Scan, place: Place): void {
   if (scan.reason !== null || !scan.helpers.sourceAllowed(dir)) return
-  scan.stamps?.set(dir, stamp(dir))
+  record(scan, dir)
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true })
@@ -450,7 +467,7 @@ function scanGitCheckout(project: string, scan: Scan): void {
     scan.reason = 'cannot list nested skills'
     return
   }
-  stampShallowDirs(project, [...tracked.map((record) => record.slice(record.indexOf('\t') + 1)), ...untracked, ...ignored], scan)
+  stampListedDirs(project, [...tracked.map((record) => record.slice(record.indexOf('\t') + 1)), ...untracked, ...ignored], scan)
   // Claude Code asks check-ignore about the folder holding `.claude`, never the skill itself, so an ignored file git lists on its own is still loaded: its folder would have been listed whole had it been ignored.
   const candidates: string[] = [...untracked, ...ignored.filter((rel) => !rel.endsWith('/'))]
   const objects = new Map<string, string>()
@@ -521,18 +538,26 @@ function gitDirOf(root: string): string {
 /** Stamp the checkout's index and HEAD, which a pull, checkout, merge, reset or `git add` rewrites, so a skill file that arrives that way drops a clean nested answer at once instead of after the minute. */
 function stampGitState(root: string, scan: Scan): void {
   const gitDir = gitDirOf(root)
-  for (const name of ['index', 'HEAD']) scan.stamps?.set(path.join(gitDir, name), stamp(path.join(gitDir, name)))
+  for (const name of ['index', 'HEAD']) record(scan, path.join(gitDir, name))
 }
 
-/** The directories down to {@link NESTED_STAMP_DEPTH} levels below `project` that hold something git lists, stamped so an untracked skill or `.claude` folder added in one of them drops a clean nested answer at once. Deeper folders keep the minute. */
-function stampShallowDirs(project: string, listed: readonly string[], scan: Scan): void {
+/** The folders whose change must end a clean nested answer at once, stamped after git listed: every folder down to {@link NESTED_STAMP_DEPTH} levels below `project` that holds something git lists, and, at any depth, the folder holding each listed `.claude` and every folder from it down to the listed path. A stamp changed since the listing began is too fresh to trust (see {@link record}), so a `.claude` created between the listing and the stamping is not cached. More than {@link NESTED_STAMP_DIRS} folders leaves some unstamped, so that answer is not cached either. */
+function stampListedDirs(project: string, listed: readonly string[], scan: Scan): void {
   const dirs = new Set<string>([project])
   for (const rel of listed) {
     const parts = rel.split('/').filter((part) => part !== '')
-    for (let n = 1; n <= Math.min(parts.length - 1, NESTED_STAMP_DEPTH); n++) dirs.add(path.join(project, ...parts.slice(0, n)))
-    if (dirs.size >= NESTED_STAMP_DIRS) break
+    const claude = parts.indexOf('.claude')
+    const add = (from: number, to: number): void => {
+      for (let n = from; n <= to; n++) dirs.add(path.join(project, ...parts.slice(0, n)))
+    }
+    add(1, Math.min(parts.length - 1, NESTED_STAMP_DEPTH))
+    if (claude >= 0) add(claude, parts.length - 1)
+    if (dirs.size >= NESTED_STAMP_DIRS) {
+      scan.volatile = true
+      break
+    }
   }
-  for (const dir of dirs) scan.stamps?.set(dir, stamp(dir))
+  for (const dir of dirs) record(scan, dir)
 }
 
 /** Nested skill directories anywhere under `project`: listed by git inside a checkout, walked outside one. The directories and files it read are stamped like the fixed folders', so a clean answer is dropped the moment one changed, and kept for a minute otherwise (a file git has never listed leaves no stamp). */
@@ -564,9 +589,9 @@ export function hiddenRuleSource(cwd: string, projectDir: string | undefined, en
   const project = projectDir !== undefined && path.isAbsolute(projectDir) ? path.resolve(projectDir) : here
   const scanKey = `${processKey}:${here}:${project}`
   // A stale "hidden" only skips a rewrite, so a found reason keeps its minute; a clean answer is trusted only while nothing it read has changed.
-  if (fixedCache?.key !== scanKey || (fixedCache.reason !== null ? now - fixedCache.at > SCAN_TTL_MS : !stillCurrent(fixedCache.stamps))) fixedCache = { key: scanKey, at: now, ...scanFixed(here, project, helpers) }
+  if (fixedCache?.key !== scanKey || (fixedCache.reason !== null ? now - fixedCache.at > SCAN_TTL_MS : fixedCache.volatile || !stillCurrent(fixedCache.stamps))) fixedCache = { key: scanKey, at: now, ...scanFixed(here, project, helpers) }
   if (fixedCache.reason !== null) return fixedCache.reason
-  if (nestedCache?.key !== scanKey || now - nestedCache.at > SCAN_TTL_MS || (nestedCache.reason === null && !stillCurrent(nestedCache.stamps))) nestedCache = { key: scanKey, at: now, ...scanNested(project, helpers) }
+  if (nestedCache?.key !== scanKey || now - nestedCache.at > SCAN_TTL_MS || (nestedCache.reason === null && (nestedCache.volatile || !stillCurrent(nestedCache.stamps)))) nestedCache = { key: scanKey, at: now, ...scanNested(project, helpers) }
   return nestedCache.reason ?? agentReason(query.agentType, [fixedCache, nestedCache])
 }
 

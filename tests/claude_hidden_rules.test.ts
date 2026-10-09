@@ -70,6 +70,25 @@ function write(file: string, text: string): void {
   fs.writeFileSync(file, text)
 }
 
+/** Set the modification time of everything under `dirs` an hour back: the scan keeps no clean answer built on a stamp newer than 2 s, so a test that wants the cache to be trusted ages its fixtures first. */
+function age(...dirs: string[]): void {
+  setTimes(-3_600_000, dirs)
+}
+
+/** Set the modification time of everything under `dirs` an hour ahead, so a stamp is too fresh to trust however slow the machine is. */
+function postdate(...dirs: string[]): void {
+  setTimes(3_600_000, dirs)
+}
+
+function setTimes(offsetMs: number, dirs: readonly string[]): void {
+  const then = new Date(Date.now() + offsetMs)
+  const walk = (p: string): void => {
+    if (fs.lstatSync(p).isDirectory()) for (const name of fs.readdirSync(p)) walk(path.join(p, name))
+    fs.utimesSync(p, then, then)
+  }
+  for (const d of dirs) if (fs.existsSync(d)) walk(d)
+}
+
 function check(b: Box, env: NodeJS.ProcessEnv = {}, query: HiddenRuleQuery = {}): string | null {
   return hiddenRuleSource(b.project, b.project, { CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_PID: plainPid, CLAUDE_CODE_SESSION_ID: 's', ...env }, b.helpers, query)
 }
@@ -310,6 +329,7 @@ describe('hiddenRuleSource: rule files', () => {
     const skill = path.join(b.project, 'pkg', '.claude', 'skills', 's', 'SKILL.md')
     write(skill, '---\nname: s\n---\n')
     expect(runGit(['add', '-f', 'pkg'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    age(b.project)
     expect(check(b)).toBeNull()
     fs.renameSync(skill, `${skill}.away`)
     fs.renameSync(`${skill}.away`, skill)
@@ -323,6 +343,7 @@ describe('hiddenRuleSource: rule files', () => {
     expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
     write(path.join(b.project, 'pkg', '.claude', 'skills', 'a', 'SKILL.md'), '---\nname: a\n---\n')
     expect(runGit(['add', '-f', '.'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    age(b.project)
     expect(check(b, {}, { now: 1_000 })).toBeNull()
     write(path.join(b.project, 'pkg', '.claude', 'skills', 'new', 'SKILL.md'), PATTERN_SKILL)
     expect(check(b, {}, { now: 1_000 })).toContain(path.join('new', 'SKILL.md'))
@@ -333,6 +354,7 @@ describe('hiddenRuleSource: rule files', () => {
     expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
     write(path.join(b.project, 'other', 'readme.txt'), 'x\n')
     expect(runGit(['add', '-f', '.'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    age(b.project)
     expect(check(b, {}, { now: 1_000 })).toBeNull()
     write(path.join(b.project, 'other', '.claude', 'agents', 'x.md'), '---\nname: x\ndisallowedTools: Bash(curl *)\n---\n')
     expect(check(b, {}, { now: 1_000 })).toContain('x.md')
@@ -344,12 +366,83 @@ describe('hiddenRuleSource: rule files', () => {
     expect(runGit(init, { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
     write(path.join(b.project, 'a', 'b', 'c', 'd', 'e', 'x.txt'), 'x\n')
     expect(runGit(['add', '-f', '.'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    age(b.project, path.join(root, 'nested-index-gitdir'))
     expect(check(b, {}, { now: 1_000 })).toBeNull()
     const skill = path.join(b.project, 'a', 'b', 'c', 'd', 'e', '.claude', 'skills', 's', 'SKILL.md')
     write(skill, PATTERN_SKILL)
     expect(runGit(['add', '-f', 'a'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
     expect(check(b, {}, { now: 1_000 })).toContain('SKILL.md')
   })
+
+  // HAND-DERIVED from the threat: the stamps are taken after git lists, so a .claude made between the two was baked into the stamp, unseen by the scan, and the clean answer was kept for the minute. The seam creates it right after the last listing call.
+  it('a .claude made between the git listing and the stamping is not cached as clean', () => {
+    const b = box('nested-race')
+    expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    write(path.join(b.project, 'other', 'readme.txt'), 'x\n')
+    expect(runGit(['add', '-f', '.'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    age(b.project)
+    let made = false
+    const raced: Box = {
+      ...b,
+      helpers: {
+        ...b.helpers,
+        runGit: (args, opts) => {
+          const res = b.helpers.runGit(args, opts)
+          if (!made && args.includes('-i')) {
+            made = true
+            write(path.join(b.project, 'other', '.claude', 'agents', 'x.md'), '---\nname: x\ndisallowedTools: Bash(curl *)\n---\n')
+          }
+          return res
+        },
+      },
+    }
+    expect(check(raced, {}, { now: 1_000 })).toBeNull()
+    expect(made).toBe(true)
+    expect(check(raced, {}, { now: 1_000 })).toContain('x.md')
+  }, 60_000)
+
+  // HAND-DERIVED: a stamp newer than 2 s before the scan may be rewritten again in the same clock tick, so its clean answer is not reused (git's racy-index rule).
+  it('a nested scan built on a stamp written within the last 2 s is redone on the next call', () => {
+    const b = box('nested-racy')
+    expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    write(path.join(b.project, 'other', 'readme.txt'), 'x\n')
+    expect(runGit(['add', '-f', '.'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    postdate(b.project)
+    let listings = 0
+    const counted: Box = { ...b, helpers: { ...b.helpers, runGit: (args, opts) => (args[0] === 'ls-files' && listings++, b.helpers.runGit(args, opts)) } }
+    expect(check(counted, {}, { now: 1_000 })).toBeNull()
+    const fresh = listings
+    expect(check(counted, {}, { now: 1_000 })).toBeNull()
+    expect(listings).toBe(fresh * 2)
+    age(b.project)
+    expect(check(counted, {}, { now: 1_000 })).toBeNull()
+    const aged = listings
+    expect(check(counted, {}, { now: 1_000 })).toBeNull()
+    expect(listings).toBe(aged)
+  }, 60_000)
+
+  // HAND-DERIVED: folders past the stamp cap are not stamped, so a .claude made in one of them was never seen to change and the minute kept the clean answer.
+  it('a nested scan with more folders than it stamps is not cached as clean', () => {
+    const b = box('nested-cap')
+    expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    for (let i = 0; i < 2_100; i++) write(path.join(b.project, `d${i}`, 'f.txt'), 'x')
+    age(b.project)
+    expect(check(b, {}, { now: 1_000 })).toBeNull()
+    write(path.join(b.project, 'd999', '.claude', 'agents', 'x.md'), '---\nname: x\ndisallowedTools: Bash(curl *)\n---\n')
+    expect(check(b, {}, { now: 1_000 })).toContain('x.md')
+  }, 120_000)
+
+  // HAND-DERIVED: a skill added beside one already listed, far below the project, changes only the folders along its path.
+  it('a nested scan that was clean sees a skill added beside a listed one, however deep', () => {
+    const b = box('nested-deep')
+    expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    const skills = path.join(b.project, 'a', 'b', 'c', 'd', 'e', '.claude', 'skills')
+    write(path.join(skills, 's', 'SKILL.md'), '---\nname: s\n---\n')
+    age(b.project)
+    expect(check(b, {}, { now: 1_000 })).toBeNull()
+    write(path.join(skills, 't', 'SKILL.md'), PATTERN_SKILL)
+    expect(check(b, {}, { now: 1_000 })).toContain(path.join('t', 'SKILL.md'))
+  }, 60_000)
 
   it('a skill tree too large to finish checking counts as hidden', () => {
     const b = box('huge')
@@ -361,6 +454,7 @@ describe('hiddenRuleSource: rule files', () => {
 
   it('a skill written into a fixed folder counts on the next call, not a minute later', () => {
     const b = box('ttl')
+    age(b.config, b.project)
     expect(check(b, {}, { now: 1_000 })).toBeNull()
     write(path.join(b.config, 'skills', 'net', 'SKILL.md'), '---\ndisallowed-tools: Bash(curl *)\n---\n')
     expect(check(b, {}, { now: 1_500 })).toContain('SKILL.md')
