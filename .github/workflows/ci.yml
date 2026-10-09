@@ -295,10 +295,55 @@ jobs:
           path: ${{ runner.temp }}/tg-model-cache
           key: ${{ steps.model-cache.outputs.cache-primary-key }}
 
+  # Two-sided retrieval gate (scripts/eval-gate.ts): fails when MRR@10 on a pinned slice moves significantly down or up against evals/retrieval/baseline.json. Linux only, one runner: the ranks do not depend on the platform and the slice is small on purpose (the labelled files plus 150 seeded distractors), so this costs one embedding pass over a few hundred files. The model comes from the same cache the test jobs use and is never fetched per run.
+  retrieval-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Point the embedding model cache at a path that outlives the data root
+        shell: bash
+        run: echo "TOKEN_GOAT_MODEL_CACHE_DIR=${RUNNER_TEMP}/tg-model-cache" >> "$GITHUB_ENV"
+      - name: Restore the embedding model cache
+        id: model-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/tg-model-cache
+          key: tg-model-${{ runner.os }}-${{ hashFiles('src/embed_model.ts', 'src/embed_runtime.ts') }}
+      - name: Warm the embedding model cache
+        shell: bash
+        run: npm run model:warm
+      - name: Build
+        run: npm run build
+      - name: Retrieval gate
+        shell: bash
+        run: npm run eval:gate -- --home "${RUNNER_TEMP}/eval-gate-home"
+      - name: Check the embedding model cache is worth saving
+        id: model-cache-complete
+        if: always() && steps.model-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          root="${RUNNER_TEMP}/tg-model-cache"
+          if [ -d "$root" ] && [ "$(find "$root" -name '*.onnx' -size +30M | wc -l)" -gt 0 ] && [ "$(find "$root" -name 'ort-wasm-simd-threaded.wasm' -size +13M | wc -l)" -gt 0 ]; then
+            echo 'ok=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ok=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Save the embedding model cache
+        if: always() && steps.model-cache-complete.outputs.ok == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/tg-model-cache
+          key: ${{ steps.model-cache.outputs.cache-primary-key }}
+
   # The stable check name the branch ruleset points at. The sharded jobs report as `test-linux (1)`, `test-windows (2)` and so on, so a required context naming a shard would stop gating the moment the shard count changed; this job keeps one name the ruleset can pin, and pulls Windows, macOS and the native release targets under the same gate while it is there, so a change that stops one of those targets compiling cannot merge and surface only at release.
   test:
     if: always()
-    needs: [test-linux, test-windows, test-macos, native-targets]
+    needs: [test-linux, test-windows, test-macos, native-targets, retrieval-gate]
     runs-on: ubuntu-latest
     steps:
       - name: Verify every sharded test job succeeded

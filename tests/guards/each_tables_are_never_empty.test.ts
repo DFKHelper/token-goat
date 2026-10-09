@@ -40,6 +40,11 @@ const EXEMPT: readonly Exemption[] = [
     reason: 'jobsRestoringTheModelCache() returns the result of pinnedPopulation(), which fails on an empty or under-floor population before any table is built from it.',
   },
   {
+    file: 'tests/guards/embed_model_available_where_required.test.ts',
+    table: 'suiteJobs.map((j) => [j])',
+    reason: 'suiteJobs is jobs filtered to those running the suite. The same file asserts at least three such jobs (one per platform), so a workflow that stopped running the suite fails there first.',
+  },
+  {
     file: 'tests/guards/omission_markers_are_all_countable.test.ts',
     table: 'markers.map((m) => [`${m.file} (n=${m.n}): ${m.template}`, m.rendered, m.n] as const)',
     reason: 'markers is the return value of renderedMarkers(), which passes its scan through pinnedPopulation() with a floor of 8 and two anchors before returning, so a filter tree that stopped yielding markers fails there rather than registering zero cases here.',

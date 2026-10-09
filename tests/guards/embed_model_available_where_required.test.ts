@@ -89,7 +89,7 @@ describe('the model-gated tests can still be run somewhere', () => {
     (jobId) => {
       const steps = ciJobs()[jobId]?.steps ?? []
       const placesModel = steps.findIndex((s) => (s.run ?? '').includes('model:warm'))
-      const runsTests = steps.findIndex((s) => (s.run ?? '').includes('npm test') || String(s.with?.['command'] ?? '').includes('npm test'))
+      const runsTests = steps.findIndex((s) => (s.run ?? '').includes('npm test') || (s.run ?? '').includes('eval:gate') || String(s.with?.['command'] ?? '').includes('npm test'))
 
       expect(
         placesModel,
@@ -104,7 +104,14 @@ describe('the model-gated tests can still be run somewhere', () => {
     },
   )
 
-  it.each(jobs.map((j) => [j]))('%s declares the weights required, so a silent skip there is a failure', (jobId) => {
+  // The retrieval gate has no skippable test: its eval crashes without the weights, which fails the job, so only the jobs that run the suite need the variable.
+  const suiteJobs = jobs.filter((j) => (ciJobs()[j]?.steps ?? []).some((s) => (s.run ?? '').includes('npm test') || String(s.with?.['command'] ?? '').includes('npm test')))
+
+  it('finds the jobs that run the suite, one per platform at least', () => {
+    expect(suiteJobs.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it.each(suiteJobs.map((j) => [j]))('%s declares the weights required, so a silent skip there is a failure', (jobId) => {
     const steps = ciJobs()[jobId]?.steps ?? []
     expect(
       steps.some((s) => (s.run ?? '').includes(`${REQUIRE_VAR}=1`)),

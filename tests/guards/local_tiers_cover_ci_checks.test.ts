@@ -15,6 +15,10 @@ const NOT_A_CHECK: ReadonlyMap<string, string> = new Map([
   ['ci', 'dependency install, not a check'],
   // Downloads the embedding model into CI's cache. Locally the model lives in TOKEN_GOAT_MODEL_CACHE_DIR already and the suite gates on modelFilesPresent().
   ['run model:warm', 'fetches the model into CI cache; the local machine already has it'],
+  // The suite's global setup (tests/setup/build-bundle.ts) already builds the same bundle before any local test run.
+  ['run build', 'builds dist/token-goat.mjs for the retrieval gate; the local suite builds it in its global setup'],
+  // Embeds a few hundred files with the real model, which takes minutes: far past what a commit or push tier can spend. Run by hand with `npm run eval:gate -- --home <dir>`.
+  ['run eval:gate', 'embeds a few hundred files, minutes of work no hook tier should spend; run by hand before changing retrieval'],
 ])
 
 /** Every `npm ...` invocation CI runs, normalized to the part that names what it does. */
