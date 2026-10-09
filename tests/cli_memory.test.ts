@@ -108,7 +108,7 @@ describe('runMemoryCommand', () => {
       cap.restore()
     }
 
-    expect(cap.text()).toMatch(/applied 1 file\(s\)/)
+    expect(cap.text()).toMatch(/applied 1 file, skipped 0 files/)
     const after = fs.readFileSync(claudeMd, 'utf-8')
     expect((after.match(/Do the thing\./g) ?? []).length).toBe(1)
   })

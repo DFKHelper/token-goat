@@ -318,11 +318,11 @@ describe('accessFailureMessage', () => {
   it.each([['EISDIR'], ['ENOTDIR'], ['EPERM'], ['EMFILE']])('reports %s as itself', (code) => {
     const err = Object.assign(new Error(code), { code })
 
-    expect(accessFailureMessage(err, 'a.docx')).toBe(`could not read a.docx (${code})`)
+    expect(accessFailureMessage(err, 'a.docx')).toBe(`could not read "a.docx" (${code})`)
   })
 
   it('says something usable when the failure carries no errno at all', () => {
-    expect(accessFailureMessage(new Error('boom'), 'a.docx')).toBe('could not read a.docx (unknown error)')
+    expect(accessFailureMessage(new Error('boom'), 'a.docx')).toBe('could not read "a.docx" (unknown error)')
   })
 })
 

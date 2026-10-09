@@ -651,10 +651,10 @@ describe('runAnswer against the real index', () => {
     const r = captureErr(() => runAnswer({ question: 'what does runSection do' }))
     expect(r.err).toBe('')
     expect(r.code).toBe(0)
-    expect(r.out.split('\n')[0]).toBe('via: token-goat brief "src/read_section.ts::runSection" --limit 20')
+    expect(r.out.split('\n')[0]).toBe('via: token-goat brief src/read_section.ts::runSection --limit 20')
     expect(r.out).toContain('runSection')
     const forPhrase = captureErr(() => runAnswer({ question: 'what is runSection for?' }))
-    expect(forPhrase.out.split('\n')[0]).toBe('via: token-goat brief "src/read_section.ts::runSection" --limit 20')
+    expect(forPhrase.out.split('\n')[0]).toBe('via: token-goat brief src/read_section.ts::runSection --limit 20')
   })
 
   // HAND-DERIVED fixture: one name written into two project files, so the definition count is fixed by the layout.

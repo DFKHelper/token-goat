@@ -1532,7 +1532,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     // --fix --yes: applies the mechanical exact-duplicate-line removal.
     const rFix = run(['memory', '--project', proj, '--fix', '--yes'])
     expect(rFix.status, rFix.stderr).toBe(0)
-    expect(rFix.stdout).toMatch(/applied 1 file\(s\)/)
+    expect(rFix.stdout).toMatch(/applied 1 file, skipped 0 files/)
     const after = fs.readFileSync(claudeMd, 'utf8')
     expect((after.match(/Always run tests\./g) ?? []).length).toBe(1)
   },
