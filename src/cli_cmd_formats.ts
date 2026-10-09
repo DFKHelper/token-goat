@@ -105,7 +105,7 @@ export async function cmdImageText(file: string, opts: { json?: boolean; lang?: 
     const tokens = opts.lang.split(/[+,;\s]+/).map((s) => s.trim().toLowerCase()).filter(Boolean)
     const invalid = tokens.filter((t) => !isSupportedOcrLang(t))
     if (invalid.length > 0) {
-      throw new CliError(`unsupported OCR language(s) ${echoedValue(invalid.join(', '))}; must be from: ${SUPPORTED_OCR_LANG_CODES.join(', ')}`)
+      throw new CliError(`unsupported OCR ${invalid.length === 1 ? 'language' : 'languages'} ${echoedValue(invalid.join(', '))}; must be from: ${SUPPORTED_OCR_LANG_CODES.join(', ')}`)
     }
   }
   const result = await runImageText(file, opts.lang)

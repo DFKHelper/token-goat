@@ -310,7 +310,7 @@ export function cmdCacheAudit(opts: { json?: boolean }): void {
     const mark = f.ok ? 'ok  ' : 'WARN'
     process.stdout.write(`[${mark}] ${displaySafeText(f.check)}: ${displaySafeText(f.detail)}\n`)
   }
-  process.stdout.write(issueCount === 0 ? 'cache-audit: no issues found\n' : `cache-audit: ${issueCount} issue(s) found\n`)
+  process.stdout.write(issueCount === 0 ? 'cache-audit: no issues found\n' : `cache-audit: ${countNoun(issueCount, 'issue')} found\n`)
 }
 
 // ── resume ────────────────────────────────────────────────────────────────────

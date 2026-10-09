@@ -6,6 +6,7 @@ import { displaySafeText, displaySafeJson } from './paths.js'
 import { getDb } from './db.js'
 import { globalDbPath } from './constants.js'
 import { isWorkerRunning } from './worker_lifecycle.js'
+import { countNoun } from './util.js'
 
 /** Outcome of a {@link reclaimIndex} run. */
 export interface ReclaimResult {
@@ -182,7 +183,7 @@ export function cmdReclaimIndex(opts: {
   process.stdout.write(`  ${mb(before)} -> ${mb(after)} (${delta})\n`)
   if (result.rebuilt) {
     for (const [table, n] of Object.entries(result.dropped)) {
-      process.stdout.write(`  dropped ${n} row(s) from ${displaySafeText(table)}\n`)
+      process.stdout.write(`  dropped ${countNoun(n, 'row')} from ${displaySafeText(table)}\n`)
     }
     // Say this explicitly: after a rebuild the index is intentionally empty, and a user who runs a `symbol`/`read` query before reindexing would otherwise read the empty result as the reclaim having destroyed something.
     process.stdout.write(

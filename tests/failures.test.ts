@@ -319,7 +319,7 @@ assertion failed
 FAIL
 `);
       const text = formatFailuresText(result);
-      expect(text).toMatch(/2 failure\(s\)/);
+      expect(text).toMatch(/2 failures/);
     });
 
     it('should show message when no failures', () => {

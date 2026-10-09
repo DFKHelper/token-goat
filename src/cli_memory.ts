@@ -9,6 +9,7 @@ import { auditClaudeMd, findContentDuplicates, type ClaudeMdReport, type DupClus
 import { resolveProjectRoot } from './project.js'
 import { confirmAndApply, type FileChange } from './confirm_apply.js'
 import { echoedValue } from './hint_suggestion_guard.js'
+import { countNoun } from './util.js'
 
 export interface MemoryCommandOptions {
   project?: string
@@ -125,12 +126,12 @@ export async function runMemoryCommand(opts: MemoryCommandOptions = {}): Promise
   }
 
   process.stdout.write(
-    `\n[--fix] ${changes.length} file(s) have exact-duplicate lines that can be safely removed.\n`,
+    `\n[--fix] ${countNoun(changes.length, 'file')} have exact-duplicate lines that can be safely removed.\n`,
   )
   const result = await confirmAndApply(changes, opts.yes === true ? { yes: true } : {})
 
   process.stdout.write(
-    `\n[--fix] applied ${result.applied.length} file(s), skipped ${result.skipped.length} file(s)` +
+    `\n[--fix] applied ${countNoun(result.applied.length, 'file')}, skipped ${countNoun(result.skipped.length, 'file')}` +
       `${result.dryRun ? ' (dry run)' : ''}\n`,
   )
   if (advisoryCount > 0) {

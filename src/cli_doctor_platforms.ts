@@ -13,6 +13,7 @@ import type { DoctorResult } from './doctor_result.js'
 import { displaySafeText, normalizePath } from './paths.js'
 import { stripBom } from './jsonc_text.js'
 import { fencedCommand } from './hint_suggestion_guard.js'
+import { countNoun } from './util.js'
 
 export function globalMcpConfigPath(): string {
   return copilotMcpConfigPath()
@@ -286,6 +287,6 @@ export function checkClaudeHooksGone(wired: boolean, activity: { count: number; 
   return {
     name: 'Claude Code hooks',
     status: 'warn',
-    message: `Claude Code ran ${activity.count} token-goat hook(s) in the last 7 days, the last at ${last} UTC, but no token-goat hook is wired in ~/.claude/settings.json or this project's .claude/settings.json now, and no uninstall was recorded. The file was probably overwritten or deleted. Run: token-goat install (or token-goat install --project), then restart any running session.`,
+    message: `Claude Code ran ${countNoun(activity.count, 'token-goat hook')} in the last 7 days, the last at ${last} UTC, but no token-goat hook is wired in ~/.claude/settings.json or this project's .claude/settings.json now, and no uninstall was recorded. The file was probably overwritten or deleted. Run: token-goat install (or token-goat install --project), then restart any running session.`,
   }
 }

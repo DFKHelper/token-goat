@@ -2,6 +2,7 @@
 
 import type { SqliteDatabase } from './sqlite_driver.js'
 import { readGlobalDb, statsHasDurationColumn, statsHasHarnessColumn, HOOK_STATS_RETENTION_DAYS } from './stats.js'
+import { countNoun } from './util.js'
 
 /** Nearest-rank percentile of an ascending-sorted array. 0 for an empty array. */
 function percentile(sorted: readonly number[], p: number): number {
@@ -76,11 +77,11 @@ export function hookLatencyBreakdown(testDb?: SqliteDatabase, homeDir?: string):
 export function renderHookLatencyStats(testDb?: SqliteDatabase, homeDir?: string): void {
   const rows = hookLatencyBreakdown(testDb, homeDir)
   if (rows.length === 0) {
-    console.log(`No hook latency recorded in the last ${HOOK_STATS_RETENTION_DAYS} day(s) (or this database predates the duration_ms column).`)
+    console.log(`No hook latency recorded in the last ${countNoun(HOOK_STATS_RETENTION_DAYS, 'day')} (or this database predates the duration_ms column).`)
     return
   }
   const nowTs = Math.floor(Date.now() / 1000)
-  console.log(`Hook latency, last ${HOOK_STATS_RETENTION_DAYS} day(s) (worst p95 first):`)
+  console.log(`Hook latency, last ${countNoun(HOOK_STATS_RETENTION_DAYS, 'day')} (worst p95 first):`)
   for (const r of rows) {
     const age = formatAgeSeconds(Math.max(0, nowTs - r.newest_ts))
     console.log(

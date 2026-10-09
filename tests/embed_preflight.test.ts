@@ -100,7 +100,7 @@ describe('explainModelDownload', () => {
     expect(out.status).toBe('missing_model_files')
     expect(out.available).toBe(false)
     expect(out.message).toContain('not downloaded yet')
-    expect(out.message).toContain("this project's 5 indexed file(s)")
+    expect(out.message).toContain("this project's 5 indexed files")
     expect(out.message).not.toMatch(/token-goat index/)
     expect(out.suggestion).toBe(`Nothing to do. To download it now instead, run \`${WARM_COMMAND}\`.`)
     expect(out.actionRequired).toBe(out.suggestion)

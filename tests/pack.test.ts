@@ -312,7 +312,7 @@ describe('formatMarkdown', () => {
     }
     const md = formatMarkdown(result)
     // The closing '*' immediately after the last name already pins that nothing (an ellipsis or otherwise) was inserted between the last name and the end of the note.
-    expect(md).toContain('Skipped 3 file(s): a.ts (too large), b.ts (too large), c.ts (too large)*')
+    expect(md).toContain('Skipped 3 files: a.ts (too large), b.ts (too large), c.ts (too large)*')
   })
 
   it('appends an ellipsis on the skipped-files note when more than 3 files were skipped', () => {
@@ -323,7 +323,7 @@ describe('formatMarkdown', () => {
       total_tokens: 0,
     }
     const md = formatMarkdown(result)
-    expect(md).toContain('Skipped 4 file(s): a.ts, b.ts, c.ts...')
+    expect(md).toContain('Skipped 4 files: a.ts, b.ts, c.ts...')
   })
 })
 

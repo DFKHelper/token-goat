@@ -396,7 +396,7 @@ describe('Stats rendering', () => {
     const result = renderStats(stats)
     expect(result).toContain('0 direct commands')
     expect(result).toContain('723')
-    expect(result).toContain('hint(s) fired but not acted on')
+    expect(result).toContain('hints fired but not acted on')
   })
 
   it('renderStats stays silent about hints when direct commands were used', () => {
@@ -408,13 +408,13 @@ describe('Stats rendering', () => {
       ],
     }
     const result = renderStats(stats)
-    expect(result).not.toContain('hint(s) fired but not acted on')
+    expect(result).not.toContain('hints fired but not acted on')
   })
 
   it('renderStats does not flag hints when by_source has no hint entries at all', () => {
     const stats = { ...minimalStats, by_command: [] }
     const result = renderStats(stats)
-    expect(result).not.toContain('hint(s) fired but not acted on')
+    expect(result).not.toContain('hints fired but not acted on')
   })
 
   it('renderStats handles zero deltas', () => {

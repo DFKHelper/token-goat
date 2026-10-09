@@ -15,7 +15,7 @@ import * as path from 'node:path'
 
 import { displaySafeText, displaySafeJson } from './paths.js'
 import { CompressedOutput, TOOL_FILTERS, ToolFilter, combineStreams, deliverCompressed, detectFromCommand } from './tool_filters/index.js'
-import { runGit } from './util.js'
+import { runGit, countNoun } from './util.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 
 /** A corpus case: one captured command output plus the lines a developer must still be able to see. */
@@ -269,7 +269,7 @@ function renderValidation(cases: readonly BenchCase[]): { text: string; code: nu
   lines.push(
     failed.length === 0
       ? 'The corpus discriminates: a ratio measured against it cannot be raised by deleting content.'
-      : `${failed.length} control check(s) failed. Do not optimise against this corpus until they pass.`,
+      : `${countNoun(failed.length, 'control check')} failed. Do not optimise against this corpus until they pass.`,
   )
   return { text: lines.join('\n'), code: failed.length === 0 ? 0 : 1 }
 }

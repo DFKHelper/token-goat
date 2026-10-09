@@ -723,7 +723,7 @@ describe('cli_doctor', () => {
       seedHookDurations(dbPath, 'post_tool_use', Array(100).fill(30), 'claudecode')
       const result = checkHookLatency(dbPath)
       expect(result.status).toBe('warn')
-      expect(result.message).toContain('25 call(s)')
+      expect(result.message).toContain('25 calls')
       expect(result.message).not.toContain('125')
       expect(result.message).toContain('opencode')
     })

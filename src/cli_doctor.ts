@@ -515,7 +515,7 @@ export function checkCompactionChannel(dbPath: string): DoctorResult {
     }
     if (conclusive.length === 0) {
       if (preFixConclusive > 0) {
-        return { name, status: 'ok', message: `no post-fix compaction evidence yet -- ${preFixConclusive} compaction(s) found predate ${COMPACTION_MANIFEST_FIX_VERSION}'s manifest-survival fix and are not counted` }
+        return { name, status: 'ok', message: `no post-fix compaction evidence yet -- ${countNoun(preFixConclusive, 'compaction')} found predate ${COMPACTION_MANIFEST_FIX_VERSION}'s manifest-survival fix and are not counted` }
       }
       return { name, status: 'ok', message: 'no compaction has been measured yet' }
     }
@@ -529,7 +529,7 @@ export function checkCompactionChannel(dbPath: string): DoctorResult {
     }
     const kept = conclusive.reduce((n, c) => n + c.survived, 0)
     const sent = conclusive.reduce((n, c) => n + c.sampled, 0)
-    return { name, status: 'ok', message: `${kept}/${sent} sampled paths survived the last ${conclusive.length} compaction(s)` }
+    return { name, status: 'ok', message: `${kept}/${sent} sampled paths survived the last ${countNoun(conclusive.length, 'compaction')}` }
   } catch (e) {
     return { name, status: 'warn', message: `could not read compaction stats: ${extractErrorMessage(e)}` }
   }
@@ -567,7 +567,7 @@ export function checkHookLatency(dbPath: string): DoctorResult {
       return {
         name,
         status: 'warn',
-        message: `${label(worst)} is running a p95 of ${worst.p95_ms}ms across ${worst.count} call(s); see \`token-goat stats --hooks\` for the full breakdown`,
+        message: `${label(worst)} is running a p95 of ${worst.p95_ms}ms across ${countNoun(worst.count, 'call')}; see \`token-goat stats --hooks\` for the full breakdown`,
       }
     }
     const ignored = rows.find((r) => r.p95_ms > budgetMs && !judged.includes(r))
@@ -576,11 +576,11 @@ export function checkHookLatency(dbPath: string): DoctorResult {
       return {
         name,
         status: 'ok',
-        message: `${label(ignored)} hit p95 ${ignored.p95_ms}ms ${age} (${ignored.count} call(s)), too old or too few to judge; see \`token-goat stats --hooks\``,
+        message: `${label(ignored)} hit p95 ${ignored.p95_ms}ms ${age} (${countNoun(ignored.count, 'call')}), too old or too few to judge; see \`token-goat stats --hooks\``,
       }
     }
     const shown = worst ?? rows[0]!
-    return { name, status: 'ok', message: `worst p95 ${shown.p95_ms}ms (${label(shown)}) across ${shown.count} call(s)` }
+    return { name, status: 'ok', message: `worst p95 ${shown.p95_ms}ms (${label(shown)}) across ${countNoun(shown.count, 'call')}` }
   } catch (e) {
     return { name, status: 'warn', message: `could not read hook latency stats: ${extractErrorMessage(e)}` }
   }
@@ -634,7 +634,7 @@ export function checkUnmappedTools(dbPath: string, options?: { maxAgeDays?: numb
     return {
       name,
       status: 'ok',
-      message: `${names.length} tool name(s) seen with no handler, none resembling one token-goat handles: ${shown.join(', ')}${more}`,
+      message: `${countNoun(names.length, 'tool name')} seen with no handler, none resembling one token-goat handles: ${shown.join(', ')}${more}`,
     }
   } catch (e) {
     return { name, status: 'warn', message: `could not read the tool-name histogram: ${extractErrorMessage(e)}` }

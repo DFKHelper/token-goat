@@ -22,7 +22,7 @@ describe('stats compliance insight', () => {
 
     const output = stripAnsiEscapes(renderStats(mockStats))
     expect(output).toContain('Low surgical compliance:')
-    expect(output).toContain('3 command(s) vs 137 advisory hints')
+    expect(output).toContain('3 commands vs 137 advisory hints')
     expect(output).toContain('Run `token-goat doctor --fix` to inject the instruction gate.')
   })
 

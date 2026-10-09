@@ -102,7 +102,7 @@ function _plainTextStats(summary: StatsSummary): void {
       lines.push(
         '',
         '## By Command',
-        `  0 direct command invocations this window -- ${hintBucket.events} hint(s) fired but not acted on.`,
+        `  0 direct command invocations this window -- ${countNoun(hintBucket.events, 'hint')} fired but not acted on.`,
         '  Run token-goat symbol/read/section/semantic/outline/skeleton directly to capture these savings.',
       )
     }

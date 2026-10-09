@@ -14,6 +14,7 @@ import type {
 import { displaySafeText } from '../paths.js'
 import { toLocalDateKey } from '../stats.js'
 import { currentUpgradeDecision, getCachedUpdateStatus, updateAdvice } from '../cli_upgrade.js'
+import { countNoun } from '../util.js'
 
 // Statistics messages for insights section
 interface StatsMessages {
@@ -938,7 +939,7 @@ function _renderInsightsSection(stats: StatsData): string[] {
     if (hintSource && hintSource.events > 0) {
       lines.push(
         `${_M}${fg(...C.YELLOW)}▸${RESET} ${dim('0 direct commands   ')}${fg(...C.TEXT_PRIMARY)}${hintSource.events.toLocaleString()}${RESET}` +
-          `${dim(' hint(s) fired but not acted on — run symbol/read/section/semantic/outline/skeleton directly to capture these savings')}`,
+          `${dim(` ${hintSource.events === 1 ? 'hint' : 'hints'} fired but not acted on — run symbol/read/section/semantic/outline/skeleton directly to capture these savings`)}`,
       )
     }
   } else {
@@ -950,7 +951,7 @@ function _renderInsightsSection(stats: StatsData): string[] {
       if (compliancePct < 25) {
         lines.push(
           `${_M}${fg(...C.YELLOW)}▸${RESET} ${dim('Low surgical compliance: ')}${fg(...C.TEXT_PRIMARY)}${compliancePct}%${RESET}` +
-            `${dim(` (${commandEvents} command(s) vs ${hintEvents} advisory hints). Run \`token-goat doctor --fix\` to inject the instruction gate.`)}`,
+            `${dim(` (${countNoun(commandEvents, 'command')} vs ${hintEvents} advisory hints). Run \`token-goat doctor --fix\` to inject the instruction gate.`)}`,
         )
       }
     }

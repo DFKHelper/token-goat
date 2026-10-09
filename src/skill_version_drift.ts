@@ -4,6 +4,7 @@ import { getDb } from './db.js'
 import { globalDbPath } from './constants.js'
 import { VERSION } from './version.js'
 import { buildCommandManifest, flattenCommandNames } from './cli_commands.js'
+import { countNoun } from './util.js'
 
 // Only the `token-goat` skill's own command surface is meaningful to diff against itself -- any other skill name is a no-op throughout this module.
 const TRACKED_SKILL = 'token-goat'
@@ -75,7 +76,7 @@ export async function checkSkillVersionDrift(sessionId: string | undefined): Pro
     }
     const shown = newCommands.slice(0, MAX_COMMANDS_SHOWN)
     const more = newCommands.length > shown.length ? ` (+${newCommands.length - shown.length} more)` : ''
-    return `[token-goat: upgraded v${row.loaded_version} -> v${VERSION} since you loaded this skill -- ${newCommands.length} new command(s) available: ${shown.join(', ')}${more}. Run \`token-goat commands\` for full details.]`
+    return `[token-goat: upgraded v${row.loaded_version} -> v${VERSION} since you loaded this skill -- ${countNoun(newCommands.length, 'new command')} available: ${shown.join(', ')}${more}. Run \`token-goat commands\` for full details.]`
   } catch {
     return null
   }

@@ -5,7 +5,7 @@ import * as path from 'node:path'
 import * as minimatch from 'minimatch'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { statThroughHandle } from './handle_stat.js'
-import { decodeSource } from './util.js'
+import { decodeSource, countNoun } from './util.js'
 import { estimateTokens } from './overflow_guard.js'
 import { detectLanguage } from './parser_types.js'
 import { fenceFor } from './language_specs.js'
@@ -453,7 +453,7 @@ export function formatMarkdown(
   if (result.skipped.length > 0) {
     const skipped = result.skipped.slice(0, 3).join(', ')
     const ellipsis = result.skipped.length > 3 ? '...' : ''
-    parts.push(`> *Skipped ${result.skipped.length} file(s): ${skipped}${ellipsis}*\n`)
+    parts.push(`> *Skipped ${countNoun(result.skipped.length, 'file')}: ${skipped}${ellipsis}*\n`)
   }
 
   parts.push('---\n')

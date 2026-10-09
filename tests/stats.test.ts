@@ -581,7 +581,7 @@ describe('stats', () => {
       }
 
       expect(output).toContain('0 direct command')
-      expect(output).toContain('hint(s) fired but not acted on')
+      expect(output).toContain('1 hint fired but not acted on')
     })
   })
 

@@ -15,7 +15,7 @@ import { findSystemTempFiles, pruneBlockedRoot, pruneSystemTempFiles, sweepKnown
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
-import { ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt, foldPath, extractErrorMessage, cappedSourceBytesSaved } from './util.js'
+import { ensureDirSync, LOCK_WAIT_MS_HARDENED, withFileLock, sleepSync, withExtension, atomicWriteBytes, requireNonNegativeStrictInt, requirePositiveStrictInt, foldPath, extractErrorMessage, cappedSourceBytesSaved, countNoun } from './util.js'
 import { displaySafeText, normalizePath, displaySafeJson } from './paths.js'
 import { configPath } from './constants.js'
 import { RETIRED_CONFIG_KEYS } from './config_defaults.js'
@@ -453,7 +453,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       const hint = f.suggestion === undefined ? '' : isNearMiss ? ` (did you mean: ${f.suggestion}?)` : ` (${f.suggestion})`
       emit(`[${f.kind}] ${f.key}${hint}`)
     }
-    emit(`config validate: ${findings.length} issue(s) found`)
+    emit(`config validate: ${countNoun(findings.length, 'issue')} found`)
     return
   }
 
@@ -537,33 +537,33 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
         return
       }
       if (removed === 0) {
-        emit('Would prune 0 stale root(s). Nothing to do.')
+        emit('Would prune 0 stale roots. Nothing to do.')
       } else {
-        emit(`Would prune ${removed} stale root(s):`)
+        emit(`Would prune ${countNoun(removed, 'stale root')}:`)
         for (const r of stale) emit(`  ${r}`)
       }
       if (staleTempFiles.length === 0) {
-        emit('Would prune 0 stale indexed temp-dir file(s). Nothing to do.')
+        emit('Would prune 0 stale indexed temp-dir files. Nothing to do.')
       } else {
-        emit(`Would prune ${staleTempFiles.length} stale indexed temp-dir file(s):`)
+        emit(`Would prune ${countNoun(staleTempFiles.length, 'stale indexed temp-dir file')}:`)
         for (const p of staleTempFiles) emit(`  ${p}`)
       }
       if (orphanChunkPaths.length === 0) {
-        emit('Would prune 0 orphaned embedding chunk file(s). Nothing to do.')
+        emit('Would prune 0 orphaned embedding chunk files. Nothing to do.')
       } else {
-        emit(`Would prune orphaned embedding chunks for ${orphanChunkPaths.length} file(s):`)
+        emit(`Would prune orphaned embedding chunks for ${countNoun(orphanChunkPaths.length, 'file')}:`)
         for (const p of orphanChunkPaths) emit(`  ${p}`)
       }
       if (deadRetryPaths.length === 0) {
-        emit('Would prune 0 dead read-retry counter(s). Nothing to do.')
+        emit('Would prune 0 dead read-retry counters. Nothing to do.')
       } else {
-        emit(`Would prune ${deadRetryPaths.length} dead read-retry counter(s):`)
+        emit(`Would prune ${countNoun(deadRetryPaths.length, 'dead read-retry counter')}:`)
         for (const p of deadRetryPaths) emit(`  ${p}`)
       }
       if (sweep.prunedRows === 0) {
-        emit('Would prune 0 dead file row(s) under known roots. Nothing to do.')
+        emit('Would prune 0 dead file rows under known roots. Nothing to do.')
       } else {
-        emit(`Would prune ${sweep.prunedRows} dead file row(s) under ${sweep.prunedRoots.length} known root(s):`)
+        emit(`Would prune ${countNoun(sweep.prunedRows, 'dead file row')} under ${countNoun(sweep.prunedRoots.length, 'known root')}:`)
         for (const r of sweep.prunedRoots) emit(`  ${r}`)
       }
       // Surfaced in the preview and not only in the real run: a flagged root is the one case where running the command changes nothing and the reason is worth reading -- too large a fraction of its rows would go at once, which reads as an offline mount rather than as deleted files.
@@ -581,12 +581,12 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
       emit(displaySafeJson({ pruned: removed, blocked_roots: after, prunedTempFiles: prunedTempFiles.length, prunedOrphanChunkFiles: prunedOrphanChunks.length, prunedOrphanVectors, prunedDeadRetryPaths: sweep.prunedDeadRetryPaths.length, prunedDeadFileRows: sweep.prunedRows, deadRowRoots: sweep.prunedRoots, flaggedRoots: sweep.flaggedRoots }))
       return
     }
-    emit(`Pruned ${removed} stale root(s). Remaining: ${after.length}`)
-    emit(`Pruned ${prunedTempFiles.length} stale indexed temp-dir file(s).`)
-    emit(`Pruned orphaned embedding chunks for ${prunedOrphanChunks.length} file(s).`)
-    emit(`Pruned ${prunedOrphanVectors} orphaned embedding vector(s).`)
-    emit(`Pruned ${sweep.prunedDeadRetryPaths.length} dead read-retry counter(s).`)
-    emit(`Pruned ${sweep.prunedRows} dead file row(s) under ${sweep.prunedRoots.length} known root(s).`)
+    emit(`Pruned ${countNoun(removed, 'stale root')}. Remaining: ${after.length}`)
+    emit(`Pruned ${countNoun(prunedTempFiles.length, 'stale indexed temp-dir file')}.`)
+    emit(`Pruned orphaned embedding chunks for ${countNoun(prunedOrphanChunks.length, 'file')}.`)
+    emit(`Pruned ${countNoun(prunedOrphanVectors, 'orphaned embedding vector')}.`)
+    emit(`Pruned ${countNoun(sweep.prunedDeadRetryPaths.length, 'dead read-retry counter')}.`)
+    emit(`Pruned ${countNoun(sweep.prunedRows, 'dead file row')} under ${countNoun(sweep.prunedRoots.length, 'known root')}.`)
     for (const r of sweep.flaggedRoots) emit(`  skipped (too many rows would go at once, root may be partly offline): ${r}`)
     return
   }

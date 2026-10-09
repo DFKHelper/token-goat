@@ -202,7 +202,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
   program
     .command('dead')
     .description('symbols with zero references (default kind: function)')
-    .option('-k, --kind <kind>', 'symbol kind(s) to check, comma-separated for a union (function, method, class, ...)')
+    .option('-k, --kind <kind>', 'symbol kinds to check, comma-separated for a union (function, method, class, ...)')
     .option('--include-private', 'include _-prefixed names')
     .option('--top <n>', 'limit output to top N results')
     .option('-j, --json', 'output as JSON')
@@ -528,7 +528,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
 
   program
     .command('diff <spec> [ref]')
-    .description('show only the git diff hunk(s) that fall within one symbol\'s line range, e.g. `token-goat diff "file.ts::myFn" "HEAD~3..HEAD"` (also accepts the file::symbol@LINE anchor form documented under `read`)')
+    .description('show only the git diff hunks that fall within one symbol\'s line range, e.g. `token-goat diff "file.ts::myFn" "HEAD~3..HEAD"` (also accepts the file::symbol@LINE anchor form documented under `read`)')
     .option('-j, --json', 'output as JSON')
     .action((spec: string, ref: string | undefined, opts: { json?: boolean }) =>
       runExit(() =>

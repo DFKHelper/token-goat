@@ -34,7 +34,7 @@ describe('vscode-extension savings display', () => {
   it('renders the full-window total, not a bytes-derived approximation', () => {
     const rendered = formatSavingsBar(statsFixture())
     expect(rendered.text).toBe('🐐 token-goat: 1,086,245,675 tokens saved (30d)')
-    expect(rendered.tooltip).toContain('1,086,245,675 tokens saved over the last 30 day(s)')
+    expect(rendered.tooltip).toContain('1,086,245,675 tokens saved over the last 30 days')
   })
 
   it('labels the window explicitly rather than calling it a session', () => {

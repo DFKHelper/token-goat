@@ -103,7 +103,7 @@ describe('skill_version_drift', () => {
       const first = await checkSkillVersionDrift(sessionId)
       expect(first).not.toBeNull()
       expect(first).toContain('upgraded v0.0.0-test-old -> v' + VERSION)
-      expect(first).toContain('new command(s) available')
+      expect(first).toContain('new commands available')
       expect(first).toContain('token-goat commands')
 
       // One-shot: the session was already notified, so a second check (same turn or a later one) must not repeat it.

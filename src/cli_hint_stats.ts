@@ -2,7 +2,7 @@
 
 import { getHintStatsSummary, getHintStatsTotals, getHintSpendTotals } from './hint_stats_read.js'
 import { resetHintStats, markCategoryEffective, markCategoryIneffective, isSuppressionCategory, type CategoryEfficacy, type HintCategory, type HintStatsTotals } from './hint_stats.js'
-import { pad } from './util.js'
+import { pad, countNoun } from './util.js'
 import { displaySafeJson, displaySafeText } from './paths.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 
@@ -77,7 +77,7 @@ function printSummary(rows: readonly CategoryEfficacy[]): void {
 /** Prints the all-time saved/spent summary line. Both figures are byte counts, and the column names say so: the schema calls the underlying field `bytes_emitted` and the docs have always described it as bytes, but the printed line said only `spent=5490`, which a reader sitting next to token figures elsewhere in the same tool reads as tokens. A number whose unit is only recoverable from the schema is a number that will be misread. `saved` reuses the pre-existing `stats` ledger (unaffected by this feature) and spans every hint kind; `spent` sums only the much smaller hint_emissions ledger and renders 'n/a', never a fake 0, when nothing has been tracked yet or the store is entirely pre-migration legacy rows. The two figures cover disjoint populations and are deliberately never netted against each other -- see hint_stats.ts's getHintStatsTotals doc comment for the regression this guards against. */
 function printTotals(totals: HintStatsTotals): void {
   const spent = totals.spentBytes === null ? 'n/a' : String(totals.spentBytes)
-  const legacyNote = totals.legacyEmissions > 0 ? ` (excludes ${totals.legacyEmissions} legacy emission(s) recorded before spend tracking)` : ''
+  const legacyNote = totals.legacyEmissions > 0 ? ` (excludes ${countNoun(totals.legacyEmissions, 'legacy emission')} recorded before spend tracking)` : ''
   // saved and spent are deliberately NOT netted against each other: saved is an all-time total across every hint kind stats.ts maps to SOURCE_HINT, while spent sums only the much smaller hint_emissions ledger. They are disjoint populations -- see getHintStatsTotals's doc comment.
   process.stdout.write(
     `\nTOTAL   saved-bytes=${totals.savedBytes} (all-time, every hint kind)   spent-bytes=${spent} (hint_emissions ledger only)${legacyNote}\n`,
@@ -87,7 +87,7 @@ function printTotals(totals: HintStatsTotals): void {
 // The session form of printTotals. saved-bytes is left out rather than printed all-time beside a per-session spend, where it would read as this session's saving: the stats ledger it comes from records no session id, so no per-session figure exists.
 function printSessionTotals(totals: Omit<HintStatsTotals, 'savedBytes'>): void {
   const spent = totals.spentBytes === null ? 'n/a' : String(totals.spentBytes)
-  const legacyNote = totals.legacyEmissions > 0 ? ` (excludes ${totals.legacyEmissions} legacy emission(s) recorded before spend tracking)` : ''
+  const legacyNote = totals.legacyEmissions > 0 ? ` (excludes ${countNoun(totals.legacyEmissions, 'legacy emission')} recorded before spend tracking)` : ''
   process.stdout.write(
     `\nTOTAL (this session)   spent-bytes=${spent} (hint_emissions ledger only)${legacyNote}\n` +
       'saved-bytes: not available per session, because the stats ledger it comes from records no session id. Run `token-goat hint-stats` without --session-id for the all-time figure.\n',

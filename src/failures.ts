@@ -3,6 +3,7 @@
 import { stripAnsiEscapes } from './render/ansi.js';
 import { displaySafeJson } from './paths.js';
 import { allOfCount } from './filter_notice.js';
+import { countNoun } from './util.js'
 
 /** A single failure block with name and body. */
 export interface FailureBlock {
@@ -434,7 +435,7 @@ export function formatFailuresText(result: FailureResult): string {
   }
 
   const n = getFailureCount(result);
-  parts.push(`\n${n} failure(s)  [${result.runner}]`);
+  parts.push(`\n${countNoun(n, 'failure')}  [${result.runner}]`);
   return parts.join('\n');
 }
 

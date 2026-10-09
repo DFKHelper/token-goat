@@ -8,6 +8,7 @@ import { checkEmbeddingPreflight } from './embeddings.js'
 import { fetchBypassesProxy, nodeFetchHonoursEnvProxy, proxyConfigured } from './env_proxy.js'
 import { activeRuntime, NATIVE_RUNTIME_INSTALL, wasmBinaryPresent } from './embed_runtime.js'
 import { activeDownloadCooldown, isExplicitDownload, lastDownloadFailure, MODEL_DOWNLOAD_HOST, RUNTIME_DOWNLOAD_HOST } from './model_download_gate.js'
+import { countNoun } from './util.js'
 
 /** The approximate size of the pinned model files together (711 396 + 34 014 426 bytes). */
 const MODEL_MB = 35
@@ -98,7 +99,7 @@ export function explainModelDownload(result: EmbeddingPreflightResult, now: numb
   // No failure recorded: a load_error with no record is some other fault, and saying "downloading" would hide it. A missing runtime binary alone, with the model in place, is fetched on first use and needs no rewording.
   if (result.status === 'load_error' || !modelMissing) return result
   if (result.status === 'no_embeddings') {
-    const message = `The embedding model (about ${MODEL_MB} MB, once) is not downloaded yet. It downloads by itself in the background, and this project's ${result.indexedFiles} indexed file(s) are embedded after it.`
+    const message = `The embedding model (about ${MODEL_MB} MB, once) is not downloaded yet. It downloads by itself in the background, and this project's ${countNoun(result.indexedFiles, 'indexed file')} are embedded after it.`
     return rebuild('missing_model_files', false, message, `Nothing to do. To download it now instead, run \`${WARM_COMMAND}\`.`, undefined)
   }
   return rebuild('ready', true, `Semantic search is ready. The embedding model (about ${MODEL_MB} MB) is not downloaded yet; it is fetched on first use.`, undefined, undefined)

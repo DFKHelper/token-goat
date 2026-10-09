@@ -561,7 +561,7 @@ describe('cmdConfig layer attribution', () => {
       expect(captured()).toContain('[project_unknown_key] hints.quiet_hour (did you mean: quiet_hours?)')
       expect(captured()).toContain('[project_unknown_section] compact_asist (did you mean: compact_assist?)')
       expect(captured()).not.toContain('not usable')
-      expect(captured()).toContain('config validate: 3 issue(s) found')
+      expect(captured()).toContain('config validate: 3 issues found')
     })
   })
 
@@ -1102,7 +1102,7 @@ describe('cmdConfig validate', () => {
       invalidateConfigCache()
       cmdConfig({ action: 'validate' })
       expect(captured()).toContain('stats')
-      expect(captured()).toContain('issue(s) found')
+      expect(captured()).toContain('1 issue found')
       process.exitCode = undefined
     })
 
@@ -1156,7 +1156,7 @@ describe('cmdConfig validate', () => {
       invalidateConfigCache()
       cmdConfig({ action: 'validate' })
       expect(captured()).toContain('ocr_enabeld')
-      expect(captured()).toContain('issue(s) found')
+      expect(captured()).toContain('1 issue found')
       process.exitCode = undefined
     })
 
@@ -1207,7 +1207,7 @@ describe('cmdConfig validate', () => {
       invalidateConfigCache()
       cmdConfig({ action: 'validate' })
       expect(captured()).toContain('[value_ignored] overflow_guard.max_tokens (500 is outside the allowed range 1000-1000000; in effect: 1000)')
-      expect(captured()).toContain('config validate: 1 issue(s) found')
+      expect(captured()).toContain('config validate: 1 issue found')
     })
 
     it('is still reported when an env var overrides the key, with the env value as the one in effect', () => {

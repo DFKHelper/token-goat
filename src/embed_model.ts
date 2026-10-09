@@ -5,7 +5,7 @@ import * as path from 'node:path'
 
 import { loadConfig } from './config.js'
 import { dataDir, ensureDataDirPrivate } from './constants.js'
-import { ensureDirSync } from './util.js'
+import { ensureDirSync, countNoun } from './util.js'
 import { BertWordPiece } from './embed_tokenizer.js'
 import { NATIVE_RUNTIME_INSTALL, ORT_WEB_WASM, RUNTIME_UNAVAILABLE_ADVICE, activeRuntime, createInferenceSession, isRuntimeAvailable, runtimeLoadError, runtimeVersion, wasmBinaryPresent, wasmDir, type OrtSession, type RuntimeName } from './embed_runtime.js'
 import { copyFromSharedCache, downloadPinned, publishToSharedCache, sha256Of, type PinnedFile } from './pinned_file.js'
@@ -358,7 +358,7 @@ export async function checkEmbeddingPreflight(options?: {
     return buildResult({
       status: 'no_embeddings',
       available: false,
-      message: `Embedding model is available, but 0 of ${coverage.indexedFiles} indexed file(s) in this project have embeddings`,
+      message: `Embedding model is available, but 0 of ${countNoun(coverage.indexedFiles, 'indexed file')} in this project have embeddings`,
       suggestion: options?.projectRoot
         ? `Run ${fencedCommand('token-goat index ' + quotedArg(options.projectRoot))} to generate embeddings`
         : 'Run `token-goat index` to generate embeddings',

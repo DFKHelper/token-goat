@@ -46,22 +46,23 @@ export function formatSavingsBar(stats: StatsJson | null): SavingsBarContent {
   }
   const tokens = stats.total_tokens_saved
   const days = stats.window_days
+  const dayCount = `${days} ${days === 1 ? 'day' : 'days'}`
   if (tokens === 0) {
     return {
       text: '🐐 token-goat: 0 tokens saved',
-      tooltip: `No net token savings recorded in the last ${days} day(s) yet.`,
+      tooltip: `No net token savings recorded in the last ${dayCount} yet.`,
     }
   }
   if (tokens < 0) {
     const magnitude = Math.abs(tokens).toLocaleString()
     return {
       text: `🐐 token-goat: -${magnitude} tokens (net loss, ${days}d)`,
-      tooltip: `token-goat cost more tokens than it saved over the last ${days} day(s): a net loss of ${magnitude} tokens, from the local ledger (\`token-goat stats\`).`,
+      tooltip: `token-goat cost more tokens than it saved over the last ${dayCount}: a net loss of ${magnitude} tokens, from the local ledger (\`token-goat stats\`).`,
     }
   }
   const magnitude = tokens.toLocaleString()
   return {
     text: `🐐 token-goat: ${magnitude} tokens saved (${days}d)`,
-    tooltip: `${magnitude} tokens saved over the last ${days} day(s), across all sources (reads, hints, bash, images, compression), from the local ledger (\`token-goat stats\`).`,
+    tooltip: `${magnitude} tokens saved over the last ${dayCount}, across all sources (reads, hints, bash, images, compression), from the local ledger (\`token-goat stats\`).`,
   }
 }
