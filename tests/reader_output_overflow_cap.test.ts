@@ -85,13 +85,18 @@ beforeAll(async () => {
   const csvWide = [Array.from({ length: COUNT }, (_, i) => `column_number_${i}`).join(','), Array.from({ length: COUNT }, (_, i) => `v${i}`).join(',')]
   writeFileSync(join(root, 'wide.csv'), `${csvWide.join('\n')}\n`)
 
+  // One transaction per database: each autocommit CREATE TABLE is its own journal commit and fsync, and 1700 of them outran this hook's 120 s on the Windows runner (the whole file failed with "Hook timed out").
   const db = new Database(join(root, 'big.db'))
-  db.exec('CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)')
-  for (let i = 0; i < COUNT; i++) db.exec(`CREATE TABLE table_with_a_long_name_${i} (id INTEGER PRIMARY KEY, value_${i} TEXT)`)
-  db.exec(`INSERT INTO notes (body) VALUES ${Array.from({ length: COUNT }, (_, i) => `('${WIDE}${i}')`).join(',')}`)
+  db.transaction(() => {
+    db.exec('CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)')
+    for (let i = 0; i < COUNT; i++) db.exec(`CREATE TABLE table_with_a_long_name_${i} (id INTEGER PRIMARY KEY, value_${i} TEXT)`)
+    db.exec(`INSERT INTO notes (body) VALUES ${Array.from({ length: COUNT }, (_, i) => `('${WIDE}${i}')`).join(',')}`)
+  })()
   db.close()
   const tinyDb = new Database(join(root, 'tiny.db'))
-  for (let i = 0; i < 1300; i++) tinyDb.exec(`CREATE TABLE t${i} (a)`)
+  tinyDb.transaction(() => {
+    for (let i = 0; i < 1300; i++) tinyDb.exec(`CREATE TABLE t${i} (a)`)
+  })()
   tinyDb.close()
   const wideDb = new Database(join(root, 'wide.db'))
   wideDb.exec(`CREATE TABLE wide_table (${Array.from({ length: COUNT }, (_, i) => `column_with_a_long_name_${i} TEXT`).join(', ')})`)
