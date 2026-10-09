@@ -12,7 +12,9 @@ LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/token-goat-pre-push.XXXXXX")"
 run_check() {
   local name=$1
   shift
-  "$@" >"$LOG_DIR/$name.log" 2>&1 &
+  # Truncate once, then append: with `>` every child of the check shares one file offset and they overwrite each other's lines.
+  : >"$LOG_DIR/$name.log"
+  "$@" >>"$LOG_DIR/$name.log" 2>&1 &
   RUN_PID=$!
 }
 
