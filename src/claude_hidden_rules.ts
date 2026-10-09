@@ -40,6 +40,8 @@ const SCAN_TTL_MS = 60_000
 /** A stamp whose modification time is this close to the scan, or later, was written while the scan could still have been reading: the clean answer is not kept. */
 const RACY_MS = 2_000
 const FILE_HEAD_BYTES = 256 * 1024
+/** The opening line of a markdown file's frontmatter. */
+const OPENS_FRONTMATTER = /^\uFEFF?---[ \t]*\r?\n/
 
 /** One scan's answer: the reason it found, the stamp of every directory and file it read (for {@link stillCurrent}), and the agent names it read definitions for. */
 interface ScanResult {
@@ -314,13 +316,14 @@ function stillCurrent(stamps: ReadonlyMap<string, string>): boolean {
   return true
 }
 
-/** The first bytes of a file, or why there are none: `missing` when there is no such file (no entry, a link to nothing, or a parent that is not a directory), `unreadable` when it exists but cannot be read. */
-function head(file: string): { readonly text: string } | { readonly failure: 'missing' | 'unreadable' } {
+/** The first bytes of a file (`cut` when the file runs past them), or why there are none: `missing` when there is no such file (no entry, a link to nothing, or a parent that is not a directory), `unreadable` when it exists but cannot be read. */
+function head(file: string): { readonly text: string; readonly cut: boolean } | { readonly failure: 'missing' | 'unreadable' } {
   let fd: number | undefined
   try {
     fd = fs.openSync(file, 'r')
     const buf = Buffer.alloc(FILE_HEAD_BYTES)
-    return { text: buf.subarray(0, fs.readSync(fd, buf, 0, FILE_HEAD_BYTES, 0)).toString('utf8') }
+    const got = fs.readSync(fd, buf, 0, FILE_HEAD_BYTES, 0)
+    return { text: buf.subarray(0, got).toString('utf8'), cut: got === FILE_HEAD_BYTES && fs.fstatSync(fd).size > got }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
     return { failure: code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'unreadable' }
@@ -336,6 +339,7 @@ function checkFile(file: string, scan: Scan, place: Place): void {
   record(scan, file)
   const read = head(file)
   let text: string
+  let cut: boolean
   if ('failure' in read) {
     // A file that exists and cannot be read might add a rule. One that is not there adds none unless git tracks it: Claude Code reads skills from disk, but a skill moved away and back between two calls is the same skill, so the index copy answers for it.
     if (read.failure === 'unreadable') {
@@ -349,11 +353,16 @@ function checkFile(file: string, scan: Scan, place: Place): void {
       return
     }
     text = indexed.slice(0, FILE_HEAD_BYTES)
+    cut = indexed.length > FILE_HEAD_BYTES
   } else {
     text = read.text
+    cut = read.cut
   }
   const front = json ? undefined : (frontmatter(text) ?? '')
+  // Only the head of a file is read, so a JSON file that runs past it, or frontmatter whose closing --- does, may hold a rule the scan never saw: it cannot be scanned.
+  const unfinished = cut && (json || (OPENS_FRONTMATTER.test(text) && frontmatter(text) === undefined))
   if (front === undefined ? text.includes('PermissionRequest') : frontmatterAddsRule(front)) scan.reason = `rule source ${file}`
+  else if (unfinished) scan.reason = `cannot scan ${file}: it runs past the first ${FILE_HEAD_BYTES} bytes read`
   else if (front !== undefined && place.agents) {
     // An agent's type is its frontmatter name, not its file name.
     const name = /^name[ \t]*:(.*)$/m.exec(front)?.[1]?.trim().replace(/^(["'])(.*)\1$/, '$2')

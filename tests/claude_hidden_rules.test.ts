@@ -251,7 +251,32 @@ describe('hiddenRuleSource: rule files', () => {
     expect(check(c)).toContain('c.md')
   }, 30_000)
 
-  it('an installed plugin with a PermissionRequest hook hides a rule; the plugin listing beside the cache does not', () => {
+  // HAND-DERIVED from the review finding: the scan reads a 256 KB head, so a rule written after more than that many bytes of frontmatter (or JSON) is never seen. The padding is 300 KB, past the head, with the rule after it.
+  it('frontmatter whose closing --- lies past the 256 KB head cannot be scanned, so its rules stay hidden', () => {
+    const b = box('long-frontmatter')
+    const file = path.join(b.config, 'skills', 'big', 'SKILL.md')
+    write(file, `---\nname: big\ndescription: ${'x'.repeat(300 * 1024)}\ndisallowed-tools: Bash(curl *)\n---\nbody\n`)
+    expect(check(b)).toBe(`cannot scan ${file}: it runs past the first ${256 * 1024} bytes read`)
+  }, 30_000)
+
+  it('a long markdown body after short frontmatter, and a short file, are still scanned normally', () => {
+    const b = box('long-body')
+    write(path.join(b.config, 'skills', 'ok', 'SKILL.md'), `---\nname: ok\ndisallowed-tools: WebFetch\n---\n${'y'.repeat(300 * 1024)}\n`)
+    write(path.join(b.config, 'skills', 'plain', 'SKILL.md'), `no frontmatter at all ${'z'.repeat(300 * 1024)}\n`)
+    expect(check(b)).toBeNull()
+  }, 30_000)
+
+  it('a JSON file that runs past the 256 KB head cannot be scanned, but a small one still can', () => {
+    const b = box('long-json')
+    const file = path.join(b.config, 'skills', 'big', 'rules.json')
+    write(file, JSON.stringify({ pad: 'x'.repeat(300 * 1024), hooks: { PermissionRequest: [] } }))
+    expect(check(b)).toBe(`cannot scan ${file}: it runs past the first ${256 * 1024} bytes read`)
+    const c = box('short-json')
+    write(path.join(c.config, 'skills', 's', 'rules.json'), '{"a":1}')
+    expect(check(c)).toBeNull()
+  }, 30_000)
+
+  it('an installed plugin with a PermissionRequest hook hides a rule;the plugin listing beside the cache does not', () => {
     const b = box('plugin')
     write(path.join(b.config, 'plugins', 'plugin-directory-cache-v2.json'), '{"description":"answers PermissionRequest events"}')
     write(path.join(b.config, 'plugins', 'marketplaces', 'm', 'p', 'hooks', 'hooks.json'), '{"hooks":{"PermissionRequest":[]}}')
