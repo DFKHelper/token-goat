@@ -14,7 +14,7 @@ const filterPreload = path.join(repoRoot, 'tests', 'setup', 'permission-source-f
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-regto-'))
 afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }))
 
-// HAND-DERIVED: a spawnSync result for a child killed at its timeout carries status null, signal SIGTERM and error.code ETIMEDOUT (Node child_process docs, spawnSync); returning it for every `reg` call stands in for a reg.exe slower than the 5 s cap, whatever the machine speed.
+// HAND-DERIVED: a spawnSync result for a child killed at its timeout carries status null, signal SIGTERM and error.code ETIMEDOUT (Node child_process docs, spawnSync); returning it for every call whose file name is reg or reg.exe (the bundle now spawns reg.exe by absolute path, so a match on the bare command alone never fires) stands in for a reg.exe slower than the 5 s cap, whatever the machine speed.
 const regTimesOut = path.join(scratch, 'reg-times-out.cjs')
 fs.writeFileSync(
   regTimesOut,
@@ -22,7 +22,7 @@ fs.writeFileSync(
     "const cp = require('node:child_process')",
     'const real = cp.spawnSync',
     'cp.spawnSync = function (cmd, ...rest) {',
-    "  if (String(cmd).toLowerCase().replace(/[.]exe$/, '') === 'reg') {",
+    "  if (String(cmd).toLowerCase().split(/[\\\\/]/).pop().replace(/[.]exe$/, '') === 'reg') {",
     "    return { status: null, signal: 'SIGTERM', pid: 0, output: null, stdout: '', stderr: '', error: Object.assign(new Error('spawnSync reg ETIMEDOUT'), { code: 'ETIMEDOUT' }) }",
     '  }',
     '  return real.apply(this, [cmd, ...rest])',
