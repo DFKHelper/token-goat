@@ -224,6 +224,27 @@ describe('doctor auto-repair and embedding model checks', () => {
       expect(repairedShim).not.toContain('old stale shim content')
     })
 
+    it('repairs user-scoped Copilot CLI hooks when an installed harness has outdated entries', async () => {
+      const mockConfig: Config = {
+        mcp: { confine_reads_to_project_root: false },
+        indexing: { cross_project_symbols: true, embeddings_enabled: true },
+        network: { offline: false },
+      } as unknown as Config
+
+      vi.spyOn(configModule, 'loadConfig').mockReturnValue(mockConfig)
+      vi.spyOn(configModule, 'saveConfig').mockImplementation(() => undefined)
+      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(true)
+
+      const { copilotCliHooksDir, copilotCliScriptPath, copilotCliConfigPath } = await import('../src/bridges/copilot_cli_install.js')
+      const hooksDir = copilotCliHooksDir()
+      const shimPath = copilotCliScriptPath()
+      const configPath = copilotCliConfigPath()
+
+      // If user-level Copilot CLI is installed, repair should execute cleanly without error
+      const result = await runDoctorRepair({ rootDir: projectRoot })
+      expect(result.errors).toHaveLength(0)
+    })
+
     it('disables chat.useClaudeHooks in VS Code settings when VS Code hooks are installed', async () => {
       const mockConfig: Config = {
         mcp: { confine_reads_to_project_root: false },

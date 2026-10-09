@@ -15,13 +15,10 @@ import { claudeHookScriptPath, hookEventGaps, installHooks, isInstalled, type Ho
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import {
   copilotCliConfigPath,
-  copilotCliHooksDir,
-  copilotCliInstructionsPath,
   copilotCliScriptPath,
-  installCopilotHooksFile,
+  installCopilotCli,
   isCopilotCliInstalled,
   wiredCopilotHookWords,
-  writeCopilotInstructionsBlock,
 } from './bridges/copilot_cli_install.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './bridges/copilot_cli.js'
 import {
@@ -122,8 +119,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
       const isStaleShim = fs.existsSync(userShim) && !shimIsCurrent(userShim, COPILOT_CLI_HOOK_SCRIPT)
       const hasOutdatedEntries = wiredCopilotHookWords().some((e) => e.current === false)
       if (isStaleShim || hasOutdatedEntries) {
-        installCopilotHooksFile(copilotCliHooksDir(), 'copilot')
-        writeCopilotInstructionsBlock(copilotCliInstructionsPath())
+        installCopilotCli()
         repairs.push('Repaired Copilot CLI (user) hooks and shim')
       }
     }
@@ -141,8 +137,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
       const isStaleShim = fs.existsSync(projShim) && !shimIsCurrent(projShim, COPILOT_CLI_HOOK_SCRIPT)
       const hasOutdatedEntries = wiredCopilotHookWords(copilotLocalOpts).some((e) => e.current === false)
       if (isStaleShim || hasOutdatedEntries) {
-        installCopilotHooksFile(copilotCliHooksDir(copilotLocalOpts), 'copilot')
-        writeCopilotInstructionsBlock(copilotCliInstructionsPath(copilotLocalOpts))
+        installCopilotCli(copilotLocalOpts)
         repairs.push('Repaired Copilot CLI (project) hooks and shim')
       }
     }
