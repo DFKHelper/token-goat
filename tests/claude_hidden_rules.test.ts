@@ -321,20 +321,18 @@ describe('hiddenRuleSource: nested skills behind node_modules and links', () => 
     expect(check(b)).toContain('SKILL.md')
   }, 30_000)
 
-  it('inside a git checkout an untracked, tracked or ignored link counts, as check-ignore never skips past one', (ctx) => {
-    for (const how of ['untracked', 'tracked', 'ignored'] as const) {
-      resetHiddenRuleCache()
-      const b = box(`link-git-${how}`)
-      const ext = path.join(root, `link-git-${how}`, 'ext')
-      write(path.join(ext, '.claude', 'skills', 's', 'SKILL.md'), PATTERN_SKILL)
-      expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
-      expect(runGit(['config', 'core.symlinks', 'true'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
-      if (how === 'ignored') write(path.join(b.project, '.gitignore'), 'linked\n')
-      if (!link(ext, path.join(b.project, 'linked'))) return ctx.skip()
-      if (how === 'tracked') expect(runGit(['add', 'linked'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
-      expect(check(b), how).toContain('SKILL.md')
-    }
-  }, 60_000)
+  it.for(['untracked', 'tracked', 'ignored'] as const)('inside a git checkout a %s link counts, as check-ignore never skips past one', { timeout: 30_000 }, (how, ctx) => {
+    resetHiddenRuleCache()
+    const b = box(`link-git-${how}`)
+    const ext = path.join(root, `link-git-${how}`, 'ext')
+    write(path.join(ext, '.claude', 'skills', 's', 'SKILL.md'), PATTERN_SKILL)
+    expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    expect(runGit(['config', 'core.symlinks', 'true'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    if (how === 'ignored') write(path.join(b.project, '.gitignore'), 'linked\n')
+    if (!link(ext, path.join(b.project, 'linked'))) return ctx.skip()
+    if (how === 'tracked') expect(runGit(['add', 'linked'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    expect(check(b), how).toContain('SKILL.md')
+  })
 
   it('inside a git checkout a skill directory under an ignored directory still does not count', () => {
     const b = box('git-ignored-dir')
@@ -345,24 +343,24 @@ describe('hiddenRuleSource: nested skills behind node_modules and links', () => 
   }, 30_000)
 
   // FORMAT-DERIVED from claude.exe 2.1.291: nested skill discovery runs `git check-ignore -- <folder holding .claude>` and logs "Skipped gitignored skills dir" only when that exits 0; the skill file and the `.claude` folder are never asked about. Ignore patterns HAND-DERIVED; that git lists `c/.claude/` whole and `a/` above an ignored file was CAPTURED from git 2.53.0.windows.1.
-  it('inside a git checkout an ignored skill or .claude folder counts while the folder holding .claude is not ignored', () => {
-    const cases: readonly (readonly [ignore: string, skill: string])[] = [
-      ['a/**/*.md', 'a/.claude/skills/s/SKILL.md'],
-      ['b/.claude/skills/s/', 'b/.claude/skills/s/SKILL.md'],
-      ['c/.claude/', 'c/.claude/skills/s/SKILL.md'],
-      ['d/.claude/skills/', 'd/.claude/skills/s/SKILL.md'],
-      ['g/*\n!g/x.txt', 'g/.claude/skills/s/SKILL.md'],
-      ['h/.claude/agents/', 'h/.claude/agents/a.md'],
-    ]
-    for (const [ignore, skill] of cases) {
-      resetHiddenRuleCache()
-      const b = box(`git-ignored-${skill[0]}`)
-      expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
-      write(path.join(b.project, '.gitignore'), `${ignore}\n`)
-      write(path.join(b.project, 'g', 'x.txt'), 'kept\n')
-      write(path.join(b.project, ...skill.split('/')), PATTERN_SKILL)
-      expect(check(b), ignore).toContain(path.join(...skill.split('/')))
-    }
+  it.each([
+    ['a/**/*.md', 'a/.claude/skills/s/SKILL.md'],
+    ['b/.claude/skills/s/', 'b/.claude/skills/s/SKILL.md'],
+    ['c/.claude/', 'c/.claude/skills/s/SKILL.md'],
+    ['d/.claude/skills/', 'd/.claude/skills/s/SKILL.md'],
+    ['g/*\n!g/x.txt', 'g/.claude/skills/s/SKILL.md'],
+    ['h/.claude/agents/', 'h/.claude/agents/a.md'],
+  ] as const)('inside a git checkout an ignored skill or .claude folder counts while the folder holding .claude is not ignored: %j', (ignore, skill) => {
+    resetHiddenRuleCache()
+    const b = box(`git-ignored-${skill[0]}`)
+    expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
+    write(path.join(b.project, '.gitignore'), `${ignore}\n`)
+    write(path.join(b.project, 'g', 'x.txt'), 'kept\n')
+    write(path.join(b.project, ...skill.split('/')), PATTERN_SKILL)
+    expect(check(b), ignore).toContain(path.join(...skill.split('/')))
+  }, 30_000)
+
+  it('inside a git checkout a skill folder under an ignored holder directory does not count', () => {
     resetHiddenRuleCache()
     const b = box('git-ignored-holder')
     expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
