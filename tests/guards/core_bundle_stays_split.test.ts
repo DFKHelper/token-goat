@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { pinnedPopulation } from './population.js'
+import { cloneByteSize } from '../helpers/junction_paths.js'
 
 // @ts-expect-error -- plain .mjs build helper with JSDoc types, outside tsconfig's include.
 import { sweepStaleChunks } from '../../scripts/sweep-chunks.mjs'
@@ -72,8 +73,9 @@ describe('core bundle stays split', () => {
 
   it('keeps the eagerly loaded set under the regression ceiling', () => {
     const eager = eagerChunks()
-    let bytes = fs.statSync(ENTRY).size
-    for (const chunk of eager) bytes += fs.statSync(path.join(DIST, chunk)).size
+    // Measured as an ordinary clone would build it, as the hook entry's ceiling is: a junctioned node_modules spells every dependency module marker with a longer path.
+    let bytes = cloneByteSize(ENTRY)
+    for (const chunk of eager) bytes += cloneByteSize(path.join(DIST, chunk))
     expect(bytes, `eager startup set is ${(bytes / 1024 / 1024).toFixed(2)} MB`).toBeLessThan(MAX_EAGER_BYTES)
   })
 
