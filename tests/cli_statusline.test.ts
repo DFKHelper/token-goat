@@ -192,7 +192,8 @@ describe('runStatuslineCommand — stdin handling', () => {
 
   it('does NOT hang when stdin never sends data or an end event (critical: must never block the terminal UI)', async () => {
     io.neverEnd()
-    vi.useFakeTimers()
+    // setImmediate stays real: readStdinJson re-checks for late chunks in a setImmediate after its idle timer fires, and a faked one is never advanced by advanceTimersByTimeAsync, which left the read pending until the 10 s test timeout.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
       // Drive the internal stdin-read timeout forward explicitly instead of measuring wall-clock elapsed time: this proves the command resolves via its own short timer, not merely that it happened to return within a generous margin.
       const settlement = runStatuslineCommand()

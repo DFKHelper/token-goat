@@ -23,6 +23,15 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
+/** Drop the read handle on stdin once the payload is in or given up on. A pipe the harness holds open with nothing written keeps a flowing stdin referenced after readStdinJson has detached its listeners, so the process printed its line and then never exited. */
+function releaseStdin(): void {
+  try {
+    process.stdin.destroy()
+  } catch {
+    // Nothing to release.
+  }
+}
+
 /** Read and loosely validate the stdin payload. Never throws -- any failure (no stdin, timeout, non-JSON, non-object JSON) yields `{}`. */
 async function readPayload(): Promise<StatuslinePayload> {
   try {
@@ -30,6 +39,8 @@ async function readPayload(): Promise<StatuslinePayload> {
     return isPlainObject(raw) ? (raw as StatuslinePayload) : {}
   } catch {
     return {}
+  } finally {
+    releaseStdin()
   }
 }
 
