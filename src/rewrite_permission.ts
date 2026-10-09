@@ -450,7 +450,7 @@ function readSettingsFile(file: string): Record<string, unknown> | undefined {
   return json
 }
 
-// reg exits 1 for a missing key and for one it may not read, and words both by locale; a key is absent when reg gives the English not-found message, or else only when it repeats the message a key that cannot exist gives (asked once, lazily). Nothing is saved, as a file the user can write could hide a deny. reg is run by absolute path so a PATH entry cannot stand in.
+// reg exits 1 for a missing key and for one it may not read, and words both by locale; a key is absent when reg gives the English not-found message, or else only when it repeats the message a key that cannot exist gives (asked once, lazily), and that key sits under HKLM where a user cannot create it, so no deny-read ACL planted on a sentinel can make a denied policy key read as absent. Nothing is saved, as a file the user can write could hide a deny. reg is run by absolute path so a PATH entry cannot stand in.
 const regQuery = (key: string) => spawnSync(`${process.env['SystemRoot'] ?? 'C:/Windows'}/System32/reg.exe`, ['query', key, '/v', 'Settings'], { encoding: 'utf8', windowsHide: true, timeout: 5000 })
 /** The `Settings` value of each Windows policy key, in order: undefined when provably absent, throws when it cannot be read as a JSON object. */
 function readRegistrySettings(keys: string[]): (Record<string, unknown> | undefined)[] {
@@ -459,7 +459,7 @@ function readRegistrySettings(keys: string[]): (Record<string, unknown> | undefi
     const res = regQuery(key)
     if (res.status === 1) {
       if (res.stderr.trim() === 'ERROR: The system was unable to find the specified registry key or value.') return undefined
-      missing ??= ((none) => (none.status === 1 ? none.stderr.trim() : ''))(regQuery('HKCU\\SOFTWARE\\TokenGoatNoSuchKey'))
+      missing ??= ((none) => (none.status === 1 ? none.stderr.trim() : ''))(regQuery('HKLM\\SOFTWARE\\TokenGoatNoSuchKey'))
       if (missing !== '' && res.stderr.trim() === missing) return undefined
     }
     const json = res.status === 0 && !res.stdout.includes('\ufffd') ? asObject(JSON.parse(/^\s*Settings\s+REG_(?:EXPAND_)?SZ\s(.*)$/m.exec(res.stdout)?.[1]?.trim() ?? 'null')) : null

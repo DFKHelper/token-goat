@@ -13,7 +13,7 @@ const denyJson = JSON.stringify({ permissions: { deny: ['Read(./secret/**)'] } }
 const settingsOut = (json: string): string => `\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\ClaudeCode\r\n    Settings    REG_SZ    ${json}\r\n\r\n`
 const K_L = 'HKLM\\SOFTWARE\\Policies\\ClaudeCode'
 const K_C = 'HKCU\\SOFTWARE\\Policies\\ClaudeCode'
-const SENTINEL = 'HKCU\\SOFTWARE\\TokenGoatNoSuchKey'
+const SENTINEL = 'HKLM\\SOFTWARE\\TokenGoatNoSuchKey'
 const absent: Answer = { code: 1, err: NOT_FOUND }
 const timedOut: Answer = { code: null }
 const ES = 'ERROR: El sistema no pudo encontrar la clave o el valor del Registro especificado.\r\n'
@@ -83,6 +83,13 @@ describe('the Windows registry policy is always read live', () => {
       expect(c.cmd, 'reg must be run by absolute path so a PATH entry cannot stand in for it').toBe(`${savedRoot}/System32/reg.exe`)
       expect(c.opts['timeout'], 'the wait must stay 5 s').toBe(5000)
     }
+  })
+
+  // HAND-DERIVED from the attack the security review described: a standing deny-read ACL on a sentinel key the user can create makes it answer "Access is denied", the same text a denied policy key gives. Only a key the user cannot create can be the baseline, so the sentinel is under HKLM and never HKCU.
+  it('asks for the absent baseline under HKLM, a key a user cannot create, never under HKCU', () => {
+    live({ [K_L]: { code: 1, err: ES }, [K_C]: { code: 1, err: ES }, [SENTINEL]: { code: 1, err: ES } })
+    loadPermissionSnapshot(root)
+    expect(keysAsked().filter((k) => /NoSuchKey/.test(k))).toEqual(['HKLM\\SOFTWARE\\TokenGoatNoSuchKey'])
   })
 
   it('never asks the sentinel when no key exited 1, or when reg gave the English not-found message', () => {
