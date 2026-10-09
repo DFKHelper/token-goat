@@ -450,22 +450,22 @@ function readSettingsFile(file: string): Record<string, unknown> | undefined {
   return json
 }
 
-/** The `Settings` value of a Windows policy key: undefined when the key or value is absent, throws when it cannot be queried or is not a JSON object. */
-function readRegistrySettings(key: string): Record<string, unknown> | undefined {
-  if (!sourceAllowed(`registry:${key}`)) return undefined
-  return queryRegistry(key)
-}
-
-function queryRegistry(key: string): Record<string, unknown> | undefined {
-  const res = spawnSync('reg', ['query', key, '/v', 'Settings'], { encoding: 'utf8', windowsHide: true, timeout: 5000 })
-  if (res.error !== undefined) throw res.error
-  if (res.status === 1) return undefined
-  if (res.status !== 0) throw new Error(`reg query ${key} exited ${String(res.status)}`)
-  const m = /^\s*Settings\s+(REG_\w+)\s(.*)$/m.exec(res.stdout)
-  if (m === null || (m[1] !== 'REG_SZ' && m[1] !== 'REG_EXPAND_SZ')) throw new Error(`unreadable Settings value under ${key}`)
-  const json = asObject(JSON.parse((m[2] as string).trim()))
-  if (json === null) throw new Error(`Settings under ${key} is not a JSON object`)
-  return json
+// reg exits 1 for a missing key and for one it may not read, and words both by locale; a key is absent when reg gives the English not-found message, or else only when it repeats the message a key that cannot exist gives (asked once, lazily). Nothing is saved, as a file the user can write could hide a deny. reg is run by absolute path so a PATH entry cannot stand in.
+const regQuery = (key: string) => spawnSync(`${process.env['SystemRoot'] ?? 'C:/Windows'}/System32/reg.exe`, ['query', key, '/v', 'Settings'], { encoding: 'utf8', windowsHide: true, timeout: 5000 })
+/** The `Settings` value of each Windows policy key, in order: undefined when provably absent, throws when it cannot be read as a JSON object. */
+function readRegistrySettings(keys: string[]): (Record<string, unknown> | undefined)[] {
+  let missing: string | undefined
+  return keys.map((key) => {
+    const res = regQuery(key)
+    if (res.status === 1) {
+      if (res.stderr.trim() === 'ERROR: The system was unable to find the specified registry key or value.') return undefined
+      missing ??= ((none) => (none.status === 1 ? none.stderr.trim() : ''))(regQuery('HKCU\\SOFTWARE\\TokenGoatNoSuchKey'))
+      if (missing !== '' && res.stderr.trim() === missing) return undefined
+    }
+    const json = res.status === 0 && !res.stdout.includes('\ufffd') ? asObject(JSON.parse(/^\s*Settings\s+REG_(?:EXPAND_)?SZ\s(.*)$/m.exec(res.stdout)?.[1]?.trim() ?? 'null')) : null
+    if (json === null) throw new Error(`unreadable ${key}`)
+    return json
+  })
 }
 
 function managedFileDocs(dir: string, group: string, out: SettingsDoc[]): void {
@@ -494,10 +494,10 @@ function managedDocs(): SettingsDoc[] {
   const out: SettingsDoc[] = []
   for (const dir of managedDirs()) managedFileDocs(dir, 'file', out)
   if (process.platform === 'win32') {
-    const hklm = readRegistrySettings('HKLM\\SOFTWARE\\Policies\\ClaudeCode')
-    if (hklm !== undefined) out.push({ role: 'managed', json: hklm, managedGroup: 'hklm' })
-    const hkcu = readRegistrySettings('HKCU\\SOFTWARE\\Policies\\ClaudeCode')
-    if (hkcu !== undefined) out.push({ role: 'managed', json: hkcu, managedGroup: 'hkcu' })
+    const keys = ['HKLM', 'HKCU'].map((h) => `${h}\\SOFTWARE\\Policies\\ClaudeCode`).filter((k) => sourceAllowed(`registry:${k}`))
+    readRegistrySettings(keys).forEach((json, i) => {
+      if (json !== undefined) out.push({ role: 'managed', json, managedGroup: (keys[i] as string).slice(0, 4).toLowerCase() })
+    })
   } else if (process.platform === 'darwin') {
     for (const plist of ['/Library/Managed Preferences/com.anthropic.claudecode.plist', path.join('/Library/Managed Preferences', os.userInfo().username, 'com.anthropic.claudecode.plist')]) {
       if (!sourceAllowed(plist) || !fs.existsSync(plist)) continue
