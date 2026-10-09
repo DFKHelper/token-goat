@@ -6,7 +6,11 @@ import type { Config } from '../src/config.js'
 import { checkEmbeddingModel, runDoctorAndExit, runDoctorRepair } from '../src/cli_doctor.js'
 import * as embedModel from '../src/embed_model.js'
 import * as configModule from '../src/config.js'
-import { recordCreatedConfig } from '../src/bridges/created_configs.js'
+import { recordCreatedConfig, takeCreatedConfig } from '../src/bridges/created_configs.js'
+import { claudeHookScriptPath, installHooks } from '../src/install.js'
+import { CLAUDECODE_HOOK_SCRIPT } from '../src/bridges/claudecode.js'
+import { CODEX_HOOK_SCRIPT } from '../src/bridges/codex.js'
+import { codexConfigPath, codexHookScriptPath, installCodex } from '../src/bridges/codex_install.js'
 import { _resetDataDirCacheForTesting, configPath } from '../src/constants.js'
 import { downloadAdvice } from '../src/embed_preflight.js'
 import { MODEL_DOWNLOAD_HOST, clearDownloadFailure, isExplicitDownload, recordDownloadFailure } from '../src/model_download_gate.js'
@@ -343,6 +347,90 @@ describe('doctor auto-repair and embedding model checks', () => {
         expect(result.errors).toEqual([])
         expect(copilotRepairs(result.repairs)).toEqual([])
         expect(files.map((f) => fs.readFileSync(f, 'utf8'))).toEqual(before)
+      })
+
+      // HAND-DERIVED: the hooks file install writes runs token-goat-shim.cjs by absolute path, so deleting that one file leaves a config whose every command cannot start; nothing else on disk is stale, which is why the old stale-content and outdated-entry tests never saw it.
+      it('restores a user-scope shim that was deleted while the config still runs it', async () => {
+        seedInstall()
+        fs.rmSync(copilotCliScriptPath())
+
+        const result = await runDoctorRepair({ rootDir: projectRoot })
+
+        expect(result.errors).toEqual([])
+        expect(copilotRepairs(result.repairs)).toEqual(['Repaired Copilot CLI (user) hooks and shim'])
+        expect(fs.readFileSync(copilotCliScriptPath(), 'utf8')).toBe(COPILOT_CLI_HOOK_SCRIPT)
+        expect(copilotRepairs((await runDoctorRepair({ rootDir: projectRoot })).repairs)).toEqual([])
+      })
+
+      it('restores a project-scope shim that was deleted when this machine wrote the config', async () => {
+        const opts = { local: true, projectRoot }
+        seedInstall(opts)
+        recordCreatedConfig(copilotCliConfigPath(opts))
+        fs.rmSync(copilotCliScriptPath(opts))
+
+        const result = await runDoctorRepair({ rootDir: projectRoot })
+
+        expect(copilotRepairs(result.repairs)).toEqual(['Repaired Copilot CLI (project) hooks and shim'])
+        expect(fs.readFileSync(copilotCliScriptPath(opts), 'utf8')).toBe(COPILOT_CLI_HOOK_SCRIPT)
+      })
+
+      it('leaves a project-scope hooks file this machine did not write alone when its shim is absent', async () => {
+        const opts = { local: true, projectRoot }
+        seedInstall(opts)
+        takeCreatedConfig(copilotCliConfigPath(opts))
+        fs.rmSync(copilotCliScriptPath(opts))
+
+        const result = await runDoctorRepair({ rootDir: projectRoot })
+
+        expect(copilotRepairs(result.repairs)).toEqual([])
+        expect(fs.existsSync(copilotCliScriptPath(opts))).toBe(false)
+      })
+    })
+
+    // HAND-DERIVED: each installer writes hook commands that run an absolute shim path, so a deleted shim is the one failure whose bytes (nothing stale, nothing outdated) look like a healthy install to a content comparison.
+    describe('a hook shim deleted from disk', () => {
+      beforeEach(() => {
+        const mockConfig = { mcp: { confine_reads_to_project_root: false }, indexing: { cross_project_symbols: true, embeddings_enabled: true }, network: { offline: false }, gdrive: { enabled: false } } as unknown as Config
+        vi.spyOn(configModule, 'loadConfig').mockReturnValue(mockConfig)
+        vi.spyOn(configModule, 'saveConfig').mockImplementation(() => undefined)
+        vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(true)
+        vi.spyOn(process, 'cwd').mockReturnValue(projectRoot)
+      })
+
+      it('is restored for Claude Code', async () => {
+        installHooks('user')
+        const shim = claudeHookScriptPath()
+        expect(fs.readFileSync(shim, 'utf8')).toBe(CLAUDECODE_HOOK_SCRIPT)
+        fs.rmSync(shim)
+
+        const result = await runDoctorRepair({ rootDir: projectRoot })
+
+        expect(result.errors).toEqual([])
+        expect(result.repairs).toContain('Repaired Claude Code (user) hooks and shim')
+        expect(fs.readFileSync(shim, 'utf8')).toBe(CLAUDECODE_HOOK_SCRIPT)
+      })
+
+      it('is restored for Codex', async () => {
+        installCodex()
+        const shim = codexHookScriptPath()
+        expect(fs.readFileSync(shim, 'utf8')).toBe(CODEX_HOOK_SCRIPT)
+        fs.rmSync(shim)
+
+        const result = await runDoctorRepair({ rootDir: projectRoot })
+
+        expect(result.errors).toEqual([])
+        expect(result.repairs).toContain('Repaired Codex CLI hooks and shim')
+        expect(fs.readFileSync(shim, 'utf8')).toBe(CODEX_HOOK_SCRIPT)
+      })
+
+      it('does not install Codex hooks for a Codex user who never installed token-goat', async () => {
+        fs.mkdirSync(path.dirname(codexConfigPath()), { recursive: true })
+        fs.writeFileSync(codexConfigPath(), 'model = "gpt-5"\n')
+
+        const result = await runDoctorRepair({ rootDir: projectRoot })
+
+        expect(result.repairs.filter((r) => r.includes('Codex'))).toEqual([])
+        expect(fs.existsSync(codexHookScriptPath())).toBe(false)
       })
     })
 

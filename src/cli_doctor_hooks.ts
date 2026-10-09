@@ -4,6 +4,8 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { extractErrorMessage } from './util.js'
 import { claudeHookScriptPath, hookEventGaps, installHooks, isInstalled, type HookEventGaps } from './install.js'
+import { hasCreatedConfig } from './bridges/created_configs.js'
+import { parseNativeInvocation, type WiredHookEntry } from './native_hook.js'
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import {
   copilotCliConfigPath,
@@ -53,6 +55,18 @@ export function shimIsCurrent(scriptPath: string, expected: string): boolean {
   }
 }
 
+/** A hook shim file name, current `.cjs` or pre-rename `.js`, under either path separator. */
+const SHIM_FILE_WORD = /(?:^|[\\/])token-goat-shim\.c?js$/
+
+/** Whether a wired hook entry runs a shim file that is no longer on disk, or a native hook client whose binary is gone: either way the harness cannot start the hook, so a rewrite is the only repair. A shim that exists but is stale is the caller's own check. */
+export function wiringPointsAtMissingFile(entries: readonly Pick<WiredHookEntry, 'words'>[]): boolean {
+  return entries.some(({ words }) => {
+    const native = parseNativeInvocation(words)
+    if (native !== undefined && !fs.existsSync(native.bin)) return true
+    return words.some((word) => SHIM_FILE_WORD.test(word) && !fs.existsSync(word))
+  })
+}
+
 /** Whether a scope's wiring needs rewriting. A fully wired scope still returns an object with three empty lists, so a non-null result alone is not a gap; null means the scope wires no token-goat hook, which is not ours to add. */
 function hasHookEventGaps(gaps: HookEventGaps | null): boolean {
   return gaps !== null && (gaps.missing.length > 0 || gaps.outdated.length > 0 || gaps.broken.length > 0)
@@ -72,11 +86,13 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
   // 1. Claude Code (user scope)
   try {
     const userShim = claudeHookScriptPath()
-    const userInstalled = isInstalled('user') || fs.existsSync(userShim)
+    // A scope that wires a token-goat hook counts as installed even with its shim deleted: isInstalled reads that as not installed, and the deleted shim is the very thing to restore.
+    const userGaps = hookEventGaps('user')
+    const userInstalled = isInstalled('user') || fs.existsSync(userShim) || userGaps !== null
     if (userInstalled) {
       const isStaleShim = fs.existsSync(userShim) && !shimIsCurrent(userShim, CLAUDECODE_HOOK_SCRIPT)
-      // hookEventGaps compares each entry with the one this build writes, so it also catches an entry left by an older build.
-      if (isStaleShim || hasHookEventGaps(hookEventGaps('user'))) {
+      // hookEventGaps compares each entry with the one this build writes, so it also catches an entry left by an older build, and a shim that is gone leaves every event it wired missing.
+      if (isStaleShim || hasHookEventGaps(userGaps)) {
         installHooks('user')
         repairs.push('Repaired Claude Code (user) hooks and shim')
       }
@@ -88,10 +104,11 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
   // 2. Claude Code (project scope)
   try {
     const projShim = claudeHookScriptPath()
-    const projInstalled = isInstalled('project')
+    const projGaps = hookEventGaps('project')
+    const projInstalled = isInstalled('project') || projGaps !== null
     if (projInstalled) {
       const isStaleShim = fs.existsSync(projShim) && !shimIsCurrent(projShim, CLAUDECODE_HOOK_SCRIPT)
-      if (isStaleShim || hasHookEventGaps(hookEventGaps('project'))) {
+      if (isStaleShim || hasHookEventGaps(projGaps)) {
         installHooks('project')
         repairs.push('Repaired Claude Code (project) hooks and shim')
       }
@@ -107,8 +124,9 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
     const userInstalled = isCopilotCliInstalled() || fs.existsSync(userConfig) || fs.existsSync(userShim)
     if (userInstalled) {
       const isStaleShim = fs.existsSync(userShim) && !shimIsCurrent(userShim, COPILOT_CLI_HOOK_SCRIPT)
-      const hasOutdatedEntries = wiredCopilotHookWords().some((e) => e.current === false)
-      if (isStaleShim || hasOutdatedEntries) {
+      const wired = wiredCopilotHookWords()
+      const hasOutdatedEntries = wired.some((e) => e.current === false)
+      if (isStaleShim || hasOutdatedEntries || wiringPointsAtMissingFile(wired)) {
         repairCopilotCliHooks()
         repairs.push('Repaired Copilot CLI (user) hooks and shim')
       }
@@ -125,8 +143,11 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
     const projInstalled = isCopilotCliInstalled(copilotLocalOpts) || fs.existsSync(projConfig) || fs.existsSync(projShim)
     if (projInstalled) {
       const isStaleShim = fs.existsSync(projShim) && !shimIsCurrent(projShim, COPILOT_CLI_HOOK_SCRIPT)
-      const hasOutdatedEntries = wiredCopilotHookWords(copilotLocalOpts).some((e) => e.current === false)
-      if (isStaleShim || hasOutdatedEntries) {
+      const wired = wiredCopilotHookWords(copilotLocalOpts)
+      const hasOutdatedEntries = wired.some((e) => e.current === false)
+      // A cloned repository can commit this hooks file, so a missing file it names is only rewritten when this machine wrote the config.
+      const pointsAtMissing = hasCreatedConfig(projConfig) && wiringPointsAtMissingFile(wired)
+      if (isStaleShim || hasOutdatedEntries || pointsAtMissing) {
         repairCopilotCliHooks(copilotLocalOpts)
         repairs.push('Repaired Copilot CLI (project) hooks and shim')
       }
@@ -142,8 +163,9 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
     const codexInstalled = isCodexInstalled() || fs.existsSync(codexCfg) || fs.existsSync(codexShim)
     if (codexInstalled) {
       const isStaleShim = fs.existsSync(codexShim) && !shimIsCurrent(codexShim, CODEX_HOOK_SCRIPT)
-      const hasOutdatedEntries = wiredCodexHookWords().some((e) => e.current === false)
-      if (isStaleShim || hasOutdatedEntries) {
+      const wired = wiredCodexHookWords()
+      const hasOutdatedEntries = wired.some((e) => e.current === false)
+      if (isStaleShim || hasOutdatedEntries || wiringPointsAtMissingFile(wired)) {
         installCodex()
         repairs.push('Repaired Codex CLI hooks and shim')
       }
@@ -159,8 +181,9 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
     const grokInstalled = isGrokInstalled() || fs.existsSync(grokCfg) || fs.existsSync(grokShim)
     if (grokInstalled) {
       const isStaleShim = fs.existsSync(grokShim) && !shimIsCurrent(grokShim, GROK_HOOK_SCRIPT)
-      const hasOutdatedEntries = wiredGrokHookWords().some((e) => e.current === false)
-      if (isStaleShim || hasOutdatedEntries) {
+      const wired = wiredGrokHookWords()
+      const hasOutdatedEntries = wired.some((e) => e.current === false)
+      if (isStaleShim || hasOutdatedEntries || wiringPointsAtMissingFile(wired)) {
         installGrok()
         repairs.push('Repaired Grok CLI hooks and shim')
       }
@@ -175,8 +198,9 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
     const kimiCfg = kimiConfigPath()
     const kimiInstalled = isKimiInstalled() || fs.existsSync(kimiCfg) || fs.existsSync(kimiShim)
     if (kimiInstalled) {
-      const hasOutdatedEntries = wiredKimiHookWords().some((e) => e.current === false)
-      if (hasOutdatedEntries || (fs.existsSync(kimiShim) && fs.statSync(kimiShim).size === 0)) {
+      const wired = wiredKimiHookWords()
+      const hasOutdatedEntries = wired.some((e) => e.current === false)
+      if (hasOutdatedEntries || wiringPointsAtMissingFile(wired) || (fs.existsSync(kimiShim) && fs.statSync(kimiShim).size === 0)) {
         installKimi()
         repairs.push('Repaired Kimi Code hooks and shim')
       }

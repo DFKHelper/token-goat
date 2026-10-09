@@ -509,7 +509,8 @@ export function hookEventGaps(scope: HookScope = 'user'): HookEventGaps | null {
   for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
     // A read, never a repair: a stale Windows copy of the native binary makes its entries outdated here, and `install` is what refreshes it.
     const expected = expectedHookEntryFor(scriptPath, eventArg, { sync: false })
-    if (groupHasTokenGoat(hooks[eventKey], (c, a) => hookEntryMatches(c, a, expected))) continue
+    // An entry equal to this build's own is not wired if the shim it runs was deleted: the harness cannot start it, so it falls through to missing (or broken, for a native entry whose binary went too).
+    if (groupHasTokenGoat(hooks[eventKey], (c, a) => hookEntryMatches(c, a, expected) && isLiveTokenGoatHookCommand(c, a))) continue
     if (groupHasTokenGoat(hooks[eventKey], isLiveTokenGoatHookCommand)) outdated.push(eventKey)
     else if (groupHasTokenGoat(hooks[eventKey], isBrokenNativeHookCommand)) broken.push(eventKey)
     else missing.push(eventKey)

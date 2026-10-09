@@ -1546,6 +1546,40 @@ describe('cli_doctor', () => {
       expect(result?.message).toContain('token-goat-shim.js from an older token-goat build')
       expect(result?.message).toContain('`token-goat install --copilot`')
     })
+
+    // CAPTURE: `token-goat install --copilot` in an isolated home wrote token-goat.json with commands running `<hooks>/token-goat-shim.cjs`, plus a 232-byte token-goat-shim.js forwarder; with the .cjs deleted, doctor printed "still run token-goat-shim.js from an older token-goat build" as a WARN and exited 0 while every hook call failed to start.
+    describe('a shim deleted while the config still runs it', () => {
+      function writeInstallRunning(shimName: string): { hooksDir: string; configPath: string } {
+        const hooksDir = path.join(tempDir, 'hooks')
+        fs.mkdirSync(hooksDir, { recursive: true })
+        fs.writeFileSync(path.join(hooksDir, 'token-goat-shim.js'), "import('./token-goat-shim.cjs')")
+        const configPath = path.join(hooksDir, 'token-goat.json')
+        writeConfig(configPath, { preToolUse: [{ type: 'command', command: `"${process.execPath}" "${path.join(hooksDir, shimName)}" preToolUse`, timeoutSec: 60 }] })
+        return { hooksDir, configPath }
+      }
+
+      it('fails, naming the missing .cjs and the repair, instead of blaming the .js forwarder that is still there', () => {
+        const { hooksDir, configPath } = writeInstallRunning('token-goat-shim.cjs')
+
+        const result = checkCopilotCli(configPath, path.join(hooksDir, 'token-goat-shim.cjs'))
+
+        expect(result?.status).toBe('fail')
+        expect(result?.message).toContain('token-goat-shim.cjs is missing')
+        expect(result?.message).toContain('`token-goat install --copilot`')
+        expect(result?.message).not.toContain('older token-goat build')
+      })
+
+      it('fails when the config runs the .js forwarder and that file is gone, even with the .cjs intact', () => {
+        const { hooksDir, configPath } = writeInstallRunning('token-goat-shim.js')
+        fs.writeFileSync(path.join(hooksDir, 'token-goat-shim.cjs'), COPILOT_CLI_HOOK_SCRIPT)
+        fs.rmSync(path.join(hooksDir, 'token-goat-shim.js'))
+
+        const result = checkCopilotCli(configPath, path.join(hooksDir, 'token-goat-shim.cjs'))
+
+        expect(result?.status).toBe('fail')
+        expect(result?.message).toContain('token-goat-shim.js is missing')
+      })
+    })
   })
 
   // HAND-DERIVED: each installer writes its shim constant verbatim (install.ts for Claude Code, codex_install.ts for Codex), so an installed file equal to the constant is current and anything else predates this build.
@@ -1561,6 +1595,26 @@ describe('cli_doctor', () => {
       expect(result?.status).toBe('warn')
       expect(result?.message).toContain('token-goat-shim.js from an older token-goat build')
       expect(result?.message).toContain('`token-goat install --codex`')
+    })
+
+    // CAPTURE: with ~/.claude/hooks/token-goat-shim.cjs (and the Codex one) deleted after an install, doctor printed a WARN about the leftover .js and exited 0; the settings.json / config.toml commands still run the .cjs by absolute path.
+    it('fails when a wired hook command runs a .cjs shim that is gone, whether or not a .js forwarder is left', () => {
+      const cjs = path.join(tempDir, 'token-goat-shim.cjs')
+      const wired = ['C:/node/node.exe', cjs, 'pre_tool_use']
+      expect(checkHookShim('Codex', cjs, CODEX_HOOK_SCRIPT, 'token-goat install --codex', wired)?.status).toBe('fail')
+      fs.writeFileSync(path.join(tempDir, 'token-goat-shim.js'), "import('./token-goat-shim.cjs')")
+      const result = checkHookShim('Codex', cjs, CODEX_HOOK_SCRIPT, 'token-goat install --codex', wired)
+      expect(result?.status).toBe('fail')
+      expect(result?.message).toContain('token-goat-shim.cjs is missing')
+      expect(result?.message).toContain('`token-goat install --codex`')
+    })
+
+    it('keeps the older-build warning for hooks that really do run the .js shim', () => {
+      const legacy = path.join(tempDir, 'token-goat-shim.js')
+      fs.writeFileSync(legacy, CODEX_HOOK_SCRIPT)
+      const result = checkHookShim('Codex', path.join(tempDir, 'token-goat-shim.cjs'), CODEX_HOOK_SCRIPT, 'token-goat install --codex', ['node', legacy, 'pre_tool_use'])
+      expect(result?.status).toBe('warn')
+      expect(result?.message).toContain('token-goat-shim.js from an older token-goat build')
     })
 
     it('returns ok for the shim this build writes, and warns naming the reinstall command for one it would not', () => {

@@ -24,11 +24,11 @@ import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath, LEGACY_HOOKS_SCRIPT_FILE, readCopilotHooksOwners } from './bridges/copilot_cli_install.js'
 import { hasCreatedConfig } from './bridges/created_configs.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './bridges/copilot_cli.js'
-import { claudeHookScriptPath, claudeHooksInstalledAnyScope, hookEventGaps, isInstalled } from './install.js'
+import { claudeHookScriptPath, claudeHooksInstalledAnyScope, hookEventGaps, isInstalled, wiredClaudeHookWords } from './install.js'
 import { parseNativeInvocation, splitHookCommand } from './native_hook.js'
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from './bridges/codex.js'
-import { codexHookScriptPath } from './bridges/codex_install.js'
+import { codexHookScriptPath, wiredCodexHookWords } from './bridges/codex_install.js'
 import { LEGACY_SHIM_FILE } from './bridges/shim_common.js'
 import { cleanupDeprecatedVscodeProjectMcp, vscodeHooksInstalled, vscodeUsesClaudeHooks } from './bridges/vscode_install.js'
 import { visualStudioProjectMcpPath, visualStudioSolutionVscodeMcpPath, visualStudioUserMcpPath } from './bridges/visualstudio_install.js'
@@ -329,15 +329,28 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
       message: `hook config at ${configPath} was not written by token-goat on this machine, so doctor does not run the command it names. If these hooks are yours, run ${fencedCommand(install)} to rewrite them here.`,
     }
   }
+  const legacyPath = path.join(path.dirname(scriptPath), LEGACY_HOOKS_SCRIPT_FILE)
+  // Which shim files the config's commands run decides what a missing file means: the .cjs install runs token-goat-shim.cjs (and keeps a .js forwarder for sessions that cached the old path), an install from before the rename runs token-goat-shim.js itself.
+  let configText = ''
+  try {
+    configText = fs.readFileSync(configPath, 'utf-8')
+  } catch {
+    // An unreadable config is reported by the JSON check below once the shim is known to be present.
+  }
+  const named = hookShimFilesNamed([configText])
   if (!fs.existsSync(scriptPath)) {
-    // An install from before the shim was renamed has only the .js one, and its config still runs it.
-    if (!fs.existsSync(path.join(path.dirname(scriptPath), LEGACY_HOOKS_SCRIPT_FILE))) return null
+    if (named.current) return missingShimResult(name, scriptPath, harness, install)
+    if (named.legacy && !fs.existsSync(legacyPath)) return missingShimResult(name, legacyPath, harness, install)
+    // The config runs the pre-rename .js (or names neither, and only a leftover .js says an install was here).
+    if (!fs.existsSync(legacyPath)) return null
     return {
       name,
       status: 'warn',
       message: `hooks at ${path.dirname(scriptPath)} still run ${LEGACY_HOOKS_SCRIPT_FILE} from an older token-goat build, which Node loads as an ES module under any package.json that says "type": "module" and then fails every tool call. Recovery: run ${fencedCommand(install)}, then fully restart ${harness}.`,
     }
   }
+  // A config that still runs the .js forwarder (a session started before the rename caches it) fails every call once that file is gone, even with the .cjs it forwards to intact.
+  if (named.legacy && !fs.existsSync(legacyPath)) return missingShimResult(name, legacyPath, harness, install)
 
   let config: { hooks?: Partial<Record<string, Array<{ command?: string }>>> }
   try {
@@ -434,6 +447,17 @@ function copilotHooksRecovery(hooksDir: string, scope: 'user' | 'project'): { in
   return { install: scope === 'project' ? 'token-goat install --copilot --local' : 'token-goat install --copilot', harness: 'Copilot CLI' }
 }
 
+/** Which hook shim files the given hook commands (or whole config text) run: the current `.cjs`, the pre-rename `.js`, or both. */
+function hookShimFilesNamed(texts: readonly string[]): { current: boolean; legacy: boolean } {
+  const joined = texts.join('\n')
+  return { current: /token-goat-shim\.cjs/.test(joined), legacy: /token-goat-shim\.js(?![\w.])/.test(joined) }
+}
+
+/** The row for a hook shim that the hooks run but that is not on disk: every hook call dies at launch (Copilot's preToolUse fails closed on it), and nothing but an install puts the file back. */
+function missingShimResult(name: string, shimPath: string, harness: string, reinstall: string): DoctorResult {
+  return { name, status: 'fail', message: `hook shim at ${shimPath} is missing, but your hooks still run it, so every hook call fails to start. Recovery: run ${fencedCommand(reinstall)} (or token-goat doctor --repair), then fully restart ${harness}.` }
+}
+
 function shimIsCurrent(scriptPath: string, expected: string): boolean {
   return fs.readFileSync(scriptPath, 'utf-8').replace(/\r\n/g, '\n') === expected.replace(/\r\n/g, '\n')
 }
@@ -443,16 +467,23 @@ function staleShimMessage(scriptPath: string, harness: string, reinstall: string
 }
 
 /** Checks one installed hook shim against the script this build would write in its place. Null when the shim is not installed, so a harness nobody uses adds no row. */
-export function checkHookShim(name: string, scriptPath: string, expected: string, reinstall: string): DoctorResult | null {
+export function checkHookShim(name: string, scriptPath: string, expected: string, reinstall: string, wiredCommands: readonly string[] = []): DoctorResult | null {
+  const legacyPath = path.join(path.dirname(scriptPath), LEGACY_SHIM_FILE)
+  const named = hookShimFilesNamed(wiredCommands)
   if (!fs.existsSync(scriptPath)) {
+    // A hook command that runs the .cjs, or only the pre-rename .js, with that file gone cannot start; nothing but an install puts it back.
+    if (named.current) return missingShimResult(name, scriptPath, name, reinstall)
+    if (named.legacy && !fs.existsSync(legacyPath)) return missingShimResult(name, legacyPath, name, reinstall)
     // An install from before the shim was renamed has only the .js one, and its hook commands still run it.
-    if (!fs.existsSync(path.join(path.dirname(scriptPath), LEGACY_SHIM_FILE))) return null
+    if (!fs.existsSync(legacyPath)) return null
     return {
       name,
       status: 'warn',
       message: `hooks at ${path.dirname(scriptPath)} still run ${LEGACY_SHIM_FILE} from an older token-goat build, which Node loads as an ES module under any package.json that says "type": "module" and then fails every tool call. Recovery: run ${fencedCommand(reinstall)}, then restart any running session.`,
     }
   }
+  // A command that still runs the .js forwarder fails once that file is gone, even with the .cjs intact.
+  if (named.legacy && !fs.existsSync(legacyPath)) return missingShimResult(name, legacyPath, name, reinstall)
   if (shimIsCurrent(scriptPath, expected)) return { name, status: 'ok', message: `hook shim at ${scriptPath} matches this build` }
   return { name, status: 'warn', message: staleShimMessage(scriptPath, name, reinstall) + ', then restart any running session.' }
 }
@@ -720,7 +751,9 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   if (copilotResult) results.push(copilotResult)
   const copilotProjectResult = checkCopilotCli(copilotCliConfigPath({ local: true }), copilotCliScriptPath({ local: true }), 'project')
   if (copilotProjectResult) results.push(copilotProjectResult)
-  const claudeShimResult = checkHookShim('Claude Code', claudeHookScriptPath(), CLAUDECODE_HOOK_SCRIPT, isInstalled('user') || !isInstalled('project') ? 'token-goat install' : 'token-goat install --project')
+  // With the shim gone isInstalled reads false for both scopes, so the scope to reinstall is the one that still wires a hook.
+  const claudeProjectOnly = hookEventGaps('user') === null && hookEventGaps('project') !== null
+  const claudeShimResult = checkHookShim('Claude Code', claudeHookScriptPath(), CLAUDECODE_HOOK_SCRIPT, claudeProjectOnly || (!isInstalled('user') && isInstalled('project')) ? 'token-goat install --project' : 'token-goat install', [...wiredClaudeHookWords('user'), ...wiredClaudeHookWords('project')].flat())
   if (claudeShimResult) results.push(claudeShimResult)
   const claudeGaps = { user: hookEventGaps('user'), project: hookEventGaps('project') }
   const claudeEventsResult = checkClaudeHookEvents(claudeGaps)
@@ -729,7 +762,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   const claudeGoneResult = checkClaudeHooksGone(claudeGaps.user !== null || claudeGaps.project !== null, claudeHookActivity())
   if (claudeGoneResult) results.push(claudeGoneResult)
   for (const result of checkNativeHooks(path.join(actualDataDir, 'global.db'))) results.push(result)
-  const codexShimResult = checkHookShim('Codex', codexHookScriptPath(), CODEX_HOOK_SCRIPT, 'token-goat install --codex')
+  const codexShimResult = checkHookShim('Codex', codexHookScriptPath(), CODEX_HOOK_SCRIPT, 'token-goat install --codex', wiredCodexHookWords().flatMap((e) => e.words))
   if (codexShimResult) results.push(codexShimResult)
   const vscodeHooksResult = checkVscodeClaudeHooks(
     vscodeUsesClaudeHooks(),

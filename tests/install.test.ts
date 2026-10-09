@@ -156,6 +156,18 @@ describe('installHooks', () => {
     expect(checkClaudeHookEvents({ user: hookEventGaps('user'), project: hookEventGaps('project') })?.status).toBe('ok')
   })
 
+  // HAND-DERIVED: an entry equal to the one this build writes still names the shim by absolute path, so with that file deleted the harness cannot start it; the entry text alone (what the comparison read) is unchanged by the deletion.
+  it('reports every event as missing once the shim the wired entries run is deleted, though the entries are textually current', () => {
+    installHooks('project')
+    expect(hookEventGaps('project')).toEqual({ missing: [], outdated: [], broken: [] })
+    fs.rmSync(claudeHookScriptPath())
+
+    const gaps = hookEventGaps('project')
+    expect(gaps?.missing.length).toBeGreaterThan(0)
+    expect(gaps?.outdated).toEqual([])
+    expect(isInstalled('project')).toBe(false)
+  })
+
   it('hookEventGaps answers null when token-goat is not installed in that scope at all, and doctor then stays silent', () => {
     expect(hookEventGaps('project')).toBeNull()
     expect(checkClaudeHookEvents({ user: hookEventGaps('user'), project: hookEventGaps('project') })).toBeNull()
