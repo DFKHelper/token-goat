@@ -18,6 +18,7 @@ import { INSTRUCTION_GATE_BEGIN, INSTRUCTION_GATE_END } from '../src/cli_doctor_
 import { DEV_CHECKOUT_ADVICE } from '../src/cli_upgrade.js'
 import { clearUpdateCheck, seedUpdateCheck } from './helpers/update-check.js'
 import { allowWrites, denyWrites } from './helpers/seal-directory.js'
+import { tokenGoatOnPath } from './helpers/token_goat_on_path.js'
 import { CliError, formatCommandError } from '../src/command_error.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
 import { copilotCliConfigPath, copilotCliHooksDir, copilotCliInstructionsPath, copilotCliScriptPath, installCopilotHooksFile, wiredCopilotHookWords, writeCopilotInstructionsBlock } from '../src/bridges/copilot_cli_install.js'
@@ -648,7 +649,12 @@ describe('doctor auto-repair and embedding model checks', () => {
 
   describe('a --fix repair that fails', () => {
     // CAPTURE: `doctor --fix` with a read-only config.toml in a scratch home printed "Repair errors encountered:" and the EPERM line on stdout and exited 0. The failing save is simulated here; the message shape is the one runDoctorRepair builds.
-    async function failingFix(): Promise<{ out: string; err: unknown }> {
+    let removeStandIn: (() => void) | undefined
+    afterEach(() => { removeStandIn?.(); removeStandIn = undefined })
+
+    // The report's own verdict decides whether the error adds a line, and its Installation row turns on what `token-goat` PATH resolves to, so each run says which it gets rather than inheriting the machine's install.
+    async function failingFix(installed: string | null = '9.8.7'):Promise<{ out: string; err: unknown }> {
+      removeStandIn = tokenGoatOnPath(installed)
       const config = configModule.defaultConfig()
       config.network.offline = false
       config.mcp.confine_reads_to_project_root = true
@@ -669,6 +675,14 @@ describe('doctor auto-repair and embedding model checks', () => {
       expect(out).not.toContain('Repair errors')
       expect(out).not.toContain('EPERM')
       expect(out).toContain('Running automatic repairs')
+    })
+
+    // HAND-DERIVED: a `token-goat` on PATH that exits 1 fails the Installation check, so the report fails too and the error says so after the repair line.
+    it('adds that the checks failed as well when the report has a failing row', async () => {
+      const { out, err } = await failingFix(null)
+
+      expect(out).toContain('token-goat command not found')
+      expect(formatCommandError(err)).toBe('token-goat: 1 repair failed:\n  ✕ Failed to update configuration: EPERM: operation not permitted. Not applied: Restored permissive read access (mcp.confine_reads_to_project_root = false)\ndoctor checks failed as well; see the report above.')
     })
 
     // CAPTURE: the same scratch-home run listed "✓ Enabled semantic embeddings (indexing.embeddings_enabled = true)" under "Repairs applied:" although the save that would apply it had failed.

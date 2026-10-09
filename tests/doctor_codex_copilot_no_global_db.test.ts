@@ -14,7 +14,7 @@ let copilotHome: string
 let data: string
 let project: string
 
-function run(args: string[]): { status: number | null; out: string } {
+function run(args: string[]): { status: number | null; out: string; stdout: string } {
   const r = spawnSync(process.execPath, [BUNDLE, ...args], {
     cwd: project,
     encoding: 'utf-8',
@@ -32,7 +32,7 @@ function run(args: string[]): { status: number | null; out: string } {
       TOKEN_GOAT_NO_WORKER_SPAWN: '1',
     },
   })
-  return { status: r.status, out: `${r.stdout}${r.stderr}` }
+  return { status: r.status, out: `${r.stdout}${r.stderr}`, stdout: r.stdout }
 }
 
 function globalDbFiles(dir: string): string[] {
@@ -82,7 +82,8 @@ describe('doctor and lookups on a Codex CLI and Copilot CLI machine', () => {
 
   it('doctor --json reports both hosts without a failure and creates none', () => {
     const r = run(['doctor', '--json'])
-    const rows = JSON.parse(r.out) as Array<{ name: string; status: string }>
+    // stdout alone: a failing row elsewhere in the report (CI has no global install, so Installation fails there) adds a verdict line on stderr that is not part of the JSON.
+    const rows = JSON.parse(r.stdout) as Array<{ name: string; status: string }>
     for (const name of ['Codex', 'Copilot CLI']) {
       const row = rows.find((x) => x.name === name)
       expect(row, name).toBeDefined()
