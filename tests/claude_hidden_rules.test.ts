@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { commandLineRuleSource, frontmatterAddsRule, hiddenRuleSource, primeProcessReason, resetHiddenRuleCache, type HiddenRuleHelpers, type HiddenRuleQuery } from '../src/claude_hidden_rules.js'
+import { commandLineRuleSource, frontmatterAddsRule, hiddenRuleSource, primeProcessReason, resetHiddenRuleCache, stamp, type HiddenRuleHelpers, type HiddenRuleQuery } from '../src/claude_hidden_rules.js'
 import { selfAndAncestors } from '../src/rewrite_permission.js'
 import { runGit } from '../src/util.js'
 
@@ -443,6 +443,16 @@ describe('hiddenRuleSource: rule files', () => {
     write(path.join(skills, 't', 'SKILL.md'), PATTERN_SKILL)
     expect(check(b, {}, { now: 1_000 })).toContain(path.join('t', 'SKILL.md'))
   }, 60_000)
+
+  // HAND-DERIVED from node's contract: statSync on a path holding a NUL byte throws ERR_INVALID_ARG_VALUE on every platform, an error that is neither ENOENT nor ENOTDIR and says nothing about the folder. Only a missing entry, or a parent that is a file, may read as absent.
+  it('a stamp is absent only for a missing entry, and unreadable for any other stat failure', () => {
+    const b = box('stamp-kinds')
+    write(path.join(b.project, 'file.txt'), 'x')
+    expect(stamp(path.join(b.project, 'gone'))).toBe('absent')
+    expect(stamp(path.join(b.project, 'file.txt', 'below'))).toBe('absent')
+    expect(stamp(path.join(b.project, `bad${String.fromCharCode(0)}name`))).toBe('unreadable')
+    expect(stamp(b.project)).toMatch(/:dir$/)
+  })
 
   it('a skill tree too large to finish checking counts as hidden', () => {
     const b = box('huge')

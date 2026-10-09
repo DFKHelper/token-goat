@@ -290,7 +290,7 @@ function result(scan: Scan): ScanResult {
 }
 
 /** What a later call compares to tell whether `file` changed: its modification time, and its size for a file. Only a missing entry (or a parent that is not a directory) is `absent`; any other failure is `unreadable`, which {@link record} refuses to trust. */
-function stamp(file: string): string {
+export function stamp(file: string): string {
   try {
     const st = fs.statSync(file)
     return `${st.mtimeMs}:${st.isDirectory() ? 'dir' : st.size}`
