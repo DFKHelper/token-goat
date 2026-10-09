@@ -549,7 +549,8 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
 
       // HAND-DERIVED: unwrapped, Python on Windows opens a file in the ANSI code page and prints in UTF-8 only when told to; the rewrite changes the standard streams alone, so open() reads what it reads unwrapped while a non-ASCII print comes out as UTF-8.
       it.skipIf(!hasPython)(`reads a file with open() as unwrapped Python does and prints non-ASCII as UTF-8${pythonSkip}`, () => {
-        fs.writeFileSync(path.join(dir, 'cp.txt'), Buffer.from([0x63, 0x61, 0x66, 0xe9]))
+        // HAND-DERIVED: 0xe9 is e-acute in the ANSI code page Windows opens files in, but an invalid UTF-8 sequence where open() reads UTF-8, and there the wrapped and unwrapped tracebacks differ by the loader's frame; so elsewhere the file holds UTF-8 'caf' + e-acute, which both decode.
+        fs.writeFileSync(path.join(dir, 'cp.txt'), process.platform === 'win32' ? Buffer.from([0x63, 0x61, 0x66, 0xe9]) : Buffer.from('caf\u00e9', 'utf8'))
         const script = 'print(len(open("cp.txt").read()))'
         const direct = spawnSync('python', ['-c', script], { cwd: dir, env, encoding: 'utf8' })
         for (const cmd of [`python -c '${script}'`, `$s = 'cp.txt'; python -c "print(len(open('$s').read()))"`, `python - <<'EOF'\n${script}\nEOF`]) {
@@ -632,6 +633,17 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
         expect(r.stderr).toBe('')
         expect(r.stdout.trim()).toBe(`b''`)
         expect(r.status).toBe(0)
+      })
+
+      // CAPTURE: on a GitHub windows-latest runner Windows PowerShell 5.1 delivered efbbbf68c3a96c... for a body of 68c3a96c...; reproduced locally by setting [Console]::InputEncoding to UTF-8 with a BOM, the state of a console whose code page is 65001, where Process.Start writes the encoding's preamble to the child's stdin.
+      it.skipIf(!hasPython || label !== 'Windows PowerShell 5.1')(`gives a native command no BOM when the console input encoding is UTF-8 and puts it back${pythonSkip}`, () => {
+        const prime = '[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($true)\n'
+        for (const body of [`${TEXT}\nline 2`, '']) {
+          const r = runIn(`${prime}cat <<'EOF' | python -c "import sys; print('[' + sys.stdin.buffer.read().hex() + ']')"\n${body}${body ? '\n' : ''}EOF\nWrite-Output "cp=$([Console]::InputEncoding.CodePage) preamble=$([Console]::InputEncoding.GetPreamble().Length)"`)
+          expect(r.stderr).toBe('')
+          expect(r.stdout.trim().split(/\r?\n/)).toEqual([`[${hex(body ? `${body}\n` : '')}]`, 'cp=65001 preamble=3'])
+          expect(r.status).toBe(0)
+        }
       })
 
       // HAND-DERIVED: bash hands a program the heredoc body's UTF-8 bytes with LF line ends and the closing newline, no BOM and nothing added; python prints the hex of exactly the bytes it read from stdin.
