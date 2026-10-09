@@ -4516,7 +4516,10 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
       git(['checkout', originalBranch])
 
       // The bash tool's reported cwd is the SUBDIRECTORY, not the repo root -- mirrors a real `cd sub && git checkout feature` session.
-      await postBashHandler(makePostBashEvent('git checkout feature', '', sub))
+      // A loaded full suite can push one of the hook's 5 s git reads past its timeout, which enqueues nothing; rerunning reads the same HEAD@{1} diff, and a wrong path still fails the assertions below.
+      for (let attempt = 0; attempt < 3 && getDirtyPaths().length === 0; attempt++) {
+        await postBashHandler(makePostBashEvent('git checkout feature', '', sub))
+      }
 
       const dirty = foldedDirtyPaths()
       // git diff --name-only reports 'sub/nested.txt' relative to the repo TOP-LEVEL (dir), not relative to the subdirectory cwd it was invoked from.

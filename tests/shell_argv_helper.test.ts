@@ -7,8 +7,12 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
   const sh = POSIX_SH!
 
   // A builtin loop rather than sleep: a child process would hold the output pipe open after the shell is killed.
+  // The budget is three times a measured warm run plus a second, so a loaded machine slow to start the shell still reaches the loop before the kill.
   it('names a timeout when the shell is killed before every command ran', () => {
-    expect(() => shRunAll(sh, ['token-goat a', 'while :; do :; done', 'token-goat b'], { timeoutMs: 1500 })).toThrow(/ran 1 of 3 commands: .*(ETIMEDOUT|SIGTERM)/)
+    const started = Date.now()
+    shRunAll(sh, ['token-goat w'])
+    const timeoutMs = Math.max(1500, (Date.now() - started) * 3 + 1000)
+    expect(() => shRunAll(sh, ['token-goat a', 'while :; do :; done', 'token-goat b'], { timeoutMs })).toThrow(/ran 1 of 3 commands: .*(ETIMEDOUT|SIGTERM)/)
   })
 
   it('shares one subshell across a chunk of commands, so a run forks once per chunk', () => {
