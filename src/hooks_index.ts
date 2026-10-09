@@ -11,7 +11,7 @@ import { resolveIndexPath } from './paths.js'
 import { isUnderSystemTemp } from './project.js'
 import { ensureDirSync, atomicWriteBytes } from './util.js'
 import type { HookOutput } from './types.js'
-import { appendDirtyQueuePaths, dirtyQueuePathFor, getDirtyPathsFor } from './dirty_queue.js'
+import { appendDirtyQueuePaths, appendReconcileRequest, dirtyQueuePathFor, getDirtyPathsFor } from './dirty_queue.js'
 import { ensureWorkerAlive } from './worker_lifecycle.js'
 
 /** Absolute path to the dirty queue file (`{dataDir}/queue/dirty.txt`). */
@@ -35,8 +35,8 @@ export function enqueueDirtyPathSafe(filePath: string, opts?: { alreadyResolved?
   enqueueDirtyPathsSafe([filePath], opts)
 }
 
-/** Batch form of {@link enqueueDirtyPathSafe}: the same `resolveIndexPath` + `isUnderSystemTemp` filter over the whole array, then one queue append and one `ensureWorkerAlive()` for the set rather than one of each per path. `reconcileProject` fans a whole sweep's changed/added/removed set through here. Calling the single-path form in a loop made the append cost grow with the queue it was filling. Returns how many paths reached the queue, which is fewer than were passed whenever the temp-dir filter dropped some and zero when the append failed: a caller reporting a count reports what the worker will drain, not what it offered. */
-export function enqueueDirtyPathsSafe(filePaths: string[], opts?: { alreadyResolved?: boolean }): number {
+/** Batch form of {@link enqueueDirtyPathSafe}: the same `resolveIndexPath` + `isUnderSystemTemp` filter over the whole array, then one queue append and one `ensureWorkerAlive()` for the set rather than one of each per path. `reconcileProject` fans a whole sweep's changed/added/removed set through here. Calling the single-path form in a loop made the append cost grow with the queue it was filling. `opts.dir` names the data directory whose queue is appended to, for the worker sweeping on behalf of the directory it drains; omitted, it is {@link dataDir}. Returns how many paths reached the queue, which is fewer than were passed whenever the temp-dir filter dropped some and zero when the append failed: a caller reporting a count reports what the worker will drain, not what it offered. */
+export function enqueueDirtyPathsSafe(filePaths: string[], opts?: { alreadyResolved?: boolean; dir?: string }): number {
   const resolved: string[] = []
   try {
     for (const filePath of filePaths) {
@@ -46,7 +46,8 @@ export function enqueueDirtyPathsSafe(filePaths: string[], opts?: { alreadyResol
       resolved.push(r)
     }
     if (resolved.length === 0) return 0
-    appendDirtyPaths(resolved)
+    if (opts?.dir !== undefined) appendDirtyQueuePaths(opts.dir, resolved)
+    else appendDirtyPaths(resolved)
   } catch {
     // Fail-soft: the file write/reparse already landed either way, just not reindexed until the next `token-goat index` or edit touches this file again.
     return 0
@@ -58,6 +59,21 @@ export function enqueueDirtyPathsSafe(filePaths: string[], opts?: { alreadyResol
     // Best-effort, same as hooks_edit.ts's own call: a healthcheck failure must never turn a successful enqueue into a thrown error.
   }
   return resolved.length
+}
+
+/** Ask the worker to sweep the project containing `projectDir` against the index (reconcileProject), for a hook that knows files changed but could not learn which, such as a branch switch whose changed-file list git failed to produce in time. Costs no git spawn: the worker resolves the repository top-level itself. Never throws; returns whether the request was recorded, and wakes a dead worker as an enqueue does. */
+export function requestReconcileSafe(projectDir: string): boolean {
+  try {
+    if (!appendReconcileRequest(dataDir(), projectDir)) return false
+  } catch {
+    return false
+  }
+  try {
+    ensureWorkerAlive()
+  } catch {
+    // Best-effort, as in enqueueDirtyPathsSafe.
+  }
+  return true
 }
 
 /** Return every queued dirty path, in insertion order, deduplicated. Returns an empty array when the queue file does not exist. Blank lines (from a trailing newline or a partial write) are skipped. Duplicates are collapsed so a file edited several times is reindexed once. */

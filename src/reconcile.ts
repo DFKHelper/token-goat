@@ -25,6 +25,8 @@ export interface ReconcileOptions {
   dryRun?: boolean
   /** Index database to read/write. Defaults to {@link globalDbPath}; overridable for tests so a sweep can be run against an isolated database instead of the process-memoized default. */
   dbPath?: string
+  /** Data directory whose dirty queue receives the drifted files. Defaults to the process's data directory; the worker passes the directory it drains. */
+  queueDir?: string
 }
 
 /** Reads the resume point left by a previous budget-truncated sweep of `root`, or null when there is none (fresh project, a completed lap already cleared it, or the row cannot be read). Never throws: a corrupt or unreadable cursor degrades to "start from the beginning", not a crash. */
@@ -285,7 +287,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     // Resolved here rather than passed raw: `getTrackedFiles` returns paths joined onto the root it was given, so a relative `cwd` (the natural `token-goat reconcile` from inside the project) yields relative paths, and the worker's sha gate keys on the canonical absolute form. An unresolved relative path enqueues a key no reader can match -- the queue would fill and nothing would ever reindex. Paths from the index are already canonical, so resolving them is a no-op.
     const toEnqueue = [...changed, ...added, ...removed].map((p) => resolveIndexPath(p, cwd))
     // Batched rather than enqueued one at a time: a sweep routinely fans out four figures of paths at session start, and the single-path form appends each one separately. The count is what the queue took, not what it was offered: it refuses every path under the OS temp dir, and a project there reported files enqueued that no worker would ever see.
-    enqueued = enqueueDirtyPathsSafe(toEnqueue, { alreadyResolved: true })
+    enqueued = enqueueDirtyPathsSafe(toEnqueue, { alreadyResolved: true, ...(opts.queueDir !== undefined ? { dir: opts.queueDir } : {}) })
     // Cursor upkeep, gated the same as enqueueing above: `--dry-run` reports drift without any side effect, and persisting a resume point is a side effect. A truncated sweep that scanned at least one file saves where it stopped, so the next sweep resumes there; a sweep with nothing scanned (budget already gone before the first file) leaves whatever cursor already exists untouched rather than clobbering it with nothing. A sweep that completed a full lap clears the cursor, since the next sweep should start a fresh lap from the beginning rather than carry forward an offset a completed lap has made meaningless.
     if (budgetExhausted) {
       if (lastScanned !== null) writeReconcileCursor(dbPath, projectRoot, lastScanned)

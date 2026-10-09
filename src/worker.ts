@@ -29,6 +29,7 @@ import { modelDownloadHeld } from './embed_preflight.js'
 import { failedAtOf } from './model_download_gate.js'
 import { appendDirtyQueueFile, appendDirtyQueuePaths, dirtyQueuePathFor, parseDirtyQueueLines } from './dirty_queue.js'
 import { createQueueWaker, noteOwnQueueWrite } from './queue_waker.js'
+import { drainReconcileRequests } from './reconcile_requests.js'
 import { appendWorkerErrorLog, readPidFile, resolvePollIntervalMs, WORKER_STARTUP_GRACE_MS, workerErrorLogPath, workerPidPath, writeDrainHeartbeat } from './worker_lifecycle.js'
 
 // Stale session-snapshot sweep runs on the same loop as the dirty-queue drain (see runWorkerLoop) but throttled to this interval -- cleanup_stale's own default 24h staleness window doesn't need finer-grained sweeping than hourly, and a full directory scan on every 2s poll tick would be wasteful.
@@ -623,6 +624,9 @@ export function drainOnce(
       // A sidecar left behind is recovered by the next cycle's stage (a), which costs one duplicate unchanged-sha skip per path.
     }
   }
+
+  // (b2) Projects a hook asked to have swept because it could not list the files a branch switch changed (see reconcile_requests.ts). After the dirty queue so the sweep's own enqueues wait for the next cycle, as the deferred requeues above do. Counts as work so an idle daemon does not retire in the middle of a catch-up.
+  processed += drainReconcileRequests(dir)
 
   // (c) Opportunistic prune sweep for renamed/deleted files that never enqueued via the Edit hook path (git mv, git checkout, git clean). Runs after all normal dirty-queue work above, on a low cadence (see PRUNE_EVERY_N_DRAINS' doc comment), so it never delays draining the queue itself and a slow sweep on a huge repo only pushes out the NEXT sweep's schedule, not this cycle's already-completed dirty-queue work.
   const cycle = (drainCycleCounts.get(dir) ?? 0) + 1

@@ -27,7 +27,9 @@ import { looksLikeHtml, extractCleanText } from './web_extract.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
 import { runGit, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
-import { enqueueDirtyPathSafe } from './hooks_index.js'
+import { enqueueDirtyPathSafe, requestReconcileSafe } from './hooks_index.js'
+import { dataDir } from './constants.js'
+import { appendWorkerErrorLog } from './worker_lifecycle.js'
 import { isInsideRoot } from './path_containment.js'
 import { projectTranscriptsDir } from './claude_config_dir.js'
 import { MAX_CAPTURE_BYTES } from './bash_runner.js'
@@ -40,7 +42,7 @@ import {
   isHeadMovingGitCommand,
   ORIG_HEAD_ELIGIBLE_GIT_RE,
   ORIG_HEAD_REFLOG_MSG_RE,
-  gitRepoRoot,
+  gitRepoRootOrNull,
   enqueueNonHeadMovingRewrites,
   pipelineShapeFilter,
   isFullRecallCommand,
@@ -674,22 +676,37 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     if (isHeadMovingGitCommand(cmd) && (exitCode === null || exitCode === 0)) {
       const gitDir = runDir ?? process.cwd()
       let diffBase = 'HEAD@{1}'
+      // Why the changed-file list cannot be trusted, when it cannot: a read git did not answer at all (spawn failure or timeout, exit -1) leaves the base possibly wrong even when the diff then succeeds.
+      let unanswered: string | null = null
       if (ORIG_HEAD_ELIGIBLE_GIT_RE.test(cmd)) {
         const reflogTop = runGit(['reflog', '-1', '--format=%gs', 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
+        if (reflogTop.exitCode === -1) unanswered = `git reflog: ${reflogTop.stderr}`
         if (reflogTop.exitCode === 0 && ORIG_HEAD_REFLOG_MSG_RE.test(reflogTop.stdout.trim())) {
           const origHead = runGit(['rev-parse', '--verify', '-q', 'ORIG_HEAD'], { cwd: gitDir, timeoutMs: 5000 })
+          if (origHead.exitCode === -1) unanswered = `git rev-parse ORIG_HEAD: ${origHead.stderr}`
           if (origHead.exitCode === 0 && origHead.stdout.trim() !== '') diffBase = 'ORIG_HEAD'
         }
       }
       const mutationDiff = runGit(['diff', '--name-only', diffBase, 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
       if (mutationDiff.exitCode === 0) {
-        // `git diff --name-only` always reports paths relative to the repo top-level, regardless of which directory git was invoked from -- resolving them against the raw event cwd (a monorepo subpackage, or a `cd sub && git checkout ...`) would compute the wrong absolute path and silently enqueue nothing useful. Resolve the real top-level first.
-        const repoRoot = gitRepoRoot(gitDir)
-        for (const rel of mutationDiff.stdout.split('\n')) {
-          const trimmed = rel.trim()
-          if (trimmed.length === 0) continue
-          enqueueDirtyPathSafe(resolveIndexPath(trimmed, repoRoot), { alreadyResolved: true })
+        // `git diff --name-only` always reports paths relative to the repo top-level, regardless of which directory git was invoked from -- resolving them against the raw event cwd (a monorepo subpackage, or a `cd sub && git checkout ...`) would compute the wrong absolute path and silently enqueue nothing useful. Resolve the real top-level first, and treat a root git would not name as a failed read rather than guessing the working directory.
+        const repoRoot = gitRepoRootOrNull(gitDir)
+        if (repoRoot === null) {
+          unanswered ??= 'git rev-parse --show-toplevel named no root'
+        } else {
+          for (const rel of mutationDiff.stdout.split('\n')) {
+            const trimmed = rel.trim()
+            if (trimmed.length === 0) continue
+            enqueueDirtyPathSafe(resolveIndexPath(trimmed, repoRoot), { alreadyResolved: true })
+          }
         }
+      } else {
+        unanswered = `git diff ${diffBase} HEAD exited ${mutationDiff.exitCode}: ${mutationDiff.stderr}`
+      }
+      // Dropping the work here left the index on the old branch with nothing in any log, and under load each read above is one 5 s timeout from failing. The worker can learn what changed without the hook's time budget (a sweep of the tracked files against the index), so hand it the project and record why.
+      if (unanswered !== null) {
+        const recorded = requestReconcileSafe(gitDir)
+        appendWorkerErrorLog(dataDir(), `${new Date().toISOString()} post-bash ${cmd.slice(0, 80)} in ${gitDir}: could not list the files it changed (${unanswered.trim().slice(0, 200)}); ${recorded ? 'asked the worker to reconcile the project' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
       }
     }
 

@@ -108,16 +108,51 @@ export function appendDirtyQueueFile(filePath: string, absPaths: readonly string
 /** Append every path in `absPaths` to the dirty queue under `dir`, one path per line, in one filesystem append, and report whether they reached the live queue. Throws when the `queue/` directory or the file cannot be written. Creates both on first use. Uses append mode so concurrent producers accumulate; a trailing newline terminates each entry so {@link parseDirtyQueueLines} can split cleanly. The torn-line guard is consulted once for the whole batch, which is correct because the batch is written as a single append: only the first line of it can ever meet a partial line. The worker claims the queue by renaming it, and a handle opened before that rename still writes into the renamed file, which the worker deletes once it has read it a last time. A write landing after that read went out with the delete. So each append checks, after writing, that the file it wrote is still the one named `dirty.txt`, and writes again if a claim took it: from that point on the path is in a file the worker has yet to claim. A duplicate costs the drain one unchanged-sha skip. Every producer appends through here, the hooks and CLI through hooks_index.ts::appendDirtyPaths and the worker's own requeues through worker.ts::appendToDirtyQueue. */
 export function appendDirtyQueuePaths(dir: string, absPaths: readonly string[]): boolean {
   if (absPaths.length === 0) return true
-  const queuePath = dirtyQueuePathFor(dir)
+  return appendToClaimableFile(dirtyQueuePathFor(dir), renderDirtyQueueLines(absPaths))
+}
+
+/** Append `body` to the claimable queue-directory file at `queuePath`, creating the directory and the file on first use, and write again when a claim renamed the file under the write; see {@link appendDirtyQueuePaths} for why. Throws when the directory or file cannot be written. */
+function appendToClaimableFile(queuePath: string, body: string): boolean {
   const queueDir = path.dirname(queuePath)
   try {
     ensureDirSync(queueDir)
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST' || !fs.existsSync(queueDir)) throw e
   }
-  const body = renderDirtyQueueLines(absPaths)
   for (let attempt = 0; attempt < 3; attempt++) {
     if (appendToLiveQueue(queuePath, `${dirtyQueueLeadingNewline(queuePath)}${body}`)) return true
   }
   return false
+}
+
+/** Absolute path to the reconcile-request file for `dir`: a sibling of the dirty queue, not lines in it, because every other reader of dirty.txt (the pre-compact snapshot, doctor's pending count, the drain's per-path batch) takes each line to be a file path. */
+export function reconcileRequestPathFor(dir: string): string {
+  return path.join(dir, 'queue', 'reconcile.txt')
+}
+
+/** Record that the project containing `projectDir` must be swept against the index by the worker (reconcileProject): one JSON-string line in the reconcile-request file, which the worker claims by rename as it claims the dirty queue. Used when a hook knew files changed but could not learn which. Returns whether the request reached the live file; throws when it cannot be written. */
+export function appendReconcileRequest(dir: string, projectDir: string): boolean {
+  return appendToClaimableFile(reconcileRequestPathFor(dir), `${JSON.stringify(projectDir)}\n`)
+}
+
+/** The project directories named by the lines of a reconcile-request file, in order, each once; a line that is not a JSON string is skipped. Deduplicated on the case-folded normalized spelling, the key the dirty queue dedupes on. */
+export function parseReconcileRequests(raw: string): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed === '') continue
+    let dir: unknown
+    try {
+      dir = JSON.parse(trimmed)
+    } catch {
+      continue
+    }
+    if (typeof dir !== 'string' || dir === '') continue
+    const key = foldPath(normalizePath(dir))
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(dir)
+  }
+  return out
 }

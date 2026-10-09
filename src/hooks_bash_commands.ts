@@ -345,8 +345,13 @@ function extractGitRestorePathspecs(cmd: string): string[] {
 
 /** The repo top-level for `gitDir`, falling back to `gitDir` itself outside a repo. `git diff`/`status --porcelain`/`ls-files --full-name` all report paths relative to this, never to the invoking directory, so a monorepo subpackage cwd must not be used as the resolution base. */
 export function gitRepoRoot(gitDir: string): string {
+  return gitRepoRootOrNull(gitDir) ?? gitDir
+}
+
+/** The repository top-level for `gitDir`, or null when git could not name one (not a repository, or the read failed or timed out), so a caller that must not guess can tell that apart from a root that is `gitDir` itself. */
+export function gitRepoRootOrNull(gitDir: string): string | null {
   const toplevel = runGit(['rev-parse', '--show-toplevel'], { cwd: gitDir, timeoutMs: 5000 })
-  return toplevel.exitCode === 0 && toplevel.stdout.trim() !== '' ? toplevel.stdout.trim() : gitDir
+  return toplevel.exitCode === 0 && toplevel.stdout.trim() !== '' ? toplevel.stdout.trim() : null
 }
 
 /** Expand `git restore` pathspecs (which may be `.`, a directory, or a glob) into the concrete tracked files git itself matches, repo-root-relative. */
