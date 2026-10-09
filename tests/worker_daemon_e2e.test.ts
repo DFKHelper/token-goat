@@ -51,6 +51,33 @@ async function waitFor(label: string, timeoutMs: number, check: () => boolean): 
   }
 }
 
+/** Milliseconds from one observed rewrite of `file` to the `rewrites`-th after it. Every worker cycle replaces the drain heartbeat through a rename, even with an empty queue, so its identity changes once per poll interval; a stat spawns no process, so a loaded runner cannot stretch the measurement the way a timed `symbol` probe did. */
+async function msForRewrites(file: string, rewrites: number, timeoutMs: number): Promise<number> {
+  const identity = (): string => {
+    try {
+      const st = fs.statSync(file, { bigint: true })
+      return `${st.ino}:${st.mtimeNs}`
+    } catch {
+      return ''
+    }
+  }
+  let last = identity()
+  let seen = -1
+  let start = 0
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const now = identity()
+    if (now !== '' && now !== last) {
+      last = now
+      seen++
+      if (seen === 0) start = Date.now()
+      else if (seen === rewrites) return Date.now() - start
+    }
+    await sleep(10)
+  }
+  throw new Error(`timed out after ${timeoutMs}ms waiting for ${rewrites} heartbeat rewrites (saw ${Math.max(seen, 0)})`)
+}
+
 /** Poll interval handed to the daemon under test. Fast enough that the drain assertion resolves in well under the 2000ms production default, which is what makes that assertion able to detect the default being forced back on. */
 const DAEMON_POLL_MS = 200
 
@@ -127,7 +154,7 @@ describe('detached worker daemon (built bundle)', () => {
         fs.writeFileSync(path.join(queueDir, 'dirty.txt'), `${srcFile}\n${fortranFile}\n${auraFile}\n`)
 
         let sym: RunResult | undefined
-        const drainMs = await waitFor('the running daemon to drain the seeded queue entry', 20000, () => {
+        await waitFor('the running daemon to drain the seeded queue entry', 20000, () => {
           sym = runBundle(['symbol', 'daemonDrainedSymbol'], env, repo)
           return sym.status === 0 && sym.stdout.includes('daemonDrainedSymbol')
         })
@@ -148,10 +175,11 @@ describe('detached worker daemon (built bundle)', () => {
         })
         expect(auraSym?.stdout).toContain('daemonDrainedAttr')
 
-        // The drain landing this fast is itself the assertion that TG_WORKER_POLL_MS reached the daemon. `worker start` used to hardcode the 2000ms default into the child's env regardless of what it inherited, so the variable the daemon reads was a no-op on the only path that actually starts one. With that bug back, the first poll cycle alone puts this past the bound; DAEMON_POLL_MS is an order of magnitude under it.
+        // The cycle cadence is the assertion that TG_WORKER_POLL_MS reached the daemon. `worker start` used to hardcode the 2000ms default into the child's env regardless of what it inherited, so the variable the daemon reads was a no-op on the only path that actually starts one. The drain latency cannot show that: a queue append wakes the sleep early whatever the interval, and timing it through `symbol` spawns measured the runner's load instead. Three cycles take about 3 x DAEMON_POLL_MS; with that bug back they take at least 6000ms.
+        const cyclesMs = await msForRewrites(heartbeat, 3, 15000)
         expect(
-          drainMs,
-          `drain took ${drainMs}ms, past the 2000ms default floor -- TG_WORKER_POLL_MS is being ignored again`,
+          cyclesMs,
+          `3 worker cycles took ${cyclesMs}ms, at the 2000ms default's pace -- TG_WORKER_POLL_MS is being ignored again`,
         ).toBeLessThan(4000)
       } finally {
         // 4. Clean teardown so this test never leaks a real background process.
