@@ -112,3 +112,33 @@ describe('readStdinJson in a process starved past its idle window', () => {
     expect(res.stdout.trim(), res.stderr).toBe('resolved {"ok":1}')
   }, 90_000)
 })
+
+describe('readStdinJson when the pipe delivers after the idle timer fires', () => {
+  // HAND-DERIVED: a Windows pipe read lands several loop turns after the poll that sees it start (a thread-pool wait, then the read), so the bytes arrive after the idle timer and after its first setImmediate. Here the fake delivers on the second immediate after a timer due inside the same blocked stretch, which the old one-deferral verdict rejected before the bytes came.
+  it('reads a payload that lands two loop turns after the idle timer fired', async () => {
+    const fake = useFakeStdin()
+    const pending = readStdinJson(100, undefined, 1)
+    setTimeout(() => setImmediate(() => setImmediate(() => fake.end('{"late":2}'))), 150)
+    const end = Date.now() + 250
+    while (Date.now() < end) {
+      // hold the event loop past the idle window, as a starved process does
+    }
+    await expect(pending).resolves.toEqual({ late: 2 })
+  })
+
+  // HAND-DERIVED: a complete JSON object is buffered and the sender's EOF has not been seen; the stream stays open past the idle window, as a starved process sees it. The document is whole, so it is the payload.
+  it('accepts a complete object left waiting on the EOF', async () => {
+    const fake = useFakeStdin()
+    const pending = readStdinJson(100)
+    fake.write('{"whole":true}')
+    await expect(pending).resolves.toEqual({ whole: true })
+  })
+
+  // HAND-DERIVED: a prefix that parses is not a document; only an object or array counts, so a truncated number still times out.
+  it('does not take a scalar left waiting on the EOF as the payload', async () => {
+    const fake = useFakeStdin()
+    const pending = readStdinJson(100)
+    fake.write('12')
+    await expect(pending).rejects.toThrow(/timed out waiting for stdin/)
+  })
+})
