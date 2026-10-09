@@ -71,6 +71,13 @@ function indexOriginalBranch(repo: string, onPurpose: boolean): void {
   if (onPurpose) recordIndexedRoot(repo)
 }
 
+/** Put requests in the request file in the format the format test pins (one JSON string per line) without the production writer, so a drain test fails for a drain defect and not for a writer one. */
+function writeRequests(dirs: string[]): void {
+  const file = reconcileRequestPathFor(dataDir())
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, dirs.map((d) => `${JSON.stringify(d)}\n`).join(''))
+}
+
 function workerLog(): string {
   try {
     return fs.readFileSync(workerErrorLogPath(dataDir()), 'utf8')
@@ -188,7 +195,7 @@ describe('draining reconcile requests', () => {
     indexOriginalBranch(repo, true)
     const sub = path.join(repo, 'sub')
     fs.mkdirSync(sub)
-    for (const dir of [repo, repo, repo.toUpperCase(), sub]) appendReconcileRequest(dataDir(), dir)
+    writeRequests([repo, repo, repo.toUpperCase(), sub])
     expect(parseReconcileRequests(requestFile()), 'case variants of one directory are one request on a case-insensitive filesystem').toHaveLength(process.platform === 'linux' ? 3 : 2)
 
     drainOnce(dataDir())
@@ -198,7 +205,7 @@ describe('draining reconcile requests', () => {
 
   it('drops a request whose directory is not a repository any more, and says so', () => {
     const gone = path.join(indexableDir(), 'removed-checkout')
-    appendReconcileRequest(dataDir(), gone)
+    writeRequests([gone])
 
     expect(drainOnce(dataDir())).toBe(0)
 
@@ -210,7 +217,7 @@ describe('draining reconcile requests', () => {
     const { repo } = repoWithTwoBranches()
     indexOriginalBranch(repo, true)
     git(repo, 'checkout', '-q', 'feature')
-    appendReconcileRequest(dataDir(), repo)
+    writeRequests([repo])
     seam.reconcileBudgetMs = 0
 
     drainOnce(dataDir())
