@@ -175,11 +175,11 @@ describe.skipIf(!canRun)('semantic on the bundled WebAssembly runtime, from an i
     const still = run(['semantic', '--preflight'], jitless, failedHome)
     expect(still.stdout + still.stderr).toContain('ONNX runtime (onnxruntime-web): unavailable')
 
-    // A record under this run's own key that has outlived its day is not held against it, and the start that follows removes it. The key is rewritten to the one a run without the flag presents: NODE_OPTIONS is its last element (startFailureKey in src/embed_runtime.ts).
+    // A record under this run's own key that has outlived its day is not held against it, and the start that follows removes it. The key is rewritten to the one a run without the flag presents: NODE_OPTIONS is its last element (startFailureKey in src/embed_runtime.ts), and a run without the flag still carries whatever NODE_OPTIONS this test process was given (tests/setup/isolate-home.ts adds a --require preload), so that is the value to write, not an empty string.
     const stored = JSON.parse(fs.readFileSync(record!, 'utf8')) as { key: string; message: string; at: number }
     const key = JSON.parse(stored.key) as unknown[]
     expect(key.at(-1)).toBe('--jitless')
-    key[key.length - 1] = ''
+    key[key.length - 1] = process.env['NODE_OPTIONS'] ?? ''
     const dayAndAnHourAgo = Date.now() - 25 * 60 * 60 * 1000
     fs.writeFileSync(record!, JSON.stringify({ ...stored, key: JSON.stringify(key), at: dayAndAnHourAgo }))
     const lapsed = run(['index', '.', '--walk', '--force'], {}, failedHome)
@@ -192,6 +192,9 @@ describe.skipIf(!canRun)('semantic on the bundled WebAssembly runtime, from an i
     const serverHome = path.join(root, 'home-server')
     fs.mkdirSync(serverHome, { recursive: true })
     const on = { TOKEN_GOAT_HOOK_SERVER: '1' }
+    // `semantic` on an empty index stops at "no files indexed" before it reaches the runtime, so the project is indexed (and embedded, by a process without the flag) first. This data root's index then holds vectors, and only the server's query embedding has to start the runtime.
+    const seeded = run(['index', '.', '--walk'], {}, serverHome)
+    expect(seeded.status, seeded.stderr).toBe(0)
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: serverHome, USERPROFILE: serverHome, LOCALAPPDATA: serverHome, XDG_DATA_HOME: serverHome, TOKEN_GOAT_HOME: path.join(serverHome, '.token-goat'), CLAUDE_CONFIG_DIR: path.join(serverHome, '.claude'), TOKEN_GOAT_NO_WORKER: '1', TOKEN_GOAT_OFFLINE: '1', TOKEN_GOAT_MODEL_CACHE_DIR: SHARED_CACHE, TOKEN_GOAT_EMBEDDINGS_ENABLED: 'true', NODE_OPTIONS: '--jitless', ...on }
     delete env['NODE_PATH']
     const server = spawn(process.execPath, [path.join(pkg, 'dist', 'token-goat.mjs'), 'hook-server', 'run', '--slot', '0'], { cwd: project, env, stdio: 'ignore' })
