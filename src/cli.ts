@@ -484,7 +484,7 @@ export async function cmdIndex(
 }
 
 function cmdMap(opts: { compact?: boolean; json?: boolean }): void {
-  const map = buildProjectMap(process.cwd(), { compact: opts.compact === true })
+  const map = buildProjectMap(process.cwd(), { compact: opts.compact === true, emitsJson: opts.json === true })
   const text = formatProjectMap(map, map.compact)
   if (opts.json === true) {
     out(displaySafeJson(map, 0))

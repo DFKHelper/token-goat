@@ -429,7 +429,7 @@ export function cmdCost(opts: { session?: boolean; json?: boolean }): void {
 
 /** Emit the project baseline map. --subagent = terser compact variant. */
 export function cmdBaseline(opts: { subagent?: boolean; json?: boolean; suggestMem?: boolean }): void {
-  const map = buildProjectMap(process.cwd(), { compact: opts.subagent === true })
+  const map = buildProjectMap(process.cwd(), { compact: opts.subagent === true, emitsJson: opts.json === true })
   const suggestMem = opts.suggestMem === true
   if (opts.json === true) {
     const jsonOut: Record<string, unknown> = { ...map }

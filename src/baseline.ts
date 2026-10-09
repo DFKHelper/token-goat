@@ -26,6 +26,7 @@ export interface ProjectMap {
   readonly fileCountTruncated?: boolean
   readonly languages: Record<string, number>
   readonly topSymbols: SymbolEntry[]
+  // Empty when the map is compact and the caller only renders it as text: the compact rendering never shows recent files, so {@link buildProjectMap} skips the per-file stat that would rank them.
   readonly recentFiles: string[]
   // Effective compact decision this map was built with -- true when the caller passed --compact, OR the file count crossed repomap.compact_file_threshold. Callers MUST pass this (not their own raw opts.compact) to formatProjectMap so the rendering matches what topSymbols/recentFiles were actually sized for.
   readonly compact: boolean
@@ -211,10 +212,10 @@ function fetchTopSymbols(limit: number, dbPath: string, rootDir: string): Symbol
   }
 }
 
-/** Build a {@link ProjectMap} for `rootDir` (default: cwd). In compact mode the top-symbols list is trimmed (10 vs 30) to keep the rendered output within a small token budget. */
+/** Build a {@link ProjectMap} for `rootDir` (default: cwd). In compact mode the top-symbols list is trimmed (10 vs 30) to keep the rendered output within a small token budget. `emitsJson` says the caller prints the map itself as data rather than through {@link formatProjectMap}; without it a compact map leaves `recentFiles` empty, because ranking them stats every walked file (up to MAX_FILES_SCANNED) for a list the compact rendering never shows. */
 export function buildProjectMap(
   rootDir: string = process.cwd(),
-  opts: { compact?: boolean } = {},
+  opts: { compact?: boolean; emitsJson?: boolean } = {},
 ): ProjectMap {
   const root = path.resolve(rootDir)
   const config = loadConfig()
@@ -225,7 +226,7 @@ export function buildProjectMap(
   const topSymbols = fetchTopSymbols(symbolLimit, globalDbPath(), root)
 
   // Recent files: most-recently-modified source files, capped for the summary.
-  const recentFiles = files
+  const recentFiles = compact && opts.emitsJson !== true ? [] : files
     .map((f) => {
       let mtime: number
       try {
