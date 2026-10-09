@@ -30,6 +30,7 @@ import type { HookOutput } from '../src/types.js'
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
 import { invalidateConfigCache } from '../src/config.js'
+import { loadHiddenRuleCheck } from '../src/rewrite_permission.js'
 import { clearPerRequestCaches } from '../src/reset.js'
 import { getSessionFileEntry, wasFileReadThisSession } from '../src/session.js'
 import { normalizePath } from '../src/paths.js'
@@ -95,6 +96,9 @@ beforeAll(async () => {
   largePngPath = path.join(TMP, 'large.jpg')
   fs.writeFileSync(smallPngPath, smallPng)
   fs.writeFileSync(largePngPath, largeJpeg)
+
+  // The hook registry wraps this handler in loadingHiddenRuleCheck; calling it directly skips that wrapper, and an unloaded check skips every Claude Code rewrite (decideRewrite), so load it as the wrapper would.
+  await loadHiddenRuleCheck()
 })
 
 afterAll(() => {
