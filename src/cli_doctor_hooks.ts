@@ -8,8 +8,8 @@ import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import {
   copilotCliConfigPath,
   copilotCliScriptPath,
-  installCopilotCli,
   isCopilotCliInstalled,
+  repairCopilotCliHooks,
   wiredCopilotHookWords,
 } from './bridges/copilot_cli_install.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './bridges/copilot_cli.js'
@@ -109,7 +109,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
       const isStaleShim = fs.existsSync(userShim) && !shimIsCurrent(userShim, COPILOT_CLI_HOOK_SCRIPT)
       const hasOutdatedEntries = wiredCopilotHookWords().some((e) => e.current === false)
       if (isStaleShim || hasOutdatedEntries) {
-        installCopilotCli()
+        repairCopilotCliHooks()
         repairs.push('Repaired Copilot CLI (user) hooks and shim')
       }
     }
@@ -127,7 +127,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
       const isStaleShim = fs.existsSync(projShim) && !shimIsCurrent(projShim, COPILOT_CLI_HOOK_SCRIPT)
       const hasOutdatedEntries = wiredCopilotHookWords(copilotLocalOpts).some((e) => e.current === false)
       if (isStaleShim || hasOutdatedEntries) {
-        installCopilotCli(copilotLocalOpts)
+        repairCopilotCliHooks(copilotLocalOpts)
         repairs.push('Repaired Copilot CLI (project) hooks and shim')
       }
     }

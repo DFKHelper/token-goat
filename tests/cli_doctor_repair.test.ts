@@ -15,6 +15,9 @@ import { DEV_CHECKOUT_ADVICE } from '../src/cli_upgrade.js'
 import { clearUpdateCheck, seedUpdateCheck } from './helpers/update-check.js'
 import { allowWrites, denyWrites } from './helpers/seal-directory.js'
 import { CliError, formatCommandError } from '../src/command_error.js'
+import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
+import { copilotCliConfigPath, copilotCliHooksDir, copilotCliInstructionsPath, copilotCliScriptPath, installCopilotHooksFile, wiredCopilotHookWords, writeCopilotInstructionsBlock } from '../src/bridges/copilot_cli_install.js'
+import { copilotMcpConfigPath } from '../src/bridges/copilot_mcp_install.js'
 
 describe('doctor auto-repair and embedding model checks', () => {
   // runDoctorRepair checks the instruction gate against the user-level files and the project root, and writes the project when no gate is active anywhere. Every call gets a scratch project and a scratch home holding the gate `token-goat install` writes to ~/.claude/CLAUDE.md, so a healthy install reads as healthy and nothing touches the real home or the checkout the suite runs from.
@@ -226,25 +229,121 @@ describe('doctor auto-repair and embedding model checks', () => {
       expect(repairedShim).not.toContain('old stale shim content')
     })
 
-    it('repairs user-scoped Copilot CLI hooks when an installed harness has outdated entries', async () => {
-      const mockConfig: Config = {
-        mcp: { confine_reads_to_project_root: false },
-        indexing: { cross_project_symbols: true, embeddings_enabled: true },
-        network: { offline: false },
-      } as unknown as Config
+    describe('Copilot CLI hook repair', () => {
+      // The stale bytes below are HAND-DERIVED: a shim and a hook command written independently of the matcher, so the repair has something real to undo. The "current" side is whatever installCopilotHooksFile writes, compared against COPILOT_CLI_HOOK_SCRIPT, the constant the shim is generated from.
+      const STALE_SHIM = '// old stale shim content\n'
+      const STALE_COMMAND = 'node /old/location/token-goat-shim.cjs preToolUse'
 
-      vi.spyOn(configModule, 'loadConfig').mockReturnValue(mockConfig)
-      vi.spyOn(configModule, 'saveConfig').mockImplementation(() => undefined)
-      vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(true)
+      beforeEach(() => {
+        const mockConfig = { mcp: { confine_reads_to_project_root: false }, indexing: { cross_project_symbols: true, embeddings_enabled: true }, network: { offline: false } } as unknown as Config
+        vi.spyOn(configModule, 'loadConfig').mockReturnValue(mockConfig)
+        vi.spyOn(configModule, 'saveConfig').mockImplementation(() => undefined)
+        vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(true)
+        // The user-scope repair must not look at the checkout the suite runs from, which carries its own .github/copilot-instructions.md.
+        vi.spyOn(process, 'cwd').mockReturnValue(projectRoot)
+      })
 
-      const { copilotCliHooksDir, copilotCliScriptPath, copilotCliConfigPath } = await import('../src/bridges/copilot_cli_install.js')
-      const hooksDir = copilotCliHooksDir()
-      const shimPath = copilotCliScriptPath()
-      const configPath = copilotCliConfigPath()
+      const seedInstall = (opts: { local?: boolean; projectRoot?: string } = {}): void => {
+        installCopilotHooksFile(copilotCliHooksDir(opts), 'copilot')
+        writeCopilotInstructionsBlock(copilotCliInstructionsPath(opts))
+      }
 
-      // If user-level Copilot CLI is installed, repair should execute cleanly without error
-      const result = await runDoctorRepair({ rootDir: projectRoot })
-      expect(result.errors).toHaveLength(0)
+      const outdateEntry = (opts: { local?: boolean; projectRoot?: string } = {}): void => {
+        const file = copilotCliConfigPath(opts)
+        const config = JSON.parse(fs.readFileSync(file, 'utf8')) as { hooks: Record<string, Array<{ command: string }>> }
+        config.hooks['preToolUse'][0].command = STALE_COMMAND
+        fs.writeFileSync(file, JSON.stringify(config, null, 2) + '\n')
+      }
+
+      const copilotRepairs = (repairs: readonly string[]): string[] => repairs.filter((r) => r.includes('Copilot CLI'))
+
+      it('rewrites a stale user-scope shim and names the repair', async () => {
+        seedInstall()
+        fs.writeFileSync(copilotCliScriptPath(), STALE_SHIM)
+
+        const result = await runDoctorRepair({ rootDir: projectRoot })
+
+        expect(result.errors).toEqual([])
+        expect(copilotRepairs(result.repairs)).toEqual(['Repaired Copilot CLI (user) hooks and shim'])
+        expect(fs.readFileSync(copilotCliScriptPath(), 'utf8')).toBe(COPILOT_CLI_HOOK_SCRIPT)
+      })
+
+      it('rewrites outdated user-scope hook entries when the shim is already current', async () => {
+        seedInstall()
+        outdateEntry()
+        expect(wiredCopilotHookWords().some((e) => !e.current)).toBe(true)
+
+        const result = await runDoctorRepair({ rootDir: projectRoot })
+
+        expect(result.errors).toEqual([])
+        expect(copilotRepairs(result.repairs)).toEqual(['Repaired Copilot CLI (user) hooks and shim'])
+        const wired = wiredCopilotHookWords()
+        expect(wired.length).toBeGreaterThan(0)
+        expect(wired.every((e) => e.current)).toBe(true)
+        expect(fs.readFileSync(copilotCliConfigPath(), 'utf8')).not.toContain(STALE_COMMAND)
+      })
+
+      it('rewrites a stale project-scope shim and outdated entries and names the project repair', async () => {
+        const opts = { local: true, projectRoot }
+        seedInstall(opts)
+        fs.writeFileSync(copilotCliScriptPath(opts), STALE_SHIM)
+        outdateEntry(opts)
+
+        const result = await runDoctorRepair({ rootDir: projectRoot })
+
+        expect(result.errors).toEqual([])
+        expect(copilotRepairs(result.repairs)).toEqual(['Repaired Copilot CLI (project) hooks and shim'])
+        expect(fs.readFileSync(copilotCliScriptPath(opts), 'utf8')).toBe(COPILOT_CLI_HOOK_SCRIPT)
+        expect(wiredCopilotHookWords(opts).every((e) => e.current)).toBe(true)
+        expect(fs.existsSync(copilotCliConfigPath())).toBe(false)
+      })
+
+      it('does not add an MCP server entry the user never installed', async () => {
+        seedInstall()
+        fs.writeFileSync(copilotCliScriptPath(), STALE_SHIM)
+
+        await runDoctorRepair({ rootDir: projectRoot })
+
+        expect(fs.existsSync(copilotMcpConfigPath())).toBe(false)
+      })
+
+      it('leaves a user-written token-goat MCP entry alone and still repairs the hooks', async () => {
+        seedInstall()
+        fs.writeFileSync(copilotCliScriptPath(), STALE_SHIM)
+        const mcpText = JSON.stringify({ mcpServers: { 'token-goat': { command: 'my-own-wrapper' } } }, null, 2) + '\n'
+        fs.writeFileSync(copilotMcpConfigPath(), mcpText)
+
+        const result = await runDoctorRepair({ rootDir: projectRoot })
+
+        expect(result.errors).toEqual([])
+        expect(copilotRepairs(result.repairs)).toEqual(['Repaired Copilot CLI (user) hooks and shim'])
+        expect(fs.readFileSync(copilotMcpConfigPath(), 'utf8')).toBe(mcpText)
+      })
+
+      it('does not write a token-goat block into a project instructions file when only user scope is installed', async () => {
+        seedInstall()
+        fs.writeFileSync(copilotCliScriptPath(), STALE_SHIM)
+        const projectInstructions = copilotCliInstructionsPath({ local: true, projectRoot })
+        fs.mkdirSync(path.dirname(projectInstructions), { recursive: true })
+        fs.writeFileSync(projectInstructions, 'Team rules, written by hand.\n')
+
+        await runDoctorRepair({ rootDir: projectRoot })
+
+        expect(fs.readFileSync(projectInstructions, 'utf8')).toBe('Team rules, written by hand.\n')
+        expect(fs.existsSync(copilotCliScriptPath({ local: true, projectRoot }))).toBe(false)
+      })
+
+      it('reports no Copilot repair for a current install and rewrites nothing', async () => {
+        seedInstall()
+        const files = [copilotCliScriptPath(), copilotCliConfigPath(), copilotCliInstructionsPath()]
+        const before = files.map((f) => fs.readFileSync(f, 'utf8'))
+
+        const result = await runDoctorRepair({ rootDir: projectRoot })
+
+        expect(result.errors).toEqual([])
+        expect(copilotRepairs(result.repairs)).toEqual([])
+        expect(files.map((f) => fs.readFileSync(f, 'utf8'))).toEqual(before)
+      })
     })
 
     // Provenance: FORMAT-DERIVED. The key name and its default of false come from the `chat.useClaudeHooks` configuration entry in VS Code 1.136.0's workbench.desktop.main.js (cited at vscodeUsesClaudeHooks); the JSONC comment is a HAND-DERIVED stand-in for a user's own settings.

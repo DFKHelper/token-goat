@@ -289,6 +289,24 @@ export function installCopilotCli(opts: CopilotCliScopeOptions = {}): CopilotCli
   return withInstallScope(projectScopeRoot(opts), () => installCopilotCliScoped(opts))
 }
 
+/** The hooks file, the shim and the instructions block at `opts`'s scope: the part of an install that is only ever restoring token-goat's own files. */
+function syncCopilotHooksAndInstructions(opts: CopilotCliScopeOptions): { hooks: CopilotHooksFileResult; instructionsChanged: boolean } {
+  const hooks = installCopilotHooksFile(copilotCliHooksDir(opts), 'copilot')
+  const instructionsPath = copilotCliInstructionsPath(opts)
+  const instructionsExisted = fs.existsSync(instructionsPath)
+  const instructionsChanged = writeCopilotInstructionsBlock(instructionsPath)
+  if (!instructionsExisted) recordCreatedConfig(instructionsPath)
+  return { hooks, instructionsChanged }
+}
+
+/** What `doctor --repair` runs on a stale Copilot CLI install: re-sync the hooks file, shim and instructions block at one scope, and nothing more. A full install also merges the MCP server entry (which throws on a `token-goat` entry the user wrote, and re-adds one the user removed) and, in user scope, adds the block to a project instructions file in the working directory; a repair must not add pieces the user never installed. Returns true when anything was rewritten. */
+export function repairCopilotCliHooks(opts: CopilotCliScopeOptions = {}): boolean {
+  return withInstallScope(projectScopeRoot(opts), () => {
+    const { hooks, instructionsChanged } = syncCopilotHooksAndInstructions(opts)
+    return hooks.changed || instructionsChanged
+  })
+}
+
 function installCopilotCliScoped(opts: CopilotCliScopeOptions): CopilotCliInstallResult {
   const instructionsPath = copilotCliInstructionsPath(opts)
   // First, because it is the one step that refuses: a `token-goat` MCP entry token-goat did not write stops the install before the hooks or the instructions are touched, rather than leaving a half-installed integration behind the error.
@@ -298,10 +316,8 @@ function installCopilotCliScoped(opts: CopilotCliScopeOptions): CopilotCliInstal
   const scopeDirExisted = fs.existsSync(scopeDir)
   const mcpChanged = userScope ? installCopilotMcpServer() : false
   if (!scopeDirExisted && fs.existsSync(scopeDir)) recordCreatedConfig(scopeDir)
-  const hooks = installCopilotHooksFile(copilotCliHooksDir(opts), 'copilot')
-  const instructionsExisted = fs.existsSync(instructionsPath)
-  let instructionsChanged = writeCopilotInstructionsBlock(instructionsPath)
-  if (!instructionsExisted) recordCreatedConfig(instructionsPath)
+  const { hooks, instructionsChanged: scopeInstructionsChanged } = syncCopilotHooksAndInstructions(opts)
+  let instructionsChanged = scopeInstructionsChanged
 
   // In user scope, also synchronize an existing project-level instructions file if present in the workspace
   if (userScope) {
