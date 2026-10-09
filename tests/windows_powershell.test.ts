@@ -38,12 +38,13 @@ describe('windowsPowerShellPath', () => {
     }
   })
 
-  it('falls back to the bare name for PATH when that file is missing, and reads windir when SystemRoot is unset', () => {
+  it('reads windir when SystemRoot is unset, and never names a bare executable when the file is missing', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ps-path-'))
     try {
       delete process.env['SystemRoot']
       process.env['windir'] = root
-      expect(windowsPowerShellPath()).toBe('powershell.exe')
+      expect(path.win32.isAbsolute(windowsPowerShellPath()), 'a bare name would resolve against PATH or the working directory').toBe(true)
+      expect(windowsPowerShellPath()).not.toBe('powershell.exe')
       const exe = path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
       fs.mkdirSync(path.dirname(exe), { recursive: true })
       fs.writeFileSync(exe, '')

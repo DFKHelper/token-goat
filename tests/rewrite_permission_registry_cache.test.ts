@@ -40,6 +40,8 @@ const slot = globalThis as unknown as Record<symbol, unknown>
 
 let root: string
 let home: string
+let winRoot: string
+const savedWindir = process.env['windir']
 const savedHome = process.env['TOKEN_GOAT_HOME']
 const savedRoot = process.env['SystemRoot']
 const savedFilter = slot[FILTER]
@@ -59,6 +61,11 @@ beforeEach(() => {
   home = path.join(root, 'tg')
   fs.mkdirSync(home, { recursive: true })
   process.env['TOKEN_GOAT_HOME'] = home
+  // A throwaway Windows folder holding a reg.exe, as the registry read only spawns a reg.exe the validated folder holds.
+  winRoot = path.join(root, 'win')
+  fs.mkdirSync(path.join(winRoot, 'System32'), { recursive: true })
+  fs.writeFileSync(path.join(winRoot, 'System32', 'reg.exe'), '')
+  process.env['SystemRoot'] = winRoot
   // Let the registry sources through and keep every other source hidden, so the machine's own settings do not leak in.
   slot[FILTER] = (source: string): boolean => source.startsWith('registry:')
   Object.defineProperty(process, 'platform', { value: 'win32' })
@@ -70,6 +77,10 @@ afterEach(() => {
   slot[FILTER] = savedFilter
   if (savedHome === undefined) delete process.env['TOKEN_GOAT_HOME']
   else process.env['TOKEN_GOAT_HOME'] = savedHome
+  if (savedRoot === undefined) delete process.env['SystemRoot']
+  else process.env['SystemRoot'] = savedRoot
+  if (savedWindir === undefined) delete process.env['windir']
+  else process.env['windir'] = savedWindir
   resetPermissionSourceCache()
   fs.rmSync(root, { recursive: true, force: true })
 })
@@ -80,7 +91,7 @@ describe('the Windows registry policy is always read live', () => {
     expect(readHintCrossesRule('claudecode', root, open())).toBe(false)
     expect(keysAsked().slice(0, 2)).toEqual([K_L, K_C])
     for (const c of reg.calls) {
-      expect(c.cmd, 'reg must be run by absolute path so a PATH entry cannot stand in for it').toBe(`${savedRoot}/System32/reg.exe`)
+      expect(c.cmd, 'reg must be run by absolute path so a PATH entry cannot stand in for it').toBe(path.join(winRoot, 'System32', 'reg.exe'))
       expect(c.opts['timeout'], 'the wait must stay 5 s').toBe(5000)
     }
   })
@@ -90,6 +101,22 @@ describe('the Windows registry policy is always read live', () => {
     live({ [K_L]: { code: 1, err: ES }, [K_C]: { code: 1, err: ES }, [SENTINEL]: { code: 1, err: ES } })
     loadPermissionSnapshot(root)
     expect(keysAsked().filter((k) => /NoSuchKey/.test(k))).toEqual(['HKLM\\SOFTWARE\\TokenGoatNoSuchKey'])
+  })
+
+  // HAND-DERIVED: SystemRoot and windir are environment values any parent can set; a relative one would make the spawn resolve against the working directory.
+  it('runs reg from windir when SystemRoot is relative, and from an absolute path even when no folder holds it', () => {
+    process.env['SystemRoot'] = '.'
+    process.env['windir'] = winRoot
+    live({})
+    held()
+    expect(reg.calls.length).toBeGreaterThan(0)
+    for (const c of reg.calls) expect(c.cmd).toBe(path.join(winRoot, 'System32', 'reg.exe'))
+    process.env['SystemRoot'] = '.'
+    process.env['windir'] = ''
+    live({})
+    held()
+    expect(reg.calls.length).toBeGreaterThan(0)
+    for (const c of reg.calls) expect(path.win32.isAbsolute(c.cmd), 'a relative or bare reg is resolved by the working directory or PATH').toBe(true)
   })
 
   it('never asks the sentinel when no key exited 1, or when reg gave the English not-found message', () => {

@@ -14,6 +14,7 @@ import { isUncOrDevicePath } from './paths.js'
 import type * as HiddenRules from './claude_hidden_rules.js'
 import type { HookOutput } from './types.js'
 import { runGit } from './util.js'
+import { windowsSystem32Exe } from './windows_system32.js'
 
 /** What is being rewritten: a shell command wrapped to run under `token-goat compress` (`shell-wrap`), a shell search replaced by a read-only token-goat query (`shell-query`), a Read pointed at a shrunk copy (`read`), or a subagent prompt with a briefing appended (`agent`). */
 export type RewriteKind = 'shell-wrap' | 'shell-query' | 'read' | 'agent'
@@ -450,8 +451,8 @@ function readSettingsFile(file: string): Record<string, unknown> | undefined {
   return json
 }
 
-// reg exits 1 for a missing key and for one it may not read, and words both by locale; a key is absent when reg gives the English not-found message, or else only when it repeats the message a key that cannot exist gives (asked once, lazily), and that key sits under HKLM where a user cannot create it, so no deny-read ACL planted on a sentinel can make a denied policy key read as absent. Nothing is saved, as a file the user can write could hide a deny. reg is run by absolute path so a PATH entry cannot stand in.
-const regQuery = (key: string) => spawnSync(`${process.env['SystemRoot'] ?? 'C:/Windows'}/System32/reg.exe`, ['query', key, '/v', 'Settings'], { encoding: 'utf8', windowsHide: true, timeout: 5000 })
+// reg exits 1 for a missing key and for one it may not read, and words both by locale; a key is absent when reg gives the English not-found message, or else only when it repeats the message a key that cannot exist gives (asked once, lazily), and that key sits under HKLM where a user cannot create it, so no deny-read ACL planted on a sentinel can make a denied policy key read as absent. Nothing is saved, as a file the user can write could hide a deny. reg is run by absolute path from the validated Windows folder, so neither PATH nor the working directory can stand in; with no reg.exe there the spawn fails and the policy is unreadable.
+const regQuery = (key: string) => spawnSync(windowsSystem32Exe('reg.exe'), ['query', key, '/v', 'Settings'], { encoding: 'utf8', windowsHide: true, timeout: 5000 })
 /** The `Settings` value of each Windows policy key, in order: undefined when provably absent, throws when it cannot be read as a JSON object. */
 function readRegistrySettings(keys: string[]): (Record<string, unknown> | undefined)[] {
   let missing: string | undefined

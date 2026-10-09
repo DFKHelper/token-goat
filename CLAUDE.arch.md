@@ -581,6 +581,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/waste.ts`](src/waste.ts) | Session spend-ledger: parses a Claude Code session transcript (JSONL) and attributes token cost per tool call, per tool name, and per file, then flags a few concrete waste signals. |
 | [`src/web_extract.ts`](src/web_extract.ts) | HTML -> clean text extraction for fetched web content, so a `WebFetch` body never lands in context as raw markup. |
 | [`src/windows_powershell.ts`](src/windows_powershell.ts) | How token-goat starts Windows PowerShell to ask about processes: one place for the executable and its arguments, shared by doctor and the hidden-rule scan. |
+| [`src/windows_system32.ts`](src/windows_system32.ts) | Where a Windows system executable lives, from SystemRoot, then windir, then the literal C:\Windows: only an absolute folder that holds the file counts, so a relative or planted val |
 | [`src/worker_lifecycle.ts`](src/worker_lifecycle.ts) | The daemon's controls, kept out of `worker.ts` so the hook bundle loads them without the drain: `startDetachedWorker()`, `stopWorker()`, `isWorkerRunning()`, `ensureWorkerAlive()`, the pid and stamp files, the drain heartbeat, the error log, and the poll interval (`DEFAULT_POLL_INTERVAL_MS`, 2000 ms) |
 | [`src/xlsx_extract.ts`](src/xlsx_extract.ts) | Excel (.xlsx) narrow-slice reader. |
 | [`src/xlsx_reader.ts`](src/xlsx_reader.ts) | Minimal in-house SpreadsheetML (.xlsx) reader. |
