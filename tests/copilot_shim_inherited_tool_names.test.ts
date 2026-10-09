@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process'
 
 import { describe, it, expect, afterAll } from 'vitest'
 
+import { writeInProcessFake } from './helpers/copilot_inprocess_fake.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
 
 const tempDirs: string[] = []
@@ -18,24 +19,12 @@ afterAll(() => {
   }
 })
 
-/** A fake `token-goat` on PATH that records the stdin it was handed and answers with an empty response. The forwarded tool name reaches token-goat on stdin, not in argv, so an argv-recording fake cannot see it. Both platform wrappers delegate to one Node script so the capture is byte-identical either way. */
-function withCapturingTokenGoat(cwd: string): { env: NodeJS.ProcessEnv; captured: () => Record<string, unknown> | undefined } {
+/** What the shim forwarded to token-goat, recorded by a fake that answers through the shim's in-process route (an entry path plus a sibling token-goat-hook.mjs), so no child process has to finish inside the shim's 3000 ms spawn timeout; the forwarded tool name is part of the canonical payload that route receives. */
+function withCapturingTokenGoat(cwd: string): { entryPath: string; captured: () => Record<string, unknown> | undefined } {
   const capturePath = path.join(cwd, 'captured-stdin.json')
-  const scriptPath = path.join(cwd, 'capture.cjs')
-  fs.writeFileSync(
-    scriptPath,
-    `const fs = require('fs')\nlet buf = ''\nprocess.stdin.setEncoding('utf8')\nprocess.stdin.on('data', (c) => { buf += c })\nprocess.stdin.on('end', () => { fs.writeFileSync(${JSON.stringify(capturePath)}, buf); process.stdout.write('{}') })\n`,
-    'utf8',
-  )
-  if (process.platform === 'win32') {
-    fs.writeFileSync(path.join(cwd, 'token-goat.cmd'), `@echo off\r\nnode "${scriptPath}"\r\n`, 'utf8')
-  } else {
-    const sh = path.join(cwd, 'token-goat')
-    fs.writeFileSync(sh, `#!/bin/sh\nexec node '${scriptPath}'\n`, 'utf8')
-    fs.chmodSync(sh, 0o755)
-  }
+  const entryPath = writeInProcessFake(cwd, { capturePath })
   return {
-    env: { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') },
+    entryPath,
     captured: () => {
       if (!fs.existsSync(capturePath)) return undefined
       try {
@@ -53,13 +42,13 @@ function forward(toolName: string, toolArgs: Record<string, unknown> = {}): Reco
   tempDirs.push(cwd)
   const scriptPath = path.join(cwd, 'shim.js')
   fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT, 'utf8')
-  const { env, captured } = withCapturingTokenGoat(cwd)
-  spawnSync(process.execPath, [scriptPath, 'preToolUse'], {
+  const { entryPath, captured } = withCapturingTokenGoat(cwd)
+  spawnSync(process.execPath, [scriptPath, 'preToolUse', entryPath], {
     cwd,
     input: JSON.stringify({ sessionId: 'proto-session', toolName, toolArgs }),
     encoding: 'utf8',
     timeout: 60000,
-    env,
+    env: process.env,
   })
   return captured()
 }

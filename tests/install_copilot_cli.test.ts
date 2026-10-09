@@ -29,6 +29,7 @@ import {
   isCopilotCliInstalled,
   uninstallCopilotCli,
 } from '../src/bridges/copilot_cli_install.js'
+import { writeInProcessFake } from './helpers/copilot_inprocess_fake.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
 import { VISUALSTUDIO_GUIDANCE_BEGIN, VISUALSTUDIO_GUIDANCE_END } from '../src/bridges/visualstudio_install.js'
 import { HOOK_EVENTS } from '../src/types.js'
@@ -601,18 +602,26 @@ function mkIsolated(): string {
 
 function runShim(eventName: string, stdin: string, cwd: string, env?: NodeJS.ProcessEnv): string {
   const scriptPath = path.join(cwd, 'shim.js')
+  const { [SHIM_ENTRY_ENV]: entryPath, ...shimEnv } = env ?? process.env
   fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT, 'utf8')
-  const res = spawnSync(process.execPath, [scriptPath, eventName], {
+  const res = spawnSync(process.execPath, entryPath === undefined ? [scriptPath, eventName] : [scriptPath, eventName, entryPath], {
     cwd,
     input: stdin,
     encoding: 'utf8',
     timeout: 60000,
-    env: env ?? process.env,
+    env: shimEnv,
   })
   return res.stdout ?? ''
 }
 
-/** Writes a fake `token-goat` executable into `cwd` and returns a PATH-prepended env pointing at it, so the shim's internal `spawnSync('token-goat', ['hook', event], { shell: true })` resolves to `jsonStdout` instead of the real installed binary (mirrors tests/bridges/shims.test.ts's withFakeTokenGoat). */
+/** Key a test env uses to hand runShim the shim's argv[3] (the token-goat entry path); runShim strips it before spawning, so the shim never sees it. */
+const SHIM_ENTRY_ENV = 'TG_TEST_SHIM_ENTRY'
+
+/** Env for a capture test: the shim gets an entry path whose sibling `token-goat-hook.mjs` exports a `relayInProcess` that records the canonical payload (and, with `argvPath`, the event name) and answers `response`. That is the shim's in-process route (copilot_cli.ts tryInProcess), so the call never has to finish a child process inside the shim's fixed 3000 ms spawn timeout. The previous fake was a token-goat.cmd that started `node`: two process starts, each taking from ~55 ms to several seconds on a loaded Windows host, and a start that overran got the call killed, the shim wrote `{}`, and captured.json never appeared (ENOENT). The payload translation under test is built before the route splits, so both routes record the same canonical object. Provenance: HAND-DERIVED from COPILOT_CLI_HOOK_SCRIPT (src/bridges/copilot_cli.ts: `timeout: 3000` on the spawn fallback; tryInProcess imports `token-goat-hook.mjs` beside the entry and calls `relayInProcess(tgEvent, canonical)`); the spawn route itself stays covered by withFakeTokenGoat and writeFakeEntry. */
+function captureInProcess(cwd: string, capturePath: string | undefined, opts: { argvPath?: string; response?: string } = {}): NodeJS.ProcessEnv {
+  return { ...process.env, [SHIM_ENTRY_ENV]: writeInProcessFake(cwd, { capturePath, ...opts }) }
+}
+
 /** Like `withFakeTokenGoat`, but the fake records that it ran instead of answering with content. The shim translates whatever token-goat returns into a Copilot hook response and writes `{}` for anything it does not recognise, so a fake that only echoes JSON is invisible from stdout: an assertion on the envelope passes whether the inner command ran or not. Whether the spawn happened at all is the one difference that shows, so the fake touches a file and the test reads that. */
 function withRecordingTokenGoat(cwd: string): { env: NodeJS.ProcessEnv; spawned: () => boolean } {
   const marker = path.join(cwd, 'token-goat-was-spawned')
@@ -635,16 +644,9 @@ echo '{}'
   }
 }
 
+/** Env whose shim run answers `jsonStdout` for every hook call, through the in-process route of {@link captureInProcess} rather than a token-goat.cmd on PATH, so the answer does not depend on a child process finishing inside the shim's 3000 ms spawn timeout (mirrors tests/bridges/shims.test.ts's withFakeTokenGoat for the spawn route). */
 function withFakeTokenGoat(cwd: string, jsonStdout: string): NodeJS.ProcessEnv {
-  if (process.platform === 'win32') {
-    fs.writeFileSync(path.join(cwd, 'token-goat.cmd'), `@echo off\r\necho ${jsonStdout}\r\n`, 'utf8')
-  } else {
-    const scriptPath = path.join(cwd, 'token-goat')
-    // printf, not echo: /bin/sh is dash on most Linux hosts and its builtin echo expands backslash escapes by default, so a response whose JSON carries a `\n` inside a string arrived at the shim as a real newline mid-string and failed to parse. The shim then saw no response at all, and the one test with a multi-line payload read that silence as "the hint was correctly suppressed" -- a green Windows run and a red POSIX one for the same code.
-    fs.writeFileSync(scriptPath, `#!/bin/sh\nprintf '%s\\n' '${jsonStdout}'\n`, 'utf8')
-    fs.chmodSync(scriptPath, 0o755)
-  }
-  return { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+  return captureInProcess(cwd, undefined, { response: jsonStdout })
 }
 
 /** Writes a fake token-goat "entry" -- a plain Node script, not a PATH-resolvable binary -- that records the argv it was invoked with to `captured-argv.json` in `cwd` and exits 0 with an empty JSON response. Used to prove the shim's inner call, when given a third argv (the baked entry path), invokes that path directly via process.execPath rather than shelling out to a PATH-resolved `token-goat` at all. */
@@ -1026,14 +1028,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
   it('forwards postToolUse toolResult.textResultForLlm to token-goat as canonical.tool_response', () => {
     const cwd = mkIsolated()
     const capturePath = path.join(cwd, 'captured.json')
-    const script =
-      process.platform === 'win32'
-        ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
-        : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
-    const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
-    fs.writeFileSync(binPath, script, 'utf8')
-    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
-    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+    const env = captureInProcess(cwd, capturePath)
 
     const stdout = runShim(
       'postToolUse',
@@ -1056,14 +1051,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
   it('does not set canonical.tool_response when postToolUse has no toolResult (e.g. preToolUse-shaped payloads)', () => {
     const cwd = mkIsolated()
     const capturePath = path.join(cwd, 'captured.json')
-    const script =
-      process.platform === 'win32'
-        ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
-        : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
-    const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
-    fs.writeFileSync(binPath, script, 'utf8')
-    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
-    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+    const env = captureInProcess(cwd, capturePath)
 
     runShim(
       'postToolUse',
@@ -1085,14 +1073,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     (copilotTool, filePath) => {
       const cwd = mkIsolated()
       const capturePath = path.join(cwd, 'captured.json')
-      const script =
-        process.platform === 'win32'
-          ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
-          : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
-      const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
-      fs.writeFileSync(binPath, script, 'utf8')
-      if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
-      const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+      const env = captureInProcess(cwd, capturePath)
 
       runShim(
         'preToolUse',
@@ -1121,14 +1102,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     const cwd = mkIsolated()
     const argvPath = path.join(cwd, 'argv.txt')
     const capturePath = path.join(cwd, 'captured.json')
-    const script =
-      process.platform === 'win32'
-        ? `@echo off\r\necho %* > "${argvPath}"\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {"systemMessage":"branch: main"}\r\n`
-        : `#!/bin/sh\necho "$@" > "${argvPath}"\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{"systemMessage":"branch: main"}'\n`
-    const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
-    fs.writeFileSync(binPath, script, 'utf8')
-    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
-    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+    const env = captureInProcess(cwd, capturePath, { argvPath, response: '{"systemMessage":"branch: main"}' })
 
     const stdout = runShim(
       'userPromptSubmitted',
@@ -1206,14 +1180,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     ] as const) {
       const cwd = mkIsolated()
       const capturePath = path.join(cwd, 'captured.json')
-      const script =
-        process.platform === 'win32'
-          ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
-          : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
-      const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
-      fs.writeFileSync(binPath, script, 'utf8')
-      if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
-      const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+      const env = captureInProcess(cwd, capturePath)
 
       runShim('preToolUse', JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: copilotTool, toolArgs: {} }), cwd, env)
 
@@ -1226,14 +1193,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     for (const copilotTool of ['task', 'ask_user']) {
       const cwd = mkIsolated()
       const capturePath = path.join(cwd, 'captured.json')
-      const script =
-        process.platform === 'win32'
-          ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
-          : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
-      const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
-      fs.writeFileSync(binPath, script, 'utf8')
-      if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
-      const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+      const env = captureInProcess(cwd, capturePath)
 
       runShim('preToolUse', JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: copilotTool, toolArgs: {} }), cwd, env)
 
@@ -1251,14 +1211,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
   ): Record<string, unknown> {
     const cwd = mkIsolated()
     const capturePath = path.join(cwd, 'captured.json')
-    const script =
-      process.platform === 'win32'
-        ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
-        : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
-    const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
-    fs.writeFileSync(binPath, script, 'utf8')
-    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
-    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+    const env = captureInProcess(cwd, capturePath)
     runShim(
       event,
       JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: copilotTool, toolArgs, ...extraPayload }),
@@ -1342,14 +1295,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
   it('parses a JSON-encoded-string toolArgs (github/copilot-cli#3349) into an object instead of forwarding a raw string', () => {
     const cwd = mkIsolated()
     const capturePath = path.join(cwd, 'captured.json')
-    const script =
-      process.platform === 'win32'
-        ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
-        : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
-    const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
-    fs.writeFileSync(binPath, script, 'utf8')
-    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
-    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+    const env = captureInProcess(cwd, capturePath)
 
     // toolArgs sent as a JSON-encoded string, not a parsed object -- the documented-vs-real schema mismatch confirmed in the still-open github/copilot-cli#3349.
     runShim(
@@ -1366,14 +1312,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
   it('falls back to {} (never crashes) when toolArgs is a malformed, unparsable string', () => {
     const cwd = mkIsolated()
     const capturePath = path.join(cwd, 'captured.json')
-    const script =
-      process.platform === 'win32'
-        ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
-        : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
-    const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
-    fs.writeFileSync(binPath, script, 'utf8')
-    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
-    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+    const env = captureInProcess(cwd, capturePath)
 
     const stdout = runShim(
       'preToolUse',
@@ -1392,22 +1331,12 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     const cwd = mkIsolated()
     const capturePath1 = path.join(cwd, 'captured1.json')
     const capturePath2 = path.join(cwd, 'captured2.json')
-    const makeScript = (capturePath: string): string =>
-      process.platform === 'win32'
-        ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
-        : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
-    const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
-    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
     const payload = JSON.stringify({ cwd: '/same/project/dir', toolName: 'view', toolArgs: { path: '/f.txt' } })
 
-    fs.writeFileSync(binPath, makeScript(capturePath1), 'utf8')
-    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
-    runShim('preToolUse', payload, cwd, env)
+    runShim('preToolUse', payload, cwd, captureInProcess(cwd, capturePath1))
     const captured1 = JSON.parse(fs.readFileSync(capturePath1, 'utf8')) as { session_id: string }
 
-    fs.writeFileSync(binPath, makeScript(capturePath2), 'utf8')
-    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
-    runShim('preToolUse', payload, cwd, env)
+    runShim('preToolUse', payload, cwd, captureInProcess(cwd, capturePath2))
     const captured2 = JSON.parse(fs.readFileSync(capturePath2, 'utf8')) as { session_id: string }
 
     expect(captured1.session_id).toBeTruthy()
@@ -1417,14 +1346,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
   it('forwards agent_id, traceparent, and tracestate from Copilot payload to canonical', () => {
     const cwd = mkIsolated()
     const capturePath = path.join(cwd, 'captured.json')
-    const script =
-      process.platform === 'win32'
-        ? `@echo off\r\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath.replace(/\\/g, '\\\\')}"\r\necho {}\r\n`
-        : `#!/bin/sh\nnode -e "require('fs').writeFileSync(process.argv[1], require('fs').readFileSync(0,'utf8'))" "${capturePath}"\necho '{}'\n`
-    const binPath = process.platform === 'win32' ? path.join(cwd, 'token-goat.cmd') : path.join(cwd, 'token-goat')
-    fs.writeFileSync(binPath, script, 'utf8')
-    if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
-    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+    const env = captureInProcess(cwd, capturePath)
 
     runShim(
       'preToolUse',
