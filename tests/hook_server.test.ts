@@ -338,8 +338,8 @@ describe('serving hook calls', () => {
   it('autostarts on the first hook call, then serves the next one with output identical to a cold run', async () => {
     const sb = sandbox()
     const baseline = cold(sb, ['hook', 'pre_tool_use'], { input: bashDenyPayload('hs-serve-cold') })
-    expect(baseline.status).toBe(0)
-    expect((JSON.parse(baseline.stdout) as { decision?: string }).decision).toBe('block')
+    expect(baseline.status, baseline.stderr).toBe(0)
+    expect((JSON.parse(baseline.stdout) as { decision?: string }).decision, `stdout ${baseline.stdout}; stderr ${baseline.stderr}`).toBe('block')
 
     // Nothing to talk to yet: the client dispatches nothing, and starts slot 0 in the background.
     expect(relay(sb, 'pre_tool_use', bashDenyPayload('hs-serve-first'))).toBeNull()

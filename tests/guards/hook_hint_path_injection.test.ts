@@ -102,7 +102,7 @@ describe('the read hint', () => {
     const second = hook('pre_tool_use', payload)
     expect(second.status, second.stderr).toBe(0)
     const text = emittedText(second.stdout)
-    expect(text, 'no hint was emitted, so this case proves nothing').toContain('evil')
+    expect(text, `no hint was emitted, so this case proves nothing; stdout ${second.stdout}; stderr ${second.stderr}`).toContain('evil')
     expect(CONTROL_CHARS.test(text), 'a file name put a raw control character into the model\u2019s context').toBe(false)
   })
 

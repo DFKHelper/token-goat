@@ -44,8 +44,8 @@ function hintFor(nodeOptions: string): string {
     TOKEN_GOAT_BASH_COMPRESS: '0',
     TG_TEST_PERMISSION_ROOT: scratch,
   }
-  const event = { session_id: 'reg-timeout', cwd: repoRoot, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'cat src/parser.ts' } }
-  const res = spawnSync(process.execPath, [bundle, 'hook', 'pre_tool_use'], { input: JSON.stringify(event), encoding: 'utf8', env, timeout: 120_000 })
+  const event = { session_id: 'reg-timeout', cwd: repoRoot, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `cat "${path.join(repoRoot, 'src', 'parser.ts').replaceAll('\\', '/')}"` } }
+  const res = spawnSync(process.execPath, [bundle, 'hook', 'pre_tool_use'], { cwd: scratch, input: JSON.stringify(event), encoding: 'utf8', env, timeout: 120_000 })
   return res.stdout ?? ''
 }
 

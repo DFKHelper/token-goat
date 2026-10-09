@@ -8,6 +8,8 @@ const HOOK = Symbol.for('token-goat.permission-source-filter')
 function install(root) {
   const base = path.resolve(root)
   globalThis[HOOK] = (source) => {
+    // A registry key is machine-wide, never a fixture; path.resolve would turn it into a path under the cwd, which is inside the run root for a spawned hook.
+    if (String(source).startsWith('registry:')) return false
     const rel = path.relative(base, path.resolve(String(source)))
     return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)
   }
