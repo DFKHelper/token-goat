@@ -1566,6 +1566,7 @@ describe('cli_doctor', () => {
         expect(result?.status).toBe('fail')
         expect(result?.message).toContain('token-goat-shim.cjs is missing')
         expect(result?.message).toContain('`token-goat install --copilot`')
+        expect(result?.message).toContain('(or `token-goat doctor --repair`)')
         expect(result?.message).not.toContain('older token-goat build')
       })
 
@@ -1607,6 +1608,7 @@ describe('cli_doctor', () => {
       expect(result?.status).toBe('fail')
       expect(result?.message).toContain('token-goat-shim.cjs is missing')
       expect(result?.message).toContain('`token-goat install --codex`')
+      expect(result?.message).toContain('(or `token-goat doctor --repair`)')
     })
 
     it('keeps the older-build warning for hooks that really do run the .js shim', () => {

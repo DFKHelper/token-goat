@@ -455,7 +455,7 @@ function hookShimFilesNamed(texts: readonly string[]): { current: boolean; legac
 
 /** The row for a hook shim that the hooks run but that is not on disk: every hook call dies at launch (Copilot's preToolUse fails closed on it), and nothing but an install puts the file back. */
 function missingShimResult(name: string, shimPath: string, harness: string, reinstall: string): DoctorResult {
-  return { name, status: 'fail', message: `hook shim at ${shimPath} is missing, but your hooks still run it, so every hook call fails to start. Recovery: run ${fencedCommand(reinstall)} (or token-goat doctor --repair), then fully restart ${harness}.` }
+  return { name, status: 'fail', message: `hook shim at ${shimPath} is missing, but your hooks still run it, so every hook call fails to start. Recovery: run ${fencedCommand(reinstall)} (or ${fencedCommand('token-goat doctor --repair')}), then fully restart ${harness}.` }
 }
 
 function shimIsCurrent(scriptPath: string, expected: string): boolean {

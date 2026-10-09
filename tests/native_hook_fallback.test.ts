@@ -86,7 +86,7 @@ describe.runIf(NATIVE)('nativeHookBinary when the first attempt fails for a tran
     const note = stderr.join('')
     expect(note).toContain('wrote the Node form of the hooks')
     expect(note).toContain('no answer within')
-    expect(note).toContain('token-goat doctor --repair')
+    expect(note).toContain('`token-goat doctor --repair`')
   })
 
   it('does not run a binary again that ran and failed', () => {
@@ -120,6 +120,6 @@ describe.runIf(NATIVE)('nativeHookBinary when the first attempt fails for a tran
     expect(nativeHookBinary(entry)).toBeUndefined()
     const note = stderr.join('')
     expect(note).toContain('could not be put in place')
-    expect(note).toContain('token-goat doctor --repair')
+    expect(note).toContain('`token-goat doctor --repair`')
   })
 })
