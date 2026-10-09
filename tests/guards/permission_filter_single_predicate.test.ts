@@ -45,6 +45,40 @@ describe('permission source filter', () => {
     }
   })
 
+  // HAND-DERIVED: macOS tmpdir is /var/folders/.. -> /private/var/folders/.., so a child cwd (the target spelling) never sat under a root created through the link; a directory link (junction on Windows) reproduces that on every platform. CI failure: the macOS shard saw inside:false.
+  it('treats a path spelled through a directory link and the same path spelled by its target as the same place', () => {
+    const scratch = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-filter-link-')))
+    try {
+      const target = path.join(scratch, 'target')
+      const link = path.join(scratch, 'link')
+      fs.mkdirSync(target)
+      fs.symlinkSync(target, link, 'junction')
+      const probe = [
+        "const f = globalThis[Symbol.for('token-goat.permission-source-filter')]",
+        "const p = require('node:path')",
+        "const viaTarget = f(p.join(process.env.TG_TEST_TARGET, 'x', 'settings.json'))",
+        "const viaLink = f(p.join(process.env.TG_TEST_LINK, 'x', 'settings.json'))",
+        "const outside = f(p.join(process.env.TG_TEST_SCRATCH, 'elsewhere', 'settings.json'))",
+        'process.stdout.write(JSON.stringify({ viaTarget, viaLink, outside }))',
+      ].join(';')
+      const preload = path.join(testsDir, 'setup', 'permission-source-filter.cjs').replaceAll('\\', '/')
+      for (const root of [link, target]) {
+        const res = spawnSync(process.execPath, ['-e', probe], {
+          encoding: 'utf8',
+          env: { ...process.env, TG_TEST_PERMISSION_ROOT: root, TG_TEST_TARGET: target, TG_TEST_LINK: link, TG_TEST_SCRATCH: scratch, NODE_OPTIONS: `--require "${preload}"` },
+        })
+        expect(JSON.parse(res.stdout), `root ${root}`).toEqual({ viaTarget: true, viaLink: true, outside: false })
+      }
+    } finally {
+      try {
+        fs.unlinkSync(path.join(scratch, 'link'))
+      } catch {
+        // never created
+      }
+      fs.rmSync(scratch, { recursive: true, force: true })
+    }
+  })
+
   it('reads the same hook name the product looks up', () => {
     const src = fs.readFileSync(path.join(testsDir, '..', 'src', 'rewrite_permission.ts'), 'utf8')
     expect(src).toContain(HOOK_NAME)
