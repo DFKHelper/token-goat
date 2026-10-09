@@ -15,11 +15,49 @@ const NOT_A_CHECK: ReadonlyMap<string, string> = new Map([
   ['ci', 'dependency install, not a check'],
   // Downloads the embedding model into CI's cache. Locally the model lives in TOKEN_GOAT_MODEL_CACHE_DIR already and the suite gates on modelFilesPresent().
   ['run model:warm', 'fetches the model into CI cache; the local machine already has it'],
-  // The suite's global setup (tests/setup/build-bundle.ts) already builds the same bundle before any local test run.
-  ['run build', 'builds dist/token-goat.mjs for the retrieval gate; the local suite builds it in its global setup'],
-  // Embeds a few hundred files with the real model, which takes minutes: far past what a commit or push tier can spend. Run by hand with `npm run eval:gate -- --home <dir>`.
-  ['run eval:gate', 'embeds a few hundred files, minutes of work no hook tier should spend; run by hand before changing retrieval'],
 ])
+
+/** Exemptions that hold for one job only, as job -> command -> reason. A bare `npm run build` step added to any other job is a check with no local mirror and must still be flagged, so these are not in the global table above. */
+const NOT_A_CHECK_IN_JOB: ReadonlyMap<string, ReadonlyMap<string, string>> = new Map([
+  [
+    'retrieval-gate',
+    new Map([
+      // The suite's global setup (tests/setup/build-bundle.ts) already builds the same bundle before any local test run.
+      ['run build', 'builds dist/token-goat.mjs for the gate; the local suite builds it in its global setup'],
+      // Embeds a few hundred files with the real model, which takes minutes: far past what a commit or push tier can spend. Run by hand with `npm run eval:gate -- --home <dir>`.
+      ['run eval:gate', 'embeds a few hundred files, minutes of work no hook tier should spend; run by hand before changing retrieval'],
+    ]),
+  ],
+])
+
+export interface CiStep {
+  readonly job: string
+  readonly command: string
+}
+
+/** The steps of `ciText` that run npm, each with the job it sits in (a two-space-indented key under `jobs:`). */
+export function ciNpmSteps(ciText: string): CiStep[] {
+  const out: CiStep[] = []
+  let job = ''
+  let inJobs = false
+  for (const line of ciText.split('\n')) {
+    if (/^jobs:\s*$/.test(line)) inJobs = true
+    else if (/^\S/.test(line)) inJobs = false
+    const j = inJobs ? /^ {2}([\w-]+):\s*$/.exec(line) : null
+    if (j) job = j[1]!
+    const m = /^\s*(?:-\s*)?(?:run|command):\s*npm\s+(.+)$/.exec(line)
+    if (!m) continue
+    const rest = m[1]!.trim()
+    const command = rest.startsWith('run ') ? rest.split(/\s+/).slice(0, 2).join(' ') : rest.split(/\s+/)[0]!
+    out.push({ job, command })
+  }
+  return out
+}
+
+/** The CI npm steps that no local tier mirrors and no exemption (global, or for that step's own job) excuses. */
+export function uncoveredSteps(steps: readonly CiStep[], local: string): string[] {
+  return [...new Set(steps.filter((st) => !NOT_A_CHECK.has(st.command) && !NOT_A_CHECK_IN_JOB.get(st.job)?.has(st.command) && !local.includes(`npm ${st.command}`)).map((st) => `${st.job}: ${st.command}`))]
+}
 
 /** Every `npm ...` invocation CI runs, normalized to the part that names what it does. */
 function ciNpmCommands(): string[] {
@@ -72,11 +110,27 @@ describe('local hook tiers cover every CI check', () => {
     )
 
     const local = localTierText()
-    const uncovered = ci.filter((c) => !NOT_A_CHECK.has(c) && !local.includes(`npm ${c}`))
+    const uncovered = uncoveredSteps(ciNpmSteps(fs.readFileSync(CI_YML, 'utf8')), local)
     expect(
       uncovered,
       `CI runs these and no local hook tier does, so a green push can still fail the build: ${uncovered.join(', ')}`,
     ).toEqual([])
+  })
+
+  // Negative control: the exemption is for one job's step, so the same command elsewhere must still be flagged. HAND-DERIVED: the step lists are written here, not read from ci.yml.
+  it('still flags a bare build step in a job the exemption does not name', () => {
+    expect(uncoveredSteps([{ job: 'retrieval-gate', command: 'run build' }], '')).toEqual([])
+    expect(uncoveredSteps([{ job: 'some-other-job', command: 'run build' }], '')).toEqual(['some-other-job: run build'])
+    expect(uncoveredSteps([{ job: 'some-other-job', command: 'run eval:gate' }], '')).toEqual(['some-other-job: run eval:gate'])
+  })
+
+  it('attributes each ci.yml npm step to the job it sits in', () => {
+    const yml = 'name: X\njobs:\n  alpha:\n    steps:\n      - run: npm run build\n  beta:\n    steps:\n      - run: npm run lint\nother: 1\n'
+    expect(ciNpmSteps(yml)).toEqual([
+      { job: 'alpha', command: 'run build' },
+      { job: 'beta', command: 'run lint' },
+    ])
+    expect(ciNpmSteps(fs.readFileSync(CI_YML, 'utf8')).filter((st) => st.command === 'run build').map((st) => st.job)).toEqual(['retrieval-gate'])
   })
 
   it('scans for secrets locally, the way CI does', () => {
