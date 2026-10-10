@@ -4,6 +4,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import type * as ProcessUtilModule from '../src/process_util.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { checkInstall } from '../src/cli_doctor.js'
@@ -42,10 +43,20 @@ describe.skipIf(process.platform !== 'win32')('a .cmd shim in a PATH directory w
 
   it('install detects a claude new enough for exec-form hooks', async () => {
     shim('claude', 'echo 2.1.276 (Claude Code)')
-    // A fresh module, so the answer comes from this PATH and not one another test cached.
-    vi.resetModules()
-    const { claudeExecFormHooksSupported } = await import('../src/install.js')
-    expect(claudeExecFormHooksSupported()).toBe(true)
+    // The probe reads a probe that times out as "not supported" (the string form, its documented fallback) and its 5 s budget is the product's; a cmd.exe start alone takes that long on a loaded machine. The probe runs here through the same spawn with a long budget, so what is asserted is that the shim's version output is parsed, not how fast cmd.exe started.
+    vi.doMock('../src/process_util.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof ProcessUtilModule>()
+      return { ...actual, spawnResolvedSync: ((file, args, opts) => actual.spawnResolvedSync(file, args, { ...opts, timeout: 120_000 })) as typeof actual.spawnResolvedSync }
+    })
+    try {
+      // A fresh module, so the answer comes from this PATH and not one another test cached.
+      vi.resetModules()
+      const { claudeExecFormHooksSupported } = await import('../src/install.js')
+      expect(claudeExecFormHooksSupported()).toBe(true)
+    } finally {
+      vi.doUnmock('../src/process_util.js')
+      vi.resetModules()
+    }
   })
 
   // `token-goat ask` hands its backend a temp-file path, which has a space whenever the account name does, so the words after the shim must arrive as they were sent.

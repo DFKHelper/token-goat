@@ -1,4 +1,5 @@
 /** A PreToolUse input rewrite must never change the permission outcome the user's own Claude Code rules give the ORIGINAL call. Claude Code matches its rules against `updatedInput`, so the old unconditional `permissionDecision: "allow"` on every rewrite skipped the prompt for any wrapped command, and a `Bash(curl:*)` deny or a `Read(./private/**)` deny was matched against the wrapper or the temp copy and missed. PROVENANCE: HAND-DERIVED rule matrix: each case's expected verdict is worked out from the rule semantics documented at https://code.claude.com/docs/en/permissions (deny > ask > allow, Bash prefix/wildcard rules, the read-only command set, Read rules on `//`, `~/`, `./` paths) and https://code.claude.com/docs/en/permission-modes (deny blocks in every mode, dontAsk turns a prompt into a denial, bypassPermissions skips prompts), not from the module under test. Settings files are written into a temp tree with an explicit cwd, so no developer or machine settings take part. */
+import type * as UtilModule from '../src/util.js'
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -9,6 +10,19 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { decideRewrite as decideRewriteLoaded, loadCodexRules, loadHiddenRuleCheck, loadPermissionSnapshot, permissionNeutralRewrite, resetPermissionSourceCache, snapshotFromDocs, type RewriteRequest, type SettingsDoc } from '../src/rewrite_permission.js'
 import { CAN_JUNCTION } from './helpers/can-symlink.js'
 import { shortNameOf } from './helpers/short-name.js'
+
+// The product asks git whether a settings.local.json is tracked within 5 s and reads a git that did not answer as untrusted, so a loaded machine turned a spawn that took that long into a rewrite that never approved. Real git runs here with a long budget so every answer arrives, and `timeOutLsFiles` injects the one answer the product fails closed on.
+const gitSeam = vi.hoisted(() => ({ timeOutLsFiles: false }))
+vi.mock('../src/util.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof UtilModule>()
+  return {
+    ...actual,
+    runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => {
+      if (gitSeam.timeOutLsFiles && args[0] === 'ls-files') return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
+      return actual.runGit(args, opts?.timeoutMs === undefined ? opts : { ...opts, timeoutMs: 120_000 })
+    },
+  }
+})
 
 const CWD = path.join(os.tmpdir(), 'tg-perm-unit-cwd')
 const MODES = ['default', 'plan', 'acceptEdits', 'auto', 'dontAsk', 'bypassPermissions'] as const
@@ -451,6 +465,18 @@ describe('loadPermissionSnapshot and permissionNeutralRewrite read the real sett
   it('with no rules the rewrite ships without approval for an unproven command and with it for a read-only one', () => {
     expect(permissionNeutralRewrite({ command: wrap('curl https://example.com') }, curl(project))).toEqual({ hookType: 'rewriteInput', updatedInput: { command: wrap('curl https://example.com') }, approve: false })
     expect(permissionNeutralRewrite({ command: wrap('ls') }, { ...curl(project), original: 'ls', rewritten: wrap('ls') })).toEqual({ hookType: 'rewriteInput', updatedInput: { command: wrap('ls') }, approve: true })
+  })
+
+  it('an untracked settings.local.json allow does not approve while git has not answered whether the file is tracked', () => {
+    expect(git(project, 'init', '-q')).toBe(0)
+    writeJson(path.join(project, '.claude', 'settings.local.json'), { permissions: { allow: ['Bash(go build *)'] } })
+    gitSeam.timeOutLsFiles = true
+    try {
+      expect(permissionNeutralRewrite({ command: wrap('go build ./...') }, goBuild(project))).toBeNull()
+    } finally {
+      gitSeam.timeOutLsFiles = false
+    }
+    expect(permissionNeutralRewrite({ command: wrap('go build ./...') }, goBuild(project))).toEqual({ hookType: 'rewriteInput', updatedInput: { command: wrap('go build ./...') }, approve: true })
   })
 
   // HAND-DERIVED: git ls-files --error-unmatch exits 1 for an untracked file inside a repository and 128 outside one or in a repository git refuses (safe.directory); only the first proves Claude Code's untracked-local-file trust.

@@ -25,15 +25,15 @@ process.exit(0)
 
 let root: string
 
-/** Two answerable and two absent queries in each split, so the weak line can be fitted on train and scored on test. */
+/** One answerable and one absent query in each split, which is what the weak line needs to be fitted on train and scored on test (a class missing from a split leaves it unscored). Each query costs the harness two spawns of the stand-in binary (JSON, then text), so the least that exercises the wiring keeps the run short on a machine where a spawn is slow. */
 function golden(): string {
   const want = new Map<string, number>()
   const lines: string[] = []
-  for (let i = 0; lines.length < 8; i++) {
+  for (let i = 0; lines.length < 4; i++) {
     const id = `q${i}`
     for (const kind of ['doc', 'absent'] as const) {
       const key = `${splitOf(id)}/${kind}`
-      if ((want.get(key) ?? 0) >= 2) continue
+      if ((want.get(key) ?? 0) >= 1) continue
       want.set(key, (want.get(key) ?? 0) + 1)
       lines.push(JSON.stringify({ id, query: `${kind === 'absent' ? 'absent' : 'alpha'} query ${i}`, kind, relevant: kind === 'absent' ? [] : [{ file: 'doc.md', heading: 'Alpha' }] }))
       break

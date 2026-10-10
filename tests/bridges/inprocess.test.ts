@@ -164,37 +164,42 @@ describe('Claude Code shim: async-detach makes duration_ms report what the harne
     const scriptPath = join(cwd, 'shim.js')
     writeFileSync(scriptPath, CLAUDECODE_HOOK_SCRIPT, 'utf8')
 
-    const asyncFilePath = join(cwd, 'touched.ts')
-    writeFileSync(asyncFilePath, 'export const x = 1\n', 'utf8')
-    const asyncPayload = JSON.stringify({
-      tool_name: 'Write',
-      tool_input: { file_path: asyncFilePath },
-      session_id: 'batch-v-async-' + Math.random().toString(36).slice(2),
-    })
-    const asyncRes = spawnSync(process.execPath, [scriptPath, 'post_tool_use', entryPath], { cwd, input: asyncPayload, encoding: 'utf8', timeout: 15000 })
-    expect(asyncRes.status).toBe(0)
-    expect((asyncRes.stdout ?? '').split('\n')[0]).toBe('{"async":true}')
-    expect(existsSync(markerPath)).toBe(false)
-    const asyncDurationMs = latestHookDurationMs('hook:post_tool_use')
-    expect(asyncDurationMs).not.toBeNull()
+    const asyncRuns: number[] = []
+    const syncRuns: number[] = []
+    for (let round = 0; round < 3; round++) {
+      const asyncFilePath = join(cwd, 'touched.ts')
+      writeFileSync(asyncFilePath, 'export const x = 1\n', 'utf8')
+      const asyncPayload = JSON.stringify({
+        tool_name: 'Write',
+        tool_input: { file_path: asyncFilePath },
+        session_id: 'batch-v-async-' + Math.random().toString(36).slice(2),
+      })
+      const asyncRes = spawnSync(process.execPath, [scriptPath, 'post_tool_use', entryPath], { cwd, input: asyncPayload, encoding: 'utf8', timeout: 15000 })
+      expect(asyncRes.status).toBe(0)
+      expect((asyncRes.stdout ?? '').split('\n')[0]).toBe('{"async":true}')
+      expect(existsSync(markerPath)).toBe(false)
+      const asyncDurationMs = latestHookDurationMs('hook:post_tool_use')
+      expect(asyncDurationMs).not.toBeNull()
 
-    // A markdown file is explicitly excluded from async-detach (ASYNC_DETACH_SKIP_EXT_RE in shim_common.ts), so this Edit runs the ordinary synchronous path and its duration_ms is this call's own full round trip -- the number the async-detached call above used to be indistinguishable from before this fix.
-    const syncFilePath = join(cwd, 'NOTES.md')
-    writeFileSync(syncFilePath, '# notes\n', 'utf8')
-    const syncPayload = JSON.stringify({
-      tool_name: 'Edit',
-      tool_input: { file_path: syncFilePath },
-      session_id: 'batch-v-sync-' + Math.random().toString(36).slice(2),
-    })
-    const syncRes = spawnSync(process.execPath, [scriptPath, 'post_tool_use', entryPath], { cwd, input: syncPayload, encoding: 'utf8', timeout: 15000 })
-    expect(syncRes.status).toBe(0)
-    expect(syncRes.stdout ?? '').not.toContain('"async":true')
-    expect(existsSync(markerPath)).toBe(false)
-    const syncDurationMs = latestHookDurationMs('hook:post_tool_use')
-    expect(syncDurationMs).not.toBeNull()
-
-    // Measured on this fix: async 14ms vs sync 63ms (a 0.22 ratio). Measured against the unfixed code with the same two calls: async 102ms vs sync 65ms (a 1.57 ratio -- the async call was not smaller at all). 0.5 sits well inside the gap between those two outcomes.
-    expect(asyncDurationMs!).toBeLessThan(syncDurationMs! * 0.5)
+      // A markdown file is explicitly excluded from async-detach (ASYNC_DETACH_SKIP_EXT_RE in shim_common.ts), so this Edit runs the ordinary synchronous path and its duration_ms is this call's own full round trip -- the number the async-detached call above used to be indistinguishable from before this fix.
+      const syncFilePath = join(cwd, 'NOTES.md')
+      writeFileSync(syncFilePath, '# notes\n', 'utf8')
+      const syncPayload = JSON.stringify({
+        tool_name: 'Edit',
+        tool_input: { file_path: syncFilePath },
+        session_id: 'batch-v-sync-' + Math.random().toString(36).slice(2),
+      })
+      const syncRes = spawnSync(process.execPath, [scriptPath, 'post_tool_use', entryPath], { cwd, input: syncPayload, encoding: 'utf8', timeout: 15000 })
+      expect(syncRes.status).toBe(0)
+      expect(syncRes.stdout ?? '').not.toContain('"async":true')
+      expect(existsSync(markerPath)).toBe(false)
+      const syncDurationMs = latestHookDurationMs('hook:post_tool_use')
+      expect(syncDurationMs).not.toBeNull()
+      asyncRuns.push(asyncDurationMs!)
+      syncRuns.push(syncDurationMs!)
+    }
+    // The least of three rounds on each side: a load spike inflates one round of one side (109 ms against 210 ms was seen under a full-suite run, where the ratio needs under 105), and the least duration each side showed is the one the spike did not reach. The unfixed code still fails this, since it is the async side that is the larger there. Measured on this fix: async 14ms vs sync 63ms (a 0.22 ratio). Measured against the unfixed code with the same two calls: async 102ms vs sync 65ms (a 1.57 ratio -- the async call was not smaller at all). 0.5 sits well inside the gap between those two outcomes.
+    expect(Math.min(...asyncRuns)).toBeLessThan(Math.min(...syncRuns) * 0.5)
   })
 })
 

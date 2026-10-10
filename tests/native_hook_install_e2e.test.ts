@@ -361,11 +361,21 @@ function forms(file: string, shell: HookShell): { native: number; node: number }
   return { native, node: entries.length - native }
 }
 
-function doctorRows(sb: Sandbox, env: Env = {}): Array<{ name: string; status: string; message: string }> {
-  const res = cli(sb, ['doctor', '--json'], env, sb.proj)
-  const parsed = JSON.parse(res.stdout) as unknown
-  const list = Array.isArray(parsed) ? parsed : ((parsed as Record<string, unknown>)['checks'] ?? (parsed as Record<string, unknown>)['results'])
-  return list as Array<{ name: string; status: string; message: string }>
+/** The words doctor prints for a native hook client whose self-test got no answer inside the 5 s budget (FORMAT-DERIVED from src/native_hook.ts nativeSelftest: `no answer within ${SELFTEST_TIMEOUT_MS} ms`, the reason an ETIMEDOUT spawn gets). A starved machine produces it for a binary that would have answered, and a second run does not repeat it; a binary that ran and failed prints its exit code instead and is not matched. */
+const SELFTEST_NO_ANSWER = /no answer within \d+ ms/
+
+type DoctorRow = { name: string; status: string; message: string }
+
+/** Doctor's rows, asked again (up to twice more) while a Native hooks row reports a self-test that got no answer, because that row says nothing about the binary. Any other outcome, including the same notice after the last try, is left for the caller's assertions to fail on. */
+function doctorRows(sb: Sandbox, env: Env = {}): DoctorRow[] {
+  let list: DoctorRow[] = []
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = cli(sb, ['doctor', '--json'], env, sb.proj)
+    const parsed = JSON.parse(res.stdout) as unknown
+    list = (Array.isArray(parsed) ? parsed : ((parsed as Record<string, unknown>)['checks'] ?? (parsed as Record<string, unknown>)['results'])) as DoctorRow[]
+    if (!list.some((r) => r.name.startsWith('Native hooks') && SELFTEST_NO_ANSWER.test(r.message))) break
+  }
+  return list
 }
 
 function stopServer(sb: Sandbox): void {

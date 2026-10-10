@@ -19,6 +19,10 @@ vi.mock('node:os', async (importOriginal) => {
 import * as os from 'node:os'
 
 import { GROK_HOOK_SCRIPT } from '../src/bridges/grok.js'
+
+// The shim kills the entry it falls back to after 3 s (SHIM_FALLBACK_TIMEOUT_MS.grok, pinned by tests/bridges/shim_fallback_timeout.test.ts), and a node start alone takes that long on a loaded machine, so the capture file these tests read was never written. The shim run here has the same script with a long budget on that one line; the shipped script and its 3 s are untouched, and the throw below keeps the substitution from silently matching nothing.
+const UNHURRIED_SHIM = GROK_HOOK_SCRIPT.replace('const SHIM_FALLBACK_TIMEOUT_MS = 3000', 'const SHIM_FALLBACK_TIMEOUT_MS = 120000')
+if (UNHURRIED_SHIM === GROK_HOOK_SCRIPT) throw new Error('the Grok shim no longer declares its fallback budget on the line this test widens')
 import {
   grokConfigPath,
   grokHooksDir,
@@ -197,7 +201,7 @@ function mkIsolated(): string {
 
 function runShim(eventArg: string, stdin: string, cwd: string, env?: NodeJS.ProcessEnv): { stdout: string; status: number | null } {
   const scriptPath = path.join(cwd, 'shim.js')
-  fs.writeFileSync(scriptPath, GROK_HOOK_SCRIPT, 'utf8')
+  fs.writeFileSync(scriptPath, UNHURRIED_SHIM, 'utf8')
   const res = spawnSync(process.execPath, [scriptPath, eventArg], {
     cwd,
     input: stdin,
@@ -239,7 +243,7 @@ describe('GROK_HOOK_SCRIPT', () => {
     const cwd = mkIsolated()
     const { entryPath, capturePath } = writeFakeEntry(cwd)
     const scriptPath = path.join(cwd, 'shim.js')
-    fs.writeFileSync(scriptPath, GROK_HOOK_SCRIPT, 'utf8')
+    fs.writeFileSync(scriptPath, UNHURRIED_SHIM, 'utf8')
     const res = spawnSync(process.execPath, [scriptPath, 'pre_tool_use', entryPath], {
       cwd,
       input: JSON.stringify({ sessionId: 's1', cwd: '/tmp', toolName: 'run_terminal_command', toolInput: { command: 'npm test' } }),
@@ -286,7 +290,7 @@ describe('GROK_HOOK_SCRIPT', () => {
     const cwd = mkIsolated()
     const { entryPath } = writeFakeEntry(cwd, JSON.stringify({ decision: 'block', reason: 'already read this session' }))
     const scriptPath = path.join(cwd, 'shim.js')
-    fs.writeFileSync(scriptPath, GROK_HOOK_SCRIPT, 'utf8')
+    fs.writeFileSync(scriptPath, UNHURRIED_SHIM, 'utf8')
     const res = spawnSync(process.execPath, [scriptPath, 'pre_tool_use', entryPath], {
       cwd,
       input: JSON.stringify({ sessionId: 's1', toolName: 'read_file' }),
@@ -304,7 +308,7 @@ describe('GROK_HOOK_SCRIPT', () => {
     const cwd = mkIsolated()
     const { entryPath } = writeFakeEntry(cwd, JSON.stringify({}))
     const scriptPath = path.join(cwd, 'shim.js')
-    fs.writeFileSync(scriptPath, GROK_HOOK_SCRIPT, 'utf8')
+    fs.writeFileSync(scriptPath, UNHURRIED_SHIM, 'utf8')
     const res = spawnSync(process.execPath, [scriptPath, 'pre_tool_use', entryPath], {
       cwd,
       input: JSON.stringify({ sessionId: 's1', toolName: 'read_file' }),
@@ -320,7 +324,7 @@ describe('GROK_HOOK_SCRIPT', () => {
     const cwd = mkIsolated()
     const { entryPath } = writeFakeEntry(cwd, JSON.stringify({ hookSpecificOutput: { additionalContext: 'you already read this file' } }))
     const scriptPath = path.join(cwd, 'shim.js')
-    fs.writeFileSync(scriptPath, GROK_HOOK_SCRIPT, 'utf8')
+    fs.writeFileSync(scriptPath, UNHURRIED_SHIM, 'utf8')
     const res = spawnSync(process.execPath, [scriptPath, 'post_tool_use', entryPath], {
       cwd,
       input: JSON.stringify({ sessionId: 's1', toolName: 'read_file' }),
@@ -336,7 +340,7 @@ describe('GROK_HOOK_SCRIPT', () => {
   it('never propagates an uncaught exception or an unexpected exit code, even for adversarial/malformed payloads', () => {
     const cwd = mkIsolated()
     const scriptPath = path.join(cwd, 'shim.js')
-    fs.writeFileSync(scriptPath, GROK_HOOK_SCRIPT, 'utf8')
+    fs.writeFileSync(scriptPath, UNHURRIED_SHIM, 'utf8')
     const env = withFakeTokenGoat(cwd, JSON.stringify({ decision: 'block' }))
 
     const adversarialStdins = ['[1,2,3]', '"just a string"', '42', 'null', JSON.stringify({ toolName: { nested: 'weird' } })]

@@ -1,6 +1,7 @@
 /** End-to-end coverage for the adaptive PreCompact manifest budget wired in hooks_compact.ts (see `adaptiveCharBonus`/`gitDirtySignals`). `compact.ts`'s `computeAdaptiveBudget`/`buildManifestAdaptive` were ported from the Python predecessor (`eb119425`) but never wired to the real production PreCompact path -- only unit-tested in isolation via directly-injected opts (tests/compact.test.ts). This suite closes that "injected-callback seam" gap (see CLAUDE.md's "Critical path" section) two ways other coverage in this repo doesn't: 1. It dispatches through the *real* registered handler via `relayInProcess` (relay.ts -> hook_registry.ts's `pre_compact` registration -> `preCompactHandler`), not a directly imported function reference -- proving the wiring is actually reachable on the wire path, not just correct in isolation. 2. It never mocks `node:child_process`/`runGit` -- `hasPendingDiff`/`hasUncommittedChanges` are checked against a real scratch git repo (real `git init`/`diff`/`status --porcelain` subprocess calls), not a stubbed git result. Deliberately does NOT mock `node:child_process` (unlike hooks_compact.test.ts, which mocks it to control `mem epoch`'s spawnSync call deterministically) -- doing so here would also intercept `runGit`'s spawnSync calls and defeat the "real git state" requirement above. Deliberately does NOT call `clearModuleCaches()` between tests: that helper also runs hook_registry.ts's `clearHooks()` reset (registered via `registerReset`), which empties the shared `_handlers` map. Every hook module registers itself exactly once, at ESM import time (`registerHook('pre_compact', preCompactHandler)` etc. in hooks_compact.ts/hooks_index.ts) -- once cleared in-process, nothing re-populates it, so every `relayInProcess` call afterward would silently see zero registered handlers and resolve to `pass` (`{}`), rather than actually dispatching to `preCompactHandler`. Every other suite that calls `clearModuleCaches()` invokes hook handlers directly (bypassing the registry) or drives a fresh child process per call (session_persistence_e2e.test.ts), so this interaction is new here specifically because this suite dispatches in-process through the real registry. Session/config state between tests is instead reset narrowly, via `resetSessionState()` and `invalidateConfigCache()`. */
 
 import { tempConfigPath } from './helpers/temp-config.js'
+import type * as UtilModule from '../src/util.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -18,6 +19,12 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 })
 
 const _testConfigPath = tempConfigPath('tg-hooks-compact-adaptive-config-test.toml')
+
+// The dirty-state probe fails soft to "clean" when git runs past hints.git_hint_max_ms, which is the product's contract; on a loaded machine a spawn alone can take that long, and the suite then compared a manifest whose probe never answered. The real git runs here with a long budget, so every probe answers and what is asserted is the bonus the answer buys. The configured bound and the product default are untouched.
+vi.mock('../src/util.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof UtilModule>()
+  return { ...actual, runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => actual.runGit(args, opts?.timeoutMs === undefined ? opts : { ...opts, timeoutMs: 120_000 }) }
+})
 
 import { relayInProcess } from '../src/relay.js'
 import { runGit } from '../src/util.js'
