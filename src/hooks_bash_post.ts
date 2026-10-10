@@ -678,12 +678,20 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       let diffBase = 'HEAD@{1}'
       // Why the changed-file list cannot be trusted, when it cannot: a read git did not answer at all (spawn failure or timeout, exit -1) leaves the base possibly wrong even when the diff then succeeds.
       let unanswered: string | null = null
+      // Set when a read could not start git at all (missing, or a working directory that is gone): the worker needs git to sweep, so it could not do better and gets no request.
+      let gitNeverRan = false
       if (ORIG_HEAD_ELIGIBLE_GIT_RE.test(cmd)) {
         const reflogTop = runGit(['reflog', '-1', '--format=%gs', 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
-        if (reflogTop.exitCode === -1) unanswered = `git reflog: ${reflogTop.stderr}`
+        if (reflogTop.exitCode === -1) {
+          unanswered = `git reflog: ${reflogTop.stderr}`
+          if (reflogTop.timedOut !== true) gitNeverRan = true
+        }
         if (reflogTop.exitCode === 0 && ORIG_HEAD_REFLOG_MSG_RE.test(reflogTop.stdout.trim())) {
           const origHead = runGit(['rev-parse', '--verify', '-q', 'ORIG_HEAD'], { cwd: gitDir, timeoutMs: 5000 })
-          if (origHead.exitCode === -1) unanswered = `git rev-parse ORIG_HEAD: ${origHead.stderr}`
+          if (origHead.exitCode === -1) {
+            unanswered = `git rev-parse ORIG_HEAD: ${origHead.stderr}`
+            if (origHead.timedOut !== true) gitNeverRan = true
+          }
           if (origHead.exitCode === 0 && origHead.stdout.trim() !== '') diffBase = 'ORIG_HEAD'
         }
       }
@@ -702,11 +710,12 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
         }
       } else {
         unanswered = `git diff ${diffBase} HEAD exited ${mutationDiff.exitCode}: ${mutationDiff.stderr}`
+        gitNeverRan = mutationDiff.exitCode === -1 && mutationDiff.timedOut !== true
       }
       // Dropping the work here left the index on the old branch with nothing in any log, and under load each read above is one 5 s timeout from failing. The worker can learn what changed without the hook's time budget (a sweep of the tracked files against the index), so hand it the project and record why.
       if (unanswered !== null) {
-        const recorded = requestReconcileSafe(gitDir)
-        appendWorkerErrorLog(dataDir(), `${new Date().toISOString()} post-bash ${cmd.slice(0, 80)} in ${gitDir}: could not list the files it changed (${unanswered.trim().slice(0, 200)}); ${recorded ? 'asked the worker to reconcile the project' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
+        const recorded = gitNeverRan ? null : requestReconcileSafe(gitDir)
+        appendWorkerErrorLog(dataDir(), `${new Date().toISOString()} post-bash ${cmd.slice(0, 80)} in ${gitDir}: could not list the files it changed (${unanswered.trim().slice(0, 200)}); ${recorded === null ? 'git could not be started, so no reconcile was requested' : recorded ? 'asked the worker to reconcile the project' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
       }
     }
 

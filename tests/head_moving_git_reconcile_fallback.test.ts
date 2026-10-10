@@ -22,13 +22,26 @@ import { workerErrorLogPath } from '../src/worker_lifecycle.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { indexableDir } from './helpers/temp-config.js'
 
-const seam = vi.hoisted(() => ({ failReflog: false, reconcileBudgetMs: null as number | null }))
+const seam = vi.hoisted(() => ({ failReflog: false, timeOutDiff: false, gitMissing: false, timeOutTopLevelReads: 0, reconcileBudgetMs: null as number | null }))
+
+// The product gives each of its git reads 5 s and fails closed past it, which a loaded machine reaches (a spawn takes 2.5 s or more) and which these tests are not about: every real git call here runs with this much longer budget so the answers come back, and the timeout itself is injected below as the answer runGit gives for one (exit -1 with timedOut, CAPTURE: Node 24.12 spawnSync reports ETIMEDOUT).
+const UNHURRIED_MS = 120_000
 
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<typeof UtilModule>()
   return {
     ...actual,
-    runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => (seam.failReflog && args[0] === 'reflog' ? { stdout: '', stderr: 'timed out', exitCode: -1 } : actual.runGit(args, opts)),
+    runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => {
+      // CAPTURE: Node 24.12 on Windows 11 spawnSync reports a missing git (and a working directory that is gone) as ENOENT, with no timeout flag.
+      if (seam.gitMissing) return { stdout: '', stderr: 'spawnSync git ENOENT', exitCode: -1 }
+      if (seam.failReflog && args[0] === 'reflog') return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
+      if (seam.timeOutDiff && args[0] === 'diff') return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
+      if (seam.timeOutTopLevelReads > 0 && args[0] === 'rev-parse' && args[1] === '--show-toplevel') {
+        seam.timeOutTopLevelReads--
+        return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
+      }
+      return actual.runGit(args, opts?.timeoutMs === undefined ? opts : { ...opts, timeoutMs: UNHURRIED_MS })
+    },
   }
 })
 
@@ -112,11 +125,17 @@ beforeEach(() => {
   fs.rmSync(`${reconcileRequestPathFor(dataDir())}.draining`, { force: true })
   fs.rmSync(workerErrorLogPath(dataDir()), { force: true })
   seam.failReflog = false
+  seam.timeOutDiff = false
+  seam.gitMissing = false
+  seam.timeOutTopLevelReads = 0
   seam.reconcileBudgetMs = null
 })
 
 afterEach(() => {
   seam.failReflog = false
+  seam.timeOutDiff = false
+  seam.gitMissing = false
+  seam.timeOutTopLevelReads = 0
   seam.reconcileBudgetMs = null
 })
 
@@ -177,6 +196,30 @@ describe('a head-moving git command whose changed-file list git could not produc
     expect(workerLog()).toMatch(/git reflog: timed out/)
   })
 
+  it('asks for a reconcile and enqueues nothing when the diff itself runs past its budget', async () => {
+    const { repo } = repoWithTwoBranches()
+    git(repo, 'checkout', '-q', 'feature')
+    seam.timeOutDiff = true
+
+    await postBashHandler(postBashEvent('git checkout feature', repo))
+
+    expect(getDirtyPaths(), 'a diff that never answered must not enqueue guessed paths').toEqual([])
+    expect(parseReconcileRequests(requestFile()).map(foldPath)).toEqual([foldPath(repo)])
+    expect(workerLog()).toMatch(/git diff HEAD@\{1\} HEAD exited -1: timed out.*asked the worker to reconcile/)
+  })
+
+  it('asks for no reconcile when git could not be started at all, since the worker needs git to sweep, and says so', async () => {
+    const { repo } = repoWithTwoBranches()
+    git(repo, 'checkout', '-q', 'feature')
+    seam.gitMissing = true
+
+    await postBashHandler(postBashEvent('git checkout feature', repo))
+
+    expect(getDirtyPaths()).toEqual([])
+    expect(requestFile(), 'a missing git or a vanished directory fails the worker the same way').toBe('')
+    expect(workerLog()).toMatch(/could not list the files it changed.*git could not be started, so no reconcile was requested/)
+  })
+
   it('records nothing when git answers, so the success path is unchanged', async () => {
     const { repo } = repoWithTwoBranches()
     git(repo, 'checkout', '-q', 'feature')
@@ -210,6 +253,23 @@ describe('draining reconcile requests', () => {
     expect(drainOnce(dataDir())).toBe(0)
 
     expect(workerLog()).toMatch(/dropped, git names no repository there/)
+    expect(requestFile()).toBe('')
+  })
+
+  it('puts a project back when git did not answer in time, instead of dropping it as no repository, and finishes it on the next cycle', async () => {
+    const { repo } = repoWithTwoBranches()
+    indexOriginalBranch(repo, true)
+    git(repo, 'checkout', '-q', 'feature')
+    writeRequests([repo])
+    seam.timeOutTopLevelReads = 1
+
+    drainOnce(dataDir())
+
+    expect(workerLog()).toMatch(/git did not answer in time, continuing next cycle/)
+    expect(workerLog(), 'a slow git is not a directory that stopped being a repository').not.toMatch(/dropped/)
+    expect(parseReconcileRequests(requestFile()).map(foldPath)).toEqual([foldPath(repo)])
+    await drainTwice()
+    expect(querySymbols({ name: 'betaSym' }).map((s) => foldPath(s.filePath))).toContain(foldPath(resolveIndexPath('lib.ts', repo)))
     expect(requestFile()).toBe('')
   })
 

@@ -48,6 +48,8 @@ export interface GitResult {
   readonly stdout: string
   readonly stderr: string
   readonly exitCode: number
+  /** True only when git was started and killed for running past `timeoutMs` (exit -1 with Node's ETIMEDOUT). Exit -1 without it means git never ran or its output overflowed: git missing, a working directory that is gone, a permission failure. */
+  readonly timedOut?: boolean
 }
 
 /** Options accepted by `runGit`. */

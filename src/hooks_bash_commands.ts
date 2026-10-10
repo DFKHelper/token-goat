@@ -7,6 +7,8 @@ import * as path from 'node:path'
 import { displaySafeText, normalizePath, resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { runGit } from './util.js'
+import { dataDir } from './constants.js'
+import { appendWorkerErrorLog } from './worker_lifecycle.js'
 import { enqueueDirtyPathSafe, requestReconcileSafe } from './hooks_index.js'
 import {
   detectFromCommand,
@@ -370,8 +372,11 @@ function expandGitPathspecs(specs: string[], gitDir: string): string[] {
 /** Every path git currently reports as changed or untracked, absolute. The fallback for rewrites whose file set is not on the command line (stash apply/pop, patch application, formatter runs). */
 function workingTreeStatusPaths(gitDir: string): string[] {
   const status = runGit(['status', '--porcelain'], { cwd: gitDir, timeoutMs: 5000 })
-  // A status git never answered (spawn failure or the 5 s timeout, exit -1) names no files, which would leave the index on the pre-rewrite content with nothing in any log; the worker can sweep the project without the hook's time budget. Any other nonzero exit is git saying this is not a repository, which has nothing to reconcile.
-  if (status.exitCode === -1) requestReconcileSafe(gitDir)
+  // A status that ran past the 5 s timeout names no files, which would leave the index on the pre-rewrite content with nothing in any log; the worker can sweep the project without the hook's time budget, so hand it the project and record that. Git that never started (missing, or a working directory that is gone) gets no request, since the worker needs git to sweep too, and a nonzero exit is git saying this is not a repository, which has nothing to reconcile.
+  if (status.timedOut === true) {
+    const recorded = requestReconcileSafe(gitDir)
+    appendWorkerErrorLog(dataDir(), `${new Date().toISOString()} post-bash status sweep in ${gitDir}: git status did not answer in time (${status.stderr.trim().slice(0, 200)}); ${recorded ? 'asked the worker to reconcile the project' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
+  }
   if (status.exitCode !== 0) return []
   const repoRoot = gitRepoRoot(gitDir)
   const out: string[] = []

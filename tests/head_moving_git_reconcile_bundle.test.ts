@@ -101,6 +101,9 @@ describe('a head-moving git command whose diff fails, through the built bundle',
       expect(fs.readFileSync(request, 'utf8').split('\n').filter((l) => l !== '').map((l) => normalizePath(JSON.parse(l) as string))).toEqual([normalizePath(repo)])
 
       clearModuleCaches()
+      // Drained the way the daemon's loop does: a sweep that spent its budget, or whose git answer came late on a loaded machine, puts the project back for the next cycle, so cycle until the request is swept, then once more for what the sweep queued.
+      for (let cycle = 0; cycle < 10 && fs.existsSync(request); cycle++) drainOnce(dir)
+      expect(fs.existsSync(request), 'the request was never swept').toBe(false)
       drainOnce(dir)
       drainOnce(dir)
       await pendingEmbeddings()

@@ -52,6 +52,12 @@ export function drainReconcileRequests(dir: string): number {
   for (const projectDir of parseReconcileRequests(raw)) {
     try {
       const top = runGit(['rev-parse', '--show-toplevel'], { cwd: projectDir, timeoutMs: 5000 })
+      // A git that ran past its 5 s budget has not said this is no repository; dropping the request there lost the branch switch the hook had handed over, so the project goes back for the next cycle.
+      if (top.timedOut === true) {
+        requeue.push(projectDir)
+        logOutcome(dir, projectDir, 'git did not answer in time, continuing next cycle')
+        continue
+      }
       const root = top.exitCode === 0 ? top.stdout.trim() : ''
       if (root === '') {
         logOutcome(dir, projectDir, 'dropped, git names no repository there')
