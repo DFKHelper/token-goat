@@ -175,7 +175,7 @@ function recordReadAsServedOutput(event: HookEvent, deliveredRaw: string | null 
       if (window.limit !== undefined) syntheticCommand += ' --limit ' + window.limit
     }
     const id = storeBashOutputSync(syntheticCommand, served, 0, getCwd(event) ?? process.cwd())
-    recordFileServedOutput(normalized, id)
+    recordFileServedOutput(normalized, id, event.agentId)
   } catch {
     // best-effort; never affect the completed Read
   }
@@ -190,7 +190,7 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
   if (isImagePath(normalized)) return null
   if (isTruncatedReadDelivery(event, respText)) return null
 
-  const ids = getFileServedOutputs(normalized)
+  const ids = getFileServedOutputs(normalized, event.agentId)
   if (ids.length === 0) return null
   const parsed = parseReadDelivery(event, respText)
   if (parsed === null) return null

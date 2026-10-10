@@ -354,6 +354,107 @@ export function containsLineRun(haystack: string, needle: string): boolean {
   return ('\n' + h + '\n').includes('\n' + n + '\n')
 }
 
+/**
+ * Checks if two line-run strings (e.g. "1-120" and "1-120", or parsed ranges) are identical.
+ */
+export function equalLineRuns(a: string, b: string): boolean {
+  const rA = parseLineRange(a)
+  const rB = parseLineRange(b)
+  if (rA !== null && rB !== null) {
+    return rA[0] === rB[0] && rA[1] === rB[1]
+  }
+  return equalContentBytes(a, b)
+}
+
+/**
+ * Compares two delivered content strings for byte/line identity without stripping or trimming internal whitespace or blank lines.
+ * Normalizes only CRLF to LF and a single optional trailing newline.
+ */
+export function equalContentBytes(a: string, b: string): boolean {
+  if (a === b) return true
+  const normA = (a.endsWith('\r\n') ? a.slice(0, -2) : a.endsWith('\n') ? a.slice(0, -1) : a).replace(/\r\n/g, '\n')
+  const normB = (b.endsWith('\r\n') ? b.slice(0, -2) : b.endsWith('\n') ? b.slice(0, -1) : b).replace(/\r\n/g, '\n')
+  return normA === normB
+}
+
+/**
+ * Parses a line range string like "1-120", "lines 5-25", "10..50", "42" into [start, end].
+ */
+export function parseLineRange(s: string): [number, number] | null {
+  const clean = s.trim().replace(/^lines?\s+/i, '').trim()
+  const m = /^(\d+)(?:\s*[-–—:]\s*|\s*\.\.\s*|\s+to\s+)(\d+)$/i.exec(clean)
+  if (m) {
+    const start = parseInt(m[1] as string, 10)
+    const end = parseInt(m[2] as string, 10)
+    if (Number.isFinite(start) && Number.isFinite(end)) {
+      return [start, end]
+    }
+  }
+  const single = /^(\d+)$/.exec(clean)
+  if (single) {
+    const val = parseInt(single[1] as string, 10)
+    if (Number.isFinite(val)) return [val, val]
+  }
+  return null
+}
+
+/**
+ * Explicitly compares two line range coordinates by checking start and end bounds [start, end].
+ */
+export function equalLineRanges(
+  a: [number, number] | string,
+  b: [number, number] | string,
+): boolean {
+  const rangeA = Array.isArray(a) ? a : parseLineRange(a)
+  const rangeB = Array.isArray(b) ? b : parseLineRange(b)
+  if (rangeA === null || rangeB === null) return false
+  return rangeA[0] === rangeB[0] && rangeA[1] === rangeB[1]
+}
+
+/**
+ * Checks whether the most recent slices in `ranges` form a sequential paging chain
+ * (chronologically adjacent slices advancing forward or backward in contiguous or near-contiguous windows).
+ */
+export function isSequentialPagingChain(
+  ranges: ReadonlyArray<readonly [number, number]>,
+  minChainLength: number = 3,
+): boolean {
+  if (ranges.length < minChainLength) return false
+  const slice = ranges.slice(-minChainLength)
+
+  let forwardChain = true
+  for (let i = 1; i < slice.length; i++) {
+    const prev = slice[i - 1]!
+    const curr = slice[i]!
+    const [s1, e1] = prev
+    const [s2] = curr
+    const gap = s2 - e1
+    if (s2 > s1 && gap >= -25 && gap <= 60) {
+      // valid forward step
+    } else {
+      forwardChain = false
+      break
+    }
+  }
+  if (forwardChain) return true
+
+  let backwardChain = true
+  for (let i = 1; i < slice.length; i++) {
+    const prev = slice[i - 1]!
+    const curr = slice[i]!
+    const [s1] = prev
+    const [s2, e2] = curr
+    const gap = s1 - e2
+    if (s2 < s1 && gap >= -25 && gap <= 60) {
+      // valid backward step
+    } else {
+      backwardChain = false
+      break
+    }
+  }
+  return backwardChain
+}
+
 // Bounds how long withFileLock waits behind another holder before giving up (never hangs the caller indefinitely), and how old an unreleased lock file must be before a crashed holder's lock is treated as abandoned and stolen.
 const LOCK_WAIT_MS = 2000
 const LOCK_STALE_MS = 5000

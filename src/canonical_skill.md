@@ -112,11 +112,22 @@ Then answer in order:
 
 Paths go in relative to the working directory; `waste` prints absolute ones, so trim them. Keep excerpts to the few lines carrying the point, and scrub anything identifying.
 
+## Anti-Paging Trap
+
+When encountering sequential read suggestions or denials (such as `Sequential line-range paging detected`), do not attempt to page through a file using adjacent line-range slices (e.g. `1-100`, `101-200`, `201-300`). Paging line-by-line burns tokens, discards structural context, and triggers hook guard denials.
+
+Instead, immediately switch away from line paging to AST/symbol navigation or targeted searches:
+- **AST / Symbol Navigation:** Run `token-goat symbol <name>` or `token-goat read "file::symbol"` to pull the exact function, class, or method definition.
+- **Structural Overview:** Run `token-goat skeleton <file>` or `token-goat outline <file>` to map file symbols, line ranges, and boundaries before reading.
+- **Targeted Grep / Python:** Use targeted ripgrep (`rg <pattern> <file>`) or structural AST queries (`ast-grep`), or targeted python scripts to locate the specific line or definition without blind window sliding.
+- **Document Sections:** Use `token-goat section "file::Heading"` for markdown and documentation rather than paging paragraphs.
+
 ## Anti-Patterns
 
 - **Answering the gate with "probably not" instead of a command.** The gate is a question with a checkable answer, not a disposition. If you cannot name which command would have worked, you have not answered it -- and `token-goat stats` will show the flat counts that prove it.
 - **Treating a batch as one gate.** Five reads issued in one message are five gates, not one. Batching is a latency optimisation; it does not pool the token cost.
 - **Using `symbol` as a grep.** `symbol NAME` resolves a definition. When you want every *use*, that is `refs file::symbol --callers`; when you want a concept rather than a literal string, that is `semantic`. Reaching for the wrong one and then falling back to a wide search spends the cost of both.
+- **Falling into the paging trap.** Paging through a file line-by-line with sequential range reads is an anti-pattern. When warned or denied for sequential paging, switch immediately to AST/symbol navigation (`token-goat symbol`, `token-goat skeleton`, `token-goat outline`) or targeted python/grep.
 - **Slicing a file that was never indexed.** A file created, generated, or left untracked this turn has no index entry, so a slice command returns nothing and reads as "not there" rather than "not indexed". That case is an explicit exemption -- read it directly and move on instead of retrying the slice.
 - **Re-running a command to see output you already have.** Captured output is addressable by ID via `bash-output`/`web-output`/`mcp-output`, and anything cached this session is reachable with `recall`. Re-running is the most expensive way to scroll up.
 - **Writing tool or binary names into an agent's `tools`/`allowed-tools` frontmatter.** Shell binaries and editor programs are invoked *through* the shell tool; they are not tool identifiers. Instruction-file loaders harvest such names into an allowlist and then warn that every one is unknown -- which is why the gate text above deliberately names none.

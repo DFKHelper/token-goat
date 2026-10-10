@@ -51,10 +51,12 @@ export function readRequestedSliceWindow(event: HookEvent): RequestedSliceWindow
     const harness = rawTextReadHarness(event)
     const zeroBased = harness === 'qwen' || harness === 'gemini'
     const offset = rawOffset === undefined ? 1 : zeroBased ? (rawOffset >= 0 ? Math.floor(rawOffset) + 1 : 1) : rawOffset >= 1 ? Math.floor(rawOffset) : 1
+    const limit = rawLimit !== undefined && rawLimit > 0 ? Math.floor(rawLimit) : undefined
+    const isExplicitSlice = offset > 1 || (limit !== undefined && limit > 0)
     return {
       offset,
-      limit: rawLimit !== undefined && rawLimit > 0 ? Math.floor(rawLimit) : undefined,
-      isExplicitSlice: true,
+      limit,
+      isExplicitSlice,
     }
   }
 
@@ -65,14 +67,14 @@ export function readRequestedSliceWindow(event: HookEvent): RequestedSliceWindow
     if (rawRange.length >= 2) {
       const rawEnd = Number(rawRange[1])
       if (rawEnd === -1) {
-        return { offset: startVal, isExplicitSlice: true }
+        return { offset: startVal, isExplicitSlice: startVal > 1 }
       }
       if (Number.isFinite(rawEnd) && rawEnd >= startVal) {
         const lineCount = Math.floor(rawEnd - startVal + 1)
         return { offset: startVal, limit: lineCount, isExplicitSlice: true }
       }
     }
-    return { offset: startVal, isExplicitSlice: true }
+    return { offset: startVal, isExplicitSlice: startVal > 1 }
   }
 
   const startLine =
@@ -88,7 +90,8 @@ export function readRequestedSliceWindow(event: HookEvent): RequestedSliceWindow
     const effectiveStart = startLine !== undefined && startLine >= 1 ? Math.floor(startLine) : 1
     const effectiveLimit =
       endLine !== undefined && endLine >= effectiveStart ? Math.floor(endLine - effectiveStart + 1) : undefined
-    return { offset: effectiveStart, limit: effectiveLimit, isExplicitSlice: true }
+    const isExplicitSlice = effectiveStart > 1 || (effectiveLimit !== undefined && effectiveLimit > 0)
+    return { offset: effectiveStart, limit: effectiveLimit, isExplicitSlice }
   }
 
   return { isExplicitSlice: false }
@@ -195,6 +198,7 @@ interface SliceScan {
   bytes: number
   trustworthy: boolean
   nearSingleLine: boolean
+  spansWholeFile?: boolean
 }
 
 /** Scans the 1-indexed line window [offset, offset + limit) without reading the whole file into memory. */
@@ -219,10 +223,12 @@ function scanRequestedSlice(absPath: string, offset: number, limit: number): Sli
       }
       const bytesRead = fs.readSync(fd, buf, 0, buf.length, null)
       if (bytesRead === 0) {
+        const spansWholeFile = offset <= 1 && lineNumber <= windowEnd
         return {
           bytes: sliceBytes,
           trustworthy: true,
           nearSingleLine: lineNumber < NEAR_SINGLE_LINE_SCAN_THRESHOLD && totalScanned > 2000,
+          spansWholeFile,
         }
       }
       totalScanned += bytesRead
@@ -252,7 +258,7 @@ function scanRequestedSlice(absPath: string, offset: number, limit: number): Sli
 
 /** Outcome of trying to size a Read call's requested offset/limit window. */
 export type RequestedSlice =
-  | { readonly kind: 'bytes'; readonly bytes: number }
+  | { readonly kind: 'bytes'; readonly bytes: number; readonly spansWholeFile?: boolean }
   | { readonly kind: 'unbounded' }
   | { readonly kind: 'nearSingleLine' }
 
@@ -264,13 +270,18 @@ export function estimateRequestedSlice(event: HookEvent, absPath: string): Reque
   const scan = scanRequestedSlice(absPath, effectiveOffset, window.limit)
   if (scan === null) return { kind: 'unbounded' }
   if (scan.nearSingleLine) return { kind: 'nearSingleLine' }
-  if (scan.trustworthy) return { kind: 'bytes', bytes: scan.bytes }
+  if (scan.trustworthy) return { kind: 'bytes', bytes: scan.bytes, spansWholeFile: scan.spansWholeFile === true }
   return { kind: 'unbounded' }
 }
 
-/** Whether a sized offset/limit window is under `thresholdBytes`: a small slice a size gate lets through. Only a window the scan could bound counts, never an unbounded or single-line one. */
-export function isSmallSlice(slice: RequestedSlice, thresholdBytes: number): boolean {
-  return slice.kind === 'bytes' && slice.bytes < thresholdBytes
+/** Whether a sized offset/limit window is under `thresholdBytes`: a small slice a size gate lets through. Only a window the scan could bound counts, never an unbounded or single-line one. Slices exceeding SLICE_ESTIMATE_SCAN_CAP_BYTES or spanning whole files must not get the small-slice bypass. */
+export function isSmallSlice(slice: RequestedSlice, thresholdBytes: number, fileSize?: number): boolean {
+  if (slice.kind !== 'bytes') return false
+  if (slice.bytes >= thresholdBytes) return false
+  if (slice.bytes > SLICE_ESTIMATE_SCAN_CAP_BYTES) return false
+  if (slice.spansWholeFile === true) return false
+  if (fileSize !== undefined && fileSize > 0 && slice.bytes >= fileSize) return false
+  return true
 }
 
 /** Whether a bounded offset/limit Read names only lines this session never served: no whole-file read behind it, and no recorded line range touching the window. Such a read hands over text the model has not seen, so a re-read note or count-based deny about it would be false. */

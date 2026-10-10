@@ -639,13 +639,13 @@ function statIdentity(absPath: string): { size: number; mtimeMs: number } | unde
 }
 
 /** Record that inclusive line range [start, end] of `filePath` was served via a sed line-range read this session. Deduplicates identical ranges and caps retained ranges per file. Also stamps the file's current identity (size + mtimeMs) onto its session entry, so a later repeated read of the same range can be denied even when no content snapshot exists to diff against (see `rangeFileIdentity`). */
-export function recordFileLineRange(filePath: string, start: number, end: number): void {
+export function recordFileLineRange(filePath: string, start: number, end: number, agentId?: string): void {
   const normalized = normalizePath(filePath)
-  const key = foldPath(normalized)
+  const key = fileLedgerKey(normalized, agentId)
   const entryKey = resolveFilesKey(normalized)
   const entry = _files.get(entryKey)
   // The ranges on record were served while the file had the identity stamped beside them. Re-stamping it for this range without dropping them would let the repeated-range deny in hooks_read.ts vouch for text the model was never shown, since every later read of any other window also refreshes the snapshot it diffs against.
-  const identity = dropFileLineRangesIfChanged(normalized)
+  const identity = dropFileLineRangesIfChanged(normalized, agentId)
   const ranges = _fileLineRanges.get(key) ?? []
   if (!ranges.some(([s, e]) => s === start && e === end)) {
     ranges.push([start, end])
@@ -657,25 +657,38 @@ export function recordFileLineRange(filePath: string, start: number, end: number
 }
 
 /** Drop `filePath`'s recorded line ranges when the file no longer has the size and mtime it had when they were recorded, and return its current identity (undefined when it cannot be stat'd). The Bash pre hook calls this before it measures a `sed -n`/`head` read against those ranges, as {@link recordFileLineRange} does before it adds one: measured first, a re-read of lines changed outside the session was told to recall them from earlier output. */
-export function dropFileLineRangesIfChanged(filePath: string): { size: number; mtimeMs: number } | undefined {
+export function dropFileLineRangesIfChanged(filePath: string, agentId?: string): { size: number; mtimeMs: number } | undefined {
   const normalized = normalizePath(filePath)
   const identity = statIdentity(normalized)
-  const prior = _fileLineRangeIdentities.get(foldPath(normalized)) ?? _files.get(resolveFilesKey(normalized))?.rangeFileIdentity
-  if (prior !== undefined && identity !== undefined && (prior.size !== identity.size || prior.mtimeMs !== identity.mtimeMs)) resetFileLineRanges(normalized)
+  const key = fileLedgerKey(normalized, agentId)
+  const prior = _fileLineRangeIdentities.get(key) ?? _files.get(resolveFilesKey(normalized))?.rangeFileIdentity
+  if (prior !== undefined && identity !== undefined && (prior.size !== identity.size || prior.mtimeMs !== identity.mtimeMs)) resetFileLineRanges(normalized, agentId)
   return identity
 }
 
 /** Inclusive line ranges of `filePath` already served via sed this session (empty if none). */
-export function getFileLineRanges(filePath: string): ReadonlyArray<readonly [number, number]> {
-  return _fileLineRanges.get(foldPath(normalizePath(filePath))) ?? []
+export function getFileLineRanges(filePath: string, agentId?: string): ReadonlyArray<readonly [number, number]> {
+  return _fileLineRanges.get(fileLedgerKey(normalizePath(filePath), agentId)) ?? []
 }
 
 /** Drop every recorded line range for `filePath` without marking it edited (unlike {@link recordFileEdit}, which does both): a change discovered on disk that the session itself never made -- an edit outside this session, or a Read/Write by another process -- still invalidates the ranges the exact-overlap dedup trusts, but it must not falsely mark the file as edited by this session for the compaction manifest and resume logic that read `wasEdited`. */
-export function resetFileLineRanges(filePath: string): void {
-  const key = foldPath(normalizePath(filePath))
-  _fileLineRanges.delete(key)
-  _fileLineRangeIdentities.delete(key)
-  _fileLineRangesReset.add(key)
+export function resetFileLineRanges(filePath: string, agentId?: string): void {
+  const normalized = normalizePath(filePath)
+  if (agentId !== undefined && agentId !== '') {
+    const key = fileLedgerKey(normalized, agentId)
+    _fileLineRanges.delete(key)
+    _fileLineRangeIdentities.delete(key)
+    _fileLineRangesReset.add(key)
+  } else {
+    const baseKey = foldPath(normalized)
+    for (const k of Array.from(_fileLineRanges.keys())) {
+      if (k === baseKey || k.endsWith(':' + baseKey)) {
+        _fileLineRanges.delete(k)
+        _fileLineRangeIdentities.delete(k)
+        _fileLineRangesReset.add(k)
+      }
+    }
+  }
 }
 
 /** Cap on retained served-output ids per file. Deliberately small: every id retained here is a blob the containment check may have to read from disk before it can decide, so this is a bound on that read fan-out and not just on memory. Newest ids are kept, since a later body is the more likely container of the next read of the same file. */
@@ -688,19 +701,25 @@ const GENERIC_SERVED_OUTPUT_FOLDED_KEY = foldPath(normalizePath(GENERIC_SERVED_O
 /** Cap on retained served-output ids under the single session-wide generic (non-file) key. Unlike MAX_SERVED_OUTPUTS_PER_FILE, this key is shared by every non-file-read Bash command in the session rather than split one-per-file, so 8 would mean "only the last 8 Bash outputs in the whole session are searchable." Sized larger than the per-file cap for that reason, while still bounding the read-and-index fan-out `elideServedShellLines` pays for every id in the list on each call. */
 export const MAX_GENERIC_SERVED_OUTPUTS = 32
 
-/** Record that the body cached under `outputId` was served to this session as a read of `filePath`. */
-export function recordFileServedOutput(filePath: string, outputId: string): void {
-  const key = foldPath(normalizePath(filePath))
-  const cap = key === GENERIC_SERVED_OUTPUT_FOLDED_KEY ? MAX_GENERIC_SERVED_OUTPUTS : MAX_SERVED_OUTPUTS_PER_FILE
+/** Builds an isolated key for delivered outputs and line ranges per agent/consumer. */
+export function fileLedgerKey(filePath: string, agentId?: string): string {
+  const folded = foldPath(normalizePath(filePath))
+  return agentId !== undefined && agentId !== '' ? `${agentId}:${folded}` : folded
+}
+
+/** Record that the body cached under `outputId` was served to this session as a read of `filePath` (isolated per agent/consumer). */
+export function recordFileServedOutput(filePath: string, outputId: string, agentId?: string): void {
+  const key = fileLedgerKey(filePath, agentId)
+  const cap = key.endsWith(GENERIC_SERVED_OUTPUT_FOLDED_KEY) ? MAX_GENERIC_SERVED_OUTPUTS : MAX_SERVED_OUTPUTS_PER_FILE
   const ids = (_fileServedOutputs.get(key) ?? []).filter((id) => id !== outputId)
   ids.push(outputId)
   if (ids.length > cap) ids.splice(0, ids.length - cap)
   _fileServedOutputs.set(key, ids)
 }
 
-/** Cache ids whose body this session was shown as a read of `filePath`, newest last (empty if none). */
-export function getFileServedOutputs(filePath: string): readonly string[] {
-  return _fileServedOutputs.get(foldPath(normalizePath(filePath))) ?? []
+/** Cache ids whose body this session was shown as a read of `filePath`, newest last (empty if none, isolated per agent/consumer). */
+export function getFileServedOutputs(filePath: string, agentId?: string): readonly string[] {
+  return _fileServedOutputs.get(fileLedgerKey(filePath, agentId)) ?? []
 }
 
 /** Mark `filePath` as having been delivered incompletely this session. Two callers, not one: the post_tool_use Read hook when the tool response carries a `[Truncated:` marker, and the post_tool_use Bash hook for a tail-style dump, whose shown lines cannot be placed against the file because their absolute start depends on a total line count the hook does not have. A later pre_tool_use for the same file may then deny with a skeleton/surgical-read hint rather than serve another full read. May, not will: the deny is gated on `hints.truncated_read_min_lines`, so a small file that merely tripped the token-based marker is still read normally, a redirect there costing more than it saves. Session-artifact files take a separate branch with their own recall message. */

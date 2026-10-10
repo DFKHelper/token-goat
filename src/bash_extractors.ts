@@ -784,8 +784,8 @@ export function leadingLinesHint(
 ): string | null {
   const key = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
   // Lines served before the file changed on disk are not in context any more, so their ranges go before this read is measured against them. Stat'ing the path is gated the way pricing it is: this runs before the command is approved.
-  if (commandPathIsTouchable(hintPath, event)) dropFileLineRangesIfChanged(key)
-  const prior = findRangeOverlap(getFileLineRanges(key), start, end)
+  if (commandPathIsTouchable(hintPath, event)) dropFileLineRangesIfChanged(key, event.agentId)
+  const prior = findRangeOverlap(getFileLineRanges(key, event.agentId), start, end)
   if (prior !== null) return sedOverlapHint(hintPath, prior, start, end)
   if (substitute === null) return null
   return lead + substituteSentence(hintPath, [[start, end]], substitute)

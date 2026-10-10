@@ -201,6 +201,7 @@ async function maybeCollapseIdenticalRead(
   cwd: string | null,
   cacheMinBytes: number,
   persisted = false,
+  agentId?: string,
 ): Promise<HookOutput | null> {
   if (optedOut) return null
   // A failed read's output is an error message, not file content. Never store one as the baseline a later run would be collapsed against, and never collapse one away.
@@ -214,7 +215,7 @@ async function maybeCollapseIdenticalRead(
   //
   // Keyed by file rather than by command, because the measured waste is not one command repeated: it is several spellings of overlapping reads of one file, which hash differently and return different bytes. Newest first, since a later body is the more likely container and stopping at the first hit bounds how many blobs get read. Against the directory the command ran in, which a leading `cd DIR` moves: `cd docs` then a read of `README.md` is a different file from the `README.md` beside it, and two files can hold identical text. `cmd` arrives with that prefix already stripped, so the caller resolves the directory from the raw command (see postBashHandler's runDir).
   const fileKey = resolveIndexPath(filePath, runDir ?? process.cwd())
-  const priorIds = getFileServedOutputs(fileKey)
+  const priorIds = getFileServedOutputs(fileKey, agentId)
   let containerId: string | null = null
   let identical = false
   for (let i = priorIds.length - 1; i >= 0; i--) {
@@ -261,7 +262,7 @@ async function maybeCollapseIdenticalRead(
     const storedId = await storeBashOutput(cmd, rewrite?.text ?? output, exitCode ?? 0, runDir)
     recordBashOutput(sessionKey, storedId, originalBytes)
     // A persisted result reached the model as a 2 KB preview, so none of it counts as served: a later overlapping read withheld against it would point at lines the model never saw, and a recall of a body this size is persisted and previewed all over again.
-    if (!persisted) recordFileServedOutput(fileKey, storedId)
+    if (!persisted) recordFileServedOutput(fileKey, storedId, agentId)
     if (rewrite === null) return null
     // Priced against the delivered size for the same reason the containment pointer below is: the harness truncates a Bash result before the model sees it, so collapsing an oversized body spares at most the delivered slice.
     return emitRewrite(rewrite.text, rewrite.reason, { kind: rewrite.kind, originalBytes: deliveredOutputBytes(originalBytes), ...(rewrite.detail === undefined ? {} : { detail: rewrite.detail }) })
@@ -284,6 +285,7 @@ async function maybeElideServedGenericOutput(
   runDir: string | null,
   cacheMinBytes: number,
   persisted = false,
+  agentId?: string,
 ): Promise<HookOutput | null> {
   if (optedOut) return null
   // A recall is neither withheld nor kept as a match target. Withheld, its notice names the id just recalled, so the text never arrives however often the model follows it; kept, its copy of an earlier command's output carries the recall's name, so a rerun of that command slips past the same-command exclusion below and is collapsed against it.
@@ -297,7 +299,7 @@ async function maybeElideServedGenericOutput(
   if (originalBytes < cacheMinBytes) return null
 
   // Excludes a prior run of this SAME command: an identical rerun of, say, `npm test` is the finding, not redundancy -- collapsing it away deletes the one piece of information a rerun carries, that the result did not change. bash_identical_read_collapse.test.ts pins exactly this for maybeCollapseIdenticalRead's own file-read case; a same-command rerun reaching this generic path must not quietly reintroduce the same collapse through a different door. A stretch shared with a DIFFERENT command's earlier output carries no such signal, so it is still fair game.
-  const priorIds = getFileServedOutputs(GENERIC_SERVED_OUTPUT_KEY).filter((id) => getBashOutput(id)?.command !== cmd)
+  const priorIds = getFileServedOutputs(GENERIC_SERVED_OUTPUT_KEY, agentId).filter((id) => getBashOutput(id)?.command !== cmd)
   let rewrittenText: string | null = null
   if (priorIds.length > 0) {
     const elided = elideServedShellLines(cmd, output, priorIds, true)
@@ -308,7 +310,7 @@ async function maybeElideServedGenericOutput(
     }
   }
   // Nothing to record when the harness persisted the result, for the reason maybeCollapseIdenticalRead gives. Stored under the directory the command ran in, as every other store in this file is, which is where the waste report and a later run's delta look for it.
-  if (!persisted) recordFileServedOutput(GENERIC_SERVED_OUTPUT_KEY, await storeBashOutput(cmd, rewrittenText ?? output, exitCode ?? 0, runDir))
+  if (!persisted) recordFileServedOutput(GENERIC_SERVED_OUTPUT_KEY, await storeBashOutput(cmd, rewrittenText ?? output, exitCode ?? 0, runDir), agentId)
   if (rewrittenText === null) return null
   return emitRewrite(rewrittenText, 'already-served shell output collapsed', { kind: 'bash_compress:generic-served-elision', originalBytes: deliveredOutputBytes(originalBytes) })
 }
@@ -790,7 +792,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const isFileRead = pureFileReadPath(cmd) !== null
     if (isFileRead || (!isMonitoring && !isBuildCommand(cmd) && !isCurlGetCommand(cmd))) {
       // A plain file read reaches here and, before this branch existed, left with nothing: no cache entry, no dedup, no compression, and only a pre-hook advisory the backoff ledger suppresses. Re-reading the same unchanged file therefore cost its full body every time. Collapse the byte-identical repeat first, since it is strictly cheaper than compressing a body the model has already been given verbatim.
-      const identical = await maybeCollapseIdenticalRead(cmd, runDir, optedOut, output, exitCode, cwd, cacheMinBytes, persisted)
+      const identical = await maybeCollapseIdenticalRead(cmd, runDir, optedOut, output, exitCode, cwd, cacheMinBytes, persisted, event.agentId)
       if (identical !== null) return identical
       // Before giving up, a compound/piped/redirect command (which the pre-hook could not wrap for compression) or an unwrapped single command gets its already-captured output compressed here. File reads are excluded: they are served or collapsed via file-reading semantics, not generic compression. Single commands are compressed via pre-hook wrapping (or unwrapped git diff earlier); compound/piped/redirect commands are compressed here.
       if (!isFileRead && (!isUnwrapped || !isCompressibleSingleCommand(cmd))) {
@@ -799,7 +801,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       }
       // A file read stays out of the generic list entirely, including the two-or-more-file compound shape `pureFileReadPath` itself declines to name (a single `filePath` has nowhere to put a second file): it already has its own per-file served store above, and letting a `sed`/`awk` range read's content leak into the session-wide list here is how a second, unrelated file that happens to share text with the first gets a stretch of itself withheld on the strength of a read of a DIFFERENT file -- exactly what the per-file scoping above exists to prevent.
       if (!isFileRead && extractLineRangeReadsCompound(cmd) === null) {
-        const genericElision = await maybeElideServedGenericOutput(cmd, optedOut, output, exitCode, runDir, cacheMinBytes, persisted)
+        const genericElision = await maybeElideServedGenericOutput(cmd, optedOut, output, exitCode, runDir, cacheMinBytes, persisted, event.agentId)
         if (genericElision !== null) return genericElision
       }
       // Nothing compressed this output. Escape bytes can still go, losslessly, whatever the shape.
