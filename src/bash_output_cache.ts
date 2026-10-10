@@ -220,12 +220,12 @@ export function normalizeCommandForCacheKey(cmd: string): string {
 }
 
 /** Return the stable hash for a command: 16-hex-char SHA-256 prefix of the normalized command with cwd scoping. The async {@link commandHash} below is the long-standing public name and stays; this is the same body, exposed synchronously for callers that must finish the write before their (very short-lived) hook process exits. Every fingerprint helper it reaches for is already a `*Sync` one, so nothing is lost by dropping the promise. */
-export function commandHashSync(command: string, cwd: string | null = null): string {
+export function commandHashSync(command: string, cwd: string | null = null, gitState: () => string | null = () => (cwd ? gitStateFingerprintSync(cwd) : null)): string {
   const normalized = normalizeCommandForCacheKey(command)
   let key = cwd ? `${normalizePath(cwd)}\x00${normalized}` : normalized
 
   if (cwd && isGitMutableCommand(command)) {
-    const fp = gitStateFingerprintSync(cwd)
+    const fp = gitState()
     if (fp) key = `${key}\x00git:${fp}`
   }
 
@@ -258,11 +258,16 @@ export function commandHash(command: string, cwd: string | null = null): Promise
 
 /** Blob id for one invocation's output: {@link commandHashSync} folded together with the output bytes. The command hash alone collapses every run of one command in one cwd onto a single id, so a later run with different output overwrote the body an already-emitted `bash-output <id> --full` notice described and that notice silently started resolving to text it never named. Folding the output in gives each distinct body its own id, so an older notice keeps resolving to the body it described; {@link storeBashOutputSync} still leaves the command hash resolvable as a lookup key for callers that only know the command. */
 export function bashOutputIdSync(command: string, output: string, cwd: string | null = null): string {
-  return shortFingerprint(`${commandHashSync(command, cwd)}\x00${output}`)
+  return outputIdFromCommandHash(commandHashSync(command, cwd), output)
+}
+
+/** The id {@link bashOutputIdSync} derives, for a caller that already holds the command hash. */
+function outputIdFromCommandHash(commandKey: string, output: string): string {
+  return shortFingerprint(`${commandKey}\x00${output}`)
 }
 
 /** Compute current git/dir/lockfile/file state fingerprints for `command` run in `cwd`. Stored on a {@link BashOutputEntry} at write time (`storeBashOutput`) and recomputed at cache-recall time ({@link isBashEntryStale}) so a cached entry whose underlying source state has since changed is not served as if it were still fresh. - `git`: git-mutable commands (`git diff`/`git status`), `git push`, and any command whose output depends on the whole working tree -- test runners (the {@link isTestRunnerCommand} the failing-test advisory in hooks_bash_post.ts stores a run under, bare `npm test`/`yarn test`/`pnpm test` included), linters (eslint/ruff), the dev servers and bundlers the monitoring list recalls ({@link isDevServerCommand}), and `npm run <script>` -- since {@link gitStateFingerprintSync} already captures staged/unstaged/untracked changes anywhere in the tree. - `dir`: directory-listing commands, scoped to the listed directory's entry-name listing. - `lockfile`: dependency-list/install/audit/outdated commands, scoped to the resolved lockfile's content. - `file`: `cat <file>`, scoped to that one file's mtime + size. */
-export function computeBashFingerprints(command: string, cwd: string | null): { git?: string; dir?: string; lockfile?: string; file?: string } | undefined {
+export function computeBashFingerprints(command: string, cwd: string | null, gitState: () => string | null = () => (cwd ? gitStateFingerprintSync(cwd) : null)): { git?: string; dir?: string; lockfile?: string; file?: string } | undefined {
   const fingerprints: { git?: string; dir?: string; lockfile?: string; file?: string } = {}
 
   if (
@@ -275,7 +280,7 @@ export function computeBashFingerprints(command: string, cwd: string | null): { 
       isDevServerCommand(command) ||
       isNpmRunScriptCommand(command))
   ) {
-    const fp = gitStateFingerprintSync(cwd)
+    const fp = gitState()
     if (fp) fingerprints.git = fp
   }
 
@@ -400,9 +405,12 @@ export function summarizeOutputDelta(oldOutput: string, newOutput: string): stri
 
 /** Store a command's `output` and `exitCode`, returning its id. The id is {@link bashOutputIdSync}, which folds the output into the command hash, so re-running the same command with different output stores a new entry beside the old one rather than overwriting it -- a recall pointer already handed to the model keeps resolving to the body it described. A redirect blob at the plain {@link commandHash} is refreshed to point at the newest entry, so callers that know only the command (cross-run delta folding, `token-goat waste`) still resolve the latest through {@link getBashOutput}. */
 export function storeBashOutputSync(command: string, output: string, exitCode: number, cwd: string | null = null): string {
-  const id = bashOutputIdSync(command, output, cwd)
-  const commandKey = commandHashSync(command, cwd)
-  const fingerprints = computeBashFingerprints(command, cwd)
+  // The git state costs two git spawns and is the same for the command hash and the fingerprints below, so it is read once, and only if one of them asks for it.
+  let gitState: { value: string | null } | null = null
+  const gitStateOnce = (): string | null => (gitState ??= { value: cwd ? gitStateFingerprintSync(cwd) : null }).value
+  const commandKey = commandHashSync(command, cwd, gitStateOnce)
+  const id = outputIdFromCommandHash(commandKey, output)
+  const fingerprints = computeBashFingerprints(command, cwd, gitStateOnce)
   // Redact once and reuse everywhere -- storeBlob() applies its own defense-in-depth redaction pass to the JSON it writes to disk, but the in-memory _byId cache and the recall index write below both bypassed that pass entirely (served/indexed raw output), leaking secrets via same-process reads and `token-goat recall`/FTS search. Redacting here keeps disk, in-memory, and the recall index all consistent.
   const redactedOutput = redactSecrets(output).text
   // The command line itself can carry a secret too (e.g. `curl -H "Authorization: Bearer sk-ant-..."`), not just its output. storeBlob()'s whole-JSON redaction pass would strip it from the on-disk blob's `command` field, but the in-memory `entry.command` below and the recall index write both bypassed that pass entirely for the command text specifically -- only the output half of this same fix was ever applied. Redacting here closes that gap the same way the output redaction above already did.

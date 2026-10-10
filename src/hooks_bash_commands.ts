@@ -7,7 +7,7 @@ import * as path from 'node:path'
 import { displaySafeText, normalizePath, resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { runGit } from './util.js'
-import { enqueueDirtyPathSafe } from './hooks_index.js'
+import { enqueueDirtyPathSafe, requestReconcileSafe } from './hooks_index.js'
 import {
   detectFromCommand,
   filterByName,
@@ -370,6 +370,8 @@ function expandGitPathspecs(specs: string[], gitDir: string): string[] {
 /** Every path git currently reports as changed or untracked, absolute. The fallback for rewrites whose file set is not on the command line (stash apply/pop, patch application, formatter runs). */
 function workingTreeStatusPaths(gitDir: string): string[] {
   const status = runGit(['status', '--porcelain'], { cwd: gitDir, timeoutMs: 5000 })
+  // A status git never answered (spawn failure or the 5 s timeout, exit -1) names no files, which would leave the index on the pre-rewrite content with nothing in any log; the worker can sweep the project without the hook's time budget. Any other nonzero exit is git saying this is not a repository, which has nothing to reconcile.
+  if (status.exitCode === -1) requestReconcileSafe(gitDir)
   if (status.exitCode !== 0) return []
   const repoRoot = gitRepoRoot(gitDir)
   const out: string[] = []
