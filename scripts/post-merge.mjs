@@ -124,6 +124,7 @@ function main() {
   runStep('Refreshing Claude Code hooks & shims', nodeCmd, [bundlePath, 'install'])
   runStep('Refreshing Copilot CLI user hooks & shims', nodeCmd, [bundlePath, 'install', '--copilot'])
   runStep('Refreshing Copilot CLI project hooks & shims', nodeCmd, [bundlePath, 'install', '--copilot', '--local'])
+  runStep('Refreshing Codex CLI hooks & shims', nodeCmd, [bundlePath, 'install', '--codex'])
   runStep('Running doctor repairs across configured harnesses', nodeCmd, [bundlePath, 'doctor', '--repair'])
 
   // 6. Prune and index
