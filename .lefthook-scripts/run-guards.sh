@@ -15,7 +15,9 @@
 # does the same thing for the pre-push tier.
 set -euo pipefail
 
-LOG="$(mktemp "${TMPDIR:-/tmp}/token-goat-guards.XXXXXX")"
+TMP_BASE="${TMPDIR:-/tmp}"
+[[ "$TMP_BASE" == "/tmp" && ! -d "/tmp" ]] && mkdir -p /tmp 2>/dev/null || true
+LOG="$(mktemp "${TMP_BASE}/token-goat-guards.XXXXXX")"
 
 if npm run test:guards >"$LOG" 2>&1; then
   rm -f -- "$LOG"
