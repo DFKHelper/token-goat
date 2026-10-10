@@ -68,24 +68,31 @@ interface CodexConfig {
 /** Thrown by {@link installCodex}/{@link uninstallCodex} when `config.toml` exists but cannot be read or isn't parseable TOML. A caller about to write the file must let this propagate rather than silently proceeding as if the file were empty -- otherwise a single TOML typo in the user's config gets clobbered on write, or the hook shim and the file's backups are deleted while it still names them. */
 export class CodexConfigParseError extends Error {}
 
-/** Absolute path to `~/.codex/config.toml`. */
-export function codexConfigPath(): string {
-  return path.join(os.homedir(), '.codex', 'config.toml')
+/** Codex CLI's config directory: `$CODEX_HOME` when set and non-empty, else `~/.codex`. Codex itself resolves it the same way (`find_codex_home` in codex-rs/utils/home-dir/src/lib.rs, https://github.com/openai/codex), so an install that ignored the variable would write a valid config to a directory Codex never reads and every hook would silently never fire. Only an empty value counts as unset, as in Codex. */
+export function codexHomeDir(): string {
+  const override = process.env['CODEX_HOME']
+  if (override !== undefined && override !== '') return path.resolve(override)
+  return path.join(os.homedir(), '.codex')
 }
 
-/** Absolute path to `~/.codex/AGENTS.md`. */
+/** Absolute path to `config.toml` in the Codex home. */
+export function codexConfigPath(): string {
+  return path.join(codexHomeDir(), 'config.toml')
+}
+
+/** Absolute path to `AGENTS.md` in the Codex home. */
 export function codexAgentsPath(): string {
-  return path.join(os.homedir(), '.codex', 'AGENTS.md')
+  return path.join(codexHomeDir(), 'AGENTS.md')
 }
 
 /** Absolute path the Codex hook shim script is installed to. */
 export function codexHookScriptPath(): string {
-  return path.join(os.homedir(), '.codex', 'hooks', SHIM_FILE)
+  return path.join(codexHomeDir(), 'hooks', SHIM_FILE)
 }
 
 /** The shim's pre-`.cjs` path, now a forwarder to it (see {@link LEGACY_SHIM_FILE}). */
 function codexLegacyHookScriptPath(): string {
-  return path.join(os.homedir(), '.codex', 'hooks', LEGACY_SHIM_FILE)
+  return path.join(codexHomeDir(), 'hooks', LEGACY_SHIM_FILE)
 }
 
 /** Parse `config.toml` at `p`. A missing file yields `{}` -- the legitimate "nothing installed yet" case. When `opts.strict` is true, a file that *exists* but cannot be read or fails to parse throws {@link CodexConfigParseError} instead of returning `{}`, so a caller about to overwrite or strip the file can tell "genuinely empty" apart from "corrupt, do not touch"; `opts.command` names the command the message tells the user to run again. Non-strict (read-only) callers keep the lenient `{}` fallback. */
