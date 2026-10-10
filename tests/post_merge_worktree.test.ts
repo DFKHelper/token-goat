@@ -4,6 +4,8 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
+import { codexHookScriptPath } from '../src/bridges/codex_install.js'
+import { copilotCliScriptPath } from '../src/bridges/copilot_cli_install.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
 import { tempDir } from './helpers/temp-config.js'
 
@@ -24,12 +26,27 @@ function stageCheckout(root: string): void {
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'stub', private: true, scripts: { build: 'node build.mjs' } }))
 }
 
-function runPostMerge(root: string, log: string) {
+/** Fresh home, CODEX_HOME and COPILOT_HOME, all apart from each other and from the real ones, so the script's host check never sees a developer's own Codex or Copilot install. */
+function isolatedHosts(): { home: string; codexHome: string; copilotHome: string } {
+  const base = tempDir()
+  return { home: path.join(base, 'home'), codexHome: path.join(base, 'codex'), copilotHome: path.join(base, 'copilot') }
+}
+
+function runPostMerge(root: string, log: string, hosts = isolatedHosts()) {
   return spawnSync(process.execPath, [path.join(root, 'scripts', 'post-merge.mjs')], {
     cwd: root,
     encoding: 'utf8',
-    env: { ...process.env, TG_POST_MERGE_LOG: log },
+    env: { ...process.env, TG_POST_MERGE_LOG: log, HOME: hosts.home, USERPROFILE: hosts.home, CODEX_HOME: hosts.codexHome, COPILOT_HOME: hosts.copilotHome },
   })
+}
+
+function writeShim(shimPath: string): void {
+  fs.mkdirSync(path.dirname(shimPath), { recursive: true })
+  fs.writeFileSync(shimPath, '// shim')
+}
+
+function loggedArgs(log: string): string[] {
+  return fs.readFileSync(log, 'utf8').split(/\r?\n/).filter(Boolean)
 }
 
 describe('post-merge sync in a linked worktree', () => {
@@ -52,17 +69,67 @@ describe('post-merge sync in a linked worktree', () => {
     const fromMain = runPostMerge(main, mainLog)
     expect(fromMain.status, fromMain.stderr).toBe(0)
     expect(fromMain.stdout).not.toContain('Linked worktree')
-    expect(fs.readFileSync(mainLog, 'utf8').split(/\r?\n/).filter(Boolean)).toEqual([
-      'hook-server stop',
-      'worker stop',
-      'worker start',
-      'install',
-      'install --copilot',
-      'install --copilot --local',
-      'install --codex',
-      'doctor --repair',
-      'project prune',
-      'index',
-    ])
+    expect(loggedArgs(mainLog)).toEqual(['hook-server stop', 'worker stop', 'worker start', 'install', 'doctor --repair', 'project prune', 'index'])
+  })
+})
+
+describe('post-merge refresh of the Codex and Copilot hosts', () => {
+  const BASE = ['hook-server stop', 'worker stop', 'worker start', 'install']
+  const TAIL = ['doctor --repair', 'project prune', 'index']
+
+  /** Runs the script in a main checkout after `seed` placed shims where the product's own path functions say they belong, with CODEX_HOME and COPILOT_HOME set to the isolated directories. */
+  function run(seed: (root: string) => void): string[] {
+    const main = gitRepoWithCommit()
+    stageCheckout(main)
+    const hosts = isolatedHosts()
+    const saved = { codex: process.env['CODEX_HOME'], copilot: process.env['COPILOT_HOME'] }
+    process.env['CODEX_HOME'] = hosts.codexHome
+    process.env['COPILOT_HOME'] = hosts.copilotHome
+    try {
+      seed(main)
+    } finally {
+      for (const [key, value] of [['CODEX_HOME', saved.codex], ['COPILOT_HOME', saved.copilot]] as const) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+    const log = path.join(tempDir(), 'run.log')
+    const res = runPostMerge(main, log, hosts)
+    expect(res.status, res.stderr).toBe(0)
+    return loggedArgs(log)
+  }
+
+  it('skips Codex and Copilot, creating nothing, when no host has a token-goat shim', { timeout: 120_000 }, () => {
+    const hosts = isolatedHosts()
+    const main = gitRepoWithCommit()
+    stageCheckout(main)
+    const log = path.join(tempDir(), 'none.log')
+    const res = runPostMerge(main, log, hosts)
+    expect(res.status, res.stderr).toBe(0)
+    expect(loggedArgs(log)).toEqual([...BASE, ...TAIL])
+    expect(res.stdout).not.toContain('Codex')
+    expect(res.stdout).not.toContain('Copilot')
+    for (const dir of [hosts.home, hosts.codexHome, hosts.copilotHome]) expect(fs.existsSync(dir), dir).toBe(false)
+  })
+
+  it('refreshes Codex only, at CODEX_HOME rather than ~/.codex, when its shim is there', { timeout: 120_000 }, () => {
+    expect(run(() => writeShim(codexHookScriptPath()))).toEqual([...BASE, 'install --codex', ...TAIL])
+  })
+
+  it('refreshes Copilot user scope only, at COPILOT_HOME, when its shim is there', { timeout: 120_000 }, () => {
+    expect(run(() => writeShim(copilotCliScriptPath()))).toEqual([...BASE, 'install --copilot', ...TAIL])
+  })
+
+  it('refreshes Copilot project scope only when the checkout carries the shim', { timeout: 120_000 }, () => {
+    expect(run((root) => writeShim(copilotCliScriptPath({ local: true, projectRoot: root })))).toEqual([...BASE, 'install --copilot --local', ...TAIL])
+  })
+
+  it('refreshes every host that has a shim, in the order the install steps are listed', { timeout: 120_000 }, () => {
+    const args = run((root) => {
+      writeShim(codexHookScriptPath())
+      writeShim(copilotCliScriptPath())
+      writeShim(copilotCliScriptPath({ local: true, projectRoot: root }))
+    })
+    expect(args).toEqual([...BASE, 'install --copilot', 'install --copilot --local', 'install --codex', ...TAIL])
   })
 })

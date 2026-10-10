@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-/** `post-merge` / `post-rewrite` hook: automatically synchronize token-goat after git pull/merge/rebase. Automatically: 1. Checks if package-lock.json changed; if so, runs `npm install`. 2. Rebuilds the bundle (`npm run build`). 3. Stops resident hook-servers so fresh code is loaded on the next hook invocation. 4. Restarts the worker daemon. 5. Refreshes shims and instructions across Claude Code and Copilot CLI harnesses. 6. Triggers index update for any files needing re-parsing. In a linked worktree (`git worktree add`) it stops after step 2: steps 3-6 act on the user's real home, so running them from a scratch checkout would point every installed hook at that checkout's build and start a worker from it. */
+/** `post-merge` / `post-rewrite` hook: automatically synchronize token-goat after git pull/merge/rebase. Automatically: 1. Checks if package-lock.json changed; if so, runs `npm install`. 2. Rebuilds the bundle (`npm run build`). 3. Stops resident hook-servers so fresh code is loaded on the next hook invocation. 4. Restarts the worker daemon. 5. Refreshes shims and instructions for Claude Code, and for Copilot CLI and Codex CLI only where token-goat already installed its shim there. 6. Triggers index update for any files needing re-parsing. In a linked worktree (`git worktree add`) it stops after step 2: steps 3-6 act on the user's real home, so running them from a scratch checkout would point every installed hook at that checkout's build and start a worker from it. */
 
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs'
+import os from 'node:os'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const isWin = process.platform === 'win32'
@@ -36,6 +37,23 @@ function runStep(label, cmd, args, options = {}) {
     process.stderr.write(`${res.stderr}\n`)
   }
   return false
+}
+
+/** True when a token-goat hook shim (current `.cjs` or the older `.js`) sits in `hooksDir`. Only token-goat's own install writes it, so it marks a host token-goat was already wired into; a machine without that host, or one the maintainer never opted in, gets no refresh and no new files. */
+function hasShim(hooksDir) {
+  return ['token-goat-shim.cjs', 'token-goat-shim.js'].some((name) => fs.existsSync(path.join(hooksDir, name)))
+}
+
+/** `$CODEX_HOME` when non-empty, else `~/.codex`: `codexHomeDir` in src/bridges/codex_install.ts, which Codex resolves the same way. */
+function codexHooksDir() {
+  const override = process.env.CODEX_HOME
+  return path.join(override ? path.resolve(override) : path.join(os.homedir(), '.codex'), 'hooks')
+}
+
+/** `$COPILOT_HOME` when not blank, else `~/.copilot`: `copilotCliUserRoot` in src/copilot_home.ts. */
+function copilotUserHooksDir() {
+  const override = process.env.COPILOT_HOME
+  return path.join(override && override.trim() !== '' ? path.resolve(override) : path.join(os.homedir(), '.copilot'), 'hooks')
 }
 
 function gitChangedFiles() {
@@ -122,9 +140,16 @@ function main() {
 
   // 5. Refresh shims and instructions across harnesses
   runStep('Refreshing Claude Code hooks & shims', nodeCmd, [bundlePath, 'install'])
-  runStep('Refreshing Copilot CLI user hooks & shims', nodeCmd, [bundlePath, 'install', '--copilot'])
-  runStep('Refreshing Copilot CLI project hooks & shims', nodeCmd, [bundlePath, 'install', '--copilot', '--local'])
-  runStep('Refreshing Codex CLI hooks & shims', nodeCmd, [bundlePath, 'install', '--codex'])
+  // The other hosts are refreshed only where token-goat's shim already is: `install --codex` or `--copilot` on a machine without that host would create its config directory and wire hooks into a tool the user does not have.
+  if (hasShim(copilotUserHooksDir())) {
+    runStep('Refreshing Copilot CLI user hooks & shims', nodeCmd, [bundlePath, 'install', '--copilot'])
+  }
+  if (hasShim(path.join(projectRoot, '.github', 'hooks'))) {
+    runStep('Refreshing Copilot CLI project hooks & shims', nodeCmd, [bundlePath, 'install', '--copilot', '--local'])
+  }
+  if (hasShim(codexHooksDir())) {
+    runStep('Refreshing Codex CLI hooks & shims', nodeCmd, [bundlePath, 'install', '--codex'])
+  }
   runStep('Running doctor repairs across configured harnesses', nodeCmd, [bundlePath, 'doctor', '--repair'])
 
   // 6. Prune and index
