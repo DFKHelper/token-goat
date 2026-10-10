@@ -103,9 +103,15 @@ function cli(sb: Sandbox, args: string[], env: Env = {}, cwd: string = sb.home):
   return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
 }
 
-function install(sb: Sandbox, flags: string[], env: Env = {}, cwd?: string): void {
-  const res = cli(sb, ['install', ...flags], env, cwd)
+/** The notice install prints when it wrote the Node form because the native client's copy was held or its self-test got no answer (FORMAT-DERIVED from src/native_hook.ts: the emitErr in nativeHookBinary, COPY_FAILED, nativeSelftest, TRANSIENT_WHY): the two causes a starved machine produces and a second run does not repeat. A binary that ran and failed prints a different reason and is not matched. */
+const TRANSIENT_NATIVE_FALLBACK = /wrote the Node form of the hooks, not the native hook client, because (its copy could not be put in place|its self-test failed: no answer within)/
+
+/** Install, and return what install printed on stderr. Install already tries the copy and the self-test twice in one process; on a machine starved enough that both attempts time out (the self-test's 5 s budget is production's and stays), the notice it prints says to install again, so this does, up to twice more, and only while that notice is the reason. Any other outcome, including the same notice after the last try, is left for the caller's assertions to fail on. */
+function install(sb: Sandbox, flags: string[], env: Env = {}, cwd?: string): string {
+  let res = cli(sb, ['install', ...flags], env, cwd)
+  for (let again = 0; again < 2 && res.status === 0 && TRANSIENT_NATIVE_FALLBACK.test(res.stderr); again++) res = cli(sb, ['install', ...flags], env, cwd)
   expect(res.status, `install ${flags.join(' ')}: ${res.stderr}${res.stdout}`).toBe(0)
+  return res.stderr
 }
 
 async function startServer(sb: Sandbox): Promise<void> {
@@ -403,9 +409,9 @@ describe.runIf(NATIVE).each(['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli
   }, 120_000)
 
   it('writes the native form for every event and each way the harness runs it is served, matches the Node command, and falls back to it', async () => {
-    install(sb, INSTALL_FLAG[harness], harness === 'claudecode' ? { TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS: '1' } : {})
+    const printed = install(sb, INSTALL_FLAG[harness], harness === 'claudecode' ? { TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS: '1' } : {})
     const f = forms(CONFIG_FILE[harness](sb), SPLIT[harness])
-    expect(f.native).toBeGreaterThan(0)
+    expect(f.native, `install printed: ${printed}`).toBeGreaterThan(0)
     expect(f.node).toBe(0)
     const got = await driveHarness(sb, harness, 'exec')
     expected = { native: expected.native + got.native, fallback: expected.fallback + got.fallback }

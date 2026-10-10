@@ -33,7 +33,7 @@ vi.mock('node:child_process', async (importOriginal) => {
   }
 })
 
-import { loadPermissionSnapshot, readHintCrossesRule, resetPermissionSourceCache } from '../src/rewrite_permission.js'
+import { loadHiddenRuleCheck, loadPermissionSnapshot, permissionNeutralRewrite, readHintCrossesRule, resetPermissionSourceCache, type RewriteRequest } from '../src/rewrite_permission.js'
 
 const FILTER = Symbol.for('token-goat.permission-source-filter')
 const slot = globalThis as unknown as Record<symbol, unknown>
@@ -166,6 +166,24 @@ describe('the Windows registry policy is always read live', () => {
       expect(readHintCrossesRule('claudecode', root, secret()), JSON.stringify(body)).toBe(true)
       expect(reg.calls.length, 'the live read was skipped').toBeGreaterThan(0)
     }
+  })
+
+  // HAND-DERIVED from the threat: a file the same user can write is a file the agent can write, so a planted policy entry (a deny rule, stamped now so a 30-second memory would have believed it) must not decide what the machine registry holds. The registry is asked every time and nothing of the answer is stored. The reg answers are mocked, as the real reg.exe fails closed after 5 s and a loaded machine crosses that.
+  it('a planted policy memory is not read by a rewrite, and no registry answer is stored', async () => {
+    await loadHiddenRuleCheck()
+    const dir = path.join(home, 'policy_cache')
+    fs.mkdirSync(dir, { recursive: true })
+    for (const key of [K_L, K_C]) {
+      fs.writeFileSync(path.join(dir, `${key.replace(/\W+/g, '_')}.json`), JSON.stringify({ key, at: Date.now(), settings: { permissions: { deny: ['Bash(curl:*)'] } } }))
+    }
+    const before = fs.readdirSync(dir).sort()
+    const cmd = "token-goat compress -f generic --timeout 600 -c 'curl https://example.com'"
+    const req: RewriteRequest = { kind: 'shell-wrap', harness: 'claudecode', mode: 'default', cwd: root, original: 'curl https://example.com', rewritten: cmd }
+    live({ [K_L]: absent, [K_C]: absent })
+    expect(permissionNeutralRewrite({ command: cmd }, req)).not.toBeNull()
+    expect(keysAsked()).toEqual([K_L, K_C])
+    expect(fs.readdirSync(dir).sort()).toEqual(before)
+    expect(fs.readdirSync(home).sort()).toEqual(['policy_cache'])
   })
 
   it('a lookup that times out, fails to start or returns something unreadable holds the hint back', () => {

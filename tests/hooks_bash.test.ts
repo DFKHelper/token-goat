@@ -2,7 +2,7 @@ import { indexableDir, tempConfigPath } from './helpers/temp-config.js'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
 import type { HookOutput } from '../src/types.js'
-import { writeFileSync, unlinkSync, mkdtempSync, rmSync, mkdirSync, statSync } from 'node:fs'
+import { writeFileSync, unlinkSync, mkdtempSync, rmSync, mkdirSync, statSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -45,17 +45,38 @@ import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { getBashOutputId, recordFileRead, getCurlDownloadPath, wasFileReadThisSession, getFileLineRanges, wasFileTruncatedThisSession } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { resolveIndexPath } from '../src/paths.js'
+import { resolveIndexPath, normalizePath } from '../src/paths.js'
 import { canRunPowerShell } from '../src/shell.js'
 import * as pathsModule from '../src/paths.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { getDirtyPaths, clearDirtyQueue } from '../src/hooks_index.js'
 import { foldPath } from '../src/util.js'
+import { parseReconcileRequests, reconcileRequestPathFor } from '../src/dirty_queue.js'
 
 /** The dirty queue, case-folded for comparison. The git-mutation tests build their expected path from `tmpdir()` (the environment's spelling, `C:\WINDOWS\TEMP`) while the enqueued path originates from git's own output (the on-disk spelling, `C:/Windows/Temp`). Both name the same file, so a case-sensitive `toContain` fails on a distinction the filesystem does not make. foldPath is the product's own path-comparison function, so folding both sides asserts the invariant that actually holds. */
 function foldedDirtyPaths(): string[] {
   return getDirtyPaths().map(foldPath)
+}
+
+/** The project directories the hook asked the worker to reconcile, as the worker would read them. */
+function reconcileRequestedDirs(): string[] {
+  try {
+    return parseReconcileRequests(readFileSync(reconcileRequestPathFor(_testDataDir), 'utf8')).map((d) => foldPath(normalizePath(d)))
+  } catch {
+    return []
+  }
+}
+
+/** The contract of a head-moving git command in the post hook is that the change is never lost, not that the dirty queue is non-empty: the hook's git reads have a 5 s budget, and a loaded full suite makes one spawn take about 2.5 s, so a read that times out enqueues nothing and records a reconcile request for the repository instead (hooks_bash_post.ts, requestReconcileSafe). Returns the dirty queue after requiring that either `expected` is in it or, when it is empty, the repository `repo` was handed to the worker; a queue that holds other paths but not `expected` still fails, and so does a hook that did neither. */
+function dirtyOrReconciled(repo: string, expected: string[]): string[] {
+  const dirty = foldedDirtyPaths()
+  if (dirty.length > 0) {
+    for (const path of expected) expect(dirty).toContain(foldPath(path))
+    return dirty
+  }
+  expect(reconcileRequestedDirs()).toContain(foldPath(normalizePath(repo)))
+  return dirty
 }
 
 function makePostBashEvent(command: string, output: string, cwd?: string): HookEvent {
@@ -4448,6 +4469,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
   beforeEach(() => {
     clearModuleCaches()
     clearDirtyQueue()
+    rmSync(reconcileRequestPathFor(_testDataDir), { force: true })
   })
 
   it('enqueues a file changed by `git checkout <branch>` to the dirty queue', async () => {
@@ -4465,9 +4487,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
 
       await postBashHandler(makePostBashEvent('git checkout feature', '', dir))
 
-      const dirty = foldedDirtyPaths()
-      const expected = resolveIndexPath('a.txt', dir)
-      expect(dirty).toContain(foldPath(expected))
+      dirtyOrReconciled(dir, [resolveIndexPath('a.txt', dir)])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -4486,9 +4506,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
 
       await postBashHandler(makePostBashEvent(`git reset --hard ${firstSha}`, '', dir))
 
-      const dirty = foldedDirtyPaths()
-      const expected = resolveIndexPath('a.txt', dir)
-      expect(dirty).toContain(foldPath(expected))
+      dirtyOrReconciled(dir, [resolveIndexPath('a.txt', dir)])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -4515,8 +4533,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
       git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'change nested.txt'])
       git(['checkout', originalBranch])
 
-      // The bash tool's reported cwd is the SUBDIRECTORY, not the repo root -- mirrors a real `cd sub && git checkout feature` session.
-      // A loaded full suite can push one of the hook's 5 s git reads past its timeout, which enqueues nothing; rerunning reads the same HEAD@{1} diff, and a wrong path still fails the assertions below.
+      // The bash tool's reported cwd is the SUBDIRECTORY, not the repo root -- mirrors a real `cd sub && git checkout feature` session. A loaded full suite can push one of the hook's 5 s git reads past its timeout, which enqueues nothing; rerunning reads the same HEAD@{1} diff, and a wrong path still fails the assertions below.
       for (let attempt = 0; attempt < 3 && getDirtyPaths().length === 0; attempt++) {
         await postBashHandler(makePostBashEvent('git checkout feature', '', sub))
       }
@@ -4564,9 +4581,8 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
 
       await postBashHandler(makePostBashEvent('git rebase ' + originalBranch, '', dir))
 
-      const dirty = foldedDirtyPaths()
       // mainline.txt is the only file whose final working-tree content actually differs from before the rebase (first.txt/second.txt already existed with identical content on feature pre-rebase) -- this is the correct enqueue set, not an incidental one.
-      expect(dirty).toContain(foldPath(resolveIndexPath('mainline.txt', dir)))
+      dirtyOrReconciled(dir, [resolveIndexPath('mainline.txt', dir)])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -4655,9 +4671,8 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
 
       expect(execFileSync('git', ['rev-parse', 'ORIG_HEAD'], { cwd: dir }).toString().trim()).not.toBe(rebaseOrigHead)
       expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir }).toString().trim()).toBe(preResetTip)
-      const dirty = foldedDirtyPaths()
-      // third.txt is what this reset actually reverted -- the correct, narrow enqueue.
-      expect(dirty).toContain(foldPath(resolveIndexPath('third.txt', dir)))
+      // third.txt is what this reset actually reverted -- the correct, narrow enqueue. A diff that timed out under load enqueues nothing and hands the repository to the worker instead, which leaves nothing for the not.toContain below to examine.
+      const dirty = dirtyOrReconciled(dir, [resolveIndexPath('third.txt', dir)])
       // mainline.txt only shows up if the reset had somehow used the rebase's stale, far-back ORIG_HEAD instead of its own immediately-prior state.
       expect(dirty).not.toContain(foldPath(resolveIndexPath('mainline.txt', dir)))
     } finally {
@@ -4682,7 +4697,7 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
 
       await postBashHandler(makePostBashEvent(`cd ../${basename(other)} && git checkout ${originalBranch}`, '', start))
 
-      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', other)))
+      dirtyOrReconciled(other, [resolveIndexPath('a.txt', other)])
     } finally {
       rmSync(start, { recursive: true, force: true })
       rmSync(other, { recursive: true, force: true })

@@ -437,28 +437,6 @@ describe('loadPermissionSnapshot and permissionNeutralRewrite read the real sett
     expect(permissionNeutralRewrite({ command: wrap('curl https://example.com') }, curl(project))).toBeNull()
   })
 
-  // HAND-DERIVED from the threat: a file the same user can write is a file the agent can write, so a planted policy entry (a deny rule here, stamped now so the old 30-second memory would have believed it) must not decide what the machine registry holds. The registry is asked every time, so the planted file changes nothing, and nothing of the answer is stored beside it.
-  it.runIf(process.platform === 'win32')('a planted policy memory is not read, and no registry answer is stored', async () => {
-    await loadHiddenRuleCheck()
-    const slot = Symbol.for('token-goat.permission-source-filter')
-    const globals = globalThis as unknown as Record<symbol, unknown>
-    const previous = globals[slot]
-    globals[slot] = (source: string): boolean => source.startsWith('registry:') || (typeof previous !== 'function' || (previous as (s: string) => unknown)(source) === true)
-    const dir = path.join(process.env['TOKEN_GOAT_HOME'] as string, 'policy_cache')
-    try {
-      fs.mkdirSync(dir, { recursive: true })
-      for (const key of ['HKLM\\SOFTWARE\\Policies\\ClaudeCode', 'HKCU\\SOFTWARE\\Policies\\ClaudeCode']) {
-        writeJson(path.join(dir, `${key.replace(/\W+/g, '_')}.json`), { key, at: Date.now(), settings: { permissions: { deny: ['Bash(curl:*)'] } } })
-      }
-      const before = fs.readdirSync(dir).sort()
-      expect(permissionNeutralRewrite({ command: wrap('curl https://example.com') }, curl(project))).not.toBeNull()
-      expect(fs.readdirSync(dir).sort()).toEqual(before)
-    } finally {
-      globals[slot] = previous
-      fs.rmSync(dir, { recursive: true, force: true })
-    }
-  }, 60_000)
-
   it('a project deny rule applies from a subdirectory the session moved into', () => {
     writeJson(path.join(project, '.claude', 'settings.json'), { permissions: { deny: ['Bash(curl:*)'] } })
     expect(permissionNeutralRewrite({ command: wrap('curl https://example.com') }, curl(path.join(project, 'sub')))).toBeNull()

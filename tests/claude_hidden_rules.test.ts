@@ -294,13 +294,15 @@ describe('hiddenRuleSource: rule files', () => {
 
   it('inside a git checkout a nested skill directory counts unless git ignores it, as Claude Code skips ignored ones', () => {
     const b = box('nested-git')
+    // Files only: this test is about which skill folders the scan reads, and the claude process's command line, which each check would otherwise read through a PowerShell spawn of 1.5 to 3 s on a quiet machine, adds nothing to that answer.
+    const files = { filesOnly: true }
     expect(runGit(['init', '-q'], { cwd: b.project, timeoutMs: 15_000 }).exitCode).toBe(0)
     write(path.join(b.project, '.gitignore'), 'vendor/\n')
     write(path.join(b.project, 'vendor', '.claude', 'skills', 's', 'SKILL.md'), '---\ndisallowed-tools: Bash(curl *)\n---\n')
-    expect(check(b)).toBeNull()
+    expect(check(b, {}, files)).toBeNull()
     write(path.join(b.project, 'pkg', '.claude', 'skills', 's', 'SKILL.md'), '---\ndisallowed-tools: Bash(curl *)\n---\n')
     resetHiddenRuleCache()
-    expect(check(b)).toContain(path.join('pkg', '.claude', 'skills', 's', 'SKILL.md'))
+    expect(check(b, {}, files)).toContain(path.join('pkg', '.claude', 'skills', 's', 'SKILL.md'))
   }, 30_000)
 
   // HAND-DERIVED: git lists a tracked file in its index whether or not it is still on disk; Claude Code reads skills from disk, so a gone file adds no rule. A tracked path replaced by a directory cannot be opened as a file (EISDIR, not ENOENT) and stays hidden; one whose parent became a file is gone too, which the OS reports as ENOTDIR on Linux and macOS and as ENOENT on Windows (open(2) and CreateFile name those errors for a path component that is not a directory and for one that does not exist), so the test holds on every platform because the scan reads both as missing.
