@@ -51,9 +51,7 @@ export function extractLwcJavaScript(content: string, filePath: string): Salesfo
   ]
   const refs: RefEntry[] = []
 
-  // Blank comments (backtick-template-literal-aware, see stripJsComments) so commented-out
-  // `@api` declarations and Salesforce imports aren't indexed as live code; string/template
-  // literal content is untouched.
+  // Blank comments (backtick-template-literal-aware, see stripJsComments) so commented-out `@api` declarations and Salesforce imports aren't indexed as live code; string/template literal content is untouched.
   const commentFree = stripJsComments(content)
 
   const apiRe = /@api\s*(?:\r?\n\s*)?(?:(get|set)\s+)?(?:async\s+)?([A-Za-z_$][\w$]*)\s*(\()?/g
@@ -88,10 +86,7 @@ export function extractLwcTemplate(content: string, filePath: string): Salesforc
   const symbols: SymbolEntry[] = []
   const refs: RefEntry[] = []
 
-  // Blank `<!-- ... -->` spans before matching anything below, not just the event-handler
-  // bindings, so a commented-out element (e.g. `<!-- <div lwc:ref="oldRef"> -->` or `<!-- <c-old-widget> -->`)
-  // isn't indexed as a live symbol/ref. Length-preserving, so line offsets computed against it
-  // still line up with the original content.
+  // Blank `<!-- ... -->` spans before matching anything below, not just the event-handler bindings, so a commented-out element (e.g. `<!-- <div lwc:ref="oldRef"> -->` or `<!-- <c-old-widget> -->`) isn't indexed as a live symbol/ref. Length-preserving, so line offsets computed against it still line up with the original content.
   const markupNoComments = stripXmlComments(content)
   // One index over the original content, reused by every loop below. `stripXmlComments` is length-preserving, so an offset into `markupNoComments` addresses the same line in `content`.
   const lineIndex = buildLineIndex(content)
@@ -205,9 +200,7 @@ export function extractSalesforceMarkup(content: string, filePath: string): Sale
   const refs: RefEntry[] = []
   const isAura = ['.cmp', '.app', '.evt', '.intf', '.design', '.auradoc', '.tokens'].includes(extension)
 
-  // Blank `<!-- ... -->` spans before matching anything below, not just the action bindings, so
-  // a commented-out attribute/handler/controller/extension/c:Component reference isn't indexed
-  // as live (matches extractLwcTemplate's equivalent fix above).
+  // Blank `<!-- ... -->` spans before matching anything below, not just the action bindings, so a commented-out attribute/handler/controller/extension/c:Component reference isn't indexed as live (matches extractLwcTemplate's equivalent fix above).
   const markupNoComments = stripXmlComments(content)
   // One index over the original content, reused by every loop and helper below. `stripXmlComments` is length-preserving, so an offset into `markupNoComments` addresses the same line in `content`.
   const lineIndex = buildLineIndex(content)

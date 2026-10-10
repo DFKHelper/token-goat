@@ -1,10 +1,4 @@
-/**
- * The regex language adapters and the table that dispatches to them.
- *
- * parser.ts reaches this module only through loadRegexExtractors()'s dynamic import, so the adapters load where files are
- * parsed (the CLI, the worker, parseFile) and never on the hook path. Nothing on the hook path may import it statically:
- * tests/guards/dist_chunks_deduped.test.ts fails when an adapter lands in the hook's eager set.
- */
+/** The regex language adapters and the table that dispatches to them. parser.ts reaches this module only through loadRegexExtractors()'s dynamic import, so the adapters load where files are parsed (the CLI, the worker, parseFile) and never on the hook path. Nothing on the hook path may import it statically: tests/guards/dist_chunks_deduped.test.ts fails when an adapter lands in the hook's eager set. */
 
 import type { RegexLanguage } from '../language_specs.js'
 import type { SymbolEntry } from '../parser_types.js'
@@ -77,13 +71,7 @@ type SymbolExtractor = (content: string, filePath: string) => SymbolEntry[]
 /** The regex rows whose extractors live in parser.ts itself: the structured-document formats. */
 type ParserRegexLanguage = 'markdown' | 'json' | 'yaml' | 'toml' | 'css' | 'dockerfile'
 
-/**
- * Map an adapter's parsed `.sections` (heading, level, line, endLine) into indexable
- * SymbolEntry rows. HTML and Liquid compute headings into `.sections` for the section-outline
- * consumer but historically never surfaced them as symbols, so they never entered the index
- * and were unreachable via `symbol`/`skeleton`/`outline` -- unlike markdown/proto/graphql/sql,
- * which push headings into both symbols and sections via makeSymbolEmitter.
- */
+/** Map an adapter's parsed `.sections` (heading, level, line, endLine) into indexable SymbolEntry rows. HTML and Liquid compute headings into `.sections` for the section-outline consumer but historically never surfaced them as symbols, so they never entered the index and were unreachable via `symbol`/`skeleton`/`outline` -- unlike markdown/proto/graphql/sql, which push headings into both symbols and sections via makeSymbolEmitter. */
 function sectionsToHeadingSymbols(
   sections: ReadonlyArray<{ heading: string; level: number; line: number; endLine: number }>,
   filePath: string,
@@ -123,9 +111,7 @@ export const ADAPTER_EXTRACTORS: Record<Exclude<RegexLanguage, ParserRegexLangua
     const r = extractLiquid(content, filePath)
     return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]
   },
-  // The six template dialects mask their own delimiters out and hand off to extractHtml, so they
-  // compose the same way html/liquid do above -- see templates_idx.ts's module doc for why this
-  // is the one place in Batch G/F where sharing IS correct.
+  // The six template dialects mask their own delimiters out and hand off to extractHtml, so they compose the same way html/liquid do above -- see templates_idx.ts's module doc for why this is the one place in Batch G/F where sharing IS correct.
   jinja2: (content, filePath) => {
     const r = extractJinja2(content, filePath)
     return [...r.symbols, ...sectionsToHeadingSymbols(r.sections, filePath)]

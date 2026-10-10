@@ -1,10 +1,4 @@
-/**
- * Swift symbol extractor — regex-based (no tree-sitter grammar needed).
- *
- * Extracts: classes, structs, enums, protocols, extensions, actors, top-level
- * functions, methods (including init/deinit/subscript), properties, type aliases,
- * associated types, macro declarations, and `import` directives.
- */
+/** Swift symbol extractor — regex-based (no tree-sitter grammar needed). Extracts: classes, structs, enums, protocols, extensions, actors, top-level functions, methods (including init/deinit/subscript), properties, type aliases, associated types, macro declarations, and `import` directives. */
 
 import type { SymbolEntry } from '../parser_types.js'
 import {
@@ -28,12 +22,7 @@ interface TypeFrame {
   bodyEntered: boolean
 }
 
-// Swift identifiers are Unicode, and any keyword becomes a legal declaration name when wrapped in
-// backticks (`var `default` = 0`, common in generated and interop code). An ASCII-only class does
-// not merely skip those declarations: it matches the ASCII prefix and stops, so `struct Café` was
-// indexed under the truncated name `Caf` and every member in its body was parented to that name.
-// The ranges start at U+00C0 rather than using the `u` flag, because these patterns are assembled
-// as strings and `u` mode would reject the identity escape in the operator class of FUNC_RE.
+// Swift identifiers are Unicode, and any keyword becomes a legal declaration name when wrapped in backticks (`var `default` = 0`, common in generated and interop code). An ASCII-only class does not merely skip those declarations: it matches the ASCII prefix and stops, so `struct Café` was indexed under the truncated name `Caf` and every member in its body was parented to that name. The ranges start at U+00C0 rather than using the `u` flag, because these patterns are assembled as strings and `u` mode would reject the identity escape in the operator class of FUNC_RE.
 const IDENT_START = 'A-Za-z_\\u00C0-\\uFFFF'
 const IDENT_CONT = 'A-Za-z0-9_\\u00C0-\\uFFFF'
 const IDENT = `(?:\`[^\`]+\`|[${IDENT_START}][${IDENT_CONT}]*)`
@@ -46,55 +35,30 @@ function unquoteIdent(name: string): string {
 // An optional generic clause. Swift 5.7's primary associated types put a generic inside a generic constraint routinely (`func f<C: Collection<Int>>(...)`), and a flat `<[^>]*>` stops at the inner `>` and then fails to reach the parameter list, dropping the declaration. GENERIC_CLAUSE is the shared nesting-aware form; this file's own copy of it, capped at one level, is what the other regex adapters were missing entirely.
 const GENERIC = '(?:' + GENERIC_CLAUSE + ')?'
 
-// Attributes may appear inline before a declaration. The argument list gets one level of nesting
-// for the same reason as GENERIC: `@available(*, deprecated, renamed: "replacement()")` is ordinary
-// deprecation markup, and a flat `\([^()]*\)` cannot span the parentheses inside the message.
+// Attributes may appear inline before a declaration. The argument list gets one level of nesting for the same reason as GENERIC: `@available(*, deprecated, renamed: "replacement()")` is ordinary deprecation markup, and a flat `\([^()]*\)` cannot span the parentheses inside the message.
 const LEADING_ATTRIBUTE_RE =
   /^\s*(?:@[A-Za-z_][A-Za-z0-9_.]*(?:\((?:[^()]|\([^()]*\))*\))?\s+)+/
 export function stripLeadingAttributes(s: string): string {
   return s.replace(LEADING_ATTRIBUTE_RE, '')
 }
 
-// `import` may carry an access level in Swift 6 (`public import Foundation`, `internal import X`),
-// and attributes such as `@preconcurrency` / `@_exported` are stripped before this runs.
-// Exported because read_commands.ts's `imports` command matched Swift imports with its own copy of
-// this pattern: the two drifted apart the moment one was extended, so `token-goat imports` reported
-// none of the imports the index itself held for the same file.
+// `import` may carry an access level in Swift 6 (`public import Foundation`, `internal import X`), and attributes such as `@preconcurrency` / `@_exported` are stripped before this runs. Exported because read_commands.ts's `imports` command matched Swift imports with its own copy of this pattern: the two drifted apart the moment one was extended, so `token-goat imports` reported none of the imports the index itself held for the same file.
 export const IMPORT_RE = new RegExp(
   '^(?:(?:public|package|internal|fileprivate|private)\\s+)?' +
   'import\\s+(?:(?:class|struct|enum|protocol|func|var|let|typealias)\\s+)?' +
   `(${IDENT}(?:\\.${IDENT})*)`,
 )
 
-// Shared modifier alternation for func/init/subscript/property declarations. `(?:set)`-suffixed
-// access modifiers (`private(set) var x`, `package(set) var x`) are real Swift syntax restricting
-// the setter's visibility independently of the getter's, so `(?:\(set\))?` is folded into the
-// access-level alternative rather than left to desync the match entirely. `package` is Swift
-// 5.9's module-group access level, a peer of public/internal that applies to every declaration
-// kind -- omitting it dropped every `package`-scoped member from the index. `distributed` is
-// SE-0336's modifier marking a distributed actor's remotely-callable methods (`distributed func
-// greet() -> String`) -- without it here, every method inside a distributed actor (which itself
-// requires the `distributed` keyword) failed to match FUNC_RE at all.
+// Shared modifier alternation for func/init/subscript/property declarations. `(?:set)`-suffixed access modifiers (`private(set) var x`, `package(set) var x`) are real Swift syntax restricting the setter's visibility independently of the getter's, so `(?:\(set\))?` is folded into the access-level alternative rather than left to desync the match entirely. `package` is Swift 5.9's module-group access level, a peer of public/internal that applies to every declaration kind -- omitting it dropped every `package`-scoped member from the index. `distributed` is SE-0336's modifier marking a distributed actor's remotely-callable methods (`distributed func greet() -> String`) -- without it here, every method inside a distributed actor (which itself requires the `distributed` keyword) failed to match FUNC_RE at all.
 //
-// `nonisolated` and `unowned` are split out because both take a legal parenthesized argument
-// (`nonisolated(unsafe) var cache`, Swift 5.10's escape hatch for global state; `unowned(unsafe)
-// var delegate`, the long-standing ObjC-interop form). Listed as bare words they matched the
-// keyword and then demanded whitespace, so the declaration was dropped on exactly the lines where
-// the modifier is load-bearing. `prefix`/`postfix`/`infix` introduce operator functions,
-// `optional` marks an `@objc protocol` requirement, and `consuming`/`borrowing`/`isolated` are the
-// SE-0377 / SE-0313 ownership and isolation modifiers -- each one is the first word on its line,
-// so its absence here dropped the whole declaration rather than just the modifier.
+// `nonisolated` and `unowned` are split out because both take a legal parenthesized argument (`nonisolated(unsafe) var cache`, Swift 5.10's escape hatch for global state; `unowned(unsafe) var delegate`, the long-standing ObjC-interop form). Listed as bare words they matched the keyword and then demanded whitespace, so the declaration was dropped on exactly the lines where the modifier is load-bearing. `prefix`/`postfix`/`infix` introduce operator functions, `optional` marks an `@objc protocol` requirement, and `consuming`/`borrowing`/`isolated` are the SE-0377 / SE-0313 ownership and isolation modifiers -- each one is the first word on its line, so its absence here dropped the whole declaration rather than just the modifier.
 const MODIFIER_ALT =
   '(?:(?:public|private|fileprivate|internal|open|package)(?:\\(set\\))?|' +
   '(?:nonisolated|unowned)(?:\\([A-Za-z]+\\))?|' +
   'static|final|class|override|required|convenience|mutating|nonmutating|dynamic|async|lazy|weak|' +
   'indirect|distributed|prefix|postfix|infix|optional|consuming|borrowing|isolated)'
 
-// Function name is either a plain identifier or an operator-overload symbol (`func ==(...)`,
-// `func +(...)`) -- Swift's operator functions are real top-level and member declarations, not
-// an edge case a language extractor can ignore. Generics come after the name in Swift
-// (`func foo<T: Comparable>(x: T) -> T`), unlike Kotlin's `fun <T> foo(...)`. The parameter list
-// may legally begin on the next physical line, so `(` is optional when the name ends the line.
+// Function name is either a plain identifier or an operator-overload symbol (`func ==(...)`, `func +(...)`) -- Swift's operator functions are real top-level and member declarations, not an edge case a language extractor can ignore. Generics come after the name in Swift (`func foo<T: Comparable>(x: T) -> T`), unlike Kotlin's `fun <T> foo(...)`. The parameter list may legally begin on the next physical line, so `(` is optional when the name ends the line.
 const FUNC_RE = new RegExp(
   '^\\s*(?:' + MODIFIER_ALT + '\\s+)*' +
   `func\\s+(${IDENT}|[+\\-*/%=!<>&|^~]+)\\s*` + GENERIC + '\\s*(?:\\(|$)',
@@ -112,11 +76,7 @@ const SUBSCRIPT_RE = new RegExp(
   '(subscript)\\s*' + GENERIC + '\\s*(?:\\(|$)',
 )
 
-// `var`/`let` property declaration -- matches a stored property (`var x: Int = 0`), a
-// type-annotated-only property (`let y: String`), and a computed property's header line
-// (`var z: Int { get { ... } }` / `var z: Int { get set }`), since all three share the same
-// `var|let name` prefix. The whole declarator list is captured rather than one name, because a
-// single `var` may declare several (`var a = 0, b = 1`); splitNames pulls the individual names out.
+// `var`/`let` property declaration -- matches a stored property (`var x: Int = 0`), a type-annotated-only property (`let y: String`), and a computed property's header line (`var z: Int { get { ... } }` / `var z: Int { get set }`), since all three share the same `var|let name` prefix. The whole declarator list is captured rather than one name, because a single `var` may declare several (`var a = 0, b = 1`); splitNames pulls the individual names out.
 const PROPERTY_RE = new RegExp(
   '^\\s*(?:' + MODIFIER_ALT + '\\s+)*' +
   '(?:var|let)\\s+(' + `${IDENT}` + '[^\\n]*)',
@@ -128,14 +88,7 @@ const ENUM_CASE_RE = new RegExp(
   '(?:@[A-Za-z_][A-Za-z0-9_.]*\\s+)*case\\s+(' + `${IDENT}` + '[^\\n]*)',
 )
 
-/**
- * Names declared by one `var`/`let` declarator list.
- *
- * Only commas at bracket depth zero separate declarators: a comma inside a generic argument
- * (`var m: Dictionary<String, Int>`) or a call (`var a = f(1, 2), b = 3`) belongs to the
- * declarator it sits in. `>` is not counted as a closer when it is the tail of `->`, so a function
- * type in the annotation cannot drive the depth negative.
- */
+/** Names declared by one `var`/`let` declarator list. Only commas at bracket depth zero separate declarators: a comma inside a generic argument (`var m: Dictionary<String, Int>`) or a call (`var a = f(1, 2), b = 3`) belongs to the declarator it sits in. `>` is not counted as a closer when it is the tail of `->`, so a function type in the annotation cannot drive the depth negative. */
 function splitDeclaratorNames(tail: string): string[] {
   const names: string[] = []
   let depth = 0
@@ -160,19 +113,7 @@ function splitDeclaratorNames(tail: string): string[] {
   return names
 }
 
-// The keyword itself is captured (group 1) so the caller can map it to the right symbol kind --
-// class/struct/enum/protocol/extension/actor all share this one header shape, differing only in
-// keyword and in what an "extension" conceptually is (adds members to an existing type rather
-// than declaring a new one, mirroring how kotlin.ts's companion-object handling folds members
-// into their enclosing frame's name). `actor` is Swift 5.5's concurrency-safe reference type,
-// declared with a `{ }` body exactly like a class; omitting it dropped the actor AND every
-// member nested in its body from the index entirely. `distributed` is SE-0336's modifier for a
-// distributed actor (location-transparent, usable across process/network boundaries) -- without
-// it in the modifier alternation, `distributed actor Foo { ... }` never matched at all (the
-// modifier list is anchored immediately before the class/struct/.../actor keyword), dropping the
-// actor and every member nested in its body from the index the same way a plain `actor` did
-// before that keyword was added. The name may be dotted (`extension Array.Index`, `extension
-// Foo.Bar`) for nested-type extension targets.
+// The keyword itself is captured (group 1) so the caller can map it to the right symbol kind -- class/struct/enum/protocol/extension/actor all share this one header shape, differing only in keyword and in what an "extension" conceptually is (adds members to an existing type rather than declaring a new one, mirroring how kotlin.ts's companion-object handling folds members into their enclosing frame's name). `actor` is Swift 5.5's concurrency-safe reference type, declared with a `{ }` body exactly like a class; omitting it dropped the actor AND every member nested in its body from the index entirely. `distributed` is SE-0336's modifier for a distributed actor (location-transparent, usable across process/network boundaries) -- without it in the modifier alternation, `distributed actor Foo { ... }` never matched at all (the modifier list is anchored immediately before the class/struct/.../actor keyword), dropping the actor and every member nested in its body from the index the same way a plain `actor` did before that keyword was added. The name may be dotted (`extension Array.Index`, `extension Foo.Bar`) for nested-type extension targets.
 const TYPE_HEADER_RE = new RegExp(
   '^(?:(?:public|private|fileprivate|internal|open|package|final|indirect|distributed|nonisolated)\\s+)*' +
   '(class|struct|enum|protocol|extension|actor)\\s+' +
@@ -285,10 +226,7 @@ export function extractSwift(
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
 
-    // Mask multi-line Swift `"""..."""` string spans first, state carried across lines, so
-    // braces inside one of those can never desync braceDepth. Skipped on lines that start
-    // already inside a block comment (mlState null) to avoid misreading comment prose that
-    // happens to contain opener-shaped text.
+    // Mask multi-line Swift `"""..."""` string spans first, state carried across lines, so braces inside one of those can never desync braceDepth. Skipped on lines that start already inside a block comment (mlState null) to avoid misreading comment prose that happens to contain opener-shaped text.
     let mlLine = rawLine
     if (mlState !== null || commentDepth === 0) {
       const masked = stripMultilineStringSpan(rawLine, mlState, 'swift')
@@ -296,9 +234,7 @@ export function extractSwift(
       mlState = masked.state
     }
 
-    // Strip /* */ block-comment spans (depth carried across lines) so braces inside commented-out
-    // code are not counted toward braceDepth. Swift block comments nest, so this uses the
-    // depth-aware helper rather than the boolean one the non-nesting languages share.
+    // Strip /* */ block-comment spans (depth carried across lines) so braces inside commented-out code are not counted toward braceDepth. Swift block comments nest, so this uses the depth-aware helper rather than the boolean one the non-nesting languages share.
     const { code: blockStripped, depth: nextCommentDepth } = stripNestedBlockCommentSpan(mlLine, commentDepth)
     commentDepth = nextCommentDepth
 
@@ -320,12 +256,7 @@ export function extractSwift(
       imports.push({ kind: 'import', target: unquoteIdent(importM[1] ?? ''), line: lineNum })
     }
 
-    // class/struct/enum/protocol/extension. Recognized at file scope (brace depth 0), or while
-    // genuinely one brace level inside another type's body (a real nested type/extension member)
-    // -- matches kotlin.ts's classDetectionGateOk gate, so a type declared local to a function
-    // body is never mistaken for a member of the enclosing type. Depth is the gate rather than
-    // leading whitespace, which carries no meaning in Swift: a file-scope declaration indented
-    // inside a `#if os(iOS)` region is still file-scope.
+    // class/struct/enum/protocol/extension. Recognized at file scope (brace depth 0), or while genuinely one brace level inside another type's body (a real nested type/extension member) -- matches kotlin.ts's classDetectionGateOk gate, so a type declared local to a function body is never mistaken for a member of the enclosing type. Depth is the gate rather than leading whitespace, which carries no meaning in Swift: a file-scope declaration indented inside a `#if os(iOS)` region is still file-scope.
     const outerFrame = typeStack.length > 0 ? typeStack[typeStack.length - 1]! : null
     const outerDepthInType = outerFrame !== null ? braceDepth - outerFrame.startDepth : 0
     const typeDetectionGateOk = typeStack.length === 0 || outerDepthInType === 1
@@ -351,24 +282,16 @@ export function extractSwift(
     const frame = typeStack.length > 0 ? typeStack[typeStack.length - 1]! : null
     if (frame !== null && tm === null) {
       const depthInType = braceDepth - frame.startDepth
-      // === 1, not >= 1: a local var/func declared inside a method body sits at depthInType 2+
-      // (matches kotlin.ts/csharp.ts, which gate the same way) -- an ungated >= 1 check would
-      // index locals declared inside a method as if they were members of the enclosing type.
+      // === 1, not >= 1: a local var/func declared inside a method body sits at depthInType 2+ (matches kotlin.ts/csharp.ts, which gate the same way) -- an ungated >= 1 check would index locals declared inside a method as if they were members of the enclosing type.
       if (depthInType === 1) {
         pushMembers(line, frame.name, lineNum, stripped.slice(0, 200))
       }
     } else if (frame === null && braceDepth === 0) {
-      // `init`/`deinit`/`subscript` are only ever type members in Swift, never legal at top
-      // level, so pushMembers' parent-less form covers the two shapes that are: a function and
-      // a file-scope `let`/`var`, which is how Swift spells a global constant.
+      // `init`/`deinit`/`subscript` are only ever type members in Swift, never legal at top level, so pushMembers' parent-less form covers the two shapes that are: a function and a file-scope `let`/`var`, which is how Swift spells a global constant.
       pushMembers(line, undefined, lineNum, stripped.slice(0, 200))
     }
 
-    // Brace-count on a string-stripped copy of the line so a literal brace inside a string
-    // literal is never counted as real nesting. Walk char-by-char (rather than a single
-    // open-count minus close-count) so a same-line open+close (`struct Empty {}`) still marks
-    // bodyEntered -- the net delta for that line is zero, but depth genuinely peaked one above
-    // the frame's start in between the two braces, which a batched delta can never observe.
+    // Brace-count on a string-stripped copy of the line so a literal brace inside a string literal is never counted as real nesting. Walk char-by-char (rather than a single open-count minus close-count) so a same-line open+close (`struct Empty {}`) still marks bodyEntered -- the net delta for that line is zero, but depth genuinely peaked one above the frame's start in between the two braces, which a batched delta can never observe.
     const braceLine = stripRegexLiterals(stripStringLiterals(line, SWIFT_STRIP))
 
     // A line can hold several declarations of one type body: the members after a type header's `{` (`struct S { var a = 0; func f() {} }`), and those after the first on a body line (`func c() {}; func d() {}`). The branches above index only the first declaration on the line; the rest are found here, the header's own body first so the rows keep source order.
@@ -409,12 +332,7 @@ export function extractSwift(
     }
     openMembers = endOpenMembers(symbols, settled, openMembers, braceDepth, lineNum, lines)
     openMembers.push(...lineOpens)
-    // Pop finished type frames. A frame only pops once its own opening brace has actually been
-    // entered (bodyEntered) -- this guards a type whose header spans multiple lines (Allman-
-    // style `struct Foo` / `{`, or a multi-line `where` clause), where braceDepth still equals
-    // the frame's start depth on the header line itself. Every Swift type declaration requires
-    // a `{ }` body (unlike Kotlin's brace-less primary-constructor-only data class), so no
-    // separate "pending pop" tracking is needed here.
+    // Pop finished type frames. A frame only pops once its own opening brace has actually been entered (bodyEntered) -- this guards a type whose header spans multiple lines (Allman- style `struct Foo` / `{`, or a multi-line `where` clause), where braceDepth still equals the frame's start depth on the header line itself. Every Swift type declaration requires a `{ }` body (unlike Kotlin's brace-less primary-constructor-only data class), so no separate "pending pop" tracking is needed here.
     while (typeStack.length > 0) {
       const top = typeStack[typeStack.length - 1]!
       if (top.bodyEntered && braceDepth <= top.startDepth) {

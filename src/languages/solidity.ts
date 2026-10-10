@@ -1,8 +1,4 @@
-/**
- * Solidity symbol extractor: contracts, interfaces and libraries with their functions, constructors, fallback and receive functions,
- * modifiers, structs, enums, events and errors, plus file-level functions, structs, enums, errors and user-defined value types.
- * Imports are the quoted path of each `import` form.
- */
+/** Solidity symbol extractor: contracts, interfaces and libraries with their functions, constructors, fallback and receive functions, modifiers, structs, enums, events and errors, plus file-level functions, structs, enums, errors and user-defined value types. Imports are the quoted path of each `import` form. */
 
 import { quotedTarget, scanBraceLanguage, type BraceAdapterResult, type BraceLanguage, type Decl, type DeclContext } from './brace_engine.js'
 

@@ -1,39 +1,4 @@
-/**
- * VHDL adapter: entity, architecture, package declaration, package body, function and procedure.
- *
- * VHDL block headers are not terminated by punctuation the way a statement is (`;`): they are
- * terminated by the keyword `is` (`entity foo is`, `architecture rtl of foo is`, `package body p
- * is`, `function f(...) return bit is`, `procedure p(...) is`), after which the block's own
- * declarative items and statements each end with `;` up to the header's matching
- * `end [<kind>] [<name>];`. This adapter tokenizes VHDL as a sequence of statements the way the
- * ABL/SAS/PL/I/RPG/JCL adapters do (`span_collector.ts`), but splits on two different terminators:
- * a top-level `;` for an ordinary statement, and a standalone `is` word for one of the five header
- * keywords above. A statement whose own leading keyword is IF/CASE/LOOP/GENERATE/RECORD/PROCESS/
- * BLOCK/FOR/COMPONENT/UNITS/PROTECTED also uses `is`, `then` or a bare keyword to open, and its own
- * `end <kind>;`/`end;` to close, but this adapter does not open a stack frame for those -- it just
- * recognizes their closing keyword and leaves the real (entity/architecture/package/function/
- * procedure) stack alone, so a `end if;`/`end loop;`/`end case;`/`end generate;`/`end record;`
- * inside a function or process body never pops the function/procedure frame early. A design unit
- * closed the old way, with the keyword omitted (`end foo;` or bare `end;`), also pops the
- * innermost real frame: the LRM makes the keyword optional only for entity/architecture/package/
- * subprogram/process/block, never for if/case/loop/generate, so an unrecognized or absent keyword
- * after `end` is unambiguously one of ours.
- *
- * Per IEEE 1076-2008 clause 15.9, a VHDL-2008 delimited comment (`/* ... *\/`) does NOT nest: the
- * first `*\/` closes it, however many `/*` appeared inside. `--` line comments run to end of line.
- * String literals (`"..."`, with `""` as an escaped quote) and character literals (`'x'`, told
- * apart from the `'` attribute-name tick by requiring a non-identifier character immediately
- * before the opening `'`) are masked to spaces before any keyword matching, so neither can produce
- * a false header or `end`. VHDL keywords and identifiers are case-insensitive throughout.
- *
- * Declarations with no body (a `function`/`procedure` prototype in a package spec, ending `;`
- * with no `is`) produce no symbol, matching this repo's convention elsewhere of only listing a
- * declaration that has a body. Bit-string, based and operator-symbol (`function "+"`) names are
- * out of scope for v1: an operator function's masked `"+"` name resolves to an empty string and is
- * dropped rather than mis-attributed.
- *
- * Imports are `use` clause targets (`use ieee.std_logic_1164.all;` -> `ieee.std_logic_1164.all`).
- */
+/** VHDL adapter: entity, architecture, package declaration, package body, function and procedure. VHDL block headers are not terminated by punctuation the way a statement is (`;`): they are terminated by the keyword `is` (`entity foo is`, `architecture rtl of foo is`, `package body p is`, `function f(...) return bit is`, `procedure p(...) is`), after which the block's own declarative items and statements each end with `;` up to the header's matching `end [<kind>] [<name>];`. This adapter tokenizes VHDL as a sequence of statements the way the ABL/SAS/PL/I/RPG/JCL adapters do (`span_collector.ts`), but splits on two different terminators: a top-level `;` for an ordinary statement, and a standalone `is` word for one of the five header keywords above. A statement whose own leading keyword is IF/CASE/LOOP/GENERATE/RECORD/PROCESS/ BLOCK/FOR/COMPONENT/UNITS/PROTECTED also uses `is`, `then` or a bare keyword to open, and its own `end <kind>;`/`end;` to close, but this adapter does not open a stack frame for those -- it just recognizes their closing keyword and leaves the real (entity/architecture/package/function/ procedure) stack alone, so a `end if;`/`end loop;`/`end case;`/`end generate;`/`end record;` inside a function or process body never pops the function/procedure frame early. A design unit closed the old way, with the keyword omitted (`end foo;` or bare `end;`), also pops the innermost real frame: the LRM makes the keyword optional only for entity/architecture/package/ subprogram/process/block, never for if/case/loop/generate, so an unrecognized or absent keyword after `end` is unambiguously one of ours. Per IEEE 1076-2008 clause 15.9, a VHDL-2008 delimited comment (`/* ... *\/`) does NOT nest: the first `*\/` closes it, however many `/*` appeared inside. `--` line comments run to end of line. String literals (`"..."`, with `""` as an escaped quote) and character literals (`'x'`, told apart from the `'` attribute-name tick by requiring a non-identifier character immediately before the opening `'`) are masked to spaces before any keyword matching, so neither can produce a false header or `end`. VHDL keywords and identifiers are case-insensitive throughout. Declarations with no body (a `function`/`procedure` prototype in a package spec, ending `;` with no `is`) produce no symbol, matching this repo's convention elsewhere of only listing a declaration that has a body. Bit-string, based and operator-symbol (`function "+"`) names are out of scope for v1: an operator function's masked `"+"` name resolves to an empty string and is dropped rather than mis-attributed. Imports are `use` clause targets (`use ieee.std_logic_1164.all;` -> `ieee.std_logic_1164.all`). */
 
 import { SpanCollector, type StatementAdapterResult } from './span_collector.js'
 import { buildLineIndex, offsetToLine, type AdapterImport } from './common.js'
@@ -48,9 +13,7 @@ const PROC_RE = /^\s*PROCEDURE\s+([A-Za-z_]\w*|"[^"]*")/i
 const USE_RE = /^\s*USE\s+([A-Za-z_][\w.]*)/i
 const END_KEYWORD_RE = /^\s*END\b\s*([A-Za-z_]\w*)?/i
 
-// Keywords VHDL also closes with `end <kw>;` that this adapter never opens a frame for. An `end`
-// naming one of these is a no-op here rather than a pop of the innermost real (entity/
-// architecture/package/function/procedure) frame.
+// Keywords VHDL also closes with `end <kw>;` that this adapter never opens a frame for. An `end` naming one of these is a no-op here rather than a pop of the innermost real (entity/ architecture/package/function/procedure) frame.
 const IGNORED_END_KEYWORDS: ReadonlySet<string> = new Set([
   'IF', 'CASE', 'LOOP', 'GENERATE', 'RECORD', 'PROCESS', 'BLOCK', 'FOR', 'COMPONENT', 'UNITS', 'PROTECTED',
 ])
@@ -68,8 +31,7 @@ interface Stmt {
   readonly endOffset: number
 }
 
-/** Masks `--` line comments, non-nesting `/* *\/` block comments, string literals and character
- * literals to spaces (newlines preserved), so keyword/statement scanning never sees their content. */
+/** Masks `--` line comments, non-nesting `/* *\/` block comments, string literals and character literals to spaces (newlines preserved), so keyword/statement scanning never sees their content. */
 function maskVhdl(content: string): string {
   const n = content.length
   const out: string[] = new Array(n)
@@ -124,8 +86,7 @@ function maskVhdl(content: string): string {
       }
       continue
     }
-    // A character literal is exactly `'x'` (three characters). Told apart from the attribute
-    // tick (`clk'event`) by requiring the preceding emitted character not be an identifier char.
+    // A character literal is exactly `'x'` (three characters). Told apart from the attribute tick (`clk'event`) by requiring the preceding emitted character not be an identifier char.
     if (ch === "'" && content[i + 2] === "'" && content[i + 1] !== undefined && content[i + 1] !== '\n') {
       const prevEmitted = i > 0 ? out[i - 1] : undefined
       if (prevEmitted === undefined || !/[A-Za-z0-9_]/.test(prevEmitted)) {
@@ -142,9 +103,7 @@ function maskVhdl(content: string): string {
   return out.join('')
 }
 
-/** Splits masked VHDL into `;`-terminated statements plus header statements ending in a standalone
- * `is` after one of the five tracked opening keywords (paren-depth aware, so a parameter list's
- * own `;`/`is` never fires early). */
+/** Splits masked VHDL into `;`-terminated statements plus header statements ending in a standalone `is` after one of the five tracked opening keywords (paren-depth aware, so a parameter list's own `;`/`is` never fires early). */
 function splitStatements(masked: string): Stmt[] {
   const stmts: Stmt[] = []
   const n = masked.length

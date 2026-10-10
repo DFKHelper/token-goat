@@ -1,11 +1,4 @@
-/**
- * GraphQL schema / document extractor.
- *
- * Extracts types, queries, mutations, subscriptions, fragments, directives,
- * enums, interfaces, inputs, unions, scalars, and schema blocks.
- * Each symbol also becomes a section for surgical `token-goat section` reads.
- * Pure-regex; no tree-sitter dependency.
- */
+/** GraphQL schema / document extractor. Extracts types, queries, mutations, subscriptions, fragments, directives, enums, interfaces, inputs, unions, scalars, and schema blocks. Each symbol also becomes a section for surgical `token-goat section` reads. Pure-regex; no tree-sitter dependency. */
 
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection, MultilineStringState, AdapterImport } from './common.js'
@@ -23,13 +16,7 @@ import {
 import { findMatchingBraceEndLine } from './brace_spans.js'
 import { countContentLines } from '../util.js'
 
-// Finds the index of the first `#` on `line` that isn't sitting inside an open single- or
-// double-quoted string literal on that same line - i.e. a real line-comment start. Used by
-// `stripGraphqlDescriptions` to decide, when not already inside an open block description,
-// whether a `#` or a `"""` description opener comes first on the line: whichever comes first
-// wins, since a `#` before any opener starts a real comment (and any `"""`-looking text after it
-// is just comment prose, not a real opener), while an opener before any `#` means the rest of the
-// line - `#` included - is description content, not a comment.
+// Finds the index of the first `#` on `line` that isn't sitting inside an open single- or double-quoted string literal on that same line - i.e. a real line-comment start. Used by `stripGraphqlDescriptions` to decide, when not already inside an open block description, whether a `#` or a `"""` description opener comes first on the line: whichever comes first wins, since a `#` before any opener starts a real comment (and any `"""`-looking text after it is just comment prose, not a real opener), while an opener before any `#` means the rest of the line - `#` included - is description content, not a comment.
 function findUnquotedHash(line: string): number {
   for (let i = 0; i < line.length; i++) {
     if (line[i] === '#' && !isInsideStringLiteral(line, i)) return i
@@ -37,19 +24,11 @@ function findUnquotedHash(line: string): number {
   return -1
 }
 
-// ---------------------------------------------------------------------------
-// Import pragma: # import FragmentName from "path.graphql"
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Import pragma: # import FragmentName from "path.graphql" ---------------------------------------------------------------------------
 const GRAPHQL_IMPORT_RE =
   /^[ \t]*#[ \t]*import\b(?:[^"'\n]*)?['"]([^'"]+)['"]/gm
 
-// type / interface / input / enum / union / scalar (+ optional extend prefix). The
-// keyword-to-name separator is restricted to same-line horizontal whitespace ([ \t]+, not the
-// generic \s+, which also matches a newline): GraphQL enum values are ordinary Name tokens, so an
-// enum can legally have a member whose text collides with a type-system keyword (e.g. an enum
-// value literally named `scalar` or `type`). With a newline-crossing \s+, a keyword-valued enum
-// member sitting alone on its line got misread as the keyword itself, greedily binding the next
-// physical line's enum value as the declaration name and emitting a phantom top-level symbol.
+// type / interface / input / enum / union / scalar (+ optional extend prefix). The keyword-to-name separator is restricted to same-line horizontal whitespace ([ \t]+, not the generic \s+, which also matches a newline): GraphQL enum values are ordinary Name tokens, so an enum can legally have a member whose text collides with a type-system keyword (e.g. an enum value literally named `scalar` or `type`). With a newline-crossing \s+, a keyword-valued enum member sitting alone on its line got misread as the keyword itself, greedily binding the next physical line's enum value as the declaration name and emitting a phantom top-level symbol.
 const TYPE_RE =
   /^[ \t]*(extend[ \t]+)?(?<keyword>type|interface|input|enum|union|scalar)[ \t]+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gm
 
@@ -63,9 +42,7 @@ const FRAGMENT_RE = /^[ \t]*fragment[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+on[ \t]+
 const OPERATION_RE =
   /^[ \t]*(?<op>query|mutation|subscription)[ \t]+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gm
 
-// schema { } — a schema block may carry a Directives[Const] list between the keyword and the
-// brace (e.g. `schema @auth { ... }`), which the plain `\s*` gap can't absorb; `[^{\n]*` covers
-// that without crossing a line boundary, and `\b` keeps `schemaVersion: 1` from false-matching.
+// schema { } — a schema block may carry a Directives[Const] list between the keyword and the brace (e.g. `schema @auth { ... }`), which the plain `\s*` gap can't absorb; `[^{\n]*` covers that without crossing a line boundary, and `\b` keeps `schemaVersion: 1` from false-matching.
 const SCHEMA_RE = /^[ \t]*schema\b[^{\n]*\{/gm
 
 const KIND_MAP: ReadonlyMap<string, string> = new Map([
@@ -80,24 +57,7 @@ const KIND_MAP: ReadonlyMap<string, string> = new Map([
 const MAX_SYMBOLS = 10_000 // raised from 500: see makeSymbolEmitter's own comment in common.ts for the measurement
 const MAX_HEADING_LEN = 120
 
-/**
- * Blank GraphQL SDL description strings - both `"""..."""` block descriptions (which can span
- * multiple lines, carrying `stripMultilineStringSpan` state across calls the same way
- * C#/Kotlin/PHP/PowerShell do for their own multi-line string forms) and single-line `"..."`
- * descriptions - before the declaration regexes run. A description's content is arbitrary prose,
- * and a content line that happens to read like a declaration (e.g. `type Foo represents a user`
- * inside a `"""..."""` block) would otherwise be matched by `TYPE_RE`/`OPERATION_RE`/`FRAGMENT_RE`
- * as a real, phantom symbol since those patterns are only anchored to line start, not aware of
- * being inside a description. GraphQL's `"""..."""` uses the same triple-double-quote delimiter as Kotlin's raw strings, and `'kotlin'` was reused as the `MultilineStringLang` for that reason until it turned out that every per-language table keyed on the tag comes along with it: `MULTILINE_OPENER_COMMENT_MARKERS.kotlin` is `['//']`, so once a description closed mid-line and `findMultilineOpener` took over from the `#` guard below, a `"""` sitting in a trailing `#` comment opened a phantom description that ran to end of file and cost the schema every symbol in it. GraphQL now carries its own tag, whose entries state GraphQL's own rules -- `#` comments, and a block string that ends at the first `"""` run rather than the longest.
- *
- * Also resolves precedence against `#` line comments on lines where no description is
- * currently open: a real `#` comment can textually contain a `"""`-looking sequence (e.g. `#
- * see """ for details`), which must not be misread as a real description opener. On such a
- * line, `findUnquotedHash` locates the earliest real `#`; if it comes before any `"""` on the
- * line, only the portion of the line before the `#` is scanned for a description opener, and the
- * `#`-onward remainder is left untouched here for the later `stripHashComments` pass to strip as
- * an ordinary comment.
- */
+/** Blank GraphQL SDL description strings - both `"""..."""` block descriptions (which can span multiple lines, carrying `stripMultilineStringSpan` state across calls the same way C#/Kotlin/PHP/PowerShell do for their own multi-line string forms) and single-line `"..."` descriptions - before the declaration regexes run. A description's content is arbitrary prose, and a content line that happens to read like a declaration (e.g. `type Foo represents a user` inside a `"""..."""` block) would otherwise be matched by `TYPE_RE`/`OPERATION_RE`/`FRAGMENT_RE` as a real, phantom symbol since those patterns are only anchored to line start, not aware of being inside a description. GraphQL's `"""..."""` uses the same triple-double-quote delimiter as Kotlin's raw strings, and `'kotlin'` was reused as the `MultilineStringLang` for that reason until it turned out that every per-language table keyed on the tag comes along with it: `MULTILINE_OPENER_COMMENT_MARKERS.kotlin` is `['//']`, so once a description closed mid-line and `findMultilineOpener` took over from the `#` guard below, a `"""` sitting in a trailing `#` comment opened a phantom description that ran to end of file and cost the schema every symbol in it. GraphQL now carries its own tag, whose entries state GraphQL's own rules -- `#` comments, and a block string that ends at the first `"""` run rather than the longest. Also resolves precedence against `#` line comments on lines where no description is currently open: a real `#` comment can textually contain a `"""`-looking sequence (e.g. `# see """ for details`), which must not be misread as a real description opener. On such a line, `findUnquotedHash` locates the earliest real `#`; if it comes before any `"""` on the line, only the portion of the line before the `#` is scanned for a description opener, and the `#`-onward remainder is left untouched here for the later `stripHashComments` pass to strip as an ordinary comment. */
 function stripGraphqlDescriptions(text: string): string {
   let state: MultilineStringState | null = null
   const outLines: string[] = []
@@ -121,16 +81,7 @@ function stripGraphqlDescriptions(text: string): string {
   return outLines.join('\n')
 }
 
-/**
- * Index of the `{` that opens a declaration's body, searching `text` from `from` up to (but not
- * including) `until`, or -1 when the declaration has no body inside that window. A GraphQL
- * declaration header can carry an `implements A & B` list and a directive list before its brace,
- * and a directive argument may itself hold an object value (`@cache(policy: {ttl: 5})`) or a list
- * (`@x(vals: [{a: 1}])`), so a `{` nested inside `(...)`/`[...]` is skipped: matching that one
- * would end the symbol at the argument's closing brace instead of the body's. `text` is the
- * already stripped form (comments removed, every string literal blanked), so no quote handling is
- * needed here.
- */
+/** Index of the `{` that opens a declaration's body, searching `text` from `from` up to (but not including) `until`, or -1 when the declaration has no body inside that window. A GraphQL declaration header can carry an `implements A & B` list and a directive list before its brace, and a directive argument may itself hold an object value (`@cache(policy: {ttl: 5})`) or a list (`@x(vals: [{a: 1}])`), so a `{` nested inside `(...)`/`[...]` is skipped: matching that one would end the symbol at the argument's closing brace instead of the body's. `text` is the already stripped form (comments removed, every string literal blanked), so no quote handling is needed here. */
 function findDeclarationBraceIndex(text: string, from: number, until: number): number {
   let nesting = 0
   const limit = Math.min(until, text.length)
@@ -155,15 +106,7 @@ export function extractGraphql(
 
   const contentLineIndex = buildLineIndex(content)
 
-  // Mask """..."""/"..." descriptions BEFORE extracting imports or stripping `#` comments.
-  // GRAPHQL_IMPORT_RE matches any line that merely starts with `# import ... "..."`, with no
-  // way to tell a real import pragma apart from prose inside a """..."""` description that
-  // happens to describe or quote the import syntax (e.g. doc text reading `# import Foo from
-  // "bar.graphql"` as an example). Running descriptionsStripped first blanks that prose to
-  // spaces before the import regex ever sees it, while leaving genuine `#import` comment lines
-  // outside any description untouched -- the same reasoning stripGraphqlDescriptions already
-  // documents for why declaration extraction runs against blanked descriptions instead of raw
-  // content. Reused below instead of calling stripGraphqlDescriptions a second time.
+  // Mask """..."""/"..." descriptions BEFORE extracting imports or stripping `#` comments. GRAPHQL_IMPORT_RE matches any line that merely starts with `# import ... "..."`, with no way to tell a real import pragma apart from prose inside a """..."""` description that happens to describe or quote the import syntax (e.g. doc text reading `# import Foo from "bar.graphql"` as an example). Running descriptionsStripped first blanks that prose to spaces before the import regex ever sees it, while leaving genuine `#import` comment lines outside any description untouched -- the same reasoning stripGraphqlDescriptions already documents for why declaration extraction runs against blanked descriptions instead of raw content. Reused below instead of calling stripGraphqlDescriptions a second time.
   const descriptionsStripped = stripGraphqlDescriptions(content)
 
   // Extract imports BEFORE stripping comments — #import pragmas live in comment lines
@@ -175,17 +118,7 @@ export function extractGraphql(
     }
   }
 
-  // Mask "\"\"\"...\"\"\""/"..." descriptions BEFORE stripping `#` comments, not after.
-  // stripHashComments's own quote-awareness (common.ts's isInsideStringLiteral) only tracks
-  // quote parity within a single line, so a `#` inside a still-open """..."""` block description
-  // - one whose opening """` is on an earlier line - looks "not inside a string" on the
-  // description's own content lines and gets treated as a real comment marker. If that happens
-  // to blank out the description's closing """` too (e.g. a `#` earlier on the same line as the
-  // closer), stripGraphqlDescriptions never finds a matching closer for the rest of the file,
-  // and its carried-over "still open" state masks every real declaration after it as description
-  // content, silently dropping all of them. Running stripGraphqlDescriptions first means the
-  // whole description span - `#` characters included - is already blanked to spaces before
-  // stripHashComments ever sees it, so there is no comment marker left inside it to misread.
+  // Mask "\"\"\"...\"\"\""/"..." descriptions BEFORE stripping `#` comments, not after. stripHashComments's own quote-awareness (common.ts's isInsideStringLiteral) only tracks quote parity within a single line, so a `#` inside a still-open """..."""` block description - one whose opening """` is on an earlier line - looks "not inside a string" on the description's own content lines and gets treated as a real comment marker. If that happens to blank out the description's closing """` too (e.g. a `#` earlier on the same line as the closer), stripGraphqlDescriptions never finds a matching closer for the rest of the file, and its carried-over "still open" state masks every real declaration after it as description content, silently dropping all of them. Running stripGraphqlDescriptions first means the whole description span - `#` characters included - is already blanked to spaces before stripHashComments ever sees it, so there is no comment marker left inside it to misread.
   const stripped = stripHashComments(descriptionsStripped)
   const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(stripped)
@@ -249,9 +182,7 @@ export function extractGraphql(
   const finalSymbols = propagateEndLinesToSymbols(symbols, sections).map((sym) => {
     const scanFrom = braceScanStarts.get(`${sym.name}\0${sym.lineStart}`)
     if (scanFrom === undefined) return sym
-    // Bounded by the flat end line the pass above assigned: a brace-less declaration (`scalar
-    // DateTime`, `union A = B | C`, a bodyless `type Foo`) must not reach forward and adopt the
-    // NEXT declaration's block, so the correction can only ever shrink a span, never grow one.
+    // Bounded by the flat end line the pass above assigned: a brace-less declaration (`scalar DateTime`, `union A = B | C`, a bodyless `type Foo`) must not reach forward and adopt the NEXT declaration's block, so the correction can only ever shrink a span, never grow one.
     const windowEnd = lineIndex[sym.lineEnd] ?? stripped.length
     const braceIndex = findDeclarationBraceIndex(stripped, scanFrom, windowEnd)
     if (braceIndex === -1) return sym

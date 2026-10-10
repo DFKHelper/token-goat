@@ -1,9 +1,4 @@
-/**
- * z/OS JCL adapter: the JOB (to the next JOB, a `//` null statement, or the end of the file), PROC procedures (an in-stream
- * one to its PEND), and the named EXEC steps of each, a step running to the line before the next step. `//*` comment lines,
- * in-stream data after `DD *` or `DD DATA` (to `/*`, the DLM= delimiter, or for `DD *` the next `//` statement), and JES
- * control statements never produce symbols. Operation keywords are matched case-insensitively. Imports are INCLUDE MEMBER=.
- */
+/** z/OS JCL adapter: the JOB (to the next JOB, a `//` null statement, or the end of the file), PROC procedures (an in-stream one to its PEND), and the named EXEC steps of each, a step running to the line before the next step. `//*` comment lines, in-stream data after `DD *` or `DD DATA` (to `/*`, the DLM= delimiter, or for `DD *` the next `//` statement), and JES control statements never produce symbols. Operation keywords are matched case-insensitively. Imports are INCLUDE MEMBER=. */
 
 import type { AdapterImport } from './common.js'
 import { SpanCollector, type StatementAdapterResult } from './span_collector.js'

@@ -1,8 +1,4 @@
-/**
- * Groovy symbol extractor, also used for Gradle build scripts and Jenkinsfiles. Finds classes, interfaces, traits, enums, records and
- * annotation types with their methods and constructors, script-level methods (Spock's `def "a feature"()` too), Gradle tasks, and
- * Jenkins pipeline stages, nested stages taking the enclosing stage as their parent.
- */
+/** Groovy symbol extractor, also used for Gradle build scripts and Jenkinsfiles. Finds classes, interfaces, traits, enums, records and annotation types with their methods and constructors, script-level methods (Spock's `def "a feature"()` too), Gradle tasks, and Jenkins pipeline stages, nested stages taking the enclosing stage as their parent. */
 
 import { cFunctionHeader, rawQuoted, scanBraceLanguage, stripLeadingWords, type BraceAdapterResult, type BraceLanguage, type Decl, type DeclContext } from './brace_engine.js'
 

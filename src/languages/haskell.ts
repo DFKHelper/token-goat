@@ -1,54 +1,4 @@
-/**
- * Haskell (Haskell 2010 Language Report) adapter: `module`, `data`/`newtype`, `type`, `class`,
- * `instance`, and top-level function bindings (a type signature and/or one or more equations).
- *
- * Haskell has no `{`/`}`/`begin`/`end` delimiter around a top-level declaration -- the layout
- * rule (Report section 2.7) infers braces and semicolons from indentation instead. Rather than
- * implement the full layout algorithm, this adapter uses the same heuristic every Haskell ctags
- * generator uses: a line with NO leading whitespace is a top-level declaration boundary, and a
- * declaration's span runs from its own boundary line to the line just before the next one (or to
- * end of file). This is exact for idiomatically-formatted Haskell (every real-world style guide
- * requires top-level declarations to start in column 1) and is the same assumption
- * `elixir.ts`/`kotlin.ts` make for their own languages' equivalent "what counts as a top-level
- * name" question.
- *
- * Masking rules (own pass, independent of every other adapter in this repo, per this batch's
- * established one-file-one-citation convention -- see scheme.ts's module doc for the rationale):
- *
- *  - `{- -}` block comments NEST (Report section 2.3, "Comments": "A nested comment begins with
- *    "{-" and ends with "-}" ... Nested comments are also used for compiler pragmas.", and the
- *    lexer grammar's `ncomment` production is defined recursively over `ANY | ncomment`, i.e. a
- *    complete nested comment is itself a legal ANY-run inside another one). `maskHaskellBlockComment`
- *    counts nesting depth the same way `scheme.ts::maskSchemeBlockComment` does for `#| |#`, written
- *    independently since the delimiters and citation differ.
- *  - `--` line comments, per Report section 2.3: "An ordinary comment begins with a sequence of
- *    two or more consecutive dashes (e.g. --) and extends to the following newline. The sequence
- *    of dashes must not form part of a legal lexeme. For example, "-->" or "|--" do not begin a
- *    comment, because both of these are legal lexemes; however "--foo" does start a comment."
- *    Section 2.4's lexical grammar backs this precisely: `varsym -> ( symbol⟨:⟩ {symbol} ) ⟨reservedop | dashes⟩`
- *    where `dashes -> -- {-}` (two or more dashes) is explicitly EXCLUDED from the legal-varsym
- *    set. So a maximal run of two-or-more dashes is a comment marker only when nothing after it
- *    extends it into a longer symbolic token; if the character right after the run is itself one
- *    of `ascSymbol`'s characters (section 2.4: `! # $ % & * + . / < = > ? @ \ ^ | - ~ :`), the
- *    whole thing is one operator lexeme (e.g. `-->`) and not a comment. `isSymbolChar` below is
- *    exactly that `ascSymbol` set (ASCII only -- `uniSymbol` is out of scope for this adapter).
- *    The dash run itself is only ever attempted at a token boundary (the previous character is
- *    not itself a symbol char), so a dash run glued onto a preceding symbolic prefix (the
- *    Report's own "|--" example) is never mistaken for a comment opener either.
- *  - `"..."` strings and `'x'` characters follow section 2.6: backslash escapes a following
- *    character (including a literal `"` inside a string, or `'` inside a character literal), and
- *    a named/numeric escape (`\n`, `\NUL`, `\233`) is consumed as a run of letters or digits so a
- *    multi-character escape doesn't leave a stray character live. A `'` is only attempted as a
- *    character-literal opener when the previous character is not itself an identifier character
- *    (section 2.4's `varid`/`conid` both allow a trailing `'`, e.g. `x'`, `map'`), since a genuine
- *    character literal can never immediately follow an identifier character with no separator.
- *
- * `.lhs` (literate Haskell) is explicitly OUT of scope: this adapter only claims `.hs`. Literate
- * Haskell interleaves prose and code using either bird tracks (`>`-prefixed lines) or
- * `\begin{code}`/`\end{code}` LaTeX blocks (GHC User's Guide, "Literate comments"), and correctly
- * telling code from prose needs its own masking pass this adapter does not implement. Extending
- * to `.lhs` is a real, separate follow-up, not a a bug in this file.
- */
+/** Haskell (Haskell 2010 Language Report) adapter: `module`, `data`/`newtype`, `type`, `class`, `instance`, and top-level function bindings (a type signature and/or one or more equations). Haskell has no `{`/`}`/`begin`/`end` delimiter around a top-level declaration -- the layout rule (Report section 2.7) infers braces and semicolons from indentation instead. Rather than implement the full layout algorithm, this adapter uses the same heuristic every Haskell ctags generator uses: a line with NO leading whitespace is a top-level declaration boundary, and a declaration's span runs from its own boundary line to the line just before the next one (or to end of file). This is exact for idiomatically-formatted Haskell (every real-world style guide requires top-level declarations to start in column 1) and is the same assumption `elixir.ts`/`kotlin.ts` make for their own languages' equivalent "what counts as a top-level name" question. Masking rules (own pass, independent of every other adapter in this repo, per this batch's established one-file-one-citation convention -- see scheme.ts's module doc for the rationale): - `{- -}` block comments NEST (Report section 2.3, "Comments": "A nested comment begins with "{-" and ends with "-}" ... Nested comments are also used for compiler pragmas.", and the lexer grammar's `ncomment` production is defined recursively over `ANY | ncomment`, i.e. a complete nested comment is itself a legal ANY-run inside another one). `maskHaskellBlockComment` counts nesting depth the same way `scheme.ts::maskSchemeBlockComment` does for `#| |#`, written independently since the delimiters and citation differ. - `--` line comments, per Report section 2.3: "An ordinary comment begins with a sequence of two or more consecutive dashes (e.g. --) and extends to the following newline. The sequence of dashes must not form part of a legal lexeme. For example, "-->" or "|--" do not begin a comment, because both of these are legal lexemes; however "--foo" does start a comment." Section 2.4's lexical grammar backs this precisely: `varsym -> ( symbol⟨:⟩ {symbol} ) ⟨reservedop | dashes⟩` where `dashes -> -- {-}` (two or more dashes) is explicitly EXCLUDED from the legal-varsym set. So a maximal run of two-or-more dashes is a comment marker only when nothing after it extends it into a longer symbolic token; if the character right after the run is itself one of `ascSymbol`'s characters (section 2.4: `! # $ % & * + . / < = > ? @ \ ^ | - ~ :`), the whole thing is one operator lexeme (e.g. `-->`) and not a comment. `isSymbolChar` below is exactly that `ascSymbol` set (ASCII only -- `uniSymbol` is out of scope for this adapter). The dash run itself is only ever attempted at a token boundary (the previous character is not itself a symbol char), so a dash run glued onto a preceding symbolic prefix (the Report's own "|--" example) is never mistaken for a comment opener either. - `"..."` strings and `'x'` characters follow section 2.6: backslash escapes a following character (including a literal `"` inside a string, or `'` inside a character literal), and a named/numeric escape (`\n`, `\NUL`, `\233`) is consumed as a run of letters or digits so a multi-character escape doesn't leave a stray character live. A `'` is only attempted as a character-literal opener when the previous character is not itself an identifier character (section 2.4's `varid`/`conid` both allow a trailing `'`, e.g. `x'`, `map'`), since a genuine character literal can never immediately follow an identifier character with no separator. `.lhs` (literate Haskell) is explicitly OUT of scope: this adapter only claims `.hs`. Literate Haskell interleaves prose and code using either bird tracks (`>`-prefixed lines) or `\begin{code}`/`\end{code}` LaTeX blocks (GHC User's Guide, "Literate comments"), and correctly telling code from prose needs its own masking pass this adapter does not implement. Extending to `.lhs` is a real, separate follow-up, not a a bug in this file. */
 
 import type { SymbolEntry } from '../parser_types.js'
 
@@ -57,11 +7,7 @@ const SYMBOL_CHARS = new Set(['!', '#', '$', '%', '&', '*', '+', '.', '/', '<', 
 const isSymbolChar = (ch: string | undefined): boolean => ch !== undefined && SYMBOL_CHARS.has(ch)
 const isIdentChar = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9_']/.test(ch)
 
-/**
- * Skips one nested `{- ... -}` block comment starting at `start` (pointing at the `{`), per
- * Report section 2.3: a `{-` seen while already inside increments depth, only the matching `-}`
- * decrements it to zero. Returns the index just past the closer, or end of input if unclosed.
- */
+/** Skips one nested `{- ... -}` block comment starting at `start` (pointing at the `{`), per Report section 2.3: a `{-` seen while already inside increments depth, only the matching `-}` decrements it to zero. Returns the index just past the closer, or end of input if unclosed. */
 function maskHaskellBlockComment(content: string, start: number): number {
   const n = content.length
   let i = start + 2
@@ -82,9 +28,7 @@ function maskHaskellBlockComment(content: string, start: number): number {
   return i
 }
 
-/** Consumes an escape's payload after the backslash in a string/char literal: a run of letters or
- * digits for a named/numeric escape (`\NUL`, `\ESC`, `\233`), otherwise exactly one character
- * (`\\`, `\"`, `\'`, `\n`). Returns the index just past the consumed payload. */
+/** Consumes an escape's payload after the backslash in a string/char literal: a run of letters or digits for a named/numeric escape (`\NUL`, `\ESC`, `\233`), otherwise exactly one character (`\\`, `\"`, `\'`, `\n`). Returns the index just past the consumed payload. */
 function escapePayloadEnd(content: string, afterBackslash: number): number {
   const n = content.length
   const ch = content[afterBackslash]
@@ -101,8 +45,7 @@ function escapePayloadEnd(content: string, afterBackslash: number): number {
   return Math.min(afterBackslash + 1, n)
 }
 
-/** Masks `--` line comments, nested `{- -}` block comments, `"..."` strings, and `'x'` character
- * literals to spaces (newlines preserved), left to right in one pass. */
+/** Masks `--` line comments, nested `{- -}` block comments, `"..."` strings, and `'x'` character literals to spaces (newlines preserved), left to right in one pass. */
 function maskHaskell(content: string): string {
   const n = content.length
   const out: string[] = new Array(n)
@@ -170,8 +113,7 @@ function maskHaskell(content: string): string {
         i = j + 1
         continue
       }
-      // Not a closed character literal within reach: a Template Haskell quote (`'Con`, `''Type`)
-      // or a stray apostrophe -- leave it as ordinary code.
+      // Not a closed character literal within reach: a Template Haskell quote (`'Con`, `''Type`) or a stray apostrophe -- leave it as ordinary code.
       out[i] = ch
       i++
       continue
@@ -194,8 +136,7 @@ interface Def {
   readonly name: string
 }
 
-/** Returns true when `line` (already comment/string/char masked) has a bare `=` that is not part
- * of `==`, `<=`, `>=`, `/=`, or `=>` -- the "this line's shape is an equation" test. */
+/** Returns true when `line` (already comment/string/char masked) has a bare `=` that is not part of `==`, `<=`, `>=`, `/=`, or `=>` -- the "this line's shape is an equation" test. */
 function hasTopLevelEquals(line: string): boolean {
   for (let i = 0; i < line.length; i++) {
     if (line[i] !== '=') continue
@@ -208,8 +149,7 @@ function hasTopLevelEquals(line: string): boolean {
   return false
 }
 
-/** Skips a leading `(context) =>` / `context =>` on a `class`/`instance` head, via a plain
- * string search (not a `.*=>` regex, which overlaps with the surrounding `\s` runs). */
+/** Skips a leading `(context) =>` / `context =>` on a `class`/`instance` head, via a plain string search (not a `.*=>` regex, which overlaps with the surrounding `\s` runs). */
 function afterContext(rest: string): string {
   const arrow = rest.indexOf('=>')
   return (arrow >= 0 ? rest.slice(arrow + 2) : rest).trimStart()
@@ -225,9 +165,7 @@ function classify(line: string, continued = false): Def[] | undefined {
 
   if ((m = /^type\s+(?:family\s+)?([A-Z][A-Za-z0-9_']*)/.exec(line))) return [{ kind: 'type', name: m[1]! }]
 
-  // `class Foo a where` / `class Eq a => Ord a where` -- a leading `context =>` is skipped by a
-  // plain string search rather than a `.*=>` regex, which ReDoS-linting flags for the overlap
-  // between `.*` and the surrounding `\s` runs.
+  // `class Foo a where` / `class Eq a => Ord a where` -- a leading `context =>` is skipped by a plain string search rather than a `.*=>` regex, which ReDoS-linting flags for the overlap between `.*` and the surrounding `\s` runs.
   if (/^class\s/.test(line)) {
     const rest = afterContext(line.slice('class'.length))
     if ((m = /^([A-Z][A-Za-z0-9_']*)/.exec(rest))) return [{ kind: 'class', name: m[1]! }]

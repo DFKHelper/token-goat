@@ -1,10 +1,4 @@
-/**
- * PL/I adapter: labeled PROCEDURE blocks (nested ones under their parent) and PACKAGE blocks, each to the END that closes it.
- * DO groups, BEGIN blocks and SELECT groups are tracked only so every END closes the right block; `END label;` closes the nearest
- * block with that label, and any block left open inside it closes with it. Statements end with a semicolon; `/* ... *\/` comments and
- * quoted strings are skipped, and a column 73-80 sequence field is dropped when most long lines carry one. Keywords are
- * case-insensitive. Imports are %INCLUDE members.
- */
+/** PL/I adapter: labeled PROCEDURE blocks (nested ones under their parent) and PACKAGE blocks, each to the END that closes it. DO groups, BEGIN blocks and SELECT groups are tracked only so every END closes the right block; `END label;` closes the nearest block with that label, and any block left open inside it closes with it. Statements end with a semicolon; `/* ... *\/` comments and quoted strings are skipped, and a column 73-80 sequence field is dropped when most long lines carry one. Keywords are case-insensitive. Imports are %INCLUDE members. */
 
 import type { AdapterImport } from './common.js'
 import { SpanCollector, topLevelWords, type StatementAdapterResult } from './span_collector.js'

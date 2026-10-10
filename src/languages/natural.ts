@@ -1,15 +1,4 @@
-/**
- * Software AG Natural adapter: the object itself (named by its file stem, kind by extension),
- * inline `DEFINE SUBROUTINE` blocks, the `DEFINE DATA` block and its level-1 fields (also the
- * level-1 fields of a data area), `USING`/`INCLUDE` imports, and `PERFORM`/`CALLNAT`/`FETCH`
- * references.
- *
- * Object types by extension: https://bluinsights.aws/docs/codebase-dependencies-languages-natural/
- * Comments: a line starting `* ` or `**` (or a lone `*`), or `/*`; ` /*` ends a line's code
- * (https://documentation.softwareag.com/naturalONE/natONE912/natov/pg/pg_furth_ucom.htm). A NaturalONE
- * source header is a run of `*` lines, so it is dropped as comments. DEFINE SUBROUTINE ends at
- * END-SUBROUTINE in structured mode (https://documentation.softwareag.com/natural/nat912win/sm/definesu.htm).
- */
+/** Software AG Natural adapter: the object itself (named by its file stem, kind by extension), inline `DEFINE SUBROUTINE` blocks, the `DEFINE DATA` block and its level-1 fields (also the level-1 fields of a data area), `USING`/`INCLUDE` imports, and `PERFORM`/`CALLNAT`/`FETCH` references. Object types by extension: https://bluinsights.aws/docs/codebase-dependencies-languages-natural/ Comments: a line starting `* ` or `**` (or a lone `*`), or `/*`; ` /*` ends a line's code (https://documentation.softwareag.com/naturalONE/natONE912/natov/pg/pg_furth_ucom.htm). A NaturalONE source header is a run of `*` lines, so it is dropped as comments. DEFINE SUBROUTINE ends at END-SUBROUTINE in structured mode (https://documentation.softwareag.com/natural/nat912win/sm/definesu.htm). */
 
 import * as path from 'node:path'
 

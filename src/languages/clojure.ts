@@ -1,39 +1,4 @@
-/**
- * Clojure adapter: `defn`, `defn-`, `def`, `defmacro`, `defprotocol`, `defrecord`, `deftype`,
- * `defmulti`, `defmethod`, `definterface`, `ns`.
- *
- * Its own file with its own masker, per the settled decision in `templates_idx.ts`'s module doc.
- * Clojure's reader (clojure.org/reference/reader) diverges from every other Lisp in this batch in
- * ways that are load-bearing for a masker, not cosmetic:
- *  - Clojure has NO block comment at all. clojure.org/reference/reader lists only `;` line
- *    comments as a comment form (`#_` and the `(comment ...)` macro are the closest things to a
- *    second comment mechanism, and neither is a `/* *\/`-shaped delimited span the
- *    `tests/guards/block_comment_nesting_is_classified.test.ts` guard is scoped to, so this
- *    adapter has no `maskClojureBlockComment` to register there). A masker written by analogy to
- *    Common Lisp's or Scheme's `#| |#` handling would be actively wrong here: it would treat a
- *    `#|` appearing in real Clojure source (which has no meaning to the Clojure reader) as an
- *    open delimiter and blank everything up to a `|#` that may be arbitrarily far away or absent.
- *  - `#_` elides the NEXT FORM (clojure.org/reference/reader, "Discard": "The this next form
- *    following the #_ ... is completely ignored"), the same *shape* of problem as Scheme/Racket's
- *    `#;` but a different reader syntax and a different set of nested forms to recognize (Clojure
- *    adds map `{}` and set `#{}` literals `datumEnd` in the Scheme/Racket files never needs to
- *    skip over).
- *  - Character literals have NO `#\` prefix: clojure.org/reference/reader, "Characters" --
- *    `\newline`, `\space`, `\tab`, `\backspace`, `\formfeed`, `\return`, `\uNNNN`, or a bare
- *    `\c` for any other character. A masker written for Common Lisp/Scheme/Racket's `#\` shape
- *    would completely miss Clojure's char literals (there is no `#` to key off), which is exactly
- *    the kind of near-miss the module doc for this batch warns "only look alike from a distance."
- *  - Reader conditionals (`#?(:clj expr :cljs expr)`) and namespaced keywords (`::foo`) introduce
- *    no delimiter this masker must track specially: `#?` opens an ordinary `(` the depth-counting
- *    walk already handles, and `::` is just two characters inside an otherwise-ordinary keyword
- *    token.
- *  - `'` is the QUOTE abbreviation, never a string delimiter -- the same reason the other four
- *    adapters in this batch do not reuse `common.ts::stripStringLiterals`.
- *
- * Strings are `"..."` with `\` escapes (multi-line strings are legal Clojure, unlike most
- * C-family languages, so this masker -- like every other Lisp masker in this batch -- runs over
- * the whole file rather than one line at a time).
- */
+/** Clojure adapter: `defn`, `defn-`, `def`, `defmacro`, `defprotocol`, `defrecord`, `deftype`, `defmulti`, `defmethod`, `definterface`, `ns`. Its own file with its own masker, per the settled decision in `templates_idx.ts`'s module doc. Clojure's reader (clojure.org/reference/reader) diverges from every other Lisp in this batch in ways that are load-bearing for a masker, not cosmetic: - Clojure has NO block comment at all. clojure.org/reference/reader lists only `;` line comments as a comment form (`#_` and the `(comment ...)` macro are the closest things to a second comment mechanism, and neither is a `/* *\/`-shaped delimited span the `tests/guards/block_comment_nesting_is_classified.test.ts` guard is scoped to, so this adapter has no `maskClojureBlockComment` to register there). A masker written by analogy to Common Lisp's or Scheme's `#| |#` handling would be actively wrong here: it would treat a `#|` appearing in real Clojure source (which has no meaning to the Clojure reader) as an open delimiter and blank everything up to a `|#` that may be arbitrarily far away or absent. - `#_` elides the NEXT FORM (clojure.org/reference/reader, "Discard": "The this next form following the #_ ... is completely ignored"), the same *shape* of problem as Scheme/Racket's `#;` but a different reader syntax and a different set of nested forms to recognize (Clojure adds map `{}` and set `#{}` literals `datumEnd` in the Scheme/Racket files never needs to skip over). - Character literals have NO `#\` prefix: clojure.org/reference/reader, "Characters" -- `\newline`, `\space`, `\tab`, `\backspace`, `\formfeed`, `\return`, `\uNNNN`, or a bare `\c` for any other character. A masker written for Common Lisp/Scheme/Racket's `#\` shape would completely miss Clojure's char literals (there is no `#` to key off), which is exactly the kind of near-miss the module doc for this batch warns "only look alike from a distance." - Reader conditionals (`#?(:clj expr :cljs expr)`) and namespaced keywords (`::foo`) introduce no delimiter this masker must track specially: `#?` opens an ordinary `(` the depth-counting walk already handles, and `::` is just two characters inside an otherwise-ordinary keyword token. - `'` is the QUOTE abbreviation, never a string delimiter -- the same reason the other four adapters in this batch do not reuse `common.ts::stripStringLiterals`. Strings are `"..."` with `\` escapes (multi-line strings are legal Clojure, unlike most C-family languages, so this masker -- like every other Lisp masker in this batch -- runs over the whole file rather than one line at a time). */
 
 import { SpanCollector, type StatementAdapterResult } from './span_collector.js'
 import { buildLineIndex, offsetToLine } from './common.js'
@@ -55,9 +20,7 @@ const DEFINERS: ReadonlyMap<string, string> = new Map([
 const isSpace = (ch: string | undefined): boolean => ch !== undefined && /\s/.test(ch)
 const isSymbolChar = (ch: string | undefined): boolean => ch !== undefined && !/[\s()[\]{}"'`,;\\]/.test(ch)
 
-/** The end of one datum elided by `#_` (clojure.org/reference/reader, "Discard"): a parenthesized,
- * bracketed, or brace-delimited form (map/vector/set literals all use one of `()[]{}`), a string,
- * a backslash character literal, or a bare symbol/keyword run. */
+/** The end of one datum elided by `#_` (clojure.org/reference/reader, "Discard"): a parenthesized, bracketed, or brace-delimited form (map/vector/set literals all use one of `()[]{}`), a string, a backslash character literal, or a bare symbol/keyword run. */
 function datumEnd(content: string, i: number): number {
   const n = content.length
   if (i >= n) return i
@@ -103,10 +66,7 @@ function datumEnd(content: string, i: number): number {
   return p === i ? i + 1 : p
 }
 
-/** Masks `;` line comments, `#_`-elided datums, `"..."` strings and `\<name>` character literals
- * to spaces (newlines preserved), left to right in one pass. Clojure has no block comment
- * (clojure.org/reference/reader), so unlike common_lisp.ts/scheme.ts/racket.ts there is no
- * `#| |#` branch here at all. */
+/** Masks `;` line comments, `#_`-elided datums, `"..."` strings and `\<name>` character literals to spaces (newlines preserved), left to right in one pass. Clojure has no block comment (clojure.org/reference/reader), so unlike common_lisp.ts/scheme.ts/racket.ts there is no `#| |#` branch here at all. */
 function maskClojure(content: string): string {
   const n = content.length
   const out: string[] = new Array(n)
@@ -129,11 +89,7 @@ function maskClojure(content: string): string {
       i = end
       continue
     }
-    // A backslash character literal only opens in "read position": require the previously
-    // emitted, non-blanked character to be a delimiter (or start of input), so a symbol that
-    // merely contains a backslash-adjacent sequence is never misread as a char literal. In
-    // practice Clojure symbols never contain a bare `\`, so this guard mainly protects against
-    // running past the end of a truncated/malformed file.
+    // A backslash character literal only opens in "read position": require the previously emitted, non-blanked character to be a delimiter (or start of input), so a symbol that merely contains a backslash-adjacent sequence is never misread as a char literal. In practice Clojure symbols never contain a bare `\`, so this guard mainly protects against running past the end of a truncated/malformed file.
     if (ch === '\\' && (i === 0 || /[\s([{'"`,]/.test(content[i - 1]!) || content[i - 1] === undefined)) {
       const start = i
       const end = datumEnd(content, i)
@@ -210,10 +166,7 @@ export function extractClojure(content: string, filePath: string): StatementAdap
       depth++
       const tok = readToken(masked, i + 1)
       if (tok !== undefined) {
-        // `defmethod` names its target multimethod followed by a dispatch value, and `def-` forms
-        // in general have the definer immediately followed by the name -- no function-shorthand
-        // peeling is needed here (Clojure's `defn` always takes the name directly, unlike Scheme's
-        // `(define (name args) ...)`).
+        // `defmethod` names its target multimethod followed by a dispatch value, and `def-` forms in general have the definer immediately followed by the name -- no function-shorthand peeling is needed here (Clojure's `defn` always takes the name directly, unlike Scheme's `(define (name args) ...)`).
         const kind = DEFINERS.get(tok.word.toLowerCase())
         if (kind !== undefined) {
           const nameTok = readNameToken(masked, tok.end)

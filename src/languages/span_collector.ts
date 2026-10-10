@@ -1,7 +1,4 @@
-/**
- * Shared bookkeeping for the statement-scanning adapters (ABAP, SAS, PL/I, RPG, JCL, OpenEdge ABL): a symbol is opened when its
- * header statement is read, closed when its terminator is reached, and every body is sliced from the raw lines at the end.
- */
+/** Shared bookkeeping for the statement-scanning adapters (ABAP, SAS, PL/I, RPG, JCL, OpenEdge ABL): a symbol is opened when its header statement is read, closed when its terminator is reached, and every body is sliced from the raw lines at the end. */
 
 import type { SymbolEntry } from '../parser_types.js'
 import type { AdapterImport } from './common.js'

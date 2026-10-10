@@ -236,10 +236,7 @@ export function queryRefCounts(
   const scopeSql = scopeWhere.length > 0 ? ` AND ${scopeWhere.join(' AND ')}` : ''
   const sqlFor = (width: number): string =>
     `SELECT name, COUNT(*) as c FROM refs WHERE name IN (${Array.from({ length: width }, () => '?').join(', ')})${scopeSql} GROUP BY name`
-  // Every full batch is the same statement, so it is prepared once and run with different names. A
-  // file with 400,000 symbols is 445 batches, and preparing that statement 445 times is 445 parses
-  // of a 900-placeholder string for no gain. The last batch is usually a different width and gets
-  // its own.
+  // Every full batch is the same statement, so it is prepared once and run with different names. A file with 400,000 symbols is 445 batches, and preparing that statement 445 times is 445 parses of a 900-placeholder string for no gain. The last batch is usually a different width and gets its own.
   const full = names.length >= REF_COUNT_BATCH ? db.prepare(sqlFor(REF_COUNT_BATCH)) : undefined
   // One read transaction over all the batches. `global.db` is written by the background indexer while this reads, so without it batch 1 and batch 445 can see different databases and the map would mix counts from either side of a reindex -- something the single statement this replaced could not do. The cost is that the snapshot is pinned for the whole loop: in WAL, which is what `db.ts` puts every connection in, that does not block the writer but does defer checkpointing for as long as the read runs. Measured against the live 400,157-symbol index on 2026-09-14: 135,079 names is 150 batches and 420 ms end to end, 50,000 names 75 ms, 5,000 names 4 ms. Half a second of deferred checkpointing is a smaller price than a count that is half from before a reindex and half from after.
   db.transaction(() => {

@@ -1,11 +1,4 @@
-/**
- * MATLAB and Octave adapter: functions (nested and local ones too), classdef classes with their properties, methods, events and
- * enumeration members. Only the first word of a statement is read as a keyword, so an `end` used as an index (`x(end)`,
- * `c{end}`) never closes a block. A function file whose functions have no closing `end` is detected by counting openers
- * against closers: each function then runs to the next `function` or the end of the file. `%` and `#` start comments,
- * `%{ ... %}` blocks (alone on their lines) nest, `...` continues a line, and a `'` directly after a name, bracket or
- * another quote is a transpose rather than a string. Keywords are case-sensitive. Imports are `import` statements.
- */
+/** MATLAB and Octave adapter: functions (nested and local ones too), classdef classes with their properties, methods, events and enumeration members. Only the first word of a statement is read as a keyword, so an `end` used as an index (`x(end)`, `c{end}`) never closes a block. A function file whose functions have no closing `end` is detected by counting openers against closers: each function then runs to the next `function` or the end of the file. `%` and `#` start comments, `%{ ... %}` blocks (alone on their lines) nest, `...` continues a line, and a `'` directly after a name, bracket or another quote is a transpose rather than a string. Keywords are case-sensitive. Imports are `import` statements. */
 
 import type { AdapterImport } from './common.js'
 import { SpanCollector, type StatementAdapterResult } from './span_collector.js'

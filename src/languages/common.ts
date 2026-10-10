@@ -1,23 +1,12 @@
-/**
- * Shared helpers for regex-based language adapters.
- *
- * Mirrors the subset of `src/token_goat/languages/common.py` that the TS
- * adapters actually need: line-index building, offset→line conversion, comment
- * stripping, and a simple symbol emitter used by the index adapters.
- */
+/** Shared helpers for regex-based language adapters. Mirrors the subset of `src/token_goat/languages/common.py` that the TS adapters actually need: line-index building, offset→line conversion, comment stripping, and a simple symbol emitter used by the index adapters. */
 
 import type { SymbolEntry } from '../parser_types.js'
 import { escapeRegExp } from '../util.js'
 import { precedingDocComment, type DocCommentStyle } from '../doc_comment.js'
 
-// ---------------------------------------------------------------------------
-// Line-index helpers
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Line-index helpers ---------------------------------------------------------------------------
 
-/**
- * Build an array of character offsets for the start of each line (0-indexed).
- * Element 0 is always 0 (start of file). Used for O(log n) offset→line lookups.
- */
+/** Build an array of character offsets for the start of each line (0-indexed). Element 0 is always 0 (start of file). Used for O(log n) offset→line lookups. */
 export function buildLineIndex(text: string): number[] {
   const idx: number[] = [0]
   for (let i = 0; i < text.length; i++) {
@@ -26,9 +15,7 @@ export function buildLineIndex(text: string): number[] {
   return idx
 }
 
-/**
- * Convert a character offset to a 1-based line number using binary search.
- */
+/** Convert a character offset to a 1-based line number using binary search. */
 export function offsetToLine(lineIndex: readonly number[], offset: number): number {
   let lo = 0
   let hi = lineIndex.length - 1
@@ -52,21 +39,14 @@ export function lineTextAt(content: string, lineIndex: readonly number[], line: 
   return content.slice(start, next === undefined ? content.length : next - 1).trim()
 }
 
-// ---------------------------------------------------------------------------
-// Comment stripping
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Comment stripping ---------------------------------------------------------------------------
 
 /** Strip C-style block comments (/* ... *\/) and optional line comments. */
 export function stripCstyleComments(
   text: string,
   lineCommentRe?: RegExp,
 ): string {
-  // Strip block comments first, quote-aware (like isInsideStringLiteral) so a stray "/*" inside a
-  // string literal is not mistaken for a real comment opener. Comment content is blanked with
-  // spaces (not removed) so line/column offsets are preserved. Delegates the actual per-line
-  // scan to `stripBlockCommentSpan` (below), threading `inComment` across lines the same way that
-  // function's own doc comment describes -- this used to duplicate that scan inline; the two
-  // drifting out of sync was a real risk since both are on the tree-sitter-adapter critical path.
+  // Strip block comments first, quote-aware (like isInsideStringLiteral) so a stray "/*" inside a string literal is not mistaken for a real comment opener. Comment content is blanked with spaces (not removed) so line/column offsets are preserved. Delegates the actual per-line scan to `stripBlockCommentSpan` (below), threading `inComment` across lines the same way that function's own doc comment describes -- this used to duplicate that scan inline; the two drifting out of sync was a real risk since both are on the tree-sitter-adapter critical path.
   const lines = text.split('\n')
   let inComment = false
   const outLines: string[] = []
@@ -82,12 +62,7 @@ export function stripCstyleComments(
   return out
 }
 
-/**
- * Strip XML/HTML ``<!-- ... -->`` block comments. Comment content is blanked with spaces (not
- * removed), and newlines inside a multi-line comment are preserved as-is, so line/column offsets
- * are unaffected downstream — mirrors `stripCstyleComments`'s span-blanking approach for `/* ... *\/`
- * comments, just with the `<!--`/`-->` delimiters instead of `/*`/`*\/`.
- */
+/** Strip XML/HTML ``<!-- ... -->`` block comments. Comment content is blanked with spaces (not removed), and newlines inside a multi-line comment are preserved as-is, so line/column offsets are unaffected downstream — mirrors `stripCstyleComments`'s span-blanking approach for `/* ... *\/` comments, just with the `<!--`/`-->` delimiters instead of `/*`/`*\/`. */
 export function stripXmlComments(text: string): string {
   const lines = text.split('\n')
   let inComment = false
@@ -128,23 +103,8 @@ export function stripXmlComments(text: string): string {
   return outLines.join('\n')
 }
 
-/**
- * Blanks `//` and `/* *\/` JS/TS comments in a single linear scan that copies every quoted-string
- * and backtick template-literal span through untouched, leaving their content intact for callers
- * that still need to read it afterward (e.g. matching an import path inside its quotes). A `"`/`'`
- * string is treated as implicitly closed by a raw newline (a `"`/`'` string can never legally
- * contain one), while a backtick template literal is allowed to span real newlines since it can
- * legitimately do so in JS.
- */
-/**
- * Scan a `"`/`'`/`` ` ``-quoted string literal starting at `content[start]` (the opening quote)
- * and return the index just past its closing quote. Handles `\`-escapes; a `"`/`'` string (not a
- * backtick template literal) is also implicitly closed by an unescaped newline, since neither can
- * legitimately span one. Returns `content.length` if the string is unterminated. Shared by
- * stripJsComments below (which preserves the matched span verbatim) and sfc_idx.ts's
- * blankJsStringLiterals (which blanks it) -- only the scan itself, not what each caller does with
- * the matched span, was ever identical between the two.
- */
+/** Blanks `//` and `/* *\/` JS/TS comments in a single linear scan that copies every quoted-string and backtick template-literal span through untouched, leaving their content intact for callers that still need to read it afterward (e.g. matching an import path inside its quotes). A `"`/`'` string is treated as implicitly closed by a raw newline (a `"`/`'` string can never legally contain one), while a backtick template literal is allowed to span real newlines since it can legitimately do so in JS. */
+/** Scan a `"`/`'`/`` ` ``-quoted string literal starting at `content[start]` (the opening quote) and return the index just past its closing quote. Handles `\`-escapes; a `"`/`'` string (not a backtick template literal) is also implicitly closed by an unescaped newline, since neither can legitimately span one. Returns `content.length` if the string is unterminated. Shared by stripJsComments below (which preserves the matched span verbatim) and sfc_idx.ts's blankJsStringLiterals (which blanks it) -- only the scan itself, not what each caller does with the matched span, was ever identical between the two. */
 export function scanQuotedStringEnd(content: string, start: number): number {
   const quote = content[start]
   const n = content.length
@@ -200,13 +160,7 @@ export function stripJsComments(content: string): string {
   return out
 }
 
-/**
- * Strip GraphQL / shell / Python style ``# …`` line comments. Quote-aware: a `#` inside an
- * open single- or double-quoted string literal on the same line is not treated as a comment
- * starter, so e.g. a GraphQL description string containing a literal `#` is preserved.
- * Blank-fills (rather than deletes) the comment span so line/column offsets are preserved for
- * downstream line-based symbol extraction, matching `stripSqlLineComments` below.
- */
+/** Strip GraphQL / shell / Python style ``# …`` line comments. Quote-aware: a `#` inside an open single- or double-quoted string literal on the same line is not treated as a comment starter, so e.g. a GraphQL description string containing a literal `#` is preserved. Blank-fills (rather than deletes) the comment span so line/column offsets are preserved for downstream line-based symbol extraction, matching `stripSqlLineComments` below. */
 export function stripHashComments(text: string): string {
   return text
     .split('\n')
@@ -224,28 +178,12 @@ export function stripHashComments(text: string): string {
 const HTML_COMMENT_RE = /<!--[\s\S]*?-->/g
 const HTML_SCRIPT_BODY_RE = /(<script\b[^>]*>)([\s\S]*?)(<\/script\s*>)/gi
 const HTML_CDATA_RE = /<!\[CDATA\[[\s\S]*?\]\]>/g
-// Liquid's own comment tag, e.g. `{% comment %}...{% endcomment %}` or the whitespace-control
-// variant `{%- comment -%}...{%- endcomment -%}`. Blanked the same way as HTML `<!-- -->`
-// comments below; applying this mask universally (not just for .liquid files) is harmless since
-// `{% comment %}` syntax never occurs in plain HTML/other file kinds this function is used for.
+// Liquid's own comment tag, e.g. `{% comment %}...{% endcomment %}` or the whitespace-control variant `{%- comment -%}...{%- endcomment -%}`. Blanked the same way as HTML `<!-- -->` comments below; applying this mask universally (not just for .liquid files) is harmless since `{% comment %}` syntax never occurs in plain HTML/other file kinds this function is used for.
 const LIQUID_COMMENT_RE = /{%-?\s*comment\s*-?%}[\s\S]*?{%-?\s*endcomment\s*-?%}/gi
 
-// Blanks HTML comments, Liquid {% comment %} blocks, <script> element bodies (tags kept intact so
-// callers that still need to read the opening tag, e.g. a script `src=` extractor, are
-// unaffected), and CDATA sections - all with spaces, never newlines, so line/offset math against
-// the original text stays valid. Without this, a heading-shaped string sitting inside
-// a comment, a JS template literal in a <script> block, or a CDATA-wrapped payload
-// gets scanned as if it were real markup and produces a phantom section/symbol.
+// Blanks HTML comments, Liquid {% comment %} blocks, <script> element bodies (tags kept intact so callers that still need to read the opening tag, e.g. a script `src=` extractor, are unaffected), and CDATA sections - all with spaces, never newlines, so line/offset math against the original text stays valid. Without this, a heading-shaped string sitting inside a comment, a JS template literal in a <script> block, or a CDATA-wrapped payload gets scanned as if it were real markup and produces a phantom section/symbol.
 export function maskHtmlNoise(text: string): string {
-  // Script bodies are masked FIRST, before HTML-comment masking: a literal `<!--` sitting
-  // inside a <script> string (with no matching `-->` in that same script tag) would otherwise
-  // be treated by HTML_COMMENT_RE as a real comment opener, greedily matching everything up to
-  // the NEXT `-->` anywhere later in the document -- including real headings in between.
-  // Masking script bodies first blanks any such literal `<!--`/`-->` substrings before
-  // HTML_COMMENT_RE ever runs, so it can no longer misfire across a script boundary. An HTML
-  // comment that itself contains a `<script>`-shaped substring is unaffected by this reorder:
-  // HTML_SCRIPT_BODY_RE would just mask that fake script body too (a no-op either way, since
-  // the surrounding HTML_COMMENT_RE pass immediately after blanks that whole span regardless).
+  // Script bodies are masked FIRST, before HTML-comment masking: a literal `<!--` sitting inside a <script> string (with no matching `-->` in that same script tag) would otherwise be treated by HTML_COMMENT_RE as a real comment opener, greedily matching everything up to the NEXT `-->` anywhere later in the document -- including real headings in between. Masking script bodies first blanks any such literal `<!--`/`-->` substrings before HTML_COMMENT_RE ever runs, so it can no longer misfire across a script boundary. An HTML comment that itself contains a `<script>`-shaped substring is unaffected by this reorder: HTML_SCRIPT_BODY_RE would just mask that fake script body too (a no-op either way, since the surrounding HTML_COMMENT_RE pass immediately after blanks that whole span regardless).
   let out = text.replace(HTML_SCRIPT_BODY_RE, (_m, open: string, body: string, close: string) =>
     open + body.replace(/[^\n]/g, ' ') + close,
   )
@@ -255,10 +193,7 @@ export function maskHtmlNoise(text: string): string {
   return out
 }
 
-// ATX-style HTML/Liquid `<h1>`-`<h6>` headings. `s` (dotall) lets `.*?` cross newlines so a
-// heading formatted across multiple lines (e.g. `<h1>\n  Title\n</h1>`, common
-// HTML-formatter/pretty-printer output) still matches -- the non-greedy `.*?` still stops at
-// the first matching `</hN>`, so this doesn't introduce over-greedy matches.
+// ATX-style HTML/Liquid `<h1>`-`<h6>` headings. `s` (dotall) lets `.*?` cross newlines so a heading formatted across multiple lines (e.g. `<h1>\n  Title\n</h1>`, common HTML-formatter/pretty-printer output) still matches -- the non-greedy `.*?` still stops at the first matching `</hN>`, so this doesn't introduce over-greedy matches.
 const HTML_HEADING_RE = /<h([1-6])[^>]*>(.*?)<\/h\1>/gis
 const HTML_HEADING_TAG_STRIP_RE = /<[^>]+>/g
 
@@ -270,22 +205,11 @@ export interface HtmlHeadingMatch {
   readonly heading: string
   /** Character offset of the match start in the (unmasked) source text. */
   readonly offset: number
-  /** The full matched `<hN ...>...</hN>` text, e.g. for callers that need to inspect attributes
-   * on the opening tag (such as an `id=` anchor) without re-scanning the source. */
+  /** The full matched `<hN ...>...</hN>` text, e.g. for callers that need to inspect attributes on the opening tag (such as an `id=` anchor) without re-scanning the source. */
   readonly tag: string
 }
 
-/**
- * Find every `<h1>`-`<h6>` heading in HTML/Liquid `content`, masking comments, `<script>`
- * bodies, and CDATA sections first via {@link maskHtmlNoise} so heading-shaped text sitting
- * inside one of those (a commented-out `<h1>`, a JS template literal, a CDATA payload) is not
- * mistaken for a real heading.
- *
- * Shared by the indexer (`html.ts`, `liquid.ts`) and the live section-reading fallback
- * (`section_reader.ts`) so a heading indexed as a symbol is always reachable via the live
- * `section` command, and vice versa -- one regex/masking implementation instead of two that can
- * drift out of sync.
- */
+/** Find every `<h1>`-`<h6>` heading in HTML/Liquid `content`, masking comments, `<script>` bodies, and CDATA sections first via {@link maskHtmlNoise} so heading-shaped text sitting inside one of those (a commented-out `<h1>`, a JS template literal, a CDATA payload) is not mistaken for a real heading. Shared by the indexer (`html.ts`, `liquid.ts`) and the live section-reading fallback (`section_reader.ts`) so a heading indexed as a symbol is always reachable via the live `section` command, and vice versa -- one regex/masking implementation instead of two that can drift out of sync. */
 export function findHtmlHeadingMatches(content: string): HtmlHeadingMatch[] {
   const masked = maskHtmlNoise(content)
   const matches: HtmlHeadingMatch[] = []
@@ -312,33 +236,19 @@ export function stripSqlLineComments(text: string): string {
     .join('\n')
 }
 
-/**
- * True when `index` falls inside an opening single- or double-quoted string literal earlier
- * on `line`. Tracked as a single state machine (which quote character, if any, is currently
- * open) rather than independent odd/even counts per quote type - a line of code is inside at
- * most one kind of string at a time, since a `'` can't open while a `"`-delimited string is
- * already open (and vice versa). Using independent parity counters instead misreads an
- * apostrophe inside a double-quoted string, e.g. `"don't panic"`, as opening a single-quoted
- * string that never closes.
- */
+/** True when `index` falls inside an opening single- or double-quoted string literal earlier on `line`. Tracked as a single state machine (which quote character, if any, is currently open) rather than independent odd/even counts per quote type - a line of code is inside at most one kind of string at a time, since a `'` can't open while a `"`-delimited string is already open (and vice versa). Using independent parity counters instead misreads an apostrophe inside a double-quoted string, e.g. `"don't panic"`, as opening a single-quoted string that never closes. */
 export function isInsideStringLiteral(line: string, index: number, from = 0, opts: StripStringOpts = {}): boolean {
   let openQuote: '"' | "'" | null = null
   let i = from
   while (i < index) {
     const ch = line[i]
-    // A Scala `'` either opens a character literal, which is skipped whole, or opens nothing at
-    // all. Either way it must not leave a quote hanging open over the rest of the line.
+    // A Scala `'` either opens a character literal, which is skipped whole, or opens nothing at all. Either way it must not leave a quote hanging open over the rest of the line.
     if (opts.symbolLiterals === true && openQuote === null && ch === "'") {
       const len = scalaCharLiteralLength(line, i)
       i += len === 0 ? 1 : len
       continue
     }
-    // Only treat backslash as an escape while already inside a string (mirrors
-    // stripStringLiterals below); a bare backslash outside a string can't escape
-    // anything, and this avoids miscounting consecutive backslashes preceding a
-    // real closing quote as escaping it (e.g. an escaped trailing backslash
-    // immediately followed by the actual closing quote, as in a Windows path
-    // literal like "C:\\Users\\").
+    // Only treat backslash as an escape while already inside a string (mirrors stripStringLiterals below); a bare backslash outside a string can't escape anything, and this avoids miscounting consecutive backslashes preceding a real closing quote as escaping it (e.g. an escaped trailing backslash immediately followed by the actual closing quote, as in a Windows path literal like "C:\\Users\\").
     if (openQuote !== null && ch === '\\' && i + 1 < line.length) {
       i += 2
       continue
@@ -355,19 +265,8 @@ export function isInsideStringLiteral(line: string, index: number, from = 0, opt
   return openQuote !== null
 }
 
-/**
- * Strip a ``/* ... *\/`` block-comment span from one line, carrying `inComment` state across
- * calls (one per line, in order) so a comment spanning multiple lines is tracked correctly.
- * A `/*` occurrence that falls inside an open single- or double-quoted string literal on the
- * same line (e.g. `glob('src/*.php')`) is not treated as a comment opener, so a string that
- * merely contains that two-character sequence doesn't swallow the rest of the file as a
- * never-closed comment.
- */
-/**
- * Index of the next real `/*` opener on `line` at or after `from`, or -1 -- skipping any that sits
- * inside a string literal or after a `//`, for the reasons the two span strippers below spell out.
- * Shared by both so they can never disagree about what counts as an opener.
- */
+/** Strip a ``/* ... *\/`` block-comment span from one line, carrying `inComment` state across calls (one per line, in order) so a comment spanning multiple lines is tracked correctly. A `/*` occurrence that falls inside an open single- or double-quoted string literal on the same line (e.g. `glob('src/*.php')`) is not treated as a comment opener, so a string that merely contains that two-character sequence doesn't swallow the rest of the file as a never-closed comment. */
+/** Index of the next real `/*` opener on `line` at or after `from`, or -1 -- skipping any that sits inside a string literal or after a `//`, for the reasons the two span strippers below spell out. Shared by both so they can never disagree about what counts as an opener. */
 function nextBlockCommentOpen(line: string, from: number, opts: StripStringOpts = {}): number {
   const lineCommentIdx = lineCommentStartIndex(line, ['//'], from)
   let open = line.indexOf('/*', from)
@@ -415,17 +314,7 @@ export function stripBlockCommentSpan(line: string, inComment: boolean, opts: St
   return { code, inComment: comment }
 }
 
-/**
- * Depth-aware sibling of `stripBlockCommentSpan`, for languages whose block comments nest.
- *
- * Swift, Kotlin, Scala and Dart all specify nesting `/* ... /* ... *\/ ... *\/`; C# and PHP do not.
- * The boolean-state version above closes the outer comment at the first inner `*\/`, which exposes
- * whatever follows as code -- a `}` in that exposed tail decrements the caller's brace depth and
- * pops a type frame that is still open, misattributing every later declaration in the file. This
- * takes and returns a nesting depth instead of a boolean, so only the matching close ends the span.
- * Callers in non-nesting languages must keep using `stripBlockCommentSpan`: there, a `/*` inside a
- * comment is ordinary comment text and counting it would leave the span open forever.
- */
+/** Depth-aware sibling of `stripBlockCommentSpan`, for languages whose block comments nest. Swift, Kotlin, Scala and Dart all specify nesting `/* ... /* ... *\/ ... *\/`; C# and PHP do not. The boolean-state version above closes the outer comment at the first inner `*\/`, which exposes whatever follows as code -- a `}` in that exposed tail decrements the caller's brace depth and pops a type frame that is still open, misattributing every later declaration in the file. This takes and returns a nesting depth instead of a boolean, so only the matching close ends the span. Callers in non-nesting languages must keep using `stripBlockCommentSpan`: there, a `/*` inside a comment is ordinary comment text and counting it would leave the span open forever. */
 export function stripNestedBlockCommentSpan(line: string, depth: number, opts: StripStringOpts = {}): { code: string; depth: number } {
   let code = ''
   let j = 0
@@ -442,8 +331,7 @@ export function stripNestedBlockCommentSpan(line: string, depth: number, opts: S
       j = open + 2
       d = 1
     } else {
-      // Whichever delimiter comes first decides: a nested opener deepens the span, a closer
-      // unwinds one level. Scanning for only one of the two is how the boolean version ends early.
+      // Whichever delimiter comes first decides: a nested opener deepens the span, a closer unwinds one level. Scanning for only one of the two is how the boolean version ends early.
       const open = line.indexOf('/*', j)
       const close = line.indexOf('*/', j)
       if (close === -1 && open === -1) {
@@ -459,22 +347,13 @@ export function stripNestedBlockCommentSpan(line: string, depth: number, opts: S
   return { code, depth: d }
 }
 
-/**
- * Strip a `//` line comment from `line`, returning only the code portion before it.
- * A `//` occurrence that falls inside an open single- or double-quoted string literal (e.g.
- * `"http://example.com"`) is not treated as a comment opener, mirroring the quote-awareness
- * `stripBlockCommentSpan` applies to `/*`. Returns `line` unchanged when no real `//` is found.
- */
+/** Strip a `//` line comment from `line`, returning only the code portion before it. A `//` occurrence that falls inside an open single- or double-quoted string literal (e.g. `"http://example.com"`) is not treated as a comment opener, mirroring the quote-awareness `stripBlockCommentSpan` applies to `/*`. Returns `line` unchanged when no real `//` is found. */
 export function stripLineComment(line: string, markers: string[] = ['//'], opts: StripStringOpts = {}): string {
   const cutIdx = lineCommentStartIndex(line, markers, 0, opts)
   return cutIdx === -1 ? line : line.slice(0, cutIdx)
 }
 
-/**
- * Index of the first real (not-inside-a-string-literal) occurrence of any marker in
- * `markers`, or -1 if none is found. Shared scan logic behind {@link stripLineComment} and
- * `findMultilineOpener`'s comment-awareness guard below.
- */
+/** Index of the first real (not-inside-a-string-literal) occurrence of any marker in `markers`, or -1 if none is found. Shared scan logic behind {@link stripLineComment} and `findMultilineOpener`'s comment-awareness guard below. */
 function lineCommentStartIndex(line: string, markers: string[], from = 0, opts: StripStringOpts = {}): number {
   let cutIdx = -1
   for (const marker of markers) {
@@ -487,51 +366,12 @@ function lineCommentStartIndex(line: string, markers: string[], from = 0, opts: 
   return cutIdx
 }
 
-/**
- * Blanks out the contents of single-line string literals (single- or double-quoted, with
- * backslash-escape awareness) so that brace/paren characters inside string content - e.g. the
- * literal `"{"` in `private string bracket = "{";` - are never miscounted as real code structure
- * by a brace-depth tracker. Quote delimiters themselves are left in place so column positions
- * and any surrounding-context checks are unaffected; only the interior is replaced with spaces.
- *
- * String-interpolation holes are tracked so a nested quote inside one can't prematurely close
- * the outer string: C# `$"...{expr}..."` (a bare `{` opens a hole once the string is `$`-prefixed),
- * Kotlin `"...${expr}..."`, and PHP `"...{$expr}..."` all get a brace-depth-aware hole scan - the
- * hole's own `{`/`}` are left unblanked (they're real code, and balanced, so they don't disturb a
- * caller's net brace count), nested code braces inside the hole (e.g. a lambda body) are tracked
- * via a depth counter so they don't close the hole early, and any string literal nested inside the
- * hole (e.g. `raw.Replace("}", "")`) is recursively scanned with the same quote/escape/hole rules
- * so its content is blanked like any other string and can't leak an unmatched brace. This targets
- * the reported bug: `$"{raw.Replace("}", "")}"` used to read the nested `"` as closing the outer
- * interpolated string early, exposing the hole's own `"}"` as bare unstripped code and leaking an
- * unmatched `}` into the caller's brace-depth counter.
- *
- * C# `{{` (the escape for a literal brace inside an interpolated string) is special-cased so it
- * blanks as a literal `{` rather than opening an interpolation hole.
- *
- * It is intentionally not a full string lexer for every language's syntax, and callers should be
- * aware of these remaining gaps:
- *  - C# verbatim (`@"..."`) strings are still blanked correctly in the common case: an escaped
- *    `""` inside a verbatim string is read as "close quote, immediately reopen", which blanks the
- *    same characters either way. The one edge case this misreads is a literal backslash directly
- *    before the closing quote of a verbatim string (e.g. `@"path\"`), which this function treats
- *    as an escaped quote and so does not close the string where the verbatim-string rules
- *    actually would. Rare in practice.
- *  - PHP heredoc/nowdoc, Kotlin triple-quoted raw strings (`"""..."""`), and PowerShell
- *    here-strings (`@"..."@` / `@'...'@`) can all span multiple lines and are NOT tracked across
- *    lines here - a brace inside one of those can still desync a caller's brace-depth counter.
- *    Handling that would need dedicated multi-line state tracking, similar in spirit to
- *    `stripBlockCommentSpan` above.
- */
-/** Per-language options for {@link stripStringLiterals}. Each defaults to the pre-existing
- *  behaviour, so every caller that passes none is byte-for-byte unaffected. */
+/** Blanks out the contents of single-line string literals (single- or double-quoted, with backslash-escape awareness) so that brace/paren characters inside string content - e.g. the literal `"{"` in `private string bracket = "{";` - are never miscounted as real code structure by a brace-depth tracker. Quote delimiters themselves are left in place so column positions and any surrounding-context checks are unaffected; only the interior is replaced with spaces. String-interpolation holes are tracked so a nested quote inside one can't prematurely close the outer string: C# `$"...{expr}..."` (a bare `{` opens a hole once the string is `$`-prefixed), Kotlin `"...${expr}..."`, and PHP `"...{$expr}..."` all get a brace-depth-aware hole scan - the hole's own `{`/`}` are left unblanked (they're real code, and balanced, so they don't disturb a caller's net brace count), nested code braces inside the hole (e.g. a lambda body) are tracked via a depth counter so they don't close the hole early, and any string literal nested inside the hole (e.g. `raw.Replace("}", "")`) is recursively scanned with the same quote/escape/hole rules so its content is blanked like any other string and can't leak an unmatched brace. This targets the reported bug: `$"{raw.Replace("}", "")}"` used to read the nested `"` as closing the outer interpolated string early, exposing the hole's own `"}"` as bare unstripped code and leaking an unmatched `}` into the caller's brace-depth counter. C# `{{` (the escape for a literal brace inside an interpolated string) is special-cased so it blanks as a literal `{` rather than opening an interpolation hole. It is intentionally not a full string lexer for every language's syntax, and callers should be aware of these remaining gaps: - C# verbatim (`@"..."`) strings are still blanked correctly in the common case: an escaped `""` inside a verbatim string is read as "close quote, immediately reopen", which blanks the same characters either way. The one edge case this misreads is a literal backslash directly before the closing quote of a verbatim string (e.g. `@"path\"`), which this function treats as an escaped quote and so does not close the string where the verbatim-string rules actually would. Rare in practice. - PHP heredoc/nowdoc, Kotlin triple-quoted raw strings (`"""..."""`), and PowerShell here-strings (`@"..."@` / `@'...'@`) can all span multiple lines and are NOT tracked across lines here - a brace inside one of those can still desync a caller's brace-depth counter. Handling that would need dedicated multi-line state tracking, similar in spirit to `stripBlockCommentSpan` above. */
+/** Per-language options for {@link stripStringLiterals}. Each defaults to the pre-existing behaviour, so every caller that passes none is byte-for-byte unaffected. */
 export interface StripStringOpts {
-  /** Treat `'''`/`"""` as a single three-character string delimiter (Dart, which spells both).
-   *  Without it a triple-quoted string holding an odd number of interior quotes desyncs the
-   *  frame stack, and any brace after that quote leaks out as real code. */
+  /** Treat `'''`/`"""` as a single three-character string delimiter (Dart, which spells both). Without it a triple-quoted string holding an odd number of interior quotes desyncs the frame stack, and any brace after that quote leaks out as real code. */
   tripleQuotes?: boolean
-  /** Scala, where a `'` that opens no character literal is a symbol literal or a quoted block and
-   *  never closes. See {@link scalaCharLiteralLength}. */
+  /** Scala, where a `'` that opens no character literal is a symbol literal or a quoted block and never closes. See {@link scalaCharLiteralLength}. */
   symbolLiterals?: boolean
   /** Swift, where `\( ... )` inside a string is an interpolation hole whose content is code, so a nested string literal in it must not close the outer string. */
   swiftInterpolation?: boolean
@@ -541,18 +381,7 @@ export interface StripStringOpts {
   interpolatorPrefix?: boolean
 }
 
-/**
- * Length of the Scala character literal starting at `index` (`'a'`, `'\n'`, `'A'`), or 0 when
- * that `'` opens none. A `'` that opens no character literal is a Scala 2 symbol literal (`'ident`)
- * or a Scala 3 quoted block (`'{`/`'[`), and neither is closed by a second quote -- so reading one
- * as a string blanks the rest of the line, taking any brace on it. Scala Language Specification
- * sections 1.3.4 "Character Literals" and 1.3.6 "Symbol Literals".
- *
- * Exported so the string blanker and the comment finder read one copy of the rule: fixing only the
- * blanker leaves the comment finder believing the line is still inside a string, so a trailing
- * `// note {` is never stripped and its brace is counted instead. The two failures cancel today;
- * they stop cancelling the moment either one is corrected alone.
- */
+/** Length of the Scala character literal starting at `index` (`'a'`, `'\n'`, `'A'`), or 0 when that `'` opens none. A `'` that opens no character literal is a Scala 2 symbol literal (`'ident`) or a Scala 3 quoted block (`'{`/`'[`), and neither is closed by a second quote -- so reading one as a string blanks the rest of the line, taking any brace on it. Scala Language Specification sections 1.3.4 "Character Literals" and 1.3.6 "Symbol Literals". Exported so the string blanker and the comment finder read one copy of the rule: fixing only the blanker leaves the comment finder believing the line is still inside a string, so a trailing `// note {` is never stripped and its brace is counted instead. The two failures cancel today; they stop cancelling the moment either one is corrected alone. */
 export function scalaCharLiteralLength(line: string, index: number): number {
   if (line[index] !== "'") return 0
   if (line[index + 1] === '\\') {
@@ -566,10 +395,7 @@ export function scalaCharLiteralLength(line: string, index: number): number {
   return line[index + 1] !== undefined && line[index + 1] !== "'" && line[index + 2] === "'" ? 3 : 0
 }
 export function stripStringLiterals(line: string, opts: StripStringOpts = {}): string {
-  // A string frame blanks its content until the matching quote (unless a hole is open on top of
-  // it). A hole frame passes its content through unblanked - it's real code - tracking nested
-  // `{`/`}` depth so a nested code brace doesn't close the hole early, and pushing a new string
-  // frame for any quote it encounters (e.g. the nested string in `Replace("}", "")`).
+  // A string frame blanks its content until the matching quote (unless a hole is open on top of it). A hole frame passes its content through unblanked - it's real code - tracking nested `{`/`}` depth so a nested code brace doesn't close the hole early, and pushing a new string frame for any quote it encounters (e.g. the nested string in `Replace("}", "")`).
   type Frame = { kind: 'string'; quote: string; bareBraceHole: boolean; plain: boolean } | { kind: 'hole'; depth: number; paren?: boolean }
 
   // The frame for the string whose opening quote is at `idx`. A `$` before the quote (or `$@`/`@$`) marks a C# interpolated string, where a bare `{` (not `${`) opens an interpolation hole. A `plain` string has no holes: a Scala string with no interpolator prefix, or a Dart raw string.
@@ -601,16 +427,7 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
   while (i < line.length) {
     const ch = line[i]
 
-    // A real single-line string/hole never contains a raw, unescaped newline. Some callers (e.g.
-    // Apex, which runs this over an entire file's content rather than one line at a time - see
-    // extractApex - so it can see a `//` comment's text before comment-stripping runs) can
-    // otherwise hand this a false "open string" state, e.g. an apostrophe inside a `// Don't ...`
-    // comment. Without this, an unmatched quote like that would blank every character - including
-    // newlines - until the next stray matching quote anywhere later in the file, collapsing lines
-    // together and desyncing any line-offset bookkeeping built from the original content. Treating
-    // `\n` as an implicit terminator that closes everything still open on the stack matches what
-    // every other caller of this function already does implicitly by only ever passing it one
-    // line (with no embedded `\n`) at a time.
+    // A real single-line string/hole never contains a raw, unescaped newline. Some callers (e.g. Apex, which runs this over an entire file's content rather than one line at a time - see extractApex - so it can see a `//` comment's text before comment-stripping runs) can otherwise hand this a false "open string" state, e.g. an apostrophe inside a `// Don't ...` comment. Without this, an unmatched quote like that would blank every character - including newlines - until the next stray matching quote anywhere later in the file, collapsing lines together and desyncing any line-offset bookkeeping built from the original content. Treating `\n` as an implicit terminator that closes everything still open on the stack matches what every other caller of this function already does implicitly by only ever passing it one line (with no embedded `\n`) at a time.
     if (ch === '\n') {
       out += ch
       i++
@@ -716,11 +533,7 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
     if (!top.plain && (top.quote === '"' || (opts.singleQuoteHoles === true && top.quote[0] === "'"))) {
       if (top.bareBraceHole && ch === '{') {
         if (line[i + 1] === '{') {
-          // C# `{{` is the escape for a literal `{` inside an interpolated string, not a hole
-          // opener - without this check the first `{` opened a hole unconditionally, passing the
-          // rest of the "escaped brace" text (and everything after it on the line) through as
-          // real code instead of blanked string content, desyncing brace depth for callers that
-          // brace-count this function's output (e.g. csharp.ts).
+          // C# `{{` is the escape for a literal `{` inside an interpolated string, not a hole opener - without this check the first `{` opened a hole unconditionally, passing the rest of the "escaped brace" text (and everything after it on the line) through as real code instead of blanked string content, desyncing brace depth for callers that brace-count this function's output (e.g. csharp.ts).
           out += '  '
           i += 2
           continue
@@ -752,10 +565,7 @@ export function stripStringLiterals(line: string, opts: StripStringOpts = {}): s
   return out
 }
 
-// ---------------------------------------------------------------------------
-// Multi-line string masking (heredoc/nowdoc, triple-quoted raw strings, verbatim
-// strings, PowerShell here-strings)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Multi-line string masking (heredoc/nowdoc, triple-quoted raw strings, verbatim strings, PowerShell here-strings) ---------------------------------------------------------------------------
 
 /** Which multi-line string family is currently open, carried across `stripMultilineStringSpan` calls. */
 export type MultilineStringKind = 'heredoc' | 'nowdoc' | 'tripleQuote' | 'tripleSingleQuote' | 'verbatim' | 'psHereDouble' | 'psHereSingle' | 'rString' | 'rRaw' | 'swiftExtended' | 'sigil'
@@ -775,31 +585,12 @@ export function closingQuoteRunEnd(text: string, from: number, quote: string, le
   return -1
 }
 
-/**
- * Carried-state token for `stripMultilineStringSpan`, mirroring the `inComment: boolean` state
- * `stripBlockCommentSpan` threads across line-by-line calls. `null` means "not currently inside
- * a multi-line string"; a non-null value means the previous line ended mid-span and the next
- * call should look for that span's closer instead of scanning for a new opener.
- */
+/** Carried-state token for `stripMultilineStringSpan`, mirroring the `inComment: boolean` state `stripBlockCommentSpan` threads across line-by-line calls. `null` means "not currently inside a multi-line string"; a non-null value means the previous line ended mid-span and the next call should look for that span's closer instead of scanning for a new opener. */
 export interface MultilineStringState {
   kind: MultilineStringKind
-  /**
-   * Heredoc/nowdoc closing identifier (e.g. `EOT`) for those two kinds. For `tripleQuote`,
-   * carries the opening quote-run length as a string (e.g. `'3'`, `'4'`) instead -- C# 11+ raw
-   * string literals may open with a run of 3 or more `"` characters, and the closer must match
-   * that same run length (or greater), so the fixed 3-quote assumption can't be baked into the
-   * `findMultilineCloser` switch. Kotlin's triple-quoted strings are always exactly 3 and use
-   * `'3'` here too. For `swiftExtended`, carries the exact closing delimiter (`"""` followed by the opener's own hash run, e.g. `"""##`), so an N-hash opener can only be closed by an N-hash closer. Unused for `verbatim`/`psHereDouble`/`psHereSingle`.
-   */
+  /** Heredoc/nowdoc closing identifier (e.g. `EOT`) for those two kinds. For `tripleQuote`, carries the opening quote-run length as a string (e.g. `'3'`, `'4'`) instead -- C# 11+ raw string literals may open with a run of 3 or more `"` characters, and the closer must match that same run length (or greater), so the fixed 3-quote assumption can't be baked into the `findMultilineCloser` switch. Kotlin's triple-quoted strings are always exactly 3 and use `'3'` here too. For `swiftExtended`, carries the exact closing delimiter (`"""` followed by the opener's own hash run, e.g. `"""##`), so an N-hash opener can only be closed by an N-hash closer. Unused for `verbatim`/`psHereDouble`/`psHereSingle`. */
   identifier: string
-  /**
-   * True only for a C# verbatim *interpolated* string (`$@"..."` / `@$"..."`). A bare `{` inside
-   * one opens an interpolation hole (real code, not string content) rather than literal text, so
-   * `findMultilineCloser`'s `verbatim` case must scan hole-aware - a `"` opening a nested string
-   * literal inside the hole (e.g. `$@"{Map("}")}"`) must not be misread as this verbatim string's
-   * own closing quote. Unused (implicitly false) for every other kind, including a plain
-   * non-interpolated `@"..."` verbatim string.
-   */
+  /** True only for a C# verbatim *interpolated* string (`$@"..."` / `@$"..."`). A bare `{` inside one opens an interpolation hole (real code, not string content) rather than literal text, so `findMultilineCloser`'s `verbatim` case must scan hole-aware - a `"` opening a nested string literal inside the hole (e.g. `$@"{Map("}")}"`) must not be misread as this verbatim string's own closing quote. Unused (implicitly false) for every other kind, including a plain non-interpolated `@"..."` verbatim string. */
   interpolated?: boolean
   /** Nesting depth inside a bracket-delimited Elixir sigil, whose delimiters nest. Carried across lines; unused for every other kind. */
   depth?: number
@@ -814,11 +605,7 @@ export interface MultilineStringState {
 /** Where a multi-line literal's closing delimiter may sit on the line that holds it. `'anywhere'`: the first delimiter on the line closes the literal, wherever it falls. `'lineStart'`: only whitespace may precede it, so a delimiter appearing mid-line is ordinary content; the leading whitespace is also what the language strips from the body, which is why it is allowed rather than requiring column zero. `'column0'`: the delimiter must be the very first character of the line, with no indent at all. The rule is always named rather than assumed: reading an unanchored closer for an anchored language ends the literal early and parses its remaining body as code, which invents declarations the file never makes, while anchoring one that should not be anchored leaves the literal open to end of file and loses every declaration below it. Only the cross-line closer search consults this. A literal that opens and closes on one line is matched by the opener's own same-line scan, where an anchored rule could never be satisfied and applying it would leave a malformed one-line literal open to end of file. */
 export type CloserAnchor = 'anywhere' | 'lineStart' | 'column0'
 
-/**
- * Per-language closer-position rule, read by every branch of `findMultilineCloser` that searches for a delimiter. A `Record` rather than a lookup with a fallback, so adding a language to {@link MultilineStringLang} is a compile error until its rule is decided.
- *
- * Each entry states the rule for that language's cross-line literals, with the reference it comes from. None of these were executed against a compiler here; they are read from the cited specification text.
- */
+/** Per-language closer-position rule, read by every branch of `findMultilineCloser` that searches for a delimiter. A `Record` rather than a lookup with a fallback, so adding a language to {@link MultilineStringLang} is a compile error until its rule is decided. Each entry states the rule for that language's cross-line literals, with the reference it comes from. None of these were executed against a compiler here; they are read from the cited specification text. */
 const MULTILINE_CLOSER_ANCHOR: Record<MultilineStringLang, CloserAnchor> = {
   // An Elixir heredoc is terminated only by a delimiter run that begins its own line, preceded by nothing but the whitespace that also sets the indentation stripped from the body (Elixir syntax reference, section "Strings", heredocs). A run appearing mid-line inside the body is content.
   elixir: 'lineStart',
@@ -932,8 +719,7 @@ function findMultilineCloser(line: string, from: number, state: MultilineStringS
     case 'verbatim': {
       // No anchor is consulted here on purpose: a C# verbatim string closes on its next non-doubled quote wherever that falls, and it is the reason MULTILINE_CLOSER_ANCHOR.csharp is `'anywhere'` -- see that entry.
       if (!state.interpolated) {
-        // A `"` closes the verbatim string unless doubled (`""`), which is an escaped literal
-        // quote and does not close it.
+        // A `"` closes the verbatim string unless doubled (`""`), which is an escaped literal quote and does not close it.
         let j = from
         while (j < line.length) {
           if (line[j] === '"') {
@@ -947,14 +733,7 @@ function findMultilineCloser(line: string, from: number, state: MultilineStringS
         }
         return null
       }
-      // Interpolated verbatim string (`$@"..."` / `@$"..."`): a bare `{` opens an interpolation
-      // hole whose content is real code, not string content, so a `"` inside a nested string
-      // literal within the hole (e.g. `Map("}")` in `$@"{Map("}")}"`) must not be misread as this
-      // verbatim string's own closing quote - mirrors `stripStringLiterals`'s own bareBraceHole
-      // handling for the single-line `$"..."` case (see that function's doc comment), scoped to
-      // one line only. A hole (or its nested string) that itself spans multiple lines is a known,
-      // documented gap - same class of imprecision `stripStringLiterals` and this function's own
-      // non-interpolated branch above already accept.
+      // Interpolated verbatim string (`$@"..."` / `@$"..."`): a bare `{` opens an interpolation hole whose content is real code, not string content, so a `"` inside a nested string literal within the hole (e.g. `Map("}")` in `$@"{Map("}")}"`) must not be misread as this verbatim string's own closing quote - mirrors `stripStringLiterals`'s own bareBraceHole handling for the single-line `$"..."` case (see that function's doc comment), scoped to one line only. A hole (or its nested string) that itself spans multiple lines is a known, documented gap - same class of imprecision `stripStringLiterals` and this function's own non-interpolated branch above already accept.
       let j = from
       let holeDepth = 0
       let nestedQuote: string | null = null
@@ -1018,8 +797,7 @@ interface OpenerMatch {
   state: MultilineStringState
 }
 
-// Line-comment marker(s) recognized for each language's findMultilineOpener guard below --
-// an opener-shaped sequence sitting inside one of these is prose, not real syntax.
+// Line-comment marker(s) recognized for each language's findMultilineOpener guard below -- an opener-shaped sequence sitting inside one of these is prose, not real syntax.
 const MULTILINE_OPENER_COMMENT_MARKERS: Record<MultilineStringLang, string[]> = {
   php: ['//', '#'],
   kotlin: ['//'],
@@ -1033,11 +811,7 @@ const MULTILINE_OPENER_COMMENT_MARKERS: Record<MultilineStringLang, string[]> = 
   r: ['#'],
 }
 
-// Languages whose findMultilineOpener guard also needs the `/* ... */` block-comment check
-// below. PowerShell is deliberately excluded: its block-comment opener `<#` always contains the
-// literal `#` character that MULTILINE_OPENER_COMMENT_MARKERS.powershell already scans for, so
-// the line-comment guard above incidentally already treats everything from `<#` onward as
-// commented -- an equivalent check here would be redundant.
+// Languages whose findMultilineOpener guard also needs the `/* ... */` block-comment check below. PowerShell is deliberately excluded: its block-comment opener `<#` always contains the literal `#` character that MULTILINE_OPENER_COMMENT_MARKERS.powershell already scans for, so the line-comment guard above incidentally already treats everything from `<#` onward as commented -- an equivalent check here would be redundant.
 const MULTILINE_OPENER_BLOCK_COMMENT_LANGS: ReadonlySet<MultilineStringLang> = new Set(['php', 'kotlin', 'csharp', 'swift', 'scala', 'dart'])
 
 // Opening punctuation of an R raw character constant, anchored at the `r`/`R` prefix: quote, an optional dash run, then one of the three bracket openers (R base help page `?Quotes`, "Raw character constants"). Sticky rather than `^`-anchored so a content-wide scan can test one offset without slicing the rest of the file on every character.
@@ -1055,16 +829,7 @@ export interface RRawOpener {
   closer: string
 }
 
-/**
- * Match an R raw character constant opening at `index` in `text`, or null when none does.
- *
- * The `r`/`R` prefix only opens one when it is a token of its own, so a preceding identifier
- * character means this is the tail of a longer name rather than a prefix. Exported so the
- * line-scoped mask in {@link findMultilineOpener} and the content-scoped delimiter walks (R's
- * parameter-list scan and {@link findMatchingBraceEndLine}) all read one copy of the rule: a raw
- * constant's content is verbatim, so a walk that instead reads it as an ordinary quoted string
- * re-pairs the quotes inside it and then counts a bracket in its text as a real delimiter.
- */
+/** Match an R raw character constant opening at `index` in `text`, or null when none does. The `r`/`R` prefix only opens one when it is a token of its own, so a preceding identifier character means this is the tail of a longer name rather than a prefix. Exported so the line-scoped mask in {@link findMultilineOpener} and the content-scoped delimiter walks (R's parameter-list scan and {@link findMatchingBraceEndLine}) all read one copy of the rule: a raw constant's content is verbatim, so a walk that instead reads it as an ordinary quoted string re-pairs the quotes inside it and then counts a bracket in its text as a real delimiter. */
 export function matchRRawOpener(text: string, index: number): RRawOpener | null {
   const ch = text[index]
   if (ch !== 'r' && ch !== 'R') return null
@@ -1084,10 +849,7 @@ export interface GroovySlashy {
   end: number
 }
 
-/**
- * Characters after which Groovy expects an operand, so a `/` following one opens a slashy string
- * rather than dividing. `==~`, `=~`, `!` and the arithmetic operators all end in one of these.
- */
+/** Characters after which Groovy expects an operand, so a `/` following one opens a slashy string rather than dividing. `==~`, `=~`, `!` and the arithmetic operators all end in one of these. */
 const GROOVY_OPERAND_BEFORE: ReadonlySet<string> = new Set([...'([{,;=+-*/%<>!&|^~?:'])
 
 /** Longest body either Groovy slashy form may have; see the scan loop in {@link matchGroovySlashy} for why a bound is required rather than merely tidy. */
@@ -1111,20 +873,7 @@ function groovyOperandPosition(text: string, index: number): boolean {
   return GROOVY_OPERAND_KEYWORDS.has(text.slice(j + 1, i + 1))
 }
 
-/**
- * Match a Groovy slashy (`/.../`) or dollar-slashy (`$/.../$`) string opening at `index`, or null
- * when none does (https://groovy-lang.org/syntax.html, sections "Slashy string" and "Dollar slashy
- * string"). Exported so the brace-language masker and `pack`'s comment stripper read one copy of
- * the rule: neither `"` nor `'` delimits these, so a walk that does not know them reads an
- * apostrophe in one as opening a string and a `//` or `/*` in one as opening a comment.
- *
- * A `/` is ambiguous with division and is resolved by position: it opens a string only where an
- * operand is expected. Two deliberate limitations follow, both erring towards leaving code alone.
- * A slashy string is confined to the line it opens on, even though Groovy lets one span lines --
- * an unterminated `/` would otherwise swallow the rest of the file on a mere division misread. And
- * `//` and an empty slashy string are spelled the same, so `//` is always the comment Groovy reads
- * it as. The unambiguous `$/` form has neither restriction and may span lines.
- */
+/** Match a Groovy slashy (`/.../`) or dollar-slashy (`$/.../$`) string opening at `index`, or null when none does (https://groovy-lang.org/syntax.html, sections "Slashy string" and "Dollar slashy string"). Exported so the brace-language masker and `pack`'s comment stripper read one copy of the rule: neither `"` nor `'` delimits these, so a walk that does not know them reads an apostrophe in one as opening a string and a `//` or `/*` in one as opening a comment. A `/` is ambiguous with division and is resolved by position: it opens a string only where an operand is expected. Two deliberate limitations follow, both erring towards leaving code alone. A slashy string is confined to the line it opens on, even though Groovy lets one span lines -- an unterminated `/` would otherwise swallow the rest of the file on a mere division misread. And `//` and an empty slashy string are spelled the same, so `//` is always the comment Groovy reads it as. The unambiguous `$/` form has neither restriction and may span lines. */
 export function matchGroovySlashy(text: string, index: number): GroovySlashy | null {
   const dollar = text[index] === '$' && text[index + 1] === '/'
   if (!dollar) {
@@ -1134,10 +883,7 @@ export function matchGroovySlashy(text: string, index: number): GroovySlashy | n
     if (!groovyOperandPosition(text, index)) return null
   }
   const bodyStart = index + (dollar ? 2 : 1)
-  // A failed scan runs to this bound, so the cap is what keeps a file full of unterminated `$/`
-  // from costing O(n^2): every `$` would otherwise scan to end of file. No real regex or text
-  // block comes near 1 KB, and a literal that does is simply left unmasked, which is where this
-  // started rather than anywhere worse.
+  // A failed scan runs to this bound, so the cap is what keeps a file full of unterminated `$/` from costing O(n^2): every `$` would otherwise scan to end of file. No real regex or text block comes near 1 KB, and a literal that does is simply left unmasked, which is where this started rather than anywhere worse.
   const limit = Math.min(text.length, bodyStart + MAX_GROOVY_SLASHY_BODY)
   for (let i = bodyStart; i < limit; i++) {
     const ch = text[i]
@@ -1173,13 +919,7 @@ export interface ElixirSigilOpener {
   escapes: boolean
 }
 
-/**
- * Match a non-heredoc Elixir sigil opening at `index`: `~`, then one lowercase letter or a run of
- * uppercase letters, then a delimiter from `/ | " ' ( [ { <` (Elixir "Sigils" guide and the
- * `Kernel.SpecialForms` docs). A lowercase sigil takes `\` escapes; an uppercase one takes none.
- * A heredoc sigil (`~S"""`) returns null on purpose: its `"""` run is what the triple-quote opener
- * already finds, and that path handles the indentation-anchored closer heredocs require.
- */
+/** Match a non-heredoc Elixir sigil opening at `index`: `~`, then one lowercase letter or a run of uppercase letters, then a delimiter from `/ | " ' ( [ { <` (Elixir "Sigils" guide and the `Kernel.SpecialForms` docs). A lowercase sigil takes `\` escapes; an uppercase one takes none. A heredoc sigil (`~S"""`) returns null on purpose: its `"""` run is what the triple-quote opener already finds, and that path handles the indentation-anchored closer heredocs require. */
 export function matchElixirSigilOpener(line: string, index: number): ElixirSigilOpener | null {
   if (line[index] !== '~') return null
   let i = index + 1
@@ -1239,15 +979,7 @@ export interface SwiftExtendedOpener {
   closer: string
 }
 
-/**
- * Match a Swift extended-delimiter string opening at `index` in `text`, or null when none does.
- *
- * Any number of `#` may pad the delimiter and the count must match to close, so the hash run is
- * carried on the result rather than assumed to be one (The Swift Programming Language, "Strings
- * and Characters", section "Extended String Delimiters"). The `#` must be immediately followed by
- * the quote run, which is what keeps Swift's other `#` spellings -- `#available(iOS 15, *)`,
- * `#selector(foo)`, `#file`, `#if`, and macro attachment -- from being read as string openers.
- */
+/** Match a Swift extended-delimiter string opening at `index` in `text`, or null when none does. Any number of `#` may pad the delimiter and the count must match to close, so the hash run is carried on the result rather than assumed to be one (The Swift Programming Language, "Strings and Characters", section "Extended String Delimiters"). The `#` must be immediately followed by the quote run, which is what keeps Swift's other `#` spellings -- `#available(iOS 15, *)`, `#selector(foo)`, `#file`, `#if`, and macro attachment -- from being read as string openers. */
 export function matchSwiftExtendedOpener(text: string, index: number): SwiftExtendedOpener | null {
   if (text[index] !== '#') return null
   SWIFT_EXTENDED_OPENER_RE.lastIndex = index
@@ -1269,17 +1001,7 @@ export interface BashHeredocOpener {
   terminator: string
 }
 
-/**
- * Match a bash here-document redirection opening at `index` in `text`, or null when none does.
- *
- * The delimiter is an ordinary shell word, so it may be quoted in whole or in part and the
- * terminator is that word after quote removal: `<<\EOF`, `<<'END-OF-FILE'` and `<<"E"OF` close on
- * `EOF`, `END-OF-FILE` and `EOF` respectively (GNU Bash Reference Manual, section 3.6.6 "Here
- * Documents"). Quoting only decides whether the body is expanded, which no index cares about, so
- * every form returns the same shape. A preceding `<` or a following `<` rules the match out, which
- * is what keeps the `<<<` here-string (section 3.6.7 "Here Strings") and the `<<` left-shift
- * operator (section 6.5 "Shell Arithmetic") from being read as here-document openers.
- */
+/** Match a bash here-document redirection opening at `index` in `text`, or null when none does. The delimiter is an ordinary shell word, so it may be quoted in whole or in part and the terminator is that word after quote removal: `<<\EOF`, `<<'END-OF-FILE'` and `<<"E"OF` close on `EOF`, `END-OF-FILE` and `EOF` respectively (GNU Bash Reference Manual, section 3.6.6 "Here Documents"). Quoting only decides whether the body is expanded, which no index cares about, so every form returns the same shape. A preceding `<` or a following `<` rules the match out, which is what keeps the `<<<` here-string (section 3.6.7 "Here Strings") and the `<<` left-shift operator (section 6.5 "Shell Arithmetic") from being read as here-document openers. */
 export function matchBashHeredocOpener(text: string, index: number): BashHeredocOpener | null {
   if (text[index] !== '<' || text[index + 1] !== '<') return null
   if (text[index - 1] === '<' || text[index + 2] === '<') return null
@@ -1338,15 +1060,7 @@ function findRQuoteEnd(line: string, start: number, quote: string): number {
   return -1
 }
 
-/**
- * True if `idx` falls inside a `/* ... *\/` block-comment span that opens on this same line at
- * or before `idx` and has not yet closed by `idx`. Mirrors the open/close scan
- * `stripBlockCommentSpan` performs, but only answers the "is idx inside a same-line block
- * comment" question for `findMultilineOpener`'s guard below -- a block comment that started on
- * a PRIOR line is already handled by each caller's existing `inComment` gate, which skips
- * calling `stripMultilineStringSpan` (and therefore this function) entirely on lines that start
- * already inside one.
- */
+/** True if `idx` falls inside a `/* ... *\/` block-comment span that opens on this same line at or before `idx` and has not yet closed by `idx`. Mirrors the open/close scan `stripBlockCommentSpan` performs, but only answers the "is idx inside a same-line block comment" question for `findMultilineOpener`'s guard below -- a block comment that started on a PRIOR line is already handled by each caller's existing `inComment` gate, which skips calling `stripMultilineStringSpan` (and therefore this function) entirely on lines that start already inside one. */
 function isInsideSameLineBlockComment(line: string, idx: number, from = 0): boolean {
   let comment = false
   let j = from
@@ -1371,16 +1085,7 @@ function isInsideSameLineBlockComment(line: string, idx: number, from = 0): bool
 }
 
 function findMultilineOpener(line: string, from: number, lang: MultilineStringLang): OpenerMatch | null {
-  // Where this line's real (not-inside-a-string) `//`/`#` comment begins, if any. An opener
-  // match at or after this index is opener-shaped text inside a comment (e.g. `// see """docs`
-  // or `# example: @"`), not a genuine multi-line string opener -- without this, such a line
-  // desyncs every following line's parse state (brace counting, symbol extraction) until an
-  // unrelated later closer happens to be found.
-  // `from` marks where a previously-closed multi-line string (that closed mid-line) ends --
-  // everything in `line` before it is masked string content, not real code. Scanning these
-  // guards from index 0 instead would let a `//`/`#`, unbalanced `/*`, or odd quote count that
-  // merely happens to sit inside that ALREADY-CLOSED string's own content wrongly veto a genuine
-  // second opener later on the same line, so every guard below is bounded to start at `from`.
+  // Where this line's real (not-inside-a-string) `//`/`#` comment begins, if any. An opener match at or after this index is opener-shaped text inside a comment (e.g. `// see """docs` or `# example: @"`), not a genuine multi-line string opener -- without this, such a line desyncs every following line's parse state (brace counting, symbol extraction) until an unrelated later closer happens to be found. `from` marks where a previously-closed multi-line string (that closed mid-line) ends -- everything in `line` before it is masked string content, not real code. Scanning these guards from index 0 instead would let a `//`/`#`, unbalanced `/*`, or odd quote count that merely happens to sit inside that ALREADY-CLOSED string's own content wrongly veto a genuine second opener later on the same line, so every guard below is bounded to start at `from`.
   const commentIdx = lineCommentStartIndex(line, MULTILINE_OPENER_COMMENT_MARKERS[lang], from)
   const isCommented = (idx: number): boolean =>
     (commentIdx !== -1 && idx >= commentIdx) ||
@@ -1399,8 +1104,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
   }
 
   if (lang === 'kotlin' || lang === 'swift' || lang === 'scala' || lang === 'graphql') {
-    // Kotlin raw strings, Swift multi-line string literals and Scala multi-line string literals all use a fixed `"""` delimiter (unlike C#'s variable-length `"{3,}` run), so one branch serves all three.
-    // Swift alone also has the extended-delimiter family (`#"..."#`, `##"""..."""##`, any hash count, which must match to close). Unlike R's raw constant, one that closes on the same line is masked rather than skipped: no Swift matcher reads a symbol name out of string content -- FUNC_RE, INIT_RE, SUBSCRIPT_RE, PROPERTY_RE and TYPE_HEADER_RE each read a bare identifier after a keyword -- so blanking one cannot cost a name, while leaving it unmasked lets a `}` inside it close the enclosing declaration early.
+    // Kotlin raw strings, Swift multi-line string literals and Scala multi-line string literals all use a fixed `"""` delimiter (unlike C#'s variable-length `"{3,}` run), so one branch serves all three. Swift alone also has the extended-delimiter family (`#"..."#`, `##"""..."""##`, any hash count, which must match to close). Unlike R's raw constant, one that closes on the same line is masked rather than skipped: no Swift matcher reads a symbol name out of string content -- FUNC_RE, INIT_RE, SUBSCRIPT_RE, PROPERTY_RE and TYPE_HEADER_RE each read a bare identifier after a keyword -- so blanking one cannot cost a name, while leaving it unmasked lets a `}` inside it close the enclosing declaration early.
     let swiftExt: OpenerMatch | null = null
     if (lang === 'swift') {
       for (let h = line.indexOf('#', from); h !== -1; h = line.indexOf('#', h + 1)) {
@@ -1422,8 +1126,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     const idx = line.indexOf('"""', from)
     // An extended opener starting before the first bare `"""` wins, which is also what makes `#"""` read as one extended opener rather than a `#` followed by a plain multi-line string.
     if (swiftExt !== null && (idx === -1 || swiftExt.openStart < idx)) return swiftExt
-    // Mirrors PHP's heredoc-opener guard above: a `"""` that textually appears inside an
-    // already-open single-line string literal is not a real raw-string opener.
+    // Mirrors PHP's heredoc-opener guard above: a `"""` that textually appears inside an already-open single-line string literal is not a real raw-string opener.
     if (idx === -1 || isInsideStringLiteral(line, idx, from) || isCommented(idx)) return null
     const runClose = TRIPLE_QUOTE_RUN_CLOSE[lang]
     const tripleState: MultilineStringState = { kind: 'tripleQuote', identifier: '3', runClose, closerAnchor: MULTILINE_CLOSER_ANCHOR[lang] }
@@ -1435,12 +1138,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
   }
 
   if (lang === 'elixir' || lang === 'dart') {
-    // Elixir heredocs open with `"""` or `'''`, and `@doc`/`@moduledoc` bodies -- which are
-    // heredocs -- routinely contain example code. Whichever delimiter appears first on the line
-    // wins, so a `'''` inside a `"""` body (or vice versa) is content, not a second opener.
-    // A sigil heredoc (`~S"""`, `~s'''`) needs no special case: its delimiter run is what this
-    // finds, and the sigil prefix is left as ordinary code before the opener.
-    // Dart's multi-line strings spell the same two delimiters and share the same "first one on the line wins" rule, so they route through this branch too; a raw multi-line string (`r'''`/`r"""`) needs no special case either, since the `r` prefix is left as ordinary code before the delimiter run this finds.
+    // Elixir heredocs open with `"""` or `'''`, and `@doc`/`@moduledoc` bodies -- which are heredocs -- routinely contain example code. Whichever delimiter appears first on the line wins, so a `'''` inside a `"""` body (or vice versa) is content, not a second opener. A sigil heredoc (`~S"""`, `~s'''`) needs no special case: its delimiter run is what this finds, and the sigil prefix is left as ordinary code before the opener. Dart's multi-line strings spell the same two delimiters and share the same "first one on the line wins" rule, so they route through this branch too; a raw multi-line string (`r'''`/`r"""`) needs no special case either, since the `r` prefix is left as ordinary code before the delimiter run this finds.
     const candidates: Array<[number, MultilineStringKind, string]> = []
     const dq = line.indexOf('"""', from)
     if (dq !== -1) candidates.push([dq, 'tripleQuote', '"""'])
@@ -1448,11 +1146,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     if (sq !== -1) candidates.push([sq, 'tripleSingleQuote', "'''"])
     candidates.sort((a, b) => a[0] - b[0])
     const first = candidates[0]
-    // A sigil that is not a heredoc (`~s{...}`, `~r/.../`, `~w(...)`) may span lines too, and only
-    // the heredoc forms were masked before -- so a `def` inside one was indexed as a real function
-    // and a bare `end` inside one popped the enclosing module's frame, orphaning everything after
-    // it. Whichever opener comes first on the line wins, so a `~s` inside a heredoc body stays
-    // content and a `"""` inside a sigil body does too. Dart shares this branch but has no sigils.
+    // A sigil that is not a heredoc (`~s{...}`, `~r/.../`, `~w(...)`) may span lines too, and only the heredoc forms were masked before -- so a `def` inside one was indexed as a real function and a bare `end` inside one popped the enclosing module's frame, orphaning everything after it. Whichever opener comes first on the line wins, so a `~s` inside a heredoc body stays content and a `"""` inside a sigil body does too. Dart shares this branch but has no sigils.
     if (lang === 'elixir') {
       for (let t = line.indexOf('~', from); t !== -1; t = line.indexOf('~', t + 1)) {
         if (first !== undefined && first[0] < t) break
@@ -1474,8 +1168,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
   }
 
   if (lang === 'r') {
-    // R has no fixed-delimiter multi-line form. An ordinary `"..."`/`'...'` character constant may itself run across lines (R Language Definition, section 10.3.1 "Literal constants"), and a raw constant opens with `r"(`, `R'['`, `r"{` and so on, with optional dash padding (`r"---(`), closing on the mirrored bracket, the same dash run, and the same quote (R base help page `?Quotes`, "Raw character constants", added in R 4.0.0).
-    // Only a constant left OPEN at end of line is reported as an opener: one that closes on the same line is skipped over rather than masked, because masking it would blank the class name out of `setClass("Point", ...)`, which is exactly where the R extractor reads that symbol's name from.
+    // R has no fixed-delimiter multi-line form. An ordinary `"..."`/`'...'` character constant may itself run across lines (R Language Definition, section 10.3.1 "Literal constants"), and a raw constant opens with `r"(`, `R'['`, `r"{` and so on, with optional dash padding (`r"---(`), closing on the mirrored bracket, the same dash run, and the same quote (R base help page `?Quotes`, "Raw character constants", added in R 4.0.0). Only a constant left OPEN at end of line is reported as an opener: one that closes on the same line is skipped over rather than masked, because masking it would blank the class name out of `setClass("Point", ...)`, which is exactly where the R extractor reads that symbol's name from.
     const limit = commentIdx === -1 ? line.length : commentIdx
     let i = from
     while (i < limit) {
@@ -1506,9 +1199,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
   }
 
   if (lang === 'csharp') {
-    // C# 11+ raw string literals open with a run of 3 or MORE `"` characters (not just a fixed
-    // `"""`); the closer must match that same run length or a longer one. Match the longest
-    // available run so a 4- or 5-quote opener is recognized instead of only ever matching 3.
+    // C# 11+ raw string literals open with a run of 3 or MORE `"` characters (not just a fixed `"""`); the closer must match that same run length or a longer one. Match the longest available run so a 4- or 5-quote opener is recognized instead of only ever matching 3.
     const tripleRe = /"{3,}/g
     tripleRe.lastIndex = from
     const tripleM = tripleRe.exec(line)
@@ -1521,9 +1212,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
     verbRe.lastIndex = from
     const verbM = verbRe.exec(line)
     let verbIdx = verbM ? verbM.index : -1
-    // Same guard as the triple-quote branch above: an `@"` (or `$@"`) that textually appears
-    // inside an already-open single-line string literal - e.g. the ordinary string `"@"` in
-    // `private const string At = "@";` - is not a real verbatim-string opener.
+    // Same guard as the triple-quote branch above: an `@"` (or `$@"`) that textually appears inside an already-open single-line string literal - e.g. the ordinary string `"@"` in `private const string At = "@";` - is not a real verbatim-string opener.
     if (verbIdx !== -1 && isCommented(verbIdx)) verbIdx = -1
     if (verbIdx !== -1 && isInsideStringLiteral(line, verbIdx, from)) verbIdx = -1
 
@@ -1539,8 +1228,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
       return { openStart: tripleIdx, closesSameLine: null, state: rawState }
     }
 
-    // Verbatim: content starts right after the opening `"`. `$@"..."` / `@$"..."` marks an
-    // interpolated verbatim string - findMultilineCloser needs to know so it scans hole-aware.
+    // Verbatim: content starts right after the opening `"`. `$@"..."` / `@$"..."` marks an interpolated verbatim string - findMultilineCloser needs to know so it scans hole-aware.
     const quoteIdx = verbIdx + (verbM?.[0].length ?? 1) - 1
     const interpolated = (verbM?.[0] ?? '').includes('$')
     const closer = findMultilineCloser(line, quoteIdx + 1, { kind: 'verbatim', identifier: '', interpolated })
@@ -1551,19 +1239,14 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
   }
 
   if (lang === 'powershell') {
-    // PowerShell here-strings require `@"` / `@'` to be the last non-whitespace token on the
-    // opening line; nothing (not even a trailing comment) may follow it. That end-of-line
-    // requirement alone doesn't rule out the opener-shaped text itself living inside a `#`
-    // comment (e.g. a line that is entirely `# example: @"`), so isCommented is still checked.
+    // PowerShell here-strings require `@"` / `@'` to be the last non-whitespace token on the opening line; nothing (not even a trailing comment) may follow it. That end-of-line requirement alone doesn't rule out the opener-shaped text itself living inside a `#` comment (e.g. a line that is entirely `# example: @"`), so isCommented is still checked.
     const re = /@("|')\s*$/
     const tail = line.slice(from)
     const m = re.exec(tail)
     if (!m) return null
     const openStart = from + m.index
     if (isCommented(openStart)) return null
-    // Same guard as the other branches above: an ordinary string ending in `@"` (e.g.
-    // `$email = "admin@"`) is not a real here-string opener - the `@` there falls inside an
-    // already-open single-line string literal, not immediately after one.
+    // Same guard as the other branches above: an ordinary string ending in `@"` (e.g. `$email = "admin@"`) is not a real here-string opener - the `@` there falls inside an already-open single-line string literal, not immediately after one.
     if (isInsideStringLiteral(line, openStart, from)) return null
     const kind: MultilineStringKind = m[1] === '"' ? 'psHereDouble' : 'psHereSingle'
     // Here-strings never close on the opening line by construction.
@@ -1573,28 +1256,7 @@ function findMultilineOpener(line: string, from: number, lang: MultilineStringLa
   return null
 }
 
-/**
- * Multi-line counterpart to `stripStringLiterals`, for the string forms that function's own doc
- * comment calls out as gaps: PHP heredoc/nowdoc, Kotlin/C# triple-quoted raw strings, C# verbatim
- * strings, and PowerShell here-strings. All of these can span multiple lines, so - like
- * `stripBlockCommentSpan` - this takes and returns a carried state token instead of being usable
- * standalone on a single line.
- *
- * Everything from the opener through the closer (inclusive) is replaced with spaces, preserving
- * line length/column positions, so brace/paren characters anywhere in the span - including in the
- * opener or closer syntax itself - are invisible to a caller's brace-depth counter. Content before
- * the opener and after the closer is left untouched.
- *
- * `lang` restricts which opener syntaxes are recognized (each language only has some of these
- * forms), and callers are expected to run this once per line, threading `state` through
- * line-by-line the same way `inComment` is threaded through `stripBlockCommentSpan`.
- *
- * Known limitation: opener detection does not fully cross-check against `stripBlockCommentSpan`'s
- * comment state or single-line string context (beyond the `isInsideStringLiteral` guard PHP's
- * heredoc opener already applies), so a multi-line-string-opener-shaped sequence of characters
- * appearing inside an unrelated comment is a rare false positive this function does not defend
- * against - the same class of imprecision `stripStringLiterals` itself already accepts.
- */
+/** Multi-line counterpart to `stripStringLiterals`, for the string forms that function's own doc comment calls out as gaps: PHP heredoc/nowdoc, Kotlin/C# triple-quoted raw strings, C# verbatim strings, and PowerShell here-strings. All of these can span multiple lines, so - like `stripBlockCommentSpan` - this takes and returns a carried state token instead of being usable standalone on a single line. Everything from the opener through the closer (inclusive) is replaced with spaces, preserving line length/column positions, so brace/paren characters anywhere in the span - including in the opener or closer syntax itself - are invisible to a caller's brace-depth counter. Content before the opener and after the closer is left untouched. `lang` restricts which opener syntaxes are recognized (each language only has some of these forms), and callers are expected to run this once per line, threading `state` through line-by-line the same way `inComment` is threaded through `stripBlockCommentSpan`. Known limitation: opener detection does not fully cross-check against `stripBlockCommentSpan`'s comment state or single-line string context (beyond the `isInsideStringLiteral` guard PHP's heredoc opener already applies), so a multi-line-string-opener-shaped sequence of characters appearing inside an unrelated comment is a rare false positive this function does not defend against - the same class of imprecision `stripStringLiterals` itself already accepts. */
 export function stripMultilineStringSpan(
   line: string,
   state: MultilineStringState | null,
@@ -1638,9 +1300,7 @@ export function stripMultilineStringSpan(
   return { code, state: cur }
 }
 
-// ---------------------------------------------------------------------------
-// Symbol emitter factory
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Symbol emitter factory ---------------------------------------------------------------------------
 
 export interface MiniSection {
   heading: string
@@ -1656,24 +1316,14 @@ export interface AdapterImport {
   readonly line: number
 }
 
-/** A symbol's line span plus its extracted body text, used by adapters that resolve a
- * multi-line block's extent via a forward search (e.g. brace-matching) rather than treating
- * every symbol as single-line. */
+/** A symbol's line span plus its extracted body text, used by adapters that resolve a multi-line block's extent via a forward search (e.g. brace-matching) rather than treating every symbol as single-line. */
 export interface AdapterSpan {
   readonly startLine: number
   readonly endLine: number
   readonly body: string
 }
 
-/**
- * Build a SymbolEntry from a resolved multi-line span.
- *
- * `parent` (formerly named `docstring` and stored in that field -- several callers pass a
- * container/object name here, e.g. apex.ts's trigger `objectName`) now lives in its own
- * `parent` column, separate from `docstring`. `lines`/`style`, when both given, recover a real
- * doc comment immediately above the span's start line via {@link precedingDocComment}; omitted
- * (or a language whose comment syntax doesn't fit `'c'`/`'hash'`/`'vb'`), `docstring` stays `''`.
- */
+/** Build a SymbolEntry from a resolved multi-line span. `parent` (formerly named `docstring` and stored in that field -- several callers pass a container/object name here, e.g. apex.ts's trigger `objectName`) now lives in its own `parent` column, separate from `docstring`. `lines`/`style`, when both given, recover a real doc comment immediately above the span's start line via {@link precedingDocComment}; omitted (or a language whose comment syntax doesn't fit `'c'`/`'hash'`/`'vb'`), `docstring` stays `''`. */
 export function makeSpanSymbol(
   filePath: string,
   name: string,
@@ -1695,15 +1345,7 @@ export function makeSpanSymbol(
   }
 }
 
-/**
- * Build a single-line SymbolEntry (lineStart === lineEnd === line). `sig` becomes `body`.
- *
- * `parent` now lives in its own `parent` field rather than being stored in `docstring` (the
- * "parent lives in the docstring field" convention this adapter family used to share, before the
- * `parent` column existed -- see db.ts's SCHEMA_SQL comment for the full history). `lines`/`style`,
- * when both given, recover a real doc comment immediately above `line` via
- * {@link precedingDocComment}; omitted, `docstring` stays `''`.
- */
+/** Build a single-line SymbolEntry (lineStart === lineEnd === line). `sig` becomes `body`. `parent` now lives in its own `parent` field rather than being stored in `docstring` (the "parent lives in the docstring field" convention this adapter family used to share, before the `parent` column existed -- see db.ts's SCHEMA_SQL comment for the full history). `lines`/`style`, when both given, recover a real doc comment immediately above `line` via {@link precedingDocComment}; omitted, `docstring` stays `''`. */
 export function makeLineSymbol(
   filePath: string,
   name: string,
@@ -1726,16 +1368,7 @@ export function makeLineSymbol(
   }
 }
 
-/**
- * Factory that returns a closure for emitting one (symbol + section) pair.
- * Deduplicates by (name, kind, line). Caps at maxSymbols (default 10,000: raised from 500 after
- * measuring the actual cost of a much higher cap -- indexing a synthetic 35,000-statement, 1.7 MB
- * SQL file (the densest a single file can get before indexing.large_file_skip_kb's 2 MB default
- * excludes it outright) took 2.4s and grew global.db by 11.7 MB, a one-time per-file-change cost,
- * while this repo's own largest real file sits at 439 symbols (88% of the old 500 cap). The old
- * cap was silently discarding symbols in files not much larger than this project's own biggest
- * one, for negligible protection against a cost the byte-size skip already bounds).
- */
+/** Factory that returns a closure for emitting one (symbol + section) pair. Deduplicates by (name, kind, line). Caps at maxSymbols (default 10,000: raised from 500 after measuring the actual cost of a much higher cap -- indexing a synthetic 35,000-statement, 1.7 MB SQL file (the densest a single file can get before indexing.large_file_skip_kb's 2 MB default excludes it outright) took 2.4s and grew global.db by 11.7 MB, a one-time per-file-change cost, while this repo's own largest real file sits at 439 symbols (88% of the old 500 cap). The old cap was silently discarding symbols in files not much larger than this project's own biggest one, for negligible protection against a cost the byte-size skip already bounds). */
 export function makeSymbolEmitter(
   symbols: SymbolEntry[],
   sections: MiniSection[],
@@ -1747,11 +1380,7 @@ export function makeSymbolEmitter(
   return function emit(name: string, kind: string, line: number): void {
     if (!name || name.length > maxHeadingLen) return
     if (symbols.length >= maxSymbols) return
-    // kind must be part of the key: several adapters (sql_idx, graphql_idx, proto_idx,
-    // makefile_idx) funnel multiple distinct symbol kinds through this one shared emitter, and
-    // a name can legitimately repeat across kinds on the same line (e.g. a same-line
-    // `CREATE TABLE foo (...); CREATE FUNCTION foo() ...`). Keying on (name, line) alone let the
-    // first kind's emission silently suppress a later kind's emission of the same name.
+    // kind must be part of the key: several adapters (sql_idx, graphql_idx, proto_idx, makefile_idx) funnel multiple distinct symbol kinds through this one shared emitter, and a name can legitimately repeat across kinds on the same line (e.g. a same-line `CREATE TABLE foo (...); CREATE FUNCTION foo() ...`). Keying on (name, line) alone let the first kind's emission silently suppress a later kind's emission of the same name.
     const key = `${name}\0${kind}\0${line}`
     if (seen.has(key)) return
     seen.add(key)
@@ -1769,18 +1398,9 @@ export function makeSymbolEmitter(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Flat end-line assignment
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Flat end-line assignment ---------------------------------------------------------------------------
 
-/**
- * Assign `endLine` to each section in a sorted flat list.
- * Each section ends at the line before the next section starts, or at
- * `totalLines` for the last one. When two sections share a start line (e.g. an
- * HTML heading and its inline id anchor, or two `CREATE TABLE`s on one line),
- * `next.line - 1` would fall below the section's own start, so the end is
- * floored at `s.line` to keep the range non-inverted (a point section).
- */
+/** Assign `endLine` to each section in a sorted flat list. Each section ends at the line before the next section starts, or at `totalLines` for the last one. When two sections share a start line (e.g. an HTML heading and its inline id anchor, or two `CREATE TABLE`s on one line), `next.line - 1` would fall below the section's own start, so the end is floored at `s.line` to keep the range non-inverted (a point section). */
 export function assignFlatEndLines(sections: MiniSection[], totalLines: number): void {
   for (let i = 0; i < sections.length; i++) {
     const s = sections[i]
@@ -1794,27 +1414,12 @@ export function assignFlatEndLines(sections: MiniSection[], totalLines: number):
   }
 }
 
-/**
- * Propagate computed `endLine` from sections back onto symbols.
- * Matches by (name, lineStart).
- */
+/** Propagate computed `endLine` from sections back onto symbols. Matches by (name, lineStart). */
 export function propagateEndLinesToSymbols(
   symbols: SymbolEntry[],
   sections: MiniSection[],
 ): SymbolEntry[] {
-  // MiniSection carries no `kind`, so two DIFFERENT-kind symbols sharing a name and start line
-  // (e.g. a same-line `CREATE TABLE foo (...); CREATE FUNCTION foo() ...`, legal in sql_idx,
-  // graphql_idx, proto_idx, and makefile_idx, all of which funnel through makeSymbolEmitter)
-  // cannot be told apart by `${heading}\0${line}` alone. A plain Map keyed on that pair let the
-  // second kind's section silently overwrite the first's, so both symbols were handed the same
-  // (and for one of them, wrong) endLine. Queuing endLines per key instead of overwriting fixes
-  // this without needing a `kind` field on MiniSection: makeSymbolEmitter always pushes one
-  // symbol and one section per emit() call in lockstep, so for any group of entries sharing a
-  // key, the Nth section pushed for that key always corresponds to the Nth symbol pushed for it
-  // - callers may stable-sort `sections` and/or `symbols` by line afterward (sql_idx sorts both,
-  // proto_idx/graphql_idx/makefile_idx sort only sections), but a stable sort never reorders
-  // entries that share the same key, so consuming each key's queue in encounter order still
-  // pairs the right symbol with the right section even after sorting.
+  // MiniSection carries no `kind`, so two DIFFERENT-kind symbols sharing a name and start line (e.g. a same-line `CREATE TABLE foo (...); CREATE FUNCTION foo() ...`, legal in sql_idx, graphql_idx, proto_idx, and makefile_idx, all of which funnel through makeSymbolEmitter) cannot be told apart by `${heading}\0${line}` alone. A plain Map keyed on that pair let the second kind's section silently overwrite the first's, so both symbols were handed the same (and for one of them, wrong) endLine. Queuing endLines per key instead of overwriting fixes this without needing a `kind` field on MiniSection: makeSymbolEmitter always pushes one symbol and one section per emit() call in lockstep, so for any group of entries sharing a key, the Nth section pushed for that key always corresponds to the Nth symbol pushed for it - callers may stable-sort `sections` and/or `symbols` by line afterward (sql_idx sorts both, proto_idx/graphql_idx/makefile_idx sort only sections), but a stable sort never reorders entries that share the same key, so consuming each key's queue in encounter order still pairs the right symbol with the right section even after sorting.
   const sectionMap = new Map<string, number[]>()
   for (const sec of sections) {
     const key = `${sec.heading}\0${sec.line}`
@@ -1839,31 +1444,7 @@ export function lastContentLine(rawLines: readonly string[]): number {
   return Math.max(1, n)
 }
 
-/**
- * Source text of a generic/type-parameter clause (`<...>`), nesting-aware and NOT wrapped in a `?`
- * -- callers decide whether the clause is optional.
- *
- * A flat `<[^>]*>` closes at the first `>` it meets, so the moment a type parameter carries a
- * generic bound (`<T extends Comparable<T>>`, `<T : Comparable<T>>`, `<C: Collection<Int>>`) the
- * group ends at the inner `>` and whatever anchor follows -- `=`, `(`, `on` -- no longer lines up.
- * The declaration then matches nothing and is dropped from the index outright, or worse, falls
- * through to a looser matcher.
- *
- * A regex cannot balance brackets to arbitrary depth, so this is a ceiling rather than a parser,
- * and the honest questions are where to put it and what a miss costs. `<T extends
- * Comparable<Map<String, List<int>>>>` is four levels and reachable Dart; the previous three-level
- * form dropped it, taking a Kotlin `typealias`, a Swift `func` and a Dart `extension` with it and
- * fabricating a phantom `Function` symbol out of a Dart `typedef`. Five levels is past anything
- * observed in real declarations, and a miss beyond it now costs the one declaration rather than
- * the rest of the file (see dart.ts's brace-less class guard).
- *
- * Generated by a loop rather than written out, so the depth is one number to change instead of a
- * hand-balanced bracket nest. Backtracking cost was measured, not assumed: against both a run of
- * balanced `a<b>` groups and an unterminated clause, this form and the hand-written one it replaced
- * both stay flat to 1600 repetitions, on a probe calibrated against `/^(a+)+$/`, which blows up to
- * 4s at 30 characters. The alternatives here are disjoint on their first character, so there is no
- * ambiguity for a backtracker to explore and depth costs pattern length rather than time.
- */
+/** Source text of a generic/type-parameter clause (`<...>`), nesting-aware and NOT wrapped in a `?` -- callers decide whether the clause is optional. A flat `<[^>]*>` closes at the first `>` it meets, so the moment a type parameter carries a generic bound (`<T extends Comparable<T>>`, `<T : Comparable<T>>`, `<C: Collection<Int>>`) the group ends at the inner `>` and whatever anchor follows -- `=`, `(`, `on` -- no longer lines up. The declaration then matches nothing and is dropped from the index outright, or worse, falls through to a looser matcher. A regex cannot balance brackets to arbitrary depth, so this is a ceiling rather than a parser, and the honest questions are where to put it and what a miss costs. `<T extends Comparable<Map<String, List<int>>>>` is four levels and reachable Dart; the previous three-level form dropped it, taking a Kotlin `typealias`, a Swift `func` and a Dart `extension` with it and fabricating a phantom `Function` symbol out of a Dart `typedef`. Five levels is past anything observed in real declarations, and a miss beyond it now costs the one declaration rather than the rest of the file (see dart.ts's brace-less class guard). Generated by a loop rather than written out, so the depth is one number to change instead of a hand-balanced bracket nest. Backtracking cost was measured, not assumed: against both a run of balanced `a<b>` groups and an unterminated clause, this form and the hand-written one it replaced both stay flat to 1600 repetitions, on a probe calibrated against `/^(a+)+$/`, which blows up to 4s at 30 characters. The alternatives here are disjoint on their first character, so there is no ambiguity for a backtracker to explore and depth costs pattern length rather than time. */
 function nestedAngleClause(depth: number): string {
   let inner = '[^<>]*'
   for (let i = 0; i < depth; i++) inner = '[^<>]*(?:<' + inner + '>[^<>]*)*'

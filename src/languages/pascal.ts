@@ -1,13 +1,4 @@
-/**
- * Pascal, Delphi and Free Pascal adapter: the program, unit, library or package header, classes, records, objects, interfaces
- * and enumerations from type sections, their methods, constructors, destructors and properties, and routines with their
- * nested routines. A method implemented as `TFoo.Bar` is listed once, under TFoo, spanning its body; the declaration inside
- * the class is dropped when that body exists. A routine body runs from its `begin` or `asm` to the `end` that balances it,
- * counting `begin`, `case`, `try` and `asm` as openers. Keywords and names are case-insensitive. `{ }`, `(* *)` and `//`
- * comments (compiler directives too) and `'...'` strings never produce symbols. Imports are the `uses`, `requires` and
- * `contains` clauses. Delphi form files (`.dfm`) in text form list each `object`, `inherited` or `inline` component under
- * its owner; a binary form (it starts with `TPF0`) produces nothing.
- */
+/** Pascal, Delphi and Free Pascal adapter: the program, unit, library or package header, classes, records, objects, interfaces and enumerations from type sections, their methods, constructors, destructors and properties, and routines with their nested routines. A method implemented as `TFoo.Bar` is listed once, under TFoo, spanning its body; the declaration inside the class is dropped when that body exists. A routine body runs from its `begin` or `asm` to the `end` that balances it, counting `begin`, `case`, `try` and `asm` as openers. Keywords and names are case-insensitive. `{ }`, `(* *)` and `//` comments (compiler directives too) and `'...'` strings never produce symbols. Imports are the `uses`, `requires` and `contains` clauses. Delphi form files (`.dfm`) in text form list each `object`, `inherited` or `inline` component under its owner; a binary form (it starts with `TPF0`) produces nothing. */
 
 import * as path from 'node:path'
 

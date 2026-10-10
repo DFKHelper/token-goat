@@ -1,43 +1,4 @@
-/**
- * Single-File-Component extractor for Vue (`.vue`), Svelte (`.svelte`), and Astro (`.astro`).
- *
- * None of these three have a maintained tree-sitter grammar as an npm dependency in this
- * project, so this is a pure-regex adapter -- the same convention every other non-tree-sitter
- * language here follows (see terraform_idx.ts, html.ts). The three formats share enough
- * structure (a script-ish block of top-level JS/TS declarations + a markup region that may
- * reference other components) that they share block-extraction and declaration-extraction
- * helpers below, parameterized per format.
- *
- * Symbol kinds emitted (shared across all three formats for consistency -- see task discussion,
- * "your call, but be consistent and document the choice"):
- *   `vue_component` / `svelte_component` / `astro_component` -- one per file, the whole-file
- *     span, named after the file's basename without extension. This is what makes
- *     `token-goat symbol MyComponent` findable at all for these files.
- *   `sfc_script_function` / `sfc_script_const` / `sfc_script_class` -- top-level declarations
- *     found directly in the script block (Vue/Svelte) or frontmatter fence (Astro). Shared kind
- *     names across all three formats rather than per-format kinds, since the declarations mean
- *     the same thing regardless of which SFC format they're declared in.
- *
- * Refs (not symbols): a `RefEntry` per template-level custom-element/component-tag reference
- * (PascalCase for all three; additionally kebab-case-with-a-hyphen for Vue/Svelte, which both
- * support that authoring convention). Plain lowercase HTML tags with no hyphen are never
- * treated as component references.
- *
- * Known simplifications (documented, not accidental -- proportionate scope per the task):
- *   - Block extraction (`<script>`/`<template>`/`<style>`) is a non-greedy regex match to the
- *     FIRST matching close tag, not a real tag-depth counter. A `<template>` containing a
- *     nested, literal `<template>`/`</template>` pair (rare -- scoped-slot templates use
- *     `<template v-slot>`, not a second top-level `<template>` element) would mis-detect the
- *     block boundary. Mirrors the level of block-extraction simplicity already accepted
- *     elsewhere in this codebase (e.g. `maskHtmlNoise`'s `<script>` body regex).
- *   - Top-level declaration detection uses a brace counter to know when it's back at depth 0,
- *     not a real parser. The script is run through `blankJsStringLiterals` first, so braces
- *     inside single- AND multi-line string/template-literal spans are correctly ignored. What
- *     remains unhandled is a brace inside a regular-expression literal (`/[{]/`), and a stray
- *     backtick inside one, which would open a template span that runs on; both are rare enough
- *     to be out of proportionate scope, and either can only ever under- or over-count depth
- *     inside a script block, never touch ref extraction or the whole-file component symbol.
- */
+/** Single-File-Component extractor for Vue (`.vue`), Svelte (`.svelte`), and Astro (`.astro`). None of these three have a maintained tree-sitter grammar as an npm dependency in this project, so this is a pure-regex adapter -- the same convention every other non-tree-sitter language here follows (see terraform_idx.ts, html.ts). The three formats share enough structure (a script-ish block of top-level JS/TS declarations + a markup region that may reference other components) that they share block-extraction and declaration-extraction helpers below, parameterized per format. Symbol kinds emitted (shared across all three formats for consistency -- see task discussion, "your call, but be consistent and document the choice"): `vue_component` / `svelte_component` / `astro_component` -- one per file, the whole-file span, named after the file's basename without extension. This is what makes `token-goat symbol MyComponent` findable at all for these files. `sfc_script_function` / `sfc_script_const` / `sfc_script_class` -- top-level declarations found directly in the script block (Vue/Svelte) or frontmatter fence (Astro). Shared kind names across all three formats rather than per-format kinds, since the declarations mean the same thing regardless of which SFC format they're declared in. Refs (not symbols): a `RefEntry` per template-level custom-element/component-tag reference (PascalCase for all three; additionally kebab-case-with-a-hyphen for Vue/Svelte, which both support that authoring convention). Plain lowercase HTML tags with no hyphen are never treated as component references. Known simplifications (documented, not accidental -- proportionate scope per the task): - Block extraction (`<script>`/`<template>`/`<style>`) is a non-greedy regex match to the FIRST matching close tag, not a real tag-depth counter. A `<template>` containing a nested, literal `<template>`/`</template>` pair (rare -- scoped-slot templates use `<template v-slot>`, not a second top-level `<template>` element) would mis-detect the block boundary. Mirrors the level of block-extraction simplicity already accepted elsewhere in this codebase (e.g. `maskHtmlNoise`'s `<script>` body regex). - Top-level declaration detection uses a brace counter to know when it's back at depth 0, not a real parser. The script is run through `blankJsStringLiterals` first, so braces inside single- AND multi-line string/template-literal spans are correctly ignored. What remains unhandled is a brace inside a regular-expression literal (`/[{]/`), and a stray backtick inside one, which would open a template span that runs on; both are rare enough to be out of proportionate scope, and either can only ever under- or over-count depth inside a script block, never touch ref extraction or the whole-file component symbol. */
 
 import * as path from 'node:path'
 
@@ -84,18 +45,7 @@ function componentName(filePath: string): string {
   return path.posix.basename(normalized).replace(/\.[^.]+$/, '')
 }
 
-/**
- * Blanks the CONTENT of JS/TS string and backtick-template-literal spans (each non-newline
- * character replaced with a space; a real newline inside a backtick span is preserved as-is so
- * line numbers stay in sync) -- same quote-tracking shape as `stripJsComments` above, but
- * blanking string/template BODIES instead of passing them through untouched. `stripJsComments`
- * deliberately leaves string/template content verbatim (its own doc: "leaving quoted-string and
- * backtick template-literal spans untouched"), so a frontmatter script containing something like
- * `` const sep = `\n---\n` `` -- a template literal whose escaped `\n` sequences are literal
- * backslash-n characters, all on one physical line -- would still hand `detectAstroFrontmatter`
- * a raw `---` substring inside that quoted span. This function is what actually neutralizes it;
- * `detectAstroFrontmatter` runs both this and `stripJsComments` before its line-exact fence scan.
- */
+/** Blanks the CONTENT of JS/TS string and backtick-template-literal spans (each non-newline character replaced with a space; a real newline inside a backtick span is preserved as-is so line numbers stay in sync) -- same quote-tracking shape as `stripJsComments` above, but blanking string/template BODIES instead of passing them through untouched. `stripJsComments` deliberately leaves string/template content verbatim (its own doc: "leaving quoted-string and backtick template-literal spans untouched"), so a frontmatter script containing something like `` const sep = `\n---\n` `` -- a template literal whose escaped `\n` sequences are literal backslash-n characters, all on one physical line -- would still hand `detectAstroFrontmatter` a raw `---` substring inside that quoted span. This function is what actually neutralizes it; `detectAstroFrontmatter` runs both this and `stripJsComments` before its line-exact fence scan. */
 function blankJsStringLiterals(content: string): string {
   let out = ''
   let i = 0
@@ -114,9 +64,7 @@ function blankJsStringLiterals(content: string): string {
   return out
 }
 
-// Top-level (depth-0) declaration matchers. Only genuinely top-level `function`/`const`/`class`
-// declarations, optionally `export`ed/`default`-exported -- no attempt at Vue Options API
-// (`methods: { ... }`) member extraction, per task scope.
+// Top-level (depth-0) declaration matchers. Only genuinely top-level `function`/`const`/`class` declarations, optionally `export`ed/`default`-exported -- no attempt at Vue Options API (`methods: { ... }`) member extraction, per task scope.
 const FUNC_DECL_RE = /^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s+([A-Za-z_$][\w$]*)/
 const CONST_DECL_RE = /^(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*[:=]/
 const CLASS_DECL_RE = /^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+(?!extends\b)([A-Za-z_$][\w$]*)/
@@ -177,9 +125,7 @@ function extractTopLevelDeclarations(
   return symbols
 }
 
-// PascalCase tags are treated as component refs for all three formats; kebab-case-with-a-hyphen
-// tags additionally count for Vue/Svelte (both support that authoring convention). A plain
-// lowercase tag with no hyphen (`<div>`, `<button>`) is never a component reference.
+// PascalCase tags are treated as component refs for all three formats; kebab-case-with-a-hyphen tags additionally count for Vue/Svelte (both support that authoring convention). A plain lowercase tag with no hyphen (`<div>`, `<button>`) is never a component reference.
 const OPEN_TAG_RE = /<\s*([A-Za-z][\w.:-]*)\b/g
 
 function isComponentTag(tag: string, allowKebab: boolean): boolean {
@@ -218,13 +164,7 @@ interface TagBlock {
   readonly matchEnd: number
 }
 
-/**
- * Finds every top-level `<tag ...>...</tag>` block for a fixed tag name (`script`/`style`/
- * `template`; no regex metacharacters, safe to interpolate). Non-greedy to the first matching
- * close tag -- see the "known simplifications" module doc comment for why that's an accepted
- * limitation here. `lineIndex` must be built from the same `content` this runs against so
- * `contentStartLine` lines up.
- */
+/** Finds every top-level `<tag ...>...</tag>` block for a fixed tag name (`script`/`style`/ `template`; no regex metacharacters, safe to interpolate). Non-greedy to the first matching close tag -- see the "known simplifications" module doc comment for why that's an accepted limitation here. `lineIndex` must be built from the same `content` this runs against so `contentStartLine` lines up. */
 export function extractTagBlocks(content: string, lineIndex: readonly number[], tag: string): TagBlock[] {
   // Match against a string-blanked view so a literal closing tag inside a JS/TS string or template literal in the block's own body (e.g. `document.write('</script>')`) cannot end the match early; blanking preserves length and newlines, so every offset below still applies unchanged to the real `content`.
   const masked = blankJsStringLiterals(content)
@@ -242,11 +182,7 @@ export function extractTagBlocks(content: string, lineIndex: readonly number[], 
   return blocks
 }
 
-/**
- * Blanks the given `[start, end)` offset spans in `content` to spaces (newlines kept in place),
- * so subsequent line-number math against the result stays valid -- same masking discipline as
- * `maskHtmlNoise`/`maskHeredocs`, generalized to arbitrary offset spans instead of a fixed regex.
- */
+/** Blanks the given `[start, end)` offset spans in `content` to spaces (newlines kept in place), so subsequent line-number math against the result stays valid -- same masking discipline as `maskHtmlNoise`/`maskHeredocs`, generalized to arbitrary offset spans instead of a fixed regex. */
 function maskSpans(content: string, spans: ReadonlyArray<readonly [number, number]>): string {
   const chars = content.split('')
   for (const [start, end] of spans) {
@@ -257,26 +193,15 @@ function maskSpans(content: string, spans: ReadonlyArray<readonly [number, numbe
   return chars.join('')
 }
 
-/**
- * The whole-file component symbol, as a list so an empty file can yield none. A file with no
- * lines has no component to point at: emitting one anyway gave it `lineStart: 1, lineEnd: 0`, a
- * backwards span that reached the database and printed to the reader as `Empty.vue:1-0`. Every
- * other language emits nothing for empty content, and so does this now.
- */
+/** The whole-file component symbol, as a list so an empty file can yield none. A file with no lines has no component to point at: emitting one anyway gave it `lineStart: 1, lineEnd: 0`, a backwards span that reached the database and printed to the reader as `Empty.vue:1-0`. Every other language emits nothing for empty content, and so does this now. */
 function componentSymbols(filePath: string, name: string, kind: string, totalLines: number): SymbolEntry[] {
   if (totalLines < 1) return []
   return [{ filePath, name, kind, lineStart: 1, lineEnd: totalLines, body: '', docstring: '', parent: '' }]
 }
 
-// ---------------------------------------------------------------------------
-// Vue (.vue)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Vue (.vue) ---------------------------------------------------------------------------
 
-/**
- * Vue SFC: explicit `<script>`/`<script setup>` block(s), explicit `<template>` block, and
- * explicit `<style>` block(s) (ignored here beyond not scanning them -- they're simply never
- * visited since only `<script>`/`<template>` blocks are extracted by name).
- */
+/** Vue SFC: explicit `<script>`/`<script setup>` block(s), explicit `<template>` block, and explicit `<style>` block(s) (ignored here beyond not scanning them -- they're simply never visited since only `<script>`/`<template>` blocks are extracted by name). */
 export function extractVue(content: string, filePath: string): SfcResult {
   const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(content)
@@ -296,16 +221,9 @@ export function extractVue(content: string, filePath: string): SfcResult {
   return finalize(symbols, refs)
 }
 
-// ---------------------------------------------------------------------------
-// Svelte (.svelte)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Svelte (.svelte) ---------------------------------------------------------------------------
 
-/**
- * Svelte component: explicit `<script>` (optionally `context="module"`) and `<style>` blocks,
- * but the template is NOT wrapped in a tag -- it's everything else in the file. Modeled as "the
- * whole file with `<script>...</script>` and `<style>...</style>` spans masked to blank lines"
- * (mirrors `maskHtmlNoise`'s masking discipline).
- */
+/** Svelte component: explicit `<script>` (optionally `context="module"`) and `<style>` blocks, but the template is NOT wrapped in a tag -- it's everything else in the file. Modeled as "the whole file with `<script>...</script>` and `<style>...</style>` spans masked to blank lines" (mirrors `maskHtmlNoise`'s masking discipline). */
 export function extractSvelte(content: string, filePath: string): SfcResult {
   const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(content)
@@ -329,9 +247,7 @@ export function extractSvelte(content: string, filePath: string): SfcResult {
   return finalize(symbols, refs)
 }
 
-// ---------------------------------------------------------------------------
-// Astro (.astro)
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Astro (.astro) ---------------------------------------------------------------------------
 
 interface AstroFrontmatter {
   /** 0-indexed line of the opening `---` fence. */
@@ -340,22 +256,14 @@ interface AstroFrontmatter {
   readonly closeLine: number
 }
 
-/**
- * Detects Astro's leading `---\n...\n---` frontmatter fence. Only recognized when the opening
- * `---` is the very first non-whitespace content of the file (at most one leading blank line
- * skipped) -- a `---` appearing later in the markup body must never be misdetected as
- * frontmatter.
- */
+/** Detects Astro's leading `---\n...\n---` frontmatter fence. Only recognized when the opening `---` is the very first non-whitespace content of the file (at most one leading blank line skipped) -- a `---` appearing later in the markup body must never be misdetected as frontmatter. */
 function detectAstroFrontmatter(content: string): AstroFrontmatter | null {
   const lines = content.split('\n')
   let openLine = 0
   if ((lines[0] ?? '').trim() === '') openLine = 1
   const fenceLine = lines[openLine]
   if (fenceLine === undefined || fenceLine.replace(/\r$/, '') !== '---') return null
-  // Blank comment text and string/template-literal bodies before scanning for the closing fence,
-  // so a `---`-shaped line that only exists inside the frontmatter script's own comment or
-  // string/template literal is never mistaken for the real closing `---` (see
-  // blankJsStringLiterals's doc for the concrete repro this guards against).
+  // Blank comment text and string/template-literal bodies before scanning for the closing fence, so a `---`-shaped line that only exists inside the frontmatter script's own comment or string/template literal is never mistaken for the real closing `---` (see blankJsStringLiterals's doc for the concrete repro this guards against).
   const masked = blankJsStringLiterals(stripJsComments(content)).split('\n')
   for (let j = openLine + 1; j < lines.length; j++) {
     if ((masked[j] ?? '').replace(/\r$/, '') === '---') {
@@ -365,13 +273,7 @@ function detectAstroFrontmatter(content: string): AstroFrontmatter | null {
   return null
 }
 
-/**
- * Astro component: a leading `---` frontmatter fence of plain TS/JS (Astro's defining syntax --
- * NOT wrapped in `<script>` tags) followed by JSX-like markup. `<style>` tags in the markup are
- * masked out the same way Vue's are (never scanned for refs), matching "extract that the same
- * way Vue does if you have time" from the task; no `<script>` special-casing beyond the
- * frontmatter fence itself is needed for Astro.
- */
+/** Astro component: a leading `---` frontmatter fence of plain TS/JS (Astro's defining syntax -- NOT wrapped in `<script>` tags) followed by JSX-like markup. `<style>` tags in the markup are masked out the same way Vue's are (never scanned for refs), matching "extract that the same way Vue does if you have time" from the task; no `<script>` special-casing beyond the frontmatter fence itself is needed for Astro. */
 export function extractAstro(content: string, filePath: string): SfcResult {
   const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(content)
@@ -388,8 +290,7 @@ export function extractAstro(content: string, filePath: string): SfcResult {
     const contentStartLine = fm.openLine + 2
     pushAll(symbols, extractTopLevelDeclarations(frontmatterContent, filePath, contentStartLine))
 
-    // Mask the whole frontmatter fence (both `---` lines and everything between) out of the
-    // markup pass below, by offset, so frontmatter code is never scanned for component refs.
+    // Mask the whole frontmatter fence (both `---` lines and everything between) out of the markup pass below, by offset, so frontmatter code is never scanned for component refs.
     const fenceStartOffset = lineIndex[fm.openLine] ?? 0
     const fenceEndOffset = lineIndex[fm.closeLine + 1] ?? content.length
     spans.push([fenceStartOffset, fenceEndOffset])

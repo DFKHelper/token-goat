@@ -4,7 +4,7 @@ import type { RefEntry, SymbolEntry } from '../parser_types.js'
 import { escapeRegExp } from '../util.js'
 
 import { buildLineIndex, offsetToLine, stripXmlComments, type AdapterSpan, makeSpanSymbol } from './common.js'
-import { findElements, gtFinder } from './markup_scan.js'
+import { elementCursor, findElements, gtFinder, type Element } from './markup_scan.js'
 
 const MAX_SYMBOLS = 10_000 // raised from 1000: matches every sibling language adapter's cap, see makeSymbolEmitter's own comment in common.ts for the measurement; a large org's CustomLabels.labels-meta.xml or a complex Flow can hold well over 1000 entries
 const MAX_REFS = 10_000 // raised from 1000: see MAX_SYMBOLS above
@@ -47,44 +47,45 @@ function tagCloseRe(tag: string, flags: string): RegExp {
   return new RegExp(`</(?:[A-Za-z_][\\w.-]*:)?${tag}\\s*>`, flags)
 }
 
-// Like xmlText, but only returns a match that is a DIRECT child of `content` (nesting depth 0),
-// not one buried inside a descendant element. Salesforce serializes each Flow element's own
-// children alphabetically, so a collection child that sorts before "name" - e.g. a screen's
-// <fields> (each of which has its own <name> naming the field) or an actionCall's
-// <inputParameters> (each named too) - ends up BEFORE the element's own <name> in raw XML text.
-// A first-match-anywhere search like xmlText would then return the wrong, deeply-nested name
-// instead of the flow element's own.
+// Like xmlText, but only returns a match that is a DIRECT child of `content` (nesting depth 0), not one buried inside a descendant element. Salesforce serializes each Flow element's own children alphabetically, so a collection child that sorts before "name" - e.g. a screen's <fields> (each of which has its own <name> naming the field) or an actionCall's <inputParameters> (each named too) - ends up BEFORE the element's own <name> in raw XML text. A first-match-anywhere search like xmlText would then return the wrong, deeply-nested name instead of the flow element's own.
 export function directChildText(content: string, tag: string): string | null {
-  // The depth walk has to see EVERY element, so its name pattern is the XML 1.0 Name production (leading `_` or `:`, and `.`/`-` inside), not just `[A-Za-z][A-Za-z0-9_]*`: a tag this misses is never counted and the depth reading goes wrong for every candidate after it.
-  // The tags are listed once and the candidates, which come in increasing order, advance one depth pointer through them: re-walking the document from its start for every candidate made a document of n same-named elements cost n squared.
-  let tags: Array<{ start: number; delta: number }> | null = null
-  let next = 0
-  let depth = 0
-  for (const cand of findElements(content, tagOpenRe(tag, 'gi'), tagCloseRe(tag, 'gi'))) {
-    tags ??= listTagDeltas(content)
-    while (next < tags.length && (tags[next] as { start: number }).start < cand.start) {
-      depth += (tags[next] as { delta: number }).delta
-      next++
-    }
-    if (depth === 0) return decodeXml(cand.body.trim())
+  // The depth walk has to see EVERY element, so its name pattern is the XML 1.0 Name production (leading `_` or `:`, and `.`/`-` inside), not just `[A-Za-z][A-Za-z0-9_]*`: a tag this misses is never counted and the depth reading goes wrong for every candidate after it. The candidates come in increasing order, so one depth cursor walks the document once for all of them: re-walking it from its start for every candidate made a document of n same-named elements cost n squared. Both are read one at a time rather than listed, so the scan holds no per-tag state and its cost stays in step with the document under any garbage collector.
+  const nextCandidate = elementCursor(content, tagOpenRe(tag, 'gi'), tagCloseRe(tag, 'gi'))
+  let depthBefore: ((pos: number) => number) | null = null
+  let cand: Element | null
+  while ((cand = nextCandidate()) !== null) {
+    depthBefore ??= depthCursor(content)
+    if (depthBefore(cand.start) === 0) return decodeXml(cand.body.trim())
   }
   return null
 }
 
-/** Every tag of the document in order with its effect on nesting depth: +1 for an open tag, -1 for a close tag, 0 for a self-closing one. A tag runs to the first `>` after its name; a start with no `>` after it ends the list, since no later start has one either. */
-function listTagDeltas(content: string): Array<{ start: number; delta: number }> {
+/** The nesting depth just before each position it is asked about, for positions asked in non-decreasing order: every tag starting before the position counts +1 if it opens, -1 if it closes and 0 if it closes itself. A tag runs to the first `>` after its name; a start with no `>` after it ends the walk, since no later start has one either. */
+function depthCursor(content: string): (pos: number) => number {
   const re = /<(\/?)([A-Za-z_:][\w.:-]*)\b/g
-  const out: Array<{ start: number; delta: number }> = []
-  let m: RegExpExecArray | null
-  while ((m = re.exec(content)) !== null) {
-    const nameEnd = m.index + m[0].length
-    const gt = content.indexOf('>', nameEnd)
-    if (gt < 0) break
-    const selfClosing = content[gt - 1] === '/' && gt - 1 >= nameEnd
-    out.push({ start: m.index, delta: selfClosing ? 0 : m[1] === '/' ? -1 : 1 })
-    re.lastIndex = gt + 1
+  let depth = 0
+  let heldStart = -1
+  let heldDelta = 0
+  let done = false
+  return (pos) => {
+    for (;;) {
+      if (heldStart < 0) {
+        const m = done ? null : re.exec(content)
+        const gt = m === null ? -1 : content.indexOf('>', m.index + m[0].length)
+        if (m === null || gt < 0) {
+          done = true
+          return depth
+        }
+        const nameEnd = m.index + m[0].length
+        heldStart = m.index
+        heldDelta = content[gt - 1] === '/' && gt - 1 >= nameEnd ? 0 : m[1] === '/' ? -1 : 1
+        re.lastIndex = gt + 1
+      }
+      if (heldStart >= pos) return depth
+      depth += heldDelta
+      heldStart = -1
+    }
   }
-  return out
 }
 
 function decodeXml(value: string): string {
@@ -117,8 +118,7 @@ function wholeFileSpan(content: string): AdapterSpan {
   return {
     startLine: 1,
     endLine: lines.length > 1 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length,
-    // File-level metadata symbols can be several megabytes (profiles are a common case).
-    // Keep only the source span in the index; `read` reconstructs empty bodies from disk.
+    // File-level metadata symbols can be several megabytes (profiles are a common case). Keep only the source span in the index; `read` reconstructs empty bodies from disk.
     body: '',
   }
 }
@@ -148,11 +148,7 @@ export function rootElement(content: string): string | null {
   if (gt < 0) return null
   // A self-closing root (e.g. `<CustomObjectTranslation xmlns="..."/>`) has no separate close tag to find.
   if (content[gt - 1] === '/') return root
-  // `escapeRegExp`, because an XML name may legally contain `.` -- the capture above admits one --
-  // and an unescaped one compiles as a wildcard. A root of `Custom.Object` then matched the close
-  // tag `</CustomXObject>`, so a document that is not well formed was accepted and indexed. Nothing
-  // worse is constructible here (the capture admits no `(`, `|`, `*`, `+` or `{`, so no quantifier
-  // can be smuggled in), but a wildcard where a literal was meant is enough.
+  // `escapeRegExp`, because an XML name may legally contain `.` -- the capture above admits one -- and an unescaped one compiles as a wildcard. A root of `Custom.Object` then matched the close tag `</CustomXObject>`, so a document that is not well formed was accepted and indexed. Nothing worse is constructible here (the capture admits no `(`, `|`, `*`, `+` or `{`, so no quantifier can be smuggled in), but a wildcard where a literal was meant is enough.
   const close = new RegExp(`</(?:[A-Za-z_][\\w.-]*:)?${escapeRegExp(root)}\\s*>`, 'i')
   return close.test(content) ? root : null
 }
@@ -272,9 +268,7 @@ export function addFlowElements(
 ): void {
   const lineIndex = buildLineIndex(content)
   const tagAlternation = Object.keys(FLOW_TAG_KIND).join('|')
-  // `\s*>` on the close for the same XML 1.0 reason as xmlText: a `</variables >` that failed to close here merged this flow element with the next one of the same tag, so the second element lost its symbol and the first's span swallowed it.
-  // The opening tag carries the same namespace prefix and attribute allowance as the close, and as both sibling matchers (xmlText, elementBlocks) already did. Without them this one required a bare `<variables>`: measured, a flow whose element was written `<variables xsi:type="VariableDef">` or `<md:variables>` indexed the flow itself and not one of its elements, so every `symbol`, `read` and `refs` against those elements answered as if the flow were empty. The backreference is to group 1, which is still the bare tag name, so a prefixed open must be closed by a tag with the same local name -- prefix mismatches are a well-formedness error the indexer does not need to adjudicate.
-  // Scanned by hand rather than by one regex with a lazy body: that body re-read the rest of the file from every element start that never closed. Elements of different tags are independent here, so a missing close only settles later starts of the SAME tag (their close search is a part of the one that failed), and a start with no `>` after it ends the scan for all of them.
+  // `\s*>` on the close for the same XML 1.0 reason as xmlText: a `</variables >` that failed to close here merged this flow element with the next one of the same tag, so the second element lost its symbol and the first's span swallowed it. The opening tag carries the same namespace prefix and attribute allowance as the close, and as both sibling matchers (xmlText, elementBlocks) already did. Without them this one required a bare `<variables>`: measured, a flow whose element was written `<variables xsi:type="VariableDef">` or `<md:variables>` indexed the flow itself and not one of its elements, so every `symbol`, `read` and `refs` against those elements answered as if the flow were empty. The backreference is to group 1, which is still the bare tag name, so a prefixed open must be closed by a tag with the same local name -- prefix mismatches are a well-formedness error the indexer does not need to adjudicate. Scanned by hand rather than by one regex with a lazy body: that body re-read the rest of the file from every element start that never closed. Elements of different tags are independent here, so a missing close only settles later starts of the SAME tag (their close search is a part of the one that failed), and a start with no `>` after it ends the scan for all of them.
   const open = new RegExp(`<(?:[A-Za-z_][\\w.-]*:)?(${tagAlternation})(?=[\\s>])`, 'g')
   const closeByTag = new Map<string, RegExp>()
   const deadFromByTag = new Map<string, number>()
@@ -318,10 +312,7 @@ function emit(symbols: SymbolEntry[], seen: Set<string>, symbol: SymbolEntry): v
   symbols.push(symbol)
 }
 
-// Shared by the .field-meta.xml and .validationrule-meta.xml branches below: both emit an
-// object-scoped metadata symbol (plus an `Object.Name`-qualified duplicate when the object
-// name is resolvable) -- identical shape, differing only in the metadata suffix (used for
-// name resolution, case-sensitive per Salesforce's own file-naming convention) and kind.
+// Shared by the .field-meta.xml and .validationrule-meta.xml branches below: both emit an object-scoped metadata symbol (plus an `Object.Name`-qualified duplicate when the object name is resolvable) -- identical shape, differing only in the metadata suffix (used for name resolution, case-sensitive per Salesforce's own file-naming convention) and kind.
 function emitObjectScopedMetadata(
   symbols: SymbolEntry[],
   seen: Set<string>,
@@ -385,19 +376,10 @@ export function extractSalesforceMetadata(
         if (objectBlock === undefined) continue
         const objectName = decodeXml(objectBlock.inner.trim())
         if (objectName === '') continue
-        // Locate the actual <object> element via elementBlocks rather than a bare indexOf(objectName):
-        // Flow elements are conventionally named Verb_ObjectName (e.g. Get_Account), so objectName is
-        // almost always a substring of the enclosing <name> tag, which serializes before <object> --
-        // a plain indexOf locks onto that earlier, unrelated occurrence instead of the real <object> tag.
+        // Locate the actual <object> element via elementBlocks rather than a bare indexOf(objectName): Flow elements are conventionally named Verb_ObjectName (e.g. Get_Account), so objectName is almost always a substring of the enclosing <name> tag, which serializes before <object> -- a plain indexOf locks onto that earlier, unrelated occurrence instead of the real <object> tag.
         const objectOffset = block.offset + objectBlock.offset
         emitRef(refs, seenRefs, makeRef(content, lineIndex, filePath, objectName, objectOffset))
-        // A running cursor into block.text, not a fresh indexOf(field.text) each time: two
-        // <filters>/<inputAssignments> entries referencing the same field name inside one
-        // recordLookups/recordCreates/recordUpdates/recordDeletes block is a normal Flow
-        // pattern (e.g. "Status = Open OR Status != Closed"). A plain indexOf always resolves
-        // to the FIRST occurrence, so every subsequent same-named <field> collided with the
-        // first one's offset -- and since emitRef dedupes on filePath/name/line/col, the
-        // second (real, distinct) reference was silently dropped as a duplicate.
+        // A running cursor into block.text, not a fresh indexOf(field.text) each time: two <filters>/<inputAssignments> entries referencing the same field name inside one recordLookups/recordCreates/recordUpdates/recordDeletes block is a normal Flow pattern (e.g. "Status = Open OR Status != Closed"). A plain indexOf always resolves to the FIRST occurrence, so every subsequent same-named <field> collided with the first one's offset -- and since emitRef dedupes on filePath/name/line/col, the second (real, distinct) reference was silently dropped as a duplicate.
         let fieldSearchFrom = 0
         for (const field of elementBlocks(block.inner, 'field')) {
           const fieldName = decodeXml(field.inner.trim())

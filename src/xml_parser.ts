@@ -1,27 +1,4 @@
-/**
- * Minimal XML reader for the OOXML parts token-goat extracts (.docx, .pptx, .xlsx).
- *
- * This replaces `fast-xml-parser` as a runtime dependency. The motive is supply-chain surface, not dissatisfaction with that library: its 5.x line fans out to six transitive packages (`@nodable/entities`, `fast-xml-builder`, `is-unsafe`, `path-expression-matcher`, `xml-naming`, `strnum` -> `anynum`) where 4.x had one, and those five extra maintainer surfaces arrived inside a `^5` range that an existing install accepts without anyone deciding to take them on. What we actually consume is one constructor with four options over machine-generated OOXML, so the whole of it is reproducible here in a few hundred lines with nothing underneath it.
- *
- * The output shape is deliberately byte-identical to what `new XMLParser({ ignoreAttributes: false, preserveOrder: false, trimValues: false, parseTagValue: false })` produced, because `ooxml_extract.ts`, `docx_extract.ts`, `pptx_extract.ts` and `xlsx_reader.ts` all read that shape directly:
- *
- *   - an element with no attributes and no children is its text, so `<b>x</b>` is `"x"` and both `<b></b>` and `<b/>` are `""`;
- *   - anything else is an object holding, in this order, its child elements, then `#text` if it has any text at all, then its attributes under an `@_` prefix with the name kept verbatim including any namespace prefix (`@_w:val`, `@_r:id`);
- *   - repeated sibling elements of the same name fold into an array in document order, so `<b>1</b><c>2</c><b>3</b>` is `{b: ["1", "3"], c: "2"}`;
- *   - text is never trimmed and never coerced to a number, so a cell reading `007` stays `"007"`;
- *   - comments are dropped, CDATA is inlined as text, and a processing instruction becomes a `?target` key holding its pseudo-attributes.
- *
- * `tests/xml_parser.test.ts` holds a differential test that runs this parser and the real `fast-xml-parser` (kept as a devDependency for exactly this purpose) over the same corpus and requires deep equality, so the claim above is checked rather than asserted.
- *
- * Two deliberate differences from that library, both documented and tested:
- *
- *   1. Numeric character references are decoded. `fast-xml-parser` leaves `&#65;` and `&#x42;` standing as literal text under these options, which is data corruption of the same kind the `parseTagValue: false` note in ooxml_extract.ts describes: a document that writes a curly quote or an em dash as `&#8217;` came back with the escape showing. They are valid XML in any producer's output and are decoded here.
- *   2. Nesting deeper than MAX_DEPTH is refused. The library has no such limit, but every consumer of this tree walks it with a recursive function (`collectElements`, `collectTextRuns`), so a crafted part nesting tens of thousands deep turns into a stack overflow inside the caller rather than an error here. Real OOXML nests on the order of ten.
- *
- * On malformed input it stays lenient in the same way the library was, because these commands read files produced by other people's software and a slightly broken part should still give up its text rather than fail the whole command. An unclosed element is closed at end of input, a stray closing tag is ignored, and input containing no markup at all yields an empty object.
- *
- * Security: there is no DTD processing and no entity declaration support of any kind. A `<!DOCTYPE>` block is skipped whole, and the only entities recognised are the five XML built-ins plus numeric references. That closes XXE and entity-expansion ("billion laughs") by construction rather than by a limit, because there is no mechanism present that could resolve an external or user-defined entity in the first place.
- */
+/** Minimal XML reader for the OOXML parts token-goat extracts (.docx, .pptx, .xlsx). This replaces `fast-xml-parser` as a runtime dependency. The motive is supply-chain surface, not dissatisfaction with that library: its 5.x line fans out to six transitive packages (`@nodable/entities`, `fast-xml-builder`, `is-unsafe`, `path-expression-matcher`, `xml-naming`, `strnum` -> `anynum`) where 4.x had one, and those five extra maintainer surfaces arrived inside a `^5` range that an existing install accepts without anyone deciding to take them on. What we actually consume is one constructor with four options over machine-generated OOXML, so the whole of it is reproducible here in a few hundred lines with nothing underneath it. The output shape is deliberately byte-identical to what `new XMLParser({ ignoreAttributes: false, preserveOrder: false, trimValues: false, parseTagValue: false })` produced, because `ooxml_extract.ts`, `docx_extract.ts`, `pptx_extract.ts` and `xlsx_reader.ts` all read that shape directly: - an element with no attributes and no children is its text, so `<b>x</b>` is `"x"` and both `<b></b>` and `<b/>` are `""`; - anything else is an object holding, in this order, its child elements, then `#text` if it has any text at all, then its attributes under an `@_` prefix with the name kept verbatim including any namespace prefix (`@_w:val`, `@_r:id`); - repeated sibling elements of the same name fold into an array in document order, so `<b>1</b><c>2</c><b>3</b>` is `{b: ["1", "3"], c: "2"}`; - text is never trimmed and never coerced to a number, so a cell reading `007` stays `"007"`; - comments are dropped, CDATA is inlined as text, and a processing instruction becomes a `?target` key holding its pseudo-attributes. `tests/xml_parser.test.ts` holds a differential test that runs this parser and the real `fast-xml-parser` (kept as a devDependency for exactly this purpose) over the same corpus and requires deep equality, so the claim above is checked rather than asserted. Two deliberate differences from that library, both documented and tested: 1. Numeric character references are decoded. `fast-xml-parser` leaves `&#65;` and `&#x42;` standing as literal text under these options, which is data corruption of the same kind the `parseTagValue: false` note in ooxml_extract.ts describes: a document that writes a curly quote or an em dash as `&#8217;` came back with the escape showing. They are valid XML in any producer's output and are decoded here. 2. Nesting deeper than MAX_DEPTH is refused. The library has no such limit, but every consumer of this tree walks it with a recursive function (`collectElements`, `collectTextRuns`), so a crafted part nesting tens of thousands deep turns into a stack overflow inside the caller rather than an error here. Real OOXML nests on the order of ten. On malformed input it stays lenient in the same way the library was, because these commands read files produced by other people's software and a slightly broken part should still give up its text rather than fail the whole command. An unclosed element is closed at end of input, a stray closing tag is ignored, and input containing no markup at all yields an empty object. Security: there is no DTD processing and no entity declaration support of any kind. A `<!DOCTYPE>` block is skipped whole, and the only entities recognised are the five XML built-ins plus numeric references. That closes XXE and entity-expansion ("billion laughs") by construction rather than by a limit, because there is no mechanism present that could resolve an external or user-defined entity in the first place. */
 import { DocumentRefusedError } from './document_refusal.js'
 
 /** Maximum element nesting. Guards the recursive walkers in ooxml_extract.ts against a crafted part, not any real document: OOXML from Word, PowerPoint, Excel, LibreOffice and Google's exporters nests around ten deep, so this sits three orders of magnitude above anything legitimate. */
@@ -43,11 +20,7 @@ const NAMED_ENTITIES: Record<string, string> = {
   apos: "'",
 }
 
-/**
- * Decodes the five XML built-in entities and numeric character references.
- *
- * An unrecognised entity is left exactly as written rather than dropped or replaced: `&nbsp;` is not defined in XML without a DTD, and silently turning it into a space (or into nothing) would invent content the document does not contain. Leaving it standing at least keeps the text faithful and shows what the producer wrote.
- */
+/** Decodes the five XML built-in entities and numeric character references. An unrecognised entity is left exactly as written rather than dropped or replaced: `&nbsp;` is not defined in XML without a DTD, and silently turning it into a space (or into nothing) would invent content the document does not contain. Leaving it standing at least keeps the text faithful and shows what the producer wrote. */
 export function decodeXmlEntities(text: string): string {
   // Fast path: the overwhelming majority of OOXML text runs contain no entity at all, and indexOf over the raw string is far cheaper than running the regex to find nothing.
   if (!text.includes('&')) return text
@@ -184,11 +157,7 @@ function parseTagBody(body: string): { name: string; attrs: [string, string][] }
   return { name, attrs }
 }
 
-/**
- * Parses one XML document into the plain object tree described at the top of this file.
- *
- * Never throws on malformed markup; the only error it raises is MAX_XML_DEPTH being exceeded.
- */
+/** Parses one XML document into the plain object tree described at the top of this file. Never throws on malformed markup; the only error it raises is MAX_XML_DEPTH being exceeded. */
 export function parseXml(xml: string): Record<string, unknown> {
   // A UTF-8 BOM survives TextDecoder and would otherwise become the first character of the first text node, or break the first tag if it sits before `<`.
   const src = xml.charCodeAt(0) === 0xfeff ? xml.slice(1) : xml

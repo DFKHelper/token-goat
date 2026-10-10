@@ -1,6 +1,4 @@
-/**
- * Extracts symbols from Caddyfile configurations (global options, snippets, site blocks, directives).
- */
+/** Extracts symbols from Caddyfile configurations (global options, snippets, site blocks, directives). */
 
 import type { SymbolEntry } from '../parser_types.js'
 

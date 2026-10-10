@@ -1,16 +1,4 @@
-/**
- * HTML extractor — headings, id/class attributes, link/script imports.
- *
- * Symbols:
- *   `html_id`    — id="..." attribute values (noise-filtered)
- *   `html_class` — individual class tokens from class="..." (noise-filtered)
- *
- * Imports:
- *   `html_link`   — href values from <link> tags
- *   `html_script` — src values from <script> tags
- *
- * Sections: <h1>–<h6> headings with computed end-lines.
- */
+/** HTML extractor — headings, id/class attributes, link/script imports. Symbols: `html_id`    — id="..." attribute values (noise-filtered) `html_class` — individual class tokens from class="..." (noise-filtered) Imports: `html_link`   — href values from <link> tags `html_script` — src values from <script> tags Sections: <h1>–<h6> headings with computed end-lines. */
 
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection, AdapterImport } from './common.js'
@@ -24,16 +12,7 @@ export interface HtmlSection {
   readonly endLine: number
 }
 
-// id and class attributes. The negative lookbehind requires a proper left boundary (not
-// preceded by a word char or hyphen) so this only matches a bare `id=`/`class=` attribute,
-// not the tail of a longer attribute name like `data-id=`, `data-testid=`, `data-class=`, etc.
-// The closing quote must match the SAME character that opened it (captured in group 1) --
-// a static ["'] charclass on both ends lets a literal apostrophe inside a double-quoted
-// value (or vice versa) prematurely truncate the match, since [^"']+ excludes both quote
-// characters unconditionally regardless of which one is actually delimiting this value. A
-// per-character negative lookahead against the captured opener (rather than a static
-// exclusion charclass) is required so the body can legally contain the non-delimiting quote.
-// [\s\S] (not a bare `.`) so an attribute value spanning a literal newline -- valid HTML, produced by some auto-formatters wrapping long id/class/href/src lists -- still matches instead of silently dropping the symbol/ref. Mirrors liquid.ts's INCLUDE_RE/SECTION_RE/RENDER_RE, which already use this idiom for the same quoted-value-capture shape.
+// id and class attributes. The negative lookbehind requires a proper left boundary (not preceded by a word char or hyphen) so this only matches a bare `id=`/`class=` attribute, not the tail of a longer attribute name like `data-id=`, `data-testid=`, `data-class=`, etc. The closing quote must match the SAME character that opened it (captured in group 1) -- a static ["'] charclass on both ends lets a literal apostrophe inside a double-quoted value (or vice versa) prematurely truncate the match, since [^"']+ excludes both quote characters unconditionally regardless of which one is actually delimiting this value. A per-character negative lookahead against the captured opener (rather than a static exclusion charclass) is required so the body can legally contain the non-delimiting quote. [\s\S] (not a bare `.`) so an attribute value spanning a literal newline -- valid HTML, produced by some auto-formatters wrapping long id/class/href/src lists -- still matches instead of silently dropping the symbol/ref. Mirrors liquid.ts's INCLUDE_RE/SECTION_RE/RENDER_RE, which already use this idiom for the same quoted-value-capture shape.
 const ID_RE = /(?<![\w-])id=(["'])((?:(?!\1)[\s\S])+)\1/gi
 const CLASS_RE = /(?<![\w-])class=(["'])((?:(?!\1)[\s\S])+)\1/gi
 
@@ -53,15 +32,12 @@ function isNoise(name: string): boolean {
   return NOISE_IDS_CLASSES.has(name.toLowerCase())
 }
 
-// Cap on total html_id/html_class symbols emitted, consistent with the MAX_SYMBOLS convention
-// used by the other language adapters (e.g. powershell_idx.ts, ini_idx.ts) - minified or
-// framework-generated HTML can otherwise emit thousands of duplicate symbol rows.
+// Cap on total html_id/html_class symbols emitted, consistent with the MAX_SYMBOLS convention used by the other language adapters (e.g. powershell_idx.ts, ini_idx.ts) - minified or framework-generated HTML can otherwise emit thousands of duplicate symbol rows.
 const MAX_SYMBOLS = 10_000 // raised from 500: see makeSymbolEmitter's own comment in common.ts for the measurement
 
 const VOID_ELEMENTS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'])
 
-// Matches one open/close/self-closing tag, consuming quoted attribute values as a unit so an embedded `>` inside an attribute (`title="a > b"`) can't end the match early. The attribute section is gated behind a mandatory leading `\s`, so it can never overlap with the preceding tag-name quantifier -- self-closing is read off the raw match text afterward rather than a trailing `(\/?)` capture, which would otherwise be ambiguous with the same attribute section swallowing that `/` first.
-// It is no longer run as a regex: a start whose attribute section never reaches its `>` (an unpaired quote, or the end of the text) read on to the end of the file and then the engine tried the next `<`, so n such starts cost n squared. {@link makeTagScanner} walks the same grammar by hand and remembers where a failed walk was outside a quote.
+// Matches one open/close/self-closing tag, consuming quoted attribute values as a unit so an embedded `>` inside an attribute (`title="a > b"`) can't end the match early. The attribute section is gated behind a mandatory leading `\s`, so it can never overlap with the preceding tag-name quantifier -- self-closing is read off the raw match text afterward rather than a trailing `(\/?)` capture, which would otherwise be ambiguous with the same attribute section swallowing that `/` first. It is no longer run as a regex: a start whose attribute section never reaches its `>` (an unpaired quote, or the end of the text) read on to the end of the file and then the engine tried the next `<`, so n such starts cost n squared. {@link makeTagScanner} walks the same grammar by hand and remembers where a failed walk was outside a quote.
 export interface HtmlTag {
   readonly start: number
   readonly end: number
@@ -70,10 +46,7 @@ export interface HtmlTag {
   readonly selfClosing: boolean
 }
 
-/**
- * A scanner over `code` that returns the next tag at or after `from` under the grammar `<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)(?:\s(?:"[^"]*"|'[^']*'|[^'">])*)?>`, or null when none remains; call it again with the previous tag's `end` for the one after.
- * The attribute section is deterministic: outside a quote it runs to the first `>`, and a quote must be paired with the next like quote, else the start fails. Two starts whose walks are outside a quote at the same offset therefore end alike, so when a walk fails, every offset it was outside a quote at is recorded as dead and a later walk that reaches one of them fails at once. A later start inside one of the failed walk's quoted stretches is not cut, because its own walk begins outside a quote and can still succeed.
- */
+/** A scanner over `code` that returns the next tag at or after `from` under the grammar `<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)(?:\s(?:"[^"]*"|'[^']*'|[^'">])*)?>`, or null when none remains; call it again with the previous tag's `end` for the one after. The attribute section is deterministic: outside a quote it runs to the first `>`, and a quote must be paired with the next like quote, else the start fails. Two starts whose walks are outside a quote at the same offset therefore end alike, so when a walk fails, every offset it was outside a quote at is recorded as dead and a later walk that reaches one of them fails at once. A later start inside one of the failed walk's quoted stretches is not cut, because its own walk begins outside a quote and can still succeed. */
 export function makeTagScanner(code: string): (from: number) => HtmlTag | null {
   const head = /<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)/g
   const stop = /[>"']/g
@@ -123,9 +96,7 @@ export function makeTagScanner(code: string): (from: number) => HtmlTag | null {
 // Total bytes of `code` a single extractHtml call will spend computing element spans, bounding the cost on a pathological file (deeply malformed or enormous markup) the same way MAX_SYMBOLS bounds the id/class loops below.
 const ELEMENT_SPAN_SCAN_CAP = 2_000_000
 
-/**
- * One forward pass over `code` giving, for every non-void element whose close tag was found, the offset from its opening `<tag` to the end of its matching `</tag>`, keyed by the opening tag's own start offset. An id/class match sitting inside an opening tag looks up that tag's start in {@link openTagRanges} to find which element owns it, then in this map for the element's real end; a void element, a self-closing tag, or one whose close tag is never found (or the scan cap is hit first) is simply absent, so its id/class falls back to today's one-line span. `<style>` bodies are skipped whole rather than walked, since raw CSS is not masked by {@link maskHtmlNoise} and could otherwise contain `<`/`>` text that desyncs the tag balance.
- */
+/** One forward pass over `code` giving, for every non-void element whose close tag was found, the offset from its opening `<tag` to the end of its matching `</tag>`, keyed by the opening tag's own start offset. An id/class match sitting inside an opening tag looks up that tag's start in {@link openTagRanges} to find which element owns it, then in this map for the element's real end; a void element, a self-closing tag, or one whose close tag is never found (or the scan cap is hit first) is simply absent, so its id/class falls back to today's one-line span. `<style>` bodies are skipped whole rather than walked, since raw CSS is not masked by {@link maskHtmlNoise} and could otherwise contain `<`/`>` text that desyncs the tag balance. */
 function buildElementSpans(code: string): { spans: Map<number, number>; openTagRanges: { start: number; end: number }[] } {
   const spans = new Map<number, number>()
   const openTagRanges: { start: number; end: number }[] = []
@@ -187,11 +158,7 @@ export function extractHtml(
   const symbols: SymbolEntry[] = []
   const imports: AdapterImport[] = []
   const sections: MiniSection[] = []
-  // Blank out comments, <script> bodies, and CDATA sections (offset-preserving; see
-  // maskHtmlNoise in common.ts) before running any extraction regexes, so commented-out
-  // markup, JS inside a <script> tag, and CDATA payloads aren't indexed as live
-  // symbols/sections/imports and don't corrupt section line-range bookkeeping for the
-  // real markup that follows.
+  // Blank out comments, <script> bodies, and CDATA sections (offset-preserving; see maskHtmlNoise in common.ts) before running any extraction regexes, so commented-out markup, JS inside a <script> tag, and CDATA payloads aren't indexed as live symbols/sections/imports and don't corrupt section line-range bookkeeping for the real markup that follows.
   const code = maskHtmlNoise(content)
   const lineIndex = buildLineIndex(code)
 
@@ -201,10 +168,7 @@ export function extractHtml(
       const line = offsetToLine(lineIndex, hm.offset)
       sections.push({ heading: hm.heading, level: hm.level, line, endLine: line })
     }
-    // Check for id anchor inside the tag. [\s\S] (not a bare `.`) for the same reason as
-    // ID_RE above -- hm.tag's opening-tag segment can span a literal newline (HTML_HEADING_RE's
-    // `[^>]*` attributes match already permits it), so an id value wrapped across lines must
-    // still match instead of silently dropping the heading's anchor-id section.
+    // Check for id anchor inside the tag. [\s\S] (not a bare `.`) for the same reason as ID_RE above -- hm.tag's opening-tag segment can span a literal newline (HTML_HEADING_RE's `[^>]*` attributes match already permits it), so an id value wrapped across lines must still match instead of silently dropping the heading's anchor-id section.
     const idM = /(?<![\w-])id=(["'])((?:(?!\1)[\s\S])+)\1/i.exec(hm.tag)
     if (idM) {
       const anchorId = idM[2] ?? ''
@@ -220,13 +184,7 @@ export function extractHtml(
   const totalLines = countContentLines(code)
   assignFlatEndLines(sections, totalLines)
 
-  // id and class attributes. Deduped by (kind, name, line) - first occurrence wins within its
-  // own kind, mirroring makeSymbolEmitter's `${name}\0${line}` key semantics in common.ts - and
-  // capped at MAX_SYMBOLS total, consistent with the other language adapters. `kind` must be
-  // part of the key: html_id and html_class are distinct namespaces, and an element commonly
-  // repeats the same token as both (`id="pricing" class="pricing"`); a shared set keyed only on
-  // (name, line) let the id loop, which runs first, silently swallow the class as a false
-  // duplicate.
+  // id and class attributes. Deduped by (kind, name, line) - first occurrence wins within its own kind, mirroring makeSymbolEmitter's `${name}\0${line}` key semantics in common.ts - and capped at MAX_SYMBOLS total, consistent with the other language adapters. `kind` must be part of the key: html_id and html_class are distinct namespaces, and an element commonly repeats the same token as both (`id="pricing" class="pricing"`); a shared set keyed only on (name, line) let the id loop, which runs first, silently swallow the class as a false duplicate.
   const seenId = new Set<string>()
   const seenClass = new Set<string>()
 

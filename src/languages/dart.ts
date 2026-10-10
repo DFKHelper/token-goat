@@ -1,9 +1,4 @@
-/**
- * Dart symbol extractor — regex-based (no tree-sitter grammar needed).
- *
- * Extracts: classes, enums, mixins, extensions, extension types, type aliases,
- * methods, properties, top-level functions and variables.
- */
+/** Dart symbol extractor — regex-based (no tree-sitter grammar needed). Extracts: classes, enums, mixins, extensions, extension types, type aliases, methods, properties, top-level functions and variables. */
 
 import type { SymbolEntry } from '../parser_types.js'
 import {

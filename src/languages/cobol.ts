@@ -1,14 +1,4 @@
-/**
- * COBOL adapter: programs, procedure-division sections and paragraphs, level-01/77 data items and
- * FD/SD file descriptions, `COPY` imports, and `PERFORM`/`GO TO`/`CALL 'x'` references.
- *
- * Reference format (IBM Enterprise COBOL for z/OS, https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=structure-reference-format):
- * columns 1-6 are the sequence number area, column 7 the indicator area, 8-11 Area A, 12-72 Area B,
- * and 73-80 are ignored. Indicator `*` or `/` makes a comment line, `D`/`d` a debugging line, `-` a
- * continuation line (https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=format-indicator-area); `*>`
- * starts a floating comment. Free format (`>>SOURCE FORMAT IS FREE`, the ISO 2002 directive) has no
- * columns: text starts at column 1 and only `*>` comments.
- */
+/** COBOL adapter: programs, procedure-division sections and paragraphs, level-01/77 data items and FD/SD file descriptions, `COPY` imports, and `PERFORM`/`GO TO`/`CALL 'x'` references. Reference format (IBM Enterprise COBOL for z/OS, https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=structure-reference-format): columns 1-6 are the sequence number area, column 7 the indicator area, 8-11 Area A, 12-72 Area B, and 73-80 are ignored. Indicator `*` or `/` makes a comment line, `D`/`d` a debugging line, `-` a continuation line (https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=format-indicator-area); `*>` starts a floating comment. Free format (`>>SOURCE FORMAT IS FREE`, the ISO 2002 directive) has no columns: text starts at column 1 and only `*>` comments. */
 
 import type { RefEntry, SymbolEntry } from '../parser_types.js'
 import type { AdapterImport } from './common.js'
@@ -83,10 +73,7 @@ function blankStrings(text: string): string {
   return out
 }
 
-/**
- * Append a fixed-format continuation line (indicator `-`) to the program line before it, so a word or literal split across the two reads whole: `PERFORM CALC-` then `-    PARA` is `PERFORM CALC-PARA`.
- * The continued text starts at its first nonblank character in Area B; when that is a quote the literal above carries on, so the quote is dropped (https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=format-continuation-lines).
- */
+/** Append a fixed-format continuation line (indicator `-`) to the program line before it, so a word or literal split across the two reads whole: `PERFORM CALC-` then `-    PARA` is `PERFORM CALC-PARA`. The continued text starts at its first nonblank character in Area B; when that is a quote the literal above carries on, so the quote is dropped (https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=format-continuation-lines). */
 function joinContinuation(out: CobolLine[], areaB: string): void {
   const prev = out[out.length - 1]
   const rest = areaB.trimStart()

@@ -1,6 +1,4 @@
-/**
- * Nginx configuration language extractor and symbol parser.
- */
+/** Nginx configuration language extractor and symbol parser. */
 
 import {
   type SymbolEntry,
@@ -18,11 +16,7 @@ const NGINX_BLOCK_START_RE = /^(?:([a-zA-Z0-9_]+)[ \t]+)?(http|events|stream|ser
 const SERVER_NAME_RE = /^\s*server_name[ \t]+([^\s;][^;]*);/;
 const LISTEN_RE = /^\s*listen[ \t]+([^\s;][^;]*);/;
 
-/**
- * Extracts symbols from Nginx configuration files.
- * Handles top-level blocks (http, events, stream), upstreams, servers (labeled
- * with server_name or port if present), and locations.
- */
+/** Extracts symbols from Nginx configuration files. Handles top-level blocks (http, events, stream), upstreams, servers (labeled with server_name or port if present), and locations. */
 export function extractNginx(content: string, filePath: string): SymbolEntry[] {
   const lines = content.split('\n');
   const symbols: SymbolEntry[] = [];

@@ -1,8 +1,4 @@
-/**
- * Objective-C and Objective-C++ symbol extractor. `@interface`, `@implementation` and `@protocol` blocks run to their `@end`;
- * methods are named by their full selector (`tableView:didSelectRowAtIndexPath:`) and bound to their brace body; properties,
- * C functions, structs, enums (`NS_ENUM` too), and C++ classes and namespaces in `.mm` files are found as well.
- */
+/** Objective-C and Objective-C++ symbol extractor. `@interface`, `@implementation` and `@protocol` blocks run to their `@end`; methods are named by their full selector (`tableView:didSelectRowAtIndexPath:`) and bound to their brace body; properties, C functions, structs, enums (`NS_ENUM` too), and C++ classes and namespaces in `.mm` files are found as well. */
 
 import { cFunctionHeader, quotedTarget, scanBraceLanguage, trailingIdentifier, withoutTrailingBrace, type BraceAdapterResult, type BraceLanguage, type Decl, type DeclContext } from './brace_engine.js'
 

@@ -12,6 +12,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 ### Changed
 
 - **Upgrading re-embeds every file that was already embedded, once.** The code that chunks files and decides what gets embedded changed since 2.9.30, so token-goat marks every embedded file out of date, whatever its type, and the next `token-goat index` or the background worker embeds it again. The embeddings you have keep answering `semantic` and `search` until each file is redone, so nothing stops working in the meantime; only the one-time embedding work is new.
+- **Indexing a large Salesforce flow holds less in memory.** Finding a flow's top-level `name` used to list every matching element in the file and every tag before it, then pick one. It now reads the elements one at a time and keeps a single running tag depth, stopping at the first top-level match, so a flow with thousands of nested elements indexes in steady time instead of building lists the size of the file.
 
 ### Fixed
 

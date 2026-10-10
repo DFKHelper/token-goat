@@ -36,16 +36,7 @@ function findUnquoted(text: string, needle: string): number {
   return -1
 }
 
-/**
- * Blanks every `<# ... #>` span that both opens and closes on this line, keeping column positions
- * stable, and returns the result. Loops rather than handling a single span: only the first one used
- * to be blanked, and the `#` of the second `<#` was then read as an ordinary line comment, so
- * `function One { <# a #> <# b #> }` lost its closing brace and with it every top-level declaration
- * in the rest of the file. Running before the here-string scanner also stops a completed comment
- * from hiding a real here-string header: that scanner treats a `#` anywhere earlier on the line as
- * proof the header sits in a comment, so `<# note #> $text = @"` left the here-string unmasked and
- * its braces were counted as code.
- */
+/** Blanks every `<# ... #>` span that both opens and closes on this line, keeping column positions stable, and returns the result. Loops rather than handling a single span: only the first one used to be blanked, and the `#` of the second `<#` was then read as an ordinary line comment, so `function One { <# a #> <# b #> }` lost its closing brace and with it every top-level declaration in the rest of the file. Running before the here-string scanner also stops a completed comment from hiding a real here-string header: that scanner treats a `#` anywhere earlier on the line as proof the header sits in a comment, so `<# note #> $text = @"` left the here-string unmasked and its braces were counted as code. */
 function blankCompletedBlockComments(line: string): string {
   let out = line
   for (;;) {
@@ -60,23 +51,7 @@ function blankCompletedBlockComments(line: string): string {
   }
 }
 
-/**
- * Blanks the contents of PowerShell string literals, carrying an unterminated quote across lines,
- * and neutralises backtick escapes outside strings.
- *
- * Two faults live here. A quoted string may span lines in PowerShell, but the quote state used to
- * reset on every line, so the body of one was read as code: a `{` in it desynced the brace counter
- * and suppressed every later top-level declaration, and a `function` word in it was indexed as a
- * real declaration. Separately, a backtick escapes the next character outside a string too, so
- * `` Write-Output `{ `` passes a literal brace as an argument; counting it left the depth stuck
- * above zero for the rest of the file, and `` `# `` was read as a comment marker that swallowed a
- * real closing brace.
- *
- * PowerShell does NOT use backslash as an escape character - a backslash is a literal, most often
- * in a Windows path like `"C:\Temp\"`. Its real rules are: a doubled quote of the same kind is a
- * literal quote, and a backtick escapes the following character inside a double-quoted string (but
- * not inside a single-quoted one).
- */
+/** Blanks the contents of PowerShell string literals, carrying an unterminated quote across lines, and neutralises backtick escapes outside strings. Two faults live here. A quoted string may span lines in PowerShell, but the quote state used to reset on every line, so the body of one was read as code: a `{` in it desynced the brace counter and suppressed every later top-level declaration, and a `function` word in it was indexed as a real declaration. Separately, a backtick escapes the next character outside a string too, so `` Write-Output `{ `` passes a literal brace as an argument; counting it left the depth stuck above zero for the rest of the file, and `` `# `` was read as a comment marker that swallowed a real closing brace. PowerShell does NOT use backslash as an escape character - a backslash is a literal, most often in a Windows path like `"C:\Temp\"`. Its real rules are: a doubled quote of the same kind is a literal quote, and a backtick escapes the following character inside a double-quoted string (but not inside a single-quoted one). */
 function maskPowershellStrings(
   line: string,
   openQuote: '"' | "'" | null,
@@ -110,9 +85,7 @@ function maskPowershellStrings(
     }
     const ch = line[i]
     if (ch === '#') {
-      // An unquoted `#` starts a line comment, so the rest of the line is prose. Stopping here is
-      // what keeps a quote character inside a comment (`# example usage: @"`) from opening a string
-      // that then swallows every following line.
+      // An unquoted `#` starts a line comment, so the rest of the line is prose. Stopping here is what keeps a quote character inside a comment (`# example usage: @"`) from opening a string that then swallows every following line.
       return { code: out, quote }
     }
     if (ch === '`' && i + 1 < line.length) {
@@ -132,13 +105,7 @@ function maskPowershellStrings(
   return { code: out, quote }
 }
 
-/**
- * Skips a balanced `[...]` group at the start of `text` and returns the remainder, or null when
- * `text` does not start with one. Used for both a method's return type and a declaration attribute,
- * neither of which a fixed-depth regex handles: `[List[List[string]]]` nests deeper than the two
- * levels the old pattern allowed and the whole method was dropped, and `[Flags()] enum Mode` never
- * matched a pattern that required `enum` to be the first token on the line.
- */
+/** Skips a balanced `[...]` group at the start of `text` and returns the remainder, or null when `text` does not start with one. Used for both a method's return type and a declaration attribute, neither of which a fixed-depth regex handles: `[List[List[string]]]` nests deeper than the two levels the old pattern allowed and the whole method was dropped, and `[Flags()] enum Mode` never matched a pattern that required `enum` to be the first token on the line. */
 function skipBracketGroup(text: string): string | null {
   if (text[0] !== '[') return null
   let depth = 0
@@ -257,8 +224,7 @@ export function extractPowershell(
       line = masked.code
     }
 
-    // maskPowershellStrings already ends the line at an unquoted `#`, so comment text (e.g.
-    // `# TODO: handle { edge case`) can neither desync the brace counter nor look like a declaration.
+    // maskPowershellStrings already ends the line at an unquoted `#`, so comment text (e.g. `# TODO: handle { edge case`) can neither desync the brace counter nor look like a declaration.
     const stripped = stripLeadingAttributes(line)
 
     // Skip empty lines (including lines that were pure comments)

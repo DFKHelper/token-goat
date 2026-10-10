@@ -1,10 +1,4 @@
-/**
- * CMake adapter for `CMakeLists.txt` and `.cmake` files: `function` and `macro` definitions (closed by `endfunction` and
- * `endmacro`), the targets `add_library`, `add_executable` and `add_custom_target` create, and the `project` name. Command
- * names are case-insensitive. `#` line comments, `#[[ ]]` bracket comments, quoted arguments and `[[ ]]` bracket arguments
- * never produce symbols, and a target whose name is computed from a variable (`${name}`) is skipped. Imports are `include`,
- * `add_subdirectory` and `find_package` with a literal argument.
- */
+/** CMake adapter for `CMakeLists.txt` and `.cmake` files: `function` and `macro` definitions (closed by `endfunction` and `endmacro`), the targets `add_library`, `add_executable` and `add_custom_target` create, and the `project` name. Command names are case-insensitive. `#` line comments, `#[[ ]]` bracket comments, quoted arguments and `[[ ]]` bracket arguments never produce symbols, and a target whose name is computed from a variable (`${name}`) is skipped. Imports are `include`, `add_subdirectory` and `find_package` with a literal argument. */
 
 import type { AdapterImport } from './common.js'
 import { SpanCollector, type StatementAdapterResult } from './span_collector.js'

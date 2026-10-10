@@ -1,10 +1,4 @@
-/**
- * Minimal in-house SpreadsheetML (.xlsx) reader.
- *
- * .xlsx is an OOXML zip-of-XML container exactly like .docx and .pptx, both of which this repo already reads with `fflate` plus the in-house XML parser through `ooxml_extract.ts`. Reading .xlsx the same way removes the only reason `exceljs` was ever installed: 55 packages, and the sole source of every deprecated package in the tree (`inflight`, `lodash.isequal`, `bluebird`, `unzipper`, old `glob`, `tmp`, `fs-extra`, plus eleven `lodash.*` micro-packages).
- *
- * The shapes produced here deliberately match what ExcelJS produced, because `cellText` and `cellFormula` in `xlsx_extract.ts` branch on them and are unchanged: a native `Date` for a date-formatted cell, `{ formula, result }` for a formula cell (whose `result` may itself be a `Date` or `{ error }`), `{ error }` for a directly-entered error cell, and a plain primitive otherwise with `text` carrying the display string.
- */
+/** Minimal in-house SpreadsheetML (.xlsx) reader. .xlsx is an OOXML zip-of-XML container exactly like .docx and .pptx, both of which this repo already reads with `fflate` plus the in-house XML parser through `ooxml_extract.ts`. Reading .xlsx the same way removes the only reason `exceljs` was ever installed: 55 packages, and the sole source of every deprecated package in the tree (`inflight`, `lodash.isequal`, `bluebird`, `unzipper`, old `glob`, `tmp`, `fs-extra`, plus eleven `lodash.*` micro-packages). The shapes produced here deliberately match what ExcelJS produced, because `cellText` and `cellFormula` in `xlsx_extract.ts` branch on them and are unchanged: a native `Date` for a date-formatted cell, `{ formula, result }` for a formula cell (whose `result` may itself be a `Date` or `{ error }`), `{ error }` for a directly-entered error cell, and a plain primitive otherwise with `text` carrying the display string. */
 
 import { assertOoxmlWithinDeadline, decodeZipEntry, NotAnOfficeDocumentError, ooxmlPartBudget, ooxmlWorkDeadline, parseOoxmlPart, readOoxmlZip } from './ooxml_extract.js'
 

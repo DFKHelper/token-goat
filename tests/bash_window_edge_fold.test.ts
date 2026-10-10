@@ -12,7 +12,10 @@ import { makeHookEvent } from './helpers/hook-event.js'
 
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-/** A comment run found in a real file: 1-based inclusive bounds plus the file's own line count. */
+/** HAND-DERIVED (tests/fixtures/PROVENANCE.tsv): a file whose comment runs are sized for these cases. Real source files no longer serve, since the repository folds its own multi-line comments onto one line and a run found there today is gone after the next fold. */
+const FIXTURE = 'tests/fixtures/comment_fold/leading_and_interior.ts'
+
+/** A comment run found in a file: 1-based inclusive bounds plus the file's own line count. */
 interface Block { rel: string; lines: string[]; total: number; start: number; end: number }
 
 function isCommentLine(l: string): boolean {
@@ -95,7 +98,7 @@ describe('foldShellReadBodies: a slice does not fold a comment block at its edge
   })
 
   it('folds a comment block sitting strictly inside a sed window, which is the capability the edge rule leaves intact', async () => {
-    const b = longestBlock('src/bridges/copilot_cli.ts', 4, 8)
+    const b = longestBlock(FIXTURE, 4, 8)
     const lo = b.start - 4
     const hi = b.end + 8
     const cmd = `sed -n '${lo},${hi}p' ${b.rel}`
@@ -107,7 +110,7 @@ describe('foldShellReadBodies: a slice does not fold a comment block at its edge
   })
 
   it('leaves a comment block alone when the sed window ends inside it, so following the recall pointer returns the lines it promised', async () => {
-    const b = longestBlock('src/bridges/copilot_cli.ts', 4, 8)
+    const b = longestBlock(FIXTURE, 4, 8)
     const lo = b.start - 4
     // Cut the window off inside the run, leaving enough comment rows to still clear the planner's minimum: without the edge rule this folds, and its pointer would re-fold.
     const hi = b.start + COMMENT_FOLD_MIN_BLOCK + 1
@@ -121,7 +124,7 @@ describe('foldShellReadBodies: a slice does not fold a comment block at its edge
   })
 
   it('still folds a leading comment block when head returned fewer lines than it asked for, because that is the whole file and not a window', async () => {
-    const b = leadingBlock('src/xml_parser.ts')
+    const b = leadingBlock(FIXTURE)
     // Asking past the end is what makes this provably unwindowed: the reply is short of the request, so nothing was truncated.
     const cmd = `head -n ${b.total + 50} ${b.rel}`
     const body = await deliver(cmd, b.lines.join('\n'), 'wholehead')
@@ -131,7 +134,7 @@ describe('foldShellReadBodies: a slice does not fold a comment block at its edge
   })
 
   it('leaves a leading comment block alone when head truncated the file, since the tail it cut off is exactly what the recall would re-fold', async () => {
-    const b = leadingBlock('src/xml_parser.ts')
+    const b = leadingBlock(FIXTURE)
     const n = COMMENT_FOLD_MIN_BLOCK + 6
     if (n >= b.end) throw new Error('leading block too short to truncate inside; fixture assumption broken')
     const cmd = `head -n ${n} ${b.rel}`

@@ -1,11 +1,4 @@
-/**
- * Re-exports all language adapters added in the languages/ subdirectory.
- *
- * Adapters for TypeScript/JS, Python, Go, Rust, Ruby, Java, C++, Markdown,
- * JSON, YAML, TOML, CSS, and Dockerfile remain inlined in `parser.ts`.
- * This barrel exports the newer adapters: C#, PHP, HTML, Liquid, Kotlin, Swift,
- * GraphQL, SQL, INI, Makefile, Proto, .env, Visual Basic, Apex, and Salesforce metadata.
- */
+/** Re-exports all language adapters added in the languages/ subdirectory. Adapters for TypeScript/JS, Python, Go, Rust, Ruby, Java, C++, Markdown, JSON, YAML, TOML, CSS, and Dockerfile remain inlined in `parser.ts`. This barrel exports the newer adapters: C#, PHP, HTML, Liquid, Kotlin, Swift, GraphQL, SQL, INI, Makefile, Proto, .env, Visual Basic, Apex, and Salesforce metadata. */
 
 export * from './common.js'
 export * from './csharp.js'

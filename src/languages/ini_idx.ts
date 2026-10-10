@@ -1,9 +1,4 @@
-/**
- * INI/CFG section extractor and .env key extractor.
- *
- * `extractIni` — one symbol+section per `[header]` at column 0.
- * `extractEnv` — one symbol per `KEY=value` assignment, with optional leading blanks and an optional leading `export `, matching dotenv's own LINE regex.
- */
+/** INI/CFG section extractor and .env key extractor. `extractIni` — one symbol+section per `[header]` at column 0. `extractEnv` — one symbol per `KEY=value` assignment, with optional leading blanks and an optional leading `export `, matching dotenv's own LINE regex. */
 
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection } from './common.js'
@@ -48,11 +43,7 @@ export function extractIni(content: string, filePath: string): SymbolEntry[] {
   return propagateEndLinesToSymbols(symbols, sections)
 }
 
-/** Returns true if the quote char `q` at index `i` in `line` is escaped: an odd count of
- * consecutive backslashes immediately precedes it (each `\\` pair is one literal backslash, so
- * only an odd run actually escapes the quote — an escaped backslash before the quote must not
- * count as escaping it). Single quotes have no escape semantics in dotenv/POSIX, so this check
- * is skipped entirely for them — any `'` closes the value regardless of what precedes it. */
+/** Returns true if the quote char `q` at index `i` in `line` is escaped: an odd count of consecutive backslashes immediately precedes it (each `\\` pair is one literal backslash, so only an odd run actually escapes the quote — an escaped backslash before the quote must not count as escaping it). Single quotes have no escape semantics in dotenv/POSIX, so this check is skipped entirely for them — any `'` closes the value regardless of what precedes it. */
 function _isEscapedQuote(line: string, i: number, q: string): boolean {
   if (q === "'") return false
   let backslashes = 0
@@ -72,8 +63,7 @@ export function _lineClosesQuote(line: string, q: string): boolean {
   return false
 }
 
-/** If a value's leading char is a quote that isn't closed again later on the same line, returns
- * that quote char (the value continues, embedded-newline-style, onto following lines); else null. */
+/** If a value's leading char is a quote that isn't closed again later on the same line, returns that quote char (the value continues, embedded-newline-style, onto following lines); else null. */
 export function _detectOpenQuote(value: string): string | null {
   const trimmed = value.replace(/^\s+/, '')
   const q = trimmed[0]

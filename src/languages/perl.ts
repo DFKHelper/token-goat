@@ -1,8 +1,4 @@
-/**
- * Perl symbol extractor: packages and named subs, a sub taking its package as parent. Brace matching is unreliable in Perl
- * (`q{}`, `s{}{}`, heredocs, POD), so a span ends where the next sub or package starts, trimmed back to that body's last `}`.
- * POD, heredoc bodies, multi-line `q`/`qq`/`qw` bracket strings, comments, and everything after `__END__` or `__DATA__` are skipped.
- */
+/** Perl symbol extractor: packages and named subs, a sub taking its package as parent. Brace matching is unreliable in Perl (`q{}`, `s{}{}`, heredocs, POD), so a span ends where the next sub or package starts, trimmed back to that body's last `}`. POD, heredoc bodies, multi-line `q`/`qq`/`qw` bracket strings, comments, and everything after `__END__` or `__DATA__` are skipped. */
 
 import type { SymbolEntry } from '../parser_types.js'
 import { precedingDocComment } from '../doc_comment.js'
@@ -43,13 +39,7 @@ function stripComment(line: string): string {
   return line
 }
 
-/**
- * `code` with the contents of its single- and double-quoted strings blanked.
- *
- * A scan for an opening marker must not match text that is only quoted data: `my $msg = "pass <<EOF
- * to the shell";` otherwise opens a heredoc that no later line terminates, and every sub after it
- * disappears from the file. Length is preserved, so a match offset still lines up with `code`.
- */
+/** `code` with the contents of its single- and double-quoted strings blanked. A scan for an opening marker must not match text that is only quoted data: `my $msg = "pass <<EOF to the shell";` otherwise opens a heredoc that no later line terminates, and every sub after it disappears from the file. Length is preserved, so a match offset still lines up with `code`. */
 function maskStrings(code: string): string {
   const out = code.split('')
   let quote = ''

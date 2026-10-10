@@ -1,38 +1,9 @@
-/**
- * Shared doc-comment recovery, used by both the tree-sitter parser (`parser.ts`) and the
- * regex-based language adapters (`languages/common.ts`).
- *
- * Split into its own module rather than living in `parser.ts` (where it originated) because
- * `languages/common.ts` needs it too, and `parser.ts` already imports from `languages/common.ts`
- * (every regex extractor) -- importing `precedingDocComment` back the other way would create an
- * import cycle. `parser.ts` re-exports both symbols from here so existing callers/tests that
- * import them from `parser.js` keep working unchanged.
- */
+/** Shared doc-comment recovery, used by both the tree-sitter parser (`parser.ts`) and the regex-based language adapters (`languages/common.ts`). Split into its own module rather than living in `parser.ts` (where it originated) because `languages/common.ts` needs it too, and `parser.ts` already imports from `languages/common.ts` (every regex extractor) -- importing `precedingDocComment` back the other way would create an import cycle. `parser.ts` re-exports both symbols from here so existing callers/tests that import them from `parser.js` keep working unchanged. */
 
 /** Comment-syntax family {@link precedingDocComment} recognizes: `'c'` for `//`- and block-comment languages, `'hash'` for `#`-line-comment languages, `'vb'` for Visual Basic `'''` XML doc comments. */
 export type DocCommentStyle = 'c' | 'hash' | 'vb'
 
-/**
- * Derive a docstring from the comment block immediately above `lineStart` (1-indexed).
- *
- * Works off plain source lines rather than a syntax tree, so it applies equally to a tree-sitter
- * adapter (TS/JS, Rust) and a regex-based adapter -- both already have `lines` + a 1-indexed
- * start line and nothing else.
- *
- * ADJACENCY GUARD: the block must sit on the line *directly* above `lineStart` -- a blank line
- * between them, or a non-comment line, returns `''` rather than scanning further up. This is the
- * reason `docstring` was left unpopulated for every non-Python extractor in the first place (see
- * `boundSymbolDocstring`'s doc comment in parser.ts): without the guard, a file-level doc comment
- * would get attributed to every symbol beneath it -- the same shared-region blowup that once made
- * `body` grow quadratically -- and a comment block could get attached to more than one symbol
- * (the next symbol down would walk back through the same lines). Never scan past a blank line;
- * never widen the block once a non-comment line is hit.
- *
- * Callers that fold a leading decorator/attribute into a symbol's range (TS `@decorator`, Rust
- * `#[attr]`) pass the *already-widened* `lineStart` (the decorator/attribute's own line), so the
- * walk naturally looks above the decorator/attribute for the doc comment rather than between it
- * and the symbol.
- */
+/** Derive a docstring from the comment block immediately above `lineStart` (1-indexed). Works off plain source lines rather than a syntax tree, so it applies equally to a tree-sitter adapter (TS/JS, Rust) and a regex-based adapter -- both already have `lines` + a 1-indexed start line and nothing else. ADJACENCY GUARD: the block must sit on the line *directly* above `lineStart` -- a blank line between them, or a non-comment line, returns `''` rather than scanning further up. This is the reason `docstring` was left unpopulated for every non-Python extractor in the first place (see `boundSymbolDocstring`'s doc comment in parser.ts): without the guard, a file-level doc comment would get attributed to every symbol beneath it -- the same shared-region blowup that once made `body` grow quadratically -- and a comment block could get attached to more than one symbol (the next symbol down would walk back through the same lines). Never scan past a blank line; never widen the block once a non-comment line is hit. Callers that fold a leading decorator/attribute into a symbol's range (TS `@decorator`, Rust `#[attr]`) pass the *already-widened* `lineStart` (the decorator/attribute's own line), so the walk naturally looks above the decorator/attribute for the doc comment rather than between it and the symbol. */
 export function precedingDocComment(
   lines: readonly string[],
   lineStart: number,
@@ -72,8 +43,7 @@ export function precedingDocComment(
     return collected.join('\n').trim()
   }
 
-  // 'c' style: either a contiguous run of `//` (incl. `///`, `//!`) line comments, or a single
-  // `/* ... */` / `/** ... */` block comment, immediately above.
+  // 'c' style: either a contiguous run of `//` (incl. `///`, `//!`) line comments, or a single `/* ... */` / `/** ... */` block comment, immediately above.
   if (aboveTrimmed.endsWith('*/')) {
     let blockStart = aboveIdx
     while (blockStart >= 0) {
@@ -86,13 +56,7 @@ export function precedingDocComment(
     const opener = lines[blockStart]
     if (opener === undefined || !opener.trim().startsWith('/*')) return ''
     const region = lines.slice(blockStart, aboveIdx + 1)
-    // The upward scan stops at the first line that *starts* with `/*`, which is not enough to prove
-    // the region is one comment. A trailing block comment on a code line (`int x = f(); /* cached */`)
-    // ends with `*/` like a doc block does, so the scan sails up past arbitrary code until it reaches
-    // some earlier line opening a block -- a license header, typically -- and returns everything
-    // between the two as the symbol's docstring, source lines and all. A `*/` anywhere but at the very
-    // end closes an earlier comment, which means at least one line in between is code, so there is no
-    // doc block here at all.
+    // The upward scan stops at the first line that *starts* with `/*`, which is not enough to prove the region is one comment. A trailing block comment on a code line (`int x = f(); /* cached */`) ends with `*/` like a doc block does, so the scan sails up past arbitrary code until it reaches some earlier line opening a block -- a license header, typically -- and returns everything between the two as the symbol's docstring, source lines and all. A `*/` anywhere but at the very end closes an earlier comment, which means at least one line in between is code, so there is no doc block here at all.
     const joined = region.join('\n').trimEnd()
     if (joined.indexOf('*/') !== joined.length - 2) return ''
     return region

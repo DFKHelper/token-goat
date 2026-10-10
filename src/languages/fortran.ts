@@ -1,13 +1,4 @@
-/**
- * Fortran adapter: PROGRAM, MODULE, SUBMODULE, SUBROUTINE, FUNCTION, separate MODULE PROCEDURE and BLOCK DATA units, derived
- * TYPE definitions and named INTERFACE blocks, with the unit or type that contains each as its parent. Only the END of a unit,
- * type or interface closes a symbol: END IF, END DO, END SELECT and the other construct ends are recognized and skipped, so a
- * labeled `DO 10 ... 10 CONTINUE` loop, which has no END DO, cannot unbalance the stack. A bare END closes the innermost unit.
- * `.f`, `.for` and `.f77` are read as fixed form (a `C`, `c`, `*` or `!` in column 1 marks a comment line, a character in column 6
- * continues the previous line, text stops at column 72) unless a line starts in column 1 with code, which only free form allows;
- * the other extensions are free form (`!` comments, `&` continuation, `;` separators). Keywords are case-insensitive; strings
- * and comments never produce symbols. Imports are USE modules, INCLUDE files and `#include` lines.
- */
+/** Fortran adapter: PROGRAM, MODULE, SUBMODULE, SUBROUTINE, FUNCTION, separate MODULE PROCEDURE and BLOCK DATA units, derived TYPE definitions and named INTERFACE blocks, with the unit or type that contains each as its parent. Only the END of a unit, type or interface closes a symbol: END IF, END DO, END SELECT and the other construct ends are recognized and skipped, so a labeled `DO 10 ... 10 CONTINUE` loop, which has no END DO, cannot unbalance the stack. A bare END closes the innermost unit. `.f`, `.for` and `.f77` are read as fixed form (a `C`, `c`, `*` or `!` in column 1 marks a comment line, a character in column 6 continues the previous line, text stops at column 72) unless a line starts in column 1 with code, which only free form allows; the other extensions are free form (`!` comments, `&` continuation, `;` separators). Keywords are case-insensitive; strings and comments never produce symbols. Imports are USE modules, INCLUDE files and `#include` lines. */
 
 import * as path from 'node:path'
 
@@ -188,14 +179,7 @@ function hasFixedFormSignal(line: string): boolean {
   return line.length > 5 && /^[ \d]{5}$/.test(line.slice(0, 5)) && line[5] !== ' ' && line[5] !== '0'
 }
 
-/**
- * True for a `.f`, `.for` or `.f77` file that carries positive fixed-form evidence and no free-form signal.
- *
- * "No code in column 1" is not evidence of fixed form: an indented free-form file has none either.
- * Reading one as fixed form makes character 6 of every line a continuation mark, so no statement is
- * ever flushed and the file indexes to zero symbols with no error. Guessing free form for a file
- * that is really fixed form only degrades the result, so the doubt is resolved that way.
- */
+/** True for a `.f`, `.for` or `.f77` file that carries positive fixed-form evidence and no free-form signal. "No code in column 1" is not evidence of fixed form: an indented free-form file has none either. Reading one as fixed form makes character 6 of every line a continuation mark, so no statement is ever flushed and the file indexes to zero symbols with no error. Guessing free form for a file that is really fixed form only degrades the result, so the doubt is resolved that way. */
 function isFixedForm(filePath: string, lines: readonly string[]): boolean {
   if (!FIXED_FORM_EXTENSIONS.has(path.extname(filePath).toLowerCase())) return false
   if (lines.some(hasFreeFormSignal)) return false

@@ -6,8 +6,7 @@ import { extractMarkdownHeadings } from './hints/markdown_hints.js'
 /** Structural cut points for this file's embedding chunks, derived from the same indexing pass rather than re-parsed from scratch: markdown/doc files get one 'section' boundary per heading (extractMarkdownHeadings - cheap here since the caller already holds the full content in memory); every other language gets one 'symbol' boundary per row already committed to the `symbols` table moments earlier by indexFileSync in the same cli.ts/worker.ts call sequence. Empty when the file has no symbols/headings (unparsed language, plain text, or a file with genuinely nothing extractable) - chunkFile's own `boundaries.length === 0` check falls back to its plain sliding window in that case, so this never needs to signal "no boundaries" any differently than an empty array. Kept in its own module, separate from parser.ts, so PARSER_FINGERPRINT (which invalidates files.parser_sha) and EMBED_FINGERPRINT (which invalidates files.embed_sha, see scripts/parser-fingerprint.mjs) can each hash exactly the sources that decide their own freshness key without one dragging the other's unrelated edits into a reparse or re-embed. */
 export function buildEmbeddingBoundaries(filePath: string, content: string, dbPath: string): ChunkBoundary[] {
   if (detectLanguage(filePath) === 'markdown') {
-    // Extract all headings (no cap) for embedding boundaries so sections remain heading-aligned
-    // even for docs with >40 headings (large API references, changelogs, multi-section docs).
+    // Extract all headings (no cap) for embedding boundaries so sections remain heading-aligned even for docs with >40 headings (large API references, changelogs, multi-section docs).
     const headings = extractMarkdownHeadings(content, Infinity)
     return headings.map((h, i) => ({
       start: h.lineNumber,

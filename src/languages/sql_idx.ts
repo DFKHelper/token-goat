@@ -1,9 +1,4 @@
-/**
- * SQL DDL extractor — CREATE TABLE/VIEW/FUNCTION/PROCEDURE/INDEX/TRIGGER names.
- *
- * Pure-regex, case-insensitive. Handles multiple SQL dialects (PostgreSQL,
- * MySQL, SQLite, SQL Server, Oracle) via permissive CREATE DDL patterns.
- */
+/** SQL DDL extractor — CREATE TABLE/VIEW/FUNCTION/PROCEDURE/INDEX/TRIGGER names. Pure-regex, case-insensitive. Handles multiple SQL dialects (PostgreSQL, MySQL, SQLite, SQL Server, Oracle) via permissive CREATE DDL patterns. */
 
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection } from './common.js'
@@ -104,41 +99,8 @@ const PLSQL_CONTAINER_KINDS: ReadonlySet<string> = new Set(['sql_package', 'sql_
 // A subprogram declared or defined inside a package or type body, with the member modifiers an object type body allows.
 const MEMBER_RE = new RegExp(`^[ \\t]*(?:(?:MAP|ORDER|MEMBER|STATIC|CONSTRUCTOR|FINAL|INSTANTIABLE|OVERRIDING|NOT)\\s+)*(PROCEDURE|FUNCTION)\\s+(${QUOTED}|${BARE})`, 'gim')
 
-/**
- * Blank the contents of SQL single-quoted string literals, `--` line comments, and `/* *\/` block
- * comments in a single linear scan, replacing interior characters with spaces (keeping the quote
- * delimiters and any newlines) so DDL keywords that merely appear inside a string value (e.g.
- * dynamic SQL passed to `EXECUTE '...'`) are never matched by the `CREATE ...` patterns below, and
- * neither comment marker ever gets treated as real syntax while inside an open string literal.
- * Double-quoted spans are left untouched since double quotes delimit SQL identifiers (e.g.
- * `CREATE TABLE "user"`), not string literals - blanking them would destroy legitimate delimited
- * names. Length- and offset-preserving, like the other `strip*` helpers in `common.ts`, so
- * `match.index` positions stay valid for line lookup.
- *
- * SQL's standard escape for a literal quote inside a string is a doubled quote (`''` inside a
- * `'...'` string, `""` inside a `"..."` string) rather than a backslash - `common.ts`'s
- * `isInsideStringLiteral`/`stripStringLiterals` assume backslash escaping, so they don't fit SQL's
- * rule and this file needs its own quote-aware scanner.
- *
- * `--` and `/* *\/` comment handling used to live in separate pre-passes
- * (`stripSqlLineComments`/`common.ts`'s `stripCstyleComments`) that ran before string-literal
- * stripping. Both reset their quote-tracking at every newline, with no awareness that the current
- * line started mid-way through an already-open multi-line string literal from a prior line - so a
- * `--` or a `/*`-looking sequence inside a multi-line string got treated as real comment syntax,
- * corrupting the rest of the file two ways: blanking a closing quote and flipping string-parity
- * tracking for everything after (under-stripping: real string content eaten), or - worse - opening
- * a phantom block comment that never finds a real `*\/` closer anywhere later in the file (since
- * the file's actual `*\/`-shaped text, if any, is itself inside the same open string), silently
- * dropping every real DDL statement after it to EOF (over-stripping: real code swallowed as
- * comment). Folding both comment forms into this single stateful scan - which already tracks
- * whether a string is open across line boundaries - fixes both directions: `--` and `/*` are only
- * ever treated as comment starts when the scanner is not currently inside an open string.
- */
-/**
- * The index of the `'` closing the literal opened at `openIdx`, or -1 when nothing in the rest of the file closes it.
- *
- * Split out so that deciding "this really is a string" and blanking it afterwards walk one rule and cannot drift apart. Only the doubled-quote escape is honored: backslash escaping is MySQL's default and Postgres `E'...'`, while standard-conforming Postgres treats a backslash as an ordinary character, so honoring it unconditionally corrupts one dialect and ignoring it corrupts the other.
- */
+/** Blank the contents of SQL single-quoted string literals, `--` line comments, and `/* *\/` block comments in a single linear scan, replacing interior characters with spaces (keeping the quote delimiters and any newlines) so DDL keywords that merely appear inside a string value (e.g. dynamic SQL passed to `EXECUTE '...'`) are never matched by the `CREATE ...` patterns below, and neither comment marker ever gets treated as real syntax while inside an open string literal. Double-quoted spans are left untouched since double quotes delimit SQL identifiers (e.g. `CREATE TABLE "user"`), not string literals - blanking them would destroy legitimate delimited names. Length- and offset-preserving, like the other `strip*` helpers in `common.ts`, so `match.index` positions stay valid for line lookup. SQL's standard escape for a literal quote inside a string is a doubled quote (`''` inside a `'...'` string, `""` inside a `"..."` string) rather than a backslash - `common.ts`'s `isInsideStringLiteral`/`stripStringLiterals` assume backslash escaping, so they don't fit SQL's rule and this file needs its own quote-aware scanner. `--` and `/* *\/` comment handling used to live in separate pre-passes (`stripSqlLineComments`/`common.ts`'s `stripCstyleComments`) that ran before string-literal stripping. Both reset their quote-tracking at every newline, with no awareness that the current line started mid-way through an already-open multi-line string literal from a prior line - so a `--` or a `/*`-looking sequence inside a multi-line string got treated as real comment syntax, corrupting the rest of the file two ways: blanking a closing quote and flipping string-parity tracking for everything after (under-stripping: real string content eaten), or - worse - opening a phantom block comment that never finds a real `*\/` closer anywhere later in the file (since the file's actual `*\/`-shaped text, if any, is itself inside the same open string), silently dropping every real DDL statement after it to EOF (over-stripping: real code swallowed as comment). Folding both comment forms into this single stateful scan - which already tracks whether a string is open across line boundaries - fixes both directions: `--` and `/*` are only ever treated as comment starts when the scanner is not currently inside an open string. */
+/** The index of the `'` closing the literal opened at `openIdx`, or -1 when nothing in the rest of the file closes it. Split out so that deciding "this really is a string" and blanking it afterwards walk one rule and cannot drift apart. Only the doubled-quote escape is honored: backslash escaping is MySQL's default and Postgres `E'...'`, while standard-conforming Postgres treats a backslash as an ordinary character, so honoring it unconditionally corrupts one dialect and ignoring it corrupts the other. */
 function sqlSingleQuoteClose(text: string, openIdx: number): number {
   let i = openIdx + 1
   while (i < text.length) {
@@ -181,11 +143,7 @@ function stripSqlStringLiterals(text: string): string {
       }
     }
     if (ch === "'") {
-      // Double quotes delimit SQL identifiers (e.g. `CREATE TABLE "user"`), not string
-      // literals - blanking them would destroy legitimate delimited names. Dynamic-SQL DDL
-      // keywords that need masking (e.g. `EXECUTE 'CREATE TABLE ...'`) are always inside a
-      // single-quoted string literal, never a double-quoted identifier.
-      // An opener nothing closes is evidence this masker misread the dialect, not evidence of a string running to EOF. The usual cause is a backslash-escaped apostrophe (`'it\'s fine'`): the backslash ends the span early here, and the real closing quote then opens a phantom string that blanks every later CREATE through EOF. Refusing to blank an unclosable span costs at most one stray extra symbol, which is the safer direction, and it needs no guess about which dialect the file is written in.
+      // Double quotes delimit SQL identifiers (e.g. `CREATE TABLE "user"`), not string literals - blanking them would destroy legitimate delimited names. Dynamic-SQL DDL keywords that need masking (e.g. `EXECUTE 'CREATE TABLE ...'`) are always inside a single-quoted string literal, never a double-quoted identifier. An opener nothing closes is evidence this masker misread the dialect, not evidence of a string running to EOF. The usual cause is a backslash-escaped apostrophe (`'it\'s fine'`): the backslash ends the span early here, and the real closing quote then opens a phantom string that blanks every later CREATE through EOF. Refusing to blank an unclosable span costs at most one stray extra symbol, which is the safer direction, and it needs no guess about which dialect the file is written in.
       const closeIdx = sqlSingleQuoteClose(text, i)
       if (closeIdx === -1) {
         out += ch
@@ -203,16 +161,7 @@ function stripSqlStringLiterals(text: string): string {
       continue
     }
     if (ch === '"') {
-      // A `"..."` delimited identifier's *contents* must pass through unblanked (unlike a
-      // single-quoted literal's contents, which are masked) - the whole point of this branch is
-      // preserving legitimate delimited names for downstream regex matching. But the span still
-      // needs to be consumed as one opaque unit here: standard SQL permits ANY character inside a
-      // delimited identifier, including `'`, `--`, and `/*`. Without this branch those characters
-      // fell through to the generic `out += ch` path below one at a time, so a `'` inside a
-      // quoted identifier (e.g. `"user's_data"`, a common possessive/label-style column or table
-      // name) opened a phantom single-quoted string on the *next* scan iteration that never found
-      // a real closing `'`, blanking every DDL statement after it through EOF. `""` is honored as
-      // the doubled-quote escape for a literal `"` inside the identifier, symmetric to `''` above.
+      // A `"..."` delimited identifier's *contents* must pass through unblanked (unlike a single-quoted literal's contents, which are masked) - the whole point of this branch is preserving legitimate delimited names for downstream regex matching. But the span still needs to be consumed as one opaque unit here: standard SQL permits ANY character inside a delimited identifier, including `'`, `--`, and `/*`. Without this branch those characters fell through to the generic `out += ch` path below one at a time, so a `'` inside a quoted identifier (e.g. `"user's_data"`, a common possessive/label-style column or table name) opened a phantom single-quoted string on the *next* scan iteration that never found a real closing `'`, blanking every DDL statement after it through EOF. `""` is honored as the doubled-quote escape for a literal `"` inside the identifier, symmetric to `''` above.
       out += ch
       i++
       while (i < text.length) {
@@ -233,10 +182,7 @@ function stripSqlStringLiterals(text: string): string {
       continue
     }
     if (ch === '`') {
-      // MySQL backtick-delimited identifier - same opaque-span rationale and phantom-string risk
-      // as the `"..."` branch above (an apostrophe inside `` `user's_data` `` would otherwise open
-      // an unterminated single-quoted string and blank the rest of the file). `` `` `` is the
-      // doubled-backtick escape for a literal backtick inside the identifier.
+      // MySQL backtick-delimited identifier - same opaque-span rationale and phantom-string risk as the `"..."` branch above (an apostrophe inside `` `user's_data` `` would otherwise open an unterminated single-quoted string and blank the rest of the file). `` `` `` is the doubled-backtick escape for a literal backtick inside the identifier.
       out += ch
       i++
       while (i < text.length) {
@@ -257,11 +203,7 @@ function stripSqlStringLiterals(text: string): string {
       continue
     }
     if (ch === '[') {
-      // SQL Server bracket-delimited identifier - same rationale as the `"..."` and `` `...` ``
-      // branches above (an apostrophe inside `[user's_data]` would otherwise open an unterminated
-      // single-quoted string). `]]` is the doubled-bracket escape for a literal `]` inside the
-      // identifier. Unlike the other two forms the open/close delimiters differ, so there is no
-      // risk of misreading a bare `[` elsewhere in the file as a closer.
+      // SQL Server bracket-delimited identifier - same rationale as the `"..."` and `` `...` `` branches above (an apostrophe inside `[user's_data]` would otherwise open an unterminated single-quoted string). `]]` is the doubled-bracket escape for a literal `]` inside the identifier. Unlike the other two forms the open/close delimiters differ, so there is no risk of misreading a bare `[` elsewhere in the file as a closer.
       out += ch
       i++
       while (i < text.length) {
@@ -282,9 +224,7 @@ function stripSqlStringLiterals(text: string): string {
       continue
     }
     if (ch === '-' && text[i + 1] === '-') {
-      // `--` line comment: only recognized outside a string literal (guaranteed here, since the
-      // branch above consumes any open `'...'` span in full before returning to this point).
-      // Blank to end of line, preserving the newline itself.
+      // `--` line comment: only recognized outside a string literal (guaranteed here, since the branch above consumes any open `'...'` span in full before returning to this point). Blank to end of line, preserving the newline itself.
       while (i < text.length && text[i] !== '\n') {
         out += ' '
         i++
@@ -292,16 +232,9 @@ function stripSqlStringLiterals(text: string): string {
       continue
     }
     if (ch === '#' && text[i + 1] !== '>' && text[i + 1] !== '-') {
-      // `#` line comment: MySQL/MariaDB's third comment form, alongside `--` and `/* */`. Same
-      // string-literal guarantee as `--` above. Without this branch, a `CREATE TABLE ...`
-      // sitting inside a `#` comment (leading or trailing) survives masking and gets matched by
-      // the DDL patterns below as a live symbol.
+      // `#` line comment: MySQL/MariaDB's third comment form, alongside `--` and `/* */`. Same string-literal guarantee as `--` above. Without this branch, a `CREATE TABLE ...` sitting inside a `#` comment (leading or trailing) survives masking and gets matched by the DDL patterns below as a live symbol.
       //
-      // Excluded when immediately followed by '>' or '-': PostgreSQL's own `#>`, `#>>`, and `#-`
-      // jsonb path-extraction operators start with a bare '#' too, and this masking pass is
-      // dialect-agnostic (this file's own doc comment claims Postgres support) -- treating those
-      // as a MySQL comment opener silently blanked the rest of the physical line, dropping any
-      // further DDL statement on that same line with no error.
+      // Excluded when immediately followed by '>' or '-': PostgreSQL's own `#>`, `#>>`, and `#-` jsonb path-extraction operators start with a bare '#' too, and this masking pass is dialect-agnostic (this file's own doc comment claims Postgres support) -- treating those as a MySQL comment opener silently blanked the rest of the physical line, dropping any further DDL statement on that same line with no error.
       while (i < text.length && text[i] !== '\n') {
         out += ' '
         i++
@@ -309,9 +242,7 @@ function stripSqlStringLiterals(text: string): string {
       continue
     }
     if (ch === '/' && text[i + 1] === '*') {
-      // `/* ... */` block comment: only recognized outside a string literal, same guarantee as
-      // `--` above. Blanks through to the closing `*/` (preserving newlines so line/offset
-      // positions downstream stay valid), or to EOF if unterminated.
+      // `/* ... */` block comment: only recognized outside a string literal, same guarantee as `--` above. Blanks through to the closing `*/` (preserving newlines so line/offset positions downstream stay valid), or to EOF if unterminated.
       out += '  '
       i += 2
       while (i < text.length) {
@@ -340,13 +271,7 @@ function unquoteSegment(segment: string): string {
   return segment.slice(1, -1).split(close + close).join(close)
 }
 
-// NAME_PAT captures a schema-qualified name (e.g. "public"."users") as a single token, so a
-// naive unquote() that only strips one outer quote pair off the whole string leaves a
-// schema-qualified quoted name corrupted: "public"."users" only has its outermost quotes
-// stripped, yielding the garbage literal public"."users. Splitting on the dot that separates the
-// two independently-quoted segments (while staying inside quote/bracket delimiters, since a
-// quoted segment could itself legally contain a literal dot) and unquoting each segment
-// separately avoids that.
+// NAME_PAT captures a schema-qualified name (e.g. "public"."users") as a single token, so a naive unquote() that only strips one outer quote pair off the whole string leaves a schema-qualified quoted name corrupted: "public"."users" only has its outermost quotes stripped, yielding the garbage literal public"."users. Splitting on the dot that separates the two independently-quoted segments (while staying inside quote/bracket delimiters, since a quoted segment could itself legally contain a literal dot) and unquoting each segment separately avoids that.
 function splitQualifiedSegments(name: string): string[] {
   const segments: string[] = []
   let start = 0
@@ -379,14 +304,7 @@ function unquote(name: string): string {
   return splitQualifiedSegments(name).map(unquoteSegment).join('.')
 }
 
-/**
- * Find the next top-level `;` in `noStrings` starting at `fromIndex`, skipping over any
- * "..."/`...`/[...] delimited-identifier span so a `;` embedded in a quoted identifier's name
- * (e.g. `CREATE TABLE "a;b" (...)`) is never mistaken for the statement's real terminator.
- * stripSqlStringLiterals preserves those spans verbatim (needed so NAME_PAT can still extract
- * the identifier text) while single-quoted string literals are already blanked to spaces, so
- * only these three delimiter forms need to be skipped here.
- */
+/** Find the next top-level `;` in `noStrings` starting at `fromIndex`, skipping over any "..."/`...`/[...] delimited-identifier span so a `;` embedded in a quoted identifier's name (e.g. `CREATE TABLE "a;b" (...)`) is never mistaken for the statement's real terminator. stripSqlStringLiterals preserves those spans verbatim (needed so NAME_PAT can still extract the identifier text) while single-quoted string literals are already blanked to spaces, so only these three delimiter forms need to be skipped here. */
 function findStatementTerminator(noStrings: string, fromIndex: number): number {
   let i = fromIndex
   while (i < noStrings.length) {
@@ -449,9 +367,7 @@ interface PlsqlUnit {
   readonly line: number
 }
 
-/**
- * PL/SQL spans and children: a named unit ends at its `END name;` when one appears before the next CREATE statement, and each PROCEDURE/FUNCTION inside a package spec, package body or type body becomes a child symbol. A declaration in a spec ends at its `;`; a definition in a body ends at its own `END name;`, or else just before the next sibling. Returns the unit end lines keyed like `singleLineEndLines`, and the children.
- */
+/** PL/SQL spans and children: a named unit ends at its `END name;` when one appears before the next CREATE statement, and each PROCEDURE/FUNCTION inside a package spec, package body or type body becomes a child symbol. A declaration in a spec ends at its `;`; a definition in a body ends at its own `END name;`, or else just before the next sibling. Returns the unit end lines keyed like `singleLineEndLines`, and the children. */
 function plsqlStructure(
   noStrings: string,
   lineIndex: number[],
@@ -537,26 +453,10 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
 
   const totalLines = countContentLines(content)
   const lineIndex = buildLineIndex(content)
-  // Blanks string literals, `--` line comments, AND `/* */` block comments in one linear scan
-  // over the raw content, so neither comment marker is ever mistaken for real syntax while
-  // inside an open (possibly multi-line) string literal - see docstring below. Running this
-  // directly on `content` instead of a separate `stripCstyleComments` pre-pass is required for
-  // that: a `/* */` pre-pass with no string-literal awareness would itself misparse a `/*`- or
-  // `*/`-shaped sequence sitting inside a multi-line string.
+  // Blanks string literals, `--` line comments, AND `/* */` block comments in one linear scan over the raw content, so neither comment marker is ever mistaken for real syntax while inside an open (possibly multi-line) string literal - see docstring below. Running this directly on `content` instead of a separate `stripCstyleComments` pre-pass is required for that: a `/* */` pre-pass with no string-literal awareness would itself misparse a `/*`- or `*/`-shaped sequence sitting inside a multi-line string.
   const noStrings = stripSqlStringLiterals(content)
 
-  // name+line -> true lineEnd for a statement confirmed to terminate with `;` on its own start
-  // line. assignFlatEndLines/propagateEndLinesToSymbols only do flat "ends where the next
-  // section starts" propagation: when several complete statements share one physical line (e.g.
-  // `CREATE TABLE a (id INT); CREATE FUNCTION b() ...;`), the shared model has no way to tell
-  // which of them is genuinely the "last" one on that line, and its next-section-start heuristic
-  // extends whichever statement happens to sort last into that position all the way to the next
-  // *distinct* line (or EOF) -- silently absorbing unrelated statements that merely follow on
-  // later lines. A statement whose own terminating `;` is found on the same line as its `CREATE`
-  // keyword is unambiguous regardless of sort order, so it can be pinned to a single-line span
-  // directly instead of trusting the flat model's guess. Left untouched (flat-model behavior
-  // unchanged) whenever the terminator isn't on the start line -- e.g. a real multi-line
-  // function/procedure body -- unless it is a PL/SQL unit closed by `END name;` (plsqlStructure).
+  // name+line -> true lineEnd for a statement confirmed to terminate with `;` on its own start line. assignFlatEndLines/propagateEndLinesToSymbols only do flat "ends where the next section starts" propagation: when several complete statements share one physical line (e.g. `CREATE TABLE a (id INT); CREATE FUNCTION b() ...;`), the shared model has no way to tell which of them is genuinely the "last" one on that line, and its next-section-start heuristic extends whichever statement happens to sort last into that position all the way to the next *distinct* line (or EOF) -- silently absorbing unrelated statements that merely follow on later lines. A statement whose own terminating `;` is found on the same line as its `CREATE` keyword is unambiguous regardless of sort order, so it can be pinned to a single-line span directly instead of trusting the flat model's guess. Left untouched (flat-model behavior unchanged) whenever the terminator isn't on the start line -- e.g. a real multi-line function/procedure body -- unless it is a PL/SQL unit closed by `END name;` (plsqlStructure).
   const singleLineEndLines = new Map<string, number>()
   const units: PlsqlUnit[] = []
   const createStarts: number[] = []
@@ -573,11 +473,7 @@ export function extractSql(content: string, filePath: string): SymbolEntry[] {
           createStarts.push(m.index ?? 0)
           const semiIdx = findStatementTerminator(noStrings, m.index ?? 0)
           if (semiIdx !== -1 && (offsetToLine(lineIndex, semiIdx) === line || !BODY_KINDS.has(kind) || isBodylessFunction(kind, noStrings.slice(m.index ?? 0, semiIdx)))) {
-            // kind must be part of the key, same reasoning as makeSymbolEmitter's own `seen`
-            // key: a name can legitimately repeat across kinds on the same line (e.g. a
-            // same-line `CREATE TABLE foo (...); CREATE FUNCTION foo() ...`), and a name+line-
-            // only key would let one kind's single-line pin leak onto a different kind sharing
-            // that same name and line.
+            // kind must be part of the key, same reasoning as makeSymbolEmitter's own `seen` key: a name can legitimately repeat across kinds on the same line (e.g. a same-line `CREATE TABLE foo (...); CREATE FUNCTION foo() ...`), and a name+line- only key would let one kind's single-line pin leak onto a different kind sharing that same name and line.
             singleLineEndLines.set(`${name}\0${kind}\0${line}`, offsetToLine(lineIndex, semiIdx))
           } else if (PLSQL_UNIT_KINDS.has(kind)) {
             units.push({ name, kind, index: m.index ?? 0, matchEnd: (m.index ?? 0) + m[0].length, line })

@@ -1,35 +1,4 @@
-/**
- * Scheme (R7RS) adapter: `define`, `define-syntax`, `define-record-type`, `define-values`,
- * `define-library`.
- *
- * Its own file with its own masker -- see `templates_idx.ts`'s module doc for why the six template
- * dialects share one masker while the five Lisp dialects, this one included, each get their own.
- * Scheme's rules genuinely diverge from Common Lisp's and Racket's:
- *  - Block comments (`#| ... |#`) NEST, per R7RS 7.1.2 ("Datum comments"; the nesting rule for `#|
- *    |#` is stated in R7RS section 2.2 "Whitespace and comments": "block comments... can be
- *    nested"). `maskSchemeBlockComment` implements this independently of
- *    `common_lisp.ts::maskCommonLispBlockComment`, even though both count nesting depth the same
- *    way, because each is scoped to its own dialect's grammar and the settled decision for this
- *    batch is not to fold lookalike rules into one shared function.
- *  - Unlike Common Lisp, R7RS defines `#;` (section 2.2): "Datum comments... cause the parser to
- *    skip the next datum." This needs a "skip one datum" scanner (`skipDatum`), since the elided
- *    datum can itself be an atom, a string, a character literal, or an arbitrarily nested list --
- *    something Common Lisp's masker never needs, because CL has no datum-comment syntax.
- *  - Character literals are `#\<name-or-char>` per R7RS 6.7 ("Characters"), the same *shape* as
- *    Common Lisp's `#\` syntax but governed by R7RS's own character-name table (`#\space`,
- *    `#\newline`, `#\alarm`, ...), not CLHS's.
- *  - `'` is the QUOTE abbreviation (R7RS 2.2, "'a" == "(quote a)"), never a string delimiter, the
- *    same reason `common_lisp.ts` gives for not reusing `common.ts::stripStringLiterals`.
- *
- * Line comments are `;` to end of line. Strings are `"..."` with `\` escapes (R7RS 6.13.2).
- *
- * Definitions are found the same structural way as `common_lisp.ts` (masked-text depth scan for a
- * definer keyword right after `(`, name is the next token or, for `(define (name args) body)`
- * function shorthand, the first symbol after peeling one `(` layer) -- the STRUCTURAL walk looks
- * similar across all five Lisp files because every one of them is an s-expression language and a
- * paren-depth walk is unavoidable, but each file's masking pass (the actual point of divergence
- * this batch is about) is independently written and independently cites its own dialect's spec.
- */
+/** Scheme (R7RS) adapter: `define`, `define-syntax`, `define-record-type`, `define-values`, `define-library`. Its own file with its own masker -- see `templates_idx.ts`'s module doc for why the six template dialects share one masker while the five Lisp dialects, this one included, each get their own. Scheme's rules genuinely diverge from Common Lisp's and Racket's: - Block comments (`#| ... |#`) NEST, per R7RS 7.1.2 ("Datum comments"; the nesting rule for `#| |#` is stated in R7RS section 2.2 "Whitespace and comments": "block comments... can be nested"). `maskSchemeBlockComment` implements this independently of `common_lisp.ts::maskCommonLispBlockComment`, even though both count nesting depth the same way, because each is scoped to its own dialect's grammar and the settled decision for this batch is not to fold lookalike rules into one shared function. - Unlike Common Lisp, R7RS defines `#;` (section 2.2): "Datum comments... cause the parser to skip the next datum." This needs a "skip one datum" scanner (`skipDatum`), since the elided datum can itself be an atom, a string, a character literal, or an arbitrarily nested list -- something Common Lisp's masker never needs, because CL has no datum-comment syntax. - Character literals are `#\<name-or-char>` per R7RS 6.7 ("Characters"), the same *shape* as Common Lisp's `#\` syntax but governed by R7RS's own character-name table (`#\space`, `#\newline`, `#\alarm`, ...), not CLHS's. - `'` is the QUOTE abbreviation (R7RS 2.2, "'a" == "(quote a)"), never a string delimiter, the same reason `common_lisp.ts` gives for not reusing `common.ts::stripStringLiterals`. Line comments are `;` to end of line. Strings are `"..."` with `\` escapes (R7RS 6.13.2). Definitions are found the same structural way as `common_lisp.ts` (masked-text depth scan for a definer keyword right after `(`, name is the next token or, for `(define (name args) body)` function shorthand, the first symbol after peeling one `(` layer) -- the STRUCTURAL walk looks similar across all five Lisp files because every one of them is an s-expression language and a paren-depth walk is unavoidable, but each file's masking pass (the actual point of divergence this batch is about) is independently written and independently cites its own dialect's spec. */
 
 import { SpanCollector, type StatementAdapterResult } from './span_collector.js'
 import { buildLineIndex, offsetToLine } from './common.js'
@@ -45,9 +14,7 @@ const DEFINERS: ReadonlyMap<string, string> = new Map([
 const isSpace = (ch: string | undefined): boolean => ch !== undefined && /\s/.test(ch)
 const isSymbolChar = (ch: string | undefined): boolean => ch !== undefined && !/[\s()[\]{}"'`,;|#]/.test(ch)
 
-/** Skips one nested `#| ... |#` block comment starting at `start` (pointing at the `#`), per R7RS
- * section 2.2: a `#|` seen while already inside increments depth, only the matching `|#`
- * decrements it to zero. Returns the index just past the closer, or end of input if unclosed. */
+/** Skips one nested `#| ... |#` block comment starting at `start` (pointing at the `#`), per R7RS section 2.2: a `#|` seen while already inside increments depth, only the matching `|#` decrements it to zero. Returns the index just past the closer, or end of input if unclosed. */
 function maskSchemeBlockComment(content: string, start: number): number {
   const n = content.length
   let i = start + 2
@@ -68,14 +35,7 @@ function maskSchemeBlockComment(content: string, start: number): number {
   return i
 }
 
-/**
- * Returns the index just past one datum starting at `i` (whitespace and comments before it are
- * NOT skipped by this function -- callers position `i` at the first non-space character): a
- * parenthesized form (depth-counted, aware of nested strings so a `)` inside one doesn't close the
- * datum early), a string, a `#\` character literal, or a bare run of symbol characters. Used by
- * {@link maskScheme} to blank the datum that `#;` elides (R7RS section 2.2), so it is never
- * mistaken for a live definition.
- */
+/** Returns the index just past one datum starting at `i` (whitespace and comments before it are NOT skipped by this function -- callers position `i` at the first non-space character): a parenthesized form (depth-counted, aware of nested strings so a `)` inside one doesn't close the datum early), a string, a `#\` character literal, or a bare run of symbol characters. Used by {@link maskScheme} to blank the datum that `#;` elides (R7RS section 2.2), so it is never mistaken for a live definition. */
 function datumEnd(content: string, i: number): number {
   const n = content.length
   if (i >= n) return i
@@ -121,8 +81,7 @@ function datumEnd(content: string, i: number): number {
   return p === i ? i + 1 : p
 }
 
-/** Masks `;` line comments, nested `#| |#` block comments, `#;`-elided datums, `"..."` strings and
- * `#\<name>` character literals to spaces (newlines preserved), left to right in one pass. */
+/** Masks `;` line comments, nested `#| |#` block comments, `#;`-elided datums, `"..."` strings and `#\<name>` character literals to spaces (newlines preserved), left to right in one pass. */
 function maskScheme(content: string): string {
   const n = content.length
   const out: string[] = new Array(n)
@@ -228,8 +187,7 @@ export function extractScheme(content: string, filePath: string): StatementAdapt
         if (kind !== undefined) {
           let namePos = tok.end
           while (isSpace(masked[namePos])) namePos++
-          // (define (name args...) body): function-shorthand define peels one `(` layer and
-          // means "function" rather than "variable" (R7RS 5.3.2's two `define` forms).
+          // (define (name args...) body): function-shorthand define peels one `(` layer and means "function" rather than "variable" (R7RS 5.3.2's two `define` forms).
           const isDefine = tok.word.toLowerCase() === 'define'
           if (masked[namePos] === '(') {
             namePos++

@@ -1,9 +1,4 @@
-/**
- * Shared scanner for the brace-language adapters (Objective-C, Groovy, Solidity, Thrift, GLSL, HLSL, WGSL, Metal). Comments and
- * string contents are blanked first, so a brace, quote or keyword inside either is never read as code. One pass then tracks brace
- * depth, asks the language's matcher about each line, and binds a declaration to the `{` that opens its body, so its span ends at
- * the matching `}`. A `;` reached first makes it a one-line prototype.
- */
+/** Shared scanner for the brace-language adapters (Objective-C, Groovy, Solidity, Thrift, GLSL, HLSL, WGSL, Metal). Comments and string contents are blanked first, so a brace, quote or keyword inside either is never read as code. One pass then tracks brace depth, asks the language's matcher about each line, and binds a declaration to the `{` that opens its body, so its span ends at the matching `}`. A `;` reached first makes it a one-line prototype. */
 
 import { precedingDocComment } from '../doc_comment.js'
 import type { SymbolEntry } from '../parser_types.js'
@@ -143,10 +138,7 @@ export function maskSource(content: string, opts: BraceLexOpts): string {
       i = end
       continue
     }
-    // Before the quote rule below, because neither `"` nor `'` delimits a slashy string: an
-    // apostrophe inside one would otherwise open a quote span that blanks the real brace after it.
-    // After both comment rules, because Groovy reads `//` and `/*` as comment openers even where
-    // an operand is expected.
+    // Before the quote rule below, because neither `"` nor `'` delimits a slashy string: an apostrophe inside one would otherwise open a quote span that blanks the real brace after it. After both comment rules, because Groovy reads `//` and `/*` as comment openers even where an operand is expected.
     if (opts.slashyStrings === true) {
       const slashy = matchGroovySlashy(content, i)
       if (slashy !== null) {
@@ -235,11 +227,7 @@ const C_NOT_A_TYPE = new Set([
 ])
 const C_PREFIX_RE = /^[A-Za-z_][\w\s*&:<>,[\].]*$/
 
-/**
- * A C-style function header: a type, then the name, then `(`. The text before the parenthesis must be only type words, pointer and
- * reference marks, template brackets and `::`; a single word (a call, a macro) or anything with `=` does not qualify. Returns the
- * name, its `::` qualifier, and the words before it.
- */
+/** A C-style function header: a type, then the name, then `(`. The text before the parenthesis must be only type words, pointer and reference marks, template brackets and `::`; a single word (a call, a macro) or anything with `=` does not qualify. Returns the name, its `::` qualifier, and the words before it. */
 export function cFunctionHeader(code: string): { name: string; qualifier: string; typeText: string } | null {
   const paren = code.indexOf('(')
   if (paren <= 0) return null

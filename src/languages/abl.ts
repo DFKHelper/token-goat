@@ -1,11 +1,4 @@
-/**
- * Progress OpenEdge ABL adapter: internal PROCEDUREs and FUNCTIONs, CLASS, INTERFACE and ENUM types with their METHODs,
- * CONSTRUCTORs and DESTRUCTORs as children, and DEFINE TEMP-TABLE outside a routine. A statement ends at a period, and a
- * block header at a colon, followed by whitespace; every other colon-ended header (DO:, FOR EACH x:, CASE x:, CATCH, ON ...
- * DO:) is tracked only so each END closes the right block. `/* ... *\/` comments (which nest), `//` comments, quoted strings
- * (with `~` escapes), `{...}` include references and `&` preprocessor lines never produce symbols. Keywords are
- * case-insensitive. Imports are `{file.i}` include references and USING types.
- */
+/** Progress OpenEdge ABL adapter: internal PROCEDUREs and FUNCTIONs, CLASS, INTERFACE and ENUM types with their METHODs, CONSTRUCTORs and DESTRUCTORs as children, and DEFINE TEMP-TABLE outside a routine. A statement ends at a period, and a block header at a colon, followed by whitespace; every other colon-ended header (DO:, FOR EACH x:, CASE x:, CATCH, ON ... DO:) is tracked only so each END closes the right block. `/* ... *\/` comments (which nest), `//` comments, quoted strings (with `~` escapes), `{...}` include references and `&` preprocessor lines never produce symbols. Keywords are case-insensitive. Imports are `{file.i}` include references and USING types. */
 
 import type { AdapterImport } from './common.js'
 import { SpanCollector, wordBeforeParen, type StatementAdapterResult } from './span_collector.js'

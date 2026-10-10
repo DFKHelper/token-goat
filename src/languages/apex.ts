@@ -11,47 +11,20 @@ const MODIFIER =
 /** A bare `Foo(...) {` line: a constructor if `Foo` is a type this file declares, nothing otherwise. */
 const CTOR_NO_MODIFIER_RE = new RegExp(`^[ \\t]*(${IDENT})[ \\t]*\\([^;{}]*\\)[ \\t]*\\{`, CASE_INSENSITIVE_GM)
 
-// Same leading-annotation allowance as METHOD_RE below (`@IsTest private class MyTestClass { ... }`
-// is a common, legal Apex idiom) - without it, an annotated type declaration line fails to match
-// at all, silently dropping the type and misattributing every member inside it.
+// Same leading-annotation allowance as METHOD_RE below (`@IsTest private class MyTestClass { ... }` is a common, legal Apex idiom) - without it, an annotated type declaration line fails to match at all, silently dropping the type and misattributing every member inside it.
 const TYPE_DECL_RE = new RegExp(
   `^[ \\t]*(?:@${IDENT}(?:\\([^\\n)]*\\))?[ \\t]+)*(?:${MODIFIER}[ \\t]+)*(class|interface|enum)[ \\t]+(${IDENT})\\b[^\\n{;]*`,
   CASE_INSENSITIVE_GM,
 )
-// The event list is routinely wrapped across lines when a trigger handles several events, so it
-// must not be confined to one line. When it was, the trigger did not merely go unindexed: `on` read
-// as a return type and `Account` as a name, so METHOD_RE matched the same lines and the file's only
-// symbol was a method named after the SObject, which does not exist. Matching the trigger first now
-// covers those lines, and overlapsExisting suppresses that phantom.
+// The event list is routinely wrapped across lines when a trigger handles several events, so it must not be confined to one line. When it was, the trigger did not merely go unindexed: `on` read as a return type and `Account` as a name, so METHOD_RE matched the same lines and the file's only symbol was a method named after the SObject, which does not exist. Matching the trigger first now covers those lines, and overlapsExisting suppresses that phantom.
 const TRIGGER_RE = new RegExp(
   `^[ \\t]*trigger[ \\t]+(${IDENT})[ \\t]+on[ \\t]+([A-Za-z_][A-Za-z0-9_.]*)[ \\t\\r\\n]*\\([^)]*\\)`,
   CASE_INSENSITIVE_GM,
 )
-// Apex allows a method/constructor to be declared with no access modifier at all (implicitly
-// private), and interface method signatures never carry a modifier at all - so the modifier
-// group alone cannot be mandatory (it used to be `+`, silently dropping every such method).
-// But this extractor runs matchAll over the whole file with no brace-depth tracking, unlike
-// the line-by-line C# extractor's METHOD_RE, so simply relaxing the modifier group to `*`
-// lets a plain no-modifier statement call inside a method body (`someHelper(input);`,
-// `return calculate(a, b);`) match as if it were its own method declaration. The fix requires
-// at least one of {a modifier, a return type} to be present - a bare call has neither - and
-// guards the modifier-less branch against a statement-leading keyword (`return`/`throw`/`new`/
-// etc.) being mistaken for the return type, which the modifier-mandatory branch never needs
-// since none of MODIFIER's keywords overlap with those statement keywords.
+// Apex allows a method/constructor to be declared with no access modifier at all (implicitly private), and interface method signatures never carry a modifier at all - so the modifier group alone cannot be mandatory (it used to be `+`, silently dropping every such method). But this extractor runs matchAll over the whole file with no brace-depth tracking, unlike the line-by-line C# extractor's METHOD_RE, so simply relaxing the modifier group to `*` lets a plain no-modifier statement call inside a method body (`someHelper(input);`, `return calculate(a, b);`) match as if it were its own method declaration. The fix requires at least one of {a modifier, a return type} to be present - a bare call has neither - and guards the modifier-less branch against a statement-leading keyword (`return`/`throw`/`new`/ etc.) being mistaken for the return type, which the modifier-mandatory branch never needs since none of MODIFIER's keywords overlap with those statement keywords.
 const RETURN_TYPE = '(?:[A-Za-z_][A-Za-z0-9_.<>?,\\[\\] ]*[ \\t]+)'
 const STATEMENT_KEYWORD_GUARD = '(?!(?:return|throw|new|yield|else|do|try|finally|break|continue)\\b)'
-// Two things about the tail. The parameter list is `[^;{}]*`, not a lazy `[\s\S]*?`: a parameter
-// list can span lines but can never contain `;`, `{` or `}`, and bounding it that way stops one
-// match from reaching across a declaration into another's. It could before, because the `{` was
-// required on the same line as the `)`: an Allman-style `void first()` followed by `{` on the next
-// line failed there, so the lazy scan ran on to the *next* declaration's `) {` and matched both at
-// once -- `first` still got the right body, but `second` had already been consumed and was never
-// indexed. Allowing a line break between `)` and `{` fixes that shape directly; the bound makes the
-// whole class of run-on impossible. The two return-type groups are captured (rather than
-// non-capturing as before) purely so the emit site can tell a constructor from a method: a
-// constructor is the branch that matched no return type at all.
-// The `` lookahead is a backtracking guard, not a matching rule -- it accepts exactly what the pattern already accepted. Every match below ends in `(IDENT)[ \t]*\(`, and `[ \t]*` cannot cross a newline, so the parameter list's `(` is always on the same physical line the match starts on; a line with no `(` at all can therefore never match. Without the guard such a line is quadratic: unlike TYPE_DECL_RE above (anchored on the literal `class|interface|enum`) and the sibling Swift/Scala extractors (anchored on literal `func`/`class`), nothing literal follows the modifier run here -- RETURN_TYPE does, and its character class contains a space and is then followed by `[ \t]+`, so every modifier boundary is also a candidate return-type split. The engine retries all of them, each retry costing another scan. Measured on `'static '.repeat(N) + 'x'`: N=2000 84ms, N=4000 335ms, N=8000 1346ms -- 4x per doubling. Since indexing.large_file_skip_kb defaults to 2048, a 2MB .cls was accepted and wedged the worker (which drains synchronously) for roughly half an hour on one file. With the guard the same input is ~0.05ms.
-// Placement matters: this sits AFTER the annotation group, not before it. Before it, a line opening with an unrelated annotation (`@A() static static static ...`) satisfies the lookahead on the annotation's own parentheses and the quadratic path is reachable again -- measured still 336ms at N=4000, versus 0.05ms with the guard placed here.
+// Two things about the tail. The parameter list is `[^;{}]*`, not a lazy `[\s\S]*?`: a parameter list can span lines but can never contain `;`, `{` or `}`, and bounding it that way stops one match from reaching across a declaration into another's. It could before, because the `{` was required on the same line as the `)`: an Allman-style `void first()` followed by `{` on the next line failed there, so the lazy scan ran on to the *next* declaration's `) {` and matched both at once -- `first` still got the right body, but `second` had already been consumed and was never indexed. Allowing a line break between `)` and `{` fixes that shape directly; the bound makes the whole class of run-on impossible. The two return-type groups are captured (rather than non-capturing as before) purely so the emit site can tell a constructor from a method: a constructor is the branch that matched no return type at all. The `` lookahead is a backtracking guard, not a matching rule -- it accepts exactly what the pattern already accepted. Every match below ends in `(IDENT)[ \t]*\(`, and `[ \t]*` cannot cross a newline, so the parameter list's `(` is always on the same physical line the match starts on; a line with no `(` at all can therefore never match. Without the guard such a line is quadratic: unlike TYPE_DECL_RE above (anchored on the literal `class|interface|enum`) and the sibling Swift/Scala extractors (anchored on literal `func`/`class`), nothing literal follows the modifier run here -- RETURN_TYPE does, and its character class contains a space and is then followed by `[ \t]+`, so every modifier boundary is also a candidate return-type split. The engine retries all of them, each retry costing another scan. Measured on `'static '.repeat(N) + 'x'`: N=2000 84ms, N=4000 335ms, N=8000 1346ms -- 4x per doubling. Since indexing.large_file_skip_kb defaults to 2048, a 2MB .cls was accepted and wedged the worker (which drains synchronously) for roughly half an hour on one file. With the guard the same input is ~0.05ms. Placement matters: this sits AFTER the annotation group, not before it. Before it, a line opening with an unrelated annotation (`@A() static static static ...`) satisfies the lookahead on the annotation's own parentheses and the quadratic path is reachable again -- measured still 336ms at N=4000, versus 0.05ms with the guard placed here.
 const METHOD_RE = new RegExp(
   `^[ \\t]*(?:@${IDENT}(?:\\([^\\n)]*\\))?[ \\t]+)*(?=[^\\n]*\\()` +
     `(?:(?:${MODIFIER}[ \\t]+)+(${RETURN_TYPE})?|(?:${MODIFIER}[ \\t]+)*${STATEMENT_KEYWORD_GUARD}(${RETURN_TYPE}))` +
@@ -78,19 +51,9 @@ function lineEndOffset(content: string, lineIndex: readonly number[], line: numb
   return line < lineIndex.length ? (lineIndex[line] ?? content.length) : content.length
 }
 
-// A line "starts with @" is not sufficient to be a standalone annotation line to fold into the
-// span above: a type declaration itself can carry a leading same-line annotation
-// (`@IsTest private class MyTestClass {`), and that line must never be mistaken for one of the
-// preceding pure-annotation lines a method/constructor's own span walks back through - doing so
-// swallows the class's own header line into the member's span instead of the class's.
+// A line "starts with @" is not sufficient to be a standalone annotation line to fold into the span above: a type declaration itself can carry a leading same-line annotation (`@IsTest private class MyTestClass {`), and that line must never be mistaken for one of the preceding pure-annotation lines a method/constructor's own span walks back through - doing so swallows the class's own header line into the member's span instead of the class's.
 const PURE_ANNOTATION_LINE_RE = new RegExp(`^(?:@${IDENT}(?:\\([^)]*\\))?[ \\t]*)+$`)
-// An annotation's own argument list is legally allowed to span multiple physical lines
-// (`@InvocableMethod(\n    label='Do something'\n    description='...'\n)`, idiomatic for
-// Flow-invocable methods) - PURE_ANNOTATION_LINE_RE alone can never match any of those lines
-// individually since none of them is a self-contained, paren-balanced annotation on its own.
-// Without this, the fold-back below stops at the first such line and silently drops the whole
-// annotation from the member's span, the same failure mode the same-line/standalone-single-line
-// cases above were already fixed for.
+// An annotation's own argument list is legally allowed to span multiple physical lines (`@InvocableMethod(\n    label='Do something'\n    description='...'\n)`, idiomatic for Flow-invocable methods) - PURE_ANNOTATION_LINE_RE alone can never match any of those lines individually since none of them is a self-contained, paren-balanced annotation on its own. Without this, the fold-back below stops at the first such line and silently drops the whole annotation from the member's span, the same failure mode the same-line/standalone-single-line cases above were already fixed for.
 const ANNOTATION_OPENER_RE = new RegExp(`^@${IDENT}\\(`)
 
 function annotationStartLine(lines: readonly string[], line: number): number {
@@ -112,13 +75,7 @@ function annotationStartLine(lines: readonly string[], line: number): number {
       continue
     }
     if (depth > 0 && nextDepth === 0 && ANNOTATION_OPENER_RE.test(trimmed)) {
-      // This line opens the multi-line annotation argument list; fold it (and everything below
-      // it that was already consumed) into the member's span. Requires depth > 0 on entry (we
-      // must already be resolving a previously-opened multi-line fold from a line below) -
-      // otherwise a line with a fully self-contained, balanced-paren annotation followed by
-      // unrelated trailing content (e.g. `@SuppressWarnings('PMD') public interface Foo {`)
-      // nets to depth 0 on its own and would be misread as "opens a multi-line annotation",
-      // incorrectly folding that unrelated declaration's header line into the next member's span.
+      // This line opens the multi-line annotation argument list; fold it (and everything below it that was already consumed) into the member's span. Requires depth > 0 on entry (we must already be resolving a previously-opened multi-line fold from a line below) - otherwise a line with a fully self-contained, balanced-paren annotation followed by unrelated trailing content (e.g. `@SuppressWarnings('PMD') public interface Foo {`) nets to depth 0 on its own and would be misread as "opens a multi-line annotation", incorrectly folding that unrelated declaration's header line into the next member's span.
       depth = 0
       start = i + 1
       continue
@@ -128,18 +85,7 @@ function annotationStartLine(lines: readonly string[], line: number): number {
   return start
 }
 
-/**
- * Where every `{` in `code` is closed, by one stack pass, held for the file being indexed.
- *
- * Counting depth forward from each declaration is the same answer at quadratic cost, and the cost
- * is not hypothetical: a `.cls` whose braces do not balance -- a truncated file, or one a hostile
- * repository simply wrote that way -- sends every declaration's count to end of file. Measured at
- * 4,000 unclosed declarations: 481 ms, growing fourfold per doubling, and `large_file_skip_kb`
- * admits several times that before the file is skipped at all. A balanced file pays it too, once
- * per level of nesting.
- *
- * Cleared when the file is done, so the last indexed file's text is not held alive by this module.
- */
+/** Where every `{` in `code` is closed, by one stack pass, held for the file being indexed. Counting depth forward from each declaration is the same answer at quadratic cost, and the cost is not hypothetical: a `.cls` whose braces do not balance -- a truncated file, or one a hostile repository simply wrote that way -- sends every declaration's count to end of file. Measured at 4,000 unclosed declarations: 481 ms, growing fourfold per doubling, and `large_file_skip_kb` admits several times that before the file is skipped at all. A balanced file pays it too, once per level of nesting. Cleared when the file is done, so the last indexed file's text is not held alive by this module. */
 let braceMapCode: string | null = null
 let braceMapEntries = new Map<number, number>()
 
@@ -180,11 +126,7 @@ function spanForMatch(
   bodyStartLine: number,
   matchText: string,
 ): AdapterSpan {
-  // A brace-less declaration (an abstract/interface method signature, permitted by METHOD_RE's
-  // `(?:\{|;)` terminator alternation) has no body of its own to span. Calling findBlockEndLine
-  // here would search past this declaration for the next `{` in the file, which belongs to
-  // whatever concrete method happens to follow - over-extending this span to swallow that
-  // method's entire body (and, via overlapsExisting, dropping it from the index outright).
+  // A brace-less declaration (an abstract/interface method signature, permitted by METHOD_RE's `(?:\{|;)` terminator alternation) has no body of its own to span. Calling findBlockEndLine here would search past this declaration for the next `{` in the file, which belongs to whatever concrete method happens to follow - over-extending this span to swallow that method's entire body (and, via overlapsExisting, dropping it from the index outright).
   const semicolonTerminated = matchText.trimEnd().endsWith(';')
   const startOffsetForBody = lineStartOffset(lineIndex, bodyStartLine)
   const endLine = semicolonTerminated
@@ -198,50 +140,24 @@ function spanForMatch(
   }
 }
 
-// A type-container span (class, interface, or enum body) must never suppress a method that falls
-// inside it - otherwise a brace-less interface/enum method signature, which legally shares lines
-// with its own container's span, would be silently dropped from the index.
+// A type-container span (class, interface, or enum body) must never suppress a method that falls inside it - otherwise a brace-less interface/enum method signature, which legally shares lines with its own container's span, would be silently dropped from the index.
 const CONTAINER_KINDS = new Set(['apex_class', 'apex_interface', 'apex_enum'])
 
 export function extractApex(content: string, filePath: string): { symbols: SymbolEntry[] } {
   const symbols: SymbolEntry[] = []
   const seen = new Set<string>()
   const lineIndex = buildLineIndex(content)
-  // Block comments must be stripped BEFORE string-literal blanking, not after: `stripCstyleComments`
-  // already skips a `/*` opener that falls inside an open quote (isInsideStringLiteral), so it does
-  // not need string-free input to find real comment spans. Doing it the other way around - as this
-  // used to - lets a lone apostrophe from a contraction inside a `/* */` comment (e.g. "won't") get
-  // misread by `stripStringLiterals` as a string opener, blanking from the apostrophe to end-of-line
-  // and eating the comment's own same-line closing `*/` along with it. `stripCstyleComments` then
-  // finds an orphaned unclosed `/*` and blanks everything through EOF. Stripping block comments
-  // first removes the apostrophe (and the rest of the comment body) before `stripStringLiterals`
-  // ever sees it, so it can no longer be mistaken for a string opener.
+  // Block comments must be stripped BEFORE string-literal blanking, not after: `stripCstyleComments` already skips a `/*` opener that falls inside an open quote (isInsideStringLiteral), so it does not need string-free input to find real comment spans. Doing it the other way around - as this used to - lets a lone apostrophe from a contraction inside a `/* */` comment (e.g. "won't") get misread by `stripStringLiterals` as a string opener, blanking from the apostrophe to end-of-line and eating the comment's own same-line closing `*/` along with it. `stripCstyleComments` then finds an orphaned unclosed `/*` and blanks everything through EOF. Stripping block comments first removes the apostrophe (and the rest of the comment body) before `stripStringLiterals` ever sees it, so it can no longer be mistaken for a string opener.
   const blockCommentFree = stripCstyleComments(content)
-  // String literals must be blanked BEFORE `//` line-comment stripping: stripCstyleComments's
-  // `lineCommentRe` application is not quote-aware, so a `//` inside a string (e.g. a URL literal
-  // like 'https://example.com') would otherwise be treated as a real comment starter and blank
-  // everything through end-of-line, corrupting any code that follows on the same line.
+  // String literals must be blanked BEFORE `//` line-comment stripping: stripCstyleComments's `lineCommentRe` application is not quote-aware, so a `//` inside a string (e.g. a URL literal like 'https://example.com') would otherwise be treated as a real comment starter and blank everything through end-of-line, corrupting any code that follows on the same line.
   const stringFree = stripStringLiterals(blockCommentFree)
   const code = stripCstyleComments(stringFree, /\/\/.*$/gm)
-  // annotationStartLine's paren-depth counter must walk this string/comment-blanked `code` text,
-  // not the raw source: a literal `(`/`)` inside a multi-line annotation's own string argument
-  // (e.g. `label='Do something ('`) is real code-adjacent text on a raw line but not a real paren,
-  // and counting it as one desyncs the depth tracker - either breaking the walk-back early (silently
-  // dropping the whole annotation fold, the very failure mode the multi-line-annotation fix above
-  // already covers for the no-parens case) or over/under-folding into unrelated lines.
+  // annotationStartLine's paren-depth counter must walk this string/comment-blanked `code` text, not the raw source: a literal `(`/`)` inside a multi-line annotation's own string argument (e.g. `label='Do something ('`) is real code-adjacent text on a raw line but not a real paren, and counting it as one desyncs the depth tracker - either breaking the walk-back early (silently dropping the whole annotation fold, the very failure mode the multi-line-annotation fix above already covers for the no-parens case) or over/under-folding into unrelated lines.
   const codeLines = code.split(/\r?\n/)
-  // Doc-comment lookup needs the ORIGINAL source lines (comments intact) -- `codeLines` above has
-  // had every comment blanked out for the paren-depth walk, so precedingDocComment (called via
-  // makeSpanSymbol's lines/style params below) would never see a `/** ... */` block against it.
+  // Doc-comment lookup needs the ORIGINAL source lines (comments intact) -- `codeLines` above has had every comment blanked out for the paren-depth walk, so precedingDocComment (called via makeSpanSymbol's lines/style params below) would never see a `/** ... */` block against it.
   const rawLines = content.split(/\r?\n/)
 
-  // Whether a line already sits inside a member -- a method, a constructor, a trigger -- rather
-  // than merely inside the class that holds it. Asked once per candidate match, and it used to be
-  // answered by scanning every symbol emitted so far, which is quadratic in the number of
-  // declarations: a file of 4,000 classes and 4,000 candidate members spent 1.4 s on that scan
-  // alone, and `indexing.large_file_skip_kb` admits several times that before a file is skipped. A
-  // flag per line answers it in constant time. Marking costs one pass per emitted symbol and no
-  // more, because a member whose lines are already covered is exactly what never gets emitted.
+  // Whether a line already sits inside a member -- a method, a constructor, a trigger -- rather than merely inside the class that holds it. Asked once per candidate match, and it used to be answered by scanning every symbol emitted so far, which is quadratic in the number of declarations: a file of 4,000 classes and 4,000 candidate members spent 1.4 s on that scan alone, and `indexing.large_file_skip_kb` admits several times that before a file is skipped. A flag per line answers it in constant time. Marking costs one pass per emitted symbol and no more, because a member whose lines are already covered is exactly what never gets emitted.
   const covered = new Uint8Array(codeLines.length + 2)
   const covers = (line: number): boolean => covered[line] === 1
 
@@ -252,8 +168,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     seen.add(key)
     const symbol = makeSpanSymbol(filePath, name, kind, span, parent, rawLines, 'c')
     symbols.push(symbol)
-    // Read off the symbol rather than the span, so this cannot drift from what the old scan
-    // compared against if `makeSpanSymbol` ever adjusts a line.
+    // Read off the symbol rather than the span, so this cannot drift from what the old scan compared against if `makeSpanSymbol` ever adjusts a line.
     if (CONTAINER_KINDS.has(kind)) return
     for (let line = Math.max(0, symbol.lineStart); line <= symbol.lineEnd && line < covered.length; line++) covered[line] = 1
   }
@@ -267,15 +182,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     emit(name, 'apex_trigger', spanForMatch(content, code, lineIndex, startOffset, bodyStartLine, match[0]), objectName)
   }
 
-  // A standalone `@IsTest`/`@SuppressWarnings(...)` annotation line directly above a class/
-  // interface/enum declaration (`@IsTest\npublic class MyTestClass { ... }`) is at least as
-  // common in real Apex as the same-line form (`@IsTest private class MyTestClass { ... }`)
-  // the comment above TYPE_DECL_RE already handles -- @IsTest on its own line is in fact the
-  // more idiomatic style for Apex test classes. TYPE_DECL_RE, like TRIGGER_RE, only matches
-  // annotations glued to the same physical line as the keyword, so a preceding standalone
-  // annotation line was silently excluded from the emitted span/body and lineStart pointed at
-  // the class keyword instead of its real declaration start -- the same span-folding
-  // annotationStartLine already applies to constructors/methods below, just not here.
+  // A standalone `@IsTest`/`@SuppressWarnings(...)` annotation line directly above a class/ interface/enum declaration (`@IsTest\npublic class MyTestClass { ... }`) is at least as common in real Apex as the same-line form (`@IsTest private class MyTestClass { ... }`) the comment above TYPE_DECL_RE already handles -- @IsTest on its own line is in fact the more idiomatic style for Apex test classes. TYPE_DECL_RE, like TRIGGER_RE, only matches annotations glued to the same physical line as the keyword, so a preceding standalone annotation line was silently excluded from the emitted span/body and lineStart pointed at the class keyword instead of its real declaration start -- the same span-folding annotationStartLine already applies to constructors/methods below, just not here.
   const typeNamesLower = new Set<string>()
   for (const match of code.matchAll(TYPE_DECL_RE)) {
     const typeKind = match[1] ?? ''
@@ -290,26 +197,9 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     emit(name, kind, spanForMatch(content, code, lineIndex, startOffset, bodyStartLine, match[0]))
   }
 
-  // A constructor may legally omit an access modifier entirely (implicitly private), same as any
-  // other method - but unlike a method, a constructor also has no return type, so METHOD_RE's
-  // modifier-less branch (which mandates a return-type token) can never match a bare
-  // `Foo() { ... }` line. That shape is unambiguous once the type names are known: a bare
-  // identifier immediately followed by parens and a `{`, matching a declared type name, cannot be
-  // anything but that type's constructor - a call statement ends in `;`, never `{`. Pick it up with
-  // a second pass over bare `Name(...) {` lines, now that the type names have been collected. `[^;{}]*` (not `[\s\S]*?`)
-  // keeps the parameter-list match on one line so it can't lazily span into an unrelated brace on a
-  // later line.
+  // A constructor may legally omit an access modifier entirely (implicitly private), same as any other method - but unlike a method, a constructor also has no return type, so METHOD_RE's modifier-less branch (which mandates a return-type token) can never match a bare `Foo() { ... }` line. That shape is unambiguous once the type names are known: a bare identifier immediately followed by parens and a `{`, matching a declared type name, cannot be anything but that type's constructor - a call statement ends in `;`, never `{`. Pick it up with a second pass over bare `Name(...) {` lines, now that the type names have been collected. `[^;{}]*` (not `[\s\S]*?`) keeps the parameter-list match on one line so it can't lazily span into an unrelated brace on a later line.
   //
-  // The pattern names no type, and asks the set afterwards. It used to interpolate one alternation
-  // branch per declared type, which is injection-safe -- every branch had already matched `IDENT`
-  // and was escaped on top of that -- and an availability problem all the same. Nothing caps how
-  // many types a file declares: `MAX_SYMBOLS` gates `emit`, not this set, so the branch count is
-  // bounded only by `indexing.large_file_skip_kb`, 2 MB by default. V8 walks a literal alternation
-  // branch by branch, so a file whose declarations share a long prefix costs super-quadratic time:
-  // measured against a replica of this pattern, 2,000 names took 0.78 s, 4,000 took 4.87 s and
-  // 6,000 took 17.3 s, all synchronous inside the worker's drain loop, which has no per-file
-  // deadline -- so one file stalls every file queued behind it. A set lookup is the same answer in
-  // linear time, and `typeNamesLower` was already doing it for METHOD_RE below.
+  // The pattern names no type, and asks the set afterwards. It used to interpolate one alternation branch per declared type, which is injection-safe -- every branch had already matched `IDENT` and was escaped on top of that -- and an availability problem all the same. Nothing caps how many types a file declares: `MAX_SYMBOLS` gates `emit`, not this set, so the branch count is bounded only by `indexing.large_file_skip_kb`, 2 MB by default. V8 walks a literal alternation branch by branch, so a file whose declarations share a long prefix costs super-quadratic time: measured against a replica of this pattern, 2,000 names took 0.78 s, 4,000 took 4.87 s and 6,000 took 17.3 s, all synchronous inside the worker's drain loop, which has no per-file deadline -- so one file stalls every file queued behind it. A set lookup is the same answer in linear time, and `typeNamesLower` was already doing it for METHOD_RE below.
   if (typeNamesLower.size > 0) {
     for (const match of code.matchAll(CTOR_NO_MODIFIER_RE)) {
       const name = match[1] ?? ''
@@ -330,11 +220,7 @@ export function extractApex(content: string, filePath: string): { symbols: Symbo
     const line = offsetToLine(lineIndex, startOffset)
     if (covers(line)) continue
     const bodyStartLine = annotationStartLine(codeLines, line)
-    // Sharing a name with a type declared somewhere in the file is not enough to be that type's
-    // constructor: `class Outer { class Inner { void Outer() {} } }` is a method of Inner, and was
-    // being reported as a constructor. There is no scope tracking here to say which type encloses
-    // the declaration, but a constructor never has a return type, and a method always does -- so
-    // requiring the no-return-type branch settles the ambiguous case without needing scopes.
+    // Sharing a name with a type declared somewhere in the file is not enough to be that type's constructor: `class Outer { class Inner { void Outer() {} } }` is a method of Inner, and was being reported as a constructor. There is no scope tracking here to say which type encloses the declaration, but a constructor never has a return type, and a method always does -- so requiring the no-return-type branch settles the ambiguous case without needing scopes.
     const hasReturnType = (match[1] ?? match[2] ?? '') !== ''
     // Matched against the case-folded type names because Apex resolves a constructor to its type without regard to case: `public account_service(...)` inside `class Account_Service` is that type's constructor, not a method that happens to share a spelling.
     const kind = typeNamesLower.has(name.toLowerCase()) && !hasReturnType ? 'apex_constructor' : 'apex_method'

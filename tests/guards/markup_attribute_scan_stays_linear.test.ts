@@ -77,13 +77,13 @@ describe('Aura attribute names: the single-pass scanner against the old pattern'
   })
 })
 
-// Time `run` on inputs of size n and 2n, five times interleaved, keeping the minimum of each (load only adds time), and return the ratio. A linear scan is near 2, a quadratic one near 4, a cubic one near 8.
-function growth(make: (n: number) => string, run: (text: string) => unknown, n: number): { ratio: number; small: number; large: number } {
+// Time `run` on inputs of size n and 2n, `samples` times interleaved, keeping the minimum of each (load only adds time), and return the ratio. A linear scan is near 2, a quadratic one near 4, a cubic one near 8.
+function growth(make: (n: number) => string, run: (text: string) => unknown, n: number, samples: number): { ratio: number; small: number; large: number } {
   const small = make(n)
   const large = make(2 * n)
   let a = Infinity
   let b = Infinity
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < samples; i++) {
     let t = performance.now()
     run(small)
     a = Math.min(a, performance.now() - t)
@@ -393,18 +393,19 @@ describe('differential: the hand-written scans return what the old patterns retu
   })
 })
 
-// Padding between starts, so the quadratic term (each start re-reading the rest) outweighs the linear per-start cost and a quadratic scan lands near 4 rather than 3.
-/** The growth ratio over up to three measurements, keeping the one on the side the assertion needs: below the bound for a scan that must be linear, above it for a negative control. A pause on a busy machine lands on one timing of a pair, so it can push a linear ratio over the bound or pull a quadratic one under it once, but a scan's true growth shows up in every measurement. */
+/** The growth ratio over up to three measurements, keeping the one on the side the assertion needs: below the bound for a scan that must be linear, above it for a negative control. A pause on a busy machine lands on one timing of a pair, so it can push a linear ratio over the bound or pull a quadratic one under it once, but a scan's true growth shows up in every measurement. A linear scan is sampled nine times rather than five because a WSL2 VM under host load stalls about 11 ms once per few megabytes allocated, even in a loop that only allocates objects, and the 2n run allocates more so it takes the stall more often: with five samples the linear flow scan read over the bound in 27 of 300 of these three-attempt measurements there, with nine in none. A stall can only pull a quadratic ratio down toward the bound once, so the slower negative controls keep five. */
 function settledGrowth(make: (n: number) => string, run: (text: string) => unknown, n: number, want: 'below' | 'above'): { ratio: number; small: number; large: number } {
   const passes = (ratio: number): boolean => (want === 'below' ? ratio < BOUND : ratio > BOUND)
-  let kept = growth(make, run, n)
+  const samples = want === 'below' ? 9 : 5
+  let kept = growth(make, run, n, samples)
   for (let attempt = 1; attempt < 3 && !passes(kept.ratio); attempt++) {
-    const g = growth(make, run, n)
+    const g = growth(make, run, n, samples)
     if (want === 'below' ? g.ratio < kept.ratio : g.ratio > kept.ratio) kept = g
   }
   return kept
 }
 
+// Padding between starts, so the quadratic term (each start re-reading the rest) outweighs the linear per-start cost and a quadratic scan lands near 4 rather than 3.
 const PAD = ' '.repeat(60)
 const FLOW_PATH = 'force-app/main/default/flows/F.flow-meta.xml'
 const OBJECT_PATH = 'force-app/main/default/objects/O/O.object-meta.xml'

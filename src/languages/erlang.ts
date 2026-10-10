@@ -1,12 +1,4 @@
-/**
- * Erlang adapter for `.erl` and `.hrl` files. Erlang is written as a sequence of forms, each ending in a period followed by
- * white space, so the adapter reads one form at a time and names it by its head: the `-module` attribute, a function (all of
- * its clauses, which are separated by semicolons, up to the period that ends the last one), a `-record` definition, a
- * `-define` macro, and a `-type` or `-opaque` declaration. `-include`, `-include_lib` and `-import` are the imports.
- *
- * A `%` comment, a "string", a 'quoted atom' and a `$c` character literal never produce a symbol, and a period inside any of
- * them, or inside a float such as `1.5`, does not end a form.
- */
+/** Erlang adapter for `.erl` and `.hrl` files. Erlang is written as a sequence of forms, each ending in a period followed by white space, so the adapter reads one form at a time and names it by its head: the `-module` attribute, a function (all of its clauses, which are separated by semicolons, up to the period that ends the last one), a `-record` definition, a `-define` macro, and a `-type` or `-opaque` declaration. `-include`, `-include_lib` and `-import` are the imports. A `%` comment, a "string", a 'quoted atom' and a `$c` character literal never produce a symbol, and a period inside any of them, or inside a float such as `1.5`, does not end a form. */
 
 import type { AdapterImport } from './common.js'
 import { SpanCollector, type StatementAdapterResult } from './span_collector.js'
@@ -29,10 +21,7 @@ interface Form {
   readonly endLine: number
 }
 
-/**
- * Split `content` into forms at every period that ends one: a `.` at bracket depth zero, outside a comment, string, quoted
- * atom and character literal, and followed by white space or the end of the file. Linear in the length of the file.
- */
+/** Split `content` into forms at every period that ends one: a `.` at bracket depth zero, outside a comment, string, quoted atom and character literal, and followed by white space or the end of the file. Linear in the length of the file. */
 function formsOf(content: string): Form[] {
   const out: Form[] = []
   let line = 1

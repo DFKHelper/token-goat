@@ -1,39 +1,4 @@
-/**
- * Emacs Lisp adapter: `defun`, `defmacro`, `defvar`, `defcustom`, `defconst`, `defgroup`,
- * `defface`, `define-derived-mode`, `define-minor-mode`, and the `cl-lib` forms `cl-defun`,
- * `cl-defmacro`, `cl-defstruct`, `cl-defgeneric`, `cl-defmethod` that real Emacs Lisp source uses
- * constantly.
- *
- * Its own file with its own masker, per the settled decision in `templates_idx.ts`'s module doc.
- * The GNU Emacs Lisp Reference Manual gives this dialect the simplest comment grammar of the five
- * but a character-literal syntax none of the others share:
- *  - Only `;` line comments exist (Emacs Lisp Reference Manual, node "Comment Tips"; there is no
- *    `#| |#` block comment in Emacs Lisp at all -- like Clojure, but for a different reason: Emacs
- *    Lisp's reader simply never defines that syntax). So this file has no
- *    `maskEmacsLispBlockComment` for the same reason `clojure.ts` has none, and for the same
- *    reason given there: writing one by analogy to Common Lisp/Scheme/Racket would blank real
- *    source between an incidental `#|` and an unrelated later `|#`.
- *  - Character literals are `?<char-or-escape>` (Emacs Lisp Reference Manual, node "Basic Char
- *    Syntax" / "General Escape Syntax"): `?a`, `?\n`, `?\t`, `?\C-a` (control), `?\M-a` (meta),
- *    `?\^A` (caret-control), `?\d` (DEL), octal `?\101`, or hex `?\x41`. None of the other four
- *    Lisp dialects in this batch use a bare `?` to introduce a character -- Common
- *    Lisp/Scheme/Racket all use `#\`, and Clojure uses a bare `\`. A masker written for any of
- *    those would neither recognize `?\C-a` nor stop it from swallowing the file's next `"` or `;`
- *    as though it were still inside the literal.
- *  - `?` is also a legal symbol-constituent character in an Emacs Lisp identifier (rare, but
- *    legal), so this masker only treats `?` as opening a character literal when the immediately
- *    preceding emitted character is a delimiter or start-of-input -- the same technique
- *    `vhdl.ts::maskVhdl` uses to tell a character literal's opening `'` apart from an attribute
- *    tick (`clk'event`).
- *  - `'` is the QUOTE abbreviation, never a string delimiter -- the same reason the other four
- *    Lisp adapters in this batch do not reuse `common.ts::stripStringLiterals`.
- *
- * Strings are `"..."` with `\` escapes (Emacs Lisp Reference Manual, node "String Type").
- *
- * `defalias`/`fset`-style indirect naming (where the defined name is itself a quoted argument
- * rather than the bare next token) is out of scope for v1, matching this repo's convention
- * elsewhere of only listing definitions its adapter can name with confidence.
- */
+/** Emacs Lisp adapter: `defun`, `defmacro`, `defvar`, `defcustom`, `defconst`, `defgroup`, `defface`, `define-derived-mode`, `define-minor-mode`, and the `cl-lib` forms `cl-defun`, `cl-defmacro`, `cl-defstruct`, `cl-defgeneric`, `cl-defmethod` that real Emacs Lisp source uses constantly. Its own file with its own masker, per the settled decision in `templates_idx.ts`'s module doc. The GNU Emacs Lisp Reference Manual gives this dialect the simplest comment grammar of the five but a character-literal syntax none of the others share: - Only `;` line comments exist (Emacs Lisp Reference Manual, node "Comment Tips"; there is no `#| |#` block comment in Emacs Lisp at all -- like Clojure, but for a different reason: Emacs Lisp's reader simply never defines that syntax). So this file has no `maskEmacsLispBlockComment` for the same reason `clojure.ts` has none, and for the same reason given there: writing one by analogy to Common Lisp/Scheme/Racket would blank real source between an incidental `#|` and an unrelated later `|#`. - Character literals are `?<char-or-escape>` (Emacs Lisp Reference Manual, node "Basic Char Syntax" / "General Escape Syntax"): `?a`, `?\n`, `?\t`, `?\C-a` (control), `?\M-a` (meta), `?\^A` (caret-control), `?\d` (DEL), octal `?\101`, or hex `?\x41`. None of the other four Lisp dialects in this batch use a bare `?` to introduce a character -- Common Lisp/Scheme/Racket all use `#\`, and Clojure uses a bare `\`. A masker written for any of those would neither recognize `?\C-a` nor stop it from swallowing the file's next `"` or `;` as though it were still inside the literal. - `?` is also a legal symbol-constituent character in an Emacs Lisp identifier (rare, but legal), so this masker only treats `?` as opening a character literal when the immediately preceding emitted character is a delimiter or start-of-input -- the same technique `vhdl.ts::maskVhdl` uses to tell a character literal's opening `'` apart from an attribute tick (`clk'event`). - `'` is the QUOTE abbreviation, never a string delimiter -- the same reason the other four Lisp adapters in this batch do not reuse `common.ts::stripStringLiterals`. Strings are `"..."` with `\` escapes (Emacs Lisp Reference Manual, node "String Type"). `defalias`/`fset`-style indirect naming (where the defined name is itself a quoted argument rather than the bare next token) is out of scope for v1, matching this repo's convention elsewhere of only listing definitions its adapter can name with confidence. */
 
 import { SpanCollector, type StatementAdapterResult } from './span_collector.js'
 import { buildLineIndex, offsetToLine } from './common.js'
@@ -57,24 +22,15 @@ const DEFINERS: ReadonlyMap<string, string> = new Map([
 ])
 
 const isSpace = (ch: string | undefined): boolean => ch !== undefined && /\s/.test(ch)
-// Emacs Lisp symbol-constituent characters: anything but whitespace and the syntax characters
-// that terminate a token (Emacs Lisp Reference Manual, node "Symbol Type"). `?` is excluded from
-// the token scan itself only where it opens a character literal (handled separately in the mask
-// loop below); as an ordinary token character elsewhere it is legal, but this adapter never needs
-// to read a definer or symbol name containing one.
+// Emacs Lisp symbol-constituent characters: anything but whitespace and the syntax characters that terminate a token (Emacs Lisp Reference Manual, node "Symbol Type"). `?` is excluded from the token scan itself only where it opens a character literal (handled separately in the mask loop below); as an ordinary token character elsewhere it is legal, but this adapter never needs to read a definer or symbol name containing one.
 const isSymbolChar = (ch: string | undefined): boolean => ch !== undefined && !/[\s()[\]{}"';`,#]/.test(ch)
 
-/** True when `prevEmitted` (the last character the masker has already written to `out`, or
- * `undefined` at start of input) is a position where a new datum may begin -- used to tell a
- * character-literal `?` apart from one occurring inside/after an identifier. */
+/** True when `prevEmitted` (the last character the masker has already written to `out`, or `undefined` at start of input) is a position where a new datum may begin -- used to tell a character-literal `?` apart from one occurring inside/after an identifier. */
 function atReadPosition(prevEmitted: string | undefined): boolean {
   return prevEmitted === undefined || /[\s([{'`,]/.test(prevEmitted)
 }
 
-/** Masks `;` line comments, `"..."` strings (`\` escapes) and `?<char-or-escape>` character
- * literals to spaces (newlines preserved), left to right in one pass. Emacs Lisp has no block
- * comment (GNU Emacs Lisp Reference Manual, node "Comment Tips"), so unlike
- * common_lisp.ts/scheme.ts/racket.ts there is no `#| |#` branch here at all. */
+/** Masks `;` line comments, `"..."` strings (`\` escapes) and `?<char-or-escape>` character literals to spaces (newlines preserved), left to right in one pass. Emacs Lisp has no block comment (GNU Emacs Lisp Reference Manual, node "Comment Tips"), so unlike common_lisp.ts/scheme.ts/racket.ts there is no `#| |#` branch here at all. */
 function maskEmacsLisp(content: string): string {
   const n = content.length
   const out: string[] = new Array(n)
@@ -93,19 +49,13 @@ function maskEmacsLisp(content: string): string {
       i++
       if (content[i] === '\\') {
         i++
-        // General escape syntax: `\C-`/`\M-`/`\S-`/`\A-`/`\H-`/`\s-` modifier prefixes may chain
-        // before the final character, and an octal (`\101`) or hex (`\x41`) form runs several
-        // digits long. A generous bounded run of escape-safe characters covers every real form
-        // without an unbounded scan.
+        // General escape syntax: `\C-`/`\M-`/`\S-`/`\A-`/`\H-`/`\s-` modifier prefixes may chain before the final character, and an octal (`\101`) or hex (`\x41`) form runs several digits long. A generous bounded run of escape-safe characters covers every real form without an unbounded scan.
         let guard = 0
         while (i < n && guard < 16 && /[A-Za-z0-9^\-\\]/.test(content[i]!)) {
           i++
           guard++
         }
-        // Plain basic escapes (`?\"`, `?\;`, `?\(`, ...) name a character that is not alnum/^/-/\
-        // and so never enter the loop above; per Basic Char Syntax, a lone `\<c>` still denotes
-        // exactly `c`, so consume that one character rather than leaving it unmasked -- otherwise
-        // e.g. `?\"` leaves the `"` to be misread as a real string opener by the branch below.
+        // Plain basic escapes (`?\"`, `?\;`, `?\(`, ...) name a character that is not alnum/^/-/\ and so never enter the loop above; per Basic Char Syntax, a lone `\<c>` still denotes exactly `c`, so consume that one character rather than leaving it unmasked -- otherwise e.g. `?\"` leaves the `"` to be misread as a real string opener by the branch below.
         if (guard === 0 && i < n && content[i] !== '\n') i++
       } else if (i < n && content[i] !== '\n') {
         i++

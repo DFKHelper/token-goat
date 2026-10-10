@@ -1,7 +1,4 @@
-/**
- * Apache Thrift IDL symbol extractor: structs, unions, exceptions, enums and services, the functions inside each service, typedefs,
- * and constants. Imports are `include "file.thrift"` targets.
- */
+/** Apache Thrift IDL symbol extractor: structs, unions, exceptions, enums and services, the functions inside each service, typedefs, and constants. Imports are `include "file.thrift"` targets. */
 
 import { cFunctionHeader, quotedTarget, scanBraceLanguage, trailingIdentifier, trimEndChars, type BraceAdapterResult, type BraceLanguage, type Decl, type DeclContext } from './brace_engine.js'
 

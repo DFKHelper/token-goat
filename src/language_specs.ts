@@ -1,14 +1,4 @@
-/**
- * The one table of languages token-goat indexes. Every per-language list elsewhere is derived
- * from it: the extension and basename maps detectLanguage reads (parser_types.ts), the read,
- * grep and bash hook gates, the pack fence names, and the display labels. The {@link Language}
- * union itself is derived from the `id` column, so a new row that has no extractor in
- * languages/registry.ts's ADAPTER_EXTRACTORS fails the type check rather than indexing nothing.
- *
- * Adding a language is one row here plus its extractor: see CLAUDE.arch.md "Adding a New Language".
- *
- * Leaf module: no imports, so parser_types.ts and every hook can depend on it without a cycle.
- */
+/** The one table of languages token-goat indexes. Every per-language list elsewhere is derived from it: the extension and basename maps detectLanguage reads (parser_types.ts), the read, grep and bash hook gates, the pack fence names, and the display labels. The {@link Language} union itself is derived from the `id` column, so a new row that has no extractor in languages/registry.ts's ADAPTER_EXTRACTORS fails the type check rather than indexing nothing. Adding a language is one row here plus its extractor: see CLAUDE.arch.md "Adding a New Language". Leaf module: no imports, so parser_types.ts and every hook can depend on it without a cycle. */
 
 /** Column meanings, one row per language. */
 interface LanguageSpecShape {
@@ -73,8 +63,7 @@ export const LANGUAGE_SPECS = [
   { id: 'php', extraction: 'regex', extensions: ['.php'], label: 'PHP', ...CODE, fence: 'php' },
   { id: 'html', extraction: 'regex', extensions: ['.html', '.htm'], label: 'HTML', ...DATA, fence: 'html' },
   { id: 'liquid', extraction: 'regex', extensions: ['.liquid'], ...DATA, fence: 'liquid' },
-  // Six template dialects, each masking its own delimiters out then handing off to the HTML
-  // extractor (src/languages/templates_idx.ts) -- markup formats, so DATA defaults like html/liquid.
+  // Six template dialects, each masking its own delimiters out then handing off to the HTML extractor (src/languages/templates_idx.ts) -- markup formats, so DATA defaults like html/liquid.
   { id: 'jinja2', extraction: 'regex', extensions: ['.j2', '.jinja', '.jinja2'], label: 'Jinja2', ...DATA, fence: 'jinja' },
   { id: 'handlebars', extraction: 'regex', extensions: ['.hbs', '.handlebars'], label: 'Handlebars', ...DATA, fence: 'handlebars' },
   { id: 'erb', extraction: 'regex', extensions: ['.erb'], label: 'ERB', ...DATA, fence: 'erb' },
@@ -146,8 +135,7 @@ export const LANGUAGE_SPECS = [
   { id: 'batch', extraction: 'regex', extensions: ['.bat', '.cmd'], label: 'Windows batch', ...CODE, fence: 'batch' },
   { id: 'erlang', extraction: 'regex', extensions: ['.erl', '.hrl'], label: 'Erlang', ...CODE, fence: 'erlang' },
   { id: 'vhdl', extraction: 'regex', extensions: ['.vhd', '.vhdl'], label: 'VHDL', ...CODE, fence: 'vhdl' },
-  // Five Lisp-family dialects, each its own row: none shares an extractor (see common_lisp.ts's
-  // module doc for why their lexical rules stay separate rather than a single Lisp masker).
+  // Five Lisp-family dialects, each its own row: none shares an extractor (see common_lisp.ts's module doc for why their lexical rules stay separate rather than a single Lisp masker).
   { id: 'common_lisp', extraction: 'regex', extensions: ['.lisp', '.lsp', '.cl'], label: 'Common Lisp', ...CODE, fence: 'lisp' },
   { id: 'scheme', extraction: 'regex', extensions: ['.scm', '.ss'], label: 'Scheme', ...CODE, fence: 'scheme' },
   { id: 'racket', extraction: 'regex', extensions: ['.rkt', '.rktl'], label: 'Racket', ...CODE, fence: 'racket' },

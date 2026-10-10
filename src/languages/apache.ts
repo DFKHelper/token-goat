@@ -1,6 +1,4 @@
-/**
- * Extracts symbols from Apache HTTP Server configurations (<VirtualHost>, <Directory>, <Location>, etc.).
- */
+/** Extracts symbols from Apache HTTP Server configurations (<VirtualHost>, <Directory>, <Location>, etc.). */
 
 import type { SymbolEntry } from '../parser_types.js'
 

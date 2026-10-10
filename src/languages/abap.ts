@@ -1,9 +1,4 @@
-/**
- * ABAP adapter: the REPORT/PROGRAM/FUNCTION-POOL name, local and global classes (DEFINITION and IMPLEMENTATION, each to its
- * ENDCLASS) with their METHOD blocks as children, interfaces, FORM subroutines, function modules, dialog MODULEs and DEFINE
- * macros. Statements end with a period; a `*` in column 1 comments the line and `"` comments the rest of it; '...', `...`
- * and |...| literals are blanked before any keyword is read. Keywords are case-insensitive. Imports are INCLUDE programs.
- */
+/** ABAP adapter: the REPORT/PROGRAM/FUNCTION-POOL name, local and global classes (DEFINITION and IMPLEMENTATION, each to its ENDCLASS) with their METHOD blocks as children, interfaces, FORM subroutines, function modules, dialog MODULEs and DEFINE macros. Statements end with a period; a `*` in column 1 comments the line and `"` comments the rest of it; '...', `...` and |...| literals are blanked before any keyword is read. Keywords are case-insensitive. Imports are INCLUDE programs. */
 
 import type { AdapterImport } from './common.js'
 import { SpanCollector, type StatementAdapterResult } from './span_collector.js'

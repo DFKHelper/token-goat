@@ -1,14 +1,4 @@
-/**
- * Visual Basic symbol extractor, regex-based (no tree-sitter grammar ships for VB).
- *
- * Covers VB.NET (`.vb`), VB6/VBA standard modules (`.bas`), VBScript (`.vbs`), VB6 forms (`.frm`), and VB6 class modules (`.cls`, routed here only when the content sniff in parser_types.ts recognizes the VB6 header; every other `.cls` stays Apex).
- *
- * Extracts: Namespace, Module, Class, Structure, Interface, Enum (members as children), Sub, Function, Property (VB.NET block and auto forms, VB6 Property Get/Let/Set), Event (plain and Custom), Delegate, Declare, Operator, Const, VB6 `Type` blocks and their members, and type-level fields. A `'''` XML doc comment directly above a declaration (or above its attribute lines) becomes that symbol's docstring. `#Region` blocks are sections, read by section_reader.ts rather than indexed here.
- *
- * VB is keyword-terminated and case-insensitive: a declaration opens a frame and `End <Keyword>` closes the nearest frame of that keyword. `End If`/`End Select`/`End With`/`End Try`/`End Using`/`End While` and a bare `End` never close a declaration, `MustOverride` members and interface members have no `End`, and a multi-line lambda (`Sub()` ... `End Sub`) pushes an anonymous frame so its `End Sub` never closes the enclosing procedure.
- *
- * Physical lines are first reduced to code (string contents blanked, `'` and `REM` comments removed), then joined across ` _` continuations and unbalanced parentheses, then split on `:` statement separators.
- */
+/** Visual Basic symbol extractor, regex-based (no tree-sitter grammar ships for VB). Covers VB.NET (`.vb`), VB6/VBA standard modules (`.bas`), VBScript (`.vbs`), VB6 forms (`.frm`), and VB6 class modules (`.cls`, routed here only when the content sniff in parser_types.ts recognizes the VB6 header; every other `.cls` stays Apex). Extracts: Namespace, Module, Class, Structure, Interface, Enum (members as children), Sub, Function, Property (VB.NET block and auto forms, VB6 Property Get/Let/Set), Event (plain and Custom), Delegate, Declare, Operator, Const, VB6 `Type` blocks and their members, and type-level fields. A `'''` XML doc comment directly above a declaration (or above its attribute lines) becomes that symbol's docstring. `#Region` blocks are sections, read by section_reader.ts rather than indexed here. VB is keyword-terminated and case-insensitive: a declaration opens a frame and `End <Keyword>` closes the nearest frame of that keyword. `End If`/`End Select`/`End With`/`End Try`/`End Using`/`End While` and a bare `End` never close a declaration, `MustOverride` members and interface members have no `End`, and a multi-line lambda (`Sub()` ... `End Sub`) pushes an anonymous frame so its `End Sub` never closes the enclosing procedure. Physical lines are first reduced to code (string contents blanked, `'` and `REM` comments removed), then joined across ` _` continuations and unbalanced parentheses, then split on `:` statement separators. */
 
 import type { SymbolEntry } from '../parser_types.js'
 import { precedingDocComment } from '../doc_comment.js'
@@ -79,9 +69,7 @@ function cleanName(raw: string): string {
   return raw.replace(/^\[/, '').replace(/\]$/, '').replace(/[$%&!#@]$/, '')
 }
 
-/**
- * Reduces one physical line to code: string contents are blanked (quotes kept, so a `Lib "x"` clause keeps its shape), and a `'` comment or a `REM` statement ends the line. `""` inside a string is an escaped quote, not a terminator.
- */
+/** Reduces one physical line to code: string contents are blanked (quotes kept, so a `Lib "x"` clause keeps its shape), and a `'` comment or a `REM` statement ends the line. `""` inside a string is an escaped quote, not a terminator. */
 function stripLine(line: string): string {
   let out = ''
   let inString = false

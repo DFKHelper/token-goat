@@ -1,10 +1,4 @@
-/**
- * SAS adapter: %MACRO definitions (to their %MEND, nested ones under their parent) and DATA steps named by their first output
- * data set (to RUN, QUIT, or the next step boundary). Statements end with a semicolon; `/* ... *\/` comments, `*` and `%*`
- * comment statements, and quoted strings are skipped, and DATALINES/CARDS data is never read as code. Keywords are
- * case-insensitive. A PROC step is a boundary but not a symbol: the same PROC name repeats all through a program. Imports are
- * %INCLUDE targets.
- */
+/** SAS adapter: %MACRO definitions (to their %MEND, nested ones under their parent) and DATA steps named by their first output data set (to RUN, QUIT, or the next step boundary). Statements end with a semicolon; `/* ... *\/` comments, `*` and `%*` comment statements, and quoted strings are skipped, and DATALINES/CARDS data is never read as code. Keywords are case-insensitive. A PROC step is a boundary but not a symbol: the same PROC name repeats all through a program. Imports are %INCLUDE targets. */
 
 import type { AdapterImport } from './common.js'
 import { SpanCollector, type StatementAdapterResult } from './span_collector.js'

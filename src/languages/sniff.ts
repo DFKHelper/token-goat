@@ -1,10 +1,4 @@
-/**
- * Content sniffs that pick a language for an ambiguous extension (`.m`, `.pp`, `.h`, `.pl`, `.t`, `.p`, `.w`, `.cls`).
- *
- * Kept apart from the adapters they belong to because language detection runs on the hook path and the adapters do not:
- * parser_types.ts imports these, and importing them from the adapter modules put every one of those adapters in the
- * eager set of each hook invocation. Each adapter re-exports its own sniff, so callers of the adapter are unaffected.
- */
+/** Content sniffs that pick a language for an ambiguous extension (`.m`, `.pp`, `.h`, `.pl`, `.t`, `.p`, `.w`, `.cls`). Kept apart from the adapters they belong to because language detection runs on the hook path and the adapters do not: parser_types.ts imports these, and importing them from the adapter modules put every one of those adapters in the eager set of each hook invocation. Each adapter re-exports its own sniff, so callers of the adapter are unaffected. */
 
 // How far into a file the markers are looked for, matching the head detectLanguageOfFile reads.
 const SNIFF_CHARS = 8192
@@ -26,10 +20,7 @@ const ABL_HEADER_RE = /^(?:PROCEDURE\s+[\w-]+|(?:CLASS|INTERFACE)\s+[\w.-]+)(?:\
 /** How much of a file the ABL sniff reads: the same head {@link detectLanguageOfFile} reads from disk, so both answer alike. */
 export const ABL_SNIFF_CHARS = SNIFF_CHARS
 
-/**
- * True when the head of `content` has a line only ABL writes: an ABL `.p`, `.w` or `.cls` is told from a Pascal program, a
- * CWEB file or an Apex class this way. Header comments before the first marker are fine; the marker must start its line.
- */
+/** True when the head of `content` has a line only ABL writes: an ABL `.p`, `.w` or `.cls` is told from a Pascal program, a CWEB file or an Apex class this way. Header comments before the first marker are fine; the marker must start its line. */
 export function isAblSource(content: string): boolean {
   const head = content.slice(0, ABL_SNIFF_CHARS)
   if (head.includes('\0')) return false
@@ -105,18 +96,10 @@ export function isPrologSource(content: string): boolean {
   return /^:-/m.test(head) || /^[a-z]\w*(?:\([^()\n]*\))?[ \t]*:-/m.test(head)
 }
 
-// A LaTeX document class or package definition file (`.cls`) declares itself with one of these
-// commands near the top -- `\ProvidesClass` is the LaTeX2e-mandated self-identification a `.cls`
-// file gives (see the LaTeX2e kernel documentation, `\ProvidesClass{name}[...]`), and
-// `\documentclass` appears in the rare `.cls` that is actually a driver/example file bundled
-// alongside a class. Neither string is valid Apex or VB6 syntax, so this can never fire on those.
+// A LaTeX document class or package definition file (`.cls`) declares itself with one of these commands near the top -- `\ProvidesClass` is the LaTeX2e-mandated self-identification a `.cls` file gives (see the LaTeX2e kernel documentation, `\ProvidesClass{name}[...]`), and `\documentclass` appears in the rare `.cls` that is actually a driver/example file bundled alongside a class. Neither string is valid Apex or VB6 syntax, so this can never fire on those.
 const LATEX_CLASS_MARKER_RE = /\\(?:ProvidesClass|documentclass)\b/
 
-/**
- * True when a `.cls` file is LaTeX: a positive test for LaTeX's own self-identifying commands, never a
- * negative test for "not Apex". Apex and VB6 class files never contain a backslash-command like
- * `\ProvidesClass` or `\documentclass`, so this cannot misfire on either.
- */
+/** True when a `.cls` file is LaTeX: a positive test for LaTeX's own self-identifying commands, never a negative test for "not Apex". Apex and VB6 class files never contain a backslash-command like `\ProvidesClass` or `\documentclass`, so this cannot misfire on either. */
 export function isLatexClassFile(content: string): boolean {
   return LATEX_CLASS_MARKER_RE.test(content.slice(0, SNIFF_CHARS))
 }

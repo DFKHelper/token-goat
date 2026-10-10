@@ -1,22 +1,9 @@
-/**
- * Assembly adapter for GNU as (`.s`, `.S`), NASM (`.asm`, `.nasm`) and IBM High Level Assembler, which share `.asm`: one
- * adapter that picks its dialect from the file's own content. GAS and NASM contribute labels written with a colon, `.macro`
- * and `%macro` definitions, and NASM `struc` structures, with `.include` and `%include` as imports. HLASM contributes named
- * control sections (`CSECT`, `DSECT`, `RSECT`, `START`) and `MACRO` definitions named by their prototype statement.
- *
- * A local label (one whose name starts with a period, as GAS `.L1` and NASM `.loop` do) and a colonless NASM label never
- * produce a symbol: a colonless label cannot be told from a directive such as `section .text` without a keyword list, and
- * fewer correct symbols beat more wrong ones. `;`, `#` and `//` line comments, block comments, HLASM `*` comment
- * statements, and everything past the HLASM continuation-indicator column are skipped.
- */
+/** Assembly adapter for GNU as (`.s`, `.S`), NASM (`.asm`, `.nasm`) and IBM High Level Assembler, which share `.asm`: one adapter that picks its dialect from the file's own content. GAS and NASM contribute labels written with a colon, `.macro` and `%macro` definitions, and NASM `struc` structures, with `.include` and `%include` as imports. HLASM contributes named control sections (`CSECT`, `DSECT`, `RSECT`, `START`) and `MACRO` definitions named by their prototype statement. A local label (one whose name starts with a period, as GAS `.L1` and NASM `.loop` do) and a colonless NASM label never produce a symbol: a colonless label cannot be told from a directive such as `section .text` without a keyword list, and fewer correct symbols beat more wrong ones. `;`, `#` and `//` line comments, block comments, HLASM `*` comment statements, and everything past the HLASM continuation-indicator column are skipped. */
 
 import { lastContentLine, type AdapterImport } from './common.js'
 import { SpanCollector, type StatementAdapterResult } from './span_collector.js'
 
-/**
- * A statement only HLASM writes: an operation field of CSECT, DSECT, RSECT, MACRO or MEND, uppercase as every HLASM source
- * writes them, with an optional name field before it. NASM's `section .text` and GAS's `.macro` do not match.
- */
+/** A statement only HLASM writes: an operation field of CSECT, DSECT, RSECT, MACRO or MEND, uppercase as every HLASM source writes them, with an optional name field before it. NASM's `section .text` and GAS's `.macro` do not match. */
 const HLASM_MARKER_RE = /^(?:[A-Z@#$][A-Z0-9@#$_]*)?[ \t]+(?:CSECT|DSECT|RSECT|MACRO|MEND)(?:[ \t]|$)/
 
 /** Columns 1-71 hold the statement; column 72 is the continuation-indicator field. */

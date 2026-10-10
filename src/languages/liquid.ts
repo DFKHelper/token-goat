@@ -1,17 +1,4 @@
-/**
- * Shopify Liquid template extractor.
- *
- * Symbols:
- *   `liquid_schema`       — name field from {% schema %} JSON block
- *   `liquid_section_file` — stem of filename when file is under sections/
- *
- * Imports:
- *   `liquid_include` — {% include 'snippet' %}
- *   `liquid_section` — {% section 'name' %}
- *   `liquid_render`  — {% render 'snippet' %}
- *
- * Sections: <h1>–<h6> HTML headings found inside the template.
- */
+/** Shopify Liquid template extractor. Symbols: `liquid_schema`       — name field from {% schema %} JSON block `liquid_section_file` — stem of filename when file is under sections/ Imports: `liquid_include` — {% include 'snippet' %} `liquid_section` — {% section 'name' %} `liquid_render`  — {% render 'snippet' %} Sections: <h1>–<h6> HTML headings found inside the template. */
 
 import * as path from 'node:path'
 import type { SymbolEntry } from '../parser_types.js'
@@ -26,12 +13,7 @@ export interface LiquidSection {
   readonly endLine: number
 }
 
-// The closing quote must match the SAME character that opened it (captured in group 1) --
-// a static `['"]` charclass on both ends lets a literal apostrophe inside a double-quoted
-// target (or vice versa) prematurely truncate the match, since [^'"]+ excludes both quote
-// characters unconditionally regardless of which one is actually delimiting this string. A
-// per-character negative lookahead against the captured opener (rather than a static
-// exclusion charclass) is required so the body can legally contain the non-delimiting quote.
+// The closing quote must match the SAME character that opened it (captured in group 1) -- a static `['"]` charclass on both ends lets a literal apostrophe inside a double-quoted target (or vice versa) prematurely truncate the match, since [^'"]+ excludes both quote characters unconditionally regardless of which one is actually delimiting this string. A per-character negative lookahead against the captured opener (rather than a static exclusion charclass) is required so the body can legally contain the non-delimiting quote.
 const INCLUDE_RE = /{%-?\s*include\s+(['"])((?:(?!\1)[\s\S])+?)\1/gi
 const SECTION_RE = /{%-?\s*section\s+(['"])((?:(?!\1)[\s\S])+?)\1/gi
 const RENDER_RE = /{%-?\s*render\s+(['"])((?:(?!\1)[\s\S])+?)\1/gi
@@ -51,9 +33,7 @@ export function extractLiquid(
   const imports: AdapterImport[] = []
   const sections: MiniSection[] = []
   const lineIndex = buildLineIndex(content)
-  // Blank out HTML comments and CDATA sections (offset-preserving; see maskHtmlNoise in
-  // common.ts) before scanning for Liquid tags, so a commented-out {% include %}/{% section
-  // %}/{% render %}/{% schema %} block isn't indexed as a live import/symbol.
+  // Blank out HTML comments and CDATA sections (offset-preserving; see maskHtmlNoise in common.ts) before scanning for Liquid tags, so a commented-out {% include %}/{% section %}/{% render %}/{% schema %} block isn't indexed as a live import/symbol.
   const maskedForTags = maskHtmlNoise(content)
 
   // include / section / render imports

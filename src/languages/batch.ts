@@ -1,11 +1,4 @@
-/**
- * Windows batch adapter for `.bat` and `.cmd` files: the labels cmd.exe jumps to, each running to the line before the next
- * label or to the end of the file, with the batch files a `call` statement runs as imports. Command names and labels are
- * matched case-insensitively.
- *
- * A line that begins with a colon is a label and the rest of that line is ignored, so a `::` line (a colon whose label name
- * would be empty) and a `rem` line never produce a symbol. `goto :EOF` names no label of its own and is left alone.
- */
+/** Windows batch adapter for `.bat` and `.cmd` files: the labels cmd.exe jumps to, each running to the line before the next label or to the end of the file, with the batch files a `call` statement runs as imports. Command names and labels are matched case-insensitively. A line that begins with a colon is a label and the rest of that line is ignored, so a `::` line (a colon whose label name would be empty) and a `rem` line never produce a symbol. `goto :EOF` names no label of its own and is left alone. */
 
 import { lastContentLine, type AdapterImport } from './common.js'
 import { SpanCollector, type StatementAdapterResult } from './span_collector.js'

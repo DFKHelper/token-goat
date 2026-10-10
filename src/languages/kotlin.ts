@@ -1,11 +1,4 @@
-/**
- * Kotlin symbol extractor — regex-based (no tree-sitter grammar needed).
- *
- * Extracts: classes, interfaces, objects, data classes, sealed classes,
- * companion objects, top-level type aliases, top-level functions, methods, and
- * SCREAMING_SNAKE const vals.
- * Import directives are returned as import entries.
- */
+/** Kotlin symbol extractor — regex-based (no tree-sitter grammar needed). Extracts: classes, interfaces, objects, data classes, sealed classes, companion objects, top-level type aliases, top-level functions, methods, and SCREAMING_SNAKE const vals. Import directives are returned as import entries. */
 
 import type { SymbolEntry } from '../parser_types.js'
 import {
@@ -24,27 +17,15 @@ interface ClassFrame {
   name: string
   braceDepth: number
   bodyEntered: boolean
-  // Running open-minus-close count of the primary constructor's (and any same-line supertype
-  // call's) parentheses, tracked only until bodyEntered flips true. A body-less class/interface/
-  // object header (e.g. `data class Point(val x: Int, val y: Int)`, no trailing `{`) balances
-  // this back to 0 with no body ever opening -- see the pendingPop resolution below.
+  // Running open-minus-close count of the primary constructor's (and any same-line supertype call's) parentheses, tracked only until bodyEntered flips true. A body-less class/interface/ object header (e.g. `data class Point(val x: Int, val y: Int)`, no trailing `{`) balances this back to 0 with no body ever opening -- see the pendingPop resolution below.
   parenBalance: number
-  // Set once a line leaves the frame body-less with balanced parens AND that line does not end
-  // in `:`/`,` (a Kotlin wrapped-supertype-list continuation marker). Popping does not happen
-  // immediately: a header can still legally continue onto the next line via a *leading* `:`/`,`
-  // (e.g. `class Foo(val x: Int)` / `    : Bar(x) {`), so the pop is deferred to the start of the
-  // next line, once that line's leading character rules out a continuation too.
+  // Set once a line leaves the frame body-less with balanced parens AND that line does not end in `:`/`,` (a Kotlin wrapped-supertype-list continuation marker). Popping does not happen immediately: a header can still legally continue onto the next line via a *leading* `:`/`,` (e.g. `class Foo(val x: Int)` / `    : Bar(x) {`), so the pop is deferred to the start of the next line, once that line's leading character rules out a continuation too.
   pendingPop: boolean
 }
 
 const IMPORT_RE = /^import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:\.\*)?)/
 
-// Kotlin idiomatically places annotations on the same line as the declaration they annotate
-// (`@Composable fun Foo() {}`, `@Test fun bar() {}`, `@Serializable data class Foo(...)`),
-// but FUN_RE/CONST_RE/CLASS_HEADER_RE/COMPANION_RE/TOP_FUN_RE are all `^`-anchored against
-// their modifier alternation or declaration keyword directly, with no room for a leading
-// annotation token. Stripping it before matching (never before slicing the signature/docstring,
-// which still use the original line) fixes the whole family at once.
+// Kotlin idiomatically places annotations on the same line as the declaration they annotate (`@Composable fun Foo() {}`, `@Test fun bar() {}`, `@Serializable data class Foo(...)`), but FUN_RE/CONST_RE/CLASS_HEADER_RE/COMPANION_RE/TOP_FUN_RE are all `^`-anchored against their modifier alternation or declaration keyword directly, with no room for a leading annotation token. Stripping it before matching (never before slicing the signature/docstring, which still use the original line) fixes the whole family at once.
 const LEADING_ANNOTATION_RE =
   /^\s*(?:@[A-Za-z_][A-Za-z0-9_.]*(?::[A-Za-z_][A-Za-z0-9_]*)?(?:\([^()]*\))?\s+)+/
 function stripLeadingAnnotations(s: string): string {
@@ -72,26 +53,14 @@ const CONST_RE = new RegExp(
   '(?:const\\s+)?val\\s+([A-Z_][A-Z0-9_]*)\\s*(?::|=)',
 )
 
-// The keyword itself is captured (group 1) alongside the name (group 2) so the caller can tell
-// `class`/`interface`/`object`/`enum class` apart -- without it, every declaration this matches
-// was hardcoded to kind 'class' regardless of which keyword actually introduced it, silently
-// mislabeling every Kotlin `interface Foo { ... }` and singleton `object Foo { ... }` (both very
-// common idioms - dependency-inversion interfaces and Kotlin's idiomatic singleton/utility
-// pattern) as a plain class in the index.
-// `external`, `final` and `inline` complete the modifier set: `external` introduces a Kotlin/JS or native interop declaration (`external interface Console { ... }`), `final` is the explicit spelling of the default inheritance modifier, and `inline class` is the pre-1.5 spelling of `value class`. FUN_RE above already accepts `external` and `final`, so leaving them out here made the same file treat a modifier as real on a function and unknown on a class: the header never matched, no frame was pushed, and every member inside the body was dropped alongside the type itself, exactly the way an unmatched `companion object` drops its members.
+// The keyword itself is captured (group 1) alongside the name (group 2) so the caller can tell `class`/`interface`/`object`/`enum class` apart -- without it, every declaration this matches was hardcoded to kind 'class' regardless of which keyword actually introduced it, silently mislabeling every Kotlin `interface Foo { ... }` and singleton `object Foo { ... }` (both very common idioms - dependency-inversion interfaces and Kotlin's idiomatic singleton/utility pattern) as a plain class in the index. `external`, `final` and `inline` complete the modifier set: `external` introduces a Kotlin/JS or native interop declaration (`external interface Console { ... }`), `final` is the explicit spelling of the default inheritance modifier, and `inline class` is the pre-1.5 spelling of `value class`. FUN_RE above already accepts `external` and `final`, so leaving them out here made the same file treat a modifier as real on a function and unknown on a class: the header never matched, no frame was pushed, and every member inside the body was dropped alongside the type itself, exactly the way an unmatched `companion object` drops its members.
 const CLASS_HEADER_RE = new RegExp(
   '^(?:(?:public|internal|protected|private|open|abstract|sealed|data|' +
   'inner|expect|actual|value|annotation|fun|external|final|inline)\\s+)*' +
   '(class|interface|object|enum\\s+class)\\s+(' + NAME_RE + ')',
 )
 
-// A companion object precedes `object` with the `companion` keyword, which is not a member of
-// CLASS_HEADER_RE's modifier list, so `companion object { ... }` never matches CLASS_HEADER_RE --
-// no frame gets pushed for it, yet its brace still increments braceDepth, silently dropping every
-// member declared inside it from the index (depthInClass never comes back to 1 relative to the
-// enclosing class). A companion object may optionally carry a name (`companion object Named { }`);
-// when unnamed, Kotlin's own implicit name for it is `Companion`, used here as the fallback so
-// members still resolve to a stable, real, referenceable parent name.
+// A companion object precedes `object` with the `companion` keyword, which is not a member of CLASS_HEADER_RE's modifier list, so `companion object { ... }` never matches CLASS_HEADER_RE -- no frame gets pushed for it, yet its brace still increments braceDepth, silently dropping every member declared inside it from the index (depthInClass never comes back to 1 relative to the enclosing class). A companion object may optionally carry a name (`companion object Named { }`); when unnamed, Kotlin's own implicit name for it is `Companion`, used here as the fallback so members still resolve to a stable, real, referenceable parent name.
 const COMPANION_RE = new RegExp(
   '^(?:(?:public|internal|protected|private)\\s+)*' +
   'companion\\s+object\\b(?:\\s+(' + NAME_RE + '))?',
@@ -165,10 +134,7 @@ export function extractKotlin(
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
 
-    // Mask multi-line Kotlin `"""..."""` raw string spans first, state carried across lines, so
-    // braces inside one of those can never desync braceDepth. Skipped on lines that start
-    // already inside a block comment (mlState null) to avoid misreading comment prose that
-    // happens to contain opener-shaped text.
+    // Mask multi-line Kotlin `"""..."""` raw string spans first, state carried across lines, so braces inside one of those can never desync braceDepth. Skipped on lines that start already inside a block comment (mlState null) to avoid misreading comment prose that happens to contain opener-shaped text.
     let mlLine = rawLine
     if (mlState !== null || !inComment) {
       const masked = stripMultilineStringSpan(rawLine, mlState, 'kotlin')
@@ -176,9 +142,7 @@ export function extractKotlin(
       mlState = masked.state
     }
 
-    // Strip /* */ block-comment spans (state carried across lines via inComment) so braces
-    // inside commented-out code are not counted toward braceDepth. A `/*` inside an open quote
-    // is not treated as a comment opener.
+    // Strip /* */ block-comment spans (state carried across lines via inComment) so braces inside commented-out code are not counted toward braceDepth. A `/*` inside an open quote is not treated as a comment opener.
     const { code: blockStripped, inComment: nextInComment } = stripBlockCommentSpan(mlLine, inComment)
     inComment = nextInComment
 
@@ -193,14 +157,7 @@ export function extractKotlin(
       continue
     }
 
-    // Resolve a body-less pop deferred from a prior line. A Kotlin class header can legally
-    // continue onto this new line several ways: a wrapped supertype list via a *leading* `:` or
-    // `,` (`class Foo(val x: Int)` / `    : Bar(x) {`), an Allman-style body brace on its own
-    // line (`class Foo` / `{`), or a multi-line `where` type-constraint clause (`class Foo<T>` /
-    // `    where T : Comparable<T> {`). A pending pop only fires once this line's leading
-    // character rules out all of those too. Must run before class/companion/member detection
-    // below so a genuinely finished body-less header's stack frame is gone before this new line
-    // is evaluated as its own (possibly top-level) declaration.
+    // Resolve a body-less pop deferred from a prior line. A Kotlin class header can legally continue onto this new line several ways: a wrapped supertype list via a *leading* `:` or `,` (`class Foo(val x: Int)` / `    : Bar(x) {`), an Allman-style body brace on its own line (`class Foo` / `{`), or a multi-line `where` type-constraint clause (`class Foo<T>` / `    where T : Comparable<T> {`). A pending pop only fires once this line's leading character rules out all of those too. Must run before class/companion/member detection below so a genuinely finished body-less header's stack frame is gone before this new line is evaluated as its own (possibly top-level) declaration.
     if (classStack.length > 0) {
       const pendingTop = classStack[classStack.length - 1]!
       if (pendingTop.pendingPop) {
@@ -225,22 +182,7 @@ export function extractKotlin(
       imports.push({ kind: 'import', target: importM[1] ?? '', line: lineNum })
     }
 
-    // Class/interface/object declaration. Recognized at column 0 (top-level), or indented while
-    // genuinely inside another class's body (classStack non-empty) - this captures a real
-    // nested/inner class (companion object member, sealed subclass, nested data class) without
-    // also matching arbitrarily indented top-level code that has no enclosing class.
-    // Match against the trimmed line: CLASS_HEADER_RE is column-0-anchored (`^`), so an
-    // indented nested class header would never match against the raw, still-indented line.
-    // Companion objects only occur nested inside a class/object body (classStack non-empty), and
-    // are checked ahead of CLASS_HEADER_RE since the `companion` keyword would otherwise prevent
-    // CLASS_HEADER_RE from matching at all (see COMPANION_RE comment above).
-    // Function-local classes/companion objects (declared inside a method body) must not be
-    // indexed as members of the enclosing class -- matches the depthInClass === 1 gate already
-    // applied correctly to the method/const branch below (and to csharp.ts/powershell_idx.ts).
-    // classStack.length === 0 covers the top-level case (no enclosing class at all); otherwise
-    // the current position must be exactly one brace level inside the innermost class/companion
-    // frame's body (depthInClass === 1) -- a class/companion header nested two or more levels
-    // in (e.g. inside a method body) is function-local, not a real class member.
+    // Class/interface/object declaration. Recognized at column 0 (top-level), or indented while genuinely inside another class's body (classStack non-empty) - this captures a real nested/inner class (companion object member, sealed subclass, nested data class) without also matching arbitrarily indented top-level code that has no enclosing class. Match against the trimmed line: CLASS_HEADER_RE is column-0-anchored (`^`), so an indented nested class header would never match against the raw, still-indented line. Companion objects only occur nested inside a class/object body (classStack non-empty), and are checked ahead of CLASS_HEADER_RE since the `companion` keyword would otherwise prevent CLASS_HEADER_RE from matching at all (see COMPANION_RE comment above). Function-local classes/companion objects (declared inside a method body) must not be indexed as members of the enclosing class -- matches the depthInClass === 1 gate already applied correctly to the method/const branch below (and to csharp.ts/powershell_idx.ts). classStack.length === 0 covers the top-level case (no enclosing class at all); otherwise the current position must be exactly one brace level inside the innermost class/companion frame's body (depthInClass === 1) -- a class/companion header nested two or more levels in (e.g. inside a method body) is function-local, not a real class member.
     const outerFrame = classStack.length > 0 ? classStack[classStack.length - 1]! : null
     const outerDepthInClass = outerFrame !== null ? braceDepth - outerFrame.braceDepth : 0
     const classDetectionGateOk = classStack.length === 0 || outerDepthInClass === 1
@@ -255,10 +197,7 @@ export function extractKotlin(
     } else if (cm) {
       const ckeyword = cm[1] ?? 'class'
       const cname = unquoteName(cm[2] ?? '')
-      // `enum class` collapses to the `class` branch (matches csharp.ts's precedent of no
-      // distinct 'enum' kind for a class-flavored declaration); `object` maps to 'object'
-      // (matching the companion-object branch above's own kind) rather than 'class', since a
-      // top-level `object Foo { ... }` singleton is not a class in the index's kind vocabulary.
+      // `enum class` collapses to the `class` branch (matches csharp.ts's precedent of no distinct 'enum' kind for a class-flavored declaration); `object` maps to 'object' (matching the companion-object branch above's own kind) rather than 'class', since a top-level `object Foo { ... }` singleton is not a class in the index's kind vocabulary.
       const ckind = ckeyword === 'interface' ? 'interface' : ckeyword === 'object' ? 'object' : 'class'
       const parent = classStack.length > 0 ? classStack[classStack.length - 1]!.name : undefined
       symbols.push(makeLineSymbol(filePath, cname, ckind, lineNum, line.trimEnd().slice(0, 200), parent, lines, 'c'))
@@ -268,10 +207,7 @@ export function extractKotlin(
     const frame = classStack.length > 0 ? classStack[classStack.length - 1]! : null
     if (frame !== null) {
       const depthInClass = braceDepth - frame.braceDepth
-      // === 1, not >= 1: a bare statement/local declaration inside a method body sits at
-      // depthInClass 2+ (matches csharp.ts / powershell_idx.ts, which gate the same way) --
-      // an ungated >= 1 check indexed local functions and local SCREAMING_SNAKE vals declared
-      // inside a method as if they were members of the enclosing class.
+      // === 1, not >= 1: a bare statement/local declaration inside a method body sits at depthInClass 2+ (matches csharp.ts / powershell_idx.ts, which gate the same way) -- an ungated >= 1 check indexed local functions and local SCREAMING_SNAKE vals declared inside a method as if they were members of the enclosing class.
       if (depthInClass === 1) {
         const lineNoAnn = stripLeadingAnnotations(line)
         const fm = FUN_RE.exec(lineNoAnn)
@@ -306,11 +242,7 @@ export function extractKotlin(
       }
     }
 
-    // Brace-count on a string-stripped copy of the line so a literal brace inside a string
-    // literal is never counted as real nesting. Walk char-by-char (rather than a single
-    // open-count minus close-count) so a same-line open+close (`class Empty {}`) still marks
-    // bodyEntered - the net delta for that line is zero, but depth genuinely peaked one above
-    // the frame's start in between the two braces, which a batched delta can never observe.
+    // Brace-count on a string-stripped copy of the line so a literal brace inside a string literal is never counted as real nesting. Walk char-by-char (rather than a single open-count minus close-count) so a same-line open+close (`class Empty {}`) still marks bodyEntered - the net delta for that line is zero, but depth genuinely peaked one above the frame's start in between the two braces, which a batched delta can never observe.
     const braceLine = stripStringLiterals(line)
 
     // A line can hold several declarations of one type body: the members after a type header's `{` (`class Two { fun a() = 1; fun b() = 2 }`), and those after the first on a body line (`fun c() = 1; fun d() = 2`). The branches above index only the first declaration on the line; the rest are found here, the header's own body first so the rows keep source order.
@@ -349,22 +281,11 @@ export function extractKotlin(
     }
     openMembers = endOpenMembers(symbols, settled, openMembers, braceDepth, lineNum, lines)
     openMembers.push(...lineOpens)
-    // A body-less class/interface/object header (`data class Point(val x: Int, val y: Int)`,
-    // no trailing `{`) never flips bodyEntered, so the bodyEntered-gated pop below would leave
-    // it on the stack forever, silently misattributing every later top-level declaration as one
-    // of its members. Once this frame's own constructor parens (if any) are back in balance and
-    // no body brace opened on this same line, its header *might* be complete -- but a wrapped
-    // supertype list can still continue onto a later line (trailing `:`/`,` on this line, or a
-    // leading `:`/`,` on the next), so this only arms a pending pop; the top-of-loop check above
-    // resolves it once a following line proves no continuation follows.
+    // A body-less class/interface/object header (`data class Point(val x: Int, val y: Int)`, no trailing `{`) never flips bodyEntered, so the bodyEntered-gated pop below would leave it on the stack forever, silently misattributing every later top-level declaration as one of its members. Once this frame's own constructor parens (if any) are back in balance and no body brace opened on this same line, its header *might* be complete -- but a wrapped supertype list can still continue onto a later line (trailing `:`/`,` on this line, or a leading `:`/`,` on the next), so this only arms a pending pop; the top-of-loop check above resolves it once a following line proves no continuation follows.
     if (frame !== null && !frame.bodyEntered && frame.parenBalance <= 0) {
       frame.pendingPop = !(stripped.endsWith(':') || stripped.endsWith(','))
     }
-    // Pop finished class frames. A frame only pops once its own opening brace has actually been
-    // entered (bodyEntered) - this guards a class whose primary-constructor header spans
-    // multiple lines (`class Foo(\n  val x: Int\n) {`), where braceDepth still equals the
-    // frame's start depth on the header line itself, so an ungated pop would discard the class
-    // context before its body is ever seen.
+    // Pop finished class frames. A frame only pops once its own opening brace has actually been entered (bodyEntered) - this guards a class whose primary-constructor header spans multiple lines (`class Foo(\n  val x: Int\n) {`), where braceDepth still equals the frame's start depth on the header line itself, so an ungated pop would discard the class context before its body is ever seen.
     while (classStack.length > 0) {
       const top = classStack[classStack.length - 1]!
       if (top.bodyEntered && braceDepth <= top.braceDepth) {

@@ -122,10 +122,7 @@ export interface PdfReadHandle {
   read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesRead: number }>
 }
 
-/**
- * Every byte a descriptor delivers, refusing one that delivers more than it said it would. The buffer is one byte longer than the reported size, so a file that outgrows its own stat mid-read fills it and is refused rather than silently truncated to whatever the cap blessed.
- * @see readPdfFileWithinBounds
- */
+/** Every byte a descriptor delivers, refusing one that delivers more than it said it would. The buffer is one byte longer than the reported size, so a file that outgrows its own stat mid-read fills it and is refused rather than silently truncated to whatever the cap blessed. @see readPdfFileWithinBounds */
 export async function readAllWithinReportedSize(handle: PdfReadHandle, reportedSize: number, file: string): Promise<Uint8Array> {
   const buffer = Buffer.alloc(reportedSize + 1)
   let read = 0
@@ -165,11 +162,7 @@ async function getPageWithinDeadline(doc: pdfjsTypes.PDFDocumentProxy, pageNum: 
   return raceDeadline(doc.getPage(pageNum), deadline)
 }
 
-/**
- * One page's text items, refusing once they pass `budget` characters or {@link MAX_PDF_TEXT_ITEMS} items. `budget` is spent in UTF-16 code units plus one per item for the separator the caller will join with, which is what the retained strings actually weigh in this process. It is not a count of the UTF-8 bytes those strings encode to -- a page of accented or CJK text encodes to two or three times its code units -- so it bounds the memory here and not the size of the finished document. {@link assertPdfTextWithinBounds} is what bounds that, once there is a document to measure. The refusal drops what it has and keeps draining rather than breaking out, because breaking out is not free here: a `cancel()` closes the web-stream controller while pdfjs still believes its own is open -- pdfjs marks that only on its CLOSE message -- so a chunk already in flight calls `enqueue` on a closed controller and throws from inside pdfjs's message handler, as an uncaught exception rather than a rejection of anything a caller awaits. Abandoning the reader without cancelling can instead leave `loadingTask.destroy()` waiting on a read that will never arrive, which is why teardown is raced rather than awaited -- a refused document must not be able to convert its refusal into a hang, whether or not any particular file manages to. Draining costs parse time, which the input cap already bounds; what it does not cost is the heap, which is the whole point -- nothing past the budget is ever retained. Draining is what makes the clock load-bearing rather than belt-and-braces: it is the only thing that stops the drain itself. Exported for the test that proves the deadline fires, which needs a producer that never ends and so cannot go through a real document.
- * @see MAX_PDF_TEXT_BYTES
- * @see MAX_PDF_WORK_MILLIS
- */
+/** One page's text items, refusing once they pass `budget` characters or {@link MAX_PDF_TEXT_ITEMS} items. `budget` is spent in UTF-16 code units plus one per item for the separator the caller will join with, which is what the retained strings actually weigh in this process. It is not a count of the UTF-8 bytes those strings encode to -- a page of accented or CJK text encodes to two or three times its code units -- so it bounds the memory here and not the size of the finished document. {@link assertPdfTextWithinBounds} is what bounds that, once there is a document to measure. The refusal drops what it has and keeps draining rather than breaking out, because breaking out is not free here: a `cancel()` closes the web-stream controller while pdfjs still believes its own is open -- pdfjs marks that only on its CLOSE message -- so a chunk already in flight calls `enqueue` on a closed controller and throws from inside pdfjs's message handler, as an uncaught exception rather than a rejection of anything a caller awaits. Abandoning the reader without cancelling can instead leave `loadingTask.destroy()` waiting on a read that will never arrive, which is why teardown is raced rather than awaited -- a refused document must not be able to convert its refusal into a hang, whether or not any particular file manages to. Draining costs parse time, which the input cap already bounds; what it does not cost is the heap, which is the whole point -- nothing past the budget is ever retained. Draining is what makes the clock load-bearing rather than belt-and-braces: it is the only thing that stops the drain itself. Exported for the test that proves the deadline fires, which needs a producer that never ends and so cannot go through a real document. @see MAX_PDF_TEXT_BYTES @see MAX_PDF_WORK_MILLIS */
 export async function readPageTextItems(page: pdfjsTypes.PDFPageProxy, budget: number, deadline: number): Promise<LayoutTextItem[]> {
   let items: LayoutTextItem[] = []
   let spent = 0

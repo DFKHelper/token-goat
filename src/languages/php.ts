@@ -1,9 +1,4 @@
-/**
- * PHP symbol extractor — regex-based (no tree-sitter grammar needed).
- *
- * Extracts: namespaces, classes, interfaces, traits, enums, functions,
- * methods, properties, constants, and use/require import directives.
- */
+/** PHP symbol extractor — regex-based (no tree-sitter grammar needed). Extracts: namespaces, classes, interfaces, traits, enums, functions, methods, properties, constants, and use/require import directives. */
 
 import type { SymbolEntry } from '../parser_types.js'
 import {
@@ -70,15 +65,7 @@ function inlinePhpMember(text: string, kind: string, parent: string | undefined,
   return null
 }
 
-/**
- * Blanks everything outside `<?php ... ?>`, keeping length and line breaks so every line number still lines up.
- *
- * A `.php` file is an HTML template until an opening tag says otherwise, and this adapter used to read the whole file as PHP. A `<script>function init() {` line in the markup matched the method pattern and was indexed as a PHP function: a fabricated symbol, which this repo treats as worse than a missing one. The brace-span layer walked the same markup and mis-nested on its braces.
- *
- * Exported because {@link extractPhp} and the brace-span pass in registry.ts must agree about where the PHP is; two copies of this rule could drift, which is the defect that produced the Groovy coupling.
- *
- * A file with no opening tag anywhere is returned unchanged: that is a fragment rather than a template, and blanking it would index nothing at all.
- */
+/** Blanks everything outside `<?php ... ?>`, keeping length and line breaks so every line number still lines up. A `.php` file is an HTML template until an opening tag says otherwise, and this adapter used to read the whole file as PHP. A `<script>function init() {` line in the markup matched the method pattern and was indexed as a PHP function: a fabricated symbol, which this repo treats as worse than a missing one. The brace-span layer walked the same markup and mis-nested on its braces. Exported because {@link extractPhp} and the brace-span pass in registry.ts must agree about where the PHP is; two copies of this rule could drift, which is the defect that produced the Groovy coupling. A file with no opening tag anywhere is returned unchanged: that is a fragment rather than a template, and blanking it would index nothing at all. */
 export function maskPhpInlineHtml(content: string): string {
   const opener = /<\?(?:php\b|=)/i
   if (!opener.test(content)) return content
@@ -199,8 +186,7 @@ export function extractPhp(
       openMember = null
     }
 
-    // A line directly in a type's body can hold several members (`public $a; public $b;`). The branches below index the first; the rest are queued here.
-    // A line that begins inside the block of a member opened on an earlier line can close it and go on to declare more (`return 1; } function g() {}`): those are members too, found past the closing brace.
+    // A line directly in a type's body can hold several members (`public $a; public $b;`). The branches below index the first; the rest are queued here. A line that begins inside the block of a member opened on an earlier line can close it and go on to declare more (`return 1; } function g() {}`): those are members too, found past the closing brace.
     const bodyBase = topFrame === undefined ? 0 : topFrame[1] + 1
     const preDepth = braceDepth - openB + closeB
     if ((topFrame === undefined || topFrame[2]) && preDepth >= bodyBase && preLineParenDepth === 0) {

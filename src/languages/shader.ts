@@ -1,8 +1,4 @@
-/**
- * Shader symbol extractors. GLSL, HLSL and Metal share C's function syntax: functions (entry points such as `kernel`, `vertex` and
- * `fragment` functions too), structs, GLSL interface blocks, HLSL `cbuffer`/`tbuffer` blocks, and Metal namespaces, plus `#include`
- * targets. WGSL has its own: functions, structs, aliases, and module-scope `const`, `override` and `var` declarations.
- */
+/** Shader symbol extractors. GLSL, HLSL and Metal share C's function syntax: functions (entry points such as `kernel`, `vertex` and `fragment` functions too), structs, GLSL interface blocks, HLSL `cbuffer`/`tbuffer` blocks, and Metal namespaces, plus `#include` targets. WGSL has its own: functions, structs, aliases, and module-scope `const`, `override` and `var` declarations. */
 
 import { cFunctionHeader, quotedTarget, scanBraceLanguage, stripLeadingWords, withoutTrailingBrace, type BraceAdapterResult, type BraceLanguage, type Decl, type DeclContext } from './brace_engine.js'
 

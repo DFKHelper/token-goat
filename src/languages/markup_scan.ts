@@ -30,10 +30,7 @@ export function gtFinder(text: string): (from: number) => number {
   return charFinder(text, '>')
 }
 
-/**
- * Every open tag whose name `open` matches, with the attribute text running to the first `>`. `open` must be a global regular expression matching `<` and the tag name only, and must end in a lookahead for whitespace or `>` where the old pattern's `(?:\s[^>]*)?>` required one.
- * Stops at the first start that has no `>` after it: every later start lacks one too.
- */
+/** Every open tag whose name `open` matches, with the attribute text running to the first `>`. `open` must be a global regular expression matching `<` and the tag name only, and must end in a lookahead for whitespace or `>` where the old pattern's `(?:\s[^>]*)?>` required one. Stops at the first start that has no `>` after it: every later start lacks one too. */
 export function findOpenTags(text: string, open: RegExp): OpenTag[] {
   const out: OpenTag[] = []
   open.lastIndex = 0
@@ -48,24 +45,36 @@ export function findOpenTags(text: string, open: RegExp): OpenTag[] {
   return out
 }
 
-/**
- * Every non-overlapping `<name attrs>body</close>` element, left to right, with the body running to the first `close` match after the open tag, as a lazy `[\s\S]*?` does. `close` must be a global regular expression matching the whole close tag.
- * Stops at the first start with no `>` after it, and at the first open tag with no close after it: neither can be followed by a start that fares better.
- */
+/** Every non-overlapping `<name attrs>body</close>` element, left to right, with the body running to the first `close` match after the open tag, as a lazy `[\s\S]*?` does. `close` must be a global regular expression matching the whole close tag. Stops at the first start with no `>` after it, and at the first open tag with no close after it: neither can be followed by a start that fares better. */
 export function findElements(text: string, open: RegExp, close: RegExp, limit = Infinity): Element[] {
   const out: Element[] = []
-  open.lastIndex = 0
-  let m: RegExpExecArray | null
-  while (out.length < limit && (m = open.exec(text)) !== null) {
-    const nameEnd = m.index + m[0].length
-    const gt = text.indexOf('>', nameEnd)
-    if (gt < 0) break
-    close.lastIndex = gt + 1
-    const c = close.exec(text)
-    if (c === null) break
-    const end = c.index + c[0].length
-    out.push({ start: m.index, nameEnd, end, attrs: text.slice(nameEnd, gt), body: text.slice(gt + 1, c.index), bodyEnd: c.index })
-    open.lastIndex = end
-  }
+  const next = elementCursor(text, open, close)
+  let el: Element | null
+  while (out.length < limit && (el = next()) !== null) out.push(el)
   return out
+}
+
+/** The elements {@link findElements} lists, one per call and null once there are no more, for a caller that stops early or keeps none of them: holding every element of a large document alive at once is what made a scan of one grow the garbage collector's live set with the document. */
+export function elementCursor(text: string, open: RegExp, close: RegExp): () => Element | null {
+  open.lastIndex = 0
+  let done = false
+  return () => {
+    if (done) return null
+    const m = open.exec(text)
+    if (m !== null) {
+      const nameEnd = m.index + m[0].length
+      const gt = text.indexOf('>', nameEnd)
+      if (gt >= 0) {
+        close.lastIndex = gt + 1
+        const c = close.exec(text)
+        if (c !== null) {
+          const end = c.index + c[0].length
+          open.lastIndex = end
+          return { start: m.index, nameEnd, end, attrs: text.slice(nameEnd, gt), body: text.slice(gt + 1, c.index), bodyEnd: c.index }
+        }
+      }
+    }
+    done = true
+    return null
+  }
 }

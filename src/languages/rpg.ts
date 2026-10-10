@@ -1,12 +1,4 @@
-/**
- * ILE RPG adapter. Free form: DCL-PROC procedures to END-PROC, BEGSR subroutines to ENDSR (under their procedure), DCL-PR
- * prototypes and DCL-DS data structures to their END-PR/END-DS (or the one statement when there is none), and top-level
- * DCL-S, DCL-C and DCL-F declarations. Fixed form: P specifications (B in position 24 opens a procedure, E closes it) and
- * C-specification BEGSR/ENDSR. A `**FREE` first line makes every column code; otherwise columns 1-5 are a sequence area,
- * position 6 names a fixed-form specification, a `*` in position 7 comments the line, and free-form code sits in columns
- * 8-80. `//` comments, quoted strings, compiler directives and compile-time data never produce symbols. Keywords are
- * case-insensitive. Imports are /COPY and /INCLUDE members and EXEC SQL INCLUDE.
- */
+/** ILE RPG adapter. Free form: DCL-PROC procedures to END-PROC, BEGSR subroutines to ENDSR (under their procedure), DCL-PR prototypes and DCL-DS data structures to their END-PR/END-DS (or the one statement when there is none), and top-level DCL-S, DCL-C and DCL-F declarations. Fixed form: P specifications (B in position 24 opens a procedure, E closes it) and C-specification BEGSR/ENDSR. A `**FREE` first line makes every column code; otherwise columns 1-5 are a sequence area, position 6 names a fixed-form specification, a `*` in position 7 comments the line, and free-form code sits in columns 8-80. `//` comments, quoted strings, compiler directives and compile-time data never produce symbols. Keywords are case-insensitive. Imports are /COPY and /INCLUDE members and EXEC SQL INCLUDE. */
 
 import type { AdapterImport } from './common.js'
 import { SpanCollector, type StatementAdapterResult } from './span_collector.js'
