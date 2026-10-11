@@ -1,6 +1,6 @@
 /** Decides whether a PreToolUse input rewrite may ship, and whether it may carry Claude Code's `permissionDecision: "allow"`, so that rewriting a tool call never changes the permission outcome the user's own rules give the ORIGINAL call. Claude Code evaluates its permission rules against a hook's `updatedInput`, not the input the model wrote (claude.exe 2.1.289: the PreToolUse result's `updatedInput` replaces the input before `canUseTool` runs, and an `allow` logs "Hook approved tool use ..., bypassing permission prompt"), so a `token-goat compress -c '<cmd>'` wrapper or a shrunk image's temp path is what a `Bash(curl *)` or `Read(./private/**)` rule gets matched against. Answering every rewrite with `allow`, as serializeOutput once did, therefore skipped the user's prompt for any wrapped command and let deny and ask rules miss. Every rewriteInput producer routes through {@link permissionNeutralRewrite}: it returns null (do not rewrite) whenever a deny or ask rule could match the original call, or the settings cannot be read; `approve` only when the original call is provably auto-allowed anyway and no auto-mode classifier would have reviewed it (a trusted allow rule matching a simple command, Claude Code's built-in read-only commands, a Read inside the working directory); otherwise a rewrite with no decision, which Claude Code runs through its normal permission flow. In auto and bypassPermissions a rewrite must never add a prompt, so there it is approved or skipped, never deferred: auto mode skips every rewrite, and bypassPermissions approves one only when claude_hidden_rules.ts finds no rule source the hook cannot read (a host's canUseTool, --disallowedTools, a skill's disallowed-tools, a PermissionRequest hook adding session rules). Losing a compression is fine; bypassing a user's rule is not, so every doubt resolves to null. On Copilot CLI, opencode and Grok, whose shell rules no hook can read, a shell rewrite never ships. Settings sources and precedence are from https://code.claude.com/docs/en/settings, https://code.claude.com/docs/en/managed-settings and https://code.claude.com/docs/en/permissions. Node built-ins plus the config-dir accessor, paths.ts's share check, path_containment.ts's containment and case fold, nested_worktrees.ts's common git dir, util.ts's runGit and types only, all already on every hook's path, so every hook can import it without dragging a subsystem onto the hook's eager path; Codex's rules parser lives in codex_rules.ts, imported dynamically by loadCodexRules, and the hidden-source check in claude_hidden_rules.ts, imported dynamically by loadHiddenRuleCheck. */
 
-import { spawnSync } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -452,22 +452,46 @@ function readSettingsFile(file: string): Record<string, unknown> | undefined {
 }
 
 // reg exits 1 for a missing key and for one it may not read, and words both by locale; a key is absent when reg gives the English not-found message, or else only when it repeats the message a key that cannot exist gives (asked once, lazily), and that key sits under HKLM where a user cannot create it, so no deny-read ACL planted on a sentinel can make a denied policy key read as absent. Nothing is saved, as a file the user can write could hide a deny. reg is run by absolute path from the validated Windows folder, so neither PATH nor the working directory can stand in; with no reg.exe there the spawn fails and the policy is unreadable.
-const regQuery = (key: string) => spawnSync(windowsSystem32Exe('reg.exe'), ['query', key, '/v', 'Settings'], { encoding: 'utf8', windowsHide: true, timeout: 5000 })
+const REG_ABSENT = 'ERROR: The system was unable to find the specified registry key or value.'
+const REG_SENTINEL = 'HKLM\\SOFTWARE\\TokenGoatNoSuchKey'
+const REG_OPTS = { encoding: 'utf8', windowsHide: true, timeout: 5000 } as const
+const regArgs = (key: string): string[] => ['query', key, '/v', 'Settings']
+type RegResult = { readonly status: number | null; readonly stdout: string; readonly stderr: string }
+const regQuery = (key: string): RegResult => spawnSync(windowsSystem32Exe('reg.exe'), regArgs(key), REG_OPTS)
+/** The same query without blocking the event loop, for the resident hook server's refresh: a timeout, a spawn failure or an oversized answer has no exit code, so it reads as unreadable just as the synchronous query's null status does. */
+function regQueryAsync(key: string): Promise<RegResult> {
+  return new Promise((resolve) => {
+    execFile(windowsSystem32Exe('reg.exe'), regArgs(key), REG_OPTS, (err, stdout, stderr) => {
+      const status = err === null ? 0 : typeof err.code === 'number' && err.killed !== true ? err.code : null
+      resolve({ status, stdout, stderr })
+    })
+  })
+}
+const sentinelMessage = (res: RegResult): string => (res.status === 1 ? res.stderr.trim() : '')
+/** One key's `Settings` value from its reg answer: undefined when provably absent, throws when it cannot be read as a JSON object; `missing` gives the sentinel's message, asked only when needed. */
+function registrySettings(key: string, res: RegResult, missing: () => string): Record<string, unknown> | undefined {
+  if (res.status === 1) {
+    if (res.stderr.trim() === REG_ABSENT) return undefined
+    const none = missing()
+    if (none !== '' && res.stderr.trim() === none) return undefined
+  }
+  const json = res.status === 0 && !res.stdout.includes('\ufffd') ? asObject(JSON.parse(/^\s*Settings\s+REG_(?:EXPAND_)?SZ\s(.*)$/m.exec(res.stdout)?.[1]?.trim() ?? 'null')) : null
+  if (json === null) throw new Error(`unreadable ${key}`)
+  return json
+}
 /** The `Settings` value of each Windows policy key, in order: undefined when provably absent, throws when it cannot be read as a JSON object. */
 function readRegistrySettings(keys: string[]): (Record<string, unknown> | undefined)[] {
   let missing: string | undefined
-  return keys.map((key) => {
-    const res = regQuery(key)
-    if (res.status === 1) {
-      if (res.stderr.trim() === 'ERROR: The system was unable to find the specified registry key or value.') return undefined
-      missing ??= ((none) => (none.status === 1 ? none.stderr.trim() : ''))(regQuery('HKLM\\SOFTWARE\\TokenGoatNoSuchKey'))
-      if (missing !== '' && res.stderr.trim() === missing) return undefined
-    }
-    const json = res.status === 0 && !res.stdout.includes('\ufffd') ? asObject(JSON.parse(/^\s*Settings\s+REG_(?:EXPAND_)?SZ\s(.*)$/m.exec(res.stdout)?.[1]?.trim() ?? 'null')) : null
-    if (json === null) throw new Error(`unreadable ${key}`)
-    return json
-  })
+  return keys.map((key) => registrySettings(key, regQuery(key), () => (missing ??= sentinelMessage(regQuery(REG_SENTINEL)))))
 }
+/** {@link readRegistrySettings} with every key asked at once and the sentinel asked only when some answer needs it; rejects where that throws. */
+async function readRegistrySettingsAsync(keys: string[]): Promise<(Record<string, unknown> | undefined)[]> {
+  const answers = await Promise.all(keys.map(regQueryAsync))
+  const needsSentinel = answers.some((res) => res.status === 1 && res.stderr.trim() !== REG_ABSENT)
+  const missing = needsSentinel ? sentinelMessage(await regQueryAsync(REG_SENTINEL)) : ''
+  return keys.map((key, i) => registrySettings(key, answers[i] as RegResult, () => missing))
+}
+const policyKeys = (): string[] => ['HKLM', 'HKCU'].map((h) => `${h}\\SOFTWARE\\Policies\\ClaudeCode`).filter((k) => sourceAllowed(`registry:${k}`))
 
 function managedFileDocs(dir: string, group: string, out: SettingsDoc[]): void {
   const main = readSettingsFile(path.join(dir, 'managed-settings.json'))
@@ -491,12 +515,13 @@ export function managedDirs(): string[] {
 }
 
 /** Every managed settings source on this machine (https://code.claude.com/docs/en/managed-settings#where-each-mechanism-stores-the-policy), plus the server-managed cache. */
-function managedDocs(): SettingsDoc[] {
+function managedDocs(registry?: { readonly keys: string[]; readonly values: (Record<string, unknown> | undefined)[] }): SettingsDoc[] {
   const out: SettingsDoc[] = []
   for (const dir of managedDirs()) managedFileDocs(dir, 'file', out)
   if (process.platform === 'win32') {
-    const keys = ['HKLM', 'HKCU'].map((h) => `${h}\\SOFTWARE\\Policies\\ClaudeCode`).filter((k) => sourceAllowed(`registry:${k}`))
-    readRegistrySettings(keys).forEach((json, i) => {
+    const keys = registry?.keys ?? policyKeys()
+    const values = registry?.values ?? readRegistrySettings(keys)
+    values.forEach((json, i) => {
       if (json !== undefined) out.push({ role: 'managed', json, managedGroup: (keys[i] as string).slice(0, 4).toLowerCase() })
     })
   } else if (process.platform === 'darwin') {
@@ -515,11 +540,40 @@ function managedDocs(): SettingsDoc[] {
 }
 
 const MANAGED_CACHE_MS = 30_000
+const MANAGED_REFRESH_MS = 20_000
+const MANAGED_IDLE_MS = 300_000
 let managedCache: { readonly at: number; readonly docs: SettingsDoc[] } | undefined
+let managedRefresh: ReturnType<typeof setInterval> | undefined
+let managedGeneration = 0
+let managedUsedAt = 0
 
-/** Drop the cached managed sources and the loaded hidden-rule check, for a test that changes them. */
+/** Keep the managed sources fresh off the event loop. Called by the resident hook server, whose cache would otherwise expire every 30 s and make the next handler wait on reg.exe; the registry is re-read in the background every 20 s while snapshots are being taken, and a read that fails or comes back unreadable leaves the cache to age out to the synchronous read, which decides as before. Windows only, where that cost is. */
+export function primeManagedPolicyAhead(): void {
+  if (process.platform !== 'win32' || managedRefresh !== undefined) return
+  managedUsedAt = Date.now()
+  const refresh = (): void => {
+    if (Date.now() - managedUsedAt > MANAGED_IDLE_MS) return
+    const generation = managedGeneration
+    const at = Date.now()
+    const keys = policyKeys()
+    readRegistrySettingsAsync(keys)
+      .then((values) => {
+        if (generation !== managedGeneration || (managedCache !== undefined && managedCache.at > at)) return
+        managedCache = { at, docs: managedDocs({ keys, values }) }
+      })
+      .catch(() => undefined)
+  }
+  managedRefresh = setInterval(refresh, MANAGED_REFRESH_MS)
+  managedRefresh.unref()
+  refresh()
+}
+
+/** Drop the cached managed sources, any background refresh of them and the loaded hidden-rule check, for a test that changes them. */
 export function resetPermissionSourceCache(): void {
   managedCache = undefined
+  if (managedRefresh !== undefined) clearInterval(managedRefresh)
+  managedRefresh = undefined
+  managedGeneration++
   unseenRules = undefined
 }
 
@@ -574,6 +628,7 @@ export function loadPermissionSnapshot(cwd: string, projectDir: string | undefin
     // Claude Code reads settings.local.json from the starting directory on Windows and in older versions, and from the main checkout's root elsewhere; its allow rules count only where both agree and the cwd is that directory, since a session moved with /cd reads the new directory's file instead.
     const localDir = samePath(here, start) && (process.platform === 'win32' || mainRoot === undefined || samePath(mainRoot, start)) ? start : undefined
     const now = Date.now()
+    managedUsedAt = now
     if (managedCache === undefined || now - managedCache.at > MANAGED_CACHE_MS) managedCache = { at: now, docs: managedDocs() }
     const docs: SettingsDoc[] = [...managedCache.docs]
     const user = readSettingsFile(path.join(claudeConfigDir(), 'settings.json'))

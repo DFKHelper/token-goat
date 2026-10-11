@@ -18,7 +18,7 @@ const absent: Answer = { code: 1, err: NOT_FOUND }
 const timedOut: Answer = { code: null }
 const ES = 'ERROR: El sistema no pudo encontrar la clave o el valor del Registro especificado.\r\n'
 
-const reg = vi.hoisted(() => ({ calls: [] as { cmd: string; args: string[]; opts: Record<string, unknown> }[], answers: {} as Record<string, Answer> }))
+const reg = vi.hoisted(() => ({ calls: [] as { cmd: string; args: string[]; opts: Record<string, unknown>; async?: true }[], answers: {} as Record<string, Answer> }))
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof ChildProcess>()
@@ -30,10 +30,20 @@ vi.mock('node:child_process', async (importOriginal) => {
       const a = reg.answers[args[1] as string] ?? { code: 1, err: '' }
       return a.code === null ? { status: null, error: new Error('spawnSync reg.exe ETIMEDOUT'), stdout: '', stderr: '' } : { status: a.code ?? 0, stdout: a.out ?? '', stderr: a.err ?? '' }
     },
+    // FORMAT-DERIVED from https://nodejs.org/api/child_process.html#child_processexecfilefile-args-options-callback: a non-zero exit gives an error whose `code` is the exit code, a timeout kills the child and gives `killed` true with a null `code`; the callback always runs on a later tick.
+    execFile: (cmd: string, args: readonly string[], opts: unknown, cb: (err: (Error & { code?: number | null; killed?: boolean }) | null, stdout: string, stderr: string) => void) => {
+      if (!/reg\.exe$/i.test(cmd)) return (actual.execFile as (...a: unknown[]) => unknown)(cmd, args, opts, cb)
+      reg.calls.push({ cmd, args: [...args], opts: (opts ?? {}) as Record<string, unknown>, async: true })
+      const a = reg.answers[args[1] as string] ?? { code: 1, err: '' }
+      const code = a.code === undefined ? 0 : a.code
+      const err = code === 0 ? null : code === null ? Object.assign(new Error('reg.exe timed out'), { code: null, killed: true }) : Object.assign(new Error('Command failed'), { code, killed: false })
+      setImmediate(() => cb(err, a.out ?? '', a.err ?? ''))
+      return undefined
+    },
   }
 })
 
-import { loadHiddenRuleCheck, loadPermissionSnapshot, permissionNeutralRewrite, readHintCrossesRule, resetPermissionSourceCache, type RewriteRequest } from '../src/rewrite_permission.js'
+import { loadHiddenRuleCheck, loadPermissionSnapshot, permissionNeutralRewrite, primeManagedPolicyAhead, readHintCrossesRule, resetPermissionSourceCache, type RewriteRequest } from '../src/rewrite_permission.js'
 
 const FILTER = Symbol.for('token-goat.permission-source-filter')
 const slot = globalThis as unknown as Record<symbol, unknown>
@@ -55,6 +65,11 @@ const live = (answers: Record<string, Answer>): void => {
   resetPermissionSourceCache()
 }
 const held = (): boolean => readHintCrossesRule('claudecode', root, open())
+const asyncKeys = (): string[] => reg.calls.filter((c) => c.async === true).map((c) => c.args[1] as string)
+const syncCalls = (): number => reg.calls.filter((c) => c.async !== true).length
+const flush = async (): Promise<void> => {
+  for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve))
+}
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-regpolicy-'))
@@ -73,6 +88,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   Object.defineProperty(process, 'platform', platform)
   slot[FILTER] = savedFilter
   if (savedHome === undefined) delete process.env['TOKEN_GOAT_HOME']
@@ -266,5 +282,85 @@ describe('exit 1 from reg means absent only when its message is the one for a ke
     expect(held()).toBe(true)
     live({ [K_L]: { out: '\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\ClaudeCode\r\n    Settings    REG_BINARY    00\r\n' } })
     expect(held()).toBe(true)
+  })
+})
+
+// HAND-DERIVED: the resident hook server keeps the managed sources for 30 s, and each expiry made the next handler wait on two synchronous reg.exe runs; the background refresh must decide exactly as that synchronous read does, or leave the decision to it.
+describe('the resident hook server refreshes the registry policy off the event loop', () => {
+  it('fills the cache from a background read, so a snapshot launches no synchronous reg', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' })
+    primeManagedPolicyAhead()
+    await flush()
+    expect(reg.calls, 'only Windows has a registry to read').toEqual([])
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    primeManagedPolicyAhead()
+    expect(syncCalls(), 'the refresh blocked the event loop').toBe(0)
+    await flush()
+    expect(asyncKeys(), 'the English not-found message needs no sentinel').toEqual([K_L, K_C])
+    reg.calls.length = 0
+    expect(loadPermissionSnapshot(root)?.deny.map((r) => r.raw)).toEqual(['Read(./secret/**)'])
+    expect(reg.calls, 'the snapshot read the registry again although the refresh had').toEqual([])
+  })
+
+  it('reads a localized missing key as absent through the sentinel, as the synchronous read does', async () => {
+    live({ [K_L]: { code: 1, err: ES }, [K_C]: { code: 1, err: ES }, [SENTINEL]: { code: 1, err: ES } })
+    primeManagedPolicyAhead()
+    await flush()
+    expect(asyncKeys()).toEqual([K_L, K_C, SENTINEL])
+    reg.calls.length = 0
+    expect(held()).toBe(false)
+    expect(reg.calls).toEqual([])
+  })
+
+  it('leaves the decision to the synchronous read when the background read is unreadable', async () => {
+    for (const a of [{ code: 1, err: DENIED }, timedOut, { code: 2, err: NOT_FOUND }, { out: 'not a listing' }] as Answer[]) {
+      live({ [K_L]: a })
+      primeManagedPolicyAhead()
+      await flush()
+      reg.calls.length = 0
+      expect(held(), JSON.stringify(a)).toBe(true)
+      expect(syncCalls(), `${JSON.stringify(a)}: an unreadable background read was cached`).toBeGreaterThan(0)
+    }
+  })
+
+  it('drops a refresh that a reset or a newer synchronous read overtook', async () => {
+    primeManagedPolicyAhead()
+    resetPermissionSourceCache()
+    await flush()
+    reg.calls.length = 0
+    loadPermissionSnapshot(root)
+    expect(syncCalls(), 'a refresh begun before the reset filled the cache after it').toBeGreaterThan(0)
+    vi.useFakeTimers({ toFake: ['Date'] })
+    live({})
+    primeManagedPolicyAhead()
+    vi.setSystemTime(Date.now() + 1000)
+    reg.answers[K_L] = absent
+    expect(loadPermissionSnapshot(root)?.deny, 'the synchronous read saw the policy removed').toEqual([])
+    await flush()
+    reg.calls.length = 0
+    expect(loadPermissionSnapshot(root)?.deny, 'an older background read replaced a newer synchronous one').toEqual([])
+    expect(reg.calls).toEqual([])
+  })
+
+  it('stops reading once no snapshot has been taken for five minutes, and resumes with the next one', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
+    live({})
+    primeManagedPolicyAhead()
+    await flush()
+    reg.calls.length = 0
+    vi.advanceTimersByTime(20_000)
+    expect(asyncKeys(), 'no refresh 20 s on').toEqual([K_L, K_C])
+    await flush()
+    vi.advanceTimersByTime(380_000)
+    await flush()
+    reg.calls.length = 0
+    vi.advanceTimersByTime(100_000)
+    await flush()
+    expect(reg.calls, 'an idle server kept launching reg').toEqual([])
+    loadPermissionSnapshot(root)
+    reg.calls.length = 0
+    vi.advanceTimersByTime(20_000)
+    expect(asyncKeys(), 'a snapshot did not resume the refresh').toEqual([K_L, K_C])
+    await flush()
   })
 })
