@@ -661,6 +661,8 @@ describe('doctor auto-repair and embedding model checks', () => {
       vi.spyOn(configModule, 'loadConfig').mockReturnValue(config)
       vi.spyOn(configModule, 'saveConfig').mockImplementation(() => { throw new Error('EPERM: operation not permitted') })
       vi.spyOn(embedModel, 'modelFilesPresent').mockReturnValue(true)
+      // The project-scope rows (Claude Code, Copilot CLI) read the hook files under the working directory, so the checkout the suite runs from decided the verdict: a developer's own wired native hook client there is self-tested with a 5 s limit, and a loaded machine answers "no answer within 5000 ms" and fails the report. A scratch project holds none.
+      vi.spyOn(process, 'cwd').mockReturnValue(projectRoot)
       const lines: string[] = []
       vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')) })
       const err = await runDoctorAndExit({ rootDir: projectRoot, processes: [], fix: true }).then(() => undefined, (e: unknown) => e)

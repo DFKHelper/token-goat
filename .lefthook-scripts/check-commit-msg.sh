@@ -47,7 +47,10 @@ if [[ -f "$DENYLIST" ]]; then
   shopt -s nocasematch
   while IFS= read -r line || [[ -n "$line" ]]; do
     clean_name="${line%%#*}"
-    clean_name="$(echo "$clean_name" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    # Parameter expansion only: the echo | tr | sed it replaces started four processes per listed name, which on Git Bash under load pushed the denylist test past its timeout.
+    clean_name="${clean_name//$'\r'/}"
+    clean_name="${clean_name#"${clean_name%%[![:space:]]*}"}"
+    clean_name="${clean_name%"${clean_name##*[![:space:]]}"}"
     if [[ -n "$clean_name" ]]; then
       if [[ "$BODY" == *"$clean_name"* ]]; then
         echo "commit-msg: this commit message contains a confidential name. Remove it before committing." >&2

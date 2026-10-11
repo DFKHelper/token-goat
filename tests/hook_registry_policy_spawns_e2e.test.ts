@@ -9,13 +9,33 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { HARNESS_HOOK_PAYLOADS } from './fixtures/harness_hook_payloads.js'
 
 const BUNDLE = path.join(process.cwd(), 'dist', 'token-goat.mjs')
-const COUNTER = "const cp = require('node:child_process'); const fs = require('node:fs'); const real = cp.spawnSync; cp.spawnSync = function (cmd) { if (/reg(\\.exe)?$/i.test(String(cmd))) fs.appendFileSync(process.env.TG_REG_LOG, String(cmd) + '\\n'); return real.apply(this, arguments) }"
+// Each reg launch is logged as `<command>\t<error code or empty>` after it returns, so a launch the product's own 5 s spawn timeout killed (a starved machine) is visible as ETIMEDOUT and not mistaken for a hook that skipped the read.
+const COUNTER = "const cp = require('node:child_process'); const fs = require('node:fs'); const real = cp.spawnSync; cp.spawnSync = function (cmd) { const r = real.apply(this, arguments); if (/reg(\\.exe)?$/i.test(String(cmd))) fs.appendFileSync(process.env.TG_REG_LOG, String(cmd) + '\\t' + (r.error ? r.error.code : '') + '\\n'); return r }"
+// How many times a hook is run again when one of its reg launches timed out. The product fails closed on an unreadable policy and withholds the hint, which is correct, so the run measured nothing and is repeated; the timeout itself is not touched.
+const POLICY_READ_ATTEMPTS = 4
+// A run is repeated only while the test has used less than this, so retries cannot carry it past its own 60 s timeout.
+const POLICY_READ_RETRY_WINDOW_MS = 30_000
 
 let root: string
 let project: string
 let regLog: string
 
-function hook(event: string, input: string, harness: string): { status: number; stdout: string; stderr: string; reg: string[] } {
+interface HookRun {
+  status: number
+  stdout: string
+  stderr: string
+  reg: string[]
+  regTimedOut: boolean
+}
+
+/** `hook`, run again while a reg launch timed out, up to {@link POLICY_READ_ATTEMPTS} runs; the last run is returned either way. */
+function hookWithPolicyRead(event: string, input: string, harness: string, retryBefore: number): HookRun {
+  let r = hook(event, input, harness)
+  for (let attempt = 1; attempt < POLICY_READ_ATTEMPTS && r.regTimedOut && Date.now() < retryBefore; attempt++) r = hook(event, input, harness)
+  return r
+}
+
+function hook(event: string, input: string, harness: string): HookRun {
   fs.writeFileSync(regLog, '')
   const res = spawnSync(process.execPath, ['--require', path.join(root, 'count_reg.cjs'), BUNDLE, 'hook', event], {
     cwd: project,
@@ -39,7 +59,8 @@ function hook(event: string, input: string, harness: string): { status: number; 
       TOKEN_GOAT_NO_WORKER_SPAWN: '1',
     },
   })
-  return { status: res.status ?? 1, stdout: res.stdout ?? '', stderr: res.stderr ?? '', reg: fs.readFileSync(regLog, 'utf8').split('\n').filter((l) => l !== '') }
+  const launches = fs.readFileSync(regLog, 'utf8').split('\n').filter((l) => l !== '').map((l) => l.split('\t'))
+  return { status: res.status ?? 1, stdout: res.stdout ?? '', stderr: res.stderr ?? '', reg: launches.map(([cmd]) => cmd as string), regTimedOut: launches.some(([, code]) => code === 'ETIMEDOUT') }
 }
 
 const claudecode = (tool: 'pre_tool_use' | 'post_tool_use', file: string): string =>
@@ -67,13 +88,15 @@ describe.skipIf(process.platform !== 'win32')('a hook process and the Windows re
   })
 
   it('Claude Code: each hinting hook reads the registry live by absolute path, in at most three serial launches, and the hint still arrives', () => {
+    const retryBefore = Date.now() + POLICY_READ_RETRY_WINDOW_MS
     const file = path.join(project, 'ordinary.ts')
     expect(hook('pre_tool_use', claudecode('pre_tool_use', file), 'claudecode').status).toBe(0)
     expect(hook('post_tool_use', claudecode('post_tool_use', file), 'claudecode').status).toBe(0)
-    const second = hook('pre_tool_use', claudecode('pre_tool_use', file), 'claudecode')
-    const third = hook('pre_tool_use', claudecode('pre_tool_use', file), 'claudecode')
+    const second = hookWithPolicyRead('pre_tool_use', claudecode('pre_tool_use', file), 'claudecode', retryBefore)
+    const third = hookWithPolicyRead('pre_tool_use', claudecode('pre_tool_use', file), 'claudecode', retryBefore)
     for (const r of [second, third]) {
       expect(r.status, r.stderr).toBe(0)
+      expect(r.regTimedOut, `reg timed out on the last of up to ${POLICY_READ_ATTEMPTS} runs, so the machine is too starved to read the policy`).toBe(false)
       expect(r.stdout, 'no hint was emitted, so the registry check proves nothing').toContain('ordinary.ts')
     }
     for (const r of [second, third]) {

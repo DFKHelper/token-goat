@@ -22,7 +22,7 @@ import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import { runSymbol } from '../src/read_symbol.js'
 import { captureStdout } from './helpers/capture-stdout.js'
-import { POSIX_SH, POWERSHELL, powershellArgv, shArgv } from './helpers/shell_argv.js'
+import { POSIX_SH, POWERSHELL, powershellArgv, powershellRunAll, shArgv, shRunAll } from './helpers/shell_argv.js'
 
 /** Values a suggestion carries: a plain path, a spaced path, and the ones a shell would rewrite inside double quotes. */
 const ROUND_TRIP_VALUES = ['src/a.ts', 'my dir/big file.ts::Sym', '$zzRef', '$(whoami)', '${HOME}', 'a`b', 'what does "src dir/x.ts" export', 'it"s', 'a\u201Db', 'C:\\dir\\', 'a\\\\b', 'C:\\x\\y.ts']
@@ -66,12 +66,15 @@ describe('quotedArg', () => {
     expect(quotedArg('a\n$b')).toBe('"<a value no quote mark can hold>"')
   })
 
+  // One shell process runs every value's command, since a process per value took ~26 s (bash) and ~30 s (PowerShell) unloaded and crossed the 60 s test timeout under load; each value is still asserted on its own, named in the failure message.
   it.skipIf(SH === null)('a POSIX shell hands the command every value unchanged', () => {
-    for (const value of ROUND_TRIP_VALUES) expect(shArgv(SH!, `token-goat semantic ${quotedArg(value)}`)).toEqual(['semantic', value])
+    const runs = shRunAll(SH!, ROUND_TRIP_VALUES.map((value) => `token-goat semantic ${quotedArg(value)}`))
+    ROUND_TRIP_VALUES.forEach((value, i) => expect(runs[i], value).toEqual({ calls: [['semantic', value]], stray: [] }))
   })
 
   it.skipIf(PWSH === null)('PowerShell hands the command every value unchanged', () => {
-    for (const value of ROUND_TRIP_VALUES) expect(powershellArgv(PWSH!, `token-goat semantic ${quotedArg(value)}`)).toEqual(['semantic', value])
+    const runs = powershellRunAll(PWSH!, ROUND_TRIP_VALUES.map((value) => `token-goat semantic ${quotedArg(value)}`))
+    ROUND_TRIP_VALUES.forEach((value, i) => expect(runs[i], value).toEqual({ calls: [['semantic', value]], stray: [] }))
   })
 })
 

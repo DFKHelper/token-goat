@@ -58,9 +58,15 @@ describe('commit-msg hook: confidential denylist', () => {
   it.skipIf(!hasBash)('matches a name holding regex and glob metacharacters literally', () => {
     const names = ['a.b*c[d]']
     expect(runHook(names, 'fix: rename A.B*C[D] in the loader\n').status).toBe(1)
-    // "axbbcd" is what the name matches read as a regex, and "a.bZZcd" is what it matches read as a glob; a literal match refuses neither.
-    expect(runHook(names, 'fix: rename axbbcd in the loader\n').status).toBe(0)
-    expect(runHook(names, 'fix: rename a.bZZcd in the loader\n').status).toBe(0)
+    // "axbbcd" is what the name matches read as a regex, and "a.bZZcd" is what it matches read as a glob; a literal match refuses neither. One message holds both, since a refusal on either reading refuses the whole message, and each run is a bash start-up plus a dozen child processes, which is what took this case past 60 s on a loaded machine.
+    expect(runHook(names, 'fix: rename axbbcd and a.bZZcd in the loader\n').status).toBe(0)
+  })
+
+  // The message abuts the name on both sides, so a name left with its padding or tab after the trim would not be found in it, and a carriage return inside the name (which the trim cannot reach) must be dropped as well.
+  it.skipIf(!hasBash)('matches a listed name stripped of its padding, carriage returns and a trailing comment', () => {
+    const r = runHook(['  \tQuillfeather\r Labs \t# a note\r'],'feat:QUILLFEATHER labs.\n')
+    expect(r.status).toBe(1)
+    expect(r.stderr).toMatch(/confidential name/)
   })
 
   it.skipIf(!hasBash)('refuses the commit when grep cannot run instead of reading the failure as a clean message', () => {
