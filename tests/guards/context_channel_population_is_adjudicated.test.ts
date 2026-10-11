@@ -35,8 +35,12 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'Two third-party values. The skill name in the repeated-body advisory is escaped in resident_context.ts, since a skill declares its own name and nothing upstream constrains it. The git branch name is not escaped and does not need to be: git refuses a ref containing a bracket, so it cannot carry a marker.',
   'image_shrink.ts::finalizeShrinkResult':
     'Names the image it shrank, and a repository names its images. The basename is escaped once where it is computed, which also covers the stats label it feeds. The OCR text beside it was already fenced separately.',
-  'hooks_tool_failure.ts::postToolUseFailureHandler':
+  'hooks_tool_failure.ts::adviseOnFailure':
     'Names the tool that failed twice, and an MCP server chooses the names it advertises. Escaped in repeatFailureNotice.',
+  'hooks_tool_failure.ts::postToolUseFailureHandler':
+    'Joins the line recoveryAfterFailure returns onto the advice adviseOnFailure produced. Interpolates nothing of its own; the line is adjudicated under recovery_pairs.ts::recoveryAfterFailure.',
+  'recovery_pairs.ts::recoveryAfterFailure':
+    'Echoes a fix command a model ran in an earlier session, so the text is session-influenced. It is stored only if isLearnableCommand passed it (one line, no backtick or control character, no credential, nothing destructive or about token-goat), escaped with displaySafeText and set inside one backtick fence by fencedCommand.',
   'call_streak.ts::trackedLine':
     'Emits batchHintText or searchBrakeText, whose only interpolation is a streak count this module computed; the command in the brake is a fixed template with placeholder arguments. No path, pattern, command or tool name from the payload is echoed.',
   'call_streak.ts::onReadOnlyPre': 'Reaches the channel only through trackedLine. Interpolates nothing of its own.',
@@ -148,6 +152,7 @@ describe('every function on the context channel has been adjudicated', () => {
       ['resident_context.ts', 'displaySafeText(worst.skill)'],
       ['evidence_cache.ts', 'displaySafePath(entry.source)'],
       ['hooks_tool_failure.ts', 'displaySafeText(toolName)'],
+      ['recovery_pairs.ts', 'fencedCommand(displaySafeText(best.fix))'],
       ['hooks_read.ts', 'displaySafePath(path.basename(normalized))'],
       ['hooks_read.ts', 'displaySafePath(match[1]!)'],
       ['hooks_common.ts', "displaySafeText(typeof toolInput['pattern']"],

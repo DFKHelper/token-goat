@@ -101,6 +101,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/hooks_read_post.ts`](src/hooks_read_post.ts) | `postReadHandler()` — snapshot update, session recording, `elideAlreadyServedLines()` and `foldCodeBodies()` on the delivered text |
 | [`src/hooks_read_slice.ts`](src/hooks_read_slice.ts) | Line windowing, slice estimation, line diffing, and truncated-read detection. |
 | [`src/hooks_read.ts`](src/hooks_read.ts) | `preReadHandler()` — session hint, diff-on-reread, image intercept, large-file gate, surgical-hint injection |
+| [`src/hooks_recovery.ts`](src/hooks_recovery.ts) | `post_tool_use` side of the failure-recovery pairs (recovery_pairs.ts): a successful Bash command may close a pending pair, and an edit tool drops every pending pair. |
 | [`src/hooks_screenshot.ts`](src/hooks_screenshot.ts) | Pre-tool-use hook — `pre_screenshot`: denies MCP screenshot tool calls that don't specify a destination file, redirecting the model to re-issue the call with one. |
 | [`src/hooks_session_start.ts`](src/hooks_session_start.ts) | session_start hook: re-inject a short command-routing reminder every time a session starts, resumes, or restarts after compaction. |
 | [`src/hooks_session.ts`](src/hooks_session.ts) | `sessionStartHandler()`, `userPromptSubmitHandler()` (branch and status context), `subagentStopHandler()` |
@@ -541,6 +542,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/queue_waker.ts`](src/queue_waker.ts) | Ends the worker's between-drain sleep when another process appends to `queue/dirty.txt` (fs.watch on the queue directory, timer fallback); the worker's own requeues keep their pacing. |
 | [`src/recall_index.ts`](src/recall_index.ts) | Cross-cache full-text search index for `token-goat recall`. |
 | [`src/reconcile_requests.ts`](src/reconcile_requests.ts) | The worker's side of a reconcile request: a hook that knew files changed but could not learn which (a branch switch whose changed-file list git failed to produce in time) leaves th |
+| [`src/recovery_pairs.ts`](src/recovery_pairs.ts) | Failure-recovery pairs: remember what fixed a failed Bash command, and say so the next time it fails the same way. |
 | [`src/ref_blindness.ts`](src/ref_blindness.ts) | Honest answers for questions the reference index cannot answer. |
 | [`src/regex_guard.ts`](src/regex_guard.ts) | Refusing a regular expression that can stall the process that runs it. |
 | [`src/resident_context.ts`](src/resident_context.ts) | Accounting for the context the harness injects and token-goat's hooks never see. |

@@ -332,6 +332,7 @@ read_batch            6             -            4         66.7%       no       
 search_brake          2             -            1         50.0%       no               0        0        330
 grep_dedup_hint       0 ~4          -            0         n/a         no               0        0        240
 glob_dedup_hint       0 ~1          -            0         n/a         no               0        0        60
+recovery_pair        0 ~2          -            0         n/a         no               0        0        90
 
 TOTAL   saved-bytes=48200 (all-time, every hint kind)   spent-bytes=7020 (hint_emissions ledger only)
 ```

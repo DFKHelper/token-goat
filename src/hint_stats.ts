@@ -22,6 +22,8 @@ export const HINT_CATEGORIES = [
   // The Grep/Glob dedup notes from hooks_common.ts's makeDedupHintHandlers. Logged with no correlator, so they count as spend and emissions but never as a verdict: the note is attached to the re-run it describes, so no later call can show whether it was heeded.
   'grep_dedup_hint',
   'glob_dedup_hint',
+  // recovery_pairs.ts: a failed Bash command that an earlier session learned a fix for. Logged with no correlator: the fix may be run in many spellings, so the pair store scores it (helped and hurt) rather than a pointer match.
+  'recovery_pair',
 ] as const
 
 export type HintCategory = (typeof HINT_CATEGORIES)[number]

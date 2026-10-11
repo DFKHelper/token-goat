@@ -1797,7 +1797,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       manualEffective: number
       manualIneffective: number
     }>
-    expect(rows.length).toBe(9)
+    expect(rows.length).toBe(10)
     expect(rows.every((row) => row.emitted === 0 && row.suppressed === false)).toBe(true)
     expect(rows.map((row) => row.category).sort()).toEqual([
       'bash_recall',
@@ -1808,6 +1808,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       'read_batch',
       'read_reread_dedup',
       'read_structural_nav',
+      'recovery_pair',
       'search_brake',
     ])
 

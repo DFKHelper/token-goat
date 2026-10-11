@@ -6,6 +6,7 @@ import { dirname, relative } from 'node:path'
 import { callStreakAfterFailure } from './call_streak.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import { buildLineIndex, offsetToLine } from './languages/common.js'
+import { recoveryAfterFailure } from './recovery_pairs.js'
 import { unwrapCompressCommand } from './hooks_bash_commands.js'
 import { contextOutput, getFilePath, getToolInput, getToolName, passOutput, resolveEventPath } from './hooks_common.js'
 import { displaySafeText, hostPathOfIndexKey, normalizePath } from './paths.js'
@@ -201,7 +202,19 @@ export function diagnoseEditFailure(event: HookEvent, errorText: string): string
   return null
 }
 
+/** Reasons a failed Bash command opens no recovery pair, beyond {@link REPEAT_NOTICE_EXEMPT}: a syntax error or a blocked sleep is fixed by rewriting the command, so the fix is a different C rather than something run in between. */
+const RECOVERY_SKIPPED: ReadonlySet<string> = new Set(['shell_syntax_error', 'sleep_blocked'])
+
+/** The failure handler's answer, with the failed-command recovery line (recovery_pairs.ts) appended to whatever it says. The line is computed inside {@link adviseOnFailure}, which knows the classification, and handed back through `slot`. */
 export function postToolUseFailureHandler(event: HookEvent): HookOutput {
+  const slot: { line: string | null } = { line: null }
+  const base = adviseOnFailure(event, slot)
+  if (slot.line === null) return base
+  if (base.hookType === 'context') return contextOutput([base.context, slot.line].join('\n'), base.correlators)
+  return base.hookType === 'pass' ? contextOutput(slot.line) : base
+}
+
+function adviseOnFailure(event: HookEvent, slot: { line: string | null }): HookOutput {
   try {
     const errorText = extractFailureText(event.raw)
     if (errorText === '') return passOutput()
@@ -214,6 +227,9 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
     recordStat('tool_failure', 0, 0, undefined, `tool=${(toolName ?? 'unknown').replace(/\s+/g, '_')} class=${verdict.kind} reason=${verdict.reason}`)
     // Only a `search_no_match` can produce a line here, and that reason is exempt below, so the brake never competes with the repeat notice.
     const streakLine = callStreakAfterFailure(event, verdict.reason)
+    if (toolName === 'Bash' && typeof command === 'string' && event.raw['is_interrupt'] !== true && !REPEAT_NOTICE_EXEMPT.has(verdict.reason) && !RECOVERY_SKIPPED.has(verdict.reason)) {
+      slot.line = recoveryAfterFailure(event, { command, errorText })
+    }
     if (REPEAT_NOTICE_EXEMPT.has(verdict.reason)) return streakLine ?? passOutput()
 
     if (!event.sessionId) return passOutput()

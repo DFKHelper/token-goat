@@ -208,6 +208,10 @@ const UNTRUSTED_CALLS: readonly string[] = [
 /** Sites that interpolate an accessor without escaping it, each with the reason. A bare "exempt" is not acceptable here: this repo's recorded finding is that a false exemption reason hides a gap better than a missing test does, because it reads as a decision somebody made rather than as something nobody looked at. So each reason must be one of exactly two shapes, and the test below checks which: - FENCED: name the fence function actually applied. `fenceUntrusted(` and friends delimit the bytes instead of escaping them, which is the other correct answer for a multi-line block. - PAYLOAD: state that the bytes are the payload the reader asked for. token-goat delivers file content unfenced on purpose -- the model would read the source anyway -- so a command whose whole job is to hand back document bytes does not escape them. This applies to the CONTENT only. The label and header lines beside it are token-goat's own voice and are escaped; where a site appears here, check that its neighbouring prose is escaped rather than assuming the exemption covers the whole line. */
 const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
   [
+    'hooks_tool_failure.ts:base.context',
+    'the advice adviseOnFailure already built, joined with one more line. Each value interpolated into that advice is adjudicated where it is built (context_channel_population_is_adjudicated), and the line it is joined with is escaped and fenced by fencedCommand( in recoveryAfterFailure.',
+  ],
+  [
     'hooks_bash_post.ts:rewrite.text',
     'the rewritten command-output body forwarded to emitRewrite, and it arrives already fenced. ' +
       'Every branch that assigns `rewrite` in this function goes through fenceRewriteWithinCap(, ' +
