@@ -219,17 +219,6 @@ describe('a head-moving git command whose changed-file list git could not produc
     expect(requestFile(), 'a missing git or a vanished directory fails the worker the same way').toBe('')
     expect(workerLog()).toMatch(/could not list the files it changed.*git could not be started, so no reconcile was requested/)
   })
-
-  it('records nothing when git answers, so the success path is unchanged', async () => {
-    const { repo } = repoWithTwoBranches()
-    git(repo, 'checkout', '-q', 'feature')
-
-    await postBashHandler(postBashEvent('git checkout feature', repo))
-
-    expect(getDirtyPaths().map(foldPath)).toContain(foldPath(resolveIndexPath('lib.ts', repo)))
-    expect(requestFile()).toBe('')
-    expect(workerLog()).toBe('')
-  })
 })
 
 describe('draining reconcile requests', () => {

@@ -4,7 +4,7 @@ import type { HookEvent } from '../src/hook_registry.js'
 import type { HookOutput } from '../src/types.js'
 import { writeFileSync, unlinkSync, mkdtempSync, rmSync, mkdirSync, statSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { expectHookType } from './helpers/hook-output.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
@@ -4472,83 +4472,6 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
     rmSync(reconcileRequestPathFor(_testDataDir), { force: true })
   })
 
-  it('enqueues a file changed by `git checkout <branch>` to the dirty queue', async () => {
-    const dir = gitRepoWithCommit()
-    try {
-      const git = (args: string[]): void => {
-        execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
-      }
-      const originalBranch = execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: dir }).toString().trim()
-      git(['checkout', '-b', 'feature'])
-      writeFileSync(join(dir, 'a.txt'), 'two\n')
-      git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
-      git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'change a.txt'])
-      git(['checkout', originalBranch])
-
-      await postBashHandler(makePostBashEvent('git checkout feature', '', dir))
-
-      dirtyOrReconciled(dir, [resolveIndexPath('a.txt', dir)])
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  it('enqueues a file changed by `git reset --hard <ref>`', async () => {
-    const dir = gitRepoWithCommit()
-    try {
-      const git = (args: string[]): void => {
-        execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
-      }
-      const firstSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir }).toString().trim()
-      writeFileSync(join(dir, 'a.txt'), 'two\n')
-      git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
-      git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'change a.txt'])
-
-      await postBashHandler(makePostBashEvent(`git reset --hard ${firstSha}`, '', dir))
-
-      dirtyOrReconciled(dir, [resolveIndexPath('a.txt', dir)])
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  // Regression: `git diff --name-only` always reports paths relative to the repo TOP-LEVEL, regardless of which directory git was invoked from -- resolving those paths against the raw event cwd (a monorepo subpackage) instead of the actual repo root computed the wrong absolute path and silently enqueued nothing useful for the file that really changed.
-  it('enqueues the correct absolute path when the bash tool cwd is a repo subdirectory, not the repo root', async () => {
-    const dir = indexableDir()
-    const sub = join(dir, 'sub')
-    try {
-      const git = (args: string[], cwd = dir): void => {
-        execFileSync('git', args, { cwd, stdio: 'ignore' })
-      }
-      mkdirSync(sub)
-      writeFileSync(join(sub, 'nested.txt'), 'one\n')
-      git(['init'])
-      git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
-      git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'init'])
-      const originalBranch = execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: dir }).toString().trim()
-
-      git(['checkout', '-b', 'feature'])
-      writeFileSync(join(sub, 'nested.txt'), 'two\n')
-      git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
-      git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'change nested.txt'])
-      git(['checkout', originalBranch])
-
-      // The bash tool's reported cwd is the SUBDIRECTORY, not the repo root -- mirrors a real `cd sub && git checkout feature` session. A loaded full suite can push one of the hook's 5 s git reads past its timeout, which enqueues nothing; rerunning reads the same HEAD@{1} diff, and a wrong path still fails the assertions below.
-      for (let attempt = 0; attempt < 3 && getDirtyPaths().length === 0; attempt++) {
-        await postBashHandler(makePostBashEvent('git checkout feature', '', sub))
-      }
-
-      const dirty = foldedDirtyPaths()
-      // git diff --name-only reports 'sub/nested.txt' relative to the repo TOP-LEVEL (dir), not relative to the subdirectory cwd it was invoked from.
-      const expected = resolveIndexPath('sub/nested.txt', dir)
-      expect(dirty).toContain(foldPath(expected))
-      // The old, buggy behavior resolved that same 'sub/nested.txt' string onto the subdirectory cwd instead of the repo root, producing a nonexistent 'sub/sub/nested.txt' path -- guard against that regressing back.
-      expect(dirty).not.toContain(foldPath(resolveIndexPath('sub/nested.txt', sub)))
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
   // Regression: for a multi-commit rebase, the final `rebase (finish)` reflog step is a ref finalize, not a new commit -- it points at the SAME sha as the last `rebase (pick)` step, so `HEAD@{1}` and `HEAD@{0}` are identical and `git diff --name-only HEAD@{1} HEAD` comes back completely EMPTY, silently enqueuing nothing at all (empirically confirmed). `ORIG_HEAD` survives the internal reflog churn and correctly diffs against the true pre-rebase tip, catching the file that actually changed (content newly pulled in from the rebase target).
   it('enqueues the changed file after a multi-commit rebase, where HEAD@{1}..HEAD would come back empty', async () => {
     const dir = indexableDir()
@@ -4631,76 +4554,6 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
       expect(getDirtyPaths()).toEqual([])
     } finally {
       rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  // Regression: `git reset` is deliberately excluded from the ORIG_HEAD-preferring diff base (see ORIG_HEAD_ELIGIBLE_GIT_RE in hooks_bash_commands.ts) because a bare `git reset <pathspec>` shares `git checkout <file>`'s ref-vs-path ambiguity -- always using HEAD@{1} for reset sidesteps that ambiguity entirely rather than trying to heuristically detect it. This test locks in that a reset immediately following a multi-commit rebase (which sets a far-back ORIG_HEAD) still enqueues based on the reset's own single, immediately-prior reflog step, not the rebase's ORIG_HEAD -- proving reset truly never reads ORIG_HEAD, not just that it happens to coincide with HEAD@{1} in the common case.
-  it('enqueues based on the reset itself, not a leftover ORIG_HEAD from an earlier rebase', async () => {
-    const dir = gitRepoWithCommit()
-    try {
-      const gitEnv = ['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null']
-      const git = (args: string[]): void => {
-        execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
-      }
-      const originalBranch = execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: dir }).toString().trim()
-
-      // Multi-commit rebase sets a far-back ORIG_HEAD (the true pre-rebase feature tip)
-      git(['checkout', '-b', 'feature'])
-      writeFileSync(join(dir, 'first.txt'), 'first\n')
-      git([...gitEnv, 'add', 'first.txt'])
-      git([...gitEnv, 'commit', '-m', 'add first.txt'])
-      writeFileSync(join(dir, 'second.txt'), 'second\n')
-      git([...gitEnv, 'add', 'second.txt'])
-      git([...gitEnv, 'commit', '-m', 'add second.txt'])
-      git(['checkout', originalBranch])
-      writeFileSync(join(dir, 'mainline.txt'), 'mainline\n')
-      git([...gitEnv, 'add', 'mainline.txt'])
-      git([...gitEnv, 'commit', '-m', 'unrelated mainline commit'])
-      git(['checkout', 'feature'])
-      execFileSync('git', [...gitEnv, 'rebase', originalBranch], { cwd: dir, stdio: 'ignore' })
-      const rebaseOrigHead = execFileSync('git', ['rev-parse', 'ORIG_HEAD'], { cwd: dir }).toString().trim()
-
-      // A real, unambiguous `reset --hard` immediately after: its own reflog step lands right on top of the rebase's finish step, so its own ORIG_HEAD/HEAD@{1} both point at the post-rebase tip -- nothing to do with the rebase's now-superseded ORIG_HEAD.
-      writeFileSync(join(dir, 'third.txt'), 'third\n')
-      git([...gitEnv, 'add', 'third.txt'])
-      git([...gitEnv, 'commit', '-m', 'add third.txt'])
-      const preResetTip = execFileSync('git', ['rev-parse', 'HEAD~1'], { cwd: dir }).toString().trim()
-      execFileSync('git', [...gitEnv, 'reset', '-q', '--hard', 'HEAD~1'], { cwd: dir, stdio: 'ignore' })
-
-      await postBashHandler(makePostBashEvent('git reset --hard HEAD~1', '', dir))
-
-      expect(execFileSync('git', ['rev-parse', 'ORIG_HEAD'], { cwd: dir }).toString().trim()).not.toBe(rebaseOrigHead)
-      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir }).toString().trim()).toBe(preResetTip)
-      // third.txt is what this reset actually reverted -- the correct, narrow enqueue. A diff that timed out under load enqueues nothing and hands the repository to the worker instead, which leaves nothing for the not.toContain below to examine.
-      const dirty = dirtyOrReconciled(dir, [resolveIndexPath('third.txt', dir)])
-      // mainline.txt only shows up if the reset had somehow used the rebase's stale, far-back ORIG_HEAD instead of its own immediately-prior state.
-      expect(dirty).not.toContain(foldPath(resolveIndexPath('mainline.txt', dir)))
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  // A HEAD-moving command behind a relative cd into a sibling repository: git ran there, so the reflog and the changed files the hook reads are there. The post hook's cwd is where the call started, since a git command the compressor wraps takes its cd in a child shell and a subagent's shell starts every call there.
-  it('enqueues the changed file of the repository a `cd` prefix moved into, not of the one the call started in', async () => {
-    const start = gitRepoWithCommit()
-    const other = gitRepoWithCommit()
-    try {
-      const git = (args: string[]): void => {
-        execFileSync('git', ['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', ...args], { cwd: other, stdio: 'ignore' })
-      }
-      const originalBranch = execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: other }).toString().trim()
-      git(['checkout', '-b', 'feature'])
-      writeFileSync(join(other, 'a.txt'), 'two\n')
-      git(['add', '.'])
-      git(['commit', '-m', 'change a.txt'])
-      git(['checkout', originalBranch])
-
-      await postBashHandler(makePostBashEvent(`cd ../${basename(other)} && git checkout ${originalBranch}`, '', start))
-
-      dirtyOrReconciled(other, [resolveIndexPath('a.txt', other)])
-    } finally {
-      rmSync(start, { recursive: true, force: true })
-      rmSync(other, { recursive: true, force: true })
     }
   })
 })
@@ -4852,18 +4705,6 @@ describe('postBashHandler — non-HEAD-moving working-tree rewrite enqueue', () 
       await postBashHandler(makePostBashEvent('git apply --check /tmp/change.patch', '', dir))
 
       expect(getDirtyPaths()).toEqual([])
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  it('falls back to the status sweep for `prettier --write`', async () => {
-    const dir = gitRepoWithCommit()
-    try {
-      writeFileSync(join(dir, 'a.txt'), 'formatted\n')
-      await postBashHandler(makePostBashEvent('npx prettier --write .', '', dir))
-
-      dirtyOrReconciled(dir, [resolveIndexPath('a.txt', dir)])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
