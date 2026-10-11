@@ -38,22 +38,4 @@ describe('deleteFileEmbeddings does not overflow the SQL bound-parameter limit',
     const left = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get('c:/proj/huge.ts') as { c: number }
     expect(left.c).toBe(0)
   })
-
-  // The delete must remove exactly the target file's chunks and leave every other file's chunks intact.
-  it('removes only the target file\'s chunks, leaving other files untouched', () => {
-    const db = getDb(path.join(TMP, 'index.db'))
-    ensureChunkVectors(db)
-    const insert = db.prepare('INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)')
-    for (const f of ['c:/proj/a.ts', 'c:/proj/b.ts', 'c:/proj/c.ts']) {
-      insert.run(f, 1, 2, 'x', 'code')
-      insert.run(f, 3, 4, 'y', 'code')
-    }
-    deleteFileEmbeddings(db, 'c:/proj/b.ts')
-    const b = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get('c:/proj/b.ts') as { c: number }
-    const a = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get('c:/proj/a.ts') as { c: number }
-    const c = db.prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ?').get('c:/proj/c.ts') as { c: number }
-    expect(b.c).toBe(0)
-    expect(a.c).toBe(2)
-    expect(c.c).toBe(2)
-  })
 })

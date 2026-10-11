@@ -142,7 +142,7 @@ describe('detached worker daemon (built bundle)', () => {
 
         // 3. Prove it does real work, not just "a process that stays alive": seed a real dirty-queue entry for a fixture file directly on disk (bypassing any manual `index` call) and confirm the ALREADY-RUNNING daemon drains it on its own poll cycle.
         const srcFile = path.join(repo, 'daemon_e2e_sample.ts')
-        fs.writeFileSync(srcFile, 'export function daemonDrainedSymbol(): number {\n  return 1\n}\n')
+        fs.writeFileSync(srcFile, 'export function daemonDrainedSymbol(): number {\n  return 1\n}\nexport function daemonCaller(): number {\n  return daemonDrainedSymbol()\n}\n')
         // A regex-adapter language too: those adapters load through parser.ts's dynamic import (loadRegexExtractors), which the drain loop awaits before its first cycle. Miss that await and the daemon indexes this file to nothing, while the tree-sitter file beside it still resolves -- so only a second language proves the lazy load reached the daemon.
         const fortranFile = path.join(repo, 'daemon_e2e_sample.f90')
         fs.writeFileSync(fortranFile, 'subroutine daemon_drained_fortran(x)\n  integer :: x\n  x = 1\nend subroutine daemon_drained_fortran\n')
@@ -159,6 +159,14 @@ describe('detached worker daemon (built bundle)', () => {
           return sym.status === 0 && sym.stdout.includes('daemonDrainedSymbol')
         })
         expect(sym?.stdout).toContain('daemonDrainedSymbol')
+
+        // Provenance: HAND-DERIVED. The seeded file calls daemonDrainedSymbol from daemonCaller, so a daemon that writes symbols but drops the refs rows leaves `callers` empty while `symbol` above still resolves.
+        let callers: RunResult | undefined
+        await waitFor('the running daemon to write the call reference from the seeded file', 20000, () => {
+          callers = runBundle(['callers', 'daemonDrainedSymbol'], env, repo)
+          return callers.status === 0 && callers.stdout.includes('daemonCaller')
+        })
+        expect(callers?.stdout).toContain('daemonCaller')
 
         let fortranSym: RunResult | undefined
         await waitFor('the running daemon to index the Fortran file through the lazily loaded adapter', 20000, () => {

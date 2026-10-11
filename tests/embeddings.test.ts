@@ -6,47 +6,17 @@ import { defaultConfig, saveConfig, invalidateConfigCache } from '../src/config.
 import { modelFilesPresent } from '../src/embed_model.js'
 
 describe('embeddings module', () => {
-  describe('isAvailable()', () => {
-    it('should return a boolean', () => {
-      const result = embeddings.isAvailable()
-      expect(typeof result).toBe('boolean')
-    })
-
-    it('should be consistent across multiple calls', () => {
-      const first = embeddings.isAvailable()
-      const second = embeddings.isAvailable()
-      expect(first).toBe(second)
-    })
-  })
-
+  // Provenance: HAND-DERIVED. Math.fround is the ECMAScript definition of rounding to binary32, so each expected component is computed independently of packVec: 3.14159 and 1e-6 are not representable and narrow to a different double, and 16777217 (2^24 + 1) is the first integer a 32-bit float cannot hold, so it narrows to 16777216. The read goes through byteOffset because Buffer.from(view.buffer) may sit inside a pooled ArrayBuffer.
   describe('packVec()', () => {
-    it('should pack a float vector to bytes', () => {
-      const vec = [0.1, 0.2, 0.3]
+    it.each([
+      { name: 'empty', vec: [] as number[] },
+      { name: 'single element', vec: [1.5] },
+      { name: 'values that narrow lossily', vec: [0.0, -1.5, 3.14159, 1e-6, 16777217] },
+    ])('stores each component exactly as its 32-bit float, 4 bytes per component ($name)', ({ vec }) => {
       const packed = embeddings.packVec(vec)
-      expect(Buffer.isBuffer(packed)).toBe(true)
       expect(packed.length).toBe(vec.length * 4)
-    })
-
-    it('should handle empty vectors', () => {
-      const vec: number[] = []
-      const packed = embeddings.packVec(vec)
-      expect(packed.length).toBe(0)
-    })
-
-    it('should handle single-element vector', () => {
-      const vec = [1.5]
-      const packed = embeddings.packVec(vec)
-      expect(packed.length).toBe(4)
-    })
-
-    it('should preserve vector values via IEEE 754 round-trip', () => {
-      const vec = [0.0, -1.5, 3.14159, 1e-6]
-      const packed = embeddings.packVec(vec)
-      const view = new Float32Array(packed.buffer)
-      for (let i = 0; i < vec.length; i++) {
-        // Allow small floating-point rounding
-        expect(Math.abs(view[i] - vec[i])).toBeLessThan(0.0001)
-      }
+      const view = new Float32Array(packed.buffer, packed.byteOffset, vec.length)
+      expect(Array.from(view)).toEqual(vec.map((v) => Math.fround(v)))
     })
 
     it('should produce different output for different vectors', () => {

@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { getDb } from '../src/db.js'
 import {
+  countRefs,
+  countSymbols,
   getFileEntry,
   queryRefCounts,
   queryRefs,
@@ -148,6 +150,45 @@ describe('index_reader round-trips inserted rows', () => {
     expect(queryRefs({ name: 'login' }, dbPath)).toHaveLength(100)
     expect(queryRefs({ name: 'login', limit: 5 }, dbPath)).toHaveLength(5)
     expect(queryRefs({ name: 'login', limit: 150 }, dbPath)).toHaveLength(150)
+  })
+
+  // Provenance: HAND-DERIVED. Every expected count is the number of rows seeded under the filter; no count is read back from the code under test. countRefs/countSymbols are otherwise only named in tests/read_commands.test.ts, which replaces the whole index_reader module, so the real COUNT SQL (clause included) had no owner.
+  it('countRefs counts every matching ref past the query limit and honours the filePath and rootDir filters', () => {
+    const dbPath = tmpDbPath()
+    const db = getDb(dbPath)
+    const stmt = db.prepare('INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)')
+    for (let i = 0; i < 150; i++) stmt.run(`projA/f${i}.ts`, 'login', i + 1, 0, '')
+    stmt.run('projA/f3.ts', 'login', 500, 0, '')
+    stmt.run('projB/g.ts', 'login', 1, 0, '')
+    stmt.run('projA/f1.ts', 'other', 1, 0, '')
+
+    expect(queryRefs({ name: 'login' }, dbPath)).toHaveLength(100)
+    expect(countRefs({ name: 'login' }, dbPath)).toBe(152)
+    expect(countRefs({ name: 'login', filePath: 'projA/f3.ts' }, dbPath)).toBe(2)
+    expect(countRefs({ name: 'login', rootDir: 'projB' }, dbPath)).toBe(1)
+    expect(countRefs({ name: 'login', rootDir: 'projA' }, dbPath)).toBe(151)
+    expect(countRefs({ name: 'absent' }, dbPath)).toBe(0)
+  })
+
+  // Provenance: HAND-DERIVED. Counts are the rows seeded under each filter (see the countRefs case above for why this has no other real-DB owner).
+  it('countSymbols counts every matching symbol past the query limit and honours the name, filePath, kind and rootDir filters', () => {
+    const dbPath = tmpDbPath()
+    const db = getDb(dbPath)
+    const stmt = db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    )
+    for (let i = 0; i < 150; i++) stmt.run(`projA/f${i}.ts`, 'many', 'function', 1, 2, '', '')
+    stmt.run('projA/f0.ts', 'Shape', 'class', 3, 9, '', '')
+    stmt.run('projB/g.ts', 'many', 'function', 1, 2, '', '')
+    stmt.run('projB/g.ts', 'Shape', 'class', 3, 9, '', '')
+
+    expect(querySymbols({ name: 'many' }, dbPath)).toHaveLength(100)
+    expect(countSymbols({ name: 'many' }, dbPath)).toBe(151)
+    expect(countSymbols({ name: 'many', filePath: 'projA/f0.ts' }, dbPath)).toBe(1)
+    expect(countSymbols({ kind: 'class' }, dbPath)).toBe(2)
+    expect(countSymbols({ name: 'many', rootDir: 'projB' }, dbPath)).toBe(1)
+    expect(countSymbols({ rootDir: 'projA' }, dbPath)).toBe(151)
+    expect(countSymbols({ name: 'absent' }, dbPath)).toBe(0)
   })
 
   it('queryRefsByContext caps results at 20', () => {

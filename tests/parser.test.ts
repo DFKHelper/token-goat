@@ -5,6 +5,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs } from '../src/db.js'
+import { TREE_SITTER_LANGUAGES } from '../src/language_specs.js'
 import { queryRefs, querySymbols } from '../src/index_reader.js'
 import {
   indexFileSync,
@@ -1940,6 +1941,8 @@ describe('isTreeSitterAvailable', () => {
     expect(isTreeSitterAvailable('typescript')).toBe(true)
     expect(isTreeSitterAvailable('python')).toBe(true)
     expect(isTreeSitterAvailable('javascript')).toBe(true)
+    // Provenance: HAND-DERIVED. TREE_SITTER_LANGUAGES is the registry's own list of tree-sitter languages and every grammar package it names is a dependency installed here, so each entry must load; the three literals above cannot see a branch dropped from loadGrammar for any other language.
+    for (const lang of TREE_SITTER_LANGUAGES) expect(isTreeSitterAvailable(lang), lang).toBe(true)
     // A language with no bundled grammar is always false.
     expect(isTreeSitterAvailable('markdown')).toBe(false)
     expect(isTreeSitterAvailable('unknown')).toBe(false)
@@ -1991,14 +1994,15 @@ describe('isParseSkipEligible', () => {
   it('does not skip a file whose size sits exactly at the cap (mutation-testing gap: the boundary check must be strictly greater-than, not greater-than-or-equal)', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
     const file = path.join(tmpDir, 'exact.txt')
-    fs.writeFileSync(file, Buffer.alloc(1024, 'a'))
-
-    expect(isParseSkipEligible(file, cfg)).toBe(false)
-
-    fs.writeFileSync(file, Buffer.alloc(1025, 'a'))
-    expect(isParseSkipEligible(file, cfg)).toBe(true)
-
-    fs.rmSync(tmpDir, { recursive: true, force: true })
+    try {
+      // Provenance: HAND-DERIVED. large_file_skip_kb is 1 in this cfg, so the cap is 1 * 1024 = 1024 bytes: one under and exactly at it stay, one over goes.
+      for (const [size, skipped] of [[1023, false], [1024, false], [1025, true]] as const) {
+        fs.writeFileSync(file, Buffer.alloc(size, 'a'))
+        expect(isParseSkipEligible(file, cfg), `${size} bytes`).toBe(skipped)
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
   })
 
   it('skips known generated coverage-report basenames regardless of size or skip_dirs (coverage.json/coverage-final.json land at arbitrary depth, not just under a coverage/ dir)', () => {

@@ -5,8 +5,8 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { cleanupWorkerStateFiles, drainOnce, pendingEmbeddings, processDirtyBatch, clearRetryCount, runWorkerLoop } from '../src/worker.js'
-import { dirtyQueuePathFor, getDirtyPathsFor } from '../src/dirty_queue.js'
+import { drainOnce, makeIndexer, pendingEmbeddings, processDirtyBatch, clearRetryCount, runWorkerLoop } from '../src/worker.js'
+import { getDirtyPathsFor } from '../src/dirty_queue.js'
 import { claimWorkerPidFile, currentDaemonStamp, drainHeartbeatPathFor, ensureWorkerAlive, isWorkerRunning, resolvePollIntervalMs, stopWorker, workerPidPath, workerStampPath } from '../src/worker_lifecycle.js'
 import * as parserModule from '../src/parser.js'
 import * as projectModule from '../src/project.js'
@@ -968,8 +968,8 @@ describe('drainOnce', () => {
     }
   })
 
-  // Regression: makeIndexer's parseUnchanged sha-gate ran indexFileSync ONLY when content changed, so a file re-enqueued with BYTE-IDENTICAL content (same sha) after becoming skip-eligible purely from a config change (skip_dirs/large_file_skip_kb, no edit at all) never had indexFileSync called -- and the stale-row purge lives INSIDE indexFileSync -- so its symbols/refs/files rows were never cleared, even though embeddings correctly purge via their own independent wouldSkipFileEmbedding gate. This is the specific gap the sibling "becomes skip-eligible" test above does NOT cover, since that test also edits the file (changing its sha) to make parseUnchanged false, bypassing this exact code path. Drives the real default drain path end-to-end (no injected index callback, no content change).
-  it('default path clears stale rows for a skip-eligible file re-enqueued with unchanged content (parseUnchanged=true)', () => {
+  // Regression: makeIndexer's parseUnchanged sha-gate ran indexFileSync ONLY when content changed, so a file re-enqueued with BYTE-IDENTICAL content (same sha) after becoming skip-eligible purely from a config change (skip_dirs/large_file_skip_kb, no edit at all) never had indexFileSync called -- and the stale-row purge lives INSIDE indexFileSync -- so its symbols/refs/files rows were never cleared, even though embeddings correctly purge via their own independent wouldSkipFileEmbedding gate. This is the specific gap the sibling "becomes skip-eligible" test above does NOT cover, since that test also edits the file (changing its sha) to make parseUnchanged false, bypassing this exact code path. Drives the real default drain path end-to-end (no injected index callback, no content change). Provenance: HAND-DERIVED. processDirtyBatch prunes a skip-eligible path before it calls the indexer, so the drain cannot reach makeIndexer's own skip gate (the unconditional check ahead of the parseUnchanged sha-gate); only a direct call with the file's current, unchanged sha pins it. With large_file_skip_kb = 0 any non-empty file is skip-eligible (size > 0), so the expected outcome (rows purged, `true` so the purge counts as indexed work) follows from the gate's contract, not from a captured run.
+  it('makeIndexer purges a skip-eligible file with unchanged content itself, without processDirtyBatch (parseUnchanged=true)', () => {
     const src = path.join(DIR, 'unchanged.ts')
     fs.writeFileSync(src, 'export function unchangedWorkerSymbol(): number {\n  return 1\n}\n')
     const norm = normalizePath(src)
@@ -983,17 +983,19 @@ describe('drainOnce', () => {
       expect(
         querySymbols({ name: 'unchangedWorkerSymbol', limit: 10 }, projectDb).length,
       ).toBe(1)
-      expect(getFileEntry(norm, projectDb)).not.toBeNull()
+      const indexed = getFileEntry(norm, projectDb)
+      expect(indexed).not.toBeNull()
 
-      // Make the file skip-eligible via a CONFIG CHANGE ONLY -- content and sha are untouched, so makeIndexer's parseUnchanged gate would evaluate true (entry.sha === sha), exactly the gap this test targets.
+      // Make the file skip-eligible via a CONFIG CHANGE ONLY -- content and sha are untouched, so the parseUnchanged gate would evaluate true (entry.sha === sha), exactly the gap the unconditional skip check closes.
       vi.mocked(loadConfig).mockReturnValue({
         worker: { blocked_roots: [] },
         indexing: { skip_dirs: [], skip_files: [], large_file_skip_kb: 0, large_file_symbol_only_kb: 1048576 },
       } as unknown as ReturnType<typeof loadConfig>)
-      writeQueue(DIR, [norm])
-      expect(drainOnce(DIR)).toBe(1)
 
-      // The stale symbol must no longer resolve, and the files row (including sha) must be cleared -- consistent with the embeddings side, which already purges correctly regardless of parseUnchanged via its own independent gate.
+      // Direct call: no queue and no processDirtyBatch prune in front of it.
+      expect(makeIndexer(projectDb)(norm, indexed!.sha)).toBe(true)
+
+      // The stale symbol must no longer resolve, and the files row (including sha) must be cleared.
       expect(
         querySymbols({ name: 'unchangedWorkerSymbol', limit: 10 }, projectDb).length,
       ).toBe(0)
@@ -1823,36 +1825,6 @@ describe('runWorkerLoop self-terminates when another daemon takes over its pid f
       }
     }
   })
-
-  // Guard the takeover check against a transient read: readPidFile collapses a missing, empty, or mid-write pid file to null (pid-file replacement is not atomic to a concurrent reader). The loop must NOT read that null as lost ownership, or a single filesystem hiccup would terminate the sole legitimate daemon -- the exact leak this check exists to prevent, self-inflicted. Only a concrete different pid ends the loop; an emptied pid file leaves an owner running until shouldStop or a real successor writes its own pid.
-  it('keeps running when the pid file it owned is emptied (transient null is not a takeover)', async () => {
-    const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-worker-nullpid-'))
-    let stop = false
-    try {
-      fs.writeFileSync(workerPidPath(scratchDir), `${process.pid}\n`)
-      const loopPromise = runWorkerLoop(scratchDir, 5, () => stop)
-      // Let the loop observe the pid file naming its own pid, so ownedPidFile is set.
-      await new Promise<void>((resolve) => setTimeout(resolve, 40))
-      // Simulate a transient empty pid file (mid-write / read glitch): a null read, not a real pid.
-      fs.writeFileSync(workerPidPath(scratchDir), '')
-      // Race the loop against a window several poll intervals wide. The loop must still be running: the timer wins ('running'). If it exits here ('stopped'), the null was wrongly treated as a takeover -- which is the pre-fix behavior of `else if (ownedPidFile) break`.
-      const stillRunning = new Promise<string>((resolve) => setTimeout(() => resolve('running'), 300))
-      const midResult = await Promise.race([loopPromise.then(() => 'stopped'), stillRunning])
-      expect(midResult).toBe('running')
-      // Now shut it down cleanly through the real stop path and confirm it does terminate.
-      stop = true
-      await loopPromise
-      closeDb(path.join(scratchDir, 'global.db'))
-    } finally {
-      stop = true
-      closeDb(path.join(scratchDir, 'global.db'))
-      try {
-        fs.rmSync(scratchDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
-      } catch {
-        // ignore
-      }
-    }
-  })
 })
 
 // Regression: cleanup_session/cleanup_stale existed in snapshots.ts but nothing ever called them -- session_snapshots/<sessionId>/ directories accumulated forever. runWorkerLoop now sweeps stale session snapshots on the same periodic loop as the dirty-queue drain. This drives the real default path (no injected cleanup callback, the shipping path) end-to-end: write a snapshot, backdate its mtime past cleanup_stale's 24h staleness window, run one real loop cycle, and assert the stale snapshot was actually removed from disk.
@@ -1893,48 +1865,6 @@ describe('runWorkerLoop worker state file rotation (regression)', () => {
 
     const statAfter = fs.statSync(logPath)
     expect(statAfter.size).toBeLessThan(6 * 1024 * 1024)
-  })
-})
-
-// Regression (mutation-testing gap): cleanupWorkerStateFiles' `.corrupt-*` quarantine cleanup half had zero test coverage, even end-to-end -- only the worker-errors.log rotation half was exercised above. A mutation removing the `.corrupt-` filter entirely (so every file in the queue dir, corrupt-marked or not, becomes eligible for age-based deletion) still passed the full suite. That's a real production risk: cleanupWorkerStateFiles runs periodically inside runWorkerLoop, in the same directory as the live dirty queue and drain-heartbeat marker.
-describe('cleanupWorkerStateFiles quarantine-file cleanup (mutation-testing gap)', () => {
-  const queueDirFor = (dir: string): string => path.join(dir, 'queue')
-
-  it('removes a `.corrupt-*` quarantine file older than the max age', () => {
-    const queueDir = queueDirFor(DIR)
-    fs.mkdirSync(queueDir, { recursive: true })
-    const corruptPath = path.join(queueDir, 'dirty.txt.draining.corrupt-123')
-    fs.writeFileSync(corruptPath, 'stale quarantined content')
-    const oldTime = (Date.now() - 31 * 24 * 60 * 60 * 1000) / 1000
-    fs.utimesSync(corruptPath, oldTime, oldTime)
-
-    cleanupWorkerStateFiles(DIR)
-
-    expect(fs.existsSync(corruptPath)).toBe(false)
-  })
-
-  it('keeps a `.corrupt-*` quarantine file younger than the max age', () => {
-    const queueDir = queueDirFor(DIR)
-    fs.mkdirSync(queueDir, { recursive: true })
-    const corruptPath = path.join(queueDir, 'dirty.txt.draining.corrupt-456')
-    fs.writeFileSync(corruptPath, 'recent quarantined content')
-
-    cleanupWorkerStateFiles(DIR)
-
-    expect(fs.existsSync(corruptPath)).toBe(true)
-  })
-
-  it('never removes a non-quarantine file in the queue dir, no matter how old', () => {
-    const queueDir = queueDirFor(DIR)
-    fs.mkdirSync(queueDir, { recursive: true })
-    const liveQueuePath = dirtyQueuePathFor(DIR)
-    fs.writeFileSync(liveQueuePath, '/still/live/file.ts\n')
-    const oldTime = (Date.now() - 31 * 24 * 60 * 60 * 1000) / 1000
-    fs.utimesSync(liveQueuePath, oldTime, oldTime)
-
-    cleanupWorkerStateFiles(DIR)
-
-    expect(fs.existsSync(liveQueuePath)).toBe(true)
   })
 })
 

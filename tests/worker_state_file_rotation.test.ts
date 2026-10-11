@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 
 // Regression: worker-errors.log and .draining.corrupt-* quarantine files (see drainOnce's cleanup-failure fallback) had no rotation or cleanup mechanism at all -- both could grow unbounded over a project's index lifetime. cleanupWorkerStateFiles mirrors the size/age-cutoff pattern already used elsewhere in this codebase for other accumulating state (disk_cache.ts's pruneBlobs, snapshots.ts's cleanup_stale).
 import { cleanupWorkerStateFiles } from '../src/worker.js'
+import { dirtyQueuePathFor } from '../src/dirty_queue.js'
 
 describe('cleanupWorkerStateFiles', () => {
   it('rotates (truncates) worker-errors.log once it exceeds the size cap', () => {
@@ -57,6 +58,24 @@ describe('cleanupWorkerStateFiles', () => {
 
       expect(fs.existsSync(staleCorrupt)).toBe(false)
       expect(fs.existsSync(freshCorrupt)).toBe(true)
+    } finally {
+      fs.rmSync(DIR, { recursive: true, force: true })
+    }
+  })
+
+  // Provenance: HAND-DERIVED. cleanupWorkerStateFiles runs periodically inside runWorkerLoop over the same directory as the live dirty queue, so only a `.corrupt-` name may make a queue-dir file eligible for age-based deletion; a live queue file past the age cutoff must survive. Moved here from worker.test.ts, where it was the only test that pinned the `.corrupt-` name filter (the old/young quarantine cases there duplicated the test above).
+  it('never removes a non-quarantine file in the queue dir, no matter how old', () => {
+    const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-worker-rotate-live-queue-'))
+    try {
+      fs.mkdirSync(path.dirname(dirtyQueuePathFor(DIR)), { recursive: true })
+      const liveQueuePath = dirtyQueuePathFor(DIR)
+      fs.writeFileSync(liveQueuePath, '/still/live/file.ts\n')
+      const staleTime = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000)
+      fs.utimesSync(liveQueuePath, staleTime, staleTime)
+
+      cleanupWorkerStateFiles(DIR)
+
+      expect(fs.existsSync(liveQueuePath)).toBe(true)
     } finally {
       fs.rmSync(DIR, { recursive: true, force: true })
     }

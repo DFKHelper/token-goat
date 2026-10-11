@@ -76,5 +76,9 @@ describe('deleteFileEmbeddings deletes vectors by rowid, never by subquery', () 
 
     const left = db.prepare('SELECT rowid FROM chunk_vectors ORDER BY rowid').pluck().all().map(Number)
     expect(left).toEqual(seeded['c:/proj/b.ts'])
+    // Provenance: HAND-DERIVED. Two chunks were seeded per file above, so the target keeps none and the other file keeps both; the chunks delete is a separate statement from the vector one, so the vector assertion alone cannot see it widen to every file.
+    const chunkCount = (file: string): number => (db.prepare('SELECT COUNT(*) FROM chunks WHERE file_path = ?').pluck().get(file) as number)
+    expect(chunkCount('c:/proj/a.ts')).toBe(0)
+    expect(chunkCount('c:/proj/b.ts')).toBe(2)
   })
 })

@@ -20,7 +20,7 @@ afterEach(() => {
 
 describe('embeddings.indexFile reindex replaces prior chunks', () => {
   // Regression: indexFile appended new chunks without removing the file's prior chunk rows, so reindexing a changed file accumulated stale chunks (and an emptied file kept all of them). The fix deletes the file's existing embeddings before inserting. upsertChunks no-ops when the embed model is unavailable (CI), so this asserts on the seeded stale marker's removal, which is independent of embed availability.
-  it("removes a file's stale chunk rows before inserting (does not append)", async () => {
+  it('an emptied file drops its prior chunks and vectors (the no-chunk branch of indexFile)', async () => {
     const dbPath = path.join(TMP, 'index.db')
     const db = getDb(dbPath)
     // chunk_vectors is sqlite-vec's vec0 table when the optional dep is installed, else absent; CREATE TABLE IF NOT EXISTS is a no-op against the real vec0 table and a plain stand-in otherwise. The seed below binds a BigInt rowid and a 384-dim blob so it satisfies vec0's strict integer-PK and dimension rules while staying valid for the stand-in.
@@ -34,8 +34,10 @@ describe('embeddings.indexFile reindex replaces prior chunks', () => {
     const staleId = Number(info.lastInsertRowid)
     db.prepare('INSERT INTO chunk_vectors (rowid, embedding) VALUES (?, ?)').run(BigInt(staleId), Buffer.alloc(384 * 4))
 
-    // Reindex the same path with new content; the pre-insert delete must drop the stale rows.
-    await embeddings.indexFile(db, file, 'export const fresh = 1\n')
+    // Provenance: HAND-DERIVED. 'export const fresh = 1' is 23 characters and the chunker drops anything under MIN_CHUNK_CHARS (50, src/embeddings.ts), so this content yields no chunks and indexFile reaches only its deleteFileEmbeddings branch; asserting that keeps the branch under test explicit instead of implied by the content's length.
+    const content = 'export const fresh = 1\n'
+    expect(embeddings.chunkFile(file, content)).toEqual([])
+    await embeddings.indexFile(db, file, content)
 
     const chunkRows = db
       .prepare('SELECT COUNT(*) c FROM chunks WHERE file_path = ? AND text = ?')
