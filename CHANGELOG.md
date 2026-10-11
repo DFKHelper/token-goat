@@ -16,6 +16,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **pi, opencode and OpenClaw no longer stall for minutes when hook calls keep hanging.** These hosts run token-goat inside their own process, one hook call at a time. A call that never finished made each later call wait 120 seconds before it ran, so the waits added up call after call. Now the wait is paid once: a call queued behind one that already started without waiting runs at once, and calls go back to running one at a time as soon as nothing given up on is still running. The wait itself is now 65 seconds, still longer than the 60 seconds a document extraction may take.
 - **A repeat slice of a file that was already read whole is held back again.** A slice that lies wholly inside lines the model was already given is withheld as a repeat, as it was before. A slice of a file that was edited since is still allowed.
 - **The "you are paging through this file" notice and block now look at the slice being asked for.** Three slices in a row followed by a jump to a distant part of the file used to count as paging. They no longer do, so a jump to somewhere else is not blocked.
 - **Paging through a file by giving only a start line is now noticed too.** A Read that names a start line but no length was never counted as a slice by the paging notice and block, so reading a file that way over and over went unflagged. It now counts as the same stretch of lines that token-goat already records for it, so the third such read draws the notice and the fourth is blocked.

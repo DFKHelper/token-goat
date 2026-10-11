@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { HARNESS_DETECTION_ENV_KEYS } from './helpers/harness-env.js'
 
+import { MAX_DOCUMENT_WORK_MILLIS } from '../src/document_refusal.js'
 import { registerHook } from '../src/hook_registry.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { buildEvent, relay, relayInProcess, RELAY_QUEUE_WAIT_MS } from '../src/relay.js'
@@ -283,6 +284,73 @@ describe('relayInProcess queue bound', () => {
 
     release?.({ hookType: 'deny', message: 'late verdict' })
     expect(await first).toContain('late verdict')
+  })
+
+  // HAND-DERIVED: the expectations follow from the queue rule (a call waits at most one RELAY_QUEUE_WAIT_MS for its predecessor, not at all for one that itself started out of order, and in full again once its predecessor has settled), not from the implementation's output.
+  describe('when handlers keep hanging', () => {
+    const started: string[] = []
+    const releases: Array<() => void> = []
+    // The registry outlives a test, so each test filters on its own tool name rather than adding a second handler to the first's.
+    let toolName = ''
+    let registered = 0
+    const call = (n: string, hang: boolean): Promise<string> => relayInProcess('pre_tool_use', { tool_name: toolName, tool_input: { n, hang } })
+    const startedBy = async (n: string): Promise<boolean> => {
+      for (let i = 0; i < 250 && !started.includes(n); i++) await realDelay(20)
+      return started.includes(n)
+    }
+
+    beforeEach(() => {
+      started.length = 0
+      toolName = `TgQueueSerial${++registered}`
+      registerHook('pre_tool_use', (event) => {
+        started.push(String(event.toolInput['n']))
+        return event.toolInput['hang'] === true ? new Promise<HookOutput>((resolve) => { releases.push(() => resolve({ hookType: 'pass' })) }) : { hookType: 'pass' }
+      }, { toolName })
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    })
+
+    afterEach(() => {
+      for (const release of releases.splice(0)) release()
+    })
+
+    it('pays the wait once: a call behind one that started after a timed-out wait starts at once', async () => {
+      const hung = [call('a', true), call('b', true)]
+      expect(await startedBy('a')).toBe(true)
+      await vi.advanceTimersByTimeAsync(RELAY_QUEUE_WAIT_MS - 1)
+      expect(started).toEqual(['a'])
+      await vi.advanceTimersByTimeAsync(1)
+      expect(await startedBy('b')).toBe(true)
+
+      hung.push(call('c', true))
+      expect(await startedBy('c')).toBe(true)
+      expect(await Promise.race([call('d', false), realDelay(5000).then(() => 'still waiting')])).toBe('{}')
+      expect(started).toEqual(['a', 'b', 'c', 'd'])
+      for (const release of releases.splice(0)) release()
+      await Promise.all(hung)
+    })
+
+    it('runs one call at a time again once a call arrives after its predecessor has settled', async () => {
+      const hung = [call('a', true)]
+      expect(await startedBy('a')).toBe(true)
+      const behindHang = call('b', false)
+      await vi.advanceTimersByTimeAsync(RELAY_QUEUE_WAIT_MS)
+      expect(await Promise.race([behindHang, realDelay(5000).then(() => 'still waiting')])).toBe('{}')
+
+      hung.push(call('c', true))
+      expect(await startedBy('c')).toBe(true)
+      const queued = call('d', false)
+      await realDelay(200)
+      await vi.advanceTimersByTimeAsync(RELAY_QUEUE_WAIT_MS - 1)
+      expect(started).toEqual(['a', 'b', 'c'])
+      await vi.advanceTimersByTimeAsync(1)
+      expect(await Promise.race([queued, realDelay(5000).then(() => 'still waiting')])).toBe('{}')
+      for (const release of releases.splice(0)) release()
+      await Promise.all(hung)
+    })
+  })
+
+  it('keeps the wait above the longest document extraction a handler may start', () => {
+    expect(RELAY_QUEUE_WAIT_MS).toBeGreaterThan(MAX_DOCUMENT_WORK_MILLIS)
   })
 })
 

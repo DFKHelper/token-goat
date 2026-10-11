@@ -2,6 +2,7 @@
 
 import { detectHarness, relaySeededSessionId, setRelaySeededSessionId } from './bridges/registry.js'
 import { applyCallStreak } from './call_streak.js'
+import { MAX_DOCUMENT_WORK_MILLIS } from './document_refusal.js'
 import type { HookEvent } from './hook_registry.js'
 import { runHook, serializeOutput, sessionStateKey } from './hook_registry.js'
 import { echoedValue, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
@@ -124,18 +125,24 @@ function safeSuggestions(output: HookOutput): HookOutput {
 /** Settles when the most recent {@link relayInProcess} call has; never rejects, so one failed call never blocks the next. */
 let relayQueue: Promise<unknown> = Promise.resolve()
 
-/** How long a {@link relayInProcess} call waits for the one before it to settle before it runs anyway. A handler that never settles would otherwise stall every later hook call in the host process for good, where the bridges' spawn fallback kills its child after 3000 ms. Set far above what a hook call has been seen to take: of 66,625 `hook:*` rows in this machine's ledger (2026-09-20 to 2026-09-24, Claude Code, Codex and Copilot CLI; each row a whole process lifetime, node startup included) p50 was 98 ms, p99 494 ms, p99.9 2,052 ms and the maximum 31,185 ms, and a document extraction a handler starts may run for MAX_DOCUMENT_WORK_MILLIS (60,000 ms) on its own. */
-export const RELAY_QUEUE_WAIT_MS = 120_000
+/** How long a {@link relayInProcess} call waits for the one before it to settle before it runs anyway. A handler that never settles would otherwise stall every later hook call in the host process for good, where the bridges' spawn fallback kills its child after 3000 ms. Set far above what a hook call has been seen to take: of 66,625 `hook:*` rows in this machine's ledger (2026-09-20 to 2026-09-24, Claude Code, Codex and Copilot CLI; each row a whole process lifetime, node startup included) p50 was 98 ms, p99 494 ms, p99.9 2,052 ms and the maximum 31,185 ms, and a document extraction a handler starts may run for MAX_DOCUMENT_WORK_MILLIS on its own, so the wait is that plus 5,000 ms. */
+export const RELAY_QUEUE_WAIT_MS = MAX_DOCUMENT_WORK_MILLIS + 5_000
 
-/** Resolves once `previous` settles, or after {@link RELAY_QUEUE_WAIT_MS}, whichever comes first. The timer is cleared on settle and unref'd, so a one-shot `token-goat hook` process never waits on it to exit. */
-function afterPredecessor(previous: Promise<unknown>): Promise<void> {
+/** For each queued call, settles once that call starts before its predecessor has settled. A call behind it then starts without waiting, so a host whose handlers keep hanging pays one {@link RELAY_QUEUE_WAIT_MS} in total rather than one per call; a call that starts in order never settles its entry, so the queue runs one call at a time again from the first call that arrives after its predecessor has settled. */
+const startedOutOfOrder = new WeakMap<Promise<unknown>, Promise<void>>()
+
+/** Resolves once `previous` settles (false), once `previous` started out of order (true), or after {@link RELAY_QUEUE_WAIT_MS} (true), whichever comes first. The timer is cleared on settle and unref'd, so a one-shot `token-goat hook` process never waits on it to exit. */
+function afterPredecessor(previous: Promise<unknown>): Promise<boolean> {
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, RELAY_QUEUE_WAIT_MS)
+    const timer = setTimeout(() => resolve(true), RELAY_QUEUE_WAIT_MS)
     timer.unref()
-    void previous.then(() => {
+    const done = (outOfOrder: boolean): void => {
       clearTimeout(timer)
-      resolve()
-    })
+      resolve(outOfOrder)
+    }
+    // Registered first, so a predecessor that has both settled and started out of order counts as settled.
+    void previous.then(() => done(false))
+    void startedOutOfOrder.get(previous)?.then(() => done(true))
   })
 }
 
@@ -164,8 +171,14 @@ export function relayInProcess(eventName: string, rawPayload: unknown, harnessWa
   // Read now, under the caller's environment: a resident server swaps it in only for the duration of the request.
   const detail = opts.detail ?? nativeFallbackDetail()
   const probe = process.env[HOOK_PROBE_ENV] === '1'
-  const run = afterPredecessor(relayQueue).then(() => relayOne(eventName, rawPayload, harnessWaitMs, receivedAt, opts.elapsedMs ?? (() => performance.now()), opts.afterReply, detail, probe))
+  let markOutOfOrder: () => void = () => undefined
+  const outOfOrder = new Promise<void>((resolve) => { markOutOfOrder = resolve })
+  const run = afterPredecessor(relayQueue).then((skipped) => {
+    if (skipped) markOutOfOrder()
+    return relayOne(eventName, rawPayload, harnessWaitMs, receivedAt, opts.elapsedMs ?? (() => performance.now()), opts.afterReply, detail, probe)
+  })
   relayQueue = run.catch(() => undefined)
+  startedOutOfOrder.set(relayQueue, outOfOrder)
   return run
 }
 
