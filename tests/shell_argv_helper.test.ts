@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { POSIX_SH, shRunAll } from './helpers/shell_argv.js'
+import { POSIX_SH, SH_LIVE, shRunAll } from './helpers/shell_argv.js'
 
 describe.skipIf(POSIX_SH === null)('shRunAll', () => {
   const sh = POSIX_SH!
@@ -35,9 +35,8 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       expect(message, message).not.toMatch(/cleanup/)
       const pids = ['pid', 'kid'].map((name) => fs.readFileSync(file(name), 'utf8').trim())
       for (const pid of pids) expect(pid).toMatch(/^[1-9]\d*$/)
-      // A builtin-only poll of up to two seconds in one spawn, since a fork per check cost Git Bash enough to outlast the bounded loop; a zombie no reaper has collected yet is stopped, so it counts as gone.
-      const alive = 'tg_alive() { kill -0 "$1" 2>/dev/null || return 1; tg_st=; read -r tg_st 2>/dev/null < "/proc/$1/stat"; case "${tg_st##*) }" in Z*) return 1 ;; esac; }'
-      const poll = spawnSync(sh, ['-c', `${alive}; while tg_alive ${pids[0]} || tg_alive ${pids[1]}; do [ "$SECONDS" -lt 2 ] || exit 1; done`], { windowsHide: true, timeout: 30_000 })
+      // A builtin-only poll of up to two seconds in one spawn, since a fork per check cost Git Bash enough to outlast the bounded loop; it asks the cleanup's own liveness rule, since a stricter copy once read an exited MSYS pid as running and failed a cleanup that had succeeded.
+      const poll = spawnSync(sh, ['-c', `${SH_LIVE}; while tg_live ${pids[0]} || tg_live ${pids[1]}; do [ "$SECONDS" -lt 2 ] || exit 1; done`], { windowsHide: true, timeout: 30_000 })
       expect(poll.status, 'the chunk subshell or its child is still running').toBe(0)
       expect(fs.existsSync(file('expired')), 'the child ran to its bound rather than being killed').toBe(false)
     } finally {
