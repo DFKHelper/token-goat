@@ -74,7 +74,7 @@ const SH_SCRIPT = [
 /** The variable naming a run's owner token: every process the run starts inherits it, so a cleanup can find them all after a timeout killed only the outer shell. */
 const OWNER_VAR = 'TG_SHARGV_OWNER'
 
-/** Stops then kills every process whose environment carries `${OWNER_VAR}=$TG_REAP_TOKEN`, rescanning so a child forked between scan and stop is caught, and exits 1 naming any it killed that are still alive ten seconds later, each with its process state and Windows pid and with what `kill -f` printed, so a failure explains itself (a zombie awaiting its reaper counts as gone). A survivor at two seconds is killed again, under MSYS through the Win32 interface (`kill -f`), since a loaded Windows machine left a signalled Git Bash process running past five seconds; the CONT after the KILL wakes a stopped process that would otherwise sit on its pending signal. Matching the token instead of a recorded pid finds the chunk subshell a timeout orphaned and everything it started, reparented or not, and cannot hit an unrelated process that reused a dead one's pid. One `grep -z` pass over every /proc/<pid>/environ on Linux and under MSYS, since bash's `read` pulls a /proc file a byte at a time and that took a loaded Windows machine past a minute; `ps -E` on macOS. The scan runs only after a failed run, so its cost never lands on a passing one. */
+/** Stops then kills every process whose environment carries `${OWNER_VAR}=$TG_REAP_TOKEN`, rescanning so a child forked between scan and stop is caught, and exits 1 naming any it killed that are still alive ten seconds later, each with its process state and Windows pid and with what `kill -f` printed, so a failure explains itself (a zombie awaiting its reaper counts as gone, so does a pid with no /proc entry where /proc exists, and the report lists only pids still alive when it is written, since under load a killed process can finish exiting just after the deadline). A survivor at two seconds is killed again, under MSYS through the Win32 interface (`kill -f`), since a loaded Windows machine left a signalled Git Bash process running past five seconds; the CONT after the KILL wakes a stopped process that would otherwise sit on its pending signal. Matching the token instead of a recorded pid finds the chunk subshell a timeout orphaned and everything it started, reparented or not, and cannot hit an unrelated process that reused a dead one's pid. One `grep -z` pass over every /proc/<pid>/environ on Linux and under MSYS, since bash's `read` pulls a /proc file a byte at a time and that took a loaded Windows machine past a minute; `ps -E` on macOS. The scan runs only after a failed run, so its cost never lands on a passing one. */
 const REAP_SCRIPT = [
   `tg_needle="${OWNER_VAR}=$TG_REAP_TOKEN"`,
   'tg_owned() {',
@@ -95,7 +95,7 @@ const REAP_SCRIPT = [
   '  tg_all="$tg_all$tg_new"',
   'done',
   '[ -z "$tg_all" ] || { kill -KILL $tg_all; kill -CONT $tg_all; } 2>/dev/null',
-  'tg_live() { tg_st=; read -r tg_st 2>/dev/null < "/proc/$1/stat"; case "${tg_st##*) }" in Z*) return 1 ;; esac; kill -0 "$1" 2>/dev/null; }',
+  'tg_live() { if [ -r /proc/self/stat ]; then tg_st=; read -r tg_st 2>/dev/null < "/proc/$1/stat"; [ -n "$tg_st" ] || return 1; case "${tg_st##*) }" in Z*) return 1 ;; esac; fi; kill -0 "$1" 2>/dev/null; }',
   'tg_start=$SECONDS',
   'tg_forced=',
   'while [ $((SECONDS - tg_start)) -lt 10 ]; do',
@@ -109,7 +109,8 @@ const REAP_SCRIPT = [
   '  sleep 0.1',
   'done',
   'tg_why=',
-  'for tg_p in $tg_left; do tg_st=; read -r tg_st 2>/dev/null < "/proc/$tg_p/stat"; tg_st=${tg_st##*) }; tg_w=; read -r tg_w 2>/dev/null < "/proc/$tg_p/winpid"; tg_why="$tg_why $tg_p (state ${tg_st%% *}, winpid ${tg_w:-none})"; done',
+  'for tg_p in $tg_left; do tg_live "$tg_p" || continue; tg_st=; read -r tg_st 2>/dev/null < "/proc/$tg_p/stat"; tg_st=${tg_st##*) }; tg_w=; read -r tg_w 2>/dev/null < "/proc/$tg_p/winpid"; tg_why="$tg_why $tg_p (state ${tg_st%% *}, winpid ${tg_w:-none})"; done',
+  '[ -z "$tg_why" ] && exit 0',
   'echo "still running after SIGKILL:$tg_why${tg_fout:+; kill -f said: $tg_fout}" >&2',
   'exit 1',
 ].join('\n')
