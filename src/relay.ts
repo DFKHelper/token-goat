@@ -122,52 +122,40 @@ function safeSuggestions(output: HookOutput): HookOutput {
   return output
 }
 
-/** Settles when the most recent {@link relayInProcess} call has; never rejects, so one failed call never blocks the next. */
-let relayQueue: Promise<unknown> = Promise.resolve()
-
-/** How long after the {@link relayInProcess} call before it started a call waits for that one to settle before it runs anyway. A handler that never settles would otherwise stall every later hook call in the host process for good, where the bridges' spawn fallback kills its child after 3000 ms. Set far above what a hook call has been seen to take: of 66,625 `hook:*` rows in this machine's ledger (2026-09-20 to 2026-09-24, Claude Code, Codex and Copilot CLI; each row a whole process lifetime, node startup included) p50 was 98 ms, p99 494 ms, p99.9 2,052 ms and the maximum 31,185 ms, and a document extraction a handler starts may run for MAX_DOCUMENT_WORK_MILLIS on its own, so the wait is that plus 5,000 ms. */
+/** How long after a {@link relayInProcess} call started a call queued behind it waits for it to settle before it runs anyway. A handler that never settles would otherwise stall every later hook call in the host process for good, where the bridges' spawn fallback kills its child after 3000 ms. Set far above what a hook call has been seen to take: of 66,625 `hook:*` rows in this machine's ledger (2026-09-20 to 2026-09-24, Claude Code, Codex and Copilot CLI; each row a whole process lifetime, node startup included) p50 was 98 ms, p99 494 ms, p99.9 2,052 ms and the maximum 31,185 ms, and a document extraction a handler starts may run for MAX_DOCUMENT_WORK_MILLIS on its own, so the wait is that plus 5,000 ms. */
 export const RELAY_QUEUE_WAIT_MS = MAX_DOCUMENT_WORK_MILLIS + 5_000
 
-/** How a queued call started: `started` resolves when it does, true when it went ahead of a call that had not settled; `aheadSettled` says whether that call has settled since. */
-interface RelayTurn {
-  started: Promise<boolean>
-  aheadSettled: () => boolean
+/** One {@link relayInProcess} call's place in the queue. `expired` is set {@link RELAY_QUEUE_WAIT_MS} after it started; `paid` once a later call has started without waiting for it; `root` is the paid call whose hang let this one start while calls before it were still running, if any. */
+interface QueuedCall {
+  settled: boolean
+  expired: boolean
+  paid: boolean
+  root: QueuedCall | undefined
 }
 
-/** The {@link RelayTurn} of each queued call, keyed by its {@link relayQueue} entry. */
-const turns = new WeakMap<Promise<unknown>, RelayTurn>()
+/** Calls that have not settled, in arrival order. */
+const inFlight: QueuedCall[] = []
 
-/** Resolves false once `previous` settles, or true once the call behind it may start anyway: at once when `previous` went ahead of a call that still has not settled, so a host whose handlers keep hanging pays one {@link RELAY_QUEUE_WAIT_MS} in total rather than one per call, and otherwise {@link RELAY_QUEUE_WAIT_MS} after `previous` started, so a backlog of slow but healthy calls never counts its time in the queue against the one running. Once the hung call settles, the queue runs one call at a time again. The timer is cleared on settle and unref'd, so a one-shot `token-goat hook` process never waits on it to exit. */
-function afterPredecessor(previous: Promise<unknown>): Promise<boolean> {
+/** Re-checks of calls waiting for their turn, run whenever a queued call settles or expires. */
+const waiters = new Set<() => void>()
+
+/** Resolves once `self` may start: when every call that arrived before it has settled, has run for {@link RELAY_QUEUE_WAIT_MS} since it started, or is excused. A call is excused when it hung past the wait and a call already started without it (`paid`), or when it started ahead of calls still running because its `root` hung and `root` still has not settled. A call that has hung past the wait is paid once, by the call that first starts without it; a call that starts while that one still hangs and calls behind it are still running starts at once, so a host whose handlers keep hanging pays one wait per hung call rather than one per call. Once the hung call settles the calls that went ahead are waited on again, every one of them and not only the last, each for at most the rest of its own wait. Each wait is counted from when the call waited on started, never from when the waiting call was queued, so a backlog of slow but healthy calls never overlaps the one running and a call arriving late behind a hung one waits only for what is left. */
+function awaitTurn(self: QueuedCall, earlier: readonly QueuedCall[]): Promise<void> {
   return new Promise((resolve) => {
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let finished = false
-    const done = (outOfOrder: boolean): void => {
-      if (finished) return
-      finished = true
-      clearTimeout(timer)
-      resolve(outOfOrder)
+    const check = (): void => {
+      const blocking = earlier.filter((call) => !call.settled && !call.paid && (call.root === undefined || call.root.settled))
+      if (blocking.some((call) => !call.expired)) return
+      waiters.delete(check)
+      for (const call of blocking) call.paid = true
+      self.root = blocking[0] ?? earlier.find((call) => !call.settled && !call.paid && call.root !== undefined && !call.root.settled)?.root
+      resolve()
     }
-    // Registered first, so a predecessor that has settled counts as settled however it started.
-    void previous.then(() => done(false))
-    const startClock = (): void => {
-      if (finished) return
-      timer = setTimeout(() => done(true), RELAY_QUEUE_WAIT_MS)
-      timer.unref()
-    }
-    const turn = turns.get(previous)
-    if (turn === undefined) {
-      startClock()
-      return
-    }
-    void turn.started.then((outOfOrder) => {
-      if (outOfOrder && !turn.aheadSettled()) done(true)
-      else startClock()
-    })
+    waiters.add(check)
+    check()
   })
 }
 
-/** Run the hook for `eventName` against an already-parsed payload and return the serialized wire JSON response as a string (never writes to stdout/stdin). This is the in-process counterpart of {@link relay}: it contains every step relay() performs after reading stdin, factored out so bridges that already run inside a long-lived Node process (OpenClaw, opencode, pi) or that spawn their own shim process (Codex, Claude Code, Copilot CLI) can call straight into the hook registry via `import()` instead of `spawnSync`-ing a second `token-goat hook <event>` process. `harnessWaitMs`, when given, is what the harness actually waited on before it stopped waiting — Claude Code's async-detach shim classifies eligibility and prints its early `{"async":true}` marker before this function ever runs, so the shim's own `performance.now()` at that print is the true harness-visible latency; without it, the `finally` below would keep recording this call's own full process lifetime even though the harness stopped listening long before that. Omitted for every synchronous call, where process lifetime and harness wait are the same number. On *any* error — invalid event name, malformed payload, handler throw — it resolves to `'{}'` so the caller's tool call proceeds unchanged. This function never throws and never rejects. Calls within one process run one at a time, in arrival order: each loads its session's state into module-level maps, awaits the handlers, then saves, so a concurrent call's load (opencode, OpenClaw and pi can run tool calls concurrently in one host process) used to replace the maps mid-call and save one session's reads under another's key. A call waits at most {@link RELAY_QUEUE_WAIT_MS} from when the one before it started, and not at all behind one that went ahead of a call still hanging, so one that never settles cannot stall the process's later calls; it still resolves to its own result whenever that arrives. */
+/** Run the hook for `eventName` against an already-parsed payload and return the serialized wire JSON response as a string (never writes to stdout/stdin). This is the in-process counterpart of {@link relay}: it contains every step relay() performs after reading stdin, factored out so bridges that already run inside a long-lived Node process (OpenClaw, opencode, pi) or that spawn their own shim process (Codex, Claude Code, Copilot CLI) can call straight into the hook registry via `import()` instead of `spawnSync`-ing a second `token-goat hook <event>` process. `harnessWaitMs`, when given, is what the harness actually waited on before it stopped waiting — Claude Code's async-detach shim classifies eligibility and prints its early `{"async":true}` marker before this function ever runs, so the shim's own `performance.now()` at that print is the true harness-visible latency; without it, the `finally` below would keep recording this call's own full process lifetime even though the harness stopped listening long before that. Omitted for every synchronous call, where process lifetime and harness wait are the same number. On *any* error — invalid event name, malformed payload, handler throw — it resolves to `'{}'` so the caller's tool call proceeds unchanged. This function never throws and never rejects. Calls within one process run one at a time, in arrival order: each loads its session's state into module-level maps, awaits the handlers, then saves, so a concurrent call's load (opencode, OpenClaw and pi can run tool calls concurrently in one host process) used to replace the maps mid-call and save one session's reads under another's key. A call waits for each call queued before it for at most {@link RELAY_QUEUE_WAIT_MS} from when that one started ({@link awaitTurn}), so one that never settles cannot stall the process's later calls; it still resolves to its own result whenever that arrives. */
 /** Options for {@link relayInProcess}. `elapsedMs` replaces the default clock for the duration this call records: `performance.now()` measures this process from its own start, which is what a caller waited on only when this process was started for the call. A resident server (hook_server.ts) serves calls from a process started long before, so it passes the caller's own elapsed time plus its handling time instead. */
 export interface RelayInProcessOptions {
   elapsedMs?: () => number
@@ -192,21 +180,26 @@ export function relayInProcess(eventName: string, rawPayload: unknown, harnessWa
   // Read now, under the caller's environment: a resident server swaps it in only for the duration of the request.
   const detail = opts.detail ?? nativeFallbackDetail()
   const probe = process.env[HOOK_PROBE_ENV] === '1'
-  const ahead = relayQueue
-  let aheadSettled = false
-  void ahead.then(() => { aheadSettled = true })
-  let markStarted: (outOfOrder: boolean) => void = () => undefined
-  const started = new Promise<boolean>((resolve) => { markStarted = resolve })
-  const run = afterPredecessor(ahead).then((outOfOrder) => {
-    markStarted(outOfOrder)
-    return relayOne(eventName, rawPayload, harnessWaitMs, receivedAt, opts.elapsedMs ?? (() => performance.now()), opts.afterReply, detail, probe)
+  const self: QueuedCall = { settled: false, expired: false, paid: false, root: undefined }
+  const earlier = [...inFlight]
+  inFlight.push(self)
+  return awaitTurn(self, earlier).then(() => {
+    // Unref'd, so a one-shot `token-goat hook` process never waits on it to exit.
+    const timer = setTimeout(() => {
+      self.expired = true
+      for (const waiter of [...waiters]) waiter()
+    }, RELAY_QUEUE_WAIT_MS)
+    timer.unref()
+    return relayOne(eventName, rawPayload, harnessWaitMs, receivedAt, opts.elapsedMs ?? (() => performance.now()), opts.afterReply, detail, probe).finally(() => {
+      clearTimeout(timer)
+      self.settled = true
+      inFlight.splice(inFlight.indexOf(self), 1)
+      for (const waiter of [...waiters]) waiter()
+    })
   })
-  relayQueue = run.catch(() => undefined)
-  turns.set(relayQueue, { started, aheadSettled: () => aheadSettled })
-  return run
 }
 
-/** One {@link relayInProcess} call, run once the call before it has settled or {@link afterPredecessor} lets it go ahead. */
+/** One {@link relayInProcess} call, run once {@link awaitTurn} lets it start. */
 async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: number | undefined, receivedAt: number, elapsedMs: () => number, afterReply?: (work: () => void) => void, detail?: string, probe = false): Promise<string> {
   if (!isHookEventName(eventName)) {
     return '{}'

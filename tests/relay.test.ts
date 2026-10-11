@@ -286,7 +286,7 @@ describe('relayInProcess queue bound', () => {
     expect(await first).toContain('late verdict')
   })
 
-  // HAND-DERIVED: the expectations follow from the queue rule (a call waits at most one RELAY_QUEUE_WAIT_MS counted from when its predecessor started, not at all behind one that started out of order while the call it skipped still hangs, and in full again once its predecessor has settled or the skipped call has), not from the implementation's output.
+  // HAND-DERIVED: the expectations follow from the queue rule (a call waits for every call queued before it until that call settles or has run RELAY_QUEUE_WAIT_MS since it started, not at all behind one that started out of order while the call it skipped still hangs, and again for each such call once the skipped call has settled), not from the implementation's output.
   describe('when handlers keep hanging', () => {
     const started: string[] = []
     const releases: Array<() => void> = []
@@ -396,6 +396,46 @@ describe('relayInProcess queue bound', () => {
       expect(started).toEqual(['a', 'b'])
       await vi.advanceTimersByTimeAsync(RELAY_QUEUE_WAIT_MS - 10_001)
       expect(started).toEqual(['a', 'b'])
+      await vi.advanceTimersByTimeAsync(1)
+      expect(await Promise.race([queued, realDelay(5000).then(() => 'still waiting')])).toBe('{}')
+      for (const release of releases.splice(0)) release()
+      await Promise.all(hung)
+    })
+
+    it('waits for every call that went ahead of a hung one once it settles, not only the last', async () => {
+      const hung = [call('a', true), call('b', true)]
+      expect(await startedBy('a')).toBe(true)
+      await realDelay(200)
+      await vi.advanceTimersByTimeAsync(RELAY_QUEUE_WAIT_MS)
+      expect(await startedBy('b')).toBe(true)
+      hung.push(call('c', true))
+      expect(await startedBy('c')).toBe(true)
+      releases.shift()?.()
+      await hung[0]
+
+      const queued = call('d', false)
+      await realDelay(200)
+      releases.pop()?.()
+      await hung[2]
+      await realDelay(200)
+      expect(started).toEqual(['a', 'b', 'c'])
+      await vi.advanceTimersByTimeAsync(RELAY_QUEUE_WAIT_MS - 1)
+      expect(started).toEqual(['a', 'b', 'c'])
+      await vi.advanceTimersByTimeAsync(1)
+      expect(await Promise.race([queued, realDelay(5000).then(() => 'still waiting')])).toBe('{}')
+      for (const release of releases.splice(0)) release()
+      await Promise.all(hung)
+    })
+
+    it('waits only for what is left of the wait when it arrives late behind a hung call', async () => {
+      const hung = [call('a', true)]
+      expect(await startedBy('a')).toBe(true)
+      await realDelay(200)
+      await vi.advanceTimersByTimeAsync(30_000)
+      const queued = call('b', false)
+      await realDelay(200)
+      await vi.advanceTimersByTimeAsync(RELAY_QUEUE_WAIT_MS - 30_001)
+      expect(started).toEqual(['a'])
       await vi.advanceTimersByTimeAsync(1)
       expect(await Promise.race([queued, realDelay(5000).then(() => 'still waiting')])).toBe('{}')
       for (const release of releases.splice(0)) release()
