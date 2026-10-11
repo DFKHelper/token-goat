@@ -364,7 +364,7 @@ To limit auto-approval strictly to read-only queries:
 
 #### Codex CLI (`~/.codex/config.toml`)
 
-Running `token-goat install --codex` automatically computes and writes `trusted_hash` into `[hooks.state]` so Codex trusts the hooks. To allow automatic command execution, set `approval_policy` in `~/.codex/config.toml`:
+Running `token-goat install --codex` automatically computes and writes `trusted_hash` into `[hooks.state]` so Codex trusts the hooks. If you set `CODEX_HOME`, install follows it, as Codex does: every `~/.codex` path below is then under `$CODEX_HOME`. To allow automatic command execution, set `approval_policy` in `~/.codex/config.toml`:
 
 ```toml
 approval_policy = "never"

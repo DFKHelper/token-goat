@@ -1,4 +1,4 @@
-/** The narrow path of a head-moving git command in the post hook: when git answers, exactly the files the command changed reach the dirty queue and no reconcile request is left. tests/hooks_bash.test.ts accepts a reconcile request in place of the queue because its git reads share the loaded suite's 5 s budget; this file pins the other half, so a hook whose diff or top-level read always failed could not pass through that fallback. Every real git call here runs with a long budget (the product's 5 s is what the fallback tests inject), and the base the diff was taken against is asserted, which is what separates `ORIG_HEAD` from `HEAD@{1}`. PROVENANCE: the repositories are real git repositories built here; the expected files are HAND-DERIVED from what each command rewrote (git's own semantics: a checkout, reset or rebase changes the files that differ between the old and the new tip). */
+/** The narrow path of a head-moving git command in the post hook: when git answers, exactly the files the command changed reach the dirty queue and no reconcile request is left. tests/hooks_bash.test.ts accepts a reconcile request in place of the queue because its git reads share the loaded suite's 5 s budget; this file pins the other half, so a hook whose diff or top-level read always failed could not pass through that fallback. Every real git call here runs with a long budget (the product's 5 s is what the fallback tests inject), and the base the diff was taken against is asserted, which is what separates `ORIG_HEAD` from `HEAD@{1}`. PROVENANCE: the repositories are real git repositories built here; the expected files are HAND-DERIVED from what each command rewrote (git's own semantics: a checkout, reset or rebase changes the files that differ between the old and the new tip); the subdirectory case is HAND-DERIVED from git's output, which names changed files relative to the repository top-level and not to the working directory. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import { basename, join } from 'node:path'
@@ -148,6 +148,24 @@ describe('a head-moving git command whose git reads answer', () => {
     await postBash(`cd ../${basename(other)} && git checkout ${original}`, start)
 
     expectNarrowEnqueue([folded('a.txt', other)])
-    expect(dirty()).not.toContain(folded('a.txt', start))
+  })
+
+  it('a call whose cwd is a repository subdirectory enqueues the path under the repository top-level, not under the subdirectory', async () => {
+    const dir = indexableDir()
+    fs.mkdirSync(join(dir, 'sub'))
+    fs.writeFileSync(join(dir, 'sub', 'nested.txt'), 'one\n')
+    git(dir, 'init', '-q')
+    git(dir, 'add', '.')
+    git(dir, 'commit', '-qm', 'init')
+    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+    git(dir, 'checkout', '-qb', 'feature')
+    fs.writeFileSync(join(dir, 'sub', 'nested.txt'), 'two\n')
+    git(dir, 'commit', '-qam', 'change nested.txt')
+    git(dir, 'checkout', '-q', original)
+
+    await postBash('git checkout feature', join(dir, 'sub'))
+
+    // git reports sub/nested.txt relative to the top-level; resolving it against the subdirectory would name sub/sub/nested.txt, which expectNarrowEnqueue's exact equality rejects.
+    expectNarrowEnqueue([folded('sub/nested.txt', dir)])
   })
 })

@@ -1,5 +1,6 @@
 // Run suggested `token-goat …` commands through a real POSIX shell and a real PowerShell, each with a `token-goat` function standing in for the binary, and return the argv each shell handed it. An oracle independent of quotedArg: a value reaches the command as written only if both shells agree with the literal reading of its quotes.
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import * as fs from 'node:fs'
 
 import { resolveWindowsBash } from '../../src/shell.js'
@@ -70,16 +71,68 @@ const SH_SCRIPT = [
   'done',
 ].join('\n')
 
+/** The variable naming a run's owner token: every process the run starts inherits it, so a cleanup can find them all after a timeout killed only the outer shell. */
+const OWNER_VAR = 'TG_SHARGV_OWNER'
+
+/** Stops then kills every process whose environment carries `${OWNER_VAR}=$TG_REAP_TOKEN`, rescanning so a child forked between scan and stop is caught, and exits 1 naming any it killed that are still alive ten seconds later, each with its process state and Windows pid and with what `kill -f` printed, so a failure explains itself (a zombie awaiting its reaper counts as gone). A survivor at two seconds is killed again, under MSYS through the Win32 interface (`kill -f`), since a loaded Windows machine left a signalled Git Bash process running past five seconds; the CONT after the KILL wakes a stopped process that would otherwise sit on its pending signal. Matching the token instead of a recorded pid finds the chunk subshell a timeout orphaned and everything it started, reparented or not, and cannot hit an unrelated process that reused a dead one's pid. One `grep -z` pass over every /proc/<pid>/environ on Linux and under MSYS, since bash's `read` pulls a /proc file a byte at a time and that took a loaded Windows machine past a minute; `ps -E` on macOS. The scan runs only after a failed run, so its cost never lands on a passing one. */
+const REAP_SCRIPT = [
+  `tg_needle="${OWNER_VAR}=$TG_REAP_TOKEN"`,
+  'tg_owned() {',
+  '  tg_found=',
+  '  if [ -r /proc/self/environ ]; then',
+  '    for tg_f in $(grep -lzxF -e "$tg_needle" /proc/[0-9]*/environ 2>/dev/null); do tg_f=${tg_f#/proc/}; tg_found="$tg_found ${tg_f%/environ}"; done',
+  '  else',
+  '    while read -r tg_p tg_rest; do case " $tg_rest " in *" $tg_needle "*) tg_found="$tg_found $tg_p" ;; esac; done < <(ps -wwAE -o pid= -o command= 2>/dev/null)',
+  '  fi',
+  '}',
+  'tg_all=',
+  'for tg_round in 1 2 3 4 5; do',
+  '  tg_owned',
+  '  tg_new=',
+  '  for tg_p in $tg_found; do case " $tg_all " in *" $tg_p "*) ;; *) tg_new="$tg_new $tg_p" ;; esac; done',
+  '  [ -z "$tg_new" ] && break',
+  '  kill -STOP $tg_new 2>/dev/null',
+  '  tg_all="$tg_all$tg_new"',
+  'done',
+  '[ -z "$tg_all" ] || { kill -KILL $tg_all; kill -CONT $tg_all; } 2>/dev/null',
+  'tg_live() { tg_st=; read -r tg_st 2>/dev/null < "/proc/$1/stat"; case "${tg_st##*) }" in Z*) return 1 ;; esac; kill -0 "$1" 2>/dev/null; }',
+  'tg_start=$SECONDS',
+  'tg_forced=',
+  'while [ $((SECONDS - tg_start)) -lt 10 ]; do',
+  '  tg_left=',
+  '  for tg_p in $tg_all; do tg_live "$tg_p" && tg_left="$tg_left $tg_p"; done',
+  '  [ -z "$tg_left" ] && exit 0',
+  '  if [ -z "$tg_forced" ] && [ $((SECONDS - tg_start)) -ge 2 ]; then',
+  '    tg_forced=1',
+  '    case $OSTYPE in msys* | cygwin*) tg_fout=$(/usr/bin/kill -f -KILL $tg_left 2>&1) ;; *) kill -KILL $tg_left 2>/dev/null ;; esac',
+  '  fi',
+  '  sleep 0.1',
+  'done',
+  'tg_why=',
+  'for tg_p in $tg_left; do tg_st=; read -r tg_st 2>/dev/null < "/proc/$tg_p/stat"; tg_st=${tg_st##*) }; tg_w=; read -r tg_w 2>/dev/null < "/proc/$tg_p/winpid"; tg_why="$tg_why $tg_p (state ${tg_st%% *}, winpid ${tg_w:-none})"; done',
+  'echo "still running after SIGKILL:$tg_why${tg_fout:+; kill -f said: $tg_fout}" >&2',
+  'exit 1',
+].join('\n')
+
+/** Kill whatever a failed run left behind, returning why that failed or null when nothing of the run survives. */
+function reapOwned(sh: string, token: string): string | null {
+  const res = spawnSync(sh, ['-c', REAP_SCRIPT], { encoding: 'utf8', env: { ...process.env, TG_REAP_TOKEN: token }, windowsHide: true, timeout: 60_000 })
+  return res.error || res.signal || res.status !== 0 ? spawnFailure(res) : null
+}
+
 /** Each command run by a POSIX shell, its `token-goat` calls decoded. A command that ends its chunk's subshell keeps what it printed as its run, and the chunk mates after it run again in a later pass. Git Bash drops a carriage return from the text it evaluates, quoted or not, so on Windows no quoting carries one: callers compare without it there. */
 export function shRunAll(sh: string, commands: readonly string[], opts: { timeoutMs?: number } = {}): ShellRun[] {
   const runs: (ShellRun | undefined)[] = new Array<ShellRun | undefined>(commands.length)
   let pending = commands.map((_, i) => i)
   while (pending.length > 0) {
-    const env: NodeJS.ProcessEnv = { ...process.env, TG_N: String(pending.length), TG_CHUNK: String(SH_CHUNK) }
+    const token = `${process.pid}-${randomBytes(8).toString('hex')}`
+    const env: NodeJS.ProcessEnv = { ...process.env, TG_N: String(pending.length), TG_CHUNK: String(SH_CHUNK), [OWNER_VAR]: token }
     pending.forEach((ci, j) => {
       env[`TG_CMD_${j}`] = commands[ci]
     })
     const res = spawnSync(sh, ['-c', SH_SCRIPT], { encoding: 'utf8', env, windowsHide: true, timeout: opts.timeoutMs ?? 120_000 })
+    // A timeout kills the outer shell only, orphaning the chunk subshell and anything a command started under it.
+    const reapFailure = res.error || res.signal ? reapOwned(sh, token) : null
     const fields = (res.stdout ?? '').split('\0')
     const rerun: number[] = []
     let chunkEnd = Math.min(SH_CHUNK, pending.length)
@@ -107,10 +160,12 @@ export function shRunAll(sh: string, commands: readonly string[], opts: { timeou
         cur = { calls: [], stray: [] }
       } else if (f !== '') cur.stray.push(f)
     }
+    const cleanup = reapFailure === null ? '' : `; cleanup after the kill failed: ${reapFailure}`
     if (next < pending.length) {
       const ran = runs.filter((r) => r !== undefined).length
-      throw new Error(`shell ran ${ran} of ${commands.length} commands: ${spawnFailure(res)}`)
+      throw new Error(`shell ran ${ran} of ${commands.length} commands: ${spawnFailure(res)}${cleanup}`)
     }
+    if (cleanup !== '') throw new Error(`shell ran every command but was killed: ${spawnFailure(res)}${cleanup}`)
     pending = rerun
   }
   return runs as ShellRun[]

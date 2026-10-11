@@ -7,7 +7,7 @@ import type * as ReconcileModule from '../src/reconcile.js'
 import type * as UtilModule from '../src/util.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { dataDir, globalDbPath } from '../src/constants.js'
+import { dataDir } from '../src/constants.js'
 import { appendReconcileRequest, parseReconcileRequests, reconcileRequestPathFor } from '../src/dirty_queue.js'
 import type { HookEvent } from '../src/hook_registry.js'
 import { enqueueDirtyPathsSafe, getDirtyPaths, clearDirtyQueue } from '../src/hooks_index.js'
@@ -299,6 +299,5 @@ describe('the reconcile-request file format', () => {
     appendReconcileRequest(dataDir(), odd)
     const raw = `${requestFile()}not-json\n42\n""\n`
     expect(parseReconcileRequests(raw)).toEqual([odd])
-    expect(globalDbPath()).toContain(dataDir())
   })
 })

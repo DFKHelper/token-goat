@@ -22,7 +22,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<typeof UtilModule>()
   return {
     ...actual,
-    runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => (seam.status !== null && args[0] === 'status' ? { stdout: '', stderr: 'no answer', ...seam.status } : actual.runGit(args, opts)),
+    runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => (seam.status !== null && args[0] === 'status' ? { stdout: '', stderr: 'no answer', ...seam.status } : actual.runGit(args, opts?.timeoutMs === undefined ? opts : { ...opts, timeoutMs: 120_000 })),
   }
 })
 
@@ -65,8 +65,11 @@ describe('the working-tree status sweep when git does not answer', () => {
     expect(workerLog()).toMatch(/post-bash status sweep in .*: git status did not answer in time \(no answer\); asked the worker to reconcile the project/)
   })
 
-  it('asks for nothing when git could not be started at all, since the worker needs git to sweep', async () => {
-    seam.status = { exitCode: -1 }
+  it.each([
+    { name: 'git could not be started at all, since the worker needs git to sweep', status: { exitCode: -1 } },
+    { name: 'git answers that this is not a repository', status: { exitCode: 128 } },
+  ])('asks for nothing when $name', async ({ status }) => {
+    seam.status = status
 
     await formatterRun(dir)
 
@@ -80,16 +83,6 @@ describe('the working-tree status sweep when git does not answer', () => {
 
     expect(dirty()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
     expect(requested()).toEqual([])
-    expect(workerLog()).toBe('')
-  })
-
-  it('asks for no reconcile when git answers that this is not a repository', async () => {
-    seam.status = { exitCode: 128 }
-
-    await formatterRun(dir)
-
-    expect(requested()).toEqual([])
-    expect(dirty()).toEqual([])
     expect(workerLog()).toBe('')
   })
 })

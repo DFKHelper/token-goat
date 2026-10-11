@@ -117,7 +117,7 @@ function fileHasGate(fullPath: string, markers: readonly (readonly [string, stri
   return markers.some(([begin, end]) => content.includes(begin) && content.includes(end))
 }
 
-/** The user-level instruction files `token-goat install` writes its gate into, which each harness loads in every project: `~/.claude/CLAUDE.md` (or under CLAUDE_CONFIG_DIR), `~/.codex/AGENTS.md`, and Copilot CLI's `~/.copilot/copilot-instructions.md` (or under COPILOT_HOME). Returns the ones that carry a complete gate. */
+/** The user-level instruction files `token-goat install` writes its gate into, which each harness loads in every project: `~/.claude/CLAUDE.md` (or under CLAUDE_CONFIG_DIR), `~/.codex/AGENTS.md` (or under CODEX_HOME), and Copilot CLI's `~/.copilot/copilot-instructions.md` (or under COPILOT_HOME). Returns the ones that carry a complete gate. */
 export function findActiveGlobalGates(): string[] {
   const globals: { fullPath: string; markers: readonly (readonly [string, string])[] }[] = [
     { fullPath: claudeMdPath(), markers: [[INSTRUCTION_GATE_BEGIN, INSTRUCTION_GATE_END]] },
