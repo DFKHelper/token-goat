@@ -90,6 +90,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   gdrive_image: SOURCE_IMAGE,
   session_hint: SOURCE_HINT,
   session_hint_suppressed: SOURCE_HINT,
+  // A guessed flag that option_intent.ts ran as the real one or answered with the corrected command (detail: command and the guessed flags).
+  cli_option_alias: SOURCE_HINT,
   diff_hint: SOURCE_HINT,
   evidence_cache_hit: SOURCE_HINT,
   structured_file_hint: SOURCE_HINT,

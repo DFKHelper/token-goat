@@ -527,6 +527,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'grep_dedup_hint',
       'glob_dedup_hint',
       'diff_hint',
+      'cli_option_alias',
       'predictive_prefetch_hit',
       'structured_file_hint',
       'write_rewrite_hint',

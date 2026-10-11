@@ -1,5 +1,6 @@
 import { Command } from 'commander'
 import { attemptedCommandName, suggestForUnknownCommand } from './command_intent.js'
+import { renamedFlagsIn, rewriteLineRangeFlag, suggestForUnknownOption } from './option_intent.js'
 import { spawnSync } from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -1525,8 +1526,13 @@ export async function run(argv: string[] = process.argv): Promise<void> {
   const program = buildProgram()
   // Commander's exitOverride lets us catch its internal exits (help, version, unknown command) instead of letting it call process.exit() mid-flush. Applied to every subcommand, not just the program. Commander copies the exit callback to a subcommand when that subcommand is CREATED (copyInheritedSettings, called from .command()), and buildProgram() has already created all of them by the time this runs -- so they each inherited "no callback" and `token-goat <subcommand> --help` called process.exit() for real, which is exactly what main.ts's docblock says this binary must never do, because an exit mid-flush can truncate output already written to a pipe.
   applyExitOverride(program)
+  const lineRange = rewriteLineRangeFlag(argv)
+  if (lineRange !== null) {
+    err(lineRange.note)
+    recordStat('cli_option_alias', 0, 0, undefined, `read ${lineRange.flags.join(' ')}`)
+  }
   try {
-    await program.parseAsync(argv)
+    await program.parseAsync(lineRange === null ? argv : lineRange.argv)
   } catch (e) {
     // Help / version requests throw with these codes and are not errors.
     const code = (e as { code?: string }).code
@@ -1540,6 +1546,13 @@ export async function run(argv: string[] = process.argv): Promise<void> {
         const attempted = attemptedCommandName(argv)
         const hint = attempted === null ? null : suggestForUnknownCommand(attempted)
         if (hint !== null) err(`Looking for that? Try ${hint}.`)
+      }
+      if (code === 'commander.unknownOption') {
+        const hint = suggestForUnknownOption(argv)
+        if (hint !== null) {
+          err(hint)
+          recordStat('cli_option_alias', 0, 0, undefined, `${attemptedCommandName(argv) ?? ''} ${renamedFlagsIn(argv).join(' ')}`.trim())
+        }
       }
       process.exitCode = 1
       return
