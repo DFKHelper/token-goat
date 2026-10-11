@@ -15,8 +15,7 @@
 # does the same thing for the pre-push tier.
 set -euo pipefail
 
-TMP_BASE="${TMPDIR:-/tmp}"
-[[ "$TMP_BASE" == "/tmp" && ! -d "/tmp" ]] && mkdir -p /tmp 2>/dev/null || true
+source "$(git rev-parse --show-toplevel)/.lefthook-scripts/tmp-base.sh"
 LOG="$(mktemp "${TMP_BASE}/token-goat-guards.XXXXXX")"
 
 if npm run test:guards >"$LOG" 2>&1; then

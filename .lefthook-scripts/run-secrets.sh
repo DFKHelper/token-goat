@@ -24,8 +24,7 @@ if ! command -v gitleaks >/dev/null 2>&1; then
   exit 1
 fi
 
-TMP_BASE="${TMPDIR:-/tmp}"
-[[ "$TMP_BASE" == "/tmp" && ! -d "/tmp" ]] && mkdir -p /tmp 2>/dev/null || true
+source "$(git rev-parse --show-toplevel)/.lefthook-scripts/tmp-base.sh"
 LOG="$(mktemp "${TMP_BASE}/token-goat-secrets.XXXXXX")"
 
 if gitleaks dir . --config=.gitleaks.toml --redact --exit-code 1 --no-banner >"$LOG" 2>&1; then

@@ -9,7 +9,7 @@ import { preReadHandler } from '../src/hooks_read.js'
 import { postReadHandler } from '../src/hooks_read_post.js'
 import { readRequestedSliceWindow, isSmallSlice } from '../src/hooks_read_slice.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { IDENTICAL_READ_MIN_BODY_BYTES, equalLineRuns, equalContentBytes, equalLineRanges, parseLineRange, isSequentialPagingChain } from '../src/util.js'
+import { IDENTICAL_READ_MIN_BODY_BYTES, isSequentialPagingChain } from '../src/util.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 /** The distinctive wording of the proof branch. Asserting on it, rather than on `hookType`, is what keeps these tests honest: a count-based deny is also a deny, and would otherwise read as a pass. */
@@ -120,63 +120,47 @@ describe('preReadHandler denies a Read whose exact bytes were already served', (
     if (on.hookType === 'deny') expect(on.message).toContain(PROOF)
   })
 
-  it('allows an explicit slice read when a whole-file read happened before', () => {
-    deliver() // delivers whole file
-    // Now request an explicit slice (lines 1..10)
+  // Provenance: HAND-DERIVED. Lines 1..10 of the generated file are a contiguous run inside the whole-file body the post hook stored.
+  it('withholds an explicit slice that lies wholly inside an already-served whole-file read', () => {
+    deliver() // delivers the whole file
     const sliceRead = preReadHandler(readEvent('pre_tool_use', { offset: 1, limit: 10 }))
-    if (sliceRead.hookType === 'deny') {
-      expect(sliceRead.message).not.toContain(PROOF)
-    }
+    expect(sliceRead.hookType).toBe('deny')
+    if (sliceRead.hookType === 'deny') expect(sliceRead.message).toContain(PROOF)
   })
 
-  it('isolates subagent ledgers without granting blanket immunity to repeat reads', () => {
-    // Parent was served lines 1..10
+  // Provenance: HAND-DERIVED. Line 3 is rewritten on disk after lines 1..10 were served, so the slice a re-read would return is no longer the text the model holds.
+  it('allows a slice to be re-read once the file was edited inside that window', () => {
     deliver({ offset: 1, limit: 10 })
+    const lines = fs.readFileSync(target, 'utf8').split('\n')
+    lines[2] = 'line 2: EDITED ' + 'q'.repeat(60)
+    fs.writeFileSync(target, lines.join('\n'), 'utf8')
 
-    // First read by subagent-worker-1: child never saw parent context, must NOT be denied
-    const subagentEvent1 = makeHookEvent({
-      eventName: 'pre_tool_use',
-      toolName: 'Read',
-      toolInput: { file_path: target, offset: 1, limit: 10 },
-      agentId: 'subagent-worker-1',
-      raw: { cwd: dir, tool_name: 'Read', tool_input: { file_path: target, offset: 1, limit: 10 } },
-    })
-    const out1 = preReadHandler(subagentEvent1)
-    expect(out1.hookType).not.toBe('deny')
+    const reread = preReadHandler(readEvent('pre_tool_use', { offset: 1, limit: 10 }))
+    if (reread.hookType === 'deny') expect(reread.message).not.toContain(PROOF)
 
-    // Now record delivery to subagent-worker-1
-    postReadHandler(makeHookEvent({
-      eventName: 'post_tool_use',
-      toolName: 'Read',
-      toolInput: { file_path: target, offset: 1, limit: 10 },
-      agentId: 'subagent-worker-1',
-      raw: { cwd: dir, tool_name: 'Read', tool_input: { file_path: target, offset: 1, limit: 10 }, tool_response: { content: 'ok' } },
-    }))
+    // Positive control: the same slice, served again from the edited file, is withheld, so the decline above is the content check and not an empty store.
+    clearModuleCaches()
+    deliver({ offset: 1, limit: 10 })
+    const same = preReadHandler(readEvent('pre_tool_use', { offset: 1, limit: 10 }))
+    expect(same.hookType).toBe('deny')
+    if (same.hookType === 'deny') expect(same.message).toContain(PROOF)
+  })
 
-    // Second read of the exact same slice by the SAME subagent: MUST be denied (dedup applies to repeat child reads)
-    const subagentEvent2 = makeHookEvent({
-      eventName: 'pre_tool_use',
-      toolName: 'Read',
-      toolInput: { file_path: target, offset: 1, limit: 10 },
-      agentId: 'subagent-worker-1',
-      raw: { cwd: dir, tool_name: 'Read', tool_input: { file_path: target, offset: 1, limit: 10 } },
-    })
-    const out2 = preReadHandler(subagentEvent2)
-    expect(out2.hookType).toBe('deny')
-    if (out2.hookType === 'deny') {
-      expect(out2.message).toMatch(/(already served in this session, byte for byte|were already read this session)/)
-    }
+  // Provenance: HAND-DERIVED. The same 40 generated lines as every other case here, written with CRLF endings: lines 1..10 are a contiguous run inside the whole-file body the post hook stored from disk, CR bytes included on both sides of the comparison.
+  it('still withholds a repeat slice of a CRLF file that was served whole', () => {
+    const lines = Array.from({ length: 40 }, (_, i) => `line ${i}: crlf ${'q'.repeat(60)}`)
+    fs.writeFileSync(target, lines.join('\r\n') + '\r\n', 'utf8')
+    deliver()
+    const sliceRead = preReadHandler(readEvent('pre_tool_use', { offset: 1, limit: 10 }))
+    expect(sliceRead.hookType).toBe('deny')
+    if (sliceRead.hookType === 'deny') expect(sliceRead.message).toContain(PROOF)
+  })
 
-    // Different subagent (subagent-worker-2): isolated ledger, must NOT be denied
-    const subagent2Event = makeHookEvent({
-      eventName: 'pre_tool_use',
-      toolName: 'Read',
-      toolInput: { file_path: target, offset: 1, limit: 10 },
-      agentId: 'subagent-worker-2',
-      raw: { cwd: dir, tool_name: 'Read', tool_input: { file_path: target, offset: 1, limit: 10 } },
-    })
-    const outSub2 = preReadHandler(subagent2Event)
-    expect(outSub2.hookType).not.toBe('deny')
+  it('does not withhold an explicit slice that reaches past what was served', () => {
+    // Discrimination half of the test above: lines 5..20 are not wholly inside the 1..10 body.
+    deliver({ offset: 1, limit: 10 })
+    const wider = preReadHandler(readEvent('pre_tool_use', { offset: 5, limit: 16 }))
+    if (wider.hookType === 'deny') expect(wider.message).not.toContain(PROOF)
   })
 
   it('does not trigger sequential line-range paging for non-adjacent distant lookups', () => {
@@ -200,7 +184,8 @@ describe('preReadHandler denies a Read whose exact bytes were already served', (
   })
 })
 
-describe('Codex Sol 6.1 Invariant: Bounded Read vs Whole-file Slice', () => {
+describe('readRequestedSliceWindow: a whole-file spelling is not a bounded slice', () => {
+  // Provenance: HAND-DERIVED. Read's `offset` defaults to 1 and `view_range` [1, -1] means to the end of the file, so neither names a narrower window than a plain read.
   it('does not treat offset: 1, limit: undefined as an explicit bounded slice', () => {
     const event = makeHookEvent({
       eventName: 'pre_tool_use',
@@ -208,8 +193,7 @@ describe('Codex Sol 6.1 Invariant: Bounded Read vs Whole-file Slice', () => {
       toolInput: { file_path: 'foo.ts', offset: 1 },
       raw: { cwd: dir, tool_name: 'Read', tool_input: { file_path: 'foo.ts', offset: 1 } },
     })
-    const window = readRequestedSliceWindow(event)
-    expect(window.isExplicitSlice).toBe(false)
+    expect(readRequestedSliceWindow(event).isExplicitSlice).toBe(false)
   })
 
   it('does not treat view_range: [1, -1] as an explicit bounded slice', () => {
@@ -219,69 +203,49 @@ describe('Codex Sol 6.1 Invariant: Bounded Read vs Whole-file Slice', () => {
       toolInput: { path: 'foo.ts', view_range: [1, -1] },
       raw: { cwd: dir, tool_name: 'view', tool_input: { path: 'foo.ts', view_range: [1, -1] } },
     })
-    const window = readRequestedSliceWindow(event)
-    expect(window.isExplicitSlice).toBe(false)
-  })
-
-  it('denies isSmallSlice bypass when slice spans the whole file', () => {
-    const slice = {
-      offset: 1,
-      limit: 100,
-      byteCount: 500,
-      lineCount: 100,
-      spansWholeFile: true,
-    }
-    expect(isSmallSlice(slice, 4096, 500)).toBe(false)
+    expect(readRequestedSliceWindow(event).isExplicitSlice).toBe(false)
   })
 })
 
-describe('Codex Sol 6.1 Invariant: True Content Identity vs Line Range Coordinate', () => {
-  it('equalContentBytes does NOT strip internal blank lines or internal whitespace differences', () => {
-    const original = 'alpha\n\nbeta\n'
-    const changed = 'alpha\nbeta\n'
-    expect(equalContentBytes(original, changed)).toBe(false)
-
-    const whitespaceDiff = 'alpha\n  beta\n'
-    const whitespaceDiff2 = 'alpha\n    beta\n'
-    expect(equalContentBytes(whitespaceDiff, whitespaceDiff2)).toBe(false)
-
-    // True match with CRLF / LF normalization
-    expect(equalContentBytes('alpha\r\nbeta\r\n', 'alpha\nbeta\n')).toBe(true)
+describe('isSmallSlice', () => {
+  // Provenance: HAND-DERIVED. The shape is RequestedSlice's 'bytes' arm (hooks_read_slice.ts); 500 bytes is under the 4096 threshold used here, so only the guard named in each case can make the answer false.
+  it('lets a small bounded slice through', () => {
+    expect(isSmallSlice({ kind: 'bytes', bytes: 500, spansWholeFile: false }, 4096, 100_000)).toBe(true)
   })
 
-  it('equalLineRanges compares line bounds [start, end]', () => {
-    expect(equalLineRanges([1, 100], [1, 100])).toBe(true)
-    expect(equalLineRanges([1, 100], [1, 101])).toBe(false)
-    expect(parseLineRange('1..100')).toEqual([1, 100])
-    expect(parseLineRange('lines 1-100')).toEqual([1, 100])
+  it('refuses a slice that spans the whole file', () => {
+    expect(isSmallSlice({ kind: 'bytes', bytes: 500, spansWholeFile: true }, 4096, 100_000)).toBe(false)
+  })
+
+  it('refuses a slice as large as the file it came from', () => {
+    expect(isSmallSlice({ kind: 'bytes', bytes: 500 }, 4096, 500)).toBe(false)
+  })
+
+  it('refuses a slice at or over the threshold, and one that could not be bounded', () => {
+    expect(isSmallSlice({ kind: 'bytes', bytes: 4096 }, 4096, 100_000)).toBe(false)
+    expect(isSmallSlice({ kind: 'unbounded' }, 4096, 100_000)).toBe(false)
   })
 })
 
-describe('Codex Sol 6.1 Invariant: Sequential Paging Heuristic', () => {
+describe('isSequentialPagingChain', () => {
+  // Provenance: HAND-DERIVED. Each range is [start, end]; the chain is the last N ranges, oldest first, with the window being asked for included by the caller. A step is forward when the next start is past the previous start and within 25 lines before / 60 lines after the previous end.
   it('identifies chronologically adjacent slice chains', () => {
-    const prev: Array<readonly [number, number]> = [[1, 100], [101, 200]]
-    expect(isSequentialPagingChain(prev, { start: 201, end: 300 })).toBe(true)
+    expect(isSequentialPagingChain([[1, 100], [101, 200], [201, 300]], 3)).toBe(true)
+  })
+
+  it('identifies a backward chain', () => {
+    expect(isSequentialPagingChain([[201, 300], [101, 200], [1, 100]], 3)).toBe(true)
   })
 
   it('rejects distant non-adjacent slice lookups', () => {
-    const prev: Array<readonly [number, number]> = [[1220, 1290], [600, 650]]
-    expect(isSequentialPagingChain(prev, { start: 700, end: 760 })).toBe(false)
-  })
-})
-
-describe('equalLineRuns helper', () => {
-  it('correctly compares line ranges in various formats', () => {
-    expect(equalLineRuns('1-120', '1-120')).toBe(true)
-    expect(equalLineRuns('1..120', '1-120')).toBe(true)
-    expect(equalLineRuns('lines 1-120', '1-120')).toBe(true)
-    expect(equalLineRuns('1-120', '1-121')).toBe(false)
-    expect(equalLineRuns('5:25', '5-25')).toBe(true)
-    expect(equalLineRuns('42', '42')).toBe(true)
+    expect(isSequentialPagingChain([[1220, 1290], [600, 650], [700, 760]], 3)).toBe(false)
   })
 
-  it('correctly compares multiline text runs', () => {
-    expect(equalLineRuns('foo\nbar\n', 'foo\nbar')).toBe(true)
-    expect(equalLineRuns('foo\r\nbar', 'foo\nbar')).toBe(true)
-    expect(equalLineRuns('foo\nbar', 'foo\nbaz')).toBe(false)
+  it('rejects three contiguous slices followed by a distant jump', () => {
+    expect(isSequentialPagingChain([[1, 100], [101, 200], [201, 300], [601, 650]], 4)).toBe(false)
+  })
+
+  it('needs at least the requested number of ranges', () => {
+    expect(isSequentialPagingChain([[1, 100], [101, 200]], 3)).toBe(false)
   })
 })

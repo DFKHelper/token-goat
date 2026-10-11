@@ -15,7 +15,7 @@ import { leadWithCommand, docNavigation, fencedCommand, fileSubject, nameSubject
 import { escapeHintName, headingTreeParts, hintTarget, sectionOrRangeCommand, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
 import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
-import { countNoun, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun, equalContentBytes, isSequentialPagingChain } from './util.js'
+import { countNoun, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun, isSequentialPagingChain } from './util.js'
 import { loadConfig } from './config.js'
 import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
 import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges } from './session.js'
@@ -24,6 +24,7 @@ import { readAllSessionManifests, loadSessionCache, getContextPressure } from '.
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
 import {
   readRequestedSliceWindow,
+  requestedSliceSpan,
   estimateRequestedSlice,
   describeSliceAdvice,
   loadSnapshotDiff,
@@ -181,8 +182,8 @@ function sessionArtifactRecall(rawPath: string): string {
 }
 
 /** Recall pointer for prior output of a file served earlier this session. */
-function priorOutputRecallHint(normalized: string, agentId?: string): string {
-  const ids = getFileServedOutputs(normalized, agentId)
+function priorOutputRecallHint(normalized: string): string {
+  const ids = getFileServedOutputs(normalized)
   if (ids.length === 0) return ''
   const latestId = ids[ids.length - 1]
   return ' Recall earlier content with `token-goat bash-output ' + latestId + '`.'
@@ -537,11 +538,8 @@ function firstReadSymbolOutput(decision: ReadPolicyDecision, policyContext: Read
 
 export function recordActualSlice(event: HookEvent, filePath: string): void {
   const window = readRequestedSliceWindow(event)
-  if (window.isExplicitSlice && window.offset !== undefined) {
-    const start = window.offset
-    const end = window.limit !== undefined ? window.offset + window.limit - 1 : start + 100
-    recordFileLineRange(filePath, start, end, event.agentId)
-  }
+  const span = requestedSliceSpan(window)
+  if (window.isExplicitSlice && span !== undefined) recordFileLineRange(filePath, span.start, span.end)
 }
 
 /** contextOutput, degraded to passOutput during hints.quiet_hours. Only the advisory/ informational hint paths (contextOutput -- lets the call proceed, injects a suggestion) are gated this way; correctness-relevant denyOutput blocks (truncation, oversized-file, reread-deny) are never suppressed by quiet hours. A hint that names a real heading or symbol passes its path as `correlators`, so hint-stats credits a follow-through on any part of that file, as it did when the hint printed a placeholder extractPathCorrelator strips. */
@@ -587,8 +585,7 @@ function isProtectedRecentRead(normalized: string, n: number): boolean {
 /** The id of an already-served body that provably contains every line this Read would deliver, or null when there is no such proof. The count-based re-read machinery below reasons about how many times a *file* was read. That is a heuristic, and the recent-read protection window exists precisely because it can be wrong. This is not a heuristic: the bytes this Read would hand over are compared, whole-line aligned, against bytes the session recorded as already delivered for this same file. A hit means the model is holding this exact text. Everything about the comparison fails toward allowing the read: - the current text comes from disk, so a file that changed since the earlier delivery no longer matches and the read proceeds. Line numbers are never consulted, for the reason stated on `_fileServedOutputs` in session.ts: an edit token-goat did not observe moves them. - stored bodies pass through secret redaction on the way in, so a body that carried a secret no longer matches the raw file and the read proceeds rather than being answered from a redacted copy. - a body below the shared floor is not worth a pointer that is itself ~200 bytes. */
 function alreadyServedOutputId(event: HookEvent, normalized: string): { id: string; bytes: number } | null {
   try {
-    const window = readRequestedSliceWindow(event)
-    const ids = getFileServedOutputs(normalized, event.agentId)
+    const ids = getFileServedOutputs(normalized)
     if (ids.length === 0) return null
     const wouldServe = readWindowFromDisk(event, normalized)
     if (wouldServe === null) return null
@@ -599,12 +596,7 @@ function alreadyServedOutputId(event: HookEvent, normalized: string): { id: stri
       const id = ids[i]
       if (id === undefined) continue
       const prior = getBashOutput(id)
-      if (prior !== null) {
-        const matches = window.isExplicitSlice
-          ? equalContentBytes(prior.output, wouldServe)
-          : containsLineRun(prior.output, wouldServe)
-        if (matches) return { id, bytes }
-      }
+      if (prior !== null && containsLineRun(prior.output, wouldServe)) return { id, bytes }
     }
     return null
   } catch {
@@ -1105,7 +1097,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
     const config = loadConfig()
     const window = readRequestedSliceWindow(event)
-    const isSmallUnseenSlice = isSmallSlice(requestedSlice, config.hints.reread_deny_min_bytes, rereadBytes) && isUnseenWindow(window, getFileLineRanges(normalized, event.agentId), fullReads)
+    const isSmallUnseenSlice = isSmallSlice(requestedSlice, config.hints.reread_deny_min_bytes, rereadBytes) && isUnseenWindow(window, getFileLineRanges(normalized), fullReads)
 
     if (fullReads === 0 && !window.isExplicitSlice && !isDispatchedFileType(normalized) &&
       meetsFirstReadSymbolThreshold(config.hints.first_read_symbol_policy, config.hints.first_read_symbol_bytes, rereadBytes)) {
@@ -1136,7 +1128,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         )
       }
 
-      const prevRanges = getFileLineRanges(normalized, event.agentId)
+      const prevRanges = getFileLineRanges(normalized)
       if (window.isExplicitSlice && window.offset !== undefined && window.limit !== undefined) {
         const start = window.offset
         const end = window.offset + window.limit - 1
@@ -1150,7 +1142,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             return denyOutput(
               'Lines ' + start + '..' + end + ' of this file were already read this session. ' +
               'Pull just the part you need with ' + realSymbolReadHint(normalized, shown, { start, end }) + '.' +
-              priorOutputRecallHint(normalized, event.agentId),
+              priorOutputRecallHint(normalized),
             )
           }
           if (snapDiff.kind === 'unchanged') {
@@ -1169,10 +1161,10 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             if (recordedIdentity === undefined || (currentIdentity !== undefined && recordedIdentity.size === currentIdentity.size && recordedIdentity.mtimeMs === currentIdentity.mtimeMs)) {
               return denyRangeReread()
             }
-            resetFileLineRanges(normalized, event.agentId)
+            resetFileLineRanges(normalized)
           } else {
             // Content confirmed changed (kind 'diff'): the recorded ranges no longer describe what disk holds, so they must not keep denying this or any other overlapping read of this file. Drop them and let the read proceed to fresh content.
-            resetFileLineRanges(normalized, event.agentId)
+            resetFileLineRanges(normalized)
           }
         }
       }
@@ -1180,14 +1172,12 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // Item 2.5: sequential line-range paging on source files and docs/XML (3+ slices read so far)
       const isPagingTracked = isSourceExt || /\.(md|mdx|markdown|rst|xml|dtsx|ampkg|xaml)$/i.test(basename)
       // Denied once per file per compaction epoch. A reported session was refused 18 times in a row on one file, each retry an adjusted window: a caller that pages again after this deny has either a reason to want literal lines or will not switch tools, and a second refusal changes neither, it only costs a turn. Later slices pass with the paging note below. The key carries the epoch because the ranges this counts are themselves cleared at compaction, and a caller that no longer holds the deny should see it once more.
-      const pagingDenyKey = 'paging-deny:' + getCompactedAt() + ':' + (event.agentId ? event.agentId + ':' : '') + foldPath(normalized)
-      const pagingWindowSpan = window.offset !== undefined && window.limit !== undefined ? { start: window.offset, end: window.offset + window.limit - 1 } : undefined
-      const isSequentialChain = pagingWindowSpan !== undefined && isSequentialPagingChain(prevRanges, 3)
+      const pagingDenyKey = 'paging-deny:' + getCompactedAt() + ':' + foldPath(normalized)
+      const pagingWindowSpan = requestedSliceSpan(window)
+      // The chain is the slices already read plus the one being asked for: three contiguous slices followed by a jump elsewhere in the file are not paging.
+      const isSequentialChain = pagingWindowSpan !== undefined && isSequentialPagingChain([...prevRanges, [pagingWindowSpan.start, pagingWindowSpan.end]], 4)
       if (isPagingTracked && window.isExplicitSlice && prevRanges.length >= 3 && isSequentialChain && !wasHintShown(pagingDenyKey)) {
         // A window this narrow relative to the symbol it sits inside (see isWindowInsideMuchLargerSymbol) is already the narrowest handle available -- denying it in favor of reading the whole symbol would hand back a much bigger body than the window ever asked for, so this specific deny is skipped and the read proceeds.
-        const pagingWindowSpan = window.offset !== undefined && window.limit !== undefined
-          ? { start: window.offset, end: window.offset + window.limit - 1 }
-          : undefined
         if (pagingWindowSpan === undefined || !isWindowInsideMuchLargerSymbol(normalized, pagingWindowSpan.start, pagingWindowSpan.end)) {
           markHintShown(pagingDenyKey)
           recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
@@ -1229,7 +1219,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         return denyOutput(leadWithCommand(
           sectionOrRangeCommand(shown, hintTarget(normalized, 'section')),
           'to read one section',
-          'Markdown file already read this session.' + priorOutputRecallHint(normalized, event.agentId),
+          'Markdown file already read this session.' + priorOutputRecallHint(normalized),
         ))
       }
 
@@ -1238,7 +1228,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         const hint = surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized, rereadBytes))
         recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-structured-deny')
         bookDenyIdentity('structured')
-        return denyOutput((hint + ' ' + sentenceStart(readSubject(normalized, hint)) + ' was already read this session (' + reads + ' ' + plural + ').' + priorOutputRecallHint(normalized, event.agentId)).trimStart())
+        return denyOutput((hint + ' ' + sentenceStart(readSubject(normalized, hint)) + ' was already read this session (' + reads + ' ' + plural + ').' + priorOutputRecallHint(normalized)).trimStart())
       }
 
       // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
@@ -1248,7 +1238,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordStat('session_hint', 0, 0)
         bookDenyIdentity('source-count')
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
-        return denyOutput((surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)) + ' Tried to read this file ' + reads + ' times already.' + priorOutputRecallHint(normalized, event.agentId)).trimStart())
+        return denyOutput((surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)) + ' Tried to read this file ' + reads + ' times already.' + priorOutputRecallHint(normalized)).trimStart())
       }
     }
 
@@ -1257,16 +1247,16 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-count-deny')
       bookDenyIdentity('count')
       // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
-      return denyOutput((hint + ' ' + sentenceStart(readSubject(normalized, hint)) + ' was already read this session (' + reads + ' ' + plural + ').' + priorOutputRecallHint(normalized, event.agentId)).trimStart())
+      return denyOutput((hint + ' ' + sentenceStart(readSubject(normalized, hint)) + ' was already read this session (' + reads + ' ' + plural + ').' + priorOutputRecallHint(normalized)).trimStart())
     }
     // Only counted when the note actually reaches the caller -- quietContextOutput silently degrades to passOutput() during hints.quiet_hours, and recording unconditionally (as this used to) over-counted the ledger on every quiet-hours re-read that produced no visible output at all. Zero bytes, deliberately: this branch does NOT block the read. The note is appended and the Read still proceeds, so the file's full contents reach the model anyway and the hint text is spent on top of them -- crediting rereadCredit here booked the entire file as saved on the one path where nothing was. The event is still recorded (count, not bytes) because how often the soft note fires is worth knowing; what it is worth is separately measurable through hint-stats' acted-on tracking, which is the only thing that can tell whether the note ever changed what the model did next.
     const pagingWindow = readRequestedSliceWindow(event)
-    const activeRanges = getFileLineRanges(normalized, event.agentId)
-    const activeSpan = pagingWindow.offset !== undefined && pagingWindow.limit !== undefined ? { start: pagingWindow.offset, end: pagingWindow.offset + pagingWindow.limit - 1 } : undefined
-    const isSequentialNote = activeSpan !== undefined ? isSequentialPagingChain(activeRanges, 2) : false
+    const activeRanges = getFileLineRanges(normalized)
+    const activeSpan = requestedSliceSpan(pagingWindow)
+    const isSequentialNote = activeSpan !== undefined && isSequentialPagingChain([...activeRanges, [activeSpan.start, activeSpan.end]], 3)
     const pagingNote = (pagingWindow.isExplicitSlice && activeRanges.length >= 2 && isSequentialNote)
       ? ' Sequential line-range paging detected (' + (activeRanges.length + 1) + ' slices read). Prefer `token-goat skeleton ' + quotedArg(shown) + '` or ' +
-        realSymbolReadHint(normalized, shown, pagingWindow.offset !== undefined && pagingWindow.limit !== undefined ? { start: pagingWindow.offset, end: pagingWindow.offset + pagingWindow.limit - 1 } : undefined) + '.'
+        realSymbolReadHint(normalized, shown, activeSpan) + '.'
       : ''
     // A ranged Read whose window touches no line served before, with no whole-file read behind it, hands over lines the model has never seen: the already-read note would be false.
     const windowIsNew = isUnseenWindow(pagingWindow, activeRanges, fullReads)

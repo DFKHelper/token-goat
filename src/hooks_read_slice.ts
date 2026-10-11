@@ -34,6 +34,15 @@ export interface RequestedSliceWindow {
   readonly isExplicitSlice: boolean
 }
 
+/** Lines past `offset` that a Read with an offset and no limit is booked as covering. */
+const OFFSET_ONLY_EXTRA_LINES = 100
+
+/** The 1-based line span a Read asks for, or undefined when it names no offset. With no limit the span is the default window the line-range ledger books, so what is recorded and what the paging checks judge are the same lines. */
+export function requestedSliceSpan(window: RequestedSliceWindow): { start: number; end: number } | undefined {
+  if (window.offset === undefined) return undefined
+  return { start: window.offset, end: window.limit !== undefined ? window.offset + window.limit - 1 : window.offset + OFFSET_ONLY_EXTRA_LINES }
+}
+
 /** Harnesses whose `read_file` hands the hook the file's own text, unnumbered, where Claude Code numbers it: Gemini CLI and its fork Qwen Code return it as `llmContent` (gemini-cli-core 0.62.0 tools/read-file.js, qwen-code 0.24.7), and Grok's `FileContent` is taken the same way. A file line shaped like a `cat -n` row is file text on these, never a rendering. */
 type RawTextReadHarness = 'gemini' | 'qwen' | 'grok'
 
