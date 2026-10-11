@@ -1,5 +1,6 @@
 /** A formatter run, a patch application or a stash apply rewrites files without going through any edit tool, and the Bash post hook finds them by asking git for the working-tree status. When git runs past the hook's 5 s budget (exit -1 with timedOut, as on a loaded machine) the sweep used to name nothing and ask for nothing, so the index kept the pre-rewrite content with nothing in any log; it now asks the worker to reconcile the project and logs that, as the branch-switch block beside it does. `git restore` has the same gap one step earlier: it expands its pathspecs with `git ls-files` under the same budget, and a timed-out expansion used to name nothing just as silently, so it takes the same fallback. A git that never started (exit -1 without timedOut: missing, or a working directory that is gone) gets no request, since the worker needs git to sweep too. The status and ls-files answers are the seam: exit -1 with timedOut is what runGit returns for a spawn timeout and exit -1 without it for ENOENT (CAPTURE: Node 24.12 on Windows 11 spawnSync reports ETIMEDOUT and ENOENT), and 128 is git's "not a repository" (HAND-DERIVED from git's exit status); the expected queue contents are HAND-DERIVED from the command. */
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type * as UtilModule from '../src/util.js'
@@ -109,6 +110,27 @@ describe('the working-tree status sweep when git does not answer', () => {
     await formatterRun(dir)
 
     expect(dirty()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+    expect(requested()).toEqual([])
+    expect(workerLog()).toBe('')
+  })
+
+  // HAND-DERIVED: each row's queue is what the command rewrote in a repository holding a.txt (and sub/a.txt, committed), read off git's own pathspec and status semantics rather than the extractor; the hook runs after the command, so the setup writes the command's effect to disk first.
+  it.each([
+    { command: 'git restore -- .', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'one\n'), expected: ['a.txt', 'sub/a.txt'] },
+    { command: 'git stash pop', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'popped\n'), expected: ['a.txt'] },
+    { command: 'git apply fix.patch', effect: (d: string) => { writeFileSync(join(d, 'a.txt'), 'patched\n'); mkdirSync(join(d, 'lib')); writeFileSync(join(d, 'lib', 'new.ts'), 'export const n = 1\n') }, expected: ['a.txt', 'lib/new.ts'] },
+    { command: 'cd sub && git restore a.txt', effect: (d: string) => writeFileSync(join(d, 'sub', 'a.txt'), 'two\n'), expected: ['sub/a.txt'] },
+  ])('enqueues exactly the files `$command` rewrote, and asks for no reconcile', async ({ command, effect, expected }) => {
+    mkdirSync(join(dir, 'sub'))
+    writeFileSync(join(dir, 'sub', 'a.txt'), 'two\n')
+    execFileSync('git', ['add', 'sub/a.txt'], { cwd: dir, stdio: 'ignore' })
+    execFileSync('git', ['-c', 'user.email=t@t.t', '-c', 'user.name=t', 'commit', '-m', 'sub'], { cwd: dir, stdio: 'ignore' })
+    clearDirtyQueue()
+    effect(dir)
+
+    await bashRun(dir, command)
+
+    expect([...dirty()].sort()).toEqual(expected.map((rel) => foldPath(resolveIndexPath(rel, dir))).sort())
     expect(requested()).toEqual([])
     expect(workerLog()).toBe('')
   })

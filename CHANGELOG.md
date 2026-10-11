@@ -16,6 +16,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **A file that `git apply`, `git stash pop` or a formatter creates in a new folder is indexed.** After such a command, token-goat asks git which files changed. Git reported a new folder as just `lib/`, without naming the files in it, so a new `lib/new.ts` was never queued and stayed missing from symbol and read lookups. Each new file is now listed by name.
 - **pi, opencode and OpenClaw no longer stall for minutes when hook calls keep hanging.** These hosts run token-goat inside their own process, one hook call at a time. A call that never finished made each later call wait 120 seconds before it ran, so the waits added up call after call. Now the wait is paid once: a call queued behind one that already started without waiting runs at once, and calls go back to running one at a time as soon as nothing given up on is still running. The wait itself is now 65 seconds, still longer than the 60 seconds a document extraction may take.
 - **A repeat slice of a file that was already read whole is held back again.** A slice that lies wholly inside lines the model was already given is withheld as a repeat, as it was before. A slice of a file that was edited since is still allowed.
 - **The "you are paging through this file" notice and block now look at the slice being asked for.** Three slices in a row followed by a jump to a distant part of the file used to count as paging. They no longer do, so a jump to somewhere else is not blocked.

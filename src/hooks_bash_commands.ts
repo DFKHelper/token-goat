@@ -378,9 +378,9 @@ function expandGitPathspecs(specs: string[], gitDir: string): string[] {
     .map((rel) => resolveIndexPath(rel, repoRoot))
 }
 
-/** Every path git currently reports as changed or untracked, absolute. The fallback for rewrites whose file set is not on the command line (stash apply/pop, patch application, formatter runs). */
+/** Every path git currently reports as changed or untracked, absolute. The fallback for rewrites whose file set is not on the command line (stash apply/pop, patch application, formatter runs). Untracked files are listed one by one: plain porcelain folds a new directory into `dir/`, which names no file the index can take, so a patch that creates `lib/new.ts` enqueued nothing for it. */
 function workingTreeStatusPaths(gitDir: string): string[] {
-  const status = runGit(['status', '--porcelain'], { cwd: gitDir, timeoutMs: 5000 })
+  const status = runGit(['status', '--porcelain', '--untracked-files=all'], { cwd: gitDir, timeoutMs: 5000 })
   reconcileIfGitTimedOut(status, gitDir, 'status sweep', 'git status')
   if (status.exitCode !== 0) return []
   const repoRoot = gitRepoRoot(gitDir)
