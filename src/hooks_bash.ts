@@ -362,10 +362,10 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       hintPaths.push(hintPath)
       const sedDedupKey = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
       // Ranges served before the file changed on disk describe text that is no longer there, so they go before anything is measured against them, as the Read path drops them.
-      dropFileLineRangesIfChanged(sedDedupKey)
+      dropFileLineRangesIfChanged(sedDedupKey, event.agentId)
       // A range from line 1 to the last line is `cat` spelled another way, and gets `cat`'s answer: pricing it against a surgical read of the same lines finds no saving, since that read is the whole file too, so `awk 'NR>=1 && NR<=324'` over a 324-line, 54KB skill passed with no word while `cat` of it was refused. Checked before the range is recorded, so a refusal does not count the lines as served.
       const whole = singleLineRangeRead === null ? null : wholeFileRange(filePath, hintPath, hintCwd, ranges, tool)
-      if (whole !== null && findRangeOverlap(getFileLineRanges(sedDedupKey), whole.start, whole.end) === null) {
+      if (whole !== null && findRangeOverlap(getFileLineRanges(sedDedupKey, event.agentId), whole.start, whole.end) === null) {
         recordStat('session_hint', 0, 0)
         if (whole.cat.isSql) return pathHint(hintPath, sqlTableHint(hintPath, targetFor(hintPath, 'table'), whole.reason))
         const hint = surgicalHintFor(hintPath, whole.cat.isEnv, whole.cat.isConfig, whole.cat.isDoc, whole.cat.isXml, targetFor(hintPath, whole.cat.isEnv ? 'key' : undefined), whole.reason)
@@ -376,8 +376,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       // Recorded before the command runs, so only for a file that is there to be read: a range read of an absent file shows nothing, and Claude Code reports that failure to PostToolUseFailure alone, where nothing takes the range back, so once the file appeared a read of those lines was told they were already served.
       const onDisk = isFileAtIndexKey(sedDedupKey)
       for (const [start, end] of ranges) {
-        const priorOverlap = findRangeOverlap(getFileLineRanges(sedDedupKey), start, end)
-        if (onDisk) recordFileLineRange(sedDedupKey, start, end)
+        const priorOverlap = findRangeOverlap(getFileLineRanges(sedDedupKey, event.agentId), start, end)
+        if (onDisk) recordFileLineRange(sedDedupKey, start, end, event.agentId)
         if (priorOverlap !== null) {
           overlapHints.push(sedOverlapHint(hintPath, priorOverlap, start, end))
         } else {

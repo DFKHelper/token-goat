@@ -7,7 +7,9 @@ set -euo pipefail
 # Always anchor to git root so this script works whether lefthook invokes it
 # in-place or copies it to a temp location.
 SCRIPT_DIR="$(git rev-parse --show-toplevel)/.lefthook-scripts"
-LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/token-goat-pre-push.XXXXXX")"
+TMP_BASE="${TMPDIR:-/tmp}"
+[[ "$TMP_BASE" == "/tmp" && ! -d "/tmp" ]] && mkdir -p /tmp 2>/dev/null || true
+LOG_DIR="$(mktemp -d "${TMP_BASE}/token-goat-pre-push.XXXXXX")"
 
 run_check() {
   local name=$1

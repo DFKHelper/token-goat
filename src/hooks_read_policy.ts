@@ -85,7 +85,7 @@ export function evaluateFirstReadSymbolPolicy(ctx: ReadPolicyContext): ReadPolic
   if (firstReadSymbolPolicy === 'warn' && ctx.quiet) return { action: 'allow' }
 
   // A bounded small slice bypasses warning and denial.
-  if (ctx.window.isExplicitSlice && isSmallSlice(ctx.slice, firstReadSymbolBytes)) return { action: 'allow' }
+  if (ctx.window.isExplicitSlice && isSmallSlice(ctx.slice, firstReadSymbolBytes, ctx.fileSize)) return { action: 'allow' }
 
   // Obtain navigation evidence
   const evidence = ctx.navigationEvidence !== undefined
