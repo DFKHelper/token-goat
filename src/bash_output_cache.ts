@@ -4,6 +4,7 @@ import { readdirSync, readFileSync, statSync } from 'fs'
 import { resolve } from 'path'
 import { normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
+import { parsePorcelainZ } from './git_porcelain.js'
 import { registerReset } from './reset.js'
 import { runGit } from './util.js'
 import { storeBlob, loadBlob, isBlobStale } from './disk_cache.js'
@@ -84,7 +85,7 @@ export const isLintCommand = (cmd: string) => isCommandOfType(cmd, 'lintCommand'
 export const isNpmRunScriptCommand = (cmd: string) => isCommandOfType(cmd, 'npmRunScript')
 export const isCatCommand = (cmd: string) => isCommandOfType(cmd, 'catCommand')
 
-/** A `git status` or `git diff --stat` scoped to a specific path (`... -- <path>`) is byte-identical on every rerun until either HEAD changes or the working tree changes — exactly the condition the `gitMutable` fingerprint (HEAD sha + `git status --porcelain` hash, see gitStateFingerprintSync below) already invalidates on. `git diff` without `--stat` is excluded: a full unified diff can legitimately grow/shrink in ways a byte-exact recall would misrepresent as unchanged, so only the compact `--stat` summary form is considered cacheable here. Plain `git status` (no `--stat` flag exists for it) is always eligible once scoped. */
+/** A `git status` or `git diff --stat` scoped to a specific path (`... -- <path>`) is byte-identical on every rerun until either HEAD changes or the working tree changes — exactly the condition the `gitMutable` fingerprint (HEAD sha, `git status --porcelain`, and the stat of each path it lists, see gitStateFingerprintSync below) already invalidates on. `git diff` without `--stat` is excluded: a full unified diff can legitimately grow/shrink in ways a byte-exact recall would misrepresent as unchanged, so only the compact `--stat` summary form is considered cacheable here. Plain `git status` (no `--stat` flag exists for it) is always eligible once scoped. */
 export function isScopedGitStatusOrDiffStatCommand(cmd: string): boolean {
   if (!isCommandOfType(cmd, 'gitMutable')) return false
   if (!isCommandOfType(cmd, 'gitDiffScoped')) return false
@@ -92,17 +93,30 @@ export function isScopedGitStatusOrDiffStatCommand(cmd: string): boolean {
   return true
 }
 
-/** Fingerprint HEAD plus uncommitted working-tree state: HEAD sha and a hash of `git status --porcelain` (staged, unstaged, and untracked changes). HEAD sha alone only changes on a commit, so a plain edit to a tracked file -- never staged -- would otherwise leave the fingerprint unchanged and a cached git-diff/-status (or test/lint) result would keep being served as fresh after the tree it was computed against had already changed. Deliberately does NOT fold in `.git/index`'s mtime: `git status` can itself refresh the index's on-disk stat cache as a side effect (with no porcelain-visible change), so reading the index mtime around a `status` call is racy and would self-invalidate on the very next check even though nothing real changed. `git status --porcelain`'s output is the stable, logical signal and already a superset of what the index mtime covered. */
+/** Most changed paths whose stat {@link statusPathStats} folds in; past this the status listing alone stands for the rest, so a tree with a huge unignored folder costs a bounded number of stat calls per check. */
+const STATUS_STAT_CAP = 2000
+
+/** `path:mtimeMs:size` (or `path:-` once gone) for each path a `git status --porcelain -z` listing names, resolved against the repository root since porcelain paths always are. The listing says which files differ from HEAD, not what they hold now: a second edit to an already-modified file, or a new file beside another in an untracked folder, leaves it byte-identical. A rename's original path is not stat'd: it is gone, and the listing already names it. */
+function statusPathStats(root: string, porcelainZ: string): string {
+  const out: string[] = []
+  for (const { path: rel } of parsePorcelainZ(porcelainZ).slice(0, STATUS_STAT_CAP)) {
+    const st = statSync(resolve(root, rel), { throwIfNoEntry: false })
+    out.push(st ? `${rel}:${st.mtimeMs}:${st.size}` : `${rel}:-`)
+  }
+  return out.join('\x00')
+}
+
+/** Fingerprint HEAD plus uncommitted working-tree state: HEAD sha, `git status --porcelain` with every untracked file listed by name, and the mtime and size of each listed path (see {@link statusPathStats}). HEAD sha alone only changes on a commit, so a plain edit to a tracked file -- never staged -- would otherwise leave the fingerprint unchanged and a cached git-diff/-status (or test/lint) result would keep being served as fresh after the tree it was computed against had already changed. Deliberately does NOT fold in `.git/index`'s mtime: `git status` can itself refresh the index's on-disk stat cache as a side effect (with no porcelain-visible change), so reading the index mtime around a `status` call is racy and would self-invalidate on the very next check even though nothing real changed. `git status --porcelain`'s output is the stable, logical signal and already a superset of what the index mtime covered. */
 function gitStateFingerprintSync(cwd: string): string | null {
   try {
-    const headResult = runGit(['rev-parse', 'HEAD'], { cwd })
+    const headResult = runGit(['rev-parse', '--show-toplevel', 'HEAD'], { cwd })
     if (headResult.exitCode !== 0) return null
-    const headSha = headResult.stdout.trim()
+    const [root = '', headSha = ''] = headResult.stdout.trim().split(/\r?\n/)
 
     let statusHash = ''
-    const statusResult = runGit(['status', '--porcelain'], { cwd })
+    const statusResult = runGit(['status', '--porcelain', '-z', '--untracked-files=all'], { cwd })
     if (statusResult.exitCode === 0) {
-      statusHash = shortFingerprint(statusResult.stdout)
+      statusHash = shortFingerprint(`${statusResult.stdout}\x00${statusPathStats(root, statusResult.stdout)}`)
     }
 
     const key = `${headSha}\x00${statusHash}`

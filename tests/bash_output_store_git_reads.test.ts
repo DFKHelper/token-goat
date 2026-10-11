@@ -1,4 +1,4 @@
-/** Storing the output of a git-mutable command fingerprints the repository's state (HEAD plus `git status --porcelain`), which costs two git spawns. The store used to read that state three times for one call (the output id, the command-hash key, the stored fingerprint), so every cached `git status` paid six spawns, and under a loaded machine's ~2.5 s spawn the scoped-status recall test in hooks_bash.test.ts ran into its 60 s limit. Expected values below are HAND-DERIVED: two spawns for one store, and an id equal to the one bashOutputIdSync names for the same inputs. */
+/** Storing the output of a git-mutable command fingerprints the repository's state (HEAD plus `git status --porcelain` and the stat of each path it lists), which costs two git spawns. The store used to read that state three times for one call (the output id, the command-hash key, the stored fingerprint), so every cached `git status` paid six spawns, and under a loaded machine's ~2.5 s spawn the scoped-status recall test in hooks_bash.test.ts ran into its 60 s limit. Expected values below are HAND-DERIVED: two spawns for one store, and an id equal to the one bashOutputIdSync names for the same inputs. */
 import type * as UtilModule from '../src/util.js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -14,8 +14,8 @@ import { clearModuleCaches } from '../src/reset.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
 
 const GIT_STATE_READS = [
-  ['rev-parse', 'HEAD'],
-  ['status', '--porcelain'],
+  ['rev-parse', '--show-toplevel', 'HEAD'],
+  ['status', '--porcelain', '-z', '--untracked-files=all'],
 ]
 
 beforeEach(() => {

@@ -497,6 +497,29 @@ describe('gitStateFingerprintSync — uncommitted working-tree changes (M45 regr
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }
   })
+
+  // HAND-DERIVED: each change leaves `git status --porcelain` byte-identical (a.txt stays ` M a.txt`, an untracked folder stays `lib/`), so only the content of the listed files tells the two trees apart; the second write differs in size, so the check holds whatever the filesystem's mtime granularity.
+  it.each([
+    { name: 'an already-modified file is edited again', runIn: '.', before: (d: string) => fs.writeFileSync(path.join(d, 'a.txt'), 'two\n'), change: (d: string) => fs.writeFileSync(path.join(d, 'a.txt'), 'three three\n') },
+    { name: 'a second file lands in an already-untracked folder', runIn: '.', before: (d: string) => { fs.mkdirSync(path.join(d, 'lib')); fs.writeFileSync(path.join(d, 'lib', 'one.ts'), 'export const one = 1\n') }, change: (d: string) => fs.writeFileSync(path.join(d, 'lib', 'two.ts'), 'export const two = 2\n') },
+    { name: 'a file in an already-untracked folder is edited again', runIn: '.', before: (d: string) => { fs.mkdirSync(path.join(d, 'lib')); fs.writeFileSync(path.join(d, 'lib', 'one.ts'), 'export const one = 1\n') }, change: (d: string) => fs.writeFileSync(path.join(d, 'lib', 'one.ts'), 'export const one = 11111\n') },
+    { name: 'an already-modified file at the repository root is edited again while the command ran in a subfolder', runIn: 'sub', before: (d: string) => { fs.mkdirSync(path.join(d, 'sub')); fs.writeFileSync(path.join(d, 'sub', 'keep.txt'), 'k\n'); fs.writeFileSync(path.join(d, 'a.txt'), 'two\n') }, change: (d: string) => fs.writeFileSync(path.join(d, 'a.txt'), 'three three\n') },
+  ])('flags a cached run of `npm test` as stale when $name', async ({ runIn, before, change }) => {
+    const tmpDir = initGitRepoWithFile('tg-fp-gitwt-content-')
+    try {
+      before(tmpDir)
+      const cwd = path.join(tmpDir, runIn)
+      const id = await storeBashOutput('npm test', 'ok', 0, cwd)
+      const entry = getBashOutput(id)
+      expect(isBashEntryStale(entry!, 'npm test', cwd)).toBe(false)
+
+      change(tmpDir)
+
+      expect(isBashEntryStale(entry!, 'npm test', cwd)).toBe(true)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('computeBashFingerprints coverage for common monitored commands (M46 regression)', () => {

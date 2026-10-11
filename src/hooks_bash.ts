@@ -712,7 +712,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     }
   }
 
-  // Scoped git status / git diff --stat recall — `git status --porcelain -- <path>` or `git diff --stat -- <path>` is byte-identical on every rerun until HEAD moves or the working tree changes. The `gitMutable` fingerprint already attached in computeBashFingerprints (HEAD sha + `git status --porcelain` hash) invalidates the instant either happens — including an edit to the scoped path recorded through the normal postEditHandler/dirty-queue flow, since that edit shows up in `git status --porcelain` regardless of whether the reindex queue has drained yet — so this reuses the same staleness check as monitoring/curl/gh-api recall above rather than a bespoke one.
+  // Scoped git status / git diff --stat recall — `git status --porcelain -- <path>` or `git diff --stat -- <path>` is byte-identical on every rerun until HEAD moves or the working tree changes. The `gitMutable` fingerprint already attached in computeBashFingerprints (HEAD sha, `git status --porcelain`, and the stat of each path it lists) invalidates the instant either happens — including an edit to the scoped path recorded through the normal postEditHandler/dirty-queue flow, since that edit changes the listing or the listed path's mtime and size regardless of whether the reindex queue has drained yet — so this reuses the same staleness check as monitoring/curl/gh-api recall above rather than a bespoke one.
   if (isScopedGitStatusOrDiffStatCommand(cmd)) {
     const gitScopedHash = bashRecallKey(cmd, runDir)
     const gitScopedOutputId = getBashOutputId(gitScopedHash)
