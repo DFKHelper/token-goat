@@ -17,14 +17,15 @@ import { workerErrorLogPath } from '../src/worker_lifecycle.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
-const seam = vi.hoisted(() => ({ status: null as { exitCode: number; timedOut?: true } | null, lsFiles: null as { exitCode: number; timedOut?: true } | null }))
+type SeamAnswer = { exitCode: number; timedOut?: true; stdout?: string } | null
+const seam = vi.hoisted(() => ({ status: null as SeamAnswer, lsFiles: null as SeamAnswer, revParse: null as SeamAnswer }))
 
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<typeof UtilModule>()
   return {
     ...actual,
     runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => {
-      const answer = args[0] === 'status' ? seam.status : args[0] === 'ls-files' ? seam.lsFiles : null
+      const answer = args[0] === 'status' ? seam.status : args[0] === 'ls-files' ? seam.lsFiles : args[0] === 'rev-parse' ? seam.revParse : null
       return answer !== null ? { stdout: '', stderr: 'no answer', ...answer } : actual.runGit(args, opts?.timeoutMs === undefined ? opts : { ...opts, timeoutMs: 120_000 })
     },
   }
@@ -56,12 +57,14 @@ describe('the working-tree status sweep when git does not answer', () => {
     rmSync(workerErrorLogPath(dataDir()), { force: true })
     seam.status = null
     seam.lsFiles = null
+    seam.revParse = null
     dir = gitRepoWithCommit()
   })
 
   afterEach(() => {
     seam.status = null
     seam.lsFiles = null
+    seam.revParse = null
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -106,32 +109,77 @@ describe('the working-tree status sweep when git does not answer', () => {
     expect(workerLog()).toBe('')
   })
 
-  it('enqueues the rewritten file and asks for no reconcile when the status read answers', async () => {
+  it('enqueues the rewritten file and asks the worker to reconcile, without logging, when the status read answers', async () => {
     await formatterRun(dir)
 
     expect(dirty()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
-    expect(requested()).toEqual([])
+    expect(requested()).toEqual([foldPath(normalizePath(dir))])
     expect(workerLog()).toBe('')
   })
 
-  // HAND-DERIVED: each row's queue is what the command rewrote in a repository holding a.txt (and sub/a.txt, committed), read off git's own pathspec and status semantics rather than the extractor; the hook runs after the command, so the setup writes the command's effect to disk first.
+  const git = (d: string, ...args: string[]): void => {
+    execFileSync('git', ['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', ...args], { cwd: d, stdio: 'ignore' })
+  }
+
+  // HAND-DERIVED: each row's queue is what the command rewrote in a repository holding a.txt, sub/a.txt and café.ts (committed), read off git's own pathspec and status semantics rather than the extractor; the hook runs after the command, so the setup writes the command's effect to disk first. A status sweep asks for a reconcile whatever it lists, since a file put back to its committed content is on no listing; a `git restore` names its files and needs none.
   it.each([
-    { command: 'git restore -- .', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'one\n'), expected: ['a.txt', 'sub/a.txt'] },
-    { command: 'git stash pop', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'popped\n'), expected: ['a.txt'] },
-    { command: 'git apply fix.patch', effect: (d: string) => { writeFileSync(join(d, 'a.txt'), 'patched\n'); mkdirSync(join(d, 'lib')); writeFileSync(join(d, 'lib', 'new.ts'), 'export const n = 1\n') }, expected: ['a.txt', 'lib/new.ts'] },
-    { command: 'cd sub && git restore a.txt', effect: (d: string) => writeFileSync(join(d, 'sub', 'a.txt'), 'two\n'), expected: ['sub/a.txt'] },
-  ])('enqueues exactly the files `$command` rewrote, and asks for no reconcile', async ({ command, effect, expected }) => {
+    { command: 'git restore -- .', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'one\n'), expected: ['a.txt', 'sub/a.txt', 'café.ts'], reconcile: false },
+    { command: 'git restore café.ts', effect: (d: string) => writeFileSync(join(d, 'café.ts'), 'export const c = 1\n'), expected: ['café.ts'], reconcile: false },
+    { command: 'cd sub && git restore a.txt', effect: (d: string) => writeFileSync(join(d, 'sub', 'a.txt'), 'two\n'), expected: ['sub/a.txt'], reconcile: false },
+    { command: 'git stash pop', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'popped\n'), expected: ['a.txt'], reconcile: true },
+    { command: 'git apply fix.patch', effect: (d: string) => { writeFileSync(join(d, 'a.txt'), 'patched\n'); mkdirSync(join(d, 'lib')); writeFileSync(join(d, 'lib', 'new.ts'), 'export const n = 1\n') }, expected: ['a.txt', 'lib/new.ts'], reconcile: true },
+    { command: 'git apply fix.patch', effect: (d: string) => { mkdirSync(join(d, 'bücher')); writeFileSync(join(d, 'bücher', 'ünï.ts'), 'export const u = 1\n') }, expected: ['bücher/ünï.ts'], reconcile: true },
+    { command: 'git stash pop', effect: (d: string) => rmSync(join(d, 'a.txt')), expected: ['a.txt'], reconcile: true },
+    { command: 'git stash apply', effect: (d: string) => git(d, 'mv', 'a.txt', 'renamed.txt'), expected: ['a.txt', 'renamed.txt'], reconcile: true },
+    { command: 'git stash', effect: () => {}, expected: [], reconcile: true },
+    { command: 'git stash -u && echo done', effect: () => {}, expected: [], reconcile: true },
+    { command: 'git stash list', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'edited earlier\n'), expected: [], reconcile: false },
+  ])('enqueues exactly the files `$command` rewrote ($expected)', async ({ command, effect, expected, reconcile }) => {
     mkdirSync(join(dir, 'sub'))
     writeFileSync(join(dir, 'sub', 'a.txt'), 'two\n')
-    execFileSync('git', ['add', 'sub/a.txt'], { cwd: dir, stdio: 'ignore' })
-    execFileSync('git', ['-c', 'user.email=t@t.t', '-c', 'user.name=t', 'commit', '-m', 'sub'], { cwd: dir, stdio: 'ignore' })
+    writeFileSync(join(dir, 'café.ts'), 'export const c = 1\n')
+    git(dir, 'add', 'sub/a.txt', 'café.ts')
+    git(dir, 'commit', '-m', 'sub')
     clearDirtyQueue()
     effect(dir)
 
     await bashRun(dir, command)
 
     expect([...dirty()].sort()).toEqual(expected.map((rel) => foldPath(resolveIndexPath(rel, dir))).sort())
-    expect(requested()).toEqual([])
+    expect(requested()).toEqual(reconcile ? [foldPath(normalizePath(dir))] : [])
     expect(workerLog()).toBe('')
+  })
+
+  // HAND-DERIVED: porcelain v1 `-z` names a path as written, so a name holding ` -> ` is one path; Windows cannot create such a file, so the status answer is supplied directly and the path, absent from disk, is enqueued for the drain to drop.
+  it('takes a status entry whose name holds ` -> ` as one path', async () => {
+    seam.status = { exitCode: 0, stdout: '?? old -> new.ts\0' }
+
+    await formatterRun(dir)
+
+    expect(dirty()).toEqual([foldPath(resolveIndexPath('old -> new.ts', dir))])
+  })
+
+  it('enqueues at most 2000 swept paths, and logs that the reconcile covers the rest', async () => {
+    seam.status = { exitCode: 0, stdout: Array.from({ length: 2001 }, (_, i) => `?? gone${i}.ts\0`).join('') }
+
+    await formatterRun(dir)
+
+    expect(dirty()).toHaveLength(2000)
+    expect(dirty()).not.toContain(foldPath(resolveIndexPath('gone2000.ts', dir)))
+    expect(requested()).toEqual([foldPath(normalizePath(dir))])
+    expect(workerLog()).toMatch(/post-bash status sweep in .*: git listed 2001 paths, so only the first 2000 were queued; asked the worker to reconcile the project/)
+  })
+
+  it.each([
+    { name: 'a status sweep', run: (d: string) => formatterRun(d), answer: 'status' as const, stdout: ' M a.txt\0' },
+    { name: 'a git restore', run: (d: string) => bashRun(d, 'git restore a.txt'), answer: 'lsFiles' as const, stdout: 'a.txt\0' },
+  ])('enqueues nothing and asks for a reconcile when $name lists files but git cannot name the repository root', async ({ run, answer, stdout }) => {
+    seam[answer] = { exitCode: 0, stdout }
+    seam.revParse = { exitCode: -1, timedOut: true }
+
+    await run(dir)
+
+    expect(dirty()).toEqual([])
+    expect(requested()).toEqual([foldPath(normalizePath(dir))])
   })
 })

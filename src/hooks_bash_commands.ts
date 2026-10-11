@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { displaySafeText, normalizePath, resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { runGit } from './util.js'
+import { parsePorcelainZ } from './git_porcelain.js'
 import type { GitResult } from './util.js'
 import { dataDir } from './constants.js'
 import { appendWorkerErrorLog } from './worker_lifecycle.js'
@@ -242,8 +243,8 @@ const GIT_RESTORE_RE = /^\s*git\s+restore\b/i
 /** `git restore --staged <file>` only rewrites the index, leaving working-tree content untouched. */
 const GIT_RESTORE_STAGED_ONLY_RE = /(?:^|\s)(?:--staged|-S)(?:\s|$)/
 
-/** Matches `git stash pop` / `git stash apply`. */
-const GIT_STASH_APPLY_RE = /^\s*git\s+stash\s+(?:pop|apply)\b/i
+/** Matches the `git stash` forms that rewrite the working tree: `pop` and `apply` put changes back, and a bare `git stash`, `push`, `save` or one taking only options puts files back to their committed content. `list`, `show`, `drop` and `clear` touch no file. */
+const GIT_STASH_REWRITE_RE = /^\s*git\s+stash(?:\s+(?:pop|apply|push|save)\b|\s+-|(?=\s*(?:$|[;&|])))/i
 
 /** Matches working-tree rewriters whose changed paths are determined by patch contents. */
 const PATCH_APPLY_SEGMENT_RE = /^\s*(?:\S*[/\\])?(?:git\s+apply|patch)\b/i
@@ -346,12 +347,7 @@ function extractGitRestorePathspecs(cmd: string): string[] {
   return specs
 }
 
-/** The repo top-level for `gitDir`, falling back to `gitDir` itself outside a repo. `git diff`/`status --porcelain`/`ls-files --full-name` all report paths relative to this, never to the invoking directory, so a monorepo subpackage cwd must not be used as the resolution base. */
-export function gitRepoRoot(gitDir: string): string {
-  return gitRepoRootOrNull(gitDir) ?? gitDir
-}
-
-/** The repository top-level for `gitDir`, or null when git could not name one (not a repository, or the read failed or timed out), so a caller that must not guess can tell that apart from a root that is `gitDir` itself. */
+/** The repository top-level for `gitDir`, or null when git could not name one (not a repository, or the read failed or timed out), so a caller that must not guess can tell that apart from a root that is `gitDir` itself. `git diff`/`status --porcelain`/`ls-files --full-name` all report paths relative to this, never to the invoking directory, so a monorepo subpackage cwd must not be used as the resolution base. */
 export function gitRepoRootOrNull(gitDir: string): string | null {
   const toplevel = runGit(['rev-parse', '--show-toplevel'], { cwd: gitDir, timeoutMs: 5000 })
   return toplevel.exitCode === 0 && toplevel.stdout.trim() !== '' ? toplevel.stdout.trim() : null
@@ -367,42 +363,37 @@ function reconcileIfGitTimedOut(result: GitResult, gitDir: string, what: string,
 /** Expand `git restore` pathspecs (which may be `.`, a directory, or a glob) into the concrete tracked files git itself matches, repo-root-relative. */
 function expandGitPathspecs(specs: string[], gitDir: string): string[] {
   if (specs.length === 0) return []
-  const listed = runGit(['ls-files', '--full-name', '--', ...specs], { cwd: gitDir, timeoutMs: 5000 })
+  // `-z` names each path as written; without it a non-ASCII name comes back octal-quoted and names no file.
+  const listed = runGit(['ls-files', '-z', '--full-name', '--', ...specs], { cwd: gitDir, timeoutMs: 5000 })
   reconcileIfGitTimedOut(listed, gitDir, 'git restore', 'git ls-files')
   if (listed.exitCode !== 0) return []
-  const repoRoot = gitRepoRoot(gitDir)
+  const repoRoot = gitRepoRootOrNull(gitDir)
+  if (repoRoot === null) {
+    requestReconcileSafe(gitDir)
+    return []
+  }
   return listed.stdout
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0)
+    .split('\x00')
+    .filter((rel) => rel.length > 0)
     .map((rel) => resolveIndexPath(rel, repoRoot))
 }
 
-/** Every path git currently reports as changed or untracked, absolute. The fallback for rewrites whose file set is not on the command line (stash apply/pop, patch application, formatter runs). Untracked files are listed one by one: plain porcelain folds a new directory into `dir/`, which names no file the index can take, so a patch that creates `lib/new.ts` enqueued nothing for it. */
+/** The most paths one status sweep enqueues; past it the worker's reconcile, requested on every sweep, finds the rest of the tracked files. */
+const STATUS_SWEEP_CAP = 2000
+
+/** Every path git currently reports as changed or untracked, plus the source of each rename, absolute. The fallback for rewrites whose file set is not on the command line (stash, patch application, formatter runs). Read with `-z`, which names each path as written: plain porcelain octal-quotes a non-ASCII name and joins a rename as `old -> new`, which a name holding ` -> ` makes ambiguous. Untracked files are listed one by one, since plain porcelain folds a new directory into `dir/`, which names no file the index can take. A file the rewrite put back to its committed content is on no listing at all, so every sweep also asks the worker to reconcile the project. */
 function workingTreeStatusPaths(gitDir: string): string[] {
-  const status = runGit(['status', '--porcelain', '--untracked-files=all'], { cwd: gitDir, timeoutMs: 5000 })
+  const status = runGit(['status', '--porcelain', '-z', '--untracked-files=all'], { cwd: gitDir, timeoutMs: 5000 })
   reconcileIfGitTimedOut(status, gitDir, 'status sweep', 'git status')
   if (status.exitCode !== 0) return []
-  const repoRoot = gitRepoRoot(gitDir)
-  const out: string[] = []
-  for (const line of status.stdout.split('\n')) {
-    if (line.length < 4) continue
-    let rel = line.slice(3).trim()
-    if (rel.length === 0) continue
-    // A rename entry reads `old -> new`; only the destination exists on disk to be indexed.
-    const arrow = rel.lastIndexOf(' -> ')
-    if (arrow !== -1) rel = rel.slice(arrow + 4)
-    // Porcelain v1 C-quotes a path containing special characters; the quoted form is JSON-compatible enough to unescape directly, and an unparseable one is better skipped than enqueued as a literal-backslash path that matches nothing.
-    if (rel.startsWith('"')) {
-      try {
-        rel = JSON.parse(rel) as string
-      } catch {
-        continue
-      }
-    }
-    out.push(resolveIndexPath(rel, repoRoot))
+  const recorded = requestReconcileSafe(gitDir)
+  const repoRoot = gitRepoRootOrNull(gitDir)
+  if (repoRoot === null) return []
+  const rels = parsePorcelainZ(status.stdout).flatMap((e) => (e.origPath === undefined ? [e.path] : [e.path, e.origPath]))
+  if (rels.length > STATUS_SWEEP_CAP) {
+    appendWorkerErrorLog(dataDir(), `${new Date().toISOString()} post-bash status sweep in ${gitDir}: git listed ${rels.length} paths, so only the first ${STATUS_SWEEP_CAP} were queued; ${recorded ? 'asked the worker to reconcile the project for the rest of the tracked files' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
   }
-  return out
+  return rels.slice(0, STATUS_SWEEP_CAP).map((rel) => resolveIndexPath(rel, repoRoot))
 }
 
 /** Enqueue one rewritten path, filtering the shapes that must never reach the queue: a discard sink, a directory, and anything not actually on disk (a redirect whose target never materialized, or a path parsed out of a command that ran somewhere else). A path under the OS temp dir is refused by enqueueDirtyPathSafe itself, for this detector and the git-mutation one alike. */
@@ -420,7 +411,7 @@ function enqueueRewrittenPath(absPath: string): void {
 export function enqueueNonHeadMovingRewrites(cmd: string, runDir: string): void {
   const atRunDir = (f: string): string => resolveIndexPath(f, runDir)
   const paths: string[] = []
-  let needsStatusSweep = GIT_STASH_APPLY_RE.test(cmd)
+  let needsStatusSweep = GIT_STASH_REWRITE_RE.test(cmd)
   if (GIT_RESTORE_RE.test(cmd) && !GIT_RESTORE_STAGED_ONLY_RE.test(cmd)) {
     paths.push(...expandGitPathspecs(extractGitRestorePathspecs(cmd), runDir))
   }
@@ -431,8 +422,19 @@ export function enqueueNonHeadMovingRewrites(cmd: string, runDir: string): void 
     for (const f of extractTeeFiles(segment)) paths.push(atRunDir(f))
     for (const f of extractRedirectTargets(segment)) paths.push(atRunDir(f))
   }
-  if (needsStatusSweep) paths.push(...workingTreeStatusPaths(runDir))
   for (const p of paths) enqueueRewrittenPath(p)
+  if (needsStatusSweep) for (const p of workingTreeStatusPaths(runDir)) enqueueSweptPath(p)
+}
+
+/** Enqueue a path the status sweep listed: a file to reindex, or a path that is no longer on disk (deleted, or the source of a rename) so the drain drops its rows. Anything else, such as a submodule directory, names nothing the index holds. */
+function enqueueSweptPath(absPath: string): void {
+  try {
+    if (!statSync(absPath).isFile()) return
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') return
+  }
+  enqueueDirtyPathSafe(absPath, { alreadyResolved: true })
 }
 
 export const PIPELINE_PASSTHROUGH_HEADS = new Set(['head', 'tail', 'cat', 'tee', 'less', 'more'])
