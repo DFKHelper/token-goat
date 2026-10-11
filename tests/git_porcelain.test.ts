@@ -4,12 +4,12 @@ import { parsePorcelainZ } from '../src/git_porcelain.js'
 
 describe('parsePorcelainZ', () => {
   it.each([
-    ['a modified and an untracked file', ' M a.txt\x00?? new/b.txt\x00', [{ path: 'a.txt' }, { path: 'new/b.txt' }]],
+    ['a modified and an untracked file', ' M a.txt\x00?? new/b.txt\x00', [{ path: 'a.txt' }, { path: 'new/b.txt', untracked: true }]],
     ['a staged rename, original path second', 'R  new.txt\x00old.txt\x00 M c.txt\x00', [{ path: 'new.txt', origPath: 'old.txt' }, { path: 'c.txt' }]],
-    ['a worktree rename (R in the second column)', ' R moved.txt\x00orig.txt\x00?? d.txt\x00', [{ path: 'moved.txt', origPath: 'orig.txt' }, { path: 'd.txt' }]],
+    ['a worktree rename (R in the second column)', ' R moved.txt\x00orig.txt\x00?? d.txt\x00', [{ path: 'moved.txt', origPath: 'orig.txt' }, { path: 'd.txt', untracked: true }]],
     ['a copy', 'C  copy.txt\x00src.txt\x00', [{ path: 'copy.txt', origPath: 'src.txt' }]],
-    ['a name holding the -> arrow', '?? a -> b.txt\x00', [{ path: 'a -> b.txt' }]],
-    ['a non-ASCII name, unquoted', '?? dir/café.txt\x00', [{ path: 'dir/café.txt' }]],
+    ['a name holding the -> arrow', '?? a -> b.txt\x00', [{ path: 'a -> b.txt', untracked: true }]],
+    ['a non-ASCII name, unquoted', '?? dir/café.txt\x00', [{ path: 'dir/café.txt', untracked: true }]],
     ['an empty listing', '', []],
   ])('%s', (_name, stdout, expected) => {
     expect(parsePorcelainZ(stdout)).toEqual(expected)

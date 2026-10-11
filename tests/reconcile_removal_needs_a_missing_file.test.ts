@@ -81,7 +81,42 @@ describe('reconcileProject removal requires evidence the file is gone', () => {
 
   it('leaves a live untracked row alone', () => {
     // Calibration in the other direction: the fixture must not report a deletion when nothing failed, or the per-code table below would be indistinguishable from a sweep that never removes anything.
-    expect(sweep().removed, 'a live untracked file was reported as deleted').toEqual([])
+    const r = sweep()
+    expect(r.removed, 'a live untracked file was reported as deleted').toEqual([])
+    expect(r.changed, 'an untouched untracked file was reported as changed').toEqual([])
+  })
+
+  it('reports a live untracked row whose content changed on disk', () => {
+    // HAND-DERIVED: the row was indexed from `export const ghost = 2`, so any other bytes at a later mtime are drift; nothing but this pass revisits a file git does not list.
+    fs.writeFileSync(ghostPath, 'export const ghost = 3\n')
+    const later = new Date(Date.now() + 5000)
+    fs.utimesSync(ghostPath, later, later)
+    const r = sweep()
+    expect(r.budgetExhausted, 'the sweep was truncated, which skips this pass; this case proves nothing').toBe(false)
+    expect(basenames(r.changed), 'an untracked file rewritten on disk was never compared against its index row').toContain('ghost.ts')
+    expect(r.removed).toEqual([])
+  })
+
+  it('counts a live untracked row whose timestamp moved but content did not as timestamp-only', () => {
+    // HAND-DERIVED: the bytes are rewritten unchanged at a later mtime, so the fingerprint matches the row and only the timestamp counter may move.
+    const before = sweep().mtimeOnly
+    fs.writeFileSync(ghostPath, fs.readFileSync(ghostPath))
+    const later = new Date(Date.now() + 5000)
+    fs.utimesSync(ghostPath, later, later)
+    const r = sweep()
+    expect(r.budgetExhausted, 'the sweep was truncated, which skips this pass; this case proves nothing').toBe(false)
+    expect(r.mtimeOnly, 'a touched but identical untracked file was not counted as timestamp-only').toBe(before + 1)
+    expect(r.changed).toEqual([])
+    expect(r.removed).toEqual([])
+  })
+
+  it('reports a row whose path is now a directory as removed', () => {
+    // HAND-DERIVED: a directory at an indexed file's path means the file is gone; the stat succeeds, so only the isFile check can tell.
+    fs.rmSync(ghostPath)
+    fs.mkdirSync(ghostPath)
+    const r = sweep()
+    expect(r.budgetExhausted, 'the sweep was truncated, which suppresses deletions outright; this case proves nothing').toBe(false)
+    expect(basenames(r.removed), 'a directory standing where an indexed file was kept the row').toContain('ghost.ts')
   })
 
   for (const code of ['ENOENT', 'ENOTDIR']) {

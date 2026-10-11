@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import type * as DirtyQueueModule from '../src/dirty_queue.js'
 import type * as UtilModule from '../src/util.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -17,8 +18,13 @@ import { workerErrorLogPath } from '../src/worker_lifecycle.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
-type SeamAnswer = { exitCode: number; timedOut?: true; stdout?: string } | null
-const seam = vi.hoisted(() => ({ status: null as SeamAnswer, lsFiles: null as SeamAnswer, revParse: null as SeamAnswer }))
+type SeamAnswer = { exitCode: number; timedOut?: true; stdout?: string; stderr?: string } | null
+const seam = vi.hoisted(() => ({ status: null as SeamAnswer, lsFiles: null as SeamAnswer, revParse: null as SeamAnswer, reconcileUnrecorded: false }))
+
+vi.mock('../src/dirty_queue.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof DirtyQueueModule>()
+  return { ...actual, appendReconcileRequest: (dir: string, projectDir: string) => (seam.reconcileUnrecorded ? false : actual.appendReconcileRequest(dir, projectDir)) }
+})
 
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<typeof UtilModule>()
@@ -58,6 +64,7 @@ describe('the working-tree status sweep when git does not answer', () => {
     seam.status = null
     seam.lsFiles = null
     seam.revParse = null
+    seam.reconcileUnrecorded = false
     dir = gitRepoWithCommit()
   })
 
@@ -65,6 +72,7 @@ describe('the working-tree status sweep when git does not answer', () => {
     seam.status = null
     seam.lsFiles = null
     seam.revParse = null
+    seam.reconcileUnrecorded = false
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -81,7 +89,8 @@ describe('the working-tree status sweep when git does not answer', () => {
   it('asks the worker to reconcile the project, and logs it, when the ls-files read that expands a git restore pathspec runs past its budget', async () => {
     seam.lsFiles = { exitCode: -1, timedOut: true }
 
-    await bashRun(dir, 'git restore a.txt')
+    // A glob, since a literal name is enqueued as written whatever ls-files says.
+    await bashRun(dir, "git restore '*.txt'")
 
     expect(requested()).toEqual([foldPath(normalizePath(dir))])
     expect(dirty()).toEqual([])
@@ -109,6 +118,27 @@ describe('the working-tree status sweep when git does not answer', () => {
     expect(workerLog()).toBe('')
   })
 
+  // CAPTURE: Node v24.12.0 on Windows 11, spawnSync('git', ['log', '--oneline', '-50'], { maxBuffer: 64 }) reported error.code ENOBUFS with the message "spawnSync git ENOBUFS", which runGit hands back as stderr with exit -1 and no timedOut.
+  it('asks the worker to reconcile the project, and logs it, when git status lists more than the output buffer holds', async () => {
+    seam.status = { exitCode: -1, stderr: 'spawnSync git ENOBUFS' }
+
+    await formatterRun(dir)
+
+    expect(requested()).toEqual([foldPath(normalizePath(dir))])
+    expect(dirty()).toEqual([])
+    expect(workerLog()).toMatch(/post-bash status sweep in .*: git status listed more than the output buffer holds; asked the worker to reconcile the project/)
+  })
+
+  it('logs that a file the sweep could not see may stay stale when the reconcile request cannot be recorded', async () => {
+    seam.reconcileUnrecorded = true
+
+    await formatterRun(dir)
+
+    expect(dirty()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+    expect(requested()).toEqual([])
+    expect(workerLog()).toMatch(/post-bash status sweep in .*: could not record a reconcile request, so a file this sweep could not see may stay stale until the next index run/)
+  })
+
   it('enqueues the rewritten file and asks the worker to reconcile, without logging, when the status read answers', async () => {
     await formatterRun(dir)
 
@@ -122,7 +152,7 @@ describe('the working-tree status sweep when git does not answer', () => {
   }
 
   // HAND-DERIVED: each row's queue is what the command rewrote in a repository holding a.txt, sub/a.txt and café.ts (committed), read off git's own pathspec and status semantics rather than the extractor; the hook runs after the command, so the setup writes the command's effect to disk first. A status sweep asks for a reconcile whatever it lists, since a file put back to its committed content is on no listing; a `git restore` names its files and needs none.
-  it.each([
+  const rewriteRows: Array<{ command: string; effect: (d: string) => void; expected: string[]; reconcile: boolean; reconcileIn?: string }> = [
     { command: 'git restore -- .', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'one\n'), expected: ['a.txt', 'sub/a.txt', 'café.ts'], reconcile: false },
     { command: 'git restore café.ts', effect: (d: string) => writeFileSync(join(d, 'café.ts'), 'export const c = 1\n'), expected: ['café.ts'], reconcile: false },
     { command: 'cd sub && git restore a.txt', effect: (d: string) => writeFileSync(join(d, 'sub', 'a.txt'), 'two\n'), expected: ['sub/a.txt'], reconcile: false },
@@ -134,7 +164,20 @@ describe('the working-tree status sweep when git does not answer', () => {
     { command: 'git stash', effect: () => {}, expected: [], reconcile: true },
     { command: 'git stash -u && echo done', effect: () => {}, expected: [], reconcile: true },
     { command: 'git stash list', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'edited earlier\n'), expected: [], reconcile: false },
-  ])('enqueues exactly the files `$command` rewrote ($expected)', async ({ command, effect, expected, reconcile }) => {
+    { command: 'echo ready && git stash', effect: () => {}, expected: [], reconcile: true },
+    { command: 'git stash list && git stash pop', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'popped\n'), expected: ['a.txt'], reconcile: true },
+    { command: 'GIT_TRACE=0 git stash pop', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'popped\n'), expected: ['a.txt'], reconcile: true },
+    { command: 'git status && GIT_TRACE=0 git stash pop', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'popped\n'), expected: ['a.txt'], reconcile: true },
+    { command: 'git -c core.quotepath=off stash', effect: () => {}, expected: [], reconcile: true },
+    { command: 'git -C sub stash pop', effect: (d: string) => writeFileSync(join(d, 'sub', 'a.txt'), 'popped\n'), expected: ['sub/a.txt'], reconcile: true, reconcileIn: 'sub' },
+    { command: 'git stash -h', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'edited earlier\n'), expected: [], reconcile: false },
+    { command: 'git stash pop --help', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'edited earlier\n'), expected: [], reconcile: false },
+    // The real commands run in the effect: `git stash branch` checks out a new branch at the commit the stash was made on and applies the stash there, so café.ts goes back to that commit's content (a HEAD move, which the status listing does not show) and a.txt takes the stashed change (which only the status listing shows).
+    { command: 'git stash branch side', effect: (d: string) => { writeFileSync(join(d, 'a.txt'), 'stashed\n'); git(d, 'stash'); writeFileSync(join(d, 'café.ts'), 'export const c = 2\n'); git(d, 'commit', '-q', '-am', 'c2'); git(d, 'stash', 'branch', 'side') }, expected: ['a.txt', 'café.ts'], reconcile: true },
+    // The real commands run in the effect: a file the last commit deleted is brought back from the commit before, so it is on disk while the index, which `git ls-files` reads, lacks it.
+    { command: 'git restore --source=HEAD~1 a.txt', effect: (d: string) => { git(d, 'rm', '-q', 'a.txt'); git(d, 'commit', '-m', 'drop a'); git(d, 'restore', '--source=HEAD~1', 'a.txt') }, expected: ['a.txt'], reconcile: false },
+  ]
+  it.each(rewriteRows)('enqueues exactly the files `$command` rewrote ($expected)', async ({ command, effect, expected, reconcile, reconcileIn }) => {
     mkdirSync(join(dir, 'sub'))
     writeFileSync(join(dir, 'sub', 'a.txt'), 'two\n')
     writeFileSync(join(dir, 'café.ts'), 'export const c = 1\n')
@@ -146,7 +189,7 @@ describe('the working-tree status sweep when git does not answer', () => {
     await bashRun(dir, command)
 
     expect([...dirty()].sort()).toEqual(expected.map((rel) => foldPath(resolveIndexPath(rel, dir))).sort())
-    expect(requested()).toEqual(reconcile ? [foldPath(normalizePath(dir))] : [])
+    expect(requested()).toEqual(reconcile ? [foldPath(normalizePath(reconcileIn === undefined ? dir : join(dir, reconcileIn)))] : [])
     expect(workerLog()).toBe('')
   })
 
@@ -167,12 +210,25 @@ describe('the working-tree status sweep when git does not answer', () => {
     expect(dirty()).toHaveLength(2000)
     expect(dirty()).not.toContain(foldPath(resolveIndexPath('gone2000.ts', dir)))
     expect(requested()).toEqual([foldPath(normalizePath(dir))])
-    expect(workerLog()).toMatch(/post-bash status sweep in .*: git listed 2001 paths, so only the first 2000 were queued; asked the worker to reconcile the project/)
+    expect(workerLog()).toMatch(/post-bash status sweep in .*: git listed 2001 paths, so only the first 2000 were queued, untracked ones first; 1 untracked file was left out, which no reconcile finds, and asked the worker to reconcile the project for the rest of the tracked files/)
+  })
+
+  // HAND-DERIVED: the reconcile finds a changed tracked file from the index, but nothing lists a new untracked one except this sweep, so over the cap the untracked entries are the ones kept, wherever git put them in its listing.
+  it('keeps every untracked path when the listing is over the cap, and names no untracked file as left out', async () => {
+    const tracked = Array.from({ length: 1990 }, (_, i) => ` M tracked${i}.ts\0`).join('')
+    const untracked = Array.from({ length: 20 }, (_, i) => `?? new${i}.ts\0`).join('')
+    seam.status = { exitCode: 0, stdout: tracked + untracked }
+
+    await formatterRun(dir)
+
+    expect(dirty()).toHaveLength(2000)
+    for (let i = 0; i < 20; i++) expect(dirty()).toContain(foldPath(resolveIndexPath(`new${i}.ts`, dir)))
+    expect(workerLog()).toMatch(/git listed 2010 paths, so only the first 2000 were queued, untracked ones first; asked the worker to reconcile the project for the rest of the tracked files/)
   })
 
   it.each([
     { name: 'a status sweep', run: (d: string) => formatterRun(d), answer: 'status' as const, stdout: ' M a.txt\0' },
-    { name: 'a git restore', run: (d: string) => bashRun(d, 'git restore a.txt'), answer: 'lsFiles' as const, stdout: 'a.txt\0' },
+    { name: 'a git restore', run: (d: string) => bashRun(d, "git restore '*.txt'"), answer: 'lsFiles' as const, stdout: 'a.txt\0' },
   ])('enqueues nothing and asks for a reconcile when $name lists files but git cannot name the repository root', async ({ run, answer, stdout }) => {
     seam[answer] = { exitCode: 0, stdout }
     seam.revParse = { exitCode: -1, timedOut: true }

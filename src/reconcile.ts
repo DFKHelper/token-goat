@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { enqueueDirtyPathsSafe } from './hooks_index.js'
-import { fingerprintFile, indexedFileIsGone } from './fingerprint.js'
+import { fingerprintFile, statIndexedFile } from './fingerprint.js'
 import { getProjectFileEntries } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { indexedPathSpellingIsStale } from './parser.js'
@@ -64,7 +64,7 @@ function clearReconcileCursor(dbPath: string, root: string): void {
 export interface ReconcileResult {
   /** Tracked files examined before the budget ran out. */
   scanned: number
-  /** Tracked files whose indexed content no longer matches disk. */
+  /** Indexed files whose content no longer matches disk: tracked files from the scan, plus untracked rows the deletion pass found still on disk but changed. */
   changed: string[]
   /** Tracked files with no row in the index at all. */
   added: string[]
@@ -150,7 +150,7 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
     lines.push(`${countNoun(unqueued, 'file')} of the above could not be queued for reindexing: the queue takes nothing under the OS temp dir, and nothing at all when it cannot be written. Run token-goat index here to bring the index up to date.`)
   }
   if (result.trackedUnavailable) {
-    lines.push('This project has an index but git listed no files in it, so nothing on disk was compared against it and changed or new files could not be found. Files gone from disk were still detected. Run token-goat inside the repository, or reindex with --walk if this directory is deliberately not under git.')
+    lines.push('This project has an index but git listed no files in it, so new files could not be found. Indexed files that changed or are gone from disk were still detected. Run token-goat inside the repository, or reindex with --walk if this directory is deliberately not under git.')
   }
   if (result.budgetExhausted) {
     lines.push(`Stopped at the ${result.elapsedMs}ms budget with ${countNoun(result.unscanned, 'file')} unchecked, so there may be more drift; deletions were not computed at all, because an unchecked file is indistinguishable from a deleted one. Raise --budget-ms for a complete sweep.`)
@@ -278,7 +278,16 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
         break
       }
       // The stat is the whole check. `seenOnDisk` is filled from `git ls-files`, so on its own it says "not tracked", which is a different question from "not on disk" for every row the incremental path wrote: `token-goat index` lists tracked files only, but a file reaches the index whenever the agent reads or edits it, gitignored or merely not `git add`ed yet. Measured on this repository's own index, 228 of its 1,628 rows were untracked and all 228 were live on disk -- 201 under `scratch/`, 12 under `.claude/`, 5 under `node_modules/`, the rest loose files nobody had staged. Without this stat each sweep reported all of them as deletions and queued them for removal, the next read put them straight back, and the next sweep removed them again -- churn that never settles, and precisely the live-file removal the paragraph above calls the one mistake that destroys working index rows. Only a missing path (ENOENT/ENOTDIR) or one that is no longer a regular file, such as a directory now standing where the file was, counts as a deletion (indexedFileIsGone, the rule the prune sweeps use); every other failure means "cannot tell", and a row nobody can stat is left exactly as it is. The stat above answers the deletion question for every row in the index now that nothing else bounds this pass -- in a root git cannot enumerate that is 100% of rows, where it used to be only the untracked ones inside a repo (228 of 1,628 here). So a permission-denied path, or an unreachable network or removable drive, would otherwise hand the whole root's index to the removal queue on a single sweep, which is the one outcome this pass must never produce.
-      if (indexedFileIsGone(entry.filePath)) removed.push(entry.filePath)
+      const st = statIndexedFile(entry.filePath)
+      if (st === 'gone') {
+        removed.push(entry.filePath)
+        continue
+      }
+      // A live row git does not list is still compared against its content, as the scan above compares a tracked one: nothing else revisits an untracked file rewritten outside an edit, such as one a formatter or `git stash pop` changed past the post-bash sweep's cap.
+      if (st === null || (entry.mtime !== 0 && st.mtimeMs / 1000 === entry.mtime)) continue
+      const diskSha = fingerprintFile(entry.filePath)
+      if (diskSha === entry.sha) mtimeOnly++
+      else if (diskSha !== null) changed.push(entry.filePath)
     }
   }
 

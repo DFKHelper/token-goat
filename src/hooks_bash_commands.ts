@@ -222,7 +222,7 @@ export function extractCommand(event: HookEvent): string | undefined {
 }
 
 /** Matches git subcommands that can move HEAD and rewrite working-tree file content. */
-const HEAD_MOVING_GIT_RE = /^\s*git\s+(?:checkout|switch|pull|merge|rebase|reset|cherry-pick)\b/i
+const HEAD_MOVING_GIT_RE = /^\s*git\s+(?:checkout|switch|pull|merge|rebase|reset|cherry-pick|stash\s+branch)\b/i
 const PATH_SCOPED_CHECKOUT_RE = /^\s*git\s+checkout\s+(?:\S.*?\s)?--(?:\s|$)/i
 
 export function isHeadMovingGitCommand(cmd: string): boolean {
@@ -243,8 +243,33 @@ const GIT_RESTORE_RE = /^\s*git\s+restore\b/i
 /** `git restore --staged <file>` only rewrites the index, leaving working-tree content untouched. */
 const GIT_RESTORE_STAGED_ONLY_RE = /(?:^|\s)(?:--staged|-S)(?:\s|$)/
 
-/** Matches the `git stash` forms that rewrite the working tree: `pop` and `apply` put changes back, and a bare `git stash`, `push`, `save` or one taking only options puts files back to their committed content. `list`, `show`, `drop` and `clear` touch no file. */
-const GIT_STASH_REWRITE_RE = /^\s*git\s+stash(?:\s+(?:pop|apply|push|save)\b|\s+-|(?=\s*(?:$|[;&|])))/i
+/** The `git stash` subcommands that rewrite the working tree: `pop` and `apply` put changes back, `branch` checks out a branch and applies the stash onto it, and `push` or `save` put files back to their committed content, as a bare `git stash` or one taking only options does. `list`, `show`, `drop`, `clear`, `create` and `store` touch no file. */
+const GIT_STASH_REWRITE_SUBCOMMANDS = new Set(['pop', 'apply', 'branch', 'push', 'save'])
+
+/** Git's own leading options that take their value as the next argument, per git(1): `-C <path>`, `-c <name>=<value>`, and the long forms that also accept `--opt=<value>`. */
+const GIT_OPTIONS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env'])
+
+/** The directory whose working tree a `git stash` segment rewrites, or null when the segment is not one that rewrites it. Environment assignments ahead of `git` and git's own leading options are skipped, and each `-C <path>` moves the directory as git does, relative to the one before it (an empty path leaves it unchanged). `-h` or `--help` anywhere after `stash` prints usage and touches nothing. */
+function gitStashRewriteDir(segment: string, runDir: string): string | null {
+  const tokens = safeShlexSplit(segment)
+  if (tokens === null) return null
+  let i = 0
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!)) i++
+  const head = tokens[i]
+  if (head === undefined || path.basename(head.replace(/\\/g, '/')).replace(/\.exe$/i, '').toLowerCase() !== 'git') return null
+  let dir = runDir
+  for (i++; i < tokens.length && tokens[i]!.startsWith('-'); i++) {
+    const t = tokens[i]!
+    if (!GIT_OPTIONS_WITH_VALUE.has(t)) continue
+    const value = tokens[++i]
+    if (t === '-C' && value !== undefined && value !== '') dir = path.resolve(dir, value)
+  }
+  if (tokens[i] !== 'stash') return null
+  const rest = tokens.slice(i + 1)
+  if (rest.some((t) => t === '-h' || t === '--help')) return null
+  const sub = rest[0]
+  return sub === undefined || sub.startsWith('-') || GIT_STASH_REWRITE_SUBCOMMANDS.has(sub) ? dir : null
+}
 
 /** Matches working-tree rewriters whose changed paths are determined by patch contents. */
 const PATCH_APPLY_SEGMENT_RE = /^\s*(?:\S*[/\\])?(?:git\s+apply|patch)\b/i
@@ -385,13 +410,25 @@ const STATUS_SWEEP_CAP = 2000
 function workingTreeStatusPaths(gitDir: string): string[] {
   const status = runGit(['status', '--porcelain', '-z', '--untracked-files=all'], { cwd: gitDir, timeoutMs: 5000 })
   reconcileIfGitTimedOut(status, gitDir, 'status sweep', 'git status')
+  const stamp = `${new Date().toISOString()} post-bash status sweep in ${gitDir}`
+  if (status.exitCode === -1 && status.timedOut !== true && /ENOBUFS/.test(status.stderr)) {
+    // Git ran but listed more than runGit's output buffer holds, so this sweep names no file; the worker's reconcile, which reads the index rather than this listing, can still find the changed ones.
+    const recorded = requestReconcileSafe(gitDir)
+    appendWorkerErrorLog(dataDir(), `${stamp}: git status listed more than the output buffer holds; ${recorded ? 'asked the worker to reconcile the project' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
+  }
   if (status.exitCode !== 0) return []
   const recorded = requestReconcileSafe(gitDir)
   const repoRoot = gitRepoRootOrNull(gitDir)
   if (repoRoot === null) return []
-  const rels = parsePorcelainZ(status.stdout).flatMap((e) => (e.origPath === undefined ? [e.path] : [e.path, e.origPath]))
+  const entries = parsePorcelainZ(status.stdout)
+  // Untracked paths first: the worker's reconcile finds every tracked file this cap leaves out, but it never lists a new untracked file, so the sweep is the only thing that queues one.
+  const rels = [...entries.filter((e) => e.untracked === true), ...entries.filter((e) => e.untracked !== true)].flatMap((e) => (e.origPath === undefined ? [e.path] : [e.path, e.origPath]))
+  if (!recorded && rels.length <= STATUS_SWEEP_CAP) {
+    appendWorkerErrorLog(dataDir(), `${stamp}: could not record a reconcile request, so a file this sweep could not see may stay stale until the next index run\n`)
+  }
   if (rels.length > STATUS_SWEEP_CAP) {
-    appendWorkerErrorLog(dataDir(), `${new Date().toISOString()} post-bash status sweep in ${gitDir}: git listed ${rels.length} paths, so only the first ${STATUS_SWEEP_CAP} were queued; ${recorded ? 'asked the worker to reconcile the project for the rest of the tracked files' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
+    const untrackedDropped = Math.max(0, entries.filter((e) => e.untracked === true).length - STATUS_SWEEP_CAP)
+    appendWorkerErrorLog(dataDir(), `${stamp}: git listed ${rels.length} paths, so only the first ${STATUS_SWEEP_CAP} were queued, untracked ones first; ${untrackedDropped > 0 ? `${untrackedDropped} untracked ${untrackedDropped === 1 ? 'file was' : 'files were'} left out, which no reconcile finds, and ` : ''}${recorded ? 'asked the worker to reconcile the project for the rest of the tracked files' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
   }
   return rels.slice(0, STATUS_SWEEP_CAP).map((rel) => resolveIndexPath(rel, repoRoot))
 }
@@ -411,19 +448,25 @@ function enqueueRewrittenPath(absPath: string): void {
 export function enqueueNonHeadMovingRewrites(cmd: string, runDir: string): void {
   const atRunDir = (f: string): string => resolveIndexPath(f, runDir)
   const paths: string[] = []
-  let needsStatusSweep = GIT_STASH_REWRITE_RE.test(cmd)
+  // Each directory whose working tree needs a status sweep: the run directory for a patch or formatter, or wherever `git -C` pointed a stash.
+  const sweepDirs = new Set<string>()
   if (GIT_RESTORE_RE.test(cmd) && !GIT_RESTORE_STAGED_ONLY_RE.test(cmd)) {
-    paths.push(...expandGitPathspecs(extractGitRestorePathspecs(cmd), runDir))
+    const specs = extractGitRestorePathspecs(cmd)
+    paths.push(...expandGitPathspecs(specs, runDir))
+    // `ls-files` lists only what the index holds, so a file `--source` brought back that the index lacks is found by its literal name instead; globs, `:` magic and `.` name nothing literally.
+    for (const spec of specs) if (spec !== '.' && !spec.startsWith(':') && !/[*?[]/.test(spec)) paths.push(atRunDir(spec))
   }
   for (const segment of splitShellSegments(cmd)) {
-    if (PATCH_APPLY_SEGMENT_RE.test(segment) && !PATCH_APPLY_INSPECT_ONLY_RE.test(segment)) needsStatusSweep = true
-    if (isFormatterWriteSegment(segment)) needsStatusSweep = true
+    if (PATCH_APPLY_SEGMENT_RE.test(segment) && !PATCH_APPLY_INSPECT_ONLY_RE.test(segment)) sweepDirs.add(runDir)
+    if (isFormatterWriteSegment(segment)) sweepDirs.add(runDir)
+    const stashDir = gitStashRewriteDir(segment, runDir)
+    if (stashDir !== null) sweepDirs.add(stashDir)
     for (const f of extractSedInPlaceFiles(segment)) paths.push(atRunDir(f))
     for (const f of extractTeeFiles(segment)) paths.push(atRunDir(f))
     for (const f of extractRedirectTargets(segment)) paths.push(atRunDir(f))
   }
-  for (const p of paths) enqueueRewrittenPath(p)
-  if (needsStatusSweep) for (const p of workingTreeStatusPaths(runDir)) enqueueSweptPath(p)
+  for (const p of new Set(paths)) enqueueRewrittenPath(p)
+  for (const dir of sweepDirs) for (const p of workingTreeStatusPaths(dir)) enqueueSweptPath(p)
 }
 
 /** Enqueue a path the status sweep listed: a file to reindex, or a path that is no longer on disk (deleted, or the source of a rename) so the drain drops its rows. Anything else, such as a submodule directory, names nothing the index holds. */

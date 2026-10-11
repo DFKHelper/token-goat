@@ -17,11 +17,17 @@ export function shortFingerprint(content: string | Buffer): string {
 
 /** Is an index row's file definitely gone from `filePath`? True when nothing answers there (ENOENT, or ENOTDIR because a parent became a file) or what answers is not a regular file: `files` rows are source files, so a directory (or a symlink to one) at an indexed path means the indexed file is gone even though the path still exists. False for a file that is there and for any stat failure that cannot be told apart from "present but unreachable" (EPERM, EBUSY, an unmounted share), so an unreadable file is never reported gone. The one rule behind reconcile, the worker drain and the prune sweeps; {@link fileIsAbsent} stays ENOENT-only for callers that must not treat a directory as gone. */
 export function indexedFileIsGone(filePath: string): boolean {
+  return statIndexedFile(filePath) === 'gone'
+}
+
+/** One stat of an index row's file: its stats when a regular file answers at `filePath`, `'gone'` when {@link indexedFileIsGone} would say so, and `null` for any other stat failure, which says nothing either way. For a caller that needs the mtime of a file it also has to tell apart from a deleted one, so it stats once rather than twice. */
+export function statIndexedFile(filePath: string): fs.Stats | 'gone' | null {
   try {
-    return !fs.statSync(filePath).isFile()
+    const st = fs.statSync(filePath)
+    return st.isFile() ? st : 'gone'
   } catch (err) {
     const code = (err as NodeJS.ErrnoException | null)?.code
-    return code === 'ENOENT' || code === 'ENOTDIR'
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'gone' : null
   }
 }
 
