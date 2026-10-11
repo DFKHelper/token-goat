@@ -5,9 +5,11 @@ import { dirname, relative } from 'node:path'
 
 import { callStreakAfterFailure } from './call_streak.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
+import { describeNearMiss, findNearMiss, isNearMissAdvice } from './edit_near_miss.js'
 import { buildLineIndex, offsetToLine } from './languages/common.js'
 import { recoveryAfterFailure } from './recovery_pairs.js'
 import { unwrapCompressCommand } from './hooks_bash_commands.js'
+import { applyHintTracking, uncorrelatedHint } from './hint_stats.js'
 import { contextOutput, getFilePath, getToolInput, getToolName, passOutput, resolveEventPath } from './hooks_common.js'
 import { displaySafeText, hostPathOfIndexKey, normalizePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
@@ -110,10 +112,31 @@ export function repeatFailureNotice(toolName: string | undefined): string {
 /** Maximum file size (10 MB) to inspect on an edit failure to avoid memory stalls. */
 const MAX_EDIT_DIAGNOSE_BYTES = 10 * 1024 * 1024
 
+/** Every `old_string` an edit tool call carried: the single key under any host's spelling (Claude Code `old_string`, Copilot CLI `old_str`, a bare `target`, Antigravity `TargetContent`), then each `edits[]` entry of a MultiEdit. Empty strings are dropped, since they match everywhere. */
+function editOldStrings(event: HookEvent): string[] {
+  const input = event.toolInput
+  const out: string[] = []
+  for (const key of ['old_string', 'old_str', 'target', 'TargetContent']) {
+    const value = input[key]
+    if (typeof value === 'string' && value !== '') {
+      out.push(value)
+      break
+    }
+  }
+  const edits = input['edits']
+  if (Array.isArray(edits)) {
+    for (const entry of edits) {
+      const value = entry !== null && typeof entry === 'object' ? (entry as Record<string, unknown>)['old_string'] : undefined
+      if (typeof value === 'string' && value !== '') out.push(value)
+    }
+  }
+  return out
+}
+
 /** Inspect an Edit tool failure and generate actionable, surgical guidance. When an agent fails an edit because `old_string` matches multiple locations or zero locations, the raw harness error ("Multiple matches found") provides no line numbers or context, causing blind retry loops. This helper inspects the file on disk to report the exact match counts and line numbers so the agent can disambiguate immediately. */
 export function diagnoseEditFailure(event: HookEvent, errorText: string): string | null {
   const toolName = getToolName(event)
-  if (!toolName || !/^(edit|str_replace_editor)$/i.test(toolName)) {
+  if (!toolName || !/^(edit|multiedit|str_replace_editor)$/i.test(toolName)) {
     return null
   }
 
@@ -126,20 +149,12 @@ export function diagnoseEditFailure(event: HookEvent, errorText: string): string
     return null
   }
 
-  const filePath =
-    getFilePath(event) ?? (typeof event.toolInput['path'] === 'string' && event.toolInput['path'] !== '' ? resolveEventPath(event, event.toolInput['path']) : undefined)
+  const fallbackPath = ['path', 'TargetFile'].map((key) => event.toolInput[key]).find((value): value is string => typeof value === 'string' && value !== '')
+  const filePath = getFilePath(event) ?? (fallbackPath === undefined ? undefined : resolveEventPath(event, fallbackPath))
   if (!filePath) return null
 
-  const oldString =
-    typeof event.toolInput['old_string'] === 'string'
-      ? event.toolInput['old_string']
-      : typeof event.toolInput['old_str'] === 'string'
-        ? event.toolInput['old_str']
-        : typeof event.toolInput['target'] === 'string'
-          ? event.toolInput['target']
-          : undefined
-
-  if (oldString === undefined || oldString === '') return null
+  const oldStrings = editOldStrings(event)
+  if (oldStrings.length === 0) return null
 
   const absPath = hostPathOfIndexKey(normalizePath(filePath))
   if (!existsSync(absPath)) return null
@@ -149,6 +164,9 @@ export function diagnoseEditFailure(event: HookEvent, errorText: string): string
     if (stat.size > MAX_EDIT_DIAGNOSE_BYTES) return null
 
     const fileContent = readFileSync(absPath, 'utf8')
+    // A MultiEdit names several old strings and the error text may not say which one failed, so take the first one the file cannot explain: absent for a not-found, repeated for a multiple-match.
+    const oldString = oldStrings.length === 1 ? oldStrings[0] : oldStrings.find((candidate) => (isNotFound ? !fileContent.includes(candidate) : fileContent.indexOf(candidate) !== fileContent.lastIndexOf(candidate)))
+    if (oldString === undefined) return null
     const relDisplay = displaySafeText(relative(process.cwd(), absPath).replace(/\\/g, '/') || absPath)
 
     if (isMultiple) {
@@ -177,6 +195,10 @@ export function diagnoseEditFailure(event: HookEvent, errorText: string): string
         return `[token-goat] Edit failed: string not found in ${relDisplay}, but matches with normalized line endings. Check CRLF vs LF line endings or whitespace.`
       }
 
+      const nearMiss = findNearMiss(fileContent, oldString)
+      const nearAdvice = nearMiss === null ? null : describeNearMiss(fileContent, relDisplay, nearMiss)
+      if (nearAdvice !== null) return nearAdvice
+
       const firstLine = oldString.split(/\r?\n/)[0]?.trim() ?? ''
       if (firstLine.length >= 10) {
         const fileLines = fileContent.split('\n')
@@ -200,6 +222,12 @@ export function diagnoseEditFailure(event: HookEvent, errorText: string): string
   }
 
   return null
+}
+
+/** The context answer for an edit diagnostic. Only a near-miss diagnostic (edit_near_miss.ts) is logged as a hint: the older advice carries no new information the hint ledger could judge. */
+function editAdviceOutput(event: HookEvent, text: string): HookOutput {
+  const out = contextOutput(text)
+  return isNearMissAdvice(text) ? applyHintTracking(event, out, uncorrelatedHint('edit_near_miss')) : out
 }
 
 /** Reasons a failed Bash command opens no recovery pair, beyond {@link REPEAT_NOTICE_EXEMPT}: a syntax error or a blocked sleep is fixed by rewriting the command, so the fix is a different C rather than something run in between. */
@@ -258,7 +286,7 @@ function adviseOnFailure(event: HookEvent, slot: { line: string | null }): HookO
       if (editDiagnostic !== null) {
         ledger.seen[signature] = true
         writeLedger(target, ledger)
-        return contextOutput(editDiagnostic)
+        return editAdviceOutput(event, editDiagnostic)
       }
 
       // If this is an actionable SQL column/table error, advise immediately with valid schema.
@@ -277,7 +305,7 @@ function adviseOnFailure(event: HookEvent, slot: { line: string | null }): HookO
     writeLedger(target, ledger)
 
     if (editDiagnostic !== null) {
-      return contextOutput(editDiagnostic)
+      return editAdviceOutput(event, editDiagnostic)
     }
 
     if (sqlDiagnostic !== null) {

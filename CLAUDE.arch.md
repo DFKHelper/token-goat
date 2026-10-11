@@ -455,6 +455,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/document_refusal.ts`](src/document_refusal.ts) | How long any one document's extraction may run, whatever format it is. |
 | [`src/docx_extract.ts`](src/docx_extract.ts) | Word (.docx) narrow-slice reader. |
 | [`src/dotenv_redact.ts`](src/dotenv_redact.ts) | Value redaction for dotenv files. |
+| [`src/edit_near_miss.ts`](src/edit_near_miss.ts) | Exports: `NearMissRung`, `NearMissHit`, `NearMiss`, `findNearMiss` |
 | [`src/embedding_boundaries.ts`](src/embedding_boundaries.ts) | Exports: `buildEmbeddingBoundaries` |
 | [`src/emit.ts`](src/emit.ts) | The two writers every command surface uses to put its result on stdout and its diagnostics on stderr. |
 | [`src/encoding.ts`](src/encoding.ts) | Source file character encoding and BOM detection / transcoding. |

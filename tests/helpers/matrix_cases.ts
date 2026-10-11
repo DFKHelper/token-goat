@@ -1797,11 +1797,12 @@ export const cases: Record<string, () => void | Promise<void>> = {
       manualEffective: number
       manualIneffective: number
     }>
-    expect(rows.length).toBe(10)
+    expect(rows.length).toBe(11)
     expect(rows.every((row) => row.emitted === 0 && row.suppressed === false)).toBe(true)
     expect(rows.map((row) => row.category).sort()).toEqual([
       'bash_recall',
       'bash_redirect',
+      'edit_near_miss',
       'edit_reread_suggest',
       'glob_dedup_hint',
       'grep_dedup_hint',

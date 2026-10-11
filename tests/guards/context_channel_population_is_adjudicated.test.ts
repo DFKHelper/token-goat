@@ -39,6 +39,8 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'Names the tool that failed twice, and an MCP server chooses the names it advertises. Escaped in repeatFailureNotice.',
   'hooks_tool_failure.ts::postToolUseFailureHandler':
     'Joins the line recoveryAfterFailure returns onto the advice adviseOnFailure produced. Interpolates nothing of its own; the line is adjudicated under recovery_pairs.ts::recoveryAfterFailure.',
+  'hooks_tool_failure.ts::editAdviceOutput':
+    'Wraps a diagnostic diagnoseEditFailure built. The near-miss shape echoes the edited path (displaySafeText in diagnoseEditFailure) and a span of the on-disk file, which describeNearMiss redacts and then fences with fenceFileText before it is joined into the string, so the file text never reaches the channel unfenced. Interpolates nothing of its own.',
   'recovery_pairs.ts::recoveryAfterFailure':
     'Echoes a fix command a model ran in an earlier session, so the text is session-influenced. It is stored only if isLearnableCommand passed it (one line, no backtick or control character, no credential, nothing destructive or about token-goat), escaped with displaySafeText and set inside one backtick fence by fencedCommand.',
   'call_streak.ts::trackedLine':

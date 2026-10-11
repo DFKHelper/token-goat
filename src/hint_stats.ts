@@ -24,6 +24,8 @@ export const HINT_CATEGORIES = [
   'glob_dedup_hint',
   // recovery_pairs.ts: a failed Bash command that an earlier session learned a fix for. Logged with no correlator: the fix may be run in many spellings, so the pair store scores it (helped and hurt) rather than a pointer match.
   'recovery_pair',
+  // edit_near_miss.ts: a failed Edit whose old_string differs from the file only by whitespace, punctuation or indentation. Logged with no correlator: the corrected edit may be retyped in any spelling, so it counts as spend and emissions but never a verdict.
+  'edit_near_miss',
 ] as const
 
 export type HintCategory = (typeof HINT_CATEGORIES)[number]
