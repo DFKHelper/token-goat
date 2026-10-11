@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { displaySafeText, normalizePath, resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { runGit } from './util.js'
+import type { GitResult } from './util.js'
 import { dataDir } from './constants.js'
 import { appendWorkerErrorLog } from './worker_lifecycle.js'
 import { enqueueDirtyPathSafe, requestReconcileSafe } from './hooks_index.js'
@@ -356,10 +357,18 @@ export function gitRepoRootOrNull(gitDir: string): string | null {
   return toplevel.exitCode === 0 && toplevel.stdout.trim() !== '' ? toplevel.stdout.trim() : null
 }
 
+/** A git read that ran past the hook's 5 s budget names no files, which would leave the index on the pre-rewrite content with nothing in any log; the worker can sweep the project without that budget, so hand it the project and record that. Git that never started (missing, or a working directory that is gone) gets no request, since the worker needs git to sweep too, and a nonzero exit is git saying this is not a repository, which has nothing to reconcile. */
+function reconcileIfGitTimedOut(result: GitResult, gitDir: string, what: string, gitCommand: string): void {
+  if (result.timedOut !== true) return
+  const recorded = requestReconcileSafe(gitDir)
+  appendWorkerErrorLog(dataDir(), `${new Date().toISOString()} post-bash ${what} in ${gitDir}: ${gitCommand} did not answer in time (${result.stderr.trim().slice(0, 200)}); ${recorded ? 'asked the worker to reconcile the project' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
+}
+
 /** Expand `git restore` pathspecs (which may be `.`, a directory, or a glob) into the concrete tracked files git itself matches, repo-root-relative. */
 function expandGitPathspecs(specs: string[], gitDir: string): string[] {
   if (specs.length === 0) return []
   const listed = runGit(['ls-files', '--full-name', '--', ...specs], { cwd: gitDir, timeoutMs: 5000 })
+  reconcileIfGitTimedOut(listed, gitDir, 'git restore', 'git ls-files')
   if (listed.exitCode !== 0) return []
   const repoRoot = gitRepoRoot(gitDir)
   return listed.stdout
@@ -372,11 +381,7 @@ function expandGitPathspecs(specs: string[], gitDir: string): string[] {
 /** Every path git currently reports as changed or untracked, absolute. The fallback for rewrites whose file set is not on the command line (stash apply/pop, patch application, formatter runs). */
 function workingTreeStatusPaths(gitDir: string): string[] {
   const status = runGit(['status', '--porcelain'], { cwd: gitDir, timeoutMs: 5000 })
-  // A status that ran past the 5 s timeout names no files, which would leave the index on the pre-rewrite content with nothing in any log; the worker can sweep the project without the hook's time budget, so hand it the project and record that. Git that never started (missing, or a working directory that is gone) gets no request, since the worker needs git to sweep too, and a nonzero exit is git saying this is not a repository, which has nothing to reconcile.
-  if (status.timedOut === true) {
-    const recorded = requestReconcileSafe(gitDir)
-    appendWorkerErrorLog(dataDir(), `${new Date().toISOString()} post-bash status sweep in ${gitDir}: git status did not answer in time (${status.stderr.trim().slice(0, 200)}); ${recorded ? 'asked the worker to reconcile the project' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
-  }
+  reconcileIfGitTimedOut(status, gitDir, 'status sweep', 'git status')
   if (status.exitCode !== 0) return []
   const repoRoot = gitRepoRoot(gitDir)
   const out: string[] = []

@@ -1,4 +1,4 @@
-/** A formatter run, a patch application or a stash apply rewrites files without going through any edit tool, and the Bash post hook finds them by asking git for the working-tree status. When git runs past the hook's 5 s budget (exit -1 with timedOut, as on a loaded machine) the sweep used to name nothing and ask for nothing, so the index kept the pre-rewrite content with nothing in any log; it now asks the worker to reconcile the project and logs that, as the branch-switch block beside it does. A git that never started (exit -1 without timedOut: missing, or a working directory that is gone) gets no request, since the worker needs git to sweep too. The status answer is the seam: exit -1 with timedOut is what runGit returns for a spawn timeout and exit -1 without it for ENOENT (CAPTURE: Node 24.12 on Windows 11 spawnSync reports ETIMEDOUT and ENOENT), and 128 is git's "not a repository" (HAND-DERIVED from git's exit status); the expected queue contents are HAND-DERIVED from the command. */
+/** A formatter run, a patch application or a stash apply rewrites files without going through any edit tool, and the Bash post hook finds them by asking git for the working-tree status. When git runs past the hook's 5 s budget (exit -1 with timedOut, as on a loaded machine) the sweep used to name nothing and ask for nothing, so the index kept the pre-rewrite content with nothing in any log; it now asks the worker to reconcile the project and logs that, as the branch-switch block beside it does. `git restore` has the same gap one step earlier: it expands its pathspecs with `git ls-files` under the same budget, and a timed-out expansion used to name nothing just as silently, so it takes the same fallback. A git that never started (exit -1 without timedOut: missing, or a working directory that is gone) gets no request, since the worker needs git to sweep too. The status and ls-files answers are the seam: exit -1 with timedOut is what runGit returns for a spawn timeout and exit -1 without it for ENOENT (CAPTURE: Node 24.12 on Windows 11 spawnSync reports ETIMEDOUT and ENOENT), and 128 is git's "not a repository" (HAND-DERIVED from git's exit status); the expected queue contents are HAND-DERIVED from the command. */
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -16,13 +16,16 @@ import { workerErrorLogPath } from '../src/worker_lifecycle.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
-const seam = vi.hoisted(() => ({ status: null as { exitCode: number; timedOut?: true } | null }))
+const seam = vi.hoisted(() => ({ status: null as { exitCode: number; timedOut?: true } | null, lsFiles: null as { exitCode: number; timedOut?: true } | null }))
 
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<typeof UtilModule>()
   return {
     ...actual,
-    runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => (seam.status !== null && args[0] === 'status' ? { stdout: '', stderr: 'no answer', ...seam.status } : actual.runGit(args, opts?.timeoutMs === undefined ? opts : { ...opts, timeoutMs: 120_000 })),
+    runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => {
+      const answer = args[0] === 'status' ? seam.status : args[0] === 'ls-files' ? seam.lsFiles : null
+      return answer !== null ? { stdout: '', stderr: 'no answer', ...answer } : actual.runGit(args, opts?.timeoutMs === undefined ? opts : { ...opts, timeoutMs: 120_000 })
+    },
   }
 })
 
@@ -33,9 +36,13 @@ const requested = (): string[] => {
 const dirty = (): string[] => getDirtyPaths().map((p) => foldPath(p))
 const workerLog = (): string => (existsSync(workerErrorLogPath(dataDir())) ? readFileSync(workerErrorLogPath(dataDir()), 'utf8') : '')
 
+async function bashRun(dir: string, command: string): Promise<void> {
+  await postBashHandler(makeHookEvent({ eventName: 'post_tool_use', toolName: 'Bash', toolInput: { command }, sessionId: 'status-sweep', raw: { tool_name: 'Bash', tool_input: { command }, tool_response: '', cwd: dir } }))
+}
+
 async function formatterRun(dir: string): Promise<void> {
   writeFileSync(join(dir, 'a.txt'), 'formatted\n')
-  await postBashHandler(makeHookEvent({ eventName: 'post_tool_use', toolName: 'Bash', toolInput: { command: 'npx prettier --write .' }, sessionId: 'status-sweep', raw: { tool_name: 'Bash', tool_input: { command: 'npx prettier --write .' }, tool_response: '', cwd: dir } }))
+  await bashRun(dir, 'npx prettier --write .')
 }
 
 describe('the working-tree status sweep when git does not answer', () => {
@@ -47,11 +54,13 @@ describe('the working-tree status sweep when git does not answer', () => {
     rmSync(reconcileRequestPathFor(dataDir()), { force: true })
     rmSync(workerErrorLogPath(dataDir()), { force: true })
     seam.status = null
+    seam.lsFiles = null
     dir = gitRepoWithCommit()
   })
 
   afterEach(() => {
     seam.status = null
+    seam.lsFiles = null
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -63,6 +72,24 @@ describe('the working-tree status sweep when git does not answer', () => {
     expect(requested()).toEqual([foldPath(normalizePath(dir))])
     expect(dirty()).toEqual([])
     expect(workerLog()).toMatch(/post-bash status sweep in .*: git status did not answer in time \(no answer\); asked the worker to reconcile the project/)
+  })
+
+  it('asks the worker to reconcile the project, and logs it, when the ls-files read that expands a git restore pathspec runs past its budget', async () => {
+    seam.lsFiles = { exitCode: -1, timedOut: true }
+
+    await bashRun(dir, 'git restore a.txt')
+
+    expect(requested()).toEqual([foldPath(normalizePath(dir))])
+    expect(dirty()).toEqual([])
+    expect(workerLog()).toMatch(/post-bash git restore in .*: git ls-files did not answer in time \(no answer\); asked the worker to reconcile the project/)
+  })
+
+  it('enqueues the restored file and asks for no reconcile when the ls-files read answers', async () => {
+    await bashRun(dir, 'git restore a.txt')
+
+    expect(dirty()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+    expect(requested()).toEqual([])
+    expect(workerLog()).toBe('')
   })
 
   it.each([

@@ -68,7 +68,7 @@ function reconcileRequestedDirs(): string[] {
   }
 }
 
-/** The contract of a head-moving git command in the post hook is that the change is never lost, not that the dirty queue is non-empty: the hook's git reads have a 5 s budget, and a loaded full suite makes one spawn take about 2.5 s, so a read that times out enqueues nothing and records a reconcile request for the repository instead (hooks_bash_post.ts, requestReconcileSafe). Returns the dirty queue after requiring that either `expected` is in it or, when it is empty, the repository `repo` was handed to the worker; a queue that holds other paths but not `expected` still fails, and so does a hook that did neither. */
+/** The contract of a head-moving git command, or of a working-tree rewrite the hook finds by asking git (restore, stash, apply, a formatter), in the post hook is that the change is never lost, not that the dirty queue is non-empty: the hook's git reads have a 5 s budget, and a loaded full suite makes one spawn take about 2.5 s, so a read that times out enqueues nothing and records a reconcile request for the repository instead (hooks_bash_post.ts and hooks_bash_commands.ts, requestReconcileSafe). Returns the dirty queue after requiring that either `expected` is in it or, when it is empty, the repository `repo` was handed to the worker; a queue that holds other paths but not `expected` still fails, and so does a hook that did neither. */
 function dirtyOrReconciled(repo: string, expected: string[]): string[] {
   const dirty = foldedDirtyPaths()
   if (dirty.length > 0) {
@@ -4727,7 +4727,7 @@ describe('postBashHandler — non-HEAD-moving working-tree rewrite enqueue', () 
 
       await postBashHandler(makePostBashEvent('git restore a.txt', '', dir))
 
-      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+      dirtyOrReconciled(dir, [resolveIndexPath('a.txt', dir)])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -4741,7 +4741,7 @@ describe('postBashHandler — non-HEAD-moving working-tree rewrite enqueue', () 
 
       await postBashHandler(makePostBashEvent('git restore -- .', '', dir))
 
-      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+      dirtyOrReconciled(dir, [resolveIndexPath('a.txt', dir)])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -4767,7 +4767,7 @@ describe('postBashHandler — non-HEAD-moving working-tree rewrite enqueue', () 
 
       await postBashHandler(makePostBashEvent('git stash pop', '', dir))
 
-      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+      dirtyOrReconciled(dir, [resolveIndexPath('a.txt', dir)])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -4839,7 +4839,7 @@ describe('postBashHandler — non-HEAD-moving working-tree rewrite enqueue', () 
       writeFileSync(join(dir, 'a.txt'), 'patched\n')
       await postBashHandler(makePostBashEvent('git apply /tmp/change.patch', '', dir))
 
-      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+      dirtyOrReconciled(dir, [resolveIndexPath('a.txt', dir)])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -4863,7 +4863,7 @@ describe('postBashHandler — non-HEAD-moving working-tree rewrite enqueue', () 
       writeFileSync(join(dir, 'a.txt'), 'formatted\n')
       await postBashHandler(makePostBashEvent('npx prettier --write .', '', dir))
 
-      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+      dirtyOrReconciled(dir, [resolveIndexPath('a.txt', dir)])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -4939,7 +4939,7 @@ describe('postBashHandler — non-HEAD-moving working-tree rewrite enqueue', () 
 
       await postBashHandler(makePostBashEvent('cd sub && git restore a.txt', '', dir))
 
-      expect(foldedDirtyPaths()).toContain(foldPath(resolveIndexPath('a.txt', sub)))
+      dirtyOrReconciled(sub, [resolveIndexPath('a.txt', sub)])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
