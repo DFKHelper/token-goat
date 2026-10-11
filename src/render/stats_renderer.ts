@@ -531,6 +531,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'structured_file_hint',
       'write_rewrite_hint',
       'write_blind_drop',
+      'write_sibling_copy',
       'websearch_dedup_hint',
       'large_file_hint_followed',
       'large_file_hint_ignored',

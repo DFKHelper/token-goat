@@ -1,4 +1,4 @@
-/** pre_tool_use hook for the Write tool: full-rewrite detector (feature-queue #302). The gap: `hooks_edit.ts::postEditHandler` already intercepts Write AFTER it happens (enqueue reindex, emit a markdown-section hint), but nothing intercepts it BEFORE. When an agent uses Write to rewrite an EXISTING file where only a small portion actually changed, it has to send the entire new file content through the tool call -- every unchanged line burns tokens that a targeted `Edit` (or `token-goat replace` / `write-file --from`, see CLAUDE.md's "Writing Files with Special Characters" section) would have avoided. This hook compares the incoming Write's new content against the current on-disk content -- only possible when the file already exists; a Write creating a brand-new file has nothing to compare against, so the rewrite comparison is never attempted for it (only the placeholder check of write_guards.ts runs, as it does for Edit, MultiEdit and Codex apply_patch) -- and, when the unchanged-line fraction is high on a non-trivially large file, emits an advisory hint recommending Edit instead. Never blocks: Write is sometimes genuinely the right tool (a real full-file rewrite), so this is `context`-only, exactly like hooks_glob.ts's dedup hint. Diff-detection approach: checked for a reusable line-diff utility first (per task instructions) -- `bash_output_cache.ts::summarizeOutputDelta` is bag-of-lines only (counts issue-marker lines present/absent, or a bare old-vs-new line-count delta), not order-aware, so it can't distinguish "10% of lines changed, scattered" from "one contiguous 90% rewrite"; `read_commands.ts`'s `parseDiffHunks`/`splitDiffHunks` shell out to `git diff` against a committed ref and a path already on disk, which doesn't fit here (the new content is a pending tool_input, not yet written, and spawning `git diff --no-index` on every Write would add subprocess latency to a hook that must stay fast and must also work outside a git repo). Neither is an adequate fit, so this hook computes its own line-level LCS length -- the honest, order-respecting signal the task asked for -- bounded by {@link MAX_LINES_FOR_DIFF} so the O(n*m) DP never turns a Write into a multi-second hook call. */
+/** pre_tool_use hook for the Write tool: full-rewrite detector (feature-queue #302). The gap: `hooks_edit.ts::postEditHandler` already intercepts Write AFTER it happens (enqueue reindex, emit a markdown-section hint), but nothing intercepts it BEFORE. When an agent uses Write to rewrite an EXISTING file where only a small portion actually changed, it has to send the entire new file content through the tool call -- every unchanged line burns tokens that a targeted `Edit` (or `token-goat replace` / `write-file --from`, see CLAUDE.md's "Writing Files with Special Characters" section) would have avoided. This hook compares the incoming Write's new content against the current on-disk content -- only possible when the file already exists; a Write creating a brand-new file has nothing at its own path to compare against, so the rewrite comparison is never attempted for it (it gets the placeholder check of write_guards.ts, as Edit, MultiEdit and Codex apply_patch do, and the sibling-copy advice of sibling_copy.ts) -- and, when the unchanged-line fraction is high on a non-trivially large file, emits an advisory hint recommending Edit instead. Never blocks: Write is sometimes genuinely the right tool (a real full-file rewrite), so this is `context`-only, exactly like hooks_glob.ts's dedup hint. Diff-detection approach: checked for a reusable line-diff utility first (per task instructions) -- `bash_output_cache.ts::summarizeOutputDelta` is bag-of-lines only (counts issue-marker lines present/absent, or a bare old-vs-new line-count delta), not order-aware, so it can't distinguish "10% of lines changed, scattered" from "one contiguous 90% rewrite"; `read_commands.ts`'s `parseDiffHunks`/`splitDiffHunks` shell out to `git diff` against a committed ref and a path already on disk, which doesn't fit here (the new content is a pending tool_input, not yet written, and spawning `git diff --no-index` on every Write would add subprocess latency to a hook that must stay fast and must also work outside a git repo). Neither is an adequate fit, so this hook computes its own line-level LCS length -- the honest, order-respecting signal the task asked for -- bounded by {@link MAX_LINES_FOR_DIFF} so the O(n*m) DP never turns a Write into a multi-second hook call. */
 import { readFileSync, statSync } from 'node:fs'
 
 import { fingerprintContent } from './fingerprint.js'
@@ -12,6 +12,7 @@ import { lcsLength, splitLines } from './line_diff.js'
 import { normalizePath } from './paths.js'
 import { readShapeOf } from './read_shape.js'
 import { dropFileLineRangesIfChanged, getFileLineRanges, getSessionFileEntry, getCompactedAt, markHintShown, wasHintShown } from './session.js'
+import { siblingCandidates, siblingCopyExcluded, siblingCopyMessage } from './sibling_copy.js'
 import { isWithinQuietHours } from './util.js'
 import { BLIND_DROP_MIN_LINES, blindDropMessage, countRunLines, findNewElisionLine, patchAddedLines, placeholderMessage, unseenRemovedRuns } from './write_guards.js'
 import type { HookOutput } from './types.js'
@@ -73,6 +74,26 @@ function blindDropGuard(event: HookEvent, filePath: string, newContent: string, 
   return guardVerdict(guardKey('blind', filePath, newContent), blindDropMessage(filePath, runs), 'kind=blind_drop last_read=' + shape + ' lines=' + countRunLines(runs))
 }
 
+/** Advice for a Write that creates a new file named like a copy of an existing sibling (`solver_v2.py` beside `solver.py`) and repeats at least `hints.write_rewrite_unchanged_pct` of its lines: edit the original instead. Advice only, once per original per session; the sibling must have at least `hints.write_rewrite_min_lines` lines and both files stay under the diff caps. */
+function siblingCopyGuard(filePath: string, newContent: string): HookOutput {
+  const cfg = loadConfig().hints
+  if (!cfg.write_sibling_copy || siblingCopyExcluded(filePath, cfg.write_sibling_copy_allow)) return passOutput()
+  const newLines = splitLines(newContent)
+  if (newLines.length > MAX_LINES_FOR_DIFF) return passOutput()
+  for (const original of siblingCandidates(filePath)) {
+    const oldLines = splitLines(readKnownText(original))
+    if (oldLines.length < cfg.write_rewrite_min_lines || oldLines.length > MAX_LINES_FOR_DIFF) continue
+    const unchangedPct = (lcsLength(oldLines, newLines) / oldLines.length) * 100
+    if (unchangedPct < cfg.write_rewrite_unchanged_pct) continue
+    const key = 'write_sibling_copy:' + fingerprintContent(original)
+    if (wasHintShown(key)) return passOutput()
+    markHintShown(key)
+    recordStat('write_sibling_copy', 0, 0, undefined, 'unchanged_pct=' + Math.round(unchangedPct))
+    return contextOutput(siblingCopyMessage(original, unchangedPct))
+  }
+  return passOutput()
+}
+
 /** The placeholder check for an Edit, a MultiEdit (each edit's `new_string`) or a Codex `apply_patch` (the `+` lines of each file it adds or updates; its input carries the patch under `command`). A line counts only when neither the file now nor the text being replaced holds it. */
 function preEditPlaceholderGuard(event: HookEvent): HookOutput {
   if (loadConfig().hints.write_blind_drop === 'off') return passOutput()
@@ -121,7 +142,8 @@ export function preWriteRewriteHandler(event: HookEvent): HookOutput {
       stat = statSync(filePath)
     } catch {
       // Doesn't exist yet (or the path is otherwise unreachable) -- a brand-new-file Write has nothing to compare against for the rewrite hint, but a placeholder in it is still a placeholder.
-      return placeholderGuard(event, filePath, newContent, '')
+      const created = placeholderGuard(event, filePath, newContent, '')
+      return created.hookType !== 'pass' ? created : siblingCopyGuard(filePath, newContent)
     }
     if (!stat.isFile()) return passOutput()
     if (stat.size > MAX_OLD_FILE_BYTES_FOR_DIFF) return passOutput()

@@ -29,6 +29,7 @@ const { defaultConfig, invalidateConfigCache, saveConfig } = await import('../sr
 const { makeHookEvent } = await import('./helpers/hook-event.js')
 const { normalizePayload } = await import('../src/hooks_cli.js')
 const { normalizePath } = await import('../src/paths.js')
+const { siblingCandidates } = await import('../src/sibling_copy.js')
 const { recordReadShape } = await import('../src/read_shape.js')
 const { recordFileRead, recordFileLineRange } = await import('../src/session.js')
 
@@ -460,5 +461,146 @@ describe('write_blind_drop guard', () => {
       const { target, lines } = seedPartialRead('cfg-off-bd.ts', 'partial', [[1, 40]])
       expect(preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n')).hookType).toBe('pass')
     })
+  })
+})
+
+// The sibling-copy advice (hints.write_sibling_copy). File names, line counts and the 75% / 40-line defaults are HAND-DERIVED from the brief and src/config_defaults.ts. The Copilot CLI `create` payload {path, file_text} is CAPTURE: the arguments of a real `create` tool call in a Copilot CLI 1.0.x session log (events.jsonl), run through the real normalizePayload. Claude Code's Write {file_path, content} is FORMAT-DERIVED from https://code.claude.com/docs/en/hooks.
+describe('siblingCandidates', () => {
+  const dir = path.join(FILES_DIR, 'cand')
+  it.each([
+    ['solver_v2.py', ['solver.py']],
+    ['solver-v3.py', ['solver.py']],
+    ['solverv2.py', ['solver.py']],
+    ['solver_fixed.py', ['solver.py']],
+    ['solver_new.ts', ['solver.ts']],
+    ['solver_copy.ts', ['solver.ts']],
+    ['solver_old.ts', ['solver.ts']],
+    ['solver_orig.ts', ['solver.ts']],
+    ['solver_backup.ts', ['solver.ts']],
+    ['solver copy.ts', ['solver.ts']],
+    ['solver (1).ts', ['solver.ts']],
+    ['solver.py.bak', ['solver.py']],
+    ['solver.py.orig', ['solver.py']],
+    ['solver.py.new', ['solver.py']],
+    ['solver_v2_fixed.py', ['solver_v2.py']],
+    ['v2.py', []],
+    ['solver.py', []],
+    ['notes.bak', []],
+    ['solver_v.py', []],
+    ['Solver_V2.PY', ['Solver.PY']],
+  ])('%s names %j', (name, expected) => {
+    expect(siblingCandidates(path.join(dir, name))).toEqual(expected.map((e) => path.join(dir, e)))
+  })
+})
+
+describe('sibling-copy advice', () => {
+  /** A directory (optionally nested under `parts`) holding `original` of `lines` lines. */
+  function setup(original: string, lines: number, ...parts: string[]): { dir: string; original: string } {
+    const dir = path.join(fs.mkdtempSync(path.join(FILES_DIR, 'sib-')), ...parts)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, original), makeLines(lines))
+    return { dir, original: path.join(dir, original) }
+  }
+
+  /** `makeLines(n)` with its last line replaced, so the copy is 98% unchanged for n = 50. */
+  const nearCopy = (n: number): string => makeLines(n - 1) + 'changed last line\n'
+
+  it.each([
+    ['solver_v2.py', 'solver.py'],
+    ['solver-v3.py', 'solver.py'],
+    ['solver_fixed.py', 'solver.py'],
+    ['solver_new.py', 'solver.py'],
+    ['solver_copy.py', 'solver.py'],
+    ['solver copy.py', 'solver.py'],
+    ['solver (1).py', 'solver.py'],
+    ['solver.py.bak', 'solver.py'],
+  ])('advises editing the original when %s repeats %s', (copy, original) => {
+    const { dir } = setup(original, 50)
+    const result = preWriteRewriteHandler(writeEvent(path.join(dir, copy), nearCopy(50)))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('98%')
+      expect(result.context).toContain('token-goat outline')
+      expect(result.context).toContain('solver.py')
+    }
+    expect(vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'write_sibling_copy')?.[4]).toBe('unchanged_pct=98')
+  })
+
+  it('speaks once per original, not once per copy', () => {
+    const { dir } = setup('solver.py', 50)
+    expect(preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), nearCopy(50))).hookType).toBe('context')
+    expect(preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v3.py'), nearCopy(50))).hookType).toBe('pass')
+  })
+
+  it('passes a copy that shares too little with the original', () => {
+    const { dir } = setup('solver.py', 50)
+    expect(preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), makeLines(50, 'other'))).hookType).toBe('pass')
+  })
+
+  it('passes when the original is below the minimum line count', () => {
+    const { dir } = setup('solver.py', 30)
+    expect(preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), nearCopy(30))).hookType).toBe('pass')
+  })
+
+  it('passes when the file the name points at does not exist', () => {
+    const { dir } = setup('other.py', 50)
+    expect(preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), nearCopy(50))).hookType).toBe('pass')
+  })
+
+  it('passes a new file whose name is not a copy of anything', () => {
+    const { dir } = setup('solver.py', 50)
+    expect(preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_extra.py'), nearCopy(50))).hookType).toBe('pass')
+  })
+
+  it.each([
+    ['migrations'],
+    ['versions'],
+    ['fixtures'],
+    ['__snapshots__'],
+  ])('stays silent inside a %s directory', (series) => {
+    const { dir } = setup('solver.py', 50, series)
+    expect(preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), nearCopy(50))).hookType).toBe('pass')
+  })
+
+  it('stays silent inside an api/vN directory', () => {
+    const { dir } = setup('solver.py', 50, 'api', 'v2')
+    expect(preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), nearCopy(50))).hookType).toBe('pass')
+  })
+
+  it('stays silent for a path matching hints.write_sibling_copy_allow', () => {
+    const cfg = defaultConfig()
+    cfg.hints.write_sibling_copy_allow = ['legacy/*_v2.py']
+    saveConfig(cfg)
+    invalidateConfigCache()
+    const { dir } = setup('solver.py', 50, 'legacy')
+    expect(preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), nearCopy(50))).hookType).toBe('pass')
+    expect(preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v3.py'), nearCopy(50))).hookType).toBe('context')
+  })
+
+  it('is off when hints.write_sibling_copy is false', () => {
+    const cfg = defaultConfig()
+    cfg.hints.write_sibling_copy = false
+    saveConfig(cfg)
+    invalidateConfigCache()
+    const { dir } = setup('solver.py', 50)
+    expect(preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), nearCopy(50))).hookType).toBe('pass')
+  })
+
+  it('leaves a Write to an existing versioned file to the rewrite check', () => {
+    const { dir } = setup('solver.py', 50)
+    fs.writeFileSync(path.join(dir, 'solver_v2.py'), makeLines(50, 'other'))
+    expect(preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), nearCopy(50))).hookType).toBe('pass')
+  })
+
+  it('lets a placeholder refusal win over the advice', () => {
+    const { dir } = setup('solver.py', 50)
+    expect(preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), nearCopy(50) + '// ... existing code ...\n')).hookType).toBe('deny')
+  })
+
+  it('reads a Copilot CLI create through the real payload normalization', () => {
+    const { dir } = setup('solver.py', 50)
+    const wire = { tool_name: 'create', tool_input: { path: path.join(dir, 'solver_v2.py'), file_text: nearCopy(50) } }
+    const normalized = normalizePayload(wire, 'copilot_cli') as { tool_name: string; tool_input: Record<string, unknown> }
+    expect(preWriteRewriteHandler(makeHookEvent({ eventName: 'pre_tool_use', toolName: normalized.tool_name, toolInput: normalized.tool_input, sessionId: 'test' })).hookType).toBe('context')
   })
 })

@@ -60,6 +60,8 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'Passes placeholderMessage through guardVerdict. That message shows the placeholder line through echoedValue, which is display-safe and quoted.',
   'hooks_write.ts::blindDropGuard':
     'Passes blindDropMessage through guardVerdict. That message shows the path through displaySafePath and fileSubject, inside quotedArg for the suggested read commands, and otherwise only line numbers.',
+  'hooks_write.ts::siblingCopyGuard':
+    'Passes siblingCopyMessage through contextOutput. That message shows the original file path only inside a token-goat outline command, from displaySafePath through quotedArg (left out when canQuoteArg refuses it); the rest is a percentage.',
   'hooks_write.ts::preEditPlaceholderGuard':
     'Returns the verdict of placeholderGuard for Edit, MultiEdit and apply_patch text; interpolates nothing of its own.',
   'hooks_compact.ts::preCompactHandler':

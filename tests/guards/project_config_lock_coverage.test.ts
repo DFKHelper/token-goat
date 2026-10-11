@@ -64,6 +64,9 @@ const REVIEWED_OVERRIDABLE: readonly string[] = [
   'hints.web_dedup_min_bytes',
   // A data-loss guard on the model's own Write, not a read the repository controls: a project that turns it off only restores the behaviour before the guard existed.
   'hints.write_blind_drop',
+  // Only silences advice about a new file's name; a repository's own migration or variant naming is exactly what it would list.
+  'hints.write_sibling_copy',
+  'hints.write_sibling_copy_allow',
   'hints.write_rewrite_min_lines',
   'hints.write_rewrite_unchanged_pct',
   'hooks.latency_budget_ms',

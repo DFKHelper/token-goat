@@ -9,6 +9,7 @@ const CONFIG_SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..',
 /** Fields intentionally reachable only through config.toml, each with the reason it cannot follow the scalar pattern. Keep this list minimal: an entry here is an admission that one config field behaves differently from every other, so it needs a reason a reader can check, not just a name. */
 const EXEMPT = new Map<string, string>([
   ['backoff_thresholds', 'number[] -- no env helper parses a list, so an override would have to invent a serialization format'],
+  ['write_sibling_copy_allow', 'string[] globs -- no env helper parses a list, so an override would have to invent a serialization format'],
 ])
 
 function readConfigSrc(): string {
