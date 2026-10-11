@@ -27,6 +27,10 @@ const { recordStat } = await import('../src/stats.js')
 const { clearModuleCaches } = await import('../src/reset.js')
 const { defaultConfig, invalidateConfigCache, saveConfig } = await import('../src/config.js')
 const { makeHookEvent } = await import('./helpers/hook-event.js')
+const { normalizePayload } = await import('../src/hooks_cli.js')
+const { normalizePath } = await import('../src/paths.js')
+const { recordReadShape } = await import('../src/read_shape.js')
+const { recordFileRead, recordFileLineRange } = await import('../src/session.js')
 
 const FILES_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-write-files-'))
 
@@ -238,5 +242,223 @@ describe('preWriteRewriteHandler', () => {
 
     // Same 80%-unchanged content no longer clears the raised 90% floor -- passes.
     expect(preWriteRewriteHandler(writeEvent(target, content)).hookType).toBe('pass')
+  })
+})
+
+// The partial-view guard (hints.write_blind_drop). Payload shapes: Claude Code Write/Edit/MultiEdit tool_input is FORMAT-DERIVED from https://code.claude.com/docs/en/hooks (file_path + content; file_path + old_string + new_string; file_path + edits[]). Copilot CLI `create` {path, file_text} is CAPTURE: the arguments of a real `create` tool call in a Copilot CLI 1.0.x session log (events.jsonl, toolName "create"), run through the real normalizePayload. Codex `apply_patch` {command: <V4A patch>} is FORMAT-DERIVED from codex-rs core/src/tools/handlers/apply_patch.rs (see the comment in hooks_cli.ts::normalizePayload) with the tool name CAPTURE, codex-cli 0.155.0 (tests/install_codex.test.ts). Marker strings and line counts are HAND-DERIVED.
+describe('write_blind_drop guard', () => {
+  const PLACEHOLDER = '// ... rest of file unchanged ...'
+
+  function editEvent(toolName: string, toolInput: Record<string, unknown>): HookEvent {
+    return makeHookEvent({ eventName: 'pre_tool_use', toolName, toolInput, sessionId: 'test' })
+  }
+
+  function setPolicy(policy: 'deny' | 'warn' | 'off', quietHours = ''): void {
+    const cfg = defaultConfig()
+    cfg.hints.write_blind_drop = policy
+    cfg.hints.quiet_hours = quietHours
+    saveConfig(cfg)
+    invalidateConfigCache()
+  }
+
+  /** A 100-line file on disk whose last Read the session records as `shape`, with `served` as the windows it was shown. */
+  function seedPartialRead(name: string, shape: 'partial' | 'outline' | 'fold', served: Array<[number, number]>): { target: string; lines: string[] } {
+    const target = path.join(FILES_DIR, name)
+    const lines = makeLines(100).trimEnd().split('\n')
+    fs.writeFileSync(target, lines.join('\n') + '\n')
+    recordFileRead(target, false)
+    for (const [s, e] of served) recordFileLineRange(target, s, e)
+    recordReadShape('test', normalizePath(target), shape)
+    return { target, lines }
+  }
+
+  describe('placeholder lines', () => {
+    it('denies a Write whose new content carries a placeholder the file does not hold, naming the line', () => {
+      const target = path.join(FILES_DIR, 'ph-existing.ts')
+      fs.writeFileSync(target, makeLines(50))
+      const result = preWriteRewriteHandler(writeEvent(target, 'line 0\n' + PLACEHOLDER + '\n'))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') expect(result.message).toContain(PLACEHOLDER)
+      expect(vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'write_blind_drop')?.[4]).toContain('kind=placeholder')
+    })
+
+    it('lets the identical call through on the retry', () => {
+      const target = path.join(FILES_DIR, 'ph-retry.ts')
+      fs.writeFileSync(target, makeLines(50))
+      const event = writeEvent(target, 'line 0\n' + PLACEHOLDER + '\n')
+      expect(preWriteRewriteHandler(event).hookType).toBe('deny')
+      expect(preWriteRewriteHandler(event).hookType).toBe('pass')
+    })
+
+    it('passes a placeholder line the file already holds', () => {
+      const target = path.join(FILES_DIR, 'ph-already.ts')
+      fs.writeFileSync(target, 'line 0\n' + PLACEHOLDER + '\nline 2\n')
+      expect(preWriteRewriteHandler(writeEvent(target, 'line 0\n' + PLACEHOLDER + '\nline 2 changed\n')).hookType).toBe('pass')
+    })
+
+    it('flags a brand-new file that is a placeholder, and passes one that is not', () => {
+      const target = path.join(FILES_DIR, 'ph-new.ts')
+      expect(preWriteRewriteHandler(writeEvent(target, 'import x from "x"\n// existing code\n')).hookType).toBe('deny')
+      expect(preWriteRewriteHandler(writeEvent(path.join(FILES_DIR, 'ph-new-clean.ts'), 'import x from "x"\n')).hookType).toBe('pass')
+    })
+
+    it.each([
+      '// existing code path handles retries',
+      '// the rest of the file is generated, do not hand-edit',
+      '# unchanged since v1 because the schema froze',
+      'const rest = [...remaining]',
+      '// ... spread the options here',
+    ])('does not mistake ordinary prose or code for a placeholder: %s', (line) => {
+      const target = path.join(FILES_DIR, 'ph-prose-' + Math.abs(line.length * 31 + line.charCodeAt(3)) + '.ts')
+      expect(preWriteRewriteHandler(writeEvent(target, line + '\n')).hookType).toBe('pass')
+    })
+
+    it.each([
+      '// ... existing code ...',
+      '# ... rest unchanged',
+      '/* rest of the file unchanged */',
+      '<!-- ... remaining content ... -->',
+      '[truncated]',
+      '[... remaining content omitted ...]',
+      '... 29 more lines of recordEditedFile (46-74) folded -- token-goat read "x::y@38"',
+    ])('recognizes the placeholder %s', (line) => {
+      const target = path.join(FILES_DIR, 'ph-kind-' + Math.abs(line.length * 17 + line.charCodeAt(4)) + '.ts')
+      expect(preWriteRewriteHandler(writeEvent(target, line + '\n')).hookType).toBe('deny')
+    })
+
+    it('checks an Edit new_string, passing when old_string already holds the marker', () => {
+      const target = path.join(FILES_DIR, 'ph-edit.ts')
+      fs.writeFileSync(target, 'a\nb\n')
+      expect(preWriteRewriteHandler(editEvent('Edit', { file_path: target, old_string: 'b', new_string: '// ... existing code ...' })).hookType).toBe('deny')
+      const held = path.join(FILES_DIR, 'ph-edit-held.ts')
+      fs.writeFileSync(held, 'a\n// ... existing code ...\n')
+      expect(preWriteRewriteHandler(editEvent('Edit', { file_path: held, old_string: '// ... existing code ...', new_string: '// ... existing code ...\nc' })).hookType).toBe('pass')
+    })
+
+    it('checks every edit of a MultiEdit', () => {
+      const target = path.join(FILES_DIR, 'ph-multi.ts')
+      fs.writeFileSync(target, 'a\nb\n')
+      const edits = [{ old_string: 'a', new_string: 'A' }, { old_string: 'b', new_string: '// rest of file unchanged' }]
+      expect(preWriteRewriteHandler(editEvent('MultiEdit', { file_path: target, edits })).hookType).toBe('deny')
+    })
+
+    it('reads a Copilot CLI create through the real payload normalization', () => {
+      const target = path.join(FILES_DIR, 'ph-copilot.ts')
+      fs.writeFileSync(target, makeLines(50))
+      const wire = { tool_name: 'create', tool_input: { path: target, file_text: 'line 0\n' + PLACEHOLDER + '\n' } }
+      const normalized = normalizePayload(wire, 'copilot_cli') as { tool_name: string; tool_input: Record<string, unknown> }
+      expect(normalized.tool_name).toBe('Write')
+      expect(preWriteRewriteHandler(editEvent(normalized.tool_name, normalized.tool_input)).hookType).toBe('deny')
+    })
+
+    it('reads a Copilot CLI edit through the real payload normalization', () => {
+      const target = path.join(FILES_DIR, 'ph-copilot-edit.ts')
+      fs.writeFileSync(target, 'a\nb\n')
+      const wire = { tool_name: 'edit', tool_input: { path: target, old_str: 'b', new_str: '// ... existing code ...' } }
+      const normalized = normalizePayload(wire, 'copilot_cli') as { tool_name: string; tool_input: Record<string, unknown> }
+      expect(preWriteRewriteHandler(editEvent(normalized.tool_name, normalized.tool_input)).hookType).toBe('deny')
+    })
+
+    it('reads the added lines of a Codex apply_patch, and passes a patch that adds none', () => {
+      const target = path.join(FILES_DIR, 'ph-codex.ts')
+      fs.writeFileSync(target, 'a\nb\n')
+      const patch = (added: string): string => `*** Begin Patch\n*** Update File: ${target}\n@@\n-b\n+${added}\n*** End Patch\n`
+      const wire = (command: string) => ({ tool_name: 'apply_patch', tool_input: { command } })
+      const bad = normalizePayload(wire(patch('// ... existing code ...')), 'codex') as { tool_name: string; tool_input: Record<string, unknown> }
+      expect(bad.tool_name).toBe('Edit')
+      expect(preWriteRewriteHandler(editEvent(bad.tool_name, bad.tool_input)).hookType).toBe('deny')
+      const good = normalizePayload(wire(patch('c')), 'codex') as { tool_name: string; tool_input: Record<string, unknown> }
+      expect(preWriteRewriteHandler(editEvent(good.tool_name, good.tool_input)).hookType).toBe('pass')
+    })
+  })
+
+  describe('whole-file Write after a partial read', () => {
+    it('denies a Write that drops lines outside the windows the session was shown, naming them', () => {
+      const { target, lines } = seedPartialRead('bd-deny.ts', 'partial', [[1, 40]])
+      const result = preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n'))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('60 lines')
+        expect(result.message).toContain('@41-100')
+        expect(result.message).toContain('token-goat read')
+      }
+      expect(vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'write_blind_drop')?.[4]).toContain('kind=blind_drop last_read=partial')
+    })
+
+    it('lets the identical Write through on the retry', () => {
+      const { target, lines } = seedPartialRead('bd-retry.ts', 'partial', [[1, 40]])
+      const event = writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n')
+      expect(preWriteRewriteHandler(event).hookType).toBe('deny')
+      expect(preWriteRewriteHandler(event).hookType).toBe('pass')
+    })
+
+    it('passes when the dropped lines were inside the served windows', () => {
+      const { target, lines } = seedPartialRead('bd-seen.ts', 'partial', [[1, 40], [41, 100]])
+      expect(preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n')).hookType).toBe('pass')
+    })
+
+    it('passes when the file was never read in part (no read shape)', () => {
+      const target = path.join(FILES_DIR, 'bd-noshape.ts')
+      const lines = makeLines(100).trimEnd().split('\n')
+      fs.writeFileSync(target, lines.join('\n') + '\n')
+      expect(preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n')).hookType).toBe('pass')
+    })
+
+    it('passes when the file was read whole after the partial read', () => {
+      const { target, lines } = seedPartialRead('bd-fullread.ts', 'partial', [[1, 40]])
+      recordFileRead(target, true)
+      expect(preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n')).hookType).toBe('pass')
+    })
+
+    it('passes when fewer than five unseen lines are dropped', () => {
+      const { target, lines } = seedPartialRead('bd-few.ts', 'partial', [[1, 96]])
+      // Mostly-unchanged content may draw the unrelated rewrite hint; only the guard is under test.
+      expect(preWriteRewriteHandler(writeEvent(target, lines.slice(0, 96).join('\n') + '\nline 96\nline 97 changed\n')).hookType).not.toBe('deny')
+      expect(vi.mocked(recordStat).mock.calls.some((c) => c[0] === 'write_blind_drop')).toBe(false)
+    })
+
+    it('treats a partial shape with no recorded windows as unknown and passes', () => {
+      const { target, lines } = seedPartialRead('bd-nowindows.ts', 'partial', [])
+      expect(preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n')).hookType).toBe('pass')
+    })
+
+    it('denies after an outline-shaped read, which showed no lines at all', () => {
+      const { target, lines } = seedPartialRead('bd-outline.ts', 'outline', [])
+      expect(preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n')).hookType).toBe('deny')
+    })
+
+    it('passes after a fold-shaped read, whose shown lines cannot be placed', () => {
+      const { target, lines } = seedPartialRead('bd-fold.ts', 'fold', [])
+      expect(preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n')).hookType).toBe('pass')
+    })
+  })
+
+  describe('hints.write_blind_drop', () => {
+    it('warn adds a note instead of refusing, and quiet hours silence it', () => {
+      setPolicy('warn')
+      const a = path.join(FILES_DIR, 'cfg-warn.ts')
+      fs.writeFileSync(a, makeLines(10))
+      expect(preWriteRewriteHandler(writeEvent(a, PLACEHOLDER + '\n')).hookType).toBe('context')
+      setPolicy('warn', '00:00-23:59')
+      const b = path.join(FILES_DIR, 'cfg-warn-quiet.ts')
+      fs.writeFileSync(b, makeLines(10))
+      expect(preWriteRewriteHandler(writeEvent(b, PLACEHOLDER + '\n')).hookType).toBe('pass')
+    })
+
+    it('deny stays in force inside quiet hours', () => {
+      setPolicy('deny', '00:00-23:59')
+      const a = path.join(FILES_DIR, 'cfg-deny-quiet.ts')
+      fs.writeFileSync(a, makeLines(10))
+      expect(preWriteRewriteHandler(writeEvent(a, PLACEHOLDER + '\n')).hookType).toBe('deny')
+    })
+
+    it('off turns both checks off', () => {
+      setPolicy('off')
+      const a = path.join(FILES_DIR, 'cfg-off.ts')
+      fs.writeFileSync(a, makeLines(10))
+      expect(preWriteRewriteHandler(writeEvent(a, PLACEHOLDER + '\n')).hookType).toBe('pass')
+      const { target, lines } = seedPartialRead('cfg-off-bd.ts', 'partial', [[1, 40]])
+      expect(preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n')).hookType).toBe('pass')
+    })
   })
 })

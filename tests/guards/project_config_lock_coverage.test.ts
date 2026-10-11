@@ -62,6 +62,8 @@ const REVIEWED_OVERRIDABLE: readonly string[] = [
   'hints.truncated_read_min_lines',
   'hints.warn_unbalanced_shell_quoting',
   'hints.web_dedup_min_bytes',
+  // A data-loss guard on the model's own Write, not a read the repository controls: a project that turns it off only restores the behaviour before the guard existed.
+  'hints.write_blind_drop',
   'hints.write_rewrite_min_lines',
   'hints.write_rewrite_unchanged_pct',
   'hooks.latency_budget_ms',

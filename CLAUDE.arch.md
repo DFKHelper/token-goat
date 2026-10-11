@@ -498,6 +498,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/known_roots.ts`](src/known_roots.ts) | Exports: `isTooShallowToPrune`, `recordKnownRoot`, `sweepExpiredKnownRootMarkers`, `recordKnownRootThrottled` |
 | [`src/language_specs.ts`](src/language_specs.ts) | The one table of languages token-goat indexes. |
 | [`src/lazy_module.ts`](src/lazy_module.ts) | Shared factory for the "lazily load an optional npm dependency" pattern used by every optional-dependency reader (pdf_extract.ts, xlsx_extract.ts, ooxml_extract.ts, screenshot.ts, |
+| [`src/line_diff.ts`](src/line_diff.ts) | Line-level comparison helpers shared by the Write pre-hook and its guards (hooks_write.ts, write_guards.ts). |
 | [`src/line_matchers.ts`](src/line_matchers.ts) | Linear-time matchers for header-like lines. |
 | [`src/line_regions.ts`](src/line_regions.ts) | Maps a requested line span onto the file regions that cover it. |
 | [`src/listing_size.ts`](src/listing_size.ts) | `token-goat listing-size`: price the skill and agent listings Claude Code puts in context. |
@@ -585,6 +586,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/windows_powershell.ts`](src/windows_powershell.ts) | How token-goat starts Windows PowerShell to ask about processes: one place for the executable and its arguments, shared by doctor and the hidden-rule scan. |
 | [`src/windows_system32.ts`](src/windows_system32.ts) | Where a Windows system executable lives, from SystemRoot, then windir, then the literal C:\Windows: only an absolute folder that holds the file counts, so a relative or planted val |
 | [`src/worker_lifecycle.ts`](src/worker_lifecycle.ts) | The daemon's controls, kept out of `worker.ts` so the hook bundle loads them without the drain: `startDetachedWorker()`, `stopWorker()`, `isWorkerRunning()`, `ensureWorkerAlive()`, the pid and stamp files, the drain heartbeat, the error log, and the poll interval (`DEFAULT_POLL_INTERVAL_MS`, 2000 ms) |
+| [`src/write_guards.ts`](src/write_guards.ts) | Pure checks behind the Write/Edit pre-hook's partial-view guard (hooks_write.ts): a placeholder standing in for content the model did not write, and a whole-file Write that deletes |
 | [`src/xlsx_extract.ts`](src/xlsx_extract.ts) | Excel (.xlsx) narrow-slice reader. |
 | [`src/xlsx_reader.ts`](src/xlsx_reader.ts) | Minimal in-house SpreadsheetML (.xlsx) reader. |
 | [`src/zip_bounds.ts`](src/zip_bounds.ts) | Shared decompression bounds for zip-format archives (.zip/.jar/.whl/.vsix/.nupkg, and the .docx/.pptx/.xlsx OOXML formats, which are all ZIP containers under the hood). |
