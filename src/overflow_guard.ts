@@ -37,26 +37,30 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
   const totalLines = lines.length
 
   const bodyBudget = Math.max(1, budgetTokens - markerMarginTokens - reserve)
-  const charBudget = bodyBudget * guardDivisor(contentClass)
 
   const kept: string[] = []
-  let used = 0
+  let usedTokens = 0
 
   for (const ln of lines) {
     const stripped = stripAnsiEscapes(ln)
-    // Charge the RAW line length, not the ANSI-stripped length: kept.push(ln) below retains the raw (un-stripped) line, so accounting must match what is actually emitted. Charging the stripped length would let ANSI-heavy lines discount bytes that are never removed.
+    // Price the line by its own class so a CJK line costs what it does among English ones. A whole-text dense class stays: a 76-column base64 line is too short to classify on its own and was priced dense before.
+    const lineClass = contentClass === 'dense' ? contentClass : classifyContent(stripped)
+    // Charge the RAW line length, not the ANSI-stripped length: kept.push(ln) below retains the raw (un-stripped) line, so accounting must match what is actually emitted.
     const cost = ln.length + 1
-    if (kept.length === 0 && cost > charBudget) {
-      // Slice the stripped string so the budget is measured and cut on visible characters; avoids ANSI bytes silently consuming budget and eliminates dangling escape sequences from a mid-code cut. Use safeSlice to avoid splitting UTF-16 surrogate pairs.
+    const costTokens = cost / guardDivisor(lineClass)
+
+    if (kept.length === 0 && costTokens > bodyBudget) {
+      // Slice the stripped string so the budget is measured and cut on visible characters; avoids ANSI bytes silently consuming budget and dangling escape sequences from a mid-code cut. safeSlice never splits a UTF-16 surrogate pair.
+      const charBudget = bodyBudget * guardDivisor(lineClass)
       const truncated = safeSlice(stripped, charBudget)
       kept.push(truncated)
       break
     }
-    if (kept.length > 0 && used + cost > charBudget) {
+    if (kept.length > 0 && usedTokens + costTokens > bodyBudget) {
       break
     }
     kept.push(ln)
-    used += cost
+    usedTokens += costTokens
   }
 
   const shown = kept.length
