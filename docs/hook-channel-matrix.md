@@ -19,15 +19,15 @@ From `serializeOutput` plus a full producer enumeration (`rg "contextOutput\(|de
 |---|---|---|
 | deny | `{"decision":"block","reason"}` | pre_tool_use only (hooks_read, hooks_bash, hooks_fetch url policy, hooks_mcp dedup, hooks_screenshot, hooks_skill, hooks_websearch, hooks_glob/grep dedup) |
 | context, raw stdout | bare text on stdout | pre_compact on claudecode only (`EVENTS_WITH_RAW_STDOUT_CONTEXT`) — the manifest becomes summarizer input |
-| context, systemMessage | `{"systemMessage"}` | pre_compact on every other harness (`EVENTS_WITHOUT_ADDITIONAL_CONTEXT`; `notification` is in the set but has zero producers) |
+| context, systemMessage | `{"systemMessage"}` | pre_compact on every other harness, and the `stop` unverified-work advisory on claudecode and codex (`EVENTS_WITHOUT_ADDITIONAL_CONTEXT`; `notification` is in the set but has zero producers) |
 | context, additionalContext | `{"hookSpecificOutput":{"hookEventName","additionalContext"}}` | pre_tool_use (bash advisory hints, image-shrink payload, hooks_write); post_tool_use (agent report notice, bash recall/gh/test-failure hints, hooks_edit, pendingContext drain); post_tool_use_failure (repeat-failure brake); session_start (routing reminder); user_prompt_submit (session hints) |
 | rewriteInput | `{"hookSpecificOutput":{"updatedInput"}}`, plus `"permissionDecision":"allow"` only when the original call would run with no prompt anyway (src/rewrite_permission.ts) or on Codex, which requires it | pre_tool_use only (agent-spawn briefing, bash command wrap, image shrink on Claude Code and VS Code) |
 | rewriteOutput | `{"hookSpecificOutput":{"updatedToolOutput"}}` | post_tool_use only (WebFetch fencing/redaction/compression, websearch, bash/bashoutput/taskoutput/grep compression, mcp compression, browser-image dedup, agent-report compaction, exitplanmode) |
 
 `visualstudio` (`install --visualstudio`) has no column in the verdicts below: Visual Studio documents no agent hooks, so the bridge writes no hooks file and every channel is **X** there. token-goat reaches that agent only through its MCP tools and the instructions block.
 
-`subagent_stop` and `post_compact` handlers only ever return pass (side effects only). `notification`
-and `stop` have zero registered handlers. `hermes` has no bridge row in `BRIDGE_CAPABILITY_MATRIX`
+`subagent_stop` and `post_compact` handlers only ever return pass (side effects only). `notification` has
+zero registered handlers; `stop` has one (hooks_stop.ts), advisory only. `hermes` has no bridge row in `BRIDGE_CAPABILITY_MATRIX`
 and is out of scope here.
 
 ## Verdicts per harness

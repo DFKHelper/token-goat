@@ -105,6 +105,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/hooks_session_start.ts`](src/hooks_session_start.ts) | session_start hook: re-inject a short command-routing reminder every time a session starts, resumes, or restarts after compaction. |
 | [`src/hooks_session.ts`](src/hooks_session.ts) | `sessionStartHandler()`, `userPromptSubmitHandler()` (branch and status context), `subagentStopHandler()` |
 | [`src/hooks_skill.ts`](src/hooks_skill.ts) | `postSkillHandler()` captures skill bodies across compaction; `preSkillHandler()` denies a same-session re-load with a compact-recall hint |
+| [`src/hooks_stop.ts`](src/hooks_stop.ts) | The Stop hook: when the agent ends a turn with source edits that no test, lint, typecheck or build run has covered since, say so once. |
 | [`src/hooks_taskoutput.ts`](src/hooks_taskoutput.ts) | TaskOutput poll-delta caching hook. |
 | [`src/hooks_tool_failure.ts`](src/hooks_tool_failure.ts) | `post_tool_use_failure` handler -- the repeat-failure brake. |
 | [`src/hooks_websearch.ts`](src/hooks_websearch.ts) | WebSearch caching/dedup hooks. |
@@ -574,6 +575,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/ts_refs.ts`](src/ts_refs.ts) | Type-resolved reference disambiguation for TypeScript, using the TypeScript compiler API. |
 | [`src/untrusted_fence.ts`](src/untrusted_fence.ts) | The single decision point for "should this text be fenced, and under what notice". |
 | [`src/url_policy.ts`](src/url_policy.ts) | Shared allow/deny matching for URL policy (`webfetch.allow` / `webfetch.deny`). |
+| [`src/verification_state.ts`](src/verification_state.ts) | What the session has verified. |
 | [`src/video_chapters.ts`](src/video_chapters.ts) | Reads embedded chapter markers and subtitle-stream metadata out of a video file via `ffprobe`, so an agent can see a video's structure without downloading/transcoding it. |
 | [`src/vscode_duplicate.ts`](src/vscode_duplicate.ts) | Duplicate-invocation suppression for VS Code agent hooks. |
 | [`src/vscode_path_gate.ts`](src/vscode_path_gate.ts) | Which paths a pre_tool_use handler may open. |

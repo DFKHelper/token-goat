@@ -6,6 +6,7 @@ import { contextOutput, emitRewrite, passOutput, extractToolResponseField, OUTPU
 import { fenceUntrusted, fenceUntrustedSpans } from './untrusted_fence.js'
 import { UNTRUSTED_TOOL_TAG, type FenceSpan } from './injection_scan.js'
 import type { HookOutput } from './types.js'
+import { noteVerificationRun } from './verification_state.js'
 import { getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, recordFileLineRange, resetFileLineRanges, recordFileRead, markFileTruncated, wasHintShown, markHintShown, recordCliRead, recordSymbolRead, takeBashStartCwd, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
 import { resolveIndexPath, toDisplayPath, displaySafePath, displaySafeText, dirAtIndexKey, hostPathOfIndexKey, hostPathOfTypedPath, isFileAtIndexKey } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
@@ -665,6 +666,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const startCwd = heldStartCwd ?? cwd
     // The command the pre hook saw, recovered from a `token-goat compress` wrapper it rewrote the call into, and the directory the command ran in: every cached output below is keyed, stored and fingerprinted against them, so the pre hook, which derives the same directory from the same command and its own cwd, recalls a run only where it happened.
     const { rawCmd, cmd, runDir } = resolveBashCall(rawCmdRaw, startCwd)
+    noteVerificationRun(cmd, exitCode, event.toolInput['run_in_background'] === true)
     // Matches MIN_CACHE_BYTES's old hardcoded value as the config default, so an untouched install sees identical behavior; a configured cache_min_bytes now actually moves the floor instead of being silently ignored.
     const cacheMinBytes = loadConfig().bash_compress.cache_min_bytes
     const resp = event.raw['tool_response']

@@ -207,7 +207,8 @@ describe('hook registry', () => {
     // Full matrix over every HookEventName, cross-checked against https://code.claude.com/docs/en/hooks (verified 2026-07-02): PreCompact and Notification do not accept `additionalContext` inside `hookSpecificOutput` and must use the top-level `systemMessage` field instead; every other event does accept it there. This exists so a new event added to HOOK_EVENTS without an entry in EVENTS_WITHOUT_ADDITIONAL_CONTEXT can't silently default to the wrong shape the way pre_compact did (2026-07-02) -- every event is asserted, not just the two or three a hand-picked example test happens to cover. Runs on 'codex' rather than 'claudecode' so pre_compact still emits JSON here: the raw-stdout carve-out is Claude Code's alone and is pinned by its own pair of tests above. Every other event is harness-independent, so this matrix's coverage is unchanged.
     it.each(HOOK_EVENTS)('serializes context for %s to the schema-correct shape', (eventName) => {
       const result = JSON.parse(serializeOutput({ hookType: 'context', context: 'hint' }, eventName, 'codex')) as Record<string, unknown>
-      if (eventName === 'pre_compact' || eventName === 'notification') {
+      // Stop joins the set: the Claude Code hooks doc gives Stop only the top-level decision/reason/systemMessage fields, no hookSpecificOutput (https://code.claude.com/docs/en/hooks), and Codex's Stop takes the same common output fields.
+      if (eventName === 'pre_compact' || eventName === 'notification' || eventName === 'stop') {
         expect(result).toEqual({ systemMessage: 'hint' })
       } else {
         expect(result).toHaveProperty('hookSpecificOutput.additionalContext', 'hint')

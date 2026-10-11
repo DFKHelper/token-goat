@@ -35,6 +35,8 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'Two third-party values. The skill name in the repeated-body advisory is escaped in resident_context.ts, since a skill declares its own name and nothing upstream constrains it. The git branch name is not escaped and does not need to be: git refuses a ref containing a bracket, so it cannot carry a marker.',
   'image_shrink.ts::finalizeShrinkResult':
     'Names the image it shrank, and a repository names its images. The basename is escaped once where it is computed, which also covers the stats label it feeds. The OCR text beside it was already fenced separately.',
+  'hooks_stop.ts::stopHandler':
+    'Names the source files the session edited, which a repository names, and the last verification command, which the model typed. Each file name goes through nameSubject and the command through quotedArg, both display-safe, so neither can carry a marker or a backtick.',
   'hooks_tool_failure.ts::postToolUseFailureHandler':
     'Names the tool that failed twice, and an MCP server chooses the names it advertises. Escaped in repeatFailureNotice.',
   'call_streak.ts::trackedLine':

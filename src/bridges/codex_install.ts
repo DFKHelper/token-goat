@@ -36,13 +36,14 @@ const CODEX_EVENT_ARG: Record<CodexHookEvent, string> = {
 }
 
 /** Codex hook events that are turn-scoped but not tool-specific, so they need no `matcher` (Codex's docs: omit `matcher` entirely to match every occurrence of a supported event). Confirmed against Codex's real hooks documentation (developers.openai.com/codex/hooks, "Configuration Reference"/"Hooks" pages, checked 2026-07-18): `PreCompact`, `UserPromptSubmit`, and `SubagentStop` are real Codex hook events using the identical `[[hooks.<Event>]]` config.toml shape already used for `PreToolUse`/`PostToolUse` above -- token-goat just wasn't wiring them. Claude Code (`../install.ts`'s `HOOK_EVENT_MAP`) and Grok (`grok_install.ts`'s `GROK_HOOK_EVENTS`) already wire the equivalent three events to the same server-side handlers (`preCompactHandler`/ `preCompactIndexHandler`, `userPromptSubmitHandler`, `subagentStopHandler` in src/hooks_compact.ts, src/hooks_index.ts, src/hooks_session.ts). */
-const CODEX_GLOBAL_HOOK_EVENTS = ['PreCompact', 'UserPromptSubmit', 'SubagentStop'] as const
+const CODEX_GLOBAL_HOOK_EVENTS = ['PreCompact', 'UserPromptSubmit', 'Stop', 'SubagentStop'] as const
 type CodexGlobalHookEvent = (typeof CODEX_GLOBAL_HOOK_EVENTS)[number]
 
 /** Codex global event key -> the internal event arg passed to the shim / `token-goat hook`. */
 const CODEX_GLOBAL_EVENT_ARG: Record<CodexGlobalHookEvent, string> = {
   PreCompact: 'pre_compact',
   UserPromptSubmit: 'user_prompt_submit',
+  Stop: 'stop',
   SubagentStop: 'subagent_stop',
 }
 

@@ -135,6 +135,7 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
     git_hint_max_ms: 50,
     min_session_hint_savings_bytes: 512,
     pre_skill_advisory: true,
+    stop_verification_advisory: true,
     context_threshold_advisory: true,
     diff_hint_min_tokens_saved: 1000,
     // Base for the pressure-scaled first-read deny gate in hooks_read.ts (large file, never read before). Matches that gate's long-tuned 500KB threshold at 'cool' context pressure; warm/hot/ critical scale it down from there so the same read gets redirected to a surgical read sooner once the context window is nearly full.

@@ -127,6 +127,8 @@ export interface HintsConfig {
   git_hint_max_ms: number
   min_session_hint_savings_bytes: number
   pre_skill_advisory: boolean
+  /** Stop-time note, shown to the user and never blocking, when files were edited after the last passing test, lint, typecheck or build command (verification_state.ts). */
+  stop_verification_advisory: boolean
   context_threshold_advisory: boolean
   diff_hint_min_tokens_saved: number
   large_read_redirect_bytes: number
