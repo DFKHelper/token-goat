@@ -2,13 +2,13 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { runBundle, tgIsolatedEnv } from './helpers/bundle.js'
 
 import { describeNearMiss, findNearMiss, isNearMissAdvice, MAX_SPAN_BYTES, MAX_SPAN_LINES } from '../src/edit_near_miss.js'
 import type { HookEvent } from '../src/hook_registry.js'
-import { diagnoseEditFailure } from '../src/hooks_tool_failure.js'
+import { diagnoseEditFailure, loadNearMiss, postToolUseFailureWithExtras } from '../src/hooks_tool_failure.js'
 
 const fixture = (name: string): Record<string, unknown> => JSON.parse(readFileSync(join(__dirname, 'fixtures', 'claude_code_2_1_281', name), 'utf8')) as Record<string, unknown>
 const NOT_FOUND = fixture('edit_not_found.json')
@@ -16,6 +16,8 @@ const MULTIPLE = fixture('edit_multiple_matches.json')
 
 const dir = mkdtempSync(join(tmpdir(), 'tg-near-miss-'))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
+// The registered handler loads the near-miss module on demand; these calls skip that handler, so load it as it would.
+beforeAll(loadNearMiss)
 let counter = 0
 function fileWith(body: string): string {
   counter += 1
@@ -90,6 +92,15 @@ describe('diagnoseEditFailure on a near miss', () => {
     expect(out).toContain('- log it as an observation only, never\u00A0dispatched from.')
     expect(out).toContain('untrusted')
     expect(out).toContain('Copy the on-disk text below into old_string exactly')
+  })
+
+  it('the registered handler loads the module itself and still answers with the near-miss text', async () => {
+    const path = fileWith('keep\n  tabbed\nend\n')
+    const input = { path, old_str: '    tabbed', new_str: 'x' }
+    const event = { ...editEvent('Edit', input), sessionId: 'near-miss-registered', raw: { session_id: 'near-miss-registered', tool_name: 'Edit', tool_input: input, error: 'No match found for old_str' } }
+    const out = await postToolUseFailureWithExtras(event)
+    expect(out.hookType).toBe('context')
+    expect(out.hookType === 'context' ? out.context : '').toContain('line 2 matches, ignoring indentation')
   })
 
   it('falls back to the similar-line advice when no rung matches', () => {

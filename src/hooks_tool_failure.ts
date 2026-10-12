@@ -5,7 +5,7 @@ import { dirname, relative } from 'node:path'
 
 import { callStreakAfterFailure } from './call_streak.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
-import { describeNearMiss, findNearMiss, isNearMissAdvice } from './edit_near_miss.js'
+import type * as EditNearMiss from './edit_near_miss.js'
 import { buildLineIndex, offsetToLine } from './languages/common.js'
 import { unwrapCompressCommand } from './hooks_bash_commands.js'
 import { applyHintTracking, uncorrelatedHint } from './hint_stats.js'
@@ -108,6 +108,18 @@ export function repeatFailureNotice(toolName: string | undefined): string {
   return `[token-goat] ${tool} just failed with the same error as an earlier call this session. Retrying it unchanged will fail the same way -- change the arguments, the tool, or the approach.`
 }
 
+/** The near-miss finder (edit_near_miss.ts, with the secret-name list under it), loaded by {@link postToolUseFailureWithExtras} only for a failed edit tool call so the hook entry does not parse it on every tool call. Until it is loaded {@link diagnoseEditFailure} skips the near-miss rung and gives the older advice, so a caller that wants the near-miss answer awaits {@link loadNearMiss} first. */
+let nearMissLib: typeof EditNearMiss | undefined
+
+/** Load the near-miss module for {@link diagnoseEditFailure}. A load failure leaves it unloaded, which is the older-advice path rather than an error. */
+export async function loadNearMiss(): Promise<void> {
+  try {
+    nearMissLib ??= await import('./edit_near_miss.js')
+  } catch {
+    // The near-miss rung is an extra; the older edit advice still answers.
+  }
+}
+
 /** Maximum file size (10 MB) to inspect on an edit failure to avoid memory stalls. */
 const MAX_EDIT_DIAGNOSE_BYTES = 10 * 1024 * 1024
 
@@ -194,8 +206,8 @@ export function diagnoseEditFailure(event: HookEvent, errorText: string): string
         return `[token-goat] Edit failed: string not found in ${relDisplay}, but matches with normalized line endings. Check CRLF vs LF line endings or whitespace.`
       }
 
-      const nearMiss = findNearMiss(fileContent, oldString)
-      const nearAdvice = nearMiss === null ? null : describeNearMiss(fileContent, relDisplay, nearMiss)
+      const nearMiss = nearMissLib?.findNearMiss(fileContent, oldString) ?? null
+      const nearAdvice = nearMiss === null ? null : nearMissLib?.describeNearMiss(fileContent, relDisplay, nearMiss) ?? null
       if (nearAdvice !== null) return nearAdvice
 
       const firstLine = oldString.split(/\r?\n/)[0]?.trim() ?? ''
@@ -226,7 +238,7 @@ export function diagnoseEditFailure(event: HookEvent, errorText: string): string
 /** The context answer for an edit diagnostic. Only a near-miss diagnostic (edit_near_miss.ts) is logged as a hint: the older advice carries no new information the hint ledger could judge. */
 function editAdviceOutput(event: HookEvent, text: string): HookOutput {
   const out = contextOutput(text)
-  return isNearMissAdvice(text) ? applyHintTracking(event, out, uncorrelatedHint('edit_near_miss')) : out
+  return nearMissLib?.isNearMissAdvice(text) === true ? applyHintTracking(event, out, uncorrelatedHint('edit_near_miss')) : out
 }
 
 /** Reasons a failed Bash command opens no recovery pair, beyond {@link REPEAT_NOTICE_EXEMPT}: a syntax error or a blocked sleep is fixed by rewriting the command, so the fix is a different C rather than something run in between. */
@@ -263,6 +275,8 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
 /** {@link postToolUseFailureHandler} plus the recovery line and the missing-path suggestion, each appended to whatever it says. {@link adviseOnFailure}, which knows the classification, records what each needs in `slot`; the modules are imported here only when asked for, because recovery_pairs.ts and path_miss.ts (with the index reader under it) would otherwise be parsed by the hook entry on every tool call. */
 export async function postToolUseFailureWithExtras(event: HookEvent): Promise<HookOutput> {
   const slot = newSlot()
+  const toolName = getToolName(event)
+  if (toolName !== undefined && /^(edit|multiedit|str_replace_editor)$/i.test(toolName)) await loadNearMiss()
   const base = adviseOnFailure(event, slot)
   try {
     if (slot.recovery !== null) {
