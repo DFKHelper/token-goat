@@ -13,7 +13,7 @@ import { mayBeVerificationCommand } from '../src/hooks_verification.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileEdit, recordVerificationRun } from '../src/session.js'
 import { loadSessionState, saveSessionState, sessionSidecarPath } from '../src/session_store.js'
-import { evaluateVerification, isVerificationCommand, maskCommandCredentials, noteFailedVerificationRun, noteVerificationRun } from '../src/verification_state.js'
+import { evaluateVerification, isVerificationCommand, noteFailedVerificationRun, noteVerificationRun } from '../src/verification_state.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 const T0 = Date.UTC(2026, 9, 1, 12, 0, 0)
@@ -266,23 +266,6 @@ describe('stored command credentials', () => {
     expect(stored).toContain('npm test')
   })
 
-  // HAND-DERIVED: the exact masked text, so a mask that eats a neighbouring separator or argument fails.
-  it.each([
-    ['TOKEN=abc12345; npm test', 'TOKEN=***; npm test'],
-    ['TOKEN=abc12345 && npm test', 'TOKEN=*** && npm test'],
-    ['npm test --auth abc12345 --watch', 'npm test --auth *** --watch'],
-    ['mysql -phunter2 -e x && npm test', 'mysql -p*** -e x && npm test'],
-    ['psql -p 5432 -c x && npm test', 'psql -p*** -c x && npm test'],
-    ['npm test -p 4000', 'npm test -p 4000'],
-    ['mysql -p -e x && npm test', 'mysql -p -e x && npm test'],
-    ['curl -H "Authorization: Bearer abc12345" x', 'curl -H "Authorization: ***" x'],
-    ['curl Authorization:abc12345 x', 'curl Authorization:*** x'],
-    ['npm test --token --watch', 'npm test --token --watch'],
-    ['npm test --private-key=abc12345', 'npm test --private-key=***'],
-  ])('maskCommandCredentials turns %j into %j', (command, expected) => {
-    expect(maskCommandCredentials(command)).toBe(expected)
-  })
-
   it('keeps the check and drops its leading assignments, which are not part of what ran', () => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
     const sid = newSession()
@@ -322,36 +305,73 @@ describe('stored command credentials', () => {
     expect(receiptLines(state, false).join('\n')).toContain('npm test')
   })
 
-  // HAND-DERIVED: the reviewer's three leaks plus other spellings, each with `hunter2` ON the check line itself (the table above puts it on a segment the filter drops). Expected stored text is what the fail-closed layer keeps: the runner and subcommand, or the mask's own output for a recognised secret flag.
-  it.each([
-    ['npm test --header "X-Auth-Token: hunter2"', 'npm test'],
-    ['npm test --header=Authorization:Bearer hunter2', 'npm test'],
-    ['npm run build -- --env.NPM_TOKEN=hunter2', 'npm run build -- --env.NPM_TOKEN=***'],
-    ['npm test -H "X-Api-Token: hunter2"', 'npm test'],
-    ['npm test -H "X-Amz-Security-Token: hunter2"', 'npm test'],
-    ['npm test --password=hunter2', 'npm test --password=***'],
-    ['npm test --token hunter2', 'npm test --token ***'],
-    ['npm test --header X-Custom:hunter2', 'npm test'],
+  // HAND-DERIVED: each command with `hunter2` ON the check line itself, written from the spec (the runner and subcommand, the documented switches and path-like words are kept; every other word is dropped and marked with an ellipsis), not from the allow-list's code. The first group is every form the second re-review stored verbatim; the second is the header and flag forms from earlier rounds. Both writers, the finished-run and the failed-run path, run every row.
+  const STORED_ROWS: ReadonlyArray<readonly [string, string]> = [
+    ['npx vitest --env=TOKEN=hunter2', 'npx vitest …'],
+    ['npm test -p hunter2', 'npm test …'],
+    ['npm test -t hunter2', 'npm test …'],
+    ['npm test -e hunter2', 'npm test …'],
+    ['npm test --foo hunter2', 'npm test …'],
+    ['npm test --sessionid hunter2', 'npm test …'],
+    ['npm test --foo=hunter2', 'npm test …'],
+    ['npm test hunter2', 'npm test …'],
+    ['npm test "hunter2"', 'npm test …'],
+    ['npm test -- hunter2', 'npm test -- …'],
+    ['cargo test --features hunter2', 'cargo test …'],
+    ['npm test --ci hunter2', 'npm test --ci …'],
+    ['npm test hunter2 --ci', 'npm test --ci …'],
+    ['npm test -p hunter2/x.txt', 'npm test …'],
+    ['npm test --header "X-Auth-Token: hunter2"', 'npm test …'],
+    ['npm test --header=Authorization:Bearer hunter2', 'npm test …'],
+    ['npm run build -- --env.NPM_TOKEN=hunter2', 'npm run build -- …'],
+    ['npm test -H "X-Api-Token: hunter2"', 'npm test …'],
+    ['npm test -H "X-Amz-Security-Token: hunter2"', 'npm test …'],
+    ['npm test --password=hunter2', 'npm test …'],
+    ['npm test --token hunter2', 'npm test …'],
+    ['npm test --header X-Custom:hunter2', 'npm test …'],
+    ['pytest -k hunter2 tests/test_x.py::test_y', 'pytest tests/test_x.py::test_y …'],
+    // HAND-DERIVED: from here on, commands with no secret on them, whose stored text says what ran. `--grep parser` loses its flag and value, the one change from the deny-list's output.
+    ['npm test', 'npm test'],
     ['npm test --watch --reporter=verbose', 'npm test --watch --reporter=verbose'],
-    ['npm run test:unit -- --grep parser', 'npm run test:unit -- --grep parser'],
-  ])('stores %j as %j and never writes hunter2 under the home', (command, expected) => {
+    ['npm run test:unit -- --grep parser', 'npm run test:unit -- …'],
+    ['npx vitest run tests/a.test.ts', 'npx vitest run tests/a.test.ts'],
+    ['pytest tests/test_x.py::test_y', 'pytest tests/test_x.py::test_y'],
+    ['cargo test --features x', 'cargo test …'],
+    ['npx tsc --noEmit', 'npx tsc --noEmit'],
+    ['npm test --reporter=hunter2', 'npm test …'],
+  ]
+
+  const WRITERS: ReadonlyArray<readonly [string, (command: string) => void]> = [
+    ['finished run', (command) => noteVerificationRun(command, 1, false)],
+    ['failed run', (command) => noteFailedVerificationRun(command, 'Exit code 1', false)],
+  ]
+
+  /** Every file under `dir`, so a secret anywhere on disk is found, not only in the session blob. */
+  function filesUnder(dir: string): string[] {
+    return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? filesUnder(path.join(dir, entry.name)) : [path.join(dir, entry.name)]))
+  }
+
+  it.each(
+    STORED_ROWS.flatMap(([command, expected]) => WRITERS.map(([writer, write]) => [writer, command, expected, write] as const)),
+  )('%s: stores %j as %j and never writes hunter2 under a fresh home', (_writer, command, expected, write) => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
-    const sid = newSession()
-    inSession(sid, () => noteVerificationRun(command, 1, false))
-    const state = evaluateVerification(sid)
-    expect(state.runs[0]?.command).toBe(expected)
-    const files: string[] = []
-    const walk = (dir: string): void => {
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, entry.name)
-        if (entry.isDirectory()) walk(full)
-        else files.push(full)
-      }
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-stop-row-'))
+    vi.stubEnv('TOKEN_GOAT_HOME', home)
+    clearModuleCaches()
+    try {
+      const sid = newSession()
+      inSession(sid, () => write(command))
+      const state = evaluateVerification(sid)
+      expect(state.runs[0]?.command).toBe(expected)
+      const files = filesUnder(home)
+      expect(files.length).toBeGreaterThan(0)
+      expect(files.filter((f) => fs.readFileSync(f).includes('hunter2'))).toEqual([])
+      expect([receiptLines(state, false).join('\n'), stopAdvisoryText(state) ?? '']).toSatisfy((texts: string[]) => texts.every((t) => !t.includes('hunter2')))
+    } finally {
+      clearModuleCaches()
+      vi.unstubAllEnvs()
+      fs.rmSync(home, { recursive: true, force: true })
     }
-    walk(process.env.TOKEN_GOAT_HOME ?? '')
-    expect(files.length).toBeGreaterThan(0)
-    expect(files.filter((f) => fs.readFileSync(f).includes('hunter2'))).toEqual([])
-    expect([receiptLines(state, false).join('\n'), stopAdvisoryText(state) ?? '']).toSatisfy((texts: string[]) => texts.every((t) => !t.includes('hunter2')))
   })
 
   // A quoted env value with spaces is not an assignment the prefix matcher can strip, so the segment no longer starts with a check and is dropped: nothing is recorded at all, which is the safe direction.

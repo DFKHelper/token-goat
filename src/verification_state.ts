@@ -61,7 +61,7 @@ function successImpliedWithoutStatus(): boolean {
 
 const STORED_COMMAND_MAX_CHARS = 200
 
-/** The command as the session blob keeps it: only the check segments, without their leading `NAME=value` assignments, then secrets redacted, whitespace collapsed, capped. The rest of the line (`export GH_PAT=...`, `mysqldump -p...`, `sshpass -p ...`, a curl header) never reaches disk or the model, whatever its spelling, which a list of secret shapes cannot promise. Two runs of one command must collapse to one entry, so this is also the identity. */
+/** The command as the session blob keeps it: only the check segments, without their leading `NAME=value` assignments, whitespace collapsed, each cut down to what {@link allowListed} lets through, then capped. The rest of the line (`export GH_PAT=...`, `mysqldump -p...`, `sshpass -p ...`, a curl header) and every argument the allow-list does not know never reach disk or the model, whatever their spelling, which a list of secret shapes cannot promise. redactSecrets still runs last over what was kept, for a path-like word shaped like a known token. Two runs of one command must collapse to one entry, so this is also the identity. */
 function storedCommand(command: string): string {
   const checks = command
     .split(COMMAND_SEPARATOR)
@@ -69,44 +69,42 @@ function storedCommand(command: string): string {
     .map((segment) => segment.trim())
     .filter(isVerificationSegment)
     .map((segment) => segment.replace(ENV_ASSIGNMENT_PREFIX, '').replace(/\s+/g, ' '))
-    .map((segment) => collapseIfArgumentLooksLikeValue(maskCommandCredentials(redactSecrets(segment).text)))
+    .map((segment) => redactSecrets(allowListed(segment)).text)
   return checks.join('; ').slice(0, STORED_COMMAND_MAX_CHARS)
 }
 
-/** A `host:port`, header or other `name:value` token; a Windows drive path is not one. */
-const COLON_TOKEN = /^(?![A-Za-z]:[\\/])[^:]*:(?!:)/
-/** Fail-closed third layer: the mask lists the secret spellings someone thought of, so a check line that still carries a `name:value` token (a header in any flag form, `--header=Authorization:Bearer x`) or a bare `NAME=value` argument keeps only its leading words, the runner and subcommand (`npm run build`), and drops every argument. The value of such an argument is not recognisable by its name, and a lost flag in the receipt costs less than a secret on disk. */
-function collapseIfArgumentLooksLikeValue(segment: string): string {
-  const words = segment.split(' ')
-  const argsAt = words.findIndex((word) => word.startsWith('-') || /^["']/.test(word))
-  if (argsAt < 0) return segment
-  const args = words.slice(argsAt)
-  const looksLikeValue = args.some((word) => (COLON_TOKEN.test(word) && !word.endsWith(':***')) || (!word.startsWith('-') && /^[^=]+=/.test(word) && !word.endsWith('=***')))
-  return looksLikeValue ?words.slice(0, argsAt).join(' ') : segment
+/** The runner and subcommand of a check, as {@link isVerificationSegment} recognises it (OTHER_VERIFICATION_PATTERNS above, lang_patterns.ts TEST_RUNNER_COMMAND_PATTERNS, bash_output_cache.ts lintCommand). Nothing after it is trusted by default. */
+const CHECK_HEAD = /^(?:(?:npx\s+)?(?:jest|vitest(?:\s+(?:run|watch))?|eslint|tsc|mypy|pyright)|pytest|(?:uv\s+run\s+)?ruff(?:\s+(?:check|format))?|go\s+(?:test|build|vet)|cargo\s+(?:test|build|check|clippy)|dotnet\s+(?:build|test)|(?:npm|pnpm|yarn)\s+(?:run(?:-script)?\s+)?(?:test|build|lint|typecheck|type-check|check|compile|verify)(?::[\w:-]+)?|python3?\s+-m\s+(?:mypy|pyright|ruff|pytest))(?=\s|$)/i
+/** Switches that take no value: each is documented by a test, lint, typecheck or build runner (vitest, jest, pytest, tsc, cargo). A flag that takes a value is absent on purpose, since its name does not say whether the value is a secret. */
+const SAFE_FLAGS: ReadonlySet<string> = new Set(['--', '--ci', '--run', '--watch', '--watch=false', '--watchAll=false', '--coverage', '--bail', '--verbose', '--silent', '--no-color', '--noEmit', '--passWithNoTests', '--release', '--locked', '--all-targets', '-x', '-q', '-v', '-vv'])
+/** The values of `--reporter=` that name a built-in reporter; any other value could be anything. */
+const SAFE_REPORTER = /^--reporter=(?:default|verbose|dot|basic|json|junit|tap|spec|min|list|agent)$/
+const PATH_SHAPE = /^[^-][\w./@:\\-]*$/
+const PATH_EVIDENCE = /[/\\]|::|\.[A-Za-z]\w*$/
+/** Stands in the stored check for every word the allow-list dropped. */
+const DROPPED_MARK = '…'
+
+/** A bare path or test selector (`tests/a.test.ts`, `tests/test_x.py::test_y`): a word with a separator or an extension. `hunter2` alone is not one. A positional file name is kept because it is what identifies the check; a secret spelled as a path with a separator or an extension is not something a runner is handed as a bare argument, and one that follows a flag is dropped by {@link allowListed}. */
+function looksLikePathOrSelector(word: string): boolean {
+  return PATH_SHAPE.test(word) && PATH_EVIDENCE.test(word)
 }
 
-const SECRET_ENV_NAME = /TOKEN|KEY|SECRET|PASS(?:WD|WORD)?|PWD|AUTH|COOKIE|CREDENTIAL|BEARER/i
-// An unquoted value stops at a separator, so `TOKEN=abc; npm test` keeps its `;`.
-const ENV_ASSIGNMENT = /(^|[\s;&|])([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|]+)/g
-const LONG_FLAG = /(--[\w.-]+(?:=|\s+))("[^"]*"|'[^']*'|\S+)/g
-// A flag name says it takes a secret when it contains one of these words, or is exactly `pass`, `pwd` or `key` or ends in `-key`: `--passWithNoTests` and `--keyboard` stay as they are.
-const SECRET_FLAG_NAME = /password|passwd|passphrase|token|secret|api-?key|auth|bearer|credential|cookie|^pass$|^pwd$|(?:^|-)key$|-(?:pass|pwd)$/i
-const BASIC_AUTH_FLAG = /(^|\s)(-u\s+)\S+:\S+/g
-const DB_CLIENT = /\b(?:mysql|psql|mariadb)\b/
-const DB_PASSWORD_FLAG = /(^|\s)-p\s*(?!-)\S+/g
-// A header name that says it carries a secret: the named ones, and any `X-…` custom header with a secret word in it (`X-Auth-Token`, `X-Amz-Security-Token`).
-const QUOTED_AUTH_HEADER = /(["'])((?:proxy-)?authorization|cookie|x-api-key|x-[\w-]*(?:token|key|secret|auth|pass|session|credential)[\w-]*)(\s*:)[^"']*\1/gi
-const BARE_AUTH_HEADER = /(^|\s)((?:proxy-)?authorization|cookie|x-api-key)(\s*:\s*)\S+/gi
-
-/** Second layer over {@link storedCommand}'s segment filter, for what sits on the check itself: `NAME=value` where the name says it is a secret, the value of a long flag whose name says it takes one (`--password`, `--token`, `--private-key`, `--pass`, `--bearer`, `--credentials`), `-u user:pass`, an Authorization or Cookie header value, and `-p<password>` on a mysql, psql or mariadb command. secret_redact.ts matches value shapes and misses `API_TOKEN=abcd1234 npm test`; the receipt and the Stop advisory repeat this text to the model, so it is masked here, where it is stored. */
-export function maskCommandCredentials(command: string): string {
-  const masked = command
-    .replace(ENV_ASSIGNMENT, (whole, lead: string, name: string) => (SECRET_ENV_NAME.test(name) ? `${lead}${name}=***` : whole))
-    .replace(LONG_FLAG, (whole, flag: string, value: string) => (SECRET_FLAG_NAME.test(flag.replace(/^--/, '').replace(/[=\s]+$/, '')) && !value.startsWith('--') ? `${flag}***` : whole))
-    .replace(BASIC_AUTH_FLAG, (_whole, lead: string, flag: string) => `${lead}${flag}***`)
-    .replace(QUOTED_AUTH_HEADER, (_whole, quote: string, header: string, colon: string) => `${quote}${header}${colon} ***${quote}`)
-    .replace(BARE_AUTH_HEADER, (_whole, lead: string, header: string, colon: string) => `${lead}${header}${colon}***`)
-  return DB_CLIENT.test(masked) ? masked.replace(DB_PASSWORD_FLAG, (_whole, lead: string) => `${lead}-p***`) : masked
+/** Fail-closed allow-list over one check segment: the runner and subcommand, the switches in {@link SAFE_FLAGS}, a built-in `--reporter=` and path-like words survive; every other word is dropped and the loss is marked, so `npm test --foo hunter2` stores `npm test …`. A word that follows a dropped flag with no `=` may be that flag's value, so it is dropped even when it looks like a path (`-p a/b.c`). A deny-list of secret spellings cannot promise this: a value is not recognisable by its flag name, its position or its shape, which is why the mask that used to sit here is gone. */
+function allowListed(segment: string): string {
+  const headMatch = CHECK_HEAD.exec(segment)
+  const head = headMatch?.[0] ?? /^[A-Za-z]+/.exec(segment)?.[0] ?? ''
+  const kept = [head]
+  let dropped = headMatch === null
+  let afterDroppedFlag: boolean = false
+  for (const word of segment.slice(head.length).split(' ')) {
+    if (word === '') continue
+    const safe: boolean = SAFE_FLAGS.has(word) || SAFE_REPORTER.test(word) || (!afterDroppedFlag && looksLikePathOrSelector(word))
+    if (safe) kept.push(word)
+    else dropped = true
+    afterDroppedFlag = !safe && word.startsWith('-') && !word.includes('=')
+  }
+  if (dropped) kept.push(DROPPED_MARK)
+  return kept.filter((w) => w !== '').join(' ')
 }
 
 /** Record a finished Bash call if it was a verification command. A background launch has not finished, so it is not a verdict, and neither is a call whose exit status something around the check decided ({@link exitStatusIsCheckVerdict}): that call is left unrecorded, so it neither clears the edits made since the last pass nor counts as a failure. An unknown status is not recorded as null here because evaluateVerification reads null as a pass. */
