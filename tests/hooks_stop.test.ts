@@ -322,6 +322,46 @@ describe('stored command credentials', () => {
     expect(receiptLines(state, false).join('\n')).toContain('npm test')
   })
 
+  // HAND-DERIVED: the reviewer's three leaks plus other spellings, each with `hunter2` ON the check line itself (the table above puts it on a segment the filter drops). Expected stored text is what the fail-closed layer keeps: the runner and subcommand, or the mask's own output for a recognised secret flag.
+  it.each([
+    ['npm test --header "X-Auth-Token: hunter2"', 'npm test'],
+    ['npm test --header=Authorization:Bearer hunter2', 'npm test'],
+    ['npm run build -- --env.NPM_TOKEN=hunter2', 'npm run build -- --env.NPM_TOKEN=***'],
+    ['npm test -H "X-Api-Token: hunter2"', 'npm test'],
+    ['npm test -H "X-Amz-Security-Token: hunter2"', 'npm test'],
+    ['npm test --password=hunter2', 'npm test --password=***'],
+    ['npm test --token hunter2', 'npm test --token ***'],
+    ['npm test --header X-Custom:hunter2', 'npm test'],
+    ['npm test --watch --reporter=verbose', 'npm test --watch --reporter=verbose'],
+    ['npm run test:unit -- --grep parser', 'npm run test:unit -- --grep parser'],
+  ])('stores %j as %j and never writes hunter2 under the home', (command, expected) => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    const sid = newSession()
+    inSession(sid, () => noteVerificationRun(command, 1, false))
+    const state = evaluateVerification(sid)
+    expect(state.runs[0]?.command).toBe(expected)
+    const files: string[] = []
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) walk(full)
+        else files.push(full)
+      }
+    }
+    walk(process.env.TOKEN_GOAT_HOME ?? '')
+    expect(files.length).toBeGreaterThan(0)
+    expect(files.filter((f) => fs.readFileSync(f).includes('hunter2'))).toEqual([])
+    expect([receiptLines(state, false).join('\n'), stopAdvisoryText(state) ?? '']).toSatisfy((texts: string[]) => texts.every((t) => !t.includes('hunter2')))
+  })
+
+  // A quoted env value with spaces is not an assignment the prefix matcher can strip, so the segment no longer starts with a check and is dropped: nothing is recorded at all, which is the safe direction.
+  it('records nothing for a quoted env value with spaces ahead of the check', () => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    const sid = newSession()
+    inSession(sid, () => noteVerificationRun('PASS="my hunter2 pw" npm test', 1, false))
+    expect(evaluateVerification(sid).runs).toHaveLength(0)
+  })
+
   it('keeps every check of a chain, joined, and nothing between them', () => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
     const sid = newSession()
