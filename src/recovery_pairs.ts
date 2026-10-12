@@ -1,7 +1,8 @@
-/** Failure-recovery pairs: remember what fixed a failed Bash command, and say so the next time it fails the same way. A failed command C opens a pending pair; when C (or C behind a prefix such as an env activation, `npx`, `uv run` or `env VAR=`) then exits 0 within {@link RECOVERY_WINDOW} later Bash calls with no edit between, the fix is what the model ran in between, or the prefix S added to C. A rerun with nothing between is a flaky command, and an edit between means the edit was the fix (the code changed, not the environment), so both learn nothing. Pairs live per project in a sidecar JSON under the token-goat data dir, keyed by the project hash, with no database migration; a later session whose Bash fails the same way (same normalized command, same error cluster) gets one line naming the fix, and the pair is scored on what follows: the fix ran and C then passed is a help, C failing again after the fix is a hurt, and two hurts with more hurts than helps retire it. Nothing is learned from a command that is destructive, names token-goat, can not sit inside one backtick fence, or carries a credential: the stored fix is replayed into the model's context, so it has to be safe to run on sight. */
+/** Failure-recovery pairs: remember what fixed a failed Bash command, and say so the next time it fails the same way. A failed command C opens a pending pair; when C (or C behind a prefix such as an env activation, `npx`, `uv run` or `env VAR=`) then exits 0 within {@link RECOVERY_WINDOW} later Bash calls with no edit between, the fix is what the model ran in between, or the prefix S added to C. A rerun with nothing between is a flaky command, and an edit between means the edit was the fix (the code changed, not the environment), so both learn nothing. Pairs live per project in a sidecar JSON under the token-goat data dir, keyed by the project hash, with no database migration; a later session whose Bash fails the same way (same command in the same directory, same first error line) gets one line naming the fix as history once two distinct sessions have learned it, and the pair is scored on what follows: the fix ran and C then passed is a help, C failing again after the fix is a hurt, and two hurts with more hurts than helps retire it. Nothing is learned from a command that names token-goat, can not sit inside one backtick fence, or carries a credential, and a fix is kept only when every part starts with an allowlisted build, test or install verb (recovery_fix_policy.ts): the stored fix is replayed into the model's context, so it has to be safe to run on sight. */
 
-import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { readFileSync, rmSync } from 'node:fs'
+import { dirname, isAbsolute, join, posix, relative, sep } from 'node:path'
 
 import { stripLeadingAssignments } from './bash_extractors.js'
 import { dataDir } from './constants.js'
@@ -12,9 +13,10 @@ import { contextOutput, getCwd } from './hooks_common.js'
 import { fencedCommand } from './hint_suggestion_guard.js'
 import { displaySafeText } from './paths.js'
 import { projectHash, resolveProjectRoot } from './project.js'
-import { hasPreciseSecret, redactSecrets } from './secret_redact.js'
+import { redactSecrets } from './secret_redact.js'
 import { sessionSidecarPath } from './session_store.js'
 import { errorPrefix } from './tool_error_class.js'
+import { carriesCredential, fixIsAllowed } from './recovery_fix_policy.js'
 import { atomicWriteText, ensureDirSync } from './util.js'
 
 /** Later Bash calls a pending pair stays open for before it is dropped. */
@@ -41,6 +43,12 @@ const MAX_FIX_COMMANDS = 2
 const PENDING_SUFFIX = '.recovery-pending'
 const STORE_VERSION = 1
 
+/** Distinct sessions that must have learned a pair before it speaks; one session's coincidence is not history. */
+const MIN_SESSIONS = 2
+
+/** Session tags kept per pair; only the count up to MIN_SESSIONS matters, the rest bounds the file. */
+const MAX_SESSIONS = 8
+
 export interface StoredPair {
   /** The error cluster ({@link errorPrefix} of the redacted error text). */
   signature: string
@@ -51,16 +59,22 @@ export interface StoredPair {
   lastSeen: number
   helped: number
   hurt: number
+  /** Short hashes of the distinct sessions that learned or were helped by this pair. */
+  sessions: string[]
 }
 
 interface OpenPair {
   key: string
+  /** The command core qualified by its project-relative directory; what a pair is keyed on. */
+  shape: string
   /** The failed command as run, squeezed, so a rerun can be compared with it whole. */
   failed: string
   signature: string
   calls: number
   between: string[]
   offered?: { fix: string }
+  /** How many leading parts of the offered fix have run, whole and in order. */
+  progress?: number
   fixRan?: boolean
 }
 
@@ -70,6 +84,7 @@ interface PendingState {
   /** The working directory the cached project key was resolved for; resolving it spawns git, so one hook process per Bash call would pay for it every time. */
   cwd?: string
   projectKey?: string | null
+  root?: string | null
 }
 
 // Reading the code, not running it: a command like these changes nothing, so running one between a failure and its success is not a fix.
@@ -91,7 +106,7 @@ export function isLearnableCommand(command: string): boolean {
   if (text === '' || text.length > MAX_COMMAND_CHARS) return false
   if (UNFENCEABLE.test(text)) return false
   if (/token-goat/i.test(text) || DESTRUCTIVE.test(text)) return false
-  return !hasPreciseSecret(text)
+  return !carriesCredential(text)
 }
 
 /** Split `command` at its last top-level `&&` or `;` into the prefix (everything through that separator, normalized) and the core it runs, then peel wrappers (`env`, `npx`, `uv run`, leading `VAR=value`) off the core. The wrappers are discarded from the core, so `npx vitest` and `vitest` share a key; the prefix keeps the wrappers' absence/presence visible to the caller through {@link learnableFix}, which compares whole commands. A `||` or a separator inside quotes is not a boundary. */
@@ -143,8 +158,7 @@ export function learnableFix(failed: string, success: string, between: readonly 
   if (wrapperDelta) parts.push(squeeze(success))
   if (parts.length === 0) return null
   const fix = parts.join(' && ')
-  const safe = redactSecrets(fix).text
-  return safe === fix && fix.length <= MAX_FIX_CHARS ? fix : null
+  return fix.length <= MAX_FIX_CHARS && !carriesCredential(fix) && fixIsAllowed(fix, f.core, WRAPPER) ? fix : null
 }
 
 function storePath(key: string): string {
@@ -156,23 +170,40 @@ export function recoveryStorePath(key: string): string {
   return storePath(key)
 }
 
+function dropStore(key: string): void {
+  try {
+    rmSync(storePath(key), { force: true })
+  } catch {
+    // Best-effort: a stale empty file is harmless, it only costs a read.
+  }
+}
+
 function loadStore(key: string, now: number): StoredPair[] {
   try {
     const parsed: unknown = JSON.parse(readFileSync(storePath(key), 'utf8'))
     const pairs = (parsed as { pairs?: unknown }).pairs
     if (!Array.isArray(pairs)) return []
-    return pairs.filter((p): p is StoredPair => {
-      const o = p as Partial<StoredPair> | null
-      return o !== null && typeof o === 'object' && typeof o.signature === 'string' && typeof o.commandShape === 'string' && typeof o.fix === 'string' && typeof o.count === 'number' && typeof o.lastSeen === 'number' && typeof o.helped === 'number' && typeof o.hurt === 'number' && now - o.lastSeen <= PAIR_TTL_MS
-    })
+    const kept = pairs
+      .filter((p): p is StoredPair => {
+        const o = p as Partial<StoredPair> | null
+        return o !== null && typeof o === 'object' && typeof o.signature === 'string' && typeof o.commandShape === 'string' && typeof o.fix === 'string' && typeof o.count === 'number' && typeof o.lastSeen === 'number' && typeof o.helped === 'number' && typeof o.hurt === 'number' && now - o.lastSeen <= PAIR_TTL_MS
+      })
+      .map((p) => ({ ...p, sessions: Array.isArray(p.sessions) ? p.sessions.filter((s): s is string => typeof s === 'string') : [] }))
+    if (kept.length === 0) dropStore(key)
+    return kept
   } catch {
     return []
   }
 }
 
+// Read-modify-write without a lock: two hooks racing on one project can lose one update, which costs a pair one count and nothing else.
 function saveStore(key: string, pairs: StoredPair[]): void {
   try {
     const kept = [...pairs].sort((a, b) => b.lastSeen - a.lastSeen).slice(0, MAX_PAIRS)
+    if (kept.length === 0) {
+      dropStore(key)
+      return
+    }
     const target = storePath(key)
     ensureDirSync(dirname(target))
     atomicWriteText(target, JSON.stringify({ version: STORE_VERSION, pairs: kept }))
@@ -188,6 +219,20 @@ export function isRetired(pair: StoredPair): boolean {
 
 function matches(pair: StoredPair, signature: string, shape: string): boolean {
   return pair.signature === signature && pair.commandShape === shape
+}
+
+/** The same pair an offer came from: its fix, the shape it was learned for and the failure it was learned from, so a different failure of the same command never scores it. */
+function isOffered(pair: StoredPair, offered: { fix: string }, signature: string, shape: string): boolean {
+  return pair.fix === offered.fix && matches(pair, signature, shape)
+}
+
+/** A short stable tag for a session, so a pair can count the distinct sessions that learned it without storing session ids. */
+function sessionTag(event: HookEvent): string {
+  return createHash('sha256').update(sessionStateKey(event)).digest('hex').slice(0, 12)
+}
+
+function addSession(pair: StoredPair, tag: string): void {
+  if (!pair.sessions.includes(tag)) pair.sessions = [...pair.sessions, tag].slice(-MAX_SESSIONS)
 }
 
 /** The key a project's pair file is stored under: the hash of its canonical root, resolved from the event's working directory. Null when the root can not be resolved. */
@@ -214,6 +259,7 @@ function readPending(target: string): PendingState {
     const parsed = JSON.parse(readFileSync(target, 'utf8')) as Partial<PendingState>
     const state: PendingState = { open: Array.isArray(parsed.open) ? parsed.open : [], shown: Array.isArray(parsed.shown) ? parsed.shown : [] }
     if (parsed.projectKey !== undefined) state.projectKey = typeof parsed.projectKey === 'string' ? parsed.projectKey : null
+    if (parsed.root !== undefined) state.root = typeof parsed.root === 'string' ? parsed.root : null
     if (typeof parsed.cwd === 'string') state.cwd = parsed.cwd
     return state
   } catch {
@@ -221,14 +267,22 @@ function readPending(target: string): PendingState {
   }
 }
 
-function keyFor(state: PendingState, event: HookEvent): string | null {
+function projectFor(state: PendingState, event: HookEvent): { key: string | null; root: string | null } {
   const cwd = getCwd(event)
-  if (state.projectKey !== undefined && state.cwd === cwd) return state.projectKey
-  const key = recoveryProjectKey(cwd)
+  if (state.projectKey !== undefined && state.root !== undefined && state.cwd === cwd) return { key: state.projectKey, root: state.root }
+  let root: string | null = null
+  let key: string | null = null
+  try {
+    root = resolveProjectRoot(cwd === undefined ? undefined : { project: cwd })
+    key = projectHash(root)
+  } catch {
+    // An unresolvable root leaves both null: no pair is stored or offered for this call.
+  }
   state.projectKey = key
+  state.root = root
   if (cwd === undefined) delete state.cwd
   else state.cwd = cwd
-  return key
+  return { key, root }
 }
 
 function writePending(target: string, state: PendingState): void {
@@ -240,11 +294,53 @@ function writePending(target: string, state: PendingState): void {
   }
 }
 
-function signatureOf(errorText: string): string {
-  return errorPrefix(redactSecrets(errorText).text).slice(0, MAX_FIX_CHARS)
+function toPosix(path: string): string {
+  return path.split(sep).join('/')
 }
 
-/** Record a failed Bash command and return the one-line recurrence hint when an earlier session learned a fix for this exact failure. `reason` is already known not to be one the failure hook withholds advice for. */
+const LEADING_CD = /^cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*(?:&&|;)/
+
+/** The directory a command runs in, relative to the project root: the event's working directory, moved by a leading `cd`. Two services of one monorepo have different scopes, so `cd svc1 && pytest` and `cd svc2 && pytest` never share a pair. Empty at the root. */
+function scopeOf(root: string | null, cwd: string | undefined, command: string): string {
+  if (root === null || cwd === undefined) return ''
+  let dir = toPosix(relative(root, cwd)) || '.'
+  const cd = LEADING_CD.exec(squeeze(command))
+  if (cd !== null) {
+    const target = (cd[1] ?? '').replace(/^["']|["']$/g, '')
+    dir = isAbsolute(target) ? toPosix(relative(root, target)) || '.' : posix.join(dir, target)
+  }
+  const scope = posix.normalize(dir)
+  return scope === '.' ? '' : scope.replace(/\/$/, '')
+}
+
+function shapeOf(scope: string, core: string): string {
+  return scope === '' ? core : `${scope}::${core}`
+}
+
+/** Lines that name no failure: an npm script banner (`> pkg@1.0.0 test`), a rule or title banner, a line with no letter or digit. */
+function isGenericHeader(line: string): boolean {
+  return /^>\s/.test(line) || /^[=\-*#~_\s]*$/.test(line) || (/^[=\-*#~_]{2}/.test(line) && /[=\-*#~_]{2}$/.test(line)) || !/[A-Za-z0-9]/.test(line)
+}
+
+const ERROR_LINE = /error|fail|cannot|not found|exception|denied|no such|traceback/i
+
+/** The cluster key of an error: its first line that reads as an error, or the first three informative lines when none does, never a generic banner. Null when the text has no informative line. */
+function signatureOf(errorText: string): string | null {
+  const lines = redactSecrets(errorText)
+    .text.split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !/^Exit code \d+$/.test(line))
+  const exit = /^Exit code (\d+)/.exec(redactSecrets(errorText).text.trim())
+  const informative = lines.filter((line) => !isGenericHeader(line))
+  if (informative.length === 0) return null
+  const chosen = informative.find((line) => ERROR_LINE.test(line))
+  const picked = chosen === undefined ? informative.slice(0, 3) : [chosen]
+  const text = `${exit === null ? '' : `exit ${exit[1] ?? ''}: `}${picked.map((line) => errorPrefix(line)).join(' | ')}`
+  const signature = text.slice(0, MAX_FIX_CHARS)
+  return carriesCredential(signature) ? null : signature
+}
+
+/** Record a failed Bash command and return the one-line recurrence hint when two earlier sessions learned a fix for this exact failure in this directory. `reason` is already known not to be one the failure hook withholds advice for. */
 export function recoveryAfterFailure(event: HookEvent, failure: { command: string; errorText: string }): string | null {
   try {
     const target = pendingPath(event)
@@ -252,33 +348,51 @@ export function recoveryAfterFailure(event: HookEvent, failure: { command: strin
     const { core } = splitCommandPrefix(failure.command)
     if (core === '') return null
     const signature = signatureOf(failure.errorText)
+    if (signature === null) return null
     const state = readPending(target)
-    const key = keyFor(state, event)
+    const { key, root } = projectFor(state, event)
+    const shape = shapeOf(scopeOf(root, getCwd(event), failure.command), core)
     const now = Date.now()
     const pairs = key === null ? [] : loadStore(key, now)
     const prior = state.open.find((o) => o.key === core)
     if (prior?.offered !== undefined && prior.fixRan === true) {
-      const pair = pairs.find((p) => p.fix === prior.offered?.fix && p.commandShape === core)
+      const pair = pairs.find((p) => prior.offered !== undefined && isOffered(p, prior.offered, prior.signature, prior.shape))
       if (pair !== undefined && key !== null) {
         pair.hurt += 1
         saveStore(key, pairs)
       }
     }
-    const candidates = pairs.filter((p) => matches(p, signature, core) && !isRetired(p)).sort((a, b) => b.helped - b.hurt - (a.helped - a.hurt) || b.count - a.count || b.lastSeen - a.lastSeen)
+    const candidates = pairs.filter((p) => matches(p, signature, shape) && !isRetired(p) && p.sessions.length >= MIN_SESSIONS).sort((a, b) => b.helped - b.hurt - (a.helped - a.hurt) || b.count - a.count || b.lastSeen - a.lastSeen)
     const best = candidates[0]
-    const open: OpenPair = { key: core, failed: squeeze(failure.command), signature, calls: 0, between: [], ...(best === undefined ? {} : { offered: { fix: best.fix } }) }
+    const open: OpenPair = { key: core, shape, failed: squeeze(failure.command), signature, calls: 0, between: [], ...(best === undefined ? {} : { offered: { fix: best.fix } }) }
     state.open = [...state.open.filter((o) => o.key !== core), open].slice(-MAX_OPEN)
-    const id = `${signature}\n${core}`
+    const id = `${signature}\n${shape}`
     const speak = best !== undefined && !state.shown.includes(id)
     if (speak) state.shown = [...state.shown, id].slice(-64)
     writePending(target, state)
     if (!speak || best === undefined) return null
-    const text = `[token-goat] This failed before; it was fixed by running: ${fencedCommand(displaySafeText(best.fix))} (seen ${best.count} ${best.count === 1 ? 'time' : 'times'})`
+    const text = `&#91;token-goat] In an earlier session this same failure was followed by: ${fencedCommand(displaySafeText(best.fix))} (seen ${best.count} ${best.count === 1 ? 'time' : 'times'}, not verified)`
     const out = applyHintTracking(event, contextOutput(text), uncorrelatedHint('recovery_pair'))
     return out.hookType === 'context' ? out.context : null
   } catch {
     return null
   }
+}
+
+/** Advance the offered fix's progress with one successful command: each part of the fix must run as a whole command, in order, and a single call that is the whole fix counts for all of it. */
+function advanceOfferedFix(open: OpenPair, command: string): void {
+  const offered = open.offered
+  if (offered === undefined || open.fixRan === true) return
+  const ran = squeeze(command)
+  const parts = offered.fix.split(' && ')
+  if (ran === offered.fix) {
+    open.fixRan = true
+    return
+  }
+  const next = open.progress ?? 0
+  if (ran !== parts[next]) return
+  open.progress = next + 1
+  if (open.progress === parts.length) open.fixRan = true
 }
 
 /** A successful Bash command: it may close a pending pair (learning a fix or scoring an offered one), or be the in-between work for one. */
@@ -290,7 +404,8 @@ export function recoveryAfterSuccess(event: HookEvent, command: string): void {
     if (state.open.length === 0) return
     const clean = isLearnableCommand(command)
     const now = Date.now()
-    const key = keyFor(state, event)
+    const { key } = projectFor(state, event)
+    const tag = sessionTag(event)
     const keep: OpenPair[] = []
     const { core } = splitCommandPrefix(command)
     let store: StoredPair[] | null = null
@@ -303,26 +418,33 @@ export function recoveryAfterSuccess(event: HookEvent, command: string): void {
         store ??= key === null ? [] : loadStore(key, now)
         const offered = open.offered
         if (offered !== undefined && open.fixRan === true) {
-          const pair = store.find((p) => p.fix === offered.fix && p.commandShape === open.key)
+          const pair = store.find((p) => isOffered(p, offered, open.signature, open.shape))
           if (pair !== undefined) {
             pair.helped += 1
             pair.count += 1
             pair.lastSeen = now
+            addSession(pair, tag)
             changed = true
           }
           continue
         }
         const fix = learnableFix(open.failed, command, open.between)
         if (fix !== null) {
-          const same = store.find((p) => matches(p, open.signature, open.key) && p.fix === fix)
-          if (same !== undefined) same.count += 1
-          else store = [...store.filter((p) => !matches(p, open.signature, open.key)), { signature: open.signature, commandShape: open.key, fix, count: 1, lastSeen: now, helped: 0, hurt: 0 }]
-          if (same !== undefined) same.lastSeen = now
-          changed = true
+          const sameShape = store.filter((p) => matches(p, open.signature, open.shape))
+          const same = sameShape.find((p) => p.fix === fix)
+          if (same !== undefined) {
+            same.count += 1
+            same.lastSeen = now
+            addSession(same, tag)
+            changed = true
+          } else if (!sameShape.some((p) => p.helped > 0)) {
+            store = [...store.filter((p) => !matches(p, open.signature, open.shape)), { signature: open.signature, commandShape: open.shape, fix, count: 1, lastSeen: now, helped: 0, hurt: 0, sessions: [tag] }]
+            changed = true
+          }
         }
         continue
       }
-      if (open.offered !== undefined && squeeze(command).includes(open.offered.fix)) open.fixRan = true
+      advanceOfferedFix(open, command)
       open.between = [...open.between, squeeze(command)].slice(-RECOVERY_WINDOW)
       keep.push(open)
     }
