@@ -602,8 +602,13 @@ function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string;
 async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boolean; fix?: boolean; probe?: string }): Promise<void> {
   if (opts.probe !== undefined) {
     // Loaded on demand: a probe spawns a whole harness, and nothing else in doctor needs this module.
-    const { PROBE_COMMANDS, formatProbeReport, isProbeHarness, probeVerdict, runProbe } = await import('./doctor_probe.js')
+    const { IDE_HOSTS_WITHOUT_PROBE, NO_HEADLESS_PROBE_EXIT_CODE, PROBE_COMMANDS, formatProbeReport, isProbeHarness, noHeadlessProbeMessage, probeVerdict, runProbe } = await import('./doctor_probe.js')
     const harness = opts.probe.trim().toLowerCase()
+    if (IDE_HOSTS_WITHOUT_PROBE.has(harness)) {
+      err(`token-goat: ${noHeadlessProbeMessage(harness)}`)
+      process.exitCode = NO_HEADLESS_PROBE_EXIT_CODE
+      return
+    }
     if (!isProbeHarness(harness)) {
       throw new CliError(`no headless probe for ${echoedValue(opts.probe)}; supported: ${Object.keys(PROBE_COMMANDS).join(', ')}`)
     }
@@ -1344,7 +1349,7 @@ export function buildProgram(): Command {
     .option('--json', 'emit check results as JSON instead of text')
     .option('--repair', 'automatically repair fixable issues (permissive settings, missing semantics models)')
     .option('--fix', 'alias for --repair')
-    .option('--probe <harness>', 'run one real prompt through a harness (claudecode, codex, copilot_cli) and check that token-goat\'s context hooks reach the model')
+    .option('--probe <harness>', 'run one real prompt through a harness (claudecode, codex, copilot_cli) and check that token-goat\'s context hooks reach the model; exits 3 for an editor host (vscode, visualstudio, jetbrains) that has no headless mode')
     .action(guard(cmdDoctor))
 
   program

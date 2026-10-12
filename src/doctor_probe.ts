@@ -13,13 +13,37 @@ import type { HookEventName } from './types.js'
 /** The prompt every probe sends. No quote, `%`, `!`, `^`, `&`, `|`, `<` or `>`, so it passes through cmd.exe unchanged when the harness is a `.cmd` shim. */
 export const PROBE_PROMPT = 'Reply with every line of your context that begins with token-goat probe marker, copied exactly, one per line. If there are none, reply NONE.'
 
-/** How each probeable harness runs one prompt headless. Each was run against the probe marker before it went here (claude 2.1.284, codex-cli 0.158.0, Copilot CLI 1.0.88). Copilot gets no `--allow-all-tools`: the prompt needs no tool, and a diagnostic has no business granting the model every tool in the user's project. */
+/** How each probeable harness runs one prompt headless. Each invocation was run against the probe marker on claude 2.1.284, codex-cli 0.158.0 and Copilot CLI 1.0.88; the same subcommand and `-p` shape, given a different prompt, was only seen accepted (it reached the login or trust check, not an argument error) on claude 2.1.296, codex-cli 0.159.3 and Copilot CLI 1.0.95, and the marker run was not repeated there. Copilot gets no `--allow-all-tools`: the prompt needs no tool, and a diagnostic has no business granting the model every tool in the user's project. */
 export const PROBE_COMMANDS: Readonly<Partial<Record<HarnessName, { readonly bin: string; readonly args: readonly string[] }>>> = {
   claudecode: { bin: 'claude', args: ['-p', PROBE_PROMPT] },
   codex: { bin: 'codex', args: ['exec', PROBE_PROMPT] },
   copilot_cli: { bin: 'copilot', args: ['-p', PROBE_PROMPT] },
 }
 
+/** Hosts that run inside an editor and have no headless mode to send one prompt through, so `doctor --probe` cannot drive them. Exit code 3 names this case apart from 1 (a hook is at fault) and 2 (the harness failed before its model replied). */
+export const IDE_HOSTS_WITHOUT_PROBE: ReadonlySet<string> = new Set(['vscode', 'visualstudio', 'jetbrains'])
+export const NO_HEADLESS_PROBE_EXIT_CODE = 3
+
+export function noHeadlessProbeMessage(host: string): string {
+  return `${host} has no headless mode, so doctor --probe cannot send it a prompt; run token-goat doctor to check its install and hooks`
+}
+
+/** `message` with each spelling of the resolved binary path replaced by `<harness>`; on Windows the match ignores case and slash direction, since `C:/x/Claude.exe` and `c:\x\claude.exe` name one file. */
+export function hideResolvedPath(message: string, resolved: string): string {
+  if (resolved === '') return message
+  if (process.platform !== 'win32') return message.split(resolved).join('<harness>')
+  const fold = (text: string): string => text.replaceAll('\\', '/').toLowerCase()
+  const haystack = fold(message)
+  const needle = fold(resolved)
+  if (haystack.length !== message.length || needle.length !== resolved.length) return message.split(resolved).join('<harness>')
+  let out = ''
+  let from = 0
+  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, from)) {
+    out += message.slice(from, at) + '<harness>'
+    from = at + needle.length
+  }
+  return out + message.slice(from)
+}
 export function isProbeHarness(name: string): name is HarnessName {
   return Object.prototype.hasOwnProperty.call(PROBE_COMMANDS, name)
 }
@@ -109,7 +133,7 @@ export function runProbe(harness: HarnessName, opts: { cwd?: string; resolve?: (
     const timedOut = (run.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT'
     const status: ProbeRunStatus = timedOut ? 'timeout' : run.status === 0 ? 'ok' : 'failed'
     const output = `${run.stderr ?? ''}\n${stdout}`.trim()
-    const detail = tail(output || run.error?.message?.split(resolved).join('<harness>') || '')
+    const detail = tail(output || hideResolvedPath(run.error?.message ?? '', resolved))
     const startError = (run.error as NodeJS.ErrnoException | undefined)?.code
     const spawnError = startError !== undefined && START_ERROR_CODES.has(startError) ? startError : undefined
     if (spawnError !== undefined) return { harness, command, status: 'spawn_failed', exitCode: null, events: probed.map((event) => ({ event, result: implemented.has(event) ? 'not_fired' : 'not_wired' })), detail: spawnError }
