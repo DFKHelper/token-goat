@@ -90,7 +90,7 @@ const EXPECTED_PATTERNS: readonly ExpectedPattern[] = [
   // 16: the file changed on disk after the last read.
   { reason: 'file_modified_since_read', tools: ['Edit', 'MultiEdit', 'Write'], re: /^File has been modified since read/ },
   // 643 (578 Bash, 53 Read, 11 Grep, 1 Edit): a path that does not exist, in each tool's own wording.
-  { reason: 'path_not_found', re: /No such file or directory|^File does not exist\.|^Path does not exist:/ },
+  { reason: 'path_not_found', re: /No such file or directory|^File does not exist\.|^Path does not exist\b/ },
   // 1,171: an interpreter raising: a Python traceback header, the `Node.js vN.N.N` line Node prints under every uncaught error, or a named error line (`SyntaxError: ...`). After path_not_found, so a missing file stays a missing file whichever language reported it.
   { reason: 'script_exception', tools: ['Bash'], re: /^(?:Traceback \(most recent call last\):|Node\.js v\d+\.\d+\.\d+\b|[A-Z]\w*(?:Error|Exception)(?: \[\w+\])?: )/m },
   // 14: a Read over the harness's size ceiling.
