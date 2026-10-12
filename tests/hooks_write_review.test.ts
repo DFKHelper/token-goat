@@ -22,10 +22,11 @@ const { invalidateConfigCache } = await import('../src/config.js')
 const { makeHookEvent } = await import('./helpers/hook-event.js')
 const { normalizePayload } = await import('../src/hooks_cli.js')
 const { normalizePath } = await import('../src/paths.js')
-const { recordFileRead, recordFileLineRange } = await import('../src/session.js')
+const { recordFileRead, recordFileLineRange, getFileLineRanges, recordBashStartCwd } = await import('../src/session.js')
 const { recordReadShape } = await import('../src/read_shape.js')
 const { postBashHandler } = await import('../src/hooks_bash_post.js')
-const { isWholeFileRead } = await import('../src/served_extent.js')
+const { isWholeFileRead, servedExtents } = await import('../src/served_extent.js')
+const { removedLineIndexes, MAX_DIFF_SPAN } = await import('../src/write_guards.js')
 const { trimToBudget } = await import('../src/overflow_guard.js')
 
 const FILES_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-write-rev-files-'))
@@ -343,5 +344,193 @@ describe('line endings', () => {
     const target = fresh()
     fs.writeFileSync(target, 'a\r\n// ... existing code ...\r\nb\r\n')
     expect((await preWriteRewriteHandler(writeEvent(target, 'a\r\n// ... existing code ...\r\nb changed\r\n'))).hookType).toBe('pass')
+  })
+})
+
+describe('a read that ran elsewhere or printed less than the lines is not recorded as seen (final review round)', () => {
+  const body = lines(200)
+  const dropped = body.split('\n').slice(0, 120).concat(body.split('\n').slice(140)).join('\n') + 'edited\n'
+  const project = path.join(FILES_DIR, 'proj-r6')
+  const other = path.join(FILES_DIR, 'other-r6')
+  const target = path.join(project, 'src', 'a.ts')
+
+  // FORMAT-DERIVED: the Claude Code Bash tool_response envelope as in tests/fixtures/harness_hook_payloads.ts; the hook starts in `project`, which is the cwd the event reports.
+  function postBash(command: string, toolUseId?: string): Promise<unknown> {
+    const raw = { cwd: project, tool_name: 'Bash', tool_input: { command }, ...(toolUseId === undefined ? {} : { tool_use_id: toolUseId }), tool_response: { stdout: 'served', stderr: '', interrupted: false, isImage: false, noOutputExpected: false } }
+    return postBashHandler(makeHookEvent({ eventName: 'post_tool_use', toolName: 'Bash', toolInput: { command }, sessionId: 'test', raw }))
+  }
+
+  function seed(): void {
+    for (const dir of [project, other]) {
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true })
+      fs.writeFileSync(path.join(dir, 'src', 'a.ts'), body)
+    }
+    recordFileRead(target, false)
+    recordFileLineRange(target, 1, 100)
+    recordReadShape('test', normalizePath(target), 'partial')
+  }
+
+  const denied = async (): Promise<boolean> => (await preWriteRewriteHandler(writeEvent(target, dropped))).hookType === 'deny'
+
+  it('control: a plain relative range read clears the Write', async () => {
+    seed()
+    expect(await denied()).toBe(true)
+    await postBash('token-goat read src/a.ts@101-200')
+    expect(await denied()).toBe(false)
+  })
+
+  // HAND-DERIVED: `env -C DIR cmd` and `env --chdir=DIR cmd` run cmd in DIR (coreutils env), so `src/a.ts` is DIR/src/a.ts, not a file of the hook's directory; `pushd` moves the shell the same way.
+  it.each([
+    `env -C ${normalizePath(other)} token-goat read src/a.ts@101-200`,
+    `env -C ${normalizePath(other)} FOO=1 token-goat read src/a.ts@101-200`,
+    `env --chdir=${normalizePath(other)} token-goat read src/a.ts@101-200`,
+    `env --chdir ${normalizePath(other)} token-goat read src/a.ts@101-200`,
+    `env -iC ${normalizePath(other)} token-goat read src/a.ts@101-200`,
+    `env -C${normalizePath(other)} token-goat read src/a.ts@101-200`,
+    `FOO=1 env -C ${normalizePath(other)} token-goat read src/a.ts@101-200`,
+    `cd src && env -C ${normalizePath(other)} token-goat read a.ts@101-200`,
+    `pushd ${normalizePath(other)} && token-goat read src/a.ts@101-200`,
+    `pushd ${normalizePath(other)}; token-goat read src/a.ts@101-200`,
+    `(pushd ${normalizePath(other)} && token-goat read src/a.ts@101-200)`,
+    `cd ${normalizePath(project)} && pushd ${normalizePath(other)} && token-goat read src/a.ts@101-200`,
+  ])('records nothing for %s', async (command) => {
+    seed()
+    await postBash(command)
+    expect(await denied()).toBe(true)
+  })
+
+  // HAND-DERIVED: a `cd` that wraps the whole command resolves the path against that directory, so a read behind it is recorded against the file it read; an env that only sets or unsets variables does not move the read.
+  it.each([`cd ${normalizePath(path.join(project, 'src'))} && token-goat read a.ts@101-200`, '(cd src && token-goat read a.ts@101-200)', 'env -u X FOO=1 token-goat read src/a.ts@101-200', 'env -i token-goat read src/a.ts@101-200'])('still records %s', async (command) => {
+    seed()
+    await postBash(command)
+    expect(await denied()).toBe(false)
+  })
+
+  // HAND-DERIVED: `cd missing` fails and `cd -` returns to a directory the hook cannot name, so the path the hook resolves is one no file sits at.
+  it.each(['cd missing; token-goat read src/a.ts@101-200', 'cd - && token-goat read src/a.ts@101-200', 'cd missing && token-goat read src/a.ts@101-200', 'cd $NOWHERE && token-goat read src/a.ts@101-200'])('records no path that does not exist for %s', async (command) => {
+    seed()
+    // The pre hook held the directory the call started in, so the post hook resolves the cd prefix from it alone and has no cwd fallback to land on the real file.
+    recordBashStartCwd('toolu_r6_missing', project)
+    await postBash(command, 'toolu_r6_missing')
+    expect(getFileLineRanges(path.join(project, 'missing', 'src', 'a.ts')).length).toBe(0)
+    expect(getFileLineRanges(path.join(project, '-', 'src', 'a.ts')).length).toBe(0)
+    expect(getFileLineRanges(path.join(project, '$NOWHERE', 'src', 'a.ts')).length).toBe(0)
+  })
+
+  // FORMAT-DERIVED: the Codex PostToolUse payload of tests/fixtures/harness_hook_payloads.ts (tool_name Bash, tool_response a plain string), run through the same normalizePayload step the hook entry applies; the ledger must read it as it reads Claude Code's.
+  it('records a Codex Bash read in the ledger, and not one behind env -C', async () => {
+    seed()
+    const post = (command: string): Promise<unknown> => {
+      const wire = { cwd: project, tool_name: 'Bash', tool_use_id: 'call_4', tool_input: { command }, tool_response: 'served\n' }
+      const normalized = normalizePayload(wire, 'codex') as Record<string, unknown>
+      return postBashHandler(makeHookEvent({ eventName: 'post_tool_use', toolName: normalized['tool_name'] as string, toolInput: normalized['tool_input'] as Record<string, unknown>, sessionId: 'test', raw: normalized }))
+    }
+    await post(`env -C ${normalizePath(other)} token-goat read src/a.ts@101-200`)
+    expect(await denied()).toBe(true)
+    await post('env FOO=1 token-goat read src/a.ts@101-200')
+    expect(await denied()).toBe(false)
+  })
+
+  // HAND-DERIVED: each flag below stops the body being printed in full (usage text, JSON, a heading list, a cut, statistics), read off the option lists of `read` and `section` in src/cli.ts; `-j` and `-h` are the short spellings.
+  it.each(['--help', '-h', '--json', '-j', '--stats', '--list', '--grep x', '--head 5', '--max-lines 5', '--tail 5'])('does not count a ranged read followed by %s', async (flag) => {
+    seed()
+    const spec = normalizePath(target) + '@101-200'
+    expect(await servedExtents('read', spec, `token-goat read "${spec}"`, project)).toEqual([{ filePath: normalizePath(target), start: 101, end: 200 }])
+    expect(await servedExtents('read', spec, `token-goat read "${spec}" ${flag}`, project)).toEqual([])
+    await postBash(`token-goat read src/a.ts@101-200 ${flag}`)
+    expect(await denied()).toBe(true)
+  })
+})
+
+describe('removedLineIndexes keeps its answer without the full table', () => {
+  // HAND-DERIVED: a reference longest-common-subsequence walk written here, with the full table and the same tie rule (prefer dropping a new line over an old one), compared on seeded random inputs over a small alphabet so ties are common.
+  function reference(oldAll: string[], newAll: string[]): number[] {
+    let head = 0
+    while (head < oldAll.length && head < newAll.length && oldAll[head] === newAll[head]) head++
+    let tail = 0
+    while (tail < oldAll.length - head && tail < newAll.length - head && oldAll[oldAll.length - 1 - tail] === newAll[newAll.length - 1 - tail]) tail++
+    const a = oldAll.slice(head, oldAll.length - tail)
+    const b = newAll.slice(head, newAll.length - tail)
+    const t = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0))
+    for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) t[i]![j] = a[i - 1] === b[j - 1] ? t[i - 1]![j - 1]! + 1 : Math.max(t[i - 1]![j]!, t[i]![j - 1]!)
+    const out: number[] = []
+    let i = a.length
+    let j = b.length
+    while (i > 0) {
+      if (j > 0 && a[i - 1] === b[j - 1]) {
+        i--
+        j--
+      } else if (j > 0 && t[i]![j - 1]! >= t[i - 1]![j]!) j--
+      else {
+        out.push(i - 1)
+        i--
+      }
+    }
+    return out.reverse().map((i) => i + head)
+  }
+
+  it('matches the full-table walk on random inputs', () => {
+    let seedState = 12345
+    const next = (): number => (seedState = (seedState * 1103515245 + 12345) & 0x7fffffff)
+    for (let round = 0; round < 300; round++) {
+      const a = Array.from({ length: next() % 40 }, () => String.fromCharCode(97 + (next() % 4)))
+      const b = Array.from({ length: next() % 40 }, () => String.fromCharCode(97 + (next() % 4)))
+      expect(removedLineIndexes(a, b), `${a.join('')} -> ${b.join('')}`).toEqual(reference(a, b))
+    }
+  })
+
+  // Counts the bytes of every Uint8Array and Uint16Array built with a length while the call runs; the module reads these globals when it allocates.
+  function allocatedBytes(run: () => number[]): { removed: number[]; bytes: number } {
+    let bytes = 0
+    const originals = { u8: globalThis.Uint8Array, u16: globalThis.Uint16Array }
+    class CountU8 extends originals.u8 {
+      constructor(length: number) {
+        super(length)
+        bytes += length
+      }
+    }
+    class CountU16 extends originals.u16 {
+      constructor(length: number) {
+        super(length)
+        bytes += length * 2
+      }
+    }
+    Object.assign(globalThis, { Uint8Array: CountU8, Uint16Array: CountU16 })
+    try {
+      return { removed: run(), bytes }
+    } finally {
+      Object.assign(globalThis, { Uint8Array: originals.u8, Uint16Array: originals.u16 })
+    }
+  }
+
+  it('allocates under 1 MB of typed arrays for two files at the span bound that share only a few lines', () => {
+    const a = Array.from({ length: MAX_DIFF_SPAN }, (_, i) => (i % 97 === 0 ? 'shared' : `old ${i}`))
+    const b = Array.from({ length: MAX_DIFF_SPAN }, (_, i) => (i % 89 === 0 ? 'shared' : `new ${i}`))
+    const { removed, bytes } = allocatedBytes(() => removedLineIndexes(a, b))
+    expect(removed.length).toBeGreaterThan(MAX_DIFF_SPAN * 0.9)
+    expect(removed.length).toBeLessThan(MAX_DIFF_SPAN)
+    expect(bytes).toBeGreaterThan(0)
+    expect(bytes).toBeLessThan(1024 * 1024)
+  })
+
+  // HAND-DERIVED: past the bound nothing is compared, so every old line between the shared head and tail is reported removed (the answer that can only add a refusal, never drop one), and no table is built.
+  it('past the span bound reports every old line between the shared head and tail as removed, without a table', () => {
+    const a = ['head', ...Array.from({ length: MAX_DIFF_SPAN + 1 }, (_, i) => `old ${i}`), 'tail']
+    const b = ['head', ...Array.from({ length: 5 }, (_, i) => `new ${i}`), 'tail']
+    const { removed, bytes } = allocatedBytes(() => removedLineIndexes(a, b))
+    expect(removed).toEqual(Array.from({ length: MAX_DIFF_SPAN + 1 }, (_, i) => i + 1))
+    expect(bytes).toBe(0)
+  })
+
+  it('still refuses a Write that drops unseen lines from a file longer than the span bound', async () => {
+    const big = path.join(FILES_DIR, 'big-span.ts')
+    const oldText = lines(3 * MAX_DIFF_SPAN)
+    fs.writeFileSync(big, oldText)
+    recordFileRead(big, false)
+    recordFileLineRange(big, 1, 100)
+    recordReadShape('test', normalizePath(big), 'partial')
+    const kept = oldText.split('\n')
+    const newText = kept.slice(0, 100).concat(kept.slice(2 * MAX_DIFF_SPAN)).join('\n') + 'edited\n'
+    expect((await preWriteRewriteHandler(writeEvent(big, newText))).hookType).toBe('deny')
   })
 })

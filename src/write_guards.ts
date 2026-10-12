@@ -87,7 +87,10 @@ export function patchAddedLines(patch: string): Array<{ path: string; added: str
   return files
 }
 
-/** The 0-based indexes of `oldLines` that a rewrite into `newLines` removes: every old line outside one longest common subsequence. Needs the full DP table to walk back through, so the caller bounds both inputs (hooks_write.ts caps them at MAX_LINES_FOR_DIFF); a shared head and tail are matched off first, which is nearly all of a small edit. */
+/** Longest stretch of old or new lines, after the shared head and tail, that {@link removedLineIndexes} will compare line by line. */
+export const MAX_DIFF_SPAN = 2000
+
+/** The 0-based indexes of `oldLines` that a rewrite into `newLines` removes: every old line outside one longest common subsequence. Walks back through one bit per table cell, so the table stays small; a stretch longer than MAX_DIFF_SPAN on either side is not compared and counts every old line in it as removed, which only makes the blind-drop guard speak where it might have passed; a shared head and tail are matched off first, which is nearly all of a small edit. */
 export function removedLineIndexes(oldLines: string[], newLines: string[]): number[] {
   let head = 0
   while (head < oldLines.length && head < newLines.length && oldLines[head] === newLines[head]) head++
@@ -96,18 +99,27 @@ export function removedLineIndexes(oldLines: string[], newLines: string[]): numb
   const n = oldLines.length - head - tail
   const m = newLines.length - head - tail
   const removed: number[] = []
-  if (m === 0) {
+  if (m === 0 || n > MAX_DIFF_SPAN || m > MAX_DIFF_SPAN) {
     for (let i = 0; i < n; i++) removed.push(head + i)
     return removed
   }
   const width = m + 1
-  const table = new Uint16Array((n + 1) * width)
+  // Two rolling rows carry the lengths; the walk back needs only, per mismatching cell, whether the cell to its left held at least as much as the one above, so that is kept as one bit per cell (0.5 MB at the 2000 x 2000 bound, where the full Uint16 table was 8 MB).
+  const goesLeft = new Uint8Array(Math.ceil(((n + 1) * width) / 8))
+  let above = new Uint16Array(width)
+  let row = new Uint16Array(width)
   for (let i = 1; i <= n; i++) {
     for (let j = 1; j <= m; j++) {
-      table[i * width + j] = oldLines[head + i - 1] === newLines[head + j - 1]
-        ? (table[(i - 1) * width + j - 1] ?? 0) + 1
-        : Math.max(table[(i - 1) * width + j] ?? 0, table[i * width + j - 1] ?? 0)
+      if (oldLines[head + i - 1] === newLines[head + j - 1]) {
+        row[j] = (above[j - 1] ?? 0) + 1
+      } else {
+        const left = row[j - 1] ?? 0
+        const up = above[j] ?? 0
+        row[j] = Math.max(left, up)
+        if (left >= up) goesLeft[(i * width + j) >> 3]! |= 1 << ((i * width + j) & 7)
+      }
     }
+    ;[above, row] = [row, above]
   }
   let i = n
   let j = m
@@ -115,7 +127,7 @@ export function removedLineIndexes(oldLines: string[], newLines: string[]): numb
     if (j > 0 && oldLines[head + i - 1] === newLines[head + j - 1]) {
       i--
       j--
-    } else if (j > 0 && (table[i * width + j - 1] ?? 0) >= (table[(i - 1) * width + j] ?? 0)) {
+    } else if (j > 0 && ((goesLeft[(i * width + j) >> 3] ?? 0) & (1 << ((i * width + j) & 7))) !== 0) {
       j--
     } else {
       removed.push(head + i - 1)

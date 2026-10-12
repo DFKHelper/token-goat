@@ -6,8 +6,8 @@ export interface ServedExtent {
   end: number
 }
 
-/** Flags that cut what the call prints to less than the whole symbol or section, so its extent no longer says what was shown. */
-const NARROWING_FLAG = /\s--(?:grep|max-lines|head|tail|section|stats|json)\b/
+/** Flags that stop the call printing the whole symbol or section, so its extent no longer says what was shown: a cut (`--grep`, `--max-lines`, `--head`), another output (`--json`/`-j`, `--stats`, `--list`, which prints headings), or usage text (`--help`/`-h`). Any short cluster holding `j` or `h` counts, which only errs toward recording nothing. */
+const NARROWING_FLAG = /\s(?:--(?:grep|max-lines|head|tail|section|stats|json|list|help)\b|-[A-Za-gik-z]*[jh])/
 
 /** The `@N` / `@N-M` suffix of `spec`, or null. A `::` before the suffix means the `@` anchors a symbol line, not a range. */
 function rangeSuffix(spec: string): { file: string; start: number; end: number } | null {

@@ -95,9 +95,9 @@ function bashResultByteLength(resp: unknown): number {
   return 0
 }
 
-// A `token-goat read|section|symbol` result is never detached, however short: the post hook's ledger update (the line ranges and full reads the write guard counts as seen) must land before the next tool call, and a detached hook finishes after Claude Code has moved on. The prefix is a run of `cd <dir>` and plain `export NAME=value` statements in any order. It does not refuse the names the command-prefix peel refuses (PATH, TOKEN_GOAT_HOME, ...): reading past one only keeps a short result from being detached, which is the safe direction here.
+// A `token-goat read|section|symbol` result is never detached, however short: the post hook's ledger update (the line ranges and full reads the write guard counts as seen) must land before the next tool call, and a detached hook finishes after Claude Code has moved on. The prefix is a run of `cd <dir>` and plain `export NAME=value` statements in any order, then assignments and an `env` with its flags (but not `-C` or `--chdir`, whose read the ledger records nothing for). It does not refuse the names the command-prefix peel refuses (PATH, TOKEN_GOAT_HOME, ...): reading past one only keeps a short result from being detached, which is the safe direction here.
 const TG_LEDGER_PREFIX_RE = /^(?:(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)|export[ \t]+[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|[^\s"'])*(?:[ \t]+[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|[^\s"'])*)*)[ \t]*(?:&&|;|\r?\n)\s*)+/
-const TG_LEDGER_READ_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:token-goat|tg|node(?:\.exe)?\s+["']?(?:\S*[\\/])?token-goat(?:\.mjs)?["']?)\s+(?:read|section|symbol)\b/i
+const TG_LEDGER_READ_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:env\s+(?:(?:(?:-u|--unset)\s+\S+|-(?![A-Za-z]*C|-chdir)\S*|[A-Za-z_][A-Za-z0-9_]*=\S+)\s+)*)?(?:token-goat|tg|node(?:\.exe)?\s+["']?(?:\S*[\\/])?token-goat(?:\.mjs)?["']?)\s+(?:read|section|symbol)\b/i
 
 function isLedgerReadCommand(cmd: unknown): boolean {
   if (typeof cmd !== 'string') return false

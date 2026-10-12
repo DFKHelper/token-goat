@@ -7,7 +7,9 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { CLAUDECODE_HOOK_SCRIPT } from '../../src/bridges/claudecode.js'
+import { extractTgSurgicalRead } from '../../src/bash_extractors.js'
 import { isAsyncDetachEligible } from '../../src/hook_adapters.js'
+import { resolveBashCall } from '../../src/hooks_bash_commands.js'
 import { BUNDLE } from '../helpers/bundle.js'
 
 const tempDirs: string[] = []
@@ -118,6 +120,11 @@ describe('Claude Code shim async-detach classification', () => {
     'cd /p && export A=1; tg read f@1-5',
     '(cd x && token-goat read f)',
     '( export A=1; token-goat read f@1-5 )',
+    'env -i token-goat read f@1-3',
+    'env FOO=1 token-goat read f@1-3',
+    'env -u X token-goat read f@1-3',
+    'env --unset=X token-goat read f@1-3',
+    'FOO=1 env -u X BAR=2 tg section README.md::Intro',
   ])('never backgrounds the short result of %s, whose ledger update must land before the next call', (command) => {
     const stdout = runShim('post_tool_use', JSON.stringify({ tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: 'x'.repeat(50) } }))
     expect(stdout).not.toContain('"async":true')
@@ -144,5 +151,54 @@ describe('the in-process copy of the ledger-read rule agrees with the shim', () 
 
   it.each(['export A=1; git status', 'export A=1; echo token-goat read f', '(cd x && git status)'])('treats %s as eligible', (command) => {
     expect(eligible(command)).toBe(true)
+  })
+})
+
+describe('every read the ledger records is one the no-detach rule matches, in both copies', () => {
+  const eligible = (command: string): boolean => isAsyncDetachEligible('post_tool_use', JSON.stringify({ tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: 'x'.repeat(50) } }))
+  const shimDetaches = (command: string): boolean => runShim('post_tool_use', JSON.stringify({ tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: 'x'.repeat(50) } })).startsWith('{"async":true}')
+  // The ledger side is what the post hook does with the command: resolveBashCall peels the prefix, extractTgSurgicalRead decides whether anything is recorded.
+  const recorded = (command: string): boolean => extractTgSurgicalRead(resolveBashCall(command, '/proj').cmd, '/proj') !== null
+
+  // HAND-DERIVED: the expected column follows from env(1): `-i`, `-u NAME` and NAME=value change only the environment, while `-C DIR` and `--chdir=DIR` run the read in another directory, so the ledger cannot place the file and records nothing.
+  const SHAPES: Array<[string, boolean]> = [
+    ['token-goat read f@1-3', true],
+    ['tg section README.md::Intro', true],
+    ['FOO=1 token-goat read f@1-3', true],
+    ['env token-goat read f@1-3', true],
+    ['env -i token-goat read f@1-3', true],
+    ['env FOO=1 token-goat read f@1-3', true],
+    ['env -u X token-goat read f@1-3', true],
+    ['env --unset X token-goat read f@1-3', true],
+    ['env --unset=X token-goat read f@1-3', true],
+    ['env -i -u X FOO=1 BAR=2 token-goat read f@1-3', true],
+    ['FOO=1 env -u X token-goat read f@1-3', true],
+    ['cd /p && env -u X token-goat read f@1-3', true],
+    ['export A=1; env FOO=1 tg read f@1-3', true],
+    ['(cd /p && env -i token-goat read f@1-3)', true],
+    ['env -C /other token-goat read f@1-3', false],
+    ['env --chdir=/other token-goat read f@1-3', false],
+    ['env --chdir /other token-goat read f@1-3', false],
+    ['env -C /other FOO=1 token-goat read f@1-3', false],
+    ['env -iC /other token-goat read f@1-3', false],
+    ['pushd /other && token-goat read f@1-3', false],
+    ['echo token-goat read f', false],
+  ]
+
+  it.each(SHAPES)('%s: the ledger records it = %s', (command, expected) => {
+    expect(recorded(command)).toBe(expected)
+  })
+
+  it.each(SHAPES.filter(([, isRecorded]) => isRecorded))('the in-process rule does not detach %s', (command) => {
+    expect(eligible(command)).toBe(false)
+  })
+
+  it.each(SHAPES.filter(([, isRecorded]) => isRecorded).map(([command]) => command))('the shim does not detach %s', (command) => {
+    expect(shimDetaches(command)).toBe(false)
+  })
+
+  it.each(['echo token-goat read f', 'env -i git status', 'env FOO=1 echo token-goat read f'])('both copies still detach %s', (command) => {
+    expect(eligible(command)).toBe(true)
+    expect(shimDetaches(command)).toBe(true)
   })
 })

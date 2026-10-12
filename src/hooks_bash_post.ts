@@ -751,7 +751,8 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
         const narrowing = tgRead.spec.slice(tgRead.filePath.length)
         if (narrowing.length > 0) recordSymbolRead(tgRead.filePath, narrowing.replace(/^::/, ''))
       }
-      if (tgRead.filePath !== null) {
+      // A `cd` the shell could not follow (`cd missing`, `cd -`, `cd $VAR`) leaves a path no file sits at, and nothing was shown from it.
+      if (tgRead.filePath !== null && isFileAtIndexKey(tgRead.filePath)) {
         try {
           const { servedExtents, isWholeFileRead } = await import('./served_extent.js')
           const { isCappedOutput } = await import('./overflow_guard.js')

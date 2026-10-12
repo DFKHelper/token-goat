@@ -44,7 +44,6 @@ export function placeholderGuard(event: HookEvent, filePath: string, newText: st
 /** Flag a whole-file Write that removes at least {@link BLIND_DROP_MIN_LINES} lines the session never read. Only the last Read's shape and the served ranges the session keeps can say what was seen, so it speaks only when both agree the file was read in part: a file never Read here, one read whole since the last compaction, and a `fold` or `truncated` Read (whose shown lines cannot be placed) all pass, as does a partial Read whose ranges an Edit has since dropped. */
 export function blindDropGuard(event: HookEvent, filePath: string, newContent: string, oldLines: string[], newLines: string[]): HookOutput {
   if (loadConfig().hints.write_blind_drop === 'off') return passOutput()
-  if (oldLines.length > MAX_LINES_FOR_DIFF || newLines.length > MAX_LINES_FOR_DIFF) return passOutput()
   const normalized = normalizePath(filePath)
   const shape = readShapeOf(sessionStateKey(event), normalized)
   if (shape === null || shape === 'fold' || shape === 'truncated') return passOutput()
