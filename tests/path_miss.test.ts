@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { runBundle, tgIsolatedEnv } from './helpers/bundle.js'
 
 import type { HookEvent } from '../src/hook_registry.js'
+import { codexMissingPathHandler } from '../src/hooks_recovery.js'
 import { postToolUseFailureWithExtras } from '../src/hooks_tool_failure.js'
 import { missingPathsFromStderr } from '../src/path_miss.js'
 import { indexFileSync } from '../src/parser.js'
@@ -15,6 +16,8 @@ import { normalizePath } from '../src/paths.js'
 const fixture = (name: string): Record<string, unknown> => JSON.parse(readFileSync(join(__dirname, 'fixtures', 'claude_code_2_1_281', name), 'utf8')) as Record<string, unknown>
 const CAPTURED_BASH = fixture('bash_failure.json')
 const CAPTURED_READ = fixture('read_file_missing.json')
+// FORMAT-DERIVED: tests/fixtures/PROVENANCE.tsv row for codex_ddb33e34b/bash_post_tool_use_missing_path.json (openai/codex ddb33e34b278, codex-rs/core/src/tools/context.rs ExecCommandToolOutput::post_tool_use_response: the response is a bare string)
+const CODEX_BASH = JSON.parse(readFileSync(join(__dirname, 'fixtures', 'codex_ddb33e34b', 'bash_post_tool_use_missing_path.json'), 'utf8')) as Record<string, unknown>
 
 let project: string
 let counter = 0
@@ -127,6 +130,46 @@ describe('the nudge on a failed tool call', async () => {
   })
 })
 
+describe('the nudge on a Codex Bash result', () => {
+  const was = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+  beforeAll(() => {
+    process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'codex'
+  })
+  afterAll(() => {
+    if (was === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+    else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = was
+  })
+
+  function codexEvent(over: Record<string, unknown>): HookEvent {
+    counter += 1
+    const raw: Record<string, unknown> = { ...CODEX_BASH, session_id: `path-miss-codex-${process.pid}-${counter}`, cwd: project, ...over }
+    return { eventName: 'post_tool_use', toolName: 'Bash', toolInput: raw['tool_input'] as Record<string, unknown>, sessionId: raw['session_id'] as string, agentId: undefined, raw }
+  }
+
+  it('names the entry beside the missing path from the bare-string tool_response', async () => {
+    const out = await codexMissingPathHandler(codexEvent({}))
+    expect(out.hookType).toBe('context')
+    expect(out.hookType === 'context' ? out.context : '').toContain('`"nonexistent_dirs"`')
+  })
+
+  it('says nothing for output that is not a missing-path message', async () => {
+    expect((await codexMissingPathHandler(codexEvent({ tool_response: 'hi\n' }))).hookType).toBe('pass')
+  })
+
+  it('says nothing for an object tool_response, which is not what Codex sends', async () => {
+    expect((await codexMissingPathHandler(codexEvent({ tool_response: { stdout: '', stderr: CODEX_BASH['tool_response'] } }))).hookType).toBe('pass')
+  })
+
+  it('says nothing on another harness', async () => {
+    delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+    try {
+      expect((await codexMissingPathHandler(codexEvent({}))).hookType).toBe('pass')
+    } finally {
+      process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'codex'
+    }
+  })
+})
+
 describe('the built bundle', () => {
   const home = mkdtempSync(join(tmpdir(), 'tg-path-miss-e2e-'))
   const work = join(home, 'proj')
@@ -157,6 +200,14 @@ describe('the built bundle', () => {
     // FORMAT-DERIVED: src/hook_adapters.ts copilotRun -- tool_name from copilotCanonicalToolName('view'), tool_input from toolArgs (path), error verbatim, no cwd key.
     const out = hook({ session_id: 'e2e-copilot', tool_name: 'Read', tool_input: { path: join(work, 'src', 'hooks_tool_failur.ts') }, error: 'Path does not exist: src/hooks_tool_failur.ts' })
     expect(out).toContain('src/hooks_tool_failure.ts')
+  })
+
+  it('answers the Codex Bash result, a bare-string tool_response', () => {
+    const payload = { ...CODEX_BASH, session_id: 'e2e-codex-bash', cwd: work }
+    const res = runBundle(['hook', 'post_tool_use'], { cwd: work, env: { ...env, TOKEN_GOAT_HARNESS_OVERRIDE: 'codex' }, input: JSON.stringify(payload), timeout: 60_000 })
+    expect(res.status, res.stderr).toBe(0)
+    expect(res.stdout).toContain('does not exist. Existing paths that look like it')
+    expect(res.stdout).toContain('nonexistent_dirs')
   })
 
   it('records the nudge under the path_miss hint category', () => {

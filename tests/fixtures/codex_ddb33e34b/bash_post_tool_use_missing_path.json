@@ -1,0 +1,1 @@
+{"session_id":"019a0000-0000-7000-8000-000000000001","transcript_path":null,"cwd":"PROJECT","hook_event_name":"PostToolUse","model":"gpt-5.5","turn_id":"turn-1","permission_mode":"default","tool_name":"Bash","tool_use_id":"call_1","tool_input":{"command":"ls nonexistent_dir"},"tool_response":"ls: cannot access 'nonexistent_dir': No such file or directory\n"}
