@@ -302,7 +302,7 @@ describe('write_blind_drop guard', () => {
 
     it('flags a brand-new file that is a placeholder, and passes one that is not', async () => {
       const target = path.join(FILES_DIR, 'ph-new.ts')
-      expect((await preWriteRewriteHandler(writeEvent(target, 'import x from "x"\n// existing code\n'))).hookType).toBe('deny')
+      expect((await preWriteRewriteHandler(writeEvent(target, 'import x from "x"\n// ... existing code ...\n'))).hookType).toBe('deny')
       expect((await preWriteRewriteHandler(writeEvent(path.join(FILES_DIR, 'ph-new-clean.ts'), 'import x from "x"\n'))).hookType).toBe('pass')
     })
 
@@ -374,7 +374,7 @@ describe('write_blind_drop guard', () => {
     it('reads a Copilot CLI edit through the real payload normalization', async () => {
       const target = path.join(FILES_DIR, 'ph-copilot-edit.ts')
       fs.writeFileSync(target, 'a\nb\n')
-      // PROVENANCE: CAPTURE of the producer's own tool description, not of an executed call: the system.message in a real Copilot CLI 1.0.88 session log (events.jsonl) documents the edit tool with the arguments path, old_str and new_str. Marker text is HAND-DERIVED. No executed edit call was present in the available logs.
+      // PROVENANCE: FORMAT-DERIVED, not a capture of an executed call: the system.message in a real Copilot CLI 1.0.88 session log (<user>/.copilot/session-state/<session>/events.jsonl) documents the edit tool with the arguments path, old_str and new_str. No executed edit call was present in the available logs, so this proves agreement with the producer's description and not that a shipped build sends it. Marker text is HAND-DERIVED.
       const wire = { tool_name: 'edit', tool_input: { path: target, old_str: 'b', new_str: '// ... existing code ...' } }
       const normalized = normalizePayload(wire, 'copilot_cli') as { tool_name: string; tool_input: Record<string, unknown> }
       expect((await preWriteRewriteHandler(editEvent(normalized.tool_name, normalized.tool_input))).hookType).toBe('deny')

@@ -104,6 +104,22 @@ describe('Claude Code shim async-detach classification', () => {
     expect(stdout).not.toContain('"async":true')
   })
 
+  it.each([
+    'token-goat read src/a.ts@1-3',
+    'tg section README.md::Intro',
+    'cd /p && token-goat symbol foo',
+    'TOKEN_GOAT_HOME=/h token-goat read f',
+    'node /x/dist/token-goat.mjs read f@1-2',
+  ])('never backgrounds the short result of %s, whose ledger update must land before the next call', (command) => {
+    const stdout = runShim('post_tool_use', JSON.stringify({ tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: 'x'.repeat(50) } }))
+    expect(stdout).not.toContain('"async":true')
+  })
+
+  it.each(['echo token-goat read f', 'token-goat outline f', 'git status'])('still backgrounds the short result of %s', (command) => {
+    const stdout = runShim('post_tool_use', JSON.stringify({ tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: 'x'.repeat(50) } }))
+    expect(stdout.split('\n')[0]).toBe('{"async":true}')
+  })
+
   it('never backgrounds a Bash call with no tool_response at all', () => {
     const stdout = runShim('post_tool_use', JSON.stringify({ tool_name: 'Bash' }))
     expect(stdout.split('\n')[0]).toBe('{"async":true}')

@@ -16,7 +16,7 @@ function loadGuards(): Promise<typeof WriteGuardHooks> {
   return import('./write_guard_hooks.js')
 }
 
-/** pre_tool_use handler for Write. Fails open on every path that isn't a clean "existing file, mostly-unchanged rewrite" match: missing/non-string content, a path that doesn't exist yet (brand-new file -- zero comparison attempted), a directory at that path, an old file over `MAX_OLD_FILE_BYTES_FOR_DIFF` (never even read), a read error, a file below `hints.write_rewrite_min_lines`, a diff too large to compute cheaply, or an unchanged-line fraction below `hints.write_rewrite_unchanged_pct` all just `passOutput()`. */
+/** pre_tool_use handler for Write. Fails open on every path that isn't a clean "existing file, mostly-unchanged rewrite" match: missing/non-string content, a path that doesn't exist yet (brand-new file -- zero comparison attempted), a directory at that path, an old file over `MAX_OLD_FILE_BYTES_FOR_DIFF` or one that cannot be read (never diffed; the placeholder check still runs on the new text, with nothing known of the old), a file below `hints.write_rewrite_min_lines`, a diff too large to compute cheaply, or an unchanged-line fraction below `hints.write_rewrite_unchanged_pct` all just `passOutput()`. */
 export async function preWriteRewriteHandler(event: HookEvent): Promise<HookOutput> {
   try {
     const toolName = getToolName(event)
@@ -34,9 +34,11 @@ export async function preWriteRewriteHandler(event: HookEvent): Promise<HookOutp
     if (onDisk.state === 'absent') {
       // Doesn't exist yet (or the path is otherwise unreachable) -- a brand-new-file Write has nothing to compare against for the rewrite hint, but a placeholder in it is still a placeholder.
       const created = guards.placeholderGuard(event, filePath, newContent, '')
-      return created.hookType !== 'pass' ? created : guards.siblingCopyGuard(filePath, newContent)
+      return created.hookType !== 'pass' ? created : guards.siblingCopyGuard(event, filePath, newContent)
     }
     if (onDisk.state === 'unusable') return passOutput()
+    // A regular file too big to read (or unreadable) still gets the placeholder check, against an empty known text: whatever markers it already carries are unknown, so the guard errs toward speaking, once.
+    if (onDisk.state === 'unread') return guards.placeholderGuard(event, filePath, newContent, '')
     const oldContent = onDisk.text
     if (oldContent === newContent) return passOutput()
 

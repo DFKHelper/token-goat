@@ -50,10 +50,17 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp('(?:^|/)' + source + '$', 'i')
 }
 
-/** Whether the advice stays silent for `filePath`: it sits in a directory of numbered or variant files by design (`migrations`, `versions`, `fixtures`, `__snapshots__`, any `vN` directory), or matches one of the user's `allow` globs. */
-export function siblingCopyExcluded(filePath: string, allow: readonly string[]): boolean {
+/** The directory names between `projectRoot` and the file, lowercased. A path outside the root, or no root at all, yields only the file's own directory, so a project that happens to live under a `v2` or `fixtures` folder is not silenced, while a file directly in one still is. */
+function directorySegments(normalized: string, projectRoot: string | null): string[] {
+  const root = projectRoot === null ? '' : projectRoot.replace(/\\/g, '/').replace(/\/+$/, '')
+  if (root !== '' && normalized.toLowerCase().startsWith(root.toLowerCase() + '/')) return normalized.slice(root.length + 1).split('/').slice(0, -1).map((s) => s.toLowerCase())
+  return normalized.split('/').slice(-2, -1).map((s) => s.toLowerCase())
+}
+
+/** Whether the advice stays silent for `filePath`: it sits, below `projectRoot`, in a directory of numbered or variant files by design (`migrations`, `versions`, `fixtures`, `__snapshots__`, any `vN` directory), or matches one of the user's `allow` globs. */
+export function siblingCopyExcluded(filePath: string, allow: readonly string[], projectRoot: string | null): boolean {
   const normalized = filePath.replace(/\\/g, '/')
-  const segments = normalized.split('/').slice(0, -1).map((s) => s.toLowerCase())
+  const segments = directorySegments(normalized, projectRoot)
   if (segments.some((s) => SERIES_DIRECTORIES.has(s) || VERSION_DIRECTORY.test(s))) return true
   return allow.some((glob) => glob !== '' && globToRegExp(glob.replace(/\\/g, '/')).test(normalized))
 }

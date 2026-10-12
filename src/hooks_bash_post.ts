@@ -753,8 +753,9 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       }
       if (tgRead.filePath !== null) {
         try {
-          const { servedExtents } = await import('./served_extent.js')
+          const { servedExtents, isWholeFileRead } = await import('./served_extent.js')
           for (const extent of await servedExtents(tgRead.sub, tgRead.spec, cmd, runDir)) recordFileLineRange(extent.filePath, extent.start, extent.end)
+          if (isWholeFileRead(tgRead.sub, tgRead.spec, tgRead.filePath, cmd)) recordFileRead(tgRead.filePath, true)
         } catch {
           // Best-effort bookkeeping: an index that cannot answer leaves the ledger as it was.
         }

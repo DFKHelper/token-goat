@@ -108,6 +108,13 @@ function bashResultByteLength(resp) {
   }
   return 0
 }
+// A token-goat read|section|symbol result is never detached, however short: see isAsyncDetachEligible in src/hook_adapters.ts.
+const TG_CD_PREFIX_LEDGER_RE = /^(?:cd\\s+(?:"[^"]*"|'[^']*'|\\S+)[ \\t]*(?:&&|;|\\r?\\n)\\s*)+/
+const TG_LEDGER_READ_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*=\\S+\\s+)*(?:token-goat|tg|node(?:\\.exe)?\\s+["']?(?:\\S*[\\\\/])?token-goat(?:\\.mjs)?["']?)\\s+(?:read|section|symbol)\\b/i
+function isLedgerReadCommand(cmd) {
+  if (typeof cmd !== 'string') return false
+  return TG_LEDGER_READ_RE.test((cmd.replace(TG_CD_PREFIX_LEDGER_RE, '') || cmd).trim())
+}
 function isAsyncDetachEligible(eventName, input) {
   if (eventName === 'subagent_stop') return true
   if (eventName !== 'post_tool_use') return false
@@ -124,7 +131,7 @@ function isAsyncDetachEligible(eventName, input) {
             : ''
       return !ASYNC_DETACH_SKIP_EXT_RE.test(filePath)
     }
-    if (toolName === 'Bash') return bashResultByteLength(payload['tool_response']) < ASYNC_DETACH_BASH_MAX_BYTES
+    if (toolName === 'Bash') return !isLedgerReadCommand((payload['tool_input'] || {})['command']) && bashResultByteLength(payload['tool_response']) < ASYNC_DETACH_BASH_MAX_BYTES
     return false
   } catch {
     return false

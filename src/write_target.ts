@@ -8,8 +8,8 @@ export const MAX_LINES_FOR_DIFF = 4000
 /** Byte-size gate applied to the OLD file's `stat.size` before it is ever read into memory. `MAX_LINES_FOR_DIFF` above only rejects an oversized file AFTER `readFileSync` has already loaded the whole thing and `splitLines` has already run -- so a huge single-line file (a minified bundle, a data dump) or a huge multi-GB log sailed straight through that gate and synchronously read its entire content into a JS string on every single Write, exactly the unbounded-`readFileSync` pattern already fixed for the catch-all file-type dispatch in hooks_read.ts (see SLICE_ESTIMATE_SCAN_CAP_BYTES there). Checked against `stat.size`, which is already available post-`statSync`, before any read is attempted. */
 export const MAX_OLD_FILE_BYTES_FOR_DIFF = 4 * 1024 * 1024
 
-/** What is on disk at `filePath`: `absent` when it cannot be stat'd (a Write there creates it), `unusable` when it is not a regular file, is over the diff byte cap (never read) or cannot be read, else its text. */
-export type OnDisk = { state: 'absent' } | { state: 'unusable' } | { state: 'text'; text: string }
+/** What is on disk at `filePath`: `absent` when it cannot be stat'd (a Write there creates it), `unusable` when it is not a regular file (a directory, a device), `unread` when it is a regular file whose text is not known (over the diff byte cap and never read, or unreadable), else its text. */
+export type OnDisk = { state: 'absent' } | { state: 'unusable' } | { state: 'unread' } | { state: 'text'; text: string }
 
 export function inspectFile(filePath: string): OnDisk {
   let stat
@@ -18,11 +18,12 @@ export function inspectFile(filePath: string): OnDisk {
   } catch {
     return { state: 'absent' }
   }
-  if (!stat.isFile() || stat.size > MAX_OLD_FILE_BYTES_FOR_DIFF) return { state: 'unusable' }
+  if (!stat.isFile()) return { state: 'unusable' }
+  if (stat.size > MAX_OLD_FILE_BYTES_FOR_DIFF) return { state: 'unread' }
   try {
     return { state: 'text', text: readFileSync(filePath, 'utf-8') }
   } catch {
-    return { state: 'unusable' }
+    return { state: 'unread' }
   }
 }
 

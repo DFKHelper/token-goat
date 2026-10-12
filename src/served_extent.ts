@@ -42,3 +42,11 @@ export async function servedExtents(sub: string, spec: string, cmd: string, proj
   }
   return extents
 }
+
+/** A bare `token-goat read <file>`: one spec, no flag, pipe or redirect, so the call printed the file's whole text. */
+const WHOLE_FILE_READ = /^(?:token-goat|tg)\s+read\s+(?:"[^"]+"|'[^']+'|[^\s"'|<>;&-][^\s|<>;&]*)\s*$/
+
+/** True when `cmd` is a bare `token-goat read` of `spec`'s file with nothing after the file: `spec` is the resolved path alone (no `::symbol`, no `@range`) and no flag narrows the output. Such a call counts as a full read of the file. */
+export function isWholeFileRead(sub: string, spec: string, filePath: string, cmd: string): boolean {
+  return sub === 'read' && spec === filePath && WHOLE_FILE_READ.test(cmd.trim())
+}

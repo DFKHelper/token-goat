@@ -267,6 +267,7 @@ const ANCHORS: Record<string, { stdout: string | RegExp; exit?: number }> = {
   'claudecode|Write of a .md file (no detach)': { stdout: /^(?!\{"async":true\})/ },
   'claudecode|short Bash result (async detach)': { stdout: /^\{"async":true\}\n/ },
   'claudecode|long Bash result (no detach)': { stdout: /^(?!\{"async":true\})/ },
+  'claudecode|short token-goat read result (no detach)': { stdout: /^(?!\{"async":true\})/ },
   'claudecode|subagent finished (async detach)': { stdout: /^\{"async":true\}\n/ },
   'claudecode|unknown event': { stdout: '{}', exit: 0 },
   'claudecode|payload behind a byte order mark': { stdout: /^\{"decision":"block"/ },

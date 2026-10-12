@@ -7,7 +7,7 @@ import { echoedValue, fencedCommand, fileSubject, quotedArg } from './hint_sugge
 const ELLIPSIS = String.raw`(?:\.{3}|…)`
 const COMMENT_LEAD = String.raw`(?:/{2,}|#+|/\*+|\*+|<!--|--|;+|%+|"""|''')`
 const COMMENT_CLOSE = String.raw`(?:\*+/|-->|"""|''')`
-const KEYWORD = String.raw`(?:rest|remainder|remaining|existing|unchanged|omitted|truncated|previous|same as)`
+const KEYWORD = String.raw`(?:rest|remainder|remaining|existing|unchanged|omitted|truncated|previous|same as|other)`
 const SUBJECT = String.raw`(?:rest of (?:the )?(?:file|code|content|function|class|module|implementation|method)|existing (?:code|content|implementation)|remaining (?:code|content|lines|implementation)|previous (?:code|content))`
 const TRAILER = String.raw`(?:(?:is |remains |stays |goes )?(?:unchanged|here|omitted|as[- ]is|the same|same as before|as before|above|below))`
 
@@ -19,10 +19,13 @@ const ANY_ELLIPSIS = new RegExp(ELLIPSIS, 'g')
 const HAS_ELLIPSIS = new RegExp(ELLIPSIS)
 const STARTS_WITH_ELLIPSIS = new RegExp(`^${ELLIPSIS}`)
 const ENDS_WITH_ELLIPSIS = new RegExp(`${ELLIPSIS}$`)
-const C_STYLE_LEAD = /^(?:\/{2,}|\/\*+|<!--)/
 const LEAD_THEN_TRAILER = new RegExp(`^(?:keep )?(?:the )?${KEYWORD}(?: \\S+){0,4}? (?:unchanged|here|omitted|truncated|as[- ]is|the same|as before|above|below)$`, 'i')
 const WRAPPED_MARKER = new RegExp(`^(?:the )?${KEYWORD}(?: \\S+){0,3}$`, 'i')
 const SUBJECT_ONLY = new RegExp(`^${SUBJECT}(?: ${TRAILER})?$`, 'i')
+// Without an ellipsis a subject alone (`// existing code`, `/* remaining content */`) is an ordinary comment, so a qualifier that says the text was left out has to follow it.
+const SUBJECT_QUALIFIED = new RegExp(`^${SUBJECT} (?:(?:is |are |remains? |stays? )?(?:unchanged|omitted|truncated|not shown|as[- ]is|as before|same as before)|(?:remains?|stays?|is|are) (?:the )?same)$`, 'i')
+// With an ellipsis the qualifier alone is enough: `// ... same as before`, `// ... 40 more lines omitted`.
+const ELLIPSIS_QUALIFIER = new RegExp(`^(?:(?:the )?(?:same as before|as before|unchanged|omitted|truncated|not shown)|\\d+ (?:more )?\\S+ (?:omitted|truncated|not shown|unchanged|hidden|elided))$`, 'i')
 const BRACKET_NOTE = new RegExp(`^(?:truncated|omitted|content (?:truncated|omitted)|(?:remaining|rest of)[^\\]]{0,60}(?:omitted|truncated|unchanged)|\\d+ (?:more )?lines? (?:omitted|truncated|folded))$`, 'i')
 const FOLD_MARKER = new RegExp(`^${ELLIPSIS}\\s*\\d+\\s+(?:more\\s+)?lines?\\b.*\\bfolded\\b`, 'i')
 const TOKEN_GOAT_NOTICE = /^\[token-goat[: ].{0,200}\]$/
@@ -40,10 +43,10 @@ function isElisionLine(trimmed: string): boolean {
   const led = LEADING_COMMENT.test(trimmed)
   if (!led && !STARTS_WITH_ELLIPSIS.test(trimmed)) return false
   const body = led ? trimmed.replace(LEADING_COMMENT, '').replace(TRAILING_COMMENT, '').trim() : trimmed
-  const payload = spaced(body)
+  const payload = spaced(body).replace(/^[([](.*)[)\]]$/, '$1').trim()
   const hasEllipsis = HAS_ELLIPSIS.test(body)
-  if (SUBJECT_ONLY.test(payload)) return hasEllipsis || (led && C_STYLE_LEAD.test(trimmed))
-  if (!hasEllipsis) return false
+  if (!hasEllipsis) return SUBJECT_QUALIFIED.test(payload)
+  if (SUBJECT_ONLY.test(payload) || ELLIPSIS_QUALIFIER.test(payload)) return true
   return LEAD_THEN_TRAILER.test(payload) || (STARTS_WITH_ELLIPSIS.test(body) && ENDS_WITH_ELLIPSIS.test(body) && WRAPPED_MARKER.test(payload))
 }
 
