@@ -158,10 +158,17 @@ describe('a whole-file token-goat read counts as the whole file seen', () => {
     expect((await preWriteRewriteHandler(writeEvent(target, dropped))).hookType).not.toBe('deny')
   })
 
-  // HAND-DERIVED: characterization. stripCommandPrefix drops `cd` prefixes and bare leading assignments but not an `export X=0;` statement, so that spelling is never recorded; the failure is toward asking for a re-read, never toward trusting an unseen file.
-  it('leaves a read behind an export statement unrecorded, so the Write is still refused', async () => {
+  // HAND-DERIVED: export statements with plain NAME=value words, the shape a model writes to set an environment ahead of a read; stripCommandPrefix peels them like a cd.
+  it.each(['export X=0; token-goat read', 'export X=0 Y=1 && token-goat read', "export X='a b'; export Y=\"c\"; token-goat read"])('counts a whole-file read behind the statement %s', async (prefix) => {
     const target = seed()
-    await postBash(`export X=0; token-goat read "${normalizePath(target)}"`)
+    await postBash(`${prefix} "${normalizePath(target)}"`)
+    expect((await preWriteRewriteHandler(writeEvent(target, dropped))).hookType).not.toBe('deny')
+  })
+
+  // HAND-DERIVED: exports that expand or substitute something are not plain NAME=value, so the command is left whole, the read is not recorded, and the Write is still refused.
+  it.each(['export X=$(cmd); token-goat read', 'export X=`cmd`; token-goat read', 'export X=$HOME; token-goat read', 'export X="$(cmd)"; token-goat read'])('leaves a read behind %s unrecorded', async (prefix) => {
+    const target = seed()
+    await postBash(`${prefix} "${normalizePath(target)}"`)
     expect((await preWriteRewriteHandler(writeEvent(target, dropped))).hookType).toBe('deny')
   })
 
