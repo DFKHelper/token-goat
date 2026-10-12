@@ -16,8 +16,8 @@ export function dropsPreCompactContext(): boolean {
   return PRE_COMPACT_CONTEXT_DROPPED.has(getHarnessName())
 }
 
-/** Harnesses whose stop hook has no non-blocking channel. Copilot CLI is the member: its hooks reference (read into src/bridges/copilot_cli.ts, agentStop branch) accepts only `{decision, reason}` from agentStop and subagentStop, and silently ignores `additionalContext` there, so an advisory could only be a block, which the Stop advisory never is. */
-export const STOP_CONTEXT_DROPPED = new Set<string>(['copilot_cli'])
+/** Harnesses whose stop hook has no non-blocking channel. VS Code is the second member: its Stop and SubagentStop read only `hookSpecificOutput.decision` and `reason` and act on `block` (executeStopHook in extensions/copilot/dist/extension.js, VS Code 1.140.0), and src/bridges/vscode_hooks.ts answers a context there with `{}`, so an advisory written and marked as given would reach no one. Copilot CLI is the first: its hooks reference (read into src/bridges/copilot_cli.ts, agentStop branch) accepts only `{decision, reason}` from agentStop and subagentStop, and silently ignores `additionalContext` there, so an advisory could only be a block, which the Stop advisory never is. */
+export const STOP_CONTEXT_DROPPED = new Set<string>(['copilot_cli', 'vscode'])
 
 export function dropsStopContext(): boolean {
   return STOP_CONTEXT_DROPPED.has(getHarnessName())

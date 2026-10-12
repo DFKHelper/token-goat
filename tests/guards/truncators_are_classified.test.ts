@@ -417,6 +417,13 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
         'compress()-helper entry above.',
     },
   ],
+  [
+    'capReceipts',
+    {
+      bucket: 'shortens-a-count-or-a-digest-not-free-text',
+      reason: 'Drops whole entries from the parked-receipt array down to MAX_RECEIPTS and cuts no entry\'s text; parkAgentReceipt redacts an entry\'s text with redactSecrets before it is stored.',
+    },
+  ],
 ])
 
 function classify(name: string): Classification | undefined {

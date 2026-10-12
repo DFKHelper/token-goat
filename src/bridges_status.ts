@@ -203,7 +203,11 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
       },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
       { events: ['notification'], reason: NO_SERVER_HANDLER_REASON },
-      { events: ['stop'], reason: NO_STOP_WIRING_REASON },
+      {
+        events: ['stop'],
+        reason:
+          'VS Code runs the agentStop entry of the shared hooks file, but its Stop hook reads only a block decision (hookSpecificOutput.decision and reason, executeStopHook in extensions/copilot/dist/extension.js, VS Code 1.140.0) and the unverified-work advisory never blocks, so the handler passes there (STOP_CONTEXT_DROPPED)',
+      },
     ],
   },
   {

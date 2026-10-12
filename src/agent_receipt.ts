@@ -21,7 +21,7 @@ import { evaluateVerification, type VerificationState } from './verification_sta
 
 // Not `.json`: sessionSidecarPath refuses any other file ending in `.json`, because every reader that lists the sessions directory takes one to be a session.
 const RECEIPTS_SUFFIX = '.agent-receipts'
-/** Receipts kept per parent session, oldest dropped first. */
+/** Receipts kept per parent session. Over the cap, clean (hash-only) entries go first, oldest first, then the oldest flagged ones: a flagged entry is the evidence, and a clean one only keeps two identical reports apart. */
 const MAX_RECEIPTS = 16
 const MAX_NAMED_FILES = 3
 /** A subagent stop is not a hot path, and the 50 ms hint budget is shorter than a cold git start on Windows. */
@@ -45,6 +45,21 @@ interface StoredReceipt {
   readonly agentId?: string
   /** Epoch milliseconds the receipt was parked. */
   readonly at: number
+}
+
+function capReceipts(receipts: StoredReceipt[]): StoredReceipt[] {
+  let excess = receipts.length - MAX_RECEIPTS
+  if (excess <= 0) return receipts
+  const dropped = new Set<StoredReceipt>()
+  for (const wantClean of [true, false]) {
+    for (const r of receipts) {
+      if (excess > 0 && (r.text === '') === wantClean && !dropped.has(r)) {
+        dropped.add(r)
+        excess--
+      }
+    }
+  }
+  return receipts.filter((r) => !dropped.has(r))
 }
 
 function reportHash(trimmedReport: string): string {
@@ -111,7 +126,7 @@ function withReceipts<T>(sessionId: string, create: boolean, work: (receipts: St
         const receipts = readReceipts(target)
         const before = JSON.stringify(receipts)
         const out = work(receipts)
-        const after = JSON.stringify(receipts.slice(-MAX_RECEIPTS))
+        const after = JSON.stringify(capReceipts(receipts))
         if (after !== before) atomicWriteText(target, after)
         return { out }
       },
@@ -178,9 +193,11 @@ export function subagentStopHandler(event: HookEvent): HookOutput {
   try {
     const cwd = getCwd(event)
     if (!event.sessionId || !cwd) return passOutput()
-    const result = runGit(['status', '--porcelain'], { cwd, timeoutMs: loadConfig().hints.git_hint_max_ms })
     const message = typeof event.raw['last_assistant_message'] === 'string' ? event.raw['last_assistant_message'] : ''
-    if (result.exitCode === 0 && result.stdout.trim() === '' && claimsOwnChange(message) && !claimsCommittedChange(message)) {
+    // The report decides first: most stops claim nothing, and none of those needs a git process.
+    if (!claimsOwnChange(message) || claimsCommittedChange(message)) return passOutput()
+    const result = runGit(['status', '--porcelain'], { cwd, timeoutMs: loadConfig().hints.git_hint_max_ms })
+    if (result.exitCode === 0 && result.stdout.trim() === '') {
       console.warn(`subagent-stop: possible hallucination — session=${event.sessionId} but git status is clean`)
     }
     return passOutput()

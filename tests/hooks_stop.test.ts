@@ -11,7 +11,7 @@ import { stopAdvisoryText, stopHandler } from '../src/hooks_stop.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileEdit, recordVerificationRun } from '../src/session.js'
 import { loadSessionState, saveSessionState, sessionSidecarPath } from '../src/session_store.js'
-import { evaluateVerification, isVerificationCommand, noteFailedVerificationRun, noteVerificationRun } from '../src/verification_state.js'
+import { evaluateVerification, isVerificationCommand, maskCommandCredentials, noteFailedVerificationRun, noteVerificationRun } from '../src/verification_state.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 const T0 = Date.UTC(2026, 9, 1, 12, 0, 0)
@@ -183,6 +183,8 @@ describe('noteVerificationRun and noteFailedVerificationRun', () => {
     ['echo set -o pipefail; npm test | tail'],
     ['# set -o pipefail\nnpm test | tail'],
     ['npm test | tail; set -o pipefail'],
+    ['set -o pipefail; set +o pipefail; npm test | tail'],
+    ['set -eo pipefail; set +o pipefail\nnpm test | tail'],
   ])('does not book %j as a pass', (command) => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
     const sid = newSession()
@@ -195,7 +197,7 @@ describe('noteVerificationRun and noteFailedVerificationRun', () => {
     expect(state.editedSinceLastPass).toEqual(['a.ts'])
   })
 
-  it.each([['npm test'], ['npm test && echo ok'], ['cd app && npm test'], ['npm run build && npm test'], ['set -o pipefail; npm test | tail -5'], ['set -eo pipefail; npm test | tail -5'], ['set -euo pipefail\nnpm test 2>&1 | tail -5'], ['set -e -o pipefail && npm test | tail'], ['npm test;'], ['npm test 2>&1'], ['npm test &> out.log'], ['npm test >&2'], ['npm test 2>&1 && echo ok'], ['sleep 1 & npm test'], ['set -o pipefail; npm test |& tail']])('still books %j as a pass', (command) => {
+  it.each([['npm test'], ['npm test && echo ok'], ['cd app && npm test'], ['npm run build && npm test'], ['set -o pipefail; npm test | tail -5'], ['set -eo pipefail; npm test | tail -5'], ['set -euo pipefail\nnpm test 2>&1 | tail -5'], ['set -e -o pipefail && npm test | tail'], ['npm test;'], ['npm test 2>&1'], ['npm test &> out.log'], ['npm test >&2'], ['npm test 2>&1 && echo ok'], ['sleep 1 & npm test'], ['set -o pipefail; npm test |& tail'], ['set +o pipefail; set -o pipefail; npm test | tail']])('still books %j as a pass', (command) => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
     const runs = runsAfter(() => noteVerificationRun(command, 0, false))
     expect(runs.map((r) => r.exitCode)).toEqual([0])
@@ -219,6 +221,24 @@ describe('stored command credentials', () => {
     ['npm test --token=tok123456', 'tok123456'],
     ["npm test --api-key 'k e y 1'", 'k e y 1'],
     ['npm test -u admin:s3cretpw', 's3cretpw'],
+    ['DB_PASS=hunter2 npm test', 'hunter2'],
+    ['npm test --db-password=abc12345', 'abc12345'],
+    ['npm test --client-secret=abc12345', 'abc12345'],
+    ['npm test --secret-key=abc12345', 'abc12345'],
+    ['npm test --access-token abc12345', 'abc12345'],
+    ['npm test --auth abc12345', 'abc12345'],
+    ['mysql -phunter2 -e x && npm test', 'hunter2'],
+    ['mysql -p hunter2 -e x && npm test', 'hunter2'],
+    ['curl -H "Authorization: abc12345" x && npm test', 'abc12345'],
+    ["curl -H 'Cookie: sid=abc12345' x && npm test", 'abc12345'],
+    ['api_token=abc12345 npm test', 'abc12345'],
+    ['DB_PASSWD=abc12345 npm test', 'abc12345'],
+    ['AWS_CREDENTIAL=abc12345 npm test', 'abc12345'],
+    ['npm test --passwd abc12345', 'abc12345'],
+    ['npm test --apikey abc12345', 'abc12345'],
+    ['npm test --secret abc12345', 'abc12345'],
+    ['AUTH_HEADER=abc12345 npm test', 'abc12345'],
+    ['SESSION_COOKIE=abc12345 npm test', 'abc12345'],
   ])('masks the secret in %j', (command, secret) => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
     const sid = newSession()
@@ -226,6 +246,21 @@ describe('stored command credentials', () => {
     const stored = evaluateVerification(sid).runs[0]?.command ?? ''
     expect(stored).not.toContain(secret)
     expect(stored).toContain('npm test')
+  })
+
+  // HAND-DERIVED: the exact masked text, so a mask that eats a neighbouring separator or argument fails.
+  it.each([
+    ['TOKEN=abc12345; npm test', 'TOKEN=***; npm test'],
+    ['TOKEN=abc12345 && npm test', 'TOKEN=*** && npm test'],
+    ['npm test --auth abc12345 --watch', 'npm test --auth *** --watch'],
+    ['mysql -phunter2 -e x && npm test', 'mysql -p*** -e x && npm test'],
+    ['psql -p 5432 -c x && npm test', 'psql -p*** -c x && npm test'],
+    ['npm test -p 4000', 'npm test -p 4000'],
+    ['mysql -p -e x && npm test', 'mysql -p -e x && npm test'],
+    ['curl -H "Authorization: Bearer abc12345" x', 'curl -H "Authorization: ***" x'],
+    ['curl Authorization:abc12345 x', 'curl Authorization:*** x'],
+  ])('maskCommandCredentials turns %j into %j', (command, expected) => {
+    expect(maskCommandCredentials(command)).toBe(expected)
   })
 
   it('leaves a command with no secret-looking assignment as it was', () => {
@@ -330,6 +365,15 @@ describe('stopHandler', () => {
   it('does nothing on Copilot CLI, whose agentStop drops a non-blocking message', () => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'copilot_cli')
     expect(stopHandler(stopEvent(unverifiedSession())).hookType).toBe('pass')
+  })
+
+  // FORMAT-DERIVED: VS Code 1.140.0 extensions/copilot/dist/extension.js executeStopHook reads only hookSpecificOutput.decision === 'block' and reason; src/bridges/vscode_hooks.ts answers a stop context with {}.
+  it.each(['copilot_cli', 'vscode'])('does nothing on %s and does not mark the advisory as given', (harness) => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', harness)
+    const sid = unverifiedSession()
+    expect(stopHandler(stopEvent(sid)).hookType).toBe('pass')
+    const advised = sessionSidecarPath(sid, '.stop-advised')
+    expect(advised !== null && fs.existsSync(advised)).toBe(false)
   })
 
   it('judges a subagent on its own commands', () => {
