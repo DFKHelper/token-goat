@@ -7,6 +7,14 @@ const FLAG = String.raw`(?:\s+--?[A-Za-z][\w-]*(?:=[\w./-]+)?)`
 const PATH_ARG = String.raw`[\w./-]+`
 const PIP_ARGS = String.raw`(?:${FLAG}|\s+-r\s+${PATH_ARG}|\s+-e\s+\.[\w./-]*|\s+\.)*`
 
+/** The verbs a `make` target or a package-manager script name must start with to be replayed: the build, test, lint, setup, install, check, generate and compile family, never a deploy, publish, reset or migration. A name may continue after a verb with `:`, `-` or `_` (`build:prod`, `test-unit`, `lint:fix`) unless {@link UNSAFE_TASK_WORDS} appears anywhere in it. */
+export const FIX_TASK_VERBS: readonly string[] = ['build', 'tests?', 'lint', 'typecheck', 'check', 'setup', 'install', 'bootstrap', 'generate', 'gen', 'codegen', 'compile']
+
+/** Words that make a task name unsafe to replay whatever verb it starts with (`build-and-publish`, `test:reset-db`). */
+const UNSAFE_TASK_WORDS: readonly string[] = ['deploy', 'publish', 'release', 'reset', 'drop', 'migrat', 'seed', 'push', 'upload', 'prune', 'wipe', 'destroy', 'clean', 'purge', 'delete', 'rollback']
+
+const TASK = String.raw`(?!\S*(?:${UNSAFE_TASK_WORDS.join('|')}))(?:${FIX_TASK_VERBS.join('|')})(?:[:_-][\w:.-]*)?(?=\s|$)`
+
 export interface FixVerbClass {
   name: string
   pattern: RegExp
@@ -17,14 +25,14 @@ export interface FixVerbClass {
 /** The one list of verbs a stored fix may start with, after leading `VAR=value` and wrappers are peeled. Package-adding forms (`npm i left-pad`, `pip install foo`, `cargo add`, `yarn add`) match none of these: only argument-free installs and installs from a manifest do. */
 export const FIX_VERB_ALLOWLIST: readonly FixVerbClass[] = [
   { name: 'js package manager install, build or test', pattern: new RegExp(String.raw`^(?:npm|pnpm|yarn|bun)\s+(?:ci|install|i|test|t|build|rebuild)${FLAG}*$`), example: 'npm ci' },
-  { name: 'js package manager script', pattern: new RegExp(String.raw`^(?:npm|pnpm|yarn|bun)\s+run\s+[\w:.-]+${FLAG}*$`), example: 'npm run build' },
+  { name: 'js package manager script', pattern: new RegExp(String.raw`^(?:npm|pnpm|yarn|bun)\s+run\s+${TASK}${FLAG}*$`), example: 'npm run build' },
   { name: 'pip install from a manifest', pattern: new RegExp(String.raw`^(?:python3?\s+-m\s+)?pip3?\s+install${PIP_ARGS}$`), example: 'pip install -r requirements.txt' },
   { name: 'uv pip install from a manifest', pattern: new RegExp(String.raw`^uv\s+pip\s+install${PIP_ARGS}$`), example: 'uv pip install -e .' },
   { name: 'python environment sync', pattern: new RegExp(String.raw`^(?:uv\s+sync|poetry\s+install|pipenv\s+(?:install|sync))${FLAG}*$`), example: 'uv sync' },
   { name: 'cargo', pattern: new RegExp(String.raw`^cargo\s+(?:build|test|fetch|check)${FLAG}*$`), example: 'cargo fetch' },
   { name: 'go build and test', pattern: new RegExp(String.raw`^go\s+(?:build|test|vet)(?:${FLAG}|\s+\.{1,2}/[\w./-]*)*$`), example: 'go test ./...' },
   { name: 'go modules', pattern: new RegExp(String.raw`^go\s+mod\s+(?:download|tidy|vendor)${FLAG}*$`), example: 'go mod download' },
-  { name: 'make target', pattern: new RegExp(String.raw`^make(?:\s+[\w.-]+|${FLAG})*$`), example: 'make setup' },
+  { name: 'make target', pattern: new RegExp(String.raw`^make(?:\s+${TASK}|${FLAG})*$`), example: 'make setup' },
   { name: 'virtualenv activation', pattern: new RegExp(String.raw`^(?:source|\.)\s+[\w./-]*activate(?:\.\w+)?$`), example: 'source .venv/bin/activate' },
   { name: 'bundler', pattern: new RegExp(String.raw`^bundle\s+install${FLAG}*$`), example: 'bundle install' },
   { name: 'dotnet', pattern: new RegExp(String.raw`^dotnet\s+(?:restore|build|test)${FLAG}*$`), example: 'dotnet restore' },
@@ -37,6 +45,9 @@ export const RERUN_COMMAND: RegExp = /^(?:python3?\s+-m\s+)?(?:pytest|vitest|jes
 
 /** Anything that pipes, chains, redirects, substitutes, fetches or escalates. A match refuses the part whatever verb it starts with. */
 const FORBIDDEN_IN_PART = /[|;<>&$`]|\b(?:curl|wget|sudo|iex|eval|base64)\b|Invoke-Expression/i
+
+/** A flag that points an install at another package index or registry, or hands make or pip another file (`-i`, `-f`, `-c`), in the spaced or the `=` form. Refused whatever its value, because the value would be a host or file the error text chose. */
+const SOURCE_FLAG = /(?:^|\s)(?:--?(?:index-url|extra-index-url|default-index|index|find-links|registry|trusted-host|proxy|repository|repository-url|file|makefile)|-[ifc])(?:=|\s|$)/i
 
 /** Environment variables that change what a program loads or runs. */
 const DANGEROUS_ENV = /^(?:LD_\w+|DYLD_\w+|PATH|NODE_OPTIONS|NODE_PATH|BASH_ENV|ENV|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|RUBYOPT|GIT_\w+|npm_config_\w+|NPM_CONFIG_\w+|PIP_\w+|UV_\w+)$/
@@ -64,7 +75,7 @@ function coreOf(segment: string, wrappers: RegExp): string {
 /** Whether every `&&` part of `fix` is safe to show a later session as history. A part is accepted when it starts with an allowlisted verb, or is the failed command itself (`failedCore`) and a {@link RERUN_COMMAND}, behind the prefix the success added. */
 export function fixIsAllowed(fix: string, failedCore: string, wrappers: RegExp): boolean {
   for (const part of fix.split(' && ')) {
-    if (part === '' || FORBIDDEN_IN_PART.test(part)) return false
+    if (part === '' || FORBIDDEN_IN_PART.test(part) || SOURCE_FLAG.test(part)) return false
     if (leadingAssignmentNames(part).some((name) => DANGEROUS_ENV.test(name))) return false
     const core = coreOf(part, wrappers)
     if (core === failedCore && RERUN_COMMAND.test(core)) continue
@@ -74,10 +85,13 @@ export function fixIsAllowed(fix: string, failedCore: string, wrappers: RegExp):
 }
 
 const CREDENTIAL_PATTERNS: readonly RegExp[] = [
-  /(?:^|\s)--?(?:password|passwd|pass|pwd|token|api[-_]?key|secret|access[-_]?key|client[-_]?secret|auth)(?:=|\s+)\S/i,
+  /(?:^|\s)--?(?:password|passwd|passphrase|pass|pwd|pw|token|api[-_]?key|secret|access[-_]?key|client[-_]?secret|auth|cookie|credentials?)(?:=|\s+)\S/i,
   /(?:^|\s)(?:-u|--user)\s+\S*:\S/,
-  /\b(?:mysql|mysqldump|mysqladmin|psql|pg_dump|pg_restore|mongo\w*|redis-cli|sqlcmd)\b[^|;&]*\s-p\S/i,
-  /(?:^|[\s;&|])[A-Za-z_]\w*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASS)=/i,
+  /\b(?:mysql|mysqldump|mysqladmin|psql|pg_dump|pg_restore|mongo\w*|redis-cli|sqlcmd)\b[^|;&]*\s-(?:p\S|W\s+\S)/i,
+  /(?:^|[\s;&|])(?:[A-Za-z_]\w*)?(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASSPHRASE|PASS|PWD|PAT|CRED|CREDENTIALS?|AUTH)=/i,
+  /\bsshpass\b/i,
+  /\bopenssl\b[^|;&]*\s-(?:k|kfile|pass|passin|passout)\s+\S/i,
+  /(?:^|\s)(?:-H|--header)[\s=]+["']?[\w-]*(?:auth|token|key|secret|cookie|session|passw)[\w-]*\s*:\s*\S/i,
   /:\/\/[^\s/:@]+:[^\s/@]+@/,
   /\b(?:authorization|bearer)\b/i,
 ]

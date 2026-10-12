@@ -413,10 +413,12 @@ Which host gets which of the three failure hints depends on what the host report
 | Host | `recovery_pair` (the fix a failed command had before) | `edit_near_miss` (exact lines for a missed Edit) | `path_miss` (the path you probably meant) |
 |---|---|---|---|
 | Claude Code | yes, from the failure event | yes | yes, for Read, Grep, Edit, Write and Bash |
-| Copilot CLI | yes, from `postToolUseFailure` | yes | yes |
+| Copilot CLI | unverified: only if a shell command that exits non-zero arrives as `postToolUseFailure`, and Copilot's own session log records such a command as a successful result (`completed with exit code 1`), so expect it not to | yes | yes for a missing file path; unverified for a shell command, for the same reason |
 | Codex | no: a shell result is always a success and carries no exit code | no: a failed `apply_patch` sends no hook | Bash only, from the `No such file or directory` text of the result |
 | VS Code Chat | no: a tool that throws sends no hook | no | Bash only (`run_in_terminal`), from the text of the result |
 | Visual Studio, JetBrains | no hooks: only the command-line `Did you mean:` list reaches them, through the MCP tools and the file commands | no | the `Did you mean:` list only |
+
+What the failure hints keep on disk: a command that failed is never written down as text. The pending note for a session (`sessions/<id>.recovery-pending`) and the saved pair (`recovery_pairs/<project>.json`) hold only SHA-256 digests of the failed command, its prefix and its directory, so a password, token or key typed on a command line cannot be read back from either file. The fix that is shown later is the one piece kept as text, and only when it passes the allowlist: build, test, lint, typecheck, check, setup, install, bootstrap, generate and compile tasks of `make`, `npm run`, `pnpm run`, `yarn run` and `bun run` (a task such as `deploy`, `publish`, `reset` or `clean` is refused), and no command that points the package manager at another index or registry. The allowlist is checked again when a stored fix is about to be shown. Files written by an earlier version are ignored and replaced. A shell command's `No such file or directory` text on Codex and VS Code only draws a path suggestion when the path is one of the command's own arguments and does not exist.
 
 The `Did you mean:` list printed by the read commands (`outline`, `skeleton`, `read`, `section` and the others) is the same on every host, since it is command output rather than a hook.
 
