@@ -17,9 +17,14 @@ function rangeSuffix(spec: string): { file: string; start: number; end: number }
   return { file: m[1]!, start, end: m[3] !== undefined ? parseInt(m[3], 10) : start }
 }
 
+/** An unquoted pipe, redirect, `;` or `&` (the character class of WHOLE_FILE_READ's operand), after which the printed text is cut or sent elsewhere. */
+const SHELL_OPERATOR = /[|<>;&]/
+
 /** The extents served by `token-goat <sub> <spec>` as `extractTgSurgicalRead` classified it (`spec` holds the resolved file path). Best-effort: an unresolvable or ambiguous spec yields nothing, and so does a command whose flags narrow the output. The resolvers load on demand because this runs on the hook path. */
 export async function servedExtents(sub: string, spec: string, cmd: string, projectRoot: string | null): Promise<ServedExtent[]> {
   if (NARROWING_FLAG.test(cmd)) return []
+  const { maskQuotedSpans } = await import('./tool_filters/helpers.js')
+  if (SHELL_OPERATOR.test(maskQuotedSpans(cmd))) return []
   if (sub === 'read') {
     const range = rangeSuffix(spec)
     if (range !== null) return range.end >= range.start ? [{ filePath: range.file, start: range.start, end: range.end }] : []

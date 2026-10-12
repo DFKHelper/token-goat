@@ -40,7 +40,7 @@ import {
   extractCatFile,
   extractGhViewForBatchAdvisory,
 } from '../src/bash_extractors.js'
-import { isHeadMovingGitCommand, stripCommandPrefix, stripSubshellGroup } from '../src/hooks_bash_commands.js'
+import { bashRecallKey, cdPrefixCwd, isHeadMovingGitCommand, resolveBashCall, stripCommandPrefix, stripExportPrefix, stripSubshellGroup } from '../src/hooks_bash_commands.js'
 import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { getBashOutputId, recordFileRead, getCurlDownloadPath, wasFileReadThisSession, getFileLineRanges, wasFileTruncatedThisSession } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
@@ -5197,3 +5197,127 @@ describe('extractPythonFileRead — PowerShell here-string and multi-format supp
   })
 })
 
+
+// HAND-DERIVED: command strings; the expected values are computed from the shell's own rules (an export statement runs in the same shell and changes only its environment, a cd moves the directory the rest runs in), independently of the code.
+describe('stripExportPrefix — plain export statements ahead of a command', () => {
+  it.each([
+    ['export X=1; cat f', 'cat f'],
+    ['export X=1 && cat f', 'cat f'],
+    ['export X=1\ncat f', 'cat f'],
+    ['export X=1 Y=2; cat f', 'cat f'],
+    ['export X=1; export Y=2; cat f', 'cat f'],
+    ['export X="a b"; cat f', 'cat f'],
+    ["export X='a b'; cat f", 'cat f'],
+    ['export X=; cat f', 'cat f'],
+  ])('peels %j', (command, bare) => {
+    expect(stripExportPrefix(command)).toBe(bare)
+  })
+
+  it.each([
+    'export X=1 | cat f',
+    'export X=1 || cat f',
+    'export X=1 & cat f',
+    'export X="`c`"; cat f',
+    'export X=a\\ b; cat f',
+    'export X="a\\b"; cat f',
+    'export X=$(c); cat f',
+    'export X=$HOME; cat f',
+    'export -n X; cat f',
+    'export -n X=1; cat f',
+    'export -p X=1; cat f',
+    'export X=a\\; cat f',
+    'export X; cat f',
+    'export X+=1; cat f',
+    'export 1X=1; cat f',
+    'export PATH=/tmp/x; cat f',
+    'export LD_PRELOAD=/tmp/x.so; cat f',
+    'export DYLD_INSERT_LIBRARIES=/tmp/x; cat f',
+    'export BASH_ENV=/tmp/x; cat f',
+    'export ENV=/tmp/x; cat f',
+    'export TOKEN_GOAT_BASH_COMPRESS=0; cat f',
+    'export A=1 PATH=/tmp/x; cat f',
+    'export X=1; export PATH=/tmp/x; cat f',
+  ])('leaves %j as written', (command) => {
+    const peeled = stripExportPrefix(command)
+    expect(peeled === command || peeled.startsWith('export ')).toBe(true)
+    expect(peeled.endsWith('cat f')).toBe(true)
+    expect(peeled === 'cat f').toBe(false)
+  })
+
+  it('peels a name that only starts like a protected one', () => {
+    expect(stripExportPrefix('export PATHS=1; cat f')).toBe('cat f')
+    expect(stripExportPrefix('export ENVIRONMENT=1; cat f')).toBe('cat f')
+  })
+
+  it('stops at the first export that is not plain, keeping the plain ones before it', () => {
+    expect(stripExportPrefix('export A=1; export PATH=/x; cat f')).toBe('export PATH=/x; cat f')
+  })
+})
+
+describe('stripLeadingAssignments — an assignment that changes what runs is not peeled', () => {
+  it.each(['PATH=/tmp/x cat f', 'LD_PRELOAD=/tmp/x.so cat f', 'BASH_ENV=/tmp/x cat f', 'ENV=/tmp/x cat f', 'A=1 PATH=/tmp/x cat f', 'env PATH=/tmp/x cat f'])('keeps %j whole', (command) => {
+    expect(stripCommandPrefix(command)).toBe(command)
+  })
+
+  it('still peels an ordinary assignment', () => {
+    expect(stripCommandPrefix('PATHS=/tmp/x cat f')).toBe('cat f')
+    expect(stripCommandPrefix('FOO=1 cat f')).toBe('cat f')
+    expect(stripCommandPrefix('TOKEN_GOAT_BASH_COMPRESS=0 cat f')).toBe('cat f')
+  })
+})
+
+describe('an export ahead of a cd keeps the cd', () => {
+  const start = join(tmpdir(), 'tg-export-cd')
+
+  it.each([
+    'export X=1; cd sub && cat f',
+    'export X=1 Y=2 && cd sub && cat f',
+    'export X=1; cd sub && export Y=2; cat f',
+    '( export X=1; cd sub && cat f )',
+  ])('resolves %j to the command and the directory the cd lands in', (command) => {
+    const call = resolveBashCall(command, start)
+    expect(call.cmd).toBe('cat f')
+    expect(call.runDir).toBe(resolveBashCall('cd sub && cat f', start).runDir)
+    expect(normalizePath(call.runDir ?? '')).toBe(normalizePath(resolveIndexPath('sub', start)))
+  })
+
+  it('keys one command run behind two different cds as two entries', () => {
+    const a = resolveBashCall('export CI=1; cd a && git log', start)
+    const b = resolveBashCall('export CI=1; cd b && git log', start)
+    expect(a.cmd).toBe(b.cmd)
+    expect(bashRecallKey(a.cmd, a.runDir)).not.toBe(bashRecallKey(b.cmd, b.runDir))
+  })
+
+  it('leaves the directory alone behind an export that is not peeled', () => {
+    const call = resolveBashCall('export PATH=/x; cd sub && cat f', start)
+    expect(call.cmd).toBe('export PATH=/x; cd sub && cat f')
+    expect(bashRecallKey(call.cmd, call.runDir)).not.toBe(bashRecallKey('cat f', resolveBashCall('cd sub && cat f', start).runDir))
+  })
+
+  it('names the directory a hint path resolves against', () => {
+    expect(cdPrefixCwd('export X=1; cd sub && cat f', start)).toBe(cdPrefixCwd('cd sub && cat f', start))
+    expect(cdPrefixCwd('export X=1; cd sub && cat f', start)).not.toBe(start)
+  })
+
+  it('meets the hint a cd-prefixed cat meets: advisory, against the cd target', () => {
+    const result = preBashHandler(makeBashEvent('export X=1; cd subdir && cat file.py', '/repo'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') expect(result.context).toContain(resolveIndexPath('file.py', resolveIndexPath('subdir', '/repo')))
+  })
+})
+
+describe('an export ahead of a command no longer hides it from the pre-Bash hints', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('gives `export CI=1; find …` the find hint the bare find gets', () => {
+    const bare = preBashHandler(makeBashEvent('find src/ -name "*.ts"'))
+    expect(bare.hookType).toBe('context')
+    expect(preBashHandler(makeBashEvent('export CI=1; find src/ -name "*.ts"'))).toEqual(bare)
+  })
+
+  it('gives an export that changes what runs no hint', () => {
+    expect(preBashHandler(makeBashEvent('export PATH=/tmp/x; find src/ -name "*.ts"')).hookType).toBe('pass')
+  })
+})

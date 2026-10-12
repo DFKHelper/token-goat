@@ -26,6 +26,7 @@ const { recordFileRead, recordFileLineRange } = await import('../src/session.js'
 const { recordReadShape } = await import('../src/read_shape.js')
 const { postBashHandler } = await import('../src/hooks_bash_post.js')
 const { isWholeFileRead } = await import('../src/served_extent.js')
+const { trimToBudget } = await import('../src/overflow_guard.js')
 
 const FILES_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-write-rev-files-'))
 
@@ -123,8 +124,8 @@ describe('a whole-file token-goat read counts as the whole file seen', () => {
     expect((await preWriteRewriteHandler(writeEvent(target, dropped))).hookType).toBe('deny')
   })
 
-  // HAND-DERIVED: the cap note is the literal text trimToBudget in src/overflow_guard.ts appends to a result it cut (25000 is overflow_guard.max_tokens); the persisted path is any non-empty string, which is all the post hook tests for.
-  const CAPPED = 'line 0\nline 1\n[token-goat: output capped at ~25000 tokens to protect context — showing 1200 of 1500 lines. Narrow it with token-goat read file@N-M.]'
+  // FORMAT-DERIVED: trimToBudget in src/overflow_guard.ts is the producer of the cap note; its own output over a budget the text exceeds is the fixture, so the marker cannot drift from what the hook looks for. The persisted path is any non-empty string, which is all the harness field's presence means here.
+  const CAPPED = trimToBudget(lines(5000), 100)
 
   it('does not count a persisted whole-file read, which the model saw only as a preview', async () => {
     const target = seed()
@@ -149,6 +150,25 @@ describe('a whole-file token-goat read counts as the whole file seen', () => {
     const capped = seed()
     await postBash(ranged(capped), { stdout: CAPPED })
     expect((await preWriteRewriteHandler(writeEvent(capped, dropped))).hookType).toBe('deny')
+  })
+
+  // HAND-DERIVED: a ranged or line-range read whose output goes through a pipe, a redirect or a second command shows the model less than the range (or none of it), so the lines it names were not seen.
+  it.each(['| head -20', '| tail -3', '> /dev/null', '>> out.txt', '2> err.txt', '< in.txt', '; echo done', '&& echo done', '& wait'])('does not count a ranged read followed by %s', async (tail) => {
+    for (const spec of ['@101-200', '::101-200']) {
+      const target = seed()
+      await postBash(`token-goat read "${normalizePath(target)}${spec}" ${tail}`)
+      expect((await preWriteRewriteHandler(writeEvent(target, dropped))).hookType, `${spec} ${tail}`).toBe('deny')
+    }
+  })
+
+  it('counts a ranged read whose quoted path holds an operator character', async () => {
+    const target = fresh().replace('.ts', ';x.ts')
+    fs.writeFileSync(target, body)
+    recordFileRead(target, false)
+    recordFileLineRange(target, 1, 100)
+    recordReadShape('test', normalizePath(target), 'partial')
+    await postBash(`token-goat read "${normalizePath(target)}@101-200"`)
+    expect((await preWriteRewriteHandler(writeEvent(target, dropped))).hookType).not.toBe('deny')
   })
 
   // HAND-DERIVED: the two prefix shapes a model writes ahead of a read; resolveBashCall strips them before the ledger sees the command.
