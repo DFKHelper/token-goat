@@ -104,3 +104,44 @@ describe('Copilot CLI subagentStop modifiedResponse (CAPTURE C4a, C4c)', () => {
     expect(runInstalledShim('postToolUse', post, proj)).toEqual({})
   })
 })
+
+describe('Copilot CLI evidence receipt through the installed shim and the built bundle (CAPTURE C4a-013, C4a-014)', () => {
+  /** A project that is a clean git repository, so a report that claims a change has no tree change behind it. */
+  function cleanRepo(): string {
+    const proj = mkTemp('tg-subagent-receipt-ws-')
+    for (const args of [['init', '-q'], ['-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'base']]) {
+      const res = spawnSync('git', args, { cwd: proj, encoding: 'utf8' })
+      expect(res.status, res.stderr).toBe(0)
+    }
+    return proj
+  }
+
+  it('maps agentId and response, so the rewrite carries the receipt for a claimed change on a clean tree, and the parent task result is then left alone', () => {
+    const proj = cleanRepo()
+    const stop = stopPayload(proj, 'I fixed the parser bug in widget.ts.')
+    const out = runInstalledShim('subagentStop', stop, proj)
+    expect(Object.keys(out)).toEqual(['modifiedResponse'])
+    const text = out['modifiedResponse'] as string
+    expect(text.startsWith('I fixed the parser bug in widget.ts.\n\n')).toBe(true)
+    expect(text).toContain('the report claims a change, but this subagent recorded no edit and the working tree is clean')
+    const post = copilotCapture('C4a-014-postToolUse-task', { proj })
+    post['sessionId'] = stop['sessionId']
+    post['toolResult'] = { resultType: 'success', textResultForLlm: text }
+    expect(runInstalledShim('postToolUse', post, proj)).toEqual({})
+  })
+
+  it('parks nothing, so a post-tool result with the unrewritten report adds no receipt of its own', () => {
+    const proj = cleanRepo()
+    const stop = stopPayload(proj, 'I fixed the parser bug in widget.ts.')
+    runInstalledShim('subagentStop', stop, proj)
+    const post = copilotCapture('C4a-014-postToolUse-task', { proj })
+    post['sessionId'] = stop['sessionId']
+    post['toolResult'] = { resultType: 'success', textResultForLlm: 'I fixed the parser bug in widget.ts.' }
+    expect(JSON.stringify(runInstalledShim('postToolUse', post, proj))).not.toContain('recorded no edit')
+  })
+
+  it('lets a report that claims nothing through without a receipt', () => {
+    const proj = cleanRepo()
+    expect(runInstalledShim('subagentStop', stopPayload(proj, 'The parser reads the file once.'), proj)).toEqual({ decision: 'allow' })
+  })
+})

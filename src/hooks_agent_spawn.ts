@@ -6,7 +6,7 @@ import * as path from 'node:path'
 import { claudeConfigDir } from './claude_config_dir.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { emitRewrite, passOutput, contextOutput, denyOutput, extractToolResultText, getCwd } from './hooks_common.js'
+import { dropsResultRewrite, emitRewrite, passOutput, contextOutput, denyOutput, extractToolResultText, getCwd } from './hooks_common.js'
 import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { neutralizeSpokenMarkers } from './injection_scan.js'
 import { getOutstandingAgentSpawns, getSessionBashOutputs, markHintShown, recordOutstandingAgentSpawn, removeOutstandingAgentSpawn, wasHintShown } from './session.js'
@@ -645,7 +645,8 @@ async function postAgentHandler(event: HookEvent): Promise<HookOutput> {
 
     // Compact the envelope only when the combined rewrite actually pays for the notice it adds, using the same shared net-benefit gate as every other rewrite path (hooks_bashoutput, hooks_taskoutput, bash_runner). A report that is long purely because it is long PROSE rewrites to nothing here and correctly falls through to the annotate-only path below, which is the pre-existing behavior.
     const { final, worthwhile } = planReportCompaction(resultText, recallHint, notice)
-    if (final !== resultText) {
+    // On a host that drops a result rewrite the compaction is skipped whole: it would book a saving for bytes delivered unchanged, and the receipt in `notice` would go with the rewrite. The notice goes out as context below instead.
+    if (final !== resultText && !dropsResultRewrite()) {
       if (worthwhile) {
         const updatedOutput = `${final}\n\n${notice}`
         // The sibling session_hint event above stays at 0/0 because appending a pointer genuinely saves nothing; leaving this branch to be represented by that same zero-valued event is precisely the recordStat desync this codebase has fixed repeatedly, and it would report its single largest new saver as worth nothing.

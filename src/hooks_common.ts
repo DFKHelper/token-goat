@@ -222,6 +222,11 @@ export function withPreservedBlocks(output: HookOutput, blocks: readonly Record<
   return { ...output, updatedBlocks: [{ type: 'text', text: output.updatedOutput }, ...blocks] }
 }
 
+/** Whether the host has no field that replaces a tool result, so a rewriteOutput never reaches the model. VS Code is the one: its PostToolUse reads only `additionalContext` and a block (see bridges/vscode_hooks.ts). A handler that holds something it must deliver (an evidence receipt) sends it as context there instead of folding it into a rewrite. */
+export function dropsResultRewrite(): boolean {
+  return detectHarness() === 'vscode'
+}
+
 /** Build a `pass` output — let the tool call proceed unchanged. */
 export function passOutput(): HookOutput {
   return { hookType: 'pass' }
@@ -256,8 +261,8 @@ export function emitRewrite(
   savings?: RewriteSavings,
   redaction: RedactionAccounting = 'count-here',
 ): HookOutput {
-  // VS Code's PostToolUse has no field that replaces a tool result (see bridges/vscode_hooks.ts), so a rewrite there never reaches the model: pass instead, and book no saving or redaction for bytes that were delivered unchanged.
-  if (detectHarness() === 'vscode') return passOutput()
+  // A rewrite the host drops is passed instead, and no saving or redaction is booked for bytes that were delivered unchanged.
+  if (dropsResultRewrite()) return passOutput()
   if (redaction === 'count-here') {
     const count = countRedactionPlaceholders(updatedOutput)
     if (count > 0) recordStat('secret_redacted', 0, count, undefined, detail)

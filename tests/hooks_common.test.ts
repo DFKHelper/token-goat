@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   BODY_FIRST_TOOL_RESPONSE_KEYS,
   contextOutput,
   countNonEmptyLines,
   denyOutput,
+  emitRewrite,
   estimateResultCount,
   extractToolResponseField,
   getCwd,
@@ -15,6 +16,18 @@ import {
   passOutput,
 } from '../src/hooks_common.js'
 import { makeHookEvent as makeEvent } from './helpers/hook-event.js'
+
+describe('emitRewrite on a host that drops a result rewrite', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  // FORMAT-DERIVED: VS Code 1.140.0 extension.js ignores updatedToolOutput on PostToolUse; src/bridges/vscode_hooks.ts serializeVscodeOutput returns {} for rewriteOutput.
+  it('passes on VS Code and rewrites on Claude Code', () => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'vscode')
+    expect(emitRewrite('shorter', 'test').hookType).toBe('pass')
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    expect(emitRewrite('shorter', 'test').hookType).toBe('rewriteOutput')
+  })
+})
 
 describe('hooks_common', () => {
   describe('accessors', () => {

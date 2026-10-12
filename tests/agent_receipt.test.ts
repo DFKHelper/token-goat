@@ -176,6 +176,22 @@ describe('parked receipts', () => {
     expect(takeAgentReceipt(sid, 'report 0')).toBeNull()
     expect(takeAgentReceipt(sid, 'report 16')).toBe('receipt 16')
   })
+
+  // HAND-DERIVED: a flagged receipt is the evidence, so a burst of clean agents after it must push out each other, not it.
+  it('over the cap drops clean entries before an older flagged one', () => {
+    const sid = newSession()
+    parkAgentReceipt(sid, 'flagged report', 'receipt for the flagged agent', 'agent-flagged')
+    for (let i = 0; i < 20; i += 1) parkAgentReceipt(sid, `clean report ${i}`, '', `agent-clean-${i}`)
+    expect(takeAgentReceipt(sid, 'flagged report', 'agent-flagged')).toBe('receipt for the flagged agent')
+  })
+
+  it('over the cap with only flagged entries drops the oldest', () => {
+    const sid = newSession()
+    for (let i = 0; i < 18; i += 1) parkAgentReceipt(sid, `report ${i}`, `receipt ${i}`, `agent-${i}`)
+    expect(takeAgentReceipt(sid, 'report 0', 'agent-0')).toBeNull()
+    expect(takeAgentReceipt(sid, 'report 1', 'agent-1')).toBeNull()
+    expect(takeAgentReceipt(sid, 'report 2', 'agent-2')).toBe('receipt 2')
+  })
 })
 
 describe('the receipt through the real hook registry', () => {
@@ -303,7 +319,6 @@ describe('the receipt through the real hook registry', () => {
     ['Changes made:\n- None'],
     ['Changes: nothing, this was a read-only review.'],
     ["I'll add the guard next."],
-    ['Fixed the parser bug.'],
   ])('read-only report %j with a clean tree is not flagged', (message) => {
     expect(claimsChangeTheTreeLacks(message, repo)).toBe(false)
   })
@@ -316,6 +331,8 @@ describe('the receipt through the real hook registry', () => {
     ['Changes made:\n- Updated the README.\n- Added a test.'],
     ['Done.\nI updated the README.'],
     ['We replaced the cache layer.'],
+    ['Fixed the parser bug.'],
+    ['Done:\n- I fixed the parser\n- I added tests'],
   ])('own-work claim %j with a clean tree is flagged', (message) => {
     expect(claimsChangeTheTreeLacks(message, repo)).toBe(true)
   })
@@ -420,7 +437,7 @@ describe('the receipt through the real hook registry', () => {
     expect((await agentResult(sid, 'Done.\n\nagentId: agent-b (internal ID - do not mention to user.)')).hookType).toBe('pass')
   })
 
-  // The Claude Code trailer id and the hook payload's agent_id must be one id, or a trailer-keyed delivery silently finds nothing. See the CAPTURE note above the trailer test for what was observed of the trailer.
+  // This pins the join logic only, with an agent_id the test chose: the equality of the trailer id and the hook's agent_id is not captured. What is: the trailer ids of the 2.1.284 transcript name the subagents/agent-<id>.jsonl files (CAPTURE), and the SubagentStop payload carries agent_transcript_path of that agent-<id>.jsonl shape (FORMAT-DERIVED, tests/fixtures/harness_hook_payloads.ts). A host that stops agreeing delivers nothing rather than another agent's receipt.
   it('the id in the Agent result trailer is the agent_id of its SubagentStop', async () => {
     const sid = newSession()
     const id = 'a9ac7a96ac3596453'
@@ -624,6 +641,33 @@ describe('the built hook entry, per host', () => {
       expect(out, 'receipt for ' + id).toContain('last check failed')
     }
   }, 120000)
+
+  // HAND-DERIVED: three fenced blocks of 90 lines, past agent_report.min_bytes (8000, src/config_defaults.ts) and collapsible, so the report takes the compaction path.
+  const LONG_REPORT = `Wrote the widget; the tests fail.\n\n${('```\n' + 'a filler line of captured build output, long enough to collapse\n'.repeat(90) + '```\n').repeat(3)}`
+
+  it('vscode: a long report is delivered unchanged with the receipt in additionalContext, since VS Code drops a result rewrite', () => {
+    const base = { session_id: 'e2e-receipt-vs', permission_mode: 'default' }
+    // The receipt is parked by the Claude Code flow in the same session: VS Code parks none of its own (see the next test).
+    hook('post_tool_use_failure', 'claudecode', { ...base, agent_id: 'sub1', agent_type: 'general-purpose', hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 'toolu_1', error: 'Exit code 1\nFAIL', is_interrupt: false })
+    hook('subagent_stop', 'claudecode', { ...base, agent_id: 'sub1', agent_type: 'general-purpose', hook_event_name: 'SubagentStop', stop_hook_active: false, last_assistant_message: LONG_REPORT })
+    expect(fs.readdirSync(path.join(root, 'tg'), { recursive: true }).map(String).filter((n) => n.includes('.agent-receipts')).length).toBeGreaterThan(0)
+    // FORMAT-DERIVED: PostToolUse input is tool_name, tool_input, tool_response, tool_use_id (VS Code 1.140.0 extension.js, the agent-hook payload builder); runSubagent is the subagent tool (src/hooks_cli.ts VS Code tool map).
+    const out = hook('post_tool_use', 'vscode', { ...base, hook_event_name: 'PostToolUse', tool_name: 'runSubagent', tool_input: { prompt: 'Build the widget.' }, tool_response: LONG_REPORT, tool_use_id: 'tu-1' })
+    const parsed = JSON.parse(out) as { hookSpecificOutput?: { additionalContext?: string; updatedToolOutput?: string } }
+    expect(parsed.hookSpecificOutput?.additionalContext ?? '').toContain('last check failed')
+    expect(parsed.hookSpecificOutput?.updatedToolOutput).toBeUndefined()
+  })
+
+  it('vscode: a SubagentStop carries no report, so nothing is parked and the later result has no receipt', () => {
+    const base = { session_id: 'e2e-receipt-vs-none', permission_mode: 'default' }
+    hook('post_tool_use_failure', 'vscode', { ...base, hook_event_name: 'PostToolUseFailure', tool_name: 'run_in_terminal', tool_input: { command: 'npm test' }, tool_use_id: 'tu-0', error: 'Exit code 1' })
+    // FORMAT-DERIVED: VS Code 1.140.0 extension.js builds the SubagentStop input as agent_id, agent_type and stop_hook_active only; a search of that file for last_assistant_message finds none.
+    const stop = hook('subagent_stop', 'vscode', { ...base, hook_event_name: 'SubagentStop', agent_id: 'sub-vs', agent_type: 'Explore', stop_hook_active: false })
+    expect(JSON.parse(stop)).toEqual({})
+    expect(fs.readdirSync(path.join(root, 'tg'), { recursive: true }).map(String).filter((n) => n.includes('.agent-receipts'))).toEqual([])
+    const out = hook('post_tool_use', 'vscode', { ...base, hook_event_name: 'PostToolUse', tool_name: 'runSubagent', tool_input: { prompt: 'Look.' }, tool_response: 'Wrote the widget; the tests fail.', tool_use_id: 'tu-1' })
+    expect(out).not.toContain('last check failed')
+  })
 
   it('codex: the same flow reports the run that was never confirmed passing', () => {
     const file = `${project.replaceAll(path.sep, '/')}/src/widget.ts`
