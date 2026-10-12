@@ -664,8 +664,9 @@ async function postAgentHandler(event: HookEvent): Promise<HookOutput> {
 }
 
 registerHook('subagent_start', subagentStartHandler)
-// advisory: hooks_session.ts's subagentStopHandler shares this event and must still run, whichever module registered first.
+// advisory: the handlers that share this event must all still run, whichever module registered first.
 registerHook('subagent_stop', async (event) => (await loadAgentReceipt()).subagentReceiptHandler(event), { advisory: true })
+registerHook('subagent_stop', async (event) => (await loadAgentReceipt()).subagentStopHandler(event), { advisory: true })
 registerHook('subagent_stop', subagentReportRewriteHandler, { advisory: true })
 // Written out one per line, not looped over SPAWN_TOOL_BRIEF_FIELD: tests/hooks_cli.test.ts scans this source for literal registerHook toolName arguments to prove every name a harness maps to has a handler. A test here pins these lines to the table's keys.
 registerHook('pre_tool_use', loadingHiddenRuleCheck(preAgentHandler), { toolName: 'Agent' })

@@ -400,6 +400,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/call_streak.ts`](src/call_streak.ts) | Call-streak advisories: the two hints that judge a run of tool calls rather than one call. |
 | [`src/canonical_skill.ts`](src/canonical_skill.ts) | The canonical token-goat skill installed by `token-goat install`, generated from `src/canonical_skill.md` by `npm run skill:canonical`. |
 | [`src/capabilities.ts`](src/capabilities.ts) | A machine-readable statement of every capability token-goat has that can send data off the machine or leave data on it, with its effective state and the place that state is enforce |
+| [`src/change_claim.ts`](src/change_claim.ts) | Whether a subagent's final report claims a change of its own. |
 | [`src/claude_config_dir.ts`](src/claude_config_dir.ts) | Where Claude Code keeps its own per-user configuration, and nothing else. |
 | [`src/claude_hidden_rules.ts`](src/claude_hidden_rules.ts) | Whether a Claude Code session could be under permission rules no settings file shows, so that rewrite_permission.ts must not answer a bypassPermissions rewrite with `allow`: a host |
 | [`src/cli_audit.ts`](src/cli_audit.ts) | CLI handler for `token-goat audit`. |

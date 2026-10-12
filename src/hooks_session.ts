@@ -170,75 +170,16 @@ async function userPromptSubmitHandler(event: HookEvent): Promise<HookOutput> {
   }
 }
 
-// Matches common completion-tense verbs a subagent would use in its own final report when it CLAIMS to have made changes (e.g. "Fixed the bug and committed the change") — as opposed to inferring intent from the task it was assigned. Handles common inflections (fix/fixed/fixing). Deliberately excludes commit/push verbs: a clean `git status --porcelain` is also the expected, correct outcome after a successful commit, so those verbs cannot be used as hallucination signals on their own — see CLAIMED_COMMIT_VERBS_RE below.
-const CLAIMED_CHANGE_VERBS_RE =
-  /\b(fix(?:ed|es|ing)?|implement(?:ed|s|ing)?|add(?:ed|s|ing)?|creat(?:e|ed|es|ing)|writ(?:e|ten|es|ing)|refactor(?:ed|s|ing)?|updat(?:e|ed|es|ing)|chang(?:e|ed|es|ing)|edit(?:ed|s|ing)?|modif(?:y|ied|ies|ying)|delet(?:e|ed|es|ing)|remov(?:e|ed|es|ing)|patch(?:ed|es|ing)?|resolv(?:e|ed|es|ing)|replac(?:e|ed|es|ing)|improv(?:e|ed|es|ing)|appl(?:y|ied|ies|ying))\b/i;
-
 // Matches claims that the changes were committed/pushed — a legitimate explanation for an empty `git status --porcelain` output, so its presence must suppress the hallucination warning rather than trigger it.
 const CLAIMED_COMMIT_VERBS_RE = /\b(commit(?:ted|s|ting)?|push(?:ed|es|ing)?)\b/i;
-
-// A bare verb alternation cannot tell "fixed the bug" from "did not fix anything", so a negation cue in the few words immediately preceding the matched verb voids the claim; deliberately not the whole clause, since an unrelated earlier negation ("No tests were skipped, and I updated the config") must still leave the real claim standing.
-const NEGATION_RE = /\b(no|not|n't|never|none|nothing|without)\b/i;
-
-// Returns true only if lastAssistantMessage contains an un-negated claimed-change verb: splits on sentence boundaries so a negation earlier in the same message does not suppress a genuine claim in a later, unrelated clause, and only looks at the 4 words immediately before the matched verb so an unrelated negation earlier in the same clause does not falsely suppress a real claim later in it.
-function claimsUnnegatedChange(message: string): boolean {
-  const clauses = message.split(/[.;\n]+/);
-  return clauses.some((clause) => {
-    const match = CLAIMED_CHANGE_VERBS_RE.exec(clause);
-    if (!match) {
-      return false;
-    }
-    const wordsBefore = clause.slice(0, match.index).trim().split(/\s+/).filter(Boolean);
-    const nearbyWords = wordsBefore.slice(-4).join(' ');
-    return !NEGATION_RE.test(nearbyWords);
-  });
-}
 
 // True when the message claims a commit or push, which explains a clean working tree.
 function claimsCommittedChange(message: string): boolean {
   return CLAIMED_COMMIT_VERBS_RE.test(message);
 }
 
-function subagentStopHandler(event: HookEvent): HookOutput {
-  try {
-    if (!event.sessionId) {
-      return passOutput();
-    }
-
-    const cwd = getCwd(event);
-    if (!cwd) {
-      return passOutput();
-    }
-
-    try {
-      const result = runGit(['status', '--porcelain'], { cwd, timeoutMs: loadConfig().hints.git_hint_max_ms });
-      if (result.exitCode === 0) {
-        const gitOutput = result.stdout.trim();
-        if (!gitOutput) {
-          // last_assistant_message is the subagent's own final report — the real signal is whether the agent CLAIMS to have made changes (fixed/committed/implemented/...) while git shows none, not whether the assigned task merely asked for changes.
-          const lastAssistantMessage = (event.raw['last_assistant_message'] as string) || '';
-          const claimsChanges = claimsUnnegatedChange(lastAssistantMessage);
-          const claimsCommitted = CLAIMED_COMMIT_VERBS_RE.test(lastAssistantMessage);
-          if (claimsChanges && !claimsCommitted) {
-            console.warn(
-              `subagent-stop: possible hallucination — session=${event.sessionId} but git status is clean`
-            );
-          }
-        }
-      }
-
-      return passOutput();
-    } catch {
-      return passOutput();
-    }
-  } catch {
-    return passOutput();
-  }
-}
-
 registerHook('user_prompt_submit', userPromptSubmitHandler);
-registerHook('subagent_stop', subagentStopHandler);
 // followsMatcher: this handler filters no tool, but it must not force the catch-all matcher. On Claude Code it is a no-op anyway, and on Copilot CLI -- the harness it exists for -- the installed matcher plays no part, since that shim receives every postToolUse event regardless. So accepting the event's existing narrowed matcher costs the delivery nothing and keeps every other harness from paying a hook spawn on tool calls no handler wants.
 registerHook('post_tool_use', pendingContextHandler, { advisory: true, followsMatcher: true });
 
-export { claimsCommittedChange, claimsUnnegatedChange, pendingContextHandler, subagentStopHandler, userPromptSubmitHandler };
+export { claimsCommittedChange, pendingContextHandler, userPromptSubmitHandler };

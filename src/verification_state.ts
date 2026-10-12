@@ -22,7 +22,8 @@ const OTHER_VERIFICATION_PATTERNS: ReadonlyArray<RegExp> = [
 ]
 
 const ENV_ASSIGNMENT_PREFIX = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/
-const COMMAND_SEPARATOR = /(&&|\|\||[;|\n])/
+// A lone `&` backgrounds what precedes it; `2>&1`, `&>log`, `>&2`, `|&` and `&&` are not that.
+const COMMAND_SEPARATOR = /(&&|\|\||[;|\n]|(?<![>&|])&(?![>&]))/
 
 function isVerificationSegment(segment: string): boolean {
   const trimmed = segment.trim().replace(ENV_ASSIGNMENT_PREFIX, '')
@@ -34,14 +35,16 @@ export function isVerificationCommand(command: string): boolean {
   return command.split(COMMAND_SEPARATOR).some(isVerificationSegment)
 }
 
-const PIPEFAIL = /\bset\s+(?:-\w*\s+)*-o\s+pipefail/
+/** A real `set` statement that turns pipefail on: `set -o pipefail`, `set -eo pipefail`, `set -euo pipefail`, `set -e -o pipefail`. */
+const PIPEFAIL_STATEMENT = /^set\s+(?:-\w+\s+|-o\s+\w+\s+)*-\w*o\s+pipefail\b/
 
-/** True when the exit status of `command` is the verdict of its checks: from the first check onward only `&&` joins what follows, no `||`, `;` or newline lets a later segment replace the status, and a pipe follows only under `set -o pipefail`. `npm test 2>&1 | tail`, `npm test || true` and `npm test; echo done` all exit 0 whatever the check did, and a `||` just before the first check means it may not have run at all. */
+/** True when the exit status of `command` is the verdict of its checks: from the first check onward only `&&` joins what follows, no `||`, `;` or newline lets a later segment replace the status, a lone `&` backgrounds the check so nothing finished, and a pipe follows only under a `set -o pipefail` statement that comes before the check (not one in a comment, an `echo` or after it). `npm test 2>&1 | tail`, `npm test || true` and `npm test; echo done` all exit 0 whatever the check did, and a `||` just before the first check means it may not have run at all. */
 export function exitStatusIsCheckVerdict(command: string): boolean {
   // A trailing separator ends the command with no segment after it.
   const parts = command.replace(/[;\s]+$/, '').split(COMMAND_SEPARATOR)
   const first = parts.findIndex(isVerificationSegment)
-  const allowed = PIPEFAIL.test(command) ? ['&&', '|'] : ['&&']
+  const pipefail = parts.slice(0, first).some((part, i) => i % 2 === 0 && PIPEFAIL_STATEMENT.test(part.trim()))
+  const allowed = pipefail ? ['&&', '|'] : ['&&']
   return first >= 0 && parts[first - 1] !== '||' && parts.slice(first + 1).every((part, i) => i % 2 === 1 || allowed.includes(part))
 }
 
@@ -55,7 +58,20 @@ const STORED_COMMAND_MAX_CHARS = 200
 
 /** The command as the session blob keeps it: secrets redacted, whitespace collapsed, capped. Two runs of one command must collapse to one entry, so this is also the identity. */
 function storedCommand(command: string): string {
-  return redactSecrets(command.replace(/\s+/g, ' ').trim()).text.slice(0, STORED_COMMAND_MAX_CHARS)
+  return maskCommandCredentials(redactSecrets(command.replace(/\s+/g, ' ').trim()).text).slice(0, STORED_COMMAND_MAX_CHARS)
+}
+
+const SECRET_ENV_NAME = /TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL/i
+const ENV_ASSIGNMENT = /(^|[\s;&|])([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/g
+const SECRET_FLAG = /(--(?:password|passwd|token|api-key|apikey|secret)(?:=|\s+))("[^"]*"|'[^']*'|\S+)/gi
+const BASIC_AUTH_FLAG = /(^|\s)(-u\s+)\S+:\S+/g
+
+/** The command with the secret-looking values masked: `NAME=value` where the name says it is a secret, `--password`/`--token`/`--api-key` values and `-u user:pass`. secret_redact.ts matches value shapes and misses `API_TOKEN=abcd1234 npm test`; the receipt and the Stop advisory repeat this text to the model, so it is masked here, where it is stored. */
+function maskCommandCredentials(command: string): string {
+  return command
+    .replace(ENV_ASSIGNMENT, (whole, lead: string, name: string) => (SECRET_ENV_NAME.test(name) ? `${lead}${name}=***` : whole))
+    .replace(SECRET_FLAG, (_whole, flag: string) => `${flag}***`)
+    .replace(BASIC_AUTH_FLAG, (_whole, lead: string, flag: string) => `${lead}${flag}***`)
 }
 
 /** Record a finished Bash call if it was a verification command. A background launch has not finished, so it is not a verdict, and neither is a call whose exit status something around the check decided ({@link exitStatusIsCheckVerdict}): that call is left unrecorded, so it neither clears the edits made since the last pass nor counts as a failure. An unknown status is not recorded as null here because evaluateVerification reads null as a pass. */

@@ -18,7 +18,7 @@ import { redactSecrets } from '../src/secret_redact.js'
 import { recordFileEdit, recordVerificationRun } from '../src/session.js'
 import { loadSessionState, saveSessionState, sessionSidecarPath } from '../src/session_store.js'
 import { withFileLock } from '../src/util.js'
-import type { VerificationState } from '../src/verification_state.js'
+import { noteFailedVerificationRun, type VerificationState } from '../src/verification_state.js'
 
 // clearModuleCaches also empties the hook registry, so the registry tests reload the modules instead and dispatch through the production registrations.
 let runHook: typeof RunHookFn
@@ -119,6 +119,7 @@ describe('parked receipts', () => {
     expect(takeAgentReceipt(sid, 'Done.', 'agent-a')).toBe('receipt for A')
   })
 
+  // CAPTURE: the trailer shape is from a real Claude Code 2.1.284 Agent tool result in a local session transcript (~/.claude/projects/<project>/<session>.jsonl): `agentId: a9ac7a96ac3596453 (internal ID - do not mention to user. Use SendMessage with to: 'a9ac7a96ac3596453', ...`. The same id names that subagent's own transcript, subagents/agent-a9ac7a96ac3596453.jsonl. That the SubagentStop agent_id carries this id is the documented meaning of agent_id, pinned by the registry test below, not captured here.
   it('two identical reports go to their own subagents by the agentId trailer of a Claude Code result', () => {
     const sid = newSession()
     parkAgentReceipt(sid, 'Done.', 'receipt for A', 'a1b2c3d4e5f60718')
@@ -276,7 +277,7 @@ describe('the receipt through the real hook registry', () => {
     expect(JSON.stringify(await agentResult(sid, 'I fixed the parser bug.'))).toContain('recorded no edit')
   })
 
-  // HAND-DERIVED: sentences a read-only agent (Explore, a reviewer) writes about code it only read, and ones that report its own work.
+  // HAND-DERIVED: sentences a read-only agent (Explore, a reviewer) writes about code it only read, and ones that report its own work. Every form here gets no accusation on a clean tree.
   it.each([
     ['The handler adds a header to each request.'],
     ['The parser removes comments before it tokenizes, and the cache replaces stale entries.'],
@@ -285,11 +286,37 @@ describe('the receipt through the real hook registry', () => {
     ["I couldn't update the config because it is read only."],
     ['I wrote up what I found below.'],
     ['Findings:\n- The loader creates a temp file.\n- The writer deletes it.'],
-  ])('read-only prose %j with a clean tree is not flagged', (message) => {
+    ['We updated nothing'],
+    ['Fixed: nothing'],
+    ['Deleted files: none'],
+    ['We removed nothing'],
+    ['Summary: updated nothing, read only.'],
+    ['Renamed symbols are listed below.'],
+    ['Replaced by foo in the cache layer.'],
+    ['Findings:\n- Removed code at line 5 is dead\n- Updated docs are stale'],
+    ['The diff for reference:\n```diff\n- removed foo\n+ added bar\n```'],
+    ['The diff for reference:\n- removed foo\n+ added bar\n@@ -1 +1 @@'],
+    ['Quoted from the log:\n```\nI fixed the parser\n```'],
+    ['Quoted commit:\n- I removed the dead branch\n+ we added a guard'],
+    ['Changed: none'],
+    ['Changes made: none'],
+    ['Changes made:\n- None'],
+    ['Changes: nothing, this was a read-only review.'],
+    ["I'll add the guard next."],
+    ['Fixed the parser bug.'],
+  ])('read-only report %j with a clean tree is not flagged', (message) => {
     expect(claimsChangeTheTreeLacks(message, repo)).toBe(false)
   })
 
-  it.each([['I renamed foo to bar.'], ["I've also added a guard."], ['Fixed the parser bug.'], ['Done.\n- Updated the README.\n- Added a test.'], ['We replaced the cache layer.']])('own-work claim %j with a clean tree is flagged', (message) => {
+  it.each([
+    ['I renamed foo to bar.'],
+    ["I've also added a guard."],
+    ['We fixed the parser bug in x.ts'],
+    ['Changes made: added a guard to y.ts'],
+    ['Changes made:\n- Updated the README.\n- Added a test.'],
+    ['Done.\nI updated the README.'],
+    ['We replaced the cache layer.'],
+  ])('own-work claim %j with a clean tree is flagged', (message) => {
     expect(claimsChangeTheTreeLacks(message, repo)).toBe(true)
   })
 
@@ -328,6 +355,80 @@ describe('the receipt through the real hook registry', () => {
     inSession(`${sid}:agent:sub1`, () => recordVerificationRun('npm test', 2, T0 + 1000))
     await runHook(buildEvent('subagent_stop', stopPayload(sid, 'Tests fail.')))
     expect(JSON.stringify(await agentResult(sid, 'Tests fail.'))).toContain('exit 2')
+  })
+
+  // HAND-DERIVED: AKIA plus sixteen capitals is the AWS access key shape secret_redact.ts matches, here inside a file name the subagent chose.
+  it('redacts a secret in a file name before the receipt is stored', async () => {
+    const sid = newSession()
+    inSession(`${sid}:agent:sub1`, () => recordFileEdit('C:/proj/src/a_AKIAABCDEFGHIJKLMNOP.ts'))
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, report)))
+    const stored = fs.readFileSync(sessionSidecarPath(sid, '.agent-receipts')!, 'utf8')
+    expect(stored).toContain('edited after its last passing check')
+    expect(stored).not.toContain('AKIAABCDEFGHIJKLMNOP')
+  })
+
+  // The receipt line is built from file names and commands (nameSubject and echoedValue quote them, they do not redact), so the parked text itself is what has to carry no secret.
+  it('redacts the receipt text it is handed before it is stored', () => {
+    const sid = newSession()
+    parkAgentReceipt(sid, 'Done.', 'token-goat: this subagent edited after its last passing check: file "a_AKIAABCDEFGHIJKLMNOP.ts".', 'agent-a')
+    const stored = fs.readFileSync(sessionSidecarPath(sid, '.agent-receipts')!, 'utf8')
+    expect(stored).toContain('edited after its last passing check')
+    expect(stored).not.toContain('AKIAABCDEFGHIJKLMNOP')
+  })
+
+  it('names the failed command in the receipt without the secret its env assignment carried', async () => {
+    const sid = newSession()
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    inSession(`${sid}:agent:sub1`, () => {
+      noteFailedVerificationRun('API_TOKEN=abcd1234efgh5678ijkl npm test', 'Exit code 1', false)
+    })
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, report)))
+    const text = JSON.stringify(await agentResult(sid, report))
+    expect(text).toContain('npm test')
+    expect(text).not.toContain('abcd1234efgh5678ijkl')
+  })
+
+  it('a delivery with nothing parked writes no file and takes no lock', async () => {
+    const sid = newSession()
+    expect((await agentResult(sid, report)).hookType).toBe('pass')
+    expect((await waitResult(sid, { 'thread-a': { completed: 'Done.' } })).hookType).toBe('pass')
+    expect(fs.existsSync(sessionSidecarPath(sid, '.agent-receipts')!)).toBe(false)
+    expect(fs.existsSync(sessionSidecarPath(sid, '.agent-receipts.lock')!)).toBe(false)
+  })
+
+  it('a delivery that matches nothing leaves the sidecar byte for byte as it was', () => {
+    const sid = newSession()
+    parkAgentReceipt(sid, 'Done.', 'receipt for A', 'agent-a')
+    const sidecar = sessionSidecarPath(sid, '.agent-receipts')!
+    const before = fs.readFileSync(sidecar, 'utf8')
+    const old = new Date(T0 - 60_000)
+    fs.utimesSync(sidecar, old, old)
+    expect(takeAgentReceipt(sid, 'Something else entirely.')).toBeNull()
+    expect(fs.readFileSync(sidecar, 'utf8')).toBe(before)
+    expect(fs.statSync(sidecar).mtimeMs).toBe(old.getTime())
+  })
+
+  // HAND-DERIVED: agent B is clean and agent A is flagged, and both return the same words. B parks nothing, so before clean agents were recorded the ambiguity was invisible and B's result took A's receipt.
+  it('a clean agent that returned the same words as a flagged one does not take its receipt', async () => {
+    const sid = newSession()
+    inSession(`${sid}:agent:agent-a`, () => recordVerificationRun('npm test', 1, T0 + 1000))
+    inSession(`${sid}:agent:agent-b`, () => recordVerificationRun('npm test', 0, T0 + 1000))
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, 'Done.', { agent_id: 'agent-a' })))
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, 'Done.', { agent_id: 'agent-b' })))
+    expect((await agentResult(sid, 'Done.')).hookType).toBe('pass')
+    expect(JSON.stringify(await agentResult(sid, 'Done.\n\nagentId: agent-a (internal ID - do not mention to user.)'))).toContain('exit 1')
+    expect((await agentResult(sid, 'Done.\n\nagentId: agent-b (internal ID - do not mention to user.)')).hookType).toBe('pass')
+  })
+
+  // The Claude Code trailer id and the hook payload's agent_id must be one id, or a trailer-keyed delivery silently finds nothing. See the CAPTURE note above the trailer test for what was observed of the trailer.
+  it('the id in the Agent result trailer is the agent_id of its SubagentStop', async () => {
+    const sid = newSession()
+    const id = 'a9ac7a96ac3596453'
+    inSession(`${sid}:agent:${id}`, () => recordVerificationRun('npm test', 3, T0 + 1000))
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, 'Done.', { agent_id: id })))
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, 'Done.', { agent_id: 'af00000000000000b' })))
+    const out = await agentResult(sid, `Done.\n\nagentId: ${id} (internal ID - do not mention to user. Use SendMessage with to: '${id}' to continue this agent.)`)
+    expect(JSON.stringify(out)).toContain('exit 3')
   })
 
   it('is off when the config key is off', async () => {

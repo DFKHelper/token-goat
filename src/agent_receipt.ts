@@ -1,7 +1,7 @@
 /** The evidence receipt a subagent's report carries when its own record gives the parent a reason to doubt it: the last check it ran failed, it edited source after its last passing check, or the report claims a change the subagent never made. A clean subagent gets nothing. The verdict is verification_state.ts's, read for the subagent's own session-state key, so there is no second bookkeeping of what it ran. The receipt is computed when the subagent stops and parked in a sidecar of the parent session, keyed by a hash of the redacted report, because the parent's Agent result arrives on a different event and nothing else ties the two. */
 
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 import { getHarnessName } from './bridges/registry.js'
@@ -10,6 +10,7 @@ import type { HookEvent } from './hook_registry.js'
 import { sessionStateKey } from './hook_registry.js'
 import { echoedValue, nameSubject } from './hint_suggestion_guard.js'
 import { contextOutput, getCwd, passOutput } from './hooks_common.js'
+import { claimsOwnChange } from './change_claim.js'
 import { claimsCommittedChange } from './hooks_session.js'
 import { redactSecrets } from './secret_redact.js'
 import { sessionSidecarPath } from './session_store.js'
@@ -65,13 +66,9 @@ export function receiptLines(state: VerificationState, claimsChangeWithoutEdit: 
   return lines
 }
 
-/** A subagent reporting its own work: first person ("I fixed", "I've also added", "we renamed"), or a past-tense verb that opens a sentence or bullet ("Fixed the parser."). Prose that describes code ("The handler adds a header") or a plan is not a claim, and neither is "I wrote up what I found". Negations need no cue list: "I did not fix" and "I couldn't update" put a word between the pronoun and the verb, so they never match. */
-const OWN_CHANGE_CLAIM_RE =
-  /(?:^|[.;!?:\n])[ \t]*(?:[-*>•]+[ \t]*|\d+[.)][ \t]*)?(?:(?:I|we)(?:'ve|[ \t]+have)?[ \t]+(?:(?:also|then|just|now|already)[ \t]+)?)?(?:fixed|implemented|added|created|wrote|written|refactored|updated|changed|edited|modified|deleted|removed|patched|resolved|replaced|improved|applied|renamed|rewrote|rewritten)\b(?![ \t]+up\b)/i
-
 /** True when the report claims a change the working tree does not show: a first-person change claim, no commit claim anywhere (a commit leaves a clean tree, and a stray mention of one only silences the flag, the safe direction), and git status clean. A dirty tree silences it whoever dirtied it, the parent's own work included: the subagent's Bash edits are not recorded, so the tree is the only evidence left, and a missed flag costs less than a false accusation. */
 export function claimsChangeTheTreeLacks(report: string, cwd: string | null): boolean {
-  if (cwd === null || !OWN_CHANGE_CLAIM_RE.test(report) || claimsCommittedChange(report)) return false
+  if (cwd === null || !claimsOwnChange(report) || claimsCommittedChange(report)) return false
   const result = runGit(['status', '--porcelain'], { cwd, timeoutMs: GIT_STATUS_TIMEOUT_MS })
   return result.exitCode === 0 && result.stdout.trim() === ''
 }
@@ -100,19 +97,22 @@ function readReceipts(target: string): StoredReceipt[] {
   }
 }
 
-/** Run `work` on the parent session's parked receipts under a cross-process lock and write back what it leaves, atomically. Every hook is its own OS process and two subagents can stop at once, so an unlocked read-modify-write loses one of their receipts. Null when the lock or the sidecar is unavailable: the report goes out without a receipt rather than failing the hook. */
-function withReceipts<T>(sessionId: string, work: (receipts: StoredReceipt[]) => T): T | null {
+/** Run `work` on the parent session's parked receipts under a cross-process lock and write back what it leaves, atomically, and only when it changed them. A delivery (`create` false) with no sidecar, or one that holds nothing, returns null without taking the lock or touching the disk: most Agent results have nothing parked, and each of those must cost no write. Every hook is its own OS process and two subagents can stop at once, so an unlocked read-modify-write loses one of their receipts. Null when the lock or the sidecar is unavailable: the report goes out without a receipt rather than failing the hook. */
+function withReceipts<T>(sessionId: string, create: boolean, work: (receipts: StoredReceipt[]) => T): T | null {
   const target = sessionSidecarPath(sessionId, RECEIPTS_SUFFIX)
   const lockPath = sessionSidecarPath(sessionId, RECEIPTS_LOCK_SUFFIX)
   if (target === null || lockPath === null) return null
+  if (!create && (!existsSync(target) || readReceipts(target).length === 0)) return null
   try {
     ensureDirSync(dirname(target))
     const held = withFileLock(
       lockPath,
       () => {
         const receipts = readReceipts(target)
+        const before = JSON.stringify(receipts)
         const out = work(receipts)
-        atomicWriteText(target, JSON.stringify(receipts.slice(-MAX_RECEIPTS)))
+        const after = JSON.stringify(receipts.slice(-MAX_RECEIPTS))
+        if (after !== before) atomicWriteText(target, after)
         return { out }
       },
       { waitMs: RECEIPT_LOCK_WAIT_MS },
@@ -123,16 +123,17 @@ function withReceipts<T>(sessionId: string, work: (receipts: StoredReceipt[]) =>
   }
 }
 
-/** Park `text` for the parent session, to be handed to whoever delivers the report that hashes the same or that names `agentId`. */
+/** Park `text` for the parent session, to be handed to whoever delivers the report that hashes the same or that names `agentId`. An empty `text` parks a clean agent: it hands out nothing, but it makes a clean and a flagged agent that returned the same words ambiguous to a delivery that names neither. The text is redacted again here because it carries file names and a command the subagent chose. */
 export function parkAgentReceipt(sessionId: string, redactedReport: string, text: string, agentId?: string): void {
   const trimmed = redactedReport.trim()
   if (trimmed === '') return
-  const entry: StoredReceipt = { hash: reportHash(trimmed), length: trimmed.length, text, at: Date.now(), ...(agentId ? { agentId } : {}) }
-  withReceipts(sessionId, (receipts) => {
+  const entry: StoredReceipt = { hash: reportHash(trimmed), length: trimmed.length, text: redactSecrets(text).text, at: Date.now(), ...(agentId ? { agentId } : {}) }
+  withReceipts(sessionId, true, (receipts) => {
     receipts.push(entry)
   })
 }
 
+// The trailer id is taken to be the agent_id the hook payloads carry; tests/agent_receipt.test.ts pins that through the registry, so a host that stops agreeing fails there instead of silently delivering nothing.
 const AGENT_ID_TRAILER_RE = /\bagentId:\s*([A-Za-z0-9_-]{6,})/g
 
 /** The id of the agent a Claude Code Agent result names in the trailer it appends to the report (`agentId: <id> (internal ID ...`), or undefined. The last one wins: a report may quote an earlier trailer. */
@@ -141,20 +142,20 @@ function trailerAgentId(resultText: string): string | undefined {
   return matches.at(-1)?.[1]
 }
 
-/** The parked receipt for a delivered report, consumed so it is delivered once. Matched on the subagent's id when the delivery names one (`agentId`, or the trailer of a Claude Code result), because two subagents can return the same words ("Done.") with different verdicts; otherwise on the report text, which `resultText` may continue past on a new line (the harness appends a trailer). A text match that two receipts with different verdicts both satisfy is ambiguous and delivers nothing: a missing receipt is a smaller error than another agent's. A delivery that names an id never takes a receipt parked under a different id. */
+/** The parked receipt for a delivered report, consumed so it is delivered once. Matched on the subagent's id when the delivery names one (`agentId`, or the trailer of a Claude Code result), because two subagents can return the same words ("Done.") with different verdicts; otherwise on the report text, which `resultText` may continue past on a new line (the harness appends a trailer). A text match that two entries with different verdicts both satisfy (a clean agent's empty entry included) is ambiguous and delivers nothing: a missing receipt is a smaller error than another agent's. A delivery that names an id never takes a receipt parked under a different id. */
 export function takeAgentReceipt(sessionId: string, resultText: string, agentId?: string): string | null {
   const trimmed = resultText.trim()
   const wantedId = agentId ?? trailerAgentId(trimmed)
   // A report that continues past the parked one must continue on a new line, so 'report 1' is never taken for the start of 'report 16'.
   const endsReport = (r: StoredReceipt): boolean => r.length === trimmed.length || trimmed[r.length] === '\n' || trimmed[r.length] === '\r'
   const sameText = (r: StoredReceipt): boolean => r.length <= trimmed.length && endsReport(r) && reportHash(trimmed.slice(0, r.length)) === r.hash
-  return withReceipts(sessionId, (receipts) => {
+  return withReceipts(sessionId, false, (receipts) => {
     const byId = wantedId === undefined ? -1 : receipts.findIndex((r) => r.agentId === wantedId)
-    if (byId >= 0 && (agentId !== undefined || sameText(receipts[byId]!))) return receipts.splice(byId, 1)[0]?.text ?? null
+    if (byId >= 0 && (agentId !== undefined || sameText(receipts[byId]!))) return receipts.splice(byId, 1)[0]?.text || null
     if (agentId !== undefined) return null
     const candidates = receipts.map((r, i) => ({ r, i })).filter(({ r }) => sameText(r) && (wantedId === undefined || r.agentId === undefined))
     if (candidates.length === 0 || candidates.some(({ r }) => r.text !== candidates[0]!.r.text)) return null
-    return receipts.splice(candidates[0]!.i, 1)[0]?.text ?? null
+    return receipts.splice(candidates[0]!.i, 1)[0]?.text || null
   })
 }
 
@@ -165,7 +166,23 @@ export function subagentReceiptHandler(event: HookEvent): HookOutput {
     if (getHarnessName() === 'copilot_cli' || !event.sessionId || typeof raw !== 'string' || raw === '' || event.raw['stop_hook_active'] === true) return passOutput()
     const report = redactSecrets(raw).text
     const text = receiptForStoppedAgent(event, report)
-    if (text !== null) parkAgentReceipt(event.sessionId, report, text, event.agentId)
+    if (text !== null || loadConfig().hints.agent_receipt) parkAgentReceipt(event.sessionId, report, text ?? '', event.agentId)
+    return passOutput()
+  } catch {
+    return passOutput()
+  }
+}
+
+/** subagent_stop, registered by hooks_agent_spawn.ts (lazily, with the receipt handler): a subagent whose report claims a change of its own while `git status` shows a clean tree, and does not also claim a commit or push, gets a warning on the operator's stderr. It never changes the stop. */
+export function subagentStopHandler(event: HookEvent): HookOutput {
+  try {
+    const cwd = getCwd(event)
+    if (!event.sessionId || !cwd) return passOutput()
+    const result = runGit(['status', '--porcelain'], { cwd, timeoutMs: loadConfig().hints.git_hint_max_ms })
+    const message = typeof event.raw['last_assistant_message'] === 'string' ? event.raw['last_assistant_message'] : ''
+    if (result.exitCode === 0 && result.stdout.trim() === '' && claimsOwnChange(message) && !claimsCommittedChange(message)) {
+      console.warn(`subagent-stop: possible hallucination — session=${event.sessionId} but git status is clean`)
+    }
     return passOutput()
   } catch {
     return passOutput()

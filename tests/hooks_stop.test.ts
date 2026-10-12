@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stopAdvisoryText, stopHandler } from '../src/hooks_stop.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileEdit, recordVerificationRun } from '../src/session.js'
-import { loadSessionState, saveSessionState } from '../src/session_store.js'
+import { loadSessionState, saveSessionState, sessionSidecarPath } from '../src/session_store.js'
 import { evaluateVerification, isVerificationCommand, noteFailedVerificationRun, noteVerificationRun } from '../src/verification_state.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
@@ -176,6 +176,13 @@ describe('noteVerificationRun and noteFailedVerificationRun', () => {
     ['false || npm test'],
     ['npm test | tee out.log'],
     ['npm test && npm run build | tail'],
+    ['npm test &'],
+    ['npm test & echo done'],
+    ['npm test > out.log 2>&1 &'],
+    ['npm test | tail # set -o pipefail'],
+    ['echo set -o pipefail; npm test | tail'],
+    ['# set -o pipefail\nnpm test | tail'],
+    ['npm test | tail; set -o pipefail'],
   ])('does not book %j as a pass', (command) => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
     const sid = newSession()
@@ -188,7 +195,7 @@ describe('noteVerificationRun and noteFailedVerificationRun', () => {
     expect(state.editedSinceLastPass).toEqual(['a.ts'])
   })
 
-  it.each([['npm test'], ['npm test && echo ok'], ['cd app && npm test'], ['npm run build && npm test'], ['set -o pipefail; npm test | tail -5'], ['npm test;']])('still books %j as a pass', (command) => {
+  it.each([['npm test'], ['npm test && echo ok'], ['cd app && npm test'], ['npm run build && npm test'], ['set -o pipefail; npm test | tail -5'], ['set -eo pipefail; npm test | tail -5'], ['set -euo pipefail\nnpm test 2>&1 | tail -5'], ['set -e -o pipefail && npm test | tail'], ['npm test;'], ['npm test 2>&1'], ['npm test &> out.log'], ['npm test >&2'], ['npm test 2>&1 && echo ok'], ['sleep 1 & npm test'], ['set -o pipefail; npm test |& tail']])('still books %j as a pass', (command) => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
     const runs = runsAfter(() => noteVerificationRun(command, 0, false))
     expect(runs.map((r) => r.exitCode)).toEqual([0])
@@ -199,6 +206,33 @@ describe('noteVerificationRun and noteFailedVerificationRun', () => {
     const secret = 'ghp_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
     const runs = runsAfter(() => noteVerificationRun(`GH_TOKEN=${secret} npm test`, 0, false))
     expect(runs[0]?.command).not.toContain(secret)
+  })
+})
+
+describe('stored command credentials', () => {
+  // HAND-DERIVED: shapes the global patterns in secret_redact.ts miss, which are the point (a name that says it is a secret, a flag that takes one). The values are made up.
+  it.each([
+    ['API_TOKEN=abcd1234efgh5678ijkl npm test', 'abcd1234efgh5678ijkl'],
+    ['DB_PASSWORD="pass-word-1" npm test', 'pass-word-1'],
+    ['export SECRET_KEY=zzzz1111 && npm test', 'zzzz1111'],
+    ['npm test --password hunter2', 'hunter2'],
+    ['npm test --token=tok123456', 'tok123456'],
+    ["npm test --api-key 'k e y 1'", 'k e y 1'],
+    ['npm test -u admin:s3cretpw', 's3cretpw'],
+  ])('masks the secret in %j', (command, secret) => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    const sid = newSession()
+    inSession(sid, () => noteVerificationRun(command, 0, false))
+    const stored = evaluateVerification(sid).runs[0]?.command ?? ''
+    expect(stored).not.toContain(secret)
+    expect(stored).toContain('npm test')
+  })
+
+  it('leaves a command with no secret-looking assignment as it was', () => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    const sid = newSession()
+    inSession(sid, () => noteVerificationRun('NODE_ENV=test CI=1 npm test', 0, false))
+    expect(evaluateVerification(sid).runs[0]?.command).toBe('NODE_ENV=test CI=1 npm test')
   })
 })
 
@@ -237,6 +271,13 @@ describe('stopHandler', () => {
       recordVerificationRun('npm test', 0, Date.now() + 1000)
     })
     expect(stopHandler(stopEvent(sid)).hookType).toBe('pass')
+  })
+
+  it('writes nothing for a clean first stop', () => {
+    const sid = newSession()
+    const advised = sessionSidecarPath(sid, '.stop-advised')
+    expect(stopHandler(stopEvent(sid)).hookType).toBe('pass')
+    expect(advised !== null && fs.existsSync(advised)).toBe(false)
   })
 
   it('never answers a stop a hook already continued', () => {
