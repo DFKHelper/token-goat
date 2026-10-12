@@ -547,8 +547,8 @@ function reportNotice(resultText: string, recallHint: string, spawnAdvisory: str
   return `[token-goat] This subagent report (${toKB(resultText.length)}KB) is cached for later recall: ${recallHint}${spawnAdvisory === '' ? '' : `\n${spawnAdvisory}`}`
 }
 
-/** A report that already ends in the notice of a rewrite token-goat made. On Copilot CLI the subagentStop rewrite replaces the subagent's answer before the parent's task result is built (tg-captures C4a-014), so the post-tool pass then sees token-goat's own output, and compacting and caching it again would store the compacted copy as if it were the report. */
-const REWRITTEN_REPORT_RE = /\n\n\[token-goat\] This subagent report \([0-9.]+KB\) is cached for later recall: token-goat mcp-output mcp_[0-9a-f]{16} --full$/
+/** A report that already ends in the notice of a rewrite token-goat made, with or without the receipt lines (`token-goat: ...`) that reportNotice appends after the recall hint. On Copilot CLI the subagentStop rewrite replaces the subagent's answer before the parent's task result is built (tg-captures C4a-014), so the post-tool pass then sees token-goat's own output, and compacting and caching it again would store the compacted copy as if it were the report. */
+const REWRITTEN_REPORT_RE = /\n\n\[token-goat\] This subagent report \([0-9.]+KB\) is cached for later recall: token-goat mcp-output mcp_[0-9a-f]{16} --full(?:\ntoken-goat: [^\n]*)*$/
 
 /** The compacted report and whether it pays for `notice`. Fence collapse, then intra-report cross-fence dedup, then blank-run collapse, judged by ONE combined net-benefit check rather than a gate each: sub-threshold rewrites could each decline alone when their sum would pass, and firing the notice cost more than once would double-charge it. Shared by the post-tool pass and Copilot's subagentStop rewrite so the two cannot drift. */
 function planReportCompaction(resultText: string, recallHint: string, notice: string): { final: string; worthwhile: boolean } {
@@ -676,3 +676,4 @@ registerHook('post_tool_use', postAgentHandler, { toolName: 'Agent' })
 registerHook('post_tool_use', postAgentHandler, { toolName: 'task' })
 registerHook('post_tool_use', postAgentHandler, { toolName: 'Task' })
 registerHook('post_tool_use', postAgentHandler, { toolName: 'spawn_agent' })
+registerHook('post_tool_use', async (event) => (await loadAgentReceipt()).waitAgentHandler(event), { toolName: 'multi_agent_v1wait_agent' })

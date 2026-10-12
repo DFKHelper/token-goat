@@ -1,6 +1,6 @@
 // The evidence receipt a subagent report carries. Provenance: the SubagentStop payload keys (session_id, cwd, agent_id, agent_type, stop_hook_active, last_assistant_message) are FORMAT-DERIVED from https://code.claude.com/docs/en/hooks (SubagentStop) and https://developers.openai.com/codex/hooks, the same docs tests/fixtures/harness_hook_payloads.ts cites for its subagent_stop rows; the Copilot subagentStop keys follow tests/fixtures/copilot_cli_1_0_88/C4a-013-subagentStop.json (CAPTURE, Copilot CLI 1.0.88). The Agent tool result is a plain string here, as in tests/hooks_agent_spawn.test.ts; the envelope Claude Code wraps around it is not verified, which is why the trailer case below is HAND-DERIVED rather than claimed as captured. Every expected receipt is HAND-DERIVED from the edits, runs and report text each test builds.
 
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -10,12 +10,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { runHook as RunHookFn } from '../src/hook_registry.js'
 import type { buildEvent as BuildEventFn } from '../src/relay.js'
 
-import { parkAgentReceipt, receiptLines, takeAgentReceipt } from '../src/agent_receipt.js'
+import { claimsChangeTheTreeLacks, parkAgentReceipt, receiptLines, takeAgentReceipt } from '../src/agent_receipt.js'
 import { globalDbPath } from '../src/constants.js'
 import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { redactSecrets } from '../src/secret_redact.js'
 import { recordFileEdit, recordVerificationRun } from '../src/session.js'
-import { loadSessionState, saveSessionState } from '../src/session_store.js'
+import { loadSessionState, saveSessionState, sessionSidecarPath } from '../src/session_store.js'
+import { withFileLock } from '../src/util.js'
 import type { VerificationState } from '../src/verification_state.js'
 
 // clearModuleCaches also empties the hook registry, so the registry tests reload the modules instead and dispatch through the production registrations.
@@ -108,6 +110,65 @@ describe('parked receipts', () => {
     expect(takeAgentReceipt(sid, 'The work is done.\nagentId: abc123')).toBe('receipt text')
   })
 
+  // HAND-DERIVED: two subagents return the same words with different verdicts; the ids are what tell them apart.
+  it('two identical reports go to their own subagents when the delivery names the id', () => {
+    const sid = newSession()
+    parkAgentReceipt(sid, 'Done.', 'receipt for A', 'agent-a')
+    parkAgentReceipt(sid, 'Done.', 'receipt for B', 'agent-b')
+    expect(takeAgentReceipt(sid, 'Done.', 'agent-b')).toBe('receipt for B')
+    expect(takeAgentReceipt(sid, 'Done.', 'agent-a')).toBe('receipt for A')
+  })
+
+  it('two identical reports go to their own subagents by the agentId trailer of a Claude Code result', () => {
+    const sid = newSession()
+    parkAgentReceipt(sid, 'Done.', 'receipt for A', 'a1b2c3d4e5f60718')
+    parkAgentReceipt(sid, 'Done.', 'receipt for B', '99887766554433aa')
+    const trailer = (id: string): string => `Done.\n\nagentId: ${id} (internal ID - do not mention to user. Use SendMessage with to: '${id}' to continue this agent.)`
+    expect(takeAgentReceipt(sid, trailer('99887766554433aa'))).toBe('receipt for B')
+    expect(takeAgentReceipt(sid, trailer('a1b2c3d4e5f60718'))).toBe('receipt for A')
+  })
+
+  it('identical reports with different verdicts and no id to tell them apart deliver nothing', () => {
+    const sid = newSession()
+    parkAgentReceipt(sid, 'Done.', 'receipt for A', 'agent-a')
+    parkAgentReceipt(sid, 'Done.', 'receipt for B', 'agent-b')
+    expect(takeAgentReceipt(sid, 'Done.')).toBeNull()
+  })
+
+  it('a delivery that names an id never takes a receipt parked for another agent', () => {
+    const sid = newSession()
+    parkAgentReceipt(sid, 'Done.', 'receipt for A', 'agent-a')
+    expect(takeAgentReceipt(sid, 'Done.', 'agent-c')).toBeNull()
+    expect(takeAgentReceipt(sid, 'Done.', 'agent-a')).toBe('receipt for A')
+  })
+
+  it('drops a receipt nobody claimed within half an hour', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(T0)
+      const sid = newSession()
+      parkAgentReceipt(sid, 'The work is done.', 'receipt text', 'agent-a')
+      vi.setSystemTime(T0 + 31 * 60 * 1000)
+      expect(takeAgentReceipt(sid, 'The work is done.', 'agent-a')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('writes under the cross-process lock: a park that cannot get it parks nothing', () => {
+    const sid = newSession()
+    const lockPath = sessionSidecarPath(sid, '.agent-receipts.lock')
+    if (lockPath === null) throw new Error('no lock path')
+    // Another hook process holds the lock for longer than a park waits, so a park that ignored the lock would write into the file the holder is rewriting.
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true })
+    const held = withFileLock(lockPath, () => {
+      parkAgentReceipt(sid, 'Done.', 'receipt text', 'agent-a')
+      return 'held'
+    })
+    expect(held, 'the test must hold the lock for the park to contend with').toBe('held')
+    expect(takeAgentReceipt(sid, 'Done.', 'agent-a')).toBeNull()
+  }, 15000)
+
   it('keeps the newest sixteen', () => {
     const sid = newSession()
     for (let i = 0; i < 17; i += 1) parkAgentReceipt(sid, `report ${i}`, `receipt ${i}`)
@@ -159,6 +220,31 @@ describe('the receipt through the real hook registry', () => {
     expect(text).toContain('npm test')
   })
 
+  // FORMAT-DERIVED as in the codex case of the built-entry block below (wait.rs:299-302, protocol.rs:1932-1948, registry.rs:943-952).
+  const waitResult = (sid: string, status: Record<string, unknown>, asText = true) =>
+    runHook(buildEvent('post_tool_use', { tool_name: 'multi_agent_v1wait_agent', tool_input: { targets: Object.keys(status) }, session_id: sid, tool_response: asText ? JSON.stringify({ status, timed_out: false }) : { status, timed_out: false } }))
+
+  it('codex: a finished subagent gets its receipt on the wait_agent result, keyed on its thread id', async () => {
+    const sid = newSession()
+    inSession(`${sid}:agent:thread-a`, () => recordVerificationRun('npm test', 1, T0 + 1000))
+    inSession(`${sid}:agent:thread-b`, () => recordVerificationRun('npm test', 2, T0 + 1000))
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, 'Done.', { agent_id: 'thread-a' })))
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, 'Done.', { agent_id: 'thread-b' })))
+    const out = await waitResult(sid, { 'thread-b': { completed: 'Done.' }, 'thread-a': 'running' })
+    expect(out.hookType).toBe('context')
+    const text = JSON.stringify(out)
+    expect(text).toContain('exit 2')
+    expect(text).not.toContain('exit 1')
+    const later = await waitResult(sid, { 'thread-a': { completed: 'Done.' } }, false)
+    expect(JSON.stringify(later)).toContain('exit 1')
+  })
+
+  it('codex: a wait_agent result with nothing finished, or a clean agent, adds nothing', async () => {
+    const sid = newSession()
+    expect((await waitResult(sid, { 'thread-a': 'running' })).hookType).toBe('pass')
+    expect((await waitResult(sid, { 'thread-a': { completed: 'Done.' } })).hookType).toBe('pass')
+  })
+
   it('books one agent_receipt stat for the delivered receipt and none for a clean report', async () => {
     const receiptRows = (): number => (getDb(globalDbPath()).prepare("SELECT count(*) c FROM stats WHERE kind='agent_receipt'").get() as { c: number }).c
     const before = receiptRows()
@@ -188,6 +274,30 @@ describe('the receipt through the real hook registry', () => {
     const sid = newSession()
     await runHook(buildEvent('subagent_stop', stopPayload(sid, 'I fixed the parser bug.')))
     expect(JSON.stringify(await agentResult(sid, 'I fixed the parser bug.'))).toContain('recorded no edit')
+  })
+
+  // HAND-DERIVED: sentences a read-only agent (Explore, a reviewer) writes about code it only read, and ones that report its own work.
+  it.each([
+    ['The handler adds a header to each request.'],
+    ['The parser removes comments before it tokenizes, and the cache replaces stale entries.'],
+    ['Callers update the index when a file changes.'],
+    ['I did not fix anything; the bug is in the caller.'],
+    ["I couldn't update the config because it is read only."],
+    ['I wrote up what I found below.'],
+    ['Findings:\n- The loader creates a temp file.\n- The writer deletes it.'],
+  ])('read-only prose %j with a clean tree is not flagged', (message) => {
+    expect(claimsChangeTheTreeLacks(message, repo)).toBe(false)
+  })
+
+  it.each([['I renamed foo to bar.'], ["I've also added a guard."], ['Fixed the parser bug.'], ['Done.\n- Updated the README.\n- Added a test.'], ['We replaced the cache layer.']])('own-work claim %j with a clean tree is flagged', (message) => {
+    expect(claimsChangeTheTreeLacks(message, repo)).toBe(true)
+  })
+
+  it('a read-only report from an Explore agent gets no receipt through the registry', async () => {
+    const sid = newSession()
+    const message = 'The handler adds a header to each request.'
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, message, { agent_type: 'Explore' })))
+    expect((await agentResult(sid, message)).hookType).toBe('pass')
   })
 
   it('a claimed change that was committed is not flagged', async () => {
@@ -267,6 +377,21 @@ describe('the receipt through the real hook registry', () => {
     expect(receiptRows()).toBe(before + 1)
   })
 
+  it('on Copilot CLI the post-tool pass leaves the rewritten report, receipt lines included, as it is', async () => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'copilot_cli')
+    await freshRegistry()
+    const sid = newSession()
+    inSession(`${sid}:agent:sub1`, () => recordVerificationRun('npm test', 1, T0 + 1000))
+    // HAND-DERIVED: prose the compaction leaves alone keeps the rewritten report above agent_report.min_bytes (8000, src/config_defaults.ts), the size from which the post-tool pass would otherwise compact it again.
+    const bulky = `${'A paragraph of findings that no rewrite shortens. '.repeat(200)}\n\n${longReport}`
+    const rewritten = await runHook(buildEvent('subagent_stop', stopPayload(sid, bulky)))
+    if (rewritten.hookType !== 'rewriteOutput') throw new Error('the subagentStop rewrite was expected to fire')
+    expect(rewritten.updatedOutput).toContain('last check failed')
+    expect(rewritten.updatedOutput.length).toBeGreaterThan(8000)
+    const again = await runHook(buildEvent('post_tool_use', { tool_name: 'task', tool_input: { prompt: 'Look into it.' }, session_id: sid, tool_response: rewritten.updatedOutput }))
+    expect(again.hookType).toBe('pass')
+  })
+
   it('does not park a receipt for a stop a hook already continued', async () => {
     const sid = newSession()
     inSession(`${sid}:agent:sub1`, () => recordVerificationRun('npm test', 1, T0 + 1000))
@@ -286,6 +411,34 @@ describe('the receipt through the real hook registry', () => {
     expect(JSON.stringify(out)).toContain('last check failed')
     expect(receiptRows()).toBe(before + 1)
     expect(takeAgentReceipt(sid, report)).toBeNull()
+  })
+
+  it('on Copilot CLI the rewrite keeps the redacted report byte for byte and a redacted secret stays redacted', async () => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'copilot_cli')
+    await freshRegistry()
+    const sid = newSession()
+    inSession(`${sid}:agent:sub1`, () => recordVerificationRun('npm test', 1, T0 + 1000))
+    // FORMAT-DERIVED: the AWS access key id shape (AKIA plus 16 upper-case alphanumerics) that tests/hooks_agent_spawn.test.ts also uses as its secret.
+    const secret = 'AKIAABCDEFGHIJKLMNOP'
+    const leaky = `Checked the loader. The key ${secret} is in the fixture.`
+    const redacted = redactSecrets(leaky).text
+    expect(redacted).not.toContain(secret)
+    const out = await runHook(buildEvent('subagent_stop', stopPayload(sid, leaky)))
+    if (out.hookType !== 'rewriteOutput') throw new Error('the subagentStop rewrite was expected to fire')
+    expect(out.updatedOutput.startsWith(redacted + '\n\n')).toBe(true)
+    expect(out.updatedOutput).not.toContain(secret)
+  })
+
+  it('on Copilot CLI the state flags need the subagent to have its own record, since its tool events carry no agentId', async () => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'copilot_cli')
+    await freshRegistry()
+    // CAPTURE: tests/fixtures/copilot_cli_1_0_88 C4a-004, C4a-014 and C1a-005 (preToolUse and postToolUse) hold no agentId, while the subagentStop fixtures C4a-013 and C4c-011 do; so a Copilot subagent's checks land under the parent session key.
+    const sid = newSession()
+    inSession(sid, () => recordVerificationRun('npm test', 1, T0 + 1000))
+    expect((await runHook(buildEvent('subagent_stop', stopPayload(sid, 'Looked at the loader; it reads the file once.')))).hookType).toBe('pass')
+    // The git-status branch needs no per-agent record, so a claim of work on a clean tree is still caught.
+    const claim = await runHook(buildEvent('subagent_stop', stopPayload(sid, 'I fixed the parser bug.')))
+    expect(JSON.stringify(claim)).toContain('recorded no edit')
   })
 
   it('on Copilot CLI a clean subagent report is left alone', async () => {
@@ -349,6 +502,28 @@ describe('the built hook entry, per host', () => {
     expect(context).toContain('widget.ts')
   })
 
+  it('claudecode: subagents stopping at the same moment each keep their receipt', async () => {
+    const base = { session_id: 'e2e-receipt-race', permission_mode: 'default' }
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l']
+    const env = { ...process.env, TOKEN_GOAT_HOME: path.join(root, 'tg'), LOCALAPPDATA: path.join(root, 'local'), XDG_DATA_HOME: path.join(root, 'xdg'), HOME: path.join(root, 'home'), USERPROFILE: path.join(root, 'home'), CLAUDE_CONFIG_DIR: path.join(root, 'claude'), CODEX_HOME: path.join(root, 'codex'), COPILOT_HOME: path.join(root, 'copilot'), TOKEN_GOAT_HARNESS_OVERRIDE: 'claudecode', TOKEN_GOAT_HOOK_SERVER: '0', TOKEN_GOAT_NATIVE_HOOKS: '0', TOKEN_GOAT_NO_WORKER_SPAWN: '1' }
+    const runOne = (event: string, payload: Record<string, unknown>): Promise<void> =>
+      new Promise((resolve) => {
+        const child = spawn(process.execPath, [BUNDLE, 'hook', event], { cwd: project, env, stdio: ['pipe', 'ignore', 'ignore'] })
+        child.on('close', () => resolve())
+        child.stdin.on('error', () => {})
+        child.stdin.end(JSON.stringify({ cwd: project.replaceAll(path.sep, '/'), ...payload }))
+      })
+    // Each failed check is recorded first, one after another, so only the stops race.
+    for (const id of ids) {
+      await runOne('post_tool_use_failure', { ...base, agent_id: 'sub-' + id, agent_type: 'general-purpose', hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 'toolu_' + id, error: 'Exit code 1\nFAIL' })
+    }
+    await Promise.all(ids.map((id) => runOne('subagent_stop', { ...base, agent_id: 'sub-' + id, agent_type: 'general-purpose', hook_event_name: 'SubagentStop', stop_hook_active: false, last_assistant_message: 'Report from ' + id + '.' })))
+    for (const id of ids) {
+      const out = hook('post_tool_use', 'claudecode', { ...base, hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { prompt: 'Work.' }, tool_response: 'Report from ' + id + '.' })
+      expect(out, 'receipt for ' + id).toContain('last check failed')
+    }
+  }, 120000)
+
   it('codex: the same flow reports the run that was never confirmed passing', () => {
     const file = `${project.replaceAll(path.sep, '/')}/src/widget.ts`
     fs.mkdirSync(path.join(project, 'src'), { recursive: true })
@@ -358,7 +533,9 @@ describe('the built hook entry, per host', () => {
     hook('post_tool_use', 'codex', { ...child, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_use_id: 'call_1', tool_input: { command: 'npm test' }, tool_response: 'ok' })
     hook('post_tool_use', 'codex', { ...child, hook_event_name: 'PostToolUse', tool_name: 'apply_patch', tool_use_id: 'call_2', tool_input: { command: `*** Begin Patch\n*** Update File: ${file}\n@@\n-export const w = 1\n+export const w = 2\n*** End Patch` }, tool_response: 'Success' })
     hook('subagent_stop', 'codex', { ...child, hook_event_name: 'SubagentStop', stop_hook_active: false, last_assistant_message: 'Patched the widget.' })
-    const out = hook('post_tool_use', 'codex', { ...base, hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_use_id: 'call_3', tool_input: { prompt: 'Patch it.' }, tool_response: 'Patched the widget.' })
+    // FORMAT-DERIVED: the report reaches the parent through the multi-agent v1 wait_agent tool, hook tool name = namespace + name (openai/codex a9b0815 codex-rs/core/src/tools/registry.rs:943-952, tools/mod.rs:47-59, handlers/multi_agents_spec.rs:14); its result is WaitAgentResult { status: { <thread id>: AgentStatus }, timed_out } (handlers/multi_agents/wait.rs:299-302) with AgentStatus::Completed(Option<String>) serialized snake_case (protocol/src/protocol.rs:1932-1948), and the SubagentStop agent_id is that thread id (core/src/hook_runtime.rs:1056). Not a capture: no real Codex multi-agent run was made for this fixture.
+    const waited = JSON.stringify({ status: { 'agent-1': { completed: 'Patched the widget.' } }, timed_out: false })
+    const out = hook('post_tool_use', 'codex', { ...base, hook_event_name: 'PostToolUse', tool_name: 'multi_agent_v1wait_agent', tool_use_id: 'call_3', tool_input: { targets: ['agent-1'], timeout_ms: 30000 }, tool_response: waited })
     expect(out).toContain('edited after its last passing check')
     expect(out).toContain('widget.ts')
   })

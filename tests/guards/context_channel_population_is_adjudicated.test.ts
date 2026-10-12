@@ -70,6 +70,8 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'One site, reached through quietContextOutput. Its path comes through the same displaySafePath-derived `shown` the pre-read hints use.',
   'hooks_agent_spawn.ts::subagentStartHandler':
     'Emits buildSubagentBriefing, which interpolates the project map and recent cached-output ids. Repository-chosen text in the map (the folder name, recent file paths, top symbol names, kinds and paths) all goes through displaySafeText inside formatProjectMap, pinned by tests/copilot_subagent_start.test.ts; the output ids are hexadecimal ids storeBashOutput generated and the sizes are integers.',
+  'agent_receipt.ts::waitAgentHandler':
+    'Emits the evidence receipt lines of a Codex subagent whose report the parent just received. receiptLines builds them from file names (nameSubject), the failed command (echoedValue) and fixed words, and the thread id that heads a multi-agent block goes through echoedValue, so nothing the repository or the subagent chose reaches the channel unescaped.',
   'hooks_agent_spawn.ts::postAgentHandler':
     'The unrestricted-spawn advisory names agent definitions from a roster that includes the project you are in. AGENT_NAME_RE constrains the name at the parser and neutralizeSpokenMarkers escapes it again at the sentence, so widening the character set cannot quietly reopen it.',
   // The six below are outer handlers whose whole contribution is a try/catch and a dispatch to the Inner adjudicated above them. They are in the population because the walk is transitive, which is the right default: a wrapper that started composing its own text would otherwise be invisible.
