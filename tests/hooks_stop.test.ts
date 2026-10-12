@@ -167,6 +167,33 @@ describe('noteVerificationRun and noteFailedVerificationRun', () => {
     expect(runs.map((r) => [r.command, r.exitCode])).toEqual([['npm test', 2]])
   })
 
+  // HAND-DERIVED from shell semantics: the exit status of a list is the last command's, a pipeline's is its last stage's unless pipefail is set, and `||` / `;` let a later command replace the status.
+  it.each([
+    ['npm test 2>&1 | tail -30'],
+    ['npm test || true'],
+    ['npm test; echo done'],
+    ['npm test\necho done'],
+    ['false || npm test'],
+    ['npm test | tee out.log'],
+    ['npm test && npm run build | tail'],
+  ])('does not book %j as a pass', (command) => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    const sid = newSession()
+    inSession(sid, () => {
+      recordFileEdit('/p/src/a.ts')
+      noteVerificationRun(command, 0, false)
+    })
+    const state = evaluateVerification(sid)
+    expect(state.runs).toEqual([])
+    expect(state.editedSinceLastPass).toEqual(['a.ts'])
+  })
+
+  it.each([['npm test'], ['npm test && echo ok'], ['cd app && npm test'], ['npm run build && npm test'], ['set -o pipefail; npm test | tail -5'], ['npm test;']])('still books %j as a pass', (command) => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    const runs = runsAfter(() => noteVerificationRun(command, 0, false))
+    expect(runs.map((r) => r.exitCode)).toEqual([0])
+  })
+
   it('stores the command redacted', () => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
     const secret = 'ghp_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
@@ -222,6 +249,29 @@ describe('stopHandler', () => {
     expect(stopHandler(stopEvent(sid)).hookType).toBe('pass')
     inSession(sid, () => recordFileEdit('C:/proj/src/other.ts'))
     expect(stopHandler(stopEvent(sid)).hookType).toBe('context')
+  })
+
+  // HAND-DERIVED: the order of edits, passing check and stops below is the whole scenario. The first state and the last are identical text ("edited since the last passing check: widget.ts"), so only a forgotten signature lets the last one speak.
+  it('speaks again when the same edit-without-check state returns after a passing check', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(T0)
+      const sid = newSession()
+      // The same check precedes both edits so the advisory text, and so its signature, is identical each time.
+      inSession(sid, () => recordVerificationRun('npm test', 0, T0))
+      vi.setSystemTime(T0 + 1000)
+      inSession(sid, () => recordFileEdit('C:/proj/src/widget.ts'))
+      expect(stopHandler(stopEvent(sid)).hookType).toBe('context')
+      expect(stopHandler(stopEvent(sid)).hookType).toBe('pass')
+      vi.setSystemTime(T0 + 2000)
+      inSession(sid, () => recordVerificationRun('npm test', 0, T0 + 2000))
+      expect(stopHandler(stopEvent(sid)).hookType).toBe('pass')
+      vi.setSystemTime(T0 + 3000)
+      inSession(sid, () => recordFileEdit('C:/proj/src/widget.ts'))
+      expect(stopHandler(stopEvent(sid)).hookType).toBe('context')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('is off when the config key is off', () => {

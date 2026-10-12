@@ -51,9 +51,9 @@ export function stopHandler(event: HookEvent): HookOutput {
     const key = sessionStateKey(event)
     const state = evaluateVerification(key)
     const text = stopAdvisoryText(state)
-    if (text === null) return passOutput()
-    const signature = createHash('sha256').update(text).digest('hex').slice(0, 16)
     const target = sessionSidecarPath(key, ADVISED_SUFFIX)
+    // A verified state remembers the empty signature: the same edit-then-no-check state recurring after a passing check is a new picture and must be said again.
+    const signature = text === null ? '' : createHash('sha256').update(text).digest('hex').slice(0, 16)
     if (target !== null) {
       if (readAdvised(target) === signature) return passOutput()
       try {
@@ -63,7 +63,7 @@ export function stopHandler(event: HookEvent): HookOutput {
         // Unable to remember: say it again next time rather than never.
       }
     }
-    return contextOutput(text)
+    return text === null ? passOutput() : contextOutput(text)
   } catch {
     return passOutput()
   }

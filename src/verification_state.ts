@@ -22,14 +22,27 @@ const OTHER_VERIFICATION_PATTERNS: ReadonlyArray<RegExp> = [
 ]
 
 const ENV_ASSIGNMENT_PREFIX = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/
-const COMMAND_SEPARATOR = /&&|\|\||[;|\n]/
+const COMMAND_SEPARATOR = /(&&|\|\||[;|\n])/
+
+function isVerificationSegment(segment: string): boolean {
+  const trimmed = segment.trim().replace(ENV_ASSIGNMENT_PREFIX, '')
+  return trimmed !== '' && (isTestRunnerCommand(trimmed) || isLintCommand(trimmed) || OTHER_VERIFICATION_PATTERNS.some((re) => re.test(trimmed)))
+}
 
 /** True when any segment of `command` is a test, lint, typecheck or build invocation. */
 export function isVerificationCommand(command: string): boolean {
-  return command.split(COMMAND_SEPARATOR).some((segment) => {
-    const trimmed = segment.trim().replace(ENV_ASSIGNMENT_PREFIX, '')
-    return trimmed !== '' && (isTestRunnerCommand(trimmed) || isLintCommand(trimmed) || OTHER_VERIFICATION_PATTERNS.some((re) => re.test(trimmed)))
-  })
+  return command.split(COMMAND_SEPARATOR).some(isVerificationSegment)
+}
+
+const PIPEFAIL = /\bset\s+(?:-\w*\s+)*-o\s+pipefail/
+
+/** True when the exit status of `command` is the verdict of its checks: from the first check onward only `&&` joins what follows, no `||`, `;` or newline lets a later segment replace the status, and a pipe follows only under `set -o pipefail`. `npm test 2>&1 | tail`, `npm test || true` and `npm test; echo done` all exit 0 whatever the check did, and a `||` just before the first check means it may not have run at all. */
+export function exitStatusIsCheckVerdict(command: string): boolean {
+  // A trailing separator ends the command with no segment after it.
+  const parts = command.replace(/[;\s]+$/, '').split(COMMAND_SEPARATOR)
+  const first = parts.findIndex(isVerificationSegment)
+  const allowed = PIPEFAIL.test(command) ? ['&&', '|'] : ['&&']
+  return first >= 0 && parts[first - 1] !== '||' && parts.slice(first + 1).every((part, i) => i % 2 === 1 || allowed.includes(part))
 }
 
 /** Claude Code and Copilot CLI deliver a failed call to a separate failure event, so a call that reaches the ordinary post-tool event without a status finished cleanly. Every other host reports failures through the same event, with a status only some of them carry. */
@@ -45,9 +58,9 @@ function storedCommand(command: string): string {
   return redactSecrets(command.replace(/\s+/g, ' ').trim()).text.slice(0, STORED_COMMAND_MAX_CHARS)
 }
 
-/** Record a finished Bash call if it was a verification command. A background launch has not finished, so it is not a verdict. */
+/** Record a finished Bash call if it was a verification command. A background launch has not finished, so it is not a verdict, and neither is a call whose exit status something around the check decided ({@link exitStatusIsCheckVerdict}): that call is left unrecorded, so it neither clears the edits made since the last pass nor counts as a failure. An unknown status is not recorded as null here because evaluateVerification reads null as a pass. */
 export function noteVerificationRun(command: string, exitCode: number | null, runInBackground: boolean): void {
-  if (runInBackground || !isVerificationCommand(command)) return
+  if (runInBackground || !isVerificationCommand(command) || !exitStatusIsCheckVerdict(command)) return
   recordVerificationRun(storedCommand(command), exitCode ?? (successImpliedWithoutStatus() ? 0 : null))
 }
 
