@@ -1,11 +1,17 @@
-/** Existing paths a missing one was probably meant to be. A path a model or a user types is wrong in a handful of recurring ways (a screenshot name whose AM/PM space is U+202F, a leading `@` from a mention, a `:12` line suffix, a directory dropped, a one-letter typo), and each has a cheap, exact repair. Every candidate returned was checked against the disk, so a suggestion never leads to a second miss. */
+/** Existing paths a missing one was probably meant to be. A path a model or a user types is wrong in a handful of recurring ways (a screenshot name whose AM/PM space is U+202F, a leading `@` from a mention, a `:12` line suffix, a directory dropped, a one-letter typo), and each has a cheap, exact repair. Every candidate returned was checked against the disk, so a suggestion never leads to a second miss. The missing path is whatever the model typed, so the lookup is a probe a hostile prompt could aim anywhere: every candidate, directory read and index row is confined to the project root (the working directory when there is no project), left out when it is a credential file name, a vendored or generated tree, a `skip_dirs` directory or an excluded project root. */
 
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, opendirSync } from 'node:fs'
 import * as path from 'node:path'
 
+import { isIgnoredIndexPath } from './baseline.js'
+import { loadConfig } from './config.js'
 import { fileIsAbsent } from './fingerprint.js'
-import { indexedFilesNamed, indexedProjectFiles } from './indexed_file_names.js'
-import { foldPath } from './path_containment.js'
+import { filesNamed, indexedFileList, type IndexedFile } from './indexed_file_names.js'
+import { foldPath, isInsideRoot } from './path_containment.js'
+import { findProject } from './project.js'
+import { isSecretFileName } from './secret_file_names.js'
+import { hasSkipSegmentBelowRoot } from './skip_scope.js'
+import { isUnderBlockedRoot } from './util.js'
 import { levenshteinDistance } from './util_suggest.js'
 
 /** Most candidates returned. */
@@ -15,7 +21,7 @@ export const MAX_PATH_SUGGESTIONS = 3
 const MAX_PATH_CHARS = 1024
 
 /** Directory entries read when looking for a near name beside the missing path. */
-const MAX_DIR_ENTRIES = 5000
+export const MAX_DIR_ENTRIES = 5000
 
 /** Unicode space characters other than the ASCII space: NBSP, the Ogham space, the U+2000 block, narrow NBSP, the medium mathematical space and the ideographic space. */
 const UNICODE_SPACES = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g
@@ -51,13 +57,49 @@ function spellingVariants(missing: string): string[] {
   return [...seen].filter((spelling) => spelling !== '')
 }
 
-function entriesOf(dir: string): string[] {
+/** Where suggestions may come from and what they may be: `root` is the project root, or the working directory when there is no project; `indexed` says the index of `root` may be read. */
+interface Scope {
+  root: string
+  indexed: boolean
+  skipDirs: readonly string[]
+  blockedRoots: readonly string[]
+}
+
+/** The scope of one lookup. The index is read only for a real project: `resolveProjectRoot` falls back to the working directory itself (the home directory, say) when nothing marks a project, and an index keyed on that would answer for every project under it. */
+function scopeFor(cwd: string, rootDir: string | null): Scope {
+  const cfg = loadConfig()
+  const project = rootDir !== null ? findProject(rootDir) : null
+  const indexed = rootDir !== null && project !== null && samePath(project.root, rootDir)
+  return { root: indexed && rootDir !== null ? rootDir : cwd, indexed, skipDirs: cfg.indexing.skip_dirs, blockedRoots: cfg.worker.blocked_roots }
+}
+
+/** Whether `abs` may be offered: inside the scope (links resolved), not a credential file name, not under a vendored or generated tree, a configured `skip_dirs` directory or an excluded project root. */
+function permitted(abs: string, scope: Scope): boolean {
+  if (isSecretFileName(path.basename(abs))) return false
+  if (isIgnoredIndexPath(abs, scope.root) || hasSkipSegmentBelowRoot(abs, scope.root, (segment) => scope.skipDirs.includes(segment))) return false
+  if (isUnderBlockedRoot(abs, scope.blockedRoots)) return false
+  return isInsideRoot(abs, scope.root)
+}
+
+/** The first {@link MAX_DIR_ENTRIES} names in `dir`, read entry by entry so a huge directory is never listed whole. None for a directory outside the scope, absent or unreadable. */
+function entriesOf(dir: string, scope: Scope): string[] {
+  if (!isInsideRoot(dir, scope.root)) return []
+  const names: string[] = []
   try {
-    return readdirSync(dir).slice(0, MAX_DIR_ENTRIES)
+    const handle = opendirSync(dir)
+    try {
+      while (names.length < MAX_DIR_ENTRIES) {
+        const entry = handle.readSync()
+        if (entry === null) break
+        names.push(entry.name)
+      }
+    } finally {
+      handle.closeSync()
+    }
   } catch {
     // A directory that is absent or unreadable has no near names to offer; the rungs that do not need it still run.
-    return []
   }
+  return names
 }
 
 /** `abs` as the reader would type it: relative to `cwd` when it sits under it, forward slashes either way. */
@@ -86,13 +128,13 @@ function resolveIndexed(file: string, rootDir: string): string {
 }
 
 /** Rung 2: indexed files with the same basename, or the same stem under another extension (`config.js` for `config.ts`). When more than the cap share the name (`index.ts`), only those that also share a parent directory name with the missing path are kept: a pick among fifty is no suggestion. */
-function sameNameFiles(missingAbs: string, rootDir: string): string[] {
+function sameNameFiles(missingAbs: string, rootDir: string, files: readonly IndexedFile[], scope: Scope): string[] {
   const base = path.basename(missingAbs)
   const dot = base.lastIndexOf('.')
   const names = dot > 0 ? [base, base.slice(0, dot)] : [base]
-  const found = [...new Set(names.flatMap((name) => indexedFilesNamed(name, rootDir)))]
+  const found = [...new Set(names.flatMap((name) => filesNamed(files, name)))]
     .map((file) => resolveIndexed(file, rootDir))
-    .filter((abs) => !samePath(abs, missingAbs) && !fileIsAbsent(abs))
+    .filter((abs) => !samePath(abs, missingAbs) && !fileIsAbsent(abs) && permitted(abs, scope))
   const ranked = found.sort((a, b) => sharedParents(b, missingAbs) - sharedParents(a, missingAbs) || a.localeCompare(b))
   return ranked.length <= MAX_PATH_SUGGESTIONS ? ranked : ranked.filter((abs) => sharedParents(abs, missingAbs) > 0)
 }
@@ -105,7 +147,7 @@ function typoBudget(base: string): number {
 }
 
 /** Rung 3: a name beside the missing path, then an indexed file, whose basename is a typo of the missing one. Same-directory names rank first, then the closer edit distance. */
-function nearNameFiles(missingAbs: string, rootDir: string | null): string[] {
+function nearNameFiles(missingAbs: string, rootDir: string, files: readonly IndexedFile[] | null, scope: Scope): string[] {
   const base = path.basename(missingAbs)
   const budget = typoBudget(base)
   if (budget === 0) return []
@@ -119,19 +161,13 @@ function nearNameFiles(missingAbs: string, rootDir: string | null): string[] {
     if (distance > budget) return
     scored.push({ abs, rank: sameDir ? 0 : 1, distance })
   }
-  for (const name of entriesOf(dir)) consider(path.join(dir, name), true)
-  if (rootDir !== null) {
-    try {
-      for (const file of indexedProjectFiles(rootDir)) consider(resolveIndexed(file, rootDir), false)
-    } catch {
-      // No readable index leaves the names beside the missing path, already considered, to answer.
-    }
-  }
-  return scored.sort((a, b) => a.rank - b.rank || a.distance - b.distance || a.abs.localeCompare(b.abs)).map((entry) => entry.abs).filter((abs) => !samePath(abs, missingAbs) && !fileIsAbsent(abs))
+  for (const name of entriesOf(dir, scope)) consider(path.join(dir, name), true)
+  for (const file of files ?? []) consider(resolveIndexed(file.filePath, rootDir), false)
+  return scored.sort((a, b) => a.rank - b.rank || a.distance - b.distance || a.abs.localeCompare(b.abs)).map((entry) => entry.abs).filter((abs) => !samePath(abs, missingAbs) && !fileIsAbsent(abs) && permitted(abs, scope))
 }
 
 /** Rung 4: `abs` with each segment that does not exist swapped for the one directory entry that differs from it only in case, or null when no segment needed it or one had no such entry. On a case-insensitive filesystem every segment already resolves and this is null. */
-function caseCorrected(abs: string): string | null {
+function caseCorrected(abs: string, scope: Scope): string | null {
   const root = path.parse(abs).root
   let current = root
   let changed = false
@@ -141,19 +177,20 @@ function caseCorrected(abs: string): string | null {
       current = next
       continue
     }
-    const matches = entriesOf(current).filter((entry) => entry.toLowerCase() === segment.toLowerCase())
+    const matches = entriesOf(current, scope).filter((entry) => entry.toLowerCase() === segment.toLowerCase())
     if (matches.length !== 1) return null
     current = path.join(current, matches[0] as string)
     changed = true
   }
-  return changed ? current : null
+  return changed && permitted(current, scope) ? current : null
 }
 
-/** At most {@link MAX_PATH_SUGGESTIONS} existing paths `missing` may have been meant to name, relative to `cwd` where they sit under it. `rootDir` is the project the index was built for, or null when there is none. A spelling variant that exists decides the answer alone; otherwise the same-name, near-name and case-only rungs add to it in that order. */
+/** At most {@link MAX_PATH_SUGGESTIONS} existing paths `missing` may have been meant to name, relative to `cwd` where they sit under it. `rootDir` is the project root the lookup resolved, or null when there is none; every path returned lies inside it, or inside `cwd` when it is not a real project, and the index is read (once) only for a real project. A spelling variant that exists decides the answer alone; otherwise the same-name, near-name and case-only rungs add to it in that order. */
 export function suggestPaths(missing: string, cwd: string, rootDir: string | null): string[] {
   if (missing === '' || missing.length > MAX_PATH_CHARS || /[\r\n\0]/.test(missing)) return []
+  const scope = scopeFor(cwd, rootDir)
   const missingAbs = path.resolve(cwd, missing)
-  const variants = spellingVariants(missing).map((spelling) => path.resolve(cwd, spelling)).filter((abs) => !samePath(abs, missingAbs) && existsSync(abs))
+  const variants = spellingVariants(missing).map((spelling) => path.resolve(cwd, spelling)).filter((abs) => !samePath(abs, missingAbs) && permitted(abs, scope) && existsSync(abs))
   if (variants.length > 0) return [...new Set(variants)].slice(0, MAX_PATH_SUGGESTIONS).map((abs) => displayPath(abs, cwd))
 
   const stripped = path.resolve(cwd, withoutDecoration(missing))
@@ -161,15 +198,17 @@ export function suggestPaths(missing: string, cwd: string, rootDir: string | nul
   const add = (list: readonly string[]): void => {
     for (const abs of list) if (!samePath(abs, missingAbs) && !found.some((seen) => samePath(seen, abs))) found.push(abs)
   }
-  if (rootDir !== null) {
+  let files: IndexedFile[] | null = null
+  if (scope.indexed) {
     try {
-      add(sameNameFiles(stripped, rootDir))
+      files = indexedFileList(scope.root)
+      add(sameNameFiles(stripped, scope.root, files, scope))
     } catch {
       // No readable index (never built, or the read database is unavailable) leaves the disk-only rungs below to answer.
     }
   }
-  const corrected = caseCorrected(stripped)
-  add(nearNameFiles(stripped, rootDir))
+  const corrected = caseCorrected(stripped, scope)
+  add(nearNameFiles(stripped, scope.root, files, scope))
   if (corrected !== null) add([corrected])
   return found.slice(0, MAX_PATH_SUGGESTIONS).map((abs) => displayPath(abs, cwd))
 }

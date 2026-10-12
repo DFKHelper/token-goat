@@ -34,7 +34,12 @@ vi.mock('node:fs', async (importOriginal) => {
     }
     return [...names]
   }
-  return { ...real, default: { ...real, existsSync, readdirSync }, existsSync, readdirSync }
+  const opendirSync = (p: unknown): { readSync: () => { name: string } | null; closeSync: () => void } => {
+    const names = readdirSync(p)
+    let next = 0
+    return { readSync: () => (next < names.length ? { name: names[next++] as string } : null), closeSync: () => undefined }
+  }
+  return { ...real, default: { ...real, existsSync, readdirSync, opendirSync }, existsSync, readdirSync, opendirSync }
 })
 
 // The fake volume is case-sensitive, so paths compare as written, as foldPath does on Linux.

@@ -22,15 +22,21 @@ vi.mock('node:fs', async (importOriginal) => {
     }
     return [...names]
   }
-  return { ...real, default: { ...real, existsSync, readdirSync }, existsSync, readdirSync }
+  const opendirSync = (p: unknown): { readSync: () => { name: string } | null; closeSync: () => void } => {
+    const names = readdirSync(p)
+    let next = 0
+    return { readSync: () => (next < names.length ? { name: names[next++] as string } : null), closeSync: () => undefined }
+  }
+  return { ...real, default: { ...real, existsSync, readdirSync, opendirSync }, existsSync, readdirSync, opendirSync }
 })
 
-vi.mock('../src/path_containment.js', async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), foldPath: fake.fold }))
+vi.mock('../src/path_containment.js', async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), foldPath: fake.fold, isInsideRoot: () => true }))
+vi.mock('../src/project.js', async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), findProject: (dir: string) => ({ root: dir, hash: 'fake', marker: '.git' }) }))
 vi.mock('../src/fingerprint.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   fileIsAbsent: (p: string) => ![...fake.files].some((file) => fake.fold(file) === fake.fold(String(p))),
 }))
-vi.mock('../src/indexed_file_names.js', () => ({ indexedProjectFiles: () => fake.indexed, indexedFilesNamed: () => fake.indexed }))
+vi.mock('../src/indexed_file_names.js', () => ({ indexedFileList: () => fake.indexed.map((filePath) => ({ filePath, base: filePath.toLowerCase() })), filesNamed: () => fake.indexed }))
 
 import { suggestPaths } from '../src/path_suggest.js'
 

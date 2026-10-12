@@ -12,6 +12,7 @@ export class CliError extends Error {
   }
 }
 
+// Module state is safe because no process runs two commands at once: hook_server.ts sets `busy` before it dispatches and answers a second request with a `busy` frame (the gates at lines 312 and 368), and batch_serve.ts runs requests one after another through `chain = chain.then(...)`; a CLI process runs one command.
 let invocation: readonly string[] | null = null
 
 /** Records the arguments `run` was handed, after the entry script. A command answered inside the hook server runs with that server's `process.argv`, so the arguments the reader typed are only here. */
