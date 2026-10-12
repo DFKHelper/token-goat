@@ -252,6 +252,7 @@ describe('runProbe end to end through the built bundle', () => {
       "if (mode === 'hangloggedout') { console.log('Not logged in · Please run /login'); setTimeout(() => process.exit(1), 8000); await new Promise(() => {}) }",
       "if (mode === 'hang') { setTimeout(() => process.exit(0), 8000); await new Promise(() => {}) }",
       "if (mode === 'blocked') process.exit(1)",
+      "if (mode === 'flood') { process.stdout.write('x'.repeat(2 * 1024 * 1024)); process.exit(0) }",
       "if (mode === 'dieburied') { console.error(\"error: unknown option '--x'\"); for (let i = 0; i < 8; i++) console.error('usage line ' + i); process.exit(1) }",
       'const contexts = []',
       "if (mode !== 'skip') {",
@@ -357,7 +358,7 @@ describe('runProbe end to end through the built bundle', () => {
     expect(probeVerdict(report)).toBe('fail')
   })
 
-  // HAND-DERIVED: with the timeout clause gone, the captured login notice printed before the hang would be set aside as inconclusive; a hung run must still be judged.
+  // HAND-DERIVED: a pin, not a regression catch: the timeout clause in runProbe is kept on purpose so a hung harness is judged on its receipts, and this holds that a login notice printed before the hang does not set the run aside as inconclusive.
   it('fails a run that printed a login notice and then timed out', () => {
     const report = probe('hangloggedout', 2_000)
     expect(report.status).toBe('timeout')
@@ -374,6 +375,24 @@ describe('runProbe end to end through the built bundle', () => {
     expect(text).toContain('[FAIL] the harness could not be started: ')
     expect(text).toMatch(/ENOENT|EACCES|EINVAL/)
     expect(text).not.toContain('hook did not run')
+    expect(report.detail).toBe('ENOENT')
+  })
+
+  // HAND-DERIVED: spawnSync words its error `spawnSync <resolved path> ENOENT`, and the path sits under the home directory.
+  it('keeps the resolved binary path out of the text and the --json output', () => {
+    const missing = join(dirname(harnessPath), 'no-such-dir', 'claude.exe')
+    const report = runProbe('claudecode', { cwd, resolve: () => missing })
+    expect(formatProbeReport(report)).not.toContain('no-such-dir')
+    expect(JSON.stringify(report)).not.toContain('no-such-dir')
+  })
+
+  // HAND-DERIVED: a harness that prints more than spawnSync's default 1 MiB buffer is stopped with ENOBUFS after it started, so it is judged, not reported as unstartable.
+  it('judges a harness that overflowed the output buffer instead of calling it unstartable', () => {
+    const report = probe('flood')
+    expect(report.status).toBe('failed')
+    expect(report.events.map((e) => e.result)).toEqual(['not_fired', 'not_fired'])
+    expect(probeVerdict(report)).toBe('fail')
+    expect(formatProbeReport(report)).not.toContain('could not be started')
   })
 
   it('fails a run that exited non-zero with empty output and no known cause', () => {

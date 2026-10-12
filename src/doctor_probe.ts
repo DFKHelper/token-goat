@@ -87,6 +87,9 @@ function tail(text: string): string {
   return text.trim().split(/\r?\n/).slice(-5).join('\n')
 }
 
+// The codes spawnSync reports when the binary cannot be launched at all (EFTYPE is what Windows gives a file that is not an executable); anything else, such as ENOBUFS, means the harness ran. The code alone is the detail: the error message names the resolved binary path.
+const START_ERROR_CODES: ReadonlySet<string> = new Set(['ENOENT', 'EACCES', 'EPERM', 'EINVAL', 'EFTYPE', 'ENOEXEC', 'ENOTDIR'])
+
 /** Run the probe for `harness` in `cwd`. `resolve` is the PATH lookup, a parameter only so a test can name a stand-in harness; everything after it (the spawn, the hooks the child runs, the receipt directory) is the shipping path. */
 export function runProbe(harness: HarnessName, opts: { cwd?: string; resolve?: (bin: string) => string | null; timeoutMs?: number } = {}): ProbeReport {
   const spec = PROBE_COMMANDS[harness]
@@ -106,9 +109,10 @@ export function runProbe(harness: HarnessName, opts: { cwd?: string; resolve?: (
     const timedOut = (run.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT'
     const status: ProbeRunStatus = timedOut ? 'timeout' : run.status === 0 ? 'ok' : 'failed'
     const output = `${run.stderr ?? ''}\n${stdout}`.trim()
-    const detail = tail(output || run.error?.message || '')
-    const spawnError = run.error !== undefined && !timedOut ? (run.error as NodeJS.ErrnoException) : undefined
-    if (spawnError !== undefined) return { harness, command, status: 'spawn_failed', exitCode: null, events: probed.map((event) => ({ event, result: implemented.has(event) ? 'not_fired' : 'not_wired' })), detail: tail(`${spawnError.code ?? 'error'}: ${spawnError.message}`) }
+    const detail = tail(output || run.error?.message?.split(resolved).join('<harness>') || '')
+    const startError = (run.error as NodeJS.ErrnoException | undefined)?.code
+    const spawnError = startError !== undefined && START_ERROR_CODES.has(startError) ? startError : undefined
+    if (spawnError !== undefined) return { harness, command, status: 'spawn_failed', exitCode: null, events: probed.map((event) => ({ event, result: implemented.has(event) ? 'not_fired' : 'not_wired' })), detail: spawnError }
     const knownCause = probeCause(output)
     // A clean exit with an empty stdout is still judged on its receipts: that is the hook-ran-but-nothing-came-back case the probe exists to catch. A failed run is set aside only when its output names a captured harness-side cause; a timeout, or a failure with no such text, may be a hook that hung or blocked the prompt, so it is judged.
     const replied = status === 'ok' || modelReplied(stdout, nonce) || status === 'timeout' || knownCause === null

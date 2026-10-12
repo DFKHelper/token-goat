@@ -108,6 +108,12 @@ describe('exact boundaries of the row caps', () => {
     expect(capJsonRows(items.slice(0, 15), 25).truncated).toBe(false)
   })
 
+  // HAND-DERIVED: the JSON of "漢a" is two quotes (3 + 3), one wide character (10) and one ASCII letter (3), 19 ninths, plus 6 for the row separator is 25; a budget of 25 tokens is 225 ninths, so nine rows fit exactly and a tenth does not.
+  it('keeps the row that lands exactly on the budget when wide and ASCII characters are mixed', () => {
+    const items = Array.from({ length: 12 }, () => '漢a')
+    expect(capJsonRows(items, 25).items.length).toBe(9)
+  })
+
   it('drops the item one unit past the budget', () => {
     // 3-character items cost 5; 14 items are 70 of 75 and a 15th that is 4 characters costs 6, which is 76.
     const items = [...Array.from({ length: 14 }, () => 100), 1000]
