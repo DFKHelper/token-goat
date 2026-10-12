@@ -553,6 +553,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/search/search_cli.ts`](src/search/search_cli.ts) | Exports: `runParallelSearch` |
 | [`src/search/symbol_fts.ts`](src/search/symbol_fts.ts) | Full-text symbol search split by kind, for the `search` command's symbol and heading channels. |
 | [`src/secret_redact.ts`](src/secret_redact.ts) | Defense-in-depth secret redaction for {@link file://./disk_cache.ts}'s `storeBlob()` choke point. |
+| [`src/served_extent.ts`](src/served_extent.ts) | The line extents a successful `token-goat read` or `token-goat section` call handed the model, so the session's served-range ledger counts them like a sliced Read does. |
 | [`src/served_lines.ts`](src/served_lines.ts) | Finding the stretches of a delivered file window that this session has already served. |
 | [`src/sessions_dir.ts`](src/sessions_dir.ts) | Where per-session state blobs live on disk, and nothing else. |
 | [`src/sharepoint_resolve.ts`](src/sharepoint_resolve.ts) | Best-effort resolution of a SharePoint/OneDrive sharing URL to a local synced file path, so `token-goat` can read a document an agent was only given a share link for instead of fai |
@@ -587,7 +588,9 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/windows_powershell.ts`](src/windows_powershell.ts) | How token-goat starts Windows PowerShell to ask about processes: one place for the executable and its arguments, shared by doctor and the hidden-rule scan. |
 | [`src/windows_system32.ts`](src/windows_system32.ts) | Where a Windows system executable lives, from SystemRoot, then windir, then the literal C:\Windows: only an absolute folder that holds the file counts, so a relative or planted val |
 | [`src/worker_lifecycle.ts`](src/worker_lifecycle.ts) | The daemon's controls, kept out of `worker.ts` so the hook bundle loads them without the drain: `startDetachedWorker()`, `stopWorker()`, `isWorkerRunning()`, `ensureWorkerAlive()`, the pid and stamp files, the drain heartbeat, the error log, and the poll interval (`DEFAULT_POLL_INTERVAL_MS`, 2000 ms) |
+| [`src/write_guard_hooks.ts`](src/write_guard_hooks.ts) | The checks behind the Write/Edit pre-hook's partial-view guard and sibling-copy advice, with the session and config reads they need. |
 | [`src/write_guards.ts`](src/write_guards.ts) | Pure checks behind the Write/Edit pre-hook's partial-view guard (hooks_write.ts): a placeholder standing in for content the model did not write, and a whole-file Write that deletes |
+| [`src/write_target.ts`](src/write_target.ts) | What a Write/Edit pre-hook can learn about the file it targets without touching the session: the diff caps and a bounded read of what is on disk. |
 | [`src/xlsx_extract.ts`](src/xlsx_extract.ts) | Excel (.xlsx) narrow-slice reader. |
 | [`src/xlsx_reader.ts`](src/xlsx_reader.ts) | Minimal in-house SpreadsheetML (.xlsx) reader. |
 | [`src/zip_bounds.ts`](src/zip_bounds.ts) | Shared decompression bounds for zip-format archives (.zip/.jar/.whl/.vsix/.nupkg, and the .docx/.pptx/.xlsx OOXML formats, which are all ZIP containers under the hood). |

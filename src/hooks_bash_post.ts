@@ -751,6 +751,14 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
         const narrowing = tgRead.spec.slice(tgRead.filePath.length)
         if (narrowing.length > 0) recordSymbolRead(tgRead.filePath, narrowing.replace(/^::/, ''))
       }
+      if (tgRead.filePath !== null) {
+        try {
+          const { servedExtents } = await import('./served_extent.js')
+          for (const extent of await servedExtents(tgRead.sub, tgRead.spec, cmd, runDir)) recordFileLineRange(extent.filePath, extent.start, extent.end)
+        } catch {
+          // Best-effort bookkeeping: an index that cannot answer leaves the ledger as it was.
+        }
+      }
       if (tgRead.filePath !== null && loadConfig().hints.log_large_file_hint_outcomes) {
         const pendingSize = takePendingLargeFileHint(tgRead.filePath)
         if (pendingSize !== null) {

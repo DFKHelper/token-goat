@@ -140,7 +140,7 @@ export interface HintsConfig {
   write_blind_drop: WriteBlindDropPolicy
   /** Whether a Write that creates a new file named like a copy of an existing one (`solver_v2.py`, `app_fixed.ts`, `notes.md.bak`) and is mostly that file's content is told once to edit the original instead. Advice only. */
   write_sibling_copy: boolean
-  /** Globs (`*` within a path segment, `**` across segments) of new-file paths the sibling-copy advice never speaks about, matched against the path with forward slashes. Built in already: files under migrations, versions, fixtures, `__snapshots__` and `api/vN` directories. */
+  /** Globs (`*` within a path segment, `**` across segments) of new-file paths the sibling-copy advice never speaks about, matched against the path with forward slashes. Built in already: files under migrations, versions, fixtures, `__snapshots__` and any `vN` directory. */
   write_sibling_copy_allow: string[]
   reread_deny: boolean
   reread_deny_min_bytes: number

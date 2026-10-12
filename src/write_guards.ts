@@ -1,6 +1,6 @@
 /** Pure checks behind the Write/Edit pre-hook's partial-view guard (hooks_write.ts): a placeholder standing in for content the model did not write, and a whole-file Write that deletes lines the session never saw. Nothing here reads the disk or the session; the caller supplies old text, new text and the ranges served. */
 
-import { removedLineIndexes } from './line_diff.js'
+import { splitLines } from './line_diff.js'
 import { displaySafePath } from './paths.js'
 import { echoedValue, fencedCommand, fileSubject, quotedArg } from './hint_suggestion_guard.js'
 
@@ -16,12 +16,14 @@ const MAX_ELISION_LINE_CHARS = 120
 const LEADING_COMMENT = new RegExp(`^${COMMENT_LEAD}`)
 const TRAILING_COMMENT = new RegExp(`${COMMENT_CLOSE}$`)
 const ANY_ELLIPSIS = new RegExp(ELLIPSIS, 'g')
+const HAS_ELLIPSIS = new RegExp(ELLIPSIS)
 const STARTS_WITH_ELLIPSIS = new RegExp(`^${ELLIPSIS}`)
-const LOOSE_ELLIPSIS_COMMENT = new RegExp(`^${ELLIPSIS}\\s*\\S.{0,80}$`)
-const LOOSE_NEEDS = new RegExp(`\\b${KEYWORD}\\b`, 'i')
+const ENDS_WITH_ELLIPSIS = new RegExp(`${ELLIPSIS}$`)
+const C_STYLE_LEAD = /^(?:\/{2,}|\/\*+|<!--)/
+const LEAD_THEN_TRAILER = new RegExp(`^(?:keep )?(?:the )?${KEYWORD}(?: \\S+){0,4}? (?:unchanged|here|omitted|truncated|as[- ]is|the same|as before|above|below)$`, 'i')
+const WRAPPED_MARKER = new RegExp(`^(?:the )?${KEYWORD}(?: \\S+){0,3}$`, 'i')
 const SUBJECT_ONLY = new RegExp(`^${SUBJECT}(?: ${TRAILER})?$`, 'i')
 const BRACKET_NOTE = new RegExp(`^(?:truncated|omitted|content (?:truncated|omitted)|(?:remaining|rest of)[^\\]]{0,60}(?:omitted|truncated|unchanged)|\\d+ (?:more )?lines? (?:omitted|truncated|folded))$`, 'i')
-const BARE_SUBJECT = /^(?:rest of|remaining|existing|unchanged)\b.{0,60}$/i
 const FOLD_MARKER = new RegExp(`^${ELLIPSIS}\\s*\\d+\\s+(?:more\\s+)?lines?\\b.*\\bfolded\\b`, 'i')
 const TOKEN_GOAT_NOTICE = /^\[token-goat[: ].{0,200}\]$/
 
@@ -35,20 +37,23 @@ function isElisionLine(trimmed: string): boolean {
   if (trimmed === '' || trimmed.length > MAX_ELISION_LINE_CHARS) return false
   if (TOKEN_GOAT_NOTICE.test(trimmed) || FOLD_MARKER.test(trimmed)) return true
   if (trimmed.startsWith('[') && trimmed.endsWith(']')) return BRACKET_NOTE.test(spaced(trimmed.slice(1, -1)))
-  if (STARTS_WITH_ELLIPSIS.test(trimmed)) return BARE_SUBJECT.test(trimmed.replace(STARTS_WITH_ELLIPSIS, '').replace(/^[\s[(]+/, ''))
-  if (!LEADING_COMMENT.test(trimmed)) return false
-  const body = trimmed.replace(LEADING_COMMENT, '').replace(TRAILING_COMMENT, '').trim()
-  if (LOOSE_ELLIPSIS_COMMENT.test(body) && LOOSE_NEEDS.test(body)) return true
-  return SUBJECT_ONLY.test(spaced(body))
+  const led = LEADING_COMMENT.test(trimmed)
+  if (!led && !STARTS_WITH_ELLIPSIS.test(trimmed)) return false
+  const body = led ? trimmed.replace(LEADING_COMMENT, '').replace(TRAILING_COMMENT, '').trim() : trimmed
+  const payload = spaced(body)
+  const hasEllipsis = HAS_ELLIPSIS.test(body)
+  if (SUBJECT_ONLY.test(payload)) return hasEllipsis || (led && C_STYLE_LEAD.test(trimmed))
+  if (!hasEllipsis) return false
+  return LEAD_THEN_TRAILER.test(payload) || (STARTS_WITH_ELLIPSIS.test(body) && ENDS_WITH_ELLIPSIS.test(body) && WRAPPED_MARKER.test(payload))
 }
 
 /** The first placeholder line of `newText` whose trimmed text occurs nowhere in `knownText` (the file as it is now, plus an Edit's old_string), or null. A marker the file already carries is the file's own content, not something the model substituted. */
-export function findNewElisionLine(newText: string, knownText: string): string | null {
+export function findNewElisionLine(newText: string, knownText: string | (() => string)): string | null {
   let known: Set<string> | undefined
-  for (const raw of newText.split(/\r\n|\r|\n/)) {
+  for (const raw of splitLines(newText)) {
     const trimmed = raw.trim()
     if (!isElisionLine(trimmed)) continue
-    known ??= new Set(knownText.split(/\r\n|\r|\n/).map((l) => l.trim()))
+    known ??= new Set(splitLines(typeof knownText === 'function' ? knownText() : knownText).map((l) => l.trim()))
     if (!known.has(trimmed)) return trimmed
   }
   return null
@@ -73,6 +78,44 @@ export function patchAddedLines(patch: string): Array<{ path: string; added: str
     }
   }
   return files
+}
+
+/** The 0-based indexes of `oldLines` that a rewrite into `newLines` removes: every old line outside one longest common subsequence. Needs the full DP table to walk back through, so the caller bounds both inputs (hooks_write.ts caps them at MAX_LINES_FOR_DIFF); a shared head and tail are matched off first, which is nearly all of a small edit. */
+export function removedLineIndexes(oldLines: string[], newLines: string[]): number[] {
+  let head = 0
+  while (head < oldLines.length && head < newLines.length && oldLines[head] === newLines[head]) head++
+  let tail = 0
+  while (tail < oldLines.length - head && tail < newLines.length - head && oldLines[oldLines.length - 1 - tail] === newLines[newLines.length - 1 - tail]) tail++
+  const n = oldLines.length - head - tail
+  const m = newLines.length - head - tail
+  const removed: number[] = []
+  if (m === 0) {
+    for (let i = 0; i < n; i++) removed.push(head + i)
+    return removed
+  }
+  const width = m + 1
+  const table = new Uint16Array((n + 1) * width)
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      table[i * width + j] = oldLines[head + i - 1] === newLines[head + j - 1]
+        ? (table[(i - 1) * width + j - 1] ?? 0) + 1
+        : Math.max(table[(i - 1) * width + j] ?? 0, table[i * width + j - 1] ?? 0)
+    }
+  }
+  let i = n
+  let j = m
+  while (i > 0) {
+    if (j > 0 && oldLines[head + i - 1] === newLines[head + j - 1]) {
+      i--
+      j--
+    } else if (j > 0 && (table[i * width + j - 1] ?? 0) >= (table[(i - 1) * width + j] ?? 0)) {
+      j--
+    } else {
+      removed.push(head + i - 1)
+      i--
+    }
+  }
+  return removed.reverse()
 }
 
 /** Inclusive 1-based line runs of `oldLines` that a rewrite into `newLines` removes and that fall outside every served range. Empty when nothing unseen is removed. */

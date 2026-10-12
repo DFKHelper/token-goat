@@ -50,11 +50,11 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp('(?:^|/)' + source + '$', 'i')
 }
 
-/** Whether the advice stays silent for `filePath`: it sits in a directory of numbered or variant files by design (`migrations`, `versions`, `fixtures`, `__snapshots__`, `api/vN`), or matches one of the user's `allow` globs. */
+/** Whether the advice stays silent for `filePath`: it sits in a directory of numbered or variant files by design (`migrations`, `versions`, `fixtures`, `__snapshots__`, any `vN` directory), or matches one of the user's `allow` globs. */
 export function siblingCopyExcluded(filePath: string, allow: readonly string[]): boolean {
   const normalized = filePath.replace(/\\/g, '/')
   const segments = normalized.split('/').slice(0, -1).map((s) => s.toLowerCase())
-  if (segments.some((s, i) => SERIES_DIRECTORIES.has(s) || (s === 'api' && VERSION_DIRECTORY.test(segments[i + 1] ?? '')))) return true
+  if (segments.some((s) => SERIES_DIRECTORIES.has(s) || VERSION_DIRECTORY.test(s))) return true
   return allow.some((glob) => glob !== '' && globToRegExp(glob.replace(/\\/g, '/')).test(normalized))
 }
 
