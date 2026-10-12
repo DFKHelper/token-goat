@@ -24,11 +24,12 @@ export const PROBE_COMMANDS: Readonly<Partial<Record<HarnessName, { readonly bin
 export const IDE_HOSTS_WITHOUT_PROBE: ReadonlySet<string> = new Set(['vscode', 'visualstudio', 'jetbrains'])
 export const NO_HEADLESS_PROBE_EXIT_CODE = 3
 
+/** The stderr line for `doctor --probe` on a host that runs inside an editor and has no headless mode. */
 export function noHeadlessProbeMessage(host: string): string {
   return `${host} has no headless mode, so doctor --probe cannot send it a prompt; run token-goat doctor to check its install and hooks`
 }
 
-/** `message` with each spelling of the resolved binary path replaced by `<harness>`; on Windows the match ignores case and slash direction, since `C:/x/Claude.exe` and `c:\x\claude.exe` name one file. */
+/** `message` with each spelling of the resolved binary path replaced by `<harness>`; on Windows the match ignores case and slash direction and must end at a path-segment boundary, since `C:/x/Claude.exe` and `c:\x\claude.exe` name one file. */
 export function hideResolvedPath(message: string, resolved: string): string {
   if (resolved === '') return message
   if (process.platform !== 'win32') return message.split(resolved).join('<harness>')
@@ -38,12 +39,14 @@ export function hideResolvedPath(message: string, resolved: string): string {
   if (haystack.length !== message.length || needle.length !== resolved.length) return message.split(resolved).join('<harness>')
   let out = ''
   let from = 0
-  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, from)) {
+  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, Math.max(from, at + 1))) {
+    if (/[a-z0-9._-]/.test(haystack[at + needle.length] ?? '')) continue
     out += message.slice(from, at) + '<harness>'
     from = at + needle.length
   }
   return out + message.slice(from)
 }
+
 export function isProbeHarness(name: string): name is HarnessName {
   return Object.prototype.hasOwnProperty.call(PROBE_COMMANDS, name)
 }

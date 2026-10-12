@@ -30,9 +30,17 @@ function sliceToGuardTokens(text: string, tokens: number, dense: boolean): strin
   return safeSlice(text, end)
 }
 
-/** The longest prefix of `text` that {@link estimateTokens} still prices at `maxTokens` or fewer. Priced character by character with the class the whole text has, so a prefix heavy in wide-script characters is cut where its own cost runs out, not where a proportion of its length does. */
+/** The longest prefix of `text` that {@link estimateTokens} prices at `maxTokens` or fewer, never splitting a surrogate pair, and `text` itself when it already fits; found by searching the prefix length against the estimator itself, so the cut agrees with the check at the exact edge. */
 export function sliceToEstimatedTokens(text: string, maxTokens: number): string {
-  return sliceToGuardTokens(text, maxTokens - 1, classifyContent(stripAnsiEscapes(text)) === 'dense')
+  if (estimateTokens(text) <= maxTokens) return text
+  let lo = 0
+  let hi = text.length
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2)
+    if (estimateTokens(safeSlice(text, mid)) <= maxTokens) lo = mid
+    else hi = mid - 1
+  }
+  return safeSlice(text, lo)
 }
 
 /** Trim text to fit within a token budget, keeping leading lines. Preserves as many leading whole lines as fit within the budget, appending a marker line that explains the cap and suggests remediation. @param text The text to trim. @param budgetTokens The maximum allowed tokens. @param command Optional command label for tailored hint text. @param opts.reserveTokens Tokens of the budget a caller will spend around the result (a fence's tags and notice), kept out of both the entry check and the body; the marker still names `budgetTokens`. @returns Trimmed text with marker, or original text if within budget. */

@@ -83,6 +83,11 @@ describe('hiding the resolved binary path', () => {
     expect(hideResolvedPath(`${resolved.toLowerCase()} and ${resolved}`, resolved)).toBe('<harness> and <harness>')
   })
 
+  // HAND-DERIVED: a path that is only the start of a longer one names a different file, so it stays.
+  it.runIf(process.platform === 'win32')('leaves a longer path that merely starts with the resolved one', () => {
+    expect(hideResolvedPath('C:/ab/x', 'c:/a')).toBe('C:/ab/x')
+  })
+
   it('leaves a message without the path alone', () => {
     expect(hideResolvedPath('spawnSync ENOBUFS', resolved)).toBe('spawnSync ENOBUFS')
   })
