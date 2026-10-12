@@ -445,6 +445,13 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
   const memServed = (mem.compactedAt ?? 0) === compactedAt ? (mem.fileServedOutputs ?? []) : []
   const rawDiskCliReads = (disk.compactedAt ?? 0) === compactedAt ? (disk.cliReads ?? []) : []
   const memCliReads = (mem.compactedAt ?? 0) === compactedAt ? (mem.cliReads ?? []) : []
+  // One verification run per command, the later of the two when both processes saw it, oldest first and capped at MAX_VERIFICATION_RUNS; empty is omitted from the blob like the other optional lists.
+  const latestRuns = new Map<string, VerificationRun>()
+  for (const run of [...(disk.verificationRuns ?? []), ...(mem.verificationRuns ?? [])]) {
+    const seen = latestRuns.get(run.command)
+    if (seen === undefined || run.at >= seen.at) latestRuns.set(run.command, run)
+  }
+  const verificationRuns = Array.from(latestRuns.values()).sort((a, b) => a.at - b.at).slice(-MAX_VERIFICATION_RUNS)
   // recordFileEdit clears a single file's line-range history in-memory (an edit moves the numbers those ranges are matched on; the served-output ids are matched on bytes instead and survive), but that per-file deletion carries no epoch of its own, so the compaction filter above cannot see it -- an unrelated disk read from before the edit would otherwise resurrect the exact entry this process just cleared. Drop those files from the disk side before the union so the clearing actually sticks.
   const clearedRangeFiles = new Set(consumedFileLineRangeKeys())
   const clearedServedFiles = new Set(consumedFileServedOutputKeys())
@@ -477,7 +484,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     outstandingAgentSpawns: mergeOutstandingAgentSpawns(disk.outstandingAgentSpawns ?? [], mem.outstandingAgentSpawns ?? []),
     // An accumulating collection, so union rather than pick a winner: two hook processes can each see a screenshot the other never did. Disk first, then mem, so the order stays oldest-to-newest and the cap evicts the oldest -- the same policy recordSeenImage applies in memory, applied again here because a union of two capped lists can exceed the cap.
     seenImageHashes: mergeSeenImageHashes(disk.seenImageHashes ?? [], mem.seenImageHashes ?? []),
-    ...mergeVerificationRuns(disk.verificationRuns ?? [], mem.verificationRuns ?? []),
+    ...(verificationRuns.length > 0 ? { verificationRuns } : {}),
     // Last-seen scalar, not an accumulating collection: prefer mem's value (this process's freshest observation) over disk's, since a newer write always supersedes an older one.
     ...(mem.lastTabContextDigest !== undefined
       ? { lastTabContextDigest: mem.lastTabContextDigest }
@@ -491,17 +498,6 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
         ? { created_ts: mem.created_ts }
         : {}),
   }
-}
-
-/** One run per command, the later of the two when both processes saw it, oldest first and capped at MAX_VERIFICATION_RUNS; empty is omitted from the blob like the other optional lists. */
-function mergeVerificationRuns(disk: VerificationRun[], mem: VerificationRun[]): { verificationRuns?: VerificationRun[] } {
-  const latest = new Map<string, VerificationRun>()
-  for (const run of [...disk, ...mem]) {
-    const seen = latest.get(run.command)
-    if (seen === undefined || run.at >= seen.at) latest.set(run.command, run)
-  }
-  const merged = Array.from(latest.values()).sort((a, b) => a.at - b.at).slice(-MAX_VERIFICATION_RUNS)
-  return merged.length > 0 ? { verificationRuns: merged } : {}
 }
 
 /** Union two screenshot-fingerprint lists oldest-first, keeping at most MAX_SEEN_IMAGE_HASHES. */
