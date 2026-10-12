@@ -1,11 +1,11 @@
-/** Guard: a flag an agent guesses must not cost a round trip. `read f.ts --lines 1-5` is rewritten to the spec grammar and run; a guessed rename (`--top` for `--limit`, `--search` for `--grep`) fails as before and the failure gains the corrected command. Provenance: the failure text in the bundle cases is CAPTURE (the unchanged main-checkout bundle, run in an isolated home on 2026-10-11: `read f.ts --lines 1-5` -> "token-goat: unknown option '--lines'", `search foo --top 3` -> "unknown option '--top'", `read f.ts --start 2 --end 4` -> "unknown option '--start'" then "(Did you mean --stats?)"); the rewrite and suggestion expectations are HAND-DERIVED from the `file@A-B` spec grammar in src/read_spec.ts and from the quoting rules in src/hint_suggestion_guard.ts, not from option_intent.ts. */
+/** Guard: a flag an agent guesses must not cost a round trip. `read f.ts --lines 1-5` is rewritten to the spec grammar and run; a guessed rename (`--top` for `--limit`, `--search` for `--grep`) is rewritten and run the same way when its value is certain, and fails as before with the corrected command when it is not. Provenance: the failure text in the bundle cases is CAPTURE (the unchanged main-checkout bundle, run in an isolated home on 2026-10-11: `read f.ts --lines 1-5` -> "token-goat: unknown option '--lines'", `search foo --top 3` -> "unknown option '--top'", `read f.ts --start 2 --end 4` -> "unknown option '--start'" then "(Did you mean --stats?)"); the rewrite and suggestion expectations are HAND-DERIVED from the `file@A-B` spec grammar in src/read_spec.ts and from the quoting rules in src/hint_suggestion_guard.ts, not from option_intent.ts. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { buildProgram } from '../src/cli.js'
-import { FLAG_RENAMES, LINE_RANGE_FLAGS, rewriteLineRangeFlag, suggestForUnknownOption } from '../src/option_intent.js'
+import { FLAG_RENAMES, LINE_RANGE_FLAGS, rewriteFlagRename, rewriteLineRangeFlag, rewriteOptionIntent, suggestForUnknownOption } from '../src/option_intent.js'
 import { runBundle, tgIsolatedEnv } from './helpers/bundle.js'
 
 // Provenance. The commander text the bundle cases expect (`unknown option '--top'`, `unknown option '--lines'`) is CAPTURE: `node dist/token-goat.mjs search foo --top 3` and `read f.ts --lines abc` run through the built bundle on 2026-10-11 printed exactly that; `(Did you mean --stats?)` for `read f.ts --start 2` was captured in the same run. The spec forms (`f.ts@2-4`) are FORMAT-DERIVED from the read spec grammar in src/read_spec.ts (parseLineRange). The suggested commands in the unit cases are HAND-DERIVED: the alias swapped for its real flag, written out by hand.
@@ -32,6 +32,14 @@ describe('rewriteLineRangeFlag', () => {
     expect(rewriteLineRangeFlag(argvOf('read', 'f.ts', '--to=9', '--from=6'))?.argv).toEqual(argvOf('read', 'f.ts@6-9'))
   })
 
+  // `--offset` is the first line and `--limit` how many, the Read-tool meaning: 3 and 4 are lines 3, 4, 5, 6.
+  it('reads an offset and a count as the first line and how many', () => {
+    const r = rewriteLineRangeFlag(argvOf('read', 'f.ts', '--offset', '3', '--limit', '4'))
+    expect(r?.argv).toEqual(argvOf('read', 'f.ts@3-6'))
+    expect(r?.note).toContain('--offset and --limit are not options')
+    expect(rewriteLineRangeFlag(argvOf('read', 'f.ts', '--limit=1', '--offset=9'))?.argv).toEqual(argvOf('read', 'f.ts@9-9'))
+  })
+
   it('keeps the other flags of the command in place', () => {
     expect(rewriteLineRangeFlag(argvOf('--json', 'read', 'f.ts', '--lines', '1-5', '--no-hint'))?.argv).toEqual(argvOf('--json', 'read', 'f.ts@1-5', '--no-hint'))
   })
@@ -54,13 +62,91 @@ describe('rewriteLineRangeFlag', () => {
       argvOf('read', 'f.ts', '--', '--lines', '1-5'),
       argvOf('read', 'f.ts'),
       argvOf('section', 'f.ts', '--lines', '1-5'),
-      argvOf('read', 'f.ts', '--offset', '3', '--limit', '4'),
+      argvOf('read', 'f.ts', '--offset', '3'),
+      argvOf('read', 'f.ts', '--limit', '4'),
+      argvOf('read', 'f.ts', '--offset', '3', '--limit', '0'),
+      argvOf('read', 'f.ts', '--offset', '0', '--limit', '4'),
+      argvOf('read', 'f.ts', '--start', '2', '--limit', '3'),
+      argvOf('read', 'f.ts', '--offset', '2', '--end', '3'),
+      argvOf('read', 'f.ts', '--start', '5', '--end', '2'),
+      argvOf('read', 'f.ts', '--lines', '0'),
+      argvOf('read', 'f.ts', '--lines', '5-2'),
+      argvOf('read', 'f.ts', '--lines', '1-2-3'),
     ]
     for (const argv of alone) expect(rewriteLineRangeFlag(argv), argv.join(' ')).toBeNull()
   })
 })
 
+describe('rewriteFlagRename', () => {
+  it('runs a renamed limit with its value carried over', () => {
+    const r = rewriteFlagRename(argvOf('search', 'foo', '--top', '3'))
+    expect(r?.argv).toEqual(argvOf('search', 'foo', '--limit', '3'))
+    expect(r?.note).toBe('Note: ran as `token-goat search "foo" --limit 3` (--top is not an option; the flag is --limit).')
+    expect(rewriteFlagRename(argvOf('recall', 'x', '-k', '5'))?.argv).toEqual(argvOf('recall', 'x', '--limit', '5'))
+    expect(rewriteFlagRename(argvOf('semantic', 'x y', '--max=4'))?.argv).toEqual(argvOf('semantic', 'x y', '--limit=4'))
+    expect(rewriteFlagRename(argvOf('search', '--count', '2', 'foo'))?.argv).toEqual(argvOf('search', '--limit', '2', 'foo'))
+  })
+
+  it('runs a renamed filter on a cached output with its value carried over', () => {
+    for (const command of ['bash-output', 'web-output', 'mcp-output']) {
+      for (const alias of ['--search', '--filter', '--pattern']) {
+        const r = rewriteFlagRename(argvOf(command, 'ab12', alias, 'ERR'))
+        expect(r?.argv, `${command} ${alias}`).toEqual(argvOf(command, 'ab12', '--grep', 'ERR'))
+        expect(r?.note).toBe(`Note: ran as \`token-goat ${command} "ab12" --grep "ERR"\` (${alias} is not an option; the flag is --grep).`)
+      }
+    }
+    expect(rewriteFlagRename(argvOf('bash-output', 'ab12', '--search=a b'))?.argv).toEqual(argvOf('bash-output', 'ab12', '--grep=a b'))
+  })
+
+  // Each of these has a value or a choice the rename cannot settle, so the failure carries the suggestion instead.
+  it('leaves an invocation alone when the translation is not certain', () => {
+    const alone = [
+      argvOf('search', 'foo', '--top', 'abc'),
+      argvOf('search', 'foo', '--top', '0'),
+      argvOf('search', 'foo', '--top', '-3'),
+      argvOf('search', 'foo', '--top'),
+      argvOf('search', 'foo', '--top', '3', '--limit', '5'),
+      argvOf('search', 'foo', '--top', '3', '-l', '5'),
+      argvOf('search', 'foo', '--top', '3', '--max', '4'),
+      argvOf('search', 'foo', '--top', '3', '-k', '4'),
+      argvOf('search', 'foo', '--', '--top', '3'),
+      argvOf('bash-output', 'ab12', '--search'),
+      argvOf('bash-output', 'ab12', '--search', '--json'),
+      argvOf('bash-output', 'ab12', '--search='),
+      argvOf('bash-output', 'ab12', '--search', 'ERR', '--grep', 'WARN'),
+      argvOf('bash-output', 'ab12', '--search', 'a`b'),
+      argvOf('bash-output', 'ab12', '--lines', '5'),
+      argvOf('read', 'f.ts', '--top', '3'),
+      argvOf('search', 'foo'),
+      argvOf('--top', '3'),
+    ]
+    for (const argv of alone) expect(rewriteFlagRename(argv), argv.join(' ')).toBeNull()
+  })
+})
+
+describe('rewriteOptionIntent', () => {
+  it('picks the line-range rewrite for read and the rename rewrite for the rest', () => {
+    expect(rewriteOptionIntent(argvOf('read', 'f.ts', '--lines', '1-5'))?.command).toBe('read')
+    expect(rewriteOptionIntent(argvOf('search', 'foo', '--top', '3'))?.command).toBe('search')
+    expect(rewriteOptionIntent(argvOf('search', 'foo', '--top', '3'))?.flags).toEqual(['--top'])
+    expect(rewriteOptionIntent(argvOf('search', 'foo'))).toBeNull()
+  })
+})
+
 describe('suggestForUnknownOption', () => {
+  it('names the read command for a line range given to section, which has no range grammar', () => {
+    expect(suggestForUnknownOption(argvOf('section', 'README.md', '--lines', '1-5'))).toBe('Did you mean: `token-goat read "README.md@1-5"`?')
+    expect(suggestForUnknownOption(argvOf('section', 'README.md', '--start', '2', '--end', '4'))).toBe('Did you mean: `token-goat read "README.md@2-4"`?')
+    expect(suggestForUnknownOption(argvOf('section', 'README.md', '--offset=2', '--limit=3'))).toBe('Did you mean: `token-goat read "README.md@2-4"`?')
+    expect(suggestForUnknownOption(argvOf('section', 'README.md::Install', '--lines', '1-5'))).toBeNull()
+    expect(suggestForUnknownOption(argvOf('section', 'README.md', '--lines', 'abc'))).toBeNull()
+    expect(suggestForUnknownOption(argvOf('section', 'README.md'))).toBeNull()
+  })
+
+  it('still gives the command with the real flag when a value stopped the rewrite', () => {
+    expect(suggestForUnknownOption(argvOf('search', 'foo', '--top', 'abc'))).toBe('Did you mean: `token-goat search "foo" --limit "abc"`?')
+  })
+
   it('gives the command with the real flag for a renamed limit', () => {
     expect(suggestForUnknownOption(argvOf('search', 'foo', '--top', '3'))).toBe('Did you mean: `token-goat search "foo" --limit 3`?')
     expect(suggestForUnknownOption(argvOf('recall', 'x', '-k', '5'))).toBe('Did you mean: `token-goat recall "x" --limit 5`?')
@@ -113,9 +199,26 @@ describe('the tables against the registered commands', () => {
     }
   })
 
-  it('names no line-range flag that read registers', () => {
-    const options = optionsOf('read')
-    for (const flag of [...LINE_RANGE_FLAGS.whole, ...LINE_RANGE_FLAGS.start, ...LINE_RANGE_FLAGS.end]) expect(options, flag).not.toContain(flag)
+  it('names no line-range flag that read or section registers', () => {
+    for (const command of ['read', 'section']) {
+      const options = optionsOf(command)
+      for (const flag of Object.values(LINE_RANGE_FLAGS).flat()) expect(options, `${command} ${flag}`).not.toContain(flag)
+    }
+  })
+
+  // --lines is a real option on the cached-output commands (a-b, 1-based), which is why it is not a rename there: the table would shadow it.
+  it('keeps --lines out of the rename table because the cached-output commands register it', () => {
+    for (const command of ['bash-output', 'web-output', 'mcp-output']) expect(optionsOf(command), command).toContain('--lines')
+    expect(FLAG_RENAMES.flatMap((r) => r.aliases)).not.toContain('--lines')
+  })
+
+  it('names, as other spellings of a target, only flags that the command registers or that are short forms', () => {
+    for (const rename of FLAG_RENAMES) {
+      for (const command of rename.commands) {
+        const options = optionsOf(command)
+        for (const spelling of rename.targetSpellings) if (!/^-[a-z]$/.test(spelling)) expect(options, `${command} ${spelling}`).toContain(spelling)
+      }
+    }
   })
 })
 
@@ -142,11 +245,44 @@ describe('through the built bundle', () => {
     }
   })
 
-  it('keeps commander’s failure and appends the corrected command for a renamed flag', () => {
-    const r = runBundle(['search', 'foo', '--top', '3'], { cwd: base, env })
+  it('runs a renamed limit and says so on stderr', () => {
+    const real = runBundle(['search', 'foo', '--limit', '3'], { cwd: base, env })
+    for (const flags of [['--top', '3'], ['-k', '3'], ['--max=3'], ['--count', '3']]) {
+      const r = runBundle(['search', 'foo', ...flags], { cwd: base, env })
+      expect(r.status, flags.join(' ')).toBe(real.status)
+      expect(r.stdout.replace(/\d+ms/, 'Nms')).toBe(real.stdout.replace(/\d+ms/, 'Nms'))
+      expect(r.stderr).toContain('Note: ran as `token-goat search "foo" --limit')
+      expect(r.stderr).not.toContain('unknown option')
+    }
+  })
+
+  it('runs a renamed filter on a cached output and says so on stderr', () => {
+    for (const alias of ['--search', '--filter', '--pattern']) {
+      const r = runBundle(['bash-output', 'zz00', alias, 'ERR'], { cwd: base, env })
+      expect(r.stderr, alias).toContain(`Note: ran as \`token-goat bash-output "zz00" --grep "ERR"\` (${alias} is not an option; the flag is --grep).`)
+      expect(r.stderr).not.toContain('unknown option')
+    }
+  })
+
+  it('keeps commander’s failure and appends the corrected command when the value stops the rename', () => {
+    const r = runBundle(['search', 'foo', '--top', 'abc'], { cwd: base, env })
     expect(r.status).toBe(1)
     expect(r.stderr).toContain("unknown option '--top'")
-    expect(r.stderr).toContain('Did you mean: `token-goat search "foo" --limit 3`?')
+    expect(r.stderr).toContain('Did you mean: `token-goat search "foo" --limit "abc"`?')
+    expect(r.stderr).not.toContain('Note: ran as')
+  })
+
+  it('leaves the real --lines of a cached output command alone', () => {
+    const r = runBundle(['bash-output', 'zz00', '--lines', '1-2'], { cwd: base, env })
+    expect(r.stderr).not.toContain('unknown option')
+    expect(r.stderr).not.toContain('Note: ran as')
+  })
+
+  it('names the read command for a line range given to section', () => {
+    const r = runBundle(['section', 'f.ts', '--lines', '1-2'], { cwd: base, env })
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain("unknown option '--lines'")
+    expect(r.stderr).toContain('Did you mean: `token-goat read "f.ts@1-2"`?')
   })
 
   it('books each rewrite and each suggestion as a cli_option_alias stat', () => {
@@ -156,8 +292,9 @@ describe('through the built bundle', () => {
     runBundle(['read', 'f.ts', '--lines', '2-4'], { cwd: base, env: own })
     runBundle(['search', 'foo', '--top', '3'], { cwd: base, env: own })
     runBundle(['read', 'f.ts', '--lines', 'abc'], { cwd: base, env: own })
+    runBundle(['search', 'foo', '--top', 'abc'], { cwd: base, env: own })
     const stats = JSON.parse(runBundle(['stats', '--json'], { cwd: base, env: own }).stdout) as { by_kind: Record<string, { events: number }> }
-    expect(stats.by_kind['cli_option_alias']?.events).toBe(2)
+    expect(stats.by_kind['cli_option_alias']?.events).toBe(3)
   })
 
   it('leaves a flag with no safe translation to commander alone', () => {

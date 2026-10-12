@@ -303,6 +303,16 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(anchored.status, anchored.stderr).toBe(0)
     expect(anchored.stdout).toContain('return 20')
     expect(anchored.stdout).not.toContain('return 10')
+    // A line range given as flags runs as the file@A-B spec and says so on stderr. Provenance: the lines are HAND-DERIVED from the fixture written in the setup above (src/mod.ts line 5 is betaSym, line 6 its `return 2`, line 3 `return 1`); the before-state failure, `unknown option '--lines'`, is CAPTURE (the unchanged main bundle, 2026-10-11).
+    const spec = run(['read', 'src/mod.ts@5-6'])
+    for (const flags of [['--lines', '5-6'], ['--start', '5', '--end', '6'], ['--offset', '5', '--limit', '2']]) {
+      const ranged = run(['read', 'src/mod.ts', ...flags])
+      expect(ranged.status, `${flags.join(' ')} stderr: ${ranged.stderr}`).toBe(0)
+      expect(ranged.stdout).toBe(spec.stdout)
+      expect(ranged.stdout).toContain('return 2')
+      expect(ranged.stdout).not.toContain('return 1')
+      expect(ranged.stderr).toContain('Note: ran as `read "src/mod.ts@5-6"`')
+    }
   },
   section: () => {
     expectRead(['section', 'README.md::Install'], 'npm install')
@@ -316,6 +326,11 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(grepMiss.status, grepMiss.stderr).toBe(0)
     expect(grepMiss.stdout).toContain('filtered out by --grep zzznomatch')
     expect(grepMiss.stdout).not.toContain('Run npm install')
+    // section has no line-range grammar: the failure stays commander's and gains the read command that has one. Provenance: HAND-DERIVED read spec from src/read_spec.ts; the failure line is CAPTURE (`section f.ts --lines abc`, a value that gets no suggestion, printed exactly `token-goat: unknown option '--lines'` through the built bundle on 2026-10-12).
+    const ranged = run(['section', 'README.md', '--lines', '1-2'])
+    expect(ranged.status).toBe(1)
+    expect(ranged.stderr).toContain("unknown option '--lines'")
+    expect(ranged.stderr).toContain('Did you mean: `token-goat read "README.md@1-2"`?')
   },
   // Deliberately a keyword smoke test, not a proof of real embedding-vector search: this shared fixture is indexed with embeddings disabled (isolate-home.ts sets TOKEN_GOAT_EMBEDDINGS_ENABLED=false for the whole suite, and tgEnv inherits it), so this case only exercises the FTS keyword fallback and would pass identically whether or not real semantic search is wired up - it is not a substitute for that proof. The dedicated proof - a meaning-only natural-language query finding a symbol whose name/body never uses the query's words, with a control run showing the same query genuinely misses under FTS alone - lives in tests/semantic_embeddings_e2e.test.ts.
   semantic: () => {
@@ -336,6 +351,11 @@ export const cases: Record<string, () => void | Promise<void>> = {
     }
   },
   search: () => {
+    // A guessed limit flag runs as --limit and says so on stderr. Provenance: the before-state failure, `unknown option '--top'`, is CAPTURE (`search alphaSym --top 3` on the unchanged main bundle, 2026-10-11); the rewritten command is HAND-DERIVED.
+    const top = run(['search', 'alphaSym', '--top', '3'])
+    expect(top.status, top.stderr).toBe(0)
+    expect(top.stdout).toMatch(/^\d+ results? for "alphaSym" in \d+ms \[/)
+    expect(top.stderr).toContain('Note: ran as `token-goat search "alphaSym" --limit 3`')
     const r = run(['search', 'alphaSym'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/^\d+ results? for "alphaSym" in \d+ms \[/)
