@@ -2,7 +2,8 @@
 import { COPILOT_CLI_TOOL_NAME_MAP } from '../copilot_tool_names.js'
 import { ownGet } from '../own_lookup.js'
 import { foldToolName } from '../tool_name_fold.js'
-import { shimFallbackTimeoutConst } from './shim_common.js'
+import { COPILOT_SESSION_START_HELPERS } from './copilot_session_start.js'
+import { SHIM_MAX_BUFFER_CONST, shimFallbackTimeoutConst } from './shim_common.js'
 import { SHIM_TRY_SERVER } from './shim_try_server.js'
 import { MATERIALIZE_SHRUNK_IMAGE_JS } from './shrink_block.js'
 
@@ -11,6 +12,7 @@ export const COPILOT_CLI_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Copilot CLI hook shim. Translates Copilot's hook event names and
 // request/response schema to/from token-goat's internal hook protocol.
 'use strict'
+${SHIM_MAX_BUFFER_CONST}
 const { spawnSync } = require('node:child_process')
 const fs = require('node:fs')
 const os = require('node:os')
@@ -19,6 +21,7 @@ const { pathToFileURL } = require('node:url')
 
 // How long the fallback spawn of the real hook may run before the shim answers an empty fail-open '{}' for it. The hook entries token-goat installs give Copilot 60 s (HOOK_TIMEOUT_SEC in copilot_cli_install.ts); the number is SHIM_FALLBACK_TIMEOUT_MS.copilot in shim_common.ts, and a hook Copilot kills fails open the same way, so a cap of a few seconds only discarded the verdict of a cold start that was merely slow (bundle load, DB open, a loaded machine). Kept under that 60 s so the shim, not Copilot, ends a hook that really is stuck.
 ${shimFallbackTimeoutConst('copilot')}
+${COPILOT_SESSION_START_HELPERS}
 
 // Copilot event name -> token-goat internal HookEventName (src/types.ts's
 // HOOK_EVENTS). Only these nine have a token-goat handler; every other real
@@ -68,6 +71,7 @@ const COPILOT_TO_TG_EVENT = {
 // one of these keys is answered with nothing, so a Copilot build that also
 // honored the PascalCase spelling could not brief a subagent twice.
 const VSCODE_ONLY_TO_TG_EVENT = {
+  SessionStart: 'session_start',
   SubagentStart: 'subagent_start',
 }
 
@@ -329,7 +333,7 @@ async function relayVscode(entryPath, tgEvent, payload) {
       windowsHide: true,
       timeout: SHIM_FALLBACK_TIMEOUT_MS,
       killSignal: 'SIGKILL',
-      maxBuffer: 32 * 1024 * 1024,
+      maxBuffer: SHIM_MAX_BUFFER_BYTES,
       env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'vscode', TOKEN_GOAT_VSCODE_HOOKS_DIR: __dirname }),
     }
     const res = entryPath
@@ -347,6 +351,7 @@ async function relayVscode(entryPath, tgEvent, payload) {
 }
 
 async function main() {
+  const startedAt = Math.floor(require('node:perf_hooks').performance.timeOrigin)
   const copilotEvent = process.argv[2] || ''
 
   // ownGet, not a bare lookup: the map is a plain object literal, so eight keys it never declares ('constructor', 'toString', '__proto__' and the rest of Object.prototype) come back truthy and sail past the check below. tgEvent is then a Function, and 'token-goat hook ' + tgEvent is concatenated into a shell command string by the fallback at the bottom of this shim. No member of Object.prototype stringifies with a shell metacharacter, so this was a failed spawn rather than a second command -- but argv reaching a shell string through a gate that reads like it stops it is the shape worth closing, not the payload that happened to be harmless. The four shims built on shim_common.ts validate against a closed Set, which has no equivalent hole.
@@ -357,24 +362,56 @@ async function main() {
     return
   }
 
+  let sessionStartDeadline
+  if (tgEvent === 'session_start') {
+    const inherited = process.argv[4]
+    const epoch = inherited === undefined ? startedAt + SHIM_SESSION_START_TIMEOUT_MS
+      : inherited.startsWith('--session-start-deadline=') ? Number(inherited.slice('--session-start-deadline='.length)) : NaN
+    if (!Number.isSafeInteger(epoch) || epoch <= 0 || epoch > startedAt + SHIM_SESSION_START_TIMEOUT_MS) {
+      failOpenSessionStart('invalid inherited startup deadline')
+      return
+    }
+    sessionStartDeadline = epoch
+  }
   let raw = ''
-  try {
-    raw = require('node:fs').readFileSync(0, 'utf8')
-  } catch {
-    process.stdout.write('{}')
-    return
+  if (sessionStartDeadline !== undefined) {
+    try {
+      raw = await readSessionStartInput(sessionStartDeadline - Date.now())
+    } catch (error) {
+      failOpenSessionStart(error && error.message ? error.message : 'input could not be read')
+      return
+    }
+  } else {
+    try {
+      raw = require('node:fs').readFileSync(0, 'utf8')
+    } catch {
+      process.stdout.write('{}')
+      return
+    }
   }
 
   let payload
   try {
     payload = JSON.parse(raw)
   } catch {
-    process.stdout.write('{}')
+    if (sessionStartDeadline !== undefined) failOpenSessionStart('input contained malformed JSON')
+    else process.stdout.write('{}')
     return
   }
 
   if (isVscodePayload(payload)) {
-    process.stdout.write(await relayVscode(process.argv[3], tgEvent, payload))
+    if (sessionStartDeadline === undefined) {
+      process.stdout.write(await relayVscode(process.argv[3], tgEvent, payload))
+    } else {
+      try {
+        const input = typeof payload.session_id === 'string' && payload.session_id !== ''
+          ? payload
+          : Object.assign({}, payload, { session_id: stableFallbackSessionId(process.cwd()) })
+        process.stdout.write(await runBoundedSessionStart(process.argv[3], tgEvent, input, 'vscode', sessionStartDeadline))
+      } catch (error) {
+        failOpenSessionStart(error && error.message ? error.message : 'hook helper failed')
+      }
+    }
     return
   }
   if (vscodeOnly) {
@@ -467,14 +504,19 @@ async function main() {
   // template string) is safe here specifically because entryPath and tgEvent never touch a
   // shell -- no DEP0190 concern, unlike the shell:true fallback below.
   const entryPath = process.argv[3]
-  // Try the in-process hook lib first (tryInProcess above), which avoids spawning a
-  // second node process altogether. If that's unavailable, invoking the entry directly
-  // via process.execPath sidesteps PATH/cmd.exe resolution for this inner call, per the
-  // note above this function's original single-spawn form documented. The
-  // SHIM_FALLBACK_TIMEOUT_MS timeout/killSignal on both spawnSync fallbacks keeps them under
-  // the 60 s Copilot CLI is given, so token-goat degrades to its own fail-open '{}' rather
-  // than being force-killed by Copilot first.
-  let stdout = await tryInProcess(entryPath, tgEvent, canonical, 'copilot_cli')
+  // SessionStart bypasses the resident server and in-process path: only a child-process deadline can interrupt synchronous handler or SQLite work. TOKEN_GOAT_HOOK_SERVER=0 below also prevents that child from leaving a server process behind.
+  let stdout
+  if (sessionStartDeadline !== undefined) {
+    try {
+      stdout = await runBoundedSessionStart(entryPath, tgEvent, canonical, 'copilot_cli', sessionStartDeadline)
+    } catch (error) {
+      failOpenSessionStart(error && error.message ? error.message : 'hook helper failed')
+      return
+    }
+  } else {
+    // Other events retain the in-process fast path and existing fallback behavior.
+    stdout = await tryInProcess(entryPath, tgEvent, canonical, 'copilot_cli')
+  }
   if (stdout === undefined) {
     const res = entryPath
       ? spawnSync(process.execPath, [entryPath, 'hook', tgEvent], {
@@ -483,7 +525,7 @@ async function main() {
           windowsHide: true,
           timeout: SHIM_FALLBACK_TIMEOUT_MS,
           killSignal: 'SIGKILL',
-          maxBuffer: 32 * 1024 * 1024,
+          maxBuffer: SHIM_MAX_BUFFER_BYTES,
           env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli', TOKEN_GOAT_COPILOT_HOOKS_DIR: __dirname }),
         })
       : spawnSync('token-goat hook ' + tgEvent, {
@@ -493,7 +535,7 @@ async function main() {
           windowsHide: true,
           timeout: SHIM_FALLBACK_TIMEOUT_MS,
           killSignal: 'SIGKILL',
-          maxBuffer: 32 * 1024 * 1024,
+          maxBuffer: SHIM_MAX_BUFFER_BYTES,
           env: Object.assign({}, process.env, { TOKEN_GOAT_HARNESS_OVERRIDE: 'copilot_cli', TOKEN_GOAT_COPILOT_HOOKS_DIR: __dirname }),
         })
     if (res.status !== 0 || !res.stdout) {
@@ -714,4 +756,3 @@ export function translateCopilotPayload(raw: { event?: string; tool_name?: strin
   }
   return { tool_name: toolName, tool_input: input }
 }
-

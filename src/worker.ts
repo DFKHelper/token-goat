@@ -30,7 +30,7 @@ import { failedAtOf } from './model_download_gate.js'
 import { appendDirtyQueueFile, appendDirtyQueuePaths, dirtyQueuePathFor, parseDirtyQueueLines } from './dirty_queue.js'
 import { createQueueWaker, noteOwnQueueWrite } from './queue_waker.js'
 import { drainReconcileRequests } from './reconcile_requests.js'
-import { appendWorkerErrorLog, readPidFile, resolvePollIntervalMs, WORKER_STARTUP_GRACE_MS, workerErrorLogPath, workerPidPath, writeDrainHeartbeat } from './worker_lifecycle.js'
+import { appendWorkerErrorLog, claimCurrentWorker, readPidFile, resolvePollIntervalMs, WORKER_STARTUP_GRACE_MS, workerErrorLogPath, workerPidPath, writeDrainHeartbeat } from './worker_lifecycle.js'
 
 // Stale session-snapshot sweep runs on the same loop as the dirty-queue drain (see runWorkerLoop) but throttled to this interval -- cleanup_stale's own default 24h staleness window doesn't need finer-grained sweeping than hourly, and a full directory scan on every 2s poll tick would be wasteful.
 const SNAPSHOT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
@@ -867,9 +867,9 @@ export function sigtermDrainDeadline(timeoutMs: number = SIGTERM_DRAIN_TIMEOUT_M
   return Promise.race([pendingEmbeddings(), timeout]).then(() => undefined)
 }
 
-export function runDetachedWorkerDaemon(): void {
+export function runDetachedWorkerDaemon(options?: { claimSlot: boolean }): void {
   // Resolved against the directory this process was started in, before leaving it, so a relative TG_WORKER_DATA_DIR keeps meaning what its author meant.
-  const dir = path.resolve(process.env['TG_WORKER_DATA_DIR'] ?? dataDir())
+  const dir = options?.claimSlot === true ? dataDir() : path.resolve(process.env['TG_WORKER_DATA_DIR'] ?? dataDir())
   // First act: leave the inherited working directory, which startDetachedWorker already avoids but an older client or a hand-run `--worker-daemon` does not. On Windows a working directory is an open handle, and this process lives for hours, so staying put would keep the caller's directory undeletable for all of them. The daemon finds no project through its working directory: every queued path is absolute. The one reader it reaches is loadConfig()'s per-project `.token-goat.toml` lookup, and from an inherited directory that lookup applied whichever project happened to start the daemon to every project it indexed. The temp directory first, as startDetachedWorker chooses it and for its reason; the data directory when TEMP names a directory that is gone.
   for (const neutral of [os.tmpdir(), dir]) {
     try {
@@ -879,6 +879,7 @@ export function runDetachedWorkerDaemon(): void {
       // try the next one; staying put costs only the handle, never the drain
     }
   }
+  if (options?.claimSlot === true && !claimCurrentWorker(dir)) return
   // Before any drain: this process exists to do work nobody is waiting on, and it is spawned detached with stdio ignored, so it is invisible while it runs. Asking to be scheduled behind the user's own work is free when the machine is idle.
   applyIndexingPriority()
   const safeInterval = resolvePollIntervalMs()

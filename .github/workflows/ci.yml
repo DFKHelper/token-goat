@@ -201,6 +201,14 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: npm test -- --shard=${{ matrix.shard }}/4
+      - name: Check native startup ownership and ordinary hook behavior
+        shell: bash
+        working-directory: native/tg-hook
+        run: |
+          rustup component add rustfmt clippy
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
       - name: Test (VS Code extension)
         if: matrix.shard == 1
         run: npm run test:vscode-extension

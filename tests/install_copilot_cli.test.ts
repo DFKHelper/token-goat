@@ -30,6 +30,7 @@ import {
   uninstallCopilotCli,
 } from '../src/bridges/copilot_cli_install.js'
 import { writeInProcessFake } from './helpers/copilot_inprocess_fake.js'
+import { installStartupOwner } from './helpers/copilot_session_start_tree.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
 import { VISUALSTUDIO_GUIDANCE_BEGIN, VISUALSTUDIO_GUIDANCE_END } from '../src/bridges/visualstudio_install.js'
 import { HOOK_EVENTS } from '../src/types.js'
@@ -644,13 +645,21 @@ echo '{}'
   }
 }
 
-/** Env whose shim run answers `jsonStdout` for every hook call, through the in-process route of {@link captureInProcess} rather than a token-goat.cmd on PATH, so the answer does not depend on a child process finishing inside the shim's 3000 ms spawn timeout (mirrors tests/bridges/shims.test.ts's withFakeTokenGoat for the spawn route). */
+/** Env whose shim run answers `jsonStdout` through the in-process route for non-SessionStart events; SessionStart tests use a fake CLI entry because that event now deliberately runs in a bounded child. */
 function withFakeTokenGoat(cwd: string, jsonStdout: string): NodeJS.ProcessEnv {
   return captureInProcess(cwd, undefined, { response: jsonStdout })
 }
 
+function withFakeHookOutput(cwd: string, response: string): NodeJS.ProcessEnv {
+  installStartupOwner(cwd)
+  const entryPath = path.join(cwd, 'fake-hook-output.js')
+  fs.writeFileSync(entryPath, `process.stdout.write(${JSON.stringify(response)})\n`, 'utf8')
+  return { ...process.env, [SHIM_ENTRY_ENV]: entryPath }
+}
+
 /** Writes a fake token-goat "entry" -- a plain Node script, not a PATH-resolvable binary -- that records the argv it was invoked with to `captured-argv.json` in `cwd` and exits 0 with an empty JSON response. Used to prove the shim's inner call, when given a third argv (the baked entry path), invokes that path directly via process.execPath rather than shelling out to a PATH-resolved `token-goat` at all. */
 function writeFakeEntry(cwd: string): { entryPath: string; capturePath: string } {
+  installStartupOwner(cwd)
   const entryPath = path.join(cwd, 'fake-entry.js')
   const capturePath = path.join(cwd, 'captured-argv.json')
   const captureLiteral = JSON.stringify(capturePath)
@@ -721,7 +730,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
 
   it("surfaces the session_start handler's context to Copilot as additionalContext", () => {
     const cwd = mkIsolated()
-    const env = withFakeTokenGoat(
+    const env = withFakeHookOutput(
       cwd,
       JSON.stringify({
         hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'ROUTING GATE' },
@@ -733,7 +742,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
 
   it('still emits {} for sessionStart when the handler produces no context, rather than a stray key', () => {
     const cwd = mkIsolated()
-    const env = withFakeTokenGoat(cwd, '{}')
+    const env = withFakeHookOutput(cwd, '{}')
     const stdout = runShim('sessionStart', JSON.stringify({ sessionId: 's1', cwd }), cwd, env)
     expect(stdout.trim()).toBe('{}')
   })
@@ -1015,7 +1024,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
 
   it('does not emit modifiedResult for sessionStart even when the response carries updatedToolOutput', () => {
     const cwd = mkIsolated()
-    const env = withFakeTokenGoat(
+    const env = withFakeHookOutput(
       cwd,
       JSON.stringify({ hookSpecificOutput: { updatedToolOutput: 'should never surface here' } }),
     )
