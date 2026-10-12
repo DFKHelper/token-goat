@@ -50,10 +50,11 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp('(?:^|/)' + source + '$', 'i')
 }
 
-/** The directory names between `projectRoot` and the file, lowercased. A path outside the root, or no root at all, yields only the file's own directory, so a project that happens to live under a `v2` or `fixtures` folder is not silenced, while a file directly in one still is. */
+/** The directory names between `projectRoot` and the file, lowercased. A path outside a known root yields only the file's own directory, so a project that happens to live under a `v2` or `fixtures` folder is not silenced, while a file directly in one still is. With no root at all there is nothing to measure from, so every directory in the path counts and a `migrations` folder above the file's own directory still excludes it. */
 function directorySegments(normalized: string, projectRoot: string | null): string[] {
   const root = projectRoot === null ? '' : projectRoot.replace(/\\/g, '/').replace(/\/+$/, '')
   if (root !== '' && normalized.toLowerCase().startsWith(root.toLowerCase() + '/')) return normalized.slice(root.length + 1).split('/').slice(0, -1).map((s) => s.toLowerCase())
+  if (root === '') return normalized.split('/').slice(0, -1).map((s) => s.toLowerCase())
   return normalized.split('/').slice(-2, -1).map((s) => s.toLowerCase())
 }
 

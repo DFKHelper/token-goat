@@ -19,6 +19,14 @@ export function estimateTokens(text: string): number {
 }
 
 /** Trim text to fit within a token budget, keeping leading lines. Preserves as many leading whole lines as fit within the budget, appending a marker line that explains the cap and suggests remediation. @param text The text to trim. @param budgetTokens The maximum allowed tokens. @param command Optional command label for tailored hint text. @param opts.reserveTokens Tokens of the budget a caller will spend around the result (a fence's tags and notice), kept out of both the entry check and the body; the marker still names `budgetTokens`. @returns Trimmed text with marker, or original text if within budget. */
+/** The opening of the note {@link trimToBudget} ends a cut result with, shared so a reader can tell a capped result from a whole one. */
+const CAP_MARKER_PREFIX = '[token-goat: output capped at ~'
+
+/** Whether `text` ends in (or at least carries) the note {@link trimToBudget} adds to a result it cut. Text that merely quotes the note reads as capped too, which errs toward counting less as seen. */
+export function isCappedOutput(text: string): boolean {
+  return text.includes(CAP_MARKER_PREFIX)
+}
+
 export function trimToBudget(text: string, budgetTokens: number, command?: string, opts: { reserveTokens?: number } = {}): string {
   const markerMarginTokens = 64
   const reserve = Math.max(0, opts.reserveTokens ?? 0)
@@ -61,7 +69,7 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
 
   const shown = kept.length
   const hint = getHintFor(command)
-  const marker = `[token-goat: output capped at ~${budgetTokens} tokens to protect context — showing ${shown} of ${totalLines} lines. ${hint}]`
+  const marker = `${CAP_MARKER_PREFIX}${budgetTokens} tokens to protect context — showing ${shown} of ${totalLines} lines. ${hint}]`
 
   return kept.join('\n') + '\n' + forClient(marker)
 }

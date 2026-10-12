@@ -79,6 +79,13 @@ describe('a subject alone is prose; a qualifier or an ellipsis makes it a marker
     '// ... same as before',
     '// ... 40 more lines omitted',
     '# ... truncated',
+    '// rest of file here',
+    '// rest of the code goes here',
+    '// remaining code below',
+    '// remaining content above',
+    '// rest of implementation',
+    '// ... other methods unchanged',
+    '// ... other ...',
   ])('denies %s', async (line) => {
     expect((await preWriteRewriteHandler(writeEvent(fresh(), 'const a = 1\n' + line + '\nconst b = 2\n'))).hookType).toBe('deny')
   })
@@ -88,8 +95,9 @@ describe('a whole-file token-goat read counts as the whole file seen', () => {
   const body = lines(200)
   const dropped = lines(200).split('\n').slice(0, 120).concat(lines(200).split('\n').slice(140)).join('\n') + 'edited\n'
 
-  function postBash(command: string): Promise<unknown> {
-    const raw = { cwd: FILES_DIR, tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: 'served', stderr: '', interrupted: false, isImage: false, noOutputExpected: false } }
+  // FORMAT-DERIVED: the Claude Code Bash tool_response envelope (stdout, stderr, interrupted, isImage, noOutputExpected, plus persistedOutputPath when the harness stored a long result), as in tests/fixtures/harness_hook_payloads.ts and read by extractToolResponseField in src/hooks_common.ts.
+  function postBash(command: string, response: Record<string, unknown> = {}): Promise<unknown> {
+    const raw = { cwd: FILES_DIR, tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: 'served', stderr: '', interrupted: false, isImage: false, noOutputExpected: false, ...response } }
     return postBashHandler(makeHookEvent({ eventName: 'post_tool_use', toolName: 'Bash', toolInput: { command }, sessionId: 'test', raw }))
   }
 
@@ -112,6 +120,48 @@ describe('a whole-file token-goat read counts as the whole file seen', () => {
   it.each(['| head -5', '--grep value', '--head 5', '@150-170', '::alpha'])('does not count a read narrowed by %s', async (tail) => {
     const target = seed()
     await postBash(`token-goat read "${normalizePath(target)}"${tail.startsWith('@') || tail.startsWith('::') ? '' : ' '}${tail}`)
+    expect((await preWriteRewriteHandler(writeEvent(target, dropped))).hookType).toBe('deny')
+  })
+
+  // HAND-DERIVED: the cap note is the literal text trimToBudget in src/overflow_guard.ts appends to a result it cut (25000 is overflow_guard.max_tokens); the persisted path is any non-empty string, which is all the post hook tests for.
+  const CAPPED = 'line 0\nline 1\n[token-goat: output capped at ~25000 tokens to protect context — showing 1200 of 1500 lines. Narrow it with token-goat read file@N-M.]'
+
+  it('does not count a persisted whole-file read, which the model saw only as a preview', async () => {
+    const target = seed()
+    await postBash(`token-goat read "${normalizePath(target)}"`, { persistedOutputPath: path.join(DATA_DIR, 'persisted.txt') })
+    expect((await preWriteRewriteHandler(writeEvent(target, dropped))).hookType).toBe('deny')
+  })
+
+  it('does not count a whole-file read the cap cut short', async () => {
+    const target = seed()
+    await postBash(`token-goat read "${normalizePath(target)}"`, { stdout: CAPPED })
+    expect((await preWriteRewriteHandler(writeEvent(target, dropped))).hookType).toBe('deny')
+  })
+
+  it('counts a ranged read over the dropped lines, but not when it was persisted or capped', async () => {
+    const ranged = (t: string): string => `token-goat read "${normalizePath(t)}@101-200"`
+    const clean = seed()
+    await postBash(ranged(clean))
+    expect((await preWriteRewriteHandler(writeEvent(clean, dropped))).hookType).not.toBe('deny')
+    const persisted = seed()
+    await postBash(ranged(persisted), { persistedOutputPath: path.join(DATA_DIR, 'persisted.txt') })
+    expect((await preWriteRewriteHandler(writeEvent(persisted, dropped))).hookType).toBe('deny')
+    const capped = seed()
+    await postBash(ranged(capped), { stdout: CAPPED })
+    expect((await preWriteRewriteHandler(writeEvent(capped, dropped))).hookType).toBe('deny')
+  })
+
+  // HAND-DERIVED: the two prefix shapes a model writes ahead of a read; resolveBashCall strips them before the ledger sees the command.
+  it.each(['cd . && token-goat read', 'X=0 token-goat read'])('counts a whole-file read behind the prefix %s', async (prefix) => {
+    const target = seed()
+    await postBash(`${prefix} "${normalizePath(target)}"`)
+    expect((await preWriteRewriteHandler(writeEvent(target, dropped))).hookType).not.toBe('deny')
+  })
+
+  // HAND-DERIVED: characterization. stripCommandPrefix drops `cd` prefixes and bare leading assignments but not an `export X=0;` statement, so that spelling is never recorded; the failure is toward asking for a re-read, never toward trusting an unseen file.
+  it('leaves a read behind an export statement unrecorded, so the Write is still refused', async () => {
+    const target = seed()
+    await postBash(`export X=0; token-goat read "${normalizePath(target)}"`)
     expect((await preWriteRewriteHandler(writeEvent(target, dropped))).hookType).toBe('deny')
   })
 
@@ -163,6 +213,16 @@ describe('the sibling-copy series directories are read below the project root', 
   })
 })
 
+describe('the sibling-copy exclusions with no project root', () => {
+  // HAND-DERIVED: a hook payload without a cwd gives no root to measure from, so a series directory anywhere in the file's path excludes it.
+  it('stays silent for a file whose migrations directory is above its own directory', async () => {
+    const dir = path.join(fs.mkdtempSync(path.join(FILES_DIR, 'noroot-')), 'db', 'migrations', 'sql')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'solver.py'), lines(50))
+    expect((await preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), lines(49) + 'changed last line\n'))).hookType).toBe('pass')
+  })
+})
+
 describe('VS Code edit tools are checked, except the one whose contract is partial code', () => {
   // FORMAT-DERIVED: VS Code 1.137.0 resources/app/extensions/copilot/dist/extension.js, the shapes pinned in tests/hooks_cli.test.ts (vscode harness): apply_patch {input, explanation}, multi_replace_string_in_file {explanation, replacements[{filePath, oldString, newString}]}, insert_edit_into_file {explanation, filePath, code}.
   const ws = fs.mkdtempSync(path.join(FILES_DIR, 'ws-'))
@@ -192,6 +252,37 @@ describe('VS Code edit tools are checked, except the one whose contract is parti
     expect((await preWriteRewriteHandler(vscode('multi_replace_string_in_file', { explanation: 'x', replacements }))).hookType).toBe('deny')
     const clean = [{ filePath: file, oldString: 'a', newString: 'A' }, { filePath: other, oldString: 'd', newString: 'D' }]
     expect((await preWriteRewriteHandler(vscode('multi_replace_string_in_file', { explanation: 'x', replacements: clean }))).hookType).toBe('pass')
+  })
+
+  // HAND-DERIVED: replacement lists built here; the request shape is the multi_replace_string_in_file one cited above.
+  it('reports every flagged replacement in one deny, and lets the identical retry through', async () => {
+    const replacements = [
+      { filePath: file, oldString: 'a', newString: '// ... existing code ...' },
+      { filePath: other, oldString: 'd', newString: '# rest of file unchanged' },
+      { filePath: file, oldString: 'b', newString: '/* ... same as before */' },
+    ]
+    const first = await preWriteRewriteHandler(vscode('multi_replace_string_in_file', { explanation: 'x', replacements }))
+    expect(first.hookType).toBe('deny')
+    const message = (first as { message: string }).message
+    expect(message).toContain('3 placeholder lines')
+    expect(message).toContain('existing code')
+    expect(message).toContain('rest of file unchanged')
+    expect(message).toContain('same as before')
+    expect((await preWriteRewriteHandler(vscode('multi_replace_string_in_file', { explanation: 'x', replacements }))).hookType).toBe('pass')
+  })
+
+  it('counts the flagged replacements past the quoted few', async () => {
+    const replacements = Array.from({ length: 6 }, (_, i) => ({ filePath: file, oldString: 'a', newString: `// ... existing code ${i} lines omitted ...` }))
+    const message = ((await preWriteRewriteHandler(vscode('multi_replace_string_in_file', { explanation: 'x', replacements }))) as { message: string }).message
+    expect(message).toContain('6 placeholder lines')
+    expect(message).toContain('and 3 more')
+  })
+
+  // HAND-DERIVED: a list of one replacement per distinct file; the cap on examined files is MAX_EDIT_FILES_CHECKED (20) in src/write_guard_hooks.ts.
+  it('reads no more than the capped number of distinct files for a hostile replacement list', async () => {
+    const replacements = Array.from({ length: 60 }, (_, i) => ({ filePath: path.join(ws, `many${i}.ts`), oldString: 'a', newString: `// ... omitted ${i} ...` }))
+    const message = ((await preWriteRewriteHandler(vscode('multi_replace_string_in_file', { explanation: 'x', replacements }))) as { message: string }).message
+    expect(message).toContain('20 placeholder lines')
   })
 
   it('checks replace_string_in_file through its camelCase keys', async () => {

@@ -553,7 +553,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/search/search_cli.ts`](src/search/search_cli.ts) | Exports: `runParallelSearch` |
 | [`src/search/symbol_fts.ts`](src/search/symbol_fts.ts) | Full-text symbol search split by kind, for the `search` command's symbol and heading channels. |
 | [`src/secret_redact.ts`](src/secret_redact.ts) | Defense-in-depth secret redaction for {@link file://./disk_cache.ts}'s `storeBlob()` choke point. |
-| [`src/served_extent.ts`](src/served_extent.ts) | The line extents a successful `token-goat read` or `token-goat section` call handed the model, so the session's served-range ledger counts them like a sliced Read does. |
+| [`src/served_extent.ts`](src/served_extent.ts) | The line extents a successful `token-goat read` or `token-goat section` call handed the model, so the session's served-range ledger counts them like a sliced Read does. It also classifies a bare whole-file `token-goat read` (`isWholeFileRead`) as a full read; the post hook records neither the extents nor the full read when the result was persisted or carries the cap note, since the model saw only a preview. |
 | [`src/served_lines.ts`](src/served_lines.ts) | Finding the stretches of a delivered file window that this session has already served. |
 | [`src/sessions_dir.ts`](src/sessions_dir.ts) | Where per-session state blobs live on disk, and nothing else. |
 | [`src/sharepoint_resolve.ts`](src/sharepoint_resolve.ts) | Best-effort resolution of a SharePoint/OneDrive sharing URL to a local synced file path, so `token-goat` can read a document an agent was only given a share link for instead of fai |

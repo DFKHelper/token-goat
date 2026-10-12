@@ -15,7 +15,7 @@ import { dropFileLineRangesIfChanged, getFileLineRanges, wasFileFullyReadThisSes
 import { siblingCandidates, siblingCopyExcluded, siblingCopyMessage } from './sibling_copy.js'
 import { isWithinQuietHours } from './util.js'
 import { MAX_LINES_FOR_DIFF, readKnownText } from './write_target.js'
-import { BLIND_DROP_MIN_LINES, blindDropMessage, countRunLines, findNewElisionLine, patchAddedLines, placeholderMessage, unseenRemovedRuns } from './write_guards.js'
+import { BLIND_DROP_MIN_LINES, blindDropMessage, countRunLines, findNewElisionLine, patchAddedLines, placeholderMessage, placeholdersMessage, unseenRemovedRuns } from './write_guards.js'
 import type { HookOutput } from './types.js'
 
 /** The verdict for a flagged call, shared by both checks: `hints.write_blind_drop` picks deny, note or silence, quiet hours silence only the note (a refusal stays in force, as every other deny here does), and a call already flagged once under `key` passes, so repeating the identical call is the way through. Books the stat only when the verdict is actually delivered. */
@@ -82,6 +82,9 @@ export function siblingCopyGuard(event: HookEvent, filePath: string, newContent:
   return passOutput()
 }
 
+/** The most distinct files a multi-edit call is read against for placeholders; entries past the cap on further files are left unchecked, so a hostile list cannot make the hook read without bound. */
+const MAX_EDIT_FILES_CHECKED = 20
+
 /** The placeholder check for an Edit, a MultiEdit (each edit's `new_string`), a Codex `apply_patch` or a VS Code `apply_patch` (the `+` lines of each file it adds or updates; the patch sits under `command` for Codex and `input` for VS Code) and a VS Code `multi_replace_string_in_file` (each of its `replacements`, which name their own file). A line counts only when neither the file now nor the text being replaced holds it. VS Code's `insert_edit_into_file` is left out on purpose: its `code` is written with `// ...existing code...` markers by the tool's own contract. */
 export function preEditPlaceholderGuard(event: HookEvent): HookOutput {
   if (loadConfig().hints.write_blind_drop === 'off') return passOutput()
@@ -112,15 +115,25 @@ export function preEditPlaceholderGuard(event: HookEvent): HookOutput {
     const filePath = getFilePath(event)
     for (const raw of Array.isArray(input['edits']) ? (input['edits'] as unknown[]) : [input]) edits.push({ path: filePath, raw })
   }
+  const flagged: Array<{ line: string; key: string }> = []
+  const examined = new Set<string>()
   for (const { path, raw } of edits) {
     if (path === undefined || raw === null || typeof raw !== 'object' || preToolPathDeclined(event, path)) continue
     const edit = raw as Record<string, unknown>
     const newString = edit['new_string'] ?? edit['newString']
     if (typeof newString !== 'string') continue
+    if (!examined.has(path)) {
+      if (examined.size >= MAX_EDIT_FILES_CHECKED) continue
+      examined.add(path)
+    }
     const oldString = edit['old_string'] ?? edit['oldString']
     const replaced = typeof oldString === 'string' ? oldString : ''
-    const verdict = placeholderGuard(event, path, newString, () => fileText(path) + '\n' + replaced)
-    if (verdict.hookType !== 'pass') return verdict
+    const line = findNewElisionLine(newString, () => fileText(path) + '\n' + replaced)
+    const key = guardKey('placeholder', path, newString)
+    if (line !== null && !wasHintShown(key)) flagged.push({ line, key })
   }
-  return passOutput()
+  if (flagged.length === 0) return passOutput()
+  const verdict = guardVerdict(flagged[0]!.key, placeholdersMessage(flagged.map((f) => f.line)), 'kind=placeholder tool=' + (getToolName(event) ?? 'unknown') + ' entries=' + flagged.length)
+  if (verdict.hookType !== 'pass') for (const { key } of flagged) markHintShown(key)
+  return verdict
 }

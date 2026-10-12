@@ -104,6 +104,7 @@ describe('Claude Code shim async-detach classification', () => {
     expect(stdout).not.toContain('"async":true')
   })
 
+  // HAND-DERIVED: each command is a token-goat surgical read in one spelling (bare, alias, cd prefix, env prefix, node entry); the expectation follows from the shim's own rule that a read's ledger update must land before the next call.
   it.each([
     'token-goat read src/a.ts@1-3',
     'tg section README.md::Intro',
@@ -115,6 +116,7 @@ describe('Claude Code shim async-detach classification', () => {
     expect(stdout).not.toContain('"async":true')
   })
 
+  // HAND-DERIVED: commands that merely mention or sit beside a read, so the shim's surgical-read rule does not apply.
   it.each(['echo token-goat read f', 'token-goat outline f', 'git status'])('still backgrounds the short result of %s', (command) => {
     const stdout = runShim('post_tool_use', JSON.stringify({ tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: 'x'.repeat(50) } }))
     expect(stdout.split('\n')[0]).toBe('{"async":true}')

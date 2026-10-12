@@ -754,8 +754,12 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       if (tgRead.filePath !== null) {
         try {
           const { servedExtents, isWholeFileRead } = await import('./served_extent.js')
-          for (const extent of await servedExtents(tgRead.sub, tgRead.spec, cmd, runDir)) recordFileLineRange(extent.filePath, extent.start, extent.end)
-          if (isWholeFileRead(tgRead.sub, tgRead.spec, tgRead.filePath, cmd)) recordFileRead(tgRead.filePath, true)
+          const { isCappedOutput } = await import('./overflow_guard.js')
+          // A persisted result reached the model as a 2 KB preview and a capped one stops short of its last lines, so neither shows the lines the command named.
+          if (!persisted && !isCappedOutput(output)) {
+            for (const extent of await servedExtents(tgRead.sub, tgRead.spec, cmd, runDir)) recordFileLineRange(extent.filePath, extent.start, extent.end)
+            if (isWholeFileRead(tgRead.sub, tgRead.spec, tgRead.filePath, cmd)) recordFileRead(tgRead.filePath, true)
+          }
         } catch {
           // Best-effort bookkeeping: an index that cannot answer leaves the ledger as it was.
         }

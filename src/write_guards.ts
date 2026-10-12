@@ -9,6 +9,8 @@ const COMMENT_LEAD = String.raw`(?:/{2,}|#+|/\*+|\*+|<!--|--|;+|%+|"""|''')`
 const COMMENT_CLOSE = String.raw`(?:\*+/|-->|"""|''')`
 const KEYWORD = String.raw`(?:rest|remainder|remaining|existing|unchanged|omitted|truncated|previous|same as|other)`
 const SUBJECT = String.raw`(?:rest of (?:the )?(?:file|code|content|function|class|module|implementation|method)|existing (?:code|content|implementation)|remaining (?:code|content|lines|implementation)|previous (?:code|content))`
+// The subjects that name what is still to be filled in. They read as a stub with a location word after them (`// rest of file here`), where `existing code` or `previous content` stays prose.
+const REST_SUBJECT = String.raw`(?:rest of (?:the )?(?:file|code|content|function|class|module|implementation|method)|remaining (?:code|content|lines|implementation))`
 const TRAILER = String.raw`(?:(?:is |remains |stays |goes )?(?:unchanged|here|omitted|as[- ]is|the same|same as before|as before|above|below))`
 
 const MAX_ELISION_LINE_CHARS = 120
@@ -24,6 +26,8 @@ const WRAPPED_MARKER = new RegExp(`^(?:the )?${KEYWORD}(?: \\S+){0,3}$`, 'i')
 const SUBJECT_ONLY = new RegExp(`^${SUBJECT}(?: ${TRAILER})?$`, 'i')
 // Without an ellipsis a subject alone (`// existing code`, `/* remaining content */`) is an ordinary comment, so a qualifier that says the text was left out has to follow it.
 const SUBJECT_QUALIFIED = new RegExp(`^${SUBJECT} (?:(?:is |are |remains? |stays? )?(?:unchanged|omitted|truncated|not shown|as[- ]is|as before|same as before)|(?:remains?|stays?|is|are) (?:the )?same)$`, 'i')
+// A rest-of or remaining subject followed by a place word (`// rest of the code goes here`, `// remaining code below`), or the bare `rest of implementation` stub, which has no prose reading.
+const REST_PLACED = new RegExp(`^(?:${REST_SUBJECT} (?:(?:goes |is |comes )?(?:here|above|below)|follows)|rest of (?:the )?implementation)$`, 'i')
 // With an ellipsis the qualifier alone is enough: `// ... same as before`, `// ... 40 more lines omitted`.
 const ELLIPSIS_QUALIFIER = new RegExp(`^(?:(?:the )?(?:same as before|as before|unchanged|omitted|truncated|not shown)|\\d+ (?:more )?\\S+ (?:omitted|truncated|not shown|unchanged|hidden|elided))$`, 'i')
 const BRACKET_NOTE = new RegExp(`^(?:truncated|omitted|content (?:truncated|omitted)|(?:remaining|rest of)[^\\]]{0,60}(?:omitted|truncated|unchanged)|\\d+ (?:more )?lines? (?:omitted|truncated|folded))$`, 'i')
@@ -45,7 +49,7 @@ function isElisionLine(trimmed: string): boolean {
   const body = led ? trimmed.replace(LEADING_COMMENT, '').replace(TRAILING_COMMENT, '').trim() : trimmed
   const payload = spaced(body).replace(/^[([](.*)[)\]]$/, '$1').trim()
   const hasEllipsis = HAS_ELLIPSIS.test(body)
-  if (!hasEllipsis) return SUBJECT_QUALIFIED.test(payload)
+  if (!hasEllipsis) return SUBJECT_QUALIFIED.test(payload) || REST_PLACED.test(payload)
   if (SUBJECT_ONLY.test(payload) || ELLIPSIS_QUALIFIER.test(payload)) return true
   return LEAD_THEN_TRAILER.test(payload) || (STARTS_WITH_ELLIPSIS.test(body) && ENDS_WITH_ELLIPSIS.test(body) && WRAPPED_MARKER.test(payload))
 }
@@ -147,6 +151,17 @@ const ELISION_ADVICE = 'Write the real content, or change only the part you mean
 export function placeholderMessage(line: string): string {
   const shown = echoedValue(line.length > 100 ? line.slice(0, 100) + '...' : line)
   return `This call writes a placeholder line (${shown}) that is not in the file now. Written as it stands, that line replaces whatever it stands for. ${ELISION_ADVICE}`
+}
+
+/** How many flagged lines {@link placeholdersMessage} quotes before it counts the rest. */
+const MAX_QUOTED_PLACEHOLDERS = 3
+
+/** The message for one call that carries a placeholder in several edits: the first few lines quoted, each display-safe, and a count of the rest. One line is worded as {@link placeholderMessage} words it. */
+export function placeholdersMessage(found: readonly string[]): string {
+  if (found.length === 1) return placeholderMessage(found[0]!)
+  const quoted = found.slice(0, MAX_QUOTED_PLACEHOLDERS).map((line) => echoedValue(line.length > 100 ? line.slice(0, 100) + '...' : line))
+  const more = found.length > quoted.length ? ` and ${found.length - quoted.length} more` : ''
+  return `This call writes ${found.length} placeholder lines (${quoted.join(', ')}${more}) that are not in the files now. Written as they stand, each replaces whatever it stands for. ${ELISION_ADVICE}`
 }
 
 export function blindDropMessage(filePath: string, runs: ReadonlyArray<readonly [number, number]>): string {
