@@ -12,6 +12,7 @@ import { neutralizeSpokenMarkers } from './injection_scan.js'
 import { getOutstandingAgentSpawns, getSessionBashOutputs, markHintShown, recordOutstandingAgentSpawn, removeOutstandingAgentSpawn, wasHintShown } from './session.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { estimateTokens } from './compact.js'
+import { sliceToEstimatedTokens } from './overflow_guard.js'
 import { toKB } from './util.js'
 import { mcpHash, mcpOutputId, storeMcpOutput } from './mcp_cache.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
@@ -97,7 +98,7 @@ function buildSubagentBriefing(projectRoot: string | null): string {
     }
 
     // Still over budget with the map alone (e.g. a very large project tree): trim from the end as a last resort. This can still cut into the reminder, but only once dropping the cache-ids block was already insufficient, not as the first thing tried.
-    return withoutCacheIds.slice(0, Math.floor((withoutCacheIds.length * BRIEFING_TARGET_TOKENS) / tokens))
+    return sliceToEstimatedTokens(withoutCacheIds, BRIEFING_TARGET_TOKENS)
   } catch {
     // Any error during briefing construction: fail open
     return ''
